@@ -732,6 +732,38 @@ export const sv = {
     compactEmpty: "Inget att komprimera än",
     compactUnsupported: "Komprimering kräver en GGUF- eller MLX-modell med verktygsstöd",
   },
+  halloween: {
+    navLabel: "Bus eller godis…",
+    title: "Sugen på att bli skrämd?",
+    description:
+      "Vi har bryggt ihop lite skräck för Unsloth, här resten av oktober.",
+    chooseTheme: "Välj ett läskigt tema",
+    spookyGreetings: "Läskiga hälsningar",
+    spookyGreetingsDescription:
+      "Sengångaren hälsar nya chattar med en liten skräck.",
+    surprise: "Bus eller godis!",
+    surpriseDescription: "Låt sengångaren välja ett tema åt dig.",
+    themesTitle: "Läskiga teman",
+    back: "Tillbaka",
+    footer: "Unsloth återgår till det normala vid midnatt den 1 november.",
+    removeNow: "Ta bort nu",
+    greeting: {
+      boo: "Bu! Blev du rädd?",
+      booName: "Bu! Blev du rädd, {name}?",
+      trickOrTreat: "Bus eller godis? Fråga på",
+      brewing: "Något puttrar i grytan. Vad kan det vara?",
+      pumpkins: "Pumporna är snidade. Vad händer nu?",
+      ghosts: "Spökena lyssnar",
+      manor: "Välkommen till herrgården. Se upp i trappan",
+      onlyTreats: "Inget bus här, bara godis",
+      moon: "Månen har gått upp. Vad tänker du på?",
+      skeletons: "Till och med skeletten är nyfikna",
+      haunting: "Glad Halloween",
+      hauntingName: "Glad Halloween, {name}",
+      candyBag: "Fyll godispåsen med frågor",
+      broomstick: "Ta fram kvasten, nu brygger vi",
+    },
+  },
   welcome: {
     goodToSeeYou: "Kul att se dig",
     goodToSeeYouName: "Kul att se dig, {name}",
@@ -2355,6 +2387,7 @@ export const sv = {
         classic: "Klassisk",
         minimal: "Minimal",
         moreThemes: "Fler teman",
+        halloween: "Halloween",
       },
       custom: {
         chatWidth: {

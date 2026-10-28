@@ -629,6 +629,38 @@ export const de = {
     compactEmpty: "Noch nichts zu komprimieren",
     compactUnsupported: "Die Komprimierung erfordert ein GGUF- oder MLX-Modell mit Tool-Unterstützung",
   },
+  halloween: {
+    navLabel: "Süßes oder Saures…",
+    title: "Lust auf Gruseln?",
+    description:
+      "Für Unsloth haben wir ein paar Schauer zusammengebraut, noch bis Ende Oktober.",
+    chooseTheme: "Schauriges Design auswählen",
+    spookyGreetings: "Gruselige Begrüßungen",
+    spookyGreetingsDescription:
+      "Das Faultier begrüßt neue Chats mit einem Schreck.",
+    surprise: "Süßes oder Saures!",
+    surpriseDescription: "Das Faultier sucht ein Design für dich aus.",
+    themesTitle: "Schaurige Designs",
+    back: "Zurück",
+    footer: "Unsloth wird am 1. November um Mitternacht wieder normal.",
+    removeNow: "Jetzt entfernen",
+    greeting: {
+      boo: "Buh! Hab ich dich erschreckt?",
+      booName: "Buh! Hab ich dich erschreckt, {name}?",
+      trickOrTreat: "Süßes oder Saures? Frag ruhig",
+      brewing: "Hier braut sich was zusammen. Was ist es?",
+      pumpkins: "Die Kürbisse sind geschnitzt. Was kommt als Nächstes?",
+      ghosts: "Die Geister hören zu",
+      manor: "Willkommen im Spukhaus. Vorsicht auf der Treppe",
+      onlyTreats: "Keine Streiche hier, nur Süßes",
+      moon: "Der Mond ist aufgegangen. Was beschäftigt dich?",
+      skeletons: "Selbst die Skelette sind neugierig",
+      haunting: "Fröhliches Spuken",
+      hauntingName: "Fröhliches Spuken, {name}",
+      candyBag: "Füll deinen Süßigkeitenbeutel mit Fragen",
+      broomstick: "Schnapp dir deinen Besen, lass uns was zusammenbrauen",
+    },
+  },
   welcome: {
     goodToSeeYou: "Schön, dich zu sehen",
     goodToSeeYouName: "Schön, dich zu sehen, {name}",
@@ -2208,6 +2240,7 @@ export const de = {
         classic: "Klassisch",
         minimal: "Minimal",
         moreThemes: "Weitere Designs",
+        halloween: "Halloween",
       },
       custom: {
         chatWidth: {

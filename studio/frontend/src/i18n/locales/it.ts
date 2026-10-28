@@ -2110,6 +2110,7 @@ export const it = {
         classic: "Classica",
         minimal: "Minimale",
         moreThemes: "Altri temi",
+        halloween: "Halloween",
       },
       custom: {
         chatWidth: {
@@ -3403,6 +3404,38 @@ export const it = {
     compactQueued: "Compattazione richiesta per il prossimo messaggio",
     compactEmpty: "Ancora niente da compattare",
     compactUnsupported: "La compattazione richiede un modello GGUF o MLX con supporto per gli strumenti",
+  },
+  halloween: {
+    navLabel: "Dolcetto o scherzetto…",
+    title: "Voglia di brividi?",
+    description:
+      "Abbiamo preparato qualche spavento per Unsloth, fino alla fine di ottobre.",
+    chooseTheme: "Scegli un tema da brivido",
+    spookyGreetings: "Saluti da brivido",
+    spookyGreetingsDescription:
+      "Il bradipo accoglie le nuove chat con uno spavento.",
+    surprise: "Dolcetto o scherzetto!",
+    surpriseDescription: "Lascia che il bradipo scelga un tema per te.",
+    themesTitle: "Temi da brivido",
+    back: "Indietro",
+    footer: "Unsloth torna alla normalità alla mezzanotte del 1° novembre.",
+    removeNow: "Rimuovi ora",
+    greeting: {
+      boo: "Bu! Ti ho spaventato?",
+      booName: "Bu! Ti ho spaventato, {name}?",
+      trickOrTreat: "Dolcetto o scherzetto? Chiedi pure",
+      brewing: "Qualcosa bolle in pentola. Cosa sarà?",
+      pumpkins: "Le zucche sono intagliate. E adesso?",
+      ghosts: "I fantasmi ti ascoltano",
+      manor: "Benvenuto nel maniero. Attento alle scale",
+      onlyTreats: "Niente scherzetti, solo dolcetti",
+      moon: "La luna è alta. A cosa stai pensando?",
+      skeletons: "Persino gli scheletri sono curiosi",
+      haunting: "Buon Halloween",
+      hauntingName: "Buon Halloween, {name}",
+      candyBag: "Riempi il sacchetto dei dolcetti di domande",
+      broomstick: "Afferra la scopa e prepariamo una pozione",
+    },
   },
   welcome: {
     goodToSeeYou: "Che piacere vederti",

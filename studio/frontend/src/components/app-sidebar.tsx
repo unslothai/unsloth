@@ -96,6 +96,11 @@ import {
 } from "@/features/audio/workflows";
 /* eslint-enable no-restricted-imports */
 import { cn } from "@/lib/utils";
+import {
+  useHalloweenSeasonEnd,
+  useTrickOrTreatVisible,
+} from "@/features/halloween/halloween-store";
+import { TrickOrTreatDialog } from "@/features/halloween/trick-or-treat-dialog";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
 import { copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { isTauri } from "@/lib/api-base";
@@ -108,6 +113,7 @@ import { NAV_FLYOUT_INTENT, NAV_TOOLTIP_INTENT } from "@/lib/hover-intent";
 import {
   Archive03Icon,
   Cancel01Icon,
+  CandyIcon,
   BadgeInfoIcon,
   ChefHatIcon,
   CloudIcon,
@@ -1321,6 +1327,9 @@ export function AppSidebar() {
   const settingsShortcutLabel = useShortcutLabel("openSettings");
   const keyboardShortcutsLabel = useShortcutLabel("openKeyboardShortcuts");
   const isOwner = useIsAccountOwner();
+  const showTrickOrTreat = useTrickOrTreatVisible();
+  const [trickOrTreatOpen, setTrickOrTreatOpen] = useState(false);
+  useHalloweenSeasonEnd();
   const { pathname, search, href } = useRouterState({
     select: (s) => ({
       pathname: s.location.pathname,
@@ -6367,9 +6376,22 @@ export function AppSidebar() {
                   </DropdownMenu>
                 </SidebarMenuItem>
               )}
+              {showTrickOrTreat && (
+                <NavItem
+                  icon={CandyIcon}
+                  label={t("halloween.navLabel")}
+                  active={trickOrTreatOpen}
+                  testId="nav-row-trick-or-treat"
+                  onClick={() => setTrickOrTreatOpen(true)}
+                />
+              )}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+        <TrickOrTreatDialog
+          open={trickOrTreatOpen}
+          onOpenChange={setTrickOrTreatOpen}
+        />
 
         {/* Pinned, the user's sections and Projects, in the order they were dragged into.
             Recents stays last, under them all. */}

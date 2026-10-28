@@ -682,7 +682,7 @@
    Flavor themes (Theme > More themes). Each sets --th-* seeds per mode; the
    block below maps them onto the --*-base tokens, so contrast and custom
    colors still apply. */
-:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"])[data-palette] {
+:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"], [data-palette="pumpkin"], [data-palette="trick-or-treat"], [data-palette="bloody-valentine"], [data-palette="the-thing"], [data-palette="alien"], [data-palette="gothic"], [data-palette="candy-ghost"], [data-palette="zombie-wedding"], [data-palette="haunted-manor"], [data-palette="ghost-ship"], [data-palette="candy-skull"], [data-palette="midnight-haunt"])[data-palette] {
 	--background: var(--th-bg);
 	--foreground-base: var(--th-fg);
 	--action-base: var(--foreground);
@@ -732,17 +732,17 @@
 }
 
 /* Attribute specificity only, so html[data-contrast-adjust] still wins. */
-[data-palette]:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"]) {
+[data-palette]:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"], [data-palette="pumpkin"], [data-palette="trick-or-treat"], [data-palette="bloody-valentine"], [data-palette="the-thing"], [data-palette="alien"], [data-palette="gothic"], [data-palette="candy-ghost"], [data-palette="zombie-wedding"], [data-palette="haunted-manor"], [data-palette="ghost-ship"], [data-palette="candy-skull"], [data-palette="midnight-haunt"]) {
 	--muted-foreground: var(--th-muted);
 }
 
-:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"])[data-palette].dark
+:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"], [data-palette="pumpkin"], [data-palette="trick-or-treat"], [data-palette="bloody-valentine"], [data-palette="the-thing"], [data-palette="alien"], [data-palette="gothic"], [data-palette="candy-ghost"], [data-palette="zombie-wedding"], [data-palette="haunted-manor"], [data-palette="ghost-ship"], [data-palette="candy-skull"], [data-palette="midnight-haunt"])[data-palette].dark
 	:is(.chat-composer-surface, .unsloth-composer-surface, .unsloth-files-panel) {
 	background-color: color-mix(in srgb, var(--card), var(--th-fg) 4%);
 }
 
 /* Collapsed rail takes the page color, as it does in dark mode. */
-:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"])[data-palette]:not(.dark)
+:root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"], [data-palette="pumpkin"], [data-palette="trick-or-treat"], [data-palette="bloody-valentine"], [data-palette="the-thing"], [data-palette="alien"], [data-palette="gothic"], [data-palette="candy-ghost"], [data-palette="zombie-wedding"], [data-palette="haunted-manor"], [data-palette="ghost-ship"], [data-palette="candy-skull"], [data-palette="midnight-haunt"])[data-palette]:not(.dark)
 	[data-collapsible="icon"] [data-sidebar="sidebar"] {
 	--sidebar-surface: var(--background);
 }
@@ -1589,6 +1589,427 @@
 	--th-chart-3: #6ec3e0;
 	--th-chart-4: #f2a65a;
 	--th-chart-5: #c79ae6;
+}
+
+/* Halloween themes (sidebar Trick or treat, and Theme > Halloween in October). */
+:root[data-palette="pumpkin"]:not(.dark) {
+	--th-bg: #fff8f0;
+	--th-surface: #fcefdf;
+	--th-raised: #f5e7d6;
+	--th-hover: #eddfce;
+	--th-border: #e6d6c5;
+	--th-fg: #2e1a08;
+	--th-muted: #6d5d4e;
+	--th-subtle: #a19488;
+	--th-accent: #b84f00;
+	--th-accent-fg: #ffffff;
+	--th-chart-1: #b84f00;
+	--th-chart-2: #4f8a22;
+	--th-chart-3: #c98a00;
+	--th-chart-4: #7a4fd1;
+	--th-chart-5: #c8323e;
+}
+:root[data-palette="pumpkin"].dark {
+	--th-bg: #17100a;
+	--th-surface: #21170e;
+	--th-raised: #2c2016;
+	--th-hover: #372a1d;
+	--th-border: #423325;
+	--th-fg: #fbebd6;
+	--th-muted: #bbae9d;
+	--th-subtle: #7e7366;
+	--th-accent: #ff8a1f;
+	--th-accent-fg: #1f0e00;
+	--th-chart-1: #ff8a1f;
+	--th-chart-2: #8fc45a;
+	--th-chart-3: #ffc94d;
+	--th-chart-4: #b48cff;
+	--th-chart-5: #ff6b5e;
+}
+
+:root[data-palette="trick-or-treat"]:not(.dark) {
+	--th-bg: #fffaf0;
+	--th-surface: #fbf1dc;
+	--th-raised: #f3e9d3;
+	--th-hover: #ece1cb;
+	--th-border: #e4d9c2;
+	--th-fg: #2b1c08;
+	--th-muted: #6b5f4e;
+	--th-subtle: #a09688;
+	--th-accent: #9a5c00;
+	--th-accent-fg: #ffffff;
+	--th-chart-1: #9a5c00;
+	--th-chart-2: #d9531e;
+	--th-chart-3: #7a3fd1;
+	--th-chart-4: #2a8a6c;
+	--th-chart-5: #c2378f;
+}
+:root[data-palette="trick-or-treat"].dark {
+	--th-bg: #171022;
+	--th-surface: #20172f;
+	--th-raised: #2b2136;
+	--th-hover: #362c3c;
+	--th-border: #413643;
+	--th-fg: #fff3dd;
+	--th-muted: #beb3a9;
+	--th-subtle: #7f7676;
+	--th-accent: #ffc23d;
+	--th-accent-fg: #1f1200;
+	--th-chart-1: #ffc23d;
+	--th-chart-2: #ff7a2f;
+	--th-chart-3: #b48cff;
+	--th-chart-4: #ffefc2;
+	--th-chart-5: #7fd1a0;
+}
+
+:root[data-palette="bloody-valentine"]:not(.dark) {
+	--th-bg: #fdf5f6;
+	--th-surface: #f8e7ea;
+	--th-raised: #f1dee1;
+	--th-hover: #e9d5d9;
+	--th-border: #e2cdd0;
+	--th-fg: #2e0a10;
+	--th-muted: #6c5155;
+	--th-subtle: #a08b8f;
+	--th-accent: #b0122c;
+	--th-accent-fg: #ffffff;
+	--th-chart-1: #b0122c;
+	--th-chart-2: #d6587a;
+	--th-chart-3: #6e6e7a;
+	--th-chart-4: #c8602e;
+	--th-chart-5: #8b3fd1;
+}
+:root[data-palette="bloody-valentine"].dark {
+	--th-bg: #140709;
+	--th-surface: #1e0b0f;
+	--th-raised: #291418;
+	--th-hover: #341c21;
+	--th-border: #3f252a;
+	--th-fg: #f7e3e6;
+	--th-muted: #b7a5a8;
+	--th-subtle: #7a6a6c;
+	--th-accent: #ff3b55;
+	--th-accent-fg: #1c0206;
+	--th-chart-1: #ff3b55;
+	--th-chart-2: #ff9fb0;
+	--th-chart-3: #b8b8c4;
+	--th-chart-4: #ff8a5c;
+	--th-chart-5: #c77dff;
+}
+
+:root[data-palette="the-thing"]:not(.dark) {
+	--th-bg: #f4f9fb;
+	--th-surface: #e8f1f5;
+	--th-raised: #dfe9ed;
+	--th-hover: #d7e1e6;
+	--th-border: #ced9de;
+	--th-fg: #0d1d26;
+	--th-muted: #525f66;
+	--th-subtle: #8c969b;
+	--th-accent: #1f6e96;
+	--th-accent-fg: #ffffff;
+	--th-chart-1: #1f6e96;
+	--th-chart-2: #d9531e;
+	--th-chart-3: #5f7d8c;
+	--th-chart-4: #1f9e8a;
+	--th-chart-5: #c8323e;
+}
+:root[data-palette="the-thing"].dark {
+	--th-bg: #0b1217;
+	--th-surface: #111b22;
+	--th-raised: #1a252d;
+	--th-hover: #243038;
+	--th-border: #2d3a42;
+	--th-fg: #e3f1f8;
+	--th-muted: #a7b3b9;
+	--th-subtle: #6c767c;
+	--th-accent: #8fd3ff;
+	--th-accent-fg: #04121c;
+	--th-chart-1: #8fd3ff;
+	--th-chart-2: #ff7a3d;
+	--th-chart-3: #d7e8f0;
+	--th-chart-4: #6fd6c0;
+	--th-chart-5: #ff5c6c;
+}
+
+:root[data-palette="alien"]:not(.dark) {
+	--th-bg: #f3faf5;
+	--th-surface: #e6f3ea;
+	--th-raised: #ddebe2;
+	--th-hover: #d4e3d9;
+	--th-border: #ccdbd1;
+	--th-fg: #0b2015;
+	--th-muted: #516158;
+	--th-subtle: #8b9890;
+	--th-accent: #0a7a3c;
+	--th-accent-fg: #ffffff;
+	--th-chart-1: #0a7a3c;
+	--th-chart-2: #6f8f00;
+	--th-chart-3: #0f7fa8;
+	--th-chart-4: #5f6f66;
+	--th-chart-5: #c2127f;
+}
+:root[data-palette="alien"].dark {
+	--th-bg: #070d0a;
+	--th-surface: #0d1712;
+	--th-raised: #15221b;
+	--th-hover: #1d2e25;
+	--th-border: #25392e;
+	--th-fg: #d8f5e3;
+	--th-muted: #9db4a6;
+	--th-subtle: #65756c;
+	--th-accent: #39ff88;
+	--th-accent-fg: #02140a;
+	--th-chart-1: #39ff88;
+	--th-chart-2: #c8ff3d;
+	--th-chart-3: #3dd6ff;
+	--th-chart-4: #9aa8a0;
+	--th-chart-5: #ff5ca8;
+}
+
+:root[data-palette="gothic"]:not(.dark) {
+	--th-bg: #f8f6f9;
+	--th-surface: #efebf1;
+	--th-raised: #e7e3e9;
+	--th-hover: #dfdae1;
+	--th-border: #d7d2da;
+	--th-fg: #1a141e;
+	--th-muted: #5d5860;
+	--th-subtle: #949096;
+	--th-accent: #5c3f86;
+	--th-accent-fg: #ffffff;
+	--th-chart-1: #5c3f86;
+	--th-chart-2: #9e1f3d;
+	--th-chart-3: #5f5f6b;
+	--th-chart-4: #3f6fd1;
+	--th-chart-5: #a8771e;
+}
+:root[data-palette="gothic"].dark {
+	--th-bg: #0c0a0e;
+	--th-surface: #151217;
+	--th-raised: #1f1c22;
+	--th-hover: #29262c;
+	--th-border: #332f37;
+	--th-fg: #ebe6ef;
+	--th-muted: #ada8b0;
+	--th-subtle: #706d73;
+	--th-accent: #b9a3d9;
+	--th-accent-fg: #120c1a;
+	--th-chart-1: #b9a3d9;
+	--th-chart-2: #c23b5a;
+	--th-chart-3: #a7a7b3;
+	--th-chart-4: #7f6fb0;
+	--th-chart-5: #e0c08a;
+}
+
+:root[data-palette="candy-ghost"]:not(.dark) {
+	--th-bg: #fbf8fd;
+	--th-surface: #f2edf8;
+	--th-raised: #eae5f1;
+	--th-hover: #e2ddeb;
+	--th-border: #dad4e4;
+	--th-fg: #21183a;
+	--th-muted: #625b75;
+	--th-subtle: #9993a5;
+	--th-accent: #7a4fd1;
+	--th-accent-fg: #ffffff;
+	--th-chart-1: #7a4fd1;
+	--th-chart-2: #d9661e;
+	--th-chart-3: #c98a00;
+	--th-chart-4: #1f9e8a;
+	--th-chart-5: #c2378f;
+}
+:root[data-palette="candy-ghost"].dark {
+	--th-bg: #120e1a;
+	--th-surface: #1b1526;
+	--th-raised: #261f30;
+	--th-hover: #302839;
+	--th-border: #3b3243;
+	--th-fg: #f3eadb;
+	--th-muted: #b4aca5;
+	--th-subtle: #777171;
+	--th-accent: #e08cff;
+	--th-accent-fg: #1a0a20;
+	--th-chart-1: #e08cff;
+	--th-chart-2: #ff9a4a;
+	--th-chart-3: #fff1c9;
+	--th-chart-4: #7fd1c0;
+	--th-chart-5: #ff7aa8;
+}
+
+:root[data-palette="zombie-wedding"]:not(.dark) {
+	--th-bg: #faf7fc;
+	--th-surface: #f2ecf6;
+	--th-raised: #eae4ee;
+	--th-hover: #e3dbe6;
+	--th-border: #dbd3df;
+	--th-fg: #22172c;
+	--th-muted: #635a6a;
+	--th-subtle: #99929e;
+	--th-accent: #a8325a;
+	--th-accent-fg: #ffffff;
+	--th-chart-1: #a8325a;
+	--th-chart-2: #7d3fb0;
+	--th-chart-3: #6f6a5e;
+	--th-chart-4: #3f8a55;
+	--th-chart-5: #3f5fc4;
+}
+:root[data-palette="zombie-wedding"].dark {
+	--th-bg: #100c14;
+	--th-surface: #1a1421;
+	--th-raised: #251e2b;
+	--th-hover: #2f2735;
+	--th-border: #3a313e;
+	--th-fg: #ede7f5;
+	--th-muted: #afaab6;
+	--th-subtle: #736f79;
+	--th-accent: #e89ab0;
+	--th-accent-fg: #200a12;
+	--th-chart-1: #e89ab0;
+	--th-chart-2: #c79bf2;
+	--th-chart-3: #e8e2d4;
+	--th-chart-4: #8fc49a;
+	--th-chart-5: #7f9cf0;
+}
+
+:root[data-palette="haunted-manor"]:not(.dark) {
+	--th-bg: #f6f7f8;
+	--th-surface: #eceef1;
+	--th-raised: #e4e6e9;
+	--th-hover: #dddee1;
+	--th-border: #d5d6d8;
+	--th-fg: #1a1f27;
+	--th-muted: #5c6066;
+	--th-subtle: #93969a;
+	--th-accent: #8a6410;
+	--th-accent-fg: #ffffff;
+	--th-chart-1: #8a6410;
+	--th-chart-2: #4f6b80;
+	--th-chart-3: #a8452f;
+	--th-chart-4: #4f7a4a;
+	--th-chart-5: #6a5ab0;
+}
+:root[data-palette="haunted-manor"].dark {
+	--th-bg: #101318;
+	--th-surface: #181d24;
+	--th-raised: #22272c;
+	--th-hover: #2c3035;
+	--th-border: #363a3d;
+	--th-fg: #e6e9ee;
+	--th-muted: #aaadb2;
+	--th-subtle: #707378;
+	--th-accent: #d9b25a;
+	--th-accent-fg: #1a1203;
+	--th-chart-1: #d9b25a;
+	--th-chart-2: #9fb8c9;
+	--th-chart-3: #c26a5e;
+	--th-chart-4: #8fae8a;
+	--th-chart-5: #a99bd6;
+}
+
+:root[data-palette="ghost-ship"]:not(.dark) {
+	--th-bg: #f2f9f8;
+	--th-surface: #e4f2f0;
+	--th-raised: #dbeae8;
+	--th-hover: #d3e3e0;
+	--th-border: #cadbd9;
+	--th-fg: #0a2422;
+	--th-muted: #506462;
+	--th-subtle: #8a9998;
+	--th-accent: #0b7d74;
+	--th-accent-fg: #ffffff;
+	--th-chart-1: #0b7d74;
+	--th-chart-2: #5a8a12;
+	--th-chart-3: #2f62b8;
+	--th-chart-4: #b07a00;
+	--th-chart-5: #c8323e;
+}
+:root[data-palette="ghost-ship"].dark {
+	--th-bg: #081316;
+	--th-surface: #0e1d21;
+	--th-raised: #16272b;
+	--th-hover: #1f3235;
+	--th-border: #273c3e;
+	--th-fg: #ddf3f0;
+	--th-muted: #a1b4b3;
+	--th-subtle: #687878;
+	--th-accent: #3fd1c4;
+	--th-accent-fg: #021412;
+	--th-chart-1: #3fd1c4;
+	--th-chart-2: #9ad44f;
+	--th-chart-3: #7fb0f0;
+	--th-chart-4: #e8c05a;
+	--th-chart-5: #ff7a8a;
+}
+
+:root[data-palette="candy-skull"]:not(.dark) {
+	--th-bg: #fff7fa;
+	--th-surface: #fbeaf1;
+	--th-raised: #f4e1e9;
+	--th-hover: #ecd9e1;
+	--th-border: #e5d0d9;
+	--th-fg: #2c1020;
+	--th-muted: #6b5561;
+	--th-subtle: #a08f98;
+	--th-accent: #c8166b;
+	--th-accent-fg: #ffffff;
+	--th-chart-1: #c8166b;
+	--th-chart-2: #c97a00;
+	--th-chart-3: #0b8a80;
+	--th-chart-4: #7a4fd1;
+	--th-chart-5: #d9531e;
+}
+:root[data-palette="candy-skull"].dark {
+	--th-bg: #140f1c;
+	--th-surface: #1e1729;
+	--th-raised: #292032;
+	--th-hover: #35293a;
+	--th-border: #403343;
+	--th-fg: #fff4e8;
+	--th-muted: #bdb4af;
+	--th-subtle: #7e7678;
+	--th-accent: #ff5fa2;
+	--th-accent-fg: #1f0612;
+	--th-chart-1: #ff5fa2;
+	--th-chart-2: #ffb627;
+	--th-chart-3: #3fd1c4;
+	--th-chart-4: #fff4e8;
+	--th-chart-5: #9a8cff;
+}
+
+:root[data-palette="midnight-haunt"]:not(.dark) {
+	--th-bg: #f5f6fb;
+	--th-surface: #eaecf6;
+	--th-raised: #e2e4ef;
+	--th-hover: #d9dce8;
+	--th-border: #d1d4e1;
+	--th-fg: #141a33;
+	--th-muted: #585c6f;
+	--th-subtle: #9093a1;
+	--th-accent: #3f55c8;
+	--th-accent-fg: #ffffff;
+	--th-chart-1: #3f55c8;
+	--th-chart-2: #a8871e;
+	--th-chart-3: #1f8f7a;
+	--th-chart-4: #7d3fb0;
+	--th-chart-5: #c8323e;
+}
+:root[data-palette="midnight-haunt"].dark {
+	--th-bg: #0a0d1a;
+	--th-surface: #11162a;
+	--th-raised: #1a2034;
+	--th-hover: #24293e;
+	--th-border: #2d3348;
+	--th-fg: #e4e7f2;
+	--th-muted: #a7aab6;
+	--th-subtle: #6c6f7b;
+	--th-accent: #8da2ff;
+	--th-accent-fg: #060a1c;
+	--th-chart-1: #8da2ff;
+	--th-chart-2: #e8d98a;
+	--th-chart-3: #6fd6c0;
+	--th-chart-4: #c79bf2;
+	--th-chart-5: #ff8a8a;
 }
 
 /* --------------------------------------------------------------------------- */

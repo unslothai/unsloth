@@ -629,6 +629,38 @@ export const fr = {
     compactEmpty: "Rien à compacter pour le moment",
     compactUnsupported: "Le compactage nécessite un modèle GGUF ou MLX prenant en charge les outils",
   },
+  halloween: {
+    navLabel: "Un bonbon ou un sort…",
+    title: "Envie de frissons ?",
+    description:
+      "Nous avons concocté quelques frayeurs pour Unsloth, jusqu’à la fin d’octobre.",
+    chooseTheme: "Choisissez un thème effrayant",
+    spookyGreetings: "Salutations effrayantes",
+    spookyGreetingsDescription:
+      "Le paresseux accueille les nouvelles discussions avec une frayeur.",
+    surprise: "Un bonbon ou un sort !",
+    surpriseDescription: "Laissez le paresseux choisir un thème pour vous.",
+    themesTitle: "Thèmes effrayants",
+    back: "Retour",
+    footer: "Unsloth redevient normal à minuit le 1er novembre.",
+    removeNow: "Retirer maintenant",
+    greeting: {
+      boo: "Bouh ! Je vous ai fait peur ?",
+      booName: "Bouh ! Je vous ai fait peur, {name} ?",
+      trickOrTreat: "Un bonbon ou un sort ? Posez votre question",
+      brewing: "Quelque chose mijote dans le chaudron. Quoi donc ?",
+      pumpkins: "Les citrouilles sont sculptées. Et ensuite ?",
+      ghosts: "Les fantômes vous écoutent",
+      manor: "Bienvenue au manoir. Attention à l’escalier",
+      onlyTreats: "Ici, pas de sorts, que des bonbons",
+      moon: "La lune est levée. Qu’avez-vous en tête ?",
+      skeletons: "Même les squelettes sont curieux",
+      haunting: "Joyeuses frayeurs",
+      hauntingName: "Joyeuses frayeurs, {name}",
+      candyBag: "Remplissez votre sac de bonbons de questions",
+      broomstick: "À vos balais, la potion nous attend",
+    },
+  },
   welcome: {
     goodToSeeYou: "Ravi de vous voir",
     goodToSeeYouName: "Ravi de vous voir, {name}",
@@ -2207,6 +2239,7 @@ export const fr = {
         classic: "Classique",
         minimal: "Minimale",
         moreThemes: "Plus de thèmes",
+        halloween: "Halloween",
       },
       custom: {
         chatWidth: {

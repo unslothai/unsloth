@@ -23,7 +23,9 @@ try {
     "cinnamon", "cotton-candy", "dragon-fruit", "earl-grey", "espresso",
     "honey", "licorice", "macaron", "matcha", "mint", "neon-cyberpunk",
     "oat-milk", "peach", "pina-paraiso", "plum", "tangerine", "taro",
-    "wasabi", "yuzu",
+    "wasabi", "yuzu", "pumpkin", "trick-or-treat", "bloody-valentine",
+    "the-thing", "alien", "gothic", "candy-ghost", "zombie-wedding",
+    "haunted-manor", "ghost-ship", "candy-skull", "midnight-haunt",
   ];
   if (palettes.indexOf(palette) !== -1) {
     root.setAttribute("data-palette", palette);

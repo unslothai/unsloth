@@ -682,6 +682,38 @@ export const en = {
     compactEmpty: "Nothing to compact yet",
     compactUnsupported: "Compaction requires a GGUF or MLX model with tool support",
   },
+  // The sidebar's October "Trick or treat" row, its dialog, and the spooky chat greetings.
+  halloween: {
+    navLabel: "Trick or treat…",
+    title: "Feeling spooky?",
+    description:
+      "We’ve been brewing a few frights for Unsloth, here for the rest of October.",
+    chooseTheme: "Choose a frightful theme",
+    spookyGreetings: "Spooky greetings",
+    spookyGreetingsDescription: "The sloth greets new chats with a scare.",
+    surprise: "Trick or treat!",
+    surpriseDescription: "Let the sloth pick a theme for you.",
+    themesTitle: "Frightful themes",
+    back: "Back",
+    footer: "Unsloth returns to normal at midnight on November 1.",
+    removeNow: "Remove now",
+    greeting: {
+      boo: "Boo! Did I scare you?",
+      booName: "Boo! Did I scare you, {name}?",
+      trickOrTreat: "Trick or treat? Ask away",
+      brewing: "Something’s brewing. What is it?",
+      pumpkins: "The pumpkins are carved. What’s next?",
+      ghosts: "The ghosts are listening",
+      manor: "Welcome to the manor. Mind the stairs",
+      onlyTreats: "No tricks here, only treats",
+      moon: "The moon is up. What’s on your mind?",
+      skeletons: "Even the skeletons are curious",
+      haunting: "Happy haunting",
+      hauntingName: "Happy haunting, {name}",
+      candyBag: "Fill your candy bag with questions",
+      broomstick: "Grab your broomstick, let’s get brewing",
+    },
+  },
   // The empty chat's greeting; {name} is the user's nickname or first name.
   welcome: {
     goodToSeeYou: "Good to see you",
@@ -2242,6 +2274,7 @@ export const en = {
         classic: "Classic",
         minimal: "Minimal",
         moreThemes: "More themes",
+        halloween: "Halloween",
       },
       custom: {
         chatWidth: {

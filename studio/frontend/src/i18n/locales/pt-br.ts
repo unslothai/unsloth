@@ -629,6 +629,38 @@ export const ptBR = {
     compactEmpty: "Ainda não há nada para compactar",
     compactUnsupported: "A compactação requer um modelo GGUF ou MLX com suporte a ferramentas",
   },
+  halloween: {
+    navLabel: "Doces ou travessuras…",
+    title: "A fim de uns sustos?",
+    description:
+      "Preparamos alguns sustos para o Unsloth, disponíveis até o fim de outubro.",
+    chooseTheme: "Escolha um tema assustador",
+    spookyGreetings: "Saudações assustadoras",
+    spookyGreetingsDescription:
+      "A preguiça recebe os novos chats com um susto.",
+    surprise: "Doces ou travessuras!",
+    surpriseDescription: "Deixe a preguiça escolher um tema para você.",
+    themesTitle: "Temas assustadores",
+    back: "Voltar",
+    footer: "O Unsloth volta ao normal à meia-noite de 1º de novembro.",
+    removeNow: "Remover agora",
+    greeting: {
+      boo: "Bu! Assustei você?",
+      booName: "Bu! Assustei você, {name}?",
+      trickOrTreat: "Doces ou travessuras? Pode perguntar",
+      brewing: "Tem algo fervendo no caldeirão. O que será?",
+      pumpkins: "As abóboras estão esculpidas. E agora?",
+      ghosts: "Os fantasmas estão ouvindo",
+      manor: "Bem-vindo à mansão. Cuidado com a escada",
+      onlyTreats: "Nada de travessuras, só doces",
+      moon: "A lua já nasceu. O que você tem em mente?",
+      skeletons: "Até os esqueletos estão curiosos",
+      haunting: "Feliz Halloween",
+      hauntingName: "Feliz Halloween, {name}",
+      candyBag: "Encha sua sacola de doces com perguntas",
+      broomstick: "Pegue sua vassoura, vamos preparar uma poção",
+    },
+  },
   welcome: {
     goodToSeeYou: "Que bom ver você",
     goodToSeeYouName: "Que bom ver você, {name}",
@@ -2195,6 +2227,7 @@ export const ptBR = {
         classic: "Clássico",
         minimal: "Minimalista",
         moreThemes: "Mais temas",
+        halloween: "Halloween",
       },
       custom: {
         chatWidth: {

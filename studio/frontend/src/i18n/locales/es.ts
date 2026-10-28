@@ -629,6 +629,38 @@ export const es = {
     compactEmpty: "Aún no hay nada que compactar",
     compactUnsupported: "La compactación requiere un modelo GGUF o MLX compatible con herramientas",
   },
+  halloween: {
+    navLabel: "Truco o trato…",
+    title: "¿Con ganas de sustos?",
+    description:
+      "Hemos preparado algunos sustos para Unsloth, disponibles hasta finales de octubre.",
+    chooseTheme: "Elige un tema terrorífico",
+    spookyGreetings: "Saludos terroríficos",
+    spookyGreetingsDescription:
+      "El perezoso recibe los chats nuevos con un susto.",
+    surprise: "¡Truco o trato!",
+    surpriseDescription: "Deja que el perezoso elija un tema por ti.",
+    themesTitle: "Temas terroríficos",
+    back: "Atrás",
+    footer: "Unsloth vuelve a la normalidad a medianoche del 1 de noviembre.",
+    removeNow: "Quitar ahora",
+    greeting: {
+      boo: "¡Bu! ¿Te asusté?",
+      booName: "¡Bu! ¿Te asusté, {name}?",
+      trickOrTreat: "¿Truco o trato? Pregunta lo que quieras",
+      brewing: "Algo se está cocinando. ¿Qué será?",
+      pumpkins: "Las calabazas ya están talladas. ¿Qué sigue?",
+      ghosts: "Los fantasmas están escuchando",
+      manor: "Bienvenido a la mansión. Cuidado con las escaleras",
+      onlyTreats: "Aquí no hay trucos, solo dulces",
+      moon: "Ya salió la luna. ¿Qué tienes en mente?",
+      skeletons: "Hasta los esqueletos tienen curiosidad",
+      haunting: "Felices sustos",
+      hauntingName: "Felices sustos, {name}",
+      candyBag: "Llena tu bolsa de dulces con preguntas",
+      broomstick: "Toma tu escoba, a preparar pociones",
+    },
+  },
   welcome: {
     goodToSeeYou: "Me alegra verte",
     goodToSeeYouName: "Me alegra verte, {name}",
@@ -2203,6 +2235,7 @@ export const es = {
         classic: "Clásica",
         minimal: "Minimalista",
         moreThemes: "Más temas",
+        halloween: "Halloween",
       },
       custom: {
         chatWidth: {
