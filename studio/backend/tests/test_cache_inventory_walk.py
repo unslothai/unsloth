@@ -164,6 +164,10 @@ def clean_memo(monkeypatch):
     monkeypatch.setattr(cache_inventory, "_size_flights", {})
     # A background walk an earlier test left running (a real cache walk under load) must not hold these up.
     monkeypatch.setattr(cache_inventory, "_background_walk_lock", threading.Lock())
+    monkeypatch.setattr(cache_inventory, "_background_pending", set())
+    yield
+    # A worker a test left behind must finish before the patched state is put back.
+    _wait_for_background_walks()
 
 
 def _expire(key: str, *, walk_seconds: float) -> None:
@@ -336,3 +340,139 @@ def test_the_inventory_starts_background_walks_after_its_own(monkeypatch, clean_
     foreground = [key for kind, key in order if kind == "walk" and key != "uv"]
     assert len(foreground) == len(cache_inventory.CACHE_DEFINITIONS) - 1
     assert order.index(("background", "uv")) == len(foreground)
+
+
+def _wait_for_background_walks(timeout: float = 10.0) -> None:
+    deadline = time.monotonic() + timeout
+    for thread in list(threading.enumerate()):
+        if thread.name.startswith("cache-size-"):
+            thread.join(max(0.0, deadline - time.monotonic()))
+
+
+def test_a_queued_background_walk_does_not_hold_a_read_of_its_cache(monkeypatch, clean_memo):
+    """A purge or download of a cache whose refresh is queued behind another must not wait for that queue."""
+    uv_walking = threading.Event()
+    release_uv = threading.Event()
+    sizes = {"uv": iter([1, 2]), "triton": iter([10, 20, 30])}
+
+    def describe(target):
+        size = next(sizes[target.key])
+        if target.key == "uv" and size == 2:
+            uv_walking.set()
+            release_uv.wait(10)
+        return {"key": target.key, "size_bytes": size}
+
+    monkeypatch.setattr(cache_inventory, "describe_cache", describe)
+    for key in ("uv", "triton"):
+        cache_inventory._described(definition_for(key), refresh = False)
+        _expire(key, walk_seconds = 30)
+    try:
+        assert cache_inventory._described(definition_for("uv"), refresh = False)["size_bytes"] == 1
+        assert uv_walking.wait(5)
+        # triton's refresh is now queued behind uv's walk.
+        assert (
+            cache_inventory._described(definition_for("triton"), refresh = False)["size_bytes"] == 10
+        )
+        cache_inventory.invalidate_cache_size("triton")
+        answer: list = []
+        reader = threading.Thread(
+            target = lambda: answer.append(
+                cache_inventory._described(definition_for("triton"), refresh = False)
+            ),
+            daemon = True,
+        )
+        reader.start()
+        reader.join(2.0)
+        assert answer, "the read waited for a background walk queued behind another cache"
+        assert answer[0]["size_bytes"] == 20
+    finally:
+        release_uv.set()
+        _wait_for_background_walks()
+    # The queued refresh found a size newer than the one it was asked to replace and did not walk again.
+    assert cache_inventory._size_cache["triton"][2]["size_bytes"] == 20
+
+
+def test_a_refresh_that_cannot_start_walks_in_the_request(monkeypatch, clean_memo):
+    definition = definition_for("uv")
+    sizes = iter([10, 20])
+    monkeypatch.setattr(
+        cache_inventory,
+        "describe_cache",
+        lambda target: {"key": target.key, "size_bytes": next(sizes)},
+    )
+    assert cache_inventory._described(definition, refresh = False)["size_bytes"] == 10
+    _expire("uv", walk_seconds = 30)
+
+    def refuse(self):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(threading.Thread, "start", refuse)
+    assert cache_inventory._described(definition, refresh = False)["size_bytes"] == 20
+
+
+def test_recheck_accepts_a_walk_begun_after_the_request(monkeypatch, clean_memo):
+    definition = definition_for("triton")
+    sizes = iter([10, 20])
+    monkeypatch.setattr(
+        cache_inventory,
+        "describe_cache",
+        lambda target: {"key": target.key, "size_bytes": next(sizes)},
+    )
+    asked = time.monotonic()
+    assert cache_inventory._described(definition, refresh = False)["size_bytes"] == 10
+    # The walk above began after the Recheck was asked for, so the Recheck does not repeat it.
+    assert cache_inventory._described(definition, refresh = True, asked_at = asked)["size_bytes"] == 10
+
+
+def _absent(target) -> dict:
+    return {
+        "key": target.key,
+        "size_bytes": 1,
+        "present": False,
+        "purgeable": False,
+        "opt_in": False,
+    }
+
+
+def test_the_inventory_says_when_a_size_is_being_refreshed(monkeypatch, clean_memo):
+    """The page asks again while a slow cache re-walks, so an old size does not stay on screen."""
+    release = threading.Event()
+
+    def describe(target):
+        if target.key == "uv" and "uv" in cache_inventory._size_cache:
+            release.wait(10)
+        return _absent(target)
+
+    monkeypatch.setattr(cache_inventory, "describe_cache", describe)
+    monkeypatch.setattr(cache_inventory, "_free_bytes", lambda: None)
+    monkeypatch.setattr(cache_inventory, "_total_disk_bytes", lambda: None)
+    assert cache_inventory.cache_inventory()["refreshing"] is False
+    _expire("uv", walk_seconds = 30)
+    try:
+        assert cache_inventory.cache_inventory()["refreshing"] is True
+        assert cache_inventory.cache_inventory()["refreshing"] is True
+    finally:
+        release.set()
+        _wait_for_background_walks()
+    assert cache_inventory.cache_inventory()["refreshing"] is False
+
+
+def test_clearing_one_hugging_face_cache_keeps_the_other_sizes(monkeypatch, clean_memo):
+    """Base re-walked only the cleared cache; the siblings' sizes did not change."""
+    walked: list = []
+    monkeypatch.setattr(
+        cache_inventory,
+        "describe_cache",
+        lambda target: (walked.append(target.key), _absent(target))[1],
+    )
+    monkeypatch.setattr(cache_inventory, "_free_bytes", lambda: None)
+    monkeypatch.setattr(cache_inventory, "_total_disk_bytes", lambda: None)
+    monkeypatch.setattr(
+        cache_inventory,
+        "purge_cache",
+        lambda key: {"key": key, "freed_bytes": 0, "removed_entries": 0, "errors": []},
+    )
+    cache_inventory.cache_inventory()
+    walked.clear()
+    cache_inventory.purge_caches(["hf_hub"])
+    assert walked == ["hf_hub"]

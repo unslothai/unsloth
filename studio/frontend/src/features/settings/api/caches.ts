@@ -49,6 +49,7 @@ export type CacheInventory = {
   reclaimableBytes: number;
   freeBytes: number | null;
   totalDiskBytes: number | null;
+  refreshing: boolean;
 };
 
 export type CachePurgeResult = {
@@ -98,6 +99,7 @@ type ApiCacheInventory = {
   free_bytes: number | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   total_disk_bytes: number | null;
+  refreshing?: boolean;
 };
 
 type ApiCachePurgeResult = {
@@ -141,6 +143,7 @@ export function inventoryFromApi(value: ApiCacheInventory): CacheInventory {
     reclaimableBytes: value.reclaimable_bytes,
     freeBytes: value.free_bytes,
     totalDiskBytes: value.total_disk_bytes,
+    refreshing: value.refreshing === true,
   };
 }
 
