@@ -95,6 +95,10 @@ function presentCaches(inventory: CacheInventory | null): CacheEntry[] {
   return inventory.caches.filter((entry) => entry.present);
 }
 
+// A slow cache can answer from its last walk while it re-walks; ask again until every size is current.
+const FOLLOW_UP_MS = 2000;
+const FOLLOW_UP_LIMIT = 60;
+
 export function useCacheStorage() {
   const t = useT();
   const [inventory, setInventory] = useState<CacheInventory | null>(null);
@@ -104,28 +108,58 @@ export function useCacheStorage() {
 
   // Only the newest measurement installs itself; overlapping ones finish in any order.
   const latestRequest = useRef(0);
+  const followUp = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const cancelFollowUp = useCallback(() => {
+    if (followUp.current !== null) clearTimeout(followUp.current);
+    followUp.current = null;
+  }, []);
+
+  // Runs only if nothing newer was asked for in the meantime.
+  const scheduleFollowUp = useCallback(
+    (wanted: boolean, request: number, run: () => void) => {
+      if (!wanted) return;
+      followUp.current = setTimeout(() => {
+        followUp.current = null;
+        if (request === latestRequest.current) run();
+      }, FOLLOW_UP_MS);
+    },
+    [],
+  );
 
   const refresh = useCallback(
-    async (options: { refresh?: boolean } = {}) => {
-      const request = ++latestRequest.current;
-      setLoading(true);
-      try {
-        const next = await loadCacheInventory(options);
-        if (request !== latestRequest.current) return;
-        setInventory(next);
-        setLoadError(null);
-      } catch (error) {
-        if (request !== latestRequest.current) return;
-        setLoadError(
-          error instanceof Error
-            ? error.message
-            : t("settings.resources.storage.caches.measureFailed"),
-        );
-      } finally {
-        if (request === latestRequest.current) setLoading(false);
-      }
+    async (options: { refresh?: boolean } = {}, firstAttempt = 0) => {
+      cancelFollowUp();
+      // A follow-up only swaps in the newer sizes: no measuring state, and a failed one keeps the rows.
+      const load = async (attempt: number) => {
+        const request = ++latestRequest.current;
+        if (attempt === 0) setLoading(true);
+        try {
+          const next = await loadCacheInventory(attempt === 0 ? options : {});
+          if (request !== latestRequest.current) return;
+          setInventory(next);
+          setLoadError(null);
+          scheduleFollowUp(
+            next.refreshing && attempt < FOLLOW_UP_LIMIT,
+            request,
+            () => void load(attempt + 1),
+          );
+        } catch (error) {
+          if (request !== latestRequest.current || attempt > 0) return;
+          setLoadError(
+            error instanceof Error
+              ? error.message
+              : t("settings.resources.storage.caches.measureFailed"),
+          );
+        } finally {
+          if (attempt === 0 && request === latestRequest.current) {
+            setLoading(false);
+          }
+        }
+      };
+      await load(firstAttempt);
     },
-    [t],
+    [t, cancelFollowUp, scheduleFollowUp],
   );
 
   // Saving Models Folder bumps the inventory version; re-measure so rows match the new folder.
@@ -137,6 +171,11 @@ export function useCacheStorage() {
     const moved = measuredVersion.current !== inventoryVersion;
     measuredVersion.current = inventoryVersion;
     void refresh(moved ? { refresh: true } : {});
+    // Leaving the page stops any follow-up read.
+    return () => {
+      if (followUp.current !== null) clearTimeout(followUp.current);
+      followUp.current = null;
+    };
   }, [refresh, inventoryVersion]);
 
   const entries = presentCaches(inventory);
@@ -145,10 +184,18 @@ export function useCacheStorage() {
 
   const runPurge = async (keys: readonly CacheKey[]): Promise<boolean> => {
     setClearing(true);
+    cancelFollowUp();
     const request = ++latestRequest.current;
     try {
       const outcome = await purgeCaches(keys);
-      if (request === latestRequest.current) setInventory(outcome.inventory);
+      if (request === latestRequest.current) {
+        setInventory(outcome.inventory);
+        scheduleFollowUp(
+          outcome.inventory.refreshing,
+          request,
+          () => void refresh({}, 1),
+        );
+      }
       if (keys.some((key) => HUB_INVENTORY_KEYS.has(key))) {
         // Our own bump is marked so the rows skip a cold walk for data they already hold.
         bumpInventoryVersion();

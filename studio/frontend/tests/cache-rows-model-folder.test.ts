@@ -322,3 +322,42 @@ test("a measurement that failed leaves the clears disabled", async () => {
   );
   assert.equal(destructive[0].props?.disabled, true);
 });
+
+test("a size still being re-walked is asked for again until it is current", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const pending: ((value: unknown) => void)[] = [];
+  const asked: { refresh?: boolean }[] = [];
+  const render = driveRows({
+    load: (options) => {
+      asked.push(options);
+      return new Promise((resolve) => pending.push(resolve));
+    },
+    version: () => 0,
+  });
+
+  render();
+  pending[0]({ ...inventory("/old/hub"), refreshing: true });
+  await settle();
+  const shown = render();
+  // The old size stays on screen, without the measuring state, while the walk runs.
+  assert.equal(buttons(shown, CLEAR_ONE).length, 0);
+  click(buttons(shown, DETAILS)[0]);
+  assert.equal(buttons(render(), CLEAR_ONE)[0].props?.disabled, false);
+  assert.equal(pending.length, 1);
+
+  t.mock.timers.tick(2000);
+  await settle();
+  assert.equal(pending.length, 2);
+  assert.deepEqual(asked[1], {});
+  assert.equal(buttons(render(), CLEAR_ONE)[0].props?.disabled, false);
+  pending[1]({ ...inventory("/new/hub"), refreshing: false });
+  await settle();
+
+  t.mock.timers.tick(10_000);
+  await settle();
+  assert.equal(pending.length, 2, "a current answer is not asked for again");
+  const paths = [...walk(render())]
+    .map((element) => element.props?.title)
+    .filter((title) => typeof title === "string");
+  assert.deepEqual(paths, ["/new/hub"]);
+});
