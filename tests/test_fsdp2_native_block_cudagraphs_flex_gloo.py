@@ -244,3 +244,21 @@ def test_losses_are_unchanged(ranks):
     for res in ranks:
         assert res["flex"]["losses"] == res["flex_no_graphs"]["losses"]
         assert len(set(res["flex"]["losses"])) == STEPS
+
+
+def test_flex_note_does_not_count_only_the_first_block(capsys):
+    # The note prints on the first block found flex-only, before the rest of the model has run:
+    # a count there named 1 block for a model whose every block takes a BlockMask.
+    import types
+
+    native = _load_native()
+    blocks = [(torch.nn.Module(), [types.SimpleNamespace()], 10) for _ in range(3)]
+    keeper = native._BlockWeightKeep(blocks, 1000)
+    keeper.apply()
+    for block, _, _ in blocks:
+        block.__dict__["_unsloth_block_flex_only"] = True
+        keeper.observe(block)
+    out = capsys.readouterr().out
+    assert out.count("flex attention blocks") == 1, out
+    assert "1 flex attention blocks" not in out, out
+    assert all(not getattr(p[0], "_unsloth_keep_unsharded", True) for _, p, _ in blocks)

@@ -1080,8 +1080,9 @@ class _BlockWeightKeep:
         keep, nbytes, flex = self.apply()
         if flex and not self.noted:
             self.noted = True
+            # Printed at the first such block, before the others ran: no count.
             _print_rank0(
-                f"Unsloth: native FSDP2 frees the gathered weights of {flex} flex attention blocks "
+                "Unsloth: native FSDP2 frees the gathered weights of flex attention blocks "
                 "again: they run without block CUDA graphs."
             )
         if keep != was:
