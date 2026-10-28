@@ -96,12 +96,14 @@ import {
   AUDIO_CPP_STT_MODELS,
   MTMD_STT_MODELS,
   RECOMMENDED_STT_MODELS,
+  STT_CONTEXT_LENGTHS,
   STT_PICKER_MODELS,
   type SttModel,
   getSttModelRepo,
   isCuratedSttModel,
   isSttModelId,
   isSttModelLanguageCompatible,
+  normalizeSttContextLength,
   sttModelName,
   sttModelSize,
   sttListedQuantDownloaded,
@@ -497,6 +499,8 @@ export function VoiceTab() {
   // Named apart from the `sttDevice` state below, which the sidecar reports back.
   const sttDevicePreference = useVoiceSettingsStore((s) => s.sttDevice);
   const setSttDevicePreference = useVoiceSettingsStore((s) => s.setSttDevice);
+  const sttContextLength = useVoiceSettingsStore((s) => s.sttContextLength);
+  const setSttContextLength = useVoiceSettingsStore((s) => s.setSttContextLength);
   const sttProviderId = useVoiceSettingsStore((s) => s.sttProviderId);
   const setSttProviderId = useVoiceSettingsStore((s) => s.setSttProviderId);
   const sttProviderModel = useVoiceSettingsStore((s) => s.sttProviderModel);
@@ -1487,6 +1491,61 @@ export function VoiceTab() {
                 <SelectItem value="cpu" data-testid="stt-device-cpu">
                   {t("settings.voice.dictation.sttDeviceCpu")}
                 </SelectItem>
+              </SelectContent>
+            </Select>
+          </SettingsRow>
+        ) : null}
+
+        {isLocalEngine && modelSttSupported && MTMD_STT_MODELS.has(sttModel) ? (
+          <SettingsRow
+            label={t("settings.voice.dictation.sttContextLabel")}
+            description={
+              sttContextLength === 0
+                ? t("settings.voice.dictation.sttContextAutoDescription")
+                : t("settings.voice.dictation.sttContextFixedDescription")
+            }
+          >
+            <Select
+              value={String(sttContextLength)}
+              onValueChange={(value) => {
+                const next = normalizeSttContextLength(Number(value));
+                if (next === sttContextLength) return;
+                // Keep an active transcription; the next request applies the new preference.
+                void unloadSttModel(sttEngineFor(sttModel), sttModel, {
+                  wait: false,
+                }).catch(() => {});
+                setSttPhase("on-demand");
+                setSttDevice(null);
+                setSttContextLength(next);
+              }}
+            >
+              <SelectTrigger
+                data-testid="stt-context-trigger"
+                aria-label={t("settings.voice.dictation.sttContextLabel")}
+                className="w-56"
+                size="sm"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="0" data-testid="stt-context-auto">
+                  {t("settings.voice.dictation.sttContextAuto")}
+                </SelectItem>
+                {STT_CONTEXT_LENGTHS.map((length) => (
+                  <SelectItem key={length} value={String(length)}>
+                    {t("settings.voice.dictation.sttContextTokens", {
+                      count: length.toLocaleString(),
+                    })}
+                  </SelectItem>
+                ))}
+                {sttContextLength > 0 &&
+                !STT_CONTEXT_LENGTHS.some((length) => length === sttContextLength) ? (
+                  <SelectItem value={String(sttContextLength)}>
+                    {t("settings.voice.dictation.sttContextTokens", {
+                      count: sttContextLength.toLocaleString(),
+                    })}
+                  </SelectItem>
+                ) : null}
               </SelectContent>
             </Select>
           </SettingsRow>

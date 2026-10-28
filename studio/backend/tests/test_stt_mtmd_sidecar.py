@@ -24,6 +24,7 @@ def _shared_setup_2(monkeypatch):
         mtmd_mod, "_decode_audio_bounded", lambda audio, cancel_event = None: b"\x00\x00" * 16000
     )
     monkeypatch.setattr(mtmd_mod, "_pcm_to_wav_bytes", lambda pcm: b"RIFFwav")
+    monkeypatch.setattr(MtmdSttSidecar, "_count_prompt_tokens", staticmethod(lambda *a, **k: 20))
 
 
 class _FakeProcess:
@@ -79,6 +80,7 @@ def spawned(monkeypatch):
     monkeypatch.setattr(
         MtmdSttSidecar, "_ensure_model_downloaded", lambda self, model_id: ("m.gguf", "p.gguf")
     )
+    monkeypatch.setattr(MtmdSttSidecar, "_read_server_context", staticmethod(lambda *a, **k: 4096))
     return made, adopted, forgotten
 
 
@@ -555,6 +557,7 @@ def test_disconnecting_one_mtmd_request_does_not_kill_its_sibling(monkeypatch):
     sidecar._process = process
     sidecar._port = 65000
     sidecar._model_id = "qwen3-asr-0.6b"
+    sidecar._context_length = 4096
     monkeypatch.setattr(sidecar, "load", lambda model, **kwargs: None)
 
     first_cancel = threading.Event()
@@ -572,6 +575,7 @@ def test_disconnecting_one_mtmd_request_does_not_kill_its_sibling(monkeypatch):
         *,
         language = None,
         cancel_event = None,
+        payload = None,
     ):
         nonlocal started
         with started_lock:
