@@ -35,6 +35,8 @@ class _Member:
     config: dict
     tokenizer: Any = None
     rows: list = field(default_factory = list)
+    # Per row, its documents' lengths when the member's rows are packed; empty when they are not.
+    seq_lengths: list = field(default_factory = list)
     output_dir: str = ""
     total_steps: int = 0
     steps_per_epoch: int = 1
@@ -457,6 +459,81 @@ class _PerMemberLR:
         pass
 
 
+def _packs(model) -> bool:
+    """Whether the single job would pack on this model: Unsloth's SFTTrainer ignores packing on blocklisted models,
+    on forwards that cannot take packed lengths and on hybrids without the varlen kernels (unsloth.trainer)."""
+    try:
+        from unsloth import trainer as unsloth_trainer
+        from unsloth.utils.packing import _enable_hf_packed_attention, mark_allow_overlength
+
+        if getattr(model.config, "is_encoder_decoder", False) or any(
+            t in unsloth_trainer.PADDING_FREE_BLOCKLIST
+            for t in unsloth_trainer.get_transformers_model_type(model.config)
+        ):
+            return False
+        if not unsloth_trainer._forward_accepts_packing_kwargs(model):
+            return False
+        # Gated DeltaNet / conv state would carry from one document into the next without the varlen kernels.
+        if unsloth_trainer._is_hybrid_linear_attention_model(
+            model
+        ) and not unsloth_trainer.patch_hybrid_linear_attention_varlen(model):
+            return False
+    except Exception as exc:
+        logger.info("Batched training: packing unavailable (%s)", exc)
+        return False
+    mark_allow_overlength(model)
+    _enable_hf_packed_attention()
+    return True
+
+
+def _pack_rows(rows: list, max_length: int) -> tuple[list, list]:
+    """The single job's packing (TRL's default strategy) of one member's documents into rows of max_length."""
+    import dataclasses
+
+    from datasets import Dataset
+    from trl import SFTConfig
+    from trl.data_utils import pack_dataset
+
+    strategy = next(
+        (f.default for f in dataclasses.fields(SFTConfig) if f.name == "packing_strategy"), "bfd"
+    )
+    packed = pack_dataset(
+        Dataset.from_dict({"input_ids": [r[0] for r in rows], "labels": [r[1] for r in rows]}),
+        max_length,
+        strategy = strategy,
+    )
+    if "seq_lengths" not in packed.column_names:
+        raise RuntimeError(f"TRL's '{strategy}' packing does not keep document lengths.")
+    return (
+        [(list(ids), list(lab)) for ids, lab in zip(packed["input_ids"], packed["labels"])],
+        [list(n) for n in packed["seq_lengths"]],
+    )
+
+
+def _collate_packed(rows: list, slots: list, lengths: list) -> dict:
+    """One padding-free row, as the single job's packed batches: documents end to end with positions restarting at
+    each, every token routed to its own member's adapter, and no label predicted across a document boundary."""
+    import torch
+
+    seq = [n for row in lengths for n in row]
+    input_ids = torch.tensor([t for ids, _ in rows for t in ids], dtype = torch.long)
+    labels = torch.tensor([t for _, lab in rows for t in lab], dtype = torch.long)
+    sizes = torch.tensor(seq, dtype = torch.long)
+    starts = torch.cumsum(sizes, 0) - sizes
+    labels[starts[1:]] = -100
+    position_ids = torch.arange(len(input_ids)) - torch.repeat_interleave(starts, sizes)
+    adapter_ids = torch.repeat_interleave(
+        torch.tensor(slots, dtype = torch.long), torch.tensor([len(ids) for ids, _ in rows])
+    )
+    return {
+        "input_ids": input_ids[None],
+        "labels": labels[None],
+        "position_ids": position_ids[None],
+        "packed_seq_lengths": sizes.to(torch.int32),
+        "adapter_ids": adapter_ids[None],
+    }
+
+
 def _collate(rows: list, slots: list, pad_id: int) -> dict:
     import torch
 
@@ -696,18 +773,30 @@ def _run(event_queue, stop_queue, config: dict, members: list) -> None:
         max_length = model_cap
 
     _send_status(event_queue, "Tokenizing datasets...")
+    from utils.datasets.pretokenized import PRETOKENIZED_FORMAT
+
+    packs = None
     for member in members:
         if member.done:
             continue
         try:
+            info = datasets.pop(member.run_id)
+            final_format = (
+                str(info.get("final_format", "")).lower() if isinstance(info, dict) else ""
+            )
             member.tokenizer, member.rows = _tokenize_member(
-                datasets.pop(member.run_id),
+                info,
                 tokenizer,
                 member.config,
                 model_name,
                 max_length,
                 vocab_size = int(model.get_input_embeddings().num_embeddings),
             )
+            # The single job turns packing off for pre-tokenized rows, whose labels packing would drop.
+            if member.config.get("packing") and final_format != PRETOKENIZED_FORMAT:
+                packs = _packs(model) if packs is None else packs
+                if packs:
+                    member.rows, member.seq_lengths = _pack_rows(member.rows, max_length)
         except Exception as exc:
             member.done = True
             _send(
@@ -858,6 +947,7 @@ def _build_sft_trainer(
         tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
     )
     pad_id = 0 if pad_id is None else int(pad_id)
+    packed = any(m.seq_lengths for m in live)
     bf16 = fp16 = False
     if device.type == "cuda":
         from unsloth import is_bfloat16_supported
@@ -961,7 +1051,7 @@ def _build_sft_trainer(
             samples = []
             counts = None
             for k in range(num_batches):
-                rows, slots = [], []
+                rows, slots, lengths = [], [], []
                 for member in self.round:
                     window = windows[member.slot]
                     if k < len(window):
@@ -969,11 +1059,22 @@ def _build_sft_trainer(
                         member.num_tokens += sum(len(ids) for ids, _ in picked)
                         rows.extend(picked)
                         slots.extend([member.slot] * len(picked))
+                        lengths.extend(
+                            member.seq_lengths[r]
+                            if member.seq_lengths
+                            else [len(member.rows[r][0])]
+                            for r in window[k]
+                        )
                 if not rows:
                     # Every member's window is shorter here (an epoch end); the step keeps its size.
                     samples.append({"multi_lora_empty": torch.zeros(1)})
                     continue
-                batch = _collate(rows, slots, pad_id)
+                # Once any member packs, every micro-batch is one padding-free row; members never share a document.
+                batch = (
+                    _collate_packed(rows, slots, lengths)
+                    if packed
+                    else _collate(rows, slots, pad_id)
+                )
                 found = adapter_token_counts(batch["labels"], batch["adapter_ids"], U).cpu()
                 counts = found if counts is None else counts + found
                 samples.append(batch)
@@ -990,12 +1091,21 @@ def _build_sft_trainer(
             if "multi_lora_empty" in inputs:
                 return torch.zeros((), device = self.args.device, requires_grad = True)
             ids = inputs["adapter_ids"]
-            set_multi_lora_batch(self.model, ids, seq_len = inputs["input_ids"].shape[1])
-            logits = model(
-                input_ids = inputs["input_ids"],
-                attention_mask = inputs["attention_mask"],
-                use_cache = False,
-            ).logits
+            if "position_ids" in inputs:
+                set_multi_lora_batch(self.model, ids)
+                logits = model(
+                    input_ids = inputs["input_ids"],
+                    position_ids = inputs["position_ids"],
+                    packed_seq_lengths = inputs["packed_seq_lengths"],
+                    use_cache = False,
+                ).logits
+            else:
+                set_multi_lora_batch(self.model, ids, seq_len = inputs["input_ids"].shape[1])
+                logits = model(
+                    input_ids = inputs["input_ids"],
+                    attention_mask = inputs["attention_mask"],
+                    use_cache = False,
+                ).logits
             loss, per = per_adapter_loss(
                 logits,
                 inputs["labels"],

@@ -458,6 +458,8 @@ _BATCH_MEMBER_FIELDS = frozenset(
         "weight_decay",
         "warmup_steps",
         "warmup_ratio",
+        # Packing members pack only their own documents (multi_lora_trainer._pack_rows).
+        "packing",
     }
 )
 _BATCH_OPTIMIZERS = ("adamw_8bit", "adamw_torch")
@@ -621,7 +623,6 @@ def _batchable(request: TrainingStartRequest) -> bool:
         and not (request.hf_dataset or request.dataset_streaming or request.s3_config is not None)
         and not (request.resume_from_checkpoint or request.start_request_id)
         and not (request.local_eval_datasets or evaluation_enabled(request.eval_steps))
-        and not request.packing
         and request.lora_dropout == 0
         and not (request.use_dora or request.use_loftq)
         and not (
