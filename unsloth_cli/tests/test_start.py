@@ -9,6 +9,7 @@ import http.client
 import http.server
 import io
 import json
+import math
 import os
 import re
 import shlex
@@ -8375,7 +8376,8 @@ def test_vibe_env(tmp_path):
             "name": MODEL["id"],
             "provider": start._VIBE_PROVIDER,
             "alias": start._VIBE_MODEL_ALIAS,
-            "auto_compact_threshold": int(MODEL["context_length"] * 0.9),
+            "max_context_length": MODEL["context_length"],
+            "auto_compact_threshold": MODEL["context_length"] - 24_000,
         }
     ]
     assert env["VIBE_ACTIVE_MODEL"] == start._VIBE_MODEL_ALIAS
@@ -8388,9 +8390,19 @@ def test_vibe_env_carries_temperature_and_odd_model_ids():
     _, models = _vibe_settings(start._vibe_env(BASE, model, {"temperature": 0.7}))
     assert models[0]["name"] == model["id"]
     assert models[0]["temperature"] == 0.7
-    assert models[0]["auto_compact_threshold"] == int(32768 * 0.9)
+    assert models[0]["max_context_length"] == 32768
+    assert models[0]["auto_compact_threshold"] == 32768 * 3 // 4
     _, models = _vibe_settings(start._vibe_env(BASE, {"id": "m"}))
     assert set(models[0]) == {"name", "provider", "alias"}
+
+
+@pytest.mark.parametrize("window", [16384, 40960, 131072, 262144])
+def test_vibe_env_compaction_threshold_fits_the_window(window):
+    _, models = _vibe_settings(start._vibe_env(BASE, {"id": "m", "context_length": window}))
+    assert models[0]["max_context_length"] == window
+    low = max(min(50_000, window // 2), 10_000)
+    high = window - min(24_000, math.ceil(window / 4))
+    assert low <= models[0]["auto_compact_threshold"] <= high
 
 
 def test_connect_vibe_no_launch_uses_env_only(fake_studio, tmp_path):
