@@ -550,12 +550,11 @@ def _auto_decide(auto, device):
     )
 
 
-def _auto_measure(call, hidden_states):
-    """Host time to launch one block call vs GPU time to run it: the launches queue behind a GPU
-    sleep, so the event pair after the sleep sees the block's kernels back to back. If launching
-    outlasts the sleep the GPU time includes gaps, which can only understate the ratio."""
-    auto = _CUDAGRAPH_STATE["auto"]
-    device = hidden_states.device
+def _auto_time(call, device):
+    """(output, host seconds to launch one block call, GPU seconds to run it). The launches queue
+    behind a GPU sleep, so the event pair after the sleep sees the block's kernels back to back; if
+    launching outlasts the sleep the GPU time includes gaps, which can only understate the ratio.
+    Host / GPU are None when timing is unavailable."""
     try:
         torch.cuda.synchronize(device)
         start = torch.cuda.Event(enable_timing = True)
@@ -563,24 +562,30 @@ def _auto_measure(call, hidden_states):
         torch.cuda._sleep(_AUTO_SLEEP_CYCLES)
         start.record()
     except Exception:
-        _auto_off(auto, "timing unavailable")
-        return call()
+        return call(), None, None
     t0 = time.perf_counter()
     out = call()
     host = time.perf_counter() - t0
     try:
         end.record()
         end.synchronize()
-        gpu = start.elapsed_time(end) / 1e3
+        return out, host, start.elapsed_time(end) / 1e3
     except Exception:
-        _auto_off(auto, "timing unavailable")
-        return out
+        return out, None, None
+
+
+def _auto_measure(call, hidden_states):
+    auto = _CUDAGRAPH_STATE["auto"]
+    out, host, gpu = _auto_time(call, hidden_states.device)
     if auto["phase"] != "probe" or auto["decision"] is not None:
+        return out
+    if host is None or gpu is None:
+        _auto_off(auto, "timing unavailable")
         return out
     auto["host"].append(host)
     auto["gpu"].append(gpu)
     if len(auto["host"]) >= _AUTO_MEASURE_CALLS:
-        _auto_decide(auto, device)
+        _auto_decide(auto, hidden_states.device)
     return out
 
 
