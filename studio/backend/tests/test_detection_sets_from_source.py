@@ -47,10 +47,22 @@ def _registry_importable() -> bool:
     return True
 
 
+def _forget_the_imported_registry(monkeypatch):
+    # Another test in this process may have imported the registry, which makes the build skip the source.
+    monkeypatch.delitem(sys.modules, "transformers.models.auto.modeling_auto", raising = False)
+
+
 def test_sets_from_source_equal_sets_from_the_import(monkeypatch):
+    _forget_the_imported_registry(monkeypatch)
+    read = []
+    real = mc._mapping_names_from_source
+    monkeypatch.setattr(
+        mc, "_mapping_names_from_source", lambda path: read.append(real(path)) or read[-1]
+    )
     from_source = mc._build_detection_sets()
     if not _HAS_TRANSFORMERS or not _registry_importable():
         pytest.skip("the transformers registry does not import here")
+    assert read and read[0] is not None
     monkeypatch.setattr(mc, "_mapping_names_from_source", lambda path: None)
     from_import = mc._build_detection_sets()
     assert from_source == from_import
@@ -150,6 +162,7 @@ def test_reader_declines_what_it_cannot_prove(tmp_path, source):
 
 
 def test_a_declined_source_falls_back_to_the_import(monkeypatch):
+    _forget_the_imported_registry(monkeypatch)
     calls = []
     monkeypatch.setattr(mc, "_mapping_names_from_source", lambda path: calls.append(path))
     sets = mc._build_detection_sets()
