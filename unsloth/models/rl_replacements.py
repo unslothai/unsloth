@@ -3398,6 +3398,7 @@ RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer__move_model_to_vllm
 
 
 def _unsloth_vllm_load_state_dict(trainer, model):
+    model = trainer.accelerator.unwrap_model(model)
     trainer.llm.llm_engine.model_executor.driver_worker.model_runner.model.load_weights(
         model.state_dict().items()
     )

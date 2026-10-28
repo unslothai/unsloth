@@ -129,7 +129,9 @@ def _trainer(model, shared_weights = False):
         llm.shared_weights = True
     trainer = _patched_trainer_class()()
     trainer.accelerator = types.SimpleNamespace(
-        state = types.SimpleNamespace(deepspeed_plugin = None), is_main_process = True
+        state = types.SimpleNamespace(deepspeed_plugin = None),
+        is_main_process = True,
+        unwrap_model = lambda m: getattr(m, "module", m),
     )
     trainer.model = model
     trainer.vllm_mode = "colocate"
@@ -184,6 +186,11 @@ def test_trl_022_inline_sync_reaches_trl_engine():
     assert trainer._generate_vllm(dense, ["p"]) == ["p"]
     assert rec.loaded == ["weight", "bias"]
     assert rec.resets == 1
+
+    # DDP passes the wrapped model; vLLM rejects the "module." prefix.
+    trainer, rec = _trainer(dense)
+    trainer._generate_vllm(types.SimpleNamespace(module = dense), ["p"])
+    assert rec.loaded == ["weight", "bias"]
 
     model = _lora_model()
     base = model.base_model.model.proj.base_layer.weight.detach().clone()
