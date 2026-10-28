@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 """save.py's repeated gc.collect() passes stop once a pass that really ran finds nothing."""
 
 from __future__ import annotations
