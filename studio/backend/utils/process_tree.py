@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Descendants of one process without scanning the whole host.
-
-psutil's children(recursive = True) reads the stat file of every process to build a parent map, which
-costs ~180 ms on a host with ~10k processes and runs on every /api/system poll. Linux lists each
-task's children in /proc/<pid>/task/<tid>/children, so walking down from the root only touches the
-tree itself."""
+"""Descendants of one process from /proc/<pid>/task/<tid>/children, so /api/system polls skip
+psutil's recursive children(), which reads every process on the host (~180 ms at ~10k processes)."""
 
 import os
 import sys
@@ -16,10 +12,8 @@ _PROC = "/proc"
 
 
 def linux_descendant_pids(pid: int) -> Optional[list[int]]:
-    """Every descendant of ``pid``, or None when the fast path cannot answer (not Linux, a kernel
-    without CONFIG_PROC_CHILDREN, the root gone, any unexpected error): callers then ask psutil.
-    A descendant whose task directory is gone is skipped, as psutil skips it; a task that vanishes
-    while its children are read gives None, since its children may have moved to a task already read."""
+    """Every descendant of ``pid``, or None (not Linux, no CONFIG_PROC_CHILDREN, root gone, any error)
+    so the caller asks psutil. Exited descendants are skipped, as psutil skips them."""
     if not sys.platform.startswith("linux"):
         return None
     try:
