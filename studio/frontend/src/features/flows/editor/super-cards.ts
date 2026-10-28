@@ -214,21 +214,22 @@ export function applySuperCards(
 
 const FINISHED: ReadonlySet<NodeStatus> = new Set(["done", "cached", "skipped"]);
 
-/** One status for the card: a failure wins, then work in progress, then done when every step is. */
+/** One status for the card from the steps that took part in the run (a recipe's columns never run on
+ *  their own): a failure wins, then work in progress, then done when every one of them is. */
 export function rollUpStatus(statuses: (NodeStatus | undefined)[]): {
   status: NodeStatus;
   done: number;
 } {
-  const list = statuses.map((s) => s ?? "idle");
+  const list = statuses.filter((s): s is NodeStatus => !!s && s !== "idle");
   const done = list.filter((s) => FINISHED.has(s)).length;
   const has = (s: NodeStatus) => list.includes(s);
   let status: NodeStatus = "idle";
   if (has("failed")) status = "failed";
   else if (has("running") || has("loading_model")) status = "running";
   else if (has("queued") || has("waiting")) status = done ? "running" : "queued";
+  else if (has("cancelled")) status = "cancelled";
   else if (list.length && done === list.length && !list.every((s) => s === "skipped"))
     status = "done";
-  else if (has("cancelled")) status = "cancelled";
   return { status, done };
 }
 

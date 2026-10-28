@@ -181,6 +181,9 @@ test("the card rolls its blocks' run status into one", () => {
   assert.equal(rollUpStatus(["done", "failed"]).status, "failed");
   assert.equal(rollUpStatus(["done", "cached"]).status, "done");
   assert.equal(rollUpStatus(["skipped"]).status, "idle");
+  // A recipe's columns stay idle while its Recipe Dataset step runs and finishes.
+  assert.equal(rollUpStatus([undefined, "idle", "done"]).status, "done");
+  assert.equal(rollUpStatus(["done", "cancelled"]).status, "cancelled");
 });
 
 test("a recipe group's card is titled as a recipe", () => {
