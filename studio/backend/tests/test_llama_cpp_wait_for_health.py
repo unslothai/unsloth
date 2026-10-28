@@ -44,6 +44,20 @@ for _exc_name in (
         setattr(httpx, _exc_name, type(_exc_name, (Exception,), {}))
 
 
+def _fake_llama_server(directory: Path) -> str:
+    """A stand-in llama-server that ignores its arguments and exits 0 at once, as
+    /usr/bin/true does, but also on Windows: the load really spawns it."""
+    directory.mkdir(parents = True, exist_ok = True)
+    if sys.platform == "win32":
+        fake = directory / "llama-server.cmd"
+        fake.write_text("@exit /b 0\r\n", encoding = "utf-8")
+    else:
+        fake = directory / "llama-server"
+        fake.write_text("#!/bin/sh\nexit 0\n", encoding = "utf-8")
+        fake.chmod(0o755)
+    return str(fake)
+
+
 def _make_backend(port: int = 12345) -> LlamaCppBackend:
     """Barebones LlamaCppBackend with only the attributes _wait_for_health touches (bypasses __init__)."""
     b = LlamaCppBackend.__new__(LlamaCppBackend)
@@ -668,7 +682,8 @@ class TestCancelledWaitEndsTheLoad:
         gguf.write_bytes(b"GGUF" + b"\0" * 4096)
 
         b = LlamaCppBackend()
-        b._find_llama_server_binary = lambda *a, **kw: "/usr/bin/true"
+        fake_server = _fake_llama_server(tmp_path / "bin")
+        b._find_llama_server_binary = lambda *a, **kw: fake_server
         b._non_chat_gguf_refusal_for_path = lambda *a, **kw: None
         b._non_chat_gguf_refusal = lambda *a, **kw: None
         b._kill_process = lambda *a, **kw: None
@@ -714,7 +729,8 @@ class TestCancelledWaitEndsTheLoad:
         gguf.write_bytes(b"GGUF" + b"\0" * 4096)
 
         b = LlamaCppBackend()
-        b._find_llama_server_binary = lambda *a, **kw: "/usr/bin/true"
+        fake_server = _fake_llama_server(tmp_path / "bin")
+        b._find_llama_server_binary = lambda *a, **kw: fake_server
         b._non_chat_gguf_refusal_for_path = lambda *a, **kw: None
         b._non_chat_gguf_refusal = lambda *a, **kw: None
         # The drain thread would iterate a Mock's stdout forever.
@@ -840,7 +856,8 @@ def test_a_diffusion_cancel_after_health_reaps_the_runner():
 def _cancel_scaffold(tmp_path, kills):
     """A backend wired far enough to run load_model without weights or a server."""
     b = LlamaCppBackend()
-    b._find_llama_server_binary = lambda *a, **kw: "/usr/bin/true"
+    fake_server = _fake_llama_server(tmp_path / "bin")
+    b._find_llama_server_binary = lambda *a, **kw: fake_server
     b._non_chat_gguf_refusal_for_path = lambda *a, **kw: None
     b._non_chat_gguf_refusal = lambda *a, **kw: None
     b._kill_process = lambda *a, **kw: kills.append(1)
