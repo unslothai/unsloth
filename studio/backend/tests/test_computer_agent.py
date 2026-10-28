@@ -10,9 +10,14 @@ import threading
 try:
     import pytest
 except ImportError:
+
     class _PytestMock:
         class raises:
-            def __init__(self, expected_exception, match = None):
+            def __init__(
+                self,
+                expected_exception,
+                match = None,
+            ):
                 self.expected = expected_exception
                 self.match = match
 
@@ -163,7 +168,9 @@ def test_interval_screenshot_validation():
 def test_format_computer_result_text_and_errors():
     assert computer_agent.format_computer_result("computer_click", {"ok": True}) == "Done."
     assert (
-        computer_agent.format_computer_result("computer_click", {"ok": False, "error": "Permission denied"})
+        computer_agent.format_computer_result(
+            "computer_click", {"ok": False, "error": "Permission denied"}
+        )
         == "Error: Permission denied"
     )
 

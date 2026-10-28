@@ -6041,6 +6041,7 @@ async def _select_request_tools(
         # asks by name. Without UI frames the action never reaches a tab, so the tool would only
         # wait out its timeout.
         from core.inference.browser_agent import BROWSER_SCREENSHOT, BROWSER_TOOLS
+
         tools += [
             tool
             for tool in BROWSER_TOOLS
@@ -6049,6 +6050,7 @@ async def _select_request_tools(
         ]
         # Visual Computer Use mode (#15532): offered when client enables computer tools.
         from core.inference.computer_agent import COMPUTER_SCREENSHOT, COMPUTER_TOOLS
+
         tools += [
             tool
             for tool in COMPUTER_TOOLS
