@@ -1817,7 +1817,6 @@ def get_packed_info_from_kwargs(
         lengths = seq_lengths.to(device = device, dtype = torch.int32, non_blocking = True)
         cu_seqlens = torch.zeros(lengths.numel() + 1, dtype = torch.int32, device = device)
         torch.cumsum(lengths, dim = 0, dtype = torch.int32, out = cu_seqlens[1:])
-        # The one D2H read per batch, unless the caller built the tensor from host ints and said so.
         host = _attached_host_lengths(seq_lengths)
         if host is None:
             host = tuple(lengths.tolist())
@@ -1834,8 +1833,7 @@ def get_packed_info_from_kwargs(
 
 
 def _attached_host_lengths(seq_lengths) -> Optional[Tuple[int, ...]]:
-    """Host ints a producer attached as `_unsloth_lengths_tuple` when it built a device tensor from them
-    (unsloth_zoo GRPO packing does), so the lengths are not read back. Ignored unless the count matches."""
+    """Host `_unsloth_lengths_tuple` attached by the producer (unsloth_zoo GRPO), used if the count matches."""
     host = getattr(seq_lengths, "_unsloth_lengths_tuple", None)
     if not isinstance(host, tuple) or len(host) != seq_lengths.numel():
         return None

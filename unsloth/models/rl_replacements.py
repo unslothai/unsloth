@@ -4825,8 +4825,7 @@ def _unsloth_grpo_is_metric_values(delta, flat_is_ratio, mask, sequence_level):
 
 
 def _unsloth_grpo_nanmin(tensor):
-    # trl.trainer.utils.nanmin without the host sync: its `if isnan(t).all()` and boolean index both read the
-    # device. NaNs become +inf so they never win the min; an all-NaN tensor still returns NaN. Same value.
+    # Sync-free trl nanmin: same value, all-NaN still returns NaN.
     is_nan = torch.isnan(tensor)
     smallest = torch.where(is_nan, float("inf"), tensor).min()
     return torch.where(is_nan.all(), float("nan"), smallest)
@@ -4839,9 +4838,7 @@ def _unsloth_grpo_nanmax(tensor):
 
 
 def _unsloth_grpo_flush_metrics(trainer):
-    # One device-to-host read per device and kind for every metric deferred since the last log. float32 holds
-    # any float16 / bfloat16 / float32 value exactly, so each appended float equals what .item() returned, and
-    # no float64 op runs on devices without FP64 (Intel Arc XPUs); a float64 metric keeps its own group.
+    # float32 holds fp16 / bf16 / fp32 exactly (same as .item()) and avoids float64 on FP64-less XPUs.
     pending = trainer.__dict__.get("_unsloth_pending_metrics")
     if not pending:
         return
@@ -4863,18 +4860,15 @@ def _unsloth_grpo_flush_metrics(trainer):
 
 
 def _unsloth_grpo_defer_metric(trainer, target, value):
-    # target.append(value.item()) without the per-metric host sync: the training step keeps queueing GPU work
-    # and the values are read in one transfer when the trainer logs. The instance's log is wrapped once.
+    # target.append(value.item()), but read once per log instead of one sync per metric.
     if not torch.is_tensor(value):
         target.append(value)
         return
     pending = trainer.__dict__.get("_unsloth_pending_metrics")
     if pending is None:
         pending = trainer._unsloth_pending_metrics = []
-        # An instance-level log is kept; otherwise resolve the class's at call time (it may be patched later).
         _instance_log = trainer.__dict__.get("log")
-        # The wrapper lives in trainer.__dict__, so a strong reference here would be a cycle that keeps the
-        # trainer (optimizer state included) alive after `del trainer` until the cyclic gc runs.
+        # weakref: a strong ref from trainer.__dict__ would be a reference cycle keeping the trainer alive.
         import weakref
 
         try:
@@ -4891,7 +4885,6 @@ def _unsloth_grpo_defer_metric(trainer, target, value):
 
         trainer.log = log
     pending.append((target, value.detach()))
-    # Bound the queue when logging is rare or off (each entry pins a small device tensor).
     if len(pending) >= 4096:
         _unsloth_grpo_flush_metrics(trainer)
 
@@ -5406,7 +5399,6 @@ def grpo_trainer_compute_loss(function_name, function):
             clip_ratio = masked_batch_mean(is_region_clipped.float())
 
             gathered_low_clip = self.accelerator.gather(low_clip)
-            # Deferred: these reads used to stall the step before backward (one sync each).
             _unsloth_grpo_defer_metric(
                 self, self._metrics[mode]["clip_ratio/low_mean"], gathered_low_clip.nanmean()
             )

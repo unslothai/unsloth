@@ -235,8 +235,7 @@ def build_group_layout(
     first = torch.argmax(keep.to(torch.int8), dim = 1)
     ar = torch.arange(L, device = device)
     contiguous = (keep == ((ar >= first.unsqueeze(1)) & (ar < (first + n_real).unsqueeze(1)))).all()
-    # One device-to-host read for ids, completion starts, run starts / lengths and the contiguity flag
-    # (each used to be its own sync).
+    # One device-to-host read for everything below.
     host = torch.cat(
         [
             input_ids.reshape(-1).to(torch.long),
@@ -254,7 +253,6 @@ def build_group_layout(
     if host[-1]:
         real_cols_cpu = [list(range(f, f + n)) for f, n in zip(first_cpu, n_real_cpu)]
     else:
-        # keep == (input_ids != pad_id), read off the host copy of the ids
         real_cols_cpu = [
             [c for c in range(L) if ids_cpu[r][c] != pad_id] for r in range(total_rows)
         ]
@@ -318,7 +316,7 @@ def build_group_layout(
     flat_ids = input_ids[fr, fc].unsqueeze(0)  # [1, T] (grad-safe gather)
     position_ids = torch.tensor(pos_list, device = device, dtype = torch.long).unsqueeze(0)
 
-    # cstart = (L - logits_to_keep) - left_pad, so the largest left pad comes off the host copy (no sync).
+    # cstart = (L - logits_to_keep) - left_pad, so max left pad comes from the host copy.
     max_left_pad = ((L - logits_to_keep) - min(cstart_cpu)) if total_rows else 0
     W = logits_to_keep + max_left_pad
 

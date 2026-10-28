@@ -190,7 +190,6 @@ def test_build_group_layout_single_read_same_inputs(monkeypatch):
         ids_cpu, real_cols, cstart, max_lp = _old_layout_inputs(raw, C, 0, left_pad)
         assert len(seen) == 1
         assert seen[0] == (ids_cpu, real_cols, cstart)
-        # the new path reads the device once; the old one read five or six times
         assert reads == 1
         if layout is not None:
             assert layout.W == C + max_lp
@@ -219,7 +218,7 @@ def test_attached_host_lengths_skip_the_read(monkeypatch):
 
 
 def test_flush_never_converts_to_float64_on_device(monkeypatch):
-    # Intel Arc XPUs have no FP64: the flush must stack metrics in their own dtype and convert on the host.
+    # No float64 on FP64-less XPUs.
     class _Trainer:
         pass
 
@@ -250,8 +249,7 @@ def test_flush_never_converts_to_float64_on_device(monkeypatch):
 
 
 def test_deferred_metrics_do_not_keep_the_trainer_alive():
-    # The instance-level log wrapper must not form a reference cycle: `del trainer` (no gc.collect) has to
-    # free the trainer and what it owns (optimizer state, accelerator) exactly as it did before deferral.
+    # `del trainer` must free it without gc.collect (no reference cycle).
     import gc
     import weakref
 

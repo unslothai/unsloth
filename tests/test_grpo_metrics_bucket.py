@@ -87,7 +87,6 @@ def _trainer(training, should_evaluate):
         _metrics = {"train": defaultdict(list), "eval": defaultdict(list)},
         _get_per_token_logps = lambda *args, **kwargs: torch.zeros(BATCH, COMPLETION),
         processing_class = None,
-        # compute_loss defers its metric reads to the next log call.
         log = lambda logs, start_time = None: None,
     )
 
