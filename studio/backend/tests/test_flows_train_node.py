@@ -232,7 +232,9 @@ def test_chat_with_checkpoint_puts_back_the_chat_model_it_replaced(monkeypatch):
 
     monkeypatch.setattr(loading, "load_llm", load_llm)
     monkeypatch.setattr(trained_models, "resolve_by", resolve_by)
-    ctx = _Ctx(lambda m, p, q, b: {"model_identifier": "unsloth/Qwen3-1.7B-GGUF", "gguf_variant": "Q4_K_M"})
+    ctx = _Ctx(
+        lambda m, p, q, b: {"model_identifier": "unsloth/Qwen3-1.7B-GGUF", "gguf_variant": "Q4_K_M"}
+    )
     ctx.inputs = {"checkpoint": {"kind": "checkpoint", "name": "run-1"}, "prompt": "hi"}
     ctx.params = {"max_tokens": 8}
     ctx.resident, ctx.set_status = {}, lambda *a, **k: None
