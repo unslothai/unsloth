@@ -392,8 +392,6 @@ TRANSFORMERS_550_VERSION = "5.5.0"
 TRANSFORMERS_530_VERSION = "5.3.0"
 TRANSFORMERS_457_VERSION = "4.57.6"
 TRANSFORMERS_DEFAULT_VERSION = "5.5.0" if sys.version_info >= (3, 10) else "4.57.6"
-# Backwards-compat alias for the highest 5.x tier; prefer TRANSFORMERS_510_VERSION, TRANSFORMERS_550_VERSION or TRANSFORMERS_530_VERSION.
-TRANSFORMERS_5_VERSION = TRANSFORMERS_510_VERSION
 
 # Pre-installed directories - created by setup.sh / setup.ps1.
 from utils.paths.storage_roots import studio_root as _studio_root  # noqa: E402
@@ -1879,8 +1877,6 @@ _VENV_T5_550_PACKAGES = (
     "tiktoken",
 )
 
-# Backwards-compat alias
-_VENV_T5_PACKAGES = _VENV_T5_550_PACKAGES
 
 # transformers 4.57.6 refuses to import next to huggingface_hub 1.x.
 _VENV_T4_457_PACKAGES = (
@@ -2113,11 +2109,6 @@ def _venv_dir_health(venv_dir: str, packages: tuple[str, ...]) -> tuple[bool, bo
         )
         return False, True
     return True, not inconclusive
-
-
-def _venv_t5_is_valid() -> bool:
-    """Backwards-compat: check the Gemma 4 sidecar venv."""
-    return _venv_dir_is_valid(_VENV_T5_550_DIR, _VENV_T5_550_PACKAGES)
 
 
 def _install_to_dir(pkg: str, target_dir: str) -> bool:
@@ -2840,11 +2831,6 @@ def _ensure_venv_t4_457_exists() -> bool:
         _VENV_T4_457_PACKAGES,
         f"transformers {TRANSFORMERS_457_VERSION}",
     )
-
-
-def _ensure_venv_t5_exists() -> bool:
-    """Backwards-compat: ensure the Gemma 4 5.5 sidecar venv exists."""
-    return _ensure_venv_t5_550_exists()
 
 
 # PEP 440-ish release strings only (guards the pip install spec against injection).
