@@ -290,6 +290,89 @@ def test_a_slice_opens_on_a_user_turn_and_only_removes_text():
         )
 
 
+def _qwen3_counter():
+    """Renders with the shipped Qwen3 template; 4 rendered characters a token."""
+    import ast
+    from pathlib import Path
+
+    sandbox = pytest.importorskip("jinja2.sandbox")
+    source = Path(__file__).resolve().parents[3] / "unsloth" / "chat_templates.py"
+    template = next(
+        ast.literal_eval(node.value)
+        for node in ast.parse(source.read_text(encoding = "utf-8")).body
+        if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "qwen3_template"
+    )
+    env = sandbox.ImmutableSandboxedEnvironment(trim_blocks = True, lstrip_blocks = True)
+    compiled = env.from_string(template)
+
+    def count(messages):
+        return len(compiled.render(messages = messages, add_generation_prompt = True)) // 4
+
+    return count
+
+
+def test_a_slice_keeps_the_think_marker_the_template_strips_old_reasoning_by():
+    # Qwen3 drops an old turn's reasoning by splitting on </think>. A slice that cut the marker
+    # off would render that reasoning and "prove" a 40-token chat over the window.
+    count = _qwen3_counter()
+    messages = [
+        {"role": "user", "content": "Hi"},
+        {"role": "assistant", "content": "<think>" + "pondering " * 100_000 + "</think>Hello!"},
+        QUESTION,
+    ]
+    exact = count(messages)
+    assert exact < 100
+    assert bounded_prompt_count(messages, count, CONTEXT) == exact
+    fitted, truncation = fit_rolling_context(
+        messages, context_length = CONTEXT, max_tokens = 64, count_tokens = count
+    )
+    assert truncation is None
+    assert fitted == messages
+
+
+def test_large_json_arguments_are_cut_to_a_size_not_just_their_strings():
+    # Numbers and array elements are not strings, so cutting only strings left this whole.
+    messages = [
+        SYSTEM,
+        {"role": "user", "content": "store the data"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "store",
+                    "type": "function",
+                    "function": {
+                        "name": "store",
+                        "arguments": json.dumps({"data": list(range(200_000))}),
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "store", "content": "stored"},
+        {"role": "assistant", "content": "done"},
+        QUESTION,
+    ]
+    for fit in ("rolling", "checkpoint", "compact"):
+        count = _Counter(4.0)
+        if fit == "rolling":
+            _, truncation = fit_rolling_context(
+                messages, context_length = CONTEXT, max_tokens = 64, count_tokens = count
+            )
+        else:
+            _, truncation = fit_checkpoint_context(
+                messages,
+                context_length = CONTEXT,
+                max_tokens = 64,
+                count_tokens = count,
+                can_reset = True,
+                searchable = True,
+                force_reset = fit == "compact",
+            )
+        assert truncation["fits"] is True, fit
+        assert max(count.counted) <= COUNT_LIMIT, fit
+
+
 def _timing_out_client():
     class _Resp:
         status_code = 200
