@@ -1051,11 +1051,17 @@ function pendingSnapshotReadsLive(key: ClampedPillKey): boolean {
   );
 }
 
+// Search and Tools start on for Unsloth's own models; the rest stay opt-in. Connections keep their
+// own per-provider defaults in chat-page (hosted search and code execution are billed there).
+function pillDefault(key: ClampedPillKey): boolean {
+  return key === "toolsEnabled" || key === "codeToolsEnabled";
+}
+
 function pillPreference(key: ClampedPillKey): boolean {
   return (
     pillOnRecord(key) ??
     loadOptionalBool(MIRRORED_SETTINGS[key].storageKey) ??
-    false
+    pillDefault(key)
   );
 }
 
@@ -4156,11 +4162,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   supportsBuiltinCodeExecution: false,
   supportsBuiltinImageGeneration: false,
   supportsBuiltinWebFetch: false,
-  toolsEnabled: loadBool(CHAT_TOOLS_ENABLED_KEY, false),
+  toolsEnabled: loadBool(CHAT_TOOLS_ENABLED_KEY, pillDefault("toolsEnabled")),
   keepModelsLoaded: false,
   localImageModelReady: false,
   localVideoModelReady: false,
-  codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
+  codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, pillDefault("codeToolsEnabled")),
   codeToolsDeclinedUnderFullAccess: false,
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
   deepResearchEnabled: loadBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false),
