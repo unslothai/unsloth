@@ -499,9 +499,12 @@ class _MemberLossScale:
         import torch
 
         grads = [p.grad for p in params if p.grad is not None]
-        for g in grads:
-            g.div_(self.scale[slot])
-        finite = all(bool(torch.isfinite(g).all()) for g in grads)
+        finite = True
+        if grads:
+            torch._foreach_mul_(grads, 1.0 / self.scale[slot])
+            # One host read per member, not one per tensor.
+            flags = [torch.isfinite(g).all().to(grads[0].device) for g in grads]
+            finite = bool(torch.stack(flags).all())
         if finite:
             self.good_steps[slot] += 1
             if self.good_steps[slot] == self.growth_interval:
