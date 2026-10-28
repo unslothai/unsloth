@@ -4263,19 +4263,23 @@ def _lazy_openai_import_check(is_available):
     # still reports True and crashes callers that then import it, e.g. trl's judges. Try the real
     # import on the first True answer rather than at `import unsloth` (0.4 to 0.6 s of openai).
     import_ok = []
+    # Concurrent first calls make one import attempt (and print once), as the eager import did.
+    lock = threading.RLock()
 
     def is_openai_available():
         available = is_available()
         if not available:
             return available
         if not import_ok:
-            try:
-                from openai import OpenAI  # noqa: F401
-            except Exception:
-                print("Unsloth: OpenAI failed to import - ignoring for now.")
-                import_ok.append(False)
-            else:
-                import_ok.append(True)
+            with lock:
+                if not import_ok:
+                    try:
+                        from openai import OpenAI  # noqa: F401
+                    except Exception:
+                        print("Unsloth: OpenAI failed to import - ignoring for now.")
+                        import_ok.append(False)
+                    else:
+                        import_ok.append(True)
         return available if import_ok[0] else False
 
     is_openai_available._unsloth_lazy_openai_check = True

@@ -33,6 +33,9 @@ class OpenAI:
 
 _BROKEN = 'raise TypeError("simulated broken openai install")\n'
 
+# Slow to fail, so a second thread's first call arrives while the first thread is still importing.
+_SLOW_BROKEN = 'import time\ntime.sleep(1.0)\nraise TypeError("simulated broken openai install")\n'
+
 _CHECK = r"""
 import os, sys
 os.environ.setdefault("UNSLOTH_COMPILE_DISABLE", "1")
@@ -44,7 +47,19 @@ import unsloth
 import transformers.utils as tu
 import transformers.utils.import_utils as iu
 mode = sys.argv[2]
-if mode == "healthy":
+if mode == "threads":
+    import threading
+    print("CALLS", flush = True)
+    from unsloth.models._utils import _lazy_openai_import_check
+    # A fresh wrapper: trl<0.26 judges already made the first call during import unsloth.
+    check, answers = _lazy_openai_import_check(iu.is_openai_available), []
+    workers = [threading.Thread(target = lambda: answers.append(check())) for _ in range(4)]
+    for w in workers:
+        w.start()
+    for w in workers:
+        w.join()
+    assert answers == [False] * 4, answers
+elif mode == "healthy":
     importers = getattr(sys.modules.get("openai"), "_importers", [])
     eager = [f for f in importers if f[0].endswith("unsloth/models/_utils.py") and f[1] == "<module>"]
     assert not eager, eager
@@ -100,3 +115,9 @@ def test_broken_openai_still_reads_unavailable_and_warns_once(tmp_path):
     out = _run(tmp_path, "broken", _BROKEN)
     # Printed once per process, by whichever caller asks first (trl<0.26 judges ask during import).
     assert out.count(_MSG) == 1, out[-2000:]
+
+
+def test_concurrent_first_calls_on_a_broken_openai_warn_once(tmp_path):
+    out = _run(tmp_path, "threads", _SLOW_BROKEN)
+    # Concurrent first calls make one import attempt and print the message once.
+    assert out.split("CALLS", 1)[1].count(_MSG) == 1, out[-2000:]
