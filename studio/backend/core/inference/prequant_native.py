@@ -180,7 +180,6 @@ def _granularity_name(g: Any) -> str:
 
 @functools.lru_cache(maxsize = None)
 def _constructor_params(cls: Any) -> frozenset:
-    """Keyword names ``cls.__new__`` takes; read once per class, not once per weight."""
     import inspect
     return frozenset(inspect.signature(cls.__new__).parameters)
 

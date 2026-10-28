@@ -169,7 +169,6 @@ def test_int8_constructor_signature_is_read_once_not_per_weight(tmp_path, monkey
         assert native["reader"] == "native"
         for key in sd:
             assert _same(_canon(native["state_dict"][key]), _canon(stock[key])), key
-    # 8 rebuilt weights across two loads, one signature read.
     assert len(calls) == 1
 
 
