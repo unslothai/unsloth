@@ -4259,13 +4259,12 @@ import transformers.utils
 
 
 def _lazy_openai_import_check(is_available):
-    # transformers only reads openai's package metadata, so a broken install (seen on Databricks)
-    # still reports True and crashes callers that then import it, e.g. trl's judges. Try the real
-    # import on the first True answer rather than at `import unsloth` (0.4 to 0.6 s of openai).
+    # transformers reads only metadata, so a broken openai install (#1182, Databricks) reports True
+    # and crashes importers like trl's judges: try the real import once, on first use, under a lock.
     import_ok = []
-    # Concurrent first calls make one import attempt (and print once), as the eager import did.
     lock = threading.RLock()
 
+    @functools.wraps(is_available)
     def is_openai_available():
         available = is_available()
         if not available:
