@@ -17,6 +17,7 @@ const storage = {
   },
 };
 let paletteAttr: string | null = null;
+const storageListeners: ((e: { key: string | null }) => void)[] = [];
 Object.assign(globalThis, {
   localStorage: storage,
   window: {
@@ -26,7 +27,12 @@ Object.assign(globalThis, {
       addEventListener: () => undefined,
       removeEventListener: () => undefined,
     }),
-    addEventListener: () => undefined,
+    addEventListener: (
+      type: string,
+      fn: (e: { key: string | null }) => void,
+    ) => {
+      if (type === "storage") storageListeners.push(fn);
+    },
     removeEventListener: () => undefined,
   },
   document: {
@@ -194,4 +200,23 @@ test("an open session knows how long until midnight on November 1", () => {
   );
   assert.match(hook, /addEventListener\("visibilitychange", check\)/);
   assert.match(hook, /\}, \[palette, inSeason\]\);/);
+});
+
+test("a pick in another tab reaches this tab's restore target", async () => {
+  useHalloweenStore.setState({ restorePalette: null, spookyGreetings: false });
+  storage.setItem(
+    HALLOWEEN_STORAGE_KEY,
+    JSON.stringify({
+      state: {
+        spookyGreetings: true,
+        hiddenYear: null,
+        restorePalette: "matcha",
+      },
+      version: 0,
+    }),
+  );
+  for (const fn of storageListeners) fn({ key: HALLOWEEN_STORAGE_KEY });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(useHalloweenStore.getState().restorePalette, "matcha");
+  assert.equal(useHalloweenStore.getState().spookyGreetings, true);
 });

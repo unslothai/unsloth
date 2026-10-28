@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { syncAcrossWindows } from "../../lib/sync-across-windows.ts";
 import {
   type ColorThemeId,
   HALLOWEEN_THEME_IDS,
@@ -74,6 +75,9 @@ export const useHalloweenStore = create<HalloweenState>()(
     },
   ),
 );
+
+// Another tab can pick the theme to restore; reread it before this one consumes or rewrites it.
+syncAcrossWindows(useHalloweenStore);
 
 /** Remembers the theme in use before the first Halloween pick, so the season can hand it back. */
 export function pickHalloweenTheme(id: HalloweenThemeId): void {
