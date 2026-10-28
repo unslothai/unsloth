@@ -50,8 +50,7 @@ class _Routing(threading.local):
     def __init__(self):
         self.force_slow = 0
         self.stack = []
-        # [(adapted leaf, W + delta or None = build on read, "Mixer.leaf", running batch size or None)]
-        # for running mixer forwards.
+        # [(adapted leaf, W + delta or None = build on read, "Mixer.leaf", batch size or None)]
         self.raw = []
 
 
@@ -257,9 +256,7 @@ def _raw_read_class(cls):
                 names = _mixed_batch_adapter_names(self)
                 if names is not None:
                     return _per_row_weight(self, names, label, batch)
-                # Rebuilt on every read, never cached: PEFT hotswap_adapter, FlashAdamW and other
-                # `.data` writes skip version counters, so no cache key can see them. The rank-r
-                # rebuild is a few small ops per layer, under 1% of a prefill forward on CPU.
+                # Never cached: hotswap_adapter / FlashAdamW `.data` writes skip version counters.
                 effective = _full_precision_merged(self)
             if effective is not None:
                 return effective
@@ -269,12 +266,10 @@ def _raw_read_class(cls):
         return super(sub, self).weight
 
     def __reduce_ex__(self, protocol):
-        # Pickle as the plain adapter layer, loadable without Unsloth; the next mixer forward
-        # re-installs it.
+        # Pickle as the plain adapter layer so it loads without Unsloth.
         return copyreg._reconstructor, (cls, object, None), self.__dict__.copy()
 
-    # copy / deepcopy keep this class: a copied mixer can be compiled before any eager forward, and
-    # a trace cannot install it (it would read the base weight). Same steps as copy._reconstruct.
+    # copy / deepcopy keep this class: a trace cannot install it and would read the base weight.
     def __copy__(self):
         new = object.__new__(type(self))
         new.__setstate__(self.__dict__.copy())
@@ -317,9 +312,7 @@ def _install_raw_read(mixer, leaf):
     if getattr(type(module), _MARK, False):
         return True
     if torch.compiler.is_compiling():
-        # Dynamo cannot trace the class swap (nor getattr_static on older torch), and without it the
-        # traced forward would read the base weight and silently drop the adapter. Without fullgraph
-        # Dynamo runs this frame eagerly, which installs it; with fullgraph the error names the fix.
+        # Dynamo cannot trace the class swap; skipping it would silently drop the adapter, so fail loudly.
         raise RuntimeError(
             f"Unsloth: {type(mixer).__name__}.{leaf} has an active LoRA adapter that was attached "
             "after Unsloth prepared this Mamba model, so a compiled forward would read its base "
@@ -527,7 +520,6 @@ def _patch_class(cls):
                 base = module.get_base_layer().weight
                 merged.append((base, weights[leaf], leaf))
                 merged.append((weights[leaf], weights[leaf], leaf))
-        # No hooks under torch.compile (unsupported there).
         hooks = []
         if not compiling:
             hooks = [
@@ -561,9 +553,7 @@ def _patch_class(cls):
 
 
 def _prepare_on_assign(cls):
-    # PEFT attaches an adapter by assigning the LoRA layer onto the mixer (get_peft_model,
-    # inject_adapter_in_model, add_adapter on a new target). Install its class right there, so a
-    # mixer adapted after the patch is ready for a compiled forward without an eager one first.
+    # PEFT attaches adapters via setattr on the mixer: install the class there, before any compile.
     original = cls.__setattr__
     if getattr(original, _MARK, False):
         return
