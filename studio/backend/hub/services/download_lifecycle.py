@@ -113,6 +113,41 @@ def _repo_siblings(repo_type: str, repo_id: str, hf_token: HfTokenArg) -> tuple:
     return siblings
 
 
+def repo_siblings_fetched_since(
+    repo_type: str,
+    repo_id: str,
+    hf_token: Optional[str],
+    *,
+    allow_ambient_token: bool,
+    since: float,
+) -> Optional[tuple]:
+    """The listing _repo_siblings fetched successfully at or after ``since`` (a time.monotonic() taken
+    before the measuring call), else None.
+
+    Answers only when the memo sent exactly the credential a plain ``model_info(token = hf_token)``
+    sends, so a caller can reuse it instead of listing the repo again: a stale TTL hit, a failed
+    refresh serving the last listing, an empty listing, or a different credential all return None
+    and the caller fetches as before.
+    """
+    if hf_token is None:
+        if not allow_ambient_token:
+            return None  # the memo listed anonymously; model_info(token = None) sends the ambient login
+    elif not (isinstance(hf_token, str) and hf_token and hf_token == hf_token.strip()):
+        return None  # hf_token_arg strips or drops it, so the memo may have sent something else
+    key = (
+        str(repo_type),
+        repo_id.lower(),
+        hf_cache_scan.token_fingerprint(
+            hf_token_arg(hf_token, allow_ambient_token = allow_ambient_token)
+        ),
+    )
+    with _repo_siblings_lock:
+        cached = _REPO_SIBLINGS.get(key)
+    if cached is None or cached[1] < since or not cached[0]:
+        return None
+    return cached[0]
+
+
 def largest_download_file_bytes(
     repo_type: str,
     repo_id: str,
