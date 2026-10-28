@@ -118,7 +118,7 @@ import {
   Bookmark02Icon,
   CodeIcon,
   Download01Icon,
-  FileDatabaseIcon,
+  FileSearchIcon,
   Folder01Icon,
   FolderAddIcon,
   Image03Icon,
@@ -2489,7 +2489,7 @@ export function SharedComposer({
           setRagEnabled(!ragEnabled);
         }}
       >
-        <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
+        <HugeiconsIcon icon={FileSearchIcon} strokeWidth={2} />
         Chat with files
         {ragEnabled && !ragDisabled ? (
           <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
