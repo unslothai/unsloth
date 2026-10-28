@@ -4241,7 +4241,7 @@ export function ModelConfigPage({
               }
               hint={
                 targetIsNpu
-                  ? `Tokens of context FastFlowLM loads the model with. Unset, it loads ${NPU_DEFAULT_CONTEXT_LENGTH.toLocaleString()}, or the model's limit if that is lower.`
+                  ? `Context the NPU loads the model with. Default ${NPU_DEFAULT_CONTEXT_LENGTH.toLocaleString()}, or the model's limit if lower.`
                   : undefined
               }
               onChange={(value) =>

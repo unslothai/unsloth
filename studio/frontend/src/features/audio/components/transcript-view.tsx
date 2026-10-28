@@ -36,6 +36,7 @@ import {
   sanitizeSpeakerName,
   speakerLabel,
 } from "../transcript-model";
+import { FieldLabel } from "./field";
 import { Waveform, type WaveformControl } from "./waveform";
 import { decodePeaks } from "./waveform-decode";
 
@@ -131,9 +132,9 @@ function SpeakerChip({
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-64 gap-2 p-3">
-        <label htmlFor={inputId} className="text-ui-13 font-medium">
+        <FieldLabel htmlFor={inputId} className="text-ui-13 font-medium">
           Name
-        </label>
+        </FieldLabel>
         <Input
           id={inputId}
           value={draft}

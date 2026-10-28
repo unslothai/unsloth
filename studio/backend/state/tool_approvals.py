@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Per-call tool-call confirmation gate.
-
-When a chat request sets ``confirm_tool_calls``, the agentic loop pauses before executing each tool and waits here for the user's decision, which arrives via ``POST /api/inference/tool-confirm`` on a separate connection.
-
-Each gated call is identified by a unique ``approval_id`` (minted with ``new_approval_id``) that the loop registers here and echoes in the ``tool_start`` stream event. The frontend sends that exact id back, so a stale or duplicate confirmation, or a second tool awaiting a decision in the same session, can never resolve the wrong call; ``session_id`` is kept alongside purely as a scope check.
-
-The slot is registered with ``begin_tool_decision`` *before* the loop yields ``tool_start``, closing the race where a fast confirmation (or an auto "Always allow") could arrive before the waiter exists. ``wait_tool_decision`` then blocks and cleans up its own slot.
-"""
+"""Per-call approval gate keyed by approval_id; begin_tool_decision registers before tool_start"""
 
 import os
 import secrets

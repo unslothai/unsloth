@@ -5219,6 +5219,7 @@ else
             fi
             # Best-effort: the target exists only on llama.cpp trees carrying the diffusion example.
             run_quiet_no_exit "build diffusion visual server" cmake --build "$_BUILD_TMP/build" --config Release --target llama-diffusion-gemma-visual-server -j"$NCPU" || true
+            run_quiet_no_exit "build llama-bench" cmake --build "$_BUILD_TMP/build" --config Release --target llama-bench -j"$NCPU" || true
         fi
 
         # Opt-in smoke test (CUDA JIT stalls); runs before the install swap.
@@ -5248,6 +5249,7 @@ else
                         if [ "$BUILD_OK" = true ]; then
                             run_quiet_no_exit "build llama-quantize (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-quantize -j"$NCPU" || true
                             run_quiet_no_exit "build diffusion visual server (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-diffusion-gemma-visual-server -j"$NCPU" || true
+                            run_quiet_no_exit "build llama-bench (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-bench -j"$NCPU" || true
                         fi
                     else
                         BUILD_OK=false

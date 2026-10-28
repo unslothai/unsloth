@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""whisper.cpp prebuilt status endpoint.
-
-GET  /api/whisper/update-status  -> is a newer prebuilt available + job state
-
-Detection reuses utils.whisper_cpp_freshness and fails open so the UI never blocks on a missing marker /
-offline GitHub. There is no whisper-only update trigger: whisper updates piggyback on the single main update
-item (POST /api/llama/update chains a whisper phase when whisper is behind).
-"""
+"""GET /api/whisper/update-status: prebuilt state; fails open; updates via POST /api/llama/update"""
 
 from __future__ import annotations
 

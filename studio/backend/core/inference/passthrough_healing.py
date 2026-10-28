@@ -1,29 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tool-call healing for the client-tool passthrough.
-
-With server-side tools disabled (``unsloth run --disable-tools``, every
-``unsloth start`` coding agent), requests carrying the client's own ``tools``
-bypass Unsloth's tool loop and are relayed to/from llama-server verbatim. Small
-GGUF models often emit their tool calls as TEXT (``<tool_call>{...}</tool_call>``,
-Gemma ``<|tool_call>...``, ``<function=...>`` XML) instead of structured
-``tool_calls`` -- on the passthrough that text reaches the agent as prose and
-the turn dies. This module promotes such text back into structured calls on the
-RESPONSE side only: the upstream request body is never touched, no extra
-generation is issued, so llama-server slot/KV-cache reuse is byte-identical.
-
-Healing only ever fires when the request declared client tools, and only
-promotes calls whose function name exactly matches a declared tool. Promotion
-removes EXACTLY the promoted calls' markup spans (the parser reports them):
-undeclared calls, unparseable blocks, and suppressed alternate formats keep
-every byte and relay as text, so healing can never silently delete model
-output. Responses without a tool signal and requests without tools are untouched, as is
-any request whose ``response_format`` constrains decoding: a grammar has already fixed what
-the reply means. Per-request opt-out:
-``auto_heal_tool_calls: false``. Process kill-switch:
-``UNSLOTH_DISABLE_TOOL_CALL_HEALING=1``.
-"""
+"""Turns text tool calls into structured ones for declared tools only, response side; never deletes
+unmatched output; response_format requests untouched; auto_heal_tool_calls false and
+UNSLOTH_DISABLE_TOOL_CALL_HEALING=1 opt out"""
 
 import json
 import os

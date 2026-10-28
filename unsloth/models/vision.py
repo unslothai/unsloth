@@ -282,6 +282,7 @@ from ._uma_safetensors import is_integrated_unified_memory_gpu
 from ._utils import estimate_training_reserve_bytes as _zoo_reserve_estimate
 from ._remote_code_buffers import restore_remote_code_non_persistent_buffers
 from ._custom_dtype import cast_mixed_linear_inputs, resolve_dtype, trusted_custom_dtype
+from ._mamba_lora import patch_mamba_fused_lora
 from .remote_code_shims import apply_remote_code_shims
 from .grouped_linear_lora import register_grouped_linear_lora
 from .loader_utils import (
@@ -5458,6 +5459,8 @@ class FastBaseModel:
     ):
         reject_alora(model)
         set_deepspeed_moe_leaf_modules(model)
+        # Mamba fused kernels read x_proj / dt_proj / out_proj .weight raw, skipping adapters on them.
+        patch_mamba_fused_lora(model)
         from ..import_fixes import fix_transformers_voxtral_realtime_inplace_audio_add
 
         fix_transformers_voxtral_realtime_inplace_audio_add()

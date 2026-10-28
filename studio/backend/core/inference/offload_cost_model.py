@@ -1,38 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Relative throughput of a candidate offload placement.
-
-The planner needs to RANK placements, not predict absolute t/s. So this models
-the marginal cost of moving a tensor group off the GPU, in milliseconds per
-token, and leaves the resident baseline as a free parameter the caller supplies
-or ignores.
-
-Two regimes, measured separately because they have different mechanisms:
-
-``generation``
-    One token at a time. Host-resident weights are computed by the CPU backend,
-    NOT streamed to the GPU. Measured directly: with the dense FFN spilled,
-    generation scales with thread count (2.42 / 5.83 / 11.82 t/s at 4 / 16 / 64
-    threads) while a fully resident run does not move at all (87.30 vs 87.31 at
-    4 vs 64). So the cost scales with the HOST's compute and memory bandwidth,
-    not with the PCIe generation.
-
-``prefill``
-    A whole ubatch at once. ggml's scheduler sends the large GEMM to the GPU and
-    copies the weights in, so this regime IS link-bound, and it reads the FULL
-    tensor rather than only the activated slice.
-
-The distinction matters most for MoE: generation touches ``n_used / n_expert``
-of the expert weights per token, but a 512-token prefill ubatch touches
-essentially all of them. MoE therefore tolerates spilling far better than a
-dense model during generation and slightly WORSE during prefill.
-
-Calibration is in ``_RATE_RATIOS`` and comes from the measurements in
-``plans/impl_planner_cost.md``. Rates are expressed as multiples of the
-contiguous-weight rate, because ratios transfer across machines much better than
-absolute milliseconds do.
-"""
+"""Ranks offload placements; spilled weights are CPU-bound in generation but link-bound in prefill."""
 
 from __future__ import annotations
 
