@@ -415,19 +415,17 @@ def _delete_document_chunks(conn, document_id: str) -> None:
     """Delete a document's chunk rows (chunks/chunks_fts/chunks_vec), keeping the documents row. Used when
     reconciling a half-ingested doc to failed: retrieval filters by scope not status, so leftover chunks would
     stay citable."""
-    chunk_ids = [
-        r["id"]
-        for r in conn.execute(
-            "SELECT id FROM chunks WHERE document_id=?", (document_id,)
-        ).fetchall()
-    ]
-    if not chunk_ids:
+    if (
+        conn.execute("SELECT 1 FROM chunks WHERE document_id=? LIMIT 1", (document_id,)).fetchone()
+        is None
+    ):
         return
-    has_vec = vec_table_exists(conn)
-    for chunk_id in chunk_ids:
-        conn.execute("DELETE FROM chunks_fts WHERE chunk_id=?", (chunk_id,))
-        if has_vec:
-            conn.execute("DELETE FROM chunks_vec WHERE chunk_id=?", (chunk_id,))
+    # chunk_id has no index in fts5 (UNINDEXED) or vec0, so match all of the document's chunk ids in
+    # one scan of each table instead of one scan per chunk.
+    owned = "SELECT id FROM chunks WHERE document_id=?"
+    conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({owned})", (document_id,))
+    if vec_table_exists(conn):
+        conn.execute(f"DELETE FROM chunks_vec WHERE chunk_id IN ({owned})", (document_id,))
     conn.execute("DELETE FROM chunks WHERE document_id=?", (document_id,))
 
 
