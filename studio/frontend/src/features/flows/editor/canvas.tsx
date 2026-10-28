@@ -213,8 +213,6 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
     [],
   );
 
-  const view = useSuperCardView(nodes, edges);
-
   const onEdgesChange = useCallback((changes: EdgeChange<RfEdge>[]) => {
     let selection: { add: Set<string>; remove: Set<string> } | null = null;
     for (const change of changes) {
@@ -231,6 +229,8 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
       ui.setSelection(ui.selectedNodes, [...next]);
     }
   }, []);
+
+  const view = useSuperCardView(nodes, edges);
 
   const onNodeDragStart = useCallback(
     (_: ReactMouseEvent, node: RfNode) => {
