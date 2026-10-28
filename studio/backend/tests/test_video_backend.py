@@ -1352,7 +1352,6 @@ def test_is_ltx23_checkpoint_gguf(monkeypatch, tmp_path):
     path.write_bytes(b"x")
     assert is_ltx23_checkpoint(path) is True
 
-    # A different header is a different file: the verdict is kept per file identity and stamps.
     gguf.GGUFReader = _reader_for(
         {
             "model.diffusion_model.transformer_blocks.0.scale_shift_table": (4096, 6),

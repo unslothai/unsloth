@@ -250,9 +250,7 @@ def read_checkpoint_header(checkpoint_path: Path | str) -> dict[str, tuple[int, 
     return names_shapes
 
 
-# One load asks several times (download estimate, then the load itself), and a GGUF header walk
-# builds a view per tensor; a verdict is keyed by the file's identity and stamps, so an edited or
-# replaced file is read again. Failed reads are never kept.
+# Keyed by file identity + stamps: an edited or replaced file is re-read; failures never kept.
 _LTX23_VERDICTS: dict[tuple, bool] = {}
 _LTX23_VERDICTS_LOCK = threading.Lock()
 _LTX23_VERDICTS_MAX = 256
