@@ -13,25 +13,12 @@ from core.flows.specs import SPECS_BY_TYPE, inp, out, spec
 
 from ._flows_helpers import doc, edge, node, run_async
 
+COLUMN = {"name": "ticket", "column_type": "sampler", "sampler_type": "uuid", "params": {}}
 HELD = [f"held-out support ticket number {i}: my invoice is wrong" for i in range(8)]
 
 
 @pytest.fixture(autouse = True)
 def fake_specs(monkeypatch):
-    monkeypatch.setitem(
-        SPECS_BY_TYPE,
-        "test.gen",
-        spec(
-            "test.gen",
-            "Gen",
-            "data",
-            "",
-            inputs = [inp("seed", "dataset", optional = True)],
-            outputs = [out("dataset", "dataset")],
-            params = [],
-            side_effect = True,
-        ),
-    )
     monkeypatch.setitem(
         SPECS_BY_TYPE,
         "test.bench",
@@ -51,9 +38,10 @@ def loop_doc(gen_rows = 4, **loop_params):
     return doc(
         [
             node("loop", "logic.loop", group = "L", **loop_params),
-            node("gen", "test.gen", group = "R", rows = gen_rows),
+            node("gen", "recipe.generate", group = "R", rows = gen_rows),
             node("train", "train.finetune", group = "L"),
             node("bench", "test.bench", group = "L"),
+            node("col", "recipe.column", group = "R", column = COLUMN),
         ],
         [
             edge("gen", "dataset", "train", "dataset"),
@@ -63,7 +51,7 @@ def loop_doc(gen_rows = 4, **loop_params):
         ],
         groups = [
             {"id": "L", "label": "Loop", "kind": "loop", "rect": [0, 0, 900, 500]},
-            {"id": "R", "label": "Recipe", "rect": [20, 40, 300, 300]},
+            {"id": "R", "label": "Recipe", "kind": "recipe", "rect": [20, 40, 300, 300]},
         ],
     )
 
@@ -76,7 +64,7 @@ def _plan(d):
 
 def test_loop_body_takes_the_fed_recipe_group_and_stays_acyclic():
     plan = _plan(loop_doc())
-    assert set(plan.bodies["loop"]) == {"gen", "train", "bench"}
+    assert set(plan.bodies["loop"]) == {"gen", "col", "train", "bench"}
     assert plan.feedback["loop"]["target"] == "gen"
     assert "seed" not in plan.inputs["gen"]
     assert plan.order.index("gen") < plan.order.index("train") < plan.order.index("bench")
@@ -86,15 +74,16 @@ def test_loop_body_takes_the_fed_recipe_group_and_stays_acyclic():
     "change, message",
     [
         (lambda d: d["edges"].pop(), "Draw the dashed feeds-the-next-round wire"),
-        (
-            lambda d: d["edges"][-1].update(target = "train", target_port = "dataset"),
-            "takes one connection",
-        ),
+        (lambda d: d["edges"].append(edge("train", "holdout", "gen", "seed")), "takes one connection"),
         (
             lambda d: d["edges"][-1].update(source = "train", source_port = "metrics"),
             "scores the model",
         ),
         (lambda d: d["edges"][-1].update(source_port = "results"), "scores the model"),
+        (
+            lambda d: d["edges"][-1].update(target = "train", target_port = "dataset"),
+            "recipe's seed input",
+        ),
         (
             lambda d: d["nodes"][3].pop("group"),
             "runs inside one Loop group",
@@ -188,7 +177,7 @@ def _engine(leak = False, test_pass = None):
         }
 
     eng = LoopEngine()
-    eng.handlers = {"test.gen": gen, "train.finetune": train, "test.bench": bench}
+    eng.handlers = {"recipe.generate": gen, "train.finetune": train, "test.bench": bench}
     eng.mint_key = lambda account: ("sk-unsloth-test", None)
     eng.revoke_key = lambda key_id: None
     return eng, seen, scored
@@ -268,11 +257,6 @@ def test_benchmark_failures_map_to_the_seed_columns():
 def test_the_real_benchmark_node_can_close_the_loop():
     d = loop_doc()
     d["nodes"][3]["type"] = "train.benchmark"
-    d["nodes"][1]["type"] = "recipe.generate"
-    d["groups"][1]["kind"] = "recipe"
-    d["nodes"].append(
-        node("col", "recipe.column", group = "R", column = {"name": "ticket", "column_type": "sampler", "sampler_type": "uuid", "params": {}})
-    )
     parsed, errors = parse_document(d)
     assert not errors, errors
     plan = compile_flow(parsed)
@@ -321,3 +305,14 @@ def test_a_recipe_step_validates_against_the_seed_it_runs_on(monkeypatch, tmp_pa
     )
     asyncio.run(data.recipe_group(ctx))
     assert checked[0]["recipe"]["seed_config"]["source"] == {"seed_type": "local", "path": str(seed)}
+
+
+
+def test_a_loop_refuses_an_lm_eval_task_on_its_benchmark():
+    d = loop_doc()
+    d["nodes"][3]["type"] = "train.benchmark"
+    d["nodes"][3]["params"]["task"] = "HellaSwag"
+    parsed, errors = parse_document(d)
+    assert not errors, errors
+    with pytest.raises(CompileError, match = "set Benchmark's Task to Recipe held-out"):
+        compile_flow(parsed)

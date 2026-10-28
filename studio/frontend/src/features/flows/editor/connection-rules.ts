@@ -139,7 +139,7 @@ export function checkConnection(
   const out = sourceSpec.outputs.find((p) => p.id === src.port);
   const inp = targetSpec.inputs.find((p) => p.id === dst.port);
   if (!out || !inp) return { ok: false, reason: "Unknown port" };
-  if (isFeedback(sourceSpec, out, inp)) {
+  if (isFeedback(sourceSpec, out, targetSpec, inp)) {
     return {
       ok: true,
       kind: "feedback",
@@ -153,15 +153,17 @@ export function checkConnection(
   return { ok: true, kind: "data", sourcePort: out.id, targetPort: inp.id };
 }
 
-/** A score step's failures into a dataset input: the Loop's "feeds the next round" wire, never a data edge. */
+/** A score step's failures into a recipe step's seed: the Loop's "feeds the next round" wire, never a data edge. */
 export function isFeedback(
   sourceSpec: NodeSpec,
   out: PortSpec,
+  targetSpec: NodeSpec,
   inp: PortSpec,
 ): boolean {
   return (
     out.id === "failures" &&
-    inp.type === "dataset" &&
+    targetSpec.type === "recipe.generate" &&
+    inp.id === "seed" &&
     sourceSpec.outputs.some((p) => p.id === "score")
   );
 }

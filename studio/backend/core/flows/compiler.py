@@ -524,8 +524,17 @@ def _check_feedback(
                 )
             )
             continue
+        task = next((p for p in sspec["params"] if p["id"] == "task"), None)
+        if task and (nodes[src].get("params") or {}).get("task", task["default"]) != task["default"]:
+            errors.append(
+                issue(
+                    f"A Loop scores its own held-out rows: set {sspec['title']}'s Task to {task['default']}",
+                    node_id = src,
+                )
+            )
+            continue
         dport = next((p for p in dspec["inputs"] if p["id"] == edge["target_port"]), None)
-        if dport is None or dport["type"] != "dataset":
+        if dspec["type"] != GENERATE_TYPE or dport is None or dport["id"] != "seed":
             errors.append(
                 issue("The next round's failures go into a recipe's seed input", edge_id = eid)
             )
