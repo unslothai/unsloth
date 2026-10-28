@@ -11,6 +11,7 @@ import { type NodeProps, NodeResizer } from "@xyflow/react";
 import { Suspense, lazy, memo, useState } from "react";
 import { useDocStore } from "../stores/doc-store";
 import type { RfNode } from "./derive-rf";
+import { portInk, studioInk } from "./theme-colors";
 
 const MarkdownPreview = lazy(() =>
   import("@/components/markdown/markdown-preview").then((m) => ({
@@ -27,10 +28,14 @@ const RESIZER = {
   handleStyle: { opacity: 0 },
 } as const;
 
-/** Mixes a hex into the frame surface, so tints read on both themes. */
+/** Mixes a colour into the frame surface, so tints read on both themes. */
 function tint(color: string, percent: number): string {
-  return `color-mix(in oklab, ${color} ${percent}%, transparent)`;
+  return `color-mix(in oklab, ${studioInk(color)} ${percent}%, transparent)`;
 }
+
+// Studio surfaces: groups and default notes are neutral; the group colour is its dot.
+const GROUP_FILL = "color-mix(in oklab, var(--muted) 40%, transparent)";
+const NOTE_STYLE = { background: "var(--muted)", borderColor: "var(--border)" };
 
 function GroupFrameImpl({ data, selected }: NodeProps<RfNode>) {
   const groupId = (data as { groupId: string }).groupId;
@@ -44,8 +49,8 @@ function GroupFrameImpl({ data, selected }: NodeProps<RfNode>) {
     <div
       className="corner-squircle h-full w-full rounded-2xl border shadow-sm"
       style={{
-        borderColor: tint(color, selected ? 70 : 40),
-        background: tint(color, 6),
+        borderColor: selected ? "var(--ring-select)" : "var(--border)",
+        background: GROUP_FILL,
       }}
     >
       <NodeResizer
@@ -62,12 +67,12 @@ function GroupFrameImpl({ data, selected }: NodeProps<RfNode>) {
       />
       <div
         className="flow-group-drag flex cursor-grab items-center gap-2 border-b px-3 py-2 active:cursor-grabbing"
-        style={{ borderColor: tint(color, 25) }}
+        style={{ borderColor: "var(--border)" }}
         onDoubleClick={() => setEditing(true)}
       >
         <span
           className="size-2.5 shrink-0 rounded-full"
-          style={{ background: color }}
+          style={{ background: portInk(color) }}
         />
         {editing ? (
           <Input
@@ -102,12 +107,16 @@ function NoteFrameImpl({ data, selected }: NodeProps<RfNode>) {
   const upsertNote = useDocStore((s) => s.upsertNote);
   const [editing, setEditing] = useState(false);
   if (!note) return null;
-  const color = note.color || "#FDE68A";
+  const color = note.color;
   const showEditor = editing || !note.text;
   return (
     <BaseNode
       className="corner-squircle h-full w-full min-w-0 overflow-hidden rounded-xl border-border/60 shadow-sm"
-      style={{ background: tint(color, 35), borderColor: tint(color, 55) }}
+      style={
+        color
+          ? { background: tint(color, 35), borderColor: tint(color, 55) }
+          : NOTE_STYLE
+      }
       onDoubleClick={(e) => {
         e.stopPropagation();
         setEditing(true);

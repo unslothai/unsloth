@@ -25,7 +25,7 @@ import { StructuredOutput, isStructuredValue } from "./value-viewers";
 
 const RUN_STATUS_STYLE: Record<string, string> = {
   queued: "text-muted-foreground",
-  running: "border-sky-500/25 bg-sky-500/10 text-sky-700 dark:text-sky-300",
+  running: "border-border bg-muted text-foreground",
   cancelling:
     "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300",
   cancelled: "text-muted-foreground",

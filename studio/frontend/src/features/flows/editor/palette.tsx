@@ -2,13 +2,15 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { CollapsibleSectionTriggerButton } from "@/features/recipe-studio/dialogs/shared/collapsible-section-trigger";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { memo, useDeferredValue, useMemo, useState } from "react";
 import { useCatalogStore } from "../stores/catalog-store";
+import { useUiStore } from "../stores/ui-store";
 import type { NodeSpec } from "../types";
-import { Search01Icon } from "./icon-data";
+import { Cancel01Icon, Search01Icon } from "./icon-data";
 import { nodeIcon } from "./icons";
 import { NodeIconTile } from "./node-card";
 import { CATEGORY_TONES } from "./node-tones";
@@ -82,7 +84,21 @@ function PaletteImpl({ onAdd }: { onAdd: (type: string) => void }) {
 
   return (
     <div className="flex h-full w-64 shrink-0 flex-col border-border border-r bg-background">
-      <div className="relative border-border border-b px-3 py-2">
+      <div className="flex items-center justify-between pt-2 pr-1.5 pl-4">
+        <span className="font-semibold text-sm text-foreground">Nodes</span>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Hide nodes"
+          title="Hide nodes"
+          onClick={() => useUiStore.getState().togglePalette()}
+          className="text-muted-foreground"
+        >
+          <HugeiconsIcon icon={Cancel01Icon} size={15} />
+        </Button>
+      </div>
+      <div className="relative border-border border-b px-3 pt-1 pb-2">
         <HugeiconsIcon
           icon={Search01Icon}
           className="pointer-events-none absolute top-1/2 left-5.5 size-3.5 -translate-y-1/2 text-muted-foreground"
