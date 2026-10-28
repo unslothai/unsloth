@@ -313,7 +313,9 @@ def _calls_compiled(forward):
         return False
     if any(_is_compiled(scope.get(name)) for name in code.co_names if name in scope):
         return True
-    for cell in getattr(fn, "__closure__", None) or ():  # a compiled helper captured from an enclosing scope
+    for cell in (
+        getattr(fn, "__closure__", None) or ()
+    ):  # a compiled helper captured from an enclosing scope
         try:
             value = cell.cell_contents
         except ValueError:  # empty cell
