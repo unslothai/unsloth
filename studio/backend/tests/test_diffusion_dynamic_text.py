@@ -391,7 +391,11 @@ def test_static_compile_and_unarmed_families_are_not_hooked():
 
 def test_fingerprint_for_dynamic_true_keys_only_on_unbacked():
     h3 = MiniMaxH3Transformer3DModel()
-    want = "unbacked:" + ",".join(dt._FAMILY_UNBACKED[type(h3).__name__]) if dt.unbacked_supported() else None
+    want = (
+        "unbacked:" + ",".join(dt._FAMILY_UNBACKED[type(h3).__name__])
+        if dt.unbacked_supported()
+        else None
+    )
     assert dt.fingerprint(h3, True) == want
     assert dt.fingerprint(h3, False) is None
     assert dt.fingerprint(QwenImage21Transformer2DModel(), True) is None
@@ -575,7 +579,9 @@ def test_minimax_h3_float8_weights_keep_temb_backed_dynamic():
     dt.uninstall(m)
     # a plain (bf16 / int8) H3 keeps the unbacked temb
     assert dt.unbacked_sources_for(MiniMaxH3Transformer3DModel())[0] == "L['temb']"
-    assert not set(dt.unbacked_sources_for(MiniMaxH3Transformer3DModel())) & set(dt.sources_for(MiniMaxH3Transformer3DModel()))
+    assert not set(dt.unbacked_sources_for(MiniMaxH3Transformer3DModel())) & set(
+        dt.sources_for(MiniMaxH3Transformer3DModel())
+    )
 
 
 def test_minimax_h3_float8_inside_a_plain_parameter_keeps_temb_backed_dynamic():
@@ -708,8 +714,13 @@ class _Flux3ModeBlock(_Lin):
 
 
 class _Flux3SingleBlock(_Lin):
-    def forward(self, hidden_states, encoder_hidden_states, temb_mod, temb_mod_context, image_rotary_emb):
-        joint = torch.cat([encoder_hidden_states, hidden_states], 1) * image_rotary_emb[0] + image_rotary_emb[1]
+    def forward(
+        self, hidden_states, encoder_hidden_states, temb_mod, temb_mod_context, image_rotary_emb
+    ):
+        joint = (
+            torch.cat([encoder_hidden_states, hidden_states], 1) * image_rotary_emb[0]
+            + image_rotary_emb[1]
+        )
         text = encoder_hidden_states.shape[1]
         return self.proj(joint[:, :text]) + temb_mod_context, joint[:, text:] + temb_mod
 
@@ -720,10 +731,20 @@ class _Flux3Hooked(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.transformer_blocks = torch.nn.ModuleList([_Flux3ModeBlock() for _ in range(2)])
-        self.single_transformer_blocks = torch.nn.ModuleList([_Flux3SingleBlock() for _ in range(2)])
+        self.single_transformer_blocks = torch.nn.ModuleList(
+            [_Flux3SingleBlock() for _ in range(2)]
+        )
 
-    def forward(self, text_len, image_len = 64):
-        txt, img, mod = torch.randn(1, text_len, 8), torch.randn(1, image_len, 8), torch.randn(1, 1, 8)
+    def forward(
+        self,
+        text_len,
+        image_len = 64,
+    ):
+        txt, img, mod = (
+            torch.randn(1, text_len, 8),
+            torch.randn(1, image_len, 8),
+            torch.randn(1, 1, 8),
+        )
         txt_rope = (torch.randn(text_len, 8), torch.randn(text_len, 8))
         img_rope = (torch.randn(image_len, 8), torch.randn(image_len, 8))
         for block in self.transformer_blocks:
@@ -733,7 +754,10 @@ class _Flux3Hooked(torch.nn.Module):
         rope = (torch.cat([txt_rope[0], img_rope[0]]), torch.cat([txt_rope[1], img_rope[1]]))
         for block in self.single_transformer_blocks:
             txt, img = block(
-                hidden_states = img, encoder_hidden_states = txt, temb_mod = mod, temb_mod_context = mod,
+                hidden_states = img,
+                encoder_hidden_states = txt,
+                temb_mod = mod,
+                temb_mod_context = mod,
                 image_rotary_emb = rope,
             )
         return img
@@ -753,7 +777,11 @@ class _ZImageHooked(torch.nn.Module):
         self.noise_refiner = torch.nn.ModuleList([_ZImageBlock()])
         self.layers = torch.nn.ModuleList([_ZImageBlock() for _ in range(2)])
 
-    def forward(self, text_len, image_len = 64):
+    def forward(
+        self,
+        text_len,
+        image_len = 64,
+    ):
         def args(n):
             return torch.randn(1, n, 8), torch.ones(1, n, dtype = torch.bool), torch.randn(1, n, 8)
 
@@ -780,9 +808,17 @@ class _MossHooked(torch.nn.Module):
         super().__init__()
         self.layers = torch.nn.ModuleList([_MossBlock() for _ in range(2)])
 
-    def forward(self, text_len, image_len = 64):
+    def forward(
+        self,
+        text_len,
+        image_len = 64,
+    ):
         n = text_len + image_len
-        x, rope, mod = torch.randn(1, n, 8), (torch.randn(n, 8), torch.randn(n, 8)), torch.randn(1, 1, 8)
+        x, rope, mod = (
+            torch.randn(1, n, 8),
+            (torch.randn(n, 8), torch.randn(n, 8)),
+            torch.randn(1, 1, 8),
+        )
         for layer in self.layers:
             x = layer(x, rope, mod)
         return x
@@ -801,7 +837,11 @@ class _H3Hooked(torch.nn.Module):
         super().__init__()
         self.transformer_blocks = torch.nn.ModuleList([_H3Block() for _ in range(2)])
 
-    def forward(self, text_len, image_len = 64):
+    def forward(
+        self,
+        text_len,
+        image_len = 64,
+    ):
         n = text_len + image_len
         x, rope = torch.randn(1, n, 8), (torch.randn(n, 8), torch.randn(n, 8))
         # temb has 1 row on the first step and 2 after it
@@ -814,7 +854,10 @@ class _H3Hooked(torch.nn.Module):
 
 class _FluxHookedBlock(_Lin):
     def forward(self, hidden_states, encoder_hidden_states, temb, image_rotary_emb):
-        joint = torch.cat([encoder_hidden_states, hidden_states], 1) * image_rotary_emb[0] + image_rotary_emb[1]
+        joint = (
+            torch.cat([encoder_hidden_states, hidden_states], 1) * image_rotary_emb[0]
+            + image_rotary_emb[1]
+        )
         text = encoder_hidden_states.shape[1]
         return joint[:, :text], self.proj(joint[:, text:]) + temb[:, None]
 
@@ -824,12 +867,22 @@ class _FluxHooked(torch.nn.Module):
         super().__init__()
         self.transformer_blocks = torch.nn.ModuleList([_FluxHookedBlock() for _ in range(2)])
 
-    def forward(self, text_len, image_len = 64):
-        txt, img, temb = torch.randn(1, text_len, 8), torch.randn(1, image_len, 8), torch.randn(1, 8)
+    def forward(
+        self,
+        text_len,
+        image_len = 64,
+    ):
+        txt, img, temb = (
+            torch.randn(1, text_len, 8),
+            torch.randn(1, image_len, 8),
+            torch.randn(1, 8),
+        )
         n = text_len + image_len
         rope = (torch.randn(n, 8), torch.randn(n, 8))
         for block in self.transformer_blocks:
-            txt, img = block(hidden_states = img, encoder_hidden_states = txt, temb = temb, image_rotary_emb = rope)
+            txt, img = block(
+                hidden_states = img, encoder_hidden_states = txt, temb = temb, image_rotary_emb = rope
+            )
         return img
 
 
@@ -879,6 +932,8 @@ def test_new_prompt_length_under_group_offload_hooks_reuses_the_first_graphs(nam
     block inputs become ``L['args'][i]`` / ``L['kwargs'][...]``, and ``L['___stack0'][...]`` after the eager hook."""
     seen = _hooked_graphs_per_render(name)
     assert seen[0] > 0 and seen[1:] == [0, 0, 0, 0], seen
-    if name == "ZImageTransformer2DModel" or (name == "MiniMaxH3Transformer3DModel" and dt.unbacked_supported()):
+    if name == "ZImageTransformer2DModel" or (
+        name == "MiniMaxH3Transformer3DModel" and dt.unbacked_supported()
+    ):
         # the caption, image and unified lengths (H3: the 1-row then 2-row temb) share the first render's one graph
         assert seen[0] == 1, seen
