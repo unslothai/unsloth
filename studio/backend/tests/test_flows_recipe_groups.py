@@ -306,12 +306,17 @@ def test_a_bare_hub_seed_is_resolved_before_validate_like_recipe_studios_load():
             return {"dataset": [{"output": "x"}], "total": 1}
         raise AssertionError(path)
 
-    ctx = _Ctx(routes, params = {RECIPE_PARAM: _compiled(_flow(payload)), "rows": 1, "mode": "preview"})
+    ctx = _Ctx(
+        routes, params = {RECIPE_PARAM: _compiled(_flow(payload)), "rows": 1, "mode": "preview"}
+    )
     asyncio.run(data.recipe_group(ctx))
     assert sent["inspect"]["dataset_name"] == "unsloth/alpaca-cleaned"
     assert sent["validate"] == resolved and sent["job"] == resolved
     # A path the reader already takes is left alone.
-    assert data.bare_hub_seed({"seed_config": {"source": {"seed_type": "hf", "path": resolved}}}) is None
+    assert (
+        data.bare_hub_seed({"seed_config": {"source": {"seed_type": "hf", "path": resolved}}})
+        is None
+    )
 
 
 def test_an_invalid_recipe_never_starts_a_job():
