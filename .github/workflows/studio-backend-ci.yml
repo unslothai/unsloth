@@ -207,7 +207,7 @@ jobs:
           pip install \
             python-multipart aiofiles sqlalchemy cryptography psutil \
             pyyaml jinja2 mammoth unpdf requests \
-            'numpy<3' 'pytest<9.2' pytest-asyncio pytest-xdist pytest-timeout httpx \
+            'numpy<3' pytest pytest-asyncio pytest-xdist pytest-timeout httpx \
             soundfile librosa
           # soundfile + librosa, or the no-torchcodec decode test silently skips.
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
@@ -402,7 +402,7 @@ jobs:
           pip install \
             python-multipart aiofiles sqlalchemy cryptography psutil \
             pyyaml jinja2 mammoth unpdf requests typer \
-            'numpy<3' 'pytest<9.2' pytest-asyncio pytest-xdist pytest-timeout httpx
+            'numpy<3' pytest pytest-asyncio pytest-xdist pytest-timeout httpx
           # pytest-timeout names a hung test instead of a `cancelled` job.
           # torchvision: unsloth_zoo.vision_utils imports it at module scope.
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
