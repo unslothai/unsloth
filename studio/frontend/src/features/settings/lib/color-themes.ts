@@ -432,10 +432,10 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
       surface: "#fff0c4",
     },
     dark: {
-      accent: "#ffc400",
-      background: "#1a0b24",
-      foreground: "#fff4d6",
-      surface: "#251135",
+      accent: "#8f5c00",
+      background: "#fffae6",
+      foreground: "#2e1f00",
+      surface: "#fff0c4",
     },
   },
   "bloody-valentine": {
@@ -447,10 +447,10 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
       surface: "#ffe0e6",
     },
     dark: {
-      accent: "#ff1f43",
-      background: "#1f0307",
-      foreground: "#ffe3e8",
-      surface: "#2c070d",
+      accent: "#c4001f",
+      background: "#fff0f2",
+      foreground: "#3a0510",
+      surface: "#ffe0e6",
     },
   },
   alien: {
@@ -492,10 +492,10 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
       surface: "#dcefff",
     },
     dark: {
-      accent: "#3dbcff",
-      background: "#04121f",
-      foreground: "#e0f3ff",
-      surface: "#081c2e",
+      accent: "#0062a8",
+      background: "#eef8ff",
+      foreground: "#04233a",
+      surface: "#dcefff",
     },
   },
   "midnight-haunt": {
@@ -522,10 +522,10 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
       surface: "#eee0ff",
     },
     dark: {
-      accent: "#b27aff",
-      background: "#100619",
-      foreground: "#f0e4ff",
-      surface: "#190b28",
+      accent: "#6a24c8",
+      background: "#f8f1ff",
+      foreground: "#22093d",
+      surface: "#eee0ff",
     },
   },
   "black-cat": {
@@ -557,4 +557,23 @@ const HALLOWEEN_THEME_ID_SET: ReadonlySet<string> = new Set(HALLOWEEN_THEME_IDS)
 
 export function isHalloweenThemeId(value: unknown): value is HalloweenThemeId {
   return typeof value === "string" && HALLOWEEN_THEME_ID_SET.has(value);
+}
+
+// No dark seeds: these read best light. In dark mode they show Standard (keep in sync with
+// public/theme-boot.js).
+export const LIGHT_ONLY_THEME_IDS: ReadonlySet<ColorThemeId> = new Set<ColorThemeId>([
+  "trick-or-treat",
+  "bloody-valentine",
+  "the-thing",
+  "gothic",
+]);
+
+/** The palette the document shows: a light-only theme gives way to Standard in dark mode. */
+export function paletteForMode(
+  palette: ColorThemeId,
+  mode: "light" | "dark",
+): ColorThemeId {
+  return mode === "dark" && LIGHT_ONLY_THEME_IDS.has(palette)
+    ? "standard"
+    : palette;
 }

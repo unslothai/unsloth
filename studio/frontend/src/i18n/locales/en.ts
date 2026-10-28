@@ -698,6 +698,7 @@ export const en = {
     footer: "Unsloth returns to normal at midnight on November 1.",
     removeNow: "Remove now",
     hideFromSidebar: "Hide from sidebar",
+    lightOnly: "Light mode only",
     greeting: {
       boo: "Boo! Did I scare you?",
       booName: "Boo! Did I scare you, {name}?",

@@ -644,6 +644,7 @@ export const ar = {
     footer: "يعود Unsloth إلى طبيعته عند منتصف ليل 1 نوفمبر.",
     removeNow: "إزالة الآن",
     hideFromSidebar: "إخفاء من الشريط الجانبي",
+    lightOnly: "الوضع الفاتح فقط",
     greeting: {
       boo: "بوو! هل أخفتك؟",
       booName: "بوو! هل أخفتك يا {name}؟",

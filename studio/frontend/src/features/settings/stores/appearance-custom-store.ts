@@ -7,7 +7,11 @@ import {
   createJSONStorage,
   persist,
 } from "zustand/middleware";
-import { COLOR_THEMES, type ColorThemeId } from "../lib/color-themes.ts";
+import {
+  COLOR_THEMES,
+  type ColorThemeId,
+  paletteForMode,
+} from "../lib/color-themes.ts";
 import { remeasureSkippedContent } from "../lib/interface-scale-runtime.ts";
 import type { ResolvedTheme } from "./theme-store";
 
@@ -656,7 +660,8 @@ function surfacesFor(
   palette: ColorThemeId,
   resolved: ResolvedTheme,
 ): PaletteSurfaces {
-  const { background, surface } = COLOR_THEMES[palette][resolved];
+  const { background, surface } =
+    COLOR_THEMES[paletteForMode(palette, resolved)][resolved];
   if (!surface) return PALETTE_SURFACES[resolved];
   return {
     background,

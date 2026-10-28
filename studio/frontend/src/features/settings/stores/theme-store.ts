@@ -6,6 +6,7 @@ import {
   COLOR_THEME_IDS,
   type ColorThemeId,
   isColorThemeId,
+  paletteForMode,
 } from "../lib/color-themes.ts";
 
 export type Theme = "light" | "dark" | "system";
@@ -76,10 +77,13 @@ function applyToDocument(resolved: ResolvedTheme) {
   el.classList.toggle("dark", resolved === "dark");
   el.classList.toggle("light", resolved === "light");
   el.style.colorScheme = resolved;
+  // A light-only palette swaps in and out with the mode.
+  applyPaletteToDocument(currentPalette);
 }
 
-function applyPaletteToDocument(palette: Palette) {
+function applyPaletteToDocument(stored: Palette) {
   if (typeof document === "undefined") return;
+  const palette = paletteForMode(stored, resolveTheme(currentTheme));
   const el = document.documentElement;
   // Standard is the base :root/.dark palette and uses no attribute.
   if (palette === "standard") {
@@ -177,6 +181,10 @@ function getPaletteSnapshot(): Palette {
 
 function getPaletteServerSnapshot(): Palette {
   return "standard";
+}
+
+export function getResolvedTheme(): ResolvedTheme {
+  return resolveTheme(currentTheme);
 }
 
 export function getPalette(): Palette {

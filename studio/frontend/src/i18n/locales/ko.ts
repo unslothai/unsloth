@@ -643,6 +643,7 @@ export const ko = {
     footer: "Unsloth는 11월 1일 자정에 원래대로 돌아가요.",
     removeNow: "지금 제거",
     hideFromSidebar: "사이드바에서 숨기기",
+    lightOnly: "라이트 모드 전용",
     greeting: {
       boo: "왁! 놀랐어요?",
       booName: "왁! {name}님, 놀랐어요?",

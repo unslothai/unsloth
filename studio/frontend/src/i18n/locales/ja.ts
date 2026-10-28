@@ -644,6 +644,7 @@ export const ja = {
     footer: "Unslothは11月1日の午前0時に元に戻ります。",
     removeNow: "今すぐ解除",
     hideFromSidebar: "サイドバーから非表示",
+    lightOnly: "ライトモードのみ",
     greeting: {
       boo: "ばあ！びっくりしました？",
       booName: "ばあ！{name}さん、びっくりしました？",

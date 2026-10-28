@@ -644,6 +644,7 @@ export const hi = {
     footer: "Unsloth 1 नवंबर की आधी रात को सामान्य हो जाएगा।",
     removeNow: "अभी हटाएँ",
     hideFromSidebar: "साइडबार से छिपाएं",
+    lightOnly: "केवल लाइट मोड",
     greeting: {
       boo: "बू! डर गए क्या?",
       booName: "बू! डर गए क्या, {name}?",

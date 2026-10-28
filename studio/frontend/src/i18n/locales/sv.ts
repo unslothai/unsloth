@@ -748,6 +748,7 @@ export const sv = {
     footer: "Unsloth återgår till det normala vid midnatt den 1 november.",
     removeNow: "Ta bort nu",
     hideFromSidebar: "Dölj från sidofältet",
+    lightOnly: "Endast ljust läge",
     greeting: {
       boo: "Bu! Blev du rädd?",
       booName: "Bu! Blev du rädd, {name}?",

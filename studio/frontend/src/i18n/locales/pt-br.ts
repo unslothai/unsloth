@@ -645,6 +645,7 @@ export const ptBR = {
     footer: "O Unsloth volta ao normal à meia-noite de 1º de novembro.",
     removeNow: "Remover agora",
     hideFromSidebar: "Ocultar da barra lateral",
+    lightOnly: "Somente no modo claro",
     greeting: {
       boo: "Bu! Assustei você?",
       booName: "Bu! Assustei você, {name}?",
