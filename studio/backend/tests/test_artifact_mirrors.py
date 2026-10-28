@@ -927,3 +927,80 @@ def test_artifact_folder_bytes_without_inodes_keys_by_blob_path(monkeypatch, tmp
 
     monkeypatch.setattr(Path, "stat", no_inode)
     assert cache_inventory.artifact_folder_bytes(repo_dir) == 800
+
+
+def test_full_pipeline_fetched_through_mirror_is_available_as_pipeline(monkeypatch, tmp_path):
+    """The row must load the pipeline snapshot and keep the mirror as its deletion owner."""
+    import json
+    from huggingface_hub import scan_cache_dir
+
+    from core.inference.diffusion_families import detect_family_for_pick
+    from hub.services.models import cache_inventory, deletion
+
+    files = {
+        "model_index.json": 1,
+        "processor/processor_config.json": 2,
+        "processor/tokenizer.json": 2,
+        "scheduler/scheduler_config.json": 2,
+        "text_encoder/config.json": 2,
+        "text_encoder/model.safetensors": 1,
+        "transformer/config.json": 2,
+        "transformer/diffusion_pytorch_model.safetensors": 1,
+        "vae/config.json": 2,
+        "vae/diffusion_pytorch_model.safetensors": 1,
+    }
+    cached = _cache_repo(tmp_path, _FP8_REPO, files)
+    snapshot = cached.revisions[0].snapshot_path
+    (snapshot / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "QwenImage21Pipeline",
+                "processor": ["transformers", "Qwen3VLProcessor"],
+                "scheduler": ["diffusers", "FlowMatchEulerDiscreteScheduler"],
+                "text_encoder": ["transformers", "Qwen3VLForConditionalGeneration"],
+                "transformer": ["diffusers", "QwenImage21Transformer2DModel"],
+                "vae": ["diffusers", "AutoencoderKLQwenImage21"],
+            }
+        )
+    )
+    for config in snapshot.rglob("*config.json"):
+        config.write_text("{}")
+    # Use the actual Hugging Face cache scanner, with only its root isolated to this fixture.
+    monkeypatch.setattr(cache_inventory, "all_hf_cache_scans", lambda: [scan_cache_dir(tmp_path)])
+    rows = cache_inventory._scan_cached_models(active_hub_cache = tmp_path)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["single_file"] is False
+    assert row["task"] == "text-to-image"
+    assert row["artifact_kind"] == "diffusers_pipeline"
+    assert not row["partial"]
+    assert not row["companion"]
+    assert row["load_id"] == str(snapshot.resolve())
+    assert row["repo_id"] == _FP8_REPO
+    assert row["cache_path"] == str(cached.repo_path)
+    assert detect_family_for_pick(row["load_id"], None, None).name == "qwen-image-2.1"
+    # A loaded snapshot must still protect its owning cache repository from deletion.
+    monkeypatch.setattr(deletion, "iter_repo_cache_dirs", lambda *_a: [cached.repo_path])
+    assert deletion._loaded_id_matches_repo(row["load_id"], row["repo_id"])
+
+    # An interrupted download must remain partial and must not be treated as ready.
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan, "is_snapshot_partial", lambda *_a, **_k: True
+    )
+    partial = cache_inventory._scan_cached_models(active_hub_cache = tmp_path)[0]
+    assert partial["partial"]
+
+
+def test_root_checkpoint_in_an_older_revision_keeps_artifact_classification(tmp_path):
+    """A later pipeline-only snapshot must not hide a retained checkpoint from another revision."""
+    from types import SimpleNamespace
+
+    from hub.services.models.cache_inventory import _artifact_repo_has_root_checkpoint
+
+    cached = _cache_repo(tmp_path, _FP8_REPO, {**_FOLDERS, **_DENOISER})
+    assert not _artifact_repo_has_root_checkpoint(cached)
+    older = cached.repo_path / "snapshots" / "older"
+    older.mkdir()
+    (older / "checkpoint.safetensors").write_bytes(b"checkpoint")
+    cached.revisions.append(SimpleNamespace(snapshot_path = older))
+    assert _artifact_repo_has_root_checkpoint(cached)

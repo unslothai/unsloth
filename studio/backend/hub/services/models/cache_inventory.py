@@ -897,6 +897,26 @@ class _CachedNonGgufPayload(NamedTuple):
     payload_snapshots: frozenset[str]
 
 
+def _artifact_repo_has_root_checkpoint(repo_info) -> bool:
+    """Keep checkpoint classification when any cached revision has a standalone root weight."""
+    for revision in repo_info.revisions:
+        snapshot = getattr(revision, "snapshot_path", None)
+        if snapshot is None:
+            return True
+        try:
+            for entry in Path(snapshot).iterdir():
+                name = entry.name.lower()
+                if (
+                    (entry.is_file() or entry.is_symlink())
+                    and not _is_training_artefact_name(name)
+                    and (name.endswith(".safetensors") or _is_checkpoint_weight_name(name))
+                ):
+                    return True
+        except OSError:
+            return True
+    return False
+
+
 # Keys mirror _classify_non_gguf_model_format's kwargs, so a revision classifies like the repo.
 _PAYLOAD_FLAGS = (
     "has_config",
@@ -1258,6 +1278,15 @@ def _scan_cached_models(
                     payload_snapshots = payload.payload_snapshots,
                 )
                 load_snapshot = identity.load_snapshot
+                # A complete pipeline without a standalone checkpoint is loadable from its snapshot,
+                # while its repository identity remains the owner for deletion.
+                artifact_pipeline = bool(
+                    artifact_checkpoint
+                    and not _artifact_repo_has_root_checkpoint(repo_info)
+                    and _diffusers_pipeline_artifact_kind(load_snapshot)
+                )
+                if artifact_pipeline:
+                    artifact_checkpoint = False
                 local_metadata = (
                     snapshot_metadata
                     if load_snapshot == snapshot_path
@@ -1390,6 +1419,8 @@ def _scan_cached_models(
                         tts_only = is_output_audio,
                     )
                 )
+                if artifact_pipeline:
+                    row["load_id"] = str(load_snapshot)
                 # Pin the immutable snapshot, not the bare id: refs/main can move after this structural scan.
                 if row_task is None and pipeline_artifact_kind is not None:
                     row["load_id"] = str(load_snapshot)
