@@ -13,6 +13,8 @@ from unsloth.kernels import fp8 as F8
 @pytest.fixture
 def spies(monkeypatch):
     calls = []
+    # NVIDIA routing; ROCm runners report a HIP version and keep the compiled path (tested below).
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
     monkeypatch.setattr(F8, "_fp8_rowwise_backend", lambda device: "scaled_mm")
     monkeypatch.setattr(F8, "_FP8_ROWWISE_DIRECT", True)
     monkeypatch.setattr(
@@ -142,3 +144,11 @@ def test_compile_disabled_keeps_the_eager_wrapper():
     assert F8._fp8_rowwise_direct_enabled("1", compile_disabled = False) is True
     for off in ("0", "false", "No", " off "):
         assert F8._fp8_rowwise_direct_enabled(off, compile_disabled = False) is False
+
+
+def test_rocm_keeps_the_compiled_path(spies, monkeypatch):
+    monkeypatch.setattr(torch.version, "hip", "7.0", raising = False)
+    with FakeTensorMode(), torch.no_grad():
+        assert F8.fbgemm_fp8_linear(*_args(32)) == "compiled"
+        assert F8.fbgemm_fp8_linear(*_args(128)) == "compiled"
+    assert spies == ["compiled", "compiled"]
