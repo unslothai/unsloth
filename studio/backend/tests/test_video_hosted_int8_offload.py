@@ -61,7 +61,6 @@ def tiny_config() -> dict:
 
 @contextlib.contextmanager
 def v1_int8_classes():
-
     class _Base(torch.Tensor):
         __torch_function__ = torch._C._disabled_torch_function_impl
 
