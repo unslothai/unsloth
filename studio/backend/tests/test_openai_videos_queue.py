@@ -471,3 +471,50 @@ def test_a_queued_job_names_the_resident_model_when_auto_switch_is_off(
     assert queued["status"] == "queued"
     assert queued["model"] == first["model"] != "sora-2"
     backend.gate.set()
+
+
+def test_a_queued_start_holds_an_inference_slot_so_a_switch_cannot_evict_a_running_chat(
+    client, backend, monkeypatch
+):
+    from core.inference import llama_keepwarm, media_switch_backends
+
+    first = _render_one(client, backend)
+    queued = client.post("/v1/videos", json = {"prompt": "behind a chat"}).json()
+    backend.gate.set()
+    _wait_terminal(client, first["id"])
+    real_start = video_routes._start_openai_video
+    seen = []
+
+    async def _start_and_check(*args, **kwargs):
+        seen.append(media_switch_backends.chat_busy())
+        return await real_start(*args, **kwargs)
+
+    monkeypatch.setattr(video_routes, "_start_openai_video", _start_and_check)
+    before = llama_keepwarm.other_inference_request_count(current_request_counted = False)
+    llama_keepwarm._note_pending()
+    llama_keepwarm._note_start()  # one chat completion in flight
+    try:
+        _drain()
+    finally:
+        llama_keepwarm._note_end()
+    assert seen == [True]
+    assert llama_keepwarm.other_inference_request_count(current_request_counted = False) == before
+    assert _wait_terminal(client, queued["id"])["status"] == "completed"
+
+
+def test_a_queued_image_to_video_job_reports_the_canvas_of_its_reference(client, backend):
+    from test_openai_videos_route import _reference_image_bytes
+
+    png = _reference_image_bytes("PNG", (300, 600))
+    portrait = {"input_reference": ("frame.png", png, "image/png")}
+    immediate = _create(client, {"prompt": "tall"}, portrait).json()
+    assert immediate["size"] == "704x1216"
+    _wait_terminal(client, immediate["id"])
+    _render_one(client, backend)
+    try:
+        queued = _create(client, {"prompt": "tall"}, portrait).json()
+        assert queued["status"] == "queued"
+        assert queued["size"] == immediate["size"]
+        assert client.get(f"/v1/videos/{queued['id']}").json()["size"] == immediate["size"]
+    finally:
+        backend.gate.set()

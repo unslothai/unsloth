@@ -2504,6 +2504,15 @@ def _own_queued_videos() -> list[VideoJob]:
     ]
 
 
+def _keyframe_canvas(fam, h3_task, reference: Optional[str], last_frame: Optional[str]):
+    """The backend's canvas for these keyframes, routing input_reference as begin_generate does."""
+    from core.inference.video import VideoBackend
+    from core.inference.video_minimax_h3 import H3_TASK_REFERENCES
+
+    first = None if h3_task == H3_TASK_REFERENCES else reference
+    return VideoBackend._resolve_keyframes(fam, h3_task, first, last_frame, None, None)
+
+
 def _queued_job_display(
     body: VideoJobCreateRequest, reference: Optional[str], inputs: _VideoCreateInputs
 ) -> tuple[str, str, str]:
@@ -2536,9 +2545,12 @@ def _queued_job_display(
         pick = resolve_local_media_model(body.model.strip(), task = VIDEO_TASK)
         fam = pick and _detect_load_family(pick.model_path, pick.gguf_filename, None)
         h3_task = expected_partition(pick) if fam else None
+    canvas = None
     if fam is not None:
         try:
             _refuse_family_inputs(fam, h3_task, body, reference, inputs)
+            if inputs.size is None and (reference is not None or body.last_frame):
+                canvas = _keyframe_canvas(fam, h3_task, reference, body.last_frame)
         except VideoShapeError as exc:
             raise _openai_video_error(400, str(exc), param = _shape_error_param(exc, body))
         except ValueError as exc:
@@ -2556,6 +2568,8 @@ def _queued_job_display(
     presets = defaults.get("resolution_presets") or []
     if inputs.size is not None:
         size = f"{inputs.size[0]}x{inputs.size[1]}"
+    elif canvas is not None:
+        size = f"{canvas[2]}x{canvas[3]}"
     elif presets:
         size = f"{int(presets[0][0])}x{int(presets[0][1])}"
     else:
@@ -2678,6 +2692,7 @@ def _queued_account_active(account: AccountContext) -> bool:
 async def _start_queued_video(entry: _QueuedVideo) -> bool:
     from core.inference import media_keepwarm
     from core.inference.gpu_arbiter import VIDEO
+    from core.inference.llama_keepwarm import InferenceActivityReservation
 
     async with _video_start_lock():
         if entry not in _VIDEO_QUEUE:
@@ -2694,8 +2709,12 @@ async def _start_queued_video(entry: _QueuedVideo) -> bool:
             return True
         entry.starting = True
         entered = started = False
+        # Counted like an HTTP create (inference, then media), so an idle unload or auto-switch
+        # can neither cancel the accepted clip nor take this start for a running chat.
+        activity = InferenceActivityReservation()
+        activity.reserve()
         try:
-            # Counted like an HTTP create, so an idle unload or auto-switch cannot cancel the accepted clip.
+            await activity.start()
             await media_keepwarm.begin_request(VIDEO)
             entered = True
             await arun_as(
@@ -2728,6 +2747,7 @@ async def _start_queued_video(entry: _QueuedVideo) -> bool:
         finally:
             if entered:
                 media_keepwarm.end_request(VIDEO, counted = started)
+            activity.finish()
         _drop_queued_video(entry)
         entry.starting = False
     return True
