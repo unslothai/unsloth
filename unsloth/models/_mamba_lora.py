@@ -107,15 +107,20 @@ def mamba_raw_weight_adapters(mixer):
     return [name for name in leaves if _has_active_adapter(modules[name])] if leaves else leaves
 
 
-def _merged_weight(module, allow_multiple = False):
-    """``W + delta`` when that is exactly what the LoRA module computes, else None."""
+def _merged_weight(module, allow_multiple = False, names = None):
+    """``W + delta`` when that is exactly what the LoRA module computes, else None.
+
+    ``names`` replaces the active adapters (one row of a PEFT mixed-adapter batch).
+    """
     try:
         from peft.tuners.lora import Linear as LoraLinear
     except Exception:
         return None
     if not isinstance(module, LoraLinear):
         return None
-    active = [name for name in module.active_adapters if name in module.lora_A]
+    if names is None:
+        names = module.active_adapters
+    active = [name for name in names if name in module.lora_A]
     if not active or (len(active) != 1 and not allow_multiple):
         return None
     for name in active:
@@ -159,6 +164,7 @@ def _cache_key(module):
         base._version,
         base.data_ptr(),
         base.dtype,
+        base.device,
         torch.is_inference_mode_enabled(),
     ]
     for name in module.active_adapters:
@@ -169,28 +175,80 @@ def _cache_key(module):
                 a._version,
                 a.data_ptr(),
                 a.dtype,
+                a.device,
                 id(b),
                 b._version,
                 b.data_ptr(),
                 b.dtype,
+                b.device,
                 module.scaling.get(name),
             ]
     return tuple(key)
 
 
+def _full_precision_merged(module, names = None):
+    # Built outside the caller's autocast, as merge_and_unload builds it: the cached weight is then
+    # independent of whether the first eval forward ran under autocast.
+    device_type = module.get_base_layer().weight.device.type
+    try:
+        context = torch.autocast(device_type, enabled = False)
+    except Exception:
+        return _merged_weight(module, allow_multiple = True, names = names)
+    with context:
+        return _merged_weight(module, allow_multiple = True, names = names)
+
+
+def _mixed_batch_adapter_names(module):
+    """Per-row adapter names of a PEFT mixed-adapter batch (``adapter_names=``), else None.
+
+    PEFT delivers them through a forward pre-hook on each LoRA layer, which a raw ``.weight``
+    read never runs.
+    """
+    for hook in module._forward_pre_hooks.values():
+        if (
+            isinstance(hook, functools.partial)
+            and getattr(hook.func, "__name__", "") == "_adapter_names_pre_forward_hook"
+        ):
+            names = hook.keywords.get("adapter_names")
+            if names is not None:
+                return list(names)
+    return None
+
+
+def _per_row_weight(module, names, label):
+    """[batch, out, in] effective weights, one per row of a mixed-adapter batch.
+
+    ``W @ x`` with a [batch, in, seq] input broadcasts per row, so each row sees its own adapter and
+    ``"__base__"`` / unknown names see the base weight, as PEFT's mixed-batch forward gives them.
+    """
+    base = module.get_base_layer().weight
+    weights = {}
+    for name in dict.fromkeys(names):
+        if name == "__base__" or name not in module.lora_A:
+            weights[name] = base
+            continue
+        weight = _full_precision_merged(module, names = [name])
+        if weight is None:
+            if not torch.compiler.is_compiling():
+                _warn_raw_read(label)
+            weight = base
+        weights[name] = weight
+    return torch.stack([weights[name] for name in names])
+
+
 def _eval_weight(module):
     """``W + delta`` for a raw read outside the fused training call, cached when grad is off."""
     if torch.is_grad_enabled():
-        return _merged_weight(module, allow_multiple = True)
+        return _full_precision_merged(module)
     try:
         key = _cache_key(module)
     except Exception:
         # Inference tensors carry no version counter: no cache, recompute per read.
-        return _merged_weight(module, allow_multiple = True)
+        return _full_precision_merged(module)
     cached = module.__dict__.get(_CACHE)
     if cached is not None and cached[0] == key:
         return cached[1]
-    weight = _merged_weight(module, allow_multiple = True)
+    weight = _full_precision_merged(module)
     module.__dict__[_CACHE] = (key, weight)
     return weight
 
@@ -220,6 +278,9 @@ def _raw_read_class(cls):
             if module is not self:
                 continue
             if effective is None:
+                names = _mixed_batch_adapter_names(self)
+                if names is not None:
+                    return _per_row_weight(self, names, label)
                 effective = _eval_weight(self)
             if effective is not None:
                 return effective

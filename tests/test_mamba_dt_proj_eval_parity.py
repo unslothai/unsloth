@@ -272,6 +272,46 @@ def test_cached_weight_follows_data_reassignment(monkeypatch, arch):
     assert not torch.equal(_logits(model, ids), first)
 
 
+@pytest.mark.parametrize("arch", ARCHS)
+def test_cached_weight_follows_dtype_conversion(monkeypatch, arch):
+    # model.double() / .bfloat16() keep the parameter objects and their version counters; the cached
+    # W + delta lives in __dict__, which Module._apply does not convert.
+    model = _trained(monkeypatch, arch, ["dt_proj"])
+    ids = _ids()
+    _logits(model, ids)
+    model.double()
+    assert all(p.dtype == torch.float64 for p in helpers._lora_param(model, "dt_proj", "B"))
+    assert torch.equal(_logits(model, ids), _logits(_merged(model), ids))
+
+
+@pytest.mark.parametrize("arch", ARCHS)
+def test_autocast_eval_does_not_leak_into_full_precision(monkeypatch, arch):
+    # The cached W + delta must not keep a bf16-rounded delta from an earlier autocast forward.
+    model = _trained(monkeypatch, arch, ["dt_proj"])
+    ids = _ids()
+    with torch.autocast("cpu", dtype = torch.bfloat16):
+        _logits(model, ids)
+    assert torch.equal(_logits(model, ids), _logits(_merged(model), ids))
+
+
+@pytest.mark.parametrize("arch", ARCHS)
+def test_mixed_adapter_batch_routes_each_row(monkeypatch, arch):
+    # PEFT's adapter_names= picks an adapter per row ("__base__" = none) through LoRA pre-hooks that a
+    # raw weight read bypasses: each row must still get exactly its own adapter.
+    model = _trained(monkeypatch, arch, ["dt_proj"])
+    ids = _ids()
+    adapted = _logits(model, ids)
+    with model.disable_adapter():
+        base = _logits(model, ids)
+    assert (adapted - base).abs().max() > 1e-6, "the trained adapter has no effect"
+    with torch.no_grad():
+        mixed = model(input_ids = ids, use_cache = False, adapter_names = ["__base__", "default"]).logits
+    torch.testing.assert_close(mixed[0], base[0], rtol = 1e-6, atol = 1e-6)
+    torch.testing.assert_close(mixed[1], adapted[1], rtol = 1e-6, atol = 1e-6)
+    # The mixed batch must not poison the plain path afterwards.
+    assert torch.equal(_logits(model, ids), adapted)
+
+
 def test_concurrent_eval_threads_each_see_the_adapter(monkeypatch):
     # nn.DataParallel replicas and serving threads run forwards concurrently: the effective weight
     # is armed per thread, so one thread finishing cannot disarm another mid-forward.
