@@ -8756,7 +8756,8 @@ _sandbox_shims_lock = threading.Lock()
 
 
 def _trusted_system_binary(name: str) -> "str | None":
-    """Root-owned, not group/world writable, no set-id bit or file capability: either would clear the death signal."""
+    """Root-owned, not group/world writable, no set-id bit or file capability: either would clear the death signal.
+    World-readable too: an unreadable binary runs non-dumpable, which hides /proc/<pid>/exe from the readiness wait."""
     for directory in _SANDBOX_SHIM_DIRS:
         path = os.path.join(directory, name)
         try:
@@ -8769,6 +8770,7 @@ def _trusted_system_binary(name: str) -> "str | None":
             or st.st_mode & 0o022
             or st.st_mode & (stat.S_ISUID | stat.S_ISGID)
             or not st.st_mode & 0o111
+            or not st.st_mode & 0o004
         ):
             continue
         try:
@@ -8787,11 +8789,17 @@ def _probe_sandbox_shims() -> "tuple[str, str] | None":
         return None
     try:
         # Old setpriv lacks --pdeathsig (util-linux < 2.33), and busybox-style builds take other flags.
-        soft, hard = _resource.getrlimit(_resource.RLIMIT_CPU)
-        cpu = "{}:{}".format(
-            "unlimited" if soft == _resource.RLIM_INFINITY else soft,
-            "unlimited" if hard == _resource.RLIM_INFINITY else hard,
-        )
+        # The limits a launch sets, so a policy refusing one of them (SELinux checks a changed hard limit) keeps
+        # the pre-exec, which skips a refused limit where prlimit would refuse the launch.
+        limits = _sandbox_rlimit_args()
+        if not limits:
+            soft, hard = _resource.getrlimit(_resource.RLIMIT_CPU)
+            limits = [
+                "--cpu={}:{}".format(
+                    "unlimited" if soft == _resource.RLIM_INFINITY else soft,
+                    "unlimited" if hard == _resource.RLIM_INFINITY else hard,
+                )
+            ]
         result = subprocess.run(
             [
                 setpriv,
@@ -8800,7 +8808,7 @@ def _probe_sandbox_shims() -> "tuple[str, str] | None":
                 "KILL",
                 "--",
                 prlimit,
-                f"--cpu={cpu}",
+                *limits,
                 "--",
                 setpriv,
                 "--dump",
@@ -8875,6 +8883,9 @@ def _sandbox_rlimit_args() -> "list[str] | None":
         nofile = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NOFILE", "16384"))
         hard_cur = _resource.getrlimit(_resource.RLIMIT_NOFILE)[1]
         target = nofile if hard_cur == _resource.RLIM_INFINITY else min(nofile, hard_cur)
+        if target > _sandbox_nr_open():
+            # Above fs.nr_open setrlimit fails even under the hard limit: the pre-exec skips it.
+            return None
         wanted.append(("nofile", _resource.RLIMIT_NOFILE, target))
     except (ValueError, OSError):
         pass
@@ -8882,7 +8893,10 @@ def _sandbox_rlimit_args() -> "list[str] | None":
     for flag, resource_id, value in wanted:
         if not isinstance(value, int) or value < 0 or value >= 2**63:
             return None
-        hard_cur = _resource.getrlimit(resource_id)[1]
+        try:
+            hard_cur = _resource.getrlimit(resource_id)[1]
+        except (ValueError, OSError):
+            return None
         if hard_cur != _resource.RLIM_INFINITY and value > hard_cur:
             # Raising a hard limit needs CAP_SYS_RESOURCE: the pre-exec skips it without, raises it with.
             if _has_cap_sys_resource():
@@ -8890,6 +8904,15 @@ def _sandbox_rlimit_args() -> "list[str] | None":
             continue
         args.append(f"--{flag}={value}:{value}")
     return args
+
+
+def _sandbox_nr_open() -> int:
+    """fs.nr_open, or 0 when unreadable (which keeps the pre-exec)."""
+    try:
+        with open("/proc/sys/fs/nr_open", encoding = "ascii") as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return 0
 
 
 def _has_cap_sys_resource() -> bool:
@@ -8917,22 +8940,23 @@ def _sandbox_shim_argv(argv, env) -> "tuple[str, ...] | None":
     if shutil.which(argv[0], path = search) is None:
         return None
     limits = _sandbox_rlimit_args()
-    if limits is None:
+    if not limits:
+        # Without a flag prlimit prints its limits table on a terminal before running the program.
         return None
     setpriv, prlimit = shims
     return (setpriv, "--no-new-privs", "--pdeathsig", "KILL", "--", prlimit, *limits, "--", *argv)
 
 
 def _wait_for_death_signal(pid: int, setpriv: str) -> None:
-    """Popen returns before setpriv arms the death signal; the pre-exec armed it before Popen returned."""
-    deadline = time.monotonic() + 2.0
+    """Popen returns before setpriv arms the death signal; the pre-exec armed it before Popen returned, so this
+    waits as long as Popen would have (no deadline: returning early would hand back an unarmed child)."""
     delay = 0.0001
     while True:
         try:
             exe = os.readlink(f"/proc/{pid}/exe")
         except OSError:
-            return  # exited
-        if exe not in (setpriv, setpriv + " (deleted)") or time.monotonic() >= deadline:
+            return  # exited (setpriv is readable, so a live one is not hidden)
+        if exe not in (setpriv, setpriv + " (deleted)"):
             return
         time.sleep(delay)
         delay = min(delay * 2, 0.005)

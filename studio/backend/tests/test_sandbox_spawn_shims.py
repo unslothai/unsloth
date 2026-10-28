@@ -19,12 +19,15 @@ from core.inference import os_sandbox
 
 pytestmark = pytest.mark.skipif(sys.platform != "linux", reason = "the shims are Linux only")
 
-_HAVE_SHIMS = sys.version_info >= (3, 10) and all(
-    tools._trusted_system_binary(name) for name in ("setpriv", "prlimit")
+# The production decision, probe included: installed binaries that fail it keep the pre-exec.
+_HAVE_SHIMS = (
+    sys.platform == "linux"
+    and sys.version_info >= (3, 10)
+    and tools._sandbox_exec_shims() is not None
 )
 _needs_shims = pytest.mark.skipif(
     not _HAVE_SHIMS,
-    reason = "util-linux setpriv/prlimit not installed, or Python 3.9 (keeps the pre-exec)",
+    reason = "util-linux setpriv/prlimit missing or refused by the probe, or Python 3.9 (keeps the pre-exec)",
 )
 
 _REPORT = textwrap.dedent(
@@ -254,3 +257,96 @@ def test_kill_tree_takes_the_whole_group(tmp_path):
     proc.wait()
     proc.stdout.close()
     assert all(_gone(pid) for pid in (proc.pid, *children))
+
+
+def test_the_readiness_wait_outlasts_a_slow_setpriv(monkeypatch):
+    """Popen with the pre-exec returned only once the signal was armed, however long that took."""
+    clock = [0.0]
+    reads = []
+
+    def readlink(path):
+        reads.append(path)
+        return "/usr/bin/setpriv" if len(reads) <= 5 else "/usr/bin/prlimit"
+
+    def sleep(seconds):
+        clock[0] += 1.0
+
+    monkeypatch.setattr(tools.os, "readlink", readlink)
+    monkeypatch.setattr(tools.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(tools.time, "sleep", sleep)
+    tools._wait_for_death_signal(12345, "/usr/bin/setpriv")
+    assert len(reads) == 6, "returned while setpriv had not armed the signal yet"
+
+
+def test_an_unreadable_shim_is_not_used(tmp_path, monkeypatch):
+    """An unreadable binary runs non-dumpable, so /proc/<pid>/exe of a live setpriv would fail and pass for exit."""
+    fake = tmp_path / "setpriv"
+    fake.write_bytes(b"")
+    real_stat = os.stat
+    mode = [0o100711]
+
+    def stat(path, *args, **kwargs):
+        st = real_stat(path, *args, **kwargs)
+        if str(path) != str(fake):
+            return st
+        fields = list(st)
+        fields[0], fields[4] = mode[0], 0  # st_mode, st_uid
+        return os.stat_result(fields)
+
+    monkeypatch.setattr(tools, "_SANDBOX_SHIM_DIRS", (str(tmp_path),))
+    monkeypatch.setattr(tools.os, "stat", stat)
+    assert tools._trusted_system_binary("setpriv") is None
+    mode[0] = 0o100755
+    assert tools._trusted_system_binary("setpriv") == str(fake)
+
+
+def test_nofile_above_nr_open_keeps_the_preexec(monkeypatch):
+    monkeypatch.setattr(tools, "_has_cap_sys_resource", lambda: False)
+    monkeypatch.setattr(tools, "_sandbox_nr_open", lambda: 64)
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_NOFILE", "16384")
+    import resource
+
+    if resource.getrlimit(resource.RLIMIT_NOFILE)[1] > 64:
+        assert tools._sandbox_rlimit_args() is None
+
+
+def test_a_failed_limit_query_keeps_the_preexec(monkeypatch):
+    import resource
+
+    real = tools._resource.getrlimit
+
+    def getrlimit(resource_id):
+        if resource_id == resource.RLIMIT_FSIZE:
+            raise OSError("refused")
+        return real(resource_id)
+
+    monkeypatch.setattr(tools._resource, "getrlimit", getrlimit)
+    assert tools._sandbox_rlimit_args() is None
+
+
+@pytest.mark.skipif(sys.version_info < (3, 10), reason = "Python 3.9 keeps the pre-exec")
+def test_no_limit_flags_keeps_the_preexec(tmp_path, monkeypatch):
+    """prlimit without a flag prints its limits table on a terminal before running the program."""
+    monkeypatch.setattr(tools, "_sandbox_shims", ("/usr/bin/setpriv", "/usr/bin/prlimit"))
+    monkeypatch.setattr(tools, "_sandbox_rlimit_args", lambda: [])
+    env = tools._build_safe_env(str(tmp_path))
+    assert tools._sandbox_shim_argv([sys.executable, "-c", "pass"], env) is None
+
+
+def test_the_probe_sets_the_limits_a_launch_sets(monkeypatch):
+    """An unchanged hard limit skips the LSM setrlimit check, so probing the current CPU limit proves nothing."""
+    seen = []
+    dump = b"no_new_privs: 1\nParent death signal: KILL\n"
+
+    def run(argv, **kwargs):
+        seen.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, dump, b"")
+
+    monkeypatch.setattr(tools, "_trusted_system_binary", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(tools.subprocess, "run", run)
+    limits = tools._sandbox_rlimit_args()
+    if not limits:
+        pytest.skip("no limit flag applies on this host")
+    assert tools._probe_sandbox_shims() == ("/usr/bin/setpriv", "/usr/bin/prlimit")
+    start = seen[0].index("/usr/bin/prlimit") + 1
+    assert seen[0][start : seen[0].index("--", start)] == limits
