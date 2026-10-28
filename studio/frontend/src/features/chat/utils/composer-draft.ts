@@ -89,6 +89,7 @@ export function adoptLegacyDraft(threadId: string | null): boolean {
         throw error;
       }
       adopted = true;
+      seeded = null;
     }
     storage.removeItem(`${LEGACY_DRAFT_PREFIX}${id}`);
     storage.removeItem(`${LEGACY_PASTE_DRAFT_PREFIX}${id}`);
@@ -98,16 +99,20 @@ export function adoptLegacyDraft(threadId: string | null): boolean {
   }
 }
 
-// The chat composer stays mounted, hidden, under Compare's, and localStorage tells only other tabs
-// about a write. So every composer publishes its text here as it changes, and hears the others and
-// other tabs here too; `latestDraft` is ahead of the debounced save.
+// The chat composer stays mounted, hidden, under Compare's, so every composer publishes its text
+// here as it changes and hears the others; `latestDraft` is ahead of the debounced save. Other
+// tabs are not heard: each open tab keeps its own text, so typing or sending in one never
+// rewrites another tab's composer on a different chat. The saved slot seeds a tab once, so a
+// reload or a new tab still picks up the last draft.
 type DraftListener = (text: string, source: symbol) => void;
 const draftListeners = new Set<DraftListener>();
 let latest: string | null = null;
-const OTHER_TAB = Symbol("other tab");
+let seeded: string | null = null;
 
 export function latestDraft(): string {
-  return latest ?? readComposerDraft(DRAFT_KEY) ?? "";
+  if (latest !== null) return latest;
+  seeded ??= readComposerDraft(DRAFT_KEY) ?? "";
+  return seeded;
 }
 
 export function publishDraft(text: string, source: symbol): void {
@@ -122,12 +127,6 @@ export function subscribeDraft(source: symbol, listener: (text: string) => void)
   };
   draftListeners.add(wrapped);
   return () => draftListeners.delete(wrapped);
-}
-
-if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
-  window.addEventListener("storage", (event) => {
-    if (event.key === DRAFT_KEY) publishDraft(event.newValue ?? "", OTHER_TAB);
-  });
 }
 
 // A deleted chat's leftover per-chat draft; never the shared one.

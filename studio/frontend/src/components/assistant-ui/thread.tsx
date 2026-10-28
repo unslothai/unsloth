@@ -3957,7 +3957,7 @@ const Composer: FC<{
     }
     composer.setText(draft);
   }, [draftScope, draftKey, aui]);
-  // Compare's composer or another tab, so whichever is on screen shows the latest draft.
+  // Compare's composer, so whichever is on screen shows the latest draft.
   useEffect(() => {
     if (draftScope === INCOGNITO_DRAFT_SCOPE) return;
     return subscribeDraft(draftSource, (text) => {

@@ -638,7 +638,7 @@ export function SharedComposer({
     useChatRuntimeStore.getState().incognito ? "" : latestDraft(),
   );
   const [draftSource] = useState(() => Symbol("compare composer"));
-  // Text that came from the chat composer or another tab, so it isn't published back.
+  // Text that came from the chat composer, so it isn't published back.
   const remoteDraftRef = useRef<string | null>(null);
   const unsavedDraftRef = useRef<string | null>(null);
   const incognitoBeforeRef = useRef(incognito);
