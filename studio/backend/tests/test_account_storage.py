@@ -19,6 +19,13 @@ from utils.paths.lazy import LazyPath
 ALICE = AccountContext("11111111111111111111111111111111", "alice")
 BOB = AccountContext("22222222222222222222222222222222", "bob")
 ACCOUNTS = (OWNER, ALICE, BOB)
+RAG_DB_PARAM = pytest.param(
+    "rag_db",
+    marks = pytest.mark.skipif(
+        not rag_db.RAG_AVAILABLE or not hasattr(sqlite3.Connection, "enable_load_extension"),
+        reason = "sqlite-vec cannot be loaded here",
+    ),
+)
 
 
 @pytest.fixture(autouse = True)
@@ -99,7 +106,7 @@ def test_each_database_gets_its_schema(account_home, module_name, table):
     assert module._schema_ready == set()
 
 
-@pytest.mark.parametrize("module_name", ["studio_db", "rag_db"])
+@pytest.mark.parametrize("module_name", ["studio_db", RAG_DB_PARAM])
 def test_wal_keepers_can_close_one_account(account_home, module_name):
     module = importlib.import_module(f"storage.{module_name}")
     path_fn = roots.rag_db_path if module_name == "rag_db" else roots.studio_db_path
@@ -139,7 +146,7 @@ def test_a_managed_database_keeps_its_wal_across_a_connection_close(account_home
     assert alice_db.with_name("studio.db-wal").exists()
 
 
-@pytest.mark.parametrize("module_name", ["studio_db", "rag_db"])
+@pytest.mark.parametrize("module_name", ["studio_db", RAG_DB_PARAM])
 def test_retiring_an_account_releases_its_wal_keeper(account_home, module_name):
     from routes.accounts import retire_account_roots
 

@@ -14,8 +14,10 @@ import pytest
 
 from storage import rag_db
 
+# Some macOS Pythons build sqlite3 without extension loading, so the import alone is not enough.
 requires_sqlite_vec = pytest.mark.skipif(
-    not rag_db.RAG_AVAILABLE, reason = "sqlite-vec is not installed"
+    not rag_db.RAG_AVAILABLE or not hasattr(sqlite3.Connection, "enable_load_extension"),
+    reason = "sqlite-vec cannot be loaded here",
 )
 
 
