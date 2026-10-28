@@ -73,7 +73,8 @@ export function formatSize(bytes: number | null, locale: Locale, t: Translate): 
   let value = bytes / 1024;
   let unit: (typeof SIZE_UNITS)[number] = SIZE_UNITS[0];
   for (const next of SIZE_UNITS.slice(1)) {
-    if (value < 1024) break;
+    // Compare the rounded figure: 1023.6 KB prints as "1,024 KB", so it moves up.
+    if (Math.round(value) < 1024) break;
     value /= 1024;
     unit = next;
   }
