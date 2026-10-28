@@ -145,3 +145,27 @@ def test_tp2_moe_runs_replicated_and_matches_one_process():
     assert sorted(k for _, k in res["regions"]) == ["attention", "attention", "mlp"], res["regions"]
     # The expert LoRA trained (and its gradient matched above).
     assert any("experts" in k for k in res["saved_tp"]), sorted(res["saved_tp"])[:8]
+
+
+@pytest.mark.parametrize(
+    "overrides,lora_kwargs",
+    [
+        ({}, {"lora_dropout": 0.25}),  # lora_dropout: column input replicated, row input sharded
+        ({"attention_dropout": 0.25}, {"lora_dropout": 0.25}),  # + eager attention probabilities, per head
+    ],
+    ids = ["lora_dropout", "attention_and_lora_dropout"],
+)
+def test_tp2_dropout_draws_one_process_masks(overrides, lora_kwargs):
+    results = _spawn(
+        "parity", 2, repo = LLAMA, overrides = overrides, lora_kwargs = lora_kwargs, dropout_seed = 1234
+    )
+    res = _check(results)
+    # Dropout really ran: another seed gives another first loss.
+    assert res["other_loss"] != pytest.approx(res["ref"][2][0], rel = 1e-6), (res["other_loss"], res["ref"][2])
+
+
+def test_tp2_attention_dropout_in_a_fused_kernel_is_refused():
+    model = build(LLAMA, {"attention_dropout": 0.25})
+    tpn._text_config(model)._attn_implementation = "sdpa"
+    with pytest.raises(ValueError, match = "eager attention only"):
+        tpn.derive_tp_plan(model, 2)

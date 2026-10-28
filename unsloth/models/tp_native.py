@@ -285,23 +285,44 @@ def _decoder_layers(model):
 _ATTENTION_DROPOUT_KEYS = ("attention_dropout", "attn_pdrop")
 
 
-def _refuse_dropout(model, layers):
-    """v1 has no TP-aware RNG (masks must differ per shard, match when replicated): refuse dropout."""
+def _attention_dropout(model):
     text = _text_config(model)
     for key in _ATTENTION_DROPOUT_KEYS:
         value = getattr(text, key, None)
         if isinstance(value, (int, float)) and value > 0:
-            raise ValueError(
-                f"Unsloth: tensor parallelism v1 does not support attention dropout ({key} = {value}); set it to 0."
-            )
-    for name, module in layers.named_modules():
-        if "lora_dropout" in name or not isinstance(module, nn.modules.dropout._DropoutNd):
+            return key, value
+    return None
+
+
+def _refuse_dropout(model, layers):
+    """Dropout runs on tensor parallel ranks with the masks one process draws (_TPDropoutMode); attention
+    dropout inside a fused kernel (SDPA / flash attention) draws its own mask and cannot be split per head."""
+    found = _attention_dropout(model)
+    if found is None:
+        return
+    key, value = found
+    implementation = getattr(_text_config(model), "_attn_implementation", None)
+    if implementation not in (None, "eager"):
+        raise ValueError(
+            f"Unsloth: tensor parallelism supports attention dropout ({key} = {value}) with the eager attention "
+            f"only: '{implementation}' draws the dropout mask inside a fused kernel, which cannot be split over "
+            "the tp ranks' heads. Load with attn_implementation = 'eager', or set it to 0."
+        )
+
+
+def _region_dropout_p(module, model):
+    """Whether a region can draw dropout in training (other than lora_dropout, which the projection handles)."""
+    if module.__dict__.get("_unsloth_tp_kind") == "attention" and _attention_dropout(model) is not None:
+        return True
+    for name, sub in module.named_modules():
+        if "lora_dropout" in name:
             continue
-        if module.p > 0:
-            raise ValueError(
-                f"Unsloth: tensor parallelism v1 does not support dropout inside decoder layers ({name}: p = "
-                f"{module.p}); set it to 0."
-            )
+        if isinstance(sub, nn.modules.dropout._DropoutNd) and sub.p > 0:
+            return True
+        value = sub.__dict__.get("attention_dropout", sub.__dict__.get("dropout"))
+        if isinstance(value, float) and value > 0:
+            return True
+    return False
 
 
 def _is_moe_block(module):
@@ -931,10 +952,10 @@ def _refuse_adapter(path, proj):
         raise ValueError(f"Unsloth: tensor parallelism v1 does not support LoRA variants ({path}).")
     for name in names:
         dropout = proj.lora_dropout[name] if "lora_dropout" in proj._modules else None
-        if getattr(dropout, "p", 0) > 0:
-            # Masks must match across ranks for replicated inputs and differ for sharded ones.
+        if getattr(dropout, "p", 0) > 0 and type(dropout) is not nn.Dropout:
             raise ValueError(
-                f"Unsloth: tensor parallelism v1 does not support lora_dropout > 0 ({path}); use lora_dropout = 0."
+                f"Unsloth: tensor parallelism supports nn.Dropout as lora_dropout only ({path}: "
+                f"{type(dropout).__name__})."
             )
         if proj.lora_B[name].bias is not None:
             raise ValueError(f"Unsloth: tensor parallelism v1 does not support lora_bias ({path}).")
@@ -1125,6 +1146,135 @@ def _moe_post_hook(module, args, output):
     )
 
 
+class _DropoutState:
+    """One training forward of a region: where the tensor parallel layout of its activations stands."""
+
+    def __init__(self, module):
+        self.kind = module._unsloth_tp_kind
+        self.rank, self.tp = module._unsloth_tp_coord
+        self.local_heads = module.__dict__.get("_unsloth_tp_heads")
+        self.local_width = module._unsloth_tp_local_width  # row projections' local in_features
+        self.row_bias = any(_weight(p)[1].bias is not None for p in module._unsloth_tp_row_projs)
+        self.phase = 0  # 0: replicated input, 1: column sharded, 2: row partial sums
+        self.bypass = 0
+        self.path = type(module).__name__
+
+
+def _full_mask(shape, dim, rank, tp, p, like):
+    """The rank-th 1 / tp of the dropout mask one process draws for the whole tensor (same RNG draws)."""
+    full = list(shape)
+    full[dim] *= tp
+    with torch._C.DisableTorchFunction():
+        mask = F.dropout(torch.ones(full, dtype = like.dtype, device = like.device), p, True)
+    return mask.narrow(dim, rank * shape[dim], shape[dim]).contiguous()
+
+
+def _tp_dropout(state, input, p = 0.5, training = True, inplace = False):
+    if not training or p == 0 or state.bypass or state.phase == 0:
+        # Replicated activations: every rank draws the same mask as one process (same RNG, same shape).
+        return F.dropout(input, p, training, inplace)
+    if state.phase == 2:
+        if state.row_bias:
+            raise RuntimeError(
+                f"Unsloth: dropout on the row projection output inside {state.path} runs before its bias, which "
+                "tensor parallelism adds after the reduce; set that dropout to 0."
+            )
+        return F.dropout(input, p, training, inplace)  # linear in the partial sums: same mask everywhere
+    if state.kind == "attention" and input.dim() >= 3 and input.shape[1] == state.local_heads:
+        dim = 1  # [batch, local heads, ...]: attention probabilities
+    elif state.kind == "mlp" and input.shape[-1] == state.local_width:
+        dim = input.dim() - 1  # [..., intermediate / tp]
+    else:
+        raise RuntimeError(
+            f"Unsloth: tensor parallelism cannot tell how the dropout input {tuple(input.shape)} inside "
+            f"{state.path} is sharded; set that dropout to 0."
+        )
+    mask = _full_mask(input.shape, dim, state.rank, state.tp, p, input)
+    return input.mul_(mask) if inplace else input * mask
+
+
+def _dropout_mode_class():
+    from torch.overrides import TorchFunctionMode
+
+    class _TPDropoutMode(TorchFunctionMode):
+        def __init__(self, state):
+            super().__init__()
+            self.state = state
+
+        def __torch_function__(self, func, types, args = (), kwargs = None):
+            kwargs = kwargs or {}
+            if func is F.dropout:
+                return _tp_dropout(self.state, *args, **kwargs)
+            if func is torch.dropout:
+                return _tp_dropout(self.state, *args, **kwargs)
+            if func is F.scaled_dot_product_attention and (
+                kwargs.get("dropout_p", args[4] if len(args) > 4 else 0.0) or 0.0
+            ) > 0:
+                raise RuntimeError(
+                    f"Unsloth: {self.state.path} passes dropout_p > 0 to scaled_dot_product_attention, which "
+                    "draws the mask inside the kernel and cannot be split over the tp ranks' heads; use the eager "
+                    "attention or set the attention dropout to 0."
+                )
+            if func in _UNSPLIT_DROPOUTS and (args[2] if len(args) > 2 else kwargs.get("training", True)) and (
+                args[1] if len(args) > 1 else kwargs.get("p", 0.5)
+            ) > 0:
+                raise RuntimeError(
+                    f"Unsloth: tensor parallelism supports plain dropout only; {func.__name__} inside "
+                    f"{self.state.path} is not supported."
+                )
+            return func(*args, **kwargs)
+
+    return _TPDropoutMode
+
+
+_UNSPLIT_DROPOUTS = (
+    F.dropout1d,
+    F.dropout2d,
+    F.dropout3d,
+    F.alpha_dropout,
+    F.feature_alpha_dropout,
+)
+
+
+def _dropout_region_forward(module, forward):
+    """The region forward under _TPDropoutMode in training: masks that slice / match one process's masks."""
+    mode_class = _dropout_mode_class()
+
+    def forward_with_tp_dropout(*args, **kwargs):
+        if module.__dict__.get("_unsloth_tp_gathered") or not module.training or not torch.is_grad_enabled():
+            return forward(*args, **kwargs)
+        state = _DropoutState(module)
+        module.__dict__["_unsloth_tp_dropout"] = state
+        try:
+            with mode_class(state):
+                return forward(*args, **kwargs)
+        finally:
+            module.__dict__.pop("_unsloth_tp_dropout", None)
+
+    forward_with_tp_dropout.__wrapped__ = forward
+    return forward_with_tp_dropout
+
+
+def _lora_dropout(self, adapter, x):
+    """lora_dropout on this projection's input: replicated (column) or this rank's in_features (row)."""
+    drop = self.lora_dropout[adapter]
+    p = getattr(drop, "p", 0)
+    if not (isinstance(drop, nn.Dropout) and drop.training and p > 0):
+        return drop(x)
+    state = self.__dict__.get("_unsloth_tp_state_of")
+    state = state() if state is not None else None
+    if state is not None:
+        state.bypass += 1
+    try:
+        if self._unsloth_tp_style == COLWISE:
+            return F.dropout(x, p, True)
+        rank, tp = self._unsloth_tp_coord
+        return x * _full_mask(x.shape, x.dim() - 1, rank, tp, p, x)
+    finally:
+        if state is not None:
+            state.bypass -= 1
+
+
 def copy_to_tp(x, group):
     return _CopyToTP.apply(x, group)
 
@@ -1183,6 +1333,17 @@ def _region_post_hook(module, args, output):
 
 
 def _tp_projection_forward(self, x, *args, **kwargs):
+    state_of = self.__dict__.get("_unsloth_tp_state_of")
+    state = state_of() if state_of is not None else None
+    if state is not None and self._unsloth_tp_style == COLWISE:
+        state.phase = max(state.phase, 1)
+    out = _tp_projection_compute(self, x)
+    if state is not None and self._unsloth_tp_style == ROWWISE:
+        state.phase = 2
+    return out
+
+
+def _tp_projection_compute(self, x):
     weight, base = _weight(self)
     W = _local(weight)
     bias = (
@@ -1218,7 +1379,7 @@ def _tp_projection_forward(self, x, *args, **kwargs):
             B = B.narrow(0, *rows)
         scaling = self.scaling[adapter]
         x_lora = x if torch.is_autocast_enabled() else x.to(A.dtype)
-        x_lora = self.lora_dropout[adapter](x_lora)
+        x_lora = _lora_dropout(self, adapter, x_lora)
         out = out + (F.linear(F.linear(x_lora, A), B) * scaling).to(out.dtype)
     return out
 
@@ -1347,6 +1508,29 @@ def _mark_tokenizers(chain):
             mark_world_save(tokenizer)
 
 
+def _has_lora_dropout(model):
+    return any(
+        "lora_dropout" in name and isinstance(m, nn.Dropout) and m.p > 0 for name, m in model.named_modules()
+    )
+
+
+def _global_rank0(group):
+    import torch.distributed as dist
+    return dist.get_global_rank(group, 0)
+
+
+def _sync_rng(group, dist_rank0):
+    import torch.distributed as dist
+
+    states = [torch.get_rng_state()]
+    if torch.cuda.is_available() and torch.cuda.is_initialized():
+        states.append(torch.cuda.get_rng_state())
+    dist.broadcast_object_list(states, src = dist_rank0, group = group)
+    torch.set_rng_state(states[0])
+    if len(states) > 1 and torch.cuda.is_available():
+        torch.cuda.set_rng_state(states[1].cpu())
+
+
 def _sync_trainable(model, group, src):
     import torch.distributed as dist
     with torch.no_grad():
@@ -1471,6 +1655,7 @@ def apply_tensor_parallel(
     hooked_norms = (
         set()
     )  # a norm weight shared by several regions gets one tp sum, not one per region
+    dropout_regions = 0
     for region in tp_plan.regions:
         for proj in region.projs:
             _shard_projection(region, proj, tp_mesh, rank, tp)
@@ -1486,8 +1671,26 @@ def apply_tensor_parallel(
         module._unsloth_tp_input = _input_name(module)
         if region.kind == "attention":
             _set_local_heads(module, region, tp)
+        module._unsloth_tp_kind = region.kind
+        module._unsloth_tp_coord = (rank, tp)
+        module._unsloth_tp_local_width = next(
+            (_logical_shape(*_weight(p.module))[1] // tp for p in region.projs if p.style == ROWWISE), None
+        )
+
+        def state_of(module = module):
+            return module.__dict__.get("_unsloth_tp_dropout")
+
+        for proj in region.projs:
+            proj.module.__dict__["_unsloth_tp_state_of"] = state_of
+            proj.module._unsloth_tp_coord = (rank, tp)
+        if _region_dropout_p(module, model):
+            dropout_regions += 1
+            module.__dict__["forward"] = _dropout_region_forward(module, module.forward)
         module.register_forward_pre_hook(_region_pre_hook, with_kwargs = True)
         module.register_forward_hook(_region_post_hook)
+    if tp > 1 and (dropout_regions or _has_lora_dropout(model)):
+        # Dropout masks are drawn from the ranks' own RNG in lockstep: start every tp rank from rank 0's state.
+        _sync_rng(group, dist_rank0 = _global_rank0(group))
     for block in tp_plan.moe_blocks:
         block._unsloth_tp_group = group
         block._unsloth_tp_size = tp

@@ -446,20 +446,21 @@ def test_moe_blocks_run_replicated():
     assert [r.kind for r in plan.regions] == ["attention", "attention", "mlp"]
 
 
-def test_refuses_attention_and_layer_dropout():
-    with pytest.raises(ValueError, match = "attention dropout"):
-        tpn.derive_tp_plan(build(LLAMA, {"attention_dropout": 0.1}), 2)
+def test_attention_dropout_needs_the_eager_attention():
+    tpn.derive_tp_plan(build(LLAMA, {"attention_dropout": 0.1}), 2)  # eager: supported
+    model = build(LLAMA, {"attention_dropout": 0.1})
+    tpn._text_config(model)._attn_implementation = "sdpa"
+    with pytest.raises(ValueError, match = "eager attention only"):
+        tpn.derive_tp_plan(model, 2)
     model = build(LLAMA)
     model.get_base_model().model.layers[0].mlp.add_module("drop", torch.nn.Dropout(0.1))
-    with pytest.raises(ValueError, match = "dropout inside decoder layers"):
-        tpn.derive_tp_plan(model, 2)
+    tpn.derive_tp_plan(model, 2)  # dropout modules: supported
 
 
 def test_refuses_dora_and_lora_bias():
     for kwargs, match in (
         ({"use_dora": True}, "DoRA"),
         ({"lora_bias": True}, "lora_bias"),
-        ({"lora_dropout": 0.1}, "lora_dropout"),
     ):
         model = build(LLAMA, **kwargs)
         region = tpn.derive_tp_plan(model, 2).regions[0]
