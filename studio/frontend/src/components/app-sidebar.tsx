@@ -4325,8 +4325,7 @@ export function AppSidebar() {
       }
     }
     if (!window.dispatchEvent(new Event(AUTH_SESSION_ENDING_EVENT, { cancelable: true }))) return;
-    // Before the revoke, so a request failing on the cleared session cannot auto-sign in again.
-    // Without the marker a relaunch would sign straight back in, so a failed write keeps the session.
+    // Marker before the revoke, else a relaunch or failing request signs straight back in.
     if (isTauri) {
       try {
         await markDesktopSignedOut();

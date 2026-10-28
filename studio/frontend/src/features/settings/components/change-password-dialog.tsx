@@ -201,7 +201,6 @@ export function ChangePasswordDialog({
 }: {
   initial?: boolean;
   onDone?: () => void;
-  // Controlled from a menu item, which renders no trigger of its own.
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
 }) {
@@ -406,7 +405,6 @@ export function useOwnPasswordPending(): [boolean, () => void] {
   return [initial, () => setInitial(false)];
 }
 
-/** The signed-in account's own password. */
 export function AccountPasswordDialog() {
   const [initial, settled] = useOwnPasswordPending();
   return <ChangePasswordDialog initial={initial} onDone={settled} />;

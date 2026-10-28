@@ -378,7 +378,6 @@ function OwnerAccountsTab() {
                     </span>
                   </td>
                   <td className="rounded-r-md py-3 pr-3 text-right">
-                    {/* A menu like the managed rows', so a long label cannot push the row out of the dialog. */}
                     {account.role === "owner" && (
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>

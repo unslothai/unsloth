@@ -92,7 +92,6 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       // Server first: localStorage flags can be stale (e.g. tokens from a previous install).
       try {
         const result = await fetchAuthStatus();
-        // Desktop never saw the seeded password; "Continue as owner" is its way back in.
         const requiresChange = result.login_mode === "multi" || isTauri
           ? hasAuthToken() && mustChangePassword()
           : result.requires_password_change;
@@ -314,7 +313,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         token = (await response.json()) as TokenResponse;
       }
 
-      // Signed in with a credential, so the shell may sign this owner in again; a failed clear only shows login next launch.
+      // A failed clear only shows login on the next launch.
       if (isTauri) await clearDesktopSignedOut().catch(() => undefined);
       const finishSession = () => {
         setLoginMode(loginMode);

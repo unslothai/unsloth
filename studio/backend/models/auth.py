@@ -162,9 +162,7 @@ class AccountResponse(BaseModel):
     created_at: str
     setup_code_pending: bool
     model_allowlist: Optional[list[str]] = None
-    # The owner's sign-in name besides "unsloth"; None for managed accounts.
     login_alias: Optional[str] = None
-    # From the account's own Profile settings, for display only.
     display_name: Optional[str] = None
     avatar_url: Optional[str] = None
 

@@ -143,8 +143,7 @@ def retire_account_roots(account: AccountContext):
 
 
 def _profile_of(account: dict) -> dict:
-    """Display name and avatar from the account's own Profile settings. Read-only: get_connection
-    would create and migrate a studio.db, and open a WAL keeper, for every account listed."""
+    """Read-only: get_connection would create and migrate a studio.db per listed account."""
     context = (
         OWNER
         if account["role"] == "owner"

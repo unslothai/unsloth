@@ -20,7 +20,7 @@ pub enum DesktopAuthResponse {
         access_token: String,
         refresh_token: String,
     },
-    // Built here, never parsed: an explicit Log out holds the secret back until a sign-in clears it.
+    // Built here, never parsed from the backend.
     SignedOut {
         signed_out: LoginRequired,
     },
@@ -620,7 +620,6 @@ mod tests {
             serde_json::to_string(&response).unwrap(),
             r#"{"signed_out":true}"#
         );
-        // Continue as owner and a password sign-in clear it; clearing twice is fine.
         set_signed_out(&marker, false).unwrap();
         set_signed_out(&marker, false).unwrap();
         assert!(signed_out_response(&marker).is_none());

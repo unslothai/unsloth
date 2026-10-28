@@ -385,7 +385,7 @@ _ACCOUNT_COLUMNS = (
     ("account_jwt_secret", "TEXT"),
     # JSON list of repo ids / ``org/*`` patterns; NULL = every model (#11650).
     ("model_allowlist", "TEXT"),
-    # The owner's optional sign-in name; resolves to the owner at login. NULL = "unsloth" only.
+    # Owner's extra sign-in name; NULL = "unsloth" only.
     ("login_alias", "TEXT"),
 )
 
@@ -824,7 +824,6 @@ def _login_alias_taken(conn: sqlite3.Connection, name: str) -> bool:
 
 
 def resolve_login_username(username: str) -> str:
-    """The owner's sign-in name resolves to the owner; every other name is returned unchanged."""
     if username == DEFAULT_ADMIN_USERNAME:
         return username
     conn = get_connection()
@@ -841,7 +840,7 @@ def resolve_login_username(username: str) -> str:
 
 
 def set_owner_login_alias(alias: Optional[str]) -> Optional[str]:
-    """Set or clear (None, empty or "unsloth") the owner's sign-in name. "unsloth" always works too."""
+    """None, blank or "unsloth" clears it."""
     alias = (alias or "").strip()
     alias = (
         None

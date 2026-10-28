@@ -5184,7 +5184,6 @@ def _reset_password_username(conn: sqlite3.Connection, username: Optional[str]) 
     if target == DEFAULT_ADMIN_USERNAME:
         _ensure_cli_default_admin(conn)
     elif conn.execute("SELECT 1 FROM auth_user WHERE username = ?", (target,)).fetchone() is None:
-        # The owner's sign-in name resolves to the owner, as it does at login.
         if _owner_login_alias(conn) != target:
             typer.echo("Error: account not found.", err = True)
             raise typer.Exit(1)
