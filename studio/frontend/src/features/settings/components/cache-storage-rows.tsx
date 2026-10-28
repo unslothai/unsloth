@@ -223,7 +223,6 @@ export function HuggingFaceCacheFolders({
     void loadCacheBreakdown(entry.key).then(
       (next) => {
         if (current) {
-          // Empty bookkeeping folders (one .locks per root) carry no size and no action.
           setRows(
             next.filter((row) => row.sizeBytes > 0 || row.deleteAllowed),
           );
