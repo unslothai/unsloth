@@ -497,7 +497,7 @@ class StreamToolCallHealer:
                         events.append(("text", emit))
                     self._buffer = self._buffer[len(self._buffer) - keep :]
                     return events
-            # Skips the whole-buffer reparse per chunk while nothing could parse yet (quadratic in the held size).
+            # A whole-buffer reparse per chunk is quadratic in the held size.
             may_parse = self._strict_gate.may_parse(self._buffer)
             parsed, spans = (
                 parse_tool_calls_from_text(
