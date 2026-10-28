@@ -29,7 +29,8 @@ test("audio field titles go through FieldLabel, so clicking one does not focus o
   );
   assert.match(field, /"cursor-default!"/);
   for (const file of tsxFiles(AUDIO_DIR)) {
-    if (file.endsWith("components/field.tsx")) continue;
+    // Windows paths use backslashes.
+    if (file.replaceAll("\\", "/").endsWith("components/field.tsx")) continue;
     assert.doesNotMatch(readFileSync(file, "utf8"), /<label\b/, file);
   }
 });
