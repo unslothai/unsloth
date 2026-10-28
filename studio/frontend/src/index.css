@@ -6632,7 +6632,7 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 .spooky-spider {
 	position: absolute;
 	top: 0;
-	width: calc(22px * var(--ui-space-scale, 1));
+	width: calc(26px * var(--ui-space-scale, 1));
 	height: 0;
 	animation-name: spooky-spider-drop;
 	animation-timing-function: ease-in-out;
@@ -6642,7 +6642,7 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 	content: "";
 	position: absolute;
 	top: 0;
-	bottom: calc(14px * var(--ui-space-scale, 1));
+	bottom: calc(13px * var(--ui-space-scale, 1));
 	left: 50%;
 	width: 1px;
 	background: currentColor;
@@ -6659,11 +6659,10 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 }
 @keyframes spooky-spider-drop {
 	0% { height: 0; }
-	22% { height: calc(var(--spooky-drop) + 8px); }
-	28% { height: var(--spooky-drop); }
-	34% { height: calc(var(--spooky-drop) + 3px); }
-	40%, 72% { height: var(--spooky-drop); }
-	100% { height: 0; }
+	55% { height: calc(var(--spooky-drop) + 8px); }
+	72% { height: var(--spooky-drop); }
+	86% { height: calc(var(--spooky-drop) + 3px); }
+	100% { height: var(--spooky-drop); }
 }
 @keyframes spooky-spider-sway {
 	from { transform: rotate(-5deg); }
@@ -6700,23 +6699,26 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 }
 @keyframes spooky-bat-flap {
 	from { transform: scaleY(1); }
-	to { transform: scaleY(0.35); }
+	to { transform: scaleY(0.8); }
 }
-/* Reduced motion: fade in place. */
+/* Reduced motion: the spider fades in place and bats fly without flapping. The global reduced-motion rules would cut both to 0.01ms, so they keep their length. */
+html.force-reduced-motion .spooky-still :is(.spooky-spider, .spooky-bat) {
+	animation-duration: var(--spooky-ms) !important;
+}
+@media (prefers-reduced-motion: reduce) {
+	html:not(.force-motion) .spooky-still :is(.spooky-spider, .spooky-bat) {
+		animation-duration: var(--spooky-ms) !important;
+	}
+}
 .spooky-still .spooky-spider {
 	height: var(--spooky-drop);
-	animation-name: spooky-fade;
-}
-.spooky-still .spooky-bat {
-	left: calc(var(--spooky-bats-left) + var(--spooky-bat-i, 0) * 52px * var(--ui-space-scale, 1));
-	animation-name: spooky-fade;
+	animation-name: spooky-fade-in;
 }
 .spooky-still :is(.spooky-spider-body, .spooky-bat-wings) {
 	animation: none;
 }
-@keyframes spooky-fade {
-	0% { opacity: 0; }
-	15%, 85% { opacity: 0.85; }
-	100% { opacity: 0; }
+@keyframes spooky-fade-in {
+	from { opacity: 0; }
+	to { opacity: 0.85; }
 }
 

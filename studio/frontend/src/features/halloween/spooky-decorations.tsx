@@ -3,7 +3,7 @@
 
 import { cn } from "@/lib/utils";
 import { useRouterState } from "@tanstack/react-router";
-import { useReducedMotion } from "motion/react";
+import { useReducedMotionConfig } from "motion/react";
 import {
   type CSSProperties,
   useEffect,
@@ -20,12 +20,12 @@ type Visitor =
       kind: "bats";
       id: number;
       top: string;
-      left: string;
       flip: boolean;
       bats: { delay: number; offset: number; scale: number }[];
     };
 
-const SPIDER_MS = 9000;
+// The drop; the spider then hangs until the page changes.
+const SPIDER_MS = 3500;
 const BATS_MS = 9000;
 
 const between = (min: number, max: number) => min + Math.random() * (max - min);
@@ -63,38 +63,30 @@ function Web({ web }: { web: SpiderWeb }) {
   );
 }
 
+// Font Awesome 7 "spider" (solid), CC BY 4.0 (fontawesome.com).
 function Spider() {
   return (
     <svg
       aria-hidden="true"
-      viewBox="0 0 24 24"
+      viewBox="0 0 640 640"
       className="spooky-spider-body"
       fill="currentColor"
     >
-      <g
-        stroke="currentColor"
-        strokeWidth="1.3"
-        strokeLinecap="round"
-        fill="none"
-      >
-        <path d="M9 11L4 8L2 10M9 13L3 13L1 15M9.5 15L5 18L4 21M10 16.5L7 21" />
-        <path d="M15 11L20 8L22 10M15 13L21 13L23 15M14.5 15L19 18L20 21M14 16.5L17 21" />
-      </g>
-      <ellipse cx="12" cy="9.5" rx="2.4" ry="2.2" />
-      <ellipse cx="12" cy="15" rx="3.4" ry="4" />
+      <path d="M433.3 33c11.9-3.5 24.4 2.7 29 13.9l.8 2.3l40 136c2.5 8.4.1 17.5-6.1 23.7L432.9 273l76.4-20.8l19.9-59.8l.9-2.3c5-11.1 17.7-16.8 29.5-12.9s18.5 16.1 15.8 28l-.7 2.4l-24 72c-2.5 7.6-8.7 13.4-16.5 15.6L443.1 320l91.1 24.8c7.7 2.1 13.9 8 16.5 15.6l24 72l.7 2.4c2.7 11.9-4.1 24.1-15.8 28c-11.8 3.9-24.5-1.8-29.5-12.9l-.9-2.3l-19.9-59.8l-76.4-20.8l64.1 64.1c6.1 6.1 8.5 15.1 6.2 23.4l-40 144l-.8 2.3c-4.4 11.3-16.8 17.7-28.8 14.4S414.3 600 416.4 588l.5-2.4l36.2-130.5l-37.2-37.2C415 470 372.4 512 320 512s-95-42-96-94.1l-37 37l36 122.3l.6 2.4c2.2 11.9-4.9 23.9-16.8 27.4s-24.4-2.7-29-13.9l-.8-2.3l-40-136c-2.5-8.4-.1-17.5 6.1-23.8l64.1-64.1l-76.4 20.8l-19.9 59.8l-.9 2.3c-5 11.1-17.7 16.8-29.5 12.9s-18.5-16.1-15.8-28l.7-2.4l24-72c2.5-7.6 8.7-13.4 16.5-15.6l91.1-24.8l-91.1-24.8c-7.7-2.1-13.9-8-16.5-15.6l-24-72l-.7-2.4c-2.7-11.9 4.1-24.1 15.8-28S105 178.9 110 190l.9 2.3l19.9 59.8l76.4 20.8l-64.1-64.1c-6.2-6.2-8.5-15.3-6.1-23.7l40-136l.8-2.3c4.6-11.3 17.1-17.4 29-13.9s19 15.5 16.8 27.4l-.6 2.4L187 185l53 53c1-43.3 36.4-78.1 79.9-78.1s78.9 34.8 79.9 78.2l53.1-53.1l-36-122.3l-.6-2.4c-2.2-12 4.9-23.9 16.8-27.4z" />
     </svg>
   );
 }
 
+// Material Design Icons "bat", Apache-2.0 (github.com/Templarian/MaterialDesign).
 function Bat() {
   return (
     <svg
       aria-hidden="true"
-      viewBox="0 0 48 20"
+      viewBox="0.5 6.5 23 12.5"
       className="spooky-bat-wings"
       fill="currentColor"
     >
-      <path d="M24 6c1.2-2 2.4-2 3 0c4-4 10-5 21-1c-5 1-7 4-8 8c-3-2-6-2-9 1c-1.5-2-3.5-3-7-3s-5.5 1-7 3c-3-3-6-3-9-1C7 9 5 6 0 5c11-4 17-3 21 1c.6-2 1.8-2 3 0Z" />
+      <path d="M.75 8S5 7 8 9c0 0 .5 3.75 2.5 3.75V11s.5 1 1.5 1s1.5-1 1.5-1v1.75C15.5 12.75 16 9 16 9c3-2 7.25-1 7.25-1c-2 1-2.25 4.5-2.25 4.5c-4 0-4 3.25-4 3.25c-5-1-5 2.75-5 2.75s0-3.75-5-2.75c0 0 0-3.25-4-3.25C3 12.5 2.75 9 .75 8" />
     </svg>
   );
 }
@@ -102,16 +94,18 @@ function Bat() {
 // Reduced motion keeps the visits but fades them in place.
 export function SpookyDecorations() {
   const on = useSpookyDecorations();
-  const reduced = useReducedMotion();
+  // Follows Studio's Reduce motion setting, which can override the system one.
+  const reduced = useReducedMotionConfig();
   const [visitors, setVisitors] = useState<Visitor[]>([]);
   const href = useRouterState({ select: (s) => s.location.href });
   // biome-ignore lint/correctness/useExhaustiveDependencies: each page rolls its own webs.
   const webs = useMemo(() => rollSpiderWebs(), [href]);
   const nextId = useRef(0);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: each page rolls its own visitors.
   useEffect(() => {
+    setVisitors([]);
     if (!on) {
-      setVisitors([]);
       return;
     }
     const timers = new Set<ReturnType<typeof setTimeout>>();
@@ -122,27 +116,25 @@ export function SpookyDecorations() {
       }, ms);
       timers.add(t);
     };
-    const visit = (v: Visitor, ms: number) => {
+    const visit = (v: Visitor, ms?: number) => {
       // Hidden tabs skip visits rather than queue them.
       if (document.hidden) {
         return;
       }
       setVisitors((list) => [...list, v]);
-      later(ms + 500, () =>
-        setVisitors((list) => list.filter((x) => x.id !== v.id)),
-      );
+      if (ms !== undefined) {
+        later(ms + 500, () =>
+          setVisitors((list) => list.filter((x) => x.id !== v.id)),
+        );
+      }
     };
     const spider = () => {
-      visit(
-        {
-          kind: "spider",
-          id: nextId.current++,
-          left: `${between(35, 92).toFixed(1)}%`,
-          drop: Math.round(between(90, 230)),
-        },
-        SPIDER_MS,
-      );
-      later(between(25_000, 55_000), spider);
+      visit({
+        kind: "spider",
+        id: nextId.current++,
+        left: `${between(35, 92).toFixed(1)}%`,
+        drop: Math.round(between(90, 230)),
+      });
     };
     const bats = () => {
       const count = 1 + Math.floor(Math.random() * 3);
@@ -151,7 +143,6 @@ export function SpookyDecorations() {
           kind: "bats",
           id: nextId.current++,
           top: `${between(8, 32).toFixed(1)}%`,
-          left: `${between(20, 65).toFixed(1)}%`,
           flip: Math.random() < 0.5,
           bats: Array.from({ length: count }, (_, i) => ({
             delay: i * between(0.25, 0.6),
@@ -163,14 +154,19 @@ export function SpookyDecorations() {
       );
       later(between(30_000, 60_000), bats);
     };
-    later(between(2000, 6000), spider);
-    later(between(7000, 14_000), bats);
+    // A page gets a spider or bats, never both: a quarter of the time each.
+    const roll = Math.random();
+    if (roll < 0.25) {
+      later(between(2000, 6000), spider);
+    } else if (roll < 0.5) {
+      later(between(2000, 6000), bats);
+    }
     return () => {
       for (const t of timers) {
         clearTimeout(t);
       }
     };
-  }, [on]);
+  }, [on, href]);
 
   if (!on) {
     return null;
@@ -196,6 +192,7 @@ export function SpookyDecorations() {
               {
                 left: v.left,
                 "--spooky-drop": `${v.drop}px`,
+                "--spooky-ms": `${SPIDER_MS}ms`,
                 animationDuration: `${SPIDER_MS}ms`,
               } as CSSProperties
             }
@@ -209,7 +206,6 @@ export function SpookyDecorations() {
             style={
               {
                 top: v.top,
-                "--spooky-bats-left": v.left,
                 transform: v.flip ? "scaleX(-1)" : undefined,
               } as CSSProperties
             }
@@ -221,15 +217,17 @@ export function SpookyDecorations() {
                 className="spooky-bat"
                 style={
                   {
-                    "--spooky-bat-i": i,
+                    "--spooky-ms": `${BATS_MS}ms`,
                     animationDuration: `${BATS_MS}ms`,
                     animationDelay: `${b.delay}s`,
                     marginTop: b.offset,
-                    scale: b.scale,
                   } as CSSProperties
                 }
               >
-                <Bat />
+                {/* Sized here, not on the flying element: scale there shortens the flight too. */}
+                <div style={{ scale: b.scale }}>
+                  <Bat />
+                </div>
               </div>
             ))}
           </div>

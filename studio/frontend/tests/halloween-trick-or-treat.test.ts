@@ -254,6 +254,18 @@ test("spiders and bats are on by default and stay off once turned off", async ()
   );
   const deco = read("../src/features/halloween/spooky-decorations.tsx");
   assert.match(deco, /reduced && "spooky-still"/);
+  // Studio's Reduce motion: Off has to win over the system setting.
+  assert.match(deco, /const reduced = useReducedMotionConfig\(\);/);
+  assert.match(
+    deco,
+    /if \(roll < 0\.25\) \{\s*later\([^;]*spider\);\s*\} else if \(roll < 0\.5\) \{\s*later\([^;]*bats\);/,
+  );
+  const css = read("../src/index.css");
+  // The global reduced-motion rules would end the fade at once.
+  assert.match(
+    css,
+    /html:not\(\.force-motion\) \.spooky-still :is\(\.spooky-spider, \.spooky-bat\) \{\s*animation-duration: var\(--spooky-ms\) !important;/,
+  );
   assert.match(deco, /useMemo\(\(\) => rollSpiderWebs\(\), \[href\]\)/);
   assert.match(deco, /pointer-events-none fixed inset-0/);
   const root = read("../src/app/routes/__root.tsx");
