@@ -44,13 +44,13 @@ def _makedirs_could_succeed(path: Path) -> bool:
 
 
 def _configured_location() -> str:
-    """UNSLOTH_COMPILE_LOCATION as unsloth_zoo.compiler takes it: verbatim, so neither ``~`` expanded nor whitespace stripped, since os.makedirs does neither. Blank counts as unset (setup_cache_env pins the default over a blank value)."""
+    """UNSLOTH_COMPILE_LOCATION verbatim, as os.makedirs in unsloth_zoo.compiler takes it (no ``~``, no strip). Blank = unset, as in setup_cache_env."""
     configured = os.environ.get("UNSLOTH_COMPILE_LOCATION") or ""
     return configured if configured.strip() else ""
 
 
 def _configured_cache_dirs() -> List[Path]:
-    """The one directory unsloth_zoo.compiler writes to (``_get_compile_folder``): UNSLOTH_COMPILE_LOCATION when set, else ``unsloth_compiled_cache``, either taken against the CWD as os.makedirs takes it; only when that cannot be created, ``<tempdir>/<same leaf>``. The CWD default is never added beside a configured location: the compiler does not write there, so a directory of that name in the launch folder is somebody else's (or a stale leftover) and is neither cleared nor put on sys.path."""
+    """Where unsloth_zoo.compiler writes (``_get_compile_folder``): the location, else ``<tempdir>/<leaf>``. Never the CWD default beside a configured location: the compiler does not write there, so that folder is somebody else's."""
     import tempfile
 
     configured = _configured_location()
