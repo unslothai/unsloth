@@ -1405,8 +1405,7 @@ _SENTINEL_MAX_LEN = max(len(sentinel) for sentinel in _STRIP_SENTINELS)
 # Bytes sampled from each end when checking that a buffer continues the previous one.
 _EXTENSION_SAMPLE = 64
 
-# Open Qwen/Hermes call body: while none of these (nor ``call\s*:``) appears after the opener, the strip of
-# ``prefix + <tool_call>{...`` is the prefix (or, with ``seg_final`` off, the text unchanged). See ``_gate_try_arm``.
+# Literals that can change the strip of an open ``prefix + <tool_call>{...`` body (see ``_gate_try_arm``).
 _OPEN_CALL_OPENER = "<tool_call>"
 _OPEN_CALL_TRIGGERS = (
     "<tool_call",
@@ -1579,7 +1578,6 @@ class StreamingMarkupStripper:
         self._seen_head = ""
         self._seen_mid = ""
         self._seen_tail = ""
-        # Open-call gate: while on, the strip result cannot change until a trigger arrives (``_gate_try_arm``).
         self._gate_on = False
         self._gate_out = ""
         # (floor, first) the gate can never arm for; append-only growth cannot undo its reason.
@@ -1598,7 +1596,6 @@ class StreamingMarkupStripper:
         for trigger in _OPEN_CALL_TRIGGERS:
             if text.find(trigger, lo) >= 0:
                 return False
-        # ``call\s*:`` (Gemma bare call): \s* may span appends, so a pending ``call`` resumes its whitespace run.
         at = self._gate_call_ws
         if at >= 0:
             at = _OPEN_CALL_WS_RE.match(text, at).end()
@@ -1621,18 +1618,10 @@ class StreamingMarkupStripper:
         return True
 
     def _gate_try_arm(self, text: str, seg_start: int, out: str, seg_out: str):
-        """Arm when ``text[seg_start:]``, the segment just stripped to ``seg_out``, is ``P + <tool_call> + B`` with:
-
-        - P free of ``<``, ``[``, ``{`` and ``call\\s*:``;
-        - B starting with ``\\s*{`` and holding no ``_OPEN_CALL_TRIGGERS`` entry and no ``call\\s*:``.
-
-        Every such segment strips to P (``seg_final``) or to itself, whatever B holds. Without those
-        literals: the masking walk finds no blocked body (P has no brace, and a brace in B follows the
-        ``<tool_call>`` opener, which stops the walk) and no Gemma or rehearsal candidate; there are no
-        think spans; the Mistral, rehearsal, Gemma, ``<function``, GLM (needs a name after the opener)
-        and closed-pair arms all find nothing; and the ``<tool_call>.*$`` arm removes the opener to EOF.
-        Every later arm needs a ``<`` or ``[`` that P does not have. B can only grow, so the result,
-        and the cut and whole-buffer decisions taken before it, stay fixed until a trigger arrives."""
+        """Arm when ``text[seg_start:]`` is ``P + <tool_call> + B``: P without ``<``, ``[``, ``{``, ``call\\s*:``;
+        B starting ``\\s*{`` without a trigger or ``call\\s*:``. Then only ``<tool_call>.*$`` matches (the masking
+        walk stops at the opener, GLM needs a name, every other arm needs a ``<`` or ``[`` in P), so the segment
+        strips to P (``seg_final``) or itself, and so do the cut decisions, until a trigger arrives."""
         key = (self._floor, self._first)
         if self._gate_dead == key:
             return
@@ -1655,9 +1644,8 @@ class StreamingMarkupStripper:
             return
         brace = _OPEN_CALL_WS_RE.match(text, body).end()
         if brace == len(text):
-            # No body yet: retry next token.
             return
-        # The full strip just run must agree, which a bug in the reasoning above would break first.
+        # Fail closed if the full strip just run disagrees with the reasoning above.
         if text[brace] != "{" or seg_out != (prefix if self._seg_final else text[seg_start:]):
             self._gate_dead = key
             return
@@ -1780,7 +1768,6 @@ class StreamingMarkupStripper:
             self._reset()
 
         if self._gate_on:
-            # Open call body with nothing new that could end or change it: the strip, and every decision before it, is unchanged.
             out = self._gate_hold(text)
             if out is not None:
                 self._note(text)

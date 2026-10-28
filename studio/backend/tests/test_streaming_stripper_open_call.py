@@ -44,8 +44,6 @@ def _replay(stripper, chunks):
 
 
 class _CountingStripper(StreamingMarkupStripper):
-    """Counts the calls and characters handed to the full strip."""
-
     __slots__ = ()
     seen = [0, 0]
 
@@ -60,8 +58,7 @@ class _CountingStripper(StreamingMarkupStripper):
     "preamble", ["I'll search. ", "", "Running it:\n", "<think>plan</think>\n\n"]
 )
 def test_open_call_work_does_not_grow_with_the_body(seg_final, preamble):
-    """Counts the characters handed to the full strip instead of timing: re-stripping the open tail
-    per token hands it about tokens ** 2 / 2 * chars_per_token, and the gate hands it a constant."""
+    """Counts characters handed to the full strip, not time: re-stripping the open tail per token is quadratic."""
     opener = preamble + '<tool_call>{"name": "python", "arguments": {"code": "'
     seen = {}
     for count in (250, 2000):
@@ -70,8 +67,7 @@ def test_open_call_work_does_not_grow_with_the_body(seg_final, preamble):
         outs = _replay(_CountingStripper(ENABLED, seg_final = seg_final), chunks)
         seen[count] = tuple(_CountingStripper.seen)
         assert outs == _replay(_FullStripEveryToken(ENABLED, seg_final = seg_final), chunks)
-    # Same calls and characters for 8x the tokens: the work is per new character, not per tail. The
-    # few calls left are the first ~128 characters, where ``_is_extension`` cannot sample a middle yet.
+    # The few calls left fall in the first ~128 characters, before ``_is_extension`` samples a middle.
     assert seen[250] == seen[2000], seen
     assert seen[2000][0] < 40, seen
 
@@ -139,8 +135,7 @@ def test_every_strip_sentinel_is_an_open_call_trigger():
 @pytest.mark.parametrize("trigger", _TRIGGERS)
 @pytest.mark.parametrize("seg_final", [True, False])
 def test_every_trigger_split_one_char_at_a_time_matches(trigger, seg_final):
-    # Past the ~128 characters ``_is_extension`` needs to sample a middle, so later tokens are
-    # answered by the gate rather than by a fresh arm and its full strip.
+    # Past the ~128 characters ``_is_extension`` needs, so the gate answers later tokens.
     prefix = 'ok <tool_call>{"name": "web_search", "arguments": {"query": "' + "words " * 40
     chunks = [prefix] + list(trigger + ' more" }}') + ["</tool_call>", " after"]
     for names in (ENABLED, None):
