@@ -562,9 +562,10 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         )}
 
         <Button
-          variant="dark"
+          variant="primary"
           type="submit"
-          className="mx-auto flex w-fit"
+          size="hero"
+          className="mx-auto flex h-[2.967em] w-fit bg-control-accent px-[1.56em] py-0 [font-family:var(--font-heading)] text-[0.9375rem] font-semibold tracking-[0.02em] text-control-accent-foreground hover:bg-control-accent/85"
           disabled={
             loading ||
             statusLoading ||
