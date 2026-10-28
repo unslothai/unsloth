@@ -487,12 +487,50 @@ def _packs(model) -> bool:
             model
         ) and not unsloth_trainer.patch_hybrid_linear_attention_varlen(model):
             return False
+        mark_allow_overlength(model)
+        _enable_hf_packed_attention()
+        if not _packed_forward_isolated(model):
+            # Members share a row, so a leak here would mix jobs, not just one job's documents.
+            logger.warning(
+                "Batched training: packed documents are not isolated on this model; not packing"
+            )
+            return False
     except Exception as exc:
         logger.info("Batched training: packing unavailable (%s)", exc)
         return False
-    mark_allow_overlength(model)
-    _enable_hf_packed_attention()
     return True
+
+
+def _packed_forward_isolated(model) -> bool:
+    """Measured, not assumed: a document's logits after another document in one packed row match it alone.
+    Qwen3.5 on transformers 5.3 passes every static check yet lets full attention cross documents."""
+    import torch
+
+    embeddings = model.get_input_embeddings()
+    device, vocab = embeddings.weight.device, embeddings.num_embeddings
+    generator = torch.Generator().manual_seed(0)
+    first = torch.randint(0, vocab, (48,), generator = generator).to(device)
+    second = torch.randint(0, vocab, (32,), generator = generator).to(device)
+
+    def logits(ids, lengths):
+        positions = torch.cat([torch.arange(n) for n in lengths]).to(device)
+        out = model(
+            input_ids = ids[None],
+            position_ids = positions[None],
+            packed_seq_lengths = torch.tensor(lengths, dtype = torch.int32, device = device),
+            use_cache = False,
+        ).logits
+        return out[0, -len(second) :].float()
+
+    training = model.training
+    model.eval()
+    try:
+        with torch.no_grad():
+            alone = logits(second, [len(second)])
+            packed = logits(torch.cat([first, second]), [len(first), len(second)])
+    finally:
+        model.train(training)
+    return bool((packed - alone).abs().mean() <= 0.05 * alone.abs().mean())
 
 
 def _pack_num_proc(tokenizer) -> Optional[int]:
