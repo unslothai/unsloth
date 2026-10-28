@@ -89,26 +89,23 @@ def test_large_text_small_budget():
     assert tools._dense_prefix_chars(escaped, 1000.0) == _reference(escaped, 1000.0) == 3999
 
 
-class _CountingStr(str):
-    """Counts per-character indexing, which only the scanning loop does."""
+def test_ascii_text_is_answered_without_a_per_character_scan(monkeypatch):
+    # The loop calls ord() once per plain character; a module global shadows the builtin.
+    calls = []
 
-    reads = 0
+    def counting_ord(char):
+        calls.append(char)
+        return ord(char)
 
-    def __getitem__(self, key):
-        type(self).reads += 1
-        return str.__getitem__(self, key)
-
-
-def test_ascii_text_is_answered_without_a_per_character_scan():
-    _CountingStr.reads = 0
-    text = _CountingStr("a" * 10_000)
+    monkeypatch.setattr(tools, "ord", counting_ord, raising = False)
+    text = "a" * 10_000
     assert tools._dense_prefix_chars(text, 1_000.0) == 4_000
     assert tools._dense_prefix_chars(text, 1e9) == 10_000
-    assert _CountingStr.reads == 0
+    assert calls == []
     # An escape before the cut still takes the loop, and the loop still reads characters.
-    escaped = _CountingStr("a%41" + "a" * 100)
-    assert tools._dense_prefix_chars(escaped, 10.0) == _reference(str(escaped), 10.0)
-    assert _CountingStr.reads > 0
+    escaped = "a%41" + "a" * 100
+    assert tools._dense_prefix_chars(escaped, 10.0) == _reference(escaped, 10.0)
+    assert calls
 
 
 def test_other_numeric_budgets_match():
