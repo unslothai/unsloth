@@ -242,6 +242,12 @@ def rl_roles(params: dict, objective: str) -> dict:
 
 def rl_config(params: dict, objective: str, config: dict) -> list[dict]:
     """The /api/train/start RL fields; returns the GRPO rewards it picked."""
+    from core.flows.specs import SPECS_BY_TYPE
+
+    # A node saved before these params existed (or built by notebook import or the API) has no
+    # rewards or system prompt; without the format prompt GRPO's rewards never fire.
+    defaults = {p["id"]: p["default"] for p in SPECS_BY_TYPE["train.finetune"]["params"]}
+    params = {**defaults, **params}
     config["objective"] = objective
     if params.get("beta") not in (None, ""):
         config["rl_beta"] = float(params["beta"])

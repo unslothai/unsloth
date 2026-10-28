@@ -329,3 +329,13 @@ def test_hub_holdout_never_downloads_more_than_it_can_use(monkeypatch):
     with pytest.raises(FlowNodeError, match = "900000 rows"):
         training._load_rows({"source": "hf", "ref": "org/big"}, None, None)
     assert len(training._load_rows({"source": "hf", "ref": "org/big"}, None, 9)) == 10
+
+
+def test_grpo_without_saved_rewards_or_prompt_uses_the_node_defaults():
+    config = {}
+    rewards = training.rl_config({"objective": "grpo"}, "grpo", config)
+    assert [r["name"] for r in rewards] == ["exact-answer", "soft-xml-format"]
+    assert "<answer>" in config["rl_system_prompt"] and config["grpo_num_generations"] == 4
+    config = {}
+    training.rl_config({"system_prompt": ""}, "grpo", config)
+    assert "rl_system_prompt" not in config
