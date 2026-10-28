@@ -1135,7 +1135,6 @@ exit 1
         let modeh = bin.with_extension("modeh");
         assert!(matches!(probe_managed_bin(bin.clone()).await, ManagedProbe::Ready { .. }));
 
-        // Reused once: `-h` ran once in all, and a Retry asks again.
         fs::write(&calls, "").unwrap();
         install_launch_cli_probe(bin.clone());
         assert!(matches!(probe_managed_bin(bin.clone()).await, ManagedProbe::Ready { .. }));
@@ -1145,14 +1144,12 @@ exit 1
         assert!(matches!(probe_managed_bin(bin.clone()).await, ManagedProbe::Ready { .. }));
         assert_eq!(fs::read_to_string(&calls).unwrap(), "-h\n");
 
-        // A failed launch probe is asked again.
         fs::write(&modeh, "broken").unwrap();
         fs::write(&calls, "").unwrap();
         install_launch_cli_probe(bin.clone());
         assert!(matches!(probe_managed_bin(bin.clone()).await, ManagedProbe::Stale { .. }));
         assert_eq!(fs::read_to_string(&calls).unwrap(), "-h\n-h\n");
 
-        // Another CLI's probe does not answer for this one.
         fs::remove_file(&modeh).unwrap();
         let other = fake_cli("launch-help-other", "#!/bin/sh\nexit 0\n");
         install_launch_cli_probe(other.bin.clone());

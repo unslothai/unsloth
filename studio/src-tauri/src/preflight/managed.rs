@@ -1082,7 +1082,6 @@ pub(crate) fn start_launch_cli_probe() {
             let _ = pending.send(probe);
         });
     if let Err(error) = spawned {
-        // The dropped sender makes the preflight run `-h` itself.
         warn!("Could not start the launch CLI probe: {error}");
     }
 }
