@@ -3115,8 +3115,7 @@ const Composer: FC<{
   const scrollThreadToBottom = useScrollThreadToBottom();
   const threadEmpty = useAuiState(({ thread }) => thread.isEmpty);
   const toggleWritingExpanded = () => {
-    // Welcome page: the bottom pin would hold the old overflow as stabilizer padding and leave the
-    // expanded frame shifted up, so unpin to expand and re-pin on collapse to keep the toolbar in view.
+    // Welcome page: the bottom pin's stabilizer padding shifted the expanded frame up.
     if (threadEmpty) {
       if (isWritingExpanded) {
         window.requestAnimationFrame(() => scrollThreadToBottom("instant"));

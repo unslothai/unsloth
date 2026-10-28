@@ -5,7 +5,6 @@ import { type RefObject, useLayoutEffect } from "react";
 
 const FILL_VAR = "--composer-fill-height";
 const EDGE_GAP_PX = 16;
-// Re-measures for a few frames while the layout around the composer settles.
 const SETTLE_MS = 400;
 const SCROLLS = /(auto|scroll)/;
 
@@ -22,7 +21,6 @@ function scrollParent(el: HTMLElement): HTMLElement | null {
   return null;
 }
 
-/** Pinned to the bottom (thread footer, compare) it grows up to the panes' top; in flow (welcome, project page) it grows down. */
 function availableHeight(root: HTMLElement, compare: boolean): number {
   const rootRect = root.getBoundingClientRect();
   const footer = root.closest(".aui-thread-viewport-footer");
@@ -34,8 +32,7 @@ function availableHeight(root: HTMLElement, compare: boolean): number {
       (panes?.getBoundingClientRect().top ?? 0) + cssPx(panes, "paddingTop");
     return rootRect.bottom - (top + EDGE_GAP_PX);
   }
-  // Unscrolled top, so a page that already overflows does not read as more room. Its bottom padding
-  // is ignored: assistant-ui's --aui-scroll-stabilizer adds some for a frame, which made the height bounce.
+  // Not the scroller's padding: --aui-scroll-stabilizer adds some for a frame.
   const scroller = scrollParent(root);
   const bottom = Math.min(
     scroller?.getBoundingClientRect().bottom ?? window.innerHeight,
@@ -44,7 +41,6 @@ function availableHeight(root: HTMLElement, compare: boolean): number {
   return bottom - EDGE_GAP_PX - (rootRect.top + (scroller?.scrollTop ?? 0));
 }
 
-/** While expanded, sizes the editor so the whole composer (attachments, queue and toolbar included) fills the chat area. */
 export function useExpandedComposerFill(
   editorRef: RefObject<HTMLElement | null>,
   expanded: boolean,

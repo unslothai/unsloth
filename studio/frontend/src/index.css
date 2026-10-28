@@ -3300,15 +3300,13 @@ html[data-chat-font] .aui-root {
 		--composer-fade-bottom: calc(1rem * var(--ui-space-scale, 1));
 	}
 
-	/* --composer-fill-height (useExpandedComposerFill) fills the chat area net of attachments and
-	   toolbar; the clamp is only the first frame's fallback. max(): never below the compact height.
-	   svh, since dvh tracks Safari's bar. Either root: the thread's form or compare's wrapper. */
+	/* --composer-fill-height: useExpandedComposerFill; the clamp is the first-frame fallback. */
 	[data-writing-expanded="true"] .unsloth-composer-editor {
 		height: max(
 			var(--composer-editor-height, calc(40px * var(--ui-space-scale, 1))),
 			var(--composer-fill-height, clamp(8rem, calc(80svh - 12rem), 42rem))
 		);
-		/* Lands in one frame: a 280ms grow read as the bottom edge creeping. Collapsing still eases. */
+		/* Instant: easing in read as the bottom edge creeping. */
 		transition: none;
 	}
 
@@ -3316,7 +3314,6 @@ html[data-chat-font] .aui-root {
 		transition: padding-top 280ms cubic-bezier(0.22, 1, 0.36, 1);
 	}
 
-	/* Snaps with the editor above; collapsing still slides back down. */
 	.aui-thread-welcome-center:has([data-writing-expanded="true"]) {
 		padding-top: calc(1rem * var(--ui-space-scale, 1));
 		transition: none;
