@@ -746,8 +746,7 @@ class ExportBackend:
         self._audio_type = None
         self.decision = None
         self.diffusion_lm_profile = None
-        # Set once a load starts; a backend that never loaded since its last cleanup has no
-        # garbage or cached GPU blocks of its own for cleanup_memory to free.
+        # True from a load's start until cleanup_memory clears the GPU cache.
         self._gpu_cache_dirty = False
 
     def _diffusion_refusal(self, method: str) -> Optional[str]:
@@ -764,7 +763,7 @@ class ExportBackend:
             logger.info("Starting memory cleanup...")
 
             model_names = list(self.inference_backend.models.keys())
-            # Read before the resets below; a stub without the flag (tests) always clears.
+            # Before the resets below; no flag (built without __init__) always clears.
             needs_clear = (
                 bool(model_names)
                 or self.current_model is not None
@@ -782,8 +781,6 @@ class ExportBackend:
             self._audio_type = None
             self.decision = None
 
-            # Skipped only when nothing was loaded since the last clear (a fresh worker, or the
-            # load right after the worker's own cleanup): a full gc pass there frees nothing.
             if needs_clear:
                 clear_gpu_cache()
                 self._gpu_cache_dirty = False

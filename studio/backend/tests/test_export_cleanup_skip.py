@@ -1,6 +1,4 @@
-"""cleanup_memory runs the GPU cache clear (a full gc pass) only when this backend loaded something
-since its last clear: a fresh export worker's first load, and the load right after the worker's own
-cleanup, have nothing to free."""
+"""cleanup_memory clears the GPU cache only when something was loaded since the last clear."""
 
 from __future__ import annotations
 
