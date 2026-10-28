@@ -385,6 +385,9 @@ def test_only_a_bounded_mlx_cache_is_priced_and_its_admitted_width_never_shrinks
     assert inf._mlx_cache_bounded({"context_length_enforced": False, "mlx_context_budget": 4096})
     assert not inf._mlx_cache_bounded({"context_length_enforced": None})
     assert not inf._mlx_cache_bounded(
+        {"context_length_enforced": True, "context_unbounded_when_batched": True}
+    )
+    assert not inf._mlx_cache_bounded(
         {"context_length_enforced": False, "mlx_context_budget": None}
     )
     entry = {"mlx_growth": {"mib": 1, "row_mib": 1, "slots": 1}}

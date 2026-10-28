@@ -615,7 +615,9 @@ def gguf_replaced_credit_mib(llama) -> int:
 
 def mlx_cache_bounded(entry: dict) -> bool:
     """Whether the loaded MLX model's cache stops at the context it was priced at: a cache window or a per-request
-    budget. Without either its growth has no ceiling to reserve."""
+    budget. Without either its growth has no ceiling to reserve; batched vision rows drop the window."""
+    if entry.get("context_unbounded_when_batched"):
+        return False
     return entry.get("context_length_enforced") is True or bool(entry.get("mlx_context_budget"))
 
 
