@@ -80,6 +80,9 @@ jobs:
   selftests:
     name: Selftests, lint and the single-file build
     runs-on: ubuntu-latest
+    env:
+      # A release published mid-run puts an update card over the controls the scripts click.
+      UNSLOTH_DISABLE_UPDATE_CHECK: '1'
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
