@@ -4782,6 +4782,7 @@ export const ja = {
       s3Unsupported: "RL トレーニングはまだ S3 データから列の役割を読み取れません。Hugging Face またはアップロードしたデータセットを使ってください。",
       error: "列を読み込めませんでした: {error}",
       missing: "まだ必要: {roles}",
+      implicitPrompt: "{prompt} 列がありません。TRL と同じく、{chosen} と {rejected} に共通する冒頭のターンをプロンプトとして使います。",
       answerNote: "回答列は報酬にだけ渡され、モデルには見えません。",
       columnHeader: "列",
       sampleHeader: "1行目",

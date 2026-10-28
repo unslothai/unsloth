@@ -4918,6 +4918,7 @@ export const fr = {
       s3Unsupported: "L'entraînement RL ne peut pas encore lire les rôles de colonnes des données S3. Utilisez un jeu de données Hugging Face ou importé.",
       error: "Impossible de charger les colonnes : {error}",
       missing: "Encore requis : {roles}",
+      implicitPrompt: "Pas de colonne {prompt} : le prompt correspond aux premiers tours communs à {chosen} et {rejected}, comme TRL lit ces jeux de données.",
       answerNote: "La colonne de réponse ne va qu'aux récompenses ; le modèle ne la voit jamais.",
       columnHeader: "Colonne",
       sampleHeader: "Première ligne",

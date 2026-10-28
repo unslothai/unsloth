@@ -4907,6 +4907,7 @@ export const de = {
       s3Unsupported: "RL-Training kann Spaltenrollen aus S3-Daten noch nicht lesen. Verwende einen Hugging-Face- oder hochgeladenen Datensatz.",
       error: "Spalten konnten nicht geladen werden: {error}",
       missing: "Noch erforderlich: {roles}",
+      implicitPrompt: "Keine Spalte {prompt}: Der Prompt sind die ersten Turns, die {chosen} und {rejected} gemeinsam haben, so wie TRL diese Datensätze liest.",
       answerNote: "Die Antwortspalte geht nur an die Belohnungen; das Modell sieht sie nie.",
       columnHeader: "Spalte",
       sampleHeader: "Erste Zeile",

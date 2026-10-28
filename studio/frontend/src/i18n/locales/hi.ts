@@ -4843,6 +4843,7 @@ export const hi = {
       s3Unsupported: "RL ट्रेनिंग अभी S3 डेटा से कॉलम भूमिकाएँ नहीं पढ़ सकती। Hugging Face या अपलोड किया गया डेटासेट इस्तेमाल करें।",
       error: "कॉलम लोड नहीं हो सके: {error}",
       missing: "अभी चाहिए: {roles}",
+      implicitPrompt: "कोई {prompt} कॉलम नहीं: TRL की तरह, {chosen} और {rejected} में साझा शुरुआती टर्न ही प्रॉम्प्ट माने जाते हैं।",
       answerNote: "जवाब वाला कॉलम सिर्फ़ रिवॉर्ड को जाता है; मॉडल उसे कभी नहीं देखता।",
       columnHeader: "कॉलम",
       sampleHeader: "पहली पंक्ति",

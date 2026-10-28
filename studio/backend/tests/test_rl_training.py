@@ -55,6 +55,28 @@ def test_preference_rows_strip_the_user_turn_from_full_conversations():
     assert out[0]["prompt"] == [{"role": "user", "content": "q"}]
 
 
+@pytest.mark.parametrize("objective", ["dpo", "orpo"])
+def test_preference_prompt_is_implicit_like_trl(objective):
+    # trl-lib/ultrafeedback_binarized: no prompt column, the conversations share the user turn.
+    def convo(reply):
+        return [{"role": "user", "content": "q"}, {"role": "assistant", "content": reply}]
+
+    ds = Dataset.from_list(
+        [{"chosen": convo("good"), "rejected": convo("bad"), "score_chosen": 9.0}]
+    )
+    out, roles = format_rl_dataset(ds, objective)
+    assert "prompt" not in roles
+    assert out[0]["prompt"] == [{"role": "user", "content": "q"}]
+    assert out[0]["chosen"] == [{"role": "assistant", "content": "good"}]
+    assert out[0]["rejected"] == [{"role": "assistant", "content": "bad"}]
+
+
+def test_implicit_prompt_needs_conversations_that_share_it():
+    ds = Dataset.from_list([{"chosen": "good", "rejected": "bad"}])
+    with pytest.raises(ValueError, match = "Map a Prompt column"):
+        format_rl_dataset(ds, "dpo")
+
+
 def test_missing_roles_name_the_columns_found():
     with pytest.raises(ValueError, match = "chosen, rejected"):
         resolve_role_columns(["prompt", "text"], "orpo")

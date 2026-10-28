@@ -4912,6 +4912,7 @@ export const en = {
       s3Unsupported: "RL training can't read column roles from S3 data yet. Use a Hugging Face or uploaded dataset.",
       error: "Could not load columns: {error}",
       missing: "Still needed: {roles}",
+      implicitPrompt: "No {prompt} column: the prompt is the opening turns that {chosen} and {rejected} share, as TRL reads these datasets.",
       answerNote: "The answer column only goes to the rewards; the model never sees it.",
       columnHeader: "Column",
       sampleHeader: "First row",

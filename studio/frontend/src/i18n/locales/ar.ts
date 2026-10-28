@@ -4832,6 +4832,7 @@ export const ar = {
       s3Unsupported: "لا يستطيع تدريب RL قراءة أدوار الأعمدة من بيانات S3 بعد. استخدم مجموعة بيانات من Hugging Face أو مجموعة مرفوعة.",
       error: "تعذّر تحميل الأعمدة: {error}",
       missing: "ما زال مطلوبًا: {roles}",
+      implicitPrompt: "لا يوجد عمود {prompt}: الموجّه هو الأدوار الأولى المشتركة بين {chosen} و{rejected}، كما يقرأ TRL هذه المجموعات.",
       answerNote: "عمود الإجابة يُمرَّر إلى المكافآت فقط؛ ولا يراه النموذج أبدًا.",
       columnHeader: "العمود",
       sampleHeader: "الصف الأول",

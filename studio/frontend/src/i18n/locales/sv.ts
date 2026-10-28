@@ -5126,6 +5126,7 @@ export const sv = {
       s3Unsupported: "RL-träning kan inte läsa kolumnroller från S3-data än. Använd ett dataset från Hugging Face eller ett uppladdat.",
       error: "Det gick inte att läsa in kolumner: {error}",
       missing: "Behövs fortfarande: {roles}",
+      implicitPrompt: "Ingen kolumn för {prompt}: prompten är de inledande turerna som {chosen} och {rejected} delar, så som TRL läser sådana dataset.",
       answerNote: "Svarskolumnen går bara till belöningarna; modellen ser den aldrig.",
       columnHeader: "Kolumn",
       sampleHeader: "Första raden",

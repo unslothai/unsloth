@@ -4823,6 +4823,7 @@ export const ko = {
       s3Unsupported: "RL 학습은 아직 S3 데이터에서 열 역할을 읽을 수 없습니다. Hugging Face 또는 업로드한 데이터셋을 사용하세요.",
       error: "열을 불러오지 못했습니다: {error}",
       missing: "아직 필요: {roles}",
+      implicitPrompt: "{prompt} 열이 없습니다. TRL과 마찬가지로 {chosen}과 {rejected}가 공유하는 앞부분 턴을 프롬프트로 사용합니다.",
       answerNote: "답변 열은 보상에만 전달되며 모델은 볼 수 없습니다.",
       columnHeader: "열",
       sampleHeader: "첫 번째 행",

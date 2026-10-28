@@ -4734,6 +4734,7 @@ export const zhCN = {
       s3Unsupported: "RL 训练暂时无法从 S3 数据读取列角色。请使用 Hugging Face 数据集或上传的数据集。",
       error: "无法加载列：{error}",
       missing: "仍需要：{roles}",
+      implicitPrompt: "没有{prompt}列：与 TRL 读取这类数据集的方式一样，以{chosen}和{rejected}共有的开头轮次作为提示。",
       answerNote: "答案列只传给奖励函数，模型永远看不到。",
       columnHeader: "列",
       sampleHeader: "第一行",

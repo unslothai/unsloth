@@ -48,9 +48,10 @@ export const RL_ROLES: Record<RlObjective, readonly RlRole[]> = {
   orpo: ["prompt", "chosen", "rejected", "system"],
   grpo: ["prompt", "answer", "system"],
 };
+// DPO/ORPO prompts may be implicit, as TRL reads them: the turns chosen and rejected share.
 export const RL_REQUIRED_ROLES: Record<RlObjective, readonly RlRole[]> = {
-  dpo: ["prompt", "chosen", "rejected"],
-  orpo: ["prompt", "chosen", "rejected"],
+  dpo: ["chosen", "rejected"],
+  orpo: ["chosen", "rejected"],
   grpo: ["prompt"],
 };
 const AUTO_NAMES: Record<RlRole, readonly string[]> = {

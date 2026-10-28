@@ -4907,6 +4907,7 @@ export const it = {
       s3Unsupported: "L'addestramento RL non può ancora leggere i ruoli delle colonne dai dati S3. Usa un dataset di Hugging Face o caricato.",
       error: "Impossibile caricare le colonne: {error}",
       missing: "Ancora necessari: {roles}",
+      implicitPrompt: "Nessuna colonna {prompt}: il prompt sono i turni iniziali che {chosen} e {rejected} hanno in comune, come TRL legge questi dataset.",
       answerNote: "La colonna della risposta va solo alle ricompense; il modello non la vede mai.",
       columnHeader: "Colonna",
       sampleHeader: "Prima riga",

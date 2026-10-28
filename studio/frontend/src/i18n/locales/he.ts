@@ -4980,6 +4980,7 @@ export const he = {
       s3Unsupported: "אימון RL עדיין לא יכול לקרוא תפקידי עמודות מנתוני S3. השתמש במאגר נתונים מ-Hugging Face או במאגר שהועלה.",
       error: "לא ניתן לטעון עמודות: {error}",
       missing: "עדיין נדרש: {roles}",
+      implicitPrompt: "אין עמודת {prompt}: ההנחיה היא תורות הפתיחה ש-{chosen} ו-{rejected} חולקות, כפי ש-TRL קורא מערכי נתונים כאלה.",
       answerNote: "עמודת התשובה מועברת רק לתגמולים; המודל אף פעם לא רואה אותה.",
       columnHeader: "עמודה",
       sampleHeader: "שורה ראשונה",

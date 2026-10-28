@@ -4906,6 +4906,7 @@ export const es = {
       s3Unsupported: "El entrenamiento RL aún no puede leer los roles de columna de datos en S3. Usa un dataset de Hugging Face o uno subido.",
       error: "No se pudieron cargar las columnas: {error}",
       missing: "Aún falta: {roles}",
+      implicitPrompt: "Sin columna {prompt}: el prompt son los turnos iniciales que comparten {chosen} y {rejected}, como TRL lee estos conjuntos de datos.",
       answerNote: "La columna de respuesta solo va a las recompensas; el modelo nunca la ve.",
       columnHeader: "Columna",
       sampleHeader: "Primera fila",

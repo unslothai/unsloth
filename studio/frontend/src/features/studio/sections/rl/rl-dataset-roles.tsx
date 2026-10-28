@@ -24,6 +24,7 @@ import {
   type RlObjective,
   type RlRole,
   missingRlRoles,
+  resolveRlMapping,
   syncRlMapping,
 } from "@/features/training";
 import { type TranslationKey, useT } from "@/i18n";
@@ -127,9 +128,10 @@ export function RlDatasetRoles({
   );
   // Columns are kept with the dataset they came from: a switch must not map the new
   // dataset's roles from the previous one's columns while its own are loading.
-  const [loaded, setLoaded] = useState<{ key: string; columns: string[] } | null>(
-    null,
-  );
+  const [loaded, setLoaded] = useState<{
+    key: string;
+    columns: string[];
+  } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const latestRequest = useRef(0);
@@ -250,8 +252,15 @@ export function RlDatasetRoles({
   const mappedRoles = new Set(Object.values(config.mapping));
   const required = RL_REQUIRED_ROLES[objective];
   const chipRoles = roles.filter(
-    (role) => required.includes(role) || role === "answer",
+    (role) => required.includes(role) || role === "answer" || role === "prompt",
   );
+  const implicitPrompt =
+    columns !== null &&
+    objective !== "grpo" &&
+    missing.length === 0 &&
+    !Object.values(
+      resolveRlMapping(objective, columns, config.mapping),
+    ).includes("prompt");
 
   return (
     <div className="flex flex-col gap-3 rounded-xl border border-border/70 p-3">
@@ -374,6 +383,15 @@ export function RlDatasetRoles({
         <p className="text-ui-11p5 text-amber-700 dark:text-amber-300">
           {t("rl.dataset.missing", {
             roles: missing.map((role) => t(ROLE_LABEL[role])).join(", "),
+          })}
+        </p>
+      )}
+      {implicitPrompt && (
+        <p className="text-ui-11p5 text-muted-foreground/85">
+          {t("rl.dataset.implicitPrompt", {
+            prompt: t(ROLE_LABEL.prompt),
+            chosen: t(ROLE_LABEL.chosen),
+            rejected: t(ROLE_LABEL.rejected),
           })}
         </p>
       )}
