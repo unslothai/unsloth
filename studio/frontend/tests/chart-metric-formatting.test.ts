@@ -48,8 +48,15 @@ test("padding after a decimal point is still trimmed", () => {
 test("negative zero reads as zero", () => {
   assert.equal(formatMetric(-0), "0");
   assert.equal(formatAxisMetric(-0), "0");
-  // toFixed rounds this to "-0" before the trim sees it.
-  assert.equal(formatAxisMetric(-0.000001), "0");
+});
+
+test("tiny axis ticks stay distinct instead of all reading 0", () => {
+  const ticks = [0, 0.0000125, 0.000025, 0.0000375, 0.00005].map(
+    formatAxisMetric,
+  );
+  assert.deepEqual(ticks, ["0", "1.25e-5", "2.5e-5", "3.75e-5", "5e-5"]);
+  assert.equal(formatAxisMetric(-0.000001), "-1e-6");
+  assert.equal(formatAxisMetric(0.002), "0.002");
 });
 
 test("a non-finite metric is still reported as zero", () => {

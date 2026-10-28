@@ -5,7 +5,8 @@ import type { LossHistoryItem, OutlierMode, SmoothedLossItem } from "./types";
 
 export const CHART_SYNC_ID = "train-metrics-sync";
 export const MAX_RENDER_POINTS = 800;
-export const CHART_CONTAINER_CLASS = "h-[calc(220px*var(--ui-space-scale,1))] 4xl:h-[calc(300px*var(--ui-space-scale,1))] w-full";
+export const CHART_CONTAINER_CLASS =
+  "h-[calc(220px*var(--ui-space-scale,1))] 4xl:h-[calc(300px*var(--ui-space-scale,1))] w-full";
 export const DEFAULT_CHART_MARGIN = { top: 4, right: 8, bottom: 0, left: 4 };
 export const DEFAULT_Y_AXIS_WIDTH = 45;
 const TRAILING_ZEROES_RE = /\.?0+$/;
@@ -66,6 +67,11 @@ export function formatAxisMetric(value: number): string {
   }
 
   const abs = Math.abs(value);
+  if (abs > 0 && abs < 0.001) {
+    // GRPO losses sit near 1e-5: fixed decimals would label every tick 0.
+    const [mantissa, exponent] = value.toExponential(2).split("e");
+    return `${trimFormatted(mantissa)}e${exponent}`;
+  }
   let decimals = 4;
 
   if (abs >= 1000) {
