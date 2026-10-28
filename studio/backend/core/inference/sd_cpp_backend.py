@@ -2743,18 +2743,14 @@ class _SdState:
 
     @property
     def placed_ordinal(self) -> Optional[int]:
-        """The torch-visible CUDA ordinal of ``physical_gpu_id``, as the diffusers state records its card.
-
-        Helpers that share the image model's card (the FLUX.3 prompt upsampler, segmentation) read
-        ``placed_ordinal`` off whichever engine is active. Without it a native load on card 1 reads as
-        unplaced, and the upsampler's llama-server starts unpinned and splits over every visible GPU."""
+        """Torch ordinal of ``physical_gpu_id``; without it card-sharing helpers (upsampler) split over all GPUs."""
         if self.physical_gpu_id is None or self.off_torch_device is not None:
             return None
         try:
             from utils.hardware import get_parent_visible_gpu_ids
             visible = [int(i) for i in get_parent_visible_gpu_ids()]
             return visible.index(int(self.physical_gpu_id))
-        except Exception:  # noqa: BLE001 -- unknown mapping reads as unplaced, the previous answer
+        except Exception:  # noqa: BLE001
             return None
 
 

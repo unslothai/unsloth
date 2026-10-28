@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A native sd.cpp image load reports its card to the helpers that share it (the FLUX.3 prompt upsampler)."""
-
 import types
 
 import pytest
@@ -46,7 +44,6 @@ def test_upsampler_reads_the_native_sd_cpp_card(monkeypatch, visible, physical, 
 def test_unresolved_or_off_torch_native_placement_stays_unplaced(monkeypatch):
     _activate(monkeypatch, _native_state(physical_gpu_id = None), [0, 1])
     assert pup._resident_cuda_ordinal() is None
-    # An UNSLOTH_DIFFUSION_SD_CPP_DEVICE card is not a torch ordinal.
     _activate(monkeypatch, _native_state(physical_gpu_id = 1, off_torch_device = "Vulkan1"), [0, 1])
     assert pup._resident_cuda_ordinal() is None
 
@@ -61,5 +58,4 @@ def test_llama_server_is_masked_to_the_native_card(monkeypatch):
     from core.inference.llama_cpp import LlamaCppBackend
 
     monkeypatch.setattr(LlamaCppBackend, "_torch_is_rocm", staticmethod(lambda _torch: False))
-    # Before: no ordinal, so no mask, and llama-server split its layers over both cards.
     assert pup._child_device_mask(pup._resident_cuda_ordinal()) == {"CUDA_VISIBLE_DEVICES": "5"}
