@@ -3837,6 +3837,13 @@ class UnslothTrainer:
                     f"{objective.upper()} is not available for vision-language models yet; "
                     "use SFT or GRPO."
                 )
+            if objective == "grpo" and self.is_vlm:
+                # The prompts carry no image parts and the media columns are dropped, so the run
+                # would quietly train on text only.
+                raise ValueError(
+                    "GRPO on an image dataset is not available yet; use SFT, or a dataset "
+                    "without image columns."
+                )
             if objective != "sft" and self.diffusion_lm_profile:
                 # Text-diffusion models train with their own denoising objective, not TRL's RL trainers.
                 raise ValueError(
