@@ -502,8 +502,15 @@ class MfluxRuntime:
     def _plan_vae_tiling(self, model: Any, width: int, height: int) -> None:
         from mflux.models.common.vae.tiling_config import TilingConfig
 
+        try:
+            from core.inference.gpu_residency import metal_media_priced
+
+            # Its price reserved the tiled decode, and a chat model may join mid-generation on that price.
+            priced = metal_media_priced()
+        except Exception:  # noqa: BLE001
+            priced = False
         tiled = TilingConfig.may_tile_implicitly(model) and vae_tiling_needed(
-            width, height, self.free_working_set_bytes()
+            width, height, 0 if priced else self.free_working_set_bytes()
         )
         model.tiling_config = TilingConfig() if tiled else None
         self.last_vae_tiled = tiled

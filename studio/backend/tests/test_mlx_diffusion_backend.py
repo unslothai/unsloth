@@ -1897,8 +1897,37 @@ def test_the_renderer_sees_the_shared_pool_beside_a_chat_model(monkeypatch):
     monkeypatch.setattr(gr, "_mlx_chat_unallocated_mib", lambda: 4096)
     runtime = mb.MfluxRuntime()
     monkeypatch.setattr(gr, "media_held_mib", lambda: {0: 9000})
+    monkeypatch.setattr("psutil.virtual_memory", lambda: types.SimpleNamespace(available = 64 * _GIB))
     assert runtime.free_working_set_bytes() == 12 * _GIB
-    assert mb.vae_tiling_needed(2048, 2048, runtime.free_working_set_bytes())
+    # Available RAM caps the pool as admission's reading does.
+    monkeypatch.setattr("psutil.virtual_memory", lambda: types.SimpleNamespace(available = 5 * _GIB))
+    assert runtime.free_working_set_bytes() == 1 * _GIB
+    assert gr.metal_media_priced()
     # Under Off nothing is priced, and the renderer keeps its own reading.
     monkeypatch.setattr(gr, "media_held_mib", lambda: {})
     assert runtime.free_working_set_bytes() == 88 * _GIB
+
+
+@pytest.mark.parametrize("priced, free_gib, expected", [(True, 40.0, True), (False, 40.0, False)])
+def test_a_priced_media_model_on_metal_always_tiles(monkeypatch, priced, free_gib, expected):
+    """Its price reserved the tiled decode, and a chat model may join on it while this render runs."""
+    import sys
+    import types
+
+    import core.inference.gpu_residency as gr
+
+    class _TilingConfig:
+        @staticmethod
+        def may_tile_implicitly(model):
+            return True
+
+    module = types.ModuleType("mflux.models.common.vae.tiling_config")
+    module.TilingConfig = _TilingConfig
+    monkeypatch.setitem(sys.modules, "mflux.models.common.vae.tiling_config", module)
+    monkeypatch.delenv(mb.VAE_TILING_ENV, raising = False)
+    monkeypatch.setattr(gr, "metal_media_priced", lambda: priced)
+    runtime = mb.MfluxRuntime()
+    monkeypatch.setattr(runtime, "free_working_set_bytes", lambda: int(free_gib * _GIB))
+    model = types.SimpleNamespace(tiling_config = None)
+    runtime._plan_vae_tiling(model, 1024, 1024)
+    assert runtime.vae_tiled() is expected

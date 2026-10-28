@@ -419,13 +419,21 @@ def _on_metal() -> bool:
 def shared_metal_headroom_bytes() -> Optional[int]:
     """What every process on Apple's one GPU may still take, less what resident MLX chat models reserved to grow.
     None unless priced media is kept on Metal (Off keeps the renderer's own reading) or with no reading."""
-    if not _on_metal() or not media_held_mib():
+    if not metal_media_priced():
         return None
+    import psutil
     from core.inference.llama_cpp import _apple_wired_headroom_bytes
 
     wired = _apple_wired_headroom_bytes()
-    unallocated = _mlx_chat_unallocated_mib() or 0
-    return None if wired is None else max(0, wired - unallocated * 1024 * 1024)
+    if wired is None:
+        return None
+    pool = min(wired, int(psutil.virtual_memory().available))
+    return max(0, pool - (_mlx_chat_unallocated_mib() or 0) * 1024 * 1024)
+
+
+def metal_media_priced() -> bool:
+    """Whether a media model is kept on Metal at a price: one that reserved the tiled decode, so it must tile."""
+    return _on_metal() and bool(media_held_mib())
 
 
 def _metal_pool() -> tuple[Optional[dict[int, dict]], Optional[str]]:
