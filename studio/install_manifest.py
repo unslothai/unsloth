@@ -255,10 +255,7 @@ def _one_metadata_scan_per_call(fn):
 
 
 def _metadata_record_index(backups_only: bool = False) -> Dict[str, list]:
-    """Canonical name -> [(dist, dir, dir-name key)].
-
-    Nameless / unreadable records file under the directory name with no dist (no version).
-    """
+    """Canonical name -> [(dist, dir, dir-name key)]; nameless records file by dir name, no dist."""
     from importlib.metadata import MetadataPathFinder, distributions
 
     paths = _metadata_scan_paths()
@@ -293,7 +290,6 @@ def _metadata_record_index(backups_only: bool = False) -> Dict[str, list]:
 
 
 def _records_named(index: Dict[str, list], key: str) -> List[Tuple[str, Optional[Path]]]:
-    """(version, directory) for every record filed under *key*, sorted."""
     found: List[Tuple[str, Optional[Path]]] = []
     for dist, record_path, path_key in index.get(key, ()):
         if dist is None:
