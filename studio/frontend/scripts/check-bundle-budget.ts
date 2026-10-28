@@ -435,8 +435,10 @@ export const BUDGET = {
   // carried onto main's budget at each later merge of main.
   // Python rewards (#12995): +4,260 B raw / +1,341 B transfer over #12601 (the isolation switch, Start
   // gating and per-reward Try it errors in the eager rewards section and catalog), measured at 2fe7715056.
-  transferBytes: 2_113_769,
-  rawBytes: 7_010_399,
+  // Sample answers (#12999): +1,158 B raw / +347 B transfer over #12995 (the card's loading, waiting
+  // and error strings in the eager catalog), measured at 7eb8c86831.
+  transferBytes: 2_114_116,
+  rawBytes: 7_011_557,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.
