@@ -137,7 +137,6 @@ _HEAD_NORMS = (
     "key_layernorm",
 )
 _MLA_NAMES = ("q_a_proj", "q_b_proj", "kv_a_proj_with_mqa", "kv_b_proj", "kv_a_layernorm")
-_MOE_CONFIG_KEYS = ("num_experts", "num_local_experts", "n_routed_experts", "moe_num_experts")
 # An attention forward reading these sizes off the config would reshape to the global head count.
 _GLOBAL_HEAD_READS = re.compile(r"config\.(num_attention_heads|num_key_value_heads)\b")
 _GLOBAL_WIDTH_READS = re.compile(
@@ -193,6 +192,12 @@ class TPPlan:
     replicated_layers: int = (
         0  # decoder layers with no region (e.g. linear attention): run replicated
     )
+    # Mixture-of-experts blocks: run replicated (experts not sharded), outputs averaged over tp.
+    moe_blocks: list = dataclasses.field(default_factory = list)
+
+    @property
+    def replicated_moe(self):
+        return len(self.moe_blocks)
 
     def styles(self):
         """{projection path: style} (the plan in transformers form, local paths)."""
@@ -299,28 +304,25 @@ def _refuse_dropout(model, layers):
             )
 
 
-def _refuse_moe_mla(model, layers):
+def _is_moe_block(module):
+    """A mixture-of-experts block (by structure: an `experts` child or an experts / sparse-MoE class)."""
+    for name, sub in module.named_modules():
+        leaf = name.rsplit(".", 1)[-1]
+        cls = type(sub).__name__
+        if leaf == "experts" or "Experts" in cls or "SparseMoe" in cls or "MoE" in cls:
+            return True
+    return False
+
+
+def _refuse_mla(model, layers):
     text = _text_config(model)
-    for key in _MOE_CONFIG_KEYS:
-        value = getattr(text, key, None)
-        if isinstance(value, int) and value > 0:
-            raise ValueError(
-                f"Unsloth: tensor parallelism v1 does not support mixture-of-experts models ({key} = {value}): "
-                "expert sharding is not implemented. Use native FSDP2 (UNSLOTH_FSDP2=1) instead."
-            )
     if getattr(text, "kv_lora_rank", None):
         raise ValueError(
             "Unsloth: tensor parallelism v1 does not support multi-head latent attention (MLA, kv_lora_rank "
             f"= {text.kv_lora_rank}). Use native FSDP2 (UNSLOTH_FSDP2=1) instead."
         )
     for name, module in layers.named_modules():
-        leaf = name.rsplit(".", 1)[-1]
-        cls = type(module).__name__
-        if leaf == "experts" or "Experts" in cls or "SparseMoe" in cls or "MoE" in cls:
-            raise ValueError(
-                f"Unsloth: tensor parallelism v1 does not support mixture-of-experts layers ({name}: {cls})."
-            )
-        if leaf in _MLA_NAMES:
+        if name.rsplit(".", 1)[-1] in _MLA_NAMES:
             raise ValueError(
                 f"Unsloth: tensor parallelism v1 does not support multi-head latent attention ({name})."
             )
@@ -430,22 +432,19 @@ def derive_tp_plan(
     plan = dict(plan) if plan else _hf_plan(model)
     compiled = [(k, _pattern(k), v) for k, v in plan.items()]
     layers_path, layers = _decoder_layers(model)
-    # Config / module MoE and MLA first: older transformers plans name expert styles v1 does not know.
-    _refuse_moe_mla(model, layers)
+    _refuse_mla(model, layers)
     _refuse_dropout(model, layers)
+    # Mixture-of-experts blocks are not sharded: they run replicated on every tp rank (expert styles in the
+    # plan name parts of them). An expert style that lands inside a sharded region is refused in _classify.
     for key, _, style in compiled:
-        if style in _MOE_STYLES:
-            raise ValueError(
-                f"Unsloth: tensor parallelism v1 does not support mixture-of-experts layers ('{key}': '{style}')."
-            )
         if style in _MLA_STYLES:
             raise ValueError(
                 f"Unsloth: tensor parallelism v1 does not support multi-head latent attention ('{key}')."
             )
-        if style not in _STYLES and style not in _REPLICATED_STYLES:
+        if style not in _STYLES and style not in _REPLICATED_STYLES and style not in _MOE_STYLES:
             raise ValueError(f"Unsloth: unknown tensor parallel style '{style}' for '{key}'.")
     text = _text_config(model)
-    regions, replicated, seen = [], 0, {}
+    regions, replicated, seen, moe = [], 0, {}, []
     for index, layer in enumerate(layers):
         found = 0
         for child_name, child in layer.named_children():
@@ -454,7 +453,16 @@ def derive_tp_plan(
                 if child_name in _ATTN_NAMES
                 else ("mlp" if child_name in _MLP_NAMES else None)
             )
-            if kind is None or not _has_params(child):
+            if not _has_params(child):
+                continue
+            if kind != "attention" and _is_moe_block(child):
+                # Replicated: identical input and weights on every tp rank, so identical outputs and grads.
+                if id(child) not in seen:
+                    moe.append(child)
+                seen[id(child)] = None
+                found += kind is not None
+                continue
+            if kind is None:
                 continue
             path = f"{layers_path}.{index}.{child_name}"
             found += 1
@@ -474,7 +482,13 @@ def derive_tp_plan(
         source = (
             "transformers" if any(p.from_plan for r in regions for p in r.projs) else "structural"
         )
-    return TPPlan(tp_size = tp_size, regions = regions, source = source, replicated_layers = replicated)
+    return TPPlan(
+        tp_size = tp_size,
+        regions = regions,
+        source = source,
+        replicated_layers = replicated,
+        moe_blocks = moe,
+    )
 
 
 def _region(path, module, kind, compiled, text, tp):
@@ -1080,6 +1094,37 @@ class _ReduceFromTP(torch.autograd.Function):
         return grad, None
 
 
+class _MeanFromTP(torch.autograd.Function):
+    """All-reduce mean forward, identity backward: a replicated block's output made bitwise equal on every tp
+    rank (CUDA scatter / index_add kernels are not deterministic), its gradient already the same everywhere."""
+
+    @staticmethod
+    def forward(ctx, x, group, size):
+        return _all_reduce(x, group) / size
+
+    @staticmethod
+    def backward(ctx, grad):
+        return grad, None, None
+
+
+def _moe_post_hook(module, args, output):
+    if module.__dict__.get("_unsloth_tp_gathered"):
+        return None  # tp_replica: one rank may run alone
+    group, size = module._unsloth_tp_group, module._unsloth_tp_size
+
+    def sync(y):
+        return _MeanFromTP.apply(y, group, size) if y.is_floating_point() else y
+
+    if isinstance(output, torch.Tensor):
+        return sync(output)
+    if isinstance(output, (tuple, list)) and output and isinstance(output[0], torch.Tensor):
+        return type(output)((sync(output[0]), *output[1:]))
+    raise RuntimeError(
+        f"Unsloth: tensor parallel replicated mixture-of-experts block {type(module).__name__} returned "
+        f"{type(output)}."
+    )
+
+
 def copy_to_tp(x, group):
     return _CopyToTP.apply(x, group)
 
@@ -1443,6 +1488,10 @@ def apply_tensor_parallel(
             _set_local_heads(module, region, tp)
         module.register_forward_pre_hook(_region_pre_hook, with_kwargs = True)
         module.register_forward_hook(_region_post_hook)
+    for block in tp_plan.moe_blocks:
+        block._unsloth_tp_group = group
+        block._unsloth_tp_size = tp
+        block.register_forward_hook(_moe_post_hook)
     # Unsloth decode paths bypass the regions: mark and guard every wrapper level.
     info = {"size": tp, "rank": rank, "regions": len(tp_plan.regions), "source": tp_plan.source}
     inner = _unwrap(model)
@@ -1467,6 +1516,11 @@ def apply_tensor_parallel(
                 else ""
             )
             + _kv_replicated_note(tp_plan)
+            + (
+                f", {tp_plan.replicated_moe} mixture-of-experts blocks replicated (experts not sharded)"
+                if tp_plan.replicated_moe
+                else ""
+            )
             + "."
         )
     return model

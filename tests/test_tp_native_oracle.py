@@ -431,14 +431,19 @@ def test_shard_slice_unpermute_round_trip():
         (GEMMA3, {"num_attention_heads": 12, "num_key_value_heads": 3}, 4, "not a multiple of it"),
         (MISTRAL, {}, 2, "intermediate_size = 37"),
         (OLMO2, {}, 2, "normalizes .* features, not one head"),
-        (QWEN3_MOE, {}, 2, "mixture-of-experts"),
-        (DEEPSEEK_V3, {}, 2, "mixture-of-experts|latent attention"),
+        (DEEPSEEK_V3, {}, 2, "latent attention"),
     ],
 )
 def test_refusals_plan(repo, overrides, tp, match):
     model = build(repo, overrides, lora = False)
     with pytest.raises(ValueError, match = match):
         tpn.derive_tp_plan(model, tp)
+
+
+def test_moe_blocks_run_replicated():
+    plan = tpn.derive_tp_plan(build(QWEN3_MOE, {"mlp_only_layers": [1]}, lora = False), 2)
+    assert plan.replicated_moe == 1
+    assert [r.kind for r in plan.regions] == ["attention", "attention", "mlp"]
 
 
 def test_refuses_attention_and_layer_dropout():
