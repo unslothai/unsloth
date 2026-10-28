@@ -930,6 +930,15 @@ def test_an_excluded_setting_trains_alone(batching, tmp_path, fields):
     assert openai_fine_tuning._batch_for(plain) == [plain]
 
 
+def test_non_default_adam_betas_train_alone(batching, tmp_path):
+    # Packing off so the pair is otherwise batchable: the batched AdamW would drop the betas.
+    plain = [_entry(tmp_path, n, packing = False) for n in "ab"]
+    assert openai_fine_tuning._batchable(plain[0].request)
+    tuned = [_entry(tmp_path, n, packing = False, adam_beta2 = 0.99) for n in "cd"]
+    batching.extend(tuned)
+    assert openai_fine_tuning._batch_for(tuned[0]) == [tuned[0]]
+
+
 @pytest.mark.parametrize(
     "fields",
     [

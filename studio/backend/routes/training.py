@@ -2164,9 +2164,7 @@ async def _admit_training_request(
             normalize_reward_name,
         )
 
-        stored_specs = (
-            _stored_reward_specs(training_run_config(resume_run)) if resume_run else {}
-        )
+        stored_specs = _stored_reward_specs(training_run_config(resume_run)) if resume_run else {}
         if resume_run and _resume_reward_mismatch(stored_specs, request.grpo_rewards):
             raise HTTPException(
                 status_code = 409,
@@ -2237,6 +2235,8 @@ async def _admit_training_request(
         "save_steps": request.save_steps,
         "weight_decay": request.weight_decay,
         "max_grad_norm": request.max_grad_norm,
+        "adam_beta1": request.adam_beta1,
+        "adam_beta2": request.adam_beta2,
         "max_grad_value": request.max_grad_value,
         "max_grad_leaf_norm": request.max_grad_leaf_norm,
         "cast_norm_output_to_input_dtype": request.cast_norm_output_to_input_dtype,
