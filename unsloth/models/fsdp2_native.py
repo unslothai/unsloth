@@ -23,6 +23,7 @@ import functools
 import math
 import os
 import sys
+import types
 from typing import Callable, Optional, Union
 
 import torch
@@ -3346,6 +3347,31 @@ def _has_cpu_tensors(optimizer, grads = False):
     return False
 
 
+def _local_grads_if_mixed(optimizer):
+    """Swap DTensor grads for their local shards when DTensor and plain grads mix: one foreach unscale
+    takes one tensor kind ("got mixed torch.Tensor and DTensor"). Elementwise, so the shard result is the same."""
+    try:
+        from torch.distributed.tensor import DTensor
+    except ImportError:
+        return optimizer
+    groups, dtensor, plain = [], False, False
+    for group in optimizer.param_groups:
+        params = []
+        for p in group["params"]:
+            grad = p.grad
+            if isinstance(grad, DTensor):
+                dtensor = True
+                p = types.SimpleNamespace(grad = grad._local_tensor)
+            elif grad is not None:
+                plain = True
+            # Plain grads keep their parameter: upstream reassigns a coalesced float16 sparse grad to it.
+            params.append(p)
+        groups.append({"params": params})
+    if not (dtensor and plain):
+        return optimizer
+    return types.SimpleNamespace(param_groups = groups)
+
+
 def _scaler_for_native(trainer):
     """float16: the GradScaler's inf check must agree over ranks, or one rank skips a step the
     others take. ShardedGradScaler all-reduces it."""
@@ -3399,7 +3425,9 @@ def _scaler_for_native(trainer):
             # CPU grads get non_blocking copies of CUDA inv_scale / found_inf, read before they land.
             if inv_scale.device.type != "cpu" and _has_cpu_tensors(optimizer, grads = True):
                 inv_scale, found_inf = inv_scale.cpu(), found_inf.cpu()
-            return super()._unscale_grads_(optimizer, inv_scale, found_inf, allow_fp16)
+            return super()._unscale_grads_(
+                _local_grads_if_mixed(optimizer), inv_scale, found_inf, allow_fp16
+            )
 
         def step(self, optimizer, *args, **kwargs):
             # Same race for a fused optimizer's grad_scale / found_inf on CPU parameters: use host copies.
