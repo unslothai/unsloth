@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Fewer cyclic GC passes while `import unsloth` pulls in torch / transformers / trl.
-
-Those imports allocate ~700k long-lived objects, so the default generation 0 threshold
-triggers several full collections that find almost nothing. The caller's generation 0
-threshold comes back at the end of the import. If the import raises instead, the package
-leaves sys.modules and a one-shot meta path hook restores it on the next import anywhere;
-this module also outlives the failed import, so a retry still sees the original value.
-"""
+"""Raise the gen 0 GC threshold while `import unsloth` runs: torch / transformers / trl allocate
+~700k long-lived objects, so the default triggers full collections that find almost nothing.
+A failed import leaves sys.modules; a one-shot meta path hook then restores it on the next import."""
 
 import gc
 import sys

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Repeated full gc.collect() passes that stop once a pass that really ran finds nothing. Imports only gc."""
+"""Full gc.collect() passes that stop once a pass that really ran finds nothing. Imports only gc."""
 
 import gc
 
@@ -13,14 +13,11 @@ def collect_garbage(
     before = None,
     after = None,
 ):
-    """Up to `passes` full gc.collect() passes, with `before` / `after` (e.g. a cache flush) run around each.
+    """Up to `passes` full gc.collect() passes, `before` / `after` run around each.
 
-    Stops after a pass that ran and found nothing: it freed nothing and ran no finalizer, so the next pass
-    would walk the same heap and find nothing either. Keeps going, as every pass used to, whenever that is
-    not certain: gc.callbacks are registered (they run around every pass and may drop references), the
-    pass did not return 0 (None when gc.collect is swapped out), or the full-collection stats do not show
-    exactly one more collection that freed nothing (CPython returns 0 without collecting while another
-    thread's collection is in progress).
+    Stops after a pass that ran and found nothing. Keeps going while gc.callbacks are registered (they
+    may drop references) or when the gen 2 stats do not show one more empty collection (CPython returns 0
+    without collecting while another thread is collecting).
     """
     for _ in range(passes):
         if before is not None:
