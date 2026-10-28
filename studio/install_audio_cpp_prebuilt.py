@@ -8,7 +8,7 @@ llama.cpp runtime: every bundle is self-contained (the server links ggml statica
 Releases are named ``audio-<tag>-bin-<os>-<arch>-<backend>.{zip,tar.gz}``, the scheme
 upstream uses and the Unsloth fork keeps, so one resolver serves both. Windows CUDA
 bundles need the CUDA runtime DLLs, which upstream publishes as a separate
-``audio-<tag>-cudart-windows-x64-<line>.zip``; that download is skipped when the
+``audio-<tag>-cudart-windows-<arch>-<line>.zip`` (same arch as the bundle); that download is skipped when the
 running Python's torch already ships the same CUDA runtime line.
 
 The bundle is extracted into a staging directory beside the managed tree, started once
