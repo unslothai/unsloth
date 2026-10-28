@@ -429,7 +429,9 @@ export const BUDGET = {
   // The Evals tab on the Benchmarks page (#12521) adds 6,058 B raw / 1,585 B transfer, its strings in the eager en
   // locale; its runtime driver is a React.lazy chunk. Raised by that on top of main.
   // Flows: +12,232 B raw / +6,300 B transfer over 1610b38cc4 (shared startup chunks); Flows itself stays lazy.
-  transferBytes: 2_109_070,
+  // Flows gallery kept as Daniel's (no Studio Card/Skeleton/Textarea/Spinner there): chunk split moves
+  // ~1.2 KB transfer into startup (2,053.3 -> 2,054.5 KB, Node 26, 127 chunks). Raised by that.
+  transferBytes: 2_110_270,
   rawBytes: 6_991_845,
 };
 
