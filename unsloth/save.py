@@ -2412,6 +2412,105 @@ def _choose_first_conversion(
     return model_dtype
 
 
+def _convert_into_gguf_directory(
+    model_name,
+    model_directory,
+    model_dtype,
+    first_conversion,
+    first_conversion_dtype,
+    is_vlm,
+    is_gpt_oss,
+    print_output,
+    gguf_directory,
+    conversion_staging,
+):
+    """Run the HF to GGUF conversion and put its files in `gguf_directory`. With a staging folder the converter writes beside the destination; without one it keeps the bare-name CWD placement."""
+    print("Unsloth: Preparing converter script...")
+    with use_local_gguf():
+        converter_path, supported_text_archs, supported_vision_archs = (
+            _download_convert_hf_to_gguf()
+        )
+
+        print(f"Unsloth: [1] Converting model into {first_conversion_dtype} GGUF format.")
+        print(f"This might take 3 minutes...")
+
+        initial_files, is_vlm_update = convert_to_gguf(
+            model_name = (
+                model_name
+                if conversion_staging is None
+                else os.path.join(conversion_staging, model_name)
+            ),
+            input_folder = model_directory,
+            model_dtype = model_dtype,
+            quantization_type = first_conversion,
+            converter_location = converter_path,
+            supported_text_archs = supported_text_archs,
+            supported_vision_archs = supported_vision_archs,
+            is_vlm = is_vlm,
+            is_gpt_oss = is_gpt_oss,
+            max_shard_size = "50GB",
+            print_output = print_output,
+        )
+    for file in initial_files:
+        if not os.path.exists(file):
+            # Gated like the outer handler: disk advice is only right when disk is the problem, and a converter with no llama.cpp support fails here with space to spare.
+            if IS_KAGGLE_ENVIRONMENT and _gguf_failure_looks_like_disk(
+                RuntimeError(f"Conversion produced no output at {file}"),
+                os.path.dirname(file) or None,
+            ):
+                raise RuntimeError(
+                    f"Unsloth: Conversion failed for {file}\n"
+                    "You are in a Kaggle environment with limited disk space (20GB).\n"
+                    "Try saving to /tmp for more space or use a smaller model.\n"
+                    "Alternatively, save the 16bit model first, then convert manually."
+                )
+            else:
+                raise RuntimeError(
+                    f"Unsloth: Conversion failed for {file}\nPlease check disk space and try again."
+                )
+
+    os.makedirs(gguf_directory, exist_ok = True)
+    moved_files = []
+    for fpath in initial_files:
+        dst = os.path.join(gguf_directory, os.path.basename(fpath))
+        _place_gguf_output(fpath, dst)
+        moved_files.append(dst)
+    return moved_files, is_vlm_update
+
+
+def _gguf_conversion_staging(gguf_directory):
+    """A private folder inside `gguf_directory` for the converter's output, or None. `convert_to_gguf` resolves a bare name against the process CWD, so the intermediate GGUF used to be written there and then moved, which is a full copy whenever the CWD and the output folder sit on different filesystems (a Kaggle export redirected to /tmp, a Studio export folder on another drive). Written here instead, the move below is a rename. A hidden subfolder rather than the output folder itself, so a partial file from a failed conversion never sits in the output folder under its final name, and the cleanup is one rmtree. Returns `(staging, created_gguf_directory)`; on any failure `(None, False)` and the caller keeps the old CWD placement."""
+    import tempfile
+
+    created = False
+    try:
+        if not os.path.isdir(gguf_directory):
+            os.makedirs(gguf_directory, exist_ok = True)
+            created = True
+        return tempfile.mkdtemp(prefix = ".unsloth_gguf_convert_", dir = gguf_directory), created
+    except Exception:
+        if created:
+            _remove_empty_directory(gguf_directory)
+        return None, False
+
+
+def _remove_empty_directory(directory):
+    try:
+        os.rmdir(directory)
+    except OSError:
+        pass
+
+
+def _place_gguf_output(src, dst):
+    """Move one converter output to its final name. `os.replace` is a rename on one filesystem, and unlike `os.rename` it also replaces an existing file on Windows, where `shutil.move` would fall back to a full copy. Anything it refuses (another filesystem, a directory at `dst`, a held file) goes through `shutil.move` exactly as before."""
+    if os.path.abspath(src) == os.path.abspath(dst):
+        return
+    try:
+        os.replace(src, dst)
+    except OSError:
+        shutil.move(src, dst)
+
+
 def save_to_gguf(
     model_name: str,
     model_type: str,
@@ -2538,58 +2637,33 @@ def save_to_gguf(
             print_output = print_output,
         )
 
-    print("Unsloth: Preparing converter script...")
-    with use_local_gguf():
-        converter_path, supported_text_archs, supported_vision_archs = (
-            _download_convert_hf_to_gguf()
-        )
-
-        print(f"Unsloth: [1] Converting model into {first_conversion_dtype} GGUF format.")
-        print(f"This might take 3 minutes...")
-
-        initial_files, is_vlm_update = convert_to_gguf(
-            model_name = model_name,
-            input_folder = model_directory,
-            model_dtype = model_dtype,
-            quantization_type = first_conversion,
-            converter_location = converter_path,
-            supported_text_archs = supported_text_archs,
-            supported_vision_archs = supported_vision_archs,
-            is_vlm = is_vlm,
-            is_gpt_oss = is_gpt_oss,
-            max_shard_size = "50GB",
-            print_output = print_output,
-        )
-    is_vlm = is_vlm_update
-    for file in initial_files:
-        if not os.path.exists(file):
-            # Gated like the outer handler: disk advice is only right when disk is the problem, and a converter with no llama.cpp support fails here with space to spare.
-            if IS_KAGGLE_ENVIRONMENT and _gguf_failure_looks_like_disk(
-                RuntimeError(f"Conversion produced no output at {file}"),
-                os.path.dirname(file) or None,
-            ):
-                raise RuntimeError(
-                    f"Unsloth: Conversion failed for {file}\n"
-                    "You are in a Kaggle environment with limited disk space (20GB).\n"
-                    "Try saving to /tmp for more space or use a smaller model.\n"
-                    "Alternatively, save the 16bit model first, then convert manually."
-                )
-            else:
-                raise RuntimeError(
-                    f"Unsloth: Conversion failed for {file}\nPlease check disk space and try again."
-                )
-
     if gguf_directory is None:
         gguf_directory = f"{model_directory}_gguf"
     else:
         gguf_directory = os.fspath(gguf_directory)
-    os.makedirs(gguf_directory, exist_ok = True)
-    moved_files = []
-    for fpath in initial_files:
-        dst = os.path.join(gguf_directory, os.path.basename(fpath))
-        shutil.move(fpath, dst)
-        moved_files.append(dst)
-    initial_files = moved_files
+    conversion_staging, created_gguf_directory = _gguf_conversion_staging(gguf_directory)
+    try:
+        initial_files, is_vlm_update = _convert_into_gguf_directory(
+            model_name = model_name,
+            model_directory = model_directory,
+            model_dtype = model_dtype,
+            first_conversion = first_conversion,
+            first_conversion_dtype = first_conversion_dtype,
+            is_vlm = is_vlm,
+            is_gpt_oss = is_gpt_oss,
+            print_output = print_output,
+            gguf_directory = gguf_directory,
+            conversion_staging = conversion_staging,
+        )
+    except BaseException:
+        if conversion_staging is not None:
+            shutil.rmtree(conversion_staging, ignore_errors = True)
+            if created_gguf_directory:
+                _remove_empty_directory(gguf_directory)
+        raise
+    if conversion_staging is not None:
+        shutil.rmtree(conversion_staging, ignore_errors = True)
+    is_vlm = is_vlm_update
 
     print(f"Unsloth: Initial conversion completed! Files: {initial_files}")
 
