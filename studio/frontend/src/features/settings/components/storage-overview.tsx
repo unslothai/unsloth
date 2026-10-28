@@ -96,7 +96,7 @@ export function StorageBar({
           : null}
       </div>
       {legend === "inline" ? (
-        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-ui-11 text-muted-foreground">
           {segments.map((segment) => (
             <span key={segment.key} className="flex items-center gap-1.5">
               <span

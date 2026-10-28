@@ -87,14 +87,14 @@ function clampPercent(value: number | null | undefined): number {
 }
 
 function usageIndicatorClass(percent: number): string {
-  if (percent >= 90) return "bg-destructive";
+  if (percent >= 90) return "bg-[#e5532d] dark:bg-[#f06a3f]";
   if (percent >= 70) return "bg-amber-500";
   return "bg-control-accent";
 }
 
 function usageValueClass(percent: number | null): string {
   if (!isFiniteNumber(percent)) return "text-muted-foreground/70";
-  if (percent >= 90) return "text-red-600 dark:text-red-400";
+  if (percent >= 90) return "text-[#e5532d] dark:text-[#f06a3f]";
   if (percent >= 70) return "text-amber-600 dark:text-amber-400";
   return "text-foreground";
 }
