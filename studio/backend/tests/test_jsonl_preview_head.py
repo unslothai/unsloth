@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""JSON Lines previews skip pyarrow's JSON reader, which segfaulted the server (#15681)."""
+"""JSON Lines previews skip the datasets loader, whose threaded pyarrow JSON reader segfaulted the server (#15681)."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def loader_calls(monkeypatch):
     return calls
 
 
-def test_jsonl_preview_skips_the_arrow_json_reader(tmp_path, loader_calls):
+def test_jsonl_preview_skips_the_threaded_loader(tmp_path, loader_calls):
     rows = [
         {
             "tools": [
@@ -71,7 +71,7 @@ def test_jsonl_preview_skips_the_arrow_json_reader(tmp_path, loader_calls):
     assert dataset[0]["messages"][2]["content"] == "r" * 50_000
 
 
-def test_mixed_nested_types_raise_instead_of_reaching_the_native_reader(tmp_path, loader_calls):
+def test_mixed_nested_types_raise_without_the_threaded_loader(tmp_path, loader_calls):
     def row(search):
         call = {"function": {"name": "s", "arguments": {"json_body": {"searchContent": search}}}}
         return {"messages": [{"role": "assistant", "content": "", "tool_calls": [call]}]}
@@ -92,9 +92,7 @@ def test_mixed_nested_types_raise_instead_of_reaching_the_native_reader(tmp_path
         (['{"v": 9007199254740993}', '{"v": 1.5}'], [9007199254740992.0, 1.5]),
     ],
 )
-def test_numbers_from_list_cannot_type_preview_like_the_loader(
-    tmp_path, loader_calls, lines, expected
-):
+def test_large_numbers_preview_like_the_loader(tmp_path, loader_calls, lines, expected):
     path = tmp_path / "train.jsonl"
     path.write_text("".join(line + "\n" for line in lines), encoding = "utf-8")
     dataset, _ = local._stream_file_preview_slice(path, 10)
