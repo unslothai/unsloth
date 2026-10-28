@@ -346,19 +346,21 @@ _OVER_PROOF_THRESHOLDS = 2
 _CHARS_PER_ESTIMATED_TOKEN = 4
 
 
-def _tail(text: str, max_chars: int) -> str:
-    """The end of ``text``, not its start: templates strip old reasoning up to a closing marker
-    such as ``</think>``, and a cut that lost the marker would render reasoning the original never
-    sent."""
+def _ends(text: str, max_chars: int) -> str:
+    """Both ends of ``text`` with the middle cut out, so a template checking how it starts or
+    ends (a tool-response prefix, say) still sees what it saw."""
     if max_chars <= 0:
         return ""
-    return text if len(text) <= max_chars else text[len(text) - max_chars :]
+    if len(text) <= max_chars:
+        return text
+    head = max_chars // 2
+    return text[:head] + text[len(text) - (max_chars - head) :]
 
 
 def _clipped_arguments(arguments: Any, max_chars: int) -> Any:
-    """Tool-call arguments cut to about ``max_chars`` characters in all and still valid JSON:
-    strings keep their ends, and arrays and objects stop taking items once that is spent.
-    Arguments that do not parse become the empty object."""
+    """Tool-call arguments cut to about ``max_chars`` characters of JSON, still valid: brackets,
+    separators and keys are charged, strings keep their ends, and arrays and objects stop taking
+    items once the budget is spent. Arguments that do not parse become the empty object."""
     value = arguments
     if isinstance(arguments, str):
         try:
@@ -370,24 +372,21 @@ def _clipped_arguments(arguments: Any, max_chars: int) -> Any:
     def _cut(node):
         nonlocal left
         if isinstance(node, str):
-            kept = _tail(node, left)
+            kept = _ends(node, left - 2)
             left -= len(kept) + 2
             return kept
-        if isinstance(node, list):
-            items = []
-            for item in node:
+        if isinstance(node, (list, dict)):
+            left -= 2
+            pairs = node.items() if isinstance(node, dict) else enumerate(node)
+            taken = []
+            for key, item in pairs:
                 if left <= 0:
                     break
-                items.append(_cut(item))
-            return items
-        if isinstance(node, dict):
-            fields = {}
-            for key, item in node.items():
-                if left <= 0:
-                    break
-                left -= len(str(key)) + 3
-                fields[key] = _cut(item)
-            return fields
+                left -= 1  # separator
+                if isinstance(node, dict):
+                    left -= len(json.dumps(str(key), ensure_ascii = False)) + 1
+                taken.append((key, _cut(item)))
+            return dict(taken) if isinstance(node, dict) else [item for _, item in taken]
         left -= len(str(node))
         return node
 
@@ -398,9 +397,13 @@ def _clipped_arguments(arguments: Any, max_chars: int) -> Any:
 
 
 def _clipped_for_count(message: dict, max_chars: int) -> dict:
-    """A copy holding at most about ``max_chars`` of each of its content, its reasoning and its
-    tool-call arguments. It renders a subset of what the original renders, so its count is a
-    lower bound on the original's."""
+    """A copy holding at most about ``max_chars`` of each of its text and its tool-call
+    arguments, rendering a subset of what the original renders, so its count is a lower bound.
+
+    Templates rewrite assistant text: they strip old reasoning between markers that differ per
+    model (Qwen's ``</think>``, Gemma's ``<|channel>``), and a cut that lost either marker would
+    render reasoning the original never sent. So an assistant message's text is kept whole or
+    emptied, never cut. Other roles are rendered as given and keep both ends of a cut."""
     changed: dict[str, Any] = {}
     calls = message.get("tool_calls")
     if isinstance(calls, list) and calls:
@@ -421,26 +424,33 @@ def _clipped_for_count(message: dict, max_chars: int) -> dict:
         ]
         if any(new is not old for new, old in zip(short, calls)):
             changed["tool_calls"] = short
-    for key in ("content", "reasoning_content"):
-        value = message.get(key)
-        if isinstance(value, str) and len(value) > max_chars:
-            changed[key] = _tail(value, max_chars)
-        elif key == "content" and isinstance(value, list):
-            # Newest parts first, as for text; parts past the budget, images too, are left out.
-            parts, left, cut = [], max_chars, False
-            for part in reversed(value):
-                if left <= 0:
+    content = message.get("content")
+    if message.get("role") == "assistant":
+        reasoning = message.get("reasoning_content")
+        text_chars = len(str(content or "")) + len(str(reasoning or ""))
+        if text_chars > max_chars:
+            changed["content"] = ""
+            if reasoning:
+                changed["reasoning_content"] = ""
+        return {**message, **changed} if changed else message
+    if isinstance(content, str) and len(content) > max_chars:
+        changed["content"] = _ends(content, max_chars)
+    elif isinstance(content, list):
+        # Newest parts first; parts past the budget, images too, are left out.
+        parts, left, cut = [], max_chars, False
+        for part in reversed(content):
+            if left <= 0:
+                cut = True
+                break
+            text = part.get("text") if isinstance(part, dict) else None
+            if isinstance(text, str):
+                if len(text) > left:
                     cut = True
-                    break
-                text = part.get("text") if isinstance(part, dict) else None
-                if isinstance(text, str):
-                    if len(text) > left:
-                        cut = True
-                        part = {**part, "text": _tail(text, left)}
-                    left -= len(part["text"])
-                parts.append(part)
-            if cut:
-                changed[key] = parts[::-1] or ""
+                    part = {**part, "text": _ends(text, left)}
+                left -= len(part["text"])
+            parts.append(part)
+        if cut:
+            changed["content"] = parts[::-1] or ""
     return {**message, **changed} if changed else message
 
 

@@ -290,8 +290,8 @@ def test_a_slice_opens_on_a_user_turn_and_only_removes_text():
         )
 
 
-def _qwen3_counter():
-    """Renders with the shipped Qwen3 template; 4 rendered characters a token."""
+def _template_counter(name: str):
+    """Renders with a template from unsloth/chat_templates.py; 4 rendered characters a token."""
     import ast
     from pathlib import Path
 
@@ -300,24 +300,35 @@ def _qwen3_counter():
     template = next(
         ast.literal_eval(node.value)
         for node in ast.parse(source.read_text(encoding = "utf-8")).body
-        if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "qwen3_template"
+        if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == name
     )
     env = sandbox.ImmutableSandboxedEnvironment(trim_blocks = True, lstrip_blocks = True)
     compiled = env.from_string(template)
 
     def count(messages):
-        return len(compiled.render(messages = messages, add_generation_prompt = True)) // 4
+        rendered = compiled.render(
+            messages = messages, add_generation_prompt = True, bos_token = ""
+        )
+        return len(rendered) // 4
 
     return count
 
 
-def test_a_slice_keeps_the_think_marker_the_template_strips_old_reasoning_by():
-    # Qwen3 drops an old turn's reasoning by splitting on </think>. A slice that cut the marker
-    # off would render that reasoning and "prove" a 40-token chat over the window.
-    count = _qwen3_counter()
+# Each template strips an old turn's reasoning between its own markers: Qwen3 splits on the
+# closing </think>, Gemma-4 drops a section holding the opening <|channel>. A cut that lost either
+# marker would render that reasoning and "prove" a 40-token chat over the window.
+REASONING_TURNS = {
+    "qwen3_template": "<think>" + "pondering " * 100_000 + "</think>Hello!",
+    "gemma4_template": "<|channel>thought\n" + "pondering " * 100_000 + "<channel|>Hello!",
+}
+
+
+@pytest.mark.parametrize("template", sorted(REASONING_TURNS))
+def test_a_slice_keeps_the_markers_a_template_strips_old_reasoning_by(template):
+    count = _template_counter(template)
     messages = [
         {"role": "user", "content": "Hi"},
-        {"role": "assistant", "content": "<think>" + "pondering " * 100_000 + "</think>Hello!"},
+        {"role": "assistant", "content": REASONING_TURNS[template]},
         QUESTION,
     ]
     exact = count(messages)
@@ -328,10 +339,29 @@ def test_a_slice_keeps_the_think_marker_the_template_strips_old_reasoning_by():
     )
     assert truncation is None
     assert fitted == messages
+    fitted, truncation = fit_checkpoint_context(
+        messages,
+        context_length = CONTEXT,
+        max_tokens = 64,
+        count_tokens = count,
+        can_reset = True,
+        searchable = True,
+    )
+    assert truncation is None
+    assert fitted == messages
 
 
-def test_large_json_arguments_are_cut_to_a_size_not_just_their_strings():
-    # Numbers and array elements are not strings, so cutting only strings left this whole.
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        # Numbers are not strings, so cutting only strings left this whole.
+        {"data": list(range(200_000))},
+        # Empty containers hold no string or number, so only charging their syntax bounds them.
+        {"data": [{}] * 400_000},
+    ),
+    ids = ("numbers", "empty objects"),
+)
+def test_large_json_arguments_are_cut_to_a_size_not_just_their_strings(arguments):
     messages = [
         SYSTEM,
         {"role": "user", "content": "store the data"},
@@ -344,7 +374,7 @@ def test_large_json_arguments_are_cut_to_a_size_not_just_their_strings():
                     "type": "function",
                     "function": {
                         "name": "store",
-                        "arguments": json.dumps({"data": list(range(200_000))}),
+                        "arguments": json.dumps(arguments),
                     },
                 }
             ],
