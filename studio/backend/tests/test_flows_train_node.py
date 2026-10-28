@@ -280,3 +280,34 @@ def test_hub_rows_with_timestamps_still_upload(monkeypatch):
     loaded = training._load_rows({"source": "hf", "ref": "org/ds"}, None, None)
     assert loaded[0]["at"] == "2026-01-01 00:00:00" and loaded[0]["x"] is None
     json.dumps(loaded, allow_nan = False)
+
+
+def test_chat_with_checkpoint_puts_back_the_chat_model_it_replaced(monkeypatch):
+    from types import SimpleNamespace
+
+    from studio_mcp import loading, trained_models
+
+    loads = []
+
+    async def load_llm(caller, ctx, **kw):
+        loads.append((kw["model"], kw["variant"]))
+
+    async def resolve_by(*a, **k):
+        return SimpleNamespace(ref = "/out/run-1", is_lora = True)
+
+    monkeypatch.setattr(loading, "load_llm", load_llm)
+    monkeypatch.setattr(trained_models, "resolve_by", resolve_by)
+    ctx = _Ctx(
+        lambda m, p, q, b: {"model_identifier": "unsloth/Qwen3-1.7B-GGUF", "gguf_variant": "Q4_K_M"}
+    )
+    ctx.inputs = {"checkpoint": {"kind": "checkpoint", "name": "run-1"}, "prompt": "hi"}
+    ctx.params = {"max_tokens": 8}
+    ctx.resident, ctx.set_status = {}, lambda *a, **k: None
+
+    async def llm_text(**k):
+        return "hello"
+
+    ctx.llm_text = llm_text
+    out = asyncio.run(training.chat_checkpoint(ctx))
+    assert out == {"text": "hello"}
+    assert loads == [("/out/run-1", None), ("unsloth/Qwen3-1.7B-GGUF", "Q4_K_M")]
