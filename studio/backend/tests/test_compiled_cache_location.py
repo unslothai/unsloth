@@ -2,7 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """The compiled-cache clear acts on the directory unsloth_zoo.compiler writes to and nothing else:
-UNSLOTH_COMPILE_LOCATION when set, else unsloth_compiled_cache in the CWD, else the temp fallback."""
+UNSLOTH_COMPILE_LOCATION when set, else unsloth_compiled_cache in the CWD. Never the shared temp dir the compiler
+falls back to past an unusable location: anyone on the machine can create or link that name."""
 
 import os
 import tempfile
@@ -102,44 +103,70 @@ def test_a_relative_location_is_taken_against_the_cwd(tmp_path, monkeypatch, lau
     assert (other / MODULE).is_file()
 
 
-def test_an_uncreatable_location_falls_back_to_the_temp_dir_like_the_compiler(
-    tmp_path, monkeypatch, launch
-):
+def _blocked(tmp_path, monkeypatch) -> Path:
+    """A location os.makedirs cannot create, so the compiler would write to <tempdir>/ucc instead."""
     blocker = _write(tmp_path / "not_a_dir")
     monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(blocker / "ucc"))
-    fallback = tmp_path / "tmp" / "ucc"
+    return tmp_path / "tmp" / "ucc"
+
+
+@pytest.mark.parametrize("preserve", [["Unsloth*Trainer.py"], None])
+def test_an_uncreatable_location_never_adopts_the_shared_temp_dir(
+    tmp_path, monkeypatch, launch, preserve
+):
+    """<tempdir>/<leaf> is a name every user and install on the machine shares, so nothing there is provably ours."""
+    fallback = _blocked(tmp_path, monkeypatch)
+    _write(fallback / cache_cleanup.CACHE_MARKER, "")
     _write(fallback / MODULE)
     _write(fallback / "notes.txt")
     _write(launch / "unsloth_compiled_cache" / MODULE)
 
-    assert cache_cleanup.get_existing_cache_dirs() == [fallback]
-    cache_cleanup.clear_unsloth_compiled_cache()
+    assert cache_cleanup.get_existing_cache_dirs() == []
+    cache_cleanup.clear_unsloth_compiled_cache(preserve_patterns = preserve)
 
-    assert not (fallback / MODULE).exists()
+    assert (fallback / MODULE).is_file()
     assert (fallback / "notes.txt").is_file()
     assert (launch / "unsloth_compiled_cache" / MODULE).is_file()
 
 
-@pytest.mark.skipif(
-    os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
-    reason = "needs a POSIX permission bit that is enforced",
-)
-def test_a_read_only_location_also_clears_the_temp_dir_the_compiler_fell_back_to(
-    tmp_path, monkeypatch, launch
-):
-    pinned = tmp_path / "ro" / "ucc"
-    pinned.mkdir(parents = True)
-    monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(pinned))
-    fallback = tmp_path / "tmp" / "ucc"
-    _write(fallback / MODULE)
-    pinned.chmod(0o555)
-    try:
-        assert cache_cleanup.get_existing_cache_dirs() == [pinned, fallback]
-        cache_cleanup.clear_unsloth_compiled_cache()
-    finally:
-        pinned.chmod(0o755)
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason = "needs POSIX symlinks")
+def test_a_temp_dir_symlink_cannot_point_the_clear_at_another_cache(tmp_path, monkeypatch, launch):
+    fallback = _blocked(tmp_path, monkeypatch)
+    victim = tmp_path / "victim"
+    _write(victim / cache_cleanup.CACHE_MARKER, "")
+    witness = _write(victim / "keep.txt")
+    fallback.symlink_to(victim, target_is_directory = True)
 
-    assert not (fallback / MODULE).exists()
+    cache_cleanup.clear_unsloth_compiled_cache()
+
+    assert witness.is_file()
+
+
+def test_a_temp_dir_is_never_put_on_the_import_path(tmp_path, monkeypatch, launch):
+    import sys
+
+    fallback = _blocked(tmp_path, monkeypatch)
+    _write(fallback / cache_cleanup.CACHE_MARKER, "")
+    _write(fallback / "sitecustomize.py")
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.setenv("PYTHONPATH", "")
+
+    cache_cleanup.register_compiled_cache_on_path()
+
+    assert str(fallback.resolve()) not in sys.path
+    assert str(fallback.resolve()) not in os.environ["PYTHONPATH"]
+
+
+@pytest.mark.parametrize("leaf", [".", ".."])
+def test_a_dot_leaf_does_not_reach_the_temp_root(tmp_path, monkeypatch, launch, leaf):
+    blocker = _write(tmp_path / "not_a_dir")
+    monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(blocker) + "/" + leaf)
+    _write(tmp_path / "tmp" / cache_cleanup.CACHE_MARKER, "")
+    witness = _write(tmp_path / "tmp" / "keep.txt")
+
+    cache_cleanup.clear_unsloth_compiled_cache()
+
+    assert witness.is_file()
 
 
 def test_a_creatable_location_never_reaches_the_temp_dir(tmp_path, monkeypatch, launch):
@@ -161,7 +188,8 @@ def test_the_location_is_taken_verbatim_like_the_compiler(tmp_path, monkeypatch,
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", value)
 
-    assert [p.resolve() for p in cache_cleanup._configured_cache_dirs()] == [
-        (launch / value).resolve()
-    ]
-    assert str(Path(value)) in cache_cleanup._trusted_cache_paths()
+    dirs = cache_cleanup._configured_cache_dirs()
+    assert dirs == [Path.cwd() / value]
+    # Absolute, so the Settings purge gate and its ``expanduser`` see the folder the compiler writes to.
+    assert all(d.is_absolute() for d in dirs)
+    assert str(dirs[0]) in cache_cleanup._trusted_cache_paths()
