@@ -51,16 +51,12 @@ fn env_block_path(stdout: &[u8]) -> Option<Option<String>> {
     )
 }
 
-/// A login shell slower than this leaves PATH as inherited, rather than holding the window back.
 #[cfg(not(windows))]
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// After the shell exits, how long its last output may take to drain when something it started
-/// still holds stdout open.
 #[cfg(not(windows))]
 const DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// Most output read after the poll loop stops.
 #[cfg(not(windows))]
 const DRAIN_MAX_BYTES: usize = 1 << 20;
 
@@ -68,9 +64,7 @@ const DRAIN_MAX_BYTES: usize = 1 << 20;
 #[derive(Debug, PartialEq)]
 struct TimedOut;
 
-/// Stdout of `shell -ilc command`; `Ok(None)` when it could not start or exited non-zero.
-/// Reads like `Command::output()`, except a background job an rc file leaves holding stdout
-/// cannot keep launch waiting, and a shell that never finishes is killed at `timeout`.
+/// `Command::output()`, but a job left holding stdout cannot delay launch; killed at `timeout`.
 #[cfg(not(windows))]
 fn run_login_shell(
     shell: &str,
@@ -101,10 +95,9 @@ fn run_login_shell(
         let _ = child.wait();
         return Ok(None);
     };
-    // Bounded: a job writing nonstop waits on the reader instead of queueing without limit, and
-    // once this function returns the reader's send fails, so the pipe closes behind it.
+    // Bounded so a nonstop writer blocks; the dropped receiver later closes the pipe.
     let (sender, chunks) = mpsc::sync_channel::<Vec<u8>>(64);
-    // Builder, not thread::spawn: a refused thread leaves PATH as inherited instead of panicking.
+    // Builder, not thread::spawn: a refused thread must not panic launch.
     let reader = std::thread::Builder::new().spawn(move || {
         let mut buffer = [0u8; 8192];
         loop {
@@ -160,7 +153,6 @@ fn run_login_shell(
             Err(RecvTimeoutError::Timeout) => {}
         }
     }
-    // Whatever is already queued, capped: a background job writing nonstop must not hold launch here.
     let mut drained = 0;
     while drained < DRAIN_MAX_BYTES {
         let Ok(chunk) = chunks.try_recv() else { break };
@@ -168,14 +160,13 @@ fn run_login_shell(
         out.extend_from_slice(&chunk);
     }
     let success = status.is_some_and(|status| status.success());
-    // The grace ran out with the block still open: a cut-off PATH is not a result.
+    // A cut-off PATH is not a result.
     if success && !eof && !env_block_complete(&out) {
         return Err(TimedOut);
     }
     Ok(success.then_some(out))
 }
 
-/// Both delimiters are in: the block `env_block_path` reads is whole.
 #[cfg(not(windows))]
 fn env_block_complete(stdout: &[u8]) -> bool {
     let delimiter = DELIMITER.as_bytes();
@@ -197,8 +188,7 @@ fn read_login_shell_path(
 }
 
 /// Old command only if the shell rejected the probe (Plan 9 rc, a renamed fish); a probe
-/// that ran without PATH (`export -n PATH`) must not rerun the history-rewriting one, and a
-/// shell that timed out is not given a second wait.
+/// that ran without PATH (`export -n PATH`) or timed out must not rerun the history-rewriting one.
 #[cfg(not(windows))]
 fn login_shell_path(shell: &str, timeout: std::time::Duration) -> Option<String> {
     let probe = probe_command(shell);
@@ -335,8 +325,6 @@ mod tests {
         (dir, shell)
     }
 
-    /// An rc file that starts a background job keeps stdout open after the shell exits; PATH
-    /// still arrives as soon as the shell is done, not when that job ends.
     #[cfg(not(windows))]
     #[test]
     fn a_background_job_holding_stdout_does_not_hold_launch() {
@@ -352,8 +340,6 @@ mod tests {
         assert!(elapsed < std::time::Duration::from_secs(10), "{elapsed:?}");
     }
 
-    /// A shell that never finishes is killed at the timeout, PATH is left alone, and the old
-    /// command is not given a second wait.
     #[cfg(not(windows))]
     #[test]
     fn a_shell_that_never_finishes_times_out_once() {
@@ -373,8 +359,6 @@ mod tests {
         assert!(elapsed < std::time::Duration::from_secs(10), "{elapsed:?}");
     }
 
-    /// A shell that exits 0 with the block cut off while a job holds stdout: the grace runs out,
-    /// PATH is left alone, and the old command is not given a second wait.
     #[cfg(not(windows))]
     #[test]
     fn a_cut_off_block_after_the_grace_is_not_a_path() {
@@ -392,9 +376,7 @@ mod tests {
         assert!(elapsed < std::time::Duration::from_secs(10), "{elapsed:?}");
     }
 
-    /// A job that writes to the inherited stdout without end cannot hold launch past the grace.
-    /// The writer is capped at 256 MiB so a regression to an unbounded queue fails without
-    /// taking the host's memory; backpressure keeps it writing through the whole grace.
+    /// `head -c` caps the writer: an unbounded-queue regression fails without eating host memory.
     #[cfg(not(windows))]
     #[test]
     fn a_job_writing_nonstop_does_not_hold_launch() {
@@ -407,7 +389,6 @@ mod tests {
         assert!(elapsed < std::time::Duration::from_secs(10), "{elapsed:?}");
     }
 
-    /// A shell that exits non-zero while a job holds stdout still counts as rejecting the probe.
     #[cfg(not(windows))]
     #[test]
     fn a_rejecting_shell_with_a_held_stdout_still_falls_back() {
