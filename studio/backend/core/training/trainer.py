@@ -5022,7 +5022,7 @@ class UnslothTrainer:
                 )
                 if warmup_steps > 0:
                     self._update_progress(
-                        status_message = f"Format warm-up ({warmup_steps} SFT steps)..."
+                        status_message = f"Format warm-up: step 0 of {warmup_steps}..."
                     )
                     run_format_warmup(
                         self.model,
@@ -5030,6 +5030,9 @@ class UnslothTrainer:
                         config_args,
                         warmup_steps,
                         should_stop = lambda: self.should_stop,
+                        on_step = lambda step, steps: self._update_progress(
+                            status_message = f"Format warm-up: step {step} of {steps}..."
+                        ),
                     )
                     if self.should_stop:
                         self._update_progress(

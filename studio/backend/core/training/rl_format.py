@@ -121,6 +121,24 @@ def warmup_steps_to_run(rl_settings: Optional[dict], objective: str, resuming: b
     return int((rl_settings or {}).get("format_warmup_steps") or 0)
 
 
+def warmup_callback(
+    steps: int,
+    should_stop: Callable[[], bool],
+    on_step: Optional[Callable[[int, int], None]] = None,
+):
+    """Stops the warm-up on cancel and reports each finished step as (step, steps)."""
+    from transformers import TrainerCallback
+
+    class _WarmupProgress(TrainerCallback):
+        def on_step_end(self, _args, state, control, **_kw):
+            if on_step is not None:
+                on_step(int(state.global_step), steps)
+            if should_stop():
+                control.should_training_stop = True
+
+    return _WarmupProgress()
+
+
 def run_format_warmup(
     model,
     tokenizer,
@@ -128,9 +146,9 @@ def run_format_warmup(
     steps: int,
     should_stop: Callable[[], bool] = lambda: False,
     dataset = None,
+    on_step: Optional[Callable[[int, int], None]] = None,
 ) -> Optional[dict]:
     """Runs ``steps`` SFT steps on the warm-up set before GRPO. Returns the trainer's final metrics."""
-    from transformers import TrainerCallback
     from trl import SFTConfig, SFTTrainer
 
     from core.training.rl import _config_kwargs
@@ -170,17 +188,12 @@ def run_format_warmup(
         packing = False,
     )
 
-    class _Stop(TrainerCallback):
-        def on_step_end(self, _args, _state, control, **_kw):
-            if should_stop():
-                control.should_training_stop = True
-
     trainer = SFTTrainer(
         model = model,
         processing_class = tokenizer,
         train_dataset = train_dataset,
         args = args,
-        callbacks = [_Stop()],
+        callbacks = [warmup_callback(steps, should_stop, on_step)],
     )
     result = trainer.train()
     return getattr(result, "metrics", None)

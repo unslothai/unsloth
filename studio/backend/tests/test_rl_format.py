@@ -174,3 +174,27 @@ def test_bundled_solution_rewards_read_the_reasoning_format(reply, expected):
     specs = [get_reward(n) for n in ("solution-format", "solution-exact", "solution-numeric")]
     scores, _ = preview_scores(specs, reply, reference = "So the total is #### 1234")
     assert [s["score"] for s in scores] == expected
+
+
+def test_warmup_reports_step_n_of_m_and_stops_on_cancel():
+    from types import SimpleNamespace
+
+    from core.training.rl_format import warmup_callback
+
+    seen, stop = [], [False]
+    callback = warmup_callback(20, lambda: stop[0], lambda step, steps: seen.append((step, steps)))
+    control = SimpleNamespace(should_training_stop = False)
+    callback.on_step_end(None, SimpleNamespace(global_step = 7), control)
+    assert seen == [(7, 20)] and not control.should_training_stop
+    stop[0] = True
+    callback.on_step_end(None, SimpleNamespace(global_step = 8), control)
+    assert seen[-1] == (8, 20) and control.should_training_stop
+
+
+def test_the_run_shows_warmup_progress_as_step_n_of_m():
+    import inspect
+
+    from core.training import trainer
+
+    source = inspect.getsource(trainer)
+    assert 'status_message = f"Format warm-up: step {step} of {steps}..."' in source
