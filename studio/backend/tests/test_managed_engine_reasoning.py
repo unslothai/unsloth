@@ -378,6 +378,35 @@ def test_a_latest_turn_the_strict_estimate_refuses_still_drops_old_history():
     assert len(fitted["messages"]) < len(messages)
 
 
+def test_an_estimated_fit_leaves_room_for_the_whole_reply_cap():
+    # The cap is sent unchanged when the count fails, so prompt + cap must fit the real window.
+    import json
+
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    orchestrator = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    orchestrator.active_model_name = "m"
+    orchestrator.models = {"m": {"engine": "sglang", "context_length": 2048}}
+    orchestrator._managed_engine = SimpleNamespace(adapter = ADAPTERS["sglang"])
+
+    def count(*args, **kwargs):
+        raise RuntimeError("500 Server Error: Integer exceeds 64-bit range")
+
+    orchestrator.count_chat_tokens = count
+    messages = []
+    for index in range(10):
+        messages += [
+            {"role": "user", "content": f"question {index}: " + "1,2,3,4,5,6,7,8,9,0," * 70},
+            {"role": "assistant", "content": "ok"},
+        ]
+    messages.append({"role": "user", "content": "Continue."})
+    fitted = orchestrator.compact_chat_context(
+        messages, context_overflow = "truncate_oldest", max_tokens = 1024
+    )
+    # A token spans at least one UTF-8 byte, so the serialized bytes bound the real count.
+    assert sum(len(json.dumps(m).encode()) for m in fitted["messages"]) + 1024 <= 2048
+
+
 def test_tool_stream_reasoning_reaches_studio_as_reasoning_content():
     from routes.managed_engine_chat import _with_reasoning_content
 
