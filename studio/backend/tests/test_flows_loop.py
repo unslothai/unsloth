@@ -89,6 +89,7 @@ def test_loop_body_takes_the_fed_recipe_group_and_stays_acyclic():
             "runs inside one Loop group",
         ),
         (lambda d: d["edges"].pop(2), "needs held-out rows"),
+        (lambda d: d["edges"].pop(1), "so each round scores the model it just trained"),
         (
             lambda d: d["edges"][2].update(source = "gen", source_port = "dataset"),
             "needs held-out rows",

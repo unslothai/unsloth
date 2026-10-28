@@ -560,6 +560,21 @@ def _check_feedback(
                 )
             )
             continue
+        scored = {
+            src_node
+            for port in sspec["inputs"]
+            if port["type"] == "checkpoint"
+            for src_node, _ in inputs[src].get(port["id"], ())
+        }
+        if scored != {held[0]}:
+            errors.append(
+                issue(
+                    f"Wire the Checkpoint of the step that held the rows out into {sspec['title']}, "
+                    "so each round scores the model it just trained",
+                    node_id = src,
+                )
+            )
+            continue
         if loop in found:
             errors.append(issue("A Loop takes one feeds-the-next-round wire", edge_id = eid))
             continue
