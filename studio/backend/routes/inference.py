@@ -1262,28 +1262,40 @@ def _normalize_openai_passthrough_sse_line(
     raw_line: str, *, cap_parallel_tool_calls: bool = False
 ) -> str:
     """Relay comments, [DONE] and unparsable lines as-is; re-serialize only when a compat fix applies."""
+    return _normalize_openai_passthrough_sse_line_and_data(
+        raw_line, cap_parallel_tool_calls = cap_parallel_tool_calls
+    )[0]
+
+
+_SSE_LINE_UNPARSED = object()
+
+
+def _normalize_openai_passthrough_sse_line_and_data(
+    raw_line: str, *, cap_parallel_tool_calls: bool = False
+) -> tuple[str, Any]:
+    """The normalized line plus its decoded JSON when the check had to parse it, so the relay need not."""
     if not raw_line.startswith("data:"):
-        return raw_line
+        return raw_line, _SSE_LINE_UNPARSED
     # Fast path: skip the JSON parse when neither key appears in the line.
     if '"reasoning_content"' not in raw_line and not (
         cap_parallel_tool_calls and '"tool_calls"' in raw_line
     ):
-        return raw_line
+        return raw_line, _SSE_LINE_UNPARSED
     payload = raw_line[len("data:") :].lstrip()
     if payload.strip() in ("", "[DONE]"):
-        return raw_line
+        return raw_line, _SSE_LINE_UNPARSED
     try:
         obj = json.loads(payload)
     except Exception:
-        return raw_line
+        return raw_line, _SSE_LINE_UNPARSED
     if not isinstance(obj, dict):
-        return raw_line
+        return raw_line, obj
     changed = _add_empty_content_to_reasoning_deltas(obj)
     if cap_parallel_tool_calls and _drop_parallel_tool_call_deltas(obj):
         changed = True
     if not changed:
-        return raw_line
-    return "data: " + json.dumps(obj, separators = (",", ":"), ensure_ascii = False)
+        return raw_line, obj
+    return "data: " + json.dumps(obj, separators = (",", ":"), ensure_ascii = False), obj
 
 
 def _prompt_tokens_details(upstream):
@@ -7288,6 +7300,17 @@ def _monitor_openai_sse_line(
     try:
         data = json.loads(data_str)
     except json.JSONDecodeError:
+        return None
+    return _monitor_openai_sse_data(monitor_id, data, context_length)
+
+
+def _monitor_openai_sse_data(
+    monitor_id: Optional[str],
+    data: Any,
+    context_length = None,
+) -> Optional[str]:
+    """Core of ``_monitor_openai_sse_line`` for a data line the caller already decoded."""
+    if not monitor_id:
         return None
     if isinstance(data, dict):
         error_message = _monitor_openai_error_message(data)
@@ -46080,15 +46103,16 @@ async def _openai_passthrough_stream_admitted(
                         yield raw_line + "\n\n"
                         monitor_done = True
                         break
-                    raw_line = _normalize_openai_passthrough_sse_line(
+                    raw_line, chunk_data = _normalize_openai_passthrough_sse_line_and_data(
                         raw_line,
                         cap_parallel_tool_calls = payload.parallel_tool_calls is False,
                     )
-                    data_text = raw_line[5:].strip()
-                    try:
-                        chunk_data = json.loads(data_text)
-                    except json.JSONDecodeError:
-                        chunk_data = None
+                    if chunk_data is _SSE_LINE_UNPARSED:
+                        data_text = raw_line[5:].strip()
+                        try:
+                            chunk_data = json.loads(data_text)
+                        except json.JSONDecodeError:
+                            chunk_data = None
                     if isinstance(chunk_data, dict):
                         if isinstance(chunk_data.get("id"), str):
                             last_chunk_id = chunk_data["id"]
@@ -46110,7 +46134,10 @@ async def _openai_passthrough_stream_admitted(
                             saw_stream_error = True
                             mark_response_failed(getattr(request, "scope", None))
                     if not client_wants_progress and _is_prefill_progress_only(chunk_data):
-                        _monitor_openai_sse_line(monitor_id, raw_line, llama_backend.context_length)
+                        # chunk_data decodes raw_line (a data: line), so skip the monitor's re-parse.
+                        _monitor_openai_sse_data(
+                            monitor_id, chunk_data, llama_backend.context_length
+                        )
                         if progress_keepalive.due():
                             yield _OPENAI_PREFILL_PROGRESS_SSE
                         continue
@@ -46150,10 +46177,17 @@ async def _openai_passthrough_stream_admitted(
                         yield finish_line + "\n\n"
                         saw_finish_reason = True
                     for out_line in out_lines:
-                        monitor_event = _monitor_openai_sse_line(
-                            monitor_id,
-                            out_line,
-                            llama_backend.context_length,
+                        monitor_event = (
+                            # The healer leaves chunk_data untouched whenever it relays raw_line.
+                            _monitor_openai_sse_data(
+                                monitor_id, chunk_data, llama_backend.context_length
+                            )
+                            if out_line is raw_line and chunk_data is not None
+                            else _monitor_openai_sse_line(
+                                monitor_id,
+                                out_line,
+                                llama_backend.context_length,
+                            )
                         )
                         if monitor_event == "error":
                             saw_stream_error = True

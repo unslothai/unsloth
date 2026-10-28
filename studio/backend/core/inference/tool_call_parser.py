@@ -1103,6 +1103,18 @@ def _unmask_blocked_bodies(text: str, bodies: list) -> Optional[str]:
     return result if count == len(bodies) else None
 
 
+def _search_from_literal(pattern: re.Pattern, literal: str, text: str, pos: int):
+    """``pattern.search(text, pos)`` for a pattern whose every match starts with ``literal``: the regex is
+    tried only where ``find`` lands, not at every position (a lookbehind still sees the text before)."""
+    at = text.find(literal, pos)
+    while at >= 0:
+        m = pattern.match(text, at)
+        if m:
+            return m
+        at = text.find(literal, at + 1)
+    return None
+
+
 def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] = None) -> str:
     """Strips closed bare call:NAME{...} calls; non-promotable, quoted and unanchored ones stay visible; None strips every anchored closed non-execution call."""
     if _whole_content_is_json_value(text):
@@ -1117,7 +1129,7 @@ def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] 
     floor = blocked_markerless_prefix_end(text, cursor, enabled_tool_names)
     code_spans, code_from = None, 0
     while cursor < n:
-        m = _GEMMA_BARE_TC_RE.search(text, cursor)
+        m = _search_from_literal(_GEMMA_BARE_TC_RE, "call", text, cursor)
         if not m:
             out.append(text[cursor:])
             break
