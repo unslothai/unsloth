@@ -2,19 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Render the macOS DMG install-window background.
-
-Writes studio/src-tauri/dmg/background.tiff, the image Finder draws behind the
-app icon and the Applications alias when the disk image opens.
-
-The layout is tied to the Finder coordinates in studio/src-tauri/tauri.macos.conf.json.
-Finder maps icon positions onto the background from the same origin, so the base
-page has to match dmg.windowSize exactly or the artwork slides out from under the
-icons. tests/studio/test_tauri_branding_contract.py holds that contract.
-
-Output is a two-page TIFF: a base page at window size and a second page at twice
-that, which is how Finder picks up a sharp image on a retina display.
-"""
+"""Renders the DMG background TIFF; its base page must match dmg.windowSize in tauri.macos.conf.json."""
 
 from __future__ import annotations
 

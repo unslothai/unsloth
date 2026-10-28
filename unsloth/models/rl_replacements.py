@@ -2239,6 +2239,11 @@ def grpo_trainer__generate(function_name, function):
     if function_name != "_generate":
         return function
 
+    # A stop string can terminate a completion before the limit without an EOS token.
+    function = function.replace(
+        "ids[-1] not in eos_and_pad",
+        "(self.max_completion_length is None or len(ids) >= self.max_completion_length) and ids[-1] not in eos_and_pad",
+    )
     return _guard_vllm_sync_reload_for_shared_weights(function)
 
 
@@ -2250,6 +2255,10 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     if function_name != "_generate_and_score_completions":
         return function
 
+    function = function.replace(
+        "ids[-1] not in eos_and_pad",
+        "(self.max_completion_length is None or len(ids) >= self.max_completion_length) and ids[-1] not in eos_and_pad",
+    )
     function = function.replace(
         "prompt_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False",
         "prompt_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False",
@@ -2928,7 +2937,11 @@ def _unsloth_vllm_active_adapters(model):
     configs = getattr(model, "peft_config", None) or {}
     active = getattr(model, "active_adapters", None)
     if callable(active):
-        active = active()
+        try:
+            active = active()
+        except ValueError:
+            # transformers' PeftAdapterMixin raises on a model with no adapter (full finetuning).
+            active = None
     if isinstance(active, str):
         active = [active]
     return set(active) if active else set(configs)
@@ -3371,6 +3384,85 @@ def grpo_trainer__move_model_to_vllm(function_name, function):
 
 
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__move_model_to_vllm)
+
+
+def online_dpo_trainer__move_model_to_vllm(function_name, function):
+    if function_name != "_move_model_to_vllm":
+        return function
+    function = grpo_trainer__move_model_to_vllm(function_name, function)
+    return re.sub(
+        r"^([ \t]+)return _unsloth_vllm_sync_peft_merged\(self\)\n",
+        r"\1if self.vllm_mode == 'server' and self.accelerator.is_main_process and hasattr(self.vllm_client, 'weight_update'):\n"
+        r"\1    with self.vllm_client.weight_update():\n"
+        r"\1        return _unsloth_vllm_sync_peft_merged(self)\n"
+        r"\1return _unsloth_vllm_sync_peft_merged(self)\n",
+        function,
+        count = 1,
+        flags = re.MULTILINE,
+    )
+
+
+RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer__move_model_to_vllm)
+
+
+def _unsloth_vllm_load_state_dict(trainer, model):
+    deepspeed_plugin = getattr(trainer.accelerator.state, "deepspeed_plugin", None)
+    if getattr(trainer, "is_fsdp_enabled", False) or (
+        deepspeed_plugin is not None and getattr(deepspeed_plugin, "zero_stage", 0) == 3
+    ):
+        raise RuntimeError(
+            "Unsloth: Online DPO with use_vllm = True on TRL < 0.23 cannot sync sharded "
+            "(FSDP / DeepSpeed ZeRO-3) weights into vLLM. Upgrade TRL to 0.23 or later."
+        )
+    model = trainer.accelerator.unwrap_model(model)
+    model = getattr(model, "_orig_mod", model)
+    trainer.llm.llm_engine.model_executor.driver_worker.model_runner.model.load_weights(
+        model.state_dict().items()
+    )
+    trainer.llm.reset_prefix_cache()
+
+
+def online_dpo_trainer__generate_vllm(function_name, function):
+    # TRL < 0.23 syncs inline here, which _strip_vllm_weight_loads would turn into pass.
+    if function_name != "_generate_vllm":
+        return function
+    match = re.search(
+        r"^(?P<indent>[ \t]+)llm_model = self\.llm\.llm_engine\.model_executor\.driver_worker\.model_runner\.model\n"
+        r"(?P=indent)llm_model\.load_weights\(model\.state_dict\(\)\.items\(\)\)\n",
+        function,
+        re.MULTILINE,
+    )
+    if match is None:
+        return function
+    i = match.group("indent")
+    sync = (
+        f"{i}if not getattr(self.llm, 'shared_weights', False):\n"
+        f"{i}    from unsloth.models.rl_replacements import _unsloth_vllm_sync_kind_cached, _unsloth_vllm_sync_peft_merged, _unsloth_vllm_load_state_dict\n"
+        f"{i}    _unsloth_sync_kind = _unsloth_vllm_sync_kind_cached(self)\n"
+        f"{i}    if _unsloth_sync_kind == 'peft_merged':\n"
+        f"{i}        _unsloth_vllm_sync_peft_merged(self)\n"
+        f"{i}    elif _unsloth_sync_kind == 'trl':\n"
+        f"{i}        _unsloth_vllm_load_state_dict(self, model)\n"
+    )
+    return function[: match.start()] + sync + function[match.end() :]
+
+
+RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer__generate_vllm)
+
+
+def online_dpo_trainer__generate_vllm_colocate(function_name, function):
+    # Level-2 sleep discards the weights, but the next microbatch of the same step skips the sync.
+    if function_name != "_generate_vllm_colocate":
+        return function
+    return re.sub(
+        r"^([ \t]+)self\.llm\.sleep\(level=2\)\n",
+        r"\1self.llm.sleep(level=2)\n\1self._last_loaded_step = -1\n",
+        function,
+        flags = re.MULTILINE,
+    )
+
+
+RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer__generate_vllm_colocate)
 
 
 def grpo_trainer__get_per_token_logps(function_name, function):

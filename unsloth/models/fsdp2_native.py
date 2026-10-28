@@ -1,19 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Native FSDP2 for every Unsloth model, built directly on `torch.distributed.fsdp.fully_shard`.
-
-    for unit in find_shard_units(model): fully_shard(unit, mp_policy = mp)
-    fully_shard(model, mp_policy = mp)
-
-with `MixedPrecisionPolicy(param_dtype = compute dtype, reduce_dtype = float32)`. Neither accelerate's
-nor transformers' FSDP code wraps the model: Unsloth shards it before the optimizer exists and the
-Trainer / accelerate only see an already sharded `FSDPModule` (no second wrap, no DDP).
-
-Opt in with `UNSLOTH_FSDP2=1` (or `native`) under torchrun (WORLD_SIZE > 1).
-`UNSLOTH_FSDP2_BACKEND=accelerate` (or an `accelerate launch` FSDP config) keeps the accelerate
-path in `unsloth/models/fsdp2.py`. Nothing changes without the flag.
-"""
+"""Native fully_shard FSDP2 for all Unsloth models, applied before the optimizer exists; opt-in
+UNSLOTH_FSDP2=1 under torchrun; no second wrap, no DDP; UNSLOTH_FSDP2_BACKEND=accelerate keeps
+accelerate path."""
 
 from __future__ import annotations
 
@@ -23,6 +13,7 @@ import functools
 import math
 import os
 import sys
+import types
 from typing import Callable, Optional, Union
 
 import torch
@@ -1019,8 +1010,9 @@ def _skip_free_unsharded_param():
     return None
 
 
-def _compiled_block_modules(model):
-    """ids of every module inside a decoder block _block_compile wrapped (and did not turn off)."""
+def _compiled_block_modules(model, roots = None):
+    """ids of every module inside a decoder block _block_compile wrapped (and did not turn off);
+    `roots` (a dict) collects id -> block module."""
     inside = set()
     for module in model.modules():
         if id(module) in inside or not getattr(
@@ -1029,21 +1021,41 @@ def _compiled_block_modules(model):
             continue
         if module.__dict__.get("_unsloth_block_mode", 1) == 0:
             continue
-        inside.update(id(m) for m in module.modules())
+        for m in module.modules():
+            inside.add(id(m))
+            if roots is not None:
+                roots[id(m)] = module
     return inside
+
+
+def _block_cudagraphs_keep_budget():
+    """Per rank bytes of gathered block weights kept for block CUDA graphs. LoRA keeps only the
+    adapters (T4 Qwen3-0.6B: 0.04 GiB); a sharded full finetune keeps every block weight in fp32
+    (1.64 GiB per rank there) for graphs that measured no faster."""
+    try:
+        return float(os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS_FSDP2_KEEP_GB", "0.5")) * 2**30
+    except ValueError:
+        return 0.5 * 2**30
+
+
+def _gib(nbytes):
+    # LoRA adapters are tens of MiB: "0.00 GiB" read as nothing kept.
+    return f"{nbytes / 2**30:.2f} GiB" if nbytes >= 2**30 / 10 else f"{nbytes / 2**20:.1f} MiB"
 
 
 def _keep_unsharded_for_block_cudagraphs(model):
     """FSDP2 frees gathered params at reshard, moving their addresses so block CUDA graphs re-record every
     step (2 x T4 Qwen3 LoRA: 6 records, 0 replays). Keep the storage; the next all-gather refills it in place.
-    Only weights inside compiled blocks: the rest (embeddings, head, final norm) never enter a block graph."""
+    Only weights inside compiled blocks: the rest (embeddings, head, final norm) never enter a block graph.
+    Over the budget nothing is kept and those blocks run without graphs (never recorded)."""
     if not _block_cudagraphs_requested():
         return 0
-    blocks = _compiled_block_modules(model)
+    roots = {}
+    blocks = _compiled_block_modules(model, roots)
     if not blocks:
         return 0
     FSDPModule = _fsdp_module_class()
-    kept, nbytes = 0, 0
+    candidates, nbytes = [], 0
     for module in model.modules():
         if not isinstance(module, FSDPModule):
             continue
@@ -1055,25 +1067,44 @@ def _keep_unsharded_for_block_cudagraphs(model):
             if getattr(fsdp_param, "_unsloth_keep_unsharded", False):
                 continue
             info = getattr(fsdp_param, "_module_info", None)
-            if id(getattr(info, "module", None)) not in blocks:
+            owner = id(getattr(info, "module", None))
+            if owner not in blocks:
                 continue
             if not callable(getattr(type(fsdp_param), "free_unsharded_param", None)):
-                return kept  # a torch without this FSDP2 internal: graphs re-record as before
-            fsdp_param.free_unsharded_param = _skip_free_unsharded_param
-            fsdp_param._unsloth_keep_unsharded = True
-            kept += 1
+                return 0  # a torch without this FSDP2 internal: graphs re-record as before
+            candidates.append((fsdp_param, roots[owner]))
             try:
-                dtype = getattr(fsdp_param, "param_dtype", None) or fsdp_param.orig_dtype
+                # param_dtype / orig_dtype are set at FSDP2's lazy init (first forward), after this.
+                dtype = (
+                    getattr(fsdp_param, "param_dtype", None)
+                    or getattr(getattr(group, "mp_policy", None), "param_dtype", None)
+                    or fsdp_param.sharded_param.dtype
+                )
                 nbytes += fsdp_param._orig_size.numel() * dtype.itemsize
             except Exception:
                 pass
-    if kept:
+    if not candidates:
+        return 0
+    budget = _block_cudagraphs_keep_budget()
+    if nbytes > budget:
+        layers = {id(block): block for _, block in candidates}
+        for block in layers.values():
+            block.__dict__["_unsloth_block_graphs_off"] = True
         _print_rank0(
-            f"Unsloth: UNSLOTH_BLOCK_CUDAGRAPHS=1 under native FSDP2 keeps the gathered weights of "
-            f"{kept} parameters allocated ({nbytes / 2**30:.2f} GiB per rank) so the block CUDA graphs "
-            "replay instead of re-recording every step."
+            f"Unsloth: UNSLOTH_BLOCK_CUDAGRAPHS=1 under native FSDP2 would keep {_gib(nbytes)} "
+            f"per rank of gathered block weights allocated (budget {_gib(budget)}, "
+            f"UNSLOTH_BLOCK_CUDAGRAPHS_FSDP2_KEEP_GB); {len(layers)} blocks run without CUDA graphs."
         )
-    return kept
+        return 0
+    for fsdp_param, _ in candidates:
+        fsdp_param.free_unsharded_param = _skip_free_unsharded_param
+        fsdp_param._unsloth_keep_unsharded = True
+    _print_rank0(
+        f"Unsloth: UNSLOTH_BLOCK_CUDAGRAPHS=1 under native FSDP2 keeps the gathered weights of "
+        f"{len(candidates)} parameters allocated ({_gib(nbytes)} per rank) so the block CUDA graphs "
+        "replay instead of re-recording every step."
+    )
+    return len(candidates)
 
 
 def _post_shard(
@@ -3346,6 +3377,31 @@ def _has_cpu_tensors(optimizer, grads = False):
     return False
 
 
+def _local_grads_if_mixed(optimizer):
+    """Swap DTensor grads for their local shards when DTensor and plain grads mix: one foreach unscale
+    takes one tensor kind ("got mixed torch.Tensor and DTensor"). Elementwise, so the shard result is the same."""
+    try:
+        from torch.distributed.tensor import DTensor
+    except ImportError:
+        return optimizer
+    groups, dtensor, plain = [], False, False
+    for group in optimizer.param_groups:
+        params = []
+        for p in group["params"]:
+            grad = p.grad
+            if isinstance(grad, DTensor):
+                dtensor = True
+                p = types.SimpleNamespace(grad = grad._local_tensor)
+            elif grad is not None:
+                plain = True
+            # Plain grads keep their parameter: upstream reassigns a coalesced float16 sparse grad to it.
+            params.append(p)
+        groups.append({"params": params})
+    if not (dtensor and plain):
+        return optimizer
+    return types.SimpleNamespace(param_groups = groups)
+
+
 def _scaler_for_native(trainer):
     """float16: the GradScaler's inf check must agree over ranks, or one rank skips a step the
     others take. ShardedGradScaler all-reduces it."""
@@ -3399,7 +3455,9 @@ def _scaler_for_native(trainer):
             # CPU grads get non_blocking copies of CUDA inv_scale / found_inf, read before they land.
             if inv_scale.device.type != "cpu" and _has_cpu_tensors(optimizer, grads = True):
                 inv_scale, found_inf = inv_scale.cpu(), found_inf.cpu()
-            return super()._unscale_grads_(optimizer, inv_scale, found_inf, allow_fp16)
+            return super()._unscale_grads_(
+                _local_grads_if_mixed(optimizer), inv_scale, found_inf, allow_fp16
+            )
 
         def step(self, optimizer, *args, **kwargs):
             # Same race for a fused optimizer's grad_scale / found_inf on CPU parameters: use host copies.

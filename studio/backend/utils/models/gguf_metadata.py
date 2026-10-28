@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""``general.*`` reader for GGUF headers, used by ``detect_mmproj_file`` to
-pair weights and projectors via ``general.base_model.0.repo_url``."""
+"""GGUF general.* reader; detect_mmproj_file pairs projectors via general.base_model.0.repo_url."""
 
 from __future__ import annotations
 
@@ -438,11 +437,10 @@ def _walk_memo_store(f, key: tuple, started: int, *items: Tuple[tuple, tuple]) -
 
 
 def skip_gguf_strings(f, count: int) -> int:
-    """Skip up to ``count`` GGUF strings (u64 length + bytes) from ``f``'s position through
-    one buffer, not one read + seek per entry. Returns how many were skipped and leaves ``f``
-    at the next one; stops early at an entry over 1 MiB or a length field cut short by EOF,
-    so the caller's loop handles the rest exactly as before. A stream that cannot seek back skips
-    nothing here. A walk already done on the same unchanged file is replayed as one seek."""
+    """Skip up to ``count`` GGUF strings (u64 length + bytes) through one buffer; return how many,
+    with ``f`` at the next. Stops at an entry over 1 MiB, a length cut short by EOF, or a stream
+    that cannot rewind, so the caller's per-entry loop handles the rest exactly as before. A walk
+    already done on the same unchanged file is replayed as one seek."""
     if not _can_rewind(f):
         return 0
     key, hit, started = _walk_memo_lookup(f, count, None)

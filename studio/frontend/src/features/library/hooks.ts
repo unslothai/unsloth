@@ -4,6 +4,7 @@
 import { MAX_DOCUMENT_PREVIEW_BYTES } from "@/components/file-viewer";
 import { decodePeaks } from "@/features/audio/components/waveform-decode";
 import { translate } from "@/i18n";
+import { subscribeLayoutScale } from "@/lib/layout-scale";
 import { type RefObject, useEffect, useState } from "react";
 import {
   LibraryFileTooLarge,
@@ -180,10 +181,13 @@ export function useSeen(ref: RefObject<Element | null>): boolean {
   return seen;
 }
 
+/** `baseGap` is the gap at 100%, so `minColumnWidth` scales with interface zoom and text size. */
 export function useColumnCount(
   ref: RefObject<HTMLElement | null>,
   minColumnWidth = 200,
   maxColumns = 5,
+  baseGap?: number,
+  wideColumnWidth?: number,
 ): number {
   const [columns, setColumns] = useState(4);
   useEffect(() => {
@@ -191,13 +195,21 @@ export function useColumnCount(
     if (!element) return;
     const measure = () => {
       const gap = parseFloat(getComputedStyle(element).columnGap) || 0;
-      const fit = Math.floor((element.clientWidth + gap) / (minColumnWidth + gap));
-      setColumns(Math.max(2, Math.min(maxColumns, fit)));
+      const scale = baseGap && gap > 0 ? gap / baseGap : 1;
+      const fits = (width: number) =>
+        Math.floor((element.clientWidth + gap) / (width * scale + gap));
+      const wide = wideColumnWidth ? fits(wideColumnWidth) : 0;
+      setColumns(Math.max(2, Math.min(maxColumns, fits(minColumnWidth)), wide));
     };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(element);
-    return () => observer.disconnect();
-  }, [ref, minColumnWidth, maxColumns]);
+    // A zoom step can change the gap without resizing the container.
+    const unsubscribe = subscribeLayoutScale(measure);
+    return () => {
+      observer.disconnect();
+      unsubscribe();
+    };
+  }, [ref, minColumnWidth, maxColumns, baseGap, wideColumnWidth]);
   return columns;
 }

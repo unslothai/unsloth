@@ -2448,7 +2448,10 @@ def detect_dspark_file(
 def _registered_custom_model_root(path: str) -> Optional[Path]:
     try:
         from storage.studio_db import list_scan_folders
-        folders = list_scan_folders()
+        from utils.paths import studio_db_path
+        from utils.scan_memo import memoized
+
+        folders = memoized(("scan_folders", str(studio_db_path())), list_scan_folders)
     except Exception:
         return None
     candidate = Path(os.path.abspath(Path(path).expanduser()))

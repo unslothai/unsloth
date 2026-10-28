@@ -98,10 +98,25 @@ def _process_tree_rss_mb(process: Any) -> int:
     import psutil
 
     total = process.memory_info().rss
-    try:
-        children = process.children(recursive = True)
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
-        children = []
+    children = None
+    pid = getattr(process, "pid", None)
+    if isinstance(pid, int):
+        from utils.process_tree import linux_descendant_pids
+
+        # Linux walks the tree itself; psutil's recursive children() reads every process on the host.
+        descendants = linux_descendant_pids(pid)
+        if descendants is not None:
+            children = []
+            for child_pid in descendants:
+                try:
+                    children.append(psutil.Process(child_pid))
+                except psutil.Error:
+                    continue
+    if children is None:
+        try:
+            children = process.children(recursive = True)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            children = []
     for child in children:
         try:
             total += child.memory_info().rss
@@ -2321,6 +2336,7 @@ def _get_cached_system_gpu_info(
         amd_driver_warning_report,
         get_backend_visible_gpu_info,
         get_cross_vendor_inference_gpu_info,
+        get_mixed_vulkan_inference_gpu_info,
         get_visible_gpu_utilization,
         get_vulkan_inference_gpu_info,
         gpu_query,
@@ -2449,6 +2465,16 @@ def _get_cached_system_gpu_info(
                 inference_gpu_info = {**cross_vendor_info, "gguf_gpu_ids_supported": False}
             else:
                 inference_gpu_info = gpu_info
+            if vulkan_info is None:
+                # A CUDA + Vulkan llama.cpp also runs on the cards only Vulkan reaches (#15444).
+                with (
+                    contextlib.nullcontext()
+                    if refresh_memory
+                    else gpu_query.display_reads(max_stale = 0)
+                ):
+                    mixed_info = get_mixed_vulkan_inference_gpu_info(inference_gpu_info)
+                if mixed_info is not None:
+                    inference_gpu_info = mixed_info
 
         combined_info = (gpu_info, inference_gpu_info)
         _system_gpu_cache = (time.monotonic(), combined_info)

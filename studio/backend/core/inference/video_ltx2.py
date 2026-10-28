@@ -1,25 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""LTX-2.3 pipeline assembly for diffusers 0.39.
-
-diffusers 0.39 ships every LTX-2.3 model class but its single-file loader maps every LTX-2
-checkpoint to the 2.0 config, so 2.3 checkpoints fail a shape check at load. The community
-transformer-only GGUFs also carry the DiT + connectors but NOT the text projections, VAEs, or
-vocoder that 2.3 moved out of the transformer. This assembles the full 2.3 pipeline:
-
-- transformer: from the checkpoint via ``from_single_file`` with the 2.3 config overrides and the
-  ``prompt_adaln_single`` keys pre-renamed (the library converter doesn't know them).
-- connectors: from the checkpoint's connector keys plus the ``text_embedding_projection`` tensors,
-  fetched from the companion file in ``unsloth/LTX-2.3-GGUF`` when not bundled.
-- video/audio VAE, vocoder: from the checkpoint when bundled, else the companion files.
-- scheduler, text encoder (Gemma3), tokenizer: from the LTX-2.0 base repo, which 2.3 shares.
-
-Every config and rename table mirrors diffusers' ``scripts/convert_ltx2_to_diffusers.py`` (the
-authoritative 2.3 mapping the loader hasn't absorbed). Assembled through the constructor, not
-``from_pretrained``, because the vocoder class differs from the base pin (``LTX2VocoderWithBWE`` vs
-``LTX2Vocoder``) and the type gate would reject it.
-"""
+"""LTX-2.3 pipeline is built via the constructor; from_pretrained's type gate rejects the 2.3 vocoder."""
 
 from __future__ import annotations
 

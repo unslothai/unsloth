@@ -2757,11 +2757,14 @@ class FastModel(FastBaseModel):
             except GptOssUnknownExpertLayoutError:
                 # Only fatal where the layout decides the expert classes or the float16 refusal.
                 if (load_in_4bit and _bnb_compatible_quant) or (
-                    _gpt_oss_bnb_4bit and dtype == torch.float16
+                    _gpt_oss_bnb_4bit
+                    and (
+                        dtype == torch.float16 or (not SUPPORTS_BFLOAT16 and dtype == torch.float32)
+                    )
                 ):
                     raise
         if _gpt_oss_fused and _gpt_oss_bnb_4bit:
-            refuse_gpt_oss_fused_4bit_float16(dtype)
+            refuse_gpt_oss_fused_4bit_float16(dtype, SUPPORTS_BFLOAT16)
         if load_in_4bit and _bnb_compatible_quant and not _gpt_oss_fused:
             string += "_load_in_4bit_"
         elif load_in_4bit and _bnb_compatible_quant:

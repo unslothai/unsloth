@@ -1104,6 +1104,7 @@ def test_mlx_inference_text_load_forwards_studio_settings(monkeypatch):
                 "token": "hf-token",
                 "trust_remote_code": True,
                 "text_only": True,
+                "quantize_embeddings": True,
             },
         )
     ]
@@ -1667,6 +1668,7 @@ def test_mlx_inference_vlm_lora_uses_unsloth_loader_without_native_adapter_rewri
                 "token": "hf-token",
                 "trust_remote_code": True,
                 "text_only": False,
+                "quantize_embeddings": False,
             },
         )
     ]

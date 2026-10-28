@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tool definitions and executors for LLM tool calling: web search (DuckDuckGo), Python code
-execution, and terminal commands."""
+"""Tool definitions and executors for LLM calls: DuckDuckGo search, Python code, terminal commands."""
 
 import ast
 import base64
@@ -8748,6 +8747,230 @@ def _sandbox_preexec():
             pass
 
 
+# _sandbox_preexec without a Python pre-exec (Linux): Popen does setsid/umask in C, setpriv and prlimit exec in
+# place (same PID), so the server is vforked instead of forked through interpreter code.
+_SANDBOX_SHIM_DIRS = ("/usr/bin", "/bin", "/usr/sbin", "/sbin")
+_sandbox_shims: "tuple[str, str] | None | bool" = False  # False = not probed yet
+_sandbox_shims_lock = threading.Lock()
+
+
+def _trusted_system_binary(name: str) -> "str | None":
+    """Root-owned, not group/world writable, no set-id bit or file capability: either would clear the death signal.
+    World-readable too: an unreadable binary runs non-dumpable, which hides /proc/<pid>/exe from the readiness wait."""
+    for directory in _SANDBOX_SHIM_DIRS:
+        path = os.path.join(directory, name)
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        if (
+            not S_ISREG(st.st_mode)
+            or st.st_uid != 0
+            or st.st_mode & 0o022
+            or st.st_mode & (stat.S_ISUID | stat.S_ISGID)
+            or not st.st_mode & 0o111
+            or not st.st_mode & 0o004
+        ):
+            continue
+        try:
+            os.getxattr(path, "security.capability")
+            continue
+        except OSError:
+            pass
+        return path
+    return None
+
+
+def _probe_sandbox_shims() -> "tuple[str, str] | None":
+    setpriv = _trusted_system_binary("setpriv")
+    prlimit = _trusted_system_binary("prlimit")
+    if setpriv is None or prlimit is None:
+        return None
+    try:
+        # Old setpriv lacks --pdeathsig (util-linux < 2.33), and busybox-style builds take other flags.
+        # The limits a launch sets, so a policy refusing one of them (SELinux checks a changed hard limit) keeps
+        # the pre-exec, which skips a refused limit where prlimit would refuse the launch.
+        limits = _sandbox_rlimit_args()
+        if not limits:
+            soft, hard = _resource.getrlimit(_resource.RLIMIT_CPU)
+            limits = [
+                "--cpu={}:{}".format(
+                    "unlimited" if soft == _resource.RLIM_INFINITY else soft,
+                    "unlimited" if hard == _resource.RLIM_INFINITY else hard,
+                )
+            ]
+        result = subprocess.run(
+            [
+                setpriv,
+                "--no-new-privs",
+                "--pdeathsig",
+                "KILL",
+                "--",
+                prlimit,
+                *limits,
+                "--",
+                setpriv,
+                "--dump",
+            ],
+            stdin = subprocess.DEVNULL,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            env = {"PATH": os.defpath, "LC_ALL": "C"},
+            timeout = 5,
+            start_new_session = True,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError, AttributeError):
+        return None
+    # Read back after two more execs: an LSM transition on exec (AppArmor, SELinux) would clear the death signal.
+    dump = result.stdout.decode("ascii", "replace").splitlines()
+    if (
+        result.returncode != 0
+        or "no_new_privs: 1" not in dump
+        or not any(
+            line.startswith("Parent death signal:") and line.split(":", 1)[1].strip(" []") == "KILL"
+            for line in dump
+        )
+    ):
+        return None
+    try:
+        # Read by _wait_for_death_signal.
+        os.readlink("/proc/self/exe")
+    except OSError:
+        return None
+    return setpriv, prlimit
+
+
+def _sandbox_exec_shims() -> "tuple[str, str] | None":
+    global _sandbox_shims
+    if _sandbox_shims is False:
+        with _sandbox_shims_lock:
+            if _sandbox_shims is False:
+                _sandbox_shims = _probe_sandbox_shims()
+    return _sandbox_shims
+
+
+def _sandbox_rlimit_args() -> "list[str] | None":
+    """The limits _sandbox_preexec would set, as prlimit flags; None if one could fail there (it skips a failing
+    limit, prlimit refuses the launch), so the caller keeps the pre-exec for that host."""
+    if _resource is None:
+        return None
+    wanted = []
+    try:
+        wanted.append(
+            (
+                "nproc",
+                _resource.RLIMIT_NPROC,
+                int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NPROC", "10000")),
+            )
+        )
+    except ValueError:
+        pass
+    wanted.append(("fsize", _resource.RLIMIT_FSIZE, 100 * 1024 * 1024))
+    if _sandbox_as_bytes is not None:
+        wanted.append(("as", _resource.RLIMIT_AS, _sandbox_as_bytes))
+    try:
+        wanted.append(
+            (
+                "cpu",
+                _resource.RLIMIT_CPU,
+                int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_CPU_S", "600")),
+            )
+        )
+    except ValueError:
+        pass
+    try:
+        nofile = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NOFILE", "16384"))
+        hard_cur = _resource.getrlimit(_resource.RLIMIT_NOFILE)[1]
+        target = nofile if hard_cur == _resource.RLIM_INFINITY else min(nofile, hard_cur)
+        if target > _sandbox_nr_open():
+            # Above fs.nr_open setrlimit fails even under the hard limit: the pre-exec skips it.
+            return None
+        wanted.append(("nofile", _resource.RLIMIT_NOFILE, target))
+    except (ValueError, OSError):
+        pass
+    args = []
+    for flag, resource_id, value in wanted:
+        if not isinstance(value, int) or value < 0 or value >= 2**63:
+            return None
+        try:
+            hard_cur = _resource.getrlimit(resource_id)[1]
+        except (ValueError, OSError):
+            return None
+        if hard_cur != _resource.RLIM_INFINITY and value > hard_cur:
+            # Raising a hard limit needs CAP_SYS_RESOURCE: the pre-exec skips it without, raises it with.
+            if _has_cap_sys_resource():
+                return None
+            continue
+        args.append(f"--{flag}={value}:{value}")
+    return args
+
+
+def _sandbox_nr_open() -> int:
+    """fs.nr_open, or 0 when unreadable (which keeps the pre-exec)."""
+    try:
+        with open("/proc/sys/fs/nr_open", encoding = "ascii") as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return 0
+
+
+def _has_cap_sys_resource() -> bool:
+    """Unknown counts as held, which keeps the pre-exec."""
+    try:
+        with open("/proc/self/status", encoding = "ascii", errors = "replace") as f:
+            for line in f:
+                if line.startswith("CapEff:"):
+                    return bool(int(line.split()[1], 16) & (1 << 24))
+    except (OSError, ValueError, IndexError):
+        pass
+    return True
+
+
+def _sandbox_shim_argv(argv, env) -> "tuple[str, ...] | None":
+    """argv behind setpriv and prlimit, or None to keep _sandbox_preexec."""
+    # Python 3.9 forks (no vfork) even without a pre-exec, so the shims would only add two execs there.
+    if sys.platform != "linux" or sys.version_info < (3, 10) or not argv:
+        return None
+    shims = _sandbox_exec_shims()
+    if shims is None:
+        return None
+    # A missing program keeps Popen's own FileNotFoundError instead of a prlimit exit status.
+    search = os.pathsep.join(os.get_exec_path(env))
+    if shutil.which(argv[0], path = search) is None:
+        return None
+    limits = _sandbox_rlimit_args()
+    if not limits:
+        # Without a flag prlimit prints its limits table on a terminal before running the program.
+        return None
+    setpriv, prlimit = shims
+    return (setpriv, "--no-new-privs", "--pdeathsig", "KILL", "--", prlimit, *limits, "--", *argv)
+
+
+def _wait_for_death_signal(pid: int, setpriv: str) -> None:
+    """Popen returns before setpriv arms the death signal; the pre-exec armed it before Popen returned, so this
+    waits as long as Popen would have (no deadline: returning early would hand back an unarmed child)."""
+    delay = 0.0001
+    while True:
+        try:
+            exe = os.readlink(f"/proc/{pid}/exe")
+        except OSError:
+            return  # exited (setpriv is readable, so a live one is not hidden)
+        if exe not in (setpriv, setpriv + " (deleted)"):
+            return
+        time.sleep(delay)
+        delay = min(delay * 2, 0.005)
+
+
+def _spawn_behind_sandbox_shims(prepared, popen_kwargs):
+    proc = subprocess.Popen(prepared.argv, **popen_kwargs)
+    if prepared.execution_record is not None:
+        prepared.execution_record = dataclasses.replace(
+            prepared.execution_record, execution_status = "started"
+        )
+    _wait_for_death_signal(proc.pid, os.path.realpath(prepared.argv[0]))
+    return proc
+
+
 def _account_confinement():
     """Confinement for the acting account's next child: None for owner, raises if unavailable."""
     return account_confinement(_SANDBOX_SITE_DIR)
@@ -9096,7 +9319,22 @@ def _apply_prepared_launch(prepared, popen_kwargs: dict) -> dict:
     popen_kwargs["cwd"] = prepared.workdir
     popen_kwargs["env"] = prepared.env
     if sys.platform != "win32":
-        popen_kwargs["preexec_fn"] = prepared.preexec_fn
+        if prepared.preexec_fn is _bypass_preexec:
+            # setsid in C: a Python pre-exec forks the whole server instead of vfork.
+            popen_kwargs.pop("preexec_fn", None)
+            popen_kwargs["start_new_session"] = True
+        else:
+            shim_argv = None
+            if prepared.preexec_fn is _sandbox_preexec and prepared.spawn_callback is None:
+                shim_argv = _sandbox_shim_argv(prepared.argv, prepared.env)
+            if shim_argv is not None:
+                popen_kwargs.pop("preexec_fn", None)
+                popen_kwargs["start_new_session"] = True
+                popen_kwargs["umask"] = 0o077
+                prepared.argv = shim_argv
+                prepared.spawn_callback = _spawn_behind_sandbox_shims
+            else:
+                popen_kwargs["preexec_fn"] = prepared.preexec_fn
     popen_kwargs["close_fds"] = prepared.close_fds
     if prepared.pass_fds:
         # Empty for every fallback, so Windows never sees a kwarg it rejects.

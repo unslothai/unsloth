@@ -3,8 +3,6 @@
 
 /** Notifies runtimes of Data tab deletions; otherwise a later sync writes the attachment back. */
 
-import forge from "node-forge";
-
 export type ChatAttachmentDeletedEvent = {
   messageId: string;
   attachmentId: string;
@@ -87,6 +85,7 @@ export async function chatContentPartAttachmentIdFromSignature(
     }
   }
   if (hex === null) {
+    const { default: forge } = await import("node-forge");
     const digest = forge.md.sha256.create();
     digest.update(signature, "utf8");
     hex = digest.digest().toHex();

@@ -1,30 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Reversible, failure-safe monkey-patches that speed up the diffusion denoiser.
-
-These patch a couple of SHARED diffusers classes (a tiny surface covering all families) to make
-inference faster WITHOUT reducing accuracy or regressing ``torch.compile``. Both are compile-safe:
-they lower to plain ops, are bit-identical or FMA-1-ULP (equal-or-MORE accurate) vs stock, and
-torch.compile fuses either form to the same kernel -- so they help EAGER and are compile-neutral.
-
-Patched (measured B200, bf16, DiT shapes):
-* ``RMSNorm.forward`` -> fused ``F.rms_norm`` on the common path (non-NPU, no bias, weight
-  None/fp16/bf16; else the exact original). The standout win (~6-12x per call, QK-norm runs every
-  attention block on Qwen-Image + Z-Image). bf16: one rounding instead of two (~1 ULP off stock, nearer fp64).
-* ``AdaLayerNormContinuous`` / ``AdaLayerNormZero`` / ``AdaLayerNormZeroSingle`` -> the
-  ``norm(x)*(1+scale)+shift`` modulation fused via ``torch.addcmul`` (~1.2x, fp32 exact, bf16 1
-  ULP). Covers flux.1 / flux.2-klein / qwen-image.
-
-NOT patched (evidence-based): ``FeedForward`` Dropout skip (measured a REGRESSION, the isinstance
-check costs more); GEGLU/SwiGLU/GELU (mul-bound, need a custom kernel); per-family custom classes
-and attention (not shared; attention already routes through the set_attention_backend dispatcher).
-
-Lifecycle: ``install_compile_safe_patches()`` is idempotent, class-level. Install for any active
-speed tier; the bit-identical ``off`` path runs UNINSTALLED, so the caller uninstalls on an ``off``
-load and on unload. The chat<->diffusion arbiter guarantees a single active pipe, so class-level
-state is safe.
-"""
+"""Reversible, failure-safe, compile-safe accuracy-neutral patches of shared diffusers classes;
+uninstall on off-tier loads and on unload; the chat/diffusion arbiter ensures one active pipe, so
+class-level state is safe"""
 
 from __future__ import annotations
 

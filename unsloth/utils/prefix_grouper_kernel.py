@@ -10,39 +10,8 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""FlexAttention shared-prefix kernel for PrefixGrouper (GRPO shared-prompt dedup).
-
-In GRPO every prompt spawns ``G = num_generations`` completions that share the same
-prompt prefix. The full-row packed path forwards the identical prefix ``G`` times.
-PrefixGrouper stores the prefix ONCE and concatenates only the ``G`` suffixes, with an
-attention layout where each suffix token attends to ``[the single shared prefix] +
-[causal within its own suffix]``. This kernel expresses that one-prefix -> many-suffix
-fan-out via a ``torch.nn.attention.flex_attention`` block mask, so the masked-out
-cross-suffix / cross-group blocks are never computed and the ``P + G*R`` FLOP saving is
-realised (not merely a masked dense ``O(T^2)``).
-
-Mask semantics (identical to the certified SDPA oracle):
-
-    keep(q_idx, kv_idx) = same_group(q, kv) AND
-        ( is_prefix[kv_idx]                                  # full prefix visibility
-          OR ( suffix_of_kv[kv_idx] == suffix_of_kv[q_idx]   # same suffix ...
-               AND kv_idx <= q_idx ) )                       # ... causal within it
-
-This module is self-contained (no dependency on any temp/ scratch dir) so PrefixGrouper
-works from the installed source after a fresh compile. It is only imported lazily from
-``attention_dispatch.run_attention`` when ``prefix_seg_info`` is present, which itself is
-only ever set when ``UNSLOTH_GRPO_PREFIX_GROUPER`` is on and grouping succeeded, so the
-default (off) path never touches this file.
-
-Provided entry points:
-  * ``PrefixSegInfo``            : per-flat-token segment metadata + cache signature.
-  * ``build_seg_info_multigroup``: build PrefixSegInfo for many groups packed flat.
-  * ``build_seg_info_from_layout``: build PrefixSegInfo for ONE group (test helper).
-  * ``get_block_mask``          : cached create_block_mask keyed on the signature.
-  * ``flex_shared_prefix_attention(Q, K, V, prefix_seg_info)``
-        Q/K/V of shape [1, T, n_heads, head_dim]; returns [1, T, n_heads, head_dim],
-        IDENTICAL semantics to the SDPA oracle.
-"""
+"""GRPO PrefixGrouper FlexAttention kernel, prefix stored once; self-contained (no temp dir
+dependency); imported lazily only when prefix_seg_info is set, so default-off never imports it."""
 
 from __future__ import annotations
 

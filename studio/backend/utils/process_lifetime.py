@@ -1,27 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Bind Unsloth child processes to the parent's lifetime so none survive an
-abnormal parent exit (terminal-window close, Task Manager "End Task", SIGKILL,
-crash) -- the cooperative shutdown path only runs on graceful exits.
-
-Windows: one parent-owned Job Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.
-The parent is assigned to it, children inherit it automatically, and the OS
-reaps every process in the job when the parent's last handle closes. Mirrors the
-desktop app's job in studio/src-tauri/src/windows_job.rs.
-
-POSIX: each long-lived child sets prctl(PR_SET_PDEATHSIG) on Linux via a tiny
-preexec hook. Linux's signal is per-direct-child only, so multiprocessing
-workers are also tracked for terminate_all.
-
-macOS has neither mechanism, so tracked children are also recorded on disk and
-the next startup sweeps whatever the previous run left behind
-(reap_recorded_children). That record is the only reaper macOS has after a
-crash, a Force Quit or a closed terminal.
-
-Best-effort throughout: any failure degrades to today's behavior, never raises.
-Stdlib only.
-"""
+"""Kills Unsloth children when the parent dies abnormally (Job Object, PDEATHSIG, macOS disk record
+swept at startup); best-effort, never raises; stdlib only."""
 
 from __future__ import annotations
 
