@@ -294,7 +294,6 @@ def snapshot_selection_key(snapshot: Path) -> tuple[float, str]:
 
 def latest_snapshot_dir(repo_dir: Path) -> Optional[Path]:
     """Newest immediate child of ``repo_dir/snapshots``, or None. mtime is the signal huggingface_hub's from_pretrained resolves to; ties fall to ``snapshot_selection_key`` so every caller names the same directory."""
-    # A scan's partial checks each ask again for the same repo.
     return memoized(
         ("latest_snapshot_dir", os.fspath(repo_dir)), lambda: _latest_snapshot_dir(repo_dir)
     )

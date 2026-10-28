@@ -195,7 +195,6 @@ def _portable_cache_home() -> Optional[Path]:
 
 
 def _scan_memoized(name: str, compute):
-    # Without an env override these read Settings rows from studio.db on every call.
     from utils.scan_memo import memoized
 
     environ = os.environ

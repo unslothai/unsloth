@@ -64,7 +64,6 @@ def _infer_studio_home_from_venv_uncached() -> Path | None:
 
 
 def _resolved(value: str) -> Path:
-    # studio_root() resolves twice per call, and a scan asks for it several times per repo.
     return memoized(("resolved", value), lambda: _resolved_uncached(value))
 
 

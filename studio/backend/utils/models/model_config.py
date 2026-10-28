@@ -2451,7 +2451,6 @@ def _registered_custom_model_root(path: str) -> Optional[Path]:
         from utils.paths import studio_db_path
         from utils.scan_memo import memoized
 
-        # One studio.db read per scan, not one per model.
         folders = memoized(("scan_folders", str(studio_db_path())), list_scan_folders)
     except Exception:
         return None

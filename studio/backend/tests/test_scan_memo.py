@@ -165,7 +165,6 @@ def test_hf_cache_setting_write_is_seen_by_the_next_scan(monkeypatch, tmp_path):
 
 
 def test_a_cache_invalidation_mid_scan_is_seen_by_the_same_scan(monkeypatch, tmp_path):
-    # The inventory retry after an epoch change runs inside the scope that saw the old roots.
     from hub.utils import inventory_scan
 
     stored = {"value": None}

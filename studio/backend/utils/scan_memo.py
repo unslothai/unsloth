@@ -19,8 +19,7 @@ _T = TypeVar("_T")
 _scope: ContextVar[Optional[dict]] = ContextVar("studio_scan_memo", default = None)
 # Set when the scope ends: a task or thread that copied the context and outlives it stops using it.
 _CLOSED = object()
-# Bumped on a cache mutation (move, delete, finished download); entries are keyed by it, so an
-# inventory retry inside the same scope recomputes the roots instead of rescanning the old ones.
+# Bumped by invalidate_hf_cache_scans: an inventory retry in the same scope must not reuse old roots.
 _generation = 0
 
 
