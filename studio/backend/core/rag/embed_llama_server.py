@@ -112,10 +112,7 @@ _GGUF_POOLING_DEFAULT = {"nomic-bert": "mean", "nomic-bert-moe": "mean"}
 
 @lru_cache(maxsize = 8)
 def _embed_host(host: str) -> str:
-    """One numeric address for bind, requests and the port-owner check.
-
-    A name resolving to several addresses lets llama-server bind one while the client dials
-    another a different user holds."""
+    # One address for bind, URL and owner check: a multi-address name can bind one and dial another.
     try:
         ips = [a[4][0] for a in socket.getaddrinfo(host, None, type = socket.SOCK_STREAM)]
     except OSError:
