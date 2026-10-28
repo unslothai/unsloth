@@ -32854,10 +32854,9 @@ async def produce_openai_chat_completions(
 
     # Classify capability flags from the loaded template.
     _sf_model_info = backend.models.get(backend.active_model_name, {})
-    # Only MLX and managed vLLM count their own prompt exactly, so only they are fitted first.
     _sf_fit_overflow = (
         _rolling_context_policy(payload)
-        if _sf_model_info.get("is_mlx") or _sf_model_info.get("engine") == "vllm"
+        if _sf_model_info.get("is_mlx") or _sf_model_info.get("engine") in ("vllm", "sglang")
         else None
     )
     if _sf_model_info.get("engine") in ("vllm", "sglang"):
@@ -32914,6 +32913,8 @@ async def produce_openai_chat_completions(
     # tool_choice asked directly: _tool_loop_unusable weighs it against GGUF's tools.
     _sf_recall_loop_usable = (
         payload.tool_choice != "none"
+        # Managed engines refuse tools on this path; their tool turns go through managed_tool_chat.
+        and _sf_model_info.get("engine") not in ("vllm", "sglang")
         and not _tool_loop_unusable
         and not _has_client_tool_contract
         and not _response_format_constrains_decoding(payload)
