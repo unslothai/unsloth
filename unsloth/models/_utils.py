@@ -5197,6 +5197,26 @@ def per_layer_device(module, default = 0):
     return device, buffer_index
 
 
+def refresh_moved_layer_devices(layers, block_swap = None):
+    """A model moved after loading (accelerate's prepare / Trainer `.to(device)` sends a single-device map
+    such as {"": 1} to cuda:0) keeps the per-layer device published at load, so decode moved activations
+    back to the old card ("cuda:1 and cuda:0"). Checks the first and last layer once per decode step and
+    republishes every layer only when a weight sits on another index of the published device type; block
+    swap and offload park weights on CPU or meta by design, so those are left alone."""
+    if block_swap is not None or len(layers) == 0:
+        return
+    for layer in (layers[0], layers[-1]):
+        published = getattr(layer, "__dict__", {}).get("_per_layer_device")
+        if not isinstance(published, torch.device):
+            continue
+        device = _device_of_parameters(layer)
+        if device is not None and device.type == published.type and device != published:
+            from unsloth_zoo.patching_utils import verify_and_set_device
+            for each in layers:
+                verify_and_set_device(each)
+            return
+
+
 def move_to_device(target_device, *tensors):
     """Move tensors to target_device (returns same objects if already there)."""
     if isinstance(target_device, int):
