@@ -55,6 +55,7 @@ function harness(response: ReturnType<typeof jsonResponse>) {
         notifyChatHistoryUpdated: () => {},
         isCoalescedHistoryEvent: () => false,
       },
+      "../utils/openapi-support": { readAdvertisedPatchGuards: () => null },
       "../utils/load-warning-toast": { showLoadWarning: () => {} },
       "../lib/load-request": {},
       "./generation-length.ts": {},
