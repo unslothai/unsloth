@@ -375,11 +375,9 @@ def _can_rewind(f) -> bool:
 
 
 def skip_gguf_strings(f, count: int) -> int:
-    """Skip up to ``count`` GGUF strings (u64 length + bytes) from ``f``'s position through
-    one buffer, not one read + seek per entry. Returns how many were skipped and leaves ``f``
-    at the next one; stops early at an entry over 1 MiB or a length field cut short by EOF,
-    so the caller's loop handles the rest exactly as before. A stream that cannot seek back skips
-    nothing here."""
+    """Skip up to ``count`` GGUF strings (u64 length + bytes) through one buffer; return how many,
+    with ``f`` at the next. Stops at an entry over 1 MiB, a length cut short by EOF, or a stream
+    that cannot rewind, so the caller's per-entry loop handles the rest exactly as before."""
     if not _can_rewind(f):
         return 0
     unpack = _U64_AT
