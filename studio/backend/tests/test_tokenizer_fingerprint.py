@@ -35,8 +35,7 @@ def _tokenizer(extra_vocab = 0, keep_init_state = True):
 
 @pytest.fixture
 def restore_reducer():
-    # An earlier test in this process may have installed the fingerprint already (any
-    # format_and_template_dataset call does), so each test starts from datasets' own reducer.
+    # Earlier tests may have installed the fingerprint; start each from datasets' own reducer.
     current = datasets_dill._save_transformersPreTrainedTokenizerBase
     dispatch = dict(datasets_dill.Pickler.dispatch)
     original = getattr(current, "__wrapped__", current)
@@ -138,8 +137,7 @@ def _spy_on_datasets_reducer(
 
 
 def test_hashing_still_goes_through_datasets_own_reducer(restore_reducer):
-    # datasets keeps runtime state out of the hash in its reducer (4.7+ also the backend's truncation
-    # and padding), so the fingerprint must hand the tokenizer to it rather than pickle it itself.
+    # datasets' reducer keeps runtime state (4.7+ truncation / padding) out of the hash, so delegate to it.
     seen: list = []
     _spy_on_datasets_reducer(restore_reducer, seen)
     tokenizer_fingerprint.install_tokenizer_fingerprint()
