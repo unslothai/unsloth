@@ -29,7 +29,6 @@ class _FullStripEveryToken(StreamingMarkupStripper):
 
 
 def _code_tokens(count):
-    # JSON-escaped Python: quotes, backslashes, braces, brackets and colons in nearly every token.
     line = 'def f(x):\n    return {"a": [x, "b\\\\c"], "d": f"{x}"}\n'
     escaped = json.dumps(line)[1:-1]
     return [escaped[i : i + 4] for i in range(0, len(escaped), 4)] * (count // 16 + 1)
