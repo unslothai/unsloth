@@ -70,8 +70,14 @@ def test_both_suites_run_the_check_after_xdist_tags_groups(conftest):
     assert "check" in [ast.unparse(n.func) for n in ast.walk(hook) if isinstance(n, ast.Call)]
 
 
-def test_version_compat_keeps_pytest_below_the_release_that_drops_xdist_groups():
-    # Backend CI carries the same pin (studio-backend-ci.yml); these lanes monkeypatch torch config too.
-    text = (REPO / ".github/workflows/version-compat-ci.yml").read_text(encoding = "utf-8")
-    assert "'pytest>=8,<9.2'" in text
-    assert "'pytest>=8'" not in text, "version-compat-ci.yml installs an unpinned pytest"
+@pytest.mark.parametrize(
+    "workflow, pin, unpinned",
+    [
+        (".github/workflows/studio-backend-ci.yml", "'pytest<9.2'", " pytest pytest-"),
+        (".github/workflows/version-compat-ci.yml", "'pytest>=8,<9.2'", "'pytest>=8'"),
+    ],
+)
+def test_ci_keeps_pytest_below_the_release_that_drops_xdist_groups(workflow, pin, unpinned):
+    text = (REPO / workflow).read_text(encoding = "utf-8")
+    assert pin in text
+    assert unpinned not in text, f"{workflow} installs an unpinned pytest"
