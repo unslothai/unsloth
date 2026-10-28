@@ -1152,7 +1152,8 @@ def mlx_resolve_drafter_offload(model_dir, knobs, drafter, *, auto: bool, **pric
 
     room = mlx_resolve_offload(model_dir, knobs, drafter = drafter, **priced)
     if not auto:
-        # A plan the load would then refuse the drafter on (nothing fits: all on disk, no step) helps nobody.
+        # A chosen drafter attaches either way, so room it still does not fit in (nothing fits: all on
+        # disk, no step) would only slow the load.
         if "auto" in knobs and fits(room) is False:
             return mlx_resolve_offload(model_dir, knobs, **priced), None
         return room, None
@@ -5516,7 +5517,6 @@ class MLXInferenceBackend:
             _offloaded["prefill_chunk"] = self._prefill_step
         _priceable = not (is_distributed or is_lora or dtype is not None)
         spec_kind = _drafter_ctx = None
-        _drafter_fitted = False
         _vlm_route = speculates and not is_vision
         if speculates and _vlm_generation_is_diffusion(self._model):
             # Neither the single path nor the resident batch may decode a diffusion model speculatively.
@@ -5558,9 +5558,6 @@ class MLXInferenceBackend:
             ) = mlx_speculative.build_draft(
                 self._model, resolution, fits = _fits, draft_n_max = _positive_int(spec_draft_n_max)
             )
-            _drafter_fitted = (
-                self._speculative_draft is not None and self._speculative_draft.drafter is not None
-            )
             logger.info(
                 "MLX speculative decoding: %s (mode %s, reason %s)",
                 spec_kind or "off",
@@ -5570,9 +5567,10 @@ class MLXInferenceBackend:
         # TurboQuant's layout is not one the planner prices, and a refused one stays full width:
         # fit either at full width, which only ever under-promises.
         _requested_bits = None if self._turboquant else _normalize_mlx_kv_bits(kv_bits)
+        # Only a drafter that shrank the context fitted it; otherwise the context is fitted for the target alone.
         _fitted_ctx, _eligibility = (
             (_drafter_ctx, _eligibility)
-            if _drafter_fitted
+            if _drafter_ctx is not None
             else (None, _eligibility)
             if not _priceable or _positive_int(max_seq_length) is not None
             else _fitted_context(

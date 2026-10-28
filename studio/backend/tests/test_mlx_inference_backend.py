@@ -4898,7 +4898,9 @@ def test_an_explicit_speculative_mode_loads_through_mlx_vlm_and_attaches_what_fi
     monkeypatch.setattr(
         mlx_speculative,
         "resolve_speculation",
-        lambda mode, *_a, **_k: mlx_speculative.SpecResolution(mode, (source,)),
+        lambda mode, *_a, **_k: mlx_speculative.SpecResolution(
+            mode, () if mode == "ngram" else (source,)
+        ),
     )
     monkeypatch.setattr(
         mlx_inference, "mlx_drafter_fit", lambda *a, **k: fits.append(a[1:4]) or (True, 4096)
@@ -4928,6 +4930,11 @@ def test_an_explicit_speculative_mode_loads_through_mlx_vlm_and_attaches_what_fi
     monkeypatch.setattr(mlx_inference, "mlx_drafter_fit", lambda *a, **k: (False, None))
     backend.load_model(config, max_seq_length = 0, speculative_type = "ngram")
     assert fits[-1] is True  # copies alone still load through mlx-vlm, so the fit prices that route
+    # A chosen mode's drafter priced not to fit attaches anyway, and the context is fitted without it.
+    fits.clear()
+    backend.load_model(config, max_seq_length = 0, speculative_type = "dflash")
+    assert backend._speculative_draft.drafter is not None and fits == [True]
+    assert backend.models["org/text"]["spec_fallback_reason"] is None
     backend.load_model(config, max_seq_length = 0, spec_draft_model = "org/d")
     assert fits[-2:] == [True, True]  # a named drafter enters the speculative route under Auto
     # ... and is a request, so a load that cannot honour it says why.

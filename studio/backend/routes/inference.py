@@ -14691,7 +14691,8 @@ def _mlx_estimate_drafter(
         target_name = model_identifier,
         allowed = _discoverable_drafters(model_identifier),
     )
-    for source in resolution.sources:
+    first = None
+    for index, source in enumerate(resolution.sources):
         attaches, fitted = mlx_drafter_fit(
             model_dir,
             ceiling,
@@ -14704,6 +14705,13 @@ def _mlx_estimate_drafter(
         )
         if attaches:
             return (source.path, source.builtin), fitted, True
+        if not index:
+            first = attaches
+    # As the load does, a mode the user chose with none that fits attaches its first drafter; one
+    # that cannot be sized is left out of the price rather than leaving no price.
+    if mode != "auto" and first is False:
+        source = resolution.sources[0]
+        return (source.path, source.builtin), None, True
     return None, None, True
 
 
@@ -20653,7 +20661,7 @@ async def estimate_memory(
                 mlx_offload_baseline,
             )
             mlx_route = {**({"vision": True} if mlx_speculates else {}), **mlx_offload}
-            if not mlx_named_ctx and mlx_drafter is None:
+            if not mlx_named_ctx and mlx_fitted_ctx is None:
                 mlx_fitted_ctx = _mlx_estimate_fitted_context(
                     config, model_dir, mlx_load_in_4bit, mlx_kv_bits, **mlx_route
                 )

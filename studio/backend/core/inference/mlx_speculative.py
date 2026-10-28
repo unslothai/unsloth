@@ -376,32 +376,49 @@ def build_draft(
     draft_n_max: Optional[int] = None,
 ) -> tuple:
     """``(draft, kind, reason, context)`` for the first source ``fits`` accepts that builds, else copies
-    alone when the mode allows. ``reason`` names a passed-over choice, so a substitute never attaches silently."""
+    alone when the mode allows. ``reason`` names a passed-over choice, so a substitute never attaches silently.
+    A mode the user chose still prefers a source that fits, but attaches one that does not rather than none:
+    that one reserves no context."""
     from unsloth_zoo.mlx.speculative import companion_drafter, native_mtp_drafter
 
     if _carries_encoder_state(target):
         logger.info("MLX speculative decoding: %s carries encoder state", type(target).__name__)
         return None, None, None if resolution.mode == "auto" else RUNTIME_ERROR, None
-    reason = resolution.reason
-    for source in resolution.sources:
-        ok, context = fits(source)
-        if not ok:
-            if resolution.mode != "auto":
-                reason = DRAFTER_NO_MEMORY
-            elif ok is not None:  # priced, and the drafter would shrink it
-                reason = AUTO_CONTEXT_COST
-            continue
+    reason, incompatible, unfit = resolution.reason, False, []
+
+    def build(source):
+        nonlocal reason, incompatible
         try:
             drafter = (native_mtp_drafter if source.builtin else companion_drafter)(
                 source.path, target
             )
             if drafter is None:
                 raise ValueError("no MTP splitter knows this checkpoint")
+            return drafter
         except Exception as exc:
             logger.warning("MLX drafter %s (%s) not attached: %s", source.path, source.kind, exc)
-            reason = DRAFTER_INCOMPATIBLE
-            continue
-        return _draft(drafter, resolution.copies, draft_n_max), source.kind, reason, context
+            reason, incompatible = DRAFTER_INCOMPATIBLE, True
+
+    for source in resolution.sources:
+        ok, context = fits(source)
+        if ok:
+            if (drafter := build(source)) is not None:
+                return _draft(drafter, resolution.copies, draft_n_max), source.kind, reason, context
+        elif resolution.mode != "auto":
+            reason = DRAFTER_NO_MEMORY  # stands only if a source that fits attaches instead
+            unfit.append(source)
+        elif ok is not None:  # priced, and the drafter would shrink it
+            reason = AUTO_CONTEXT_COST
+    if unfit:
+        reason = DRAFTER_INCOMPATIBLE if incompatible else resolution.reason
+    for source in unfit:
+        logger.warning(
+            "MLX drafter %s (%s) is not priced to fit beside this model; attaching it as chosen",
+            source.path,
+            source.kind,
+        )
+        if (drafter := build(source)) is not None:
+            return _draft(drafter, resolution.copies, draft_n_max), source.kind, reason, None
     if resolution.copies and resolution.mode != "auto":  # auto copies only alongside a drafter
         return _draft(None, True, draft_n_max), "ngram", reason, None
     return None, None, reason, None

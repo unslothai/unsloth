@@ -820,11 +820,14 @@ class TestEstimateMemoryRoute:
         monkeypatch.setattr(
             spec, "speculation_refusal", lambda kv_quant, **_: spec.KV_QUANT if kv_quant else None
         )
+        fit = False
         monkeypatch.setattr(
             mlx_inference,
             "mlx_drafter_fit",
             lambda d, ceiling, pinned, source, **_: (
-                source.path == "/ok" and (pinned or 0) <= 8192,
+                None
+                if fit == "unsized" or (fit == "mixed" and source.path == "/big")
+                else source.path == "/ok" and (pinned or 0) <= 8192 and not fit,
                 None if pinned else 12288,
             ),
         )
@@ -846,13 +849,22 @@ class TestEstimateMemoryRoute:
         _estimate(model_path = "org/model")
         _estimate(model_path = "o/m", speculative_type = "ngram", mlx_kv_quant = "auto", mlx_kv_bits = 8)
         _estimate(model_path = "org/model", spec_draft_model = "org/d")  # named under Auto
-        assert [route for *_, route in priced] == [True, True, True, None, None, True, True]
-        assert [row[:2] for row in priced[:6]] == [
+        fit = "unfit"  # nothing fits: the chosen mode still charges its first drafter, fitted without it
+        assert _estimate(model_path = "org/model", speculative_type = "mtp").context_fitted == 24576
+        # A first drafter that cannot be sized is the one the load attaches: the target is priced alone,
+        # not with an unfit drafter that never loads.
+        for fit in ("unsized", "mixed"):
+            _estimate(model_path = "org/model", speculative_type = "mtp")
+        assert [route for *_, route in priced] == [True] * 3 + [None] * 2 + [True] * 5
+        assert [row[:2] for row in priced[:6] + priced[7:]] == [
             (12288, ("/ok", False)),
             (4096, ("/ok", False)),
-            (65536, None),
+            (65536, ("/big", True)),
             (20480, None),
             (20480, None),
+            (24576, None),
+            (24576, ("/big", True)),
+            (24576, None),
             (24576, None),
         ]
 
