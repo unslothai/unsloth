@@ -91,8 +91,55 @@ from importlib.metadata import version as package_version, PackageNotFoundError
 
 from unsloth_cli._argv import _expand_attached_np_short
 
-# Eager on purpose: Desktop's `unsloth -h` preflight must keep proving that the module
-# behind `unsloth studio run` imports. Every other command module loads on first use.
+# typer lists commands before sub-apps, each in registration order.
+_COMMAND_ORDER = (
+    "train",
+    "inference",
+    "chat",
+    "export",
+    "eval",
+    "list-checkpoints",
+    "doctor",
+    "run",
+    "install-kernels",
+    "studio",
+    "start",
+    "mcp",
+    "connect",
+)
+
+# Only a real command dispatch from the console script (or `python -m unsloth_cli`) loads its
+# command module on first use. Help, version, completion, a bare or unknown command and any
+# import as a library keep importing and building every command up front, exactly as before:
+# Desktop's `unsloth -h` health probe must still fail when any command module is broken, so
+# its repair flow still triggers. A Windows `studio setup` / `studio update` keeps loading
+# studio alone, as before.
+_EAGER_TOKENS = frozenset(
+    ("-h", "--help", "-V", "--version", "--install-completion", "--show-completion")
+)
+_cli_args = (
+    _sys.argv[1:] if (_is_entry_point or (_entry_base == "-m" and _runs_unsloth_cli)) else None
+)
+_load_every_command = not _windows_studio_mutation_entry and (
+    not _cli_args
+    or _cli_args[0] not in _COMMAND_ORDER
+    or any(_arg in _EAGER_TOKENS for _arg in _cli_args)
+    or "_UNSLOTH_COMPLETE" in _os.environ
+)
+del _cli_args
+
+if _load_every_command:
+    from unsloth_cli.commands.train import train
+    from unsloth_cli.commands.inference import inference
+    from unsloth_cli.commands.chat import chat
+    from unsloth_cli.commands.start import start_app
+    from unsloth_cli.commands.export import export, list_checkpoints
+    from unsloth_cli.commands.eval import evaluate as eval_command
+    from unsloth_cli.commands.doctor import doctor
+    from unsloth_cli.commands.mcp import mcp_app
+    from unsloth_cli.commands.studio import run as studio_run, _LlamaPassthroughCommand
+
+# Always eager: `unsloth studio run` is the command Desktop starts the backend with.
 from unsloth_cli.commands.studio import studio_app
 
 
@@ -158,6 +205,11 @@ if _TyperGroup is not None:
             super().__init__(*args, **kwargs)
             self.commands = _LazyCommands(self.commands, _ACTIVE_LAZY_COMMANDS)
             self._listing = 0
+            if _load_every_command:
+                # Build every command now, as typer does for eagerly registered ones, so a
+                # command that typer cannot build still fails `unsloth -h` and `--version`.
+                for _name in list(self.commands):
+                    self.commands[_name]
 
         def parse_args(self, ctx, args):
             ctx.meta.setdefault(_ARGV_META_KEY, list(args))
@@ -269,22 +321,6 @@ _LAZY_COMMANDS = {
     "mcp": ("Connect coding agents to the Unsloth Studio MCP server.", False),
     "connect": ("Deprecated alias for `unsloth start`.", True),
 }
-# typer lists commands before sub-apps, each in registration order.
-_COMMAND_ORDER = (
-    "train",
-    "inference",
-    "chat",
-    "export",
-    "eval",
-    "list-checkpoints",
-    "doctor",
-    "run",
-    "install-kernels",
-    "studio",
-    "start",
-    "mcp",
-    "connect",
-)
 # A Windows `studio setup` / `studio update` registers studio alone, as before.
 _ACTIVE_LAZY_COMMANDS = () if _windows_studio_mutation_entry else tuple(_LAZY_COMMANDS)
 
