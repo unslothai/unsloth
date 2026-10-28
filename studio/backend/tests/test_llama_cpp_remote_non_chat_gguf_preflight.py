@@ -294,12 +294,14 @@ def test_a_chat_repo_load_still_proceeds_past_the_teardown(monkeypatch):
     backend = LlamaCppBackend()
     order: list[str] = []
     _repo_load(monkeypatch, backend, order)
+    monkeypatch.setattr(
+        backend, "_download_gguf", lambda **_kwargs: order.append("download") or "/cache/m.gguf"
+    )
 
-    def _download(**_kwargs):
-        order.append("download")
+    def _stop(**_kwargs):
         raise RuntimeError("stop here")
 
-    monkeypatch.setattr(backend, "_download_gguf", _download)
+    monkeypatch.setattr(backend, "_download_mtp", _stop)
     monkeypatch.setattr(
         diffusion_compat,
         "_read_gguf_header",
@@ -315,7 +317,35 @@ def test_a_chat_repo_load_still_proceeds_past_the_teardown(monkeypatch):
             )
         )
 
-    assert order == ["kill", "download"]
+    assert order == ["download", "kill"]
+
+
+def test_a_failed_download_leaves_the_resident_model_running(monkeypatch):
+    backend = LlamaCppBackend()
+    order: list[str] = []
+    _repo_load(monkeypatch, backend, order)
+
+    def _download(**_kwargs):
+        order.append("download")
+        raise RuntimeError("connection reset")
+
+    monkeypatch.setattr(backend, "_download_gguf", _download)
+    monkeypatch.setattr(
+        diffusion_compat,
+        "_read_gguf_header",
+        lambda *_a, **_k: _gguf_bytes(arch = "qwen3", declared_kv = 32),
+    )
+
+    with pytest.raises(RuntimeError, match = "connection reset"):
+        backend.load_model(
+            GgufLoadIntent(
+                hf_repo = "unsloth/Qwen3-1.7B-GGUF",
+                hf_variant = "Q4_K_M",
+                model_identifier = "unsloth/Qwen3-1.7B-GGUF",
+            )
+        )
+
+    assert order == ["download"]
 
 
 def test_a_preflighted_file_is_judged_without_a_second_request(monkeypatch, tmp_path):
@@ -802,8 +832,8 @@ def test_the_launch_reuses_the_carried_file_instead_of_resolving_it_again():
     src = inspect.getsource(llama_cpp_module.LlamaCppBackend.load_model)
     teardown = src.index("# ── Phase 1: kill old process")
     reuse = src.index("self._verified_cached_gguf(intent, hf_repo, hf_variant)")
-    download = src.index("model_path = self._download_gguf(", teardown)
-    assert teardown < reuse < download, "the carried file is not consulted before the download"
+    download = src.index("model_path = self._download_gguf(", reuse)
+    assert reuse < download < teardown, "the carried file is not consulted before the download"
 
 
 def test_a_carried_path_outside_the_active_cache_is_not_reused(monkeypatch, tmp_path):
@@ -892,7 +922,7 @@ def test_the_launch_opens_the_carried_file_instead_of_resolving_it(monkeypatch, 
         return order
 
     assert _load(_verified(cached)) == ["kill"]
-    assert _load(None) == ["kill", "download"]
+    assert _load(None) == ["download", "kill"]
 
 
 def _launchable_backend(monkeypatch) -> LlamaCppBackend:

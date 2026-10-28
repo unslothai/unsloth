@@ -23226,6 +23226,32 @@ class LlamaCppBackend:
                     )
                     raise ValueError(_early_non_chat)
 
+            # Downloaded before the teardown so the resident model keeps serving meanwhile.
+            model_path = _preflight_model_path
+            if hf_repo:
+                # Resolve repo casing once so the GGUF and companions share one cache entry.
+                _resolved_repo = _resolve_repo_id_casing(hf_repo)
+                if _resolved_repo != hf_repo:
+                    logger.info(
+                        "Using cached repo_id casing '%s' for requested '%s'",
+                        _resolved_repo,
+                        hf_repo,
+                    )
+                    hf_repo = _resolved_repo
+                with _hf_offline_if_unreachable():
+                    if model_path is None:
+                        # Revalidate the carried file before skipping download resolution.
+                        model_path = self._verified_cached_gguf(intent, hf_repo, hf_variant)
+                        if model_path:
+                            logger.info("Reusing verified cached GGUF: %s", model_path)
+                    if model_path is None:
+                        model_path = self._download_gguf(
+                            hf_repo = hf_repo,
+                            hf_variant = hf_variant,
+                            hf_token = hf_token,
+                            cancel_event = download_cancel_event,
+                        )
+
             # The probe can take a moment on a slow Hub, so re-read the cancel flag rather
             # than tearing down a healthy server for a load that was called off.
             if _load_cancelled():
@@ -23309,29 +23335,7 @@ class LlamaCppBackend:
             _unloadable_mtp_draft_path: Optional[str] = None
             # Scope HF_HUB_OFFLINE to the download block only when DNS is dead.
             if hf_repo:
-                # Resolve repo casing once so the GGUF and companions share one cache entry.
-                _resolved_repo = _resolve_repo_id_casing(hf_repo)
-                if _resolved_repo != hf_repo:
-                    logger.info(
-                        "Using cached repo_id casing '%s' for requested '%s'",
-                        _resolved_repo,
-                        hf_repo,
-                    )
-                    hf_repo = _resolved_repo
                 with _hf_offline_if_unreachable():
-                    model_path = _preflight_model_path
-                    if model_path is None:
-                        # Revalidate the carried file before skipping download resolution.
-                        model_path = self._verified_cached_gguf(intent, hf_repo, hf_variant)
-                        if model_path:
-                            logger.info("Reusing verified cached GGUF: %s", model_path)
-                    if model_path is None:
-                        model_path = self._download_gguf(
-                            hf_repo = hf_repo,
-                            hf_variant = hf_variant,
-                            hf_token = hf_token,
-                            cancel_event = download_cancel_event,
-                        )
                     if self._pending_variant_fallback:
                         hf_variant, self._variant_fallback_warning = self._pending_variant_fallback
                         # Replayed by the respawn and a variant-less Apply, which would re-download.
