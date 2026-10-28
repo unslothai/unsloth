@@ -1529,6 +1529,22 @@ def _refuse_block_swap(model):
         )
 
 
+def _frozen_weights_are_vllm_engine_storage(model):
+    """True if weights are views of a vLLM engine's (`llm.shared_weights`), found on the model or base_model.model."""
+    seen = set()
+    stack = [model]
+    while stack:
+        m = stack.pop()
+        if m is None or id(m) in seen or not isinstance(m, torch.nn.Module):
+            continue
+        seen.add(id(m))
+        if getattr(m.__dict__.get("vllm_engine"), "shared_weights", False):
+            return True
+        modules = m.__dict__.get("_modules", {})
+        stack.extend(modules.get(name) for name in ("base_model", "model"))
+    return False
+
+
 def shard_model(model, config: Optional[FSDP2Config] = None):
     """fully_shard each unit of `find_shard_units`, then the root (embeddings, final norm, lm_head,
     leftovers). Pass the outermost module the loop calls (the PeftModel for LoRA). Idempotent."""
@@ -1576,6 +1592,19 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
                 f"(fully_shard(ignored_params), torch 2.7+); this is torch {torch.__version__}."
             )
         config = dataclasses.replace(config, shard_frozen = False)
+    if (
+        config.shard_frozen is None
+        and _supports_ignored_params(fully_shard)
+        and _frozen_weights_are_vllm_engine_storage(model)
+    ):
+        from .fsdp2_perf import _env_tristate as _replicate_env
+        if _replicate_env("UNSLOTH_FSDP2_REPLICATE_FROZEN") is None:
+            # Sharding engine-owned weights frees nothing and adds a shard per rank (3B GRPO OOMs on a T4).
+            config = dataclasses.replace(config, shard_frozen = False)
+            _print_rank0(
+                "Unsloth: native FSDP2 keeps the frozen weights replicated: they are the vLLM engine's "
+                "weights (fast_inference), so sharding them would copy them, not free them."
+            )
     device = _shard_device(model, config.device)
     dist = _ensure_process_group(device, config.backend, config.timeout)
     if device.type == "cuda":
