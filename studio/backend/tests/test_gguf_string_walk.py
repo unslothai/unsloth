@@ -168,6 +168,57 @@ def test_walk_reads_in_chunks_not_per_entry():
     assert CountingReader.reads < 10
 
 
+class _ForwardOnly(io.BytesIO):
+    """Skips ahead but cannot seek back, like a pipe that discards; reports that honestly."""
+
+    def seekable(self):
+        return False
+
+    def seek(
+        self,
+        offset,
+        whence = 0,
+    ):
+        target = (
+            offset
+            if whence == 0
+            else self.tell() + offset
+            if whence == 1
+            else len(self.getvalue()) + offset
+        )
+        if target < self.tell():
+            raise io.UnsupportedOperation("cannot seek back")
+        return super().seek(offset, whence)
+
+
+class _NoSeekableMethod:
+    """read / seek / tell without seekable(), as mmap.mmap was before Python 3.13."""
+
+    def __init__(self, data):
+        self._f = io.BytesIO(data)
+        self.read, self.seek, self.tell = self._f.read, self._f.seek, self._f.tell
+
+
+def test_streams_that_cannot_rewind_skip_entry_by_entry():
+    data = b"".join(_entry(e) for e in (b"<a>", b"b", b"[c]")) + b"TAIL"
+    for make in (_ForwardOnly, _NoSeekableMethod):
+        f = make(data)
+        assert skip_gguf_strings(f, 3) == 0
+        assert f.tell() == 0
+        f = make(data)
+        assert take_gguf_strings_by_first_byte(f, 3, frozenset(b"<[")) == (0, [])
+        assert f.tell() == 0
+        # The callers' own loops still walk the whole array and stop at the tail.
+        f = make(data)
+        for _ in range(3 - skip_gguf_strings(f, 3)):
+            (n,) = struct.unpack("<Q", f.read(8))
+            f.seek(n, 1)
+        assert f.read() == b"TAIL"
+        assert LlamaCppBackend._gguf_read_array_value(make(data), 8, 3) == (
+            LlamaCppBackend._gguf_read_array_value(io.BytesIO(data), 8, 3)
+        )
+
+
 def test_non_seekable_stream_reads_entry_by_entry():
     data = b"".join(_entry(e) for e in (b"<a>", b"b", b"[c]"))
 

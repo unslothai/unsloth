@@ -365,11 +365,24 @@ _STRING_SCAN_CHUNK = 1 << 18
 _STRING_SCAN_MAX = 1 << 20
 
 
+def _can_rewind(f) -> bool:
+    """The buffered walks read ahead and seek back. Without a working ``seekable()`` (a forward-only
+    stream, or ``mmap`` before 3.13) the caller's per-entry loop runs instead."""
+    seekable = getattr(f, "seekable", None)
+    try:
+        return bool(seekable()) if callable(seekable) else False
+    except Exception:  # noqa: BLE001 -- unknown wrapper: take the per-entry path
+        return False
+
+
 def skip_gguf_strings(f, count: int) -> int:
     """Skip up to ``count`` GGUF strings (u64 length + bytes) from ``f``'s position through
     one buffer, not one read + seek per entry. Returns how many were skipped and leaves ``f``
     at the next one; stops early at an entry over 1 MiB or a length field cut short by EOF,
-    so the caller's loop handles the rest exactly as before."""
+    so the caller's loop handles the rest exactly as before. A stream that cannot seek back skips
+    nothing here."""
+    if not _can_rewind(f):
+        return 0
     unpack = _U64_AT
     buf = b""
     size = pos = done = 0
@@ -411,7 +424,7 @@ def take_gguf_strings_by_first_byte(
     entry over 1 MiB or one cut short by EOF, leaving ``f`` at it. A stream that cannot seek
     back reads nothing here."""
     kept: list[bytes] = []
-    if not f.seekable():
+    if not _can_rewind(f):
         return 0, kept
     unpack = _U64_AT
     keep = kept.append
