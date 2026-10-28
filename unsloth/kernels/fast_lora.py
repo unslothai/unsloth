@@ -266,6 +266,10 @@ def _lora_dropout_and_bias(projs, X):
         p = _lora_dropout_p(proj, X, adapter)
         if p is None:
             return None
+        if p and proj.__dict__.get("_unsloth_tp_style") == "rowwise":
+            # Tensor parallel row projection: X is this rank's in_features shard, so the mask must be the
+            # rank's slice of one process's mask; the projection's own forward draws that (models/tp_native).
+            return None
         dropout_p.append(p)
         biases.append(proj.lora_B[adapter].bias)
     if any(lora_bias_blocks_fused(proj) for proj in projs):

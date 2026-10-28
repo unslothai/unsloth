@@ -33,6 +33,27 @@ def _seeded_train(model, ids, steps, clip, seed):
     return _train(model, ids, steps, clip)
 
 
+class _FusedO:
+    """o_proj through Unsloth's fused LoRA_W (apply_lora_o, as llama.py's attention forward calls it): its
+    lora_dropout runs inside the fused Function, on this rank's row shard of the input."""
+
+    def __init__(self, attn):
+        self.attn, self.inner = attn, attn.o_proj.forward
+        self.busy = False
+        attn.o_proj.forward = self
+
+    def __call__(self, X, *args, **kwargs):
+        if self.busy:  # apply_lora_o's own fallback: the projection's forward
+            return self.inner(X, *args, **kwargs)
+        from unsloth.kernels.fast_lora import apply_lora_o
+
+        self.busy = True
+        try:
+            return apply_lora_o(self.attn, X)
+        finally:
+            self.busy = False
+
+
 def _case_parity(
     rank,
     world,
@@ -41,14 +62,33 @@ def _case_parity(
     overrides,
     lora_kwargs,
     dropout_seed = None,
+    reentrant_checkpointing = False,
+    fused_lora_o = False,
 ):
     from safetensors.torch import load_file
     from torch.distributed.device_mesh import init_device_mesh
 
+    if fused_lora_o:
+        from test_tp_native_gloo import _import_checkout_unsloth
+
+        error = _import_checkout_unsloth()
+        assert error is None, error
+        from unsloth.models import tp_native as T  # one tp_native for the fused kernels and tp_replica
+    else:
+        T = tpn
     ref = build(repo, overrides, **lora_kwargs)
     model = build(repo, overrides, **lora_kwargs)
+    for m in (ref, model):
+        if reentrant_checkpointing:
+            # The first forward of a reentrant checkpoint runs under no_grad, the recompute with grad.
+            m.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": True})
+            m.enable_input_require_grads()
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))
-    tpn.apply_tensor_parallel(model, mesh["tp"])
+    T.apply_tensor_parallel(model, mesh["tp"])
+    if fused_lora_o:
+        for m in (ref, model):
+            for layer in T._unwrap(m).model.layers:
+                _FusedO(layer.self_attn)
     plan = model._unsloth_tp_plan
     generated = model.generate(
         input_ids = torch.zeros(1, 2, dtype = torch.long), max_new_tokens = 2, pad_token_id = 0
@@ -56,16 +96,16 @@ def _case_parity(
     ids = _batch(ref)
     if dropout_seed is None:
         ref_out = _train(ref, ids, 3, torch.nn.utils.clip_grad_norm_)
-        tp_out = _train(model, ids, 3, tpn.tp_clip_grad_norm_)
+        tp_out = _train(model, ids, 3, T.tp_clip_grad_norm_)
     else:
         ref_out = _seeded_train(ref, ids, 3, torch.nn.utils.clip_grad_norm_, dropout_seed)
-        tp_out = _seeded_train(model, ids, 3, tpn.tp_clip_grad_norm_, dropout_seed)
+        tp_out = _seeded_train(model, ids, 3, T.tp_clip_grad_norm_, dropout_seed)
         # Dropout on: a different seed must change the loss (the masks are really drawn).
         other = build(repo, overrides, **lora_kwargs)
         other_out = _seeded_train(other, ids, 1, torch.nn.utils.clip_grad_norm_, dropout_seed + 1)
     ref_dir, tp_dir = os.path.join(tmp, f"ref{rank}"), os.path.join(tmp, "tp")
     ref.save_pretrained(ref_dir)
-    tpn.save_tp_adapter(model, tp_dir)
+    T.save_tp_adapter(model, tp_dir)
     return {
         "ref": ref_out,
         "tp": tp_out,
@@ -189,3 +229,30 @@ def test_tp2_attention_dropout_in_a_fused_kernel_is_refused():
     tpn._text_config(model)._attn_implementation = "sdpa"
     with pytest.raises(ValueError, match = "eager attention only"):
         tpn.derive_tp_plan(model, 2)
+
+
+@pytest.mark.parametrize(
+    "overrides,kwargs",
+    [
+        # Reentrant gradient checkpointing: the attention dropout masks of the no-grad first forward and of the
+        # recompute must both be one process's masks.
+        ({"attention_dropout": 0.25}, {"reentrant_checkpointing": True}),
+        # One KV head < tp 2: the replicated key / value projections read the whole (replicated) input.
+        ({"num_attention_heads": 4, "num_key_value_heads": 1}, {}),
+        # Unsloth's fused LoRA o_proj (LoRA_W) with lora_dropout: its input is sharded over tp.
+        ({}, {"fused_lora_o": True}),
+    ],
+    ids = ["reentrant_checkpointing", "kv_replicated_lora_dropout", "fused_lora_o_dropout"],
+)
+def test_tp2_dropout_paths_draw_one_process_masks(overrides, kwargs):
+    results = _spawn(
+        "parity",
+        2,
+        repo = LLAMA,
+        overrides = overrides,
+        lora_kwargs = {"lora_dropout": 0.25},
+        dropout_seed = 1234,
+        **kwargs,
+    )
+    res = _check(results)
+    assert res["other_loss"] != pytest.approx(res["ref"][2][0], rel = 1e-6)
