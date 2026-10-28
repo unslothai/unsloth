@@ -1972,7 +1972,7 @@ def test_a_build_that_cannot_launch_at_all_is_counted(fake_settings, monkeypatch
     """0xC0000135 arrives as a large POSITIVE exit code, so the probe accepts it; a missing execute bit fails identically, so it is only counted."""
     from core.inference import sd_cpp_backend
 
-    # The runtime loads, so the failed launch is unexplained (a missing execute bit looks the same).
+    # Runtime loads, so the failed launch stays ambiguous.
     monkeypatch.setattr(sd_cpp_backend, "rocm_runtime_resolvable", lambda: True)
     monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
     sd_cpp_backend.note_unlaunchable_accelerator_build("/opt/sd/rocm/sd-server")

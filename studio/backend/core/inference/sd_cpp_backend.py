@@ -1279,9 +1279,7 @@ _rocm_missing_memo: Optional[tuple[Optional[list[str]]]] = None
 
 
 def _rocm_missing_sonames_fresh() -> Optional[list[str]]:
-    """The ROCm sonames a fresh process cannot load. Not ``ctypes`` in this process: torch's ROCm
-    wheel has already loaded its own libamdhip64.so.7 here, so a lookup by soname succeeds while
-    sd-cli, a separate process that never sees torch's lib dir, still dies at exec (exit 127)."""
+    """Fresh process, not in-process ctypes: torch's ROCm wheel already loaded its own sonames here, which sd-cli never sees."""
     global _rocm_missing_memo
     if os.name != "posix" or sys.platform == "darwin":
         return None
@@ -2559,7 +2557,6 @@ def note_unlaunchable_accelerator_build(
             accelerator,
             fallback_accelerator_for(accelerator),
         )
-        # Proven when the loader shows the ROCm runtime absent: that alone explains the failed launch.
         note_accelerator_runtime_failure(
             accelerator, proven = accelerator_probe_failure_is_decisive(accelerator), card = card
         )
@@ -2632,9 +2629,7 @@ def _pin_fingerprint() -> dict:
 
 
 def _skip_unloadable_rocm(accelerator: str) -> str:
-    """The fallback rung in place of a ROCm build whose host runtime the loader cannot find. Checked
-    before any fetch: the ROCm bundle is ~300 MB, and a fetch that stalls or is cut short records
-    no strike, so without this every load would start the same download again."""
+    """Before any fetch: a stalled or cut-short ~300 MB ROCm download records no strike, so every load would retry it."""
     klass = _accelerator_class_of(accelerator)
     nxt = fallback_accelerator_for(klass) if klass == "rocm" else None
     if not nxt:
