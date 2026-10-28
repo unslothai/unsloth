@@ -365,3 +365,27 @@ test("a starter recipe lands in free space, not on top of what is there", async 
   const alone = insertStarterRecipe([10, 10], { rows: 5 });
   assert.deepEqual(useDocStore.getState().graph.groups[alone.group as string].rect.slice(0, 2), [-30, -50]);
 });
+
+test("a tool profile added without a server yet stays as a card and can be removed", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { addRecipeBlock, removeSetup } = await import(
+    "../src/features/flows/recipe/recipe-blocks.ts"
+  );
+  const { recipeSetup } = await import("../src/features/flows/recipe/recipe-setup.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group, nodes } = sqlGroup();
+  useDocStore.getState().load({ ...doc(nodes), groups: [group] });
+  addRecipeBlock("recipe", "llm", "tool_config");
+  const graph = useDocStore.getState().graph;
+  const tools = recipeSetup(graph, graph.groups.recipe).cards.filter(
+    (c) => c.kind === "tool_config",
+  );
+  assert.equal(tools.length, 1);
+  assert.equal(tools[0].warning, "Add a tool server");
+  removeSetup({ groupId: "recipe", kind: "tool_config", name: tools[0].name });
+  const after = useDocStore.getState().graph;
+  assert.equal(
+    recipeSetup(after, after.groups.recipe).cards.some((c) => c.kind === "tool_config"),
+    false,
+  );
+});

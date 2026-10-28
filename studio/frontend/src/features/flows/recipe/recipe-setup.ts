@@ -12,6 +12,7 @@ import {
   groupColumns,
   groupGenerate,
   isRecipeGroup,
+  pendingToolProfiles,
 } from "./recipe-columns";
 import { SEED_BLOCKS, SEED_TYPE_BLOCK } from "./recipe-kinds";
 
@@ -196,6 +197,21 @@ export function recipeSetup(
       title: alias,
       subtitle: "Tool access",
       fields: [{ label: "Servers", value: servers.join(", ") || "none" }],
+    });
+  }
+  for (const alias of pendingToolProfiles(group)) {
+    if (tools.has(alias)) continue;
+    const id = setupId(group.id, "tool_config", alias);
+    tools.set(alias, id);
+    cards.push({
+      id,
+      groupId: group.id,
+      kind: "tool_config",
+      name: alias,
+      title: alias,
+      subtitle: "Tool access",
+      fields: [{ label: "Servers", value: "none yet" }],
+      warning: "Add a tool server",
     });
   }
   for (const node of groupColumns(graph, group.id)) {

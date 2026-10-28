@@ -149,6 +149,20 @@ export function referenceEdgeDiff(
   return { add: want.filter((e) => !have.has(key(e))), remove };
 }
 
+/** Tool profiles kept only as ui nodes: added but with no tool server yet. */
+export function pendingToolProfiles(group: FlowGroup): string[] {
+  const nodes = Array.isArray(group.ui?.nodes) ? group.ui.nodes : [];
+  const saved = new Set(
+    (Array.isArray(group.config?.tool_configs) ? group.config.tool_configs : []).map(
+      (t) => (t as { tool_alias?: string }).tool_alias,
+    ),
+  );
+  return nodes.flatMap((node) => {
+    const n = node as { node_type?: string; id?: string };
+    return n.node_type === "tool_config" && n.id && !saved.has(n.id) ? [n.id] : [];
+  });
+}
+
 /** The recipe JSON a group stands for: its config plus its columns in canvas order. */
 export function groupPayload(group: FlowGroup, columns: FlowNode[]) {
   return {

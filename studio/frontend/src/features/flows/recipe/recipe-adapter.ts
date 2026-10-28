@@ -11,6 +11,7 @@ import type {
   RecipeNode,
   RecipeProcessorConfig,
 } from "@/features/recipe-studio/types";
+import { makeToolProfileConfig } from "@/features/recipe-studio/utils/config-factories";
 import { importRecipePayload } from "@/features/recipe-studio/utils/import/importer";
 import { buildRecipePayload } from "@/features/recipe-studio/utils/payload/build-payload";
 import {
@@ -25,6 +26,7 @@ import {
   type RecipeColumn,
   columnName,
   groupPayload,
+  pendingToolProfiles,
 } from "./recipe-columns";
 
 const COLUMN_KINDS = new Set(["sampler", "llm", "expression", "validator"]);
@@ -53,7 +55,13 @@ export function studioView(group: FlowGroup, columns: FlowNode[]): StudioView {
   if (!result.snapshot) {
     return { configs: {}, byNode: {}, processors: [], errors: result.errors };
   }
-  const configs = result.snapshot.configs;
+  const configs = { ...result.snapshot.configs };
+  // A tool profile with no server yet lives only in the ui nodes (Recipe Studio's payload drops it).
+  for (const name of pendingToolProfiles(group)) {
+    if (Object.values(configs).some((c) => c.name === name)) continue;
+    const id = `flows-tools-${name}`;
+    configs[id] = { ...makeToolProfileConfig(id, []), name };
+  }
   const idByName = new Map(
     Object.values(configs).map((config) => [config.name, config.id]),
   );

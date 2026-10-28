@@ -58,7 +58,7 @@ function RecipeSetupNodeImpl({ data, selected }: NodeProps<RfNode>) {
             variant="outline"
             className={cn("h-5 px-1.5 text-ui-10", RECIPE_STUDIO_WARNING_BADGE_TONE)}
           >
-            Needs file
+            {card.kind === "seed" ? "Needs file" : "Needs server"}
           </Badge>
         )}
       </NodeCardHeader>

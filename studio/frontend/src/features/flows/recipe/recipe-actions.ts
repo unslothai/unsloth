@@ -224,19 +224,31 @@ export function insertStarterRecipe(
   return generate;
 }
 
-/** Where the next column of a group goes: right of its columns, grown into the group frame. */
+/** Where the next column of a group goes: the first free cell of the frame's column grid, else a new row
+ *  below its columns, the frame grown to hold it. The Recipe Dataset step's lane stays clear for its cards. */
 export function nextColumnSlot(
   graph: DocGraph,
   groupId: string,
 ): { pos: [number, number]; group: FlowGroup } {
   const group = graph.groups[groupId];
-  const columns = groupColumns(graph, groupId);
+  const members = graph.nodeOrder
+    .map((id) => graph.nodes[id])
+    .filter((n) => n.group === groupId);
+  const step = members.find((n) => n.type === GENERATE_TYPE);
   const [x, y, w, h] = group.rect;
-  const bottom = columns.reduce(
-    (max, n) => Math.max(max, n.pos[1]),
-    y + 60 - COLUMN_SIZE[1],
-  );
-  const pos: [number, number] = [x + 40, bottom + COLUMN_SIZE[1]];
-  const height = Math.max(h, pos[1] - y + COLUMN_SIZE[1]);
+  const [cw, ch] = COLUMN_SIZE;
+  const taken = (cx: number, cy: number) =>
+    (step && Math.abs(cx - step.pos[0]) < cw && cy >= step.pos[1] - ch / 2) ||
+    members.some(
+      (n) => Math.abs(n.pos[0] - cx) < cw - 20 && Math.abs(n.pos[1] - cy) < ch - 20,
+    );
+  for (let cy = y + 60; cy + ch - 40 <= y + h; cy += ch)
+    for (let cx = x + 40; cx + cw - 40 <= x + w; cx += cw)
+      if (!taken(cx, cy)) return { pos: [cx, cy], group };
+  const bottom = members
+    .filter((n) => n.type === COLUMN_TYPE)
+    .reduce((max, n) => Math.max(max, n.pos[1]), y + 60 - ch);
+  const pos: [number, number] = [x + 40, bottom + ch];
+  const height = Math.max(h, pos[1] - y + ch);
   return { pos, group: { ...group, rect: [x, y, w, height] } };
 }
