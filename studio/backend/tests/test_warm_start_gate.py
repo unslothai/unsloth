@@ -82,7 +82,6 @@ def test_a_shutdown_while_parked_runs_no_stage(recorded, monkeypatch):
     monkeypatch.setattr(warmup, "START_GATE_MAX_WAIT_S", 60.0)
     gate = threading.Event()
     assert warmup.start_background_warm(gate = gate) is True
-    # The lifespan's shutdown order: retire the epoch, then open the gate.
     hw.invalidate_detection()
     gate.set()
     assert warmup.join_background_warm(30) is True
@@ -115,7 +114,6 @@ def test_the_gate_opens_only_once_the_last_body_chunk_is_sent():
         seen.append((message["type"], event.is_set()))
 
     _run(_gate_middleware(app, event)(_http_scope(), _receive, send))
-    # Every message, the last body chunk included, is handed on before the gate opens.
     assert seen == [
         ("http.response.start", False),
         ("http.response.body", False),

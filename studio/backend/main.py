@@ -1051,7 +1051,6 @@ async def lifespan(app: FastAPI):
     _invalidate_detection = getattr(_hw_module, "invalidate_detection", None)
     if _invalidate_detection is not None:
         _invalidate_detection()
-    # A warm still parked at its start gate wakes into its epoch check and stands down.
     _first_response_sent.set()
 
     await asyncio.to_thread(_release_api_usage_writer, _api_usage_writer_lease)

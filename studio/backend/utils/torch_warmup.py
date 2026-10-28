@@ -432,7 +432,6 @@ _STAGES = (
 )
 
 
-# Bound on the start-gate wait; only a launch nobody connects to reaches it.
 START_GATE_MAX_WAIT_S = 2.0
 
 
