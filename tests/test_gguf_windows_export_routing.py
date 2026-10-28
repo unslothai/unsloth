@@ -97,7 +97,9 @@ class _Harness:
         final = model_name if model_name.endswith(".gguf") else f"{model_name}.{qtype.upper()}.gguf"
         self.initial_names.append(final)
         # save.py requires the returned paths to exist; the escape under test is at the quantize join.
-        return [str(self._scratch(final))], False
+        real = self._scratch(final)
+        # Under the posixpath shim on a Windows host, a backslash path has no posix basename; "C:/..." still opens.
+        return [real.as_posix() if self.flavour is posixpath else str(real)], False
 
     def _quantize(self, input_gguf, output_gguf, quant_type, **kw):
         self.quantize_calls.append(
