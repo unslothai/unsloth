@@ -2269,7 +2269,7 @@ export const it = {
         gpuUnusableDetail: "Rilevata, ma PyTorch non può usarla",
         detailedView: "Vista dettagliata",
         detailedViewDescription:
-          "Mostra il carico della CPU e carico, temperatura e consumo di ogni GPU nella finestra mobile e qui.",
+          "Mostra il carico della CPU e carico, temperatura e consumo di ogni GPU nella finestra mobile.",
         cpuLoad: "Carico CPU",
         gpuLoad: "Carico GPU",
         temperature: "Temperatura",

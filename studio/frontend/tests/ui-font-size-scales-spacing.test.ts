@@ -413,9 +413,10 @@ test("composite settings controls shrink inside their row", () => {
   );
   const resources = readSrc("features/settings/tabs/resources-tab.tsx");
   assert.ok(resources.includes("flex min-w-0 flex-wrap items-start justify-between"));
+  // The GPU meter spans its card, so its readings truncate instead of widening it.
   assert.ok(
     resources.includes(
-      '"flex w-[min(calc(392px*var(--ui-space-scale,1)),100%)] shrink-0 flex-col',
+      '"flex min-w-0 items-baseline justify-between gap-3 text-xs tabular-nums"',
     ),
   );
 });

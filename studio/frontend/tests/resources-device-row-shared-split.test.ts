@@ -74,7 +74,7 @@ test("the System device row labels a shared total instead of calling it VRAM", (
   );
   assert.match(
     resourcesTab,
-    /\) : sharedSplit \? \(\s*<span[^>]*>\s*\{percentText\}\s*<\/span>/,
+    /\{sharedSplit \? \(\s*<span[^>]*>\s*\{percentText\}\s*<\/span>/,
   );
   assert.match(
     resourcesTab,
