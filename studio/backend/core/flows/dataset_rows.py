@@ -36,7 +36,6 @@ def dataset_source(value: Any) -> dict:
         name = ref
         if ref.startswith("ref:"):
             from hub.utils.host_paths import resolve_host_path_reference
-
             name = resolve_host_path_reference(ref) or ""
             if not name:
                 raise DatasetRowsError(

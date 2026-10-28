@@ -30,7 +30,12 @@ def client():
         yield test_client
 
 
-def _rows(client, value, offset = 0, limit = 20):
+def _rows(
+    client,
+    value,
+    offset = 0,
+    limit = 20,
+):
     return client.post(
         "/api/flows/dataset-rows", json = {"value": value, "offset": offset, "limit": limit}
     )
@@ -107,6 +112,8 @@ def test_the_viewer_reads_no_further_than_its_window(client, monkeypatch):
 
     monkeypatch.setattr(formatting, "load_preview_slice", preview)
     hub = {"kind": "dataset", "source": "hf", "ref": "org/sql"}
-    assert _rows(client, hub, offset = dr.VIEW_ROWS - 10, limit = 50).json()["view_rows"] == dr.VIEW_ROWS
+    assert (
+        _rows(client, hub, offset = dr.VIEW_ROWS - 10, limit = 50).json()["view_rows"] == dr.VIEW_ROWS
+    )
     assert _rows(client, hub, offset = dr.VIEW_ROWS, limit = 50).json()["rows"] == []
     assert max(sizes) == dr.VIEW_ROWS
