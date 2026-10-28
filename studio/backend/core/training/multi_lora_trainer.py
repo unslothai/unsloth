@@ -796,7 +796,14 @@ def _run(event_queue, stop_queue, config: dict, members: list) -> None:
             if member.config.get("packing") and final_format != PRETOKENIZED_FORMAT:
                 packs = _packs(model) if packs is None else packs
                 if packs:
+                    documents = len(member.rows)
                     member.rows, member.seq_lengths = _pack_rows(member.rows, max_length)
+                    logger.info(
+                        "Batched training: %s packs %d documents into %d rows",
+                        member.run_id,
+                        documents,
+                        len(member.rows),
+                    )
         except Exception as exc:
             member.done = True
             _send(
