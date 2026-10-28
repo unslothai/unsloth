@@ -458,7 +458,6 @@ _BATCH_MEMBER_FIELDS = frozenset(
         "weight_decay",
         "warmup_steps",
         "warmup_ratio",
-        # Packing members pack only their own documents (multi_lora_trainer._pack_rows).
         "packing",
     }
 )
