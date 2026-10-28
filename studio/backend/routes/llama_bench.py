@@ -163,7 +163,6 @@ def _claim_lease(holder: str) -> None:
 
 def _release_lease(holder: str) -> None:
     from routes import benchmarks
-
     with benchmarks._lease_lock:
         if benchmarks._lease and benchmarks._lease["holder"] == holder:
             benchmarks._lease = None
