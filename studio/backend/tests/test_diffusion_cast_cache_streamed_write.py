@@ -233,8 +233,7 @@ class _TopRegistry:
 
 
 def _onload(module):
-    """Move every weight off the host as an onload does, keeping each Parameter / buffer object (meta stands in for
-    the device: the writer cannot read it, exactly like a device copy it must not race)."""
+    """Onload keeping each Parameter / buffer object; meta stands in for a device copy the writer must not read."""
     twins = []
     for t in [*module.parameters(), *module.buffers()]:
         twin = torch.empty_like(t, device = "meta")
@@ -273,7 +272,7 @@ def _written(cand, module, path):
 
 @pytest.fixture
 def sleeps(monkeypatch):
-    """The reader's waits for an onloaded tensor to come back to the host: counted, not slept."""
+    """Counted, not slept."""
     calls = []
 
     class _Time:
@@ -302,7 +301,7 @@ def test_onloaded_top_level_group_is_written_from_its_kept_host_copy(pipe_dir, t
     twins = _onload(dense)
     assert _written(cand, dense, tmp_path / "onloaded.safetensors") == want
     assert sleeps == []
-    # Back on the host and then replaced there (an adapter fused while offloaded): the live tensor is read.
+    # replaced on the host while offloaded: the live tensor is read
     _offload(twins)
     live = dense.get_parameter(_unsampled_cast_key(cand))
     live.data = live.data + 1

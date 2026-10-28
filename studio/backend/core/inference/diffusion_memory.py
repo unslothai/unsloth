@@ -1015,10 +1015,8 @@ def _wrap_cpu_offload_hook(
 
 
 def offload_host_copy(module: Any, name: str, tensor: Any) -> Any:
-    """The host tensor the keep-cpu offload (``_wrap_cpu_offload_hook``) re-points ``name`` to on offload, while
-    ``tensor`` (the live parameter / buffer) sits on the device unchanged since its onload: same object, version and
-    storage, the rule ``_init_hook`` applies, so it holds exactly the device's bytes. Else None (also when no keep
-    state covers ``module`` or the tensor is on the host already)."""
+    """The keep-cpu host tensor for ``name`` while ``tensor`` is on the device unchanged since its onload (``_init_hook``'s
+    re-point rule: same object, version and storage), else None."""
     state = getattr(module, "__dict__", {}).get(_KEEP_ATTR)
     if (
         not isinstance(state, dict)
@@ -7107,7 +7105,7 @@ def install_group_offload_buffer_restore() -> bool:
 
 
 PIN_TOP_GROUP_ENV = "UNSLOTH_DIFFUSION_PIN_TOP_GROUP"
-# The top-level group's host copies (keyed by tensor), exposed read-only: diffusers leaves cpu_param_dict empty there.
+# read-only: diffusers leaves the top-level group's cpu_param_dict empty
 TOP_GROUP_HOST_ATTR = "_unsloth_top_host"
 
 

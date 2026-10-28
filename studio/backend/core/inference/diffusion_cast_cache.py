@@ -580,9 +580,7 @@ class _Reader:
         return None
 
     def _kept_copy(self, ref: Any, name: str) -> Any:
-        """While ``ref`` is onloaded: the host copy Studio's offload keeps for it (the top-level group's pinned /
-        re-pointed copy, or the keep-cpu model offload's), which the device copy was uploaded from. Read instead of
-        waiting out the onload and synchronising the device mid-render."""
+        """While ``ref`` is onloaded: the host copy its device copy was uploaded from (top-level group or keep-cpu offload)."""
         live = ref.data if hasattr(ref, "data") else ref
         device = getattr(live, "device", None)
         if device is None or device.type == "cpu":
