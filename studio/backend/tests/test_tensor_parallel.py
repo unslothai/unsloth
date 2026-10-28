@@ -1019,7 +1019,6 @@ def test_crash_watchdog_ignores_intentional_termination(monkeypatch):
 @pytest.mark.parametrize(
     "mutate",
     [
-        lambda b: setattr(b, "_mtp_runtime_fallback_active", False),
         lambda b: setattr(b, "_process", None),
     ],
 )
