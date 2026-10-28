@@ -2258,6 +2258,8 @@ def studio_default(
         typer.echo("\nShutting down...")
     finally:
         getattr(run_mod, "_wait_for_server_shutdown", lambda: None)()
+    # The desktop app and an in-venv `unsloth studio` serve from here, not run.py's __main__.
+    getattr(run_mod, "_exit_without_finalizing", lambda: None)()
 
 
 def _split_repo_variant(model_arg: str) -> tuple[str, Optional[str]]:
