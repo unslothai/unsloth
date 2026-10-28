@@ -536,7 +536,6 @@ def _is_windows_console(stream) -> bool:
 
 
 def _rebind_console_stderr():
-    """Returns (console stream, replacement) once sys.stderr writes plain bytes to fd 2, else None."""
     console = sys.stderr
     if not _is_windows_console(console):
         return None
