@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import threading
+import weakref
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import lru_cache
@@ -720,17 +721,42 @@ def _st_max_tokens(model_name: str | None = None) -> int | None:
         return max(1, int(limit) - reserved)
 
 
+_ST_COUNT_CACHE_SIZE = 4096
+
+
 def _st_token_counter(model_name: str | None = None) -> Callable[[str], int]:
-    """Reads the tokenizer per call under _compute_lock; caching it would outlive an unload."""
+    """Reads the tokenizer per call under _compute_lock; caching it would outlive an unload.
+    The count memo is tied to that tokenizer by a weakref: a switch empties it, an unload frees it."""
+    counts: dict[str, int] = {}
+    counted_by: list = [None]
 
     def _count(t: str) -> int:
         with _compute_lock:
             tok = _get(model_name).tokenizer
+            owner = counted_by[0]
+            if owner is None or owner() is not tok:
+                counts.clear()
+                try:
+                    counted_by[0] = weakref.ref(tok)
+                except TypeError:
+                    counted_by[0] = None
+            memo = counted_by[0] is not None and type(t) is str
+            known = counts.get(t) if memo else None
+            if known is not None:
+                # Leave the environment a tokenize would.
+                if os.environ.get("TOKENIZERS_PARALLELISM") != "false":
+                    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+                return known
             os.environ["TOKENIZERS_PARALLELISM"] = "true"
             try:
-                return len(tok.encode(t, add_special_tokens = False))
+                n = len(tok.encode(t, add_special_tokens = False))
             finally:
                 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+            if memo:
+                if len(counts) >= _ST_COUNT_CACHE_SIZE:
+                    counts.pop(next(iter(counts)))
+                counts[t] = n
+            return n
 
     return _count
 
