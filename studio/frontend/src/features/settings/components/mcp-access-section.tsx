@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { SegmentedPill } from "@/components/segmented-control";
+import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
@@ -20,6 +21,7 @@ import {
   type ReactElement,
   useEffect,
   useId,
+  useRef,
   useState,
   useSyncExternalStore,
 } from "react";
@@ -27,7 +29,9 @@ import {
   type McpAccessSettings,
   loadMcpAccess,
   updateMcpAccess,
+  updateMcpTools,
 } from "../api/mcp-access";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import {
   type ExampleOs,
   useSettingsPanelPrefsStore,
@@ -40,6 +44,7 @@ import {
   buildMcpSnippet,
   hasMcpSnippet,
 } from "./mcp-agent-snippet";
+import { McpToolsDialog } from "./mcp-tools-dialog";
 import { SettingsRow } from "./settings-row";
 import { readUseTunnelPref, subscribeUseTunnelPref } from "./tunnel-preference";
 
@@ -65,6 +70,15 @@ export function McpAccessSection({
   const [settings, setSettings] = useState<McpAccessSettings | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const [toolsSaving, setToolsSaving] = useState(false);
+  const [toolsError, setToolsError] = useState<string | null>(null);
+  const sectionRef = useRef<HTMLDivElement | null>(null);
+  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
+  const consumeScrollTarget = useSettingsDialogStore(
+    (s) => s.consumeScrollTarget,
+  );
+  const loaded = settings !== null || error !== null;
   const deviceType = usePlatformStore((s) => s.deviceType);
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
@@ -117,6 +131,37 @@ export function McpAccessSection({
     }
   };
 
+  // Settings > API links here; wait for the first load, since the card renders nothing before it.
+  useEffect(() => {
+    if (scrollTarget !== "agents-mcp" || !loaded) return;
+    const frame = window.requestAnimationFrame(() => {
+      sectionRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+      consumeScrollTarget("agents-mcp");
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [consumeScrollTarget, scrollTarget, loaded]);
+
+  const saveTools = async (states: Record<string, boolean>) => {
+    setToolsSaving(true);
+    setToolsError(null);
+    try {
+      setSettings(await updateMcpTools(states));
+    } catch (err) {
+      // resync because a rejected update may leave the server value unknown.
+      try {
+        setSettings(await loadMcpAccess());
+      } catch (refreshError) {
+        console.warn(
+          "Couldn't refresh the MCP tools after a rejected change.",
+          refreshError,
+        );
+      }
+      setToolsError(errorMessage(err) ?? t("settings.mcp.tools.saveError"));
+    } finally {
+      setToolsSaving(false);
+    }
+  };
+
   // subscribe to same-tab tunnel changes from the API examples.
   const useTunnel = useSyncExternalStore(
     subscribeUseTunnelPref,
@@ -144,6 +189,7 @@ export function McpAccessSection({
 
   return (
     <div
+      ref={sectionRef}
       data-settings-label={t("settings.apiKeys.mcp.title")}
       className="flex min-w-0 flex-col"
     >
@@ -176,6 +222,28 @@ export function McpAccessSection({
               aria-label={t("settings.apiKeys.mcp.enable")}
             />
           </SettingsRow>
+
+          {/* null on an older backend that sends no tool list. */}
+          {settings.tools ? (
+            <SettingsRow
+              label={t("settings.mcp.tools.title")}
+              description={t("settings.mcp.tools.count", {
+                on: settings.tools.filter((tool) => tool.enabled).length,
+                total: settings.tools.length,
+              })}
+            >
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setToolsError(null);
+                  setToolsOpen(true);
+                }}
+              >
+                {t("settings.mcp.tools.choose")}
+              </Button>
+            </SettingsRow>
+          ) : null}
 
           {snippet ? (
             <>
@@ -261,6 +329,17 @@ export function McpAccessSection({
             </>
           ) : null}
         </>
+      ) : null}
+
+      {settings?.tools ? (
+        <McpToolsDialog
+          open={toolsOpen}
+          onOpenChange={setToolsOpen}
+          tools={settings.tools}
+          saving={toolsSaving}
+          error={toolsError}
+          onSave={(states) => void saveTools(states)}
+        />
       ) : null}
     </div>
   );

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -42,6 +41,7 @@ test("loading reads the owner settings route and maps it to camelCase", async ()
       enabled: true,
       forcedByEnv: forced,
       url: "http://127.0.0.1:8888/mcp/",
+      tools: null,
     });
     assert.deepEqual(c.requests, [
       { path: "/api/settings/mcp-access", init: undefined },
@@ -60,6 +60,39 @@ test("saving sends only the switch value", async () => {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled: false }),
+      },
+    },
+  ]);
+});
+
+test("the tool list is kept in server order, and an older backend without one maps to null", async () => {
+  const tools = [
+    { name: "studio_status", area: "status", enabled: true },
+    { name: "cancel", area: "cancel", enabled: false },
+  ];
+  const c = client(() => Response.json({ ...BODY, tools }));
+  assert.deepEqual((await c.api.loadMcpAccess()).tools, tools);
+  assert.equal(c.api.mcpAccessFromApi(BODY).tools, null);
+});
+
+test("saving tools sends only the full turned-off list", async () => {
+  const c = client(() =>
+    Response.json({
+      ...BODY,
+      tools: [{ name: "cancel", area: "cancel", enabled: false }],
+    }),
+  );
+  const saved = await c.api.updateMcpTools({ cancel: false });
+  assert.deepEqual(saved.tools, [
+    { name: "cancel", area: "cancel", enabled: false },
+  ]);
+  assert.deepEqual(c.requests, [
+    {
+      path: "/api/settings/mcp-access",
+      init: {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tool_states: { cancel: false } }),
       },
     },
   ]);
