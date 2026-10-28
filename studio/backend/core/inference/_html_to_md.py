@@ -2276,7 +2276,12 @@ def _select_main_scope_render(
     best_visible = 0
     for i, seg in enumerate(renderer.scope_segments):
         rendered = _strip_boilerplate_lines(_cleanup(seg), site_links)
-        scored = _strip_boilerplate_lines(_cleanup(scoring.scope_segments[i]), site_links)
+        # Same pure cleanup of the same text when no span-scoring pass ran.
+        scored = (
+            rendered
+            if scoring is renderer
+            else _strip_boilerplate_lines(_cleanup(scoring.scope_segments[i]), site_links)
+        )
         if site_links is not None:
             scored = site_links.clean(scored)
         visible = _visible_chars(scored)
@@ -2316,7 +2321,11 @@ def _render_main_document(
         if renderer._has_generated_spans
         else renderer
     )
-    scored = _strip_boilerplate_lines(_cleanup("".join(scoring._out)), site_links)
+    scored = (
+        rendered
+        if scoring is renderer
+        else _strip_boilerplate_lines(_cleanup("".join(scoring._out)), site_links)
+    )
     if site_links is not None:
         scored = site_links.clean(scored)
     return _visible_chars(scored), rendered
