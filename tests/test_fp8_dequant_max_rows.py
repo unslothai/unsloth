@@ -70,6 +70,25 @@ def test_l2_probe_falls_back_to_zero(monkeypatch):
         F8._probe_fp8_l2_cache_bytes.cache_clear()
 
 
+@pytest.mark.parametrize(
+    "capability, l2, expected",
+    [((8, 9), L2, L2), ((9, 0), 50 * 1024 * 1024, 0), ((12, 0), 128 * 1024 * 1024, 0)],
+)
+def test_l2_probe_only_reports_measured_arches(monkeypatch, capability, l2, expected):
+    """Only sm89 was measured: H100 without FBGEMM (50 MiB L2) keeps the 64 row default."""
+
+    class Props:
+        major, minor = capability
+        L2_cache_size = l2
+
+    monkeypatch.setattr(torch.cuda, "get_device_properties", lambda device = None: Props())
+    F8._probe_fp8_l2_cache_bytes.cache_clear()
+    try:
+        assert F8._probe_fp8_l2_cache_bytes(torch.device("cuda", 0)) == expected
+    finally:
+        F8._probe_fp8_l2_cache_bytes.cache_clear()
+
+
 @pytest.mark.parametrize("shape, scaled", [(LARGE, True), (SMALL, False)])
 def test_autograd_function_uses_the_same_gate(monkeypatch, shape, scaled):
     calls = []

@@ -2001,10 +2001,18 @@ _FP8_DEQUANT_MAX_ROWS = 64 if _FP8_DEQUANT_MAX_ROWS_ENV is None else _FP8_DEQUAN
 _FP8_LARGE_WEIGHT_DEQUANT_MAX_ROWS = 16
 
 
+# Measured on sm89 only (L4); elsewhere (H100 without FBGEMM: 50 MiB L2) the 64 row default stays.
+_FP8_LARGE_WEIGHT_CAPABILITIES = ((8, 9),)
+
+
 @functools.lru_cache(maxsize = None)
 def _probe_fp8_l2_cache_bytes(device):
+    """L2 bytes for the large-weight gate, 0 (gate off) when unknown or on an unmeasured arch."""
     try:
-        return int(getattr(torch.cuda.get_device_properties(device), "L2_cache_size", 0) or 0)
+        props = torch.cuda.get_device_properties(device)
+        if (props.major, props.minor) not in _FP8_LARGE_WEIGHT_CAPABILITIES:
+            return 0
+        return int(getattr(props, "L2_cache_size", 0) or 0)
     except Exception:
         return 0
 
