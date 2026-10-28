@@ -3333,7 +3333,6 @@ def _adapter_repo_has_safetensors(
         return False
 
 
-# Sentinel for "the repo listing was not fetched": every helper then behaves exactly as before.
 _SIBLINGS_NOT_FETCHED = object()
 
 
@@ -3343,7 +3342,7 @@ def _fetch_repo_siblings(
     token = None,
     revision = None,
 ):
-    """The repo file listing from one model_info call, or None on any failure. Shared by the root index probe and the auto format prune, which would otherwise each reach the Hub."""
+    """Repo file listing from one model_info call, or None on any failure."""
     try:
         from huggingface_hub import HfApi
         return HfApi().model_info(model_name, revision = revision, token = token).siblings
@@ -3352,7 +3351,7 @@ def _fetch_repo_siblings(
 
 
 def _listing_lacks(siblings, filename):
-    """True only when a usable listing was fetched and *filename* is not in it, so the probe would 404. No listing (not fetched, failed, empty) means unknown: probe as before."""
+    """True only when a fetched, non-empty listing lacks *filename*; no listing means unknown."""
     if siblings is _SIBLINGS_NOT_FETCHED or not siblings:
         return False
     try:
@@ -3424,7 +3423,7 @@ def _root_index_weight_subfolders(
         from huggingface_hub import hf_hub_download
 
         if _listing_lacks(siblings, "model.safetensors.index.json"):
-            return ()  # single-file or non-safetensors repo; the download would only 404
+            return ()
         path = hf_hub_download(
             model_name,
             "model.safetensors.index.json",
@@ -3547,7 +3546,6 @@ def _prefetch_ignore_patterns(
                     .siblings
                 )
             elif siblings is None:
-                # The shared model_info call already failed: same outcome as failing here.
                 raise RuntimeError("repo listing unavailable")
             siblings = siblings or []
             # Count only in-scope model-weight safetensors, not adapters or sidecars, variant-matching when a variant is requested, else canonical, to prove the .bin redundant.
@@ -3640,15 +3638,14 @@ def maybe_prefetch_hf_snapshot(
     # A sentence-transformers repo can hold weights at the root AND in declared module subfolders. Probed once and shared, since the subdir prune and the format prune both span "/" and would drop those weights.
     st_module_paths = ()
     index_subfolders = ()
-    repo_listing = {}  # {"siblings": ...} once fetched; empty keeps every helper on its own probe
+    repo_listing = {}
     if (
         weights_at_root
         and not (tokenizer_only or adapter_only or gguf_file)
         and not (isinstance(subfolder, str) and subfolder.strip("/"))
     ):
-        # The auto format prune below lists the repo anyway (use_safetensors=None, no tf/flax); list it first so the
-        # root index probe skips an index the repo does not ship instead of paying a 404 round trip. The modules.json
-        # probe always runs: its 404 records the cached absence FastSentenceTransformer's offline gate reads.
+        # List once up front (the auto format prune would anyway) so the index probe skips a 404. modules.json is
+        # always probed: its 404 writes the .no_exist marker FastSentenceTransformer's offline gate reads.
         if use_safetensors is None and not (from_tf or from_flax):
             repo_listing["siblings"] = _fetch_repo_siblings(
                 model_name,

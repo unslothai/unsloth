@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The weights_at_root prefetch lists the repo once and skips the root index probe when the listing proves the
-index absent. The modules.json probe always runs, since its 404 records the cached absence that
-FastSentenceTransformer's offline gate reads. The patterns handed to the downloader must be exactly what the unconditional probes give,
-model_info must be called exactly as often as before, and any failed or empty listing must probe as before."""
+"""Listing the repo first skips only the root index probe it proves absent; patterns and model_info calls match
+the unconditional probes, and a failed or empty listing probes as before."""
 
 import json
 import sys
@@ -17,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 try:
     import unsloth.models._utils as U
-except ImportError as exc:  # a bare runner: unsloth_zoo, peft or torch absent
+except ImportError as exc:
     pytest.skip(f"unsloth is not importable here: {exc}", allow_module_level = True)
 
 ST_MODULES = [
@@ -149,9 +147,7 @@ def test_patterns_match_the_unconditional_probes(hub, monkeypatch, listing, kwar
         _unconditional(m)
         base = hub(listing, **kwargs)
     assert head["snapshot"] == base["snapshot"]
-    # model_info is never called more often than before (it only moves ahead of the probes).
     assert head["infos"] == base["infos"]
-    # Only probes for files the listing lacks are dropped; every remaining probe is unchanged.
     dropped = [d for d in base["downloads"] if d not in head["downloads"]]
     assert all(name not in listing for name, _, _ in dropped), dropped
     assert [d for d in base["downloads"] if d not in dropped] == head["downloads"]
@@ -164,8 +160,7 @@ def test_a_plain_repo_skips_only_the_index_probe(hub):
 
 
 def test_modules_json_is_probed_even_when_the_listing_lacks_it(hub):
-    """The 404 writes the .no_exist marker FastSentenceTransformer._modules_json_for_gating reads offline to tell
-    "not a sentence-transformers repo" from "could not check"; skipping it would make that offline load refuse."""
+    """Its 404 writes the .no_exist marker FastSentenceTransformer._modules_json_for_gating reads offline."""
     for listing in (PLAIN, SHARDED):
         got = hub(listing)
         assert [d[0] for d in got["downloads"]][:1] == ["modules.json"], listing
@@ -197,7 +192,6 @@ def test_a_hub_outage_still_probes_the_cache(hub, monkeypatch):
     assert head["downloads"] == base["downloads"]
     assert head["infos"] == base["infos"] == [(None, None)]
     assert head["snapshot"] == base["snapshot"]
-    # The ST subfolder weights were found through the cache, so the subdir prune stays off.
     assert "*/*.safetensors" not in head["snapshot"]["ignore_patterns"]
 
 
