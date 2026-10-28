@@ -187,7 +187,10 @@ def test_waiting_compatible_requests_render_as_one_call_and_each_gets_its_own_im
         )
     fox, cat, owl = seeds["a fox"], seeds["a cat"][0], seeds["an owl"][0]
     assert by_prompt == {
-        "a fox": [(f"a fox#{fox[0]}", fox[0], fox[0], 2, 0), (f"a fox#{fox[1]}", fox[1], fox[0], 2, 1)],
+        "a fox": [
+            (f"a fox#{fox[0]}", fox[0], fox[0], 2, 0),
+            (f"a fox#{fox[1]}", fox[1], fox[0], 2, 1),
+        ],
         "a cat": [(f"a cat#{cat}", cat, cat, 1, 0)],
         "an owl": [(f"an owl#{owl}", owl, owl, 1, 0)],
     }
