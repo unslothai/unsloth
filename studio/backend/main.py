@@ -611,6 +611,11 @@ def _start_llama_cpp_probes_if_enabled(app: FastAPI) -> None:
     ).start()
 
 
+# The torch warm's start gate (utils/first_response_gate.py): set once the first HTTP response is out, and at
+# shutdown so a parked warm reaches its epoch check.
+_first_response_sent = threading.Event()
+
+
 _post_warm_thread: Optional[threading.Thread] = None
 _post_warm_lock = threading.Lock()
 # Bumped every start/stop so a worker parked in join_background_warm() cannot act after shutdown.
@@ -1011,8 +1016,9 @@ async def lifespan(app: FastAPI):
             + "\n"
         )
 
-    # Last, so it never contends for the GIL before the socket binds.
-    start_background_warm()
+    # Last, so it never contends for the GIL before the socket binds; its stages wait for the first response.
+    _first_response_sent.clear()
+    start_background_warm(gate = _first_response_sent)
     _start_post_warm_thread()
 
     _lifespan_log.info(
@@ -1046,6 +1052,8 @@ async def lifespan(app: FastAPI):
     _invalidate_detection = getattr(_hw_module, "invalidate_detection", None)
     if _invalidate_detection is not None:
         _invalidate_detection()
+    # A warm still parked at its start gate wakes into its epoch check and stands down.
+    _first_response_sent.set()
 
     await asyncio.to_thread(_release_api_usage_writer, _api_usage_writer_lease)
 
@@ -1149,6 +1157,10 @@ logger = LogConfig.setup_logging(
 )
 
 app.add_middleware(LoggingMiddleware)
+
+from utils.first_response_gate import FirstResponseGateMiddleware  # noqa: E402
+
+app.add_middleware(FirstResponseGateMiddleware, event = _first_response_sent)
 
 if os.environ.get("UNSLOTH_STUDIO_MCP_TOKEN", "").strip():
     logger.warning(
