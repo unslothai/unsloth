@@ -232,6 +232,58 @@ def allow_split_backward():
     return False
 
 
+@functools.lru_cache(maxsize = None)
+def split_backward_keeps_function_nodes() -> bool:
+    """True if a Python autograd node (an autograd.Function's grad_fn, which is what an AOTAutograd compiled
+    region becomes: CompiledFunctionBackward) still answers `_input_metadata` once its graph root is gone.
+    torch's split backward needs that: stage_backward_input keeps the intermediate nodes, detaches the stage
+    outputs, and stage_backward_weight then builds GradientEdges on them, which autograd.grad checks through
+    node._input_metadata. Up to torch 2.12 THPFunction holds its node through a std::weak_ptr (expired by then:
+    "Attribute '_input_metadata' is invalid for this instance of _C._FunctionBase"); torch 2.13 made it an
+    owning c10::intrusive_ptr. Probed directly (CPU, no compile) rather than read from the version."""
+
+    class _Probe(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, x):
+            return x * 2
+
+        @staticmethod
+        def backward(ctx, grad):
+            return grad * 2
+
+    try:
+        with torch.enable_grad():
+            out = _Probe.apply(torch.ones(1, requires_grad = True))
+            node = out.grad_fn
+            del out
+            node._input_metadata
+    except RuntimeError:
+        return False
+    except Exception:
+        # Unknown failure shape: do not refuse on a probe we cannot interpret.
+        return True
+    return True
+
+
+def compiled_blocks(model):
+    """Names of submodules of `model` that run through torch.compile: Unsloth's block compile (class forward
+    marked _unsloth_block_compiled), nn.Module.compile(), torch.compile(module) wrappers and torch.compile'd
+    forwards. Their backward is an AOTAutograd CompiledFunctionBackward node."""
+    found = []
+    for name, module in model.named_modules():
+        cls_forward = getattr(type(module), "forward", None)
+        inst_forward = module.__dict__.get("forward")
+        if (
+            getattr(cls_forward, "_unsloth_block_compiled", False)
+            or module.__dict__.get("_compiled_call_impl") is not None
+            or type(module).__name__ == "OptimizedModule"
+            or hasattr(_unwrap_callable(inst_forward), "_torchdynamo_orig_callable")
+            or hasattr(inst_forward, "_torchdynamo_orig_callable")
+        ):
+            found.append(name or type(module).__name__)
+    return found
+
+
 _SINGLE_BACKWARD_MODULES = ("unsloth.kernels.fast_lora",)
 
 
