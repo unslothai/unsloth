@@ -629,6 +629,38 @@ export const fr = {
     compactEmpty: "Rien à compacter pour le moment",
     compactUnsupported: "Le compactage nécessite un modèle GGUF ou MLX prenant en charge les outils",
   },
+  halloween: {
+    navLabel: "Un bonbon ou un sort…",
+    title: "Un bonbon ou un sort ?!",
+    description:
+      "Nous avons concocté quelques frayeurs pour Unsloth, jusqu’à la fin d’octobre.",
+    chooseTheme: "Choisissez un thème effrayant",
+    spookyGreetings: "Salutations effrayantes",
+    spookyGreetingsDescription:
+      "Le paresseux accueille les nouvelles discussions avec une frayeur.",
+    decorations: "Araignées et chauves-souris",
+    decorationsDescription:
+      "Des toiles dans les coins, et de temps en temps une araignée ou une chauve-souris avec un thème d’Halloween.",
+    surprise: "Un bonbon ou un sort !",
+    surpriseDescription: "Laissez le paresseux choisir un thème pour vous.",
+    themesTitle: "Thèmes effrayants",
+    back: "Retour",
+    footer: "Unsloth redevient normal à minuit le 1er novembre.",
+    removeNow: "Retirer maintenant",
+    hideFromSidebar: "Masquer de la barre latérale",
+    greeting: {
+      pumpkins: "Les citrouilles sont sculptées. Et ensuite ?",
+      brewing: "Préparons la potion",
+      trickOrTreat: "Un bonbon ou un sort ?",
+      manor: "Bienvenue au manoir",
+      manorName: "Bienvenue au manoir, {name}",
+      happyHalloween: "Joyeux Halloween",
+      happyHalloweenName: "Joyeux Halloween, {name}",
+      spirits: "Les esprits écoutent…",
+      mysteries: "Quels mystères allons-nous percer ce soir ?",
+      conjure: "Que puis-je faire apparaître pour vous ?",
+    },
+  },
   welcome: {
     goodToSeeYou: "Ravi de vous voir",
     goodToSeeYouName: "Ravi de vous voir, {name}",
@@ -2214,6 +2246,12 @@ export const fr = {
         classic: "Classique",
         minimal: "Minimale",
         moreThemes: "Plus de thèmes",
+        halloween: "Halloween",
+      },
+      trickOrTreat: {
+        label: "Un bonbon ou un sort",
+        description:
+          "Thèmes d’Halloween et salutations effrayantes, jusqu’au 1er novembre.",
       },
       custom: {
         chatWidth: {

@@ -629,6 +629,37 @@ export const hi = {
     compactEmpty: "अभी कॉम्पैक्ट करने के लिए कुछ नहीं है",
     compactUnsupported: "कॉम्पैक्शन के लिए टूल सपोर्ट वाला GGUF या MLX मॉडल आवश्यक है",
   },
+  halloween: {
+    navLabel: "ट्रिक या ट्रीट…",
+    title: "ट्रिक या ट्रीट?!",
+    description:
+      "हमने Unsloth के लिए कुछ डरावनी चीज़ें तैयार की हैं, जो अक्टूबर के अंत तक रहेंगी।",
+    chooseTheme: "एक डरावनी थीम चुनें",
+    spookyGreetings: "डरावने अभिवादन",
+    spookyGreetingsDescription: "स्लॉथ नई चैट का स्वागत एक डर के साथ करता है।",
+    decorations: "मकड़ियाँ और चमगादड़",
+    decorationsDescription:
+      "हैलोवीन थीम पर कोनों में जाले, और कभी-कभी कोई मकड़ी या चमगादड़।",
+    surprise: "ट्रिक या ट्रीट!",
+    surpriseDescription: "स्लॉथ को आपके लिए थीम चुनने दें।",
+    themesTitle: "डरावनी थीम",
+    back: "वापस",
+    footer: "Unsloth 1 नवंबर की आधी रात को सामान्य हो जाएगा।",
+    removeNow: "अभी हटाएँ",
+    hideFromSidebar: "साइडबार से छिपाएं",
+    greeting: {
+      pumpkins: "कद्दू तराशे जा चुके हैं। आगे क्या?",
+      brewing: "चलो, कुछ जादू घोलें",
+      trickOrTreat: "ट्रिक या ट्रीट?",
+      manor: "हवेली में आपका स्वागत है",
+      manorName: "{name}, हवेली में आपका स्वागत है",
+      happyHalloween: "हैप्पी हैलोवीन",
+      happyHalloweenName: "हैप्पी हैलोवीन, {name}",
+      spirits: "आत्माएँ सुन रही हैं…",
+      mysteries: "आज रात हम कौन-से रहस्य खोलेंगे?",
+      conjure: "मैं आपके लिए क्या जादू करूँ?",
+    },
+  },
   welcome: {
     goodToSeeYou: "आपको देखकर अच्छा लगा",
     goodToSeeYouName: "{name}, आपको देखकर अच्छा लगा",
@@ -2192,6 +2223,12 @@ export const hi = {
         classic: "क्लासिक",
         minimal: "मिनिमल",
         moreThemes: "और थीम",
+        halloween: "हैलोवीन",
+      },
+      trickOrTreat: {
+        label: "ट्रिक या ट्रीट",
+        description:
+          "1 नवंबर तक हैलोवीन थीम और डरावने अभिवादन।",
       },
       custom: {
         chatWidth: {

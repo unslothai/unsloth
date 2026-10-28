@@ -629,6 +629,38 @@ export const de = {
     compactEmpty: "Noch nichts zu komprimieren",
     compactUnsupported: "Die Komprimierung erfordert ein GGUF- oder MLX-Modell mit Tool-Unterstützung",
   },
+  halloween: {
+    navLabel: "Süßes oder Saures…",
+    title: "Süßes oder Saures?!",
+    description:
+      "Für Unsloth haben wir ein paar Schauer zusammengebraut, noch bis Ende Oktober.",
+    chooseTheme: "Schauriges Design auswählen",
+    spookyGreetings: "Gruselige Begrüßungen",
+    spookyGreetingsDescription:
+      "Das Faultier begrüßt neue Chats mit einem Schreck.",
+    decorations: "Spinnen und Fledermäuse",
+    decorationsDescription:
+      "Spinnweben in den Ecken und ab und zu eine Spinne oder Fledermaus bei einem Halloween-Design.",
+    surprise: "Süßes oder Saures!",
+    surpriseDescription: "Das Faultier sucht ein Design für dich aus.",
+    themesTitle: "Schaurige Designs",
+    back: "Zurück",
+    footer: "Unsloth wird am 1. November um Mitternacht wieder normal.",
+    removeNow: "Jetzt entfernen",
+    hideFromSidebar: "Aus der Seitenleiste ausblenden",
+    greeting: {
+      pumpkins: "Die Kürbisse sind geschnitzt. Was kommt als Nächstes?",
+      brewing: "Lass uns was zusammenbrauen",
+      trickOrTreat: "Süßes oder Saures?",
+      manor: "Willkommen im Herrenhaus",
+      manorName: "Willkommen im Herrenhaus, {name}",
+      happyHalloween: "Fröhliches Halloween",
+      happyHalloweenName: "Fröhliches Halloween, {name}",
+      spirits: "Die Geister hören zu…",
+      mysteries: "Welche Geheimnisse lüften wir heute Nacht?",
+      conjure: "Was darf ich für dich herbeizaubern?",
+    },
+  },
   welcome: {
     goodToSeeYou: "Schön, dich zu sehen",
     goodToSeeYouName: "Schön, dich zu sehen, {name}",
@@ -2215,6 +2247,12 @@ export const de = {
         classic: "Klassisch",
         minimal: "Minimal",
         moreThemes: "Weitere Designs",
+        halloween: "Halloween",
+      },
+      trickOrTreat: {
+        label: "Süßes oder Saures",
+        description:
+          "Halloween-Designs und gruselige Begrüßungen, bis zum 1. November.",
       },
       custom: {
         chatWidth: {

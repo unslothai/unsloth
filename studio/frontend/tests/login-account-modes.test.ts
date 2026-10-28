@@ -135,6 +135,10 @@ function mountForm(
     "../login-client": client,
     "@/components/ui/button": { Button: "Button" },
     "@/components/mascot-img": { MascotImg: "MascotImg" },
+    "@/features/halloween/halloween-store": { useSpookyGreetings: () => false },
+    "@/features/halloween/spooky-greetings": {
+      pickSpookySloth: () => ({ sloth: "", enlarge: false }),
+    },
     "@/components/ui/input": { Input: "Input" },
     "@/components/ui/label": { Label: "Label" },
     "@tanstack/react-router": {

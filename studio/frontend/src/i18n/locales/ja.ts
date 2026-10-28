@@ -630,6 +630,36 @@ export const ja = {
     compactEmpty: "まだ圧縮する内容がありません",
     compactUnsupported: "会話の圧縮にはツール対応のGGUFまたはMLXモデルが必要です",
   },
+  halloween: {
+    navLabel: "トリック・オア・トリート…",
+    title: "トリック・オア・トリート？！",
+    description: "Unslothに少しだけ怖い仕掛けを用意しました。10月いっぱいお楽しみください。",
+    chooseTheme: "怖いテーマを選ぶ",
+    spookyGreetings: "怖いあいさつ",
+    spookyGreetingsDescription: "新しいチャットでナマケモノが驚かせます。",
+    decorations: "クモとコウモリ",
+    decorationsDescription:
+      "ハロウィンテーマの間、隅にクモの巣が張られ、ときどきクモやコウモリが現れます。",
+    surprise: "トリック・オア・トリート！",
+    surpriseDescription: "ナマケモノにテーマを選んでもらいましょう。",
+    themesTitle: "怖いテーマ",
+    back: "戻る",
+    footer: "Unslothは11月1日の午前0時に元に戻ります。",
+    removeNow: "今すぐ解除",
+    hideFromSidebar: "サイドバーから非表示",
+    greeting: {
+      pumpkins: "かぼちゃのランタンができました。次は何をしましょう？",
+      brewing: "さあ、魔法の薬を作ろう",
+      trickOrTreat: "トリック・オア・トリート？",
+      manor: "屋敷へようこそ",
+      manorName: "{name}さん、屋敷へようこそ",
+      happyHalloween: "ハッピーハロウィン",
+      happyHalloweenName: "{name}さん、ハッピーハロウィン",
+      spirits: "精霊たちが耳を澄ませています…",
+      mysteries: "今夜はどんな謎を解き明かしましょう？",
+      conjure: "どんな魔法をかけましょうか？",
+    },
+  },
   welcome: {
     goodToSeeYou: "お会いできてうれしいです",
     goodToSeeYouName: "{name}さん、お会いできてうれしいです",
@@ -2169,6 +2199,12 @@ export const ja = {
         classic: "クラシック",
         minimal: "ミニマル",
         moreThemes: "その他のテーマ",
+        halloween: "ハロウィン",
+      },
+      trickOrTreat: {
+        label: "トリック・オア・トリート",
+        description:
+          "11月1日まで、ハロウィンのテーマと怖いあいさつを楽しめます。",
       },
       custom: {
         chatWidth: {
