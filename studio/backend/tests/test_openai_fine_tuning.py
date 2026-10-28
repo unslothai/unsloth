@@ -1441,8 +1441,7 @@ def test_start_training_batch_refuses_resume_and_reports_a_busy_gpu_per_member(m
     "model", ["//attacker.example/share/model", "\\\\attacker.example\\share\\model"]
 )
 def test_batch_probe_never_touches_a_managed_share_path(batch_queue, monkeypatch, model):
-    """The batch model probe runs as the job's account and behind its path guard: a managed account's UNC
-    model is never handed to a disk / SMB probe, and the job falls back to the single start that refuses it."""
+    """A managed account's UNC model never reaches the batch probe; the single start refuses it."""
     import utils.models.diffusion_lm as diffusion_lm
     import utils.models.model_config as model_config
     from utils.account_context import AccountContext
