@@ -338,7 +338,6 @@ export function ResourcesTab() {
   const inferenceVramTotal = separateInferenceGpu
     ? aggregateGpuMemoryTotalGb(inferenceDisplay.usageDevices)
     : 0;
-  // The page shows every reading; the Detailed view choices only shape the floating window.
   const telemetryByOrdinal = new Map(
     displayedGpu?.available
       ? gpuTelemetryRows(
@@ -1115,8 +1114,7 @@ export function ResourcesTab() {
                     })}
                   </span>
                 </div>
-                {/* Same 392px as the Model downloads control, so both blocks start on one edge.
-                    Below 992px the dialog stops filling its 960px cap and the row stacks. */}
+                {/* 392px: the Model downloads control's width, so both start on one edge. */}
                 <div className="flex w-[min(calc(392px*var(--ui-space-scale,1)),100%)] shrink-0 flex-col gap-2.5 pt-0.5 max-[992px]:w-full">
                   {hasSharedMemoryHeadroom(device) ? (
                     <div className="text-xs text-muted-foreground">
