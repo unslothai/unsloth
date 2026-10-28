@@ -40,14 +40,22 @@ const LINES: Line[] = [
   ["halloween.greeting.conjure", null, [WITCH]],
 ];
 
+const HALLOWEEN_SLOTHS = [TRICK_OR_TREAT, WITCH, DEAD, VAMPIRE];
+
 const HALLOWEEN: Line = [
   "halloween.greeting.happyHalloween",
   "halloween.greeting.happyHalloweenName",
-  [TRICK_OR_TREAT, WITCH, DEAD, VAMPIRE, SHOCK],
+  [...HALLOWEEN_SLOTHS, SHOCK],
 ];
 
 const pick = <T>(items: T[]): T =>
   items[Math.floor(Math.random() * items.length)];
+
+/** One of the four Halloween sloths, for the login screen while spooky greetings are on. */
+export function pickSpookySloth(): { sloth: string; enlarge: boolean } {
+  const sloth = pick(HALLOWEEN_SLOTHS);
+  return { sloth, enlarge: ENLARGED.has(sloth) };
+}
 
 /** On October 30 and 31 (local time) Happy Halloween joins the lines a new chat picks from. */
 export function buildSpookyWelcome(

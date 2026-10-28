@@ -638,6 +638,9 @@ export const fr = {
     spookyGreetings: "Salutations effrayantes",
     spookyGreetingsDescription:
       "Le paresseux accueille les nouvelles discussions avec une frayeur.",
+    decorations: "Araignées et chauves-souris",
+    decorationsDescription:
+      "Des toiles dans les coins, et de temps en temps une araignée ou une chauve-souris avec un thème d’Halloween.",
     surprise: "Un bonbon ou un sort !",
     surpriseDescription: "Laissez le paresseux choisir un thème pour vous.",
     themesTitle: "Thèmes effrayants",

@@ -638,6 +638,9 @@ export const de = {
     spookyGreetings: "Gruselige Begrüßungen",
     spookyGreetingsDescription:
       "Das Faultier begrüßt neue Chats mit einem Schreck.",
+    decorations: "Spinnen und Fledermäuse",
+    decorationsDescription:
+      "Spinnweben in den Ecken und ab und zu eine Spinne oder Fledermaus bei einem Halloween-Design.",
     surprise: "Süßes oder Saures!",
     surpriseDescription: "Das Faultier sucht ein Design für dich aus.",
     themesTitle: "Schaurige Designs",

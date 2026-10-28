@@ -638,6 +638,9 @@ export const ptBR = {
     spookyGreetings: "Saudações assustadoras",
     spookyGreetingsDescription:
       "A preguiça recebe os novos chats com um susto.",
+    decorations: "Aranhas e morcegos",
+    decorationsDescription:
+      "Teias nos cantos e, de vez em quando, uma aranha ou um morcego com um tema de Halloween.",
     surprise: "Doces ou travessuras!",
     surpriseDescription: "Deixe a preguiça escolher um tema para você.",
     themesTitle: "Temas assustadores",

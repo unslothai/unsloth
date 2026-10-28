@@ -637,6 +637,9 @@ export const ja = {
     chooseTheme: "怖いテーマを選ぶ",
     spookyGreetings: "怖いあいさつ",
     spookyGreetingsDescription: "新しいチャットでナマケモノが驚かせます。",
+    decorations: "クモとコウモリ",
+    decorationsDescription:
+      "ハロウィンテーマの間、隅にクモの巣が張られ、ときどきクモやコウモリが現れます。",
     surprise: "トリック・オア・トリート！",
     surpriseDescription: "ナマケモノにテーマを選んでもらいましょう。",
     themesTitle: "怖いテーマ",

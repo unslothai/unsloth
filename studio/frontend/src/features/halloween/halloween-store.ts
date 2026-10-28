@@ -39,24 +39,35 @@ const SEASON_CHECK_MAX_MS = 6 * 60 * 60 * 1000;
 
 type HalloweenState = {
   spookyGreetings: boolean;
+  // Spiders, webs and bats over a Halloween theme; on until the user turns them off.
+  decorations: boolean;
   // Year the user hid the sidebar row; it stays hidden for the rest of that October.
   hiddenYear: number | null;
   restorePalette: ColorThemeId | null;
   setSpookyGreetings: (on: boolean) => void;
+  setDecorations: (on: boolean) => void;
 };
 
 export const useHalloweenStore = create<HalloweenState>()(
   persist(
     (set) => ({
       spookyGreetings: false,
+      decorations: true,
       hiddenYear: null,
       restorePalette: null,
       setSpookyGreetings: (spookyGreetings) => set({ spookyGreetings }),
+      setDecorations: (decorations) => set({ decorations }),
     }),
     {
       name: HALLOWEEN_STORAGE_KEY,
-      partialize: ({ spookyGreetings, hiddenYear, restorePalette }) => ({
+      partialize: ({
         spookyGreetings,
+        decorations,
+        hiddenYear,
+        restorePalette,
+      }) => ({
+        spookyGreetings,
+        decorations,
         hiddenYear,
         restorePalette,
       }),
@@ -65,6 +76,7 @@ export const useHalloweenStore = create<HalloweenState>()(
         return {
           ...current,
           spookyGreetings: p.spookyGreetings === true,
+          decorations: p.decorations !== false,
           hiddenYear: typeof p.hiddenYear === "number" ? p.hiddenYear : null,
           restorePalette:
             isColorThemeId(p.restorePalette) &&
@@ -129,6 +141,12 @@ export function useTrickOrTreatVisible(): boolean {
 export function useSpookyGreetings(): boolean {
   const on = useHalloweenStore((s) => s.spookyGreetings);
   return on && isHalloweenSeason();
+}
+
+export function useSpookyDecorations(): boolean {
+  const on = useHalloweenStore((s) => s.decorations);
+  const { palette } = usePalette();
+  return on && isHalloweenSeason() && isHalloweenThemeId(palette);
 }
 
 /** Outside October, hand back the pre-Halloween theme, including one a synced device re-applies.

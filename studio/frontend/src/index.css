@@ -1954,19 +1954,19 @@
 	--th-fg: #1c1519;
 	--th-muted: #5f5560;
 	--th-subtle: #948a96;
-	--th-accent: #a3173f;
+	--th-accent: #5b21b6;
 	--th-accent-fg: #ffffff;
-	--th-second: #5d5764;
-	--th-chart-1: #a3173f;
-	--th-chart-2: #5d5764;
+	--th-second: #a3173f;
+	--th-chart-1: #5b21b6;
+	--th-chart-2: #a3173f;
 	--th-chart-3: #8a8094;
-	--th-chart-4: #c43a5f;
+	--th-chart-4: #7c3aed;
 	--th-chart-5: #3b3440;
-	--ring: #5d5764;
-	--sidebar-ring: #5d5764;
-	--control-accent: #5d5764;
+	--ring: #a3173f;
+	--sidebar-ring: #a3173f;
+	--control-accent: #a3173f;
 	--control-accent-foreground: #ffffff;
-	--nav-icon-idle-base: #7d7684;
+	--nav-icon-idle-base: #b84a68;
 }
 :root[data-palette="gothic"].dark {
 	--th-bg: #0b0a0d;
@@ -1977,19 +1977,19 @@
 	--th-fg: #f1ecf2;
 	--th-muted: #b3a8b8;
 	--th-subtle: #6f6776;
-	--th-accent: #e0335e;
+	--th-accent: #a78bfa;
 	--th-accent-fg: #0b0a0d;
-	--th-second: #c9c3d1;
-	--th-chart-1: #e0335e;
-	--th-chart-2: #c9c3d1;
-	--th-chart-3: #8a8094;
-	--th-chart-4: #9b2242;
+	--th-second: #e0335e;
+	--th-chart-1: #a78bfa;
+	--th-chart-2: #e0335e;
+	--th-chart-3: #c9c3d1;
+	--th-chart-4: #7c5cd6;
 	--th-chart-5: #e8b4c4;
-	--ring: #c9c3d1;
-	--sidebar-ring: #c9c3d1;
-	--control-accent: #c9c3d1;
+	--ring: #e0335e;
+	--sidebar-ring: #e0335e;
+	--control-accent: #e0335e;
 	--control-accent-foreground: #0b0a0d;
-	--nav-icon-idle-base: #8f8996;
+	--nav-icon-idle-base: #b0365a;
 }
 
 :root[data-palette="hexberry"]:not(.dark) {
@@ -2069,28 +2069,34 @@
 		0 2px 8px -2px rgb(0 0 0 / 0.1);
 }
 :root[data-palette="candycorn"].dark {
-	--th-bg: #16120d;
-	--th-surface: #201a12;
-	--th-raised: #2a2217;
-	--th-hover: #342a1d;
-	--th-border: #4d3f2b;
-	--th-fg: #fff6e6;
-	--th-muted: #d8bf98;
-	--th-subtle: #857358;
-	--th-accent: #ff8f1f;
-	--th-accent-fg: #1a0f02;
-	--th-second: #ffd84a;
-	--th-chart-1: #ff8f1f;
-	--th-chart-2: #ffd84a;
-	--th-chart-3: #fff6e6;
-	--th-chart-4: #e0601a;
-	--th-chart-5: #c9a46a;
-	--ring: #ffd84a;
-	--sidebar-ring: #ffd84a;
-	--control-accent: #ffd84a;
-	--control-accent-foreground: #1a1402;
-	--nav-icon-idle-base: #c9a83a;
-	--composer-shadow: 0 0 40px 6px rgb(255 143 31 / 0.16);
+	--th-bg: #14100a;
+	--th-surface: #1e170d;
+	--th-raised: #291f11;
+	--th-hover: #332715;
+	--th-border: #4f3d22;
+	--th-fg: #ffffff;
+	--th-muted: #ffe2b8;
+	--th-subtle: #b3936a;
+	--th-accent: #ffc72c;
+	--th-accent-fg: #1a1002;
+	--th-second: #ff7a1a;
+	--th-chart-1: #ffc72c;
+	--th-chart-2: #ff7a1a;
+	--th-chart-3: #ffffff;
+	--th-chart-4: #ffe2b8;
+	--th-chart-5: #e0601a;
+	--ring: #ff7a1a;
+	--sidebar-ring: #ff7a1a;
+	--control-accent: #ff7a1a;
+	--control-accent-foreground: #1a0c02;
+	--nav-icon-idle-base: #ff9a3c;
+	--composer-shadow: 0 0 40px 6px rgb(255 199 44 / 0.16);
+}
+
+/* Halloween keeps its own border on Images and Video: the neutral gray vanishes on its tinted pages. */
+html[data-palette]:not(.dark):where([data-palette="pumpkin"], [data-palette="black-cat"], [data-palette="trick-or-treat"], [data-palette="bloody-valentine"], [data-palette="alien"], [data-palette="ghost-ship"], [data-palette="the-thing"], [data-palette="midnight-haunt"], [data-palette="gothic"], [data-palette="hexberry"], [data-palette="candycorn"]) .diffusion-surface {
+	--border-base: var(--th-border);
+	--input-base: var(--th-border);
 }
 
 :root[data-palette="black-cat"]:not(.dark) {
@@ -2991,16 +2997,15 @@ html[data-chat-font] .aui-root {
 
 	/* Images (Create + Train) and Video: a lighter control border than the palette
 	   default. Light mode only, since dark mode draws these controls borderless.
-	   Overrides the token, so every derived shade stays in step. Halloween keeps its own
-	   border: a neutral gray vanishes on its tinted pages. */
-	html:not(.dark):not(:where([data-palette="pumpkin"], [data-palette="black-cat"], [data-palette="trick-or-treat"], [data-palette="bloody-valentine"], [data-palette="alien"], [data-palette="ghost-ship"], [data-palette="the-thing"], [data-palette="midnight-haunt"], [data-palette="gothic"], [data-palette="hexberry"], [data-palette="candycorn"])) .diffusion-surface {
+	   Overrides the token, so every derived shade stays in step. */
+	html:not(.dark) .diffusion-surface {
 		--border-base: #e9e9e9;
 		--input-base: #e9e9e9;
 		--border: var(--border-base);
 		--input: var(--input-base);
 	}
 	/* The :root derivation is already substituted, so a scoped base must redo it for the slider. */
-	html[data-contrast-adjust]:not(.dark):not(:where([data-palette="pumpkin"], [data-palette="black-cat"], [data-palette="trick-or-treat"], [data-palette="bloody-valentine"], [data-palette="alien"], [data-palette="ghost-ship"], [data-palette="the-thing"], [data-palette="midnight-haunt"], [data-palette="gothic"], [data-palette="hexberry"], [data-palette="candycorn"])) .diffusion-surface {
+	html[data-contrast-adjust]:not(.dark) .diffusion-surface {
 		--border: color-mix(in oklab, var(--border-base), var(--contrast-target) var(--contrast-line-mix));
 		--input: color-mix(in oklab, var(--input-base), var(--contrast-target) var(--contrast-control-mix));
 	}
@@ -6621,5 +6626,98 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 	:where(.aui-reasoning-root, .aui-tool-fallback-root, .aui-tool-group-root) [data-slot="badge"] {
 		border-color: color-mix(in oklab, var(--border), var(--foreground) 15%);
 	}
+}
+
+
+/* Trick or Treat decorations: a spider on its thread and bats crossing the window. */
+.spooky-spider {
+	position: absolute;
+	top: 0;
+	width: calc(22px * var(--ui-space-scale, 1));
+	height: 0;
+	animation-name: spooky-spider-drop;
+	animation-timing-function: ease-in-out;
+	animation-fill-mode: both;
+}
+.spooky-spider::before {
+	content: "";
+	position: absolute;
+	top: 0;
+	bottom: calc(14px * var(--ui-space-scale, 1));
+	left: 50%;
+	width: 1px;
+	background: currentColor;
+	opacity: 0.4;
+}
+.spooky-spider-body {
+	position: absolute;
+	bottom: calc(-6px * var(--ui-space-scale, 1));
+	left: 0;
+	width: 100%;
+	opacity: 0.85;
+	transform-origin: 50% 0;
+	animation: spooky-spider-sway 1.6s ease-in-out infinite alternate;
+}
+@keyframes spooky-spider-drop {
+	0% { height: 0; }
+	22% { height: calc(var(--spooky-drop) + 8px); }
+	28% { height: var(--spooky-drop); }
+	34% { height: calc(var(--spooky-drop) + 3px); }
+	40%, 72% { height: var(--spooky-drop); }
+	100% { height: 0; }
+}
+@keyframes spooky-spider-sway {
+	from { transform: rotate(-5deg); }
+	to { transform: rotate(5deg); }
+}
+.spooky-bats {
+	position: absolute;
+	left: 0;
+	right: 0;
+	height: calc(60px * var(--ui-space-scale, 1));
+}
+.spooky-bat {
+	position: absolute;
+	top: 0;
+	left: 0;
+	width: calc(42px * var(--ui-space-scale, 1));
+	opacity: 0.8;
+	animation-name: spooky-bat-fly;
+	animation-timing-function: linear;
+	animation-fill-mode: both;
+}
+.spooky-bat-wings {
+	display: block;
+	width: 100%;
+	transform-origin: 50% 40%;
+	animation: spooky-bat-flap 0.2s ease-in-out infinite alternate;
+}
+@keyframes spooky-bat-fly {
+	0% { transform: translate(-10vw, 0); }
+	25% { transform: translate(25vw, -2vh); }
+	50% { transform: translate(50vw, 1.5vh); }
+	75% { transform: translate(75vw, -1.5vh); }
+	100% { transform: translate(110vw, 1vh); }
+}
+@keyframes spooky-bat-flap {
+	from { transform: scaleY(1); }
+	to { transform: scaleY(0.35); }
+}
+/* Reduced motion: the visitors fade in and out where they are instead of dropping and flying. */
+.spooky-still .spooky-spider {
+	height: var(--spooky-drop);
+	animation-name: spooky-fade;
+}
+.spooky-still .spooky-bat {
+	left: calc(var(--spooky-bats-left) + var(--spooky-bat-i, 0) * 52px * var(--ui-space-scale, 1));
+	animation-name: spooky-fade;
+}
+.spooky-still :is(.spooky-spider-body, .spooky-bat-wings) {
+	animation: none;
+}
+@keyframes spooky-fade {
+	0% { opacity: 0; }
+	15%, 85% { opacity: 0.85; }
+	100% { opacity: 0; }
 }
 

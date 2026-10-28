@@ -637,6 +637,9 @@ export const ar = {
     chooseTheme: "اختر سمة مخيفة",
     spookyGreetings: "تحيات مخيفة",
     spookyGreetingsDescription: "يستقبل الكسلان المحادثات الجديدة بإخافة.",
+    decorations: "عناكب وخفافيش",
+    decorationsDescription:
+      "شباك عنكبوت في الزوايا، وعنكبوت أو خفاش بين حين وآخر مع سمة الهالوين.",
     surprise: "حلوى أم خدعة!",
     surpriseDescription: "دع الكسلان يختار سمة لك.",
     themesTitle: "سمات مخيفة",

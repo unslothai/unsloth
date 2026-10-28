@@ -636,6 +636,9 @@ export const ko = {
     chooseTheme: "오싹한 테마 선택",
     spookyGreetings: "오싹한 인사말",
     spookyGreetingsDescription: "새 채팅을 시작하면 나무늘보가 깜짝 놀래 줘요.",
+    decorations: "거미와 박쥐",
+    decorationsDescription:
+      "할로윈 테마에서 모서리에 거미줄이 생기고, 가끔 거미나 박쥐가 나타납니다.",
     surprise: "트릭 오어 트릿!",
     surpriseDescription: "나무늘보가 테마를 골라 드려요.",
     themesTitle: "오싹한 테마",

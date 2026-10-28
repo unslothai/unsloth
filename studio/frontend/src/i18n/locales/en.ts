@@ -691,6 +691,9 @@ export const en = {
     chooseTheme: "Choose a frightful theme",
     spookyGreetings: "Spooky greetings",
     spookyGreetingsDescription: "The sloth greets new chats with a scare.",
+    decorations: "Spiders and bats",
+    decorationsDescription:
+      "Webs, plus the odd spider or bat.",
     surprise: "Trick or treat!",
     surpriseDescription: "Let the sloth pick a theme for you.",
     themesTitle: "Frightful themes",

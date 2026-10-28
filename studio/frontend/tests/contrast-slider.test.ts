@@ -282,7 +282,7 @@ test("text and lines head away from whatever they are drawn on", () => {
   }
   assert.match(
     CSS,
-    /html\[data-contrast-adjust\]:not\(\.dark\)(?::not\(:where\([^)]*\)\))? \.diffusion-surface \{\s*--border: color-mix\(in oklab, var\(--border-base\), var\(--contrast-target\) var\(--contrast-line-mix\)\);\s*--input: color-mix\(in oklab, var\(--input-base\), var\(--contrast-target\) var\(--contrast-control-mix\)\);/,
+    /html\[data-contrast-adjust\]:not\(\.dark\) \.diffusion-surface \{\s*--border: color-mix\(in oklab, var\(--border-base\), var\(--contrast-target\) var\(--contrast-line-mix\)\);\s*--input: color-mix\(in oklab, var\(--input-base\), var\(--contrast-target\) var\(--contrast-control-mix\)\);/,
   );
 });
 

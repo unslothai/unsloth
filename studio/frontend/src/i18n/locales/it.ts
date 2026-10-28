@@ -3419,6 +3419,9 @@ export const it = {
     spookyGreetings: "Saluti da brivido",
     spookyGreetingsDescription:
       "Il bradipo accoglie le nuove chat con uno spavento.",
+    decorations: "Ragni e pipistrelli",
+    decorationsDescription:
+      "Ragnatele negli angoli e ogni tanto un ragno o un pipistrello con un tema di Halloween.",
     surprise: "Dolcetto o scherzetto!",
     surpriseDescription: "Lascia che il bradipo scelga un tema per te.",
     themesTitle: "Temi da brivido",

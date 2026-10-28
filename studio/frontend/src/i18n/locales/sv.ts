@@ -741,6 +741,9 @@ export const sv = {
     spookyGreetings: "Läskiga hälsningar",
     spookyGreetingsDescription:
       "Sengångaren hälsar nya chattar med en liten skräck.",
+    decorations: "Spindlar och fladdermöss",
+    decorationsDescription:
+      "Spindelnät i hörnen och då och då en spindel eller fladdermus med ett halloweentema.",
     surprise: "Bus eller godis!",
     surpriseDescription: "Låt sengångaren välja ett tema åt dig.",
     themesTitle: "Läskiga teman",

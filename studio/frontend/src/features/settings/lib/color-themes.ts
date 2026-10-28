@@ -518,13 +518,13 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
   gothic: {
     name: "Goth",
     light: {
-      accent: "#a3173f",
+      accent: "#5b21b6",
       background: "#f7f5f7",
       foreground: "#1c1519",
       surface: "#ece8ed",
     },
     dark: {
-      accent: "#e0335e",
+      accent: "#a78bfa",
       background: "#0b0a0d",
       foreground: "#f1ecf2",
       surface: "#141217",
@@ -554,10 +554,10 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
       surface: "#fff0d6",
     },
     dark: {
-      accent: "#ff8f1f",
-      background: "#16120d",
-      foreground: "#fff6e6",
-      surface: "#201a12",
+      accent: "#ffc72c",
+      background: "#14100a",
+      foreground: "#ffffff",
+      surface: "#1e170d",
     },
   },
   "black-cat": {

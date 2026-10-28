@@ -637,6 +637,9 @@ export const ru = {
     chooseTheme: "Выберите жуткую тему",
     spookyGreetings: "Жуткие приветствия",
     spookyGreetingsDescription: "Ленивец встречает новые чаты страшилкой.",
+    decorations: "Пауки и летучие мыши",
+    decorationsDescription:
+      "Паутина по углам, а иногда паук или летучая мышь с темой Хэллоуина.",
     surprise: "Сладость или гадость!",
     surpriseDescription: "Пусть ленивец выберет тему за вас.",
     themesTitle: "Жуткие темы",

@@ -230,6 +230,40 @@ test("a pick in another tab reaches this tab's restore target", async () => {
   assert.equal(useHalloweenStore.getState().spookyGreetings, true);
 });
 
+test("spiders and bats are on by default and stay off once turned off", async () => {
+  const reread = async (state: Record<string, unknown>) => {
+    storage.setItem(
+      HALLOWEEN_STORAGE_KEY,
+      JSON.stringify({ state, version: 0 }),
+    );
+    for (const fn of storageListeners) fn({ key: HALLOWEEN_STORAGE_KEY });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return useHalloweenStore.getState().decorations;
+  };
+  // A save from before the switch existed has no field: on.
+  assert.equal(
+    await reread({ spookyGreetings: false, hiddenYear: null }),
+    true,
+  );
+  assert.equal(await reread({ decorations: false }), false);
+  assert.equal(await reread({ decorations: "nope" }), true);
+
+  const store = read("../src/features/halloween/halloween-store.ts");
+  assert.match(
+    store,
+    /return on && isHalloweenSeason\(\) && isHalloweenThemeId\(palette\);/,
+  );
+  const deco = read("../src/features/halloween/spooky-decorations.tsx");
+  // Reduced motion keeps the visits but fades them in place.
+  assert.match(deco, /reduced && "spooky-still"/);
+  assert.match(deco, /useMemo\(\(\) => rollSpiderWebs\(\), \[href\]\)/);
+  assert.match(deco, /pointer-events-none fixed inset-0/);
+  const root = read("../src/app/routes/__root.tsx");
+  assert.match(root, /\{!hideNavbar && <SpookyDecorations \/>\}/);
+  const dialog = read("../src/features/halloween/trick-or-treat-dialog.tsx");
+  assert.match(dialog, /onClick=\{\(\) => setDecorations\(!decorations\)\}/);
+});
+
 test("each spooky greeting shows its own Halloween sloths, and every picture exists", async () => {
   const { buildSpookyWelcome } = await import(
     "../src/features/halloween/spooky-greetings.ts"
@@ -289,4 +323,46 @@ test("each spooky greeting shows its own Halloween sloths, and every picture exi
       assert.ok(read(`../public/Sloth emojis/${file}`).length > 0, file);
     }
   }
+});
+
+test("the login sloth is one of the four Halloween sloths, only while greetings are on", async () => {
+  const { pickSpookySloth } = await import(
+    "../src/features/halloween/spooky-greetings.ts"
+  );
+  const seen = new Set<string>();
+  for (let i = 0; i < 200; i++) seen.add(pickSpookySloth().sloth);
+  assert.deepEqual([...seen].sort(), [
+    "sloth halloween dead.png",
+    "sloth halloween trick or treat.png",
+    "sloth halloween vampire.png",
+    "sloth halloween witch.png",
+  ]);
+  const form = read("../src/features/auth/components/auth-form.tsx");
+  assert.match(form, /isLoginMode && spooky \? halloweenSloth : null/);
+});
+
+test("spider webs show on half the pages, never by the sidebar, and vary", async () => {
+  const { rollSpiderWebs } = await import(
+    "../src/features/halloween/spider-webs.ts"
+  );
+  assert.deepEqual(
+    rollSpiderWebs(() => 0.5),
+    [],
+  );
+  const seen = new Set<string>();
+  let shown = 0;
+  for (let i = 0; i < 400; i++) {
+    const webs = rollSpiderWebs();
+    if (webs.length > 0) shown++;
+    assert.ok(webs.length <= 2);
+    assert.equal(new Set(webs.map((w) => w.placement)).size, webs.length);
+    for (const web of webs) {
+      assert.ok(["top-right", "bottom-right", "top"].includes(web.placement));
+      assert.match(web.spokes, /^M0 0L/);
+      assert.ok(web.threads.includes("Q"));
+      seen.add(web.spokes);
+    }
+  }
+  assert.ok(shown > 120 && shown < 280, `${shown} of 400 pages had webs`);
+  assert.ok(seen.size > 50, "every web is drawn afresh");
 });

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { publicAssetUrl } from "@/components/mascot-img";
 import {
   Dialog,
   DialogContent,
@@ -56,7 +57,7 @@ function Row({
   onClick,
   trailing,
 }: {
-  icon: typeof CandyIcon;
+  icon: typeof CandyIcon | string;
   label: string;
   description?: string;
   onClick: () => void;
@@ -69,7 +70,11 @@ function Row({
       className="flex min-h-[calc(64px*var(--ui-space-scale,1))] w-full cursor-pointer items-center gap-4 rounded-2xl px-4 py-2.5 text-left outline-none transition-colors hover:bg-accent focus-visible:bg-accent"
     >
       <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary/12 text-primary">
-        <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-5" />
+        {typeof icon === "string" ? (
+          <img src={publicAssetUrl(icon)} alt="" className="size-5" />
+        ) : (
+          <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-5" />
+        )}
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
         <span className="font-medium text-ui-14p5 text-foreground">
@@ -102,6 +107,8 @@ const SWATCH_OVERRIDE: Partial<
 > = {
   "trick-or-treat":
     "linear-gradient(135deg, #ffc400 28%, #b35cff 68%, color-mix(in srgb, #b35cff 75%, black) 100%)",
+  gothic:
+    "linear-gradient(135deg, #a78bfa 28%, #e0335e 72%, color-mix(in srgb, #e0335e 75%, black) 100%)",
   // White tip, orange middle, yellow base, like the candy.
   candycorn:
     "linear-gradient(170deg, #fff6e6 12%, #ff8f1f 42%, #ff8f1f 55%, #ffd84a 85%)",
@@ -159,6 +166,8 @@ export function TrickOrTreatDialog({
   const [view, setView] = useState<"home" | "themes">("home");
   const spookyGreetings = useHalloweenStore((s) => s.spookyGreetings);
   const setSpookyGreetings = useHalloweenStore((s) => s.setSpookyGreetings);
+  const decorations = useHalloweenStore((s) => s.decorations);
+  const setDecorations = useHalloweenStore((s) => s.setDecorations);
 
   return (
     <Dialog
@@ -180,11 +189,7 @@ export function TrickOrTreatDialog({
           <div className="relative flex flex-col">
             <div className="flex flex-col items-center gap-2.5 px-12 pt-10 pb-7 text-center">
               <span className="mb-1 flex size-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-[0_0_32px_-4px_var(--primary)]">
-                <HugeiconsIcon
-                  icon={PumpkinIcon}
-                  strokeWidth={1.36}
-                  className="size-9"
-                />
+                <HugeiconsIcon icon={PumpkinIcon} className="size-9" />
               </span>
               <DialogTitle className="font-semibold text-2xl tracking-[-0.01em]">
                 {t("halloween.title")}
@@ -209,6 +214,21 @@ export function TrickOrTreatDialog({
                   <Switch
                     aria-label={t("halloween.spookyGreetings")}
                     checked={spookyGreetings}
+                    tabIndex={-1}
+                    className="pointer-events-none"
+                  />
+                }
+              />
+              <Row
+                // Emoji One v1 "spider web", CC BY-SA 4.0 (github.com/joypixels/emojione-legacy).
+                icon="halloween/spider-web.svg"
+                label={t("halloween.decorations")}
+                description={t("halloween.decorationsDescription")}
+                onClick={() => setDecorations(!decorations)}
+                trailing={
+                  <Switch
+                    aria-label={t("halloween.decorations")}
+                    checked={decorations}
                     tabIndex={-1}
                     className="pointer-events-none"
                   />

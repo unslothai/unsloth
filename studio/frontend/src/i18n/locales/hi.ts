@@ -637,6 +637,9 @@ export const hi = {
     chooseTheme: "एक डरावनी थीम चुनें",
     spookyGreetings: "डरावने अभिवादन",
     spookyGreetingsDescription: "स्लॉथ नई चैट का स्वागत एक डर के साथ करता है।",
+    decorations: "मकड़ियाँ और चमगादड़",
+    decorationsDescription:
+      "हैलोवीन थीम पर कोनों में जाले, और कभी-कभी कोई मकड़ी या चमगादड़।",
     surprise: "ट्रिक या ट्रीट!",
     surpriseDescription: "स्लॉथ को आपके लिए थीम चुनने दें।",
     themesTitle: "डरावनी थीम",

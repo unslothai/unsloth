@@ -636,6 +636,9 @@ export const zhCN = {
     chooseTheme: "选择一个惊悚主题",
     spookyGreetings: "惊悚问候",
     spookyGreetingsDescription: "树懒会在新对话中吓你一跳。",
+    decorations: "蜘蛛和蝙蝠",
+    decorationsDescription:
+      "使用万圣节主题时，角落会有蛛网，偶尔还会出现蜘蛛或蝙蝠。",
     surprise: "不给糖就捣蛋！",
     surpriseDescription: "让树懒为你挑选主题。",
     themesTitle: "惊悚主题",

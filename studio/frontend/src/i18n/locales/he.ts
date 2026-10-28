@@ -723,6 +723,9 @@ export const he = {
     chooseTheme: "בחירת ערכת נושא מפחידה",
     spookyGreetings: "ברכות מפחידות",
     spookyGreetingsDescription: "העצלן מקבל שיחות חדשות בהפחדה.",
+    decorations: "עכבישים ועטלפים",
+    decorationsDescription:
+      "קורי עכביש בפינות, ומדי פעם עכביש או עטלף בערכת נושא של ליל כל הקדושים.",
     surprise: "ממתק או תעלול!",
     surpriseDescription: "העצלן יבחר בשבילך ערכת נושא.",
     themesTitle: "ערכות נושא מפחידות",
