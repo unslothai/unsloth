@@ -11758,6 +11758,7 @@ def _chat_fit_kwargs(
     policy: Optional[str] = None,
     credit_gb: Optional[dict] = None,
     mlx_need_mib: Optional[int] = None,
+    mlx_credit_mib: int = 0,
 ) -> dict:
     """How the CHAT acquire shares the GPU under When they fit / Always.
 
@@ -11788,7 +11789,8 @@ def _chat_fit_kwargs(
             for g in gpus
         }
     elif mlx_need_mib is not None:
-        kwargs["need_mib"] = {0: int(mlx_need_mib)}
+        from core.inference.gpu_residency import ChatNeed
+        kwargs["need_mib"] = ChatNeed({0: int(mlx_need_mib)}, credit_mib = mlx_credit_mib)
     elif not (config.is_gguf and _primary_can_retry_fit.get()) and (
         policy == "fit" or (not config.is_gguf and _unified_metal_host())
     ):
@@ -11800,6 +11802,11 @@ def _chat_fit_kwargs(
 def _unified_metal_host() -> bool:
     from core.inference.gpu_residency import _on_metal
     return _on_metal()
+
+
+def _mlx_slots_outgrow_price(backend, n_parallel) -> bool:
+    from core.inference.gpu_residency import mlx_slots_outgrow_price
+    return mlx_slots_outgrow_price(backend, n_parallel)
 
 
 def _outgoing_chat_credit_gb(
@@ -18528,6 +18535,8 @@ async def _load_model_impl(
                 )
                 # Without this the route reports already_loaded and nothing moves.
                 and _resident_audio_placement_matches(backend, request)
+                # More rows beside media are more KV caches: reload so admission prices them.
+                and not _mlx_slots_outgrow_price(backend, _n_parallel)
             ):
                 api_monitor.discard(_load_event)  # nothing loaded, no monitor row
                 logger.info(f"Model already loaded (Unsloth): {model_log_label}, skipping reload")
@@ -18944,6 +18953,10 @@ async def _load_model_impl(
                     model_identifier,
                     clamp_parallel_slots(_n_parallel),
                 )
+                mlx_credit_mib = 0
+                if mlx_chat_need is not None and replacing:
+                    from core.inference.gpu_residency import mlx_replaced_credit_mib
+                    mlx_credit_mib = await asyncio.to_thread(mlx_replaced_credit_mib, backend)
                 handoff_kwargs.update(
                     _chat_fit_kwargs(
                         config,
@@ -18951,6 +18964,7 @@ async def _load_model_impl(
                         multi_model_mode,
                         outgoing_chat_gb,
                         mlx_need_mib = None if mlx_chat_need is None else mlx_chat_need[0],
+                        mlx_credit_mib = mlx_credit_mib,
                     )
                 )
                 await asyncio.to_thread(

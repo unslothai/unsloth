@@ -386,6 +386,10 @@ class TestCanLoadAlongside(_ArbiterResetMixin, unittest.TestCase):
         self.assertFalse(self._metal(_need({0: free - gr.FIT_MARGIN_MIB + 1}), 20480, 12288)[0])
         self.assertEqual(self._metal(_need({0: 1}), None, 12288)[1], {"reason": "probe_error"})
         self.assertEqual(self._metal(_need({0: 1}), w, a, 2500)[1]["free_mib"], {0: free - 2500})
+        # A replacing chat load gets back what the outgoing model holds and has reserved.
+        credited = gr.ChatNeed({0: 8192}, credit_mib = 12288)
+        self.assertTrue(self._metal(credited, 6144, 6144, 4096)[0])
+        self.assertFalse(self._metal(gr.ChatNeed({0: 8192}), 6144, 6144, 4096)[0])
 
     def test_mlx_chat_growth_adds_a_kv_cache_per_row_less_what_each_worker_grew(self):
         from core.inference import llama_cpp, model_slots, orchestrator
@@ -414,6 +418,36 @@ class TestCanLoadAlongside(_ArbiterResetMixin, unittest.TestCase):
         with patch.object(model_slots, "resident", side_effect = RuntimeError):
             self.assertIsNone(gr._mlx_chat_unallocated_mib())
         self.assertIsNone(total({}, orch(g, 1, 7), orch(None, 1, 8)))
+
+    def test_a_replaced_mlx_model_credits_its_worker_and_reserved_growth(self):
+        g = {"mib": 512, "row_kv_mib": 100, "footprint_mib": 2000}
+
+        def orch(entry, rows = 2):
+            return SimpleNamespace(
+                models = {"m": entry}, effective_parallel_slots = rows, _proc = SimpleNamespace(pid = 7)
+            )
+
+        with patch.object(gr, "mlx_worker_footprint_mib", lambda o: 2100):
+            self.assertEqual(
+                gr.mlx_replaced_credit_mib(orch({"is_mlx": True, "mlx_growth": g})), 2100 + 512
+            )
+            self.assertEqual(gr.mlx_replaced_credit_mib(orch({"is_mlx": True})), 2100)
+            self.assertEqual(gr.mlx_replaced_credit_mib(orch({"is_mlx": False})), 0)
+
+    def test_more_parallel_rows_beside_media_outgrow_the_admitted_price(self):
+        o = SimpleNamespace(
+            models = {"m": {"is_mlx": True}}, active_model_name = "m", effective_parallel_slots = 2
+        )
+        with (
+            patch.object(gr, "_on_metal", return_value = True),
+            patch.object(gr, "media_held_mib", return_value = {0: 9000}),
+        ):
+            self.assertTrue(gr.mlx_slots_outgrow_price(o, 4))
+            self.assertFalse(gr.mlx_slots_outgrow_price(o, 2))
+            with patch.object(gr, "media_held_mib", return_value = {}):
+                self.assertFalse(gr.mlx_slots_outgrow_price(o, 4))
+        with patch.object(gr, "_on_metal", return_value = False):
+            self.assertFalse(gr.mlx_slots_outgrow_price(o, 4))
 
 
 class TestPipelineNeed(_GpuCacheResetMixin, unittest.TestCase):
@@ -782,3 +816,44 @@ def test_single_file_image_need_reads_fp8_from_the_header(tmp_path, monkeypatch)
     save_file({"blocks.0.weight": torch.zeros(1024, 2048, dtype = torch.bfloat16)}, str(dense))
     # Both files are 4 MiB on disk: only the one that stores fp8 widens on load.
     assert need(plain) > need(dense)
+
+
+def test_an_mlx_routed_image_load_is_priced_from_its_quantization_plan(monkeypatch):
+    import types
+
+    import core.inference.diffusion_engine_router as router
+    import core.inference.diffusion_families as dfam
+    import core.inference.gpu_residency as gr
+    import core.inference.mlx_diffusion_backend as mdb
+    from core.inference.sd_cpp_engine import ENGINE_MLX
+
+    picks = []
+    monkeypatch.setattr(
+        dfam, "detect_family_for_pick", lambda *a, **k: types.SimpleNamespace(name = "z")
+    )
+    monkeypatch.setattr(dfam, "resolve_base_repo", lambda f, b: b)
+    monkeypatch.setattr(
+        router, "predict_engine", lambda *a, **k: picks.append(k["engine"]) or ENGINE_MLX
+    )
+    monkeypatch.setattr(gr, "_cached_pick", lambda repo, name: "/m.gguf")
+    monkeypatch.setattr(mdb, "fetch_base_snapshot", lambda *a, **k: "/base")
+    monkeypatch.setattr(
+        mdb, "get_mlx_diffusion_backend", lambda: types.SimpleNamespace(_rt = lambda: None)
+    )
+    monkeypatch.setattr(mdb, "decode_headroom_bytes", lambda rt: 3 * MIB + 1)
+    plan = types.SimpleNamespace(source = "plan", planned_bytes = 4099 * MIB + 1)
+    monkeypatch.setattr(mdb, "plan_for_load", lambda *a, **k: plan)
+    request = types.SimpleNamespace(
+        model_path = "org/z",
+        gguf_filename = "z.gguf",
+        text_encoder_file = None,
+        vae_file = None,
+        model_kind = "gguf",
+        family_override = None,
+        base_repo = "org/base",
+        engine = "auto",
+    )
+    assert gr._image_need(request, 0) == (4096, 4)
+    assert picks == ["auto"]
+    plan.source = "ram_rule"
+    assert gr._image_need(request, 0) is None

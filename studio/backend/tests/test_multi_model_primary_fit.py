@@ -346,6 +346,9 @@ def test_chat_fit_kwargs(monkeypatch):
     # Unified memory pages past the budget, so Always has no out-of-memory to refuse an unpriced load on.
     monkeypatch.setattr(inf, "_unified_metal_host", lambda: True)
     assert inf._chat_fit_kwargs(native, _placement(None)).get("evict_first") is True
+    priced = inf._chat_fit_kwargs(native, _placement(None), mlx_need_mib = 700, mlx_credit_mib = 50)
+    assert priced.get("need_mib") == {0: 700} and "evict_first" not in priced
+    assert priced["need_mib"].credit_mib == 50
 
 
 @pytest.mark.parametrize(
@@ -373,6 +376,18 @@ def test_the_replace_fallback_never_refuses_a_partial_fit():
         < source.index("_primary_can_retry_fit.set(False)", unload)
         < source.index("_run_tracked_load_model_impl", unload)
     )
+
+
+def test_an_mlx_load_is_credited_what_it_replaces_and_more_rows_reprice_it():
+    import inspect
+
+    source = inspect.getsource(inf._load_model_impl)
+    shortcut = source.index('logger.info(f"Model already loaded (Unsloth)')
+    assert (
+        "not _mlx_slots_outgrow_price(backend, _n_parallel)" in source[shortcut - 1200 : shortcut]
+    )
+    credit = source.index("if mlx_chat_need is not None and replacing:")
+    assert credit < source.index("mlx_credit_mib = mlx_credit_mib", credit)
 
 
 def test_a_pinned_non_gguf_chat_load_keeps_its_requested_gpus(monkeypatch):

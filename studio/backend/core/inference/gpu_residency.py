@@ -34,6 +34,19 @@ class MediaNeed(dict):
         self.kind = kind
 
 
+class ChatNeed(dict):
+    """A chat load's {GPU: MiB}, priced against free memory plus ``credit_mib`` the model it replaces releases."""
+
+    def __init__(
+        self,
+        per_gpu: dict,
+        *,
+        credit_mib: int = 0,
+    ):
+        super().__init__({int(gpu): int(mib) for gpu, mib in per_gpu.items()})
+        self.credit_mib = int(credit_mib)
+
+
 def current_policy() -> str:
     """Keep multiple models loaded, read as the owner. Never call this under the arbiter lock (it reads a database)."""
     try:
@@ -496,6 +509,7 @@ def can_load_alongside(owner: str, need_mib: Optional[dict]) -> tuple[bool, dict
         )
         if row.get("metal"):
             free -= _mlx_chat_unallocated_mib() or 0
+        free += getattr(need_mib, "credit_mib", 0)
         if own is not None and gpu in own:
             # Reloading the same owner frees what it holds now.
             free += max(own[gpu] - getattr(own, "headroom_mib", 0), 0)
@@ -546,19 +560,57 @@ def _mlx_chat_unallocated_mib() -> Optional[int]:
             orchestrator._inference_backend,
             *(s.orchestrator for s in model_slots.resident()),
         ]:
-            for entry in list((getattr(orch, "models", None) or {}).values()):
-                if isinstance(entry, dict) and entry.get("is_mlx"):
-                    growth = entry.get("mlx_growth")
-                    if growth is None:
-                        return None
-                    rows = max(1, int(orch.effective_parallel_slots))
-                    priced = growth["mib"] + (rows - 1) * growth["row_kv_mib"]
-                    at_load, now = growth.get("footprint_mib"), mlx_worker_footprint_mib(orch)
-                    grown = now - at_load if at_load is not None and now is not None else 0
-                    total += max(0, priced - max(0, grown))
+            mib = _orch_unallocated_mib(orch)
+            if mib is None:
+                return None
+            total += mib
         return total
     except Exception:  # noqa: BLE001
         return None
+
+
+def _orch_unallocated_mib(orch) -> Optional[int]:
+    total = 0
+    for entry in list((getattr(orch, "models", None) or {}).values()):
+        if isinstance(entry, dict) and entry.get("is_mlx"):
+            growth = entry.get("mlx_growth")
+            if growth is None:
+                return None
+            rows = max(1, int(orch.effective_parallel_slots))
+            priced = growth["mib"] + (rows - 1) * growth["row_kv_mib"]
+            at_load, now = growth.get("footprint_mib"), mlx_worker_footprint_mib(orch)
+            grown = now - at_load if at_load is not None and now is not None else 0
+            total += max(0, priced - max(0, grown))
+    return total
+
+
+def mlx_replaced_credit_mib(orch) -> int:
+    """MiB a load into ``orch`` gets back from the MLX model it replaces: every load spawns a fresh worker, so the
+    old worker's footprint and the growth reserved for it are both released."""
+    try:
+        if not any(
+            isinstance(e, dict) and e.get("is_mlx")
+            for e in list((getattr(orch, "models", None) or {}).values())
+        ):
+            return 0
+        return (mlx_worker_footprint_mib(orch) or 0) + (_orch_unallocated_mib(orch) or 0)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def mlx_slots_outgrow_price(orch, n_parallel) -> bool:
+    """Whether serving ``n_parallel`` rows grows a resident MLX model beside media past what it was admitted at."""
+    try:
+        from core.inference.llama_server_args import clamp_parallel_slots
+        entry = (getattr(orch, "models", None) or {}).get(orch.active_model_name or "") or {}
+        return bool(
+            _on_metal()
+            and entry.get("is_mlx")
+            and media_held_mib()
+            and clamp_parallel_slots(n_parallel) > int(orch.effective_parallel_slots)
+        )
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def mlx_worker_footprint_mib(orch) -> Optional[int]:
