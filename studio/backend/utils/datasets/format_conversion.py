@@ -3,6 +3,7 @@
 
 """Dataset format conversion between Alpaca, ShareGPT, and ChatML."""
 
+import contextvars
 import os
 
 from .cells import cell_text
@@ -934,6 +935,55 @@ def convert_sharegpt_with_images_to_vlm_format(
     converted_list = []
     failed_count = 0
 
+    def _needs_network(image_data):
+        # Only a URL or a repo download waits on the network; local paths and decoded images stay inline.
+        if not isinstance(image_data, str):
+            return False
+        if image_data.startswith(("http://", "https://")):
+            return True
+        return _image_lookup is not None and image_data in _image_lookup
+
+    def _record(outcome):
+        nonlocal failed_count
+        ok, value = outcome
+        if ok:
+            converted_list.append(value)
+        else:
+            failed_count += 1
+            if failed_count == 1:
+                logger.info(f"⚠️ First conversion failure: {type(value).__name__}: {value}")
+        pbar.set_postfix(ok = len(converted_list), failed = failed_count, refresh = False)
+
+    def _run_inline(sample):
+        try:
+            return True, _convert_single_sample(sample)
+        except Exception as e:
+            return False, e
+
+    def _settle(pending):
+        # Results are recorded in row order, so the first failure logged is the earliest failing row, as in a serial pass.
+        entry = pending.popleft()
+        if not isinstance(entry, Future):
+            return entry
+        try:
+            return True, entry.result()
+        except Exception as e:
+            return False, e
+
+    from collections import deque
+    from concurrent.futures import Future
+
+    num_workers = 1
+    if _image_lookup is not None or (
+        isinstance(first_image, str) and first_image.startswith(("http://", "https://"))
+    ):
+        from utils.hardware import safe_thread_num_proc
+        num_workers = safe_thread_num_proc()
+    # Bounds how many fetched images can wait for their turn in memory.
+    max_pending = 2 * num_workers
+    executor = None
+    pending = deque()
+
     pbar = tqdm(
         dataset,
         total = total,
@@ -941,15 +991,28 @@ def convert_sharegpt_with_images_to_vlm_format(
         unit = "sample",
         **_quiet_bar_kwargs(),
     )
-    for sample in pbar:
-        try:
-            converted_list.append(_convert_single_sample(sample))
-        except Exception as e:
-            failed_count += 1
-            if failed_count == 1:
-                logger.info(f"⚠️ First conversion failure: {type(e).__name__}: {e}")
-        pbar.set_postfix(ok = len(converted_list), failed = failed_count, refresh = False)
-    pbar.close()
+    try:
+        for sample in pbar:
+            if num_workers > 1 and _needs_network(sample[image_column]):
+                if executor is None:
+                    from concurrent.futures import ThreadPoolExecutor
+                    executor = ThreadPoolExecutor(max_workers = num_workers)
+                # Each fetch runs under the caller's context (account, request scoped settings).
+                pending.append(
+                    executor.submit(contextvars.copy_context().run, _convert_single_sample, sample)
+                )
+            elif pending:
+                pending.append(_run_inline(sample))
+            else:
+                _record(_run_inline(sample))
+            while len(pending) > max_pending or (pending and not isinstance(pending[0], Future)):
+                _record(_settle(pending))
+        while pending:
+            _record(_settle(pending))
+    finally:
+        if executor is not None:
+            executor.shutdown(wait = True, cancel_futures = True)
+        pbar.close()
 
     if failed_count > 0:
         logger.info(f"⚠️ Skipped {failed_count}/{total} ({failed_count*100//total}%) samples")
