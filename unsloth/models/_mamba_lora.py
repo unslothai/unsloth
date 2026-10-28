@@ -50,7 +50,8 @@ class _Routing(threading.local):
     def __init__(self):
         self.force_slow = 0
         self.stack = []
-        # [(adapted leaf, W + delta or None = build on read, "Mixer.leaf")] for running mixer forwards.
+        # [(adapted leaf, W + delta or None = build on read, "Mixer.leaf", running batch size or None)]
+        # for running mixer forwards.
         self.raw = []
 
 
@@ -190,12 +191,25 @@ def _mixed_batch_adapter_names(module):
     return None
 
 
-def _per_row_weight(module, names, label):
+def _per_row_weight(module, names, label, batch = None):
     """[batch, out, in] effective weights, one per row of a mixed-adapter batch.
 
     ``W @ x`` with a [batch, in, seq] input broadcasts per row, so each row sees its own adapter and
     ``"__base__"`` / unknown names see the base weight, as PEFT's mixed-batch forward gives them.
+
+    PEFT repeats the names only for ``num_beams`` (peft/tuners/lora/model.py
+    ``_enable_peft_forward_hooks``); ``generate`` also expands each prompt ``num_return_sequences``
+    times with ``repeat_interleave``, so a running batch that is a multiple of the names gets them
+    repeated in that same order. Any other size cannot be routed and raises.
     """
+    if batch is not None and batch != len(names):
+        if not names or batch % len(names):
+            raise ValueError(
+                f"Unsloth: {label} got {len(names)} adapter_names for a batch of {batch} rows; "
+                "pass one adapter name per input row."
+            )
+        repeat = batch // len(names)
+        names = [name for name in names for _ in range(repeat)]
     base = module.get_base_layer().weight
     weights = {}
     for name in dict.fromkeys(names):
@@ -231,13 +245,13 @@ def _raw_read_class(cls):
 
     def weight(self):
         # Per thread: nn.DataParallel replicas share their leaves' __dict__ contents.
-        for module, effective, label in reversed(_routing.raw):
+        for module, effective, label, batch in reversed(_routing.raw):
             if module is not self:
                 continue
             if effective is None:
                 names = _mixed_batch_adapter_names(self)
                 if names is not None:
-                    return _per_row_weight(self, names, label)
+                    return _per_row_weight(self, names, label, batch)
                 # Rebuilt on every read, never cached: PEFT hotswap_adapter, FlashAdamW and other
                 # `.data` writes skip version counters, so no cache key can see them. The rank-r
                 # rebuild is a few small ops per layer, under 1% of a prefill forward on CPU.
@@ -482,8 +496,9 @@ def _patch_class(cls):
         raw, depth = _routing.raw, len(_routing.raw)
         if not (self.training and cache_params is None):
             # Eval / cached decode: the torch path reads dt_proj.weight raw; serve W + delta lazily.
+            batch = hidden_states.shape[0] if isinstance(hidden_states, torch.Tensor) else None
             for leaf in readable:
-                raw.append((self._modules[leaf], None, f"{cls.__name__}.{leaf}"))
+                raw.append((self._modules[leaf], None, f"{cls.__name__}.{leaf}", batch))
             try:
                 return forward(self, hidden_states, *args, **kwargs)
             finally:
@@ -501,7 +516,7 @@ def _patch_class(cls):
             module = modules[leaf]
             if leaf in readable:
                 # `.weight` now returns this tensor, so the torch path's raw read applies it too.
-                raw.append((module, weights[leaf], f"{cls.__name__}.{leaf}"))
+                raw.append((module, weights[leaf], f"{cls.__name__}.{leaf}", None))
                 frame.applied.add(leaf)
             if not use_slow:
                 base = module.get_base_layer().weight

@@ -584,3 +584,93 @@ def test_unprepared_adapter_never_compiles_silently(monkeypatch, arch):
     mixer.dt_proj.__class__ = plain
     out = _compiled_no_grad(mixer, hidden, fullgraph = False)
     torch.testing.assert_close(out, eager, rtol = 1e-5, atol = 1e-6)
+
+
+def _row_logits(model, sequences, prompt_len, names):
+    """Per-step logits of each generated row, recomputed with that row's adapter alone."""
+    out = []
+    for row, name in zip(sequences, names):
+        if name == "__base__":
+            with model.disable_adapter():
+                logits = _logits(model, row[None])
+        else:
+            logits = _logits(model, row[None])
+        out.append(logits[0, prompt_len - 1 : -1])
+    return torch.stack(out)
+
+
+@pytest.mark.parametrize("arch", ARCHS)
+@pytest.mark.parametrize(
+    "names", [["__base__", "default"], ["default", "default"]], ids = ["mixed", "same"]
+)
+@pytest.mark.parametrize("greedy", [False, True], ids = ["sample", "greedy"])
+def test_mixed_adapter_generate_num_return_sequences(monkeypatch, arch, names, greedy):
+    # generate expands each prompt num_return_sequences times (repeat_interleave), while PEFT's
+    # adapter_names hook keeps one name per prompt: every expanded row keeps its prompt's adapter.
+    # transformers refuses num_return_sequences without sampling, so greedy is top_k = 1 sampling.
+    model = _trained(monkeypatch, arch, ["dt_proj"])
+    ids = _ids(13)[:, :4]
+    torch.manual_seed(0)
+    with torch.no_grad():
+        out = model.generate(
+            input_ids = ids,
+            adapter_names = names,
+            do_sample = True,
+            top_k = 1 if greedy else 0,
+            num_return_sequences = 2,
+            max_new_tokens = 3,
+            use_cache = True,
+            output_logits = True,
+            return_dict_in_generate = True,
+            pad_token_id = 0,
+        )
+    assert out.sequences.shape[0] == 4
+    row_names = [name for name in names for _ in range(2)]
+    assert torch.equal(out.sequences[:, :4], ids.repeat_interleave(2, dim = 0))
+    got = torch.stack(out.logits, dim = 1)
+    expected = _row_logits(model, out.sequences, 4, row_names)
+    torch.testing.assert_close(got, expected, rtol = 1e-5, atol = 1e-5)
+    if greedy:
+        for i, name in enumerate(names):
+            kwargs = dict(max_new_tokens = 3, do_sample = False, use_cache = True, pad_token_id = 0)
+            with torch.no_grad():
+                if name == "__base__":
+                    with model.disable_adapter():
+                        alone = model.generate(input_ids = ids[i : i + 1], **kwargs)
+                else:
+                    alone = model.generate(input_ids = ids[i : i + 1], **kwargs)
+            assert torch.equal(out.sequences[2 * i], alone[0])
+            assert torch.equal(out.sequences[2 * i + 1], alone[0])
+
+
+@pytest.mark.parametrize("arch", ARCHS)
+def test_mixed_adapter_generate_beam_search(monkeypatch, arch):
+    # PEFT repeats adapter_names num_beams times itself; they must be used as given.
+    model = _trained(monkeypatch, arch, ["dt_proj"])
+    ids = _ids(17)[:, :4]
+    names = ["__base__", "default"]
+    kwargs = dict(
+        max_new_tokens = 3,
+        num_beams = 2,
+        num_return_sequences = 2,
+        do_sample = False,
+        use_cache = True,
+        pad_token_id = 0,
+    )
+    with torch.no_grad():
+        out = model.generate(input_ids = ids, adapter_names = names, **kwargs)
+        assert out.shape[0] == 4
+        for i, name in enumerate(names):
+            if name == "__base__":
+                with model.disable_adapter():
+                    alone = model.generate(input_ids = ids[i : i + 1], **kwargs)
+            else:
+                alone = model.generate(input_ids = ids[i : i + 1], **kwargs)
+            assert torch.equal(out[2 * i : 2 * i + 2], alone)
+
+
+def test_mixed_adapter_names_not_dividing_batch_raise(monkeypatch):
+    model = _trained(monkeypatch, "mamba", ["dt_proj"])
+    ids = torch.randint(0, 64, (3, 6), generator = torch.Generator().manual_seed(3))
+    with torch.no_grad(), pytest.raises(ValueError, match = "adapter_names"):
+        model(input_ids = ids, use_cache = False, adapter_names = ["__base__", "default"])
