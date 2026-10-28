@@ -3316,10 +3316,7 @@ _MEASURED_IMAGE_PEAK_MIB: dict[str, int] = {
 }
 # "0": Qwen-Image-Edit places from its learned peak only.
 MEASURED_ACTIVATION_QWEN_EDIT_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_QWEN_EDIT"
-# Streamed tier: worst CUDA MiB reserved above the resident weights AND the prefetch window, every DiT group streamed,
-# same request. Read only where the window is subtracted on its own (_streamed_dit_room_mib). Qwen-Image-Edit-2511,
-# RTX PRO 6000 capped at 12 / 16 GiB: allocator reserved 5048 / 5444 MiB (allocated 2383) less the 1620 MiB window.
-# The 6046 resident peak above already carries a window pad. "0" places streamed loads from the resident seed.
+# Streamed tier: peak reserved above resident weights AND the prefetch window (the resident seed already pads it).
 _MEASURED_STREAMED_IMAGE_PEAK_MIB: dict[str, int] = {
     "qwen-image-edit": 3824,
 }
@@ -3460,8 +3457,7 @@ def measured_image_runtime_mib(
     streamed: bool = False,
 ) -> Optional[int]:
     """Measured runtime headroom for ``family`` at this size, or None (unmeasured: use the flat estimate).
-    ``streamed``: the streamed-tier seed (``_MEASURED_STREAMED_IMAGE_PEAK_MIB``, prefetch window excluded) replaces
-    the whole-render seed for a family that has one; the learned peak still raises it.
+    ``streamed``: use ``_MEASURED_STREAMED_IMAGE_PEAK_MIB`` (window excluded) where present.
     ``phase`` (``diffusion_measured_peaks.PHASES``) reads that phase's learned peak instead of the whole render's.
     ``dense_transformer_mib`` selects the dense eager table; ``compute_bytes`` scales it (fp32 Qwen-Image: 8480 vs 4248).
 
@@ -4625,7 +4621,6 @@ def _refine_plan_from_loaded_weights(
             ):
                 # partial: the encode keeps the flat room (install_encode_release)
                 window = _stream_window_mib(pipe)
-                # a streamed-tier seed excludes the window this room subtracts; the resident one carries it
                 streamed_headroom = headroom
                 if static_seed and not small_host_int8:
                     streamed_headroom = min(
@@ -4649,10 +4644,8 @@ def _refine_plan_from_loaded_weights(
                     dit_room, room, wide_dit = streamed_room, streamed_room, True
                     estimates["stream_window_mib"] = window
                     if streamed_headroom < headroom:
-                        # the request guard prices against this, not the whole-render headroom
                         estimates["measured_streamed_headroom_mib"] = streamed_headroom
-                        # the seed covers the denoise only: the encode streams every resident group (the 12 GiB
-                        # state) instead of keeping the flat room on top of the wider residency (16 GiB overran)
+                        # seed covers denoise only; flat encode room on top overran at 16 GiB
                         encode_room = 0
         te_room = (
             min(max(0, room - dit_room), encoders) if stream_te and policy == OFFLOAD_GROUP else 0
@@ -5711,7 +5704,6 @@ def measured_request_extra_mib(
     sized["static_seed"] = bool(reserve[8]) if len(reserve) > 8 and reserve[8] is not None else True
     sized["dense_bf16"] = bool(len(reserve) > 10 and reserve[10])
     sized["small_host_int8"] = bool(len(reserve) > 11 and reserve[11])
-    # placed from the streamed-tier seed: requests price on the same scale (the window is not in the reserve)
     sized["streamed"] = bool(len(reserve) > 12 and reserve[12])
     need = measured_image_runtime_mib(family, speed_mode, **sized)
     learned = reserve[5] if len(reserve) > 5 else None

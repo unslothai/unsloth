@@ -116,11 +116,7 @@ def maybe_kick(
 
 
 def _pending_runtime_bytes(pipe: Any) -> int:
-    """Device bytes the parent allocates after this gate reads free memory, on a streamed-tier placement.
-
-    That placement (reserve flag 12) fills the budget to its activation seed plus the prefetch window, neither
-    allocated at load time, so a child priced from free memory alone takes the room the first render needs.
-    """
+    """Streamed-tier seed + prefetch window: budgeted but not yet allocated when this gate reads free memory."""
     reserve = getattr(pipe, "_unsloth_measured_reserve", None)
     if not reserve or len(reserve) <= 12 or not reserve[12]:
         return 0

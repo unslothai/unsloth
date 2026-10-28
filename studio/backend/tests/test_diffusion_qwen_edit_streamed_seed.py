@@ -11,7 +11,6 @@ import pytest
 
 import core.inference.diffusion_memory as dm
 
-# Qwen-Image-Edit-2511 auto (int8 DiT, int8 encoder, bf16 VAE) as loaded on an RTX PRO 6000 capped at 12 / 16 GiB.
 LOADED = {
     "transformer": (32496, "dit"),
     "text_encoder": (8559, "text_encoder"),
@@ -86,11 +85,9 @@ def test_streamed_seed_value():
         dm.measured_image_runtime_mib("qwen-image-edit", "default", streamed = True)
         == STREAMED_HEADROOM
     )
-    # scales with the output pixels like the resident seed
     assert dm.measured_image_runtime_mib(
         "qwen-image-edit", "default", width = 1328, height = 1328, streamed = True
     ) > dm.measured_image_runtime_mib("qwen-image-edit", "default", streamed = True)
-    # families without a streamed entry keep their seed; eager tiers stay unseeded
     assert dm.measured_image_runtime_mib(
         "qwen-image-2.1", "default", streamed = True
     ) == dm.measured_image_runtime_mib("qwen-image-2.1", "default")
@@ -105,12 +102,9 @@ def test_streamed_placement_keeps_more_groups_resident(pipe, budget, total):
     memory = plan.device_memory
     resident = new.resident_transformer_mib
     assert resident == _wide_room(memory, STREAMED_HEADROOM)
-    # the old placement subtracted the resident seed, which already carries a window pad, beside the window
     assert resident - _wide_room(memory, RESIDENT_HEADROOM) == RESIDENT_HEADROOM - STREAMED_HEADROOM
     assert new.estimates["measured_streamed_headroom_mib"] == STREAMED_HEADROOM
-    # the whole-render headroom (multi-GPU splits read it) is unchanged
     assert new.estimates["measured_runtime_headroom_mib"] == RESIDENT_HEADROOM
-    # never above free memory: resident + raw streamed peak + window + VAE + slack
     assert resident + 3824 + WINDOW + LOADED["vae"][0] + dm._resident_dit_slack_mib(memory) <= int(
         memory.free_mib
     )
@@ -161,9 +155,7 @@ def test_request_guard_prices_on_the_streamed_scale(monkeypatch):
         if name:
             monkeypatch.delenv(name, raising = False)
     pipe = types.SimpleNamespace(_unsloth_measured_reserve = _reserve(True))
-    # the request the load was placed for keeps every resident group
     assert dm.measured_request_extra_mib(pipe, width = 1024, height = 1024) == 0
-    # a larger one streams the difference back out
     big = dm.measured_request_extra_mib(pipe, width = 1328, height = 1328)
     assert (
         big
@@ -173,19 +165,15 @@ def test_request_guard_prices_on_the_streamed_scale(monkeypatch):
         - STREAMED_HEADROOM
     )
     assert big > 0
-    # a second source image is priced by the flat allowance on top
     assert (
         dm.measured_request_extra_mib(pipe, width = 1024, height = 1024, condition_pixels = 1024 * 1024)
         > big
     )
-    # a placement made from the resident seed is priced as before
     old = types.SimpleNamespace(_unsloth_measured_reserve = _reserve(False))
     assert dm.measured_request_extra_mib(old, width = 1024, height = 1024) == 0
 
 
 def test_vae_prebuild_child_is_priced_against_the_streamed_runtime(monkeypatch):
-    # 16 GiB load: 7.5 GiB free after the resident groups land, but the streamed seed (4608) and the prefetch window
-    # (1620) are still to come, so a child would take the room the first render needs (OOM in the child before).
     import torch
     from torch.torch_version import TorchVersion
 
@@ -222,7 +210,6 @@ def test_vae_prebuild_child_is_priced_against_the_streamed_runtime(monkeypatch):
         is False
     )
     assert spawned == []
-    # resident-seed placement (and the kill switch, which places from it) keeps the free-memory gate unchanged
     assert (
         prebuild.maybe_kick(
             types.SimpleNamespace(_unsloth_measured_reserve = reserve(False)), first_start
@@ -230,7 +217,6 @@ def test_vae_prebuild_child_is_priced_against_the_streamed_runtime(monkeypatch):
         is True
     )
     assert prebuild.maybe_kick(types.SimpleNamespace(), first_start) is True
-    # room for the child on top of the pending streamed runtime: it still runs
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device: (16384 << 20, 24576 << 20))
     assert (
         prebuild.maybe_kick(
@@ -243,23 +229,18 @@ def test_vae_prebuild_child_is_priced_against_the_streamed_runtime(monkeypatch):
 
 @pytest.mark.parametrize("budget,total", [(9550, 12288), (13638, 16376)])
 def test_streamed_seed_encode_streams_every_resident_group(pipe, monkeypatch, budget, total):
-    # 16 GiB load on hardware: the encode kept the flat room (3989 MiB) on top of the streamed tier's wider residency,
-    # held 3782 MiB through the prompt encode (base 1080) and overran the budget (allocator OOM, then a retry)
+    # 16 GiB hardware regression: flat encode room on top of streamed residency overran the budget
     new = _refine(pipe, _plan(budget, total))
     assert new.estimates["measured_streamed_headroom_mib"] == STREAMED_HEADROOM
     assert new.estimates["encode_resident_transformer_mib"] == 0
-    # install_encode_release then streams the whole residency for the encode: the encode state is the all-streamed one
     surplus = new.resident_transformer_mib - new.estimates["encode_resident_transformer_mib"]
     assert surplus == new.resident_transformer_mib
-    # the streamed-seed kill switch keeps the resident-seed placement and its flat encode room unchanged
     monkeypatch.setenv(dm.MEASURED_ACTIVATION_STREAMED_ENV, "0")
     plan = _plan(budget, total)
     old = _refine(pipe, plan)
     assert "measured_streamed_headroom_mib" not in old.estimates
     flat = old.estimates["encode_resident_transformer_mib"]
     assert flat > 0
-    # during the encode the streamed tier never holds more than the resident-seed placement does (base: proven on
-    # hardware at both budgets); the extra residency it pins for the denoise streams out first
     extra = new.resident_transformer_mib - old.resident_transformer_mib
     assert extra > 0
     assert new.estimates["encode_resident_transformer_mib"] + extra <= max(flat, extra)
