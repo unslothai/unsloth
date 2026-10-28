@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Profile usage statistics derived from studio.db.
-
-Read-only aggregation over chat threads/messages (with their per-message ``metadata_json``), content-free API
-usage receipts, and training runs/metrics. The numbers are only as complete as the local history retained after
-each feature was introduced. Chat and training tables predate authenticated subjects and therefore remain
-install-wide; API usage receipts are filtered to the requesting subject.
-
-Token counts live inside each message's metadata blob, so they cannot be summed in SQL portably (JSON1 is not
-guaranteed on every bundled SQLite). Rows are streamed once in (thread, time) order and every metric is folded
-in that single pass, then memoised against per-source count/timestamp fingerprints so reopening the Profile tab
-is free until history changes.
-"""
+"""Read-only usage stats from studio.db; chat and training are install-wide, API receipts per subject"""
 
 import csv
 import io

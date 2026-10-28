@@ -65,6 +65,7 @@ import {
   STORAGE_COLORS,
   SettingsCard,
   SettingsCardRow,
+  StorageBar,
   type StorageSegment,
   StorageOverview,
 } from "../components/storage-overview";
@@ -86,21 +87,39 @@ function clampPercent(value: number | null | undefined): number {
 }
 
 function usageIndicatorClass(percent: number): string {
-  if (percent >= 90) return "bg-destructive";
+  if (percent >= 90) return "bg-[#df4530] dark:bg-[#ef5b40]";
   if (percent >= 70) return "bg-amber-500";
   return "bg-control-accent";
 }
 
-function usageTextClass(percent: number): string {
-  if (percent >= 90) return "text-destructive";
+function usagePillClass(percent: number | null): string {
+  if (isFiniteNumber(percent) && percent >= 90) {
+    return "bg-[#df4530]/10 text-[#df4530] dark:text-[#ef5b40]";
+  }
+  if (isFiniteNumber(percent) && percent >= 70) {
+    return "bg-amber-500/10 text-amber-600 dark:text-amber-400";
+  }
+  return "bg-control-accent/10 text-control-accent";
+}
+
+function usageValueClass(percent: number | null): string {
+  if (!isFiniteNumber(percent)) return "text-muted-foreground/70";
+  if (percent >= 90) return "text-[#df4530] dark:text-[#ef5b40]";
   if (percent >= 70) return "text-amber-600 dark:text-amber-400";
-  return "text-primary";
+  return "text-foreground";
 }
 
 function formatGb(value: number | null | undefined): string {
   const safe = isFiniteNumber(value) ? Math.max(0, value) : 0;
   const digits = safe >= 10 ? 1 : 2;
   return `${safe.toFixed(digits)} GB`;
+}
+
+function formatDiskSize(diskGb: number | null | undefined): string {
+  if (isFiniteNumber(diskGb) && diskGb >= 1000) {
+    return `${(diskGb / 1000).toFixed(2)} TB`;
+  }
+  return formatGb(diskGb);
 }
 
 // RAM/VRAM are binary (GiB, like nvidia-smi); disk is decimal GB.
@@ -156,50 +175,48 @@ function MetricTile({
   const percentKnown = isFiniteNumber(percent);
   const safePercent = clampPercent(percent);
   return (
-    <div className="flex min-w-0 flex-col gap-2.5 rounded-xl border border-border/60 bg-muted/20 p-4 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
-      <div className="flex items-center justify-between gap-3">
-        <span className="truncate text-ui-11 font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-          {label}
-        </span>
-        {showUsage && (
-          <span
-            className={cn(
-              "shrink-0 font-mono text-xs tabular-nums",
-              percentKnown
-                ? usageTextClass(safePercent)
-                : "text-muted-foreground",
-            )}
-          >
-            {percentKnown ? formatPercent(safePercent) : "--"}
-          </span>
-        )}
-      </div>
-      <div className="min-w-0">
-        <div
-          title={value}
-          className="truncate font-mono text-sm tabular-nums text-foreground"
-        >
-          {value}
+    <div className="flex min-w-0 flex-col gap-3 rounded-xl border border-border/60 bg-card px-5 py-4 dark:border-transparent">
+      <div className="flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-1">
+        <div className="flex shrink-0 flex-col gap-0.5">
+          <span className="text-ui-12 text-muted-foreground">{label}</span>
+          {showUsage ? (
+            <span
+              className={cn(
+                "font-heading text-ui-21 font-semibold leading-tight tracking-[-0.02em] tabular-nums",
+                usageValueClass(percentKnown ? safePercent : null),
+              )}
+            >
+              {percentKnown ? formatPercent(safePercent) : "--"}
+            </span>
+          ) : null}
         </div>
-        <div
-          title={detail}
-          className="mt-0.5 truncate text-xs text-muted-foreground"
-        >
-          {detail}
+        <div className="ml-auto flex min-w-0 flex-col items-end gap-0.5 text-right">
+          <span
+            title={value}
+            className="max-w-full truncate text-ui-12 tabular-nums text-foreground"
+          >
+            {value}
+          </span>
+          <span
+            title={detail}
+            className="max-w-full truncate text-ui-11 text-muted-foreground"
+          >
+            {detail}
+          </span>
+          {extraDetail ? (
+            <span className="whitespace-pre-line text-ui-11 text-muted-foreground">
+              {extraDetail}
+            </span>
+          ) : null}
         </div>
       </div>
       {showUsage && (
         <Progress
           value={percentKnown ? safePercent : 0}
           aria-label={label}
-          className="h-1.5 rounded-full bg-muted dark:bg-[rgb(0_0_0_/_calc(0.4*var(--contrast-wash-gain,1)))]"
+          className="mt-auto h-1.5 rounded-full bg-muted dark:bg-[rgb(0_0_0_/_calc(0.4*var(--contrast-wash-gain,1)))]"
           indicatorClassName={usageIndicatorClass(safePercent)}
         />
-      )}
-      {extraDetail && (
-        <div className="whitespace-pre-line text-xs text-muted-foreground">
-          {extraDetail}
-        </div>
       )}
     </div>
   );
@@ -321,10 +338,14 @@ export function ResourcesTab() {
   const inferenceVramTotal = separateInferenceGpu
     ? aggregateGpuMemoryTotalGb(inferenceDisplay.usageDevices)
     : 0;
-  const telemetryRows =
-    showDetails && displayedGpu?.available
-      ? gpuTelemetryRows(displayedGpu.devices, detailMetrics)
-      : [];
+  const telemetryByOrdinal = new Map(
+    displayedGpu?.available
+      ? gpuTelemetryRows(
+          displayedGpu.devices,
+          new Set(MONITOR_DETAIL_METRICS),
+        ).map((row) => [row.key, row])
+      : [],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -555,7 +576,7 @@ export function ResourcesTab() {
     metrics.diskUsed - modelsDiskGb - cachesDiskGb,
   );
   const cacheValue = (diskGb: number) =>
-    cache.inventory ? formatGb(diskGb) : t("common.loading");
+    cache.inventory ? formatDiskSize(diskGb) : t("common.loading");
   const storageSegments: StorageSegment[] = [
     ...(metrics.modelsDisk
       ? []
@@ -579,14 +600,14 @@ export function ResourcesTab() {
       key: "other",
       label: t("settings.resources.storage.segmentOther"),
       bytes: otherDiskGb,
-      value: formatGb(otherDiskGb),
+      value: formatDiskSize(otherDiskGb),
       color: STORAGE_COLORS.other,
     },
     {
       key: "free",
       label: t("settings.resources.storage.segmentFree"),
       bytes: metrics.diskFree,
-      value: formatGb(metrics.diskFree),
+      value: formatDiskSize(metrics.diskFree),
       color: STORAGE_COLORS.free,
     },
   ];
@@ -664,7 +685,7 @@ export function ResourcesTab() {
       </header>
 
       <SettingsSection title={t("settings.resources.liveMonitor.title")}>
-        <div className="grid gap-2 py-3 sm:grid-cols-2">
+        <div className="grid gap-3 py-3 sm:grid-cols-2 sm:[&>:last-child:nth-child(odd)]:col-span-2">
           <MetricTile
             label={t("settings.resources.liveMonitor.cpu")}
             value={hostReading(cpuFrequencyLabel ?? cpuCoresLabel)}
@@ -676,7 +697,6 @@ export function ResourcesTab() {
                   : t("settings.resources.liveMonitor.currentLoad")
             }
             percent={hostUnread ? null : (systemInfo.cpu?.usage_percent ?? 0)}
-            showUsage={!showDetails || detailMetrics.has("cpuLoad")}
           />
           <MetricTile
             label={t("settings.resources.liveMonitor.ram")}
@@ -695,13 +715,13 @@ export function ResourcesTab() {
           <MetricTile
             label={t("settings.resources.liveMonitor.disk")}
             value={hostReading(
-              `${formatGb(metrics.diskUsed)} / ${formatGb(metrics.diskTotal)}`,
+              `${formatDiskSize(metrics.diskUsed)} / ${formatDiskSize(metrics.diskTotal)}`,
             )}
             detail={
               hostUnread
                 ? hostUnreadDetail
                 : t("settings.resources.liveMonitor.free", {
-                    value: formatGb(metrics.diskFree),
+                    value: formatDiskSize(metrics.diskFree),
                   })
             }
             percent={hostUnread ? null : metrics.diskPercent}
@@ -710,13 +730,13 @@ export function ResourcesTab() {
             <MetricTile
               label={t("settings.resources.liveMonitor.modelsDisk")}
               value={hostReading(
-                `${formatGb(metrics.modelsDiskUsed)} / ${formatGb(metrics.modelsDisk.total_gb)}`,
+                `${formatDiskSize(metrics.modelsDiskUsed)} / ${formatDiskSize(metrics.modelsDisk.total_gb)}`,
               )}
               detail={
                 hostUnread
                   ? hostUnreadDetail
                   : t("settings.resources.liveMonitor.free", {
-                      value: formatGb(metrics.modelsDisk.free_gb),
+                      value: formatDiskSize(metrics.modelsDisk.free_gb),
                     })
               }
               percent={hostUnread ? null : metrics.modelsDiskPercent}
@@ -776,37 +796,6 @@ export function ResourcesTab() {
             }
             percent={metrics.vramUsageKnown ? metrics.vramPercent : null}
           />
-          {telemetryRows.map((row) => (
-            <MetricTile
-              key={row.key}
-              label={row.name}
-              value={
-                [
-                  row.temperatureC !== null
-                    ? formatTemperature(row.temperatureC)
-                    : null,
-                  row.powerDrawW !== null
-                    ? formatPower(row.powerDrawW, row.powerLimitW)
-                    : null,
-                ]
-                  .filter(Boolean)
-                  .join(" · ") ||
-                (row.loadPct !== null ? `${Math.round(row.loadPct)}%` : "--")
-              }
-              detail={[
-                row.temperatureC !== null &&
-                  t("settings.resources.liveMonitor.temperature"),
-                row.powerDrawW !== null &&
-                  t("settings.resources.liveMonitor.power"),
-                row.loadPct !== null &&
-                  t("settings.resources.liveMonitor.gpuLoad"),
-              ]
-                .filter(Boolean)
-                .join(" · ")}
-              showUsage={row.loadPct !== null}
-              percent={hostUnread ? null : row.loadPct}
-            />
-          ))}
         </div>
         <SettingsRow
           label={t("settings.resources.liveMonitor.detailedView")}
@@ -1003,102 +992,153 @@ export function ResourcesTab() {
               : unknownLabel;
             // Its total is mostly system RAM, so "VRAM" beside it overstates the card (#8942).
             const sharedSplit = deviceSharedMemorySplitGb(device);
+            const telemetry = telemetryByOrdinal.get(`${ordinal ?? index}`);
+            // Shared pool: used is every app's GPU allocation (AGX), free an available-RAM floor.
+            const shared = device.shared_memory === true;
+            const usedBySystem =
+              shared &&
+              isFiniteNumber(total) &&
+              isFiniteNumber(used) &&
+              isFiniteNumber(free)
+                ? Math.max(0, total - used - free)
+                : 0;
+            const segments: StorageSegment[] = [
+              {
+                key: "used",
+                label: t("settings.resources.gpu.segmentUsed"),
+                bytes: isFiniteNumber(used) ? used : 0,
+                value: usedText,
+                color: "bg-neutral-500 dark:bg-neutral-300",
+              },
+              ...(usedBySystem > 0
+                ? [
+                    {
+                      key: "system",
+                      label: t("settings.resources.gpu.segmentSystem"),
+                      bytes: usedBySystem,
+                      value: formatGiB(usedBySystem),
+                      color: "bg-muted-foreground/40",
+                    },
+                  ]
+                : []),
+              {
+                key: "free",
+                label: t(
+                  shared
+                    ? "settings.resources.gpu.segmentAvailable"
+                    : "settings.resources.storage.segmentFree",
+                ),
+                bytes: isFiniteNumber(free) ? free : 0,
+                value: freeText,
+                color: STORAGE_COLORS.free,
+              },
+            ];
+            const deviceLabel =
+              ordinal === undefined
+                ? backendLabel
+                : `${t("settings.resources.gpu.deviceWithIndex", {
+                    index: ordinal,
+                  })}, ${backendLabel}`;
+            const telemetryParts = [
+              telemetry?.loadPct != null
+                ? `${t("settings.resources.liveMonitor.gpuLoad")} ${formatPercent(telemetry.loadPct)}`
+                : null,
+              telemetry?.temperatureC != null
+                ? formatTemperature(telemetry.temperatureC)
+                : null,
+              telemetry?.powerDrawW != null
+                ? formatPower(telemetry.powerDrawW, telemetry.powerLimitW)
+                : null,
+            ].filter((part): part is string => Boolean(part));
             return (
               <div
                 key={`${device.index ?? index}-${device.name ?? "gpu"}`}
-                className="flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-2 py-3 max-[992px]:flex-col max-[992px]:items-stretch"
+                data-settings-label={device.name ?? undefined}
+                className={cn(
+                  "flex min-w-0 flex-wrap items-start justify-between gap-x-6 gap-y-3 py-6 max-[992px]:flex-col max-[992px]:items-stretch",
+                  index > 0 && "border-t border-border/60",
+                )}
               >
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-medium text-foreground">
-                    {device.name ?? t("settings.resources.gpu.unknownDevice")}
-                  </div>
-                  <div className="mt-1 flex min-w-0 items-center gap-2">
-                    <span className="truncate text-xs text-muted-foreground">
-                      {ordinal === undefined
-                        ? backendLabel
-                        : `${t("settings.resources.gpu.deviceWithIndex", {
-                            index: ordinal,
-                          })}, ${backendLabel}`}
+                <div className="flex min-w-0 flex-1 flex-col gap-1">
+                  <p className="flex min-w-0 items-center gap-2 text-sm font-semibold text-foreground">
+                    <span className="truncate">
+                      {device.name ?? t("settings.resources.gpu.unknownDevice")}
                     </span>
-                    {/* Same accent pill as the New tags, which stays legible
-                        on the light background. */}
                     {hasSharedMemoryHeadroom(device) ? (
-                      <span className="text-xs text-muted-foreground">
+                      <span className="text-xs font-normal text-muted-foreground">
                         {t("settings.resources.gpu.sharedWithSystemRam")}
                       </span>
                     ) : sharedSplit ? (
-                      <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold tabular-nums text-control-accent">
+                      <span
+                        className={cn(
+                          "shrink-0 rounded-full px-1.5 py-1 text-ui-10 leading-none font-semibold tabular-nums",
+                          usagePillClass(
+                            isFiniteNumber(percent) ? safePercent : null,
+                          ),
+                        )}
+                      >
                         {percentText}
                       </span>
                     ) : (
-                      <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold tabular-nums text-control-accent">
+                      <span
+                        className={cn(
+                          "shrink-0 rounded-full px-1.5 py-1 text-ui-10 leading-none font-semibold tabular-nums",
+                          usagePillClass(
+                            isFiniteNumber(percent) ? safePercent : null,
+                          ),
+                        )}
+                      >
                         {percentText}{" "}
                         {t("settings.resources.gpu.vramUtilization")}
                       </span>
                     )}
-                  </div>
-                  {/* Own line: beside the pill it truncates the backend label first. */}
-                  {sharedSplit && !hasSharedMemoryHeadroom(device) ? (
-                    <div className="mt-1 text-xs text-muted-foreground">
-                      {sharedSplit.dedicated > 0
-                        ? t("settings.resources.environment.vramWithShared", {
-                            vram: formatGiB(sharedSplit.dedicated),
-                            shared: formatGiB(sharedSplit.shared),
-                          })
-                        : t("settings.resources.gpu.sharedWithSystemRam")}
+                  </p>
+                  <span className="truncate text-xs text-muted-foreground">
+                    {deviceLabel}
+                    {sharedSplit && !hasSharedMemoryHeadroom(device) ? (
+                      <>
+                        {" · "}
+                        {sharedSplit.dedicated > 0
+                          ? t("settings.resources.environment.vramWithShared", {
+                              vram: formatGiB(sharedSplit.dedicated),
+                              shared: formatGiB(sharedSplit.shared),
+                            })
+                          : t("settings.resources.gpu.sharedWithSystemRam")}
+                      </>
+                    ) : null}
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    {t("settings.resources.gpu.usedOf", {
+                      used: usedText,
+                      total: totalText,
+                    })}
+                  </span>
+                </div>
+                {/* 392px: the Model downloads control's width, so both start on one edge. */}
+                <div className="flex w-[min(calc(392px*var(--ui-space-scale,1)),100%)] shrink-0 flex-col gap-2.5 pt-0.5 max-[992px]:w-full">
+                  {hasSharedMemoryHeadroom(device) ? (
+                    <div className="text-xs text-muted-foreground">
+                      {t("settings.resources.gpu.estimatedAvailable", {
+                        value:
+                          sharedMemoryAvailableGb([device]) === null
+                            ? unknownLabel
+                            : formatGiB(device.vram_free_gb),
+                      })}
                     </div>
+                  ) : (
+                    <StorageBar
+                      segments={segments}
+                      totalBytes={isFiniteNumber(total) ? total : undefined}
+                      legend="inline"
+                      barClassName="h-1.5 rounded-full"
+                    />
+                  )}
+                  {telemetryParts.length > 0 ? (
+                    <span className="text-ui-11 tabular-nums text-muted-foreground">
+                      {telemetryParts.join(" · ")}
+                    </span>
                   ) : null}
                 </div>
-                {/* Meter under the figures, so it spans their width instead of
-                    being squeezed into the gap beside them. Same 392px as the
-                    Model downloads control, so both blocks start on one edge.
-                    Below 992px the dialog stops filling its 960px cap and the
-                    device name would truncate, so the row stacks instead. */}
-                {hasSharedMemoryHeadroom(device) ? (
-                  <div className="text-xs font-mono text-muted-foreground">
-                    {t("settings.resources.gpu.estimatedAvailable", {
-                      value:
-                        sharedMemoryAvailableGb([device]) === null
-                          ? unknownLabel
-                          : formatGiB(device.vram_free_gb),
-                    })}
-                  </div>
-                ) : (
-                  <div className="flex w-[min(calc(392px*var(--ui-space-scale,1)),100%)] shrink-0 flex-col items-stretch gap-2.5 max-[992px]:w-full">
-                    {/* Ruled between the three readings: run together they are
-                      easy to misread as one number. */}
-                    {/* min-w-0 on each reading, or truncate cannot fire: a flex
-                      item defaults to min-width:auto and the longest locales
-                      would push past the block instead of ellipsizing. */}
-                    <div className="flex items-center justify-between gap-3 font-mono text-ui-11 tabular-nums text-muted-foreground">
-                      <span className="min-w-0 truncate">
-                        {t("settings.resources.gpu.used", { value: usedText })}
-                      </span>
-                      <span
-                        aria-hidden
-                        className="h-3 w-px shrink-0 bg-border"
-                      />
-                      <span className="min-w-0 truncate">
-                        {t("settings.resources.gpu.free", { value: freeText })}
-                      </span>
-                      <span
-                        aria-hidden
-                        className="h-3 w-px shrink-0 bg-border"
-                      />
-                      <span className="min-w-0 truncate">
-                        {t("settings.resources.gpu.total", {
-                          value: totalText,
-                        })}
-                      </span>
-                    </div>
-                    <Progress
-                      value={safePercent}
-                      aria-label={device.name ?? "GPU"}
-                      className="h-1.5 w-full rounded-full bg-muted dark:bg-[rgb(0_0_0_/_calc(0.4*var(--contrast-wash-gain,1)))]"
-                      indicatorClassName={usageIndicatorClass(safePercent)}
-                    />
-                  </div>
-                )}
               </div>
             );
           })
@@ -1127,8 +1167,8 @@ export function ResourcesTab() {
         <StorageOverview
           label={t("settings.resources.storage.systemDisk")}
           heading={t("settings.resources.storage.systemUsed", {
-            used: formatGb(metrics.diskUsed),
-            total: formatGb(metrics.diskTotal),
+            used: formatDiskSize(metrics.diskUsed),
+            total: formatDiskSize(metrics.diskTotal),
           })}
           action={
             <Button

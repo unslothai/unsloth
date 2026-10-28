@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Folders the installation owner moved a kind of file to (Settings > Library > Files on disk).
-
-Only the owner's folders move: a managed account keeps every file in its private workspace, so a
-choice is read in the owner context alone. Kept in the owner's app settings and cached, since the
-galleries resolve their folder on every file lookup.
-"""
+"""Owner-only folder moves per file kind; managed accounts keep files in their private workspace."""
 
 from __future__ import annotations
 

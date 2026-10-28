@@ -2315,7 +2315,7 @@ export const ja = {
         gpuUnusableDetail: "検出されましたが、PyTorch から利用できません",
         detailedView: "詳細表示",
         detailedViewDescription:
-          "フローティングウィンドウとここに、CPU 負荷と各 GPU の負荷、温度、消費電力を表示します。",
+          "フローティングウィンドウに、CPU 負荷と各 GPU の負荷、温度、消費電力を表示します。",
         cpuLoad: "CPU 負荷",
         gpuLoad: "GPU 負荷",
         temperature: "温度",
@@ -2349,6 +2349,10 @@ export const ja = {
         used: "{value} 使用中",
         free: "{value} 空き",
         total: "{value} 合計",
+        usedOf: "{total} 中 {used} 使用中",
+        segmentUsed: "GPU が使用中",
+        segmentSystem: "システムが使用中",
+        segmentAvailable: "使用可能",
       },
       llamaBackend: {
         title: "GGUF 推論エンジン",

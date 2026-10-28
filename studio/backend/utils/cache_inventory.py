@@ -1,24 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Size and empty the caches this install fills up, and nothing else.
-
-The API takes a KEY, never a path, and this module is the only thing that turns
-one into a directory, so "may this be deleted" is answered from the resolved
-directory rather than from what was asked for. The rules, in order:
-
-* The key is one of ``CACHE_DEFINITIONS``.
-* Its root is an absolute existing directory, at least two components below the
-  filesystem anchor, and neither a symlink nor a Windows junction.
-* It is not, and does not contain, anything in ``protected_paths()``.
-* It does not sit inside anything in ``protected_trees()``.
-* It does not contain another key's root whose own clear is narrower than
-  emptying it (``sheltered_roots``).
-* It is emptied, never removed, so nothing recreates it with the wrong
-  permissions.
-* A symlink inside it is unlinked rather than followed, and a directory whose
-  real path leaves it is skipped.
-"""
+"""Empties (never removes) only CACHE_DEFINITIONS roots, refusing protected paths, protected trees
+and symlink roots; symlinks inside are unlinked, never followed"""
 
 from __future__ import annotations
 
