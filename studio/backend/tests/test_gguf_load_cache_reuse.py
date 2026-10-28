@@ -684,7 +684,9 @@ class TestLoadReusesCachedCopy:
         backend._begin_load_warnings()
         assert backend.last_load_warning == "Q4_K_M was loaded instead."
 
-    def test_low_disk_fallback_load_records_the_served_variant(self, hf_cache, tmp_path):
+    def test_low_disk_fallback_load_records_the_served_variant(
+        self, hf_cache, tmp_path, monkeypatch
+    ):
         backend = LlamaCppBackend()
         served = tmp_path / "gemma-test-Q4_K_M.gguf"
         served.write_bytes(b"GGUF" + b"\0" * 4096)
@@ -695,6 +697,11 @@ class TestLoadReusesCachedCopy:
         backend._non_chat_gguf_refusal = lambda *_a, **_k: None
         backend._kill_process = lambda *_a, **_k: None
         backend._wait_for_health = lambda timeout = 600.0, interval = 0.5, cancelled = None: True
+        # On Apple Silicon the unified-memory planner adds an unmeasured-context notice for this
+        # header-only GGUF; keep the planner on the same path as every other host.
+        monkeypatch.setattr(
+            LlamaCppBackend, "_apple_metal_memory_budget_bytes", staticmethod(lambda: 0)
+        )
 
         def _start(cmd, env, **_kwargs):
             backend._process = Mock(pid = 424242, returncode = None)
