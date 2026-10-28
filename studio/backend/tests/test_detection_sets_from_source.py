@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The VLM / audio detection sets are read from transformers' registry source, so the first
-model check in a process that has not loaded torch does not import it. Same sets as the import."""
+"""Detection sets come from the registry source without importing torch, equal to the import."""
 
 from __future__ import annotations
 
@@ -40,7 +39,7 @@ def test_building_the_sets_does_not_import_torch_or_the_registry():
 
 
 def _forget_the_imported_registry(monkeypatch):
-    # Another test in this process may have imported the registry, which makes the build skip the source.
+    # An imported registry makes the build skip the source.
     monkeypatch.delitem(sys.modules, "transformers.models.auto.modeling_auto", raising = False)
 
 
@@ -57,7 +56,6 @@ def test_sets_from_source_equal_sets_from_the_import(monkeypatch):
     if mc._transformers_enables_torch():
         assert read and read[0] is not None
     else:
-        # No usable torch: the import path (the curated fallback when it fails) is the answer.
         assert read == []
     _forget_the_imported_registry(monkeypatch)
     monkeypatch.setattr(mc, "_mapping_names_from_source", lambda path: None)
@@ -104,8 +102,7 @@ def _torch_metadata(
     "condition", ["no torch", "USE_TORCH", "USE_TF", "torch below the floor", "no floor"]
 )
 def test_the_source_is_not_read_when_transformers_may_refuse_torch(monkeypatch, condition):
-    """Without torch, importing modeling_auto fails and the sets are the curated fallback
-    (Studio on Apple Silicon, CPU-only installs); the full registry read from source differs."""
+    """Without torch the import fails into the curated fallback, which the source would not match."""
     _torch_metadata(
         monkeypatch,
         found = condition != "no torch",
