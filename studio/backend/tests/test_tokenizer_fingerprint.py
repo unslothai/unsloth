@@ -166,7 +166,9 @@ def test_backend_truncation_does_not_move_the_hash_where_datasets_ignores_it(res
     import inspect
 
     if "no_truncation" not in inspect.getsource(restore_reducer):
-        pytest.skip("this datasets hashes the backend's truncation state itself")
+        pytest.skip(
+            reason = "datasets < 4.7 hashes the backend's truncation state in its own reducer"
+        )
     tokenizer_fingerprint.install_tokenizer_fingerprint()
     tok = _tokenizer()
     before = _hash(tok)
