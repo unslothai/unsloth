@@ -150,18 +150,22 @@ def test_dropping_a_stepper_frees_its_thread_before_the_idle_timeout():
     def workers():
         return [t for t in threading.enumerate() if t.name == "studio-gen-step"]
 
-    before = len(workers())
+    # By identity, not count: a worker woken by an earlier test may still be exiting.
+    before = set(workers())
+    started = []
 
     async def run():
         steppers = [ThreadStepper(iter(range(3))) for _ in range(32)]
         assert [await stepper.next(None) for stepper in steppers] == [0] * 32
-        assert len(workers()) >= before + 32
+        started.extend(t for t in workers() if t not in before)
+        assert len(started) == 32
         steppers.clear()
 
     asyncio.run(run())
     gc.collect()
     # _IDLE_EXIT_S is 30 s; a dropped stepper's worker is woken instead of left to wait it out.
     deadline = time.monotonic() + 5
-    while len(workers()) > before and time.monotonic() < deadline:
-        time.sleep(0.02)
-    assert len(workers()) <= before, len(workers())
+    for t in started:
+        t.join(max(0.0, deadline - time.monotonic()))
+    alive = [t for t in started if t.is_alive()]
+    assert not alive, len(alive)
