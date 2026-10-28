@@ -1,0 +1,132 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+"""Batched expert LoRA on a fused-experts MoE: each adapter's rows match a lone PEFT run of that adapter."""
+
+from __future__ import annotations
+
+import copy
+
+import pytest
+import torch
+import unsloth  # noqa: F401
+
+from unsloth.kernels import multi_lora as ml
+
+transformers = pytest.importorskip("transformers")
+peft = pytest.importorskip("peft")
+Qwen3_5Moe = getattr(transformers, "Qwen3_5MoeForConditionalGeneration", None)
+pytestmark = pytest.mark.skipif(Qwen3_5Moe is None, reason = "transformers has no Qwen3.5 MoE")
+
+REPO = "trl-internal-testing/tiny-Qwen3_5MoeForConditionalGeneration-3.6"
+DENSE = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+EXPERTS = ["mlp.experts.gate_up_proj", "mlp.experts.down_proj"]
+RANKS, ALPHAS = [2, 4, 3], [4.0, 8.0, 3.0]
+T = 6
+
+
+@pytest.fixture(scope = "module")
+def base():
+    from huggingface_hub import snapshot_download
+    path = snapshot_download(REPO)
+    return Qwen3_5Moe.from_pretrained(path, torch_dtype = torch.float32).eval()
+
+
+def _batched(base):
+    torch.manual_seed(0)
+    model = copy.deepcopy(base)
+    lm = model.model.language_model
+    ml.inject_multi_lora(lm, DENSE, 3, RANKS, ALPHAS)
+    wrapped = ml.inject_multi_lora_experts(lm, EXPERTS, 3, RANKS, ALPHAS)
+    with torch.no_grad():
+        # Non-zero B: with PEFT's zero init a wrong adapter would still give the base output.
+        for _, layer in ml._layers(model):
+            for B in layer.lora_B:
+                B.normal_(0, 0.5)
+    return model, wrapped
+
+
+def _lone(base, model, u):
+    """Adapter ``u`` exported, loaded into a plain PEFT model of the base, as a lone job would run it."""
+    cfg = peft.LoraConfig(
+        r = RANKS[u],
+        lora_alpha = ALPHAS[u],
+        target_modules = DENSE,
+        target_parameters = EXPERTS,
+        lora_dropout = 0.0,
+    )
+    lone = peft.get_peft_model(copy.deepcopy(base), cfg)
+    state = ml.adapter_state_dict(model, u)
+    result = peft.set_peft_model_state_dict(lone, state)
+    assert not result.unexpected_keys, result.unexpected_keys[:3]
+    assert not [k for k in result.missing_keys if "lora_" in k]
+    return lone
+
+
+def _ids():
+    return torch.randint(0, 100, (3, T), generator = torch.Generator().manual_seed(1))
+
+
+@pytest.mark.parametrize("mode", ["stash", "fold"])
+def test_each_adapter_matches_its_lone_peft_run(base, monkeypatch, mode):
+    if mode == "fold":
+        monkeypatch.setattr(ml, "_zoo_stash_read_store", lambda experts: None)
+    model, wrapped = _batched(base)
+    assert len(wrapped) == 2 * len(model.model.language_model.layers)
+    ids = _ids()
+    ml.set_multi_lora_batch(model, torch.tensor([0, 1, 2]), seq_len = T)
+    out = model(input_ids = ids, use_cache = False).logits
+    modes = {m.mode for m in model.modules() if isinstance(m, ml.MultiLoraExperts)}
+    assert modes == {mode}
+    for u in range(3):
+        lone = _lone(base, model, u)
+        ref = lone(input_ids = ids[u : u + 1], use_cache = False).logits[0]
+        moved = (ref - base(input_ids = ids[u : u + 1]).logits[0]).abs().max()
+        assert moved > 1e-3  # the adapter really changes the output
+        torch.testing.assert_close(out[u], ref, atol = 1e-5, rtol = 1e-4)
+
+
+def test_expert_grads_match_the_lone_run(base):
+    model, _ = _batched(base)
+    ids = _ids()
+    ml.set_multi_lora_batch(model, torch.tensor([0, 1, 2]), seq_len = T)
+    u = 1
+    model(input_ids = ids, use_cache = False).logits[u].pow(2).mean().backward()
+    lone = _lone(base, model, u)
+    lone(input_ids = ids[u : u + 1], use_cache = False).logits[0].pow(2).mean().backward()
+    layout = ml._peft_moe_lora_b_layout()
+    for name, experts in model.named_modules():
+        if not isinstance(experts, ml.MultiLoraExperts):
+            continue
+        depth = len(experts.parameter_names)
+        for i, param in enumerate(experts.parameter_names):
+            holder = lone.base_model.model.get_submodule(name)
+            for _ in range(depth - 1 - i):
+                holder = holder.base_layer
+            mine = experts.adapters[param]
+            gA, gB = mine.lora_A[u].grad, mine.lora_B[u].grad
+            flat = ml.MultiLoraExpertParam.peft_tensors
+            packed = type("G", (), {"lora_A": {u: gA}, "lora_B": {u: gB}})
+            exp_A, exp_B = flat(packed, u, layout)
+            torch.testing.assert_close(
+                exp_A, holder.lora_A["default"].weight.grad, atol = 1e-6, rtol = 1e-4
+            )
+            torch.testing.assert_close(
+                exp_B, holder.lora_B["default"].weight.grad, atol = 1e-6, rtol = 1e-4
+            )
+            other = experts.adapters[param].lora_A[0].grad
+            assert other is None or other.abs().max() == 0
+
+
+def test_another_adapter_cannot_move_a_row(base):
+    model, _ = _batched(base)
+    ids = _ids()
+    ml.set_multi_lora_batch(model, torch.tensor([0, 1, 2]), seq_len = T)
+    before = model(input_ids = ids, use_cache = False).logits.detach()
+    with torch.no_grad():
+        for _, layer in ml._layers(model):
+            layer.lora_A[0].mul_(3.0)
+            layer.lora_B[0].add_(1.0)
+    after = model(input_ids = ids, use_cache = False).logits.detach()
+    assert (after[0] - before[0]).abs().max() > 1e-3
+    torch.testing.assert_close(after[1:], before[1:], atol = 0, rtol = 0)
