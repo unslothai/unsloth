@@ -1055,73 +1055,88 @@ fn working_directory_reason() -> Option<String> {
     Some(context_reason(&error))
 }
 
-/// A `-h` probe started during app setup, so the first preflight does not wait for a Python start
-/// that could have overlapped the webview load.
-struct LaunchCliProbe {
+pub(super) struct LaunchCliProbe {
     bin: PathBuf,
     started: Instant,
     handle: tauri::async_runtime::JoinHandle<Result<bool, String>>,
 }
 
-static LAUNCH_CLI_PROBE: std::sync::Mutex<Option<LaunchCliProbe>> = std::sync::Mutex::new(None);
+type PendingLaunchCliProbe = tokio::sync::oneshot::Receiver<Option<LaunchCliProbe>>;
 
-/// Older than this, a launch answer no longer stands in for a fresh `-h`.
+/// Filled before the setup thread runs, so an early preflight still waits for its spawn.
+static LAUNCH_CLI_PROBE: std::sync::Mutex<Option<PendingLaunchCliProbe>> =
+    std::sync::Mutex::new(None);
+
 const LAUNCH_CLI_PROBE_MAX_AGE: Duration = Duration::from_secs(30);
 
-/// Start the managed CLI's `-h` probe now; the first preflight for the same CLI reuses a passing
-/// answer. Nothing else changes: no install, no context, or a failed probe leaves it to the
-/// preflight's own fresh `-h`. Returns at once: finding the CLI touches the disk, and the first
-/// use of the async runtime builds it, so both happen on a plain thread, not the main thread that
-/// is loading the webview.
+/// The first preflight for the same CLI reuses a passing `-h` from here. Off the main thread:
+/// finding the CLI touches the disk and the runtime's first use builds it.
 pub(crate) fn start_launch_cli_probe() {
+    let pending = begin_launch_cli_probe();
     let spawned = std::thread::Builder::new()
         .name("launch-cli-probe".to_string())
-        .spawn(|| {
-            let Some(bin) = crate::process::find_unsloth_binary() else {
-                return;
-            };
-            if crate::process::managed_cli_context_error().is_none() {
-                install_launch_cli_probe(bin);
-            }
+        .spawn(move || {
+            let probe = crate::process::find_unsloth_binary()
+                .filter(|_| crate::process::managed_cli_context_error().is_none())
+                .map(spawn_launch_cli_probe);
+            let _ = pending.send(probe);
         });
     if let Err(error) = spawned {
-        // The first preflight then runs `-h` itself, as it always did.
+        // The dropped sender makes the preflight run `-h` itself.
         warn!("Could not start the launch CLI probe: {error}");
     }
 }
 
-pub(super) fn install_launch_cli_probe(bin: PathBuf) {
+pub(super) fn begin_launch_cli_probe() -> tokio::sync::oneshot::Sender<Option<LaunchCliProbe>> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    if let Ok(mut slot) = LAUNCH_CLI_PROBE.lock() {
+        *slot = Some(receiver);
+    }
+    sender
+}
+
+fn spawn_launch_cli_probe(bin: PathBuf) -> LaunchCliProbe {
     let probe_bin = bin.clone();
     let handle =
         tauri::async_runtime::spawn(async move { run_cli_probe(&probe_bin, &["-h"]).await });
-    install_launch_cli_probe_task(bin, handle);
+    launch_cli_probe_task(bin, handle)
 }
 
+pub(super) fn launch_cli_probe_task(
+    bin: PathBuf,
+    handle: tauri::async_runtime::JoinHandle<Result<bool, String>>,
+) -> LaunchCliProbe {
+    LaunchCliProbe {
+        bin,
+        started: Instant::now(),
+        handle,
+    }
+}
+
+#[cfg(test)]
+pub(super) fn install_launch_cli_probe(bin: PathBuf) {
+    let _ = begin_launch_cli_probe().send(Some(spawn_launch_cli_probe(bin)));
+}
+
+#[cfg(test)]
 pub(super) fn install_launch_cli_probe_task(
     bin: PathBuf,
     handle: tauri::async_runtime::JoinHandle<Result<bool, String>>,
 ) {
-    let started = Instant::now();
-    if let Ok(mut slot) = LAUNCH_CLI_PROBE.lock() {
-        *slot = Some(LaunchCliProbe {
-            bin,
-            started,
-            handle,
-        });
-    }
+    let _ = begin_launch_cli_probe().send(Some(launch_cli_probe_task(bin, handle)));
 }
 
-/// `true` only for a passing launch `-h` on this CLI, taken once and recent; anything else is
-/// `false` and the caller runs `-h` itself.
-///
-/// A launch probe for any CLI is taken and awaited, not only this one's: its spawn holds the
-/// runtime launch guard, so a preflight spawning beside it would read the guard as busy.
+/// `true` only for a recent passing launch `-h` on this CLI, taken once. Any CLI's probe is
+/// awaited: its spawn holds the runtime launch guard, which a spawn beside it reads as busy.
 async fn launch_cli_probe_passed(bin: &Path) -> bool {
-    let probe = match LAUNCH_CLI_PROBE.lock() {
+    let pending = match LAUNCH_CLI_PROBE.lock() {
         Ok(mut slot) => slot.take(),
         Err(_) => None,
     };
-    let Some(probe) = probe else {
+    let Some(pending) = pending else {
+        return false;
+    };
+    let Ok(Some(probe)) = pending.await else {
         return false;
     };
     let passed = matches!(probe.handle.await, Ok(Ok(true)));
@@ -1164,10 +1179,8 @@ pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
         .as_ref()
         .is_some_and(|fingerprint| read_cached_capability(fingerprint).is_some());
 
-    // `-h` always decides first: a matching fingerprint does not prove the CLI still launches, and a
-    // CLI whose `-h` fails is unusable even if `desktop-capabilities` answers. A passing one from this
-    // launch counts; a failed one is asked again, so failures read as before. Awaited before any
-    // spawn below, which would otherwise find the runtime launch guard held by it.
+    // `-h` decides first: a fingerprint does not prove the CLI launches, and a failing `-h` wins over
+    // a capability answer. Awaited before any spawn below, which would find its guard held.
     let launch_help_passed = launch_cli_probe_passed(&bin).await;
     let help_probe = async {
         if launch_help_passed {
@@ -1177,8 +1190,7 @@ pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
         }
     };
 
-    // On a cache miss both Python starts overlap instead of running one after the other. Joined
-    // in this task, so the two spawns still take the runtime launch guard one at a time.
+    // A cache miss overlaps both Python starts; one task, so the spawns take the guard in turn.
     let (cli_probe, capability_probe) = if cache_hit {
         (help_probe.await, None)
     } else {

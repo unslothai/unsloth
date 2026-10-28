@@ -25,7 +25,10 @@ pub(crate) use version::{
 #[cfg(test)]
 use backend::{backend_desktop_auth_status, backend_health};
 #[cfg(test)]
-use managed::{install_launch_cli_probe, install_launch_cli_probe_task};
+use managed::{
+    begin_launch_cli_probe, install_launch_cli_probe, install_launch_cli_probe_task,
+    launch_cli_probe_task,
+};
 #[cfg(test)]
 use managed::probe_managed_bin;
 #[cfg(test)]
@@ -1069,14 +1072,14 @@ exit 1
             other => panic!("expected Stale, got {other:?}"),
         };
 
-        // `-h` fails while desktop-capabilities answers: still unusable, as when `-h` ran alone first.
+        // `-h` fails while desktop-capabilities answers: still unusable.
         fs::write(&modeh, "broken").unwrap();
         assert_eq!(
             reason_of(probe_managed_bin(bin.clone()).await),
             "cli_unusable"
         );
 
-        // That capability answer was not cached: once `-h` passes, the CLI is asked again.
+        // That answer was not cached.
         fs::remove_file(&modeh).unwrap();
         fs::write(&calls, "").unwrap();
         assert!(matches!(
@@ -1096,7 +1099,7 @@ exit 1
             "cli_unusable"
         );
 
-        // Only the capability probe fails: the same reason as before.
+        // Only the capability probe fails.
         fs::remove_file(&modeh).unwrap();
         assert_eq!(
             reason_of(probe_managed_bin(bin.clone()).await),
@@ -1134,28 +1137,26 @@ exit 1
         let bin = fake.bin.clone();
         let calls = bin.with_extension("calls");
         let modeh = bin.with_extension("modeh");
-        // Warm the capability cache so only `-h` is in play below.
         assert!(matches!(probe_managed_bin(bin.clone()).await, ManagedProbe::Ready { .. }));
 
-        // Launch probe passes: the preflight reuses it, so `-h` ran once in all.
+        // Reused once: `-h` ran once in all, and a Retry asks again.
         fs::write(&calls, "").unwrap();
         install_launch_cli_probe(bin.clone());
         assert!(matches!(probe_managed_bin(bin.clone()).await, ManagedProbe::Ready { .. }));
         assert_eq!(fs::read_to_string(&calls).unwrap(), "-h\n");
 
-        // Taken once: the next preflight (a Retry) asks the CLI itself.
         fs::write(&calls, "").unwrap();
         assert!(matches!(probe_managed_bin(bin.clone()).await, ManagedProbe::Ready { .. }));
         assert_eq!(fs::read_to_string(&calls).unwrap(), "-h\n");
 
-        // A failed launch probe is not trusted either way: the preflight asks again and decides.
+        // A failed launch probe is asked again.
         fs::write(&modeh, "broken").unwrap();
         fs::write(&calls, "").unwrap();
         install_launch_cli_probe(bin.clone());
         assert!(matches!(probe_managed_bin(bin.clone()).await, ManagedProbe::Stale { .. }));
         assert_eq!(fs::read_to_string(&calls).unwrap(), "-h\n-h\n");
 
-        // A launch probe of another CLI is left alone and does not answer for this one.
+        // Another CLI's probe does not answer for this one.
         fs::remove_file(&modeh).unwrap();
         let other = fake_cli("launch-help-other", "#!/bin/sh\nexit 0\n");
         install_launch_cli_probe(other.bin.clone());
@@ -1186,8 +1187,7 @@ exit 1
         );
         let other = fake_cli("launch-guard-other", "#!/bin/sh\nexit 0\n");
 
-        // A launch probe (here for another CLI) is mid-spawn, holding the guard, when the
-        // preflight starts: the preflight waits for it instead of reading the guard as busy.
+        // A launch probe mid-spawn holds the guard: the preflight waits instead of reading busy.
         let (acquired_tx, acquired_rx) = tokio::sync::oneshot::channel();
         let handle = tauri::async_runtime::spawn_blocking(move || {
             crate::process::with_studio_runtime_launch_guard(|| {
@@ -1198,6 +1198,30 @@ exit 1
         });
         acquired_rx.await.unwrap();
         install_launch_cli_probe_task(other.bin.clone(), handle);
+        match probe_managed_bin(fake.bin.clone()).await {
+            ManagedProbe::Ready { .. } => {}
+            other => panic!("expected Ready, got {other:?}"),
+        }
+
+        // Same, while the setup thread has not handed its probe over yet.
+        let pending = begin_launch_cli_probe();
+        let (acquired_tx, acquired_rx) = tokio::sync::oneshot::channel();
+        let other_bin = other.bin.clone();
+        std::thread::spawn(move || {
+            let (held_tx, held_rx) = std::sync::mpsc::channel();
+            let handle = tauri::async_runtime::spawn_blocking(move || {
+                crate::process::with_studio_runtime_launch_guard(|| {
+                    let _ = held_tx.send(());
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    Ok(true)
+                })
+            });
+            held_rx.recv().unwrap();
+            let _ = acquired_tx.send(());
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let _ = pending.send(Some(launch_cli_probe_task(other_bin, handle)));
+        });
+        acquired_rx.await.unwrap();
         match probe_managed_bin(fake.bin.clone()).await {
             ManagedProbe::Ready { .. } => {}
             other => panic!("expected Ready, got {other:?}"),
