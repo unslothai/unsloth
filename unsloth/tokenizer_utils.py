@@ -1071,7 +1071,6 @@ def _load_correct_tokenizer(
                 config,
                 **_repair_kwargs,
             )
-        pass
     else:
         return _apply_post_load_tokenizer_fixes(
             fast_tokenizer, fix_tokenizer, config, **_repair_kwargs

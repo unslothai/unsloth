@@ -1654,7 +1654,6 @@ def _get_new_mapper():
                         table[ast.literal_eval(target.slice)] = ast.literal_eval(node.value)
                     except ValueError:
                         continue
-                pass
             elif isinstance(node, ast.Delete):
                 for target in node.targets:
                     if isinstance(target, ast.Name):
