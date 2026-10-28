@@ -231,3 +231,19 @@ def test_messages_route_honours_the_server_overflow_default(monkeypatch, stream)
     assert len(bodies[1]["messages"]) < len(bodies[0]["messages"])
     assert "exceeds the available context size" not in text
     assert "hi" in text
+
+
+@pytest.mark.parametrize("policy", [None, "truncate_middle"])
+def test_only_truncate_oldest_pays_for_the_cut_replay(monkeypatch, policy):
+    def _no_hop(*_args, **_kwargs):
+        raise AssertionError("no thread hop without a policy that remembers cuts")
+
+    monkeypatch.setattr(inf_mod.asyncio, "to_thread", _no_hop)
+    body = {"messages": _history()}
+
+    assert asyncio.run(inf_mod._prepare_passthrough_cut(_Backend(), body, policy)) == (
+        None,
+        None,
+        0,
+    )
+    assert body["messages"] == _history()

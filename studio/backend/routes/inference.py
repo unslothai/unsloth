@@ -1168,6 +1168,20 @@ def _remember_passthrough_cut(
     prefix_boundary.remember(original, body.get("messages") or [], dropped, scope)
 
 
+async def _prepare_passthrough_cut(llama_backend, body: dict, policy: Optional[str]):
+    """(uncut messages, cut scope, messages a remembered cut dropped). Only truncate_oldest
+    remembers cuts, so every other policy skips the copy, the scope and the thread hop."""
+    if policy != "truncate_oldest":
+        return None, None, 0
+    uncut = list(body.get("messages") or [])
+    scope = _passthrough_cut_scope(llama_backend, body)
+    # Off the event loop: the history can hold megabytes of images.
+    dropped = await asyncio.to_thread(
+        _replay_passthrough_cut, body, policy, getattr(llama_backend, "context_length", None), scope
+    )
+    return uncut, scope, dropped
+
+
 def _anthropic_stream_error_event(exc, *, force: bool = False):
     """Return an Anthropic in-band stream error event when one is useful."""
     # Flag failed even when returning None: middleware must not claim a preview-owned model.
@@ -44413,9 +44427,6 @@ async def _anthropic_passthrough_stream(
         disconnect_watcher = None
         # Resolved by the route from the request field or UNSLOTH_CONTEXT_OVERFLOW; None keeps the 400.
         _truncate_budget = _OVERFLOW_TRUNCATE_MAX_RETRIES if context_overflow else 0
-        _cut_scope = _passthrough_cut_scope(llama_backend, body)
-        _uncut_messages = list(body.get("messages") or [])
-        _truncated_messages = 0
 
         def _apply_passthrough_truncation(err_text: str) -> bool:
             nonlocal _truncated_messages
@@ -44430,14 +44441,9 @@ async def _anthropic_passthrough_stream(
 
         try:
             # Inside the try so a disconnect during the replay still releases the tracker.
-            if context_overflow:
-                _truncated_messages = await asyncio.to_thread(
-                    _replay_passthrough_cut,
-                    body,
-                    context_overflow,
-                    getattr(llama_backend, "context_length", None),
-                    _cut_scope,
-                )
+            _uncut_messages, _cut_scope, _truncated_messages = await _prepare_passthrough_cut(
+                llama_backend, body, context_overflow
+            )
             upstream = _LlamaUpstream(llama_backend, "/v1/chat/completions")
             while True:
                 async with aclosing(
@@ -44739,17 +44745,9 @@ async def _anthropic_passthrough_non_streaming(
         llama_backend, "/v1/chat/completions", cancel_event = cancel_event, request = request
     ) as upstream:
         _truncate_budget = _OVERFLOW_TRUNCATE_MAX_RETRIES if context_overflow else 0
-        _cut_scope = _passthrough_cut_scope(llama_backend, body)
-        _uncut_messages = list(body.get("messages") or [])
-        _truncated_messages = 0
-        if context_overflow:
-            _truncated_messages = await asyncio.to_thread(
-                _replay_passthrough_cut,
-                body,
-                context_overflow,
-                getattr(llama_backend, "context_length", None),
-                _cut_scope,
-            )
+        _uncut_messages, _cut_scope, _truncated_messages = await _prepare_passthrough_cut(
+            llama_backend, body, context_overflow
+        )
         resp = await upstream.post(body, timeout = _timeout)
         # Opt-in overflow policy, as on /v1/chat/completions: shrink and retry instead of a 400.
         while (
@@ -45574,15 +45572,8 @@ async def _openai_passthrough_stream_admitted(
         client = _llama_stream_client()
         _truncate_policy = _overflow_truncation_policy(payload)
         _truncate_budget = _OVERFLOW_TRUNCATE_MAX_RETRIES if _truncate_policy else 0
-        _uncut_messages = list(body.get("messages") or [])
-        # Off the event loop: the history can hold megabytes of images.
-        _cut_scope = _passthrough_cut_scope(llama_backend, body)
-        _truncated_messages = await asyncio.to_thread(
-            _replay_passthrough_cut,
-            body,
-            _truncate_policy,
-            getattr(llama_backend, "context_length", None),
-            _cut_scope,
+        _uncut_messages, _cut_scope, _truncated_messages = await _prepare_passthrough_cut(
+            llama_backend, body, _truncate_policy
         )
         _context_was_truncated = _truncated_messages > 0
 
@@ -46343,15 +46334,8 @@ async def _openai_passthrough_non_streaming_upstream(
 
     _truncate_policy = _overflow_truncation_policy(payload)
     _truncate_budget = _OVERFLOW_TRUNCATE_MAX_RETRIES if _truncate_policy else 0
-    _uncut_messages = list(body.get("messages") or [])
-    # Off the event loop: the history can hold megabytes of images.
-    _cut_scope = _passthrough_cut_scope(llama_backend, body)
-    _truncated_messages = await asyncio.to_thread(
-        _replay_passthrough_cut,
-        body,
-        _truncate_policy,
-        getattr(llama_backend, "context_length", None),
-        _cut_scope,
+    _uncut_messages, _cut_scope, _truncated_messages = await _prepare_passthrough_cut(
+        llama_backend, body, _truncate_policy
     )
     _context_was_truncated = _truncated_messages > 0
 
