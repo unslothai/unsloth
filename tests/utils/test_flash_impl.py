@@ -864,7 +864,6 @@ def test_explicit_fallback_warns_once_through_trainer_setup(fake, monkeypatch, c
     warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
     if value == "auto":
         assert warnings == []
-        # No registry: auto never wraps train().
         assert ("train" in vars(trainer)) == (case == "device")
     else:
         assert warnings == [f"Unsloth: {fi._ENV}={value} not used: {reason}"]

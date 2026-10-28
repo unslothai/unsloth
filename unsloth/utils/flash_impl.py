@@ -554,7 +554,7 @@ def scope_flash_attention_impl_to_train(
     if trainer is None or getattr(trainer, "_unsloth_flash_impl_wrapped", False):
         return
     requested = _requested()
-    # An explicit fa3 / fa4 request is still wrapped without a registry, so train() reports the fallback.
+    # Explicit fa3 / fa4 still wraps without a registry so train() reports the fallback.
     if requested is None or (requested == "auto" and _registry() is None):
         return
     original = getattr(trainer, "train", None)
