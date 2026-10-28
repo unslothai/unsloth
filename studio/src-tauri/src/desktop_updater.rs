@@ -37,12 +37,7 @@ const DOWNLOAD_EVENT_STEP: u64 = 512 * 1024;
 const BUNDLE_FILE: &str = ".desktop-update-bundle";
 const BUNDLE_METADATA_FILE: &str = ".desktop-update-bundle.json";
 
-/// The prepared bundle lives on disk, not in this struct.
-///
-/// Preparation finishes long before the user restarts, and the whole point of the
-/// flow is that they keep training or generating in the meantime. A platform
-/// installer held in memory for that entire window is resident memory taken from
-/// exactly the workloads the background update exists to avoid interrupting.
+/// The prepared bundle lives on disk, not here, so it does not hold memory until restart.
 #[derive(Default)]
 pub(crate) struct DesktopUpdate {
     update: Option<Update>,
@@ -188,15 +183,10 @@ pub(crate) struct DesktopUpdateBundleStatus {
     downloading: bool,
 }
 
-/// Re-arm crash cleanup when the installer never took over.
-///
-/// `on_before_exit` clears kill-on-close assuming the installer is about to
-/// replace this process; a failed or cancelled install leaves the app running
-/// with no reaper for its children.
+/// Re-arm crash cleanup when the installer never took over; `on_before_exit` cleared kill-on-close.
 #[tauri::command]
 pub(crate) async fn resume_desktop_update_cleanup() -> Result<(), String> {
-    // Both halves of what the pre-exit hook consumed: the exit guard it spent, so a
-    // retry actually reaps the backend again, and kill-on-close itself.
+    // Restore the spent exit guard and kill-on-close, so a retry reaps the backend again.
     crate::reset_termination_cleanup();
     #[cfg(windows)]
     {
@@ -205,7 +195,6 @@ pub(crate) async fn resume_desktop_update_cleanup() -> Result<(), String> {
     Ok(())
 }
 
-/// Whether crash cleanup is armed right now, for a UI that has just remounted.
 #[tauri::command]
 pub(crate) async fn desktop_update_cleanup_armed() -> Result<bool, String> {
     #[cfg(windows)]
@@ -323,7 +312,7 @@ pub(crate) async fn download_desktop_update(
     match result {
         Ok(bytes) => {
             if guard.update.as_ref().map(|u| u.version.as_str()) != Some(update.version.as_str()) {
-                // A newer check landed mid-download; these bytes are already stale.
+                // A newer check landed mid-download; these bytes are stale.
                 return Ok(());
             }
             let path = bundle_path();
@@ -349,8 +338,6 @@ pub(crate) async fn install_desktop_update(
         };
         (update, path)
     };
-    // Read back only for the install itself, so the bytes are resident for the
-    // seconds it takes rather than for the whole session.
     let metadata = bundle_metadata_path();
     let bundle = match read_prepared_bundle(&path, &metadata, &update.version) {
         Ok(bundle) => bundle,

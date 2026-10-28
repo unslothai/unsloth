@@ -3,7 +3,7 @@
 
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
+import { InfoHint } from "@/components/ui/info-hint";
 import {
   nativeAttachmentIntentToFile,
   registerNativeAttachmentPath,
@@ -13,11 +13,11 @@ import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
   Cancel01Icon,
-  Mic01Icon,
   PlusSignIcon,
-  StopIcon,
 } from "@hugeicons/core-free-icons";
+import { StopIcon } from "@/lib/media-control-icons";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
+import { MicIcon } from "@/lib/mic-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ReactNode,
@@ -46,7 +46,6 @@ import { VoicePicker } from "./voice-picker";
 import { Waveform } from "./waveform";
 import { formatSeconds } from "./waveform-peaks";
 
-/** The gallery clips an input card offers under From history. Provided by the page. */
 const AudioHistoryContext = createContext<readonly AudioGalleryClip[]>([]);
 export const AudioHistoryProvider = AudioHistoryContext.Provider;
 // False while the persistently mounted Audio page is hidden, so no card keeps the mic.
@@ -75,6 +74,55 @@ export interface AudioSourceInputHandle {
   focus: () => void;
   browse: () => void;
   markExpired: () => void;
+}
+
+/** The Library header's tabs, flat: no track, a grey pill for the active one. */
+function SourceTabs({
+  tabs,
+  value,
+  onValueChange,
+  ariaLabel,
+  disabled,
+}: {
+  tabs: { value: string; label: string }[];
+  value: string;
+  onValueChange: (value: SourceTab) => void;
+  ariaLabel: string;
+  disabled: boolean;
+}) {
+  return (
+    <div role="tablist" aria-label={ariaLabel} className="flex flex-wrap gap-1">
+      {tabs.map((tab, index) => (
+        <button
+          key={tab.value}
+          type="button"
+          role="tab"
+          aria-selected={value === tab.value}
+          tabIndex={value === tab.value ? 0 : -1}
+          disabled={disabled}
+          onKeyDown={(event) => {
+            if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+            event.preventDefault();
+            const step = event.key === "ArrowRight" ? 1 : -1;
+            const next = (index + step + tabs.length) % tabs.length;
+            onValueChange(tabs[next].value as SourceTab);
+            event.currentTarget.parentElement
+              ?.querySelectorAll<HTMLElement>('button[role="tab"]')
+              .item(next)
+              ?.focus();
+          }}
+          onClick={() => onValueChange(tab.value as SourceTab)}
+          className={cn(
+            "flex h-7 shrink-0 items-center rounded-full px-2.5 text-ui-12p5 text-foreground/80 transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50",
+            value === tab.value &&
+              "bg-[color-mix(in_srgb,var(--foreground)_7%,var(--background))] font-medium text-foreground dark:bg-[color-mix(in_srgb,var(--card),white_8%)]",
+          )}
+        >
+          {tab.label}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 function AlertLine({ children }: { children: ReactNode }) {
@@ -122,7 +170,6 @@ export function AudioSourceInput({
   onStatusChange?: (status: AudioSourceStatus) => void;
   renderWaveform?: (preview: AudioSourcePreviewView) => ReactNode;
   maxRecordSeconds?: number;
-  /** The card's copy defaults to a clone reference; other pages pass their own. */
   expiredMessage?: string;
   usesFirstSeconds?: number | null;
   recordHint?: string;
@@ -214,19 +261,17 @@ export function AudioSourceInput({
         const file = event.dataTransfer.files?.[0];
         if (file) void source.pickFile(file);
       }}
-      className={cn(
-        "corner-squircle grid gap-3 rounded-2xl bg-card p-4 ring-1 outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-ring",
-        dragging
-          ? "bg-accent ring-[color-mix(in_oklab,var(--foreground)_calc(40%*var(--contrast-edge-gain,1)),transparent)]"
-          : "ring-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)]",
-      )}
+      className="grid gap-2.5 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <div className="flex items-center justify-between gap-2">
-        <span
-          id={`${id}-label`}
-          className="text-ui-13 font-medium text-foreground"
-        >
-          {label}
+        <span className="flex items-center gap-1">
+          <span
+            id={`${id}-label`}
+            className="text-ui-13 font-medium text-foreground"
+          >
+            {label}
+          </span>
+          {hint ? <InfoHint>{hint}</InfoHint> : null}
         </span>
         {showSelected ? (
           <Button
@@ -373,14 +418,11 @@ export function AudioSourceInput({
             </div>
           ) : null}
           {tabs.length > 1 ? (
-            <PillTabs
+            <SourceTabs
               ariaLabel={`${label} source`}
               value={recording ? "record" : tab}
-              onValueChange={(next) => setTab(next as SourceTab)}
+              onValueChange={setTab}
               disabled={disabled || recording}
-              fit={true}
-              compact={true}
-              className="[&>button]:px-3"
               tabs={tabs}
             />
           ) : null}
@@ -389,11 +431,14 @@ export function AudioSourceInput({
               type="button"
               disabled={disabled}
               onClick={() => fileRef.current?.click()}
-              className="flex min-h-[calc(88px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-1 rounded-md border border-dashed border-border px-3 text-ui-12 text-muted-foreground transition-colors hover:border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className={cn(
+                "flex min-h-[calc(72px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-border px-3 text-ui-12 text-muted-foreground transition-colors hover:border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                dragging &&
+                  "border-[color-mix(in_oklab,var(--foreground)_calc(40%*var(--contrast-edge-gain,1)),transparent)] bg-accent text-foreground",
+              )}
             >
               <HugeiconsIcon icon={PlusSignIcon} className="size-5" />
-              <span>Drop an audio file here, or choose one</span>
-              {hint ? <span className="text-ui-11p5">{hint}</span> : null}
+              <span>Drop audio or choose a file</span>
             </button>
           ) : null}
           {tab === "record" || recording ? (
@@ -408,10 +453,11 @@ export function AudioSourceInput({
                     : void source.startRecording()
                 }
               >
-                <HugeiconsIcon
-                  icon={recording ? StopIcon : Mic01Icon}
-                  className="size-4"
-                />
+                {recording ? (
+                  <HugeiconsIcon icon={StopIcon} className="size-4" />
+                ) : (
+                  <MicIcon className="size-4" />
+                )}
                 {recording ? "Stop" : "Record"}
               </Button>
               <output

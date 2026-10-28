@@ -33,10 +33,11 @@ _UPLOAD_BUFFERS = 16
 _UPLOAD_MIN_TENSOR_BYTES = 1 << 20
 _UPLOAD_MIN_TOTAL_BYTES = 256 << 20
 
-# variant=None: from_pretrained never opens *.fp16.safetensors-style twins.
+# variant=None: from_pretrained never opens *.fp16.safetensors-style twins; variant="fp16" opens only those.
 _DEFAULT_WEIGHT_RE = re.compile(
     r"^(?:diffusion_pytorch_model|model)(?:-\d{5}-of-\d{5})?\.safetensors$"
 )
+_FP16_WEIGHT_RE = re.compile(r"^(?:diffusion_pytorch_model|model)\.fp16\.safetensors$")
 _DENOISER_COMPONENTS = ("transformer", "unet")
 
 
@@ -115,10 +116,7 @@ def start_prefetch(
     threads: int = _PREFETCH_THREADS,
     min_bytes: int = _PREFETCH_MIN_BYTES,
 ) -> Optional[LoadPrefetch]:
-    """Read the uncached parts of ``paths`` into the page cache on worker threads, in the given order.
-
-    None when switched off, when nothing needs it, or when the uncached bytes exceed half the available
-    host RAM (the reads would evict what the load itself needs). Never raises."""
+    """Prefetches uncached paths in order, skipping when uncached bytes exceed half of host RAM; never raises."""
     if not prefetch_enabled():
         return None
     try:
@@ -237,9 +235,11 @@ def pipeline_component_files(
     *,
     skip_denoiser: bool,
     skip_components: Iterable[str] = (),
+    variant: Optional[str] = None,
 ) -> list[str]:
     """The weight files ``from_pretrained`` reads from a local diffusers snapshot: every component
-    ``model_index.json`` names, text encoders first, then the VAE, then the denoiser. Cache only."""
+    ``model_index.json`` names, text encoders first, then the VAE, then the denoiser. Cache only.
+    ``variant="fp16"`` names the ``.fp16`` twins instead."""
     if not snapshot:
         return []
     try:
@@ -277,8 +277,9 @@ def pipeline_component_files(
             entries = sorted(os.listdir(folder))
         except OSError:
             continue
+        pattern = _FP16_WEIGHT_RE if variant == "fp16" else _DEFAULT_WEIGHT_RE
         for entry in entries:
-            if _DEFAULT_WEIGHT_RE.match(entry):
+            if pattern.match(entry):
                 path = os.path.join(folder, entry)
                 if os.path.isfile(path):
                     files.append(path)
@@ -307,6 +308,7 @@ def start_load_prefetch(
     text_encoders_replaced: Iterable[str] = (),
     cache_dir: Optional[str] = None,
     logger: Any = None,
+    variant: Optional[str] = None,
 ) -> Optional[LoadPrefetch]:
     """Prefetch what a diffusers pipeline load of ``base`` will read. Never raises."""
     if not prefetch_enabled():
@@ -339,6 +341,7 @@ def start_load_prefetch(
             _snapshot_dir(base, base_local_dir, cache_dir),
             skip_denoiser = seeded,
             skip_components = text_encoders_replaced,
+            variant = variant,
         )
         return start_prefetch(paths, logger = logger)
     except Exception as exc:  # noqa: BLE001 - a prefetch is only a hint
@@ -515,18 +518,17 @@ def fast_upload(
     *,
     logger: Any = None,
 ) -> Iterator[int]:
-    """Inside the block, ``Tensor.to(device)`` on the modules' plain CPU tensors returns a ring-uploaded copy.
-
-    Wrap the existing placement call (``module.to(device)`` / ``pipe.to(device)``): it still decides
-    what moves and how parameters are re-wrapped; only the bytes arrive faster. Yields how many tensors
-    were staged (0 = the block runs exactly as without this wrapper)."""
+    """Inside the block, Tensor.to from CPU goes through a ring upload; placement itself is unchanged."""
     staged: dict[int, tuple[Any, Any]] = {}
     mode = None
     try:
         if fast_upload_enabled():
             import torch
+            from .host_pinning import host_pinning_allowed
+
             target = torch.device(device)
-            if target.type == "cuda" and torch.cuda.is_available():
+            # The ring is pinned memory: an integrated GPU takes the stock ``.to`` instead.
+            if target.type == "cuda" and torch.cuda.is_available() and host_pinning_allowed(target):
                 if target.index is None:
                     target = torch.device("cuda", torch.cuda.current_device())
                 sources = _upload_candidates(modules, target)

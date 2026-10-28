@@ -190,10 +190,15 @@ test("a rejected tool change resyncs and shows the error in the dialog", () => {
   assert.match(TOOLS, /text-xs leading-snug text-destructive/);
 });
 
-test("the API tab row shows the status as text and jumps to the card on Agents", () => {
+test("the API tab row matches the keyless link beside it, shows the status as text and jumps to the card on Agents", () => {
   assert.match(ROW, /t\("settings\.mcp\.status\.on"\)/);
   assert.match(ROW, /t\("settings\.mcp\.status\.off"\)/);
-  assert.match(ROW, /<SettingsSection title=\{t\("settings\.apiKeys\.mcp\.title"\)\}>/);
+  assert.match(ROW, /label=\{t\("settings\.apiKeys\.mcp\.title"\)\}/);
+  assert.doesNotMatch(ROW, /SettingsSection/);
+  assert.match(
+    ROW,
+    /className="inline-flex items-center gap-1 rounded-full px-1\.5 py-0\.5 text-ui-11 font-medium text-muted-foreground/,
+  );
   assert.match(ROW, /openDialog\("agents", \{ scrollTarget: "agents-mcp" \}\)/);
   assert.match(STORE, /"agents-mcp": "agents",/);
   assert.match(SECTION, /scrollTarget !== "agents-mcp" \|\| !loaded/);

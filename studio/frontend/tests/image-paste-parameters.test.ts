@@ -107,8 +107,9 @@ test("Clip skip, CFG rescale and variation seed are named as not applied; hires 
     "CFG rescale 0.7",
     "variation seed 99 (strength 0.3)",
     "VAE: sdxl_vae.safetensors",
-    "ADetailer model: face_yolov8n.pt",
   ]);
+  // ADetailer's keys restore Studio's Detailer instead of being named as not applied.
+  assert.equal((r.detailer as { model?: string } | undefined)?.model, "face_yolov8n.pt");
   assert.deepEqual(unknownRecipeKeys(r), []);
   for (const label of [
     "RescaleCFG: 0.5",

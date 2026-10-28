@@ -3,8 +3,7 @@
 
 import type { IconSvgElement } from "@hugeicons/react";
 
-// Standard chevrons: straight-line shapes shared across dropdown triggers and
-// submenu arrows so every menu indicator matches the composer's menus.
+// Shared so every menu indicator matches the composer's menus.
 export const ChevronDownStandardIcon: IconSvgElement = [
   [
     "path",
@@ -61,7 +60,6 @@ export const ChevronLeftStandardIcon: IconSvgElement = [
   ],
 ];
 
-// Two stacked down chevrons, for "jump to the end" controls.
 export const ChevronDownDoubleStandardIcon: IconSvgElement = [
   [
     "path",
@@ -87,9 +85,7 @@ export const ChevronDownDoubleStandardIcon: IconSvgElement = [
   ],
 ];
 
-// A submenu arrow drawn against the right of its box, its tip as far from that edge as a
-// leading icon's stroke is from the left (x=2 less half a stroke). Set flush on a row's right
-// padding, the arrow and the row's icon then sit level, at any icon size.
+// Tip inset like a leading icon's stroke, so arrow and row icon sit level at any size.
 export const MenuChevronRightIcon: IconSvgElement = [
   [
     "path",

@@ -29,6 +29,8 @@ import {
 // showInlineEditResponse: on keeps Edit response in each response's action bar instead of its
 // More menu. notifyWhenReplyFinishes: on sends a system notification when a reply ends while the
 // window is hidden or unfocused. showReplyTimes: on shows when each reply finished under it.
+// showGenerationDetails: on shows live prefill / decode figures while a reply streams and where
+// a local model's layers ended up after it loads.
 // filesPanelCollapsed: on shrinks Chat with files to a header and
 // a row of pills.
 export interface ChatPreferencesState {
@@ -50,6 +52,8 @@ export interface ChatPreferencesState {
   setShowResponseModel: (value: boolean) => void;
   showReplyTimes: boolean;
   setShowReplyTimes: (value: boolean) => void;
+  showGenerationDetails: boolean;
+  setShowGenerationDetails: (value: boolean) => void;
   showInlineEditResponse: boolean;
   setShowInlineEditResponse: (value: boolean) => void;
   thinkingVisibility: DisplayVisibility;
@@ -91,7 +95,6 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       confirmDeleteChats: true,
       setConfirmDeleteChats: (confirmDeleteChats) =>
         set({ confirmDeleteChats }),
-      // Off by default: deleting files is the destructive half, so it stays opt in.
       alwaysDeleteChatFiles: false,
       setAlwaysDeleteChatFiles: (alwaysDeleteChatFiles) =>
         set({ alwaysDeleteChatFiles }),
@@ -103,6 +106,10 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       // Off by default: it adds text under every reply, so it stays opt in.
       showReplyTimes: false,
       setShowReplyTimes: (showReplyTimes) => set({ showReplyTimes }),
+      // Off by default: it adds a line of numbers under streaming replies, so it stays opt in.
+      showGenerationDetails: false,
+      setShowGenerationDetails: (showGenerationDetails) =>
+        set({ showGenerationDetails }),
       showInlineEditResponse: true,
       setShowInlineEditResponse: (showInlineEditResponse) =>
         set({ showInlineEditResponse }),
@@ -111,7 +118,6 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
         set({ thinkingVisibility }),
       toolVisibility: DEFAULT_TOOL_VISIBILITY,
       setToolVisibility: (toolVisibility) => set({ toolVisibility }),
-      // Off by default: it hides rows the thread shows today, so it stays opt in.
       foldToolActivityIntoThinking: false,
       setFoldToolActivityIntoThinking: (foldToolActivityIntoThinking) =>
         set({ foldToolActivityIntoThinking }),
@@ -142,7 +148,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           : persisted,
       merge: (persisted, current) => {
         const saved = persisted as Partial<ChatPreferencesState> | undefined;
-        // Records written before the three-state settings carry the two booleans instead.
+        // Records written before the three-state settings carry two booleans instead.
         const legacy = persisted as
           | {
               collapseThinkingByDefault?: unknown;
@@ -157,6 +163,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           showModelDisclaimer: saved?.showModelDisclaimer ?? false,
           showResponseModel: saved?.showResponseModel ?? false,
           showReplyTimes: saved?.showReplyTimes === true,
+          showGenerationDetails: saved?.showGenerationDetails === true,
           showInlineEditResponse: saved?.showInlineEditResponse ?? true,
           thinkingVisibility: migrateVisibility(
             saved?.thinkingVisibility,

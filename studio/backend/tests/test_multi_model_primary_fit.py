@@ -388,6 +388,39 @@ def test_a_serving_primary_reloaded_under_always_is_not_torn_down_for_a_refusal(
         inf._primary_can_retry_fit.reset(token)
 
 
+def test_always_loads_a_primary_that_spills_to_host_ram_without_refusing(env):
+    env.policy = "always"
+    env.errors = [GpuMemoryShortError("spills", host = True)]
+    response, _ = _gated()
+    assert response.status == "loaded" and env.requests[-1].force_alongside
+    assert env.free_calls == []
+    _nothing_unloaded(env)
+
+
+@pytest.mark.parametrize(
+    ("policy", "kept_on", "placement", "expected"),
+    [
+        ("fit", {0: 6000}, _placement([0]), True),
+        ("fit", {0: 6000}, _placement(None), True),
+        ("fit", {1: 6000}, _placement([0]), False),
+        ("fit", None, _placement([0]), False),
+        ("always", {0: 6000}, _placement([0]), False),
+    ],
+)
+def test_a_primary_reload_under_fit_refuses_a_partial_fit_beside_an_idle_kept_chat_model(
+    monkeypatch, policy, kept_on, placement, expected
+):
+    monkeypatch.setattr(gpu_residency, "media_held_mib", lambda: {})
+    kept = model_slots.ExtraSlot(FakeLlama("org/B-GGUF"), FakeOrchestrator(), "owner")
+    kept.llama._planned_vram_mib = kept_on or {}
+    monkeypatch.setattr(model_slots, "slots", [kept] if kept_on else [])
+    token = inf._primary_can_retry_fit.set(True)
+    try:
+        assert inf._primary_refuses_partial_fit(True, policy, placement) is expected
+    finally:
+        inf._primary_can_retry_fit.reset(token)
+
+
 def test_an_extra_chat_load_frees_an_idle_image_before_replacing_the_primary(env, monkeypatch):
     # Chat A + an idle image under When they fit: chat B loaded alongside comes up short. The image goes and B
     # loads beside A, instead of A being unloaded (and the image after it, by the replacement primary load).

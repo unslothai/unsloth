@@ -1263,9 +1263,12 @@ def test_a_second_load_does_not_hand_back_the_resident_path(monkeypatch):
             **{"loaded": True, "repo_id": resident, "model_path": resident}
         )
 
-    class _Request:
-        model_path = "ref:whatever"
-        base_repo = None
+    # The real request model, unvalidated: every field the route reads keeps its default
+    # (load_token, expected_load_id, ...), so a field the route starts reading cannot break this.
+    from models.inference import DiffusionLoadRequest
+
+    def _Request():
+        return DiffusionLoadRequest.model_construct(model_path = "ref:whatever", base_repo = None)
 
     monkeypatch.setattr(inference_routes, "load_diffusion_model_gated", _gated)
 

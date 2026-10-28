@@ -33,15 +33,15 @@ const DIALOG_STORE = readSrc("features/settings/stores/settings-dialog-store.ts"
 
 const LOCALES = { ar, de, en, es, fr, he, hi, it, ja, ko, ptBR, ru, sv, zhCN };
 
-test("it ends the Agents tab, the API tab links there for the owner, and settings search finds it", () => {
+test("it ends the Agents tab, the API tab's access group links there for the owner, and settings search finds it", () => {
   assert.match(
     AGENTS_TAB,
-    /<CommandBlock command=\{shellCommands\.dryRun\} \/>\s*<\/div>\s*<\/SettingsSection>\s*<div className="flex flex-col gap-2">\s*<McpAccessSection apiKey=\{newApiKey\} \/>/,
+    /<CommandBlock command=\{shellCommands\.dryRun\} \/>\s*<\/div>\s*<\/SettingsSection>\s*<SettingsSection title=\{t\("settings\.mcp\.title"\)\}>\s*<McpAccessSection apiKey=\{newApiKey\} \/>/,
   );
   assert.doesNotMatch(API_TAB, /McpAccessSection/);
   assert.match(
     API_TAB,
-    /\{isOwner \? <DecisionApiSection \/> : null\}\s*\{isOwner \? <UnslothStudioMcpRow \/> : null\}/,
+    /\{isOwner \? <UnslothStudioMcpRow \/> : null\}\s*\{isOwner \? <KeylessApiAccessLink \/> : null\}/,
   );
   assert.doesNotMatch(SECTION, /useIsAccountOwner/);
   assert.match(
@@ -146,10 +146,11 @@ test("a key just created on the API tab fills the Agents tab snippet and is kept
   // Memory only: set on create, cleared when the key card is dismissed or the dialog closes.
   assert.match(API_TAB, /setRevealed\(raw\);\s*setNewApiKey\(raw\);/);
   assert.match(API_TAB, /setRevealed\(null\);\s*setNewApiKey\(null\);/);
-  // A revoked key must not stay in the Agents tab's MCP snippet.
+  // A revoked key must not stay in the Agents tab's MCP snippet; a regenerated one replaces it.
+  assert.match(API_TAB, /let replacement: string \| null = null;[\s\S]*?replacement = created\.key;/);
   assert.match(
     API_TAB,
-    /await revokeApiKey\(revokeTarget\.id\);[^}]*setNewApiKey\(null\);/,
+    /await revokeApiKey\(revokeTarget\.id\);[^}]*setNewApiKey\(replacement\);/,
   );
   assert.match(AGENTS_TAB, /useSettingsDialogStore\(\(s\) => s\.newApiKey\)/);
   assert.match(DIALOG_STORE, /closeDialog: \(\) =>\s*set\(\{[\s\S]*?newApiKey: null,[\s\S]*?\}\)/);

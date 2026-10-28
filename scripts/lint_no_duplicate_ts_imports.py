@@ -36,40 +36,30 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-# The frontend root, not `src`: `tsc -b` also builds tsconfig.node.json
-# (`vite.config.ts`) and tsconfig.test.json (`tests`), so scanning only `src`
-# leaves those two able to red the build with the very error this catches.
+# The frontend root, not src: `tsc -b` also builds vite.config.ts and tests.
 DEFAULT_SCAN_DIR = REPO_ROOT / "studio" / "frontend"
 SKIP_PARTS = frozenset({"node_modules", "dist", "build", ".venv", "venv", "__pycache__"})
 
-# One import declaration, anchored at the cursor. `re.DOTALL` so a clause prettier wrapped
-# across lines, as the #8470 duplicate was, is still one match.
+# DOTALL so an import prettier wrapped across lines is still one match.
 _IMPORT_AT = re.compile(
     r"\Aimport\b[ \t]*(?P<clause>[^;'\"]*?)[ \t]*from[ \t]*(['\"])[^'\"]*\2[ \t]*;?",
     re.DOTALL,
 )
-# A bare `import "./styles.css"` binds nothing, but it is part of the prologue and has to be
-# stepped over rather than ending it.
+# A bare `import "./x.css"` binds nothing but must be stepped over, not end the prologue.
 _BARE_IMPORT_AT = re.compile(r"\Aimport\b[ \t]*(['\"])[^'\"]*\1[ \t]*;?")
-# Whitespace, comments, and the directive prologue that may precede the imports. Five files
-# here open with `"use client";`, and without this their imports would not be read at all.
+# Prologue trivia, including a `"use client";` directive before the imports.
 _TRIVIA_AT = re.compile(
     r"\A(?:[ \t\r\n]+|//[^\n]*|/\*.*?\*/|(['\"])use [a-z ]+\1[ \t]*;?)+",
     re.DOTALL,
 )
 
-# The `type` modifier, clause-level or per specifier. `\s+`, not a literal space:
-# any whitespace is legal after it, and a literal-space test on `type\n  Foo`
-# leaves the modifier in place and records `type` itself as the binding -- so two
-# such specifiers read as a duplicate and fail CI on a file tsc accepts.
+# \s+ not a space: `type\n  Foo` must still drop the modifier.
 _TYPE_MODIFIER = re.compile(r"^type\s+")
 
 
 def _bindings(clause: str) -> list[str]:
     """Local names a single import clause introduces, in source order."""
-    # Prettier keeps comments inside a long import list. Left in, `piece.split()`
-    # reads `//` as the binding, losing the real name and reporting the next
-    # commented import as a duplicate of it -- a CI fail on ordinary TypeScript.
+    # Strip comments prettier keeps inside import lists, else `//` reads as a binding.
     clause = re.sub(r"/\*.*?\*/", " ", clause, flags = re.DOTALL)
     clause = re.sub(r"//[^\n]*", " ", clause)
     clause = _TYPE_MODIFIER.sub("", clause.strip(), count = 1)
@@ -84,20 +74,17 @@ def _bindings(clause: str) -> list[str]:
             # `a as b` binds b; `type T` binds T; `type T as U` binds U.
             piece = _TYPE_MODIFIER.sub("", piece, count = 1).strip()
             parts = piece.split()
-            # `as` as a token, not `" as "`: DOTALL lets a specifier wrap around
-            # the keyword, and a literal-space test then records the imported
-            # name instead of the alias.
+            # Match `as` as a token: DOTALL lets a specifier wrap around the keyword.
             names.append(parts[-1] if "as" in parts[:-1] else parts[0])
         clause = clause[: braced.start()]
 
-    # What is left is the default and/or namespace part, comma separated.
     for piece in clause.split(","):
         piece = piece.strip().rstrip(",").strip()
         if not piece:
             continue
         if piece.startswith("*"):
             parts = piece.split()
-            names.append(parts[-1])  # `* as ns`
+            names.append(parts[-1])
         elif piece.isidentifier():
             names.append(piece)
     return names
@@ -163,8 +150,6 @@ def duplicates_in(source: str) -> list[tuple[int, str]]:
 def scan_paths(root: Path) -> tuple[list[tuple[str, int, str]], int]:
     found: list[tuple[str, int, str]] = []
     scanned = 0
-    # `--path` may be relative or outside the repo, and `REPO_ROOT` is absolute,
-    # so resolve before relativizing and fall back to the full path.
     root = root.resolve()
     for path in sorted(root.rglob("*")):
         if path.suffix not in (".ts", ".tsx"):
@@ -247,10 +232,7 @@ def _self_test() -> int:
             'import {\n  alpha as\n    beta,\n} from "m";\nimport { beta } from "n";\n',
             ["beta"],
         ),
-        # What the prologue bound buys. Each of these is valid TypeScript that a whole-file
-        # scan reported as a duplicate, and each was found only after the previous one was
-        # patched. They are kept as cases because the bound is what makes them impossible,
-        # and a later change that widens the scan has to fail here rather than in CI.
+        # Each case is valid TypeScript a whole-file scan once reported; widening the scan must fail here.
         (
             "TypeScript quoted as a fixture in a template literal",
             'import { createServer } from "vite";\n'
@@ -310,8 +292,7 @@ def _self_test() -> int:
             "</pre>;\n",
             [],
         ),
-        # The stated cost, pinned so it is a decision rather than a surprise. An import after
-        # other top-level code is outside the prologue and is not read.
+        # Known cost: an import after other top-level code is outside the prologue and not read.
         (
             "an import after other top-level code is deliberately not read",
             'import { A } from "m";\nregisterResolver();\nimport { A } from "n";\n',

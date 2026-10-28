@@ -1045,14 +1045,12 @@ def capability_snapshot(
     )
 
 
-# Last answer per tool; the "off" permission gate reads it on every call without probing.
-_TOOL_ISOLATION_TTL_SECONDS = 60.0
+# Last answer per tool, read by the "off" gate; a reset, a real launch or a new _host_key() replaces it.
 ISOLATED_TOOLS = ("python", "terminal")
 _tool_isolation_lock = threading.Lock()
-_tool_isolation: dict[str, tuple[float, bool, str, str]] = {}
+_tool_isolation: dict[str, tuple[bool, str, str, str]] = {}
 _tool_isolation_refreshing: set[str] = set()
-# Every check takes a number when it starts; a reset raises the floor. An answer from a check that
-# started before the reset, or before the one already recorded for that tool, is dropped.
+# A reset raises the generation floor; answers from older checks are dropped.
 _tool_isolation_generation = 0
 _tool_isolation_floor = 0
 _tool_isolation_noted: dict[str, int] = {}
@@ -1089,6 +1087,10 @@ def note_tool_isolation(
     global _tool_isolation_generation
     if tool not in ISOLATED_TOOLS:
         return
+    from .sandbox_probe import UndecidedReason
+
+    # Host resource exhaustion is not a verdict: an empty key makes the next read check again.
+    key = "" if isinstance(reason, UndecidedReason) else _host_key()
     with _tool_isolation_lock:
         if generation is None:
             _tool_isolation_generation += 1
@@ -1096,7 +1098,7 @@ def note_tool_isolation(
         elif generation < _tool_isolation_floor or generation < _tool_isolation_noted.get(tool, 0):
             return
         _tool_isolation_noted[tool] = generation
-        _tool_isolation[tool] = (time.monotonic(), bool(available), backend, reason)
+        _tool_isolation[tool] = (bool(available), backend, reason, key)
 
 
 def tool_isolation_generation() -> int:
@@ -1155,15 +1157,27 @@ def cached_tool_isolation(tool: str) -> bool | None:
     return None if cached is None else cached[0]
 
 
+def _host_key() -> str:
+    """Stat-only (no bwrap preflight): moves when the venv is swapped or bwrap installed."""
+    key = os.path.realpath(sys.executable)
+    if sys.platform == "linux":
+        from . import sandbox_linux
+        try:
+            key += repr(sandbox_linux._bwrap_file_identity(sandbox_linux._trusted_bwrap_path()))
+        except Exception as exc:  # noqa: BLE001 - no trusted bwrap is a key too
+            key += type(exc).__name__
+    return key
+
+
 def cached_tool_capability(tool: str) -> tuple[bool, str, str] | None:
-    """Never blocks: last (available, backend, reason) or None; stale starts a background refresh."""
-    now = time.monotonic()
+    """Never blocks: last (available, backend, reason) or None; a missing or other-key answer starts one check."""
+    key = _host_key()
     with _tool_isolation_lock:
         entry = _tool_isolation.get(tool)
         start = (
             tool in ISOLATED_TOOLS
             and not _background_probes_disabled()
-            and (entry is None or now - entry[0] >= _TOOL_ISOLATION_TTL_SECONDS)
+            and (entry is None or entry[3] != key)
             and tool not in _tool_isolation_refreshing
         )
         if start:
@@ -1179,7 +1193,7 @@ def cached_tool_capability(tool: str) -> tuple[bool, str, str] | None:
         except RuntimeError:
             with _tool_isolation_lock:
                 _tool_isolation_refreshing.discard(tool)
-    return None if entry is None else (entry[1], entry[2], entry[3])
+    return None if entry is None else entry[:3]
 
 
 def warm_tool_isolation() -> None:
@@ -1367,8 +1381,7 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     except (WorkdirUnsafeError, SandboxBuildError):
         raise  # can be tool-induced; says nothing about the backend itself
     except SandboxUnavailableError:
-        # The cached pass is stale (bwrap removed or no longer trusted): the next call checks again,
-        # so "off" asks instead of skipping the prompt and failing until the cache expires.
+        # Cached pass is stale: reset so "off" asks instead of failing on it until a Refresh.
         from .sandbox_probe import reset_probe_cache
         reset_probe_cache()
         raise

@@ -53,6 +53,7 @@ from utils.hidden_models import (
     is_curated_tts_repo_id,
     is_decision_api_model,
     is_hidden_model,
+    is_selected_embedder,
 )
 
 logger = get_logger(__name__)
@@ -299,7 +300,6 @@ def _cached_repo_file_name(file_obj) -> str:
 
 def cached_repo_files(revision) -> list:
     """``revision.files`` without the Finder metadata companions. Every classification below reads these by name, and a "._" companion carries the described file's own name, so it answers each one the way the real file does."""
-    # The "._" name is on the snapshot entry while the bytes are in the content-addressed blob, but the entry is a symlink to it, so one open reads both.
     return [
         f
         for f in getattr(revision, "files", ()) or ()
@@ -638,12 +638,13 @@ def _scan_cached_gguf(
                     str(snapshot_path) if snapshot_path is not None else None,
                 )
                 is_curated_stt = is_curated_stt_repo_id(repo_id) or is_audio_cpp_repo_id(repo_id)
-                # Hide infra repos unless the user downloaded a variant: variant state only exists for user downloads, and curated STT and Decision API repos are still emitted as management rows.
+                # Hide infra repos unless the user downloaded a variant (variant state only exists for user downloads); curated STT, Decision API and Settings-picked embedder repos stay as management rows.
                 if (
                     is_hidden_infra
                     and not is_curated_stt
                     and not has_variant_state
                     and not is_decision_api_model(repo_id)
+                    and not is_selected_embedder(repo_id)
                 ):
                     continue
                 if total_size == 0 and not has_variant_state:
@@ -736,10 +737,7 @@ def _scan_cached_gguf(
                         tts_only = row_task in _AUDIO_ONLY_GGUF_TASKS,
                     )
                 )
-                # Preserve a snapshot-pinned load id for a single cache: refs/main can
-                # be stale or dangling even when a different snapshot holds the quant.
-                # Only a repository spanning distinct cache roots needs repo-wide
-                # resolution so chat can choose the requested quant's owning copy.
+                # refs/main can be stale; only multi-root repos need repo-wide resolution.
                 repo_cache_roots.setdefault(key, set()).add(repo_path.parent)
                 if _prefer_cache_row(row, existing):
                     seen_lower[key] = row
@@ -1207,7 +1205,6 @@ def _scan_cached_models(
                 repo_id = repo_info.repo_id
                 repo_path = Path(repo_info.repo_path)
                 snapshot_path = _cached_model_snapshot_path(repo_path)
-                # The non-GGUF embedder has no variant downloads; always hide.
                 is_hidden_infra = _is_hidden_infra_repo(
                     repo_id,
                     str(repo_path),
@@ -1221,6 +1218,7 @@ def _scan_cached_models(
                     and not is_curated_stt
                     and not is_whisper_stt
                     and not is_decision_api_model(repo_id)
+                    and not is_selected_embedder(repo_id)
                 ):
                     continue
                 has_main_gguf = _repo_has_gguf_files(repo_info)

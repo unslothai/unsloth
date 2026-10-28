@@ -574,6 +574,68 @@ def test_generate_refuses_below_the_offload_floor(fake_runtime, monkeypatch, tmp
         backend.generate(prompt = "a sloth", width = 1280, height = 720, num_frames = 121, fps = 8)
 
 
+@pytest.fixture
+def fraction(monkeypatch):
+    from utils import vram_budget_settings
+
+    state = {"value": vram_budget_settings.VRAM_FRACTION_DEFAULT}
+    monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: state["value"])
+    return state
+
+
+def test_conventional_video_generate_guard_charges_the_reserve(
+    fraction, fake_runtime, monkeypatch, tmp_path
+):
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    torch = sys.modules["torch"]
+    monkeypatch.setattr(
+        torch,
+        "device",
+        lambda kind, index = None: types.SimpleNamespace(type = kind, index = index),
+        raising = False,
+    )
+    monkeypatch.setattr(
+        torch,
+        "cuda",
+        types.SimpleNamespace(
+            is_available = lambda: False,
+            mem_get_info = lambda device = None: (40 * GIB << 20, 80 * GIB << 20),
+            memory_reserved = lambda device = None: 0,
+        ),
+    )
+
+    def _as_on_cuda():
+        backend._state = dataclasses.replace(
+            backend._state, device = "cuda", offload_policy = "model", vram_floor_mib = 27300
+        )
+
+    _as_on_cuda()
+    backend.generate(prompt = "a sloth", width = 256, height = 256, num_frames = 9, fps = 8)
+    fraction["value"] = 0.80  # 40 GIB free less a 16 GIB reserve cannot hold the 27.3 GIB floor
+    backend.generate(prompt = "a sloth", width = 256, height = 256, num_frames = 9, fps = 8)
+    _load_gguf(backend, tmp_path)
+    _as_on_cuda()
+    with pytest.raises(RuntimeError, match = "needs about"):
+        backend.generate(prompt = "a sloth", width = 256, height = 256, num_frames = 9, fps = 8)
+
+
+def test_video_load_refuses_a_tier_only_the_reserve_rules_out(fraction, fake_runtime, monkeypatch):
+    import core.inference.video as V
+
+    spy = _spoof(monkeypatch, tier_gib = 24)  # 24 GiB card, 600 MiB in use
+    monkeypatch.setattr(V, "_video_offload_vram_floor_mib", lambda pipe, plan, **k: 18000)
+    VideoBackend().load_pipeline(FAMILIES["wan2.2-t2v-a14b"])
+    assert spy.plans
+    spy.plans.clear()
+    fraction["value"] = (
+        0.70  # 7.2 GiB kept free: 16.2 GiB cannot hold 18000 MiB plus its activations
+    )
+    with pytest.raises(RuntimeError, match = "needs about"):
+        VideoBackend().load_pipeline(FAMILIES["wan2.2-t2v-a14b"])
+    assert not spy.plans
+
+
 def test_quantise_stages_what_fits_on_the_card_and_unstages_it(monkeypatch):
     """The DiT is quantised on the card block by block and sent back to the host when the plan moves it."""
     torch = pytest.importorskip("torch")

@@ -403,6 +403,141 @@ def test_rocm_keeps_windowed_rows_off_flash_attn(monkeypatch, window):
         assert seen and not dispatched
 
 
+def _block_flag(
+    monkeypatch,
+    value,
+    leaves = None,
+):
+    monkeypatch.setattr(hpa, "IN_COMPILED_BLOCK", [value])
+    if leaves is not None:
+        monkeypatch.setattr(hpa, "_leaves_block", lambda *args: leaves)
+
+
+@pytest.mark.parametrize("in_block,leaves", [(True, True), (True, None), (False, True)])
+def test_packed_rows_leave_a_compiled_block_for_the_eager_wrapper(monkeypatch, in_block, leaves):
+    """Inside an Unsloth compiled block a packed call the predicate sends out runs the wrapper
+    eagerly (one graph break). A CPU row (real predicate) and a user's own compile (flag off) keep
+    the wrapped sdpa in the graph."""
+    hpa._ORIG_SDPA[0] = _plain_sdpa
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    _block_flag(monkeypatch, in_block, leaves)
+    leaving = in_block and leaves is True
+    lengths = [3, 3]
+    module = types.SimpleNamespace(is_causal = True, num_key_value_groups = 1, training = False)
+    q = torch.randn(1, 4, 6, 16)
+    mask, psl = _block_causal(lengths), torch.tensor(lengths, dtype = torch.int32)
+    torch._dynamo.reset()
+    torch._dynamo.utils.counters.clear()
+    fn = torch.compile(
+        lambda q: hpa._sdpa_packed_varlen(module, q, q, q, mask, packed_seq_lengths = psl)[0] * 2,
+        backend = "eager",
+    )
+    before = dict(hpa.HF_PACKED_ATTENTION_STATS)
+    out = fn(q)
+    torch.testing.assert_close(out, _plain_sdpa(module, q, q, q, mask)[0] * 2)
+    breaks = sum(torch._dynamo.utils.counters["graph_break"].values())
+    # CPU rows take the eager wrapper's own fallback, counted only outside a trace.
+    if leaving:
+        assert hpa.HF_PACKED_ATTENTION_STATS["fallback"] == before["fallback"] + 1
+        assert breaks >= 1
+    else:
+        assert hpa.HF_PACKED_ATTENTION_STATS == before
+        assert breaks == 0
+    # Unpacked rows stay in the graph either way.
+    torch._dynamo.reset()
+    torch._dynamo.utils.counters.clear()
+    plain = torch.compile(
+        lambda q: hpa._sdpa_packed_varlen(module, q, q, q, mask)[0], backend = "eager", fullgraph = True
+    )
+    plain(q)
+    assert hpa.HF_PACKED_ATTENTION_STATS["fallback"] == before["fallback"] + int(leaving)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("cpu", None, torch.bfloat16, 64, None),
+        ("cuda", 0, torch.bfloat16, 64, -1),  # a window varlen cannot take
+        ("cuda", 0, torch.bfloat16, 512, None),  # past flash
+        ("cuda", 0, torch.bfloat16, 60, None),
+    ],
+)
+def test_compiled_block_keeps_rows_without_a_varlen_win(monkeypatch, args):
+    monkeypatch.setattr(hpa, "_LEAVES_BLOCK", {})
+    assert hpa._leaves_block_eager(*args) is False
+
+
+def test_compiled_block_keeps_rows_on_torch_with_cheap_cudnn_plans(monkeypatch):
+    monkeypatch.setattr(hpa, "_SLOW_CUDNN_PLANS", False)
+    monkeypatch.setattr(hpa, "_LEAVES_BLOCK", {})
+    hpa._LEAVES_BLOCK.clear()
+    assert hpa._leaves_block_eager("cuda", 0, torch.bfloat16, 64, None) is False
+
+
+def test_compiled_block_verdict_is_computed_eagerly_while_tracing(monkeypatch):
+    """The probe runs real tensors once per key; traced instead (an lru_cache wrapper is traced
+    through __wrapped__) it saw fake tensors and kept every row in the graph."""
+    calls = []
+
+    def probe(*key):
+        calls.append(type(torch.zeros(1)) is torch.Tensor)
+        return True
+
+    monkeypatch.setattr(hpa, "_leaves_block_probe", probe)
+    monkeypatch.setattr(hpa, "_LEAVES_BLOCK", {})
+    torch._dynamo.reset()
+    fn = torch.compile(
+        lambda x: x * 2 if hpa._leaves_block("cuda", 0, torch.bfloat16, 64, None) else x,
+        backend = "eager",
+        fullgraph = True,
+    )
+    torch.testing.assert_close(fn(torch.ones(3)), torch.full((3,), 2.0))
+    fn(torch.ones(3))
+    assert calls == [True]
+
+
+@_CUDA
+@_TORCH_VARLEN_HOST
+def test_packed_rows_in_a_compiled_block_take_varlen(monkeypatch):
+    """Real predicate, evaluated while tracing: it must agree with the eager verdict, and a row it
+    sends out takes the varlen kernel."""
+    if hpa._torch_varlen(torch.device("cuda", 0)) is None:
+        pytest.skip(
+            reason = "varlen kernel needs torch's varlen_attn with window_size (CUDA torch >= 2.11)"
+        )
+    from transformers.integrations.sdpa_attention import sdpa_attention_forward
+
+    hpa._ORIG_SDPA[0] = sdpa_attention_forward
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    _block_flag(monkeypatch, True)
+    monkeypatch.setattr(hpa, "_LEAVES_BLOCK", {})
+    torch.manual_seed(0)
+    lengths = [37, 100, 2, 5, 230]
+    T, H, n_kv, D = sum(lengths), 8, 2, 64
+    module = types.SimpleNamespace(is_causal = True, num_key_value_groups = H // n_kv, training = True)
+    q = torch.randn(1, H, T, D, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+    k = torch.randn(1, n_kv, T, D, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+    v = torch.randn(1, n_kv, T, D, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+    mask, psl = _block_causal(lengths, "cuda"), torch.tensor(lengths, dtype = torch.int32)
+    torch._dynamo.reset()
+    fn = torch.compile(
+        lambda q, k, v: hpa._sdpa_packed_varlen(
+            module, q, k, v, mask, scaling = 0.11, packed_seq_lengths = psl
+        )[0],
+    )
+    for t, dims in ((q, (2,)), (k, (2,)), (v, (2,)), (mask, (2, 3))):
+        torch._dynamo.mark_dynamic(t, dims)  # as _block_compile marks the sequence
+    before = hpa.HF_PACKED_ATTENTION_STATS["fast"]
+    fast = fn(q, k, v)
+    expected = hpa._leaves_block_probe("cuda", 0, torch.bfloat16, D, None)
+    assert hpa._LEAVES_BLOCK[("cuda", 0, torch.bfloat16, D, None)] is expected
+    assert hpa.HF_PACKED_ATTENTION_STATS["fast"] == before + int(expected)
+    if hpa._SLOW_CUDNN_PLANS and torch.cuda.get_device_capability(0)[0] == 10:
+        assert expected  # the case this exists for: SM100 picks cuDNN for the dense mask
+    ref, _ = sdpa_attention_forward(module, q, k, v, mask, scaling = 0.11)
+    torch.testing.assert_close(fast.float(), ref.float(), atol = 2e-2, rtol = 2e-2)
+
+
 @_CUDA
 @pytest.mark.parametrize("window", [None, 3, 4, 128])
 @pytest.mark.parametrize("route", ["torch", "torch_2_11", "dispatch"])
@@ -1111,3 +1246,439 @@ def test_tiny_gemma4_packed_row_matches_each_document(_efficient_fresh, monkeypa
                 fast_logits[:, start : start + n], alone, atol = 3e-2, rtol = 3e-2
             )
             start += n
+
+
+def _block_layer(
+    window = None,
+    impl = "sdpa",
+    head_dim = 16,
+    n_heads = 4,
+):
+    config = types.SimpleNamespace(_attn_implementation = impl, num_attention_heads = n_heads)
+    attn = types.SimpleNamespace(config = config, head_dim = head_dim, sliding_window = window)
+    return types.SimpleNamespace(self_attn = attn)
+
+
+@pytest.mark.parametrize(
+    "case", ["cpu", "unpacked", "eager_impl", "bad_window", "no_attention", "disabled"]
+)
+def test_block_varlen_kwargs_refusals_keep_the_dense_path(monkeypatch, case):
+    """Every refusal leaves the compiled block on its previous path (SDPA over the dense mask)."""
+    hpa._ORIG_SDPA[0] = _plain_sdpa
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    lengths = [3, 3]
+    hidden = torch.randn(1, 6, 8)
+    kwargs = {"packed_seq_lengths": torch.tensor(lengths), "attention_mask": _block_causal(lengths)}
+    layer = _block_layer()
+    if case == "cpu":
+        pass  # hidden states on CPU
+    else:
+        monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+    if case == "unpacked":
+        kwargs.pop("packed_seq_lengths")
+    elif case == "eager_impl":
+        layer = _block_layer(impl = "eager")
+    elif case == "bad_window":
+        layer = _block_layer(window = 0)
+    elif case == "no_attention":
+        layer = types.SimpleNamespace()
+    elif case == "disabled":
+        monkeypatch.setenv("UNSLOTH_HF_PACKED_VARLEN", "0")
+    if case != "cpu":
+        # No CUDA here: refusals must come before any device work.
+        monkeypatch.setattr(
+            hpa, "_torch_varlen", lambda device: None if case == "cpu" else object()
+        )
+        monkeypatch.setattr(
+            "unsloth.utils.packing.get_packed_info_from_kwargs",
+            lambda *a, **k: pytest.fail("refused rows must not build packed metadata"),
+        )
+    assert hpa.block_varlen_kwargs(layer, hidden, kwargs) is None
+
+
+def test_block_varlen_kwargs_prepares_metadata_and_checks_the_mask(monkeypatch):
+    hpa._ORIG_SDPA[0] = _plain_sdpa
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+    monkeypatch.setattr(hpa, "_torch_varlen", lambda device: object())
+    monkeypatch.setattr(hpa, "_sdpa_policy_requested", lambda *args: False)
+    monkeypatch.setattr(hpa, "_BLOCK_PREP", {})
+    lengths = [3, 5]
+    cu = torch.tensor([0, 3, 8], dtype = torch.int32)
+    monkeypatch.setattr(
+        "unsloth.utils.packing.get_packed_info_from_kwargs",
+        lambda kwargs, device: (torch.tensor(lengths), cu, 5),
+    )
+    hidden = torch.randn(1, 8, 8)
+    kwargs = {"packed_seq_lengths": torch.tensor(lengths), "attention_mask": _block_causal(lengths)}
+    before = hpa.HF_PACKED_ATTENTION_STATS["compiled"]
+    assert hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs) == (cu, 5)
+    assert hpa.HF_PACKED_ATTENTION_STATS["compiled"] == before + 1
+    # A mask that is not this block-causal one (one causal span over both documents) is refused.
+    kwargs["attention_mask"] = _block_causal([8])
+    assert hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs) is None
+
+
+def test_block_varlen_kwargs_rechecks_a_mask_edited_in_place(monkeypatch):
+    """The per-forward cache keys on tensor versions: a mask edited in place is checked again."""
+    hpa._ORIG_SDPA[0] = _plain_sdpa
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+    monkeypatch.setattr(hpa, "_torch_varlen", lambda device: object())
+    monkeypatch.setattr(hpa, "_sdpa_policy_requested", lambda *args: False)
+    monkeypatch.setattr(hpa, "_BLOCK_PREP", {})
+    lengths = [3, 5]
+    cu = torch.tensor([0, 3, 8], dtype = torch.int32)
+    monkeypatch.setattr(
+        "unsloth.utils.packing.get_packed_info_from_kwargs",
+        lambda kwargs, device: (torch.tensor(lengths), cu, 5),
+    )
+    hidden = torch.randn(1, 8, 8)
+    mask = _block_causal(lengths)
+    kwargs = {"packed_seq_lengths": torch.tensor(lengths), "attention_mask": mask}
+    assert hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs) == (cu, 5)
+    mask[..., 4, 0] = True  # the second document now sees the first
+    assert hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs) is None
+
+
+def test_block_varlen_kwargs_does_not_serve_inference_metadata_to_training(monkeypatch):
+    """inference_mode forward then a training forward on the same batch: fresh cu_seqlens."""
+    hpa._ORIG_SDPA[0] = _plain_sdpa
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+    monkeypatch.setattr(hpa, "_torch_varlen", lambda device: object())
+    monkeypatch.setattr(hpa, "_sdpa_policy_requested", lambda *args: False)
+    monkeypatch.setattr(hpa, "_BLOCK_PREP", {})
+    lengths = [3, 5]
+    monkeypatch.setattr(
+        "unsloth.utils.packing.get_packed_info_from_kwargs",
+        lambda kwargs, device: (torch.tensor(lengths), _cu(lengths), 5),
+    )
+    hidden = torch.randn(1, 8, 8)
+    kwargs = {"packed_seq_lengths": torch.tensor(lengths), "attention_mask": _block_causal(lengths)}
+    with torch.inference_mode():
+        cu, _ = hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs)
+        assert hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs)[0] is cu
+    assert torch.is_inference(cu)
+    train, _ = hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs)
+    assert not torch.is_inference(train) and train.tolist() == [0, 3, 8]
+    assert hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs)[0] is train
+    with torch.inference_mode():
+        assert hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs)[0] is train
+
+
+def test_block_varlen_kwargs_survives_a_collected_mask_then_none(monkeypatch):
+    """Same lengths, the cached mask collected, then a call without a mask: refused, not a crash."""
+    hpa._ORIG_SDPA[0] = _plain_sdpa
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+    monkeypatch.setattr(hpa, "_torch_varlen", lambda device: object())
+    monkeypatch.setattr(hpa, "_sdpa_policy_requested", lambda *args: False)
+    monkeypatch.setattr(hpa, "_BLOCK_PREP", {})
+    lengths = torch.tensor([3, 5])
+    cu = torch.tensor([0, 3, 8], dtype = torch.int32)
+    monkeypatch.setattr(
+        "unsloth.utils.packing.get_packed_info_from_kwargs", lambda kwargs, device: (lengths, cu, 5)
+    )
+    hidden = torch.randn(1, 8, 8)
+    kwargs = {"packed_seq_lengths": lengths, "attention_mask": _block_causal([3, 5])}
+    assert hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs) == (cu, 5)
+    del kwargs["attention_mask"]  # the only reference: the cached weakref is now dead
+    assert hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs) is None
+
+
+def test_block_varlen_kwargs_honours_the_sdpa_policy_each_step(monkeypatch):
+    """Deterministic mode / a math-only sdpa_kernel is read per step, not cached with the hardware
+    verdict: while it asks for SDPA the block keeps the dense path, and the fast path returns after."""
+    hpa._ORIG_SDPA[0] = _plain_sdpa
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+    monkeypatch.setattr(hpa, "_torch_varlen", lambda device: object())
+    monkeypatch.setattr(hpa, "_BLOCK_PREP", {})
+    lengths = [3, 5]
+    cu = torch.tensor([0, 3, 8], dtype = torch.int32)
+    monkeypatch.setattr(
+        "unsloth.utils.packing.get_packed_info_from_kwargs",
+        lambda kwargs, device: (torch.tensor(lengths), cu, 5),
+    )
+    policy = [True]
+    monkeypatch.setattr(hpa, "_sdpa_policy_requested", lambda *args: policy[0])
+    hidden = torch.randn(1, 8, 8)
+    for wants_sdpa in (True, False):
+        policy[0] = wants_sdpa
+        # A new step: new lengths and mask objects.
+        kwargs = {
+            "packed_seq_lengths": torch.tensor(lengths),
+            "attention_mask": _block_causal(lengths),
+        }
+        got = hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs)
+        assert got is None if wants_sdpa else got == (cu, 5)
+
+
+def test_block_varlen_kwargs_rechecks_the_sdpa_policy_on_reused_tensors(monkeypatch):
+    """A cache hit must still refuse cached metadata once the sdpa policy flips."""
+    hpa._ORIG_SDPA[0] = _plain_sdpa
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+    monkeypatch.setattr(hpa, "_torch_varlen", lambda device: object())
+    monkeypatch.setattr(hpa, "_BLOCK_PREP", {})
+    lengths = [3, 5]
+    cu = torch.tensor([0, 3, 8], dtype = torch.int32)
+    monkeypatch.setattr(
+        "unsloth.utils.packing.get_packed_info_from_kwargs",
+        lambda kwargs, device: (torch.tensor(lengths), cu, 5),
+    )
+    policy = [False]
+    monkeypatch.setattr(hpa, "_sdpa_policy_requested", lambda *args: policy[0])
+    hidden = torch.randn(1, 8, 8)
+    kwargs = {"packed_seq_lengths": torch.tensor(lengths), "attention_mask": _block_causal(lengths)}
+    layer = _block_layer()
+    assert hpa.block_varlen_kwargs(layer, hidden, kwargs) == (cu, 5)
+    assert hpa.block_varlen_kwargs(layer, hidden, kwargs) == (cu, 5)
+    policy[0] = True
+    assert hpa.block_varlen_kwargs(layer, hidden, kwargs) is None
+    assert hpa.block_varlen_kwargs(layer, hidden, kwargs) is None
+    policy[0] = False
+    assert hpa.block_varlen_kwargs(layer, hidden, kwargs) == (cu, 5)
+
+
+@pytest.mark.parametrize("in_graph", [True, False])
+def test_traced_block_varlen_call_stays_in_the_graph(monkeypatch, in_graph):
+    """With prepared metadata the traced wrapper calls the varlen op without a graph break; when the
+    op cannot take the shape it keeps the wrapped sdpa, and the private kwarg never reaches it."""
+    seen = {}
+
+    def orig(module, q, k, v, mask, **kwargs):
+        seen["orig_kwargs"] = set(kwargs)
+        return _plain_sdpa(module, q, k, v, mask, **kwargs)
+
+    hpa._ORIG_SDPA[0] = orig
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    # Fake tensors keep their real (CPU) device here; the GPU test below covers the real checks.
+    monkeypatch.setattr(hpa, "_static_window", lambda *args: None)
+    monkeypatch.setattr(hpa, "_varlen_in_graph", lambda *args: in_graph)
+    monkeypatch.setattr(
+        hpa,
+        "_flash_varlen",
+        lambda q, k, v, cu, m, scale, window: q.transpose(1, 2) * scale,
+    )
+    lengths = [3, 3]
+    module = types.SimpleNamespace(is_causal = True, num_key_value_groups = 1, training = True)
+    q = torch.randn(1, 4, 6, 16, dtype = torch.bfloat16)
+    mask, psl = _block_causal(lengths), torch.tensor(lengths, dtype = torch.int32)
+    cu = torch.tensor([0, 3, 6], dtype = torch.int32)
+    torch._dynamo.reset()
+    torch._dynamo.utils.counters.clear()
+    fn = torch.compile(
+        lambda q: hpa._sdpa_packed_varlen(
+            module, q, q, q, mask, packed_seq_lengths = psl, **{hpa.BLOCK_VARLEN_KWARG: (cu, 3)}
+        )[0],
+        backend = "eager",
+        fullgraph = True,
+    )
+    out = fn(q)
+    assert sum(torch._dynamo.utils.counters["graph_break"].values()) == 0
+    if in_graph:
+        torch.testing.assert_close(out, q.transpose(1, 2) * 16**-0.5)
+        assert "orig_kwargs" not in seen
+    else:
+        assert hpa.BLOCK_VARLEN_KWARG not in seen["orig_kwargs"]
+
+
+@_CUDA
+@_TORCH_VARLEN_HOST
+@pytest.mark.parametrize("window", [None, 4])
+def test_block_varlen_runs_inside_the_graph_and_matches_dense_sdpa(monkeypatch, window):
+    """Real op, compiled fullgraph with the sequence dim dynamic like _block_compile: no graph break,
+    one graph across segment layouts after the first change, forward and backward match SDPA."""
+    if hpa._torch_varlen(torch.device("cuda", 0)) is None:
+        pytest.skip(
+            reason = "varlen kernel needs torch's varlen_attn with window_size (CUDA torch >= 2.11)"
+        )
+    from transformers.integrations.sdpa_attention import sdpa_attention_forward
+
+    # Engagement without a Python side effect (Dynamo would guard on a counter): the dense fallback
+    # fails the test, so every layout below ran the in-graph kernel.
+    def _dense(*args, **kwargs):
+        raise AssertionError("packed row fell back to SDPA over the dense mask")
+
+    hpa._ORIG_SDPA[0] = _dense
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    monkeypatch.setattr(hpa, "_VARLEN_IN_GRAPH", {})
+    H, n_kv, D = 8, 2, 64
+    module = types.SimpleNamespace(
+        is_causal = True, num_key_value_groups = H // n_kv, training = True, sliding_window = window
+    )
+    fn = torch.compile(
+        lambda q, k, v, mask, psl, varlen: hpa._sdpa_packed_varlen(
+            module,
+            q,
+            k,
+            v,
+            mask,
+            scaling = 0.11,
+            packed_seq_lengths = psl,
+            **{hpa.BLOCK_VARLEN_KWARG: varlen},
+        )[0],
+        fullgraph = True,
+    )
+    torch._dynamo.reset()
+    torch._dynamo.utils.counters.clear()
+    torch.manual_seed(0)
+    for lengths in ([37, 100, 2, 5, 230], [64, 64, 9], [300, 1, 41, 7], [128] * 3):
+        T = sum(lengths)
+        q, k, v = (
+            torch.randn(1, h, T, D, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+            for h in (H, n_kv, n_kv)
+        )
+        mask = _block_causal(lengths, "cuda")
+        if window is not None:
+            idx = torch.arange(T, device = "cuda")
+            mask = mask & (idx[None, :] > idx[:, None] - window)[None, None]
+        cu = torch.tensor([0] + lengths, device = "cuda").cumsum(0).to(torch.int32)
+        for t, dims in ((q, (2,)), (k, (2,)), (v, (2,)), (mask, (2, 3)), (cu, (0,))):
+            torch._dynamo.maybe_mark_dynamic(t, dims)
+        out = fn(q, k, v, mask, torch.tensor(lengths, dtype = torch.int32), (cu, max(lengths)))
+        grad = torch.randn_like(out)
+        got = torch.autograd.grad(out, (q, k, v), grad)
+        # Math reference: cuDNN on torch 2.6 - 2.13 can reuse a stale backward plan (wrong grads).
+        with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
+            ref_out, _ = sdpa_attention_forward(module, q, k, v, mask, scaling = 0.11)
+        ref = torch.autograd.grad(ref_out, (q, k, v), grad)
+        torch.testing.assert_close(out.float(), ref_out.float(), atol = 2e-2, rtol = 2e-2)
+        for g, r in zip(got, ref):
+            torch.testing.assert_close(g.float(), r.float(), atol = 3e-2, rtol = 3e-2)
+    assert sum(torch._dynamo.utils.counters["graph_break"].values()) == 0
+    # max_seqlen specializes once, then is dynamic: at most two graphs for four layouts.
+    assert torch._dynamo.utils.counters["stats"]["unique_graphs"] <= 2
+
+
+@pytest.mark.parametrize("mode", ["no_grad", "inference_mode"])
+def test_varlen_in_graph_probe_runs_its_backward_with_grad_enabled(monkeypatch, mode):
+    """Probe under no_grad must still run and check a backward (verdict is cached for all modes)."""
+    seen = []
+
+    def torch_varlen(device):
+        seen.append((torch.is_grad_enabled(), torch.is_inference_mode_enabled()))
+        return None
+
+    monkeypatch.setattr(hpa, "_torch_varlen", torch_varlen)
+    context = torch.no_grad() if mode == "no_grad" else torch.inference_mode()
+    with context:
+        assert hpa._varlen_in_graph_probe(0, torch.bfloat16, 64, 8, 2, None) is False
+        assert torch.is_grad_enabled() is False  # the caller's mode is restored
+    assert seen == [(True, False)]
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_varlen_in_graph_probe_inside_a_nonreentrant_checkpoint(monkeypatch, compiled):
+    """First trace inside a non-reentrant checkpoint (VLMs under DDP): the probe's own backward must
+    not go through the checkpoint's saved-tensor hooks, and the outer backward must still recompute."""
+    from torch.utils.checkpoint import checkpoint
+
+    seen = []
+
+    def torch_varlen(device):
+        # Stands in for the probe's kernel forward and backward (CUDA only).
+        try:
+            q = torch.zeros(4, 4, requires_grad = True)
+            (q @ q).sin().sum().backward()
+            seen.append(q.grad is not None)
+        except Exception as error:
+            seen.append(repr(error))
+        return None
+
+    monkeypatch.setattr(hpa, "_torch_varlen", torch_varlen)
+    monkeypatch.setattr(hpa, "_VARLEN_IN_GRAPH", {})
+
+    def block(x):
+        if hpa._varlen_in_graph(0, torch.bfloat16, 64, 8, 2, None):
+            return (x * 3).cos()
+        return (x * 2).sin()
+
+    if compiled:
+        # Dynamo calls the assume_constant_result probe eagerly while tracing, hooks still live.
+        torch._dynamo.reset()
+        block = torch.compile(block, backend = "eager", fullgraph = True)
+    x = torch.randn(4, 4, requires_grad = True)
+    checkpoint(block, x, use_reentrant = False).sum().backward()
+    assert seen == [True]
+    torch.testing.assert_close(x.grad, 2 * torch.cos(2 * x.detach()))
+
+
+@_CUDA
+@_TORCH_VARLEN_HOST
+@pytest.mark.parametrize("mode", ["no_grad", "inference_mode"])
+def test_varlen_in_graph_verdict_does_not_depend_on_the_first_grad_mode(monkeypatch, mode):
+    """Real probe under no_grad / inference_mode caches the grad-enabled answer."""
+    if hpa._torch_varlen(torch.device("cuda", 0)) is None:
+        pytest.skip(
+            reason = "varlen kernel needs torch's varlen_attn with window_size (CUDA torch >= 2.11)"
+        )
+    key = (0, torch.bfloat16, 64, 8, 2, None)
+    expected = hpa._varlen_in_graph_probe(*key)
+    if not expected:
+        pytest.skip(reason = "this build's flash varlen does not take a 64-wide GQA row")
+    monkeypatch.setattr(hpa, "_VARLEN_IN_GRAPH", {})
+    context = torch.no_grad() if mode == "no_grad" else torch.inference_mode()
+    with context:
+        assert hpa._varlen_in_graph_eager(*key) is expected
+    assert hpa._varlen_in_graph_eager(*key) is expected
+
+
+@_CUDA
+@_TORCH_VARLEN_HOST
+def test_reentrant_checkpoint_first_trace_keeps_the_block_varlen_path(monkeypatch):
+    """First compiled inside a reentrant checkpoint: forward and recompute both run varlen."""
+    if hpa._torch_varlen(torch.device("cuda", 0)) is None:
+        pytest.skip(
+            reason = "varlen kernel needs torch's varlen_attn with window_size (CUDA torch >= 2.11)"
+        )
+    from torch.utils.checkpoint import checkpoint
+    from transformers.integrations.sdpa_attention import sdpa_attention_forward
+
+    def _dense(*args, **kwargs):
+        raise AssertionError("packed row fell back to SDPA over the dense mask")
+
+    hpa._ORIG_SDPA[0] = _dense
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    monkeypatch.setattr(hpa, "_VARLEN_IN_GRAPH", {})
+    H, n_kv, D = 8, 2, 64
+    module = types.SimpleNamespace(
+        is_causal = True, num_key_value_groups = H // n_kv, training = True, sliding_window = None
+    )
+    lengths = [37, 100, 2, 5, 230]
+    T = sum(lengths)
+    mask = _block_causal(lengths, "cuda")
+    psl = torch.tensor(lengths, dtype = torch.int32)
+    cu = _cu(lengths, "cuda")
+    fn = torch.compile(
+        lambda q, k, v: hpa._sdpa_packed_varlen(
+            module,
+            q,
+            k,
+            v,
+            mask,
+            scaling = 0.11,
+            packed_seq_lengths = psl,
+            **{hpa.BLOCK_VARLEN_KWARG: (cu, max(lengths))},
+        )[0],
+        fullgraph = True,
+    )
+    torch._dynamo.reset()
+    torch.manual_seed(0)
+    q, k, v = (
+        torch.randn(1, h, T, D, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+        for h in (H, n_kv, n_kv)
+    )
+    out = checkpoint(fn, q, k, v, use_reentrant = True)
+    grad = torch.randn_like(out)
+    out.backward(grad)  # reentrant checkpoint refuses autograd.grad
+    got = (q.grad, k.grad, v.grad)
+    # Math reference: the dense-mask backend sdpa picks can change with earlier tests in this file.
+    with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
+        ref_out, _ = sdpa_attention_forward(module, q, k, v, mask, scaling = 0.11)
+    ref = torch.autograd.grad(ref_out, (q, k, v), grad)
+    torch.testing.assert_close(out.float(), ref_out.float(), atol = 2e-2, rtol = 2e-2)
+    for g, r in zip(got, ref):
+        torch.testing.assert_close(g.float(), r.float(), atol = 3e-2, rtol = 3e-2)

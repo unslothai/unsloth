@@ -52,12 +52,10 @@ TQ_AUTO = "auto"
 TQ_SCHEMES = (TQ_INT8, TQ_FP8, TQ_NVFP4, TQ_MXFP8)
 TQ_MODES = (TQ_AUTO,) + TQ_SCHEMES
 
-# Schemes whose torchao path asserts a bf16 weight, so their filter skips non-bf16 Linears rather than aborting the
-# pass. On torchao 0.17 / B200: fp8 per-row and mxfp8 assert bf16; nvfp4 and int8 handle fp32/fp16.
+# Schemes whose torchao path asserts bf16 weights: skip non-bf16 Linears.
 _REQUIRE_BF16_SCHEMES = (TQ_FP8, TQ_MXFP8)
 
-# fp8 granularity the runtime uses: per-ROW is REQUIRED for correctness on outlier-heavy DiTs. Stamped into prequant
-# metadata, so a stale per-TENSOR checkpoint is rejected and rebuilt.
+# Per-ROW fp8 is REQUIRED on outlier-heavy DiTs; stamped into prequant metadata.
 FP8_GRANULARITY = "per_row"
 
 # torchao ``activation_value_lb``: keeps an all-zero activation row off scale 0 (NaN, black frames); not calibrated.
@@ -66,9 +64,7 @@ FP8_ACTIVATION_VALUE_LB = 1e-12
 # Skip linears below this feature size: a small FLOP share, so leaving them bf16 costs ~nothing.
 DEFAULT_MIN_LINEAR_FEATURES = 512
 
-# int8-ONLY name exclusions: torch._int_mm needs activation rows M above 16, and a DiT's AdaLN modulation and timestep
-# / guidance / pooled-text embedders run once from a [batch, dim] vector (M = 1), so they crash despite large feature
-# dims. Negligible FLOPs; scaled_mm has no M limit.
+# int8-only exclusions: _int_mm needs M > 16; AdaLN/timestep/pooled embedders run at M = 1.
 _INT8_EXCLUDE_NAME_TOKENS = (
     "norm",  # AdaLN modulation .linear
     "_mod",  # Qwen img_mod / txt_mod
@@ -110,10 +106,7 @@ _INT8_FAMILY_PAD_NAME_TOKENS: dict[str, tuple[str, ...]] = _profile_table(
 
 
 def pad_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tuple[str, ...]:
-    """Name tokens whose quantized Linears get their activation rows padded to ``_int_mm``'s floor
-    rather than being left dense. int8 only (no other scheme has a row floor), and per-family.
-    Disjoint from ``exclude_tokens_for_scheme`` by construction: an excluded Linear is never
-    quantized, so there is nothing to pad."""
+    """int8 only, and disjoint from the exclude tokens since excluded Linears are never quantised."""
     if scheme != TQ_INT8:
         return ()
     return _INT8_FAMILY_PAD_NAME_TOKENS.get(str(family or "").strip().lower(), ())
@@ -126,13 +119,7 @@ def apply_small_m_padding(
     *,
     logger: Any = None,
 ) -> tuple[str, ...]:
-    """Wrap this family's small-M quantized Linears so their GEMM clears ``_int_mm``'s row floor.
-    Call AFTER the weights are quantized and in place -- ``quantize_`` on the runtime path, the
-    prequant ``load_state_dict`` on the hosted one -- because it reparents the Linears. Returns
-    the fqns wrapped, empty for a family with no pad list. RAISES if a Linear that should be
-    padded cannot be proven safe to pad: a half-padded transformer compiles on the modules that
-    were wrapped and crashes on the ones that were not, which is worse than either end state, so
-    the caller must treat this as a failed quantise."""
+    """Call after quantising in place, since padding reparents Linears; raises on any unsafe one."""
     tokens = pad_tokens_for_scheme(scheme, family)
     if not tokens:
         return ()
@@ -389,9 +376,8 @@ def divisible_for_scheme(scheme: str) -> int:
     return _SCHEME_DIVISIBLE.get(scheme, 0)
 
 
-# Per-arch preference for ``auto``, best first. int8 leads every tier: it runs full-rate on consumer and
-# workstation cards (which halve fp8 FP32 accumulate) and is within a few percent of fp8 elsewhere.
-# nvfp4 stays OUT of this arch-wide table and reaches auto only via ``_FAMILY_AUTO_PREFER``.
+# int8 leads: full-rate on consumer cards (which halve fp8 FP32 accumulate).
+# nvfp4 reaches auto only via ``_FAMILY_AUTO_PREFER``.
 _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
     (
         (10, 0),
@@ -597,13 +583,8 @@ _TORCHAO_UNAVAILABLE: Optional[tuple[Optional[str]]] = None
 
 
 def torchao_unavailable_reason() -> Optional[str]:
-    """Why no dense quant scheme can run in this install, or ``None`` when torchao is usable.
-    ``_smoke_probe`` swallows every failure, so a torchao that does not IMPORT is
-    indistinguishable from a GPU that lacks the kernels. That did not matter while a declined
-    explicit scheme fell back silently; now it is refused, and the message is all the user has. A
-    torch/torchao version skew is the common cause and it is not a hardware fault: telling a
-    Blackwell owner "'fp8' is not usable on this GPU" when the real error is ``cannot import name
-    'ScalingType' from torch.nn.functional`` points them at the wrong fix entirely."""
+    """A torchao that fails to import must not read as a GPU lacking kernels; the smoke probe
+    swallows it."""
     global _TORCHAO_UNAVAILABLE
     if _TORCHAO_UNAVAILABLE is not None:
         return _TORCHAO_UNAVAILABLE[0]
@@ -617,9 +598,7 @@ def torchao_unavailable_reason() -> Optional[str]:
         except Exception as exc:  # noqa: BLE001 - any import failure means the same thing here
             import logging
 
-            # The full text, paths included, goes to the server log; the client gets it stripped. This string is
-            # interpolated into the precision-refusal RuntimeError, which both load routes return verbatim as the 409
-            # detail, and an ImportError routinely names the absolute file of the module that raised it.
+            # Full text to server log; client gets paths stripped (it is returned as the 409 detail).
             logging.getLogger(__name__).warning(
                 "torchao is unusable: %s: %s", type(exc).__name__, exc
             )
@@ -628,9 +607,7 @@ def torchao_unavailable_reason() -> Optional[str]:
     return reason
 
 
-# An absolute POSIX or Windows path, up to the first whitespace / quote / bracket. Deliberately requires a directory
-# separator so dotted module names ("torch.nn.functional") survive intact: those are the actionable half of the
-# message.
+# Requires a directory separator so dotted module names survive.
 _ABS_PATH_RE = _re.compile(r"(?:[A-Za-z]:)?[\\/](?:[^\s'\"()<>|]*[\\/])+[^\s'\"()<>|]*")
 
 
@@ -658,8 +635,7 @@ def _smoke_cache_device_key(device: str, ordinal: Optional[int] = None) -> str:
         return device
 
 
-# Data-center GPU tokens (un-nerfed FP32 accumulate). Matched as whole tokens of get_device_name() so "A4000" is not
-# mistaken for "A40"; anything else is consumer-class.
+# Data-center GPU tokens, matched as whole tokens so "A4000" is not "A40".
 _DATACENTER_GPU_TOKENS = frozenset(
     {
         "B200",
@@ -698,10 +674,7 @@ _PROFESSIONAL_GPU_MARKERS = ("RTX PRO 6000", "RTX 6000 ADA")
 
 
 def _is_consumer_gpu(device: Any = None) -> bool:
-    """Whether the active GPU is consumer-class (GDDR), where fp8 FP32 accumulate is halved so fast
-    (FP16) accumulate is a ~2x win. Data-center HBM and professional parts are not nerfed and return
-    False. Heuristic on the device name, defaulting to consumer, which is free on data-center parts
-    and a win on consumer ones. True on any failure."""
+    """Heuristic on the device name; defaults to consumer, which costs nothing on data-center parts."""
     try:
         import re
 
@@ -734,8 +707,7 @@ def normalize_transformer_quant(value: Optional[str]) -> Optional[str]:
     return normalized
 
 
-# GGUF substitutes dense base weights; pipeline rewrites its loaded weights in place; single-file
-# artifacts keep their stored precision. ``dense_quant_blocker`` checks pipeline eligibility later.
+# GGUF substitutes dense base weights; pipeline rewrites in place; single-file keeps stored precision.
 DENSE_QUANT_KINDS: tuple[str, ...] = ("gguf", "pipeline")
 
 
@@ -798,8 +770,7 @@ def mark_source_precision(module: Any, precision: str) -> Any:
     return module
 
 
-# safetensors header dtype strings narrower than bf16, mapped to the name the refusal uses. Header
-# strings, not torch dtypes: this is read before anything is instantiated.
+# safetensors header dtype strings (read before anything is instantiated).
 _NARROW_STORED_DTYPES: dict[str, str] = {
     "F8_E4M3": "fp8",
     "F8_E5M2": "fp8",
@@ -832,17 +803,7 @@ def _cached_snapshot_dir(repo_id: str) -> Any:
 
 
 def stored_denoiser_precision(local_dir: Optional[str]) -> Optional[str]:
-    """The narrow precision a LOCAL snapshot's denoiser shards are stored at, or None.
-
-    ``from_pretrained(torch_dtype = bfloat16)`` widens a raw fp8 checkpoint as it loads, so by the
-    time ``dense_quant_blocker`` walks parameters every tensor reads bf16 and the evidence is gone.
-    Quantising it again compounds a loss already taken. Ideogram's loader records this itself with
-    ``mark_source_precision``; every other family reaches the generic loader, where the shard header
-    is the only place left to look.
-
-    Headers only, and only under a directory we already have: no download, no tensor read, and no
-    verdict without a local snapshot, which is the behaviour without this check. A hub id resolves to
-    its already-cached snapshot (``local_files_only``: an offline load stages nothing), else None."""
+    """Reads shard headers under a local snapshot only, since from_pretrained widens fp8 to bf16 on load."""
     if not local_dir:
         return None
     try:
@@ -859,9 +820,7 @@ def stored_denoiser_precision(local_dir: Optional[str]) -> Optional[str]:
             sub = root / attr
             if not sub.is_dir():
                 continue
-            # EVERY shard: a narrow checkpoint keeps its norms and embeddings wide (why
-            # _DENSE_PARAM_DTYPE_NAMES admits float32), and shards are cut by size, so the first
-            # file can be entirely wide while a later one holds the fp8 linears.
+            # EVERY shard: shards are cut by size, so a later one may hold the fp8 linears.
             for shard in sorted(sub.glob("*.safetensors")):
                 with safetensors.safe_open(str(shard), "pt") as handle:
                     for key in handle.keys():
@@ -942,12 +901,10 @@ def dense_transformer_supported(target: Any) -> bool:
     (the only config any torchao dynamic scheme accelerates). Cheap loader pre-check."""
     if getattr(target, "device", None) != "cuda":
         return False
-    # The Windows-ROCm torchao stub's quantize_ is a no-op, so the smoke probe passes on a still-dense Linear and the
-    # transformer gets MARKED quantised without being quantised, giving the wrong VRAM budget and compile policy.
+    # The Windows-ROCm torchao stub's quantize_ is a no-op: the probe would pass falsely.
     if is_stubbed("torchao"):
         return False
-    # ROCm reports gfx versions through CUDA capability APIs, so _AUTO_LADDER's NVIDIA SM floors misclassify AMD GPUs.
-    # Keep ROCm on the GGUF path.
+    # ROCm reports gfx versions via CUDA capability APIs; keep ROCm on GGUF.
     if torch_is_rocm():
         return False
     try:
@@ -1032,7 +989,7 @@ def native_quant_scheme(
         offload and scheme in NATIVE_OFFLOAD_SCHEMES and native_offload_host(target)
     ):
         return None
-    # MPS has no float8 storage.
+    # MPS cannot cast to fp8 before torch 2.15; checkpoint fp8 codes take ``comfy_fp8_storage`` instead.
     if _mps_bf16(target) and scheme != TQ_INT8:
         return None
     if _family_denied(family, scheme):
@@ -1059,15 +1016,8 @@ def select_transformer_quant_scheme(
     require_prequant: frozenset[str] = frozenset({TQ_NVFP4}),
     has_prequant: Optional[Callable[[str], bool]] = None,
 ) -> Optional[str]:
-    """The concrete scheme to apply, or None to fall back to GGUF.
-
-    ``auto`` walks the per-arch ladder and returns the first scheme passing a real quantise+matmul
-    smoke test, so an unavailable Blackwell fp4/mx kernel lands on fp8/int8 with no error. An
-    explicit scheme is honored only if supported (else None), never swapped. ``family`` applies the
-    measured deny list; ``base_repo`` keys its per-base nvfp4 lift. ``require_prequant``: schemes AUTO
-    offers only with a hosted checkpoint (the gate measured that artifact, not an on-the-fly build).
-    ``unproven_ok`` is for the PRE-EVICTION gate, where a resident model can fail the smoke test for VRAM.
-    """
+    """Auto walks the ladder past failing smoke tests; an explicit scheme is honored or None, not
+    swapped."""
     requested = normalize_transformer_quant(requested)
     if requested is None or not dense_transformer_supported(target):
         return None
@@ -1107,30 +1057,15 @@ def explicit_scheme_cached_ok(
 
 
 def dense_quant_host_capable(target: Any) -> bool:
-    """Whether an ``auto`` request could engage a dense scheme on this host.
-
-    One bit, because that is all the picker can honestly act on. A load's actual scheme depends on
-    the request (precision, speed, memory), the family deny list and the smoke probe, none of which
-    belong on an unclicked row; ``resolved`` reports what ran once there is a load.
-
-    Cheap and non-allocating, so a polled status route can ask it: the arch floors come from
-    ``_AUTO_LADDER`` and the probe is only READ from ``_SMOKE_CACHE``, where the load path already
-    paid for it. An unprobed scheme counts as usable, like the ``unproven_ok`` path; a probed
-    failure does not.
-
-    ``auto``, not "any scheme": the ladder leaves nvfp4 out, so a host that can only run nvfp4
-    honours an explicit request and has nothing automatic to offer."""
+    """Non-allocating: reads only the smoke cache, so an unprobed scheme counts as usable."""
     if not dense_transformer_supported(target):
         return False
-    # The loader keeps a pipeline dense when nothing can compile the result, so a host without
-    # inductor has no fast path to advertise. Host-level only: the per-family and per-request
-    # halves of that decision belong to the load, not to a row.
+    # No inductor means no fast path to advertise (host-level only).
     from .diffusion_speed import compile_eligible
 
     if not compile_eligible(target, is_gguf = False, family = None, probe = False):
         return False
-    # Not redundant with the arch floor: `_scheme_supported` rejects every scheme when the torchao
-    # import fails, so an ABI skew would advertise a fast path every load then falls back from.
+    # Not redundant: a torchao import failure (ABI skew) rejects every scheme.
     if torchao_unavailable_reason() is not None:
         return False
     ordinal = getattr(target, "ordinal", None)
@@ -1171,12 +1106,7 @@ def auto_scheme_candidates(
     require_prequant: frozenset[str] = frozenset({TQ_NVFP4}),
     has_prequant: Optional[Callable[[str], bool]] = None,
 ) -> tuple[str, ...]:
-    """Every scheme ``auto`` would accept on this device, best first.
-    ``select_transformer_quant_scheme`` returns only the winner, which is all the load needs
-    until the winner turns out to have no hosted prequant AND not to fit dense. The caller then
-    needs to know what auto would have picked NEXT, so it can reach a scheme that does have a
-    checkpoint instead of dropping to GGUF. Same ladder, same deny list, same smoke probe as the
-    auto branch of the selector, so the two can never disagree about what is allowed."""
+    """Every scheme auto would accept, best first, so a caller can reach one with a hosted checkpoint."""
     if not dense_transformer_supported(target):
         return ()
     device = str(getattr(target, "device", "cuda"))
@@ -1228,12 +1158,7 @@ def _auto_scheme_order(
 
 
 def auto_scheme_candidates_cached(target: Any, family: Optional[str] = None) -> tuple[str, ...]:
-    """``auto_scheme_candidates`` answered from ``_SMOKE_CACHE`` alone, for a polled status route.
-
-    Same ladder and deny list, but no probe: ``_scheme_supported`` can spawn the child smoke probe
-    or allocate in this process, and neither belongs on a route polled every few seconds. Unprobed
-    counts as usable and a probed failure does not, as in ``dense_quant_host_capable``, so the
-    published ladder sharpens as loads record verdicts instead of paying for them here."""
+    """Answers from _SMOKE_CACHE alone, with no probe, since probing can spawn a child or allocate VRAM."""
     if not dense_transformer_supported(target):
         return ()
     ordinal = getattr(target, "ordinal", None)
@@ -1276,18 +1201,12 @@ def _scheme_supported(
             return False
     except Exception:
         return False
-    # Resolve the whole table in one throwaway child, falling back in-process. Nothing above allocates: the context
-    # arrives on the first ALLOCATION, not on is_available() or get_device_capability() (0 MiB after both, 614 MiB
-    # after the first tensor). Worth a child because /images/download-plan calls assert_precision_available while the
-    # user is only STAGING, so a plan alone cost the backend ~700 MiB it can never give back. _smoke_probe's key is
-    # card-qualified, and the child is asked about that same card: a spawn starts on ordinal 0 whatever this thread is
-    # pinned to, so a bare "cuda" would file card 0's verdict under the card the load runs on (and a bare key hid
-    # child verdicts entirely).
+    # Resolve in a throwaway child: the first CUDA allocation costs ~700 MiB never returned.
+    # Key is card-qualified; a spawn starts on ordinal 0, so pass the card explicitly.
     card = _smoke_cache_device_key(device)
     if (scheme, card) not in _SMOKE_CACHE:
         with _CHILD_PROBE_LOCK:
-            # Re-checked under the lock: the route answers plans concurrently, and a burst of them must not each spawn
-            # a child that imports torch.
+            # Re-checked under the lock: concurrent plans must not each spawn a child.
             if (scheme, card) not in _SMOKE_CACHE:
                 table = _persisted_probe_table(card)
                 if table is None or scheme not in table:
@@ -1305,18 +1224,13 @@ def _scheme_supported(
     return _smoke_probe(scheme, device, unproven_ok = unproven_ok)
 
 
-# Long enough for a cold interpreter to import torch and torchao and run every probe (measured 3.9 s on a B200 host,
-# so this is ~45x headroom for a cold page cache); short enough that a child wedged in the driver does not hold the
-# route thread forever. Overrunning it is not a verdict either -- the caller falls back in-process.
+# Bounded so a wedged child cannot hang the route; a timeout is no verdict (fall back in-process).
 _CHILD_PROBE_TIMEOUT = 180.0
 
-# Set once the spawn machinery has been shown not to work here (frozen build without multiprocessing support, a
-# sandbox that refuses to fork/exec), so the fallback is paid once rather than on every miss.
+# Latched once spawn is shown not to work here, so the fallback is paid once.
 _CHILD_PROBE_UNAVAILABLE = False
 
-# Consecutive OSErrors out of the spawn before that latch is set anyway. An OSError is resource pressure and clears,
-# so it is retried; a host that raises one every time still stops paying for the attempt after a few misses. Reset by
-# the first spawn that works.
+# Consecutive spawn OSErrors (transient, retried); reset by the first spawn that works.
 _CHILD_PROBE_SPAWN_ERROR_LIMIT = 3
 _CHILD_PROBE_SPAWN_ERRORS = 0
 
@@ -1324,21 +1238,7 @@ _CHILD_PROBE_LOCK = _threading.Lock()
 
 
 def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
-    """Every scheme's verdict from a SHORT-LIVED child process, or None when it could not run.
-
-    The child dies with its CUDA context, which is the whole point: the context is process-wide and
-    the driver never returns it, so probing in the backend permanently costs what the probe touched.
-    Spawning is not free (3.9 s measured on a B200 host, nearly all of it importing torch), so one
-    child answers for every scheme in ``TQ_SCHEMES`` at once rather than one child per ladder step:
-    an auto ladder walking three schemes would otherwise pay it three times.
-
-    Verdicts are the child's ``_run_smoke_probe``, the same function the in-process path calls, so
-    the two cannot drift. ``None`` for a scheme is an allocator failure, which the caller must not
-    cache. ``None`` for the whole table means no child ran -- a frozen build without
-    multiprocessing, a sandbox that refuses to spawn, a timeout -- and the caller then probes
-    in-process exactly as before, since refusing a load over a missing subprocess would be worse
-    than the VRAM it saves.
-    """
+    """One child probes every scheme so its CUDA context dies with it; None if no child ran."""
     global _CHILD_PROBE_UNAVAILABLE, _CHILD_PROBE_SPAWN_ERRORS
     if _CHILD_PROBE_UNAVAILABLE:
         return None
@@ -1354,17 +1254,12 @@ def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
             run_without_native_path_secret,
         )
 
-        # spawn, never fork: the backend is threaded (uvicorn, the arbiter, download workers) and a forked child
-        # inherits those locks, and fork does not exist on Windows at all. A build with no spawn support at all raises
-        # here, which is what the fallback is for.
+        # spawn, never fork: the backend is threaded, and Windows has no fork.
         ctx = mp.get_context("spawn")
         with native_path_secret_removed_for_child_start():
-            # Inside the scrub, as every other orchestrator here builds theirs. The first spawn-context queue starts
-            # multiprocessing's resource tracker, which is exec'd with this environment and outlives every child, so
-            # building it above the scrub would strand the lease secret somewhere the child-side scrub cannot reach.
+            # Inside the scrub: the resource tracker outlives children and would keep the lease secret.
             queue = ctx.Queue()
-            # The same entrypoint the inference worker is spawned through: it scrubs the lease secret from the child
-            # and binds the child to this process's lifetime, so a wedged probe cannot outlive the backend.
+            # Same entrypoint as the inference worker: scrubs the lease secret and binds lifetime.
             proc = ctx.Process(
                 target = run_without_native_path_secret,
                 args = (
@@ -1378,18 +1273,13 @@ def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
                 daemon = True,
             )
             proc.start()
-        # Adopted like every other spawn site: the bind above is the CHILD arming PDEATHSIG, which is Linux only, and
-        # the Windows job object can fail to take when Unsloth already runs inside an incompatible host job. This
-        # record is what is left in that case.
+        # PDEATHSIG is Linux-only and the Windows job object can fail; this record is the backup.
         _adopt_probe_pid(proc.pid)
         _CHILD_PROBE_SPAWN_ERRORS = 0
     except Exception as exc:  # noqa: BLE001 - no child here: probe in-process instead
         import logging
 
-        # An OSError is momentary pressure on descriptors, process slots or /dev/shm, not a host that cannot spawn;
-        # latching it would hold the backend on the in-process probe, and its ~800 MiB, until restart. Only a
-        # deterministic failure latches on sight, plus a run of OSErrors so a host that always refuses is paid for
-        # only briefly.
+        # OSError is transient: latching would pin the ~800 MiB in-process probe until restart.
         transient = isinstance(exc, OSError)
         if transient:
             _CHILD_PROBE_SPAWN_ERRORS += 1
@@ -1415,8 +1305,7 @@ def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
             except Exception:  # noqa: BLE001 - Empty, or a queue torn down under us
                 pass
             if not proc.is_alive():
-                # A put lands through a feeder thread, so it can still be in flight when the child has already exited;
-                # one blocking look before calling it a loss.
+                # A put lands via a feeder thread: one blocking look before calling it a loss.
                 try:
                     table = queue.get(timeout = 1.0)
                 except Exception:  # noqa: BLE001 - the child really did die empty
@@ -1437,10 +1326,7 @@ def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
 
 
 def prewarm_probe_table(device: str = "cuda") -> bool:
-    """Resolve and persist this card's smoke-probe table at boot; True iff a child probe ran.
-
-    A load arriving mid-probe waits on the same lock and reads these verdicts. ``UNSLOTH_DIFFUSION_PROBE_PREWARM=0``
-    disables it."""
+    """Resolves the card's probe table at boot; UNSLOTH_DIFFUSION_PROBE_PREWARM=0 disables it."""
     if (_os.environ.get("UNSLOTH_DIFFUSION_PROBE_PREWARM") or "").strip().lower() in (
         "0",
         "false",
@@ -1489,9 +1375,7 @@ def _persisted_probe_table(card: str) -> Optional[dict[str, bool]]:
 # SIGKILL may be OOM and SIGTERM is timeout cleanup, so neither is a scheme verdict.
 _PROBE_CRASH_SIGNALS = frozenset({4, 6, 7, 8, 11})  # ILL, ABRT, BUS, FPE, SEGV
 
-# Windows has no signal here: multiprocessing returns GetExitCodeProcess verbatim, so a fault is the raw NTSTATUS
-# (access violation 0xC0000005, UCRT abort 0xC0000409), never -SIGSEGV. Only TERMINATE is negative, hence the sign
-# test first; the severity bits then separate a fault from a deliberate sys.exit.
+# Windows returns the raw NTSTATUS, not -SIGSEGV; only TERMINATE is negative.
 _NTSTATUS_ERROR_FLOOR = 0xC0000000
 
 
@@ -1553,13 +1437,7 @@ def _probe_child_alive(proc: Any) -> bool:
 
 
 def _close_probe_child(proc: Any, queue: Any) -> bool:
-    """Tear the probe child and its queue down; True once the child is confirmed dead. Terminate
-    then kill, as the chat worker's ``_shutdown_subprocess`` does: this child exists to hand a
-    CUDA context back, so a wedged one left alive defeats the whole probe. The lifetime record is
-    dropped only on confirmed death -- a child that outlives SIGKILL in an uninterruptible driver
-    call keeps its breadcrumb, since that record is the only remaining handle on the VRAM it is
-    holding. Best-effort at every step: this runs on the failure path too, and a probe that could
-    not answer must not also raise."""
+    """Keeps the lifetime record unless death is confirmed, as it is the only handle on held VRAM."""
     try:
         pid = proc.pid if proc is not None else None
     except Exception:  # noqa: BLE001
@@ -1595,10 +1473,7 @@ def _close_probe_child(proc: Any, queue: Any) -> bool:
 
 
 def _select_probe_card(device: str) -> None:
-    """Make ``device``'s ordinal current in this child, so the probe's argument-less CUDA calls --
-    ``synchronize()``, torchao's own capability lookups -- read the card the tensors are on.
-    Best-effort: an index this process cannot select still probes, and lands the same failure the
-    in-process fallback would."""
+    """Makes the ordinal current so argument-less CUDA calls act on the card the tensors live on."""
     ordinal = device.partition(":")[2]
     if not ordinal.isdigit():
         return
@@ -1610,10 +1485,7 @@ def _select_probe_card(device: str) -> None:
 
 
 def _child_probe_entry(device: str, schemes: tuple[str, ...], out: Any) -> None:
-    """Child side of ``_child_probe_table``: probe every scheme and post one table back.
-    Module-level and stdlib-signature so ``spawn`` can reach it by name. Every scheme is
-    attempted even after one fails, because the verdicts are independent and the whole point is
-    to pay the CUDA context once."""
+    """Probes every scheme even after one fails: verdicts are independent, and CUDA setup is paid once."""
     _select_probe_card(device)
     table: dict[str, Optional[bool]] = {}
     for scheme in schemes:
@@ -1633,37 +1505,14 @@ def _smoke_probe(
     *,
     unproven_ok: bool = False,
 ) -> bool:
-    """True iff a tiny Linear quantised with ``scheme`` runs one M=32 forward and returns finite
-    values. Cached per (scheme, device). Makes ``auto`` robust to a build lacking a prototype
-    kernel: it fails here and the ladder moves on, rather than crashing at the first real denoise
-    step.
-
-    Half the input is all-zero rows and the output is checked for finiteness, because a kernel that
-    runs is not the same as one that is usable. torchao's ``_choose_scale_float8`` has no eps clamp,
-    so a zero row yields scale 0 and NaN qdata; that is the root cause behind qwen-image's fp8 black
-    frames (its txt stream emits all-zero token rows through a set of ``txt_mlp.net.2`` linears that
-    changes run to run, which is why keeping a fixed subset bf16 does not fix it).
-    ``_make_quant_config`` floors it with ``activation_value_lb``, but only when the installed
-    torchao exposes that kwarg, and without a zero row the probe passed on a build lacking it. Zero
-    rows are not exotic: every Wan pipeline pads prompt embeddings with ``new_zeros`` out to 226 or
-    512, so the tail rows reaching the DiT are exactly zero. Measured on B200, 4096-wide Linear: 412
-    of 512 rows non-finite without the floor, 0 of 512 with it. Failing here costs one ladder step
-    down to int8 instead.
-    """
-    # Keyed by the CARD, not just "cuda": the probe runs on whichever device is current, so on a heterogeneous host a
-    # pass on one selected GPU would otherwise stand in for an untested one, and a failure on an older card would
-    # reject the scheme on a capable one.
+    """Half the input is zero rows: fp8 scale 0 gives NaN there unless activation_value_lb floors it."""
+    # Keyed by CARD: on a heterogeneous host one GPU's verdict must not stand for another.
     key = (scheme, _smoke_cache_device_key(device))
     if key in _SMOKE_CACHE:
         return _SMOKE_CACHE[key]
     ok = _run_smoke_probe(scheme, device)
     if ok is None:
-        # NOT cached, and NOT a verdict. An out-of-memory says nothing about the scheme, and the probe now runs on the
-        # ROUTE thread -- BEFORE the arbiter evicts the resident chat model, which is the whole point of raising the
-        # refusal early -- so it meets a full GPU by design. Caching it would refuse every later EXPLICIT request for
-        # this scheme for the life of the process, on a host that runs it fine once the eviction has happened; and
-        # answering "unsupported" to the pre-eviction gate (``unproven_ok``) refuses THIS load for the same reason the
-        # eviction was about to remove.
+        # OOM is NOT cached nor a verdict: the probe runs before the arbiter evicts the chat model.
         return unproven_ok
     _SMOKE_CACHE[key] = ok
     return ok
@@ -1691,10 +1540,7 @@ def _run_smoke_probe(scheme: str, device: str) -> Optional[bool]:
 
 
 def _is_out_of_memory(exc: BaseException) -> bool:
-    """Whether ``exc`` is an allocator failure rather than a verdict on the scheme.
-    ``torch.OutOfMemoryError`` subclasses ``RuntimeError``, not ``MemoryError``, and moved
-    between ``torch.cuda`` and ``torch`` across releases, so both names are tried and the message
-    is the backstop (a CUDA OOM surfaced through another wrapper still says "out of memory")."""
+    """torch.OutOfMemoryError is a RuntimeError, not MemoryError; the message text is the backstop."""
     try:
         import torch
         named = tuple(
@@ -1713,30 +1559,12 @@ def _is_out_of_memory(exc: BaseException) -> bool:
 
 
 def _resolve_fast_accum(fast_accum: Optional[bool]) -> bool:
-    """The fp8 ``use_fast_accum`` to apply. ``None`` (auto) is fast accumulate; an explicit bool forces
-    it.
-
-    This used to derive from the GPU class, on the theory that only consumer parts pay for FP32
-    accumulate. The hardware side of that is right -- NVIDIA's professional whitepapers publish
-    equal FP8 rates for both accumulate modes on RTX 6000 Ada (728.5 TFLOPS either way) and RTX PRO
-    6000 Blackwell, against an exact halving on RTX 4090/5090 -- but the resulting default was still
-    wrong on the cards it was written for, because the cost is in the cuBLAS path, not the published
-    rate. Measured: on RTX 6000 Ada (sm_89), Z-Image-Turbo 1024x1024 x9, 6.387 s precise vs ~3.1 s
-    fast, so precise costs 2.05x and is slower than running the GGUF unquantised (reported in
-    review); on B200 (sm_100) the flag is a no-op, 4096^3 ``_scaled_mm`` at 3023.8 vs 3041.8 TFLOP/s
-    (0.994x) with BITWISE-identical output and 1.213 s vs 1.230 s end to end; and consumer parts
-    already resolved to fast here.
-
-    So fast accumulate is a large win where the flag bites and free where it does not. Precise
-    accumulate stays one explicit ``transformer_quant_fast_accum: false`` away.
-    """
+    """Auto (None) is fast accumulate: a large win on RTX 6000 Ada, free on B200."""
     return True if fast_accum is None else bool(fast_accum)
 
 
-# torchao's config handlers call the PROCESS-WIDE ``recommended_inductor_config_setter()`` unless
-# ``set_inductor_config`` is False, and two of its flags change results rather than only speed: coordinate-descent
-# tuning makes the render differ between processes on one seed, and set_float32_matmul_precision("high") reaches
-# every fp32 op in the pipeline (VAE, norms). UNSLOTH_TORCHAO_INDUCTOR_CONFIG=1 restores it, for A/B benchmarking.
+# Disable torchao's process-wide inductor config: it changes results, not just speed.
+# UNSLOTH_TORCHAO_INDUCTOR_CONFIG=1 restores it for A/B benchmarking.
 _TORCHAO_INDUCTOR_CONFIG_ENV = "UNSLOTH_TORCHAO_INDUCTOR_CONFIG"
 
 
@@ -1785,12 +1613,8 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
     if scheme == TQ_INT8:
         return _quiet_config(Int8DynamicActivationInt8WeightConfig)
     if scheme == TQ_FP8:
-        # Per-ROW granularity (per-token activation + per-channel weight scale) is REQUIRED: torchao defaults to
-        # per-TENSOR, where one Z-Image outlier near 6.6e4 forces a tensor-wide scale that pushes normal values below
-        # fp8 resolution and the denoise collapses to noise. _smoke_probe checks per-row scaled_mm, so a build without
-        # it falls to int8. fast accumulate (fp8 only) follows GPU class unless forced: consumer cards run fp8 ~2x
-        # faster with FP16 accumulate. activation_value_lb floors the per-row scale: an ALL-ZERO row otherwise yields
-        # scale 0, NaN qdata, black frames.
+        # Per-ROW granularity is REQUIRED: per-tensor scale collapses on outliers (Z-Image).
+        # activation_value_lb floors the scale: an all-zero row otherwise gives NaN.
         from torchao.quantization import PerRow
 
         _install_fp8_unit_scale()
@@ -1798,10 +1622,7 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
         config_params = _inspect.signature(Float8DynamicActivationFloat8WeightConfig).parameters
         if "activation_value_lb" in config_params:
             fp8_kwargs["activation_value_lb"] = FP8_ACTIVATION_VALUE_LB
-        # Pin the plain-torch quantize kernel: the default AUTO switches to the MSLK kernel whenever an mslk package
-        # is importable, changing fp8 scale rounding BITWISE and breaking the prequant bit-identity invariant. It is
-        # also slower compiled on B200 (an opaque extern call blocks inductor's quantize fusion), so the pin costs
-        # nothing.
+        # Pin the plain-torch quantize kernel: MSLK changes fp8 rounding, breaking prequant identity.
         if "kernel_preference" in config_params:
             try:
                 from torchao.quantization.quantize_.common.kernel_preference import (
@@ -1843,8 +1664,7 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
                 weight_dtype = torch.float8_e4m3fn,
             )
         except (TypeError, AttributeError):
-            # TypeError: older torchao without the explicit dtype knobs. AttributeError: a torch build without
-            # torch.float8_e4m3fn.
+            # TypeError: older torchao; AttributeError: torch without float8_e4m3fn.
             return _quiet_config(MXDynamicActivationMXWeightConfig)
     raise ValueError(f"unknown transformer quant scheme '{scheme}'")
 
@@ -1856,20 +1676,7 @@ def make_filter_fn(
     require_bf16: bool = False,
     require_divisible: int = 0,
 ):
-    """A torchao ``quantize_`` filter keeping only FLOP-heavy linears: nn.Linear with in/out features
-    >= ``min_features`` AND whose fqn contains no ``exclude_name_tokens`` (int8 uses these to skip
-    the M=1 projections that crash ``torch._int_mm``). Hides the callback arity.
-
-    ``require_bf16`` also skips any non-bf16 Linear: fp8/mxfp8/nvfp4 assert a bf16 input weight, so
-    one non-bf16 Linear (e.g. the fp32 layers Wan/Hunyuan DiTs keep) otherwise raises and aborts the
-    ENTIRE pass, leaving the module dense. int8 tolerates non-bf16, so leaves this off.
-
-    ``require_divisible`` (0 disables) skips any Linear whose in/out features are not multiples of
-    it: the fp8/fp4 scaled_mm hardware GEMM requires 16-aligned dims and the 32-wide MX block
-    scaling cannot tile a ragged dim, so one non-conforming Linear would otherwise crash the first
-    real matmul AFTER the quantise pass succeeded (the smoke probe only proves an aligned GEMM
-    runs). Leaving such a layer bf16 costs ~nothing.
-    """
+    """A non-bf16 Linear aborts the whole quantise pass; an unaligned one crashes the first matmul later."""
 
     def filter_fn(module: Any, fqn: str = "") -> bool:
         try:
@@ -1963,9 +1770,7 @@ def quantize_transformer(
                     pass
             return scheme
 
-        # int8 skips the M=1 projections; fp8/mxfp8 assert a bf16 weight, so on a mixed-precision DiT they must skip
-        # non-bf16 ones. "lora_" keeps a baked adapter's side path high precision. Runtime only: NOT part of
-        # exclude_tokens_for_scheme, whose list is baked into prequant metadata.
+        # Runtime only: NOT part of exclude_tokens_for_scheme (baked into prequant metadata).
         exclude = exclude_tokens_for_scheme(scheme, family) + ("lora_",)
         divisible = divisible_for_scheme(scheme)
         filter_fn = make_filter_fn(
@@ -1982,9 +1787,7 @@ def quantize_transformer(
             _make_quant_config(scheme, fast_accum = fast_accum),
             filter_fn = filter_fn,
         )
-        # Pad this family's small-M linears now that the weights are quantized and in place. Not best-effort: a raise
-        # here means the transformer is quantized but not safely compilable, so it falls into the except below and the
-        # caller loads GGUF.
+        # Not best-effort: a raise means quantized but not compilable, so the caller loads GGUF.
         apply_small_m_padding(transformer, scheme, family, logger = logger)
         apply_zero_row_guard(transformer, scheme, family, logger = logger)
         try:

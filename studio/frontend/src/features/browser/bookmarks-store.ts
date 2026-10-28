@@ -14,7 +14,6 @@ export type Bookmark = {
   title: string;
   folder: BookmarkFolder;
   addedAt: number;
-  /** The page's icon when last seen, as a small PNG data: URL. */
   icon?: string;
 };
 

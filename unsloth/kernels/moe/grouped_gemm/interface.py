@@ -17,6 +17,11 @@ from unsloth.kernels.utils import torch_gpu_device
 import torch
 import triton
 
+try:
+    from triton.runtime.errors import OutOfResources
+except ImportError:  # older Triton
+    from triton.runtime import OutOfResources
+
 from .kernels.backward import (
     _autotuned_grouped_gemm_dW_kernel,
     _autotuned_grouped_gemm_dW_per_expert_kernel,
@@ -570,40 +575,123 @@ def _use_per_expert_dW_kernel():
 
 
 _PER_EXPERT_DW_FITS = {}
+_DW_CARD_FITS = {}
 
 
-def _per_expert_dW_fits(device, act_bytes, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages):
-    """False when this tile overflows ``device`` shared memory in the per-expert dW kernel.
+def _card_smem(index):
+    """(shared_memory_per_block_optin, (major, minor)) of cuda:index, else None (ROCm, no CUDA)."""
+    if getattr(torch.version, "hip", None):
+        return None
+    props = torch.cuda.get_device_properties(index)
+    return int(props.shared_memory_per_block_optin), (props.major, props.minor)
 
-    It double buffers both operands, so a caller-supplied tile the legacy kernel launched can raise OutOfResources."""
+
+def _per_expert_dW_stages(
+    device,
+    act_bytes,
+    BLOCK_SIZE_M,
+    BLOCK_SIZE_N,
+    BLOCK_SIZE_K,
+    num_stages,
+    pipelined = False,
+):
+    """Largest num_stages <= the requested one at which the per-expert dW kernel fits ``device`` shared memory, or
+    None (use the legacy kernel). Unpermuted operands (``pipelined``) multi-buffer X per stage, so 4 stages of the
+    heuristic 64x64x256 tile need 106,496 B: only the stage count drops, the tile (and so the bits) stay."""
     index = _device_index(device)
-    key = (index, act_bytes, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages)
-    fits = _PER_EXPERT_DW_FITS.get(key)
-    if fits is None:
-        fits = True
-        try:
-            if not getattr(torch.version, "hip", None):
-                from ..autotune_cache import _estimate_smem
+    key = (index, act_bytes, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages, pipelined)
+    if key in _PER_EXPERT_DW_FITS:
+        return _PER_EXPERT_DW_FITS[key]
+    stages = num_stages
+    try:
+        card = _card_smem(index)
+        if card is not None:
+            from ..autotune_cache import _estimate_smem
 
-                props = torch.cuda.get_device_properties(index)
-                smem = int(props.shared_memory_per_block_optin)
+            smem, capability = card
+            stages = None
+            for candidate in range(max(int(num_stages), 1), 0, -1):
                 tile = types.SimpleNamespace(
+                    BLOCK_SIZE_M = BLOCK_SIZE_M,
+                    BLOCK_SIZE_N = BLOCK_SIZE_N,
+                    BLOCK_SIZE_K = BLOCK_SIZE_K,
+                    num_stages = candidate,
+                )
+                need = _estimate_smem("dW", tile, act_bytes, act_bytes, capability, pipelined)
+                if need <= smem:
+                    stages = candidate
+                    break
+                if not pipelined:
+                    break  # stage count does not change a gathered launch's footprint
+            if stages is None:
+                logger.info(
+                    f"Unsloth: MoE dW tile (M, N, K, stages) {key[2:6]} needs ~{need} B shared "
+                    f"memory per-expert, over {smem} B on cuda:{index}; using the legacy dW kernel."
+                )
+            elif stages != num_stages:
+                logger.info(
+                    f"Unsloth: MoE dW tile (M, N, K) {key[2:5]} runs {stages} stages instead of "
+                    f"{num_stages} to fit {smem} B shared memory on cuda:{index}."
+                )
+    except Exception:
+        stages = num_stages
+    _PER_EXPERT_DW_FITS[key] = stages
+    return stages
+
+
+def _per_expert_dW_fits(
+    device,
+    act_bytes,
+    BLOCK_SIZE_M,
+    BLOCK_SIZE_N,
+    BLOCK_SIZE_K,
+    num_stages,
+    pipelined = False,
+):
+    """False when this tile overflows ``device`` shared memory in the per-expert dW kernel at every stage count.
+
+    A caller-supplied tile the legacy kernel launched can raise OutOfResources there (gathered loads double buffer)."""
+    return (
+        _per_expert_dW_stages(
+            device, act_bytes, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages, pipelined
+        )
+        is not None
+    )
+
+
+def _fit_dW_tiles_to_card(
+    device, act_bytes, pipelined, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages
+):
+    """Shrunk copy of a dW tile that raised OutOfResources on ``device`` (an explicit tile sized for a bigger card,
+    e.g. 128x256x256 on a 64 KiB T4, where the legacy kernel overflows too). Only called after a launch failed, so a
+    tile the estimate over-counts but that launches is never touched."""
+    tiles = (BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages)
+    key = (_device_index(device), act_bytes, pipelined, tiles)
+    fitted = _DW_CARD_FITS.get(key)
+    if fitted is None:
+        fitted = tiles
+        try:
+            card = _card_smem(key[0])
+            if card is not None:
+                config = types.SimpleNamespace(
                     BLOCK_SIZE_M = BLOCK_SIZE_M,
                     BLOCK_SIZE_N = BLOCK_SIZE_N,
                     BLOCK_SIZE_K = BLOCK_SIZE_K,
                     num_stages = num_stages,
                 )
-                need = _estimate_smem("dW", tile, act_bytes, act_bytes, (props.major, props.minor))
-                fits = need <= smem
-                if not fits:
-                    logger.info(
-                        f"Unsloth: MoE dW tile (M, N, K, stages) {key[2:]} needs ~{need} B shared "
-                        f"memory per-expert, over {smem} B on cuda:{index}; using the legacy dW kernel."
-                    )
+                _autotune_cache()._fit_config_to_smem(
+                    "dW", config, act_bytes, act_bytes, card[1], card[0], pipelined
+                )
+                fitted = (
+                    config.BLOCK_SIZE_M,
+                    config.BLOCK_SIZE_N,
+                    config.BLOCK_SIZE_K,
+                    config.num_stages,
+                )
         except Exception:
-            fits = True
-        _PER_EXPERT_DW_FITS[key] = fits
-    return fits
+            fitted = tiles
+        _DW_CARD_FITS[key] = fitted
+    return fitted
 
 
 def _launch_grouped_gemm_dW(
@@ -683,14 +771,28 @@ def _launch_grouped_gemm_dW(
 
     assert M_grad == total_tokens, f"dY M ({M_grad}) != total_tokens ({total_tokens})"
     per_expert = _use_per_expert_dW_kernel()
-    if (
-        per_expert
-        and not autotune
-        and not _per_expert_dW_fits(
-            X.device, X.element_size(), BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages
+    if not autotune:
+        BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages = _fit_tiles_to_operand_device(
+            "dW", X, X.dtype, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages
         )
-    ):
-        per_expert = False
+        legacy_stages = num_stages
+        per_expert_stages = (
+            _per_expert_dW_stages(
+                X.device,
+                X.element_size(),
+                BLOCK_SIZE_M,
+                BLOCK_SIZE_N,
+                BLOCK_SIZE_K,
+                num_stages,
+                pipelined = not (permute_x or permute_y),
+            )
+            if per_expert
+            else None
+        )
+        if per_expert_stages is None:
+            per_expert = False
+        else:
+            num_stages = per_expert_stages
 
     if accumulate:
         # Read-modify-write into an existing gradient: one program owns each (expert, n, k) tile.
@@ -708,11 +810,6 @@ def _launch_grouped_gemm_dW(
         # TMA needs a 16 byte aligned base (a DDP bucket view may not be), and the tuned tile
         # sizes assume an output no wider than X.
         use_tma_store = False
-
-    if not autotune:
-        BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages = _fit_tiles_to_operand_device(
-            "dW", X, X.dtype, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages
-        )
 
     def grid(META):
         if per_expert:
@@ -798,9 +895,50 @@ def _launch_grouped_gemm_dW(
     is_fake = _is_tracing(X, dY)
     if not is_fake:
         with torch_gpu_device(X.device):
-            compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](
-                **kernel_args, enable_fp_fusion = True
-            )
+            fit_args = None
+            if not autotune:
+                tiles = (BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, kernel_args["num_stages"])
+                pipelined = per_expert and not (permute_x or permute_y)
+                fit_args = (X.device, X.element_size(), pipelined, *tiles)
+                if (_device_index(X.device), X.element_size(), pipelined, tiles) in _DW_CARD_FITS:
+                    _set_dW_tiles(kernel_args, _fit_dW_tiles_to_card(*fit_args))  # failed before
+            try:
+                compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](
+                    **kernel_args, enable_fp_fusion = True
+                )
+            except OutOfResources:
+                # Raised before the kernel runs (dW untouched): retry once with a tile fitted to this card.
+                if fit_args is None:
+                    raise
+                tiles = fit_args[3:]
+                fitted = _fit_dW_tiles_to_card(*fit_args)
+                if fitted == tiles:
+                    if not per_expert:
+                        raise
+                    # No smaller tile known for this card (ROCm has no shared memory model here: the
+                    # heuristic 64x64x256 4-stage tile needs ~80 KiB of LDS on gfx1151's 64 KiB): run the
+                    # legacy kernel, which launched this tile before the per-expert kernel, and remember.
+                    logger.info(
+                        f"Unsloth: MoE per-expert dW tile (M, N, K, stages) {tiles} is over the shared "
+                        f"memory of {X.device}; using the legacy dW kernel."
+                    )
+                    _PER_EXPERT_DW_FITS[
+                        (_device_index(X.device), X.element_size(), *tiles[:3], legacy_stages,
+                         not (permute_x or permute_y))
+                    ] = None  # fmt: skip
+                    per_expert = False  # read by grid()
+                    kernel = _grouped_gemm_dW_kernel
+                    kernel_args.pop("EXPERTS_POW2", None)
+                    kernel_args["num_stages"] = legacy_stages
+                    if not accumulate:
+                        dW.zero_()  # the legacy kernel skips empty experts
+                else:
+                    logger.info(
+                        f"Unsloth: MoE dW tile (M, N, K, stages) {tiles} is over the shared memory of "
+                        f"cuda:{_device_index(X.device)}; using {fitted}."
+                    )
+                    _set_dW_tiles(kernel_args, fitted)
+                compiled_kernel = kernel[grid](**kernel_args, enable_fp_fusion = True)
 
         if autotune:
             log_kernel_info(compiled_kernel, kernel.best_config)
@@ -808,6 +946,15 @@ def _launch_grouped_gemm_dW(
             log_kernel_info(compiled_kernel)
 
     return dW
+
+
+def _set_dW_tiles(kernel_args, tiles):
+    (
+        kernel_args["BLOCK_SIZE_M"],
+        kernel_args["BLOCK_SIZE_N"],
+        kernel_args["BLOCK_SIZE_K"],
+        kernel_args["num_stages"],
+    ) = tiles
 
 
 def _grouped_gemm_dW_impl(
