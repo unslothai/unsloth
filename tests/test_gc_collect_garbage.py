@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+
 """Model loading's repeated full gc.collect() passes stop only after a pass that really ran and found nothing.
 
 CPython's gc.collect() returns 0 without collecting while another thread's collection is in progress, so a
