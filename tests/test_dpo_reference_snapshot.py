@@ -78,6 +78,7 @@ def _run(
         "create_model_from_path": lambda path, **kwargs: _Policy(out),
         "is_peft_model": lambda m: False,
         "get_config_model_id": lambda config: config,
+        "torch": torch,
     }
     exec(textwrap.dedent(source), namespace)
     trainer = types.SimpleNamespace()
@@ -124,6 +125,7 @@ def test_mismatched_reference_warns_and_keeps_checkpoint(monkeypatch):
 def test_rewrite_scope():
     patched = hook("__init__", TRL_INIT)
     assert patched != TRL_INIT and hook("__init__", patched) == patched
+    assert ".state_dict()" not in patched
     assert hook("compute_loss", TRL_INIT) == TRL_INIT
     legacy = TRL_INIT.replace(
         "create_model_from_path(ref_model_path, **ref_model_init_kwargs)",
@@ -146,5 +148,7 @@ def test_installed_trl_rewrites_and_compiles():
     if "create_model_from_path(ref_model_path" not in source:
         pytest.skip(f"TRL {trl.__version__} already copies the policy")
     patched = hook("__init__", source)
-    assert "self.ref_model.load_state_dict(self.model.state_dict())" in patched
+    assert "self.ref_model.load_state_dict(" in patched
+    # rl.py's _strip_vllm_weight_loads deletes `.state_dict()` from every generated trainer.
+    assert ".state_dict()" not in patched
     compile(textwrap.dedent(patched), "<patched>", "exec")

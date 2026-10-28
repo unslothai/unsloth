@@ -758,7 +758,8 @@ def dpo_trainer_reference_snapshot(function_name, function):
             "if _unsloth_dpo_model_is_instance and not is_deepspeed_zero3_enabled() "
             "and not isinstance(self.model, _UnslothFSDPModule):\n"
             "    try:\n"
-            "        self.ref_model.load_state_dict(self.model.state_dict())\n"
+            # Unbound call: rl.py strips every literal `.state_dict()` (legacy vLLM weight loads).
+            "        self.ref_model.load_state_dict(torch.nn.Module.state_dict(self.model))\n"
             "    except Exception as e:\n"
             "        import warnings\n"
             "        warnings.warn(\n"
