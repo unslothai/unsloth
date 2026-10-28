@@ -187,23 +187,15 @@ def _metadata_scan_paths() -> List[str]:
     return paths
 
 
-# Files Distribution.metadata parses, in its own fallback order.
 _METADATA_TEXT_FILES = frozenset(("METADATA", "PKG-INFO", ""))
 _SINGLE_READ_TYPE = None
-# Set for the duration of one public call, so its probes share one scan of the tree.
 _METADATA_SCAN: "contextvars.ContextVar[Optional[dict]]" = contextvars.ContextVar(
     "unsloth_install_manifest_metadata_scan", default = None
 )
 
 
 def _header_block(text: str) -> str:
-    """*text* cut after the first blank line, which always ends the RFC 822 header block.
-
-    The body after it is the project README, often most of the file, and nothing here
-    reads it. A shorter prefix that still holds that blank line parses to the same
-    headers, because the parser stops at the first empty line it meets and splits the
-    lines before it the same way. Without one the text is returned whole.
-    """
+    """*text* through its first blank line, where the email parser stops (the README is unused)."""
     cut = -1
     for separator in ("\n\n", "\r\n\r\n"):
         at = text.find(separator)
@@ -213,13 +205,7 @@ def _header_block(text: str) -> str:
 
 
 def _single_read(dist):
-    """*dist* reading and parsing its metadata once, headers only.
-
-    `Distribution.metadata` re-reads and re-parses the whole file on every access, and
-    `.version` / `.requires` each access it again. The stdlib property still does the
-    parsing, so a missing, empty or undecodable file behaves exactly as before; only a
-    successful parse is kept. Anything but a plain PathDistribution is returned as is.
-    """
+    """*dist* parsing its metadata headers once (stdlib re-parses per access); errors uncached."""
     global _SINGLE_READ_TYPE
     from importlib.metadata import PathDistribution
 
@@ -248,11 +234,7 @@ def _single_read(dist):
 
 @contextlib.contextmanager
 def _one_metadata_scan():
-    """Answer every record lookup inside the block from a single scan.
-
-    Per call only: the installer changes site-packages between calls, so nothing
-    outlives the outermost block.
-    """
+    """One record scan for the block, never across calls: the installer changes site-packages."""
     if _METADATA_SCAN.get() is not None:
         yield
         return
@@ -273,12 +255,9 @@ def _one_metadata_scan_per_call(fn):
 
 
 def _metadata_record_index(backups_only: bool = False) -> Dict[str, list]:
-    """Canonical name -> (distribution, metadata directory, directory name) per record.
+    """Canonical name -> [(dist, dir, dir-name key)].
 
-    A readable Name files the record under that name, with the distribution kept so the
-    version is read only when that name is asked about. A nameless or unreadable record
-    falls back to its directory name, with no distribution: it has no version.
-    `backups_only` skips everything but `~` directories before reading them.
+    Nameless / unreadable records file under the directory name with no dist (no version).
     """
     from importlib.metadata import MetadataPathFinder, distributions
 
@@ -375,7 +354,6 @@ def pip_backup_metadata_paths(dist_name: str) -> List[Path]:
     if _METADATA_SCAN.get() is not None:
         records = _installed_metadata_records(dist_name)
     else:
-        # Outside a shared scan, only `~` directories can answer, so read nothing else.
         records = _records_named(_metadata_record_index(backups_only = True), _canonical(dist_name))
     return [path for _version, path in records if path is not None and path.name.startswith("~")]
 

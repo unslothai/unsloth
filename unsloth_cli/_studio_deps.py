@@ -205,14 +205,12 @@ def _managed_root(extra_roots: Sequence[Path]) -> Optional[Path]:
     return None
 
 
-# MIRRORED from `_header_block` / `_single_read` in studio/install_manifest.py, which this
-# module loads by path from whichever venv it inspects and so cannot import. Keep in sync.
+# Mirror of studio/install_manifest.py (loaded by path, not importable here); a test pins them.
 _METADATA_TEXT_FILES = frozenset(("METADATA", "PKG-INFO", ""))
 _SINGLE_READ_TYPE = None
 
 
 def _header_block(text: str) -> str:
-    """*text* cut after the first blank line, which always ends the RFC 822 header block."""
     cut = -1
     for separator in ("\n\n", "\r\n\r\n"):
         at = text.find(separator)
@@ -222,7 +220,6 @@ def _header_block(text: str) -> str:
 
 
 def _single_read(dist):
-    """*dist* reading and parsing its metadata once, headers only; see install_manifest."""
     global _SINGLE_READ_TYPE
     from importlib.metadata import PathDistribution
 
