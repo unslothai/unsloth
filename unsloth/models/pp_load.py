@@ -212,7 +212,11 @@ def loaded_by(parts, spec, pp, stages_per_rank, bounds):
     for i, layer in enumerate(parts.layers):
         add(
             layer,
-            {r for r, local in enumerate(per_rank) if any(bounds[k][0] <= i < bounds[k][1] for k in local)},
+            {
+                r
+                for r, local in enumerate(per_rank)
+                if any(bounds[k][0] <= i < bounds[k][1] for k in local)
+            },
         )
     # A tied embedding / head is one parameter: read where either end lives (the union).
     add(parts.embed, {r for r, local in enumerate(per_rank) if 0 in local})
