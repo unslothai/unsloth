@@ -129,6 +129,24 @@ def test_the_tree_walk_counts_entries_like_the_reference(awkward_tree):
     assert tuned.freeable_bytes() == reference.freeable_bytes()
 
 
+def test_the_walk_matches_the_reference_on_a_portable_tree(tmp_path):
+    """Runs on Windows too, where the awkward tree's symlinks and chmod are unavailable."""
+    root = tmp_path / "cache"
+    outside = tmp_path / "outside"
+    _blob(root / "top.bin", 11)
+    for archive in range(3):
+        _blob(root / f"a{archive}" / "d0" / "d1" / f"f{archive}.py", 100 + archive)
+    inner = _blob(root / "wheels" / "inner.bin", 5000)
+    os.link(inner, root / "a1" / "inner_link.bin")
+    shared = _blob(root / "wheels" / "shared.bin", 7000)
+    _blob(outside / "keep.txt", 1)
+    os.link(shared, outside / "venv_link.bin")
+    for patterns in (None, ("a*",), ("*.bin",)):
+        assert cache_inventory._measure_root(root, patterns = patterns) == _reference_measure_root(
+            root, patterns
+        )
+
+
 def test_a_junction_below_the_top_level_is_still_not_walked(tmp_path, monkeypatch):
     root = tmp_path / "cache"
     _blob(root / "a" / "b" / "junction" / "elsewhere.bin", 4096)
