@@ -39,14 +39,6 @@ def test_building_the_sets_does_not_import_torch_or_the_registry():
     assert "HEAVY []" in out.stdout, out.stdout[-500:]
 
 
-def _registry_importable() -> bool:
-    try:
-        from transformers.models.auto import modeling_auto  # noqa: F401
-    except Exception:  # noqa: BLE001 -- e.g. a transformers whose dependency check refuses this env
-        return False
-    return True
-
-
 def _forget_the_imported_registry(monkeypatch):
     # Another test in this process may have imported the registry, which makes the build skip the source.
     monkeypatch.delitem(sys.modules, "transformers.models.auto.modeling_auto", raising = False)
@@ -60,12 +52,97 @@ def test_sets_from_source_equal_sets_from_the_import(monkeypatch):
         mc, "_mapping_names_from_source", lambda path: read.append(real(path)) or read[-1]
     )
     from_source = mc._build_detection_sets()
-    if not _HAS_TRANSFORMERS or not _registry_importable():
-        pytest.skip("the transformers registry does not import here")
-    assert read and read[0] is not None
+    if not _HAS_TRANSFORMERS:
+        pytest.skip("transformers not installed")
+    if mc._transformers_enables_torch():
+        assert read and read[0] is not None
+    else:
+        # No usable torch: the import path (the curated fallback when it fails) is the answer.
+        assert read == []
+    _forget_the_imported_registry(monkeypatch)
     monkeypatch.setattr(mc, "_mapping_names_from_source", lambda path: None)
     from_import = mc._build_detection_sets()
     assert from_source == from_import
+
+
+def _torch_metadata(
+    monkeypatch,
+    *,
+    found,
+    version = "2.5.1",
+    floor = "torch>=2.5",
+):
+    import importlib.metadata
+
+    real_find_spec = importlib.util.find_spec
+    real_version = importlib.metadata.version
+    real_requires = importlib.metadata.requires
+    monkeypatch.delenv("USE_TORCH", raising = False)
+    monkeypatch.delenv("USE_TF", raising = False)
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name, *a: (object() if found else None)
+        if name == "torch"
+        else real_find_spec(name, *a),
+    )
+    monkeypatch.setattr(
+        importlib.metadata,
+        "version",
+        lambda name: version if name == "torch" else real_version(name),
+    )
+    monkeypatch.setattr(
+        importlib.metadata,
+        "requires",
+        lambda name: [f'{floor}; extra == "torch"', "numpy>=1.17"]
+        if name == "transformers"
+        else real_requires(name),
+    )
+
+
+@pytest.mark.parametrize(
+    "condition", ["no torch", "USE_TORCH", "USE_TF", "torch below the floor", "no floor"]
+)
+def test_the_source_is_not_read_when_transformers_may_refuse_torch(monkeypatch, condition):
+    """Without torch, importing modeling_auto fails and the sets are the curated fallback
+    (Studio on Apple Silicon, CPU-only installs); the full registry read from source differs."""
+    _torch_metadata(
+        monkeypatch,
+        found = condition != "no torch",
+        version = "2.1.0" if condition == "torch below the floor" else "2.5.1",
+        floor = "torch" if condition == "no floor" else "torch>=2.5",
+    )
+    if condition in ("USE_TORCH", "USE_TF"):
+        monkeypatch.setenv(condition, "0" if condition == "USE_TORCH" else "1")
+    _forget_the_imported_registry(monkeypatch)
+    monkeypatch.setattr(
+        mc, "_mapping_names_from_source", lambda path: pytest.fail("read the source")
+    )
+    assert mc._transformers_enables_torch() is False
+    mc._build_detection_sets()
+
+
+@pytest.mark.parametrize("version", ["2.5.0", "2.5.1+cu124", "2.14.0.dev20260101"])
+def test_the_source_is_read_when_torch_meets_the_declared_floor(monkeypatch, version):
+    _torch_metadata(monkeypatch, found = True, version = version)
+    assert mc._transformers_enables_torch() is True
+
+
+@pytest.mark.parametrize(
+    "env", [{"USE_TF": "0"}, {"USE_TORCH": "1"}, {"USE_TORCH": "auto", "USE_FLAX": "0"}]
+)
+def test_env_values_that_keep_torch_on_still_read_the_source(monkeypatch, env):
+    # `import unsloth` sets USE_TF=0 and USE_FLAX=0 for the processes it starts.
+    _torch_metadata(monkeypatch, found = True)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    assert mc._transformers_enables_torch() is True
+
+
+def test_a_declared_torch_ceiling_is_not_a_runtime_gate(monkeypatch):
+    # transformers 4.52 declares torch<2.7,>=2.1 for its extras and still loads newer torch.
+    _torch_metadata(monkeypatch, found = True, version = "2.14.0", floor = "torch<2.7,>=2.1")
+    assert mc._transformers_enables_torch() is True
 
 
 def test_an_imported_registry_is_used_instead_of_the_source(monkeypatch):
@@ -166,5 +243,5 @@ def test_a_declined_source_falls_back_to_the_import(monkeypatch):
     calls = []
     monkeypatch.setattr(mc, "_mapping_names_from_source", lambda path: calls.append(path))
     sets = mc._build_detection_sets()
-    if _HAS_TRANSFORMERS:
+    if _HAS_TRANSFORMERS and mc._transformers_enables_torch():
         assert calls and "llava" in sets[0]

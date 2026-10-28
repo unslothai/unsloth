@@ -683,6 +683,47 @@ def _modeling_auto_source_path() -> Optional[str]:
     return path if os.path.isfile(path) else None
 
 
+def _transformers_enables_torch() -> bool:
+    """Whether transformers would load its torch registry, decided without importing torch or
+    transformers. Without torch (Studio on Apple Silicon / MLX, CPU-only installs) importing
+    modeling_auto fails and the sets are the curated fallback, so the source must not be read
+    then. True only when every gate transformers applies is surely passed: torch is installed
+    with metadata, USE_TORCH / USE_TF do not turn it off (4.x honours them), and its version
+    meets the torch>= floor transformers declares (ceilings ignored). False keeps the import path, always exact."""
+    import importlib.metadata
+    import importlib.util
+
+    # transformers 4.x: torch only when USE_TORCH is true/auto and USE_TF is not true. `import
+    # unsloth` sets USE_TF=0, which leaves torch on.
+    true_values = {"1", "ON", "YES", "TRUE"}
+    if os.environ.get("USE_TORCH", "AUTO").upper() not in true_values | {"AUTO"}:
+        return False
+    if os.environ.get("USE_TF", "AUTO").upper() in true_values:
+        return False
+    try:
+        from packaging.requirements import Requirement
+        from packaging.version import Version
+
+        if importlib.util.find_spec("torch") is None:
+            return False
+        torch_version = Version(importlib.metadata.version("torch"))
+        requirements = [Requirement(r) for r in importlib.metadata.requires("transformers") or []]
+    except Exception:  # noqa: BLE001 -- no metadata, an unparsable version: keep the import path
+        return False
+    # Only the floors: transformers checks a minimum torch at runtime, never the extras' ceilings
+    # (4.52 declares torch<2.7 and runs on newer torch).
+    floors = [
+        spec
+        for r in requirements
+        if r.name == "torch"
+        for spec in r.specifier
+        if spec.operator in (">=", ">")
+    ]
+    if not floors:
+        return False
+    return all(spec.contains(torch_version, prereleases = True) for spec in floors)
+
+
 def _mapping_names_from_source(path: str) -> Optional[Dict[str, dict]]:
     """The *_MAPPING_NAMES dicts read below, taken from modeling_auto.py's source with ast, never
     executed. Importing the module imports torch: seconds and hundreds of MB in a process that has
@@ -773,6 +814,7 @@ def _build_detection_sets():
         source_path = (
             None
             if "transformers.models.auto.modeling_auto" in sys.modules
+            or not _transformers_enables_torch()
             else _modeling_auto_source_path()
         )
         from_source = _mapping_names_from_source(source_path) if source_path else None
