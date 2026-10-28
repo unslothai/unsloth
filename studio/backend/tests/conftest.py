@@ -51,6 +51,11 @@ for _up in Path(__file__).resolve().parents:
             sys.path.insert(0, str(_repo_shared))
         break
 
+# pytest 9.2's monkeypatch deletes a torch config entry on undo instead of restoring it; see torch_config_guard.py.
+from torch_config_guard import install_monkeypatch_fix  # noqa: E402
+
+install_monkeypatch_fix()
+
 # Let the diffusion patch backend lazily import unsloth_zoo on a CPU-only test host: unsloth_zoo runs accelerator
 # detection at import and raises without a GPU unless this is set. setdefault so an explicit override wins.
 os.environ.setdefault("UNSLOTH_ALLOW_CPU", "1")
@@ -96,6 +101,24 @@ def _no_vae_structural_verdict_cache(monkeypatch):
     """Structural VAE fusion verdicts persist under Studio's cache root; tests must not read or write the real one
     (the cache tests turn it on against a temp dir)."""
     monkeypatch.setenv("UNSLOTH_VAE_FUSED_STRUCTURAL_CACHE", "0")
+
+
+@pytest.hookimpl(trylast = True)
+def pytest_collection_modifyitems(config, items):
+    """After xdist tags grouped tests; see tests/_shared/xdist_group_check.py."""
+    from xdist_group_check import check
+    check(config, items)
+
+
+@pytest.fixture(autouse = True)
+def _no_deleted_torch_config_entries():
+    """A test that leaves a dynamo / inductor config entry deleted errors at its own teardown; see
+    tests/_shared/torch_config_guard.py."""
+    from torch_config_guard import check_after_test, install_delete_recorder
+
+    install_delete_recorder()
+    yield
+    check_after_test()
 
 
 @pytest.fixture(autouse = True)
@@ -152,6 +175,21 @@ def _forget_mcp_discovery_state():
                     # A test's monkeypatched stand-in sessions (SimpleNamespace) have no close(); its own
                     # monkeypatch puts the real dict back.
                     pass
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
+def _forget_queued_media_requests():
+    def _forget():
+        video_routes = sys.modules.get("routes.video")
+        if video_routes is not None:
+            video_routes._VIDEO_QUEUE.clear()
+        batching = sys.modules.get("core.inference.image_request_batching")
+        if batching is not None:
+            batching._OPEN.clear()
 
     _forget()
     yield

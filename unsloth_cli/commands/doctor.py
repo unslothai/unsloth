@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`unsloth doctor --gpus`: a multi-GPU preflight to run before a distributed job.
-
-Reports the GPUs, versions and interconnect, checks that peer copies keep their
-data, runs a short all_reduce across every visible GPU, and ends with a verdict
-and the settings to try. torch is imported lazily so `unsloth --help` stays fast.
-"""
+"""unsloth doctor --gpus: multi-GPU preflight; torch imported lazily to keep --help fast."""
 
 import os
 import shutil

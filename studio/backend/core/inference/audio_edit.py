@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Checks for an Edit speech request, and the source clip an edit keeps in history.
-
-The client renders the word diff (DotTTS markup or FireRedAudio instructions); each check holds it
-against both transcripts, so a malformed or injected value never reaches the runtime.
-"""
+"""Checks for Edit speech requests (DotTTS markup or FireRedAudio word diffs, verified against both
+transcripts) and the source clip an edit keeps in history, so malformed or injected values never
+reach the runtime."""
 
 from __future__ import annotations
 

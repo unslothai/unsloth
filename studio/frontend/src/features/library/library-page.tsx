@@ -816,7 +816,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     if (tab === "folders") {
       return (
         <Button
-          variant="dark"
+          variant="muted"
           className="rounded-full"
           onClick={() => setNameDialog({ mode: "create", parentId: null })}
         >

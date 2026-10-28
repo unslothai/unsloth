@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Dependency-light wrapper around tokenizer.apply_chat_template with a kwarg fallback for templates
-that reject reasoning/tools args, plus the shared native-chat-template fallback used by the
-transformers and MLX backends."""
+"""Dependency-light wrapper around tokenizer.apply_chat_template, dropping reasoning/tools kwargs
+for templates that reject them; shared native fallback for transformers and MLX."""
 
 import copy
 import functools

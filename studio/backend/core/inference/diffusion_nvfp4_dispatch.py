@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FlashInfer's per-call dispatch work, cached. Every private import is HERE, fenced by an EXACT version
-allowlist, ONE all-or-nothing try, and a per-device bit-identity ``verify()`` (a symbol can change meaning)."""
+"""FlashInfer dispatch: every private import lives here, behind an exact-version allowlist in one
+all-or-nothing try, plus per-device verify()"""
 
 from __future__ import annotations
 

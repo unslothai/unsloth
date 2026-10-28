@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`unsloth mcp add <agent>` and the checks behind `unsloth doctor --mcp`.
-
-Agent configs only name the environment variable that holds the API key. `mcp add`
-never reads the key; doctor sends it to the server to test it and never prints it.
-"""
+"""mcp add never reads the API key (configs name only its env var); doctor tests it, never prints it."""
 
 import copy
 import difflib
