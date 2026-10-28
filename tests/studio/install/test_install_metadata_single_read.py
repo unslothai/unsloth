@@ -61,7 +61,8 @@ def _write(
         if raw:
             (info / "METADATA").write_bytes(metadata)
         else:
-            (info / "METADATA").write_text(metadata, encoding = "utf-8", newline = "")
+            # write_bytes, not write_text(newline=""): that argument is 3.10+.
+            (info / "METADATA").write_bytes(metadata.encode("utf-8"))
     return info
 
 
