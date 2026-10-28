@@ -1035,7 +1035,7 @@ export function ResourcesTab() {
                 : `${t("settings.resources.gpu.deviceWithIndex", {
                     index: ordinal,
                   })}, ${backendLabel}`;
-            const telemetryText = [
+            const telemetryParts = [
               telemetry?.loadPct != null
                 ? `${t("settings.resources.liveMonitor.gpuLoad")} ${formatPercent(telemetry.loadPct)}`
                 : null,
@@ -1045,9 +1045,7 @@ export function ResourcesTab() {
               telemetry?.powerDrawW != null
                 ? formatPower(telemetry.powerDrawW, telemetry.powerLimitW)
                 : null,
-            ]
-              .filter(Boolean)
-              .join(" · ");
+            ].filter((part): part is string => Boolean(part));
             return (
               <div
                 key={`${device.index ?? index}-${device.name ?? "gpu"}`}
@@ -1088,6 +1086,17 @@ export function ResourcesTab() {
                       </>
                     ) : null}
                   </span>
+                  {telemetryParts.length > 0 ? (
+                    // Breaks between readings, never inside "612 / 700 W".
+                    <span className="flex flex-wrap gap-x-1 text-xs tabular-nums text-muted-foreground">
+                      {telemetryParts.map((part, partIndex) => (
+                        <span key={part} className="whitespace-nowrap">
+                          {partIndex > 0 ? "· " : null}
+                          {part}
+                        </span>
+                      ))}
+                    </span>
+                  ) : null}
                   <span className="text-xs text-muted-foreground">
                     {t("settings.resources.gpu.usedOf", {
                       used: usedText,
@@ -1119,11 +1128,6 @@ export function ResourcesTab() {
                       barClassName="h-1.5 rounded-full"
                     />
                   )}
-                  {telemetryText ? (
-                    <span className="text-ui-11 tabular-nums text-muted-foreground">
-                      {telemetryText}
-                    </span>
-                  ) : null}
                 </div>
               </div>
             );
