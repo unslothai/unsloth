@@ -1917,6 +1917,23 @@ class ResearchSupervisor:
                             chunk = json.loads(data)
                             _stream_error = stream_error_from_chunk(chunk)
                             if _stream_error is not None:
+                                error = chunk.get("error")
+                                if (
+                                    json_mode
+                                    and phase in ("decision", "synthesis_audit")
+                                    and isinstance(error, dict)
+                                    and error.get("code") == "structured_output_failed"
+                                ):
+                                    # Prompt-and-validate providers reject malformed JSON before
+                                    # delivering it. Use the same plan/evidence fallbacks as a
+                                    # malformed reply, discarding any rejected partial output.
+                                    await self._check_active(run["id"])
+                                    logger.warning(
+                                        "research.structured_output_failed run_id=%s phase=%s",
+                                        run["id"],
+                                        phase,
+                                    )
+                                    return "", "", None, usage
                                 # Keep the server's error text: it names the cause and both token counts a user can act on.
                                 raise _stream_error
                             normalized_usage = _normalize_completion_usage(
