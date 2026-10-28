@@ -19,7 +19,15 @@ class _Ctx:
         self.params.update(params)
         self.seed, self.caller = 1, object()
 
-    async def call(self, method, path, json = None, params = None, files = None, **_):
+    async def call(
+        self,
+        method,
+        path,
+        json = None,
+        params = None,
+        files = None,
+        **_,
+    ):
         self.calls.append((method, path, params, json, files))
         return self.routes(method, path, params, json)
 
@@ -148,3 +156,34 @@ def test_live_metrics_stream_to_the_node_as_a_partial(monkeypatch):
     assert ctx.partials[0][1]["loss_history"] == [2.0, 1.5]
     assert out["metrics"]["loss_history"] == [2.0, 1.5]
     assert out["holdout"] is None
+
+
+def test_holdout_splits_only_the_sliced_rows(monkeypatch):
+    monkeypatch.setattr("hub.utils.host_paths.cache_reference", lambda p: f"cache:{p}")
+    started = []
+    ctx = _Ctx(_recipe_routes(started), holdout_percent = 10, dataset_slice_end = 9)
+    with pytest.raises(RuntimeError, match = "started"):
+        asyncio.run(training.finetune(ctx))
+    files = _uploads(ctx)
+    train = next(rows for name, rows in files.items() if name.endswith("-train.jsonl"))
+    held = next(rows for name, rows in files.items() if name.endswith("-holdout.jsonl"))
+    assert len(train) == 9 and len(held) == 1
+    assert {r["q"] for r in train + held} == {f"q{i}" for i in range(10)}
+    assert "dataset_slice_end" not in started[0]
+
+
+def test_holdout_reads_hub_datasets_with_the_requests_token(monkeypatch):
+    seen = {}
+
+    def load_rows(dataset, token, end):
+        seen["token"] = token
+        return ROWS
+
+    monkeypatch.setattr(training, "_load_rows", load_rows)
+    monkeypatch.setattr("core.training.account_jobs.managed_account", lambda: False)
+    ctx = _Ctx(_recipe_routes([]), holdout_percent = 10)
+    ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/gated"}}
+    ctx.caller = type("C", (), {"hf_token": "hf_req"})()
+    with pytest.raises(RuntimeError, match = "started"):
+        asyncio.run(training.finetune(ctx))
+    assert seen["token"] == "hf_req"

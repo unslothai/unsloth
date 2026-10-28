@@ -85,7 +85,11 @@ async def finetune(ctx: NodeContext) -> dict:
     holdout = None
     percent = int(ctx.params.get("holdout_percent") or 0)
     if percent > 0:
-        dataset, holdout = await holdout_split(ctx, dataset, percent, int(ctx.params.get("holdout_seed") or 0))
+        dataset, holdout = await holdout_split(
+            ctx, dataset, percent, int(ctx.params.get("holdout_seed") or 0)
+        )
+        # The split already covers only the sliced rows; slicing the train half again would shrink it.
+        config.pop("dataset_slice_end", None)
     if dataset.get("source") == "hf":
         config["hf_dataset"] = dataset["ref"]
         if dataset.get("subset"):
@@ -136,7 +140,12 @@ async def finetune(ctx: NodeContext) -> dict:
             history["loss"] = await loss_history(ctx, job_id) or history["loss"]
             ctx.partial(
                 "metrics",
-                {"loss": slot.loss, "steps": slot.step, "total": slot.total_steps, "loss_history": history["loss"]},
+                {
+                    "loss": slot.loss,
+                    "steps": slot.step,
+                    "total": slot.total_steps,
+                    "loss_history": history["loss"],
+                },
                 step = slot.step,
                 total = slot.total_steps,
             )
@@ -184,6 +193,7 @@ async def finetune(ctx: NodeContext) -> dict:
             "kind": "checkpoint",
             "name": run,
             "base_model": config["model_name"],
+            "output_dir": details.get("output_dir"),
         },
         "metrics": metrics,
         "holdout": holdout,
@@ -194,7 +204,9 @@ def downsample(values: list, points: int = HISTORY_POINTS) -> list:
     if len(values) <= points:
         return list(values)
     stride = len(values) / points
-    return [values[min(len(values) - 1, round(i * stride))] for i in range(points - 1)] + [values[-1]]
+    return [values[min(len(values) - 1, round(i * stride))] for i in range(points - 1)] + [
+        values[-1]
+    ]
 
 
 async def loss_history(ctx: NodeContext, job_id: str) -> list:
@@ -218,21 +230,28 @@ def holdout_row_ids(total: int, percent: int, seed: int) -> list[int]:
     return sorted(order[:count])
 
 
-def _load_rows(dataset: dict) -> list[dict]:
+def _load_rows(dataset: dict, token: Any, end: Optional[int]) -> list[dict]:
     from datasets import load_dataset
 
     from core.flows.nodes.data import local_seed_path
 
     if dataset.get("source") == "hf":
         loaded = load_dataset(
-            str(dataset["ref"]), dataset.get("subset") or None, split = dataset.get("split") or "train"
+            str(dataset["ref"]),
+            dataset.get("subset") or None,
+            split = dataset.get("split") or "train",
+            token = token,
         )
     else:
         path = local_seed_path(dataset.get("ref"))
         builder = next((b for ext, b in LOADERS.items() if path.endswith(ext)), None)
         if builder is None:
-            raise FlowNodeError("Hold-out works on Parquet, CSV or JSON datasets; set Hold out % to 0 for this one")
+            raise FlowNodeError(
+                "Hold-out works on Parquet, CSV or JSON datasets; set Hold out % to 0 for this one"
+            )
         loaded = load_dataset(builder, data_files = path, split = "train")
+    if end is not None:
+        loaded = loaded.select(range(min(len(loaded), end + 1)))
     if len(loaded) > HOLDOUT_MAX_ROWS:
         raise FlowNodeError(
             f"{len(loaded)} rows is too many to hold out from here; set Hold out % to 0 or use a smaller slice"
@@ -240,18 +259,30 @@ def _load_rows(dataset: dict) -> list[dict]:
     return loaded.to_list()
 
 
-async def holdout_split(ctx: NodeContext, dataset: dict, percent: int, seed: int) -> tuple[dict, dict]:
+async def holdout_split(
+    ctx: NodeContext, dataset: dict, percent: int, seed: int
+) -> tuple[dict, dict]:
     """Train on the rest of the rows and hand the held-out ones on as their own dataset."""
     from core.flows.nodes.data import recipe_artifact, recipe_rows, upload_rows
+    from core.training.account_jobs import account_hf_token
 
     if str(ctx.params.get("task") or "text") != "text" or ctx.params.get("dataset_streaming"):
-        raise FlowNodeError("Hold-out works on text datasets that are not streamed; set Hold out % to 0")
+        raise FlowNodeError(
+            "Hold-out works on text datasets that are not streamed; set Hold out % to 0"
+        )
     ctx.progress(phase = "Holding out rows")
+    # Same "use rows up to" slice the trainer would apply, so the split is of the configured range.
+    end = ctx.params.get("dataset_slice_end")
+    end = None if end in (None, "") else int(end)
     if dataset.get("source") == "recipe" and not recipe_artifact(dataset.get("ref")):
         rows = await recipe_rows(ctx, str(dataset["ref"]))
+        if end is not None:
+            rows = rows[: end + 1]
     else:
+        # The request's own Hub token, as /api/train/start gets it; managed accounts never borrow the server's.
+        token = account_hf_token(getattr(ctx.caller, "hf_token", None))
         try:
-            rows = await asyncio.to_thread(_load_rows, dataset)
+            rows = await asyncio.to_thread(_load_rows, dataset, token, end)
         except FlowNodeError:
             raise
         except Exception as exc:

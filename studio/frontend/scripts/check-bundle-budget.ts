@@ -443,7 +443,9 @@ export const BUDGET = {
   // Re-added on top of main's #14582 budget at the e3d92b48e merge: main's +8,926 B raw / +2,367 B transfer
   // since 85d63e074 on top of the line this replaced.
   // Merged onto Flows (flows-base-rl): Flows' budget plus the #12601 growth measured against d4f1ceb19.
-  transferBytes: 2_111_327,
+  // Flows gallery kept as Daniel's (no Studio Card/Skeleton/Textarea/Spinner there): chunk split moves
+  // ~1.2 KB transfer into startup (2,053.3 -> 2,054.5 KB, Node 26, 127 chunks). Raised by that.
+  transferBytes: 2_112_900,
   rawBytes: 6_999_346,
 };
 
