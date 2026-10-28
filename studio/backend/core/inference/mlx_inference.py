@@ -455,6 +455,48 @@ def share_kv_rows(entries, base):
     return shared
 
 
+def kv_skeleton(entries):
+    """``entries`` with each in-order KV entry's rows left out (its ``offset`` kept) and recurrent
+    state copied; None when another entry holds rows, as a quantized or wrapped one does."""
+    import mlx.core as mx
+
+    classes = (_cache_classes("KVCache"), _cache_classes("RotatingKVCache"))
+    recurrent = _cache_classes("ArraysCache")
+    skeleton = []
+    for entry in entries:
+        if type(entry) in classes[0] + classes[1] and _rows_in_order(entry, classes):
+            entry = copy.copy(entry)
+            entry.keys = entry.values = None
+        elif isinstance(entry, recurrent):
+            entry = _copy_value(entry, mx)
+        else:
+            return None
+        skeleton.append(entry)
+    mx.eval(list(_arrays(skeleton, mx)))
+    return skeleton
+
+
+def fill_kv_skeleton(skeleton, final):
+    """Point ``skeleton``'s KV entries at the leading rows of ``final``, the same row's cache once
+    it has decoded on; False when ``final`` does not hold them from the first row (a ring that
+    has wrapped)."""
+    kv = _cache_classes("KVCache") + _cache_classes("RotatingKVCache")
+    if len(final) != len(skeleton):
+        return False
+    pairs = [(entry, source) for entry, source in zip(skeleton, final) if type(entry) in kv]
+    if not all(
+        type(source) is type(entry)
+        and source.keys is not None
+        and getattr(source, "_idx", source.offset) == source.offset >= entry.offset
+        for entry, source in pairs
+    ):
+        return False
+    for entry, source in pairs:
+        entry.keys = source.keys[..., : entry.offset, :]
+        entry.values = source.values[..., : entry.offset, :]
+    return True
+
+
 def compact_sliding_windows(entries):
     """Drop ring rows past the window after a multi-row update; no later update reads them."""
     rings = _cache_classes("RotatingKVCache")
@@ -528,6 +570,21 @@ class VLMPromptSnapshotStore:
     def release_held(self):
         if self._held is not None:
             self._held.clear()
+
+    def over_budget(self, entries):
+        return cache_entries_nbytes(entries) > self._max_bytes
+
+    def held_entries(self, key):
+        """``key``'s held snapshots as (prefix ids, entries, replay), shortest first."""
+        held = self._held._entries.items() if self._held else ()
+        return sorted(
+            (
+                (ids, entries, self._held._is_replay((stored, ids)))
+                for (stored, ids), (entries, _nbytes) in held
+                if stored == key
+            ),
+            key = lambda item: len(item[0]),
+        )
 
     def _lookup(self, key, token_ids, limit):
         best = None
@@ -887,8 +944,10 @@ class VLMBatchRowCache:
     and store: ``open`` resumes the longest snapshot ending by the row's boundary and names the
     chunk ends to bank, the boundary and the replay; ``checkpoint`` stores each. With no
     ``store`` the row prefills cold on the same cache layout; ``releases_unserved`` frees what
-    does not serve it, as the single path does. A row holds nothing over the budget, which
-    would sit beside its own decode, and takes what is held without copying it."""
+    does not serve it, as the single path does. A row takes what is held without copying it.
+    Over the budget a copy would sit beside the row's own decode, so with ``alone`` the row
+    keeps only a skeleton and, if ``alone()`` as it leaves, holds it filled from the cache
+    unsloth-zoo hands back in ``retire``; otherwise it holds nothing."""
 
     def __init__(
         self,
@@ -898,6 +957,7 @@ class VLMBatchRowCache:
         media_token_ids = (),
         releases_unserved = False,
         step = VLM_PREFILL_STEP,
+        alone = None,
     ):
         self._store = store
         self._key = key
@@ -905,8 +965,10 @@ class VLMBatchRowCache:
         self._media_token_ids = tuple(media_token_ids)
         self._releases_unserved = releases_unserved
         self._step = step
+        self._alone = alone
         self._token_ids = []
         self._replay = None
+        self._skeletons = []
 
     def open(self, token_ids):
         self._token_ids = token_ids = list(token_ids)
@@ -917,12 +979,13 @@ class VLMBatchRowCache:
         if boundary < media_end:
             self._keep(None)
             return self._make_cache(), ()
-        cache = None
+        cache, handed = None, False
+        held = self._store.held_entries(self._key) if self._alone is not None else ()
         entries, prefix = self._store.lookup(self._key, token_ids, boundary, takes = True)
         if entries is not None and prefix >= media_end:
             if (self._key, tuple(token_ids[:prefix])) not in self._store:
                 # Handed over by the store: the row's only copy.
-                cache = entries
+                cache, handed = entries, True
             else:
                 try:
                     # The row advances its cache in place; the store keeps its own.
@@ -936,7 +999,15 @@ class VLMBatchRowCache:
         self._keep((self._key, tuple(token_ids[:prefix])) if prefix else None)
         replay = len(token_ids) - 1
         self._replay = replay if replay != boundary else None
-        return cache, [length for length in (boundary, replay) if length > prefix]
+        lengths = [length for length in (boundary, replay) if length > prefix]
+        if handed and not lengths:
+            # Banking nothing, the row holds again what served it and the prefixes it extends.
+            self._skeletons = [
+                (len(ids), skeleton, is_replay)
+                for ids, held_entries, is_replay in held
+                if len(ids) <= prefix and (skeleton := kv_skeleton(held_entries))
+            ]
+        return cache, lengths
 
     def _keep(self, item):
         if self._releases_unserved:
@@ -945,15 +1016,38 @@ class VLMBatchRowCache:
     def checkpoint(self, token_count, cache):
         # Runs inside the batch's prefill: a failure costs a later turn its reuse, never this row.
         try:
+            replay = token_count == self._replay
+            skeleton = (
+                self._alone is not None and self._store.over_budget(cache) and kv_skeleton(cache)
+            )
+            if skeleton:
+                self._skeletons.append((token_count, skeleton, replay))
+                return
             self._store.store(
                 self._key,
                 self._token_ids[:token_count],
                 copy_cache_entries(cache),
-                replay = token_count == self._replay,
+                replay = replay,
                 hold = False,
             )
         except Exception as exc:
             logger.info("MLX VLM prompt cache: batched row snapshot not stored (%s)", exc)
+
+    def retire(self, take):
+        skeletons, self._skeletons = self._skeletons, []
+        if not skeletons or not self._alone():
+            return
+        try:
+            import mlx.core as mx
+
+            final = take()
+            if not all(fill_kv_skeleton(entries, final) for _count, entries, _replay in skeletons):
+                return
+            mx.eval([list(_arrays(entries, mx)) for _count, entries, _replay in skeletons])
+            for token_count, entries, replay in skeletons:
+                self._store.store(self._key, self._token_ids[:token_count], entries, replay = replay)
+        except Exception as exc:
+            logger.info("MLX VLM prompt cache: batched row snapshot not held (%s)", exc)
 
 
 def _mlx_adapter_modules(model):
@@ -4730,6 +4824,14 @@ def _row_prompt_cache_gap():
     return row_prompt_cache_unavailable_reason()
 
 
+def _row_retire_gap():
+    try:
+        from unsloth_zoo.mlx.generate import row_retire_unavailable_reason
+    except ImportError:
+        return "the installed unsloth-zoo cannot hand a batched row's cache back"
+    return row_retire_unavailable_reason()
+
+
 def _row_quantized_cache_gap():
     try:
         from unsloth_zoo.mlx.generate import row_quantized_prompt_cache_unavailable_reason
@@ -4754,6 +4856,7 @@ class _VisionBatchSession:
         self._adapter_state = adapter_state
         self._resumes_rows = _row_prompt_cache_gap() is None
         self._rows = {}
+        self._leaving = set()
         self._by_row = {}
         self._settled = {}
         self._held = ExitStack()
@@ -4781,6 +4884,7 @@ class _VisionBatchSession:
         except BaseException:
             self._held.close()
             raise
+        self._retires_rows = self._resumes_rows and _row_retire_gap() is None
 
     @property
     def rows_in_flight(self) -> int:
@@ -4807,8 +4911,9 @@ class _VisionBatchSession:
         backend = self.backend
         plan = backend._plan_vlm_request(request, decodes_ids = self._decodes_ids)
         row = _VisionBatchRow(handle = handle, plan = plan)
+        alone = self._alone(handle) if self._retires_rows else None
         state = (
-            backend._vlm_batch_row_cache(self._adapter_state, plan.images)
+            backend._vlm_batch_row_cache(self._adapter_state, plan.images, alone = alone)
             if self._resumes_rows
             else None
         )
@@ -4848,6 +4953,12 @@ class _VisionBatchSession:
             type(backend._model).__name__,
         )
         return plan.think_prefix
+
+    def _alone(self, handle):
+        """Whether no other row decodes beside ``handle``'s. Rows that ended this step count until
+        it ends: the speculative stream frees their caches after reporting them."""
+        rows, leaving = self._rows, self._leaving
+        return lambda: all(other == handle for other in (*rows, *leaving))
 
     def step(self, waiting = None):
         now, stopped = None, {}
@@ -4891,9 +5002,11 @@ class _VisionBatchSession:
                 if not row.cancelled:
                     row.reason = result.finish_reason
                 self._record(row, result, len(result.token_ids) + (result.finish_reason == "stop"))
+                self._leaving.add(row.handle)
                 yield from self._retire(row, cancelled = row.cancelled)
             elif row.cancelled:
                 stopped[row.handle] = row
+        self._leaving.clear()
         yield from self._fail(list(failing.values()))
         for row in stopped.values():
             if row.handle in self._rows:
@@ -5276,6 +5389,7 @@ class MLXInferenceBackend:
         self,
         adapter_state,
         images = None,
+        alone = None,
     ):
         """A batched row's ``prompt_cache_state``, or None while the store is off on an unquantized
         load. Otherwise every row gets one, so all rows' caches share the factory's layout."""
@@ -5306,6 +5420,7 @@ class MLXInferenceBackend:
             media_ids,
             releases_unserved = bool(images),
             step = vlm_prefill_step(),
+            alone = alone,
         )
 
     @staticmethod

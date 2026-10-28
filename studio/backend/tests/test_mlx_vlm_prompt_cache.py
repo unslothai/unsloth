@@ -705,6 +705,106 @@ def test_session_serves_and_stores_only_prefixes_past_the_last_media_token(fake_
     assert len(store) == 0 and store.nbytes == 0
 
 
+@pytest.mark.parametrize("ring", (False, True))
+def test_a_lone_batched_row_holds_its_snapshots_from_the_cache_it_hands_back(ring):
+    mx = pytest.importorskip("mlx.core")
+    cache = pytest.importorskip("mlx_vlm.models.cache")
+
+    def positions(start, n):
+        return mx.arange(start, start + n, dtype = mx.float32).reshape(1, 1, n, 1) * mx.ones(
+            (1, 2, 1, 64)
+        )
+
+    def advance(entries, start, n):
+        for entry in entries:
+            if isinstance(entry, cache.ArraysCache):
+                entry[0] = mx.full((1, 64), float(start + n))
+            else:
+                entry.update_and_fetch(positions(start, n), -positions(start, n))
+        mx.eval([entry.state for entry in entries])
+
+    def prefill(
+        row,
+        ids,
+        decoded = 6,
+    ):
+        entries, lengths = row.open(ids)
+        done = cache_entries_offset(entries)
+        while done < len(ids) - 1:
+            take = min(STEP - done % STEP, len(ids) - 1 - done)
+            advance(entries, done, take)
+            done += take
+            if done in lengths:
+                row.checkpoint(done, entries)
+        for step in range(decoded):
+            advance(entries, done + step, 1)
+        # What unsloth-zoo hands back for a lone row: its own entries.
+        return lambda: entries
+
+    ids, alone = list(range(1000)), [True]
+    kv = (lambda: cache.RotatingKVCache(max_size = 4096)) if ring else cache.KVCache
+    plain = lambda: [kv(), cache.ArraysCache(size = 1), kv()]
+    window = lambda: cache.RotatingKVCache(max_size = 256)
+    wrapped = lambda: [window(), cache.ArraysCache(size = 1), window()]
+    store = VLMPromptSnapshotStore(max_bytes = 200_000)
+
+    def holds(lengths):
+        assert [len(item[1]) for item in store._held._entries] == lengths
+        for (_key, prefix), (entries, _nbytes) in store._held._entries.items():
+            n = len(prefix)
+            assert [entry.offset for entry in entries[::2]] == [n, n]
+            assert entries[1][0][0, 0].item() == n
+            for entry in entries[::2]:
+                assert mx.array_equal(entry.keys, positions(0, n)).item()
+                assert mx.array_equal(entry.values, -positions(0, n)).item()
+
+    row = VLMBatchRowCache(store, "m", plain, step = STEP, alone = lambda: alone[0])
+    take = prefill(row, ids[:700])
+    assert not store._held and len(store) == 0
+    assert [e.keys for _n, skeleton, _r in row._skeletons for e in skeleton[::2]] == [None] * 4
+    row.retire(take)
+    holds([512, 699])
+    # A regenerate banks nothing, so it holds again what served it and the boundary it extends.
+    row = VLMBatchRowCache(store, "m", plain, step = STEP, alone = lambda: alone[0])
+    take = prefill(row, ids[:700])
+    assert not store._held and cache_entries_offset(take()) == 705
+    row.retire(take)
+    holds([512, 699])
+    # A prompt one past the boundary resumes it whole and holds it again, not the longer replay.
+    row = VLMBatchRowCache(store, "m", plain, step = STEP, alone = lambda: alone[0])
+    row.retire(prefill(row, ids[:513]))
+    holds([512])
+    # The next turn resumes the boundary and holds only what it banks itself.
+    row = VLMBatchRowCache(store, "m", plain, step = STEP, alone = lambda: alone[0])
+    take = prefill(row, ids[:900])
+    assert [n for n, _skeleton, _replay in row._skeletons] == [768, 899]
+    row.retire(take)
+    holds([768, 899])
+
+    # Held only by a row alone in the batch, from a cache holding its rows in order, and only
+    # where unsloth-zoo hands that cache back.
+    short = prefill(VLMBatchRowCache(None, "m", plain), ids[:600], decoded = 0)
+    slid = prefill(VLMBatchRowCache(None, "m", wrapped), ids[:700], decoded = 0)
+    for layout, alone[0], handed in (
+        (plain, False, lambda: pytest.fail("taken")),
+        (plain, True, short),
+        (plain, True, slid),
+        (wrapped, True, lambda: wrapped()),
+    ):
+        row = VLMBatchRowCache(store, "m", layout, step = STEP, alone = lambda: alone[0])
+        prefill(row, ids[:700])
+        assert bool(row._skeletons) is (layout is plain)
+        row.retire(handed)
+        assert not store._held and len(store) == 0 and not row._skeletons
+    prefill(VLMBatchRowCache(store, "m", plain, step = STEP), ids[:700])
+    assert not store._held and len(store) == 0
+    # Within the budget a row banks copies as it prefills.
+    store = VLMPromptSnapshotStore(max_bytes = 10**9)
+    row = VLMBatchRowCache(store, "m", plain, step = STEP, alone = lambda: True)
+    prefill(row, ids[:700])
+    assert len(store) == 2 and not row._skeletons
+
+
 def _prefill_row(state, token_ids):
     """unsloth-zoo's batched row: resume the opened cache, checkpoint where a grid chunk ends."""
     cache, lengths = state.open(token_ids)
