@@ -2493,6 +2493,7 @@ html[data-chat-font] .aui-root {
 	--text-ui-19: calc(1.1875rem * var(--ui-font-scale, 1));
 	--text-ui-21: calc(1.3125rem * var(--ui-font-scale, 1));
 	--text-ui-25: calc(1.5625rem * var(--ui-font-scale, 1));
+	--text-ui-26: calc(1.625rem * var(--ui-font-scale, 1));
 	--text-ui-30: calc(1.875rem * var(--ui-font-scale, 1));
 	--text-ui-34: calc(2.125rem * var(--ui-font-scale, 1));
 	--text-ui-50: calc(3.125rem * var(--ui-font-scale, 1));
