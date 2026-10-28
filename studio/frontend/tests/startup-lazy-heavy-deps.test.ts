@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// mermaid (~0.5 MB), node-forge (~0.27 MB) and js-yaml load where they are used, not at startup:
-// a static import from the chat graph puts them back in the eager bundle.
+// A static import of these from the chat graph puts them back in the eager startup bundle.
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";

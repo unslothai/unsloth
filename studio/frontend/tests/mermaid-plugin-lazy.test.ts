@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Mermaid loads with the first diagram, not with the app; config handed in before then must still
-// be the one in force when that diagram renders, as an eager mermaid.initialize left it.
+// Config handed in before mermaid loads must be the one in force at the first render.
 import assert from "node:assert/strict";
 import test from "node:test";
 

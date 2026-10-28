@@ -21,8 +21,7 @@ const SECURE_KEYS = [
   "altFontFamily",
 ];
 
-// Mermaid (~0.5 MB) loads with the first diagram, not with the app. Until then the last config
-// handed in is kept and applied on load, which is what an eager mermaid.initialize left in force.
+// Mermaid loads with the first diagram; until then the last config handed in is kept and applied on load.
 let stock: DiagramPlugin | null = null;
 let loading: Promise<DiagramPlugin> | null = null;
 let pendingConfig: MermaidConfig | undefined;
