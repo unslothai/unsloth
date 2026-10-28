@@ -139,6 +139,11 @@ export const ptBR = {
     more: "Mais",
     addressPlaceholder: "Pesquise ou digite um URL",
     local: "Local",
+    browserUse: {
+      label: "Uso do navegador",
+      description: "Permite que os modelos controlem o navegador integrado",
+      unavailable: "Carregue um modelo que chame ferramentas para que ele use o navegador.",
+    },
     suggested: "Sugestões",
     suggestedMenu: {
       open: "Abrir",
@@ -1413,13 +1418,13 @@ export const ptBR = {
       unsupportedArch: "O sandbox do Windows (MXC) só funciona no Windows x64, então não está disponível neste PC.",
       builtinNeedsUpdate: "O contêiner integrado do Windows precisa da build {required} ou mais recente, e este PC usa {current}. Instale a atualização mais recente do Windows para usá-lo sem uma etapa de administrador, ou ative o sandbox alternativo abaixo.",
       unsupportedBuild: "O sandbox do Windows (MXC) precisa do Windows 11 24H2 (build 26100) ou mais recente, então não está disponível neste PC.",
-      permissionsIntro: "Escolha quando as ferramentas perguntam antes e se Python e Terminal também rodam dentro do sandbox do sistema.",
       permissionLabel: "Permissões de ferramentas",
+      levelRowLabel: "Nível do sandbox",
       levelPickerTitle: "Como o código deve ser isolado?",
       levelOff: "Desativado",
       levelOffShort: "Acesso total desliga o sandbox",
-      levelHighDetail: "Sandbox do sistema. Python e Terminal rodam dentro do sandbox do sistema (bubblewrap, Seatbelt ou MXC) além das proteções de software. Sem um sandbox do sistema funcionando, chamadas arriscadas perguntam antes.",
-      levelLowDetail: "Sandbox de software. Python e Terminal rodam somente com as proteções de software, fora do sandbox do sistema. Chamadas arriscadas perguntam antes, exceto com Acesso total.",
+      levelHighDetail: "Python e Terminal rodam dentro do sandbox do sistema (bubblewrap, Seatbelt ou MXC) além das proteções de software. Sem um sandbox do sistema funcionando, chamadas arriscadas perguntam antes.",
+      levelLowDetail: "Python e Terminal rodam somente com as proteções de software, fora do sandbox do sistema. Chamadas arriscadas perguntam antes, exceto com Acesso total.",
       levelLabel: "Sandbox",
       levelHigh: "Alto",
       levelLow: "Baixo",
@@ -2064,13 +2069,13 @@ export const ptBR = {
         },
         details: {
           ask:
-            "Pede aprovação antes de cada chamada de ferramenta, incluindo código de terminal e Python, buscas na web, edição de arquivos e ferramentas MCP. Ferramentas executadas por um provedor externo não são pausadas. Ideal quando você quer revisar cada etapa.",
+            "Pede aprovação antes de cada chamada de ferramenta, incluindo código de terminal e Python, buscas na web, edição de arquivos e ferramentas MCP. Ferramentas executadas por um provedor externo não são pausadas.",
           auto:
             "Executa sozinho as chamadas comuns e só pergunta quando uma ação parece arriscada, como ler credenciais, elevar privilégios ou executar comandos destrutivos.",
           off:
-            "Executa todas as chamadas de ferramentas sem perguntar. O código de Python e terminal continua rodando no sandbox, que limita quais arquivos do seu computador ele pode acessar. Se este computador não tiver um sandbox do sistema funcionando, chamadas arriscadas de Python e terminal perguntam primeiro.",
+            "Executa todas as chamadas de ferramentas sem perguntar. O código de Python e terminal continua rodando no sandbox, que limita quais arquivos do seu computador ele pode acessar. Sem um sandbox do sistema funcionando, chamadas arriscadas perguntam antes.",
           full:
-            "Executa todas as chamadas de ferramentas sem perguntar e desativa o sandbox de código, assim o código de Python e terminal pode ler e alterar qualquer arquivo que sua conta acessa. Ideal para tarefas confiáveis que precisam trabalhar fora do sandbox.",
+            "Executa todas as chamadas de ferramentas sem perguntar e desativa o sandbox de código, assim o código de Python e terminal pode ler e alterar qualquer arquivo que sua conta acessa.",
         },
       },
     },
@@ -2324,6 +2329,7 @@ export const ptBR = {
       liveMonitor: {
         title: "Monitor ao vivo",
         apiTitle: "Monitor da API",
+        apiDescription: "Veja o que outros apps enviam para a API deste servidor assim que chega.",
         summary: "Solicitações ativas, erros e uso de tokens",
         status: "{active} ativas · {recent} recentes · {model}",
         noModelLoaded: "nenhum modelo carregado",
@@ -2563,6 +2569,8 @@ export const ptBR = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "Tempo de atividade",
         processMemory: "Memória do processo",
         notInstalled: "Não instalado",
@@ -3316,6 +3324,7 @@ export const ptBR = {
       desktopAppVersionUnavailable: "Indisponível",
       llamaCppVersion: "Versão do llama.cpp",
       audioCppVersion: "Versão do audio.cpp",
+      mlxVersion: "Versão do MLX",
       whisperCppVersion: "Versão do whisper.cpp",
       engines: {
         title: "Motores",
@@ -4582,6 +4591,7 @@ export const ptBR = {
       modelsTitle: "Nenhum modelo ajustado ainda",
       modelsDescription: "Os modelos que você treina ou exporta no Unsloth aparecem aqui.",
       createFolder: "Criar pasta",
+      generateImage: "Gerar uma imagem",
       generateVideo: "Gerar um vídeo",
       generateAudio: "Gerar áudio",
       trainModel: "Treinar um modelo",

@@ -1070,6 +1070,7 @@ def _scan(
     root: str,
     expected_identity: tuple[int, int] | None = None,
     report: dict[str, int] | None = None,
+    excluded: set[str] | None = None,
 ) -> tuple[dict[str, dict], tuple[int, int]]:
     """Map relative path -> metadata; `report` receives counts of deliberately skipped entries."""
     from hub.storage.scan_folders import contains_sensitive_path_component, is_denied_system_path
@@ -1079,6 +1080,7 @@ def _scan(
         raise RuntimeError("Linked folder root identity changed")
 
     skipped = {"gitignored": 0, "build_dirs": 0, "too_large": 0, "over_limit": 0}
+    excluded = set() if excluded is None else excluded
     found: dict[str, dict] = {}
     mount_points = _mount_points()
     root_identities = frozenset({identity}) if identity[1] not in (None, 0) else frozenset()
@@ -1098,12 +1100,15 @@ def _scan(
                 rel = os.path.relpath(full, root).replace(os.sep, "/")
                 if entry.is_dir(follow_symlinks = False):
                     if _is_ignored_scan_dir(entry.name, full):
+                        excluded.add(rel)
                         continue
                     if rules and gitignore.is_ignored(rel, True, rules):
                         skipped["gitignored"] += 1
+                        excluded.add(rel)
                         continue
                     if _is_build_output_dir(entry.name, directory):
                         skipped["build_dirs"] += 1
+                        excluded.add(rel)
                         continue
                     resolved = os.path.realpath(full)
                     if (
@@ -1150,6 +1155,7 @@ def _scan(
                     continue
                 if rules and gitignore.is_ignored(rel, False, rules):
                     skipped["gitignored"] += 1
+                    excluded.add(rel)
                     continue
                 # Compare only fstat-reproducible ids: scandir has none on Windows; lstat differs on unstable inodes.
                 if is_appledouble_metadata(Path(full)):
@@ -1172,6 +1178,7 @@ def _scan(
                     and st.st_size > config.FOLDER_MAX_TEXT_BYTES
                 ):
                     skipped["too_large"] += 1
+                    excluded.add(rel)
                     continue
                 found[rel] = {
                     "path": full,
@@ -1192,6 +1199,7 @@ def _scan(
     if config.FOLDER_MAX_FILES and len(found) > config.FOLDER_MAX_FILES:
         kept = sorted(found)[: config.FOLDER_MAX_FILES]
         skipped["over_limit"] = len(found) - len(kept)
+        excluded.update(set(found) - set(kept))
         found = {rel: found[rel] for rel in kept}
     if report is not None:
         report.update(skipped)
@@ -1294,7 +1302,7 @@ def _check_root_identity(root: str, expected: tuple[int, int]) -> None:
         raise _FolderChanged("Linked folder root identity changed during reconciliation")
 
 
-def _source_reappeared(root: str, relative_path: str) -> bool:
+def _source_reappeared(root: str, relative_path: str, excluded: set[str]) -> bool:
     """check scanner eligibility without following a replaced path component."""
     path = PurePosixPath(relative_path)
     parts = path.parts
@@ -1310,6 +1318,8 @@ def _source_reappeared(root: str, relative_path: str) -> bool:
         # previously indexed dot directories are excluded even if they still exist
         if index < len(parts) - 1 and part.startswith("."):
             return False
+        if "/".join(parts[: index + 1]) in excluded:
+            return False
         current = os.path.join(current, part)
         try:
             current_stat = os.lstat(current)
@@ -1323,7 +1333,8 @@ def _source_reappeared(root: str, relative_path: str) -> bool:
             if not stat.S_ISDIR(current_stat.st_mode):
                 return False
         else:
-            return stat.S_ISREG(current_stat.st_mode)
+            # Empty files are skipped by the scan; one refilled since then has reappeared.
+            return stat.S_ISREG(current_stat.st_mode) and current_stat.st_size > 0
     return False
 
 
@@ -1610,7 +1621,8 @@ def _reconcile_folder(job_id: str) -> None:
         _check_running()
         expected_identity = _load_identity(folder["root_device"], folder["root_inode"])
         skipped: dict[str, int] = {}
-        current, scanned_identity = _scan(folder["path"], expected_identity, skipped)
+        excluded: set[str] = set()
+        current, scanned_identity = _scan(folder["path"], expected_identity, skipped, excluded)
         _check_running()
     except (_SyncStopped, _SyncCancelled, _LeaseLost):
         raise
@@ -1889,10 +1901,20 @@ def _reconcile_folder(job_id: str) -> None:
             raise
 
     deleted = 0
-    for rel in sorted(missing - withheld):
+    removable = sorted(missing - withheld)
+    if removable:
+        # Exclusions can lapse during ingestion (.gitignore edited, file shrunk): judge removals on a fresh scan.
+        excluded = set()
+        try:
+            rescanned, _ = _scan(folder["path"], scanned_identity, None, excluded)
+        except RuntimeError as exc:
+            raise _FolderChanged(str(exc)) from exc
+        if not rescanned.keys().isdisjoint(removable):
+            raise _FolderChanged("Linked source reappeared during reconciliation")
+    for rel in removable:
         _check_running()
         _check_root_identity(folder["path"], scanned_identity)
-        if _source_reappeared(folder["path"], rel):
+        if _source_reappeared(folder["path"], rel, excluded):
             raise _FolderChanged("Linked source reappeared during reconciliation")
         _check_root_identity(folder["path"], scanned_identity)
         _delete_mapping(folder["id"], rel)

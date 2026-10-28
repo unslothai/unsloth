@@ -1,36 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in speed optimisations for the local diffusion backend.
-
-Off by default, so the default render path stays bit-identical (the regression harness checks
-this). On opt-in it applies the near-lossless speedups in the diffusers-recommended order
-(channels_last + cudnn.benchmark -> compile, with TF32 / fused-QKV under "max"):
-
-  off     - nothing (default; bit-identical reference).
-  eager   - everything lossless EXCEPT torch.compile: channels_last VAE + cudnn.benchmark +
-            attention backend + the shared eager monkey-patches (fused RMSNorm / AdaLayerNorm
-            + per-arch addcmul, see diffusion_eager_patches.py / diffusion_arch_patches.py). The
-            fast first-image / casual path, no compile tax.
-  default - LIGHT compile. GGUF: compile ONLY the dequant op chain (~70-80% of eager GGUF time)
-            for ~1.24-1.64x at a small one-time compile (~7.5-10.4s), zero extra VRAM,
-            resolution-invariant; the block stays eager. Dense: no dequant, so falls back to
-            regional compile of the repeated block; a U-Net (SDXL, no repeated-block list) gets a
-            whole-module STATIC compile (1.61x at LPIPS 0.034, see ``_UNET_WHOLE_COMPILE``).
-  max     - FULL compile: regional max-autotune compile of the repeated block (fuses GGUF dequant
-            + matmul/norm/elementwise in one graph -- ~3.2x on GGUF Z-Image, PSNR ~36 dB, above
-            the Q4 noise floor) plus TF32 matmul and fused QKV.
-
-``default`` is the cheap always-amortising compile; ``max`` pays the larger regional tax for the
-bigger warm speedup. The compiled dequant is skipped under ``max``, which subsumes it.
-
-Knobs, safe unset: ``UNSLOTH_DIFFUSION_COMPILE_VAE=auto|0|1`` (DiT VAE decode compile; ``auto`` = ``max`` only),
-and in their own modules ``UNSLOTH_NVFP4_FAST_BIAS``, ``_FAST_DISPATCH``, ``_ZERO_BUFFER`` and ``_BACKEND``.
-
-The flags this flips (TF32, cudnn.benchmark) are PROCESS-WIDE, so ``snapshot_backend_flags`` /
-``restore_backend_flags`` let the caller restore prior values at unload, keeping a later ``off``
-load bit-identical. torch imported lazily.
-"""
+"""Opt-in speed modes off/eager/default/max (off by default); TF32 and cudnn.benchmark are process-
+wide, restore at unload; torch imported lazily"""
 
 from __future__ import annotations
 
@@ -907,6 +879,17 @@ def _vae_channels_last_3d(vae: Any, logger: Any, *, fused: bool) -> bool:
 
 
 VIDEO_VAE_HALF_ENV = "UNSLOTH_VIDEO_VAE_HALF"
+# Kill switch: "0" reruns a non-finite fp16 decode in fp32 even when its latents are already non-finite (as before).
+VIDEO_VAE_NONFINITE_INPUT_ENV = "UNSLOTH_VIDEO_VAE_NONFINITE_INPUT_KEEP_FP16"
+
+
+def _vae_input_nonfinite_skips_fp32() -> bool:
+    return os.environ.get(VIDEO_VAE_NONFINITE_INPUT_ENV, "").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
 
 
 def _video_vae_half_decode(pipe: Any, target: Any, family: Any, logger: Any) -> bool:
@@ -951,6 +934,13 @@ def _video_vae_half_decode(pipe: Any, target: Any, family: Any, logger: Any) -> 
             out = original(z.to(torch.float16), *args, **kwargs)
             sample = out[0] if isinstance(out, tuple) else getattr(out, "sample", out)
             if not torch.is_tensor(sample) or bool(torch.isfinite(sample).all()):
+                return out
+            # Non-finite latents stay non-finite in fp32; the rerun only doubles memory (T4 OOM).
+            if _vae_input_nonfinite_skips_fp32() and not bool(torch.isfinite(z).all()):
+                if logger is not None:
+                    logger.warning(
+                        "diffusion.speed: the latents reaching the VAE are not finite; fp16 decode kept"
+                    )
                 return out
             if logger is not None:
                 logger.warning(

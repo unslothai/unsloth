@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Disk-backed persistence for generated videos.
-
-Each video is a pair under ``workspace_root()/videos``: ``{id}.mp4`` holds the bytes, ``{id}.json``
-holds the recipe (an MP4 has no portable text-chunk like a PNG). The pair travels together; a lone
-file is not a valid record. Dumb storage: the route owns the schema; this only reads/writes/sorts.
-"""
+"""Video pairs {id}.mp4 + {id}.json (recipe) in workspace_root()/videos; a lone file is invalid."""
 
 from __future__ import annotations
 
@@ -526,6 +521,8 @@ def _transcode_gif_palette(
         frame.pts = count
         frame.time_base = time_base
         buffer.push(frame)
+        # palettegen emits only at EOF, but pulling lets FFmpeg consume each frame instead of queueing the whole clip
+        _drain_sink(sink)
         if held is not None:
             held.append(frame)
         count += 1

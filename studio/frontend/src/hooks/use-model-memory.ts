@@ -37,6 +37,7 @@ import {
   extraArgsAddResidentFiles,
   extraArgsOwnPlacement,
   extraArgsShapeKvCache,
+  memoryBarWeightsBytes,
 } from "@/lib/model-memory";
 import { useInferenceGpuInfo } from "./use-gpu-info";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
@@ -46,6 +47,7 @@ export interface ModelMemorySource {
   quant: string;
   /** Size from the listing, so the bar draws before the estimate arrives. */
   sizeBytes?: number | null;
+  lookupTableBytes?: number | null;
   /** What selecting the row loads, so a duplicate HF cache cannot price a different copy. */
   loadId?: string | null;
 }
@@ -263,7 +265,11 @@ async function fetchEstimate(
     .then((r) => {
       const estimate: Estimate = {
         kvBytes: r.kv_bytes,
-        weightsBytes: r.weights_bytes,
+        // weights_bytes is the whole file; its lookup tables never reach the GPU.
+        weightsBytes:
+          r.weights_bytes == null
+            ? null
+            : Math.max(0, r.weights_bytes - (r.lookup_table_bytes ?? 0)),
         specBytes: r.spec_bytes,
         nCtx: r.n_ctx ?? 0,
         projectorBytes: r.projector_bytes ?? null,
@@ -414,7 +420,7 @@ export function useModelMemory(
     if (estimate?.specUnpriced) return computeModelMemory({});
     // An env device pin is the one placement override budgetIsMeaningful cannot see.
     if (estimate?.inheritedDevicePin) return computeModelMemory({});
-    const weights = estimate?.weightsBytes ?? source?.sizeBytes;
+    const weights = memoryBarWeightsBytes(estimate, source);
     return computeModelMemory({
       // The projector is resident alongside the weights.
       weightsBytes:
@@ -441,5 +447,5 @@ export function useModelMemory(
           ? plan.nCtx == null
           : !estimate.contextIsPinned,
     });
-  }, [plan, entry, source?.sizeBytes, budgetGb, budgetFraction]);
+  }, [plan, entry, source?.sizeBytes, source?.lookupTableBytes, budgetGb, budgetFraction]);
 }

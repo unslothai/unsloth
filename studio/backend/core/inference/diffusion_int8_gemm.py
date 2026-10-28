@@ -1,48 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""int8 x int8 GEMM with torchao's dequant epilogue in the kernel: bf16 out instead of an int32 ``_int_mm`` output.
-
-The stock torchao W8A8 linear writes the int32 accumulator to HBM (4 bytes per output element) and the next compiled
-kernel reads it back to apply ``(c * x_scale) * w_scale``. Here one Triton kernel does the GEMM and the epilogue and
-writes bf16, so every int8 Linear writes half the bytes and its consumer (norm, RoPE, SwiGLU, act quant) reads half.
-
-NUMERICS: the Linear output is bit-identical to torchao's epilogue, eager and compiled under Studio's
-``emulate_precision_casts``: ``bf16(bf16(r(c) * xs) * ws)`` (+ bias as a bf16 add), where ``r`` rounds the int32
-accumulator to bf16 when the activation scale is bf16 (int32 * bf16 promotes to bf16, via fp32: two roundings) and to
-fp32 when it is fp32.
-The activation quant is torchao's own math, so Inductor still fuses it into the producer. A compiled block is NOT
-bit-identical end to end: the consumer reductions (LayerNorm / RMSNorm Welford) that used to fuse the epilogue now
-read bf16 and Inductor re-tiles them, a rounding-order change smaller than compiled-vs-eager (LPIPS-gated).
-
-Per-arch gate: sm80 / sm89 / sm120 on (measured), everything else stock. sm75: Triton cannot lower the int8 dot;
-sm100: Triton int8 is slower than cuBLAS. ROCm (weight-only int8 there) and CPU never reach it.
-Tiles: one default per arch plus a per-shape table (``_SHAPE_TILES``) for the shapes where another tile measured
-faster; every tile is probed bit-exact per device, and a tile that fails falls back to the arch default. All tiles
-accumulate in int32, so the output does not depend on the tile.
-
-Kill switch: ``UNSLOTH_DIFFUSION_INT8_GEMM=0``; ``=1`` also enables it on an unmeasured arch (still probe-gated).
-``UNSLOTH_DIFFUSION_INT8_GEMM_TILES=0`` keeps the arch default tile for every shape.
-
-ConvRot Linears (MiniMax-H3, Qwen-Image-2.1 ConvRot) run ``ConvRotLinear.forward``'s own rotation first, so eager
-output stays bit-identical; kill switch ``UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT=0``.
-
-Rotated Linears on the archs ``diffusion_convrot_quant`` covers run the rotation and the act quant as ONE kernel
-(``rotq_h16`` / ``rotq_i8``, probed per device). Where the fused GEMM is off but that kernel is on (sm100), only the
-rotated Linears are swapped and their GEMM is cuBLAS ``_int_mm`` with torchao's epilogue, op for op. Kill switch
-``UNSLOTH_DIFFUSION_INT8_ROTQUANT=0``.
-
-Rotated Linears that read the SAME activation (Q / K / V, a SwiGLU's gate / value) share one rotation + act quant
-(``shared_rotq_linears``): Inductor does not merge identical opaque custom-op calls in an inference graph (7 kernels
-per Qwen-Image-2.1 block for 4 distinct inputs). Outputs are bit-identical to the separate calls.
-
-A fully swapped Qwen-Image-2.1 SwiGLU MLP takes its down projection's codes straight from the gate / value halves
-(``convrot_swiglu_act_quant``); kill switch ``UNSLOTH_DIFFUSION_INT8_ROTQUANT_SWIGLU=0``.
-
-A block-streamed denoiser installs against its onload device (``install(..., device = ...)``): group offload's
-``swap_tensors`` keeps each Parameter's identity and the forward reads the payload off the live Parameter, so every
-call sees the onloaded copy. Kill switch ``UNSLOTH_DIFFUSION_INT8_GEMM_STREAMED=0``.
-"""
+"""int8 GEMM with torchao dequant epilogue in Triton, bf16 out; sm80/sm89/sm120 only, else stock
+(ROCm and CPU never reach it); Linear output bit-identical, compiled block not end to end;
+UNSLOTH_DIFFUSION_INT8_GEMM=0 disables."""
 
 from __future__ import annotations
 
@@ -57,6 +18,7 @@ INT8_GEMM_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM"
 INT8_GEMM_CONVROT_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT"
 INT8_GEMM_STREAMED_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_STREAMED"
 INT8_GEMM_TILES_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_TILES"
+INT8_SWIGLU_STREAMED_ENV = "UNSLOTH_DIFFUSION_INT8_SWIGLU_STREAMED"
 _MIN_TRITON = (3, 2)
 # torch._int_mm needs M > 16; below that the stock path (safe_int_mm padding) stays in charge.
 _MIN_ROWS = 17
@@ -121,6 +83,11 @@ def convrot_enabled() -> bool:
 
 def streamed_enabled() -> bool:
     raw = (os.environ.get(INT8_GEMM_STREAMED_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+def swiglu_streamed_enabled() -> bool:
+    raw = (os.environ.get(INT8_SWIGLU_STREAMED_ENV) or "").strip().lower()
     return raw not in ("0", "off", "false", "no")
 
 
@@ -774,14 +741,21 @@ def _swiglu_ff_eligible(module: Any) -> bool:
     return bool(parts[2].__dict__[_REC][2])
 
 
-def _install_swiglu_ff(transformer: Any, index: int) -> int:
-    """Patch the eligible SwiGLU MLPs on card ``index``."""
+def _install_swiglu_ff(
+    transformer: Any,
+    index: int,
+    streamed: bool = False,
+) -> int:
+    """Patch the eligible SwiGLU MLPs on card ``index`` (``streamed``: also host-resident ones)."""
     count = 0
     for module in transformer.modules():
         if _FF_MARK in module.__dict__:
             count += 1
             continue
-        if not _swiglu_ff_eligible(module) or _weight_card(module.out) != index:
+        if not _swiglu_ff_eligible(module):
+            continue
+        card = _weight_card(module.out)
+        if card != index and not (streamed and card is None):
             continue
         module.__dict__[_FF_MARK] = True
         module.forward = types.MethodType(_swiglu_ff_forward, module)
@@ -951,7 +925,7 @@ def _swap(
         return 0
 
     index = dev.index if dev.index is not None else torch.cuda.current_device()
-    return _swap_on(transformer, logger, index)
+    return _swap_on(transformer, logger, index, streamed = device is not None)
 
 
 def _split_cards(transformer: Any) -> tuple:
@@ -977,7 +951,12 @@ def _weight_card(module: Any) -> Optional[int]:
     return dev.index if dev is not None and dev.type == "cuda" else None
 
 
-def _swap_on(transformer: Any, logger: Any, index: int) -> int:
+def _swap_on(
+    transformer: Any,
+    logger: Any,
+    index: int,
+    streamed: bool = False,
+) -> int:
     """Swap the eligible int8 Linears of ``transformer`` against card ``index``'s probed kernels. On a layer split
     (several cards) only the Linears whose weight sits on ``index``."""
     global _OP_HANDLE
@@ -1028,7 +1007,15 @@ def _swap_on(transformer: Any, logger: Any, index: int) -> int:
             module.__dict__[_MARK] = module.__dict__.get("forward", _NO_PREV)
             module.forward = types.MethodType(_linear_forward, module)
             count += 1
-        ff = _install_swiglu_ff(transformer, index) if rotq else 0
+        ff = (
+            _install_swiglu_ff(
+                transformer,
+                index,
+                streamed = streamed and not multi and swiglu_streamed_enabled(),
+            )
+            if rotq
+            else 0
+        )
     if logger is not None and count:
         from .diffusion_convrot_quant import _H16_DEVICE
         logger.info(

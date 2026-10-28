@@ -441,7 +441,7 @@
   },
   "minimax-h3": {
    "cudnn_benchmark": true,
-   "filter_reduction_configs": false,
+   "filter_reduction_configs": true,
    "filter_reduction_configs_archs": [],
    "vae_fused_encoder": true
   },
@@ -476,7 +476,7 @@
   },
   "qwen-image-2.1": {
    "cudnn_benchmark": true,
-   "filter_reduction_configs": false,
+   "filter_reduction_configs": true,
    "filter_reduction_configs_archs": [],
    "vae_fused_encoder": true
   },

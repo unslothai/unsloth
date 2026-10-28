@@ -277,3 +277,118 @@ def test_nonreentrant_checkpoint_runs_without_graphs(monkeypatch):
         assert len(seen) == 2 and set(seen) == want
         assert x.grad is not None
     assert not bc._in_nonreentrant_checkpoint()
+
+
+class FakeMoeExperts(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.randn(4, 8, 8) / 8)
+
+    def forward(self, x):
+        return torch.einsum("btd,ed->bte", x, self.weight.sum(0))
+
+
+class FakeSparseMoeBlock(torch.nn.Module):
+    # transformers 4.57: ModuleList experts + num_experts.
+    def __init__(self):
+        super().__init__()
+        self.num_experts = 2
+        self.experts = torch.nn.ModuleList([torch.nn.Linear(8, 8) for _ in range(2)])
+
+    def forward(self, x):
+        return sum(e(x) for e in self.experts)
+
+
+class FakeRoutedMoe(torch.nn.Module):
+    # transformers 4.57 DeepSeek-V2 / V3, GLM4-MoE: n_routed_experts, num_experts only on the gate.
+    def __init__(self):
+        super().__init__()
+        self.n_routed_experts = 2
+        self.gate = torch.nn.Linear(8, 2)
+        self.gate.num_experts = 2
+        self.experts = torch.nn.ModuleList([torch.nn.Linear(8, 8) for _ in range(2)])
+        self.shared_experts = torch.nn.Linear(8, 8)
+
+    def forward(self, x):
+        return sum(e(x) for e in self.experts) + self.shared_experts(x)
+
+
+@pytest.mark.parametrize("moe", [None, FakeMoeExperts, FakeSparseMoeBlock, FakeRoutedMoe])
+def test_moe_layers_run_without_graphs(monkeypatch, moe):
+    """Qwen3-MoE broke under block CUDA graphs (capture host copy / replay-overwritten routing)."""
+    seen = []
+
+    def fake_compile(fn, **kwargs):
+        tag = "graphs" if kwargs.get("options", {}).get("triton.cudagraphs") else "plain"
+
+        def inner(*args, **kw):
+            seen.append(tag)
+            return fn(*args, **kw)
+
+        return inner
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+
+    class MoeDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+            self.mlp = moe() if moe is not None else torch.nn.Linear(8, 8)
+
+        def forward(self, hidden_states, **kwargs):
+            return self.mlp(self.proj(hidden_states))
+
+    bc._wrap(MoeDecoderLayer, {**bc._COMPILE_OPTIONS, "triton.cudagraphs": True})
+    layer = MoeDecoderLayer().train()
+    for _ in range(2):
+        x = torch.randn(2, 16, 8, requires_grad = True)
+        layer(x).sum().backward()
+        assert x.grad is not None
+    assert set(seen) == ({"graphs"} if moe is None else {"plain"})
+    assert not layer.__dict__.get("_unsloth_block_grad_hooks") or moe is None
+
+
+class BlockMask:
+    """Stand-in for torch.nn.attention.flex_attention.BlockMask (matched by class name)."""
+
+    def __init__(self):
+        self.kv_num_blocks = torch.ones(1, 1, 1, dtype = torch.int32)
+
+
+@pytest.mark.parametrize("mask", [None, "tensor", "block_mask"])
+def test_flex_block_mask_calls_run_without_graphs(monkeypatch, mask):
+    """Flex BlockMask calls re-record block graphs every step."""
+    seen = []
+
+    def fake_compile(fn, **kwargs):
+        tag = "graphs" if kwargs.get("options", {}).get("triton.cudagraphs") else "plain"
+
+        def inner(*args, **kw):
+            seen.append(tag)
+            return fn(*args, **kw)
+
+        return inner
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+
+    class FlexDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(
+            self,
+            hidden_states,
+            attention_mask = None,
+            **kwargs,
+        ):
+            return self.proj(hidden_states)
+
+    bc._wrap(FlexDecoderLayer, {**bc._COMPILE_OPTIONS, "triton.cudagraphs": True})
+    layer = FlexDecoderLayer().train()
+    value = {None: None, "tensor": torch.ones(2, 1, 16, 16), "block_mask": BlockMask()}[mask]
+    for _ in range(2):
+        x = torch.randn(2, 16, 8, requires_grad = True)
+        layer(x, attention_mask = value).sum().backward()
+        assert x.grad is not None
+    assert set(seen) == ({"plain"} if mask == "block_mask" else {"graphs"})

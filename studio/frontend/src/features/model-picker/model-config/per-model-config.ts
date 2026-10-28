@@ -1523,6 +1523,12 @@ function findModelOverrideKeyOwners(
   return owners;
 }
 
+export function modelOverrideKeyOwners(
+  overrideKeys: readonly string[],
+): { modelId: string; ggufVariant: string | null }[] {
+  return overrideKeys.flatMap(findModelOverrideKeyOwners);
+}
+
 export function deletePerModelConfigsForOverrideKeys(
   overrideKeys: readonly string[],
 ): boolean {

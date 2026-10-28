@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Kernel install pieces shared by Studio setup, the training worker, the SSM runtime and
-`unsloth install-kernels [names]`.
-
-Imports only stdlib, wheel_utils and child_stdio so setup and torch-less hosts can import it.
-The CLI is wheel-only (never a source build) and uses --no-deps so torch is never touched.
-"""
+"""Kernel install helpers; imports only stdlib, wheel_utils and child_stdio so torch-less hosts can
+import; CLI is wheel-only with --no-deps"""
 
 from __future__ import annotations
 

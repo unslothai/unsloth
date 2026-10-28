@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Owner-defined, install-wide model aliases (``fast-chat`` -> a real model id) for API clients.
-
-Resolved once at the ASGI edge, so access checks, auto-switch and the resolver all see the real
-id: an alias never grants what its target would not. Names exclude ``/`` and ``:`` so they can
-never shadow a repo id or a ``model:quant`` pin."""
+"""Install-wide model aliases resolved once at the ASGI edge, before access checks; never grant more
+than the target; names exclude / and :"""
 
 from __future__ import annotations
 

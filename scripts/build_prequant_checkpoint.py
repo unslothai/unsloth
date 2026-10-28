@@ -1,22 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Build a pre-quantized transformer checkpoint for the Unsloth diffusion fast path.
-
-Quantise a model's dense bf16 DiT transformer ONCE and save the quantized state dict, so
-the backend can load the already-quantized weights at runtime (meta-init +
-load_state_dict(assign=True)) instead of materialising the dense bf16 on the GPU. That
-drops the transformer GPU load peak ~2x and the download ~2x for fp8 (measured on Z-Image:
-12.9 -> 6.3 GB peak, 12 -> 6.28 GB on disk), with bit-identical output -- it is the exact
-same torchao config + min_features filter the runtime path uses, applied ahead of time.
-
-Run on one CUDA (Blackwell / Ada / Hopper) GPU. fp8 works on torch 2.9+; the FP4/MX schemes
-need the newer kernels (see scripts/nvfp4_t211_probe.py).
-
-  python scripts/build_prequant_checkpoint.py \
-      --base Tongyi-MAI/Z-Image-Turbo --family z-image --scheme fp8 \
-      --out outputs/quant_research/prequant_fp8/transformer_fp8.pt [--upload-repo ORG/REPO]
-"""
+"""Quantizes the DiT once so runtime loads it with assign=True, skipping the dense bf16 GPU load peak."""
 
 from __future__ import annotations
 

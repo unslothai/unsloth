@@ -47,11 +47,11 @@ import {
   FolderExportIcon,
   Notebook01Icon,
   RamMemoryIcon,
-  StopIcon,
   TaskDone01Icon,
   TemperatureIcon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
+import { StopIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { type ReactElement, type ReactNode, useState } from "react";
@@ -624,7 +624,7 @@ function ConfigPopoverButton({
           <p className="text-xs font-semibold">{t("studio.progress.configLabel")}</p>
           {configItems.map((group) => (
             <div key={group.section} className="flex flex-col gap-1">
-              <p className="text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
+              <p className="text-ui-11 font-semibold text-muted-foreground">
                 {group.section}
               </p>
               {group.rows.map(([label, value]) => (
@@ -737,7 +737,7 @@ function MilestoneCallout({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           {!showCompletedHint && (
-            <p className="text-ui-10 font-medium uppercase tracking-[0.12em] text-muted-foreground">
+            <p className="text-ui-11 font-medium text-muted-foreground">
               {t("studio.training.milestone")}
             </p>
           )}

@@ -136,6 +136,11 @@ export const en = {
     more: "More",
     addressPlaceholder: "Search or enter a URL",
     local: "Local",
+    browserUse: {
+      label: "Browser use",
+      description: "Let models control the in-built browser",
+      unavailable: "Load a model that can call tools to let it use the browser.",
+    },
     suggested: "Suggested",
     suggestedMenu: {
       open: "Open",
@@ -1468,13 +1473,13 @@ export const en = {
       unsupportedArch: "The Windows sandbox (MXC) only runs on x64 Windows, so it is not available on this PC.",
       builtinNeedsUpdate: "Windows' built-in container needs build {required} or newer, and this PC runs {current}. Install the latest Windows update to use it without an administrator step, or turn on the fallback below.",
       unsupportedBuild: "The Windows sandbox (MXC) needs Windows 11 24H2 (build 26100) or newer, so it is not available on this PC.",
-      permissionsIntro: "Choose when tools ask first, and whether Python and Terminal also run inside the OS sandbox.",
       permissionLabel: "Tool permissions",
+      levelRowLabel: "Sandbox level",
       levelPickerTitle: "How should code be sandboxed?",
       levelOff: "Disabled",
       levelOffShort: "Full access turns the sandbox off",
-      levelHighDetail: "OS sandboxing. Python and Terminal run inside the OS sandbox (bubblewrap, Seatbelt or MXC) on top of software sandboxing. Without a working OS sandbox, risky calls ask first.",
-      levelLowDetail: "Software sandboxing. Python and Terminal run with software sandboxing only, outside the OS sandbox. Risky calls ask first unless you chose Full access.",
+      levelHighDetail: "Python and Terminal run inside the OS sandbox (bubblewrap, Seatbelt or MXC) on top of software sandboxing. Without a working OS sandbox, risky calls ask first.",
+      levelLowDetail: "Python and Terminal run with software sandboxing only, outside the OS sandbox. Risky calls ask first unless you chose Full access.",
       levelLabel: "Sandbox",
       levelHigh: "High",
       levelLow: "Low",
@@ -1838,10 +1843,10 @@ export const en = {
         idleSecondsAriaLabel: "Idle auto-unload seconds",
         mediaEnable: "Switch image and video model by request",
         mediaEnableDescription:
-          "Load a downloaded image or video model named in an API request before generating. Its own setting: the one above covers the chat model only. Off by default.",
+          "Load a downloaded image or video model named in an API request before generating. Separate from the chat model switch. Off by default.",
         mediaIdleUnload: "Idle auto-unload for image and video",
         mediaIdleUnloadDescription:
-          "Free VRAM by unloading the image and video models after this many idle seconds. Its own setting: the one above covers the chat model only. 0 keeps them loaded, minimum 60.",
+          "Free VRAM by unloading the image and video models after this many idle seconds. Separate from the chat model switch. 0 keeps them loaded, minimum 60.",
         mediaIdleSecondsAriaLabel: "Image and video idle auto-unload seconds",
         mediaIdlePaused: "Paused while Keep model in GPU memory is on.",
         idleNeedsEnable: "Turn on Switch model by request first.",
@@ -1909,13 +1914,13 @@ export const en = {
         },
         details: {
           ask:
-            "Asks before every tool call, including terminal and Python code, web searches, file edits and MCP tools. Tools run by an external provider are not paused. Best when you want to review each step.",
+            "Asks before every tool call, including terminal and Python code, web searches, file edits and MCP tools. Tools run by an external provider are not paused.",
           auto:
             "Runs routine tool calls on its own and only asks when an action looks risky, such as reading credentials, escalating privileges or running destructive commands.",
           off:
-            "Runs every tool call without asking. Python and terminal code still run in the sandbox, which limits which files they can reach on your computer. If this computer has no working OS sandbox, risky Python and terminal calls ask first.",
+            "Runs every tool call without asking. Python and terminal code still run in the sandbox, which limits which files they can reach on your computer. Without a working OS sandbox, risky calls ask first.",
           full:
-            "Runs every tool call without asking and turns off the code sandbox, so Python and terminal code can read and change any file your account can access. Best for trusted tasks that need to work outside the sandbox.",
+            "Runs every tool call without asking and turns off the code sandbox, so Python and terminal code can read and change any file your account can access.",
         },
       },
       notifications: {
@@ -2373,6 +2378,7 @@ export const en = {
       liveMonitor: {
         title: "Live monitor",
         apiTitle: "API monitor",
+        apiDescription: "See what other apps send to this server's API as it arrives.",
         summary: "Live requests, errors, and token usage",
         status: "{active} active · {recent} recent · {model}",
         noModelLoaded: "no model loaded",
@@ -2488,7 +2494,7 @@ export const en = {
         noRamReserveDescription: "Reduce host RAM held for model weights.",
         noRamReserveHint: "Skips memory-mapped loading on supported Windows builds when the model is fully offloaded to the GPU, so its pages are not held resident. Otherwise keeps memory-mapped loading. Required CPU buffers can still use RAM. Drops --no-mmap and --mlock.",
         multiModel: "Keep multiple models loaded",
-        openSystemSettings: "System settings",
+        openSystemSettings: "Open in System",
         multiModelOff: "Off",
         multiModelFit: "When they fit",
         multiModelAlways: "Always",
@@ -2612,6 +2618,8 @@ export const en = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "Uptime",
         processMemory: "Process memory",
         notInstalled: "Not installed",
@@ -3210,7 +3218,7 @@ export const en = {
       accessTokenCopied: "Access token copied",
       copyAccessToken: "Copy access token",
       copyNow: "Copy now - this won't be shown again.",
-      usageExamples: "Usage examples",
+      usageExamples: "Chat API",
       usageNoModel:
         "Load or download a model to see runnable examples. This server has no model to name yet.",
       usageTools: "Tools",
@@ -3273,7 +3281,7 @@ export const en = {
         useViaApi: "Use via API",
       },
       mediaApi: {
-        title: "Image and video API",
+        title: "Images / Video API",
         description: "Generate images and videos from your own code with the OpenAI-compatible endpoints.",
         images: "Images",
         video: "Video",
@@ -3331,7 +3339,7 @@ export const en = {
         loadError: "Couldn't load Decision API settings.",
         sendsTo: "Requests are sent to {provider}.",
         connectionMissing: "This connection is gone or has no decision models. Pick another model.",
-        addConnection: "To use a hosted decision model, add TypeSafe, Liquid AI or OpenRouter in Connections.",
+        addConnection: "To use a cloud hosted decision model, add TypeSafe, OpenRouter etc. in Connections.",
         openConnections: "Open Connections",
       },
       mcp: {
@@ -3357,6 +3365,7 @@ export const en = {
       desktopAppVersionUnavailable: "Unavailable",
       llamaCppVersion: "llama.cpp Version",
       audioCppVersion: "audio.cpp Version",
+      mlxVersion: "MLX Version",
       whisperCppVersion: "whisper.cpp Version",
       engines: {
         title: "Engines",
@@ -3492,7 +3501,7 @@ export const en = {
       datasetLabel: "Dataset",
       datasetTooltip: "The training data used to fine-tune the model.",
       hfTokenDescription: "Required for gated or private models and datasets.",
-      uploadLocalLabel: "Or upload a local file",
+      uploadLocalLabel: "Upload a local file",
       sourceBrowse: "Browse",
       releaseToUpload: "Release to upload",
       loadYaml: "Load YAML",
@@ -4336,7 +4345,7 @@ export const en = {
   // The Scheduled page: prompts that run on a schedule, each run answered in a new chat.
   scheduledTasks: {
     title: "Scheduled",
-    description: "Run prompts on a schedule with your loaded model.",
+    description: "Run prompts on a schedule with any of your models.",
     newTask: "New task",
     upcoming: "Upcoming",
     // Column headers over the list, and the Repeats value of a monthly task.
@@ -4616,6 +4625,7 @@ export const en = {
       modelsTitle: "No fine-tuned models yet",
       modelsDescription: "Models you train or export in Unsloth show up here.",
       createFolder: "Create folder",
+      generateImage: "Generate an image",
       generateVideo: "Generate a video",
       generateAudio: "Generate audio",
       trainModel: "Train a model",

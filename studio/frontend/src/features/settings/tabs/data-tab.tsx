@@ -77,7 +77,7 @@ import {
 import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
-  Archive02Icon,
+  Archive03Icon,
   Delete02Icon,
   Download01Icon,
   FlimSlateIcon,
@@ -673,7 +673,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             <Button
               variant="outline"
               size="sm"
-              className="shrink-0"
+              className="mt-[var(--ui-title-cap-inset)] shrink-0"
               onClick={handleExportArchived}
               disabled={archivedExporting}
             >
@@ -867,12 +867,11 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
         >
           <Button
             variant="outline"
-            size="icon"
-            aria-label={t("settings.data.archiveAllAction")}
-            title={t("settings.data.archiveAllAction")}
+            size="sm"
             onClick={() => setArchiveConfirmOpen(true)}
           >
-            <HugeiconsIcon icon={Archive02Icon} className="size-4" />
+            <HugeiconsIcon icon={Archive03Icon} data-icon="inline-start" />
+            {t("settings.data.archiveAllAction")}
           </Button>
         </SettingsRow>
       </SettingsSection>

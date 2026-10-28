@@ -3378,17 +3378,226 @@ def _codex_model_catalog(model: dict, visibility: str = "none") -> dict:
     return {"models": [entry]}
 
 
+_TOML_KEY_PART = re.compile(
+    r"""[ \t]*(?:"((?:[^"\\]|\\.)*)"|'([^']*)'|([A-Za-z0-9_-]+))[ \t]*([.\]])"""
+)
+
+
+_TOML_STRING = re.compile(r'"(?:[^"\\]|\\.)*"|\'[^\']*\'')
+
+
+def _toml_table_path(chunk: str) -> Optional[tuple]:
+    """Key path of the [table] or [[array]] header opening chunk, whatever its quoting or comment."""
+    line = chunk.lstrip(" \t")
+    if not line.startswith("["):
+        return None
+    parts, pos = [], 2 if line.startswith("[[") else 1
+    while True:
+        m = _TOML_KEY_PART.match(line, pos)
+        if m is None:
+            return None
+        parts.append(next(g for g in m.groups()[:3] if g is not None))
+        pos = m.end()
+        if m.group(4) == "]":
+            return tuple(parts)
+
+
+def _toml_chunks(text: str) -> list:
+    """Split before each table header; a "[" line inside a string or an array is not one."""
+    chunks, current, delim, depth = [], "", None, 0
+    for line in text.splitlines(True):
+        if delim is None and depth == 0 and line.lstrip(" \t").startswith("["):
+            chunks.append(current)
+            current = line
+            continue
+        current += line
+        i = 0
+        while i < len(line):
+            if delim is not None:
+                if line.startswith(delim, i):
+                    # Up to two quotes may end the string just before its closing delimiter.
+                    run = len(line) - i - len(line[i:].lstrip(delim[0]))
+                    delim, i = None, i + min(run, 5)
+                else:
+                    i += 2 if delim == '"""' and line[i] == "\\" else 1
+                continue
+            c = line[i]
+            if c == "#":
+                break
+            if line.startswith(('"""', "'''"), i):
+                delim, i = line[i : i + 3], i + 3
+                continue
+            if c in "\"'":
+                m = _TOML_STRING.match(line, i)
+                i = m.end() if m else len(line)
+                continue
+            depth += (c in "[{") - (c in "]}")
+            i += 1
+    chunks.append(current)
+    return chunks
+
+
+def _toml_loads():
+    try:
+        import tomllib  # novermin
+    except ImportError:
+        try:
+            import tomli as tomllib
+        except ImportError:
+            return None
+    return tomllib.loads
+
+
+def _toml_parses(text: str) -> Optional[bool]:
+    loads = _toml_loads()
+    if loads is None:
+        return None
+    try:
+        loads(text)
+    except ValueError:
+        return False
+    return True
+
+
+def _toml_key(key: str) -> str:
+    return key if re.fullmatch(r"[A-Za-z0-9_-]+", key) else _toml_value(key)
+
+
+def _toml_value(value) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        # JSON string escapes are TOML's, except that TOML also forbids a raw DEL.
+        return json.dumps(value, ensure_ascii = False).replace("\x7f", "\\u007f")
+    if isinstance(value, float) and value != value:
+        return "nan"
+    if isinstance(value, float) and value in (float("inf"), float("-inf")):
+        return "inf" if value > 0 else "-inf"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
+    if isinstance(value, dict):
+        return (
+            "{ " + ", ".join(f"{_toml_key(k)} = {_toml_value(v)}" for k, v in value.items()) + " }"
+        )
+    return value.isoformat()  # TOML dates and times
+
+
+_CODEX_MCP_MANIFEST = "unsloth_mcp_servers.json"
+
+
+def _codex_mcp_server(chunk: str) -> Optional[tuple]:
+    # The server a [mcp_servers.NAME...] table belongs to: owning NAME owns its subtables. A bare
+    # [mcp_servers] table can mix servers from two homes, so it is never owned as a whole.
+    path = _toml_table_path(chunk)
+    return path[:2] if path and len(path) > 1 and path[0] == "mcp_servers" else None
+
+
+def _codex_mcp_manifest(home: Path) -> tuple:
+    """(home it was built from, the user's own home at the end of that chain, inherited servers)."""
+    try:
+        state = json.loads((home / _CODEX_MCP_MANIFEST).read_text(encoding = "utf-8"))
+        inherited = {tuple(path)[:2] for path in state["tables"]}
+        source, origin = state.get("source"), state.get("origin")
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return None, None, set()
+    source = source if isinstance(source, str) else None
+    return source, origin if isinstance(origin, str) else source, inherited
+
+
+def _codex_mcp_followed(home: Path) -> Optional[Path]:
+    # A source that was itself a temporary session home is gone once that session exits.
+    source, origin, _ = _codex_mcp_manifest(home)
+    for candidate in (source, origin):
+        if candidate and Path(candidate).is_dir():
+            return Path(candidate)
+    return None
+
+
+def _codex_mcp_tables(source: Path, seen: frozenset) -> list:
+    """MCP tables in source's config; a home Unsloth built trades its inherited ones for its origin's."""
+    try:
+        text = (source / "config.toml").read_text(encoding = "utf-8-sig")
+    except OSError:
+        return []
+    loads = _toml_loads()
+    try:
+        # Parsed, so root dotted keys, inline tables and a bare [mcp_servers] all count.
+        servers = loads(text).get("mcp_servers") if loads else None
+    except ValueError:
+        loads = (
+            None  # TOML 1.1, which Codex reads and tomllib does not: copy the tables as written.
+        )
+    if loads is None:
+        tables = [c for c in _toml_chunks(text) if _codex_mcp_server(c)]
+    else:
+        tables = [
+            f"[mcp_servers.{_toml_key(name)}]\n"
+            + "".join(f"{_toml_key(k)} = {_toml_value(v)}\n" for k, v in spec.items())
+            + "\n"
+            for name, spec in (servers.items() if isinstance(servers, dict) else ())
+            if isinstance(spec, dict)
+        ]
+    _, _, inherited = _codex_mcp_manifest(source)
+    upstream_home = _codex_mcp_followed(source)
+    if upstream_home is not None and str(upstream_home.resolve(strict = False)) not in seen:
+        upstream = _codex_mcp_tables(
+            upstream_home, seen | {str(upstream_home.resolve(strict = False))}
+        )
+        # The origin wins a name clash, as it does when that saved home is synced.
+        taken = inherited | {_codex_mcp_server(c) for c in upstream}
+        tables = [c for c in tables if _codex_mcp_server(c) not in taken] + upstream
+    return tables
+
+
+def _with_user_codex_mcp_servers(text: str, home: Path) -> str:
+    _, _, carried = _codex_mcp_manifest(home)
+    source = _codex_source_home()
+    home_key = home.resolve(strict = False)
+    if source.resolve(strict = False) == home_key:
+        # The printed recipe exports CODEX_HOME=home: keep reading the home it was built from.
+        followed = _codex_mcp_followed(home)
+        if followed is not None and followed.resolve(strict = False) != home_key:
+            source = followed
+        else:
+            source = _codex_source_home(ignore_configured = True)
+    source_key = str(source.resolve(strict = False))
+    tables = _codex_mcp_tables(source, frozenset({str(home_key), source_key}))
+    # Only replace what came from the user's config; servers added in this home stay.
+    servers = {_codex_mcp_server(c) for c in tables}
+    carried |= servers
+    out = "".join(c for c in _toml_chunks(text) if _codex_mcp_server(c) not in carried)
+    if tables:
+        out = out.rstrip("\n") + "\n\n" + "\n\n".join(c.rstrip("\n") for c in tables) + "\n"
+    if _toml_parses(out) is False:
+        return text
+    _, origin, _ = _codex_mcp_manifest(source)
+    # Written even when empty: a recipe shell's CODEX_HOME=home must still find a custom origin.
+    (home / _CODEX_MCP_MANIFEST).write_text(
+        json.dumps(
+            {"source": source_key, "origin": origin or source_key, "tables": sorted(servers)}
+        )
+        + "\n",
+        encoding = "utf-8",
+    )
+    return out
+
+
 def write_codex_config(
     base: str,
     model: dict,
     home: Path,
     reasoning_effort: Optional[str] = None,
+    keep_mcp_servers: bool = False,
 ) -> None:
     home.mkdir(parents = True, exist_ok = True)
 
     config = home / "config.toml"
     existing = config.read_text(encoding = "utf-8") if config.exists() else ""
     merged = _merge_codex_config(existing, base)
+    if keep_mcp_servers:
+        merged = _with_user_codex_mcp_servers(merged, home)
     if merged != existing:
         config.write_text(merged, encoding = "utf-8")
         typer.echo(f"Updated {config}")
@@ -7469,7 +7678,7 @@ def codex(
         *ctx.args,
     ]
     with _session_config("codex", launch, persist = persist) as home:
-        write_codex_config(base, entry, home, codex_effort)
+        write_codex_config(base, entry, home, codex_effort, keep_mcp_servers = True)
         env = {_CODEX_ENV_KEY: key, "CODEX_HOME": str(home)}
         _run(
             base,

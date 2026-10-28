@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""llama.cpp multimodal (mtmd) speech-to-text sidecar for Unsloth dictation.
-
-whisper.cpp loads only the Whisper architecture, so newer ASR models run through
-llama.cpp instead: a text model plus an audio mmproj, served by `llama-server`
-and driven by the OpenAI audio content part.
-
-Owns one `llama-server` on an ephemeral 127.0.0.1 port, loaded on demand and
-unloaded after the same keep-alive as the other sidecars. Each model is two GGUF
-files, so downloads run the shared worker twice.
-"""
+"""mtmd STT sidecar for non-Whisper ASR: one llama-server on an ephemeral 127.0.0.1 port; two GGUFs."""
 
 from __future__ import annotations
 

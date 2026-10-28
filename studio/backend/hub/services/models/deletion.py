@@ -1227,9 +1227,8 @@ def _delete_cached_model_blocking(
         from hub.utils import companion_assets
 
         try:
-            copies = companion_cleanup._repos_by_id(cache_inventory.all_hf_cache_scans()).get(
-                repo_id.strip().lower(), []
-            )
+            scans = cache_inventory.all_hf_cache_scans()
+            copies = companion_cleanup._repos_by_id(scans).get(repo_id.strip().lower(), [])
             # check only this root; a full copy elsewhere must not block deleting this orphan row.
             if cache_path:
                 wanted = Path(cache_path)
@@ -1241,7 +1240,7 @@ def _delete_cached_model_blocking(
                 if not copies:
                     # An empty match means the target root is not in this scan, and concluding "orphan" from copies we did not look at is the fail-open this precondition prevents; raising lands in the 503.
                     raise RuntimeError(f"cache root not present in the scan: {cache_path}")
-            still_orphan = not any(companion_assets.repo_holds_denoiser(repo) for repo in copies)
+            still_orphan = not any(companion_assets.repo_is_install(repo, scans) for repo in copies)
         except Exception as e:
             logger.warning(f"Orphan re-check failed for {repo_id}; refusing delete: {e}")
             raise HTTPException(

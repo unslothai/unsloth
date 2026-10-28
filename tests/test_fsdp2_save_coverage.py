@@ -3,9 +3,9 @@
 
 """Which exports run under FSDP2 (unsloth/save.py). save_pretrained and save_pretrained_merged
 already gather the shards to rank 0; push_to_hub_merged and push_to_hub did not, so every rank
-merged and uploaded its own shards. They now gather like the saves. GGUF and torchao exports
-rebuild or quantize the whole model in-process and are refused under FSDP2 with a way to get the
-same file. No GPU work: FSDP2 is faked by fsdp2_units, the gather by a recording context manager."""
+merged and uploaded its own shards. They now gather like the saves. GGUF, torchao, OpenVINO and
+GGML exports rebuild or quantize the whole model in-process: rank 0 runs them alone on the
+gathered model (tests/test_fsdp2_exports_gloo.py runs them for real). No GPU work: FSDP2 is faked by fsdp2_units, the gather by a recording context manager."""
 
 import contextlib
 
@@ -71,27 +71,120 @@ def test_push_to_hub_gathers(fake_fsdp2):
 
 
 @pytest.mark.parametrize(
-    "method, call",
+    "method, call, adapter_only",
     [
-        ("save_pretrained_gguf", lambda m: unsloth_save.unsloth_save_pretrained_gguf(m, "out")),
-        ("push_to_hub_gguf", lambda m: unsloth_save.unsloth_push_to_hub_gguf(m, "user/repo")),
+        (
+            "save_pretrained_gguf",
+            lambda m: unsloth_save.unsloth_save_pretrained_gguf(m, "out"),
+            False,
+        ),
+        (
+            "save_pretrained_gguf",
+            lambda m: unsloth_save.unsloth_save_pretrained_gguf(m, "out", save_method = "lora"),
+            True,
+        ),
+        (
+            "push_to_hub_gguf",
+            lambda m: unsloth_save.unsloth_push_to_hub_gguf(m, "user/repo"),
+            False,
+        ),
         (
             "save_pretrained_torchao",
             lambda m: unsloth_save.unsloth_save_pretrained_torchao(m, "out"),
+            False,
+        ),
+        (
+            "save_pretrained_openvino",
+            lambda m: unsloth_save.unsloth_save_pretrained_openvino(m, "out"),
+            False,
+        ),
+        (
+            "push_to_hub_openvino",
+            lambda m: unsloth_save.unsloth_push_to_hub_openvino(m, "user/repo"),
+            False,
+        ),
+        (
+            "save_pretrained_ggml",
+            lambda m: unsloth_save.unsloth_convert_lora_to_ggml_and_save_locally(m, "out", None),
+            True,
+        ),
+        (
+            "push_to_hub_ggml",
+            lambda m: unsloth_save.unsloth_convert_lora_to_ggml_and_push_to_hub(
+                m, None, "user/repo"
+            ),
+            True,
         ),
     ],
 )
-def test_gguf_and_torchao_are_refused_under_fsdp2(fake_fsdp2, method, call):
-    with pytest.raises(
-        RuntimeError, match = rf"`{method}` does not support a model sharded by FSDP2"
+def test_whole_model_exports_run_on_rank0_under_fsdp2(monkeypatch, method, call, adapter_only):
+    """GGUF, torchao, OpenVINO and GGML exports used to be refused (or, for OpenVINO and GGML, ran
+    on every rank over its own shards). Under FSDP2 they now gather and run on rank 0 alone:
+    a non-writer rank gets rank 0's answer without running the export."""
+    from peft import LoraConfig, get_peft_model
+
+    seen = []
+
+    def export(
+        model,
+        run,
+        name,
+        trainable_only = False,
+        **options,
     ):
-        call(_tiny_llama())
-    assert fake_fsdp2 == []
+        seen.append((name, trainable_only, sorted(options)))
+        return "rank 0's result"
+
+    monkeypatch.setattr(fsdp2_save, "fsdp2_units", lambda model: [object()])
+    monkeypatch.setattr(fsdp2_save, "fsdp2_gather_active", lambda: False)
+    monkeypatch.setattr(fsdp2_save, "fsdp2_export_on_writer", export)
+    model = get_peft_model(_tiny_llama(), LoraConfig(r = 2, target_modules = ["q_proj"]))
+    assert call(model) == "rank 0's result"
+    assert len(seen) == 1 and seen[0][0] == method and seen[0][1] is adapter_only, seen
+    # A full export stages the packed 4-bit base on the CPU, as save_pretrained_merged does.
+    if not adapter_only:
+        assert "offload_4bit" in seen[0][2], seen
 
 
-def test_refusal_passes_through_without_fsdp2(monkeypatch):
+def test_qat_torchao_export_converts_where_one_gpu_would(monkeypatch):
+    """A QAT model saved with its own config is converted in place: rank 0 keeps the gathered
+    weights on its GPU when they fit (as one GPU converts them). A given torchao_config quantizes a
+    reload of a 16-bit save, so the weights go to the CPU as for every other export."""
+    seen = []
+
+    def export(
+        model,
+        run,
+        name,
+        trainable_only = False,
+        **options,
+    ):
+        seen.append(options)
+
+    monkeypatch.setattr(fsdp2_save, "fsdp2_units", lambda model: [object()])
+    monkeypatch.setattr(fsdp2_save, "fsdp2_gather_active", lambda: False)
+    monkeypatch.setattr(fsdp2_save, "fsdp2_export_on_writer", export)
+    monkeypatch.setattr(
+        fsdp2_save, "gather_on_accelerator_if_it_fits", lambda model: {"offload_to_cpu": "gpu"}
+    )
+    model = _tiny_llama()
+    model._torchao_config = object()
+    unsloth_save.unsloth_save_pretrained_torchao(model, "out")
+    unsloth_save.unsloth_save_pretrained_torchao(model, "out", torchao_config = object())
+    assert seen == [{"offload_to_cpu": "gpu"}, dict(offload_to_cpu = True, offload_4bit = True)]
+
+
+def test_rank0_export_passes_through_without_fsdp2(monkeypatch):
     monkeypatch.setattr(fsdp2_save, "fsdp2_units", lambda model: [])
-    export = unsloth_save._fsdp2_refuses_save("save_pretrained_gguf")(lambda self, x: ("ran", x))
+    export = unsloth_save._fsdp2_export_on_rank0("save_pretrained_gguf")(lambda self, x: ("ran", x))
+    assert export(object(), 1) == ("ran", 1)
+
+
+def test_rank0_export_passes_through_inside_a_gather(monkeypatch):
+    # push_to_hub_gguf -> save_pretrained_gguf: the outer call already gathered.
+    monkeypatch.setattr(fsdp2_save, "fsdp2_units", lambda model: [object()])
+    monkeypatch.setattr(fsdp2_save, "fsdp2_gather_active", lambda: True)
+    export = unsloth_save._fsdp2_export_on_rank0("save_pretrained_gguf")(lambda self, x: ("ran", x))
     assert export(object(), 1) == ("ran", 1)
 
 

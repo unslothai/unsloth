@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""fp8 compute for the frozen base linears of a LoRA run.
-
-Each weight is quantized once to e4m3 (float scale per output row) and its bf16 copy freed; backward returns only
-grad_x, so nothing from x is saved (torchao's Float8Linear re-quantizes the bf16 weight ~4x per layer per step).
-GEMMs use unit scales with row scales applied after: rowwise ``_scaled_mm`` on sm100 routes to an untuned CUTLASS
-kernel, tensorwise to cuBLAS (aten ScaledBlas.cpp).
-"""
+"""Frozen base linears in fp8 e4m3, quantized once; backward returns only grad_x, so x is not saved."""
 
 import torch
 import torch.nn as nn

@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Disk-backed persistence for generated images.
-
-Each image is a PNG under ``workspace_root()/images`` with its recipe embedded as PNG text chunks:
-an ``unsloth`` JSON blob (the source of truth) plus an Automatic1111-style ``parameters`` string,
-so a downloaded PNG carries its own settings. The route owns the schema; this only stores files.
-"""
+"""Image PNGs in workspace_root()/images; recipe in an unsloth JSON text chunk (source of truth)"""
 
 from __future__ import annotations
 

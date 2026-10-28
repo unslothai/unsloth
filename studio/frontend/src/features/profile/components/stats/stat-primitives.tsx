@@ -35,7 +35,17 @@ export function StatsCard({
               <p className="text-xs text-muted-foreground">{description}</p>
             ) : null}
           </div>
-          {action ? <div className="max-w-full shrink-0">{action}</div> : null}
+          {action ? (
+            <div
+              className={cn(
+                "max-w-full shrink-0",
+                // Top edge on the h3's cap top (text-sm at its default leading; Hellix: 0.336em).
+                description && "mt-[calc(var(--text-sm)*0.336)]",
+              )}
+            >
+              {action}
+            </div>
+          ) : null}
         </header>
       ) : null}
       {children}

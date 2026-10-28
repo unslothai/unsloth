@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Settings policy: the account, shared and owner routers decide who may reach each
-/api/settings path."""
+"""Access to each /api/settings path is decided by the account, shared and owner routers"""
 
 import asyncio
 import functools
@@ -44,6 +43,7 @@ from utils.account_context import (
     current_account,
     is_owner_context,
     reset_account,
+    run_as,
 )
 from hub.utils.hf_tokens import (
     HfTokenArg,
@@ -2534,6 +2534,31 @@ def _fallback_supplies_reasoning_flag(model_id: str, target_id: str) -> bool:
     return False
 
 
+def _owner_fallback_answers(model_id: str, target_id: str) -> bool:
+    """Whether a managed account's load for this model would fall through to the owner's row once its own
+    entry empties out. That fallback takes the owner's row whole, so a save left at the defaults has to keep
+    a row of its own or the account gets the owner's flags, context and layers back."""
+    from utils.openai_auto_switch_settings import cached_repo_alias_keys, get_model_override
+
+    if is_owner_context():
+        return False
+    candidates = [
+        key
+        for key in (_bare_model_id(model_id), _legacy_standalone_gguf_key(model_id))
+        if key and key != target_id
+    ]
+    # The account's own broader row answers first; the same-account rules above cover it.
+    if any(get_model_override(key) for key in candidates):
+        return False
+
+    def _owner_has_row() -> bool:
+        return any(get_model_override(key) for key in (model_id, *candidates)) or bool(
+            cached_repo_alias_keys(model_id)
+        )
+
+    return run_as(OWNER, _owner_has_row)
+
+
 def _other_quants_remain(bare_id: str, removed_ids: list[str]) -> bool:
     """Whether a quant of ``bare_id`` other than the ones being removed still has an entry. Such a quant has its
     own settings and never reads the bare fallback, so this is not "is anyone inheriting" but "is this
@@ -2781,6 +2806,11 @@ def update_openai_auto_switch_override(
                 payload.llama_extra_args == []
                 and not payload.fill_absent_fields
                 and _fallback_supplies_extra_args(payload.model_id, target_id)
+            ) or (
+                # A managed account's explicit save shadows the owner's row, defaults included.
+                not is_removal
+                and not payload.fill_absent_fields
+                and _owner_fallback_answers(payload.model_id, target_id)
             )
             # Unsent defaults are still written when a broader entry would answer with the flag this row shadows.
             _kept_reasoning_budget = _kept_tuning["reasoning_budget"]

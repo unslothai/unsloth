@@ -2509,6 +2509,15 @@ async def get_model_config(
                 is_decision, layout = True, "llm"
                 config_dict = load_llm_decision_defaults()
 
+            from utils.models.training_defaults import model_training_recommendations
+
+            config_dict = model_training_recommendations(
+                config_dict,
+                is_vision = is_vision,
+                is_audio = audio_type is not None,
+                is_embedding = is_embedding,
+                is_decision = is_decision,
+            )
             logger.info(
                 f"Model config result for {model_name}: is_vision={is_vision}, is_embedding={is_embedding}, audio_type={audio_type}, audio_type_known={audio_type_definitive}, is_lora={is_lora}, max_position_embeddings={max_position_embeddings}"
             )
@@ -4065,6 +4074,7 @@ async def get_kv_cache_estimate(
         null = {
             "kv_bytes": None,
             "weights_bytes": None,
+            "lookup_table_bytes": None,
             "native_context": None,
             "spec_bytes": None,
             "n_ctx": None,
@@ -4633,6 +4643,7 @@ async def get_gguf_variants(
                         download_size_bytes = int(
                             getattr(v, "download_size_bytes", v.size_bytes) or v.size_bytes
                         ),
+                        lookup_table_bytes = int(getattr(v, "lookup_table_bytes", 0) or 0),
                         pending_drafter_filename = getattr(v, "pending_drafter_filename", None),
                         pending_drafter_size_bytes = int(
                             getattr(v, "pending_drafter_size_bytes", 0) or 0

@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Encode a Wan or MiniMax-H3 clip while its VAE is still decoding.
-
-The streamed mp4 is used only when its frames equal the final frames bit for bit, else the clip is encoded as
-before. H3 declares its audio stream up front as ``encode_x264`` does and muxes the soundtrack at the end.
-``UNSLOTH_STUDIO_VIDEO_STREAM_ENCODE=0`` turns it off.
-"""
+"""Encodes a Wan or MiniMax-H3 clip while its VAE decodes; the streamed mp4 is used only if its
+frames equal the final frames bit for bit, else re-encoded; H3 declares audio up front (as
+encode_x264) and muxes it last; UNSLOTH_STUDIO_VIDEO_STREAM_ENCODE=0 disables."""
 
 from __future__ import annotations
 
@@ -22,6 +19,8 @@ from typing import Any, Iterator, Optional
 from .host_pinning import host_pinning_allowed
 
 STREAM_ENCODE_ENV = "UNSLOTH_STUDIO_VIDEO_STREAM_ENCODE"
+# Kill switch: "0" hides the decode below the session's wrapper from chain walkers again (as before).
+STREAM_CHAIN_ENV = "UNSLOTH_STUDIO_VIDEO_STREAM_ENCODE_CHAIN"
 QUEUE_DEPTH = 8
 _STOP = object()
 
@@ -30,6 +29,13 @@ STATS = {"streamed": 0, "fallback": 0, "last": ""}
 
 def stream_encode_enabled() -> bool:
     return os.environ.get(STREAM_ENCODE_ENV, "").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _expose_inner(wrapper: Any, original: Any) -> Any:
+    """Set ``__wrapped__`` so diffusion_vae_oom's chain walkers see the untiled gate below this wrapper."""
+    if os.environ.get(STREAM_CHAIN_ENV, "").strip().lower() not in ("0", "false", "no", "off"):
+        wrapper.__wrapped__ = original
+    return wrapper
 
 
 def _note(outcome: str, reason: str, logger: Any) -> None:
@@ -178,7 +184,7 @@ class StreamEncode:
                     self._decoding = False
                     self._decoded = True
 
-            return decode
+            return _expose_inner(decode, original)
 
         def _tiled_wrapper(original: Any) -> Any:
             def tiled_decode(*args: Any, **kwargs: Any) -> Any:
@@ -464,7 +470,7 @@ class H3StreamEncode(StreamEncode):
                     self._decoding = False
                     self._decoded = True
 
-            return decode
+            return _expose_inner(decode, original)
 
         def _inner_wrapper(original: Any) -> Any:
             def _decode(*args: Any, **kwargs: Any) -> Any:

@@ -1780,6 +1780,93 @@ def test_load_wan_ti2v_5b_pipeline(fake_runtime):
     assert backend._state.pipe.vae.decoder.hooks == []
 
 
+def test_first_clip_seeds_floats_before_the_denoise_and_keeps_them_before_the_decode(
+    fake_runtime, monkeypatch
+):
+    """Seeds go in at denoise entry and are kept at decode entry."""
+    backend = VideoBackend()
+    backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    pipe = backend._state.pipe
+    events: list = []
+
+    class _Seeds:
+        def seed(self):
+            events.append("seed")
+
+        def keep(self):
+            events.append("keep")
+
+    asked: list = []
+    monkeypatch.setattr(
+        VideoBackend, "_inline_float_seeds", lambda self, state: asked.append(state) or _Seeds()
+    )
+    original_call = type(pipe).__call__
+
+    @functools.wraps(original_call)  # keeps the signature generate() gates its kwargs on
+    def _call(self, *args, **kwargs):
+        with self.progress_bar(total = 2):
+            events.append("denoiser")
+        return original_call(self, *args, **kwargs)
+
+    pipe.__class__ = type("_LoopPipe", (type(pipe),), {"__call__": _call})
+    pipe.progress_bar = lambda *a, **k: contextlib.nullcontext()
+    pipe.vae.on_decode = lambda: events.append("decode")
+    backend.generate(prompt = "a fox", steps = 2)
+    assert asked == [backend._state]
+    assert events[:2] == ["seed", "denoiser"]
+    assert events.index("keep") < events.index("decode")
+    assert events.count("keep") == 1
+
+
+def test_first_clip_seeds_floats_at_the_first_dit_forward_without_a_pipe_progress_bar(
+    fake_runtime, monkeypatch
+):
+    """H3 modular's progress bar is its loop wrapper's: the first DiT forward still seeds first."""
+    backend = VideoBackend()
+    backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    pipe = backend._state.pipe
+    events: list = []
+
+    class _Dit:
+        def __init__(self):
+            self.hooks = []
+
+        def register_forward_pre_hook(self, fn):
+            self.hooks.append(fn)
+            return types.SimpleNamespace(remove = lambda: self.hooks.remove(fn))
+
+        def __call__(self):
+            for hook in list(self.hooks):
+                hook(self, ())
+            events.append("denoiser")
+
+    dit = _Dit()
+
+    class _Seeds:
+        modules = [dit]
+
+        def seed(self):
+            if "seed" not in events:
+                events.append("seed")
+
+        def keep(self):
+            events.append("keep")
+
+    monkeypatch.setattr(VideoBackend, "_inline_float_seeds", lambda self, state: _Seeds())
+    original_call = type(pipe).__call__
+
+    @functools.wraps(original_call)
+    def _call(self, *args, **kwargs):
+        dit()
+        dit()
+        return original_call(self, *args, **kwargs)
+
+    pipe.__class__ = type("_ModularLikePipe", (type(pipe),), {"__call__": _call})
+    backend.generate(prompt = "a fox", steps = 2)
+    assert events[:3] == ["seed", "denoiser", "denoiser"]
+    assert dit.hooks == []
+
+
 def _fits_in_memory_snapshot(device):
     """A memory snapshot big enough that no load is ever refused for size, so a test forcing a
     device does not inherit the runner's own free memory as a precondition."""
@@ -11007,7 +11094,7 @@ def _ticker(monkeypatch, total):
         events.append(event)
         return event
 
-    monkeypatch.setattr(video_mod, "_record_cuda_event", _fake_event)
+    monkeypatch.setattr(video_mod, "_record_device_event", _fake_event)
     return video_mod._CompletedStepTicker(total), events
 
 
@@ -11046,16 +11133,114 @@ def test_ticker_never_walks_backwards_or_past_the_total(monkeypatch):
     assert ticker.completed() == 4
 
 
-def test_ticker_falls_back_to_the_host_count_without_cuda_events(monkeypatch):
-    # CPU/MPS have no events and no run-ahead, so the host count IS the progress.
+def test_ticker_falls_back_to_the_host_count_without_device_events(monkeypatch):
+    # A CPU host has no events and no run-ahead, so the host count IS the progress.
     import core.inference.video as video_mod
 
-    monkeypatch.setattr(video_mod, "_record_cuda_event", lambda: None)
+    monkeypatch.setattr(video_mod, "_record_device_event", lambda: None)
     ticker = video_mod._CompletedStepTicker(5)
     for step in range(1, 6):
         ticker.record(step)
         assert ticker.completed() == step
     assert ticker.event_backed is False
+
+
+@pytest.mark.parametrize("has_event, mps_available", [(True, True), (False, True), (True, False)])
+def test_ticker_follows_mps_events(monkeypatch, has_event, mps_available):
+    # MPS events back the ticker and boundary; no torch.mps.Event or no MPS keeps the host count.
+    import core.inference.video as video_mod
+
+    events: list = []
+
+    class _MpsEvent(_FakeCudaEvent):
+        def __init__(self) -> None:
+            super().__init__()
+            self.recorded = False
+            events.append(self)
+
+        def record(self) -> None:
+            self.recorded = True
+
+    torch = types.ModuleType("torch")
+    torch.cuda = types.SimpleNamespace(is_available = lambda: False)
+    torch.backends = types.SimpleNamespace(
+        mps = types.SimpleNamespace(is_available = lambda: mps_available)
+    )
+    torch.mps = types.SimpleNamespace(**({"Event": _MpsEvent} if has_event else {}))
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    ticker = video_mod._CompletedStepTicker(3)
+    for step in range(1, 4):
+        ticker.record(step)
+    if not (has_event and mps_available):
+        assert ticker.completed() == 3
+        assert ticker.event_backed is False
+        assert ticker.mark_boundary() is False
+        return
+    assert [event.recorded for event in events] == [True] * 3
+    assert ticker.completed() == 0
+    events[0].done = True
+    assert ticker.completed() == 1
+    assert ticker.mark_boundary() is True
+    assert ticker.boundary_reached() is False
+    for event in events:
+        event.done = True
+    assert ticker.completed() == 3
+    assert ticker.boundary_reached() is True
+
+
+def test_ticker_tracks_real_mps_work(monkeypatch):
+    # Real Apple Silicon: the host enqueues every step long before the GPU runs them, so the bar
+    # must follow the events. The CUDA-only helper this replaced reports all steps done at once.
+    torch = pytest.importorskip("torch")
+    if not torch.backends.mps.is_available():
+        pytest.skip("needs an MPS device")
+    import core.inference.video as video_mod
+
+    x = torch.randn(2048, 2048, device = "mps")
+    torch.mps.synchronize()
+
+    def _run(ticker, steps):
+        y = x
+        for step in range(1, steps + 1):
+            for _ in range(12):
+                y = (y @ x) * 1e-3
+            ticker.record(step)
+        sentinel = torch.mps.Event()
+        sentinel.record()
+        return y, sentinel
+
+    def _cuda_only_event():
+        if not torch.cuda.is_available():
+            return None
+        event = torch.cuda.Event()
+        event.record()
+        return event
+
+    with monkeypatch.context() as patch:
+        patch.setattr(video_mod, "_record_device_event", _cuda_only_event)
+        base = video_mod._CompletedStepTicker(4)
+        _, sentinel = _run(base, 4)
+        base_done = base.completed()
+        base_behind = not sentinel.query()
+    torch.mps.synchronize()
+
+    head = video_mod._CompletedStepTicker(4)
+    _, sentinel = _run(head, 4)
+    head_done = head.completed()
+    head_marked = head.mark_boundary()
+    head_behind = not sentinel.query()
+    head_boundary = head.boundary_reached()
+    torch.mps.synchronize()
+    if not (base_behind and head_behind):
+        pytest.skip("the GPU caught up with the host before the probe")
+
+    assert base_done == 4 and base.event_backed is False
+    assert head.event_backed is True
+    assert head_done < 4
+    assert head_marked is True and head_boundary is False
+    assert head.completed() == 4
+    assert head.boundary_reached() is True
 
 
 def test_ticker_unmarkable_step_does_not_shift_the_ones_after_it(monkeypatch):
@@ -11074,7 +11259,7 @@ def test_ticker_unmarkable_step_does_not_shift_the_ones_after_it(monkeypatch):
         events.append(event)
         return event
 
-    monkeypatch.setattr(video_mod, "_record_cuda_event", _fake_event)
+    monkeypatch.setattr(video_mod, "_record_device_event", _fake_event)
     ticker = video_mod._CompletedStepTicker(4)
     for step in range(1, 5):
         ticker.record(step)
@@ -11211,7 +11396,7 @@ def _patch_events(monkeypatch, *, done: bool = False):
         events.append(event)
         return event
 
-    monkeypatch.setattr(video_mod, "_record_cuda_event", _fake_event)
+    monkeypatch.setattr(video_mod, "_record_device_event", _fake_event)
     return events
 
 
@@ -11349,7 +11534,7 @@ def test_a_capture_cannot_start_while_an_event_query_is_in_flight(monkeypatch):
             finish_query.wait(5.0)
             return True
 
-    monkeypatch.setattr(video_mod, "_record_cuda_event", lambda: _BlockingEvent())
+    monkeypatch.setattr(video_mod, "_record_device_event", lambda: _BlockingEvent())
     ticker = video_mod._CompletedStepTicker(1)
     ticker.record(1)
 
@@ -13546,3 +13731,208 @@ def test_a_layer_split_fallback_moves_the_compile_below_the_offload_hooks(
     _load_gguf(backend, tmp_path)
     assert speed_offload and set(speed_offload) == {not split_expected}
     assert (seen == [backend._state.pipe]) if moved else (seen == [])
+
+
+@pytest.mark.parametrize("te_scheme, encoder_gb", [(None, 66.8), ("int8", 27.2)])
+def test_h3_unified_guard_prices_the_hosted_conditioner(
+    fake_runtime, monkeypatch, te_scheme, encoder_gb
+):
+    import core.inference.video as video_mod
+    from core.inference.video_families import detect_video_family
+
+    seen = {}
+
+    def capture(**kwargs):
+        seen.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(video_mod, "plan_diffusion_memory", capture)
+    monkeypatch.setattr(video_mod, "settled_snapshot_device_memory", lambda _target: None)
+    monkeypatch.setattr(video_mod, "raise_on_unified_memory_shortfall", lambda *_a, **_kw: None)
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    VideoBackend._raise_on_modular_unified_shortfall(
+        fam,
+        target = None,
+        dtype = sys.modules["torch"].bfloat16,
+        device = "cuda",
+        memory_mode = None,
+        scheme = "fp8",
+        te_scheme = te_scheme,
+    )
+    assert seen["model_dense_mib"] == int((20.3 + encoder_gb + 11.1) * 1000**3 / 1024**2)
+
+
+@pytest.mark.parametrize(
+    "te_request, source, encoder_gb",
+    [
+        (None, "MiniMaxAI/MiniMax-H3", 27.2),
+        ("int8", "MiniMaxAI/MiniMax-H3", 27.2),
+        ("none", "MiniMaxAI/MiniMax-H3", 66.8),
+        ("int8", "someone/MiniMax-H3", 66.8),
+        ("int8", None, 66.8),
+    ],
+)
+def test_h3_unified_preflight_uses_the_seeded_encoder_provenance(
+    fake_runtime, monkeypatch, te_request, source, encoder_gb
+):
+    import core.inference.video as video_mod
+
+    class ReachedPreflight(Exception):
+        pass
+
+    seen = {}
+
+    def capture(**kwargs):
+        seen.update(kwargs)
+        raise ReachedPreflight
+
+    pipe = types.SimpleNamespace(
+        get_component_spec = lambda _name: types.SimpleNamespace(
+            pretrained_model_name_or_path = source
+        ),
+    )
+    diffusers = types.SimpleNamespace(
+        ComponentsManager = lambda: object(),
+        ModularPipeline = types.SimpleNamespace(from_pretrained = lambda *_a, **_kw: pipe),
+    )
+    monkeypatch.setattr(video_mod, "_h3_auto_precision_ok", lambda _target: True)
+    monkeypatch.setattr(video_mod, "plan_diffusion_memory", capture)
+    monkeypatch.setattr(video_mod, "settled_snapshot_device_memory", lambda _target: None)
+    fam = _detect_load_family("MiniMaxAI/MiniMax-H3", None, "minimax-h3")
+    with pytest.raises(ReachedPreflight):
+        VideoBackend()._load_h3_modular_pipeline(
+            diffusers = diffusers,
+            torch = sys.modules["torch"],
+            fam = fam,
+            repo_id = fam.base_repo,
+            base = fam.base_repo,
+            kind = "pipeline",
+            dtype = sys.modules["torch"].bfloat16,
+            device = "cuda",
+            hf_token = None,
+            memory_mode = None,
+            transformer_quant = "fp8",
+            text_encoder_quant = te_request,
+            target = types.SimpleNamespace(device = "cuda"),
+        )
+    assert seen["model_dense_mib"] == int((20.3 + encoder_gb + 11.1) * 1000**3 / 1024**2)
+
+
+def test_h3_unified_quantized_components_still_refuse_a_spark_sized_pool(fake_runtime, monkeypatch):
+    import core.inference.video as video_mod
+    from core.inference.diffusion_memory import DeviceMemory
+
+    fam = _detect_load_family("MiniMaxAI/MiniMax-H3", None, "minimax-h3")
+    memory = DeviceMemory("cuda", "cuda", "unified_memory", 45 * 1024, 54 * 1024)
+    monkeypatch.setattr(video_mod, "settled_snapshot_device_memory", lambda _target: memory)
+    with pytest.raises(RuntimeError, match = "unified memory") as exc:
+        VideoBackend._raise_on_modular_unified_shortfall(
+            fam,
+            target = types.SimpleNamespace(device = "cuda", supports_model_cpu_offload = True),
+            dtype = sys.modules["torch"].bfloat16,
+            device = "cuda",
+            memory_mode = None,
+            scheme = "fp8",
+            te_scheme = "int8",
+        )
+    assert "57 GB" in str(exc.value)
+    # A larger unified pool can load the quantized pair even though the old 93 GiB estimate refused it.
+    monkeypatch.setattr(video_mod, "settled_snapshot_device_memory", _unified_snapshot(128))
+    VideoBackend._raise_on_modular_unified_shortfall(
+        fam,
+        target = types.SimpleNamespace(device = "mps", supports_model_cpu_offload = True),
+        dtype = sys.modules["torch"].bfloat16,
+        device = "mps",
+        memory_mode = None,
+        scheme = "fp8",
+        te_scheme = "int8",
+    )
+
+
+@pytest.mark.parametrize("total_gib, fallback_fits", [(128, False), (160, True)])
+def test_h3_unified_guard_reruns_before_a_failed_hosted_encoder_goes_dense(
+    fake_runtime, monkeypatch, total_gib, fallback_fits
+):
+    import core.inference.video as video_mod
+    import core.inference.diffusion_prequant as prequant_mod
+    import core.inference.video_minimax_h3_te as te_mod
+    from core.inference.diffusion_memory import DeviceMemory
+
+    calls = []
+    snapshots = []
+    initial_memory = _unified_snapshot(total_gib)(None)
+    free_mib = initial_memory.free_mib
+
+    def snapshot(_target):
+        memory = DeviceMemory("mps", "mps", "unified_memory", free_mib, initial_memory.total_mib)
+        snapshots.append(memory)
+        return memory
+
+    def seed_transformer(*_a, **_kw):
+        nonlocal free_mib
+        free_mib -= int(20.3 * 1000**3 / 1024**2)
+        return object()
+
+    class ReachedComponents(Exception):
+        pass
+
+    real = VideoBackend._raise_on_modular_unified_shortfall
+
+    def spy(fam, **kwargs):
+        calls.append((kwargs["scheme"], kwargs["te_scheme"], kwargs["device_memory"]))
+        return real(fam, **kwargs)
+
+    class Pipe:
+        def get_component_spec(self, _name):
+            return types.SimpleNamespace(pretrained_model_name_or_path = "MiniMaxAI/MiniMax-H3")
+
+        def update_components(self, **kwargs):
+            for name, value in kwargs.items():
+                setattr(self, name, value)
+
+        def load_components(self, **kwargs):
+            if not fallback_fits:
+                pytest.fail("dense components must not be opened before the fallback memory check")
+            raise ReachedComponents
+
+    diffusers = types.SimpleNamespace(
+        ComponentsManager = lambda: object(),
+        ModularPipeline = types.SimpleNamespace(from_pretrained = lambda *_a, **_kw: Pipe()),
+        MiniMaxH3Transformer3DModel = object,
+    )
+    monkeypatch.setattr(VideoBackend, "_raise_on_modular_unified_shortfall", staticmethod(spy))
+    monkeypatch.setattr(video_mod, "settled_snapshot_device_memory", snapshot)
+    monkeypatch.setattr(video_mod, "precision_fallback_allowed", lambda: True)
+    monkeypatch.setattr(
+        prequant_mod,
+        "resolve_prequant_source",
+        lambda *_a, **_kw: types.SimpleNamespace(location = "unsloth/MiniMax-H3-FP8"),
+    )
+    monkeypatch.setattr(prequant_mod, "load_prequantized_transformer", seed_transformer)
+    monkeypatch.setattr(te_mod, "load_h3_quantized_text_encoder", lambda *_a, **_kw: None)
+    fam = _detect_load_family("MiniMaxAI/MiniMax-H3", None, "minimax-h3")
+    expected = (
+        pytest.raises(ReachedComponents)
+        if fallback_fits
+        else pytest.raises(RuntimeError, match = "unified memory")
+    )
+    with expected:
+        VideoBackend()._load_h3_modular_pipeline(
+            diffusers = diffusers,
+            torch = sys.modules["torch"],
+            fam = fam,
+            repo_id = fam.base_repo,
+            base = fam.base_repo,
+            kind = "pipeline",
+            dtype = sys.modules["torch"].bfloat16,
+            device = "mps",
+            hf_token = None,
+            memory_mode = None,
+            transformer_quant = "fp8",
+            text_encoder_quant = "int8",
+            target = types.SimpleNamespace(device = "mps", supports_model_cpu_offload = True),
+        )
+    # Seeded weights reduce current free RAM, but both checks price the FULL model against the original pool.
+    assert free_mib < initial_memory.free_mib
+    assert snapshots == [initial_memory]
+    assert calls == [("fp8", "int8", initial_memory), ("fp8", None, initial_memory)]
