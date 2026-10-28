@@ -1238,12 +1238,43 @@ class _DropoutState:
 
 
 def _full_mask(shape, dim, rank, tp, p, like):
-    """The rank-th 1 / tp of the dropout mask one process draws for the whole tensor (same RNG draws)."""
+    """The rank-th 1 / tp of the boolean keep mask one process draws for the whole tensor (same RNG draws)."""
     full = list(shape)
     full[dim] *= tp
     with torch._C.DisableTorchFunction():
-        mask = F.dropout(torch.ones(full, dtype = like.dtype, device = like.device), p, True)
+        mask = F.dropout(torch.ones(full, dtype = like.dtype, device = like.device), p, True) != 0
     return mask.narrow(dim, rank * shape[dim], shape[dim]).contiguous()
+
+
+class _NativeDropoutScale(torch.autograd.Function):
+    """x * mask * scale rounded once from accumulator precision, as ATen's fused native_dropout kernel: its
+    forward scale is 1 / (accscalar)(1 - p), its backward native_dropout_backward(grad, mask, 1 / (1 - p))."""
+
+    @staticmethod
+    def forward(ctx, x, mask, p):
+        acc = torch.float64 if x.dtype == torch.float64 else torch.float32
+        ctx.save_for_backward(mask)
+        ctx.scale = 1.0 / (1.0 - p)
+        scale = 1.0 / torch.tensor(1.0 - p, dtype = acc).item()
+        return torch.ops.aten.native_dropout_backward(x, mask, scale)
+
+    @staticmethod
+    def backward(ctx, grad):
+        (mask,) = ctx.saved_tensors
+        return torch.ops.aten.native_dropout_backward(grad, mask, ctx.scale), None, None
+
+
+def _apply_mask(x, mask, p, inplace = False):
+    """x after dropout with this boolean keep mask, rounded as F.dropout rounds on x's device: ATen's fused
+    native_dropout on CUDA / XPU / lazy / privateuse1 (scale applied in accumulator precision), else a noise
+    tensor in x's dtype holding the rounded 1 / (1 - p) (Dropout.cpp _dropout_impl)."""
+    if x.device.type in ("cuda", "xpu", "lazy", "privateuseone") and 0 < p < 1 and x.numel() > 0:
+        y = _NativeDropoutScale.apply(x, mask, p)
+        return x.copy_(y) if inplace else y
+    noise = mask.to(x.dtype)
+    if p < 1:
+        noise.div_(1 - p)
+    return x.mul_(noise) if inplace else x * noise
 
 
 def _tp_dropout(
@@ -1274,8 +1305,7 @@ def _tp_dropout(
             f"Unsloth: tensor parallelism cannot tell how the dropout input {tuple(input.shape)} inside "
             f"{state.path} is sharded; set that dropout to 0."
         )
-    mask = _full_mask(input.shape, dim, state.rank, state.tp, p, input)
-    return input.mul_(mask) if inplace else input * mask
+    return _apply_mask(input, _full_mask(input.shape, dim, state.rank, state.tp, p, input), p, inplace)
 
 
 def _dropout_mode_class():
@@ -1367,7 +1397,7 @@ def _lora_dropout(self, adapter, x):
         ):  # whole (replicated) input on every rank
             return F.dropout(x, p, True)
         rank, tp = self._unsloth_tp_coord
-        return x * _full_mask(x.shape, x.dim() - 1, rank, tp, p, x)
+        return _apply_mask(x, _full_mask(x.shape, x.dim() - 1, rank, tp, p, x), p)
     finally:
         if state is not None:
             state.bypass -= 1
