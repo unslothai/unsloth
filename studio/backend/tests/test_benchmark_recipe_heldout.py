@@ -49,6 +49,8 @@ def test_judge_verdict_ignores_thinking():
     assert parse_judge_verdict("<think>maybe FAIL</think>PASS\nfine") is True
     assert parse_judge_verdict("FAIL: wrong") is False
     assert parse_judge_verdict("no idea") is None
+    assert parse_judge_verdict("It does not pass the check.\nFAIL") is None
+    assert parse_judge_verdict("**FAIL** - it does not pass") is False
 
 
 def test_candidate_against_baseline_and_eval_samples():

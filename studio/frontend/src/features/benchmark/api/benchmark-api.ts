@@ -68,6 +68,8 @@ export interface BenchmarkTaskInfo {
   name: string;
   description?: string;
   task_type?: string;
+  /** "recipe" tasks run from the Flows Benchmark node, which supplies their rows. */
+  runner?: "lm_eval" | "recipe";
 }
 
 export interface BenchmarkTasksResponse {
@@ -77,7 +79,8 @@ export interface BenchmarkTasksResponse {
 /** Fetch available benchmark tasks. */
 export async function fetchBenchmarkTasks(): Promise<BenchmarkTasksResponse> {
   const response = await authFetch("/api/benchmarks/evals/tasks");
-  return parseJson<BenchmarkTasksResponse>(response);
+  const data = await parseJson<BenchmarkTasksResponse>(response);
+  return { ...data, tasks: data.tasks.filter((t) => t.runner !== "recipe") };
 }
 
 /** Fetch training checkpoints (hits /api/models/checkpoints — not a benchmark endpoint). */

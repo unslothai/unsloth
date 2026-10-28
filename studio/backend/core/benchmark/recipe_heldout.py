@@ -29,7 +29,7 @@ DEFAULT_JUDGE_RUBRIC = (
 )
 
 _FENCE_RE = re.compile(r"```[a-zA-Z0-9_+-]*\n(.*?)```", re.DOTALL)
-_VERDICT_RE = re.compile(r"\b(PASS|FAIL)\b", re.IGNORECASE)
+_VERDICT_RE = re.compile(r"^[\s*#>`_\-]*(PASS|FAIL)\b", re.IGNORECASE)
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
 ChatFn = Callable[[str, list[dict[str, str]]], str]
@@ -95,7 +95,9 @@ def build_judge_messages(
 
 
 def parse_judge_verdict(text: str) -> Optional[bool]:
-    match = _VERDICT_RE.search(strip_thinking(text))
+    # The verdict is the first line, as the prompt asks; a "pass" inside the reasoning is not one.
+    first = next((line for line in strip_thinking(text).splitlines() if line.strip()), "")
+    match = _VERDICT_RE.match(first)
     if match is None:
         return None
     return match.group(1).upper() == "PASS"
