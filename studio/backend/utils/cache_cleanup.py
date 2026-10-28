@@ -34,7 +34,7 @@ def _configured_location() -> str:
 
 
 def _configured_cache_dirs() -> List[Path]:
-    """Where unsloth_zoo.compiler writes (``_get_compile_folder``): the location, else ``<cwd>/unsloth_compiled_cache``, a relative one anchored at the CWD so it is the folder os.makedirs makes. Never the CWD default beside a configured location: the compiler does not write there, so that folder is somebody else's. Never the ``<tempdir>/<leaf>`` the compiler falls back to past an unusable location either: every user and install on the machine shares that name, so a directory or link found there is not ours to clear or import from."""
+    """Where unsloth_zoo.compiler writes (``_get_compile_folder``), a relative location anchored at the CWD as os.makedirs takes it. Never the CWD default beside a configured location (somebody else's folder), nor the compiler's ``<tempdir>/<leaf>`` fallback: every user on the machine shares that name, so it is not ours to clear or import from."""
     raw = Path(_configured_location() or _DEFAULT_COMPILE_LEAF)
     try:
         return [raw if raw.is_absolute() else Path.cwd() / raw]
