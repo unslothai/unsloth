@@ -123,7 +123,7 @@ import {
   Folder02Icon,
   FlimSlateIcon,
   HelpCircleIcon,
-  Image03Icon,
+  Image01Icon,
   InformationCircleIcon,
   LibrariesIcon,
   Logout05Icon,
@@ -3380,7 +3380,7 @@ export function AppSidebar() {
       },
     },
     images: {
-      icon: Image03Icon,
+      icon: Image01Icon,
       label: t("shell.navigation.images"),
       active: pathname === "/images" || pathname.startsWith("/images/"),
       onClick: () => {

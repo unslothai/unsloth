@@ -3803,7 +3803,7 @@ function VideoGenerator({
               resolveDownloadFootprint={resolveDownloadFootprint}
               onEject={status?.loaded ? handleUnload : undefined}
               variant="ghost"
-              className="!h-[calc(34px*var(--ui-space-scale,1))]"
+              className="ml-1.5 max-w-full overflow-hidden !pl-2.5 !pr-1.5 !h-[var(--studio-chat-control-height,34px)]"
               task={VIDEO_GEN_TASKS}
               catalog={VIDEO_CATALOG}
               opaqueKind={opaqueKind}
