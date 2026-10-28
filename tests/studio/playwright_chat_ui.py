@@ -744,7 +744,7 @@ def parse_rgb(s):
 
 
 def exercise_floating_monitor_geometry(page):
-    """Exercise content, drag, native resize, and viewport geometry."""
+    """Exercise content, drag, edge resize, and viewport geometry."""
     monitor = page.get_by_test_id("floating-monitor")
     monitor.wait_for(state = "visible", timeout = 10_000)
     monitor_handle = page.get_by_test_id("floating-monitor-drag-handle")
@@ -789,19 +789,28 @@ def exercise_floating_monitor_geometry(page):
         )
         return monitor_box("drag")
 
-    def resize_monitor_to(
-        x,
-        y,
-        grip_inset = 8,
-    ):
-        before = monitor_box("resize")
-        pointer_drag(
-            before["x"] + before["width"] - grip_inset,
-            before["y"] + before["height"] - grip_inset,
-            x,
-            y,
+    def resize_handle_center(edge):
+        handle = monitor.locator(
+            f'[data-testid="floating-monitor-resize"][data-edge="{edge}"]'
         )
+        box = handle.bounding_box()
+        if box is None:
+            fail(f"floating monitor {edge} resize handle has no bounding box")
+        return box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+
+    def resize_monitor_by(dx, dy, edge = "se"):
+        before = monitor_box("resize")
+        start_x, start_y = resize_handle_center(edge)
+        pointer_drag(start_x, start_y, start_x + dx, start_y + dy)
         return before, monitor_box("resize")
+
+    def content_fits(label):
+        clipped = monitor.get_by_test_id("floating-monitor-content").evaluate(
+            "node => node.getBoundingClientRect().height"
+            " - node.parentElement.getBoundingClientRect().height"
+        )
+        if abs(clipped) > tolerance:
+            fail(f"{label}: content and its scroll region differ by {clipped!r}px")
 
     def expect_close(actual, expected, label):
         if abs(actual - expected) > tolerance:
@@ -907,13 +916,37 @@ def exercise_floating_monitor_geometry(page):
         ),
     )
 
-    # Chromium retains a blocked inline resize request; a later drag must not reveal that hidden size.
-    _, blocked_box = resize_monitor_to(
-        viewport["width"] - 2,
-        viewport["height"] - 2,
-    )
+    # At the resting corner the right and bottom edges have no room, so an outward drag changes nothing.
+    _, blocked_box = resize_monitor_by(40, 40)
     expect_close(blocked_box["width"], initial_box["width"], "blocked width")
     expect_close(blocked_box["height"], initial_box["height"], "blocked height")
+
+    # The left edge grows the card leftward while it stays pinned to the corner.
+    _, left_grown = resize_monitor_by(-60, 0, edge = "w")
+    expect_close(left_grown["width"], initial_box["width"] + 60, "left edge width")
+    expect_close(
+        left_grown["x"] + left_grown["width"],
+        viewport["width"] - inset,
+        "left edge keeps right inset",
+    )
+    expect_close(
+        left_grown["y"] + left_grown["height"],
+        viewport["height"] - inset,
+        "left edge keeps bottom inset",
+    )
+    content_fits("left edge resize")
+    # Double-click on a handle restores the default width at the same corner.
+    start_x, start_y = resize_handle_center("w")
+    page.mouse.dblclick(start_x, start_y)
+    wait_for_settled(monitor)
+    initial_box = wait_for_box(
+        "width reset",
+        lambda box: (
+            abs(box["width"] - initial_box["width"]) <= tolerance
+            and abs(box["height"] - initial_box["height"]) <= tolerance
+            and abs(box["y"] + box["height"] - viewport["height"] + inset) <= tolerance
+        ),
+    )
     left_box = drag_monitor_to(0, viewport["height"] / 2)
     expect_close(left_box["x"], inset, "left inset")
     expect_close(left_box["width"], initial_box["width"], "post-drag width")
@@ -948,44 +981,31 @@ def exercise_floating_monitor_geometry(page):
     page.set_viewport_size(viewport)
     wait_for_box("viewport restore", lambda box: is_inside(box, viewport))
 
+    # Width is the one user-set size: the content zooms with it, so height follows and never gains empty space.
     resize_start = drag_monitor_to(0, 0)
-    _, resized_box = resize_monitor_to(
-        resize_start["x"] + resize_start["width"] - 8 + 40,
-        resize_start["y"] + resize_start["height"] - 8 + 30,
-    )
+    _, resized_box = resize_monitor_by(40, 0)
     expect_close(resized_box["width"], resize_start["width"] + 40, "resize width")
-    expect_close(resized_box["height"], resize_start["height"] + 30, "resize height")
+    if resized_box["height"] <= resize_start["height"] + tolerance:
+        fail(f"content did not scale with width: {resize_start!r} -> {resized_box!r}")
     expect_close(resized_box["x"], resize_start["x"], "resize left edge")
     expect_close(resized_box["y"], resize_start["y"], "resize top edge")
+    content_fits("corner resize")
 
-    _, minimum_box = resize_monitor_to(
-        resized_box["x"] + resized_box["width"] - 102,
-        resized_box["y"] + resized_box["height"] - 102,
-        grip_inset = 2,
-    )
-    expect_close(minimum_box["width"], resize_start["width"], "minimum width")
-    expect_close(minimum_box["height"], resize_start["height"], "minimum height")
+    _, minimum_box = resize_monitor_by(-200, 0)
+    expect_close(minimum_box["width"], 232, "minimum width")
+    content_fits("minimum resize")
 
     drag_monitor_to(0, 0)
-    _, maximum_box = resize_monitor_to(
-        viewport["width"] - 2,
-        viewport["height"] - 2,
-    )
-    expect_close(
-        maximum_box["x"] + maximum_box["width"],
-        viewport["width"] - inset,
-        "maximum resize right inset",
-    )
-    expect_close(
-        maximum_box["y"] + maximum_box["height"],
-        viewport["height"] - inset,
-        "maximum resize bottom inset",
-    )
+    _, maximum_box = resize_monitor_by(viewport["width"], 0)
+    expect_close(maximum_box["width"], 520, "maximum width")
+    if not is_inside(maximum_box, viewport):
+        fail(f"maximum resize left the viewport: {maximum_box!r}")
+    content_fits("maximum resize")
 
     monitor.get_by_role("button", name = "Close").click()
     monitor.wait_for(state = "hidden")
     info(
-        "OK floating monitor preserves native resize and stays stable across "
+        "OK floating monitor resizes from its edges and stays stable across "
         "content, drag, and viewport changes"
     )
 

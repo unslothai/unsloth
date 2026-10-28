@@ -4956,6 +4956,7 @@ export const ru = {
     monitor: {
       dragHandleLabel: "Переместить живой монитор. Стрелки сдвигают его понемногу, двойной щелчок сбрасывает положение.",
       reconnecting: "Повторное подключение…",
+      resizeHint: "Потяните за любой край, чтобы изменить размер. Двойной щелчок сбрасывает размер.",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

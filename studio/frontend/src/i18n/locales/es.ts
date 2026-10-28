@@ -4998,6 +4998,7 @@ export const es = {
     monitor: {
       dragHandleLabel: "Mover el monitor en vivo. Las teclas de flecha lo desplazan un poco; con doble clic se restablece.",
       reconnecting: "Reconectando...",
+      resizeHint: "Arrastra cualquier borde para cambiar el tamaño. Doble clic restablece el tamaño.",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

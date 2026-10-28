@@ -4915,6 +4915,7 @@ export const ko = {
     monitor: {
       dragHandleLabel: "실시간 모니터를 이동합니다. 방향키로 조금씩 움직이고, 더블클릭하면 위치가 초기화됩니다.",
       reconnecting: "다시 연결하는 중...",
+      resizeHint: "가장자리를 끌어 크기를 조절하세요. 두 번 클릭하면 크기가 초기화됩니다.",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

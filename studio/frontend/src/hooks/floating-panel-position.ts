@@ -4,6 +4,7 @@
 export const FLOATING_PANEL_POSITION_KEYS = {
   liveMonitor: "unsloth_live_monitor_position",
   apiMonitor: "unsloth_api_monitor_position",
+  liveMonitorWidth: "unsloth_live_monitor_width",
 } as const;
 
 /** User's drop spot in its constraints box; a null axis stays anchored to the far edge. */
@@ -101,4 +102,59 @@ export function snapsToAnchor(
     Math.abs(drop.left - a.left) <= threshold &&
     Math.abs(drop.top - a.top) <= threshold;
   return near(rest) || near(max);
+}
+
+function clampWidth(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+/** Opt-in edge resize. Only width is user-set; height follows the content, so it never gains empty space. */
+export interface PanelResizeOptions {
+  /** The unscaled width; content zooms by width / baseWidth through `--panel-scale`. */
+  baseWidth: number;
+  minWidth: number;
+  maxWidth: number;
+  /** localStorage key for the chosen width. */
+  storageKey: string;
+}
+
+/** -1 = left/top edge, 1 = right/bottom edge, 0 = that axis is not grabbed. */
+export interface ResizeEdges {
+  x: -1 | 0 | 1;
+  y: -1 | 0 | 1;
+}
+
+export function readPanelWidth(
+  options: PanelResizeOptions | undefined,
+): number | null {
+  if (!options) return null;
+  try {
+    const value = Number(localStorage.getItem(options.storageKey));
+    return Number.isFinite(value) && value > 0
+      ? clampWidth(value, options.minWidth, options.maxWidth)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Width for a pointer delta; an edge-only grab on the other axis scales by the panel's aspect. */
+export function resizedWidth(
+  session: { width: number; height: number; edges: ResizeEdges },
+  dx: number,
+  dy: number,
+  bounds: { min: number; max: number },
+): number {
+  const { edges, width, height } = session;
+  const fromX = edges.x * dx;
+  const fromY = edges.y * dy * (height > 0 ? width / height : 1);
+  const delta =
+    edges.x !== 0 && edges.y !== 0
+      ? Math.abs(fromX) >= Math.abs(fromY)
+        ? fromX
+        : fromY
+      : edges.x !== 0
+        ? fromX
+        : fromY;
+  return clampWidth(width + delta, bounds.min, Math.max(bounds.min, bounds.max));
 }

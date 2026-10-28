@@ -5073,6 +5073,7 @@ export const he = {
     monitor: {
       dragHandleLabel: "הזז את מסך הניטור החי. מקשי החיצים מזיזים אותו מעט, ולחיצה כפולה מאפסת אותו.",
       reconnecting: "מתחבר מחדש...",
+      resizeHint: "גררו כל קצה כדי לשנות גודל. לחיצה כפולה מאפסת את הגודל.",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

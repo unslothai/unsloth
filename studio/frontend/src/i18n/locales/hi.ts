@@ -4935,6 +4935,7 @@ export const hi = {
     monitor: {
       dragHandleLabel: "लाइव मॉनिटर हिलाएँ। एरो कुंजियाँ इसे थोड़ा खिसकाती हैं, डबल-क्लिक करने पर यह रीसेट हो जाता है।",
       reconnecting: "फिर से कनेक्ट हो रहा है...",
+      resizeHint: "आकार बदलने के लिए कोई भी किनारा खींचें। डबल-क्लिक से आकार रीसेट होता है।",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

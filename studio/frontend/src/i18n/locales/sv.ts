@@ -5219,6 +5219,7 @@ export const sv = {
     monitor: {
       dragHandleLabel: "Flytta liveövervakaren. Piltangenterna flyttar den lite i taget, dubbelklick återställer den.",
       reconnecting: "Återansluter …",
+      resizeHint: "Dra i en kant för att ändra storlek. Dubbelklicka för att återställa storleken.",
     },
   },
 } as const;

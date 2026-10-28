@@ -4958,6 +4958,7 @@ export const ptBR = {
     monitor: {
       dragHandleLabel: "Mover o monitor ao vivo. As setas do teclado o deslocam um pouco; clique duplo o redefine.",
       reconnecting: "Reconectando...",
+      resizeHint: "Arraste qualquer borda para redimensionar. Clique duas vezes para redefinir o tamanho.",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

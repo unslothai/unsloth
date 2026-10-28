@@ -4924,6 +4924,7 @@ export const ar = {
     monitor: {
       dragHandleLabel: "انقل شاشة المراقبة المباشرة. مفاتيح الأسهم تحركها قليلًا، والنقر المزدوج يعيدها إلى مكانها.",
       reconnecting: "جارٍ إعادة الاتصال...",
+      resizeHint: "اسحب أي حافة لتغيير الحجم. انقر نقرًا مزدوجًا لإعادة الحجم.",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

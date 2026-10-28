@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { FLOATING_PANEL_POSITION_KEYS } from "@/hooks/floating-panel-position";
+import {
+  FLOATING_PANEL_POSITION_KEYS,
+  type ResizeEdges,
+} from "@/hooks/floating-panel-position";
 import { useFloatingPanelLayout } from "@/hooks/use-floating-panel-layout";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -28,6 +31,7 @@ import { useRouterState } from "@tanstack/react-router";
 import { CpuIcon, GripVerticalIcon } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import {
+  type CSSProperties,
   type ReactNode,
   useEffect,
   useRef,
@@ -163,11 +167,36 @@ function MemoryRow({
   );
 }
 
+// Content zooms with the card, so a wider card reads bigger instead of leaving empty space.
+function panelScaleStyle(width: number | null): CSSProperties {
+  return {
+    "--panel-scale": String((width ?? FLOATING_MONITOR_WIDTH) / FLOATING_MONITOR_WIDTH),
+  } as CSSProperties;
+}
+
 function formatGiB(value: number): string {
   // Backend reports binary units (bytes / 1024**3), so label GiB.
   const digits = value >= 10 ? 1 : 2;
   return `${value.toFixed(digits)} GiB`;
 }
+
+const RESIZE_HANDLES: { edge: string; edges: ResizeEdges; className: string }[] = [
+  { edge: "n", edges: { x: 0, y: -1 }, className: "inset-x-0 top-0 h-1.5 cursor-ns-resize" },
+  { edge: "s", edges: { x: 0, y: 1 }, className: "inset-x-0 bottom-0 h-1.5 cursor-ns-resize" },
+  { edge: "w", edges: { x: -1, y: 0 }, className: "inset-y-0 left-0 w-1.5 cursor-ew-resize" },
+  { edge: "e", edges: { x: 1, y: 0 }, className: "inset-y-0 right-0 w-1.5 cursor-ew-resize" },
+  { edge: "nw", edges: { x: -1, y: -1 }, className: "left-0 top-0 z-20 size-4 cursor-nwse-resize" },
+  { edge: "se", edges: { x: 1, y: 1 }, className: "bottom-0 right-0 z-20 size-5 cursor-nwse-resize" },
+  { edge: "ne", edges: { x: 1, y: -1 }, className: "right-0 top-0 z-20 size-4 cursor-nesw-resize" },
+  { edge: "sw", edges: { x: -1, y: 1 }, className: "bottom-0 left-0 z-20 size-5 cursor-nesw-resize" },
+];
+
+const MONITOR_RESIZE = {
+  baseWidth: FLOATING_MONITOR_WIDTH,
+  minWidth: 232,
+  maxWidth: 520,
+  storageKey: FLOATING_PANEL_POSITION_KEYS.liveMonitorWidth,
+};
 
 interface FloatingMonitorPanelProps {
   dockedBesideRunSettings: boolean;
@@ -201,6 +230,11 @@ function FloatingMonitorPanel({
     finishDrag,
     resetPosition,
     nudge,
+    width,
+    startResize,
+    updateResize,
+    finishResize,
+    resetWidth,
   } = useFloatingPanelLayout(
     constraintsElement,
     dockedBesideRunSettings || suppressed,
@@ -208,6 +242,7 @@ function FloatingMonitorPanel({
     undefined,
     FLOATING_PANEL_POSITION_KEYS.liveMonitor,
     cornerCard,
+    MONITOR_RESIZE,
   );
 
   // offsetWidth, not the bounding rect: a drag's transform skews the rect.
@@ -327,7 +362,7 @@ function FloatingMonitorPanel({
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         className={cn(
-          "settings-surface bg-background pointer-events-auto absolute flex max-h-full w-64 max-w-full cursor-default select-none flex-col overflow-hidden rounded-2xl border border-border/70 p-3 shadow-border ring-0",
+          "settings-surface bg-background group/monitor pointer-events-auto absolute flex max-h-full w-64 max-w-full cursor-default select-none flex-col overflow-hidden rounded-2xl border border-border/70 p-3 shadow-border ring-0",
           layout ? "top-0 left-0" : "right-0 bottom-0",
         )}
         data-testid="floating-monitor"
@@ -350,11 +385,36 @@ function FloatingMonitorPanel({
                 minHeight: Math.min(layout.minHeight, layout.maxHeight),
                 maxWidth: layout.maxWidth,
                 maxHeight: layout.maxHeight,
+                width: width ?? undefined,
+                ...panelScaleStyle(width),
               }
-            : undefined
+            : { width: width ?? undefined, ...panelScaleStyle(width) }
         }
       >
-        <div className="mb-2 flex items-center justify-between gap-2 border-b border-border/60 pb-2">
+        {RESIZE_HANDLES.map(({ edge, edges, className }) => (
+          <div
+            key={edge}
+            aria-hidden
+            data-testid="floating-monitor-resize"
+            data-edge={edge}
+            title={t("floatingPanels.monitor.resizeHint")}
+            onPointerDown={(event) => startResize(event, edges)}
+            onPointerMove={updateResize}
+            onPointerUp={finishResize}
+            onPointerCancel={finishResize}
+            onLostPointerCapture={finishResize}
+            onDoubleClick={resetWidth}
+            className={cn("absolute z-10 touch-none", className)}
+          />
+        ))}
+        <svg
+          aria-hidden
+          viewBox="0 0 8 8"
+          className="pointer-events-none absolute bottom-1 right-1 size-2 text-muted-foreground opacity-0 transition-opacity group-hover/monitor:opacity-60"
+        >
+          <path d="M7 1 1 7M7 4 4 7" stroke="currentColor" strokeLinecap="round" fill="none" />
+        </svg>
+        <div className="mb-2 flex items-center justify-between gap-2 border-b border-border/60 pb-2 [zoom:var(--panel-scale,1)]">
           <div className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-xs font-semibold text-foreground">
             <CpuIcon className="size-3.5 shrink-0 text-primary" />
             <span className="truncate">
@@ -403,7 +463,7 @@ function FloatingMonitorPanel({
           </div>
         </div>
 
-        <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
+        <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto [zoom:var(--panel-scale,1)]">
           <div
             ref={contentRef}
             data-testid="floating-monitor-content"

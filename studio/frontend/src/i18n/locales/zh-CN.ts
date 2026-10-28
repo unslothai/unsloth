@@ -4826,6 +4826,7 @@ export const zhCN = {
     monitor: {
       dragHandleLabel: "移动实时监控。方向键可微调位置，双击可重置。",
       reconnecting: "正在重新连接...",
+      resizeHint: "拖动任意边缘调整大小。双击恢复默认大小。",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

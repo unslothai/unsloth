@@ -4874,6 +4874,7 @@ export const ja = {
     monitor: {
       dragHandleLabel: "ライブモニターを移動します。矢印キーで少しずつ動かせ、ダブルクリックで位置をリセットします。",
       reconnecting: "再接続中...",
+      resizeHint: "端をドラッグしてサイズを変更します。ダブルクリックでサイズをリセットします。",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

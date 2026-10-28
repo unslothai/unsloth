@@ -5008,6 +5008,7 @@ export const en = {
       dragHandleLabel:
         "Move the live monitor. Arrow keys nudge it, double-click resets it.",
       reconnecting: "Reconnecting...",
+      resizeHint: "Drag any edge to resize. Double-click resets the size.",
     },
   },
 } as const;

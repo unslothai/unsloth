@@ -4999,6 +4999,7 @@ export const it = {
     monitor: {
       dragHandleLabel: "Sposta il monitor in tempo reale. I tasti freccia lo spostano leggermente, il doppio clic lo reimposta.",
       reconnecting: "Riconnessione...",
+      resizeHint: "Trascina un bordo per ridimensionare. Doppio clic ripristina la dimensione.",
     },
   },
 } as const;

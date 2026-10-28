@@ -5010,6 +5010,7 @@ export const fr = {
     monitor: {
       dragHandleLabel: "Déplacer le moniteur en direct. Les touches fléchées le déplacent légèrement, un double-clic le réinitialise.",
       reconnecting: "Reconnexion...",
+      resizeHint: "Faites glisser un bord pour redimensionner. Double-cliquez pour rétablir la taille.",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

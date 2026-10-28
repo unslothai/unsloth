@@ -4999,6 +4999,7 @@ export const de = {
     monitor: {
       dragHandleLabel: "Live-Monitor verschieben. Mit den Pfeiltasten feinjustieren, per Doppelklick zurücksetzen.",
       reconnecting: "Verbindung wird wiederhergestellt...",
+      resizeHint: "Zum Ändern der Größe an einer Kante ziehen. Doppelklick setzt die Größe zurück.",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;
