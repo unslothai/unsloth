@@ -455,8 +455,6 @@ def test_offload_placement_names_a_forward_that_cannot_record_under_the_hooks(mo
 @pytest.mark.skipif(not _CUDA, reason = "needs CUDA")
 @pytest.mark.parametrize("every_length", [False, True])
 def test_true_cfg_negative_of_another_length_records_on_the_first_render(monkeypatch, every_length):
-    """True CFG with a negative prompt of another length: the positive key records first, so the negative one is
-    still in its warm-up when the positive replays. It must record on that render too, not run ungraphed for good."""
     if every_length:
         monkeypatch.setenv(cg.EVERY_LENGTH_ENV, "1")
     else:
@@ -494,8 +492,6 @@ def test_true_cfg_negative_of_another_length_records_on_the_first_render(monkeyp
         for a, b in zip(ref, render):
             assert torch.equal(a, b)
     assert not handle.poisoned, handle.capture_error
-    # Positive records on its first decode step; the negative warms there and records on the next one.
     stats = {k: handle.stats[k] for k in ("captures", "replays", "shape_warmups", "length_eager")}
     assert (stats["captures"], stats["shape_warmups"], stats["length_eager"]) == (2, 1, 0), stats
-    # Decode steps: 2 renders x 3 steps x 2 branches, minus the negative's warm-up.
     assert handle.stats["replays"] == 2 * (steps - 1) * 2 - 1

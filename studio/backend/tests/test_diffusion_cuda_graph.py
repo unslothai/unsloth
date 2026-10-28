@@ -1275,7 +1275,6 @@ def test_a_new_prompt_length_after_the_first_render_records_nothing(stub_torch, 
 
 
 def _planned_len_handle(stub_torch, monkeypatch):
-    """A Qwen-Image-2.1-like planned handle on the stub: every new prompt length after the first warms one step."""
     import contextlib
 
     monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
@@ -1286,14 +1285,12 @@ def _planned_len_handle(stub_torch, monkeypatch):
     monkeypatch.setattr(
         stub_torch, "inference_mode", lambda *a, **k: contextlib.nullcontext(), raising = False
     )
-    # A planned re-capture records without the cache flush; the stub records it as any capture.
     monkeypatch.setattr(cg, "_graph_without_flush", stub_torch.cuda.graph)
     return handle
 
 
 def test_a_planned_negative_of_another_length_records_on_the_first_render(stub_torch, monkeypatch):
-    """Qwen-Image-2.1's planned step: the positive key records first, so the negative is still in its warm-up when the
-    positive replays (which seals the scope). That warmed key still records; a later new length does not."""
+    """The negative is still warming when the positive's replay seals the scope; it must still record."""
     handle = _planned_len_handle(stub_torch, monkeypatch)
     for _ in range(2):
         _render(handle, 3, steps = 4)
@@ -1307,11 +1304,9 @@ def test_a_planned_negative_of_another_length_records_on_the_first_render(stub_t
 
 
 def test_a_warmup_from_before_a_reset_does_not_reopen_the_sealed_scope(stub_torch, monkeypatch):
-    """A length warmed before reset() (new weights) is not one of the scope's new first render: once that render
-    sealed the scope, it runs ungraphed like any other new length."""
     handle = _planned_len_handle(stub_torch, monkeypatch)
     _step(handle, 3)
-    _step(handle, 7)  # the negative warms, then the weights change before it records
+    _step(handle, 7)
     assert handle.stats["captures"] == 1 and handle.stats["shape_warmups"] == 1
     handle.reset()
     for i in range(3):
@@ -1326,11 +1321,9 @@ def test_a_warmup_from_before_a_reset_does_not_reopen_the_sealed_scope(stub_torc
 
 
 def test_a_warmup_from_an_earlier_render_does_not_reopen_the_sealed_scope(stub_torch, monkeypatch):
-    """The warm-up window closes when its render ends: a length that only warmed on a render that sealed the scope
-    does not record on a later one."""
     handle = _planned_len_handle(stub_torch, monkeypatch)
     _step(handle, 3)
-    _step(handle, 7)  # a one-step render: the negative only warms
+    _step(handle, 7)
     cg.seal_lengths((handle,))
     assert handle.length_sealed is True
     _render(handle, 3, steps = 2)

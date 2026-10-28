@@ -1196,9 +1196,8 @@ class GraphedForward:
         self._sealed_scopes: set = set()
         self._scope_captures: dict = {}
         self._render_scopes: set = set()
-        # Planned keys warmed in this recording window (since the last render end or reset): one the seal caught in
-        # its warm-up (true CFG's other-length negative) still records on this render. Not ``_warmed``, which outlives
-        # both, so a length warmed before a reset never reopens a scope its new first render sealed.
+        # Keys warmed since the last render end/reset may still record after a seal (true CFG's other-length
+        # negative). Not ``_warmed``: it outlives resets, so would reopen sealed scopes.
         self._open_warmups: set = set()
         _LIVE_WRAPPERS.add(self)
 
@@ -1675,8 +1674,7 @@ class GraphedForward:
                 and not (self.plan is not None and key in self._open_warmups)
             ):
                 # A prompt length first seen after the first render: no warm-up, no capture, no eviction on this
-                # render. (An offloaded key it recorded before re-records after its weights moved, as before. A
-                # planned key warmed earlier on this render, true CFG's other-length negative, still records.)
+                # render. (An offloaded key it recorded before re-records after its weights moved, as before.)
                 self.stats["length_eager"] += 1
                 return self._eager_as_recorded(eager_args, eager_kwargs)
             if self.placement is not None and speed_check_enabled():
