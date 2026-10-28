@@ -1102,9 +1102,6 @@ export function ResourcesTab() {
                       used: usedText,
                       total: totalText,
                     })}
-                    {shared
-                      ? null
-                      : ` · ${t("settings.resources.gpu.free", { value: freeText })}`}
                   </span>
                 </div>
                 {/* Same 392px as the Model downloads control, so both blocks start on one edge.
@@ -1120,11 +1117,10 @@ export function ResourcesTab() {
                       })}
                     </div>
                   ) : (
-                    // A dedicated card has two slices the line under its name already gives, so only a shared pool gets a legend.
                     <StorageBar
                       segments={segments}
                       totalBytes={isFiniteNumber(total) ? total : undefined}
-                      legend={shared ? "inline" : false}
+                      legend="inline"
                       barClassName="h-1.5 rounded-full"
                     />
                   )}
