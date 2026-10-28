@@ -1046,19 +1046,60 @@ def _top_level_binding(src: str | None, name: str):
         found[start:] = ["ambiguous"] * (len(found) - start)
 
     visit(tree.body)
-    # Rebinding outside the statements above: `global name` in any function, or `name := ...` at module level.
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Global) and name in node.names:
-            found.append("ambiguous")
-    for stmt in tree.body:
-        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
-            continue
-        for node in ast.walk(stmt):
-            if isinstance(node, ast.NamedExpr) and name in targets(node.target):
-                found.append("ambiguous")
     if not found:
         return None
-    return found[0] if len(found) == 1 else "ambiguous"
+    # The scan above classifies the common shapes; any second binding site, in whatever form, makes it ambiguous.
+    if len(found) > 1 or _module_binding_sites(tree, name) > 1:
+        return "ambiguous"
+    return found[0]
+
+
+def _module_binding_sites(tree: ast.Module, name: str) -> int:
+    """Every place that binds or unbinds `name` in module scope: assignment / del / for / with / walrus targets,
+    `except ... as`, match captures, imports (and `import *`), def / class, plus `global name` anywhere."""
+    count = 0
+
+    def visit(node) -> None:
+        nonlocal count
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                count += child.name == name
+                # Decorators, defaults, bases and annotations run in module scope; the body does not.
+                for sub in ast.iter_child_nodes(child):
+                    if sub not in child.body:
+                        visit_one(sub)
+                count += sum(isinstance(n, ast.Global) and name in n.names for n in ast.walk(child))
+                continue
+            if isinstance(child, ast.Lambda):
+                continue
+            visit_one(child)
+
+    def visit_one(node) -> None:
+        nonlocal count
+        if (
+            isinstance(node, ast.Name)
+            and node.id == name
+            and isinstance(node.ctx, (ast.Store, ast.Del))
+        ):
+            count += 1
+        elif isinstance(node, ast.ExceptHandler) and node.name == name:
+            count += 1
+        elif isinstance(node, (ast.ImportFrom, ast.Import)):
+            for alias in node.names:
+                bound = alias.asname or (
+                    alias.name if isinstance(node, ast.ImportFrom) else alias.name.split(".")[0]
+                )
+                count += alias.name == "*" or bound == name
+        elif (
+            type(node).__name__ in ("MatchAs", "MatchStar") and getattr(node, "name", None) == name
+        ):
+            count += 1
+        elif type(node).__name__ == "MatchMapping" and getattr(node, "rest", None) == name:
+            count += 1
+        visit(node)
+
+    visit(tree)
+    return count
 
 
 def _module_paths(module: str, importer: str) -> list[str]:
