@@ -420,8 +420,7 @@ def _delete_document_chunks(conn, document_id: str) -> None:
         is None
     ):
         return
-    # chunk_id has no index in fts5 (UNINDEXED) or vec0, so match all of the document's chunk ids in
-    # one scan of each table instead of one scan per chunk.
+    # chunk_id is unindexed in fts5 and vec0: one IN scan per table, not one scan per chunk.
     owned = "SELECT id FROM chunks WHERE document_id=?"
     conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({owned})", (document_id,))
     if vec_table_exists(conn):

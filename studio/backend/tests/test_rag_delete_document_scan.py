@@ -13,8 +13,7 @@ from core.rag import store
 from core.rag.chunking import Chunk
 from storage import rag_db
 
-# Some interpreters (e.g. the python.org macOS build) are compiled without loadable SQLite
-# extensions, so vec0 cannot load even when the sqlite-vec package is installed.
+# python.org macOS builds lack loadable SQLite extensions, so vec0 cannot load even with sqlite-vec.
 pytestmark = pytest.mark.skipif(
     not rag_db.RAG_AVAILABLE or not hasattr(sqlite3.Connection, "enable_load_extension"),
     reason = "sqlite-vec is not installed or this sqlite3 cannot load extensions",
@@ -74,9 +73,7 @@ def _populate(
             for _ in range(rng.randint(0, per_doc))
         ]
         _add(conn, rng, scopes[d % 3], f"doc{d}", texts)
-    # Rows the old loop also handled: a re-added chunk (two fts rows for one chunk id), an fts row
-    # with a NULL scope, an int chunk_id next to its text twin, a vec row under another scope, and
-    # orphans that belong to no chunk.
+    # Edge rows: re-added chunk, NULL-scope fts row, int chunk_id beside its text twin, cross-scope vec row, orphans.
     store.add_chunks(conn, "kb:b", "doc1", [_chunk("readded alpha", 0)], [_vec(rng)])
     conn.execute(
         "INSERT INTO chunks_fts(text, chunk_id, scope) VALUES('null scope alpha', 'doc4:0', NULL)"
@@ -158,7 +155,6 @@ def test_delete_removes_the_same_rows_as_per_chunk_deletes(rag_conn):
             _per_chunk_delete(reference, doc_id, keep_document = keep)
             assert _dump(conn) == _dump(reference), doc_id
         conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('integrity-check')")
-        # Rowids handed out after the deletes match too.
         for c in (conn, reference):
             _add(c, random.Random(1), "kb:a", "tail", ["tail alpha", "tail bravo"])
         assert _dump(conn) == _dump(reference)
