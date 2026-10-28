@@ -127,7 +127,6 @@ def test_keep_resident_lock_spelling_follows_the_probe(support, expected):
 
 def test_unknown_support_leaves_a_typed_lock_alone():
     from core.inference.llama_server_args import apply_model_memory_policy
-
     assert apply_model_memory_policy(
         ["--mlock"],
         supports_load_mode = None,
@@ -164,7 +163,6 @@ def test_a_skipped_lock_does_not_demand_a_reload(tmp_path, monkeypatch, help_bod
 @pytest.mark.parametrize("support", [True, False])
 def test_a_known_build_still_owes_the_lock(support):
     from core.inference.llama_server_args import keep_resident_lock_applicable
-
     assert keep_resident_lock_applicable(True, support) is True
     assert keep_resident_lock_applicable(False, support) is False
 

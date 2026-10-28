@@ -29175,7 +29175,11 @@ class LlamaCppBackend:
                 self._memory_mlock_applicable = keep_resident_lock_applicable(
                     self._memory_mlock_applicable, load_mode_support(server_caps)
                 )
-                if _mem_should_mlock and _mem_host_resident and load_mode_support(server_caps) is None:
+                if (
+                    _mem_should_mlock
+                    and _mem_host_resident
+                    and load_mode_support(server_caps) is None
+                ):
                     logger.info(
                         "Model Memory: skipping page-lock, the llama-server --help "
                         "probe was inconclusive and newer builds reject --mlock."
