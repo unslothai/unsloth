@@ -315,7 +315,7 @@ def _case_env(
                 eval_dataset = data,
             )
         )
-        res["evaluate"] = _raised(lambda: trainer.evaluate(data))
+        res["evaluate"] = _raised(lambda: res.__setitem__("eval_loss", trainer.evaluate(data)["eval_loss"]))
         res["lion"] = _raised(
             lambda: SequentialTrainer(
                 model = model,
@@ -639,11 +639,12 @@ def test_env_tp2_trainer_matches_one_process(four_bit):
         _close(res["a"], ref["a"], what = rank)
         hint = "UNSLOTH_TP_SIZE=2: unset it"
         assert "map-style dataset" in res["iterable"] and hint in res["iterable"], res["iterable"]
-        assert "evaluation during training" in res["eval"] and hint in res["eval"], res["eval"]
-        assert "Trainer.evaluate is not supported" in res["evaluate"] and hint in res["evaluate"]
+        # Evaluation gathers over dp only (parity with one process: test_tp_eval_gloo.py).
+        assert res["eval"] is None and res["evaluate"] is None, (res["eval"], res["evaluate"])
         assert "lion_8bit" in res["lion"], res["lion"]
         assert res["generate"] is None, res["generate"]  # a whole replica per rank (tp_replica.py)
     assert results[0]["seen"] == results[1]["seen"]  # both tp ranks read the same batches
+    assert results[0]["eval_loss"] == results[1]["eval_loss"]
 
 
 def test_env_tp2_with_fsdp2_flag_and_no_dp_dimension():

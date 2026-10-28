@@ -36,7 +36,7 @@ reads the same batch, dp replicas read different ones:
 The HF / TRL Trainer trains a tensor parallel model (tp only, or dp x tp after shard_model above): no DDP over
 the tp ranks, batches sharded over dp only, tp-aware clipping and float16 scaler. Trainer checkpoints are per
 rank (unsloth_tp/rank*.pt: local shards of the trainable weights and optimizer state, resumed on the same
-layout) next to the 1-GPU adapter; bitsandbytes Adam / AdamW step the local shards; no evaluation;
+layout) next to the 1-GPU adapter; bitsandbytes Adam / AdamW step the local shards; evaluate / predict gather over dp only;
 trainer.save_model() writes the 1-GPU adapter.
 
 Unmodified scripts: UNSLOTH_TP_SIZE=k torchrun ... applies all of the above from the environment
@@ -2433,6 +2433,7 @@ def load_tensor_parallel(
 _TP_DATA = "_unsloth_tp_data"
 _DDP_MESH = "_unsloth_tp_ddp_mesh"
 _DP_SYNC = "_unsloth_tp_dp_sync"
+_TP_GATHER = "_unsloth_tp_gather_mesh"
 _UNSUPPORTED_OPTIMIZERS = (
     "8bit",
     "bnb",
@@ -2529,11 +2530,6 @@ def _refuse_tp_trainer_args(args, cpu_shards = False):
         problems.append(
             "accelerate FSDP / ParallelismConfig (use shard_model over mesh['dp'] for data parallel)"
         )
-    if (
-        _strategy(getattr(args, "eval_strategy", getattr(args, "evaluation_strategy", "no")))
-        != "no"
-    ):
-        problems.append("evaluation during training (set eval_strategy = 'no')")
     for flag in ("load_best_model_at_end", "push_to_hub"):
         if getattr(args, flag, False):
             problems.append(flag)
@@ -2586,13 +2582,13 @@ def tp_trainer_setup(
     ddp_mesh = _ddp_mesh(model)
     dp_size, dp_rank = (dp_mesh.size(), dp_mesh.get_local_rank()) if dp_mesh is not None else (1, 0)
     trainer.accelerator.__dict__[_TP_DATA] = (dp_size, dp_rank)
+    # Evaluation / predict gather over the dp replicas only: the tp ranks of a replica hold the same results.
+    trainer.accelerator.__dict__[_TP_GATHER] = dp_mesh
     trainer.__dict__["_unsloth_tensor_parallel"] = (
         True  # the generated TRL trainers skip for_inference()
     )
     _tp_scaler(trainer, dp_size)
     trainer.__dict__["save_model"] = types.MethodType(_tp_trainer_save_model, trainer)
-    for name in ("evaluate", "predict"):
-        trainer.__dict__[name] = _refuse_tp_trainer_call(name)
     # Trainer checkpoints: per-rank local shards (instance level: before native FSDP2's class hooks, whose
     # full-state gathers do not restore the packed tp part order).
     for name, method in (
@@ -2879,15 +2875,33 @@ def _tp_load_optimizer_and_scheduler(self, checkpoint, *args, **kwargs):
     return None
 
 
-def _refuse_tp_trainer_call(name):
-    def refuse(*args, **kwargs):
-        raise RuntimeError(
-            f"Unsloth: Trainer.{name} is not supported on a tensor parallel model (its gather would count every "
-            "tp rank); run the forward in your own loop, or save the adapter and evaluate on one GPU."
-            + _env_hint()
-        )
+def _dp_gather(data, dp_mesh):
+    """accelerate's gather over the dp replicas only (the tp ranks of a replica hold identical results). dp = 1:
+    the one-process result (accelerate returns its input unchanged on one process)."""
+    if dp_mesh is None or dp_mesh.size() == 1:
+        return data
+    import torch.distributed as dist
+    from accelerate.utils import recursively_apply
 
-    return refuse
+    group, size = dp_mesh.get_group(), dp_mesh.size()
+
+    def one(t):
+        t = t.clone()[None] if t.ndim == 0 else t.contiguous()
+        out = [torch.empty_like(t) for _ in range(size)]
+        dist.all_gather(out, t, group = group)
+        return torch.cat(out, dim = 0)
+
+    return recursively_apply(one, data, error_on_other_type = True)
+
+
+def _dp_gather_object(obj, dp_mesh):
+    if dp_mesh is None or dp_mesh.size() == 1:
+        return obj
+    import torch.distributed as dist
+
+    out = [None] * dp_mesh.size()
+    dist.all_gather_object(out, obj, group = dp_mesh.get_group())
+    return [x for y in out for x in y]
 
 
 def _tp_trainer_save_model(
@@ -2925,6 +2939,7 @@ def _install_tp_accelerate_hooks():
     original_prepare_model = Accelerator.prepare_model
     original_data_loader = Accelerator.prepare_data_loader
     original_clip = Accelerator.clip_grad_norm_
+    original_gather_for_metrics = Accelerator.gather_for_metrics
 
     def _tp_model(self, model):
         if self.__dict__.get(_TP_DATA) is None or not is_tensor_parallel(model):
@@ -3005,6 +3020,37 @@ def _install_tp_accelerate_hooks():
             sync["synced"] = True
         return tp_clip_grad_norm_(parameters, max_norm)
 
+    def gather_for_metrics(self, input_data, use_gather_object = False):
+        # accelerate's gather_for_metrics with the gather over dp only: the eval loader is sharded over dp
+        # (prepare_data_loader above), so its remainder truncation is the dp-sized world's.
+        if _TP_GATHER not in self.__dict__:
+            return original_gather_for_metrics(self, input_data, use_gather_object = use_gather_object)
+        from accelerate.utils import recursively_apply
+
+        dp_mesh = self.__dict__[_TP_GATHER]
+        try:
+            recursively_apply(lambda x: x, input_data, error_on_other_type = True)
+            all_tensors = True
+        except TypeError:
+            all_tensors = False
+        use_gather_object = use_gather_object or not all_tensors
+        if use_gather_object:
+            data = _dp_gather_object(input_data, dp_mesh)
+        else:
+            data = _dp_gather(input_data, dp_mesh)
+        try:
+            remainder = self.gradient_state.remainder
+            if not self.gradient_state.end_of_dataloader or remainder <= 0:
+                return data
+
+            def adjust(tensor):
+                return tensor[:remainder]
+
+            return adjust(data) if use_gather_object else recursively_apply(adjust, data)
+        except Exception:
+            return data
+
+    Accelerator.gather_for_metrics = gather_for_metrics
     Accelerator.prepare_model = prepare_model
     Accelerator.prepare_data_loader = prepare_data_loader
     Accelerator.clip_grad_norm_ = clip_grad_norm_

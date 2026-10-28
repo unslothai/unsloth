@@ -712,7 +712,7 @@ def _case_trainer(
             )
         for key, overrides in {
             "checkpoints": {"save_strategy": "steps", "save_steps": 1},
-            "eval": {"eval_strategy": "steps", "eval_steps": 1},
+            "eval": {"eval_strategy": "steps", "eval_steps": 1},  # evaluates over dp (test_tp_eval_gloo.py)
             "optim_8bit": {"optim": "adamw_bnb_8bit"},
         }.items():
             refusals[key] = _raised(
@@ -739,7 +739,6 @@ def _case_trainer(
         model = model, args = _trainer_args(tmp, 2 * dp if tp == 1 else 2), train_dataset = data
     )
     trainer.train()
-    refusals["evaluate"] = _raised(lambda: trainer.evaluate(data)) if tp > 1 else None
     logs = [h for h in trainer.state.log_history if "loss" in h]
     out_dir = os.path.join(tmp, f"adapter_{world}_{rank}")
     trainer.save_model(out_dir)
@@ -1204,9 +1203,8 @@ def test_trainer_trains_a_tensor_parallel_model_like_one_process(dp, tp):
         refusals = res["refusals"]
         # Checkpoints are per rank, bitsandbytes AdamW steps local shards (or switches to torch's AdamW).
         assert refusals["checkpoints"] is None, refusals
-        assert "evaluation during training" in (refusals["eval"] or ""), refusals
+        assert refusals["eval"] is None, refusals
         assert refusals["optim_8bit"] is None, refusals
-        assert "Trainer.evaluate is not supported" in (refusals["evaluate"] or ""), refusals
         if dp > 1:
             assert "covers 2 of 4 ranks" in (refusals["no_shard_model"] or ""), refusals
     # The tp ranks of a replica read the same batches; dp replicas read different ones.
