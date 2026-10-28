@@ -50,6 +50,11 @@ _shared_dir = _iso.parent / "_shared"
 if _shared_dir.is_dir() and str(_shared_dir) not in _sys.path:
     _sys.path.insert(0, str(_shared_dir))
 
+# pytest 9.2's monkeypatch deletes a torch config entry on undo instead of restoring it; see torch_config_guard.py.
+from torch_config_guard import install_monkeypatch_fix  # noqa: E402
+
+install_monkeypatch_fix()
+
 import importlib.util
 import os
 import sys

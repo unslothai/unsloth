@@ -74,3 +74,45 @@ def test_both_suites_run_the_guard_after_every_test(conftest):
     calls = [ast.unparse(n.func) for n in ast.walk(fixture) if isinstance(n, ast.Call)]
     assert "check_after_test" in calls and "install_delete_recorder" in calls
     assert any(isinstance(n, ast.Expr) and isinstance(n.value, ast.Yield) for n in fixture.body)
+
+
+@pytest.mark.parametrize(
+    "target, name",
+    [
+        ("torch._dynamo.config", "suppress_errors"),
+        ("torch._inductor.config", "emulate_precision_casts"),
+        ("torch._inductor.config.triton", "cudagraphs"),
+    ],
+)
+def test_monkeypatch_undo_restores_a_config_entry_instead_of_deleting_it(target, name):
+    # pytest 9.2 records a non-class target's old value from its __dict__, which a config entry is never in.
+    owner = torch
+    for part in target.split(".")[1:]:
+        owner = getattr(owner, part)
+    before = getattr(owner, name)
+    mp = pytest.MonkeyPatch()
+    mp.setattr(owner, name, not before)
+    assert getattr(owner, name) is (not before)
+    mp.undo()
+    assert guard.hidden_entries() == []
+    assert getattr(owner, name) == before
+
+
+def test_monkeypatch_undo_restores_a_config_entry_named_by_import_path():
+    before = torch._dynamo.config.suppress_errors
+    mp = pytest.MonkeyPatch()
+    mp.setattr("torch._dynamo.config.suppress_errors", not before)
+    mp.undo()
+    assert guard.hidden_entries() == []
+    assert torch._dynamo.config.suppress_errors == before
+
+
+def test_monkeypatch_on_an_ordinary_object_is_unchanged():
+    class Target:
+        pass
+
+    target = Target()
+    mp = pytest.MonkeyPatch()
+    mp.setattr(target, "flag", True, raising = False)
+    mp.undo()
+    assert not hasattr(target, "flag")

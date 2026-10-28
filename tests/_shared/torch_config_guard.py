@@ -6,7 +6,11 @@
 ``del torch._dynamo.config.recompile_limit`` (also what ``unittest.mock.patch`` does on exit before it re-creates
 the attribute) marks the entry hidden, and every later read in that process raises
 ``torch._dynamo.config.recompile_limit does not exist``. One leak on an xdist worker used to fail every compile
-test that worker ran afterwards, with no hint of where it came from."""
+test that worker ran afterwards, with no hint of where it came from.
+
+pytest 9.2 made that the normal outcome of ``monkeypatch.setattr(torch._dynamo.config, ...)``: for a non-class target
+it now records the old value from the instance ``__dict__`` (pytest #10644), where a config entry never lives, so
+``undo()`` deletes the entry instead of restoring it. ``install_monkeypatch_fix`` records the real value instead."""
 
 from __future__ import annotations
 
@@ -59,6 +63,61 @@ def install_delete_recorder() -> bool:
     cls.__delattr__ = __delattr__
     _installed = True
     return True
+
+
+def _is_torch_config(target: Any) -> bool:
+    config_module = sys.modules.get("torch.utils._config_module")
+    if config_module is None:
+        return False
+    kinds = tuple(
+        k
+        for k in (
+            getattr(config_module, "ConfigModule", None),
+            getattr(config_module, "SubConfigProxy", None),
+        )
+        if k
+    )
+    return bool(kinds) and isinstance(target, kinds)
+
+
+def install_monkeypatch_fix() -> None:
+    """Make MonkeyPatch.setattr on a torch config entry restore the value it replaced rather than delete the entry."""
+    import pytest
+    from _pytest import monkeypatch as mp_module
+
+    cls = pytest.MonkeyPatch
+    if getattr(cls.setattr, "_unsloth_torch_config_fix", False):
+        return
+    notset = getattr(mp_module, "NOTSET", None) or getattr(mp_module, "notset")
+    original = cls.setattr
+
+    def setattr(
+        self,
+        target,
+        name = notset,
+        value = notset,
+        raising = True,
+    ):
+        obj, attr = target, name
+        if isinstance(target, str) and value is notset:
+            try:
+                attr, obj = mp_module.derive_importpath(target, raising)
+            except Exception:  # noqa: BLE001 - let the real setattr raise its own error
+                obj = None
+        real = (
+            getattr(obj, attr, notset)
+            if isinstance(attr, str) and _is_torch_config(obj)
+            else notset
+        )
+        result = original(self, target, name, value, raising = raising)
+        if real is not notset and self._setattr:
+            last_obj, last_attr, last_old = self._setattr[-1]
+            if last_obj is obj and last_attr == attr and last_old is notset:
+                self._setattr[-1] = (last_obj, last_attr, real)
+        return result
+
+    setattr._unsloth_torch_config_fix = True
+    cls.setattr = setattr
 
 
 def hidden_entries() -> list[tuple[str, str]]:
