@@ -117,8 +117,7 @@ def _case_clip(native):
 
 
 def _case_trainer_clip(native):
-    """Trainer._clip_grad_norm on a native FSDP2 model whose bfloat16 weights are sharded and whose
-    float32 parameter stays replicated (DTensor + plain gradients, as norms are kept)."""
+    """Trainer._clip_grad_norm with sharded bfloat16 and replicated float32 grads."""
     from accelerate import Accelerator
     from torch.distributed.device_mesh import init_device_mesh
     from torch.distributed.fsdp import fully_shard
@@ -136,7 +135,7 @@ def _case_trainer_clip(native):
     setattr(model, native._NATIVE_FLAG, True)
     x = torch.randn(64, 7, generator = torch.Generator().manual_seed(1)).to(torch.bfloat16)
 
-    class _T:  # the Trainer methods under test on a minimal instance
+    class _T:
         _has_mixed_mesh_grads = Trainer._has_mixed_mesh_grads
         _clip_grad_norm = Trainer._clip_grad_norm
         _mixed_mesh_grad_norm = getattr(Trainer, "_mixed_mesh_grad_norm", None)
@@ -155,7 +154,6 @@ def _case_trainer_clip(native):
     dtypes = sorted({str(g.dtype) for g in grads})
     fp64 = math.sqrt(sum(float(g.double().square().sum()) for g in grads))
     one_gpu = float(torch.nn.utils.get_total_norm([g.clone() for g in grads], 2.0))
-    # max_norm = inf: the norm alone, gradients untouched.
     want = float(native.native_clip_grad_norm_(list(model.parameters()), math.inf))
     mixed = float(t._mixed_mesh_grad_norm(model, math.inf)) if t._mixed_mesh_grad_norm else None
     got = float(t._clip_grad_norm(model))
@@ -331,18 +329,17 @@ def test_native_clip_matches_torch_for_every_norm_type(tmp_path):
 
 
 def test_trainer_clip_with_replicated_and_sharded_grads_uses_native_clip(tmp_path):
-    # transformers' Trainer._mixed_mesh_grad_norm (expert parallel layouts) used to take these
-    # gradients: bfloat16 norms combined in bfloat16, off one GPU's clip_grad_norm_ by up to 2e-3.
+    # Trainer._mixed_mesh_grad_norm combined bf16 norms in bf16, off by up to 2e-3.
     transformers = pytest.importorskip("transformers")
     pytest.importorskip("accelerate")
     if not hasattr(transformers.Trainer, "_has_mixed_mesh_grads"):
         pytest.skip("this transformers has no mixed DTensor / plain gradient norm path")
     for rank, r in _run("trainer_clip", tmp_path).items():
         assert r["dtypes"] == ["torch.bfloat16", "torch.float32"], (rank, r)
-        assert r["got"] == r["want"], (rank, r)  # Unsloth's native clip took it
+        assert r["got"] == r["want"], (rank, r)
         if r["mixed"] is not None:  # this batch separates the two combines
             assert not math.isclose(r["mixed"], r["want"], rel_tol = 1e-4), (rank, r)
-        # Shard norms add one 16-bit rounding over one GPU's clip_grad_norm_ (see the clip dtype test).
+        # One extra 16-bit rounding over single-GPU clip_grad_norm_.
         assert math.isclose(r["got"], r["one_gpu"], rel_tol = 2**-6), (rank, r)
 
 

@@ -3292,11 +3292,8 @@ def _install_trainer_hooks():
 
         @functools.wraps(original_mixed_mesh)
         def _has_mixed_mesh_grads(self, model):
-            # Newer transformers send DTensor + plain gradients (an expert parallel layout) to
-            # Trainer._mixed_mesh_grad_norm, which skips accelerator.clip_grad_norm_ (and so this
-            # module's clip and the fp16 unscale) and combines 16-bit norms in 16 bits. Native FSDP2
-            # leaves small parameters (norms) replicated next to sharded ones: keep it on the
-            # accelerator path, which handles both.
+            # _mixed_mesh_grad_norm skips our clip + fp16 unscale and sums 16-bit norms in 16 bits;
+            # native FSDP2 mixes replicated and sharded grads, so stay on the accelerator path.
             if (
                 is_native_fsdp2(model)
                 or is_native_fsdp2(getattr(self, "model", None))
