@@ -173,7 +173,6 @@ def _expire(key: str, *, walk_seconds: float) -> None:
 
 
 def test_an_expired_slow_cache_answers_at_once_and_refreshes_behind(monkeypatch, clean_memo):
-    """Base re-walked inside the request: tens of seconds on a uv cache of a few million files."""
     definition = definition_for("uv")
     sizes = iter([10, 20])
     release = threading.Event()
@@ -272,7 +271,6 @@ def test_a_background_walk_overtaken_by_a_purge_does_not_store_its_size(monkeypa
 
 
 def test_background_walks_run_one_at_a_time(monkeypatch, clean_memo):
-    """Two stat-bound walks in one process only fight over the GIL."""
     running: list = []
     peak: list = []
     lock = threading.Lock()

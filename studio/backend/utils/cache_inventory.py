@@ -816,7 +816,6 @@ def _measure_root(root: Path, *, patterns: Optional[Iterable[str]] = None) -> tu
                 _record_entry(entry, ledger)
     except OSError as exc:
         logger.debug(f"Could not size {root}: {exc}")
-    # Popped from the end, so reversed keeps the base walk's top-level order.
     subdirs.reverse()
     _walk_into(subdirs, ledger)
     return ledger.freeable_bytes(), entries
