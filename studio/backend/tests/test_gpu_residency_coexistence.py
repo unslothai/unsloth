@@ -379,14 +379,12 @@ class TestCanLoadAlongside(_ArbiterResetMixin, unittest.TestCase):
     def test_metal_is_one_pool_at_the_smaller_reading_less_idle_headroom(self):
         self._resident(arb.DIFFUSION, {0}, _need({0: 9000}, weights = 6000, headroom = 3000))
         free = 12288 - 3000
-        # An image need, as the streaming planner would fail on a Metal row's missing total.
         for w, a in ((20480, 12288), (12288, 20480)):
             self.assertEqual(self._metal(_need({0: 1}, kind = "image"), w, a)[1]["free_mib"][0], free)
         self.assertTrue(self._metal(_need({0: free - gr.FIT_MARGIN_MIB}), 20480, 12288)[0])
         self.assertFalse(self._metal(_need({0: free - gr.FIT_MARGIN_MIB + 1}), 20480, 12288)[0])
         self.assertEqual(self._metal(_need({0: 1}), None, 12288)[1], {"reason": "probe_error"})
         self.assertEqual(self._metal(_need({0: 1}), w, a, 2500)[1]["free_mib"], {0: free - 2500})
-        # A replacing chat load gets back what the outgoing model holds and has reserved.
         credited = gr.ChatNeed({0: 8192}, credit_mib = 12288)
         self.assertTrue(self._metal(credited, 6144, 6144, 4096)[0])
         self.assertFalse(self._metal(gr.ChatNeed({0: 8192}), 6144, 6144, 4096)[0])
@@ -413,7 +411,6 @@ class TestCanLoadAlongside(_ArbiterResetMixin, unittest.TestCase):
         self.assertEqual(total({7: 2300}, orch(g, 4, 7), orch(False, 1, 9)), 512)
         self.assertEqual(total({7: 1900}, orch(g, 4, 7)), 812)
         self.assertEqual(total({7: 9000}, orch(g, 4, 7)), 0)
-        # Lowered to 1 slot after loading at 4: the running batch keeps its admitted width.
         self.assertEqual(total({}, orch({**g, "slots": 4}, 1, 7)), 812)
         with patch.object(llama_cpp.LlamaCppBackend, "_darwin_rusage", return_value = (1, 3 * MIB)):
             self.assertEqual(gr.mlx_worker_footprint_mib(orch(g, 1, 7)), 3)
@@ -865,7 +862,6 @@ def test_an_mlx_routed_image_load_is_priced_from_its_quantization_plan(monkeypat
     )
     assert gr._image_need(request, 0) == (4096, 4)
     assert picks == ["auto"] and fetched == ["org/base"]
-    # No base named: the load's variant resolution picks it, not the family default.
     request.base_repo = None
     assert gr._image_need(request, 0) == (4096, 4) and fetched[-1] == "org/variant"
     plan.source = "ram_rule"

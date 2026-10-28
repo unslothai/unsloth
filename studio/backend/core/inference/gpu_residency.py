@@ -35,7 +35,7 @@ class MediaNeed(dict):
 
 
 class ChatNeed(dict):
-    """A chat load's {GPU: MiB}, priced against free memory plus ``credit_mib`` the model it replaces releases."""
+    """Chat load {GPU: MiB}, priced against free memory plus ``credit_mib`` released by the model it replaces."""
 
     def __init__(
         self,
@@ -262,7 +262,6 @@ def _image_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int,
         gguf_filename = name,
         engine = getattr(request, "engine", None),
         with_loras = has_active_loras(getattr(request, "loras", None)),
-        # An explicit precision keeps a default-routed Apple Silicon load on diffusers, as the load does.
         mlx_blocker = mlx_load_blocker(
             transformer_quant = getattr(request, "transformer_quant", None),
             text_encoder_quant = getattr(request, "text_encoder_quant", None),
@@ -326,7 +325,7 @@ def _image_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int,
 
 
 def _mlx_image_need(request: Any, fam: Any) -> Optional[tuple[int, int]]:
-    """(weights MiB, decode headroom MiB) for an MLX image load: the quantization plan it will take, from headers."""
+    """(weights MiB, decode headroom MiB) of an MLX image load, from headers."""
     from core.inference.diffusion_families import resolve_base_repo
     from core.inference.mlx_diffusion_backend import (
         decode_headroom_bytes,
@@ -339,10 +338,8 @@ def _mlx_image_need(request: Any, fam: Any) -> Optional[tuple[int, int]]:
     gguf = _cached_pick(request.model_path, request.gguf_filename)
     if gguf is None:
         return None
-    # Offline only; raises when the text encoder and VAE are not downloaded yet.
     base = resolve_base_repo(fam, request.base_repo)
     if not request.base_repo:
-        # As the load resolves it: a named variant (Z-Image vs Turbo) reads its own base.
         base = resolve_variant_base(
             request.model_path,
             fam,
@@ -357,7 +354,7 @@ def _mlx_image_need(request: Any, fam: Any) -> Optional[tuple[int, int]]:
     if plan.source != "plan":
         return None
     mib = 1024 * 1024
-    # The tiled peak suffices: the renderer tiles once the shared pool cannot take an untiled decode.
+    # Tiled peak suffices: the renderer tiles once the pool cannot take an untiled decode.
     return (plan.planned_bytes - headroom) // mib, -(-headroom // mib)
 
 
@@ -417,8 +414,7 @@ def _on_metal() -> bool:
 
 
 def shared_metal_headroom_bytes() -> Optional[int]:
-    """What every process on Apple's one GPU may still take, less what resident MLX chat models reserved to grow.
-    None unless priced media is kept on Metal (Off keeps the renderer's own reading) or with no reading."""
+    """Headroom on Apple's GPU less resident MLX chat growth; None unless priced media is on Metal."""
     if not metal_media_priced():
         return None
     import psutil
@@ -437,8 +433,7 @@ def metal_media_priced() -> bool:
 
 
 def _metal_pool() -> tuple[Optional[dict[int, dict]], Optional[str]]:
-    """Apple Silicon's unified memory as GPU 0, by the readings llama.cpp's Metal fit uses: the wired headroom Metal
-    may still take, capped at the RAM macOS has available. Both already exclude every model loaded."""
+    """Unified memory as GPU 0: wired headroom capped at available RAM (both exclude loaded models)."""
     try:
         import psutil
         from core.inference.llama_cpp import _apple_wired_headroom_bytes
@@ -551,7 +546,6 @@ def can_load_alongside(owner: str, need_mib: Optional[dict]) -> tuple[bool, dict
     if info["short_mib"]:
         return False, info
     if getattr(need_mib, "kind", None) == "image":
-        # On unified memory offload moves bytes within the same pool, so there is nothing to stream.
         for gpu in [g for g in need_mib if not rows[g].get("metal")]:
             if not _keeps_transformer_resident(
                 need_mib, gpu, info["free_mib"][gpu], rows[gpu]["total_mib"]
@@ -582,8 +576,7 @@ def chat_growth_unpriced() -> bool:
 
 
 def _mlx_chat_unallocated_mib() -> Optional[int]:
-    """MiB the resident MLX chat models priced at load but have not allocated yet, less what each worker has grown
-    since. None when any recorded no price."""
+    """MiB resident MLX chat models priced but have not allocated yet; None when any is unpriced."""
     total = 0
     try:
         from core.inference import model_slots, orchestrator
@@ -607,7 +600,6 @@ def _orch_unallocated_mib(orch) -> Optional[int]:
             growth = entry.get("mlx_growth")
             if growth is None:
                 return None
-            # A lowered setting skips the reload, and batches already running keep the width they were admitted at.
             rows = max(1, int(orch.effective_parallel_slots), int(growth.get("slots", 1)))
             priced = growth["mib"] + (rows - 1) * growth["row_mib"]
             at_load, now = growth.get("footprint_mib"), mlx_worker_footprint_mib(orch)
@@ -617,8 +609,7 @@ def _orch_unallocated_mib(orch) -> Optional[int]:
 
 
 def mlx_replaced_credit_mib(orch) -> int:
-    """MiB a load into ``orch`` gets back from the MLX model it replaces: every load spawns a fresh worker, so the
-    old worker's footprint and the growth reserved for it are both released."""
+    """MiB a load into ``orch`` gets back from the MLX model it replaces (each load spawns a fresh worker)."""
     try:
         if not any(
             isinstance(e, dict) and e.get("is_mlx")
@@ -631,8 +622,7 @@ def mlx_replaced_credit_mib(orch) -> int:
 
 
 def mlx_cache_bounded(entry: dict, slots: int = 1) -> bool:
-    """Whether the loaded MLX cache stops at its priced context (a cache window or a per-request budget); batched
-    vision rows (more than one slot) drop the window."""
+    """Whether the MLX cache stops at its priced context; batched vision rows drop the window."""
     if slots > 1 and entry.get("context_unbounded_when_batched"):
         return False
     return entry.get("context_length_enforced") is True or bool(entry.get("mlx_context_budget"))
@@ -903,7 +893,7 @@ def media_fit_kwargs(
 
 
 def settle_unpriced_chat_beside_media(policy: str) -> None:
-    """Media resident beside a chat model that turned out unpriced: When they fit evicts it, Always refuses."""
+    """Media beside an unpriced chat model: When they fit evicts it, Always refuses."""
     if policy not in ("fit", "always") or not _on_metal():
         return
     from utils.account_context import current_account_id
@@ -923,8 +913,7 @@ def settle_unpriced_chat_beside_media(policy: str) -> None:
 
 
 def forget_media_price(owner: str, cancel: Any = None) -> None:
-    """Drop ``owner``'s price after a renderer change. Gives up on ``cancel``: an evictor holding the lock awaits our
-    drain."""
+    """Drop ``owner``'s price; gives up on ``cancel`` since an evictor holding the lock awaits our drain."""
     while not arb._lock.acquire(timeout = 0.05):
         if cancel is not None and cancel.is_set():
             from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
@@ -1082,7 +1071,6 @@ def coreside_locked(
     if need_mib is None or evict_first:
         return evict_or_refuse(list(kept))
     if isinstance(need_mib, ChatNeed):
-        # can_load_alongside reserves headroom only for priced media, as the unpriced chat branch above assumes.
         evict_or_refuse([n for n in kept if n in MEDIA_OWNERS and n not in _media_records()])
         if not kept:
             return
@@ -1100,7 +1088,6 @@ def coreside_locked(
         evicted,
         need_mib = need_mib,
         acting = acting,
-        # On Metal the only priced chat load is MLX, which makes room among media models only, as it did unpriced.
         media_only = owner == arb.CHAT and _on_metal(),
     )
     if not can_load_alongside(owner, need_mib)[0]:

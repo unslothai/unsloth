@@ -348,7 +348,6 @@ def test_chat_fit_kwargs(monkeypatch):
     # No target GPUs (or Vulkan ordinals) leaves every GPU in play.
     assert inf._chat_fit_kwargs(gguf, _placement(None)) == {"policy": "always"}
     assert inf._chat_fit_kwargs(gguf, _placement([0], vulkan = True)) == {"policy": "always"}
-    # Unified memory pages past the budget, so Always has no out-of-memory to refuse an unpriced load on.
     monkeypatch.setattr(inf, "_unified_metal_host", lambda: True)
     assert inf._chat_fit_kwargs(native, _placement(None)).get("evict_first") is True
     priced = inf._chat_fit_kwargs(native, _placement(None), mlx_need_mib = 700, mlx_credit_mib = 50)
@@ -388,7 +387,6 @@ def test_only_a_bounded_mlx_cache_is_priced_and_its_admitted_width_never_shrinks
     assert inf._mlx_cache_bounded({"context_length_enforced": False, "mlx_context_budget": 4096})
     assert not inf._mlx_cache_bounded({"context_length_enforced": None})
     batching = {"context_length_enforced": True, "context_unbounded_when_batched": True}
-    # One slot never batches, so its window holds; more slots batch vision rows past it.
     assert inf._mlx_cache_bounded(batching) and not inf._mlx_cache_bounded(batching, 2)
     assert not inf._mlx_cache_bounded(
         {"context_length_enforced": False, "mlx_context_budget": None}
@@ -431,13 +429,11 @@ def test_an_mlx_load_is_credited_what_it_replaces_and_more_rows_reprice_it():
     )
     inherit = source.index("# A reload for more rows keeps the context the resident was asked for.")
     assert inherit < shortcut and '"max_seq_length_requested"' in source[inherit : inherit + 400]
-    # A kept slot's reload frees its own worker too; an outgoing llama-server's footprint is not wired-only.
     credit = source.index(
         "mlx_credit_mib = await asyncio.to_thread(mlx_replaced_credit_mib, backend)"
     )
     assert "gguf_replaced_credit_mib" not in source
     assert credit < source.index("mlx_credit_mib = mlx_credit_mib", credit)
-    # An unbounded cache admitted at a price settles after the load, undoing it when refused.
     settle = source.index("settle_unpriced_chat_beside_media, multi_model_mode")
     assert settle < source.index("backend.unload_model, config.identifier", settle)
 

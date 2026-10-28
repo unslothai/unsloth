@@ -480,8 +480,7 @@ class MfluxRuntime:
         return image
 
     def free_working_set_bytes(self) -> Optional[int]:
-        """Metal's recommended working set minus what MLX holds live now (the resident model), or None. A chat worker
-        beside it shares the pool, so the system-wide headroom less that chat's reserved growth caps it."""
+        """Metal working set minus live MLX, capped by system headroom less a chat worker's reserved growth."""
         import mlx.core as mx
 
         try:
@@ -505,7 +504,7 @@ class MfluxRuntime:
         try:
             from core.inference.gpu_residency import metal_media_priced
 
-            # Its price reserved the tiled decode, and a chat model may join mid-generation on that price.
+            # Price reserved the tiled decode; a chat model may join mid-generation on it.
             priced = metal_media_priced()
         except Exception:  # noqa: BLE001
             priced = False

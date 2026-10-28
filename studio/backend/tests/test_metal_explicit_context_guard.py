@@ -1866,8 +1866,6 @@ class TestMetalAlongsideAdmission:
 
     @pytest.mark.parametrize(
         "media, gib",
-        # Its price off the working set, its headroom off available RAM and (x 0.95) off 64 GiB of wired
-        # headroom, and none left still runs the Metal checks.
         [((20480, 0), 22), ((1, 20480), 22), ((6144, 65536), 128), ((30720, 0), 22)],
     )
     def test_media_comes_off_the_metal_budget(self, tmp_path, monkeypatch, media, gib):

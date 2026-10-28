@@ -599,8 +599,7 @@ def _apple_wired_headroom_bytes() -> Optional[int]:
 
 
 def _apple_budget_beside_media_mib(held_mib: int, unallocated_mib: int) -> int:
-    """The unified-memory budget beside a resident image or video model: its price comes off the static working set,
-    and its unallocated part off available RAM, which already excludes the rest."""
+    """Unified-memory budget beside resident media: price off the working set, unallocated part off available RAM."""
     from utils.hardware.hardware import _metal_recommended_working_set_bytes
     import psutil
 
@@ -25534,7 +25533,7 @@ class LlamaCppBackend:
                         self._metal_media_mib() if _apple_budget_mib > 0 else (0, 0)
                     )
                     if _metal_media_mib:
-                        # At least 1: 0 means "not Apple Silicon" below, and would skip every Metal check.
+                        # 0 would mean "not Apple Silicon" and skip every Metal check.
                         _apple_budget_mib = max(
                             1,
                             min(
@@ -25544,7 +25543,6 @@ class LlamaCppBackend:
                                 ),
                             ),
                         )
-                    # The wired headroom is a live reading, so only the unallocated part comes off it.
                     _metal_media_wired_mib = int(
                         _metal_media_unallocated_mib * _APPLE_WIRED_CEILING_FRACTION
                     )
@@ -33719,8 +33717,7 @@ class LlamaCppBackend:
         return media_unallocated_mib()
 
     def _metal_media_mib(self) -> tuple[int, int]:
-        """(price, not yet allocated) MiB of the image/video models resident on Apple's one GPU (zeros under Off);
-        an MLX chat model kept beside them adds the caches it has yet to grow."""
+        """(price, unallocated) MiB of media resident on Apple's GPU, plus MLX chat growth beside them."""
         if self not in _serving_backends_snapshot():
             return 0, 0
         from core.inference.gpu_residency import (

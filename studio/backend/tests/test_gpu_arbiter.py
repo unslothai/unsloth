@@ -187,7 +187,6 @@ def test_a_short_chat_load_on_metal_frees_media_but_no_kept_chat_model(cores, mo
     arb.acquire_for(arb.DIFFUSION, lambda: None, policy = "fit", need_mib = {0: 4096})
     arb.acquire_for(arb.CHAT, policy = "fit", need_mib = {0: 9000})
     assert arb.DIFFUSION not in arb.residents() and bool(asked) is not metal
-    # An image load beside it still makes room among kept chat models.
     asked.clear()
     arb.acquire_for(arb.DIFFUSION, lambda: None, policy = "fit", need_mib = {0: 4096})
     assert asked
@@ -199,7 +198,6 @@ def test_a_priced_mlx_chat_load_does_not_join_an_unpriced_image(cores, monkeypat
     import core.inference.gpu_residency as res
 
     monkeypatch.setattr(res, "can_load_alongside", lambda *a: (True, {}))
-    # Off records no price for the image; changing the setting later does not add one.
     arb.acquire_for(
         arb.DIFFUSION, lambda: None, policy = "fit" if priced else "off", need_mib = {0: 4096}
     )
@@ -231,7 +229,6 @@ def test_a_renderer_change_forgets_the_media_price(cores):
     assert arb._media_needs.get(arb.DIFFUSION) == {0: 4096}
     res.forget_media_price(arb.DIFFUSION)
     assert arb.DIFFUSION not in arb._media_needs and arb.DIFFUSION in arb.residents()
-    # An evictor holding the lock waits on this fallback's drain: a cancelled fallback lets go.
     import threading
 
     cancel = threading.Event()

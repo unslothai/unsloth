@@ -1899,11 +1899,9 @@ def test_the_renderer_sees_the_shared_pool_beside_a_chat_model(monkeypatch):
     monkeypatch.setattr(gr, "media_held_mib", lambda: {0: 9000})
     monkeypatch.setattr("psutil.virtual_memory", lambda: types.SimpleNamespace(available = 64 * _GIB))
     assert runtime.free_working_set_bytes() == 12 * _GIB
-    # Available RAM caps the pool as admission's reading does.
     monkeypatch.setattr("psutil.virtual_memory", lambda: types.SimpleNamespace(available = 5 * _GIB))
     assert runtime.free_working_set_bytes() == 1 * _GIB
     assert gr.metal_media_priced()
-    # Under Off nothing is priced, and the renderer keeps its own reading.
     monkeypatch.setattr(gr, "media_held_mib", lambda: {})
     assert runtime.free_working_set_bytes() == 88 * _GIB
 

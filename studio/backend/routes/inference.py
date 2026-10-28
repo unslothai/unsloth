@@ -11794,7 +11794,7 @@ def _chat_fit_kwargs(
     elif not (config.is_gguf and _primary_can_retry_fit.get()) and (
         policy == "fit" or (not config.is_gguf and _unified_metal_host())
     ):
-        # Unified memory pages past the budget, so Always gets no out-of-memory error to refuse on.
+        # Unified memory pages past the budget: Always gets no OOM to refuse on.
         kwargs["evict_first"] = True
     return kwargs
 
@@ -14717,7 +14717,7 @@ def _mlx_load_estimate(
 
     load_in_4bit = _mlx_estimate_load_in_4bit(config, request)
     kv_bits = _mlx_estimate_kv_bits(request.mlx_kv_quant, request.mlx_kv_bits)
-    # A width the cache takes applies under a pin or a fit alike: the window is then a budget.
+    # A width the cache takes makes the window a budget, pinned or fit.
     if kv_bits is not None and mlx_kv_quant_is_refused(model_dir, kv_bits):
         kv_bits = None
     named_ctx = request.max_seq_length or 0
@@ -14764,14 +14764,12 @@ def _mlx_chat_need(
     model_identifier,
     slots: int = 1,
 ) -> Optional[tuple[int, dict]]:
-    """``(need MiB, growth)`` of an MLX chat load on Apple Silicon serving ``slots`` rows, or None if unpriceable.
-    ``growth`` is what one row grows past its weights and what each further row adds: rows prefill as one batch,
-    so each brings its compute as well as its KV cache."""
+    """``(need MiB, growth)`` of an MLX chat load serving ``slots`` rows, or None; rows prefill as one batch."""
     if getattr(config, "is_gguf", False) or not _unified_metal_host():
         return None
     try:
         _, estimate = _mlx_load_estimate(request, config, model_identifier)
-        # Offload workspaces allocate at prefill but are priced as weights, so the growth would miss them.
+        # Offload workspaces allocate at prefill but are priced as weights.
         if estimate is None or estimate.offloaded:
             return None
         from core.inference.mlx_inference import mlx_memory_budget
@@ -18574,7 +18572,6 @@ async def _load_model_impl(
                 )
                 # Without this the route reports already_loaded and nothing moves.
                 and _resident_audio_placement_matches(backend, request)
-                # More rows beside media are more KV caches: reload so admission prices them.
                 and not _mlx_slots_outgrow_price(backend, _n_parallel)
             ):
                 api_monitor.discard(_load_event)  # nothing loaded, no monitor row
@@ -46878,7 +46875,6 @@ def _mlx_fallback_load_gate(request, gpu_ordinal, multi_model_mode):
             ):
                 if ref and _repo_is_in_the_hub_cache(ref) is not True:
                     _note_load_fetched_with_a_request_token(ref, request.hf_token)
-            # The MLX price does not describe the diffusers renderer.
             forget_media_price(DIFFUSION, cancel)
             return start()
 
