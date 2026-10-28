@@ -195,7 +195,6 @@ def _record(
     *,
     directory: Optional[Path] = None,
 ) -> dict[str, Any]:
-    # Resolving the folder walks the filesystem, so a listing passes the one it globbed.
     if directory is None:
         directory = gallery_dir()
     # flags are library state, not recipe: they come from the sidecar store, never the PNG chunk
