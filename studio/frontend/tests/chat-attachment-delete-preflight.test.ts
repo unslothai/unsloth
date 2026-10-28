@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Without WebCrypto (plain http on a LAN address), reconciling an open chat after a Data tab deletion
-// hashes with node-forge, now a lazy chunk. The chunk must load before the deletion is committed.
+// Without WebCrypto (plain http on a LAN address) the lazy node-forge chunk must load before a deletion commits.
 
 import assert from "node:assert/strict";
 import test from "node:test";

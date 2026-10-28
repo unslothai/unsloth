@@ -93,7 +93,7 @@ export async function chatContentPartAttachmentIdFromSignature(
   return `${CONTENT_PART_ID_PREFIX}${hex}`;
 }
 
-/** Loads what dropping this id from an open chat needs (node-forge without WebCrypto); call before deleting. */
+/** Call before deleting: loads the hasher an open chat needs to drop this id, so a failed chunk load aborts the delete. */
 export async function prepareChatAttachmentDeletion(
   attachmentId: string,
 ): Promise<void> {

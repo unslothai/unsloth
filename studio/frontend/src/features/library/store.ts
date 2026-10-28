@@ -202,7 +202,6 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
               return;
             }
             if (id.startsWith("attachment:")) {
-              // Fails here, before anything is deleted, if an open chat could not drop it afterwards.
               await prepareChatAttachmentDeletion(id.split(":").slice(2).join(":"));
             }
             await deleteLibraryItem(id, fingerprint);
