@@ -3557,6 +3557,21 @@ def _raw_prompt_constraint(grammar, tokenizer):
     return GrammarConstraint(grammar, tokenizer, strips_special_tokens = True)
 
 
+class _PrefillStopped(Exception):
+    pass
+
+
+def _stream_until_cancelled(stream_generate, cancel_event, *args, **kwargs):
+    def check(*_):
+        if cancel_event is not None and cancel_event.is_set():
+            raise _PrefillStopped
+
+    try:
+        yield from stream_generate(*args, prompt_progress_callback = check, **kwargs)
+    except _PrefillStopped:
+        return
+
+
 class LogprobsUnsupported(ValueError):
     """``n_probs`` asked of a model that does not sample one token per step."""
 
@@ -6387,7 +6402,9 @@ class MLXInferenceBackend:
                     gen_kwargs["input_embeddings"] = input_embeddings
                 if logits_processors is not None:
                     gen_kwargs["logits_processors"] = logits_processors
-                for response in stream_generate(
+                for response in _stream_until_cancelled(
+                    stream_generate,
+                    cancel_event,
                     self._model,
                     self._tokenizer,
                     **gen_kwargs,

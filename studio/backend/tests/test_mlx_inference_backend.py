@@ -2482,6 +2482,38 @@ def test_mlx_plain_stream_keeps_characters_split_across_tokens(monkeypatch, piec
     assert _delivered(snapshots) == expected
 
 
+def test_mlx_stop_during_prefill_ends_the_reply_before_the_prompt_is_read(monkeypatch):
+    _install_fake_mlx(monkeypatch)
+    backend = _byte_level_mlx_backend(monkeypatch, [b"a", b"b"])
+    cancel, chunks = threading.Event(), []
+
+    def _stream_generate(
+        _model,
+        _tokenizer,
+        prompt_progress_callback = None,
+        **_kwargs,
+    ):
+        progress = prompt_progress_callback or (lambda *_: None)
+        progress(0, 8)
+        for done in range(2, 8, 2):
+            chunks.append(done)
+            cancel.set()
+            progress(done, 8)
+        for token_id in range(2):
+            yield SimpleNamespace(token = token_id)
+
+    monkeypatch.setattr(sys.modules["mlx_lm"], "stream_generate", _stream_generate)
+    snapshots = list(
+        backend.generate_chat_response(
+            messages = [{"role": "user", "content": "long prompt"}],
+            max_new_tokens = 2,
+            cancel_event = cancel,
+        )
+    )
+    assert chunks == [2]
+    assert _delivered(snapshots) == ""
+
+
 @pytest.mark.parametrize(
     "pieces, expected",
     [
