@@ -55,8 +55,8 @@ import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
-  AiBrain01Icon,
   AlertCircleIcon,
+  ChipIcon,
   FolderSearchIcon,
   InformationCircleIcon,
   Key01Icon,
@@ -1213,7 +1213,7 @@ export function ExportPage() {
                 <SectionBox
                   title="Source"
                   description="A local model, a fine-tuned checkpoint, or a Hugging Face model"
-                  icon={AiBrain01Icon}
+                  icon={ChipIcon}
                   chipTint="var(--chart-1)"
                   titleAction={
                     <SegmentedControl

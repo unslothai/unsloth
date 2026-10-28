@@ -65,7 +65,7 @@ export function DatasetPanel() {
       {datasetSource === "s3" && <S3ConfigForm />}
 
       {datasetSource !== "s3" && (
-        <div className="grid grid-cols-1 items-start gap-4 @xl/train-section:grid-cols-2 @xl/train-section:gap-5">
+        <div className="grid grid-cols-1 items-start gap-4 @lg/train-section:grid-cols-2 @lg/train-section:gap-5">
           <div className="flex flex-col gap-2">
             <FieldLabel
               hint={t("studio.wizard.datasetTooltip")}

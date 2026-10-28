@@ -53,16 +53,16 @@ export function MethodPicker({
             >
               <div
                 className={cn(
-                  "mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border-2 transition-colors",
+                  "mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border transition-colors",
                   selected
                     ? "border-primary bg-primary"
-                    : "border-muted-foreground/30",
+                    : "border-muted-foreground/25",
                 )}
               >
                 {selected && (
                   <HugeiconsIcon
                     icon={CheckmarkCircle02Icon}
-                    className="size-3 text-primary-foreground"
+                    className="size-2.5 text-primary-foreground"
                   />
                 )}
               </div>

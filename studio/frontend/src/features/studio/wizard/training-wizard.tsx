@@ -34,7 +34,7 @@ import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import type { TrainingMethod } from "@/types/training";
 import {
-  AiBrain01Icon,
+  ChipIcon,
   Database02Icon,
   PencilEdit02Icon,
   Settings02Icon,
@@ -356,7 +356,7 @@ export function TrainingWizard({
       <SectionBox
         title={t("studio.wizard.modelTitle")}
         description={t("studio.wizard.modelDescription")}
-        icon={AiBrain01Icon}
+        icon={ChipIcon}
         chipTint="var(--chart-1)"
       >
         <ModelPanel />
