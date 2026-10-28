@@ -752,6 +752,26 @@ def recipe_run(flow_id: str, node_id: str, run_id: str) -> dict:
     return record
 
 
+class DatasetRowsBody(BaseModel):
+    value: dict[str, Any]
+    offset: int = Field(0, ge = 0, le = 100_000)
+    limit: int = Field(20, ge = 1, le = 100)
+
+
+@router.post("/dataset-rows")
+def dataset_rows(request: Request, body: DatasetRowsBody) -> dict:
+    """A page of a flow `dataset` value's rows (Hub, uploaded or Data Recipe), for the viewers."""
+    from core.flows.dataset_rows import DatasetRowsError
+    from core.flows.dataset_rows import dataset_rows as read_rows
+
+    try:
+        return read_rows(body.value, body.offset, body.limit, _hf_token(request))
+    except DatasetRowsError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+
+
 @router.get("/{flow_id}/latest-outputs")
 def latest_outputs(flow_id: str) -> dict:
     _flow_or_404(flow_id)

@@ -201,6 +201,12 @@ export const recipeRun = (flowId: string, nodeId: string, runId: string) =>
     `/${encodeURIComponent(flowId)}/nodes/${encodeURIComponent(nodeId)}/recipe-runs/${encodeURIComponent(runId)}`,
   );
 
+export const datasetRows = (value: unknown, offset: number, limit: number) =>
+  request<import("./dataset/dataset-value").DatasetRowsPage>(
+    "/dataset-rows",
+    json("POST", { value, offset, limit }),
+  );
+
 export interface ImportReport {
   missing_models: PlanModel[];
   warnings: string[];
