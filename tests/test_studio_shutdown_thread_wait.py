@@ -150,7 +150,6 @@ def _is_run_mod_getattr_call(node: ast.AST, attr_name: str) -> bool:
 
 
 def test_in_process_studio_exits_without_finalizing_only_after_a_clean_shutdown():
-    # The desktop app runs the venv's `unsloth studio`, which serves in-process, never run.py's __main__.
     tree = _parse(_STUDIO_CLI_PY)
     hits = []
     for parent in ast.walk(tree):

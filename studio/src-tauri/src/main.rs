@@ -1437,8 +1437,7 @@ fn setup_unix_termination_signals(app: &tauri::App) -> Result<(), Box<dyn std::e
             // Exit regardless of cleanup success, or SIGTERM leaves the app running and the backend
             // orphaned.
             let cleanup_and_exit = |app: &tauri::AppHandle, exit_code: i32| {
-                // Fire-and-forget: a visibility read waits on the UI thread, and a hung UI must not
-                // keep the reap from running.
+                // No visibility read: it waits on the UI thread, and a hung UI must not block the reap.
                 if let Some(window) = app.get_window("main") {
                     let _ = window.hide();
                 }
@@ -1562,7 +1561,6 @@ enum TerminationConfirmation {
 }
 
 /// Atomically attach AppKit to a visible confirmation or reserve the guard for a new one.
-/// `needs_quit_thread`: something to confirm, or a window to hide while the event loop still runs.
 #[cfg(target_os = "macos")]
 fn begin_or_attach_termination(needs_quit_thread: bool) -> TerminationConfirmation {
     let mut state = lock_quit_confirmation_state();
@@ -1606,8 +1604,7 @@ impl<S: FnOnce()> Drop for HiddenForQuit<S> {
     }
 }
 
-/// Skips windows nobody can see (tray quit, `--hidden` start), so an unwind never pops one up; a
-/// minimized window counts as visible. `None` means no main window; an unreadable visibility hides.
+/// Minimized counts as visible; an unreadable visibility hides. Hidden (tray, `--hidden`) is left alone.
 fn main_window_needs_hiding(
     main_window_visible: impl FnOnce() -> Option<Result<bool, String>>,
 ) -> bool {
@@ -1621,10 +1618,8 @@ fn main_window_needs_hiding(
     }
 }
 
-/// Reaping takes seconds (about 18s worst case on Windows), and a window left up for it looks
-/// frozen. Returns whether a window was hidden.
-/// The hide only shows once the event loop runs again, so never call this from the main thread
-/// right before blocking it.
+/// The reap takes seconds (~18s worst case on Windows). The hide only lands once the event loop
+/// runs again, so never call this on the main thread right before blocking it.
 fn hide_main_window_for_quit(app: &tauri::AppHandle) -> bool {
     let hide = main_window_on_screen(app);
     // Not get_webview_window: that is None while browser views are children of the window.
@@ -1642,8 +1637,7 @@ fn main_window_on_screen(app: &tauri::AppHandle) -> bool {
     })
 }
 
-/// Confirm, hide, reap; returns whether to exit. Blocking parts are injected so the order is
-/// testable. The window goes after the confirm dialogs, never before, and before the reap.
+/// Confirm, hide, reap, in that order; returns whether to exit. Steps injected for the tests.
 fn quit_sequence(
     confirm: impl Fn() -> bool,
     hide: impl FnOnce() -> bool,
@@ -3099,7 +3093,6 @@ media-src 'self' https:"
         );
     }
 
-    /// Records the injected steps in order; `hides` is what the hide step reports.
     fn record_quit(
         confirmed: bool,
         hides: bool,

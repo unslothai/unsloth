@@ -1577,13 +1577,11 @@ def _wait_for_server_shutdown(timeout: Optional[float] = _SERVER_SHUTDOWN_JOIN_T
 
 
 def _exit_without_finalizing() -> NoReturn:
-    """Exit as the interpreter would, minus finalization: freeing a loaded backend's heap takes over a
-    second, and the desktop app's quit and `unsloth studio stop` wait on the process."""
+    """Exit as the interpreter would, minus finalization: freeing a loaded backend's heap takes seconds."""
     import atexit
     import threading
 
-    # The interpreter's own exit steps, in its order: join threads, then atexit hooks. The join stays
-    # unbounded: a cancelled request's to_thread work (dataset import, export) must finish its writes.
+    # CPython's exit order. Unbounded join: to_thread work (dataset import, export) must finish its writes.
     threading._shutdown()
     atexit._run_exitfuncs()
     status = 0
