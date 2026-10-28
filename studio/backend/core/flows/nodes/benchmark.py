@@ -41,13 +41,14 @@ def guess_column(columns: list[str], wanted: str, guesses: tuple[str, ...]) -> O
 
 
 def headline(metrics: list[dict]) -> tuple[Optional[float], str]:
-    """The metric the Evals tab leads with: accuracy or exact match before anything else."""
-    scored = [m for m in metrics if isinstance(m.get("score"), (int, float))]
-    for prefix in ("acc,", "acc_norm,", "exact_match,", "prompt_level_strict_acc,"):
-        for m in scored:
-            if str(m.get("name", "")).startswith(prefix):
-                return float(m["score"]), str(m["name"])
-    return (float(scored[0]["score"]), str(scored[0]["name"])) if scored else (None, "")
+    """The metric the Evals tab leads with, so the node and the tab show the same number."""
+    from core.benchmark.parse import pick_default_metric
+
+    name = pick_default_metric(metrics)
+    found = next((m for m in metrics if m.get("name") == name), None)
+    if found is None or not isinstance(found.get("score"), (int, float)):
+        return None, name
+    return float(found["score"]), name
 
 
 def _short(value: Any) -> Any:
@@ -99,9 +100,32 @@ async def _load_target(ctx: NodeContext) -> tuple[str, bool]:
     return label, False
 
 
+def _head(dataset: dict, token: Any, limit: int) -> list[dict]:
+    """The first rows of a dataset, streamed so a big file or split is never read whole."""
+    from datasets import load_dataset
+
+    if dataset.get("source") == "hf":
+        stream = load_dataset(
+            str(dataset["ref"]),
+            dataset.get("subset") or None,
+            split = dataset.get("split") or "train",
+            token = token,
+            streaming = True,
+        )
+    else:
+        from core.flows.nodes.data import local_seed_path
+        from core.flows.nodes.training import LOADERS
+
+        path = local_seed_path(dataset.get("ref"))
+        builder = next((b for ext, b in LOADERS.items() if path.endswith(ext)), None)
+        if builder is None:
+            raise FlowNodeError("Benchmark reads Parquet, CSV or JSON rows")
+        stream = load_dataset(builder, data_files = path, split = "train", streaming = True)
+    return list(stream.take(limit))
+
+
 async def _read_rows(ctx: NodeContext, dataset: Any, limit: int) -> list[dict]:
     from core.flows.nodes.data import recipe_artifact, recipe_rows
-    from core.flows.nodes.training import _load_rows
     from core.training.account_jobs import account_hf_token
 
     if not isinstance(dataset, dict) or dataset.get("kind") != "dataset":
@@ -111,7 +135,7 @@ async def _read_rows(ctx: NodeContext, dataset: Any, limit: int) -> list[dict]:
     else:
         token = account_hf_token(getattr(ctx.caller, "hf_token", None))
         try:
-            rows = await asyncio.to_thread(_load_rows, dataset, token, limit - 1)
+            rows = await asyncio.to_thread(_head, dataset, token, limit)
         except FlowNodeError:
             raise
         except Exception as exc:
@@ -159,6 +183,7 @@ async def _recipe_heldout(ctx: NodeContext, label: str, is_lora: bool, max_rows:
         "baseline": {"mode": "adapter_off" if with_base else "none"},
         # The judge is the loaded model; with an adapter loaded the route turns it off for judging.
         "judge_alias": "candidate" if scorer == "judge" else None,
+        "local_adapter": is_lora,
         "model_providers": [{"name": "local", "is_local": True}],
         "model_configs": [{"alias": "candidate", "provider": "local", "model": ""}],
     }
@@ -177,6 +202,16 @@ async def _recipe_heldout(ctx: NodeContext, label: str, is_lora: bool, max_rows:
     candidate = await _samples(ctx, run_ids.get("candidate"))
     base = {s.get("doc_id"): s for s in await _samples(ctx, run_ids.get("baseline"))}
     results, failures = [], []
+    errored = {e.get("index"): e.get("error") for e in found.get("errored") or [] if isinstance(e, dict)}
+    candidate = sorted(
+        candidate
+        + [
+            {"doc_id": i, "question": rows[i].get(prompt_col), "target": rows[i].get(reference_col) if reference_col else None, "raw_response": err}
+            for i, err in errored.items()
+            if isinstance(i, int) and 0 <= i < len(rows)
+        ],
+        key = lambda s: s.get("doc_id", 0),
+    )
     for s in candidate:
         index = s.get("doc_id")
         row = rows[index] if isinstance(index, int) and 0 <= index < len(rows) else {}
@@ -300,8 +335,6 @@ async def benchmark(ctx: NodeContext) -> dict:
             "preview": [{k: _short(v) for k, v in r.items()} for r in found["results"][:MAX_ROWS]],
         }
     )
-    return {
-        "score": found["score"],
-        "results": results,
-        "failures": await _as_dataset(ctx, found["failures"], f"{tag}-failures"),
-    }
+    failures = await _as_dataset(ctx, found["failures"], f"{tag}-failures")
+    failures["preview"] = [{k: _short(v) for k, v in r.items()} for r in found["failures"][:MAX_ROWS]]
+    return {"score": found["score"], "results": results, "failures": failures}

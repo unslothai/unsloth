@@ -59,11 +59,12 @@ def _routes(sent):
                         "candidate": {"total": 4, "scored": 4, "passed": 3, "score": 0.75},
                         "baseline": {"total": 4, "scored": 4, "passed": 0, "score": 0.0},
                         "run_ids": {"candidate": "r1", "baseline": "r1_baseline"},
+                        "errored": [{"index": 3, "error": "HTTP 500: boom"}],
                     }
                 },
             }
         if path == "/api/benchmarks/evals/runs/r1":
-            return {"samples": _samples([True, True, False, True])}
+            return {"samples": _samples([True, True, False])}
         if path == "/api/benchmarks/evals/runs/r1_baseline":
             return {"samples": _samples([False] * 4)}
         raise AssertionError(path)
@@ -96,15 +97,20 @@ def test_adapter_is_scored_against_itself_off_and_failures_keep_the_row(monkeypa
     assert sent[0]["task"] == "recipe_heldout"
     assert spec["prompt_column"] == "instruction" and spec["reference_column"] == "response"
     assert spec["baseline"] == {"mode": "adapter_off"} and spec["scorer"] == "reference"
+    assert spec["local_adapter"] is True
     assert spec["model_providers"] == [{"name": "local", "is_local": True}]
     assert out["score"] == 0.75
     results = out["results"]
     assert (results["passed"], results["scored"], results["base_score"]) == (3, 4, 0.0)
     assert results["run_id"] == "r1" and len(results["preview"]) == 4
     assert results["preview"][2]["passed"] is False and results["preview"][2]["base_passed"] is False
+    assert results["preview"][3]["reason"] == "HTTP 500: boom"
     failed = next(rows for name, rows in _uploads(ctx).items() if name.endswith("-failures.jsonl"))
-    assert failed == [{**ROWS[2], "model_output": "x", "reason": ""}]
-    assert out["failures"]["rows"] == 1
+    assert failed == [
+        {**ROWS[2], "model_output": "x", "reason": ""},
+        {**ROWS[3], "model_output": None, "reason": "HTTP 500: boom"},
+    ]
+    assert out["failures"]["rows"] == 2 and out["failures"]["preview"][0]["id"] == 2
 
 
 def test_no_adapter_means_no_baseline_and_judge_scores_without_a_reference(monkeypatch):
@@ -168,7 +174,8 @@ def test_lm_eval_refuses_an_adapter_and_scores_a_gguf_with_a_limit(monkeypatch):
     assert sent == [
         {"checkpoint_path": "unsloth/Qwen3-0.6B-GGUF", "model_source": "local", "task": "hellaswag", "limit": 10}
     ]
-    assert out["score"] == 0.25 and out["results"]["metric"] == "acc,none"
+    # The Evals tab's headline metric, acc_norm for HellaSwag, not the first one listed.
+    assert out["score"] == 0.3 and out["results"]["metric"] == "acc_norm,none"
     assert out["failures"]["rows"] == 3
 
 
@@ -176,3 +183,42 @@ def test_flows_reach_the_evals_routes_and_nothing_else_under_benchmarks():
     assert flow_caller.checked_path(httpx.URL("http://x/api/benchmarks/evals/run"), "POST")
     with pytest.raises(RuntimeError):
         flow_caller.checked_path(httpx.URL("http://x/api/benchmarks/lease"), "POST")
+
+
+def test_a_hub_split_is_streamed_and_cut_to_max_rows(monkeypatch):
+    seen = {}
+
+    class _Stream:
+        def take(self, n):
+            seen["take"] = n
+            return iter(ROWS[:n])
+
+    def load_dataset(name, subset, split, token, streaming):
+        seen.update(name = name, split = split, streaming = streaming)
+        return _Stream()
+
+    monkeypatch.setattr("datasets.load_dataset", load_dataset)
+    monkeypatch.setattr("core.training.account_jobs.account_hf_token", lambda token: None)
+    ctx = _Ctx(lambda *a: {})
+    rows = asyncio.run(benchmark._read_rows(ctx, {"kind": "dataset", "source": "hf", "ref": "o/d"}, 2))
+    assert rows == ROWS[:2]
+    assert seen == {"name": "o/d", "split": "train", "streaming": True, "take": 2}
+
+
+def test_a_local_file_is_streamed_too(monkeypatch):
+    seen = {}
+
+    class _Stream:
+        def take(self, n):
+            return iter(ROWS[:n])
+
+    def load_dataset(builder, data_files, split, streaming):
+        seen.update(builder = builder, data_files = data_files, streaming = streaming)
+        return _Stream()
+
+    monkeypatch.setattr("datasets.load_dataset", load_dataset)
+    monkeypatch.setattr("core.flows.nodes.data.local_seed_path", lambda ref: "/cache/x.jsonl")
+    monkeypatch.setattr("core.training.account_jobs.account_hf_token", lambda token: None)
+    ctx = _Ctx(lambda *a: {})
+    rows = asyncio.run(benchmark._read_rows(ctx, {"kind": "dataset", "source": "local", "ref": "ref:x"}, 3))
+    assert rows == ROWS[:3] and seen == {"builder": "json", "data_files": "/cache/x.jsonl", "streaming": True}

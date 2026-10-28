@@ -29,7 +29,7 @@ DEFAULT_JUDGE_RUBRIC = (
 )
 
 _FENCE_RE = re.compile(r"```[a-zA-Z0-9_+-]*\n(.*?)```", re.DOTALL)
-_VERDICT_RE = re.compile(r"\b(PASS|FAIL)\b", re.IGNORECASE)
+_VERDICT_RE = re.compile(r"^[\s*#>`_\-]*(PASS|FAIL)\b", re.IGNORECASE)
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
 ChatFn = Callable[[str, list[dict[str, str]]], str]
@@ -95,7 +95,9 @@ def build_judge_messages(
 
 
 def parse_judge_verdict(text: str) -> Optional[bool]:
-    match = _VERDICT_RE.search(strip_thinking(text))
+    # The verdict is the first line, as the prompt asks; a "pass" inside the reasoning is not one.
+    first = next((line for line in strip_thinking(text).splitlines() if line.strip()), "")
+    match = _VERDICT_RE.match(first)
     if match is None:
         return None
     return match.group(1).upper() == "PASS"
@@ -190,6 +192,8 @@ def run_benchmark(
                 "correct": bool(r["passed"]),
             }
             for r in results
+            # Same denominator as the score: an errored row was never scored.
+            if r.get("error") is None
         ]
         for target, results in per_target.items()
     }
@@ -211,12 +215,18 @@ def run_benchmark(
     if "baseline" in per_target:
         summary["baseline"] = _summary(per_target["baseline"])
         a, b = summary["candidate"]["score"], summary["baseline"]["score"]
-        summary["delta"] = (a - b) if a is not None and b is not None else None
+        paired = {r["index"] for r in candidate if r.get("error") is None} == {
+            r["index"] for r in per_target["baseline"] if r.get("error") is None
+        }
+        # Only a difference over the same rows says what the adapter did.
+        summary["delta"] = (a - b) if a is not None and b is not None and paired else None
     return {
         **summary,
         "cancelled": cancelled,
         "failed_examples": failed[:MAX_FAILED_EXAMPLES],
         "failed_total": len(failed),
+        # Kept out of the stored samples, so callers still see which rows could not be scored.
+        "errored": [{"index": r["index"], "error": r["error"]} for r in candidate if r.get("error") is not None],
         "samples": samples,
     }
 

@@ -49,6 +49,8 @@ def test_judge_verdict_ignores_thinking():
     assert parse_judge_verdict("<think>maybe FAIL</think>PASS\nfine") is True
     assert parse_judge_verdict("FAIL: wrong") is False
     assert parse_judge_verdict("no idea") is None
+    assert parse_judge_verdict("It does not pass the check.\nFAIL") is None
+    assert parse_judge_verdict("**FAIL** - it does not pass") is False
 
 
 def test_candidate_against_baseline_and_eval_samples():
@@ -83,6 +85,20 @@ def test_candidate_against_baseline_and_eval_samples():
     assert eval_metrics(result["candidate"])[0]["name"] == "acc,none"
 
 
+def test_no_delta_when_the_two_sides_scored_different_rows():
+    def chat(target, messages):
+        if target == "baseline" and messages[-1]["content"] == "2+2?":
+            raise RuntimeError("boom")
+        return {"2+2?": "4", "Capital of France?": "Paris", "3*3?": "9"}[messages[-1]["content"]]
+
+    result = run_benchmark(
+        {"rows": ROWS, "prompt_column": "question", "reference_column": "answer", "scorer": "reference", "with_baseline": True},
+        chat = chat,
+    )
+    assert result["candidate"]["score"] == 1.0 and result["baseline"]["score"] == 1.0
+    assert result["delta"] is None
+
+
 def test_judge_and_row_errors():
     def chat(target, messages):
         if target == "judge":
@@ -98,6 +114,9 @@ def test_judge_and_row_errors():
     assert result["candidate"] == {"total": 3, "scored": 2, "passed": 2, "errors": 1, "score": 1.0}
     assert "baseline" not in result
     assert result["failed_examples"][0]["reason"] == "HTTP 500: boom"
+    # stored samples share the score's denominator
+    assert [s["doc_id"] for s in result["samples"]["candidate"]] == [0, 1]
+    assert result["errored"] == [{"index": 2, "error": "HTTP 500: boom"}]
 
 
 def test_stops_on_cancel():
@@ -195,6 +214,16 @@ def test_adapter_off_runs_through_the_evals_slot_and_storage(harness):
     assert harness.revoked == [7]
     assert not harness.backend.is_active()
     assert harness.backend.get_last_op_status() == "success"
+
+
+def test_a_local_judge_never_grades_with_the_adapter_on_even_without_a_baseline(harness):
+    response = _run(_request(baseline = {"mode": "none"}, local_adapter = True))
+    assert response.success
+    judge = [b for b in harness.bodies if b.get("use_adapter") is False]
+    assert len(judge) == 3 and "baseline" not in response.details["recipe"]
+    # every candidate answer turns the adapter back on
+    assert [b.get("use_adapter") for b in harness.bodies] == [True, False] * 3
+    assert response.details["recipe"]["candidate"]["score"] == 1.0
 
 
 def test_a_busy_slot_refuses_and_frees_nothing(harness):
