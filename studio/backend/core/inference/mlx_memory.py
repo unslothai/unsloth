@@ -1513,12 +1513,17 @@ def mlx_offload_plan(
     prefill_chunk: Optional[int] = None,
     load_in_4bit: bool = False,
     vision: Optional[bool] = None,
+    drafter: Optional[tuple] = None,
 ) -> Optional[tuple]:
     """The ``(ple, experts, prefill_step)`` unsloth_zoo's 50/50 rule takes for this load, priced
-    as Studio prices it; a knob not ``"auto"`` and a pinned ``context`` are kept. When nothing fits,
-    everything offloadable goes to disk. None when the load cannot be planned."""
+    as Studio prices it, with ``drafter`` when given; a knob not ``"auto"`` and a pinned ``context``
+    are kept. When nothing fits, everything offloadable goes to disk. None when the load cannot be planned."""
     planner = mlx_offload_planner()
-    sizing = _size_load(model_dir, kv_bits, prefill_chunk, load_in_4bit, vision)
+    sizing = _size_load(model_dir, kv_bits, prefill_chunk, load_in_4bit, vision, drafter)
+    if sizing is None and drafter is not None:
+        # A drafter that cannot be sized cannot attach either: plan the target as if none was asked for.
+        drafter = None
+        sizing = _size_load(model_dir, kv_bits, prefill_chunk, load_in_4bit, vision)
     if planner is None or sizing is None:
         return None
     with _on_route(vision):
@@ -1527,7 +1532,7 @@ def mlx_offload_plan(
 
     def context_cost(tokens, step):
         if step not in sized:
-            sized[step] = _size_load(model_dir, kv_bits, step, load_in_4bit, vision)
+            sized[step] = _size_load(model_dir, kv_bits, step, load_in_4bit, vision, drafter)
         priced = sized[step] and _priced_at(sized[step], tokens)
         if priced is None:
             raise ValueError(f"cannot price {tokens} tokens")

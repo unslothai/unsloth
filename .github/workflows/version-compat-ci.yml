@@ -59,7 +59,7 @@ jobs:
         # packaging: import_fixes.py, loaded by path, imports it at module top.
         run: |
           python -m pip install --upgrade pip
-          pip install 'pytest>=8' 'pytest-xdist>=3' packaging
+          pip install 'pytest>=8,<9.2' 'pytest-xdist>=3' packaging
       - name: Resolve the transformers matrix once
         # Resolve the matrix once so xdist workers collect identical parameters.
         env:
@@ -107,7 +107,7 @@ jobs:
       - name: Install pytest only
         run: |
           python -m pip install --upgrade pip
-          pip install 'pytest>=8' packaging pyyaml
+          pip install 'pytest>=8,<9.2' packaging pyyaml
       - name: Assert every site declares the same window
         # Keep on one line: PowerShell on windows-latest turns a `\` continuation into a literal path.
         run: |
@@ -198,7 +198,7 @@ jobs:
           # torchcodec is required on transformers 5.x: audio_utils reads its metadata unconditionally.
           # ABI-coupled to torch, so the pair is chosen per lane. huggingface_hub unpinned: 4.x wants <1.0, 5.x >=1.5.0.
           pip install ${{ matrix.pkg_pins }} \
-            sentencepiece protobuf safetensors numpy 'pytest>=8' \
+            sentencepiece protobuf safetensors numpy 'pytest>=8,<9.2' \
             tqdm packaging psutil Pillow requests
           pip install --no-deps -e "$RUNNER_TEMP/unsloth-zoo"
           pip install --no-deps -e ./unsloth
@@ -307,7 +307,7 @@ jobs:
             ${{ matrix.torch_pins }}
           # TRL last so it pulls the transformers/peft it requires.
           pip install ${{ matrix.pkg_pins }} \
-            sentencepiece protobuf safetensors numpy 'pytest>=8' \
+            sentencepiece protobuf safetensors numpy 'pytest>=8,<9.2' \
             tqdm packaging psutil Pillow requests
           pip install ${{ matrix.trl_pin }}
           pip install --no-deps -e "$RUNNER_TEMP/unsloth-zoo"
@@ -390,7 +390,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install pytest
-        run: pip install 'pytest>=8'
+        run: pip install 'pytest>=8,<9.2'
       - name: Run all version-compat suites in one process (no cache)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

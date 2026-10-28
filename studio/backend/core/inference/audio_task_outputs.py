@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Every WAV a ``/v1/tasks/run`` reply carries. With ``named_audio_outputs`` present the
-top-level ``audio`` repeats the first one, so it is not counted twice."""
+"""Every WAV in a /v1/tasks/run reply; when named_audio_outputs is present, top-level audio repeats
+its first entry, so it is not counted twice."""
 
 from __future__ import annotations
 

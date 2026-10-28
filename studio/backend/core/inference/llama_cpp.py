@@ -8048,6 +8048,7 @@ class LlamaCppBackend:
         self._vision_disabled_by_user: bool = False
         # Block-diffusion model, served by the diffusion runner; set from the GGUF architecture at load.
         self._architecture: Optional[str] = None
+        self._gguf_type: Optional[str] = None
         self._is_diffusion: bool = False
         # Whole header walked? Separates "declares no architecture" from "unreadable".
         self._gguf_header_parsed: bool = False
@@ -14676,8 +14677,8 @@ class LlamaCppBackend:
         rows: list[dict] = []
         for line in result.stdout.strip().splitlines():
             parts = line.split("\t")
-            # 4 columns from an older probe (no name); 5 with the name column.
-            if len(parts) not in (4, 5, 6):
+            # 4 columns from an older probe (no name); 5 with the name column, 7 with the PCI id.
+            if len(parts) not in (4, 5, 6, 7):
                 continue
             try:
                 free_b, total_b = int(parts[1]), int(parts[3])
@@ -14693,6 +14694,7 @@ class LlamaCppBackend:
                         "name": parts[4].strip() if len(parts) >= 5 else "",
                         # Absent on an older staged probe, so it reads unknown and declines.
                         "type_known": len(parts) >= 6 and parts[5].strip() == "1",
+                        "pci_id": parts[6].strip().lower() if len(parts) >= 7 else "",
                     }
                 )
             except ValueError:
@@ -18423,6 +18425,7 @@ class LlamaCppBackend:
         self._shared_kv_layers = None
         self._nextn_predict_layers = None
         self._architecture = None
+        self._gguf_type = None
         self._is_diffusion = False
         self._gguf_header_parsed = False
         self._gguf_split_index = None
@@ -18431,6 +18434,7 @@ class LlamaCppBackend:
             canvas_seen = False
             WANTED = {
                 "general.architecture",
+                "general.type",
                 "tokenizer.chat_template",
                 # Vocab size = tokens array length (no vocab_size key in many GGUFs).
                 "tokenizer.ggml.tokens",
@@ -18507,6 +18511,8 @@ class LlamaCppBackend:
                                 val_s = f.read(slen).decode("utf-8")
                                 if key.startswith("general.") and key != "general.architecture":
                                     general[key] = val_s
+                                if key == "general.type":
+                                    self._gguf_type = val_s.strip().lower()
                                 if key == "general.architecture":
                                     arch = val_s
                                     self._architecture = val_s
@@ -20253,8 +20259,15 @@ class LlamaCppBackend:
             return True
 
     def _non_chat_gguf_refusal(self, gguf_path: str) -> Optional[str]:
-        """Header-only refusal of media GGUFs: a media architecture, or none at all once the header
-        parsed."""
+        """Header-only refusal of adapter and media GGUFs: an adapter, a media architecture, or none
+        at all once the header parsed."""
+        # Metadata, not filenames: an adapter may declare a chat arch; a merged LoRA is a full model.
+        # Checked before the walk gate: a type that was read is definitive even from a partial prefix.
+        if getattr(self, "_gguf_type", None) == "adapter":
+            return (
+                "This GGUF is a LoRA adapter and needs a matching base model. "
+                "Select a full model GGUF for chat, or use this adapter with its base model."
+            )
         arch = (self._architecture or "").strip().lower()
         # A media arch is KV 0 so a partial remote prefix can carry it; the walk still gates the no-arch fallback, since an incomplete read looks like none.
         if (

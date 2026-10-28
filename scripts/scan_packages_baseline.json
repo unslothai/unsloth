@@ -1852,6 +1852,14 @@
       "evidence_hash": "c6336d0259890fa8501965b7a7c32cb9ceb47e7c0843d6bc6864d91bb2ed1f94"
     },
     {
+      "package": "triton",
+      "file": "triton/_compile_warmup_pool.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L149:             code = compile(jit_function.src, function.__name__, \"exec\")\nExec: L151:             exec(code, namespace)",
+      "evidence_hash": "d9e13c239c4646f892a7798344fb8ea897e8d2a11ae4d360b8d37fdaaf3807b7"
+    },
+    {
       "package": "fastmcp-slim",
       "file": "fastmcp/cli/apps_dev.py",
       "check": "Creates archive with sensitive data AND makes network calls",

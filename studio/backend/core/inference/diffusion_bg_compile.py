@@ -1,21 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Compile a dense denoiser in the background while the user's renders keep running eager.
-
-``arm`` records the first few distinct denoiser inputs of a render run under ``force_eager`` (read by every compile
-guard and CUDA-graph wrapper); ``kick`` replays them through the compiled callable on a daemon thread with CUDA-graph
-capture suppressed, so the next render pays only the capture. A render arriving mid-compile waits for it: a render
-beside the compile was starved to 49-62 s on a B200. Any failure ends the attempt and the next render compiles inline.
-
-Dense denoisers only: torchao ones are ~30x slower eager. Offloaded ones too: no render runs beside the compile,
-so offload hooks see one forward at a time (UNSLOTH_DIFFUSION_BG_COMPILE_OFFLOADED=0 opts out). By default only the deferred
-profile (generation 3, already eager -> compiled) uses it; UNSLOTH_DIFFUSION_BG_COMPILE=1 also moves a load's
-first-render compile (render 1 then differs from render 2 for one seed), =0 disables it.
-
-``dynamic=True`` SymFloats dynamo cannot tensorify (norm ``eps``) cost a restart per block type; their names are
-saved in the load's compile-cache dir and pre-seeded next load (UNSLOTH_DIFFUSION_BG_COMPILE_FLOAT_SEEDS=0 opts out).
-"""
+"""Dense denoisers (offloaded too) compile in background while renders run eager; a render mid-
+compile waits for it; any failure ends the attempt and the next render compiles inline;
+UNSLOTH_DIFFUSION_BG_COMPILE=0 disables"""
 
 from __future__ import annotations
 

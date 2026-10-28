@@ -2618,6 +2618,8 @@ export const en = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "Uptime",
         processMemory: "Process memory",
         notInstalled: "Not installed",
@@ -3363,6 +3365,7 @@ export const en = {
       desktopAppVersionUnavailable: "Unavailable",
       llamaCppVersion: "llama.cpp Version",
       audioCppVersion: "audio.cpp Version",
+      mlxVersion: "MLX Version",
       whisperCppVersion: "whisper.cpp Version",
       engines: {
         title: "Engines",
@@ -3498,7 +3501,7 @@ export const en = {
       datasetLabel: "Dataset",
       datasetTooltip: "The training data used to fine-tune the model.",
       hfTokenDescription: "Required for gated or private models and datasets.",
-      uploadLocalLabel: "Or upload a local file",
+      uploadLocalLabel: "Upload a local file",
       sourceBrowse: "Browse",
       releaseToUpload: "Release to upload",
       loadYaml: "Load YAML",
@@ -4342,7 +4345,7 @@ export const en = {
   // The Scheduled page: prompts that run on a schedule, each run answered in a new chat.
   scheduledTasks: {
     title: "Scheduled",
-    description: "Run prompts on a schedule with your loaded model.",
+    description: "Run prompts on a schedule with any of your models.",
     newTask: "New task",
     upcoming: "Upcoming",
     // Column headers over the list, and the Repeats value of a monthly task.

@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Transport that drives the shared Unsloth tool loop over any external provider.
-
-``ExternalProviderClient.stream_chat_completion`` is the single point every
-external provider passes through: the OpenAI-compatible route yields its lines
-directly, and the Anthropic, Gemini, Responses and Kimi sub-streams are each
-translated into OpenAI chunk shape and re-yielded through it. Wrapping that one
-generator therefore covers self-hosted llama.cpp / vLLM / Ollama / custom
-endpoints and the hosted APIs alike.
-"""
+"""Tool loop over ExternalProviderClient.stream_chat_completion, which every external provider uses"""
 
 from __future__ import annotations
 

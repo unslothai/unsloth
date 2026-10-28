@@ -1,24 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One listing over every place a Studio file can live.
-
-Sources, each with its own id prefix so an item id says where its bytes are:
-
-- ``upload:<id>``                         a file uploaded straight into the Library
-- ``attachment:<message_id>:<attachment_id>``  a file attached to a chat message
-- ``image:<id>``                          an image from the Images page gallery
-- ``sandbox:<session_id>:<relative path>``     a file a chat tool wrote into its sandbox
-- ``video:<id>``                          a clip from the Video page gallery
-- ``audio:<id>``                          a clip from the Audio page's history
-- ``model:<training|exported>:<path>``    a fine-tuned model under outputs/ or exports/ (no bytes:
-                                          a model is a directory, opened in chat instead)
-
-The message and session ids are URL-encoded, since any string can be one and a colon would end it.
-
-Bytes are always served by the source's own route (``fileUrl``); the Library only lists, deletes
-and layers its overlay (name, favorite, folder) on top.
-"""
+"""Lists Studio files by id prefix: upload:<id>, attachment:<message_id>:<attachment_id>,
+image:<id>, sandbox:<session_id>:<relative path>, video:<id>, audio:<id>,
+model:<training|exported>:<path>; message and session ids are URL-encoded; bytes come from each
+source's fileUrl."""
 
 from __future__ import annotations
 

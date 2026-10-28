@@ -215,6 +215,7 @@ export {
   type SectionLanding,
 } from "./hooks/use-section-drag";
 export { usePinnedChatsStore } from "./stores/pinned-chats-store";
+export { usePinnedChatsSync } from "./hooks/use-pinned-chats-sync";
 export { usePinnedProjectsStore } from "./stores/pinned-projects-store";
 export {
   applyManualOrder,

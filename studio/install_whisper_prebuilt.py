@@ -2,56 +2,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Cross-platform whisper.cpp (whisper-server) prebuilt installer for Unsloth Studio.
-
-Downloads a per-platform whisper.cpp bundle published by the Unsloth fork
-(``unslothai/whisper.cpp``) into an isolated ``<UNSLOTH_HOME>/whisper.cpp``,
-never a system whisper.cpp. The canonical install target matches the
-sidecar/build-script contract in ``stt_ggml_sidecar.py``:
-
-    <install-dir>/build/bin/whisper-server              (Unix)
-    <install-dir>/build/bin/Release/whisper-server.exe  (Windows)
-
-Bundles are dynamically linked: ``whisper-server`` needs ``libwhisper``,
-``libggml*`` and any GPU backend libraries. The binaries carry ``RUNPATH=$ORIGIN``
-so the installer co-locates every shared library from the archive into the same
-``build/bin`` directory and marks the server executable on Unix.
-
-Archives are verified against the release's own ``whisper-prebuilt-sha256.json``
-checksum index (same model as ``install_llama_prebuilt.py``). An asset absent
-from the index, or a release without it, fails closed (setup reports the prebuilt
-unavailable and local dictation uses Transformers STT). Being a same-origin
-checksum it proves integrity, not authenticity; pair the release with GitHub
-artifact attestations for provenance.
-
-Release resolution prefers the download host (``github.com/<repo>/releases/...``),
-fetching the manifest + checksum index with zero ``api.github.com`` calls (that
-API is rate-limited to 60 req/hour unauthenticated); the GitHub API is only a
-fallback on a 404 / malformed asset.
-
-The whole component-agnostic flow (verified downloads, safe extraction, the
-install lock, release resolution, checksum-index handling, the install driver,
-the resolve probe) lives in ``prebuilt_core.py`` and is shared with
-``install_llama_prebuilt.py``. This module keeps only the whisper specifics: the
-host mapping, install-tree layout, slim pairing with the installed llama.cpp ggml
-runtime, the pinned-release CPU escape hatch, the marker filename, and the CLI.
-Every retained public name is a thin wrapper tests can monkeypatch so the core
-observes the patch.
-
-Selection is slim-only for current releases (v1.9.1-unsloth.2+): every published
-bundle is a slim (ggml-less) whisper paired to the llama.cpp prebuilt, which
-provides all ggml backends. The per-accelerator fat selection chain was deleted
-with the fat bundles; the one legacy shape still honored is the published fat CPU
-bundle of an explicitly pinned pre-slim release.
-
-Mirrors ``install_node_prebuilt.py`` / ``install_llama_prebuilt.py``. Exit codes:
-0 success (or already current), 1 error, 2 incompatible paired release, 3 busy. A re-run
-that already matches logs "already matches" and returns 0 without downloading
-(the scripts grep it). A release lookup that could not answer at all also returns 0 when
-an intact, previously validated install is on disk, logging "update unavailable, existing
-prebuilt kept; keeping the existing complete install" -- llama.cpp's wording for its own
-identical outcome, and the substring the setup scripts grep to report it.
-"""
+"""Installs whisper-server from unslothai/whisper.cpp into <UNSLOTH_HOME>/whisper.cpp/build/bin,
+never a system copy; assets missing from whisper-prebuilt-sha256.json fail closed; re-runs that
+log already matches return 0; failed lookup with intact install returns 0 (setup scripts grep
+both logs)."""
 
 from __future__ import annotations
 

@@ -24,6 +24,14 @@ export function isTerminalSettingsRejection(error: unknown): boolean {
   return status >= 400 && status < 500;
 }
 
+/** A 401 may be a transient token-refresh failure; sign-out discards the pin queue itself. */
+export function isRetryablePinError(error: unknown): boolean {
+  return (
+    !isTerminalSettingsRejection(error) ||
+    (error as ChatSettingsRequestError).status === 401
+  );
+}
+
 /** Top-level fields from FastAPI detail[].loc[0]; empty means drop the whole patch. */
 export function rejectedSettingKeys(detail: unknown): string[] {
   if (!Array.isArray(detail)) return [];

@@ -234,6 +234,11 @@ def llama_slot_cache_root() -> Path:
     return cache_root() / "llama-slots"
 
 
+def mlx_prompt_cache_root() -> Path:
+    """Dir the MLX worker saves its prompt cache in, for the next load of the same model."""
+    return cache_root() / "mlx-prompt-cache"
+
+
 def studio_bin_root() -> Path:
     """Dir for Unsloth-managed executables (the `unsloth` shim, downloaded tools like cloudflared)."""
     return studio_root() / "bin"

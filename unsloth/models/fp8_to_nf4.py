@@ -10,13 +10,8 @@
 # GNU Affero General Public License for more details.
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-"""Load a block-FP8 checkpoint straight into bitsandbytes NF4 (``load_in_4bit = True``).
-
-The fp8 block is parked off the config so transformers runs a bnb 4bit load; each FP8 tensor is
-dequantized inside its weight converter right before bnb quantizes it, so only one converter's
-tensors are ever 16-bit and NF4 is bit-identical to loading the dequantized checkpoint. The
-checkpoint's ``modules_to_not_convert`` stay out of bitsandbytes.
-"""
+"""Block-FP8 checkpoint to bnb NF4 (load_in_4bit); each FP8 tensor dequantized just before
+quantizing (bit-identical); modules_to_not_convert stay out of bitsandbytes."""
 
 import contextvars
 import copy

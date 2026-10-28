@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Stop one image generation without touching any other run of the same account.
-
-A caller binds a ticket in its context; ``asyncio.to_thread`` copies the context into the engine
-thread, where the engine hands the ticket its per-generation cancel event. Stopping the ticket
-sets only that event, whether the run is still queued or already denoising.
-"""
+"""Cancels one image run via a context ticket; asyncio.to_thread carries it, other runs untouched"""
 
 from __future__ import annotations
 

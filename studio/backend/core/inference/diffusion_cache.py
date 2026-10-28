@@ -1,21 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in step caching for the diffusion transformer (First-Block-Cache).
-
-Once a DiT's trajectory settles its output changes little across steps, so most of the
-transformer can be reused. FBCache computes the first block and, if its residual barely changed
-from the previous step (within ``threshold``), skips the rest and reuses their cached output.
-diffusers ships it natively (``transformer.enable_cache(FirstBlockCacheConfig(...))``).
-
-Measured on Flux.1-dev (28 steps, 1024px, B200): ~1.4x on top of torch.compile (2.83 -> 2.03 s)
-at LPIPS ~0.08 -- deep inside the speed-for-quality bar.
-
-Explicit ``fbcache`` works on every tier; unset / ``auto`` engages only on ``max`` with 20+ steps.
-It composes with torch.compile only at ``fullgraph=False`` (the cache's compiler-disabled decision
-is a graph break), which the speed layer switches to automatically. Best-effort: an incompatible
-model is caught and the load proceeds uncached. torch / diffusers imported lazily.
-"""
+"""Opt-in FBCache step reuse; unset or auto only on max tier with 20+ steps; needs fullgraph=False
+under torch.compile; best-effort, an incompatible model loads uncached; torch and diffusers
+imported lazily"""
 
 from __future__ import annotations
 
