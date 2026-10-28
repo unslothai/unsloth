@@ -148,6 +148,22 @@ def test_parquet_preview_does_not_load_the_files_whole(tmp_path, monkeypatch):
     )
 
 
+def test_parquet_preview_still_fails_on_data_damaged_past_the_preview_rows(tmp_path, monkeypatch):
+    # The footer still reads, but a data page in the last row group is zeroed: the full load
+    # failed the preview on main, so the leading-rows path must not hide it.
+    damaged = tmp_path / "damaged.parquet"
+    pq.write_table(_typed_table(60), damaged, row_group_size = 10)
+    column = pq.read_metadata(damaged).row_group(5).column(0)
+    with open(damaged, "r+b") as handle:
+        handle.seek(column.data_page_offset)
+        handle.write(b"\0" * 64)
+    assert _LEADING_ROWS([damaged], 10) is None
+    whole = _preview(damaged, monkeypatch, whole = True)
+    leading = _preview(damaged, monkeypatch, whole = False)
+    assert whole[0] == "error", whole
+    assert leading == whole
+
+
 def test_parquet_preview_leaves_uncertain_inputs_to_the_whole_load(tmp_path, monkeypatch):
     mixed = tmp_path / "mixed"
     mixed.mkdir()

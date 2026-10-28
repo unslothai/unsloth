@@ -334,6 +334,17 @@ def _parquet_preview_slice(files: list[Path], preview_size: int):
         table = pa.concat_tables(tables).combine_chunks()
         if table.num_rows != min(preview_size, total_rows):
             return None
+        # Decode every page once, as the full load does, so a file damaged past the preview rows
+        # still fails the preview (the full load below then raises its own error). Batches are
+        # dropped as they go, so memory stays near one batch and nothing is written to the cache.
+        decoded_rows = 0
+        for path in files:
+            with open(path, "rb") as handle:
+                parquet_file = pq.ParquetFile(handle, pre_buffer = False, buffer_size = 1 << 20)
+                for batch in parquet_file.iter_batches(batch_size = 8192, use_threads = False):
+                    decoded_rows += batch.num_rows
+        if decoded_rows != total_rows:
+            return None
         # The full load writes its rows under the features' own Arrow schema (list child names included).
         table = table.cast(arrow_schema)
         return Dataset(InMemoryTable(table), info = DatasetInfo(features = features)), total_rows
