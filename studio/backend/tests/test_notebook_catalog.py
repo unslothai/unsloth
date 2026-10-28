@@ -63,24 +63,29 @@ def test_offline_mode_never_fetches(monkeypatch, fresh_cache):
     assert catalog.build_notebook_catalog()
 
 
+@pytest.mark.parametrize("name", ["Qwen3_(4B)-GRPO.ipynb", "Qwen2.5_(3B)-GSPO.ipynb"])
+def test_grpo_recipes_import_onto_the_fine_tune_node(name):
+    assert catalog._category(name) == "grpo"
+    assert catalog.STUDIO_TASKS.get("grpo") == "text"
+
+
 @pytest.mark.parametrize(
     "name",
     [
-        "Qwen3_(4B)-GRPO.ipynb",
         "gpt_oss_(20B)_Reinforcement_Learning_2048_Game.ipynb",
         "NeMo-Gym-Sudoku.ipynb",
         "Llama3.2_(1B)-PPO.ipynb",
     ],
 )
-def test_rl_recipes_are_not_sft(name):
-    assert catalog._category(name) == "grpo"
-    assert catalog.STUDIO_TASKS.get("grpo") is None
+def test_other_rl_recipes_stay_colab_only(name):
+    assert catalog._category(name) == "rl"
+    assert catalog.STUDIO_TASKS.get("rl") is None
 
 
 @pytest.mark.parametrize("name", ["Zephyr_(7B)-DPO.ipynb", "Llama3_(8B)-ORPO.ipynb"])
-def test_preference_recipes_are_labelled_and_colab_only(name):
+def test_preference_recipes_import_onto_the_fine_tune_node(name):
     assert catalog._category(name) == "preference"
-    assert catalog.STUDIO_TASKS.get("preference") is None
+    assert catalog.STUDIO_TASKS.get("preference") == "text"
 
 
 @pytest.mark.parametrize("name", ["Llama3.1_(8B)-Alpaca.ipynb", "Mistral_Nemo_(12B)-Alpaca.ipynb"])
