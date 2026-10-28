@@ -132,7 +132,13 @@ def is_ui_control_sse_line(line: str) -> bool:
 
 def strip_server_executed_tool_call(line: str, pending_call: bool = False) -> str | None:
     """Only for the Unsloth tool-loop path, which strips the server-run call so a client does not rerun it; on a plain proxy calls must pass through untouched."""
-    payload = _sse_payload(line)
+    return _strip_payload_tool_call(line, _sse_payload(line), pending_call)
+
+
+def _strip_payload_tool_call(
+    line: str, payload: dict[str, Any] | None, pending_call: bool
+) -> str | None:
+    """``strip_server_executed_tool_call`` for a line whose payload is already decoded; never mutates it."""
     choices = payload.get("choices") if payload else None
     if not isinstance(choices, list) or not choices:
         return line
@@ -173,9 +179,8 @@ def strip_server_executed_tool_call(line: str, pending_call: bool = False) -> st
     return "data: " + json.dumps(payload, separators = (",", ":"))
 
 
-def _line_offers_tool_call(line: str) -> bool:
+def _payload_offers_tool_call(payload: dict[str, Any] | None) -> bool:
     """Keyed on the key being present, not truthy, so it agrees with the strip."""
-    payload = _sse_payload(line)
     choices = payload.get("choices") if payload else None
     if not isinstance(choices, list):
         return False
@@ -235,22 +240,25 @@ class ServerToolCallStripper:
         self._pending_call = False
 
     def strip(self, line: str) -> str | None:
-        pending = self._pending_call or _line_offers_tool_call(line)
-        out = strip_server_executed_tool_call(line, pending_call = pending)
-        ends_turn = _line_ends_turn(line)
+        # Decoded once: every check below reads the same payload, and none of them mutates it.
+        payload = _sse_payload(line)
+        pending = self._pending_call or _payload_offers_tool_call(payload)
+        out = _strip_payload_tool_call(line, payload, pending)
+        ends_turn = _payload_ends_turn(payload)
+        # An unchanged line ends the turn exactly when the input did; a rewritten one is read back.
+        out_ends_turn = ends_turn if out is line else (out is not None and _line_ends_turn(out))
         # Turn closed: whatever the loop does next opens a turn whose finish_reason is the caller's to read.
         self._pending_call = pending and not ends_turn
-        if pending or (ends_turn and (out is None or not _line_ends_turn(out))):
+        if pending or (ends_turn and not out_ends_turn):
             # Armed on withhold, since a provider may close on [DONE] alone; a removed tool_calls reason with no emitted call is blanked with no debt recorded.
             self._owes_finish = True
-        if out is not None and _line_ends_turn(out):
+        if out_ends_turn:
             self._owes_finish = False
-        self._remember_envelope(line)
+        self._remember_payload_envelope(payload)
         return out
 
-    def _remember_envelope(self, line: str) -> None:
+    def _remember_payload_envelope(self, payload: dict[str, Any] | None) -> None:
         """Keep the last chunk's identity, so a minted finish matches the stream."""
-        payload = _sse_payload(line)
         if not payload or "choices" not in payload:
             return
         envelope = {
@@ -271,7 +279,10 @@ class ServerToolCallStripper:
 
 def _line_ends_turn(line: str) -> bool:
     """Whether this line carries any finish_reason, i.e. closes the provider's turn."""
-    payload = _sse_payload(line)
+    return _payload_ends_turn(_sse_payload(line))
+
+
+def _payload_ends_turn(payload: dict[str, Any] | None) -> bool:
     choices = payload.get("choices") if payload else None
     if not isinstance(choices, list):
         return False
