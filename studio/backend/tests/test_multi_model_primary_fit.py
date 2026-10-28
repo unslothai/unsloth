@@ -421,15 +421,11 @@ def test_an_mlx_load_is_credited_what_it_replaces_and_more_rows_reprice_it():
     assert (
         "not _mlx_slots_outgrow_price(backend, _n_parallel)" in source[shortcut - 1200 : shortcut]
     )
-    # A kept slot's reload frees its own worker too; only a primary load also stops llama-server.
+    # A kept slot's reload frees its own worker too; an outgoing llama-server's footprint is not wired-only.
     credit = source.index(
         "mlx_credit_mib = await asyncio.to_thread(mlx_replaced_credit_mib, backend)"
     )
-    assert (
-        credit
-        < source.index("if replacing:", credit)
-        < source.index("gguf_replaced_credit_mib, llama_backend", credit)
-    )
+    assert "gguf_replaced_credit_mib" not in source
     assert credit < source.index("mlx_credit_mib = mlx_credit_mib", credit)
     # An unbounded cache admitted at a price settles after the load, undoing it when refused.
     settle = source.index("settle_unpriced_chat_beside_media, multi_model_mode")

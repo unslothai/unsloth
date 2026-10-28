@@ -612,20 +612,6 @@ def mlx_replaced_credit_mib(orch) -> int:
         return 0
 
 
-def gguf_replaced_credit_mib(llama) -> int:
-    """MiB a non-GGUF primary load gets back from the llama-server it tears down first."""
-    try:
-        proc = getattr(llama, "_process", None)
-        if not llama.is_loaded or proc is None or proc.pid is None:
-            return 0
-        from core.inference.llama_cpp import LlamaCppBackend
-
-        usage = LlamaCppBackend._darwin_rusage(proc.pid)
-        return 0 if usage is None else usage[1] // (1024 * 1024)
-    except Exception:  # noqa: BLE001
-        return 0
-
-
 def mlx_cache_bounded(entry: dict) -> bool:
     """Whether the loaded MLX model's cache stops at the context it was priced at: a cache window or a per-request
     budget. Without either its growth has no ceiling to reserve; batched vision rows drop the window."""

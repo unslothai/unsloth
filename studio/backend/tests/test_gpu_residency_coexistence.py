@@ -436,21 +436,6 @@ class TestCanLoadAlongside(_ArbiterResetMixin, unittest.TestCase):
             self.assertEqual(gr.mlx_replaced_credit_mib(orch({"is_mlx": True})), 2100)
             self.assertEqual(gr.mlx_replaced_credit_mib(orch({"is_mlx": False})), 0)
 
-    def test_a_replaced_llama_server_credits_its_footprint(self):
-        from core.inference import llama_cpp
-
-        def llama(loaded, pid = 9):
-            return SimpleNamespace(is_loaded = loaded, _process = SimpleNamespace(pid = pid))
-
-        with patch.object(
-            llama_cpp.LlamaCppBackend, "_darwin_rusage", return_value = (1, 8192 * MIB)
-        ):
-            self.assertEqual(gr.gguf_replaced_credit_mib(llama(True)), 8192)
-            self.assertEqual(gr.gguf_replaced_credit_mib(llama(False)), 0)
-            self.assertEqual(gr.gguf_replaced_credit_mib(llama(True, None)), 0)
-        with patch.object(llama_cpp.LlamaCppBackend, "_darwin_rusage", return_value = None):
-            self.assertEqual(gr.gguf_replaced_credit_mib(llama(True)), 0)
-
     def test_more_parallel_rows_beside_media_outgrow_the_admitted_price(self):
         o = SimpleNamespace(
             models = {"m": {"is_mlx": True}}, active_model_name = "m", effective_parallel_slots = 2
