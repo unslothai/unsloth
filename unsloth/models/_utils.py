@@ -10375,6 +10375,20 @@ class _AutoCheckpointSkip:
                 'Unsloth: checkpoint_skip_layers = "auto" under torchrun needs the process group before the second step; every layer stays checkpointed.'
             )
             return 0
+        try:
+            # The DDP running this forward was put in DDP.join() (accelerate join_uneven_inputs too);
+            # every rank enters it, so every rank takes this branch.
+            from torch.nn.parallel import DistributedDataParallel
+            ddp = DistributedDataParallel._get_active_ddp_module()
+            joined = ddp is not None and ddp._join_config.enable
+        except Exception:
+            joined = False
+        if joined:
+            # A rank out of inputs only shadows DDP's own collectives: no rank may add one.
+            print(
+                'Unsloth: checkpoint_skip_layers = "auto" does not plan under DDP.join() (uneven inputs); every layer stays checkpointed.'
+            )
+            return 0
         backend = str(dist.get_backend())
         on = device if "nccl" in backend and device is not None else torch.device("cpu")
         agreed = torch.tensor([int(count)], dtype = torch.int64, device = on)
