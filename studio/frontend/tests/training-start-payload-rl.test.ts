@@ -108,6 +108,20 @@ test("GRPO sends the Python reward isolation; other objectives keep the default"
   assert.equal(dpo.grpo_python_reward_isolation, "required");
 });
 
+test("GRPO sends the system prompt with its whitespace; a blank one is none", () => {
+  const prompt = "Think first.\nAnswer in <answer> tags.\n";
+  const sent = buildTrainingStartPayload(
+    { ...BASE, trainingObjective: "grpo", grpoSystemPrompt: prompt },
+    null,
+  );
+  assert.equal(sent.rl_system_prompt, prompt);
+  const blank = buildTrainingStartPayload(
+    { ...BASE, trainingObjective: "grpo", grpoSystemPrompt: "  \n" },
+    null,
+  );
+  assert.equal(blank.rl_system_prompt, null);
+});
+
 test("DPO does not send GRPO-only fields", () => {
   const payload = buildTrainingStartPayload(
     { ...BASE, trainingObjective: "dpo", grpoMaxCompletionLength: 512 },
