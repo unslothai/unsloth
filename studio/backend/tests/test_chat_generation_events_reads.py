@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+import random
 import threading
 import time
 from types import SimpleNamespace
@@ -125,3 +126,49 @@ def test_commit_between_read_and_wait_is_not_missed(running_run, monkeypatch):
     events = runs_db.wait_for_events("run-1", cursor, 10)
     assert [event["payload"] for event in events] == [{"delta": "late"}]
     assert time.monotonic() - started < 5
+
+
+def test_concurrent_followers_never_miss_a_commit(running_run, monkeypatch):
+    # Widens the window between each unlocked read and the lock, so commits keep landing inside it.
+    original_list = runs_db.list_events
+    rng_lock = threading.Lock()
+    rng = random.Random(0)
+
+    def slow_list(*args, **kwargs):
+        events = original_list(*args, **kwargs)
+        with rng_lock:
+            delay = rng.random() * 0.002
+        time.sleep(delay)
+        return events
+
+    monkeypatch.setattr(runs_db, "list_events", slow_list)
+    total = 150
+    start = int(runs_db.get_run("run-1")["lastEventSeq"])
+    stalls = []
+    seen = {}
+
+    def follower(name):
+        cursor = start
+        received = []
+        while len(received) < total:
+            began = time.monotonic()
+            events = runs_db.wait_for_events("run-1", cursor, 30)
+            if time.monotonic() - began > 5:
+                stalls.append(name)
+                return
+            for event in events:
+                cursor = int(event["seq"])
+                received.append(event["payload"]["delta"])
+        seen[name] = received
+
+    threads = [threading.Thread(target = follower, args = (i,)) for i in range(6)]
+    for thread in threads:
+        thread.start()
+    for i in range(total):
+        runs_db.append_events("run-1", running_run, [("chunk", {"delta": str(i)})])
+        time.sleep(rng.random() * 0.003)
+    for thread in threads:
+        thread.join(60)
+    assert not stalls
+    assert all(not thread.is_alive() for thread in threads)
+    assert seen == {i: [str(n) for n in range(total)] for i in range(6)}
