@@ -1247,7 +1247,6 @@ def _normalize_openai_passthrough_sse_line(
     )[0]
 
 
-# Second item of _normalize_openai_passthrough_sse_line_and_data when it did not parse the line.
 _SSE_LINE_UNPARSED = object()
 
 

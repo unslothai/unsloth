@@ -269,11 +269,9 @@ def _balanced_json_span(text: str, start: int) -> int | None:
     return None
 
 
-# Runs the brace scan ignores, skipped in C: up to the next quote, brace, or Gemma quote marker.
-# Unrolled loops with nothing after them, so no match backtracks; no possessive quantifiers (3.11+).
+# Unrolled loops with nothing after them never backtrack; possessive quantifiers need Python 3.11+.
 _BRACE_SKIP_RE = re.compile(r'[^"{}]*')
 _BRACE_SKIP_GEMMA_RE = re.compile(r'[^"{}<]*(?:<(?!\|"\|>)[^"{}<]*)*')
-# A JSON string body up to its closing quote; a backslash escapes the next character.
 _JSON_STRING_BODY_RE = re.compile(r'[^"\\]*(?:\\.[^"\\]*)*', re.DOTALL)
 
 
@@ -403,7 +401,7 @@ def _iter_bracket_spans(
         ("name", _MISTRAL_BRACKET_RE),
         ("rehearsal", _REHEARSAL_RE),
     )
-    # Each pattern needs its literal tag; find runs in C, while the regexes probe every word.
+    # Each regex needs its case-sensitive literal tag, so str.find gates it exactly.
     has_calls_tag = text.find("[TOOL_CALLS]", start) >= 0
     nexts = {
         "array": _MISTRAL_ARRAY_RE.search(text, start) if has_calls_tag else None,
@@ -1053,7 +1051,6 @@ def _tool_call_markup_spans(text: str) -> list[tuple[int, int]]:
 
 def _think_spans_outside_tool_markup(text: str) -> list[tuple[int, int]]:
     """A think tag opening inside a tool-call span is argument data, so it is not a reasoning block."""
-    # The literal gates run in C; the alternation regexes probe every position.
     think_spans = (
         [m.span() for m in _THINK_TAG_RE.finditer(text)]
         if "<think>" in text or "[THINK]" in text
