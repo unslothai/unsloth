@@ -308,7 +308,10 @@ export function buildTrainingStartPayload(
       objective === "grpo" ? config.grpoMaxCompletionLength : null,
     grpo_temperature: objective === "grpo" ? config.grpoTemperature : 1,
     rl_system_prompt:
-      objective === "grpo" ? config.grpoSystemPrompt.trim() || null : null,
+      // Sent as written, like the notebooks' prompts; only a blank one means none.
+      objective === "grpo" && config.grpoSystemPrompt.trim()
+        ? config.grpoSystemPrompt
+        : null,
     grpo_enable_thinking: objective === "grpo" && config.grpoEnableThinking,
     grpo_variant: objective === "grpo" ? config.grpoVariant : "dapo",
     grpo_mask_truncated_completions:
