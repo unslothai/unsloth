@@ -61,6 +61,7 @@ class _LlamaPhaseError(RuntimeError):
         self.reload_required = reload_required
 
 
+_JOB_IDLE = _flow.JOB_IDLE
 _JOB_RUNNING = _flow.JOB_RUNNING
 _JOB_SUCCESS = _flow.JOB_SUCCESS
 _JOB_ERROR = _flow.JOB_ERROR
@@ -72,6 +73,7 @@ _job: dict = _flow.new_job()
 _ALREADY_RUNNING_MESSAGE = "Another llama.cpp install is already running."
 
 _utcnow = _flow.utcnow
+_is_under = _flow.is_under
 _is_external_link = _flow.is_external_link
 _rocm_install_args = _flow.rocm_install_args
 

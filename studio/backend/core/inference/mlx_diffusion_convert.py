@@ -67,6 +67,7 @@ _BLOCK_BITS = {
     "Q6_K": 8,
 }
 _QK_K = 256
+_DENSE_TYPES = frozenset({"BF16", "F16", "F32"})
 _PAD_TOKENS = ("cap_pad_token", "x_pad_token")
 _QKV_PARTS = ("to_q", "to_k", "to_v")
 

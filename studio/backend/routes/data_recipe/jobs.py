@@ -199,6 +199,20 @@ def _resolve_local_v1_endpoint(request: Request) -> str:
     return f"http://{host}:{int(port)}/v1"
 
 
+def _request_has_desktop_access_token(request: Request) -> bool:
+    auth_header = request.headers.get("authorization")
+    if not auth_header:
+        return False
+
+    parts = auth_header.split(None, 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return False
+
+    from auth.authentication import is_desktop_access_token
+
+    return is_desktop_access_token(parts[1])
+
+
 def _used_llm_model_aliases(recipe: dict[str, Any]) -> set[str]:
     """Return model_aliases actually referenced by an LLM column. Narrows the "Chat model loaded" gate
     so orphan model_config nodes don't block unrelated runs. The ``llm-`` prefix matches

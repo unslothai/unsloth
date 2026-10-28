@@ -2116,6 +2116,11 @@ _AUTO_EXEC_MCP_VERB_ONLY_RE = re.compile(
     r"powershell|pwsh|terminal|subprocess|interpreter)(?:[_\-]|$)",
     re.IGNORECASE,
 )
+_AUTO_EXEC_MCP_RUNTIME_NOUN_RE = re.compile(
+    r"(?:^|[_\-])(?:python[0-9.]*|node|nodejs|deno|bun|ruby|perl|php|code|"
+    r"script|repl|sandbox|notebook)(?:[_\-]|$)",
+    re.IGNORECASE,
+)
 # Code/command runners run on the MCP server outside the sandbox; whole segments only.
 _AUTO_EXEC_MCP_TOOL_RE = re.compile(
     r"(?:^|[_\-])(?:"
@@ -3282,6 +3287,20 @@ def _references_studio_credential(text: str) -> bool:
 
 # Any run of text that could be a path argument, used to read one token at a time.
 _PATH_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]+")
+# Only traversal is worth resolving: a relative path without `..` stays inside the sandbox.
+_TRAVERSAL_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]*\.\.[^\s'\"()\[\]{},;|&<>]*")
+# Used only after a `cd`, where `auth/auth.db` stops meaning "inside the sandbox".
+_RELATIVE_PATH_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]*[/\\][^\s'\"()\[\]{},;|&<>]*")
+# Case-insensitive: the shell is `cmd /c` on Windows without a trusted bash.
+_CD_TARGET_RE = re.compile(
+    # `builtin cd`, `command cd`, `! cd` and `time cd` move like a bare `cd`.
+    r"(?:^\s*|[;&|({\n]\s*|\b(?:then|do|else|if|elif|while|until)\s+)"
+    # Bash allows assignment words before a special builtin, so `X=1 cd ../..` moves like a bare `cd`.
+    r"(?:(?:builtin|command|exec|nohup)\s+|time\s+(?:-p\s+)?|!\s*|[A-Za-z_]\w*=[^\s;&|()]*\s+)*"
+    r"(?:cd|pushd)\s+"
+    r"(?:(?:-[LPe@]+|--|/d)\s+)*([^\s;&|)]+)",
+    re.IGNORECASE,
+)
 # `cd -` and `popd` return; matched in one pass so order is kept.
 _DIRECTORY_MOVE_RE = re.compile(
     r"(?:^\s*|[;&|({\n]\s*|\b(?:then|do|else|if|elif|while|until)\s+)"
@@ -6575,6 +6594,8 @@ _HIGH_RISK_FORWARDING_COMMANDS = frozenset(
         "valgrind",
     }
 )
+# Tracers and profilers run the rest of the line as a child.
+_TRACER_LAUNCHERS = frozenset({"strace", "ltrace", "ktrace", "dtruss", "perf", "valgrind"})
 _EXEC_FLAG_FORWARDING_COMMANDS = frozenset({"find", "fd"})
 _EXEC_FORWARD_FLAGS = frozenset(
     {"-exec", "-execdir", "-ok", "-okdir", "--exec", "--exec-batch", "-x", "-X"}
@@ -6682,6 +6703,7 @@ _INLINE_CODE_INTERPRETERS = frozenset(
         "php",
     }
 )
+_INLINE_CODE_FLAGS = frozenset({"-c", "-e", "-E", "-r", "--eval", "--exec"})
 # Flags are per interpreter (`python -E` is not eval). Value: (exact flags, cluster letters).
 _INLINE_CODE_FLAG_SPEC = {
     "python": (frozenset({"-c"}), "c"),
@@ -9671,6 +9693,15 @@ def live_project_owns(
         if any(resolved == one or resolved.startswith(one + os.sep) for one in theirs):
             return True
     return False
+
+
+def _project_exists(project_id: str) -> bool:
+    """Whether a project of the user's is stored under this exact id."""
+    try:
+        from storage.studio_db import get_chat_project
+        return get_chat_project(project_id) is not None
+    except Exception:  # noqa: BLE001 - a storage hiccup must not delete files
+        return True
 
 
 def _is_managed_project_workdir(session_id: "str | None", workdir: str) -> bool:

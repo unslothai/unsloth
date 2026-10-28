@@ -9963,6 +9963,13 @@ def _gfx_is_windows_hip_supported(gfx: str, published_repo: str | None = None) -
     return token in _windows_hip_gfx_targets(published_repo)
 
 
+def _host_has_windows_hip_prebuilt_gfx(host: HostInfo, published_repo: str | None = None) -> bool:
+    active = _active_rocm_gfx_target(host)
+    if not active:
+        return False
+    return _gfx_is_windows_hip_supported(active, published_repo)
+
+
 def _should_auto_vulkan_for_amd_windows(host: HostInfo, published_repo: str | None = None) -> bool:
     """True when no AMD GPU on the host reaches the Windows HIP prebuilt floor, or the
     unmasked probe's own pick has no Windows HIP bundle."""

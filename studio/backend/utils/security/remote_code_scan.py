@@ -599,6 +599,11 @@ def _auto_map_refs(cfg: dict) -> set:
     return out
 
 
+def _auto_map_py(cfg: dict) -> set[str]:
+    """Own-repo ``.py`` filenames referenced by auto_map (external refs excluded)."""
+    return {fn for repo, fn in _auto_map_refs(cfg) if repo is None}
+
+
 def external_auto_map_repos(
     model_name: str,
     hf_token: Optional[str] = None,

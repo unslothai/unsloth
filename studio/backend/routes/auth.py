@@ -136,6 +136,7 @@ _LOGIN_BUCKETS_LOCK = threading.Lock()
 _LOGIN_WINDOW_SECONDS = 60.0
 _LOGIN_MAX_FAILS = 5
 _LOGIN_IP_MAX_FAILS = 30
+_LOGIN_LOCKOUT_SECONDS = 60
 # On overflow, reclaim expired buckets, then use sharded overflow rather than evict a hot bucket.
 _LOGIN_MAX_BUCKETS = 4096
 # Last full stale-sweep time; rate-limits the O(n) sweep under a burst of new IPs.
