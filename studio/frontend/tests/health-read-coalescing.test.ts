@@ -44,6 +44,7 @@ globalThis.fetch = (async (_url: string, init?: { headers?: Record<string, strin
 const { fetchDeviceType, forgetMeasuredVerdict, usePlatformStore } = await import(
   "../src/config/env.ts"
 );
+const { resetApiBase, setApiBase } = await import("../src/lib/api-base.ts");
 
 function reset(token: string | null) {
   calls = [];
@@ -98,6 +99,35 @@ test("a different token does not join the read in flight", async () => {
   const [, b] = await Promise.all([p1, p2]);
   assert.deepEqual(calls, [null, "Bearer tok2"]);
   assert.equal(b, "linux");
+});
+
+test("an unforced read never joins a forced refresh in flight", async () => {
+  reset(null);
+  const p1 = fetchDeviceType({ force: true });
+  const p2 = fetchDeviceType();
+  await Promise.all([p1, p2]);
+  assert.equal(calls.length, 2);
+});
+
+test("a read sent to another backend URL is not shared (desktop port change)", async () => {
+  reset(null);
+  const urls: string[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = ((url: string, init?: unknown) => {
+    urls.push(url);
+    return realFetch(url, init as RequestInit);
+  }) as typeof fetch;
+  try {
+    setApiBase(8901);
+    const p1 = fetchDeviceType();
+    setApiBase(8902);
+    const p2 = fetchDeviceType();
+    await Promise.all([p1, p2]);
+  } finally {
+    globalThis.fetch = realFetch;
+    resetApiBase();
+  }
+  assert.deepEqual(urls, ["http://127.0.0.1:8901/api/health", "http://127.0.0.1:8902/api/health"]);
 });
 
 test("a read started before a backend restart is not shared after it", async () => {
