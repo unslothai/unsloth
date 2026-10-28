@@ -17,6 +17,7 @@ from core.training.account_jobs import (
 from utils.account_context import account_thread
 import asyncio
 import json
+import os
 import queue
 import threading
 import time
@@ -123,6 +124,60 @@ class Subscription:
         body = json.dumps(event, separators = (",", ":"), ensure_ascii = False)
         event_type = event.get("type") or "message"
         return (f"id: {event_id}\n" f"event: {event_type}\n" f"data: {body}\n\n").encode("utf-8")
+
+
+# Shard row counts per parquet dir, reused while neither the dir nor any listed shard changed.
+_SHARD_ROWS_CACHE: dict[str, tuple[tuple, tuple[tuple[str, int], ...]]] = {}
+_SHARD_ROWS_CACHE_MAX = 8
+_SHARD_ROWS_CACHE_LOCK = threading.Lock()
+# A stat younger than this may hide a later write in the same timestamp tick, so it is never reused.
+_SHARD_ROWS_SETTLE_NS = 2_000_000_000
+
+
+def _stat_key(path: str, settled_before_ns: int) -> tuple | None:
+    st = os.stat(path)
+    if st.st_mtime_ns >= settled_before_ns or st.st_ctime_ns >= settled_before_ns:
+        return None
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
+def _shard_rows_signature(parquet_dir: Path, file_names) -> tuple | None:
+    # Adding, removing or renaming a shard moves the dir mtime; rewriting one moves its own stat.
+    settled_before_ns = time.time_ns() - _SHARD_ROWS_SETTLE_NS
+    try:
+        dir_key = _stat_key(str(parquet_dir), settled_before_ns)
+        file_keys = [_stat_key(name, settled_before_ns) for name in file_names]
+    except (OSError, ValueError):
+        return None
+    if dir_key is None or any(key is None for key in file_keys):
+        return None
+    return (dir_key, tuple(file_keys))
+
+
+def _cached_shard_rows(parquet_dir: Path, key: str) -> list[tuple[str, int]] | None:
+    with _SHARD_ROWS_CACHE_LOCK:
+        entry = _SHARD_ROWS_CACHE.get(key)
+    if entry is None:
+        return None
+    signature, shards = entry
+    if _shard_rows_signature(parquet_dir, [name for name, _ in shards]) != signature:
+        with _SHARD_ROWS_CACHE_LOCK:
+            if _SHARD_ROWS_CACHE.get(key) is entry:
+                del _SHARD_ROWS_CACHE[key]
+        return None
+    return list(shards)
+
+
+def _remember_shard_rows(parquet_dir: Path, key: str, shards) -> None:
+    shards = [(str(name), int(num_rows)) for name, num_rows in shards]
+    signature = _shard_rows_signature(parquet_dir, [name for name, _ in shards])
+    with _SHARD_ROWS_CACHE_LOCK:
+        _SHARD_ROWS_CACHE.pop(key, None)
+        if signature is None:
+            return
+        while len(_SHARD_ROWS_CACHE) >= _SHARD_ROWS_CACHE_MAX:
+            del _SHARD_ROWS_CACHE[next(iter(_SHARD_ROWS_CACHE))]
+        _SHARD_ROWS_CACHE[key] = (signature, tuple(shards))
 
 
 class JobManager:
@@ -400,10 +455,13 @@ class JobManager:
             conn = duckdb.connect(":memory:")
             try:
                 # Scan only the shards the page covers; the live preview polls page 1.
-                shards = conn.execute(
-                    "SELECT file_name, num_rows FROM parquet_file_metadata(?) ORDER BY file_name",
-                    [parquet_glob],
-                ).fetchall()
+                shards = _cached_shard_rows(parquet_dir, parquet_glob)
+                if shards is None:
+                    shards = conn.execute(
+                        "SELECT file_name, num_rows FROM parquet_file_metadata(?) ORDER BY file_name",
+                        [parquet_glob],
+                    ).fetchall()
+                    _remember_shard_rows(parquet_dir, parquet_glob, shards)
                 total = sum(int(num_rows) for _, num_rows in shards)
                 frames = []
                 skip, remaining = int(offset), int(limit)
