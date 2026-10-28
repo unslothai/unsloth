@@ -197,7 +197,7 @@ export function TrickOrTreatDialog({
     >
       <DialogContent
         data-testid="trick-or-treat-dialog"
-        className="gap-0 overflow-hidden px-0 pt-0 pb-0 sm:max-w-[min(calc(560px*var(--ui-space-scale,1)),calc(100%-2rem))]"
+        className="gap-0 overflow-x-hidden px-0 pt-0 pb-0 sm:max-w-[min(calc(560px*var(--ui-space-scale,1)),calc(100%-2rem))]"
       >
         <div className="pointer-events-none absolute inset-x-0 top-0 h-48 bg-[radial-gradient(110%_100%_at_50%_0%,color-mix(in_oklab,var(--primary)_24%,transparent),transparent_70%)]" />
         {view === "home" && <NightSky />}

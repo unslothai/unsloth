@@ -376,3 +376,10 @@ test("spider webs show on half the pages, never by the sidebar, and vary", async
   assert.ok(shown > 120 && shown < 280, `${shown} of 400 pages had webs`);
   assert.ok(seen.size > 50, "every web is drawn afresh");
 });
+
+test("the dialog still scrolls vertically on short windows", () => {
+  const dialog = read("../src/features/halloween/trick-or-treat-dialog.tsx");
+  // DialogContent bounds the height and scrolls; hiding all overflow would clip the lower rows.
+  assert.match(dialog, /className="gap-0 overflow-x-hidden px-0/);
+  assert.doesNotMatch(dialog, /className="gap-0 overflow-hidden px-0/);
+});
