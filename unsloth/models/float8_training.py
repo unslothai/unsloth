@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Opt-in torchao float8 training for full finetuning: eligible nn.Linear layers become torchao Float8Linear (fp8 matmuls in forward and backward, high precision master weights).
-
-Usage: `FastModel.from_pretrained(..., full_finetuning = True, float8_training = True)`. True means the
-tensorwise recipe. By name it runs only on compute capability 12.x (RTX PRO 6000 / RTX 50 class), where it
-was measured faster than bfloat16 at equal loss. Other fp8 GPUs (H100, B200, ROCm) need an explicit
-`torchao.float8.Float8LinearConfig`. Works with native FSDP2 (UNSLOTH_FSDP2=1): convert, then shard."""
+"""Opt-in torchao float8 training; True = tensorwise, auto only on CC 12.x (else explicit
+torchao.float8.Float8LinearConfig); with native FSDP2 convert before sharding."""
 
 from __future__ import annotations
 

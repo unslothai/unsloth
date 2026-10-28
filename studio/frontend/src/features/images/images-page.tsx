@@ -35,7 +35,6 @@ import {
   Refresh01Icon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
-import { ReloadIcon } from "@/lib/reload-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { History as HistoryIcon, Shuffle } from "lucide-react";
 import { MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
@@ -6978,7 +6977,7 @@ export function ImagesPage({
                         disabled={busy !== null}
                         onClick={handleReapply}
                       >
-                        <HugeiconsIcon icon={ReloadIcon} className="size-4" />
+                        <HugeiconsIcon icon={Refresh01Icon} className="size-4" />
                         Reapply
                       </Button>
                     </TooltipTrigger>

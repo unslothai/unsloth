@@ -1,26 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Keep a provider's bytes off Unsloth's own control channel.
-
-Unsloth multiplexes its UI control protocol onto the same SSE stream a provider's
-chunks are relayed on. The chat client picks those frames out structurally: a
-top-level ``type`` of ``tool_start`` / ``tool_end`` / ``tool_output`` /
-``tool_args`` / ``tool_status`` (and the local-runtime ``diffusion_frame`` /
-``reasoning_summary``) becomes a tool card, a badge or a canvas rather than
-assistant text, as does a ``_toolEvent`` / ``_toolStatus`` key stamped inside an
-otherwise ordinary chunk.
-
-Every one of those frames is written by this server. A provider endpoint -- a
-user-configured base_url, so not necessarily one Unsloth or the user controls --
-has no legitimate reason to emit any of them, and a verbatim relay makes its copy
-indistinguishable from ours at the client: a forged card can claim a tool the
-user trusts ran and returned something harmless, carrying
-``provenance: {"source": "local"}``, when nothing ran at all. So strip the
-control vocabulary out of everything that arrives from a provider. The
-``delta.reasoning`` alias Ollama and newer vLLM send is renamed to the canonical
-``reasoning_content``, streamed deltas only. The rest of the chunk stays as it was.
-"""
+"""Strips Unsloth control frames from provider SSE so providers cannot forge tool cards or provenance."""
 
 from __future__ import annotations
 

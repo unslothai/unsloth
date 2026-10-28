@@ -2,32 +2,8 @@
 # coding: utf-8
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""
-Static + lightweight-dynamic validator for unslothai/notebooks.
-
-Built to catch the bug classes that landed in (at minimum):
-- unslothai/notebooks#258  (Colab torchao 0.10 vs peft 0.19 floor)
-- unslothai/notebooks#260  (DONT_UPDATE_EXCEPTIONS coverage drift)
-- unslothai/notebooks#261  (torch/torchcodec ABI; --no-deps tokenizers)
-- unslothai/notebooks#264  (transformers/tokenizers window with --no-deps)
-- unslothai/notebooks#221  (removed unsloth APIs in user cells, git+ install)
-- unslothai/notebooks  commit 51b1462 (template/notebook drift)
-
-CPU-only by design: never imports torch / unsloth at module load. The
-api subcommand introspects unsloth under the existing
-tests/_zoo_aggressive_cuda_spoof.py harness (PR #5312) so it works on
-ubuntu-latest without a GPU.
-
-Usage:
-  python scripts/notebook_validator.py drift       --notebooks-dir <dir>
-  python scripts/notebook_validator.py convert     --notebooks-dir <dir> --out _converted
-  python scripts/notebook_validator.py lint        --notebooks-dir <dir> [--colab-pin <file>]
-  python scripts/notebook_validator.py exceptions  --notebooks-dir <dir>
-  python scripts/notebook_validator.py api         --converted-dir _converted --surface _api_surface.json
-  python scripts/notebook_validator.py all         --notebooks-dir <dir>
-  python scripts/notebook_validator.py refresh-colab --out scripts/data/colab_pip_freeze.gpu.txt
-  python scripts/notebook_validator.py refresh-colab --all --snapshot-dir scripts/data
-"""
+"""CPU-only notebook validator with subcommands drift, convert, lint, exceptions, api, all, refresh-
+colab; never imports torch or unsloth at module load"""
 
 from __future__ import annotations
 

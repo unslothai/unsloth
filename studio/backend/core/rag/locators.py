@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Map a chunk to highlight rectangles on its page (computed at ingest).
-
-The chunk's leading phrase is anchored in the page word list (``get_text("words")``),
-so matching survives ligatures and dehyphenation that glyph-exact ``search_for``
-misses. Matched words union per line into rects normalized to 0..1. Missing
-PyMuPDF, a too-short anchor, or no unique match yields no regions (never a guess).
-"""
+"""Highlight rects for a chunk, anchored on its leading phrase in PyMuPDF word list (survives
+ligatures); missing PyMuPDF, short anchor or no unique match yields no regions, never a guess."""
 
 from __future__ import annotations
 

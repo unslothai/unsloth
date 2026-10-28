@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Packed rows on the transformers modeling path run a varlen flash kernel (torch's, else xformers /
-flash-attn) instead of SDPA over a dense block-causal mask; heads past flash's 256 (Gemma-4 global
-layers, 512) and shapes an FA4 / FA3 impl refuses run SDPA's memory-efficient kernel over the same
-cu_seqlens. Anything else reaches the wrapped "sdpa"."""
+"""Packed rows use varlen flash; heads past 256 and shapes FA4/FA3 refuses use SDPA mem-efficient;
+anything else goes to the wrapped sdpa."""
 
 import contextlib
 import inspect

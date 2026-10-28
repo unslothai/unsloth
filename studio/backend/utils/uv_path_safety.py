@@ -1,13 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Hand uv a space-free `-c`/`--override`/`-r` file path (issue #6503).
-
-uv splits `-c`/`--override` (and UV_OVERRIDE) on whitespace, so a path with a
-space truncates. Windows tries the 8.3 short form first; otherwise (and on POSIX)
-a space-free temp path is used (removed at exit). Falls back to the original path
-on error. Shared by install_python_stack and utils.mlx_repair.
-"""
+"""Gives uv a space-free -c/--override/-r file path (uv splits -c/--override on whitespace): 8.3
+short name on Windows, else a temp copy removed at exit; falls back to the original path on
+error."""
 
 from __future__ import annotations
 

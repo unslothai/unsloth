@@ -1669,8 +1669,7 @@ def _unsloth_grpo_refuse_unscored_support(self):
         import warnings
         warnings.warn(
             "Unsloth: not scoring over the rollouts' top_k / top_p / min_p kept set "
-            "(UNSLOTH_GRPO_TRUNCATED_SUPPORT=1, or automatic for truncated vLLM rollouts "
-            "feeding the IS correction or off-policy mask) because "
+            "(requested by UNSLOTH_GRPO_TRUNCATED_SUPPORT) because "
             f"{', '.join(mismatch)}: the scored policy is not the sampler, so its top_k / top_p / "
             "min_p kept set differs from vLLM's and the PPO ratio would be unnormalised. "
             "Scoring over the full vocabulary instead.",
@@ -3553,7 +3552,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     **kwargs,
                 )
 
-            # UNSLOTH_GRPO_TRUNCATED_SUPPORT (=1 or zoo's automatic gate): score over the rollout's
+            # UNSLOTH_GRPO_TRUNCATED_SUPPORT=1 (or an older zoo's automatic gate): score over the rollout's
             # top_k / top_p / min_p kept set, matching vLLM's processed_logprobs. The zoo loss refuses to mix
             # normalisations unless this marker says the old / ref logps were scored the same way.
             try:
@@ -3568,8 +3567,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     import warnings
                     warnings.warn(
                         "Unsloth: not scoring over the rollouts' top_k / top_p / min_p kept set "
-                        "(UNSLOTH_GRPO_TRUNCATED_SUPPORT=1, or automatic for truncated vLLM "
-                        "rollouts feeding the IS correction or off-policy mask) because "
+                        "(requested by UNSLOTH_GRPO_TRUNCATED_SUPPORT) because "
                         f"{', '.join(_support_mismatch)}: those logprobs come from weights other "
                         "than the rollout's, whose top_k / top_p / min_p kept set differs from the "
                         "sampler's, so per-policy kept sets give unnormalised PPO ratios and KL. "
