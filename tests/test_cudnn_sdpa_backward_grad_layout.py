@@ -78,7 +78,6 @@ class TestGradInOutputLayout:
     def test_forward_is_identity(self):
         x = torch.randn(2, 3, 5, 4, requires_grad = True)
         y = self._fn().apply(x)
-        # A clone (Inductor removes it), so an in-place consumer of the output is allowed.
         assert torch.equal(y, x) and y.stride() == x.stride() and not y._is_view()
         y.mul_(2.0)
         assert torch.equal(y, 2 * x)
@@ -238,8 +237,7 @@ class TestCompiledPathFunction:
 
     @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
     def test_compiled_inplace_consumer(self, backend):
-        # The wrapper hands every compiled output to this Function: a view of its input there made an
-        # in-place consumer raise "Output 0 of ... is a view and is being modified inplace".
+        # A view output here made in-place consumers raise "... is a view and is being modified inplace".
         fn = self._fn()
 
         def f(wrap):
