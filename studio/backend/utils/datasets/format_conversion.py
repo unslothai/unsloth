@@ -230,6 +230,19 @@ def normalize_chatml_roles(
             return {**message, "role": role}
         return message
 
+    try:
+        import pyarrow.compute as pc
+        roles = pc.unique(
+            pc.struct_field(pc.list_flatten(dataset.data.column(chat_column)), "role")
+        )
+        if not any(
+            _normalize_role_alias(r) in _CHATML_ROLES and _normalize_role_alias(r) != r
+            for r in roles.to_pylist()
+        ):
+            return dataset
+    except Exception:
+        pass
+
     def _fold(examples):
         return {
             chat_column: [

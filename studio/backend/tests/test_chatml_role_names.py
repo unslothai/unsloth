@@ -80,3 +80,16 @@ def test_mapped_message_columns_reach_the_template_in_lowercase(mapping):
     expected = render("user", "assistant")
     assert render("User", " Assistant ") == expected
     assert "<|im_start|>assistant\n4" in expected[0]
+
+
+def test_lowercase_roles_skip_the_extra_pass():
+    from utils.datasets.format_conversion import normalize_chatml_roles
+
+    lower = Dataset.from_dict({"messages": [_conversation("system", "user", "assistant")]})
+    assert normalize_chatml_roles(lower, "messages") is lower
+    upper = Dataset.from_dict({"messages": [_conversation("System", "User", "Assistant")]})
+    assert [m["role"] for m in normalize_chatml_roles(upper, "messages")["messages"][0]] == [
+        "system",
+        "user",
+        "assistant",
+    ]
