@@ -172,7 +172,6 @@ def _fresh_settings() -> Optional[tuple[str, bool, int]]:
 
 
 async def _settings_async() -> tuple[str, bool, int]:
-    # Answered on the loop when no read is due: a worker-thread hop per request would only reach the same branch.
     fresh = _fresh_settings()
     if fresh is not None:
         return fresh
@@ -600,7 +599,7 @@ class KeylessToolPolicyMiddleware:
 
         scope, tools, generation = await _settings_async()
         settings = (scope, tools)
-        # Off (the default) admits no request, so skip the worker-thread hop that could only return False.
+        # Off admits nobody, so no worker-thread hop.
         if scope == KEYLESS_SCOPE_OFF:
             admitted = False
         else:
