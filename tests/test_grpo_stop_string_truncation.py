@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""GRPO mask_truncated_completions: a completion ending on a vLLM stop string below
-max_completion_length has no EOS, but it is not truncated (unslothai/unsloth#15382)."""
+"""A stop-string completion below max_completion_length has no EOS but is not truncated (#15382)."""
 
 import ast
 import importlib.util
@@ -46,11 +45,10 @@ def test_only_length_exhausted_completions_without_eos_are_truncated(name):
     }[name]
     completions = [
         [5] * 85,  # stopped on a stop string well below the limit
-        [5] * 128,  # ran out of tokens
-        [5] * 127 + [EOS],  # EOS exactly at the limit
+        [5] * 128,
+        [5] * 127 + [EOS],
         [5] * 127 + [PAD],
         [5] * 40 + [EOS],
     ]
     assert _is_truncated(name, transform, completions, 128) == [False, True, False, False, False]
-    # max_completion_length=None is valid TRL config: fall back to the EOS/pad check alone.
     assert _is_truncated(name, transform, completions, None) == [True, True, False, False, False]
