@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 """Packed rows on the transformers modeling path run varlen attention, and nothing else changes."""
 
+import contextlib
 import inspect
 import types
 
@@ -1682,3 +1683,128 @@ def test_reentrant_checkpoint_first_trace_keeps_the_block_varlen_path(monkeypatc
     torch.testing.assert_close(out.float(), ref_out.float(), atol = 2e-2, rtol = 2e-2)
     for g, r in zip(got, ref):
         torch.testing.assert_close(g.float(), r.float(), atol = 3e-2, rtol = 3e-2)
+
+
+def _dtype_seen():
+    seen = []
+
+    def orig(
+        module,
+        q,
+        k,
+        v,
+        mask,
+        dropout = 0.0,
+        scaling = None,
+        is_causal = None,
+        **kwargs,
+    ):
+        seen.append((q.dtype, k.dtype, v.dtype))
+        return torch.nn.functional.scaled_dot_product_attention(
+            q, k, v, attn_mask = mask, scale = scaling
+        ), None
+
+    return seen, orig
+
+
+@pytest.mark.parametrize(
+    "case, autocast, dtype, packed, expected",
+    [
+        # Full finetuning: fp32 q_norm / k_norm leave Q and K in fp32 under bf16 autocast.
+        ("fp32_under_bf16_autocast", torch.bfloat16, torch.float32, True, torch.bfloat16),
+        ("fp32_under_fp16_autocast", torch.float16, torch.float32, True, torch.float16),
+        ("fp32_without_autocast", None, torch.float32, True, torch.float32),
+        ("bf16_under_fp16_autocast", torch.float16, torch.bfloat16, True, torch.bfloat16),
+        ("unpacked_fp32_under_autocast", torch.bfloat16, torch.float32, False, torch.float32),
+    ],
+)
+def test_packed_fp32_rows_under_autocast_run_in_the_autocast_dtype(
+    monkeypatch, case, autocast, dtype, packed, expected
+):
+    """Packed fp32 Q / K / V under autocast reach the varlen checks in the dtype SDPA runs in."""
+    seen, orig = _dtype_seen()
+    hpa._ORIG_SDPA[0] = orig
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    lengths = [3, 5]
+    q, k, v = (torch.randn(1, 2, 8, 16, dtype = dtype) for _ in range(3))
+    kwargs = {"packed_seq_lengths": torch.tensor(lengths, dtype = torch.int32)} if packed else {}
+    module = types.SimpleNamespace(is_causal = True)
+    mask = _block_causal(lengths)
+    context = (
+        torch.autocast("cpu", dtype = autocast) if autocast is not None else contextlib.nullcontext()
+    )
+    with context:
+        out, _ = hpa._sdpa_packed_varlen(module, q, k, v, mask, scaling = 0.25, **kwargs)
+        ref = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask = mask, scale = 0.25)
+    assert seen == [(dtype, dtype, dtype)]
+    assert out.dtype == ref.dtype
+    torch.testing.assert_close(out, ref, atol = 0, rtol = 0)
+    if packed:
+        with context:
+            assert {t.dtype for t in hpa._autocast_float32(q, k, v)} == {expected}
+
+
+@pytest.mark.parametrize("autocast", [torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("n_kv", [2, 8])
+def test_packed_fp32_fallback_rows_keep_their_gradients(monkeypatch, autocast, n_kv):
+    """Fallback rows must get uncast Q / K / V: GQA's dK / dV reduce in fp32 after repeat_kv."""
+    from transformers.integrations.sdpa_attention import sdpa_attention_forward
+
+    hpa._ORIG_SDPA[0] = sdpa_attention_forward
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    torch.manual_seed(0)
+    lengths = [37, 100, 2, 5, 56]
+    T, H, D = sum(lengths), 8, 64
+    module = types.SimpleNamespace(is_causal = True, num_key_value_groups = H // n_kv, training = True)
+    q = torch.randn(1, H, T, D, requires_grad = True)
+    k = torch.randn(1, n_kv, T, D, requires_grad = True)
+    v = torch.randn(1, n_kv, T, D, requires_grad = True)
+    mask, psl = _block_causal(lengths), torch.tensor(lengths, dtype = torch.int32)
+    with torch.autocast("cpu", dtype = autocast):
+        out, _ = hpa._sdpa_packed_varlen(
+            module, q, k, v, mask, scaling = 0.125, packed_seq_lengths = psl
+        )
+        ref, _ = sdpa_attention_forward(module, q, k, v, mask, scaling = 0.125)
+    g = torch.randn_like(ref)
+    got = torch.autograd.grad(out, (q, k, v), g)
+    want = torch.autograd.grad(ref, (q, k, v), g)
+    torch.testing.assert_close(out, ref, atol = 0, rtol = 0)
+    for a, b in zip(got, want):
+        assert a.dtype == b.dtype == torch.float32
+        torch.testing.assert_close(a, b, atol = 0, rtol = 0)
+
+
+@_CUDA
+@_TORCH_VARLEN_HOST
+@pytest.mark.parametrize("autocast", [torch.bfloat16, torch.float16])
+def test_packed_fp32_rows_under_autocast_take_varlen(monkeypatch, autocast):
+    if hpa._torch_varlen(torch.device("cuda", 0)) is None:
+        pytest.skip("this torch has no window_size varlen_attn")
+    from transformers.integrations.sdpa_attention import sdpa_attention_forward
+
+    hpa._ORIG_SDPA[0] = sdpa_attention_forward
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    torch.manual_seed(0)
+    lengths = [37, 100, 2, 5, 230]
+    T, H, n_kv, D = sum(lengths), 8, 2, 64
+    module = types.SimpleNamespace(is_causal = True, num_key_value_groups = H // n_kv, training = True)
+    q = torch.randn(1, H, T, D, device = "cuda", requires_grad = True)
+    k = torch.randn(1, n_kv, T, D, device = "cuda", requires_grad = True)
+    v = torch.randn(1, n_kv, T, D, device = "cuda", requires_grad = True)
+    mask, psl = _block_causal(lengths, "cuda"), torch.tensor(lengths, dtype = torch.int32)
+    before = dict(hpa.HF_PACKED_ATTENTION_STATS)
+    with torch.autocast("cuda", dtype = autocast):
+        fast, _ = hpa._sdpa_packed_varlen(
+            module, q, k, v, mask, scaling = 0.11, packed_seq_lengths = psl
+        )
+        ref, _ = sdpa_attention_forward(module, q, k, v, mask, scaling = 0.11)
+    assert hpa.HF_PACKED_ATTENTION_STATS["fast"] == before["fast"] + 1
+    assert hpa.HF_PACKED_ATTENTION_STATS["fallback"] == before["fallback"]
+    assert fast.dtype == ref.dtype == autocast and fast.shape == ref.shape
+    torch.testing.assert_close(fast.float(), ref.float(), atol = 2e-2, rtol = 2e-2)
+    g = torch.randn_like(ref)
+    grads_fast = torch.autograd.grad(fast, (q, k, v), g)
+    grads_ref = torch.autograd.grad(ref, (q, k, v), g)
+    for a, b in zip(grads_fast, grads_ref):
+        assert a.dtype == torch.float32
+        torch.testing.assert_close(a, b, atol = 5e-2, rtol = 5e-2)
