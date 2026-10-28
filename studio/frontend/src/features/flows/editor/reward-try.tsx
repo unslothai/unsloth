@@ -30,6 +30,13 @@ function pick(row: Record<string, unknown>, named: unknown, names: string[]) {
   return key && row[key] !== undefined ? String(row[key]) : "";
 }
 
+/** The column mapped to `role` in the node's own column mapping, if any. */
+function mapped(params: Record<string, unknown>, role: string): string | undefined {
+  const mapping = params.custom_format_mapping;
+  if (!mapping || typeof mapping !== "object") return undefined;
+  return Object.entries(mapping as Record<string, unknown>).find(([, r]) => r === role)?.[0];
+}
+
 function sampleCompletion(reference: string): string {
   const final = reference.split("####").pop()?.trim() ?? "";
   return `<reasoning>\n...\n</reasoning>\n<answer>\n${final}\n</answer>`;
@@ -53,6 +60,7 @@ export function RewardTryPanel({ node }: { node: FlowNode }) {
   const repo = String(source?.params.repo ?? "").trim();
   const subset = String(source?.params.subset ?? "");
   const split = String(source?.params.split ?? "train");
+  const [row, setRow] = useState<Record<string, unknown> | null>(null);
   const [prompt, setPrompt] = useState("");
   const [reference, setReference] = useState("");
   const [completion, setCompletion] = useState("");
@@ -73,10 +81,12 @@ export function RewardTryPanel({ node }: { node: FlowNode }) {
     })
       .then((res) => json<{ preview_samples?: Record<string, unknown>[] }>(res))
       .then((found) => {
-        const row = found.preview_samples?.[0];
-        if (!alive || !row) return;
-        const answer = pick(row, node.params.answer_column, ANSWER_NAMES);
-        setPrompt(pick(row, node.params.prompt_column, PROMPT_NAMES));
+        const first = found.preview_samples?.[0];
+        if (!alive || !first) return;
+        const params = node.params;
+        const answer = pick(first, params.answer_column || mapped(params, "answer"), ANSWER_NAMES);
+        setRow(first);
+        setPrompt(pick(first, params.prompt_column || mapped(params, "prompt"), PROMPT_NAMES));
         setReference(answer);
         setCompletion((c) => c || sampleCompletion(answer));
       })
@@ -84,24 +94,35 @@ export function RewardTryPanel({ node }: { node: FlowNode }) {
     return () => {
       alive = false;
     };
-  }, [repo, subset, split, node.params.answer_column, node.params.prompt_column]);
+  }, [repo, subset, split, node.params]);
 
   const run = async () => {
     setBusy(true);
     setError(null);
     try {
-      const [preview, library] = await Promise.all([
-        authFetch("/api/rewards/preview", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ rewards, completion, reference: reference || null }),
-        }).then((res) => json<{ scores: Score[]; total: number }>(res)),
-        authFetch("/api/rewards").then((res) =>
-          json<{ name: string; rule: Record<string, unknown> | null }[]>(res),
-        ),
-      ]);
+      const library = await authFetch("/api/rewards").then((res) =>
+        json<{ name: string; rule: Record<string, unknown> | null }[]>(res),
+      );
       const rules = Object.fromEntries(library.map((r) => [r.name, r.rule]));
-      setScores({ rows: preview.scores, total: preview.total, max: rewardMax(rewards, rules) });
+      // Each reward is scored against the column it compares to, as in training; "answer" is the role.
+      const rows = await Promise.all(
+        rewards.map((reward) => {
+          const column = rules[reward.name]?.compare_to;
+          const own =
+            typeof column === "string" && column !== "answer" && row?.[column] !== undefined
+              ? String(row[column])
+              : reference;
+          return authFetch("/api/rewards/preview", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ rewards: [reward], completion, reference: own || null }),
+          })
+            .then((res) => json<{ scores: Score[] }>(res))
+            .then((res) => res.scores[0]);
+        }),
+      );
+      const total = rows.reduce((sum, r) => sum + r.weighted, 0);
+      setScores({ rows, total, max: rewardMax(rewards, rules) });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {

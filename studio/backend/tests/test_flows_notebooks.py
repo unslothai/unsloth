@@ -109,6 +109,21 @@ def test_grpo_notebook_without_a_library_reward_is_reported_not_imported():
     assert report["colab_url"].endswith("/nb/Qwen3_(4B)-GRPO.ipynb")
 
 
+def test_format_reward_names_win_over_exact_and_an_sft_warm_up_is_refused():
+    assert notebook_import._library_rewards(["match_format_exactly", "check_answer"])[0] == [
+        {"name": "strict-xml-format", "weight": 1.0},
+        {"name": "exact-answer", "weight": 1.0},
+    ]
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B-Base')",
+        "dataset = load_dataset('openai/gsm8k', 'main', split = 'train')",
+        "trainer = SFTTrainer(model = model, args = SFTConfig(max_steps = 5))",
+        "trainer = GRPOTrainer(model = model, reward_funcs = [check_answer], args = GRPOConfig(max_steps = 9))",
+    )
+    doc, report = notebook_import.read_notebook(nb, "Qwen3_(4B)-GRPO.ipynb")
+    assert doc is None and any("two training stages" in line for line in report["unsupported"])
+
+
 def test_dpo_notebook_carries_its_beta():
     nb = _nb(
         "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/zephyr-sft')",

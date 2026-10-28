@@ -42,12 +42,13 @@ _RL_ARGS = {
     "temperature": "temperature",
     "beta": "beta",
 }
-# Notebook reward function name -> library reward. Checked in order; first match wins.
+# Notebook reward function name -> library reward. Checked in order, format names first so
+# match_format_exactly is a format reward, not an exact answer.
 _REWARD_NAMES = (
-    (("correct", "check_answer", "exact"), "exact-answer"),
-    (("check_numbers", "numeric", "number"), "numeric-close"),
     (("strict_format", "format_exactly"), "strict-xml-format"),
     (("soft_format", "format_approximately", "xmlcount"), "soft-xml-format"),
+    (("correct", "check_answer", "exact"), "exact-answer"),
+    (("check_numbers", "numeric", "number"), "numeric-close"),
 )
 _UNSUPPORTED = {
     "KTOTrainer": "KTO preference training",
@@ -174,6 +175,8 @@ class _Reader(ast.NodeVisitor):
             self.unsupported.add(_UNSUPPORTED[fn])
         elif fn in _RL_TRAINERS:
             self.found["objective"] = _RL_TRAINERS[fn]
+        elif fn in _SFT_TRAINERS:
+            self.found["sft_stage"] = True
         elif fn and fn.endswith("Trainer") and fn not in _SFT_TRAINERS:
             self.unsupported.add(f"{fn} training")
         elif fn and fn.endswith("Loss"):
@@ -312,6 +315,9 @@ def read_notebook(data: bytes, name: str = "notebook.ipynb") -> tuple[Optional[d
     elif _category(name) == "cpt":
         reader.unsupported.add("continued pretraining on raw text (open it in Colab)")
     rewards: list[dict] = []
+    if reader.found.get("objective") and reader.found.get("sft_stage"):
+        # One Fine-tune node runs one objective; dropping the warm-up would train something else.
+        reader.unsupported.add("an SFT stage followed by RL (two training stages)")
     if reader.found.get("objective") == "grpo":
         rewards, left_out = _library_rewards(reader.rewards)
         if not rewards:
