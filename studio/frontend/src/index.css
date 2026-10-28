@@ -1640,9 +1640,7 @@
 	--control-accent: #8fe03a;
 	--control-accent-foreground: #130901;
 	--nav-icon-idle-base: #73ac2c;
-	--composer-shadow:
-		0 14px 48px -18px rgb(255 122 0 / 0.3),
-		0 4px 20px 4px var(--background);
+	--composer-shadow: 0 0 56px -12px rgb(255 122 0 / 0.3);
 }
 
 :root[data-palette="trick-or-treat"]:not(.dark) {
@@ -1714,6 +1712,9 @@
 	--control-accent: #b0247a;
 	--control-accent-foreground: #ffffff;
 	--nav-icon-idle-base: #bc438c;
+	--composer-shadow:
+		0 6px 28px -10px rgb(196 0 31 / 0.35),
+		0 2px 8px -2px rgb(0 0 0 / 0.1);
 }
 :root[data-palette="bloody-valentine"].dark {
 	--th-bg: #1f0307;
@@ -1737,6 +1738,7 @@
 	--control-accent: #ff8ac4;
 	--control-accent-foreground: #130204;
 	--nav-icon-idle-base: #c76895;
+	--composer-shadow: 0 0 56px -12px rgb(255 31 67 / 0.3);
 }
 
 :root[data-palette="alien"]:not(.dark) {
@@ -1787,9 +1789,7 @@
 	--control-accent: #ff3dc8;
 	--control-accent-foreground: #010b06;
 	--nav-icon-idle-base: #c03399;
-	--composer-shadow:
-		0 14px 48px -18px rgb(0 255 106 / 0.3),
-		0 4px 20px 4px var(--background);
+	--composer-shadow: 0 0 56px -12px rgb(0 255 106 / 0.3);
 }
 
 :root[data-palette="ghost-ship"]:not(.dark) {
@@ -1840,9 +1840,7 @@
 	--control-accent: #ffd23d;
 	--control-accent-foreground: #010e0d;
 	--nav-icon-idle-base: #c0a333;
-	--composer-shadow:
-		0 14px 48px -18px rgb(0 229 200 / 0.3),
-		0 4px 20px 4px var(--background);
+	--composer-shadow: 0 0 56px -12px rgb(0 229 200 / 0.3);
 }
 
 :root[data-palette="the-thing"]:not(.dark) {
@@ -1867,6 +1865,9 @@
 	--control-accent: #c03f00;
 	--control-accent-foreground: #ffffff;
 	--nav-icon-idle-base: #c75b26;
+	--composer-shadow:
+		0 6px 28px -10px rgb(0 98 168 / 0.35),
+		0 2px 8px -2px rgb(0 0 0 / 0.1);
 }
 :root[data-palette="the-thing"].dark {
 	--th-bg: #04121f;
@@ -1890,6 +1891,7 @@
 	--control-accent: #ff6a1a;
 	--control-accent-foreground: #020b13;
 	--nav-icon-idle-base: #c0541b;
+	--composer-shadow: 0 0 56px -12px rgb(61 188 255 / 0.3);
 }
 
 :root[data-palette="midnight-haunt"]:not(.dark) {
@@ -1940,9 +1942,7 @@
 	--control-accent: #ffe066;
 	--control-accent-foreground: #040616;
 	--nav-icon-idle-base: #c1ab56;
-	--composer-shadow:
-		0 14px 48px -18px rgb(111 134 255 / 0.3),
-		0 4px 20px 4px var(--background);
+	--composer-shadow: 0 0 56px -12px rgb(111 134 255 / 0.3);
 }
 
 :root[data-palette="gothic"]:not(.dark) {
@@ -2040,22 +2040,18 @@
 	--control-accent: #dcb8ff;
 	--control-accent-foreground: #050407;
 	--nav-icon-idle-base: #a78cc2;
-	--composer-shadow:
-		0 14px 48px -18px rgb(162 89 255 / 0.3),
-		0 4px 20px 4px var(--background);
+	--composer-shadow: 0 0 56px -12px rgb(162 89 255 / 0.3);
 }
 
-:root:where([data-palette="pumpkin"], [data-palette="alien"], [data-palette="ghost-ship"], [data-palette="midnight-haunt"], [data-palette="black-cat"]):not(.dark)
+:root:where([data-palette="pumpkin"], [data-palette="bloody-valentine"], [data-palette="alien"], [data-palette="ghost-ship"], [data-palette="the-thing"], [data-palette="midnight-haunt"], [data-palette="black-cat"]):not(.dark)
 	:is(.chat-composer-surface, .unsloth-composer-surface):focus-within {
 	box-shadow:
 		0 8px 34px -10px color-mix(in srgb, var(--th-accent) 45%, transparent),
 		0 2px 8px -2px rgb(0 0 0 / 0.1);
 }
-:root:where([data-palette="pumpkin"], [data-palette="alien"], [data-palette="ghost-ship"], [data-palette="midnight-haunt"], [data-palette="black-cat"]).dark
+:root:where([data-palette="pumpkin"], [data-palette="bloody-valentine"], [data-palette="alien"], [data-palette="ghost-ship"], [data-palette="the-thing"], [data-palette="midnight-haunt"], [data-palette="black-cat"]).dark
 	:is(.chat-composer-surface, .unsloth-composer-surface):focus-within {
-	box-shadow:
-		0 16px 56px -18px color-mix(in srgb, var(--th-accent) 40%, transparent),
-		0 4px 20px 4px var(--background);
+	box-shadow: 0 0 64px -10px color-mix(in srgb, var(--th-accent) 38%, transparent);
 }
 
 /* --------------------------------------------------------------------------- */
