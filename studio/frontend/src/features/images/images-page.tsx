@@ -198,6 +198,7 @@ import {
   downloadFile,
   downloadUrl,
   isDownloadCancelled,
+  savedFileName,
 } from "@/lib/native-files";
 import { resolveDiffusionGgufFilename } from "@/lib/diffusion-gguf-filename";
 import { createPickGuard, runGgufRepoPick } from "@/lib/diffusion-gguf-pick";
@@ -679,9 +680,10 @@ async function downloadImage(
       }
     }
     const filename = exportFilename(image, outputFormat);
-    await downloadFile(output, filename, output.type || "image/png");
+    const savedPath = await downloadFile(output, filename, output.type || "image/png");
     if (isTauri) {
-      toast.success("Image saved", { description: filename });
+      // The save dialog can rename the file, so report the name it ended on, not the one we suggested.
+      toast.success("Image saved", { description: savedFileName(savedPath) ?? filename });
     }
   } catch (error) {
     if (isDownloadCancelled(error)) {

@@ -27,6 +27,20 @@ export function encodeNativeFilename(filename: string): string {
   return btoa(binary);
 }
 
+/** The file name a save ended on. The desktop app answers with a full path, and the name typed into
+ *  that dialog is the one the user then looks for, so a caller that reports the save shows this
+ *  rather than the name it suggested. Null on the web, where the browser owns the dialog. */
+export function savedFileName(savedPath: string | null): string | null {
+  if (!savedPath) {
+    return null;
+  }
+  // Both separators: a Windows path on Windows, a POSIX one from a remote or test caller.
+  const base = savedPath.slice(
+    Math.max(savedPath.lastIndexOf("/"), savedPath.lastIndexOf("\\")) + 1,
+  );
+  return base.length > 0 ? base : null;
+}
+
 export interface NativeImportedTextFile {
   name: string;
   content: string;
@@ -86,7 +100,7 @@ export async function downloadFile(
   content: string | Blob | Uint8Array,
   filename: string,
   mimeType = "application/octet-stream",
-): Promise<void> {
+): Promise<string | null> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     const bytes =
@@ -103,7 +117,8 @@ export async function downloadFile(
     if (savedPath === null) {
       throw new DownloadCancelledError();
     }
-    return;
+    // The dialog can rename the file, so hand the caller the path it actually wrote.
+    return savedPath;
   }
 
   const browserContent =
@@ -114,7 +129,7 @@ export async function downloadFile(
       : new Blob([browserContent], { type: mimeType });
 
   browserDownload(blob, filename);
-  return;
+  return null;
 }
 
 /** Save a Blob through bounded IPC chunks in Tauri and retain normal downloads on web. */
