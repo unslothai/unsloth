@@ -141,15 +141,30 @@ def _stat_key(path: str, settled_before_ns: int) -> tuple | None:
     return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
 
 
-def _shard_rows_signature(parquet_dir: Path, file_names) -> tuple | None:
-    # Adding, removing or renaming a shard moves the dir mtime; rewriting one moves its own stat.
-    settled_before_ns = time.time_ns() - _SHARD_ROWS_SETTLE_NS
+def _shard_rows_signature(
+    parquet_dir: Path,
+    file_names,
+    read_started_ns: int | None = None,
+) -> tuple | None:
+    # Adding, removing or renaming a shard changes the dir listing; rewriting one moves its own stat.
+    # Stamps are only trusted when older than the read they describe (minus the settle window), so a
+    # change landing while the footers were being read is never paired with the old row counts.
+    if read_started_ns is None:
+        read_started_ns = time.time_ns()
+    settled_before_ns = read_started_ns - _SHARD_ROWS_SETTLE_NS
     try:
         dir_key = _stat_key(str(parquet_dir), settled_before_ns)
         file_keys = [_stat_key(name, settled_before_ns) for name in file_names]
+        # The names themselves, not only the dir stamps: some filesystems (FAT on Windows) do not
+        # move a directory's mtime when an entry is added. Any name DuckDB's glob could match counts.
+        listed = tuple(
+            sorted(entry for entry in os.listdir(parquet_dir) if entry.lower().endswith(".parquet"))
+        )
     except (OSError, ValueError):
         return None
     if dir_key is None or any(key is None for key in file_keys):
+        return None
+    if listed != tuple(sorted(os.path.basename(name) for name in file_names)):
         return None
     return (dir_key, tuple(file_keys))
 
@@ -168,9 +183,9 @@ def _cached_shard_rows(parquet_dir: Path, key: str) -> list[tuple[str, int]] | N
     return list(shards)
 
 
-def _remember_shard_rows(parquet_dir: Path, key: str, shards) -> None:
+def _remember_shard_rows(parquet_dir: Path, key: str, shards, read_started_ns: int) -> None:
     shards = [(str(name), int(num_rows)) for name, num_rows in shards]
-    signature = _shard_rows_signature(parquet_dir, [name for name, _ in shards])
+    signature = _shard_rows_signature(parquet_dir, [name for name, _ in shards], read_started_ns)
     with _SHARD_ROWS_CACHE_LOCK:
         _SHARD_ROWS_CACHE.pop(key, None)
         if signature is None:
@@ -457,11 +472,12 @@ class JobManager:
                 # Scan only the shards the page covers; the live preview polls page 1.
                 shards = _cached_shard_rows(parquet_dir, parquet_glob)
                 if shards is None:
+                    read_started_ns = time.time_ns()
                     shards = conn.execute(
                         "SELECT file_name, num_rows FROM parquet_file_metadata(?) ORDER BY file_name",
                         [parquet_glob],
                     ).fetchall()
-                    _remember_shard_rows(parquet_dir, parquet_glob, shards)
+                    _remember_shard_rows(parquet_dir, parquet_glob, shards, read_started_ns)
                 total = sum(int(num_rows) for _, num_rows in shards)
                 frames = []
                 skip, remaining = int(offset), int(limit)

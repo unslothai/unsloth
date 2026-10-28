@@ -135,3 +135,59 @@ def test_emptied_dir_is_not_served_from_cache(tmp_path, metadata_queries, monkey
     path.unlink()
     assert _page(tmp_path, 0, 5) is None
     assert _fresh_page(tmp_path, 0, 5) is None
+
+
+def test_added_shard_is_seen_when_the_dir_stamps_do_not_move(
+    tmp_path, metadata_queries, monkeypatch
+):
+    # FAT on Windows, for one, leaves a directory's mtime alone when an entry is added.
+    _settle(monkeypatch)
+    real_stat_key = manager_module._stat_key
+
+    def frozen_dir_stat_key(path, settled_before_ns):
+        if os.path.isdir(path):
+            return ("dir",)
+        return real_stat_key(path, settled_before_ns)
+
+    monkeypatch.setattr(manager_module, "_stat_key", frozen_dir_stat_key)
+    _write(tmp_path, 0, range(5))
+    assert _page(tmp_path, 0, 20)["total"] == 5
+    _write(tmp_path, 1, range(5, 12))
+    assert _page(tmp_path, 0, 20) == _fresh_page(tmp_path, 0, 20)
+    assert _page(tmp_path, 0, 20)["total"] == 12
+
+
+def test_shard_rewritten_during_the_footer_read_is_not_reused(tmp_path, monkeypatch):
+    _settle(monkeypatch)
+    monkeypatch.setattr(manager_module, "_SHARD_ROWS_CACHE", {})
+    _write(tmp_path, 0, range(5))
+    real_connect = duckdb.connect
+
+    class _Conn:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def execute(self, sql, *args, **kwargs):
+            result = self._conn.execute(sql, *args, **kwargs)
+            if "parquet_file_metadata" in sql and not rewrites:
+                rows = result.fetchall()
+                # The writer replaces the shard after its footer was read, before the stat.
+                rewrites.append(_write(tmp_path, 0, range(9)))
+                return _Rows(rows)
+            return result
+
+        def close(self):
+            return self._conn.close()
+
+    class _Rows:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return self._rows
+
+    rewrites = []
+    monkeypatch.setattr(duckdb, "connect", lambda *a, **k: _Conn(real_connect(*a, **k)))
+    assert _page(tmp_path, 0, 20)["total"] == 5
+    assert rewrites
+    assert _page(tmp_path, 0, 20)["total"] == 9
