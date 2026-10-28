@@ -1062,7 +1062,7 @@ export function ResourcesTab() {
                 key={`${device.index ?? index}-${device.name ?? "gpu"}`}
                 data-settings-label={device.name ?? undefined}
                 className={cn(
-                  "flex min-w-0 flex-wrap items-start justify-between gap-x-6 gap-y-3 py-4 max-[992px]:flex-col max-[992px]:items-stretch",
+                  "flex min-w-0 flex-wrap items-start justify-between gap-x-6 gap-y-3 py-6 max-[992px]:flex-col max-[992px]:items-stretch",
                   index > 0 && "border-t border-border/60",
                 )}
               >
