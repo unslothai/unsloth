@@ -126,9 +126,12 @@ export function trainView(input: {
     };
   if (sftColumns && prompt && prompt === response)
     return { state: "setup", detail: "Use two different columns", history: [], reward: false };
+  // Unset means the node's default rewards, as the backend trains with.
   const rewards = Array.isArray(params.rewards)
     ? params.rewards.filter((r) => String(r?.name ?? "").trim())
-    : [];
+    : params.rewards == null
+      ? [null]
+      : [];
   if (objective === "grpo" && !rewards.length)
     return { state: "setup", detail: "Pick a reward", history: [], reward: false };
   const pct = num(params.holdout_percent) ?? 0;

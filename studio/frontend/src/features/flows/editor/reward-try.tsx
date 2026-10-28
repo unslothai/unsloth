@@ -67,7 +67,11 @@ export function RewardTryPanel({ node }: { node: FlowNode }) {
   const [scores, setScores] = useState<{ rows: Score[]; total: number; max: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const rewards = (Array.isArray(node.params.rewards) ? (node.params.rewards as Picked[]) : []).filter(
+  const saved = node.params.rewards ?? [
+    { name: "exact-answer", weight: 1 },
+    { name: "soft-xml-format", weight: 1 },
+  ];
+  const rewards = (Array.isArray(saved) ? (saved as Picked[]) : []).filter(
     (r) => r.name?.trim(),
   );
 

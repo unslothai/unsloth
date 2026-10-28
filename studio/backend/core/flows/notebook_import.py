@@ -175,6 +175,7 @@ class _Reader(ast.NodeVisitor):
             self.unsupported.add(_UNSUPPORTED[fn])
         elif fn in _RL_TRAINERS:
             self.found["objective"] = _RL_TRAINERS[fn]
+            self.found.setdefault("objectives", set()).add(_RL_TRAINERS[fn])
         elif fn in _SFT_TRAINERS:
             self.found["sft_stage"] = True
         elif fn and fn.endswith("Trainer") and fn not in _SFT_TRAINERS:
@@ -315,6 +316,9 @@ def read_notebook(data: bytes, name: str = "notebook.ipynb") -> tuple[Optional[d
     elif _category(name) == "cpt":
         reader.unsupported.add("continued pretraining on raw text (open it in Colab)")
     rewards: list[dict] = []
+    if len(reader.found.get("objectives") or ()) > 1:
+        stages = " and ".join(sorted(o.upper() for o in reader.found["objectives"]))
+        reader.unsupported.add(f"more than one RL stage ({stages})")
     if reader.found.get("objective") and reader.found.get("sft_stage"):
         # One Fine-tune node runs one objective; dropping the warm-up would train something else.
         reader.unsupported.add("an SFT stage followed by RL (two training stages)")

@@ -128,6 +128,8 @@ test("sparkline spans the box and stays flat for a constant series", () => {
 test("GRPO shows the reward against its best, with where it started", () => {
   const grpo = { ...base, params: { ...base.params, objective: "grpo", rewards: [] } };
   assert.equal(trainView(grpo).detail, "Pick a reward");
+  const older = { ...base, params: { ...base.params, objective: "grpo" } };
+  assert.equal(trainView(older).state, "ready");
   const live = trainView({
     ...base,
     status: "running",

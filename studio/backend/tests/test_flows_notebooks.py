@@ -568,3 +568,14 @@ def test_embedding_notebooks_with_another_loss_are_reported():
     assert doc is None and any("CosineSimilarityLoss" in line for line in report["unsupported"])
     doc, _ = notebook_import.read_notebook(emb("MultipleNegativesRankingLoss"), "x.ipynb")
     assert doc is not None
+
+
+def test_two_rl_stages_are_refused():
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B-Base')",
+        "dataset = load_dataset('openai/gsm8k', 'main', split = 'train')",
+        "trainer = DPOTrainer(model = model, args = DPOConfig(max_steps = 5))",
+        "trainer = GRPOTrainer(model = model, reward_funcs = [check_answer], args = GRPOConfig(max_steps = 9))",
+    )
+    doc, report = notebook_import.read_notebook(nb, "Qwen3_(4B)-GRPO.ipynb")
+    assert doc is None and any("more than one RL stage" in line for line in report["unsupported"])
