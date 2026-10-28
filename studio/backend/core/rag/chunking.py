@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Page-aware recursive-separator chunking with token overlap. Each chunk records
-its ``[page_char_start, page_char_end)`` span and ``source_page_index``, used by
-the locator pass to highlight it on the PDF page."""
+"""Page-aware recursive-separator chunking with token overlap; chunks record
+page_char_start/page_char_end and source_page_index for locator highlights."""
 
 from __future__ import annotations
 

@@ -1,19 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pure helpers for text-to-video model identification.
-
-The video registry mirrors ``diffusion_families`` (no torch/diffusers imports, so
-everything unit-tests without the heavy runtime) but is a SEPARATE registry with a
-separate backend: video pipelines take frame/fps arguments, return frame stacks
-(and, for LTX-2, synchronized audio) instead of PIL images, and their artifacts are
-MP4s. Keeping the registries apart means neither picker can mis-route a checkpoint
-to the wrong engine.
-
-A video checkpoint published as a single-file GGUF only carries the DiT weights;
-the VAE / text encoder / connectors / vocoder come from the companion diffusers
-base repo, exactly like the image GGUF path.
-"""
+"""Pure helpers with no torch/diffusers imports (unit-testable without the runtime); separate video
+registry so no picker misroutes; GGUF is DiT-only, needs a base repo"""
 
 from __future__ import annotations
 

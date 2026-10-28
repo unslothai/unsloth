@@ -1,20 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Dense embedder facade dispatching to a process-wide backend from ``config.EMBED_BACKEND`` (``auto``
-picks by hardware): ``sentence-transformers`` (torch) or ``llama-server`` (GGUF, no torch).
-
-Either way the embedder stays off the GPU unless asked: this one runs in the backend process, where
-a CUDA context outlives every unload, and the other runs in a child. See ``_device``.
-
-Backends produce different vectors, so switching requires rebuilding the index. We degrade to
-llama.cpp rather than crash when ST breaks on a machine: an init-time probe falls back before any
-vector is produced (so spaces cannot mix), and a runtime ``encode`` failure swaps the process to
-llama-server for the rest of its life (KBs already embedded with ST should then be reindexed).
-
-Torch driver faults bypass Python handlers, so ``_load_device`` probes allocation in a child and
-falls back to CPU without changing the embedding space.
-"""
+"""Dense embedder facade over config.EMBED_BACKEND (sentence-transformers or llama-server); off GPU
+unless asked; backends differ, so switching needs reindex; ST failure falls back to llama-server;
+_load_device probes in a child and falls back to CPU without changing the embedding space."""
 
 from __future__ import annotations
 

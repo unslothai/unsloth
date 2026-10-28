@@ -1,17 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Resolve an OpenAI-request ``model`` string to a downloaded local model.
-
-Used by the opt-in auto-switch path. Two kinds of local model qualify: a GGUF
-(served by llama.cpp, with a quant that is actually on disk) and a non-GGUF
-checkpoint such as safetensors or MLX weights (served by the inference
-orchestrator). The match is conservative either way: only names that map to
-something already downloaded are eligible, so an arbitrary OpenAI model string
-still falls through to the loaded model (drop-in compat) and no surprise
-multi-GB download is ever triggered. The local-model scan is cached for a few
-seconds since auto-switch consults it per request.
-"""
+"""Maps an OpenAI model string to a downloaded GGUF or non-GGUF model; unknown names fall through to
+the loaded model; never triggers a download."""
 
 from __future__ import annotations
 

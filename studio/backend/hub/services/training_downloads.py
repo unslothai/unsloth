@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Training-owned transfers in the same registry and API as Hub downloads.
-
-The trainer owns its subprocess, so cancellation must stop that exact loading
-worker rather than enqueue a signal behind a blocking native Xet call. Progress
-describes current files only; leaving a load phase never verifies a full repo.
-"""
+"""Training downloads share the Hub registry; cancel kills the loader subprocess, not a queued
+signal; progress covers current files only and leaving a load phase never verifies the full repo."""
 
 from __future__ import annotations
 

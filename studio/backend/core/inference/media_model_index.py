@@ -1,16 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Which downloaded media model a requested name means, and whether it is the resident one.
-
-Two halves of one question. The index walks the model roots once per few seconds and maps every
-name a downloaded image or video model answers to onto the load spec its route takes. The
-matching half then decides whether the backend already holds that exact build, which is what
-lets a switch be skipped rather than reloading the model that is already serving.
-
-Only downloaded models are indexed. A name that resolves to nothing is refused by the caller
-rather than answered by whichever model happens to be resident.
-"""
+"""Maps downloaded media model names to load specs and flags the resident build; unresolved names
+are refused by the caller, never answered by the resident model."""
 
 from __future__ import annotations
 

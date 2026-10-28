@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Whether an image or video model can stay on a GPU next to chat, and what to unload when it can't.
-
-Keep multiple models loaded set to When they fit or Always lets the GPU arbiter keep several residents. This module
-prices them: a media resident holds the weights plus generation headroom it was admitted with, a new media load is
-priced from the files already on disk, and live free VRAM decides whether it fits. Anything it cannot price is
-treated as not fitting, so the caller frees memory first (fit) or refuses (always). Modelled on training_vram.py.
-"""
+"""Prices image/video residents against live free VRAM; anything unpriceable counts as not fitting"""
 
 from __future__ import annotations
 

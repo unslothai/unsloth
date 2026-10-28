@@ -1,19 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Install-completeness manifest for Unsloth Studio.
-
-install_python_stack.py drops the manifest before the dependency pass and writes
-it back only after the last step, so its presence means "the install finished".
-Read by `unsloth studio verify-install`, `desktop-capabilities` (and through it
-the Tauri preflight) and setup.sh/setup.ps1's fast path.
-
-Without it an installer killed part-way leaves a venv with `unsloth` but not
-studio.txt's dependencies, which still answers `-h` and so looked ready right up
-until the backend died on `import structlog`.
-
-Must import inside that half-installed venv: stdlib only, `packaging` optional.
-"""
+"""Install-completeness marker: install_python_stack.py drops it before the dependency pass and
+writes it after the last step, so presence means the install finished. Read by verify-install,
+desktop-capabilities and setup.sh/setup.ps1; stdlib only, packaging optional."""
 
 from __future__ import annotations
 

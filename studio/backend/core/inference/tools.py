@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tool definitions and executors for LLM tool calling: web search (DuckDuckGo), Python code
-execution, and terminal commands."""
+"""Tool definitions and executors for LLM calls: DuckDuckGo search, Python code, terminal commands."""
 
 import ast
 import base64
