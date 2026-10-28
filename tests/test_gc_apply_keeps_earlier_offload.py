@@ -1,12 +1,4 @@
-"""apply_unsloth_gradient_checkpointing with several models in one process.
-
-Smart offloading is one process-wide patch. A second model loaded with the short sequence
-fallback (max_seq_length < 512) used to unpatch it, so a model loaded earlier with
-use_gradient_checkpointing = "unsloth" silently stopped offloading (offloads per step went from
-28 to 0 for Qwen3-0.6B) and could run out of memory. The fallback is only a speed heuristic, so
-it now keeps "unsloth" when an earlier model turned offloading on; an explicit True / False still turns it off, and
-says so. The function is read from source and run against a stub torch, so no GPU is needed.
-"""
+"""A <512 seq model must not unpatch smart offloading an earlier model enabled. Stub torch, no GPU."""
 
 import ast
 from pathlib import Path
@@ -56,7 +48,6 @@ def _load():
 def test_short_sequence_model_keeps_an_earlier_models_offload():
     apply, patched = _load()
     assert apply("unsloth", 2048, None) == "unsloth" and patched()
-    # Stays "unsloth": a True here makes prepare_model_for_training unpatch it anyway.
     assert apply("unsloth", 256, None) == "unsloth"
     assert patched(), "a <512 model turned smart offloading off for the model loaded before it"
 

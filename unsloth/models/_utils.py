@@ -507,16 +507,11 @@ def _smart_gradient_checkpointing_patched():
 
 
 def apply_unsloth_gradient_checkpointing(use_gradient_checkpointing, max_seq_length, dtype):
-    """Apply gradient checkpointing with smart heuristics, returning the effective ``use_gradient_checkpointing`` (which may change from "unsloth" to True). Below seq 512 the "unsloth" offloading overhead is not worth it and standard gc is faster.
-
-    Smart offloading is one process-wide patch, so turning it off for a new model turns it off for
-    every model already loaded. The short sequence heuristic therefore keeps "unsloth" when an earlier
-    model enabled it, and an explicit True / False says so instead of dropping it silently."""
+    """Apply gradient checkpointing with smart heuristics, returning the effective ``use_gradient_checkpointing`` (which may change from "unsloth" to True). Below seq 512 the "unsloth" offloading overhead is not worth it and standard gc is faster. Smart offloading is a process-wide patch, so unpatching affects every loaded model."""
     if use_gradient_checkpointing == "unsloth":
         # Offloading is not worth it below ~512; standard gc is faster (crossover ~384-512).
         if max_seq_length < 512:
-            # Only a speed heuristic: never take offloading away from a model loaded earlier. Stay
-            # "unsloth", since every later step (prepare_model_for_training too) unpatches on True.
+            # Keep an earlier model's offloading; returning True would make later steps unpatch it.
             if _smart_gradient_checkpointing_patched():
                 return "unsloth"
             unpatch_unsloth_smart_gradient_checkpointing()
