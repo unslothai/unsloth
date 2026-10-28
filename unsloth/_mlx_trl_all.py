@@ -14,16 +14,11 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""The MLX `trl.__all__`, filtered on first read instead of during `import unsloth`.
-
-Filtering resolves every exported name, and trl's lazy module imports a submodule for each,
-pulling in torch, transformers, datasets and peft. Only `from trl import *`, `dir(trl)` or reading
-`trl.__all__` needs the filtered list, so a PEP 562 `__getattr__` builds it then.
-"""
+"""MLX `trl.__all__`, filtered on first read (PEP 562): filtering resolves every name, importing all of trl."""
 
 import weakref
 
-# trl's own names per module, kept outside its namespace so dir(trl) gains no bookkeeping entry.
+# Kept outside trl's namespace so dir(trl) gains no bookkeeping entry.
 _RAW_ALL = weakref.WeakKeyDictionary()
 
 
@@ -47,7 +42,7 @@ def install_lazy_trl_all(trl, filter_exports):
     building = []
 
     def _hand_back():
-        # Built: trl's namespace is left as the eager filter left it, so dir(trl) is unchanged.
+        # Leave the namespace exactly as the eager filter did, so dir(trl) is unchanged.
         for key, hook, prior in (
             ("__getattr__", __getattr__, previous),
             ("__dir__", __dir__, previous_dir),
@@ -61,8 +56,7 @@ def install_lazy_trl_all(trl, filter_exports):
     def __getattr__(name):
         if name == "__all__":
             raw = raw_trl_all(trl)
-            # A submodule reading trl.__all__ while the filter resolves it sees the raw list,
-            # as it did when the filter ran eagerly before __all__ was replaced.
+            # Re-entrant read mid-filter gets the raw list, as with the eager filter.
             if building:
                 return raw
             building.append(True)
@@ -79,8 +73,7 @@ def install_lazy_trl_all(trl, filter_exports):
         raise AttributeError(f"module {trl.__name__!r} has no attribute {name!r}")
 
     def __dir__():
-        # ModuleType.__dir__ (which trl's _LazyModule.__dir__ starts from) lists the namespace:
-        # build first, so a first dir(trl) already sees what the eager filter resolved.
+        # ModuleType.__dir__ (under trl's _LazyModule.__dir__) lists the namespace: build first.
         getattr(trl, "__all__")
         return previous_dir() if previous_dir is not None else list(namespace)
 
