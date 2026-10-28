@@ -118,6 +118,7 @@ try:
 except ImportError:
     # Older unsloth_zoo: fall back to reading the config fields directly.
     detect_logit_transforms = None
+from .._gc_passes import collect_garbage
 from ..device_type import (
     xpu_keeps_explicit_bf16,
     xpu_vllm_refuses_bf16,
@@ -5083,21 +5084,13 @@ class FastLlamaModel:
                 print("Unsloth: Offloading input_embeddings to disk to save VRAM")
                 offload_input_embeddings(model, temporary_location)
 
-            for _ in range(3):
-                collected = gc.collect()
-                clean_gpu_cache()
-                if collected == 0 and not gc.callbacks:
-                    break
+            collect_garbage(after = clean_gpu_cache)
 
             if train_lm_head:
                 print("Unsloth: Offloading output_embeddings to disk to save VRAM")
                 offload_output_embeddings(model, temporary_location)
 
-            for _ in range(3):
-                collected = gc.collect()
-                clean_gpu_cache()
-                if collected == 0 and not gc.callbacks:
-                    break
+            collect_garbage(after = clean_gpu_cache)
 
         from .lora_init import fast_lora_init, record_fast_pissa
 
@@ -5214,11 +5207,7 @@ class FastLlamaModel:
         # Prevent Transformers Trainer from auto-wrapping Unsloth LoRA models in DP.
         _mark_unsloth_disable_data_parallel(model)
 
-        for _ in range(3):
-            collected = gc.collect()
-            clean_gpu_cache()
-            if collected == 0 and not gc.callbacks:
-                break
+        collect_garbage(after = clean_gpu_cache)
 
         patch_peft_fast_inference(model)
 
@@ -5463,11 +5452,7 @@ class FastLlamaModel:
         if hasattr(internal_model, "_saved_temp_tokenizer"):
             internal_model._saved_temp_tokenizer.padding_side = "right"
 
-        for _ in range(3):
-            collected = gc.collect()
-            clean_gpu_cache()
-            if collected == 0 and not gc.callbacks:
-                break
+        collect_garbage(after = clean_gpu_cache)
 
         patch_peft_fast_inference(model)
 

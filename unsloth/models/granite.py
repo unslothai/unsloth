@@ -11,6 +11,7 @@
 
 from .llama import *
 import os
+from .._gc_passes import collect_garbage
 from ._utils import __version__
 from ._utils import move_to_device, per_layer_device
 from unsloth_zoo.utils import _get_dtype, Version
@@ -608,11 +609,5 @@ class FastGraniteModel(FastLlamaModel):
                     module.short_cos_cached = module.short_cos_cached.to(correct_dtype)
                     module.short_sin_cached = module.short_sin_cached.to(correct_dtype)
 
-        import gc
-
-        for _ in range(3):
-            collected = gc.collect()
-            clean_gpu_cache()
-            if collected == 0 and not gc.callbacks:
-                break
+        collect_garbage(after = clean_gpu_cache)
         return model, tokenizer
