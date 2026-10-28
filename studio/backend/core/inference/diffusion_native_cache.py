@@ -235,16 +235,14 @@ def _live_refs(transformer: Any, state: dict) -> dict:
 
 
 def _live_state(transformer: Any, state: dict) -> dict:
-    """``_live_refs`` of ``state``; an offload that moved weights after the capture left captured accelerator
-    tensors no live attribute matches, so capture once more (same layout) rather than pin them through the write.
-    What still differs after that is hook-built and stays captured."""
+    """``_live_refs``, recapturing once if an offload moved weights after capture (else the write pins old storage)."""
     import torch
 
     layout = {k: (v.dtype, tuple(v.shape)) for k, v in state.items()}
     refs = _live_refs(transformer, state)
     if not any(isinstance(v, torch.Tensor) and _moves_with_offload(v) for v in refs.values()):
         return refs
-    state = refs = None  # drop the stale references before the recapture
+    state = refs = None
     fresh = transformer.state_dict()
     if {k: (v.dtype, tuple(v.shape)) for k, v in fresh.items()} != layout or any(
         type(v) not in (torch.Tensor, torch.nn.Parameter) for v in fresh.values()
