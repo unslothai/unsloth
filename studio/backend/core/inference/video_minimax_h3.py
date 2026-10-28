@@ -2103,11 +2103,7 @@ def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:
 
 
 def _shown_vp8_key_frames(container: Any, stream: Any) -> Optional[int]:
-    """Frame count of a VP8 track whose every packet is a shown key frame (sd.cpp's WebM: one lossy WebP
-    bitstream per frame), read from the packet headers alone; None for anything else.
-
-    Such a packet decodes to exactly one frame (RFC 6386 9.1: show_frame bit, key frame start code), so the count
-    matches a full decode without decompressing any pixels."""
+    """Frames of a VP8 track whose every packet is a shown key frame (sd.cpp's WebM), from headers; else None."""
     if getattr(stream.codec_context, "name", None) != "vp8":
         return None
     count = 0
@@ -2115,12 +2111,12 @@ def _shown_vp8_key_frames(container: Any, stream: Any) -> Optional[int]:
         for packet in container.demux(stream):
             size = int(packet.size)
             if size == 0:
-                continue  # demuxer flush packet
+                continue
             head = bytes(memoryview(packet)[:10])
             if len(head) < 10:
                 return None
             tag = head[0] | (head[1] << 8) | (head[2] << 16)
-            # bit 0: 0 = key frame; bit 4: show_frame; bits 5-23: first partition size
+            # RFC 6386 9.1: bit 0 = 0 key frame, bit 4 show_frame, bits 5-23 first partition size
             if (
                 tag & 0x1
                 or not tag & 0x10
@@ -2129,7 +2125,7 @@ def _shown_vp8_key_frames(container: Any, stream: Any) -> Optional[int]:
             ):
                 return None
             count += 1
-    except Exception:  # noqa: BLE001 - an unreadable container gets the full decode (and its error)
+    except Exception:  # noqa: BLE001 - full decode raises the real error
         return None
     return count or None
 

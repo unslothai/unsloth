@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 native ``inspect_video``: sd-cli's WebM (VP8 key frames, PCM audio) is counted from packet headers,
-and every result (or error) equals a full decode of the clip, including hidden frames, bad headers and truncation."""
+"""H3 native ``inspect_video`` counts sd-cli WebM from VP8 headers and otherwise equals a full decode."""
 
 from fractions import Fraction
 from pathlib import Path
@@ -24,7 +23,6 @@ def _clip(
     codec: str = "libvpx",
     gop: int = 1,
 ) -> Path:
-    """sd-cli layout: one shown VP8 key frame per video packet (gop 1), optional PCM s16 track, Matroska."""
     rng = np.random.default_rng(0)
     with av.open(str(path), mode = "w", format = "matroska") as output:
         video = output.add_stream(codec, rate = _FPS)
@@ -53,7 +51,6 @@ def _clip(
 
 
 def _decoded(path: Path):
-    """The original inspect_video: a full decode counts the frames."""
     try:
         with av.open(str(path)) as container:
             stream = container.streams.video[0]
@@ -78,7 +75,6 @@ def _inspected(path: Path):
 
 @pytest.fixture
 def decodes(monkeypatch):
-    """Counts ``container.decode`` calls made through ``av.open``."""
     calls = []
     real_open = av.open
 
@@ -110,8 +106,7 @@ def _edit_first_frame_tag(
     edit,
     at: int = -3,
 ) -> Path:
-    """Rewrite one byte of the middle key frame with ``edit``: its 3-byte VP8 frame tag (RFC 6386 9.1) by default,
-    ``at = 0`` its start code."""
+    """Edit one byte of the middle key frame: its frame tag by default, ``at = 0`` its start code."""
     data = bytearray(path.read_bytes())
     start = data.find(b"\x9d\x01\x2a", len(data) // 2)
     assert start > 3
@@ -131,7 +126,7 @@ def test_sd_cli_webm_is_counted_without_decoding(tmp_path, decodes, frames, audi
 
 
 def test_a_hidden_frame_is_not_counted(tmp_path, decodes):
-    # show_frame = 0: the packet decodes to nothing, so the packet count would be one too many
+    # show_frame = 0 decodes to nothing: a packet count is one too many
     path = _edit_first_frame_tag(
         _clip(tmp_path / "a.webm", 9), tmp_path / "hidden.webm", lambda b: b & ~0x10
     )
