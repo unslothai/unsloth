@@ -101,7 +101,7 @@ def test_setup_sh_marks_the_deps_pass_and_compiles_before_the_footer():
     call = _index(lines, r'"\$VENV_DIR/bin/python" -I "\$SCRIPT_DIR/precompile_bytecode.py"', block)
     assert lines[call].rstrip().endswith("|| true")
     assert "UNSLOTH_SETUP_RERUN" in lines[block]
-    assert '_COLAB_NO_VENV" != true' in lines[block + 1]
+    assert '"${_COLAB_NO_VENV:-false}" != true' in lines[block + 1]
     # After every install phase and the frontend join, before the footer.
     assert _index(lines, r"^_frontend_bg_join$", stack) < block
     assert call < next(i for i, line in enumerate(lines) if line.startswith("# ── Footer ──"))
@@ -413,8 +413,11 @@ def test_helper_timeout_bounds_the_compile_and_leaves_the_tree_as_it_was(tmp_pat
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "POSIX signal semantics")
-def test_ctrl_c_stops_setup_as_before_and_undoes_the_partial_compile(tmp_path):
-    """bash only stops on a child's Ctrl+C when the child dies of SIGINT, so the helper must."""
+@pytest.mark.parametrize("signame", ["SIGINT", "SIGTERM", "SIGHUP"])
+def test_a_stop_signal_kills_the_compile_and_undoes_it(tmp_path, signame):
+    """bash only stops on a child's Ctrl+C when the child dies of SIGINT, so the helper must; the
+    desktop's Stop sends SIGTERM to setup's group, which the compile's own session does not get."""
+    signum = getattr(__import__("signal"), signame)
     tree = tmp_path / "site"
     _tree(tree)
     (tree / "other").mkdir()
@@ -437,9 +440,9 @@ def test_ctrl_c_stops_setup_as_before_and_undoes_the_partial_compile(tmp_path):
     while not pidfile.exists() and time.monotonic() < deadline:
         time.sleep(0.05)
     time.sleep(0.3)
-    proc.send_signal(__import__("signal").SIGINT)
+    proc.send_signal(signum)
     out, err = proc.communicate(timeout = 30)
-    assert proc.returncode == -__import__("signal").SIGINT
+    assert proc.returncode == -signum
     assert out == b"" and err == b""
     with pytest.raises(ProcessLookupError):
         os.kill(int(pidfile.read_text()), 0)

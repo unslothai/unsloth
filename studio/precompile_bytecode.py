@@ -25,6 +25,8 @@ _CHECKOUT_SKIP_DIRS = ("node_modules", "frontend", "src-tauri", "tests")
 # importlib's _write_atomic writes "<path>.<id(path)>" and renames it over <path>.
 _PARTIAL_PYC = re.compile(r"\.pyc\.\d+$")
 _CHILD_FLAG = "--compile-child"
+# More workers only add memory (about 19 MB each): 192 held 3.6 GB.
+_MAX_WORKERS = 32
 
 
 def _disabled():
@@ -156,7 +158,9 @@ def _compile_child(args):
     job = functools.partial(py_compile.compile, doraise = False, quiet = 2)
     try:
         from concurrent.futures import ProcessPoolExecutor
-        with ProcessPoolExecutor() as pool:
+
+        cpus = getattr(os, "process_cpu_count", os.cpu_count)() or 1
+        with ProcessPoolExecutor(max_workers = min(cpus, _MAX_WORKERS)) as pool:
             for _ in pool.map(job, sources, chunksize = 64):
                 pass
         return
@@ -248,16 +252,39 @@ def run(site, checkout, timeout):
     return True
 
 
-def _reraise_sigint():
-    """bash stops on a child's Ctrl+C only when the child dies of SIGINT."""
+class _Stopped(BaseException):
+    def __init__(self, signum):
+        self.signum = signum
+
+
+def _stop(signum, frame):
+    raise _Stopped(signum)
+
+
+def _catch_stop_signals():
+    """The worker group is its own session, so a SIGTERM to setup's group (the desktop's Stop)
+    or a hangup must reach it through this process."""
+    if os.name == "nt":
+        return
+    import signal
+
+    for name in ("SIGTERM", "SIGHUP"):
+        try:
+            signal.signal(getattr(signal, name), _stop)
+        except Exception:
+            pass
+
+
+def _reraise(signum):
+    """Die of the same signal: bash stops on a child's Ctrl+C only when the child dies of SIGINT."""
     if os.name != "nt":
         import signal
         try:
-            signal.signal(signal.SIGINT, signal.SIG_DFL)
-            os.kill(os.getpid(), signal.SIGINT)
+            signal.signal(signum, signal.SIG_DFL)
+            os.kill(os.getpid(), signum)
         except Exception:
             pass
-    os._exit(130)
+    os._exit(128 + int(signum))
 
 
 def main(argv):
@@ -274,14 +301,15 @@ def main(argv):
         sources, targets, new_dirs = plan(site, checkout)
         if not sources:
             return 0
+        _catch_stop_signals()
         if not run(site, checkout, _timeout()):
             undo(targets, new_dirs)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, _Stopped) as stopped:
         try:
             undo(targets, new_dirs)
         except BaseException:
             pass
-        _reraise_sigint()
+        _reraise(getattr(stopped, "signum", 2))
     except Exception:
         pass
     return 0

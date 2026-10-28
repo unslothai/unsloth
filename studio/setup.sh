@@ -5499,7 +5499,7 @@ _setup_bytecode_opted_out() {
     return 1
 }
 if { [ "${_SETUP_VENV_CHANGED:-false}" = true ] || [ "${UNSLOTH_SETUP_RERUN:-}" = 1 ]; } \
-    && [ "$_COLAB_NO_VENV" != true ] && [ -x "$VENV_DIR/bin/python" ] \
+    && [ "${_COLAB_NO_VENV:-false}" != true ] && [ -x "$VENV_DIR/bin/python" ] \
     && [ -f "$SCRIPT_DIR/precompile_bytecode.py" ] && ! _setup_bytecode_opted_out; then
     step "python" "precompiling bytecode..."
     "$VENV_DIR/bin/python" -I "$SCRIPT_DIR/precompile_bytecode.py" </dev/null || true
