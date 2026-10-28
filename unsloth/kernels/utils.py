@@ -1746,7 +1746,6 @@ def _is_exl3_quant_state(quant_state) -> bool:
     return _Exl3QuantState is not None and isinstance(quant_state, _Exl3QuantState)
 
 
-@torch.inference_mode
 def _dequantize_for_lora(
     W,
     quant_state = None,

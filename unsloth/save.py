@@ -64,6 +64,7 @@ import contextvars
 import functools
 from transformers.models.llama.modeling_llama import logger
 from .kernels import fast_dequantize, _dequantize_for_lora, QUANT_STATE, get_lora_parameters_bias
+from .kernels.utils import _is_exl3_quant_state
 import subprocess
 import traceback
 import psutil
@@ -896,7 +897,10 @@ def _merge_lora(
                 W, quant_state = W.data.to(stage), quant_state_copy(quant_state, stage)
                 A = None if A is None else A.to(stage)
                 B = None if B is None else B.to(stage)
-            W = _dequantize_for_lora(W, quant_state)
+            if _is_exl3_quant_state(quant_state):
+                W = _dequantize_for_lora(W, quant_state)
+            else:
+                W = fast_dequantize(W, quant_state)
         else:
             dtype = W.dtype
         W = W.to(torch.float32).t()
