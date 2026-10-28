@@ -167,5 +167,39 @@ class TestForwardUsesReconstruction(unittest.TestCase):
         self.assertFalse(torch.allclose(out.float(), torch.full_like(out.float(), 999.0)))
 
 
+class TestExllamaV3CompatPatches(unittest.TestCase):
+    """The patcher must keep working with newer exllamav3 (1.6.x) wrappers."""
+
+    def test_placeholder_is_tiny_and_survives_finalize(self):
+        from unsloth.exllama.patcher import _patch_hf_linear_weight
+
+        class FakeHfLinear(torch.nn.Module):  # mimics exllamav3 1.6's Exl3HfLinear
+            def __init__(self, in_features, out_features, exl3_tensors):
+                super().__init__()
+                self.in_features, self.out_features, self.inner = in_features, out_features, None
+
+            def finalize(self):
+                self.weight = torch.zeros((1,), dtype = torch.float16)  # plain tensor, as in 1.6
+
+        _patch_hf_linear_weight(FakeHfLinear)
+        layer = FakeHfLinear(4096, 1024, {})
+        # A full [out, in] placeholder gets materialized dense on GPU by transformers.
+        self.assertEqual(layer.weight.numel(), 1)
+        layer.finalize()  # raised TypeError before the fix
+        self.assertIsInstance(layer.weight, torch.nn.Parameter)
+        self.assertFalse(layer.weight.requires_grad)
+
+    def test_new_layer_discovery_api_is_left_alone(self):
+        from unsloth.exllama.patcher import _patch_get_modules_to_replace
+
+        class FakeQuantizer:  # exllamav3 >= 1.6 signature
+            def get_modules_to_replace(self, model, checkpoint_dir):
+                return "upstream"
+
+        original = FakeQuantizer.get_modules_to_replace
+        _patch_get_modules_to_replace(FakeQuantizer)
+        self.assertIs(FakeQuantizer.get_modules_to_replace, original)
+
+
 if __name__ == "__main__":
     unittest.main()

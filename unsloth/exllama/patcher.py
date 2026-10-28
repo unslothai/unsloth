@@ -94,6 +94,11 @@ def _patch_get_modules_to_replace(quantizer_cls) -> None:
     """
     if getattr(quantizer_cls, "_unsloth_modules_patched", False):
         return
+    import inspect
+
+    # Newer exllamav3 (checkpoint-key driven, takes checkpoint_dir) already maps names correctly.
+    if "checkpoint_dir" in inspect.signature(quantizer_cls.get_modules_to_replace).parameters:
+        return
     try:
         import torch
         from exllamav3.loader import SafetensorsCollection
@@ -146,9 +151,8 @@ def _patch_hf_linear_weight(hf_linear_cls) -> None:
     tensor. Newer transformers (>=5.6) finalize tied weights via
     ``get_parameter("lm_head.weight")``, which asserts the attribute is an
     ``nn.Parameter`` and raises otherwise. We wrap ``__init__`` so the placeholder
-    is a frozen meta ``nn.Parameter`` shaped ``[out_features, in_features]``; this
-    also lets shape-based logic (PEFT target discovery, Unsloth's EXL3 dequant)
-    read the correct dimensions without materializing the dense weight.
+    is a frozen 1-element meta ``nn.Parameter`` (shape logic reads
+    ``in_features`` / ``out_features`` instead).
     """
     import torch
 
@@ -159,11 +163,9 @@ def _patch_hf_linear_weight(hf_linear_cls) -> None:
 
     def patched_init(self, in_features, out_features, exl3_tensors, *args, **kwargs):
         original_init(self, in_features, out_features, exl3_tensors, *args, **kwargs)
-        placeholder = torch.zeros(
-            (int(out_features), int(in_features)),
-            dtype = torch.float16,
-            device = "meta",
-        )
+        # (1,) not [out, in]: transformers materializes missing meta params on GPU,
+        # so a full-shape placeholder costs a dense fp16 copy of every layer.
+        placeholder = torch.zeros((1,), dtype = torch.float16, device = "meta")
         self.weight = torch.nn.Parameter(placeholder, requires_grad = False)
         # Register the codebook side tensors (mcg/mul1) the stock wrapper omits,
         # else the default mcg codebook reconstructs garbage weights.
@@ -184,7 +186,12 @@ def _patch_hf_linear_weight(hf_linear_cls) -> None:
                     self.register_buffer(subkey, None)
 
     def patched_finalize(self):
+        # Newer exllamav3 assigns a plain tensor to .weight in finalize; keep our Parameter.
+        weight = self._parameters.pop("weight", None)
         original_finalize(self)
+        if weight is not None:
+            self.__dict__.pop("weight", None)
+            self.weight = weight
         # Re-create the inner layer with the codebook tensors wired in.
         mcg = getattr(self, "mcg", None)
         mul1 = getattr(self, "mul1", None)

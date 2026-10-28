@@ -410,6 +410,9 @@ def finalize_exl3_model(model, compute_dtype = None) -> int:
 
     harmonize_nonquant_dtype(model, dtype)
     model._unsloth_exl3_backend = True
+    # Hand load-time scratch (head reconstruction, placeholders) back to the driver.
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     return n
 
 

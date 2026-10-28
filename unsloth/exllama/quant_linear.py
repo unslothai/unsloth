@@ -100,23 +100,46 @@ class Exl3QuantState:
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     @torch.no_grad()
-    def dequantize(self, dtype: Optional[torch.dtype] = None) -> torch.Tensor:
-        """Reconstruct the dense weight as ``[out_features, in_features]``.
+    def dequantize(self, dtype: Optional[torch.dtype] = None, transpose: bool = False) -> torch.Tensor:
+        """Reconstruct the dense weight as ``[out_features, in_features]``
+        (or ``[in_features, out_features]`` with ``transpose=True``, the layout
+        the LoRA matmul wants, without an extra transpose copy).
 
-        ExLlamaV3's ``get_weight_tensor`` returns the weight in
-        ``[in_features, out_features]`` (column-major w.r.t. a standard
-        ``nn.Linear.weight``), so we transpose to the ``[out, in]`` convention
-        used everywhere in Unsloth / PyTorch.
+        Uses ExLlamaV3's fused reconstruct+Hadamard kernel (~10x faster than
+        ``get_weight_tensor``); falls back to ``get_weight_tensor`` for shapes the
+        kernel does not take or when ``EXL3_NO_FUSED_RECONSTRUCT`` is set.
         """
         inner = _inner_exl3(self.exl3_linear)
         if inner is None:
             raise RuntimeError("Unsloth: EXL3 quant state has no reconstructable inner layer.")
-        w = inner.get_weight_tensor()  # [in_features, out_features], fp16
-        w = w.t().contiguous()  # -> [out_features, in_features]
-        out_dtype = dtype or self.dtype
-        if out_dtype is not None and w.dtype != out_dtype:
-            w = w.to(out_dtype)
-        return w
+        out_dtype = dtype or self.dtype or torch.float16
+        n_in, n_out = self.in_features, self.out_features
+        fused = not (n_in % 128 or n_out % 128) and hasattr(inner, "K")
+        if fused:  # only a real LinearEXL3 gets here, so exllamav3 is importable
+            from exllamav3.modules.quant import exl3 as _exl3
+
+            fused = not _exl3.no_fused_reconstruct
+        if not fused:
+            # shortcut: full-width fp32 Hadamard (~3x the weight in scratch), only for
+            # shapes the fused kernel can't take; chunk it if a big head ever lands here.
+            w = inner.get_weight_tensor()  # [in, out]
+            return (w if transpose else w.t()).contiguous().to(out_dtype)
+        # Column chunks bound the fp16 scratch (~128MB) for big-vocab heads.
+        step = min(n_out, _exl3.MAX_RECONSTRUCT_SLICE_N, max(128, ((1 << 26) // n_in) // 128 * 128))
+        device = inner.trellis.device
+        out = torch.empty((n_in, n_out) if transpose else (n_out, n_in), dtype = out_dtype, device = device)
+        buf = torch.empty((n_in * step,), dtype = torch.half, device = device)
+        for n0 in range(0, n_out, step):
+            n1 = min(n_out, n0 + step)
+            w = buf[: n_in * (n1 - n0)].view(n_in, n1 - n0)  # [in, cols], as LinearEXL3.forward slices it
+            _exl3.ext.reconstruct_had_slice(
+                w, inner.trellis, inner.suh, inner.svh[n0:], inner.K, inner.mcg, inner.mul1, n0
+            )
+            if transpose:
+                out[:, n0:n1] = w
+            else:
+                out[n0:n1] = w.t()
+        return out
 
     def to(self, *args, **kwargs):
         # Quant state is device-anchored by its inner CUDA tensors; nothing to move.
@@ -164,10 +187,7 @@ def exl3_fast_dequantize(
         is what ``matmul_lora`` / ``fast_linear_forward`` want when they call
         ``fast_dequantize(W.t(), ...)``.
     """
-    w = quant_state.dequantize(dtype = dtype)  # [out, in]
-    if transpose:
-        w = w.t().contiguous()
-    return w
+    return quant_state.dequantize(dtype = dtype, transpose = transpose)
 
 
 class ExllamaV3Linear(torch.nn.Linear):
@@ -298,25 +318,8 @@ def attach_exl3_quant_states(
             bias = bias,
             compute_dtype = compute_dtype,
         )
-        # Drop the wrapper's dense placeholder weight (we only need .inner for
-        # reconstruction) so each layer doesn't keep a full fp16 copy in VRAM.
-        try:
-            w = getattr(wrapper, "weight", None)
-            if isinstance(w, torch.Tensor) and w.numel() > 1:
-                wrapper.weight = torch.nn.Parameter(
-                    torch.zeros((1,), dtype = compute_dtype, device = "meta"),
-                    requires_grad = False,
-                )
-        except Exception:
-            pass
         setattr(parent, attr_name, new_layer)
         count += 1
-    # Reclaim the freed dense placeholder weights.
-    if count:
-        import gc as _gc
-        _gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
     return count
 
 
@@ -409,11 +412,12 @@ def densify_exl3_head(model: torch.nn.Module, compute_dtype: torch.dtype = torch
                 targets.append((parent, attr_name, qs))
 
     for parent, attr_name, qs in targets:
+        # meta: the weight is assigned below, so don't allocate a throwaway dense copy.
         new_head = torch.nn.Linear(
             qs.in_features,
             qs.out_features,
             bias = qs.bias is not None,
-            device = qs.device,
+            device = "meta",
             dtype = compute_dtype,
         )
         # Always reconstruct the real quantized head from its trellis; do NOT
