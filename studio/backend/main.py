@@ -3236,8 +3236,7 @@ def setup_frontend(
     return True
 
 
-# Last, once every module-level route is registered: requests for late routes (health and liveness polls,
-# frontend assets, 404s) no longer run every earlier entry's regex. Routes added later just go unguarded.
+# Last, after every module-level route is registered; routes added later stay unguarded.
 from utils.route_prefix_guard import install_route_prefix_guards  # noqa: E402
 
 install_route_prefix_guards(app.router.routes)

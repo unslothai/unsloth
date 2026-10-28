@@ -171,7 +171,6 @@ def test_every_guarded_entry_answers_like_the_original(studio_app):
         for scope in _scopes(routes):
             fast = entry.matches(copy.copy(scope))
             if fast == (Match.NONE, {}):
-                # The only answer the guard gives itself: the original must agree.
                 slow = _original(entry)(copy.copy(scope))
                 assert slow[0] == Match.NONE, (
                     entry,
@@ -222,7 +221,6 @@ def test_unprovable_entries_are_left_alone():
     assert "matches" not in vars(catch_all)
     included = [e for e in app.router.routes if getattr(e, "original_router", None) is not None]
     if included:
-        # A route object reached through an included router is matched there on its prefixed path.
         assert "matches" not in vars(shared)
         hosted = [e for e in included if e.original_router is with_host]
         assert hosted and "matches" not in vars(hosted[0])
@@ -234,7 +232,6 @@ def test_root_path_requests_take_the_original_path():
     install_route_prefix_guards(app.router.routes)
     entry = next(e for e in app.router.routes if getattr(e, "path", None) == "/api/thing")
     assert "matches" in vars(entry)
-    # Starlette strips root_path before matching; the guard must not decide on the raw path there.
     match, _ = entry.matches(_scope("GET", "/prefix/api/thing", root_path = "/prefix"))
     assert match == Match.FULL
 

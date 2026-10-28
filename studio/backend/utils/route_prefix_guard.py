@@ -3,15 +3,9 @@
 
 """Let the router skip route-table entries whose literal path prefix rules the request out.
 
-The router tries every entry in order until one matches. With ~800 routes, a request for a path
-registered late (``/api/health``, ``/api/liveness``, every ``/assets`` file, the SPA, any 404) costs
-~0.9 ms of regex and bookkeeping on the event loop before its handler runs.
-
-An entry's path regex is anchored at the start of the literal text before its first ``{``, so a route
-path that does not start with that text cannot match it at all: ``matches()`` returns ``Match.NONE``.
-The guard returns exactly that without running the regex. Anything it cannot prove is path-anchored
-(Host routes, a ``matches`` override, a ``root_path`` deployment) is left on the original code path.
-Order, precedence, 405 partial matches and the OpenAPI schema are untouched.
+A route regex is anchored at the literal text before its first ``{``, so a path not starting with it
+is ``Match.NONE``; the guard answers that without the regex. Entries it cannot prove path-anchored
+(Host routes, ``matches`` overrides, ``root_path`` requests) keep the original code path.
 """
 
 from __future__ import annotations
@@ -22,10 +16,9 @@ from starlette.routing import BaseRoute, Match, Mount, Route, WebSocketRoute
 
 try:
     from fastapi.routing import APIRoute, APIWebSocketRoute
-except Exception:  # pragma: no cover - fastapi is a hard dependency of the backend
+except Exception:  # pragma: no cover
     APIRoute = APIWebSocketRoute = None
 
-# Route classes whose stock ``matches`` is a start-anchored regex over the route path.
 _PATH_ROUTE_TYPES = tuple(
     cls for cls in (Route, WebSocketRoute, Mount, APIRoute, APIWebSocketRoute) if cls is not None
 )
@@ -37,7 +30,6 @@ def _literal_prefix(path: Any) -> Optional[str]:
     if not isinstance(path, str) or not path.startswith("/"):
         return None
     literal = path.split("{", 1)[0]
-    # "/" (or less) rules nothing out, so a guard would only add work.
     return literal if len(literal) > 1 else None
 
 
@@ -58,7 +50,6 @@ def _included_router_parts(entry: Any):
 
 
 def _subtree_is_path_anchored(router: Any, seen: set) -> bool:
-    """Every route an included router can reach is matched on its (prefixed) path."""
     if id(router) in seen:
         return True
     seen.add(id(router))
@@ -94,8 +85,7 @@ def _guard_prefix(entry: Any, shared_leaf_ids: set) -> Optional[str]:
         return _literal_prefix(prefix)
     if not _stock_path_route(entry):
         return None
-    # A route object also reachable through an included router is matched there against its prefixed
-    # path, through this same bound method; its own path would be the wrong anchor.
+    # Also reachable via an included router: matched there on its prefixed path through this method.
     if id(entry) in shared_leaf_ids:
         return None
     return _literal_prefix(getattr(entry, "path", None))
@@ -103,7 +93,7 @@ def _guard_prefix(entry: Any, shared_leaf_ids: set) -> Optional[str]:
 
 def _guarded(matches: Callable, prefix: str) -> Callable:
     def guarded_matches(scope):
-        # root_path deployments strip a prefix first (starlette get_route_path); keep the original path there.
+        # get_route_path strips root_path first; only the raw path is safe to compare.
         if not scope.get("root_path") and not scope["path"].startswith(prefix):
             return Match.NONE, {}
         return matches(scope)
@@ -114,7 +104,7 @@ def _guarded(matches: Callable, prefix: str) -> Callable:
 
 
 def install_route_prefix_guards(routes: list) -> int:
-    """Guard each eligible top-level entry once; returns how many are guarded. Safe to call again."""
+    """Guard each eligible top-level entry; returns how many are guarded. Idempotent."""
     shared: set = set()
     for entry in routes:
         included = _included_router_parts(entry)
