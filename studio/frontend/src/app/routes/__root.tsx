@@ -271,8 +271,9 @@ const CHAT_ONLY_ALLOWED = new Set([
   "/chat",
   "/projects",
   "/library",
-  // Tasks only need a chat model, which a chat-only host runs.
+  // Tasks and Translate only need a chat model, which a chat-only host runs.
   "/tasks",
+  "/translate",
   "/hub",
   "/login",
   "/signup",
