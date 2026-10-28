@@ -102,9 +102,13 @@ def _block_backend(options):
     then nothing counts as ours and the pool is kept."""
     try:
         from torch._guards import CompileContext
-
         class _BlockInductor(torch._TorchCompileInductorWrapper):
-            def __call__(self, *args, options = None, **kwargs):
+            def __call__(
+                self,
+                *args,
+                options = None,
+                **kwargs,
+            ):
                 # options: torch.compile hands them back; the constructor already applied them.
                 _CUDAGRAPH_STATE["built"].add(CompileContext.current_compile_id())
                 return super().__call__(*args, **kwargs)
