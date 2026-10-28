@@ -4,6 +4,7 @@
 import type { IconSvgElement } from "@hugeicons/react";
 import type { ComponentType } from "react";
 import type { FlowNode, NodeSpec } from "../types";
+import { TRAIN_LOOK } from "./train-node";
 
 /** Per-type content for the shared node card. Anything left out falls back to the
  *  spec: category icon and tone, typed ports, key fields and "Show inputs". */
@@ -19,6 +20,10 @@ export interface NodeLook {
   Ports?: ComponentType<{ node: FlowNode; collapsed: boolean }>;
   /** Replaces the key fields and "Show inputs". */
   Body?: ComponentType<{ node: FlowNode }>;
+  /** Body draws the run state itself, so skip the generic output preview. */
+  ownsOutputs?: boolean;
 }
 
-export const NODE_LOOKS: Record<string, NodeLook> = {};
+export const NODE_LOOKS: Record<string, NodeLook> = {
+  "train.finetune": TRAIN_LOOK,
+};
