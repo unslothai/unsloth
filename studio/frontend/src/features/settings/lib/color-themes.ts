@@ -31,7 +31,6 @@ export const FLAVOR_THEME_IDS = [
   "cotton-candy",
 ] as const;
 
-// Offered from the sidebar's Trick or treat row and Theme > Halloween, in October only.
 export const HALLOWEEN_THEME_IDS = [
   "pumpkin",
   "black-cat",

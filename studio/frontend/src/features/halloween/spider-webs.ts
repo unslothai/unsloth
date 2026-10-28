@@ -7,7 +7,6 @@ export type SpiderWeb = {
   placement: WebPlacement;
   // Corner webs span `size` square; a top web is twice as wide as tall.
   size: number;
-  // Top webs only: where along the top edge the web hangs.
   left?: string;
   spokes: string;
   threads: string;
@@ -19,8 +18,7 @@ const between = (rand: Rand, min: number, max: number) =>
   min + rand() * (max - min);
 const f = (n: number) => n.toFixed(1);
 
-/** Spokes from an anchor, sagging capture threads between them, a frame thread and a few gaps.
- *  Drawn in a 100-unit frame with the anchor at the origin and the web opening towards +x/+y. */
+// 100-unit frame, anchor at the origin, opening towards +x/+y.
 function drawWeb(rand: Rand, from: number, to: number) {
   const count = Math.round(between(rand, 6, 9));
   const spokes = Array.from({ length: count }, (_, i) => {
@@ -64,11 +62,11 @@ function drawWeb(rand: Rand, from: number, to: number) {
   return { spokes: spokePath, threads };
 }
 
-/** Half the time nothing; otherwise one or two webs in spots clear of the sidebar. */
 export function rollSpiderWebs(rand: Rand = Math.random): SpiderWeb[] {
   if (rand() >= 0.5) {
     return [];
   }
+  // No left corners: the sidebar is there.
   const spots: WebPlacement[] = ["top-right", "bottom-right", "top"];
   const count = rand() < 0.4 ? 2 : 1;
   const picks = Array.from(

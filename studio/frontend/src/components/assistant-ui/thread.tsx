@@ -2701,7 +2701,6 @@ type Welcome = {
   key: TranslationKey;
   name?: string;
   sloth: string;
-  // Pictures drawn small on their canvas render a little larger to match the rest.
   enlarge?: boolean;
 };
 const DEFAULT_WELCOME: Welcome = {

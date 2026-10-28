@@ -101,7 +101,6 @@ function ArrowBadge() {
   );
 }
 
-// Themes whose point is more than one color show all of them in the swatch.
 const SWATCH_OVERRIDE: Partial<
   Record<(typeof HALLOWEEN_THEME_IDS)[number], string>
 > = {
@@ -109,7 +108,6 @@ const SWATCH_OVERRIDE: Partial<
     "linear-gradient(135deg, #ffc400 28%, #b35cff 68%, color-mix(in srgb, #b35cff 75%, black) 100%)",
   gothic:
     "linear-gradient(135deg, #a78bfa 28%, #e0335e 72%, color-mix(in srgb, #e0335e 75%, black) 100%)",
-  // White tip, orange middle, yellow base, like the candy.
   candycorn:
     "linear-gradient(170deg, #fff6e6 12%, #ff8f1f 42%, #ff8f1f 55%, #ffd84a 85%)",
 };

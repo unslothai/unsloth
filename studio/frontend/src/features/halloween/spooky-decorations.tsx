@@ -99,8 +99,7 @@ function Bat() {
   );
 }
 
-/** Webs on half the pages, re-rolled on each navigation, plus a spider and bats now and then. Reduced
- *  motion keeps the visits but swaps the drop and the flight for a fade in place. */
+// Reduced motion keeps the visits but fades them in place.
 export function SpookyDecorations() {
   const on = useSpookyDecorations();
   const reduced = useReducedMotion();
@@ -124,7 +123,7 @@ export function SpookyDecorations() {
       timers.add(t);
     };
     const visit = (v: Visitor, ms: number) => {
-      // A hidden tab skips the visit instead of piling them up for later.
+      // Hidden tabs skip visits rather than queue them.
       if (document.hidden) {
         return;
       }

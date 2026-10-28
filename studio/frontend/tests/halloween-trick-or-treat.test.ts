@@ -151,7 +151,6 @@ test("the sidebar row and dialog are gated on the season", () => {
   assert.match(sidebar, /\{showTrickOrTreat && \(\s*<NavItem/);
   assert.match(sidebar, /const showTrickOrTreat = useTrickOrTreatVisible\(\);/);
   assert.match(sidebar, /useHalloweenSeasonEnd\(\);/);
-  // Above More, with its own hide button.
   assert.ok(
     sidebar.indexOf('testId="nav-row-trick-or-treat"') <
       sidebar.indexOf("{/* Unpinned destinations, behind one row. */}"),
@@ -254,7 +253,6 @@ test("spiders and bats are on by default and stay off once turned off", async ()
     /return on && isHalloweenSeason\(\) && isHalloweenThemeId\(palette\);/,
   );
   const deco = read("../src/features/halloween/spooky-decorations.tsx");
-  // Reduced motion keeps the visits but fades them in place.
   assert.match(deco, /reduced && "spooky-still"/);
   assert.match(deco, /useMemo\(\(\) => rollSpiderWebs\(\), \[href\]\)/);
   assert.match(deco, /pointer-events-none fixed inset-0/);

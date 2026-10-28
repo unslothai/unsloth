@@ -1591,7 +1591,7 @@
 	--th-chart-5: #c79ae6;
 }
 
-/* Halloween themes (sidebar Trick or treat, and Theme > Halloween in October). */
+/* Halloween themes (October only). */
 :root[data-palette="pumpkin"]:not(.dark) {
 	--th-bg: #fff3e3;
 	--th-surface: #ffe7c9;
@@ -6629,7 +6629,6 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 }
 
 
-/* Trick or Treat decorations: a spider on its thread and bats crossing the window. */
 .spooky-spider {
 	position: absolute;
 	top: 0;
@@ -6703,7 +6702,7 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 	from { transform: scaleY(1); }
 	to { transform: scaleY(0.35); }
 }
-/* Reduced motion: the visitors fade in and out where they are instead of dropping and flying. */
+/* Reduced motion: fade in place. */
 .spooky-still .spooky-spider {
 	height: var(--spooky-drop);
 	animation-name: spooky-fade;

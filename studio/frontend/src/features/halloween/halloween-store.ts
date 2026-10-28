@@ -20,12 +20,11 @@ import {
 
 export const HALLOWEEN_STORAGE_KEY = "unsloth_halloween";
 
-/** Local time, so the season ends at the user's own midnight on November 1. */
+/** Local time: the season ends at the user's own midnight. */
 export function isHalloweenSeason(now: Date = new Date()): boolean {
   return now.getMonth() === 9;
 }
 
-/** Milliseconds to the next local season boundary: November 1 in October, else October 1. */
 export function msUntilSeasonChange(now: Date = new Date()): number {
   const year = now.getFullYear();
   const next = isHalloweenSeason(now)
@@ -39,9 +38,8 @@ const SEASON_CHECK_MAX_MS = 6 * 60 * 60 * 1000;
 
 type HalloweenState = {
   spookyGreetings: boolean;
-  // Spiders, webs and bats over a Halloween theme; on until the user turns them off.
   decorations: boolean;
-  // Year the user hid the sidebar row; it stays hidden for the rest of that October.
+  // Year the row was hidden; it stays hidden for that October.
   hiddenYear: number | null;
   restorePalette: ColorThemeId | null;
   setSpookyGreetings: (on: boolean) => void;
@@ -92,7 +90,6 @@ export const useHalloweenStore = create<HalloweenState>()(
 // Another tab can pick the theme to restore; reread it before this one consumes or rewrites it.
 syncAcrossWindows(useHalloweenStore);
 
-/** Remembers the theme in use before the first Halloween pick, so the season can hand it back. */
 export function pickHalloweenTheme(id: HalloweenThemeId): void {
   const current = getPalette();
   if (!isHalloweenThemeId(current)) {
@@ -149,9 +146,7 @@ export function useSpookyDecorations(): boolean {
   return on && isHalloweenSeason() && isHalloweenThemeId(palette);
 }
 
-/** Outside October, hand back the pre-Halloween theme, including one a synced device re-applies.
- *  An open session follows both boundaries (October 1 and November 1) and rechecks on focus after a
- *  sleep; the restore itself reads the live date, so a stale flag never undoes an October pick. */
+/** Outside October, restore the pre-Halloween theme; reads the live date, so a stale flag never undoes an October pick. */
 export function useHalloweenSeasonEnd(): void {
   const { palette } = usePalette();
   const [inSeason, setInSeason] = useState(() => isHalloweenSeason());

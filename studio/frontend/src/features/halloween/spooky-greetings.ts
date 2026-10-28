@@ -51,13 +51,11 @@ const HALLOWEEN: Line = [
 const pick = <T>(items: T[]): T =>
   items[Math.floor(Math.random() * items.length)];
 
-/** One of the four Halloween sloths, for the login screen while spooky greetings are on. */
 export function pickSpookySloth(): { sloth: string; enlarge: boolean } {
   const sloth = pick(HALLOWEEN_SLOTHS);
   return { sloth, enlarge: ENLARGED.has(sloth) };
 }
 
-/** On October 30 and 31 (local time) Happy Halloween joins the lines a new chat picks from. */
 export function buildSpookyWelcome(
   name: string,
   now: Date = new Date(),
