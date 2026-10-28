@@ -191,3 +191,44 @@ def test_absent_adapters_stay_in_the_graph(base):
                     adapter.lora_A[2].grad is not None and adapter.lora_A[2].grad.abs().max() == 0
                 )
                 assert adapter.lora_A[1].grad is not None
+
+
+@pytest.fixture(scope = "module")
+def input_major(base):
+    """The same experts stored input-major and flagged as Zoo's grouped-mm format (Qwen3-VL-MoE, GPT-OSS)."""
+    model = copy.deepcopy(base)
+    flagged = 0
+    for module in model.modules():
+        if (
+            hasattr(module, "gate_up_proj")
+            and hasattr(module, "down_proj")
+            and module.gate_up_proj.dim() == 3
+        ):
+            with torch.no_grad():
+                for name in ("gate_up_proj", "down_proj"):
+                    param = getattr(module, name)
+                    param.data = param.data.transpose(1, 2).contiguous()
+            module._unsloth_grouped_mm_format = True
+            flagged += 1
+    assert flagged
+    return model
+
+
+@pytest.mark.parametrize("mode", ["stash", "fold"])
+def test_input_major_grouped_mm_experts_match_their_lone_peft_run(
+    base, input_major, monkeypatch, mode
+):
+    if mode == "fold":
+        monkeypatch.setattr(ml, "_zoo_stash_read_store", lambda experts: None)
+    ids = _ids()
+    # Zoo's forward reads the flag: the relaid experts compute what the original ones do.
+    torch.testing.assert_close(
+        input_major(input_ids = ids).logits, base(input_ids = ids).logits, atol = TOL, rtol = 1e-4
+    )
+    model, _ = _batched(input_major)
+    ml.set_multi_lora_batch(model, torch.tensor([0, 1, 2], device = DEVICE), seq_len = T)
+    out = model(input_ids = ids, use_cache = False).logits
+    assert {m.mode for m in model.modules() if isinstance(m, ml.MultiLoraExperts)} == {mode}
+    for u in range(3):
+        ref = _lone(input_major, model, u)(input_ids = ids[u : u + 1], use_cache = False).logits[0]
+        torch.testing.assert_close(out[u], ref, atol = TOL, rtol = 1e-4)
