@@ -30565,6 +30565,7 @@ async def produce_openai_chat_completions(
                         yield _chat_role_chunk(completion_id, created, model_name)
 
                         gen = audio_input_generate()
+                        gen_step = ThreadStepper(gen).next
                         _DONE = object()
                         cancelled = False
                         while True:
@@ -30578,7 +30579,7 @@ async def produce_openai_chat_completions(
                                 api_monitor.finish(monitor_id, "cancelled")
                                 mark_current_response_failed()
                                 return
-                            chunk_text = await asyncio.to_thread(next, gen, _DONE)
+                            chunk_text = await gen_step(_DONE)
                             if chunk_text is _DONE:
                                 if cancel_event.is_set():
                                     cancelled = True
