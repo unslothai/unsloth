@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FIFO queueing for POST /v1/videos."""
 
 from __future__ import annotations
 
@@ -41,7 +40,7 @@ def _delete_in_background(client, video_id: str) -> tuple:
         target = lambda: result.update(response = client.delete(f"/v1/videos/{video_id}"))
     )
     thread.start()
-    time.sleep(0.2)  # long enough for the DELETE to reach the queue
+    time.sleep(0.2)
     return thread, result
 
 
@@ -69,7 +68,7 @@ def test_a_create_while_a_video_renders_is_queued_then_starts_with_its_id_seed_a
     listed = {v["id"]: v["status"] for v in client.get("/v1/videos").json()["data"]}
     assert listed[queued["id"]] == "queued" and first["id"] in listed and len(listed) == 2
 
-    _drain()  # the first video still renders: nothing starts
+    _drain()
     assert client.get(f"/v1/videos/{queued['id']}").json()["status"] == "queued"
     assert len(video_routes._VIDEO_QUEUE) == 1
 
@@ -625,7 +624,7 @@ def test_a_queued_start_holds_an_inference_slot_so_a_switch_cannot_evict_a_runni
     monkeypatch.setattr(video_routes, "_start_openai_video", _start_and_check)
     before = llama_keepwarm.other_inference_request_count(current_request_counted = False)
     llama_keepwarm._note_pending()
-    llama_keepwarm._note_start()  # one chat completion in flight
+    llama_keepwarm._note_start()
     try:
         _drain()
     finally:

@@ -14447,7 +14447,6 @@ class DiffusionBackend:
                 self._queued_generate_cancels.discard(cancel)
 
     def generation_holder(self) -> Optional[object]:
-        """Slot holder identity: running cancel, the lock (model change/admission), or None."""
         with self._generation_cancel_lock:
             if self._active_generate_cancel is not None:
                 return self._active_generate_cancel

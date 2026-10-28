@@ -39,7 +39,6 @@ class _Batch:
     images: int = 0
 
 
-# Collecting batches; accessed only on the event loop.
 _OPEN: dict[Hashable, _Batch] = {}
 
 
@@ -98,7 +97,6 @@ async def generate(
     run_batch: Callable[[list[str], list[int]], Awaitable[dict[str, Any]]],
     shared_outcome: Callable[[BaseException], bool] = lambda exc: False,
 ) -> Optional[dict[str, Any]]:
-    """Return the batch result or None; ``shared_outcome`` errors reach all members."""
     cap = batch_max()
     # An explicit seed renders alone: a batch's pixels differ slightly from a lone render's.
     if cap <= 1 or n >= cap or seed is not None:

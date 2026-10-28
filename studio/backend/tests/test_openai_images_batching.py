@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Concurrent /v1/images/generations requests with a fake backend."""
 
 from __future__ import annotations
 
@@ -341,7 +340,7 @@ def test_an_engine_stop_acknowledged_as_a_shared_call_fails_keeps_every_request_
             return real_generate(**kwargs)
         finally:
             if kwargs.get("prompts") is not None:
-                backend.active_cancel.set()  # what DiffusionBackend.cancel_generate() sets
+                backend.active_cancel.set()
 
     backend.generate = _fail_as_the_engine_cancels
     bodies = [_b64({"prompt": "a fox"}), _b64({"prompt": "a cat"})]

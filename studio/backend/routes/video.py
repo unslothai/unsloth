@@ -885,7 +885,6 @@ async def cancel_video_generation(
     video_id = await _cancel_video_id(request)
     queued = _own_queued_video(video_id) if video_id is not None else None
     if queued is not None and queued.starting:
-        # Not reserved by the engine yet: let the start settle, then stop what it leaves.
         if not await _await_queued_start(queued):
             raise HTTPException(status_code = 409, detail = "The video is starting; retry shortly.")
         queued = _own_queued_video(video_id)
@@ -2174,7 +2173,6 @@ def _refuse_family_inputs(
     reference: Optional[str],
     inputs: "_VideoCreateInputs",
 ) -> None:
-    """Family-specific shape, fps and conditioning checks, run before a switch or a queued wait."""
     from core.inference.video import assert_first_frame_pipeline_available
     from core.inference.video_families import (
         validate_video_keyframe_conditioning,
@@ -2186,8 +2184,7 @@ def _refuse_family_inputs(
     width, height = inputs.size if inputs.size is not None else (None, None)
     seconds = inputs.seconds
     _refuse_fixed_fps(fam.name, fam.default_fps, body.fps)
-    # Judge the duration against the target family's own lattice; passing None accepted any seconds and only refused
-    # it in begin_generate, after the resident pipeline had been evicted and the target fully loaded.
+    # Judge seconds against the target family's lattice now: None deferred the refusal until after the target loaded.
     want_frames = (
         body.num_frames
         if body.num_frames is not None
@@ -2225,7 +2222,6 @@ class _QueuedAccountDisabled(Exception):
 
 
 def _begin_video_generate(backend, queued_account: Optional[AccountContext], kwargs: dict):
-    # A queued start may have waited on admission or a switch since its account was checked.
     if queued_account is None:
         return backend.begin_generate(**kwargs)
 
@@ -2234,7 +2230,6 @@ def _begin_video_generate(backend, queued_account: Optional[AccountContext], kwa
             raise _QueuedAccountDisabled()
 
     _still_active()
-    # Checked again at the reservation itself: preparing the conditioning inputs takes time.
     return backend.begin_generate(**kwargs, before_commit = _still_active)
 
 
@@ -2414,7 +2409,6 @@ async def _start_openai_video(
     return _job_to_openai(job)
 
 
-# In-memory FIFO (lost on restart); jobs start as their submitting account.
 VIDEO_QUEUE_POLL_S = 2.0
 VIDEO_QUEUE_MAX = 64
 VIDEO_QUEUE_MAX_PER_ACCOUNT = 32
@@ -2537,7 +2531,6 @@ def _keyframe_canvas(
     last_frame: Optional[str],
     size = None,
 ):
-    """The backend's canvas for these keyframes, routing input_reference as begin_generate does."""
     from core.inference.video import VideoBackend
     from core.inference.video_minimax_h3 import H3_TASK_REFERENCES
 
@@ -2549,7 +2542,6 @@ def _keyframe_canvas(
 def _queued_job_display(
     body: VideoJobCreateRequest, reference: Optional[str], inputs: _VideoCreateInputs
 ) -> tuple[str, str, str]:
-    """Mirror an immediate start; loaded-model values only if it renders and the account may use it."""
     from core.inference.gpu_arbiter import VIDEO
     from core.inference.media_auto_switch import resident_answers_media_request
     from core.inference.media_model_index import (
@@ -2634,7 +2626,6 @@ async def _create_or_queue_openai_video(
 ) -> VideoJob:
     video_id = _new_video_id()
     seed = _video_seed(body)
-    # Recheck the queue after awaiting the busy probe to prevent overtaking.
     engine_busy = await asyncio.to_thread(_video_engine_busy)
     if not _VIDEO_QUEUE and not engine_busy:
         try:
@@ -2652,7 +2643,6 @@ async def _create_or_queue_openai_video(
                 raise
     await asyncio.to_thread(_refuse_unreadable_audio, inputs.reference_audios)
     model, size, seconds = await asyncio.to_thread(_queued_job_display, body, reference, inputs)
-    # No awaits between the capacity check and append.
     account = current_account()
     waiting = sum(1 for entry in _VIDEO_QUEUE if entry.account.account_id == account.account_id)
     if waiting >= VIDEO_QUEUE_MAX_PER_ACCOUNT or len(_VIDEO_QUEUE) >= VIDEO_QUEUE_MAX:
@@ -2711,7 +2701,6 @@ def _drop_queued_video(entry: _QueuedVideo) -> None:
 
 
 async def _settle_failed_queued_video(entry: _QueuedVideo, exc: BaseException) -> None:
-    """``starting`` stays set while writing, so a DELETE waits then deletes the record."""
     entry.starting = True
     try:
         await asyncio.to_thread(_fail_queued_video, entry, exc)
@@ -2747,7 +2736,6 @@ async def _start_queued_video(entry: _QueuedVideo) -> bool:
         if await asyncio.to_thread(_video_engine_busy):
             return False
         active = await asyncio.to_thread(_queued_account_active, entry.account)
-        # Recheck deletion after the awaits; claim the entry without yielding.
         if entry not in _VIDEO_QUEUE:
             return True
         if not active:
@@ -2756,15 +2744,13 @@ async def _start_queued_video(entry: _QueuedVideo) -> bool:
             return True
         entry.starting = True
         entered = started = False
-        # Counted like an HTTP create (inference, then media), so an idle unload or auto-switch
-        # can neither cancel the accepted clip nor take this start for a running chat.
+        # Counted like an HTTP create so an idle unload or auto-switch cannot cancel the accepted clip.
         activity = InferenceActivityReservation()
         activity.reserve()
         try:
             await activity.start()
             await media_keepwarm.begin_request(VIDEO)
             entered = True
-            # A load can start while the admission waits held this start.
             if await asyncio.to_thread(_video_engine_busy):
                 entry.starting = False
                 return False
@@ -2939,7 +2925,6 @@ async def openai_delete_video(video_id: str, current_subject: str = Depends(get_
 
     queued = _own_queued_video(video_id)
     if queued is not None and queued.starting:
-        # A start, or the record of its refusal, is in flight: wait, then delete what it leaves.
         if not await _await_queued_start(queued):
             raise _openai_video_error(
                 409,
