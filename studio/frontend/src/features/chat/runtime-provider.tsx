@@ -45,6 +45,8 @@ import {
 import { toast } from "sonner";
 import { useBrowserAgentStore } from "@/features/browser/agent/agent-store";
 import { browserAgentToolsForTurn } from "@/features/browser/agent/tools";
+import { useComputerAgentStore } from "@/features/computer/agent-store";
+import { computerAgentToolsForTurn } from "@/features/computer/tools";
 import { StudioDictationAdapter } from "./adapters/studio-dictation-adapter";
 import { StudioSpeechSynthesisAdapter } from "./adapters/studio-speech-synthesis-adapter";
 import {
@@ -3727,7 +3729,8 @@ function ThreadContextUsageRecount({
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   const reasoningSettings = useChatRuntimeStore(currentContextUsageReasoningKey);
   const browserTools = useBrowserAgentStore(() => browserAgentToolsForTurn().join(","));
-  const promptSettings = useChatRuntimeStore((state) => currentContextUsageSettingsKey(state, browserTools));
+  const computerTools = useComputerAgentStore(() => computerAgentToolsForTurn().join(","));
+  const promptSettings = useChatRuntimeStore((state) => currentContextUsageSettingsKey(state, `${browserTools},${computerTools}`));
   const threadSettingsPending = useChatRuntimeStore((s) => s.threadScopedSettingsPending);
   const threadLoading = useAuiState(({ thread }) => thread.isLoading);
   const savedUsage = useAuiState(({ thread }) => thread.messages.at(-1)?.metadata?.custom?.contextUsage);

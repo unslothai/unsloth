@@ -15,6 +15,7 @@ from typing import Any, Collection, Literal, Mapping, Sequence
 from urllib.parse import urlparse
 
 from core.inference.browser_agent import BROWSER_TOOL_NAMES
+from core.inference.computer_agent import COMPUTER_TOOL_NAMES
 from core.inference.llama_tool_schema import unrelaxed
 from core.inference.mcp_images import is_image_tool, split_images as split_mcp_images
 from core.inference.media_chat_tools import MEDIA_CHAT_TOOLS
@@ -26,7 +27,7 @@ MCP_TOOL_SEARCH_NAME = "mcp_tool_search"
 from core.inference.tool_call_parser import TOOL_ERROR_NUDGE, TOOL_ERROR_PREFIXES
 
 # Never deduplicated: an identical call is new work (the page as it is now, another render).
-REPEATABLE_TOOL_NAMES = BROWSER_TOOL_NAMES | MEDIA_CHAT_TOOLS
+REPEATABLE_TOOL_NAMES = BROWSER_TOOL_NAMES | COMPUTER_TOOL_NAMES | MEDIA_CHAT_TOOLS
 
 
 _CANONICAL_HEAL_ARG = {
@@ -775,6 +776,8 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
         return f"Editing: {name}" if name else "Editing file..."
     if tool_name in BROWSER_TOOL_NAMES:
         return _browser_status(tool_name, arguments)
+    if tool_name in COMPUTER_TOOL_NAMES:
+        return _computer_status(tool_name, arguments)
     mcp = mcp_display_parts(tool_name)
     if mcp:
         return f"Calling: {mcp[0]} · {mcp[1]}"
@@ -831,6 +834,46 @@ def _browser_status(tool_name: str, arguments: Mapping[str, Any]) -> str:
         return "Moving the mouse"
     if tool_name == "browser_drag":
         return "Dragging"
+    return f"Calling: {tool_name}"
+
+
+def _computer_status(tool_name: str, arguments: Mapping[str, Any]) -> str:
+    """The badge for a visual computer tool (#15532)."""
+
+    def text(key: str, limit: int = 60) -> str:
+        return " ".join(str(arguments.get(key) or "").split())[:limit]
+
+    if tool_name == "computer_screenshot":
+        return "Capturing desktop screenshot"
+    if tool_name == "computer_click":
+        x, y = arguments.get("x"), arguments.get("y")
+        loc = f" at ({x}, {y})" if x is not None and y is not None else ""
+        btn = str(arguments.get("button") or "left")
+        prefix = f"{btn.capitalize()} clicking" if btn != "left" else "Clicking"
+        return f"{prefix}{loc}"
+    if tool_name == "computer_move_mouse":
+        x, y = arguments.get("x"), arguments.get("y")
+        loc = f" to ({x}, {y})" if x is not None and y is not None else ""
+        return f"Moving mouse{loc}"
+    if tool_name == "computer_drag":
+        return "Dragging on desktop"
+    if tool_name in ("computer_mouse_down", "computer_mouse_up"):
+        act = "Pressing" if tool_name == "computer_mouse_down" else "Releasing"
+        btn = str(arguments.get("button") or "left")
+        return f"{act} {btn} mouse button"
+    if tool_name == "computer_type":
+        preview = text("text", 40)
+        return f"Typing: {preview}" if preview else "Typing on desktop..."
+    if tool_name == "computer_press_key":
+        key = text("key", 20)
+        return f"Pressing: {key}" if key else "Pressing keyboard key..."
+    if tool_name == "computer_scroll":
+        direction = text("direction").lower() or "down"
+        return f"Scrolling {direction}"
+    if tool_name == "computer_cursor_position":
+        return "Reading cursor position"
+    if tool_name == "computer_interval_screenshot":
+        return "Setting interval screenshot recording"
     return f"Calling: {tool_name}"
 
 
