@@ -5,14 +5,11 @@ import { type RefObject, useLayoutEffect } from "react";
 
 const FILL_VAR = "--composer-fill-height";
 const EDGE_GAP_PX = 16;
-// Covers the welcome screen's 280ms padding-top transition, which moves the composer without resizing it.
+// Re-measures for a few frames while the layout around the composer settles.
 const SETTLE_MS = 400;
 const SCROLLS = /(auto|scroll)/;
 
-function cssPx(
-  el: Element | null | undefined,
-  prop: "paddingTop" | "paddingBottom",
-): number {
+function cssPx(el: Element | null | undefined, prop: "paddingTop"): number {
   return el ? Number.parseFloat(getComputedStyle(el)[prop]) || 0 : 0;
 }
 
@@ -37,18 +34,14 @@ function availableHeight(root: HTMLElement, compare: boolean): number {
       (panes?.getBoundingClientRect().top ?? 0) + cssPx(panes, "paddingTop");
     return rootRect.bottom - (top + EDGE_GAP_PX);
   }
-  // Unscrolled top, so a frame that already overflows does not read as more room; the scroller's
-  // bottom padding (added with attachments) must fit too, or the page still scrolls.
+  // Unscrolled top, so a page that already overflows does not read as more room. Its bottom padding
+  // is ignored: assistant-ui's --aui-scroll-stabilizer adds some for a frame, which made the height bounce.
   const scroller = scrollParent(root);
   const bottom = Math.min(
     scroller?.getBoundingClientRect().bottom ?? window.innerHeight,
     window.innerHeight,
   );
-  return (
-    bottom -
-    Math.max(EDGE_GAP_PX, cssPx(scroller, "paddingBottom")) -
-    (rootRect.top + (scroller?.scrollTop ?? 0))
-  );
+  return bottom - EDGE_GAP_PX - (rootRect.top + (scroller?.scrollTop ?? 0));
 }
 
 /** While expanded, sizes the editor so the whole composer (attachments, queue and toolbar included) fills the chat area. */

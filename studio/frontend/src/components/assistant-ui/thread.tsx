@@ -146,6 +146,7 @@ import {
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
   IntentAwareScrollProvider,
+  useDetachThreadFromBottom,
   useIntentAwareAutoScroll,
   useIsThreadAtBottom,
   useScrollThreadToBottom,
@@ -3110,7 +3111,19 @@ const Composer: FC<{
   const oneRowHeight = Math.round(40 * uiSpaceScale);
   const [editorHeight, setEditorHeight] = useState(40);
   const [isWritingExpanded, setIsWritingExpanded] = useState(false);
+  const detachFromBottom = useDetachThreadFromBottom();
+  const scrollThreadToBottom = useScrollThreadToBottom();
+  const threadEmpty = useAuiState(({ thread }) => thread.isEmpty);
   const toggleWritingExpanded = () => {
+    // Welcome page: the bottom pin would hold the old overflow as stabilizer padding and leave the
+    // expanded frame shifted up, so unpin to expand and re-pin on collapse to keep the toolbar in view.
+    if (threadEmpty) {
+      if (isWritingExpanded) {
+        window.requestAnimationFrame(() => scrollThreadToBottom("instant"));
+      } else {
+        detachFromBottom();
+      }
+    }
     setIsWritingExpanded((expanded) => !expanded);
     inputRef.current?.focus({ preventScroll: true });
   };
