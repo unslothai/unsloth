@@ -384,6 +384,7 @@ async def chat_checkpoint(ctx: NodeContext) -> dict:
     if not name:
         raise FlowNodeError("Chat With Checkpoint needs a checkpoint")
     deadline = time.monotonic() + 3600
+    previous = await active_chat_model(ctx)
     ctx.set_status("loading_model", f"Loading {name}")
     try:
         trained = await trained_models.resolve_by(
@@ -408,14 +409,54 @@ async def chat_checkpoint(ctx: NodeContext) -> dict:
         raise FlowNodeError(f"Could not load {name}: {exc}") from None
     ctx.resident.clear()
     ctx.set_status("running")
-    prompt = as_text(ctx.inputs.get("prompt")) or str(ctx.params.get("prompt") or "")
-    if not prompt.strip():
-        raise FlowNodeError("The prompt is empty")
-    text = await ctx.llm_text(
-        model = None,
-        system = "",
-        prompt = prompt,
-        max_tokens = int(ctx.params.get("max_tokens") or 512),
-        seed = ctx.seed,
-    )
+    try:
+        prompt = as_text(ctx.inputs.get("prompt")) or str(ctx.params.get("prompt") or "")
+        if not prompt.strip():
+            raise FlowNodeError("The prompt is empty")
+        text = await ctx.llm_text(
+            model = None,
+            system = "",
+            prompt = prompt,
+            max_tokens = int(ctx.params.get("max_tokens") or 512),
+            seed = ctx.seed,
+        )
+    finally:
+        # Put back the chat model the adapter replaced: a Data Recipe step on the next run needs it loaded.
+        await restore_chat_model(ctx, previous, trained.ref)
     return {"text": strip_think(text)}
+
+
+async def active_chat_model(ctx: NodeContext) -> Optional[dict]:
+    try:
+        status = await ctx.call("GET", "/api/inference/status")
+    except FlowNodeError:
+        return None
+    model = status.get("model_identifier") if isinstance(status, dict) else None
+    if not isinstance(model, str) or not model.strip():
+        return None
+    return {"repo": model, "variant": status.get("gguf_variant") or None}
+
+
+async def restore_chat_model(ctx: NodeContext, previous: Optional[dict], replaced_by: str) -> None:
+    from studio_mcp import loading
+
+    if not previous or loading._same_id(previous["repo"], replaced_by):
+        return
+    label = previous["repo"] + (f" ({previous['variant']})" if previous["variant"] else "")
+    ctx.set_status("loading_model", f"Loading {label} again")
+    try:
+        await loading.load_llm(
+            ctx.caller,
+            None,
+            model = previous["repo"],
+            variant = previous["variant"],
+            max_seq_length = FLOW_CHAT_CONTEXT,
+            load_in_4bit = True,
+            hf_token = None,
+            kind = "llm",
+            deadline = time.monotonic() + 1800,
+        )
+        note_loaded(ctx, "llm", previous["repo"])
+        ctx.resident.clear()
+    except Exception as exc:
+        ctx.log(f"Could not load {label} again; load it before the next run ({exc})", "warning")
