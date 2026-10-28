@@ -285,6 +285,46 @@ def test_cached_weight_follows_dtype_conversion(monkeypatch, arch):
 
 
 @pytest.mark.parametrize("arch", ARCHS)
+def test_cached_weight_follows_unversioned_optimizer_step(monkeypatch, arch):
+    # FlashAdamW's Triton update writes the parameters in place without bumping their version
+    # counters (as an in-place op through `p.data` does), so eval -> train step -> eval must not
+    # serve the W + delta cached by the first eval.
+    model = _trained(monkeypatch, arch, ["dt_proj"])
+    ids = _ids()
+    first = _logits(model, ids)
+    model.train()
+    helpers._loss(model, ids).backward()
+    for p in helpers._lora_param(model, "dt_proj", "B"):
+        version = p._version
+        p.data.add_(p.grad.data, alpha = -10.0)
+        p.data.mul_(-1.5)
+        assert p._version == version
+    model.zero_grad(set_to_none = True)
+    model.eval()
+    assert torch.equal(_logits(model, ids), _logits(_merged(model), ids))
+    assert not torch.equal(_logits(model, ids), first)
+
+
+@pytest.mark.parametrize("arch", ARCHS)
+def test_device_or_dtype_move_releases_the_cached_weight(monkeypatch, arch):
+    # The cached W + delta sits outside parameters / buffers, so model.cpu() / .to() must drop it
+    # rather than keep the old device's copy alive.
+    model = _trained(monkeypatch, arch, ["dt_proj"])
+    ids = _ids()
+    _logits(model, ids)
+    cache = sys.modules["_unsloth_mamba_lora_under_test"]._CACHE
+    leaves = [
+        m for m in model.modules() if type(m).__name__ == "Linear" and hasattr(m, "lora_A")
+    ]
+    assert any(cache in leaf.__dict__ for leaf in leaves), "eval forward did not cache W + delta"
+    model.to(torch.float64)
+    assert not any(cache in leaf.__dict__ for leaf in leaves)
+    assert torch.equal(_logits(model, ids), _logits(_merged(model), ids))
+    model.cpu()
+    assert not any(cache in leaf.__dict__ for leaf in leaves)
+
+
+@pytest.mark.parametrize("arch", ARCHS)
 def test_autocast_eval_does_not_leak_into_full_precision(monkeypatch, arch):
     # The cached W + delta must not keep a bf16-rounded delta from an earlier autocast forward.
     model = _trained(monkeypatch, arch, ["dt_proj"])

@@ -274,6 +274,9 @@ def _raw_read_class(cls):
         return sub
 
     def weight(self):
+        if torch.is_grad_enabled():
+            # A training forward: the next eval read must rebuild W + delta.
+            self.__dict__.pop(_CACHE, None)
         # Per thread: nn.DataParallel replicas share their leaves' __dict__ contents.
         for module, effective, label in reversed(_routing.raw):
             if module is not self:
@@ -290,6 +293,17 @@ def _raw_read_class(cls):
             break
         return super(sub, self).weight
 
+    def train(self, mode = True):
+        # Optimizers such as FlashAdamW update params in place without bumping their version
+        # counters, so the cache key cannot see the step: drop the cached W + delta here.
+        self.__dict__.pop(_CACHE, None)
+        return super(sub, self).train(mode)
+
+    def _apply(self, fn, *args, **kwargs):
+        # The cache sits outside parameters / buffers: drop it so .cpu() / .to() frees the old copy.
+        self.__dict__.pop(_CACHE, None)
+        return super(sub, self)._apply(fn, *args, **kwargs)
+
     def __reduce_ex__(self, protocol):
         # Pickle / deepcopy as the plain adapter layer; the next mixer forward re-installs it.
         state = self.__dict__.copy()
@@ -302,6 +316,8 @@ def _raw_read_class(cls):
         (cls,),
         {
             "weight": property(weight),
+            "train": train,
+            "_apply": _apply,
             "__reduce_ex__": __reduce_ex__,
             "__module__": __name__,
             "__qualname__": qualname,
