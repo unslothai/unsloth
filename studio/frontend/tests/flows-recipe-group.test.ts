@@ -9,7 +9,8 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { applyConfigPatch, commitStudioEdit, studioView } = await import(
+const { applyConfigPatch, clientErrors, commitStudioEdit, studioView } =
+  await import(
   "../src/features/flows/recipe/recipe-adapter.ts"
 );
 const {
@@ -388,4 +389,18 @@ test("a tool profile added without a server yet stays as a card and can be remov
     recipeSetup(after, after.groups.recipe).cards.some((c) => c.kind === "tool_config"),
     false,
   );
+});
+
+test("Check flags an empty endpoint and model the way Recipe Studio does, before the server", () => {
+  const { group, nodes } = sqlGroup();
+  const config = group.config as {
+    model_providers: Record<string, unknown>[];
+    model_configs: Record<string, unknown>[];
+  };
+  // The learning recipe ships both blank; Recipe Studio refuses it until they are set.
+  config.model_providers[0].endpoint = "";
+  config.model_configs[0].model = "";
+  const errors = clientErrors(group, nodes);
+  assert.ok(errors.some((e) => /endpoint is required/.test(e)), errors.join("; "));
+  assert.ok(errors.some((e) => /model is required/.test(e)), errors.join("; "));
 });

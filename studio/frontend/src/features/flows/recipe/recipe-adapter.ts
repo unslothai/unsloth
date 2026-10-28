@@ -47,6 +47,18 @@ export interface StudioView {
   errors: string[];
 }
 
+/** Recipe Studio's own pre-server checks (a used provider with no endpoint, a preset with no model, ...). */
+export function clientErrors(group: FlowGroup, columns: FlowNode[]): string[] {
+  const view = studioView(group, columns);
+  if (view.errors.length) return view.errors;
+  return buildRecipePayload(
+    view.configs,
+    asNodes(view.configs),
+    [],
+    view.processors,
+  ).errors;
+}
+
 /** The group as Recipe Studio configs, the same ones its importer makes for a saved recipe. */
 export function studioView(group: FlowGroup, columns: FlowNode[]): StudioView {
   const result = importRecipePayload(

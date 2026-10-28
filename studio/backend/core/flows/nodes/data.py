@@ -342,7 +342,8 @@ async def run_recipe(
             total = page.get("total")
     except FlowNodeError:
         pass
-    rows = status.get("rows") if isinstance(status, dict) else None
+    # The job's own row count is the last batch's on a batched run; the dataset page counts them all.
+    rows = total if isinstance(total, int) else (status.get("rows") if isinstance(status, dict) else None)
     artifact = status.get("artifact_path") if isinstance(status, dict) else None
     saved = isinstance(artifact, str) and artifact.strip()
     kept = None if saved else await recipe_rows(ctx, job_id)

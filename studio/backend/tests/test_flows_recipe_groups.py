@@ -267,6 +267,23 @@ def test_the_group_runs_as_one_validated_job():
     assert ctx.hooks, "Stop must reach the recipe job"
 
 
+def test_the_dataset_counts_every_batch_not_the_last_one():
+    def routes(method, path, params, body):
+        if path == "/api/data-recipe/validate":
+            return {"valid": True}
+        if path == "/api/data-recipe/jobs":
+            return {"job_id": "job9"}
+        if path.endswith("/status"):
+            return {"status": "completed", "rows": 2, "artifact_path": "/x/recipes/recipe_sql"}
+        if path.endswith("/dataset"):
+            return {"dataset": [{"sql": "SELECT 1"}], "total": 6}
+        raise AssertionError(path)
+
+    ctx = _Ctx(routes, params = {RECIPE_PARAM: _compiled(_flow()), "rows": 6, "mode": "full"})
+    out = asyncio.run(data.recipe_group(ctx))
+    assert out["dataset"]["rows"] == 6
+
+
 def test_an_invalid_recipe_never_starts_a_job():
     routes, seen = _routes([], valid = False)
     ctx = _Ctx(routes, params = {RECIPE_PARAM: _compiled(_flow())})

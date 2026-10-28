@@ -39,6 +39,9 @@ export async function checkRecipeGroup(groupId: string): Promise<string[]> {
   const group = graph.groups[groupId];
   if (!group) return ["This recipe is gone"];
   try {
+    const { clientErrors } = await import("./recipe-adapter");
+    const local = clientErrors(group, groupColumns(graph, groupId));
+    if (local.length) return local;
     const { validateRecipe } = await import("@/features/recipe-studio/api");
     const result = await validateRecipe({
       recipe: groupPayload(group, groupColumns(graph, groupId)).recipe,
@@ -60,7 +63,9 @@ export function runRecipeGroup(
     toast.error("This recipe has no Recipe Dataset step");
     return;
   }
-  const blocked = seedWired(groupId) ? null : missingSeed(graph.groups[groupId]);
+  const blocked = seedWired(groupId)
+    ? null
+    : missingSeed(graph.groups[groupId]);
   if (blocked) {
     const [title, detail] = blocked.split(": ");
     toast.error(title, { description: detail });

@@ -433,8 +433,13 @@ export const BUDGET = {
   // Flows: +12,232 B raw / +6,300 B transfer over 1610b38cc4 (shared startup chunks); Flows itself stays lazy.
   // Flows gallery kept as Daniel's (no Studio Card/Skeleton/Textarea/Spinner there): chunk split moves
   // ~1.2 KB transfer into startup (2,053.3 -> 2,054.5 KB, Node 26, 127 chunks). Raised by that.
-  transferBytes: 2_104_200,
-  rawBytes: 6_970_945,
+  // Recipes in Flows add 3,077 B raw / 2,230 B transfer over 27b8977e27 (6,960,305 -> 6,963,382 B raw,
+  // 2,103,853 -> 2,106,083 B transfer, Node 26, 127 -> 132 chunks) with no recipe code eager: the lazy dataset
+  // viewer and run views share dropdown-menu, progress, use-mobile and a dist helper with startup, so those split
+  // into their own startup chunks (2,173 B raw / 2,046 B transfer), and the lazy recipe forms split index.min the
+  // same way (904 B raw / 184 B transfer). Raised by that growth.
+  transferBytes: 2_106_430,
+  rawBytes: 6_974_022,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
