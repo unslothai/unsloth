@@ -2427,7 +2427,16 @@ def run_server(
         pass
     write_startup_marker()
 
-    from main import app, setup_frontend, _desktop_owner, _IS_COLAB
+    import gc
+
+    # The import builds ~330k long-lived objects the default threshold rescans ~270 times; 0 (GC off) is left alone.
+    _gc_threshold = gc.get_threshold()
+    if _gc_threshold[0]:
+        gc.set_threshold(max(_gc_threshold[0], 100_000), *_gc_threshold[1:])
+    try:
+        from main import app, setup_frontend, _desktop_owner, _IS_COLAB
+    finally:
+        gc.set_threshold(*_gc_threshold)
 
     # A callable, re-asked at shutdown. On app.state: main.py must not import this module.
     app.state.live_sibling_backend = live_sibling_backend
