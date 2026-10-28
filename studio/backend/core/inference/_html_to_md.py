@@ -2341,11 +2341,13 @@ def _fence_for(raw: str) -> str:
 def _visible_len(line: str) -> int:
     """Length of *line* without Markdown link destinations. A tracking URL is not
     prose: a card holding one [Read](/x?<300 bytes>) otherwise scored 339 visible
-    characters off 4 and displaced the article. Scanned, so no backtracking."""
+    characters off 4 and displaced the article. Linear: once a destination fails to
+    close, the rest are answered from one table instead of a rescan each."""
     if "[" not in line and "\\" not in line:
         return len(line)
     total, i, n = 0, 0, len(line)
     open_bracket = False
+    closes = None
     while i < n:
         if line[i] == "\\":
             total += 2
@@ -2355,15 +2357,22 @@ def _visible_len(line: str) -> int:
             open_bracket = True
         # With no opening bracket, "](" is literal and the parens after it are prose.
         if open_bracket and line[i] == "]" and i + 1 < n and line[i + 1] == "(":
-            # Destinations may hold balanced or escaped parens, so the first ) does not end them.
-            j, depth = i + 2, 1
-            while j < n and depth:
-                char = line[j]
-                if char == "\\":
-                    j += 2
-                    continue
-                depth += (char == "(") - (char == ")")
-                j += 1
+            if closes is None:
+                # Destinations may hold balanced or escaped parens, so the first ) does not end them.
+                j, depth = i + 2, 1
+                while j < n and depth:
+                    char = line[j]
+                    if char == "\\":
+                        j += 2
+                        continue
+                    depth += (char == "(") - (char == ")")
+                    j += 1
+                if depth:
+                    # Unclosed: later candidates would rescan this tail, so index it once.
+                    closes = _destination_ends(line)
+            else:
+                j = closes.get(i + 2, -1)
+                depth = j < 0
             if depth:
                 total += 1
                 i += 1
@@ -2374,6 +2383,36 @@ def _visible_len(line: str) -> int:
         total += 1
         i += 1
     return total
+
+
+def _destination_ends(line: str) -> dict:
+    """End (one past the closing paren) of a destination scan started at each position the
+    scanner can stand on, for those that close. Every scan steps over the same positions,
+    escapes included, so one prefix sum of paren depth answers all of them: a scan from p
+    closes at the first later step where the sum drops below its value at p."""
+    steps: list[int] = []
+    sums: list[int] = []
+    depth, k, n = 0, 0, len(line)
+    while k < n:
+        steps.append(k)
+        sums.append(depth)
+        char = line[k]
+        if char == "\\":
+            k += 2
+            continue
+        depth += (char == "(") - (char == ")")
+        k += 1
+    ends: dict = {}
+    first_at: dict = {}  # prefix value -> earliest later step index holding it
+    sums.append(depth)
+    for m in range(len(steps), -1, -1):
+        if m < len(steps):
+            after = first_at.get(sums[m] - 1)
+            if after is not None:
+                # the step before index `after` held the closing paren
+                ends[steps[m]] = steps[after - 1] + 1
+        first_at[sums[m]] = m
+    return ends
 
 
 # Scoped conversions shorter than this are rejected as main content, e.g. an empty article stub
