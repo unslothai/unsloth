@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""UNSLOTH_PP_SIZE for a model no FastLanguageModel / FastModel load built.
-
-`import unsloth` installs the Trainer.__init__ wrapper under UNSLOTH_TP_SIZE (#15424), so a
-FastSentenceTransformer encoder gets tensor parallel applied or refused. Under UNSLOTH_PP_SIZE alone
-nothing installed it: the encoder's SentenceTransformerTrainer trained as plain DDP with no message,
-while a FastLanguageModel load of the same launch was refused. The import now installs the wrapper
-under either variable, and the wrapper's first step refuses UNSLOTH_PP_SIZE.
-
-* the installer wraps Trainer under UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE (not 1), and only there;
-* the GPU import path gates the installer on both variables;
-* the wrapper's tensor parallel step raises the UNSLOTH_PP_SIZE refusal under UNSLOTH_PP_SIZE alone."""
+"""UNSLOTH_PP_SIZE alone must install the Trainer wrapper (it refuses PP) so a non-Fast* encoder is not trained as plain DDP."""
 
 import ast
 import importlib.util
@@ -26,7 +16,6 @@ _ENV = ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_FSDP2", "WORLD_SIZE")
 
 
 def _load_tp_env(monkeypatch, calls):
-    """unsloth/models/tp_env.py with `._utils` stubbed (the real one needs the GPU package)."""
     pkg = types.ModuleType("unsloth")
     pkg.__path__ = [os.path.join(REPO, "unsloth")]
     models = types.ModuleType("unsloth.models")
@@ -59,7 +48,6 @@ def _set_env(monkeypatch, env):
     "env,applies",
     [
         ({"UNSLOTH_TP_SIZE": "2", "WORLD_SIZE": "2"}, True),
-        # An encoder trained as plain DDP here before: nothing installed the wrapper.
         ({"UNSLOTH_PP_SIZE": "2", "WORLD_SIZE": "2"}, True),
         ({"UNSLOTH_PP_SIZE": "2", "UNSLOTH_TP_SIZE": "2", "WORLD_SIZE": "4"}, True),
         ({"UNSLOTH_PP_SIZE": "1", "WORLD_SIZE": "2"}, False),
@@ -97,8 +85,6 @@ def test_gpu_import_path_gates_the_installer_on_both_variables():
 
 
 def test_wrapper_refuses_pp_size_alone(monkeypatch):
-    """The wrapper's first step (`_tensor_parallel_env_trainer_pre`) reaches tp_env's layout and
-    refuses UNSLOTH_PP_SIZE, naming the variable, instead of letting the Trainer run as DDP."""
     torch = pytest.importorskip("torch")
     _set_env(monkeypatch, {"UNSLOTH_PP_SIZE": "2", "WORLD_SIZE": "2"})
     _load_tp_env(monkeypatch, [])
