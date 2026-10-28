@@ -767,13 +767,22 @@ def dpo_trainer_reference_snapshot(function_name, function):
     # TRL reloads the checkpoint, dropping in-memory training: copy the policy's weights into it.
     # Not deepcopy: instance forward patches (block-compiled experts, packing) close over the policy's modules.
     function, count = re.subn(
-        r"(?m)^(?P<indent>[ \t]*)ref_model_init_kwargs = [^\n]+\n"
-        r"(?:(?P=indent)[^\n]*\n)*?"
-        r"(?P=indent)self\.ref_model = create_model_from_path\(ref_model_path, \*\*ref_model_init_kwargs\)\n",
-        lambda m: m[0]
+        r"(?m)^(?P<head>(?P<indent>[ \t]*)ref_model_init_kwargs = [^\n]+\n"
+        r"(?:(?P=indent)[^\n]*\n)*?)"
+        r"(?P<load>(?P=indent)self\.ref_model = create_model_from_path\(ref_model_path, \*\*ref_model_init_kwargs\)\n)",
+        lambda m: m["head"]
         + textwrap.indent(
             "from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled\n"
-            "if _unsloth_dpo_model_is_instance and not is_deepspeed_zero3_enabled():\n"
+            "_unsloth_dpo_copy_policy = _unsloth_dpo_model_is_instance and not is_deepspeed_zero3_enabled()\n"
+            "if _unsloth_dpo_copy_policy:\n"
+            # Built from the policy's config: load-time overrides (RoPE scaling) shape the modules, not the weights.
+            "    import copy as _unsloth_copy\n"
+            '    ref_model_init_kwargs.setdefault("config", _unsloth_copy.deepcopy(self.model.config))\n',
+            m["indent"],
+        )
+        + m["load"]
+        + textwrap.indent(
+            "if _unsloth_dpo_copy_policy:\n"
             # Unbound calls: rl.py strips every literal `.state_dict()` (legacy vLLM weight loads).
             "    _unsloth_policy_sd = torch.nn.Module.state_dict(self.model)\n"
             # Checked first: load_state_dict writes matching tensors before raising on the rest.

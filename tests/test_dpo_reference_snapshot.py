@@ -95,7 +95,9 @@ def _run(
     monkeypatch.setattr(ds, "is_deepspeed_zero3_enabled", lambda: zero3)
     namespace = {
         "_unsloth_dpo_reference_loadable": _NS["_unsloth_dpo_reference_loadable"],
-        "create_model_from_path": lambda path, **kwargs: _Policy(out, tied, offload),
+        "create_model_from_path": lambda path, **kwargs: _loaded(
+            _Policy(out, tied, offload), kwargs
+        ),
         "is_peft_model": lambda m: False,
         "get_config_model_id": lambda config: config,
         "torch": torch,
@@ -106,6 +108,11 @@ def _run(
     with pytest.warns(UserWarning, match = "later TRL warning"):
         namespace["__init__"](trainer, model, ref_model)
     return trainer.ref_model
+
+
+def _loaded(ref, kwargs):
+    ref.loaded_config = kwargs.get("config")
+    return ref
 
 
 def _trained(cls = _Policy):
@@ -121,6 +128,8 @@ def test_instance_reference_is_in_memory_policy(monkeypatch):
     policy.lin.forward = torch.compiler.disable(policy.lin.forward)
     ref = _run(hook("__init__", TRL_INIT), policy, monkeypatch)
     assert ref is not policy and torch.equal(ref.lin.weight, policy.lin.weight)
+    # Built from the policy's config (load-time overrides such as RoPE scaling), not the checkpoint's.
+    assert ref.loaded_config == policy.config
     x = torch.ones(1, 2)
     before = ref.lin(x)
     with torch.no_grad():
@@ -135,7 +144,7 @@ def test_instance_reference_is_in_memory_policy(monkeypatch):
 def test_path_and_zero3_keep_checkpoint(monkeypatch, model, zero3):
     model = _trained() if model is None else model
     ref = _run(hook("__init__", TRL_INIT), model, monkeypatch, zero3 = zero3)
-    assert torch.equal(ref.lin.weight, _Policy().lin.weight)
+    assert torch.equal(ref.lin.weight, _Policy().lin.weight) and ref.loaded_config is None
 
 
 def test_explicit_reference_kept(monkeypatch):
