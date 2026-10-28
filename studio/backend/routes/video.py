@@ -2226,9 +2226,16 @@ class _QueuedAccountDisabled(Exception):
 
 def _begin_video_generate(backend, queued_account: Optional[AccountContext], kwargs: dict):
     # A queued start may have waited on admission or a switch since its account was checked.
-    if queued_account is not None and not _queued_account_active(queued_account):
-        raise _QueuedAccountDisabled()
-    return backend.begin_generate(**kwargs)
+    if queued_account is None:
+        return backend.begin_generate(**kwargs)
+
+    def _still_active() -> None:
+        if not _queued_account_active(queued_account):
+            raise _QueuedAccountDisabled()
+
+    _still_active()
+    # Checked again at the reservation itself: preparing the conditioning inputs takes time.
+    return backend.begin_generate(**kwargs, before_commit = _still_active)
 
 
 async def _start_openai_video(
@@ -2550,7 +2557,11 @@ def _queued_job_display(
         expected_partition,
         resolve_local_media_model,
     )
-    from core.inference.video import _detect_load_family, get_video_backend
+    from core.inference.video import (
+        _detect_load_family,
+        _family_shape_defaults,
+        get_video_backend,
+    )
     from core.inference.video_families import VideoShapeError
     from utils.openai_auto_switch_settings import get_media_auto_switch_enabled
 
@@ -2583,7 +2594,10 @@ def _queued_job_display(
             raise _openai_video_error(
                 400, str(exc), param = _conditioning_param(body, reference, "input_reference")
             )
-    defaults = (status.get("defaults") or {}) if resident_renders else {}
+    if resident_renders:
+        defaults = status.get("defaults") or {}
+    else:
+        defaults = _family_shape_defaults(fam) if fam is not None else {}
     resident = status.get("repo_id") if resident_renders else None
     if resident:
         model = public_model_id(str(resident))

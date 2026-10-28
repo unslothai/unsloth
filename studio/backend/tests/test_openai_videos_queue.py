@@ -617,3 +617,58 @@ def test_a_queued_image_to_video_job_reports_the_canvas_of_its_reference(client,
         assert client.get(f"/v1/videos/{queued['id']}").json()["size"] == immediate["size"]
     finally:
         backend.gate.set()
+
+
+def test_an_account_disabled_while_its_conditioning_is_prepared_never_starts(
+    client, backend, monkeypatch
+):
+    first = _render_one(client, backend)
+    queued = client.post("/v1/videos", json = {"prompt": "theirs"}).json()
+    backend.gate.set()
+    _wait_terminal(client, first["id"])
+    live = {"active": True}
+    real_resolve = backend._resolve_keyframes
+
+    def _disable_then_resolve(*args, **kwargs):
+        live["active"] = False
+        return real_resolve(*args, **kwargs)
+
+    monkeypatch.setattr(video_routes, "_queued_account_active", lambda account: live["active"])
+    monkeypatch.setattr(backend, "_resolve_keyframes", _disable_then_resolve)
+    _assert_disabled_mid_start_never_renders(client, backend, queued)
+    assert backend._generate_job_active is False
+    assert backend._active_generate_cancel is None
+
+
+def test_a_queued_job_for_another_downloaded_model_reports_that_models_size_and_seconds(
+    client, backend, monkeypatch
+):
+    from types import SimpleNamespace
+
+    import core.inference.media_model_index as media_model_index
+    import core.inference.video as video_module
+    import utils.openai_auto_switch_settings as auto_switch_settings
+    from core.inference import media_auto_switch
+    from core.inference.video_families import detect_video_family
+
+    wan = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
+    _render_one(client, backend)
+    monkeypatch.setattr(auto_switch_settings, "get_media_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(media_auto_switch, "resident_answers_media_request", lambda *a, **k: False)
+    monkeypatch.setattr(
+        media_model_index,
+        "resolve_local_media_model",
+        lambda *a, **k: SimpleNamespace(model_path = wan, gguf_filename = None),
+    )
+    monkeypatch.setattr(media_model_index, "expected_partition", lambda pick: None)
+    monkeypatch.setattr(
+        video_module, "_detect_load_family", lambda *a, **k: detect_video_family(wan)
+    )
+    try:
+        queued = client.post("/v1/videos", json = {"prompt": "x", "model": wan}).json()
+        assert queued["status"] == "queued"
+        assert (queued["size"], queued["seconds"]) == ("832x480", "2.06")
+        timed = client.post("/v1/videos", json = {"prompt": "y", "model": wan, "seconds": "4"})
+        assert timed.json()["seconds"] == "4.06"
+    finally:
+        backend.gate.set()
