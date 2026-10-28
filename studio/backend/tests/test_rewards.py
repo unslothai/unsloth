@@ -522,3 +522,30 @@ def test_an_integer_past_the_float_range_is_a_reward_error(field):
     band[field] = 10**400
     with pytest.raises(rewards.RewardError, match = "finite number"):
         rewards.validate_rule({"type": "numeric", "bands": [band]})
+
+
+def test_a_score_too_large_to_weight_is_refused_not_a_500(client):
+    md = _md("huge", "type: exact_match\nscore: {match: 1.0e+308, miss: 0.0}")
+    response = client.post(
+        "/api/rewards/preview",
+        json = {
+            "rewards": [{"markdown": md, "weight": 10}],
+            "completion": "72",
+            "reference": "72",
+        },
+    )
+    assert response.status_code == 400, response.text
+    assert "score.match must be between" in response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "type: exact_match\nmissing: -2000000",
+        "type: numeric\nbands: [{within: 0, score: 2000000}]",
+        "type: numeric\nbands: [{within: 0, score: 1}]\nelse: 2000000",
+    ],
+)
+def test_every_rule_score_is_bounded(body):
+    with pytest.raises(rewards.RewardError, match = "must be between"):
+        rewards.parse_reward_markdown(_md("t", body))
