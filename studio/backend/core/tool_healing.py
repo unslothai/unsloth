@@ -295,7 +295,6 @@ def _balanced_brace_end(
             return None
         ch = content[i]
         if ch == "<":
-            # A Gemma string: only the next quote marker closes it.
             close = content.find(_GEMMA_QUOTE, i + len(_GEMMA_QUOTE))
             if close < 0:
                 return None

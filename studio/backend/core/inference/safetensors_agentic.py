@@ -158,7 +158,7 @@ def _held_rehearsal_tail_len(
     unrestricted: bool = False,
 ) -> int:
     """Length of a trailing bare tool-name token held while streaming so the name does not leak; also call:NAME{ prefixes, seen only once the brace arrives."""
-    # Restricted: a tail longer than every NAME[ARGS] cannot be a prefix, so the scan stops there.
+    # Restricted mode: same NAME[ARGS] bound as llama_cpp._held_rehearsal_tail_len.
     limit = (
         len(text)
         if unrestricted
