@@ -1490,9 +1490,7 @@ def _refuse_block_swap(model):
 
 
 def _frozen_weights_are_vllm_engine_storage(model):
-    """True when the model was loaded with fast_inference: Unsloth's vLLM load builds the HF weights as views
-    of the engine's (unsloth_zoo convert_vllm_to_huggingface, `llm.shared_weights`), so the engine keeps that
-    storage alive. The engine sits on the loaded model; a PeftModel holds it under base_model.model."""
+    """True if weights are views of a vLLM engine's (`llm.shared_weights`), found on the model or base_model.model."""
     seen = set()
     stack = [model]
     while stack:
@@ -1561,9 +1559,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     ):
         from .fsdp2_perf import _env_tristate as _replicate_env
         if _replicate_env("UNSLOTH_FSDP2_REPLICATE_FROZEN") is None:
-            # fast_inference: the frozen weights are views of the vLLM engine's own weights, which the engine
-            # keeps alive. Sharding them frees nothing and allocates every rank's shard on top (half of a 16-bit
-            # 3B model on 2 ranks, which no longer fits a T4 beside vLLM), so keep them replicated like DDP.
+            # Sharding engine-owned weights frees nothing and adds a shard per rank (3B GRPO OOMs on a T4).
             config = dataclasses.replace(config, shard_frozen = False)
             _print_rank0(
                 "Unsloth: native FSDP2 keeps the frozen weights replicated: they are the vLLM engine's "

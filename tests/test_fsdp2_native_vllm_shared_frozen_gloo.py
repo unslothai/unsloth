@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Native FSDP2 over a fast_inference (vLLM) model keeps the frozen weights replicated (gloo world of 2).
-
-Unsloth's vLLM load builds the HF weights as views of the engine's own weights (`llm.shared_weights`),
-which the engine keeps alive. When the model does not fit the planner's budget (a 16-bit 3B model on a
-T4), the sharded layout used to shard the frozen weights too: fully_shard copies each into a new padded
-shard and the engine still holds the original, so every rank paid half the model on top and
-Advanced_Llama3_2_(3B)_GRPO_LoRA ran out of memory in fully_shard. Such frozen weights now stay
-replicated (the same tensors, like DDP); only the adapters are sharded.
-
-* a model that does not fit (the CPU mesh plans the sharded layout): frozen weights sharded without an
-  engine, replicated and untouched (same storage) with one on the PeftModel or on the inner model;
-* an engine that does not share its weights, and an explicit UNSLOTH_FSDP2_REPLICATE_FROZEN=0, keep
-  the sharded layout."""
+"""Native FSDP2 keeps vLLM-shared frozen weights replicated (same storage) instead of sharding a copy (T4 OOM)."""
 
 import multiprocessing
 import os

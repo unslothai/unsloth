@@ -211,11 +211,7 @@ def _zoo_gathers_fsdp2_lora():
 
 
 def raise_if_fast_inference_under_fsdp2(fast_inference):
-    """vLLM under accelerate's FSDP2 is refused before vLLM loads instead of failing mid-run (unsloth#3551).
-
-    Unsloth's native FSDP2 (UNSLOTH_FSDP2=1 under torchrun) keeps it: each rank builds its own vLLM
-    engine (unsloth_zoo load_vllm, external_launcher), frozen base weights stay replicated, so they are
-    still the engine's, and the sharded adapters are gathered whole for every rollout (load_lora)."""
+    """Refuse vLLM under accelerate's FSDP2 early (unsloth#3551); native FSDP2 keeps it (one engine per rank)."""
     if not fast_inference or not fsdp2_requested():
         return
     from ..fsdp2_launch import unsloth_fsdp2_native_requested

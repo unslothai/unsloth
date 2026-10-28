@@ -147,7 +147,6 @@ def test_trainer_args_fsdp2_is_refused_when_the_trainer_is_built(tmp_path):
 
 @pytest.mark.parametrize("zoo_gathers", [True, False])
 def test_native_fsdp2_keeps_vllm_when_zoo_gathers_the_adapters(no_launcher, zoo_gathers):
-    """UNSLOTH_FSDP2=1 under torchrun: one vLLM engine per rank, adapters gathered for every rollout."""
     for key in ("UNSLOTH_FSDP2_BACKEND", "ACCELERATE_USE_FSDP"):
         no_launcher.delenv(key, raising = False)
     no_launcher.setenv("UNSLOTH_FSDP2", "1")
@@ -160,7 +159,6 @@ def test_native_fsdp2_keeps_vllm_when_zoo_gathers_the_adapters(no_launcher, zoo_
     else:
         with pytest.raises(NotImplementedError, match = "update unsloth_zoo"):
             raise_if_fast_inference_under_fsdp2(True)
-    # accelerate's FSDP2 for the same launch keeps the refusal.
     no_launcher.setenv("UNSLOTH_FSDP2_BACKEND", "accelerate")
     with pytest.raises(NotImplementedError, match = "fast_inference = False"):
         raise_if_fast_inference_under_fsdp2(True)
