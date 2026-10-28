@@ -502,9 +502,7 @@ class SyntheticDataKit:
                 print(f"Error during forceful kill: {kill_e}")
         for _ in range(10):
             clean_gpu_cache()
-            # A pass that finds nothing frees nothing, so later passes cannot find anything either.
-            if gc.collect() == 0 and not gc.callbacks:
-                break
+            gc.collect()
 
         if hasattr(self, "_delete_vllm"):
             self._delete_vllm(llm = None)

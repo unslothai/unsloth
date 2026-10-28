@@ -217,17 +217,14 @@ def test_vllm_resume_sleeps_and_flushes_on_any_accelerator(device_count):
     helper = _resume_helper(device_count, flushes)
     llm = _SleepingLLM(enable_sleep_mode = True)
     helper(types.SimpleNamespace(llm = llm))
-    # Up to 3 collect + flush passes; they stop once a collect finds nothing.
-    assert llm.slept == [1] and 1 <= len(flushes) <= 3
+    assert llm.slept == [1] and len(flushes) == 3
     # The engine can also hang off the model; no sleep mode means nothing to release.
     engine = _SleepingLLM(enable_sleep_mode = True)
-    first = len(flushes)
     helper(types.SimpleNamespace(llm = None, model = types.SimpleNamespace(vllm_engine = engine)))
-    assert engine.slept == [1] and 1 <= len(flushes) - first <= 3
+    assert engine.slept == [1] and len(flushes) == 6
     idle = _SleepingLLM(enable_sleep_mode = False)
-    before_idle = len(flushes)
     helper(types.SimpleNamespace(llm = idle))
-    assert idle.slept == [] and len(flushes) == before_idle
+    assert idle.slept == [] and len(flushes) == 6
 
 
 def test_vllm_resume_is_a_noop_without_an_accelerator():
