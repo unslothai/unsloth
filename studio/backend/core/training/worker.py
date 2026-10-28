@@ -3880,7 +3880,6 @@ def run_mlx_training_process(
                 if security_error:
                     event_queue.put({"type": "error", **security_error, "ts": time.time()})
                 else:
-                    _download_decision_checkpoint(event_queue, config)
                     from core.training.decision_trainer import run_decision_training
                     run_decision_training(event_queue, stop_queue, config)
             else:
@@ -4719,7 +4718,6 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     if config.get("is_decision", False):
         try:
-            _download_decision_checkpoint(event_queue, config)
             from core.training.decision_trainer import run_decision_training
             run_decision_training(event_queue, stop_queue, config)
         except Exception as exc:
