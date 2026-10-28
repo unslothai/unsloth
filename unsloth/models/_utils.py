@@ -3333,12 +3333,41 @@ def _adapter_repo_has_safetensors(
         return False
 
 
+# Sentinel for "the repo listing was not fetched": every helper then behaves exactly as before.
+_SIBLINGS_NOT_FETCHED = object()
+
+
+def _fetch_repo_siblings(
+    model_name,
+    *,
+    token = None,
+    revision = None,
+):
+    """The repo file listing from one model_info call, or None on any failure. Shared by the probes below and the auto format prune, which would otherwise each reach the Hub."""
+    try:
+        from huggingface_hub import HfApi
+        return HfApi().model_info(model_name, revision = revision, token = token).siblings
+    except Exception:
+        return None
+
+
+def _listing_lacks(siblings, filename):
+    """True only when a usable listing was fetched and *filename* is not in it, so the probe would 404. No listing (not fetched, failed, empty) means unknown: probe as before."""
+    if siblings is _SIBLINGS_NOT_FETCHED or not siblings:
+        return False
+    try:
+        return all(sibling.rfilename.replace("\\", "/") != filename for sibling in siblings)
+    except Exception:
+        return False
+
+
 def _st_weighted_subfolder_paths(
     model_name,
     *,
     token = None,
     revision = None,
     cache_dir = None,
+    siblings = _SIBLINGS_NOT_FETCHED,
 ):
     """Best-effort: which subfolder modules of this sentence-transformers repo hold weights the load reads? Returns their declared paths, or () for anything else and on any failure.
 
@@ -3353,6 +3382,8 @@ def _st_weighted_subfolder_paths(
 
         from unsloth_zoo.hf_cache_state import _ST_WEIGHTED_MODULE_TYPES
 
+        if _listing_lacks(siblings, "modules.json"):
+            return ()  # not a sentence-transformers repo; the download would only 404
         path = hf_hub_download(
             model_name,
             "modules.json",
@@ -3387,6 +3418,7 @@ def _root_index_weight_subfolders(
     token = None,
     revision = None,
     cache_dir = None,
+    siblings = _SIBLINGS_NOT_FETCHED,
 ):
     """Subfolders the root safetensors index maps weights into (Cosmos3 keeps every shard under transformer/), else ()."""
     try:
@@ -3394,6 +3426,8 @@ def _root_index_weight_subfolders(
 
         from huggingface_hub import hf_hub_download
 
+        if _listing_lacks(siblings, "model.safetensors.index.json"):
+            return ()  # single-file or non-safetensors repo; the download would only 404
         path = hf_hub_download(
             model_name,
             "model.safetensors.index.json",
@@ -3462,6 +3496,7 @@ def _prefetch_ignore_patterns(
     variant = None,
     weights_at_root = False,
     st_module_paths = (),
+    siblings = _SIBLINGS_NOT_FETCHED,
 ):
     """ignore_patterns for the prewarm snapshot: the static skip list, minus the checkpoint guard when loading from a checkpoint-* subfolder, minus the weight format the load will not read. use_safetensors is a format allowlist (True -> skip *.bin, False -> skip *.safetensors); auto (None) skips *.bin only when in-scope safetensors are shipped, and from_tf/from_flax keep *.h5/*.msgpack. Suppressed for a whole multi-component snapshot (ST/diffusers repos with per-subfolder weights), since "*" spans "/" so dropping "*.bin" would strip a module's only weight."""
     ignore_patterns = [
@@ -3503,18 +3538,21 @@ def _prefetch_ignore_patterns(
     else:
         # Auto: skip .bin only once in-scope safetensors are confirmed (best-effort; any failure keeps both).
         try:
-            from huggingface_hub import HfApi
-
-            siblings = (
-                HfApi()
-                .model_info(
-                    model_name,
-                    revision = revision,
-                    token = token,
+            if siblings is _SIBLINGS_NOT_FETCHED:
+                from huggingface_hub import HfApi
+                siblings = (
+                    HfApi()
+                    .model_info(
+                        model_name,
+                        revision = revision,
+                        token = token,
+                    )
+                    .siblings
                 )
-                .siblings
-                or []
-            )
+            elif siblings is None:
+                # The shared model_info call already failed: same outcome as failing here.
+                raise RuntimeError("repo listing unavailable")
+            siblings = siblings or []
             # Count only in-scope model-weight safetensors, not adapters or sidecars, variant-matching when a variant is requested, else canonical, to prove the .bin redundant.
             has_safetensors = any(
                 _is_model_weight_safetensors(sibling.rfilename)
@@ -3605,22 +3643,33 @@ def maybe_prefetch_hf_snapshot(
     # A sentence-transformers repo can hold weights at the root AND in declared module subfolders. Probed once and shared, since the subdir prune and the format prune both span "/" and would drop those weights.
     st_module_paths = ()
     index_subfolders = ()
+    repo_listing = {}  # {"siblings": ...} once fetched; empty keeps every helper on its own probe
     if (
         weights_at_root
         and not (tokenizer_only or adapter_only or gguf_file)
         and not (isinstance(subfolder, str) and subfolder.strip("/"))
     ):
+        # The auto format prune below lists the repo anyway (use_safetensors=None, no tf/flax); list it first so the
+        # modules.json / index probes skip files the repo does not ship instead of each paying a 404 round trip.
+        if use_safetensors is None and not (from_tf or from_flax):
+            repo_listing["siblings"] = _fetch_repo_siblings(
+                model_name,
+                token = token,
+                revision = revision,
+            )
         st_module_paths = _st_weighted_subfolder_paths(
             model_name,
             token = token,
             revision = revision,
             cache_dir = cache_dir,
+            **repo_listing,
         )
         index_subfolders = _root_index_weight_subfolders(
             model_name,
             token = token,
             revision = revision,
             cache_dir = cache_dir,
+            **repo_listing,
         )
     # tokenizer-only / adapter-only warms allow-list exact files below, so the weight-format ignore list and its model_info call are skipped.
     ignore_patterns = (
@@ -3637,6 +3686,7 @@ def maybe_prefetch_hf_snapshot(
             variant = variant,
             weights_at_root = weights_at_root,
             st_module_paths = st_module_paths,
+            **repo_listing,
         )
     )
     # Narrow the warm to what the load reads; every branch still warms root tokenizer, config and custom code so those never fall in-process.
