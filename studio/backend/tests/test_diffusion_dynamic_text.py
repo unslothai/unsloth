@@ -715,7 +715,12 @@ def test_qwen_image_21_hook_paths_match_and_first_segment_start_stays_static():
                 "['segments'][2][0]",
             ):
                 assert is_dynamic(root + leaf), root + leaf
-            for leaf in ("['segments'][0][0]", "['modulation']", "['cache_write_slice'].start", "['hidden_states_2']"):
+            for leaf in (
+                "['segments'][0][0]",
+                "['modulation']",
+                "['cache_write_slice'].start",
+                "['hidden_states_2']",
+            ):
                 assert not is_dynamic(root + leaf), root + leaf
     finally:
         cfg.dynamic_sources = before
@@ -726,7 +731,13 @@ class _Q21HookedBlock(torch.nn.Module):
         super().__init__()
         self.proj = torch.nn.Linear(8, 8)
 
-    def forward(self, hidden_states, rotary_emb = None, attention_mask = None, kv_cache_mode = None):
+    def forward(
+        self,
+        hidden_states,
+        rotary_emb = None,
+        attention_mask = None,
+        kv_cache_mode = None,
+    ):
         return self.proj(hidden_states) * rotary_emb[..., :1] + attention_mask.float().mean()
 
 
