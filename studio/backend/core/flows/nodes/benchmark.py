@@ -199,6 +199,16 @@ async def _recipe_heldout(ctx: NodeContext, label: str, is_lora: bool, max_rows:
     candidate = await _samples(ctx, run_ids.get("candidate"))
     base = {s.get("doc_id"): s for s in await _samples(ctx, run_ids.get("baseline"))}
     results, failures = [], []
+    errored = {e.get("index"): e.get("error") for e in found.get("errored") or [] if isinstance(e, dict)}
+    candidate = sorted(
+        candidate
+        + [
+            {"doc_id": i, "question": rows[i].get(prompt_col), "target": rows[i].get(reference_col) if reference_col else None, "raw_response": err}
+            for i, err in errored.items()
+            if isinstance(i, int) and 0 <= i < len(rows)
+        ],
+        key = lambda s: s.get("doc_id", 0),
+    )
     for s in candidate:
         index = s.get("doc_id")
         row = rows[index] if isinstance(index, int) and 0 <= index < len(rows) else {}

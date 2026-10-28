@@ -219,6 +219,8 @@ def run_benchmark(
         "cancelled": cancelled,
         "failed_examples": failed[:MAX_FAILED_EXAMPLES],
         "failed_total": len(failed),
+        # Kept out of the stored samples, so callers still see which rows could not be scored.
+        "errored": [{"index": r["index"], "error": r["error"]} for r in candidate if r.get("error") is not None],
         "samples": samples,
     }
 

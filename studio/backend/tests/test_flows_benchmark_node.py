@@ -59,11 +59,12 @@ def _routes(sent):
                         "candidate": {"total": 4, "scored": 4, "passed": 3, "score": 0.75},
                         "baseline": {"total": 4, "scored": 4, "passed": 0, "score": 0.0},
                         "run_ids": {"candidate": "r1", "baseline": "r1_baseline"},
+                        "errored": [{"index": 3, "error": "HTTP 500: boom"}],
                     }
                 },
             }
         if path == "/api/benchmarks/evals/runs/r1":
-            return {"samples": _samples([True, True, False, True])}
+            return {"samples": _samples([True, True, False])}
         if path == "/api/benchmarks/evals/runs/r1_baseline":
             return {"samples": _samples([False] * 4)}
         raise AssertionError(path)
@@ -103,9 +104,13 @@ def test_adapter_is_scored_against_itself_off_and_failures_keep_the_row(monkeypa
     assert (results["passed"], results["scored"], results["base_score"]) == (3, 4, 0.0)
     assert results["run_id"] == "r1" and len(results["preview"]) == 4
     assert results["preview"][2]["passed"] is False and results["preview"][2]["base_passed"] is False
+    assert results["preview"][3]["reason"] == "HTTP 500: boom"
     failed = next(rows for name, rows in _uploads(ctx).items() if name.endswith("-failures.jsonl"))
-    assert failed == [{**ROWS[2], "model_output": "x", "reason": ""}]
-    assert out["failures"]["rows"] == 1 and out["failures"]["preview"][0]["id"] == 2
+    assert failed == [
+        {**ROWS[2], "model_output": "x", "reason": ""},
+        {**ROWS[3], "model_output": None, "reason": "HTTP 500: boom"},
+    ]
+    assert out["failures"]["rows"] == 2 and out["failures"]["preview"][0]["id"] == 2
 
 
 def test_no_adapter_means_no_baseline_and_judge_scores_without_a_reference(monkeypatch):

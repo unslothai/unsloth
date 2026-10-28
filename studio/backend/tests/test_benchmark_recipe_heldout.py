@@ -100,6 +100,7 @@ def test_judge_and_row_errors():
     assert result["failed_examples"][0]["reason"] == "HTTP 500: boom"
     # stored samples share the score's denominator
     assert [s["doc_id"] for s in result["samples"]["candidate"]] == [0, 1]
+    assert result["errored"] == [{"index": 2, "error": "HTTP 500: boom"}]
 
 
 def test_stops_on_cancel():
