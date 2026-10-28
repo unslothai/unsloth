@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Tensor parallel x native FSDP2: a trainable tensor parallel (DTensor) parameter passed in
-FSDP2Config(ignored_params=...) gets no gradient reduce from FSDP2, so Unsloth averages its local shard over
-the data parallel ranks. dp 2 x tp 2 on a gloo CPU world: the dp replicas stay identical over 3 clipped steps
-and match one process on the whole batch."""
+"""dp 2 x tp 2 gloo: a TP param in FSDP2 ignored_params is averaged over dp; replicas match a single process."""
 
 import multiprocessing
 import os
@@ -125,7 +122,6 @@ def test_tp_param_in_ignored_params_is_averaged_over_dp():
     if results[0].get("unsupported"):
         pytest.skip("torch < 2.7: no fully_shard(ignored_params)")
     for res in results:
-        # The chosen parameters stay tensor parallel DTensors on the tp mesh only (FSDP2 left them out).
         assert res["names"] and res["kept_tp"] == res["names"], (res["names"], res["kept_tp"])
     for a in results:
         for b in results:

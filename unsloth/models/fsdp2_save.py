@@ -1246,8 +1246,7 @@ def _sync_replicated_grads(
         dtype = torch.float64 if p.dtype == torch.float64 else torch.float32
         groups.setdefault((str(p.device), dtype), []).append(p)
     for (device, dtype), group in groups.items():
-        # A tensor parallel DTensor left out of FSDP2 is averaged shard by shard: the ranks of `mesh`
-        # (data parallel) hold the same tp slice, so its local tensor is what they share.
+        # A TP DTensor outside FSDP2: dp ranks hold the same tp slice, so average the local shard.
         sizes = [_local_tensor(p).numel() for p in group]
         total = sum(sizes)
         key = tuple((id(p), n) for p, n in zip(group, sizes))
@@ -1290,21 +1289,19 @@ def _sync_replicated_grads(
 
 
 def _local_tensor(t):
-    """The local shard of a DTensor (a view: writes reach the DTensor); anything else unchanged."""
+    """Local shard view of a DTensor (writes reach it); anything else unchanged."""
     local = getattr(t, "_local_tensor", None)
     return local if local is not None and getattr(t, "device_mesh", None) is not None else t
 
 
 def _like_param(p, local):
-    """`local` as a gradient for `p`: a DTensor with p's mesh and placements when p is one."""
     if getattr(p, "device_mesh", None) is None or getattr(p, "_local_tensor", None) is None:
         return local
     return _dtensor_class().from_local(local, p.device_mesh, p.placements, run_check = False)
 
 
 def _fsdp_managed_param_ids(model):
-    """ids of the parameters FSDP2 manages (sharded and, if allocated, unsharded), or None when no FSDP2
-    state can be read (the caller then treats every DTensor as FSDP2's)."""
+    """ids of FSDP2-managed params, or None when no FSDP2 state is readable (treat all DTensors as FSDP2's)."""
     ids = set()
     found = False
     for unit in fsdp2_units(model):
@@ -1327,9 +1324,8 @@ def _fsdp_managed_param_ids(model):
 
 
 def _tp_shard_outside(param, mesh, dist):
-    """True for a DTensor FSDP2 does not manage whose mesh meets `mesh` (the data parallel ranks) only at
-    this rank: its local shard is replicated over `mesh`, so averaging the local gradients is correct.
-    A DTensor whose mesh shares other ranks with `mesh` (or no mesh known) would mix different shards."""
+    """True when param's mesh meets the dp `mesh` only at this rank, so its local shard is replicated
+    over `mesh`; any other overlap would average different shards."""
     if mesh is None:
         return False
     try:
@@ -1409,13 +1405,12 @@ def reduce_unsharded_trainable_grads(model):
             state["queued"] = True
             torch.autograd.Variable._execution_engine.queue_callback(_sync)
 
-    managed = False  # read once, on the first DTensor
+    managed = False
     for name, param in model.named_parameters():
         if id(param) in seen or not param.requires_grad:
             continue
         if isinstance(param, DTensor):
-            # FSDP2 reduces its own (sharded) parameters. A tensor parallel DTensor left out of FSDP2
-            # (ignored_params) gets no reduce from it: average its local shard over the dp mesh here.
+            # FSDP2 does not reduce TP DTensors in ignored_params; average them here.
             if managed is False:
                 managed = _fsdp_managed_param_ids(model)
             if managed is None or id(param) in managed or not _tp_shard_outside(param, mesh, dist):
