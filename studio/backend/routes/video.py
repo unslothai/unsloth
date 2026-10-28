@@ -2523,7 +2523,13 @@ def _own_queued_videos() -> list[VideoJob]:
     ]
 
 
-def _keyframe_canvas(fam, h3_task, reference: Optional[str], last_frame: Optional[str], size = None):
+def _keyframe_canvas(
+    fam,
+    h3_task,
+    reference: Optional[str],
+    last_frame: Optional[str],
+    size = None,
+):
     """The backend's canvas for these keyframes, routing input_reference as begin_generate does."""
     from core.inference.video import VideoBackend
     from core.inference.video_minimax_h3 import H3_TASK_REFERENCES
