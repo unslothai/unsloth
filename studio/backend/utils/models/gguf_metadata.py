@@ -6,10 +6,14 @@ pair weights and projectors via ``general.base_model.0.repo_url``."""
 
 from __future__ import annotations
 
+import io
 import os
 import re
+import stat
 import struct
 import threading
+import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import BinaryIO, Dict, Optional, Tuple
 
@@ -374,14 +378,84 @@ def _can_rewind(f) -> bool:
         return False
 
 
+# Per-process memo of finished string-array walks, so the 2nd..Nth reader of a tokenizer array
+# (a cold GGUF load runs several) seeks to the remembered end instead of walking it again. Keyed on
+# the open file's identity and state (dev, ino, size, mtime_ns, ctime_ns), the start offset and the
+# entry count. Only regular files opened with open(..., "rb") / FileIO take part (BytesIO, wrappers
+# and anything without a usable inode never do), and a walk is remembered only when the file was
+# unchanged across it and last modified more than _WALK_MEMO_SETTLE_NS before it began: a same-size
+# rewrite inside one timestamp tick (FAT 2 s, HFS+ / ext3 1 s, coarse kernel clocks) of a file that
+# old still moves mtime or ctime past the remembered value. Growing files (downloads) change size.
+_WALK_MEMO: "OrderedDict[tuple, tuple]" = OrderedDict()
+_WALK_MEMO_LOCK = threading.Lock()
+_WALK_MEMO_MAX_ENTRIES = 256
+_WALK_MEMO_MAX_KEPT_BYTES = 1 << 20
+_WALK_MEMO_SETTLE_NS = 3_000_000_000
+
+
+def _walk_file_state(f) -> Optional[tuple]:
+    if type(f) is not io.BufferedReader and type(f) is not io.FileIO:
+        return None
+    try:
+        st = os.fstat(f.fileno())
+    except (OSError, ValueError):
+        return None
+    ino = getattr(st, "st_ino", 0)
+    if not ino or not stat.S_ISREG(st.st_mode):
+        return None
+    return (st.st_dev, ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
+def _walk_memo_lookup(f, count: int, tag) -> Tuple[Optional[tuple], Optional[tuple], int]:
+    """Return ``(memo key or None, remembered result or None, walk start time ns)``."""
+    started = time.time_ns()
+    state = _walk_file_state(f)
+    if state is None:
+        return None, None, started
+    try:
+        key = state + (f.tell(), count, tag)
+    except (OSError, ValueError):
+        return None, None, started
+    with _WALK_MEMO_LOCK:
+        hit = _WALK_MEMO.get(key)
+        if hit is not None:
+            _WALK_MEMO.move_to_end(key)
+    return key, hit, started
+
+
+def _walk_memo_store(f, key: tuple, started: int, *items: Tuple[tuple, tuple]) -> None:
+    state = key[:5]
+    if max(state[3], state[4]) > started - _WALK_MEMO_SETTLE_NS:
+        return
+    if _walk_file_state(f) != state:
+        return
+    with _WALK_MEMO_LOCK:
+        for item_key, value in items:
+            _WALK_MEMO[item_key] = value
+            _WALK_MEMO.move_to_end(item_key)
+        while len(_WALK_MEMO) > _WALK_MEMO_MAX_ENTRIES:
+            _WALK_MEMO.popitem(last = False)
+
+
 def skip_gguf_strings(f, count: int) -> int:
     """Skip up to ``count`` GGUF strings (u64 length + bytes) from ``f``'s position through
     one buffer, not one read + seek per entry. Returns how many were skipped and leaves ``f``
     at the next one; stops early at an entry over 1 MiB or a length field cut short by EOF,
     so the caller's loop handles the rest exactly as before. A stream that cannot seek back skips
-    nothing here."""
+    nothing here. A walk already done on the same unchanged file is replayed as one seek."""
     if not _can_rewind(f):
         return 0
+    key, hit, started = _walk_memo_lookup(f, count, None)
+    if hit is not None:
+        f.seek(hit[1])
+        return hit[0]
+    done = _skip_gguf_strings_walk(f, count)
+    if key is not None:
+        _walk_memo_store(f, key, started, (key, (done, f.tell())))
+    return done
+
+
+def _skip_gguf_strings_walk(f, count: int) -> int:
     unpack = _U64_AT
     buf = b""
     size = pos = done = 0
@@ -420,9 +494,26 @@ def take_gguf_strings_by_first_byte(
 ) -> Tuple[int, list[bytes]]:
     """``skip_gguf_strings`` that returns ``(entries read, raw entries whose first byte is in
     first_bytes)``; also stops at an entry cut short by EOF, leaving ``f`` at it."""
-    kept: list[bytes] = []
     if not _can_rewind(f):
-        return 0, kept
+        return 0, []
+    tag = ("take", first_bytes)
+    key, hit, started = _walk_memo_lookup(f, count, tag)
+    if hit is not None:
+        f.seek(hit[1])
+        return hit[0], list(hit[2])
+    done, kept = _take_gguf_strings_walk(f, count, first_bytes)
+    if key is not None and sum(map(len, kept)) <= _WALK_MEMO_MAX_KEPT_BYTES:
+        end = f.tell()
+        items = [(key, (done, end, tuple(kept)))]
+        if done == count:
+            # Every entry was whole and at most 1 MiB, so a skip of the same array ends here too.
+            items.append((key[:-1] + (None,), (done, end)))
+        _walk_memo_store(f, key, started, *items)
+    return done, kept
+
+
+def _take_gguf_strings_walk(f, count: int, first_bytes: frozenset[int]) -> Tuple[int, list[bytes]]:
+    kept: list[bytes] = []
     unpack = _U64_AT
     keep = kept.append
     buf = b""
