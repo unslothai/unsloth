@@ -1500,6 +1500,11 @@ _RESUME_CACHE_FIELDS = (
 )
 
 
+def _rl_system_prompt(text: Optional[str]) -> Optional[str]:
+    # Kept verbatim like the notebooks' system prompts; only a blank one means none.
+    return text if text and text.strip() else None
+
+
 def _stored_reward_specs(stored: dict) -> dict[str, dict]:
     """name -> reward spec stored with a run. A resume scores with these, not the library's
     current rules, which may have been edited or deleted since."""
@@ -2269,7 +2274,7 @@ async def _admit_training_request(
             "temperature": request.grpo_temperature,
             "variant": request.grpo_variant,
             "enable_thinking": request.grpo_enable_thinking,
-            "system_prompt": (request.rl_system_prompt or "").strip() or None,
+            "system_prompt": _rl_system_prompt(request.rl_system_prompt),
             "mask_truncated_completions": request.grpo_mask_truncated_completions,
             "epsilon_high": request.grpo_epsilon_high,
         },

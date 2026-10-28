@@ -1988,3 +1988,25 @@ def test_grpo_prompts_show_every_parallel_call_and_omit_null_content():
     out, rendered = render_grpo_prompts(ds, _SingleCallTemplate(), enable_thinking = None)
     assert rendered
     assert "[weather]" in out[0]["prompt"] and "[time]" in out[0]["prompt"]
+
+
+def test_rl_system_prompt_keeps_its_whitespace():
+    from routes.training import _rl_system_prompt
+
+    prompt = "You are given a problem.\nPlace your answer between <SOLUTION></SOLUTION>\n"
+    assert _rl_system_prompt(prompt) == prompt
+    assert _rl_system_prompt("  \n") is None and _rl_system_prompt(None) is None
+
+
+def test_gemma_fold_keeps_the_system_prompt_as_given():
+    from datasets import Dataset
+    from core.training.rl import fold_system_into_user
+
+    system = "Think first.\n"
+    rows = Dataset.from_list(
+        [{"prompt": [{"role": "system", "content": system}, {"role": "user", "content": "1+1?"}]}]
+    )
+    # Gemma's own template folds the same way: system + "\n\n" + first user turn.
+    assert fold_system_into_user(rows)[0]["prompt"] == [
+        {"role": "user", "content": "Think first.\n\n\n1+1?"}
+    ]
