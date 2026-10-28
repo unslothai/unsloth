@@ -1004,7 +1004,7 @@ export function ResourcesTab() {
                 label: t("settings.resources.gpu.segmentUsed"),
                 bytes: isFiniteNumber(used) ? used : 0,
                 value: usedText,
-                color: "bg-foreground/75",
+                color: "bg-neutral-600 dark:bg-neutral-300",
               },
               ...(usedBySystem > 0
                 ? [
