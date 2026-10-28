@@ -54,6 +54,15 @@ def _apply_user_rope_scaling(config, rope_scaling):
                 "Unsloth: this model keeps one RoPE setting per layer type "
                 f"({sorted(current)}); pass rope_scaling as a dict keyed by those layer types."
             )
+        # Map legacy "type": this branch bypasses transformers' normalisation; Gemma 3 reads "rope_type".
+        scaling = {
+            k: (
+                {"rope_type": v["type"], **v}
+                if isinstance(v, dict) and "rope_type" not in v and "type" in v
+                else v
+            )
+            for k, v in scaling.items()
+        }
         # Gemma 3's rotary init indexes rope_parameters[layer_type]["rope_theta"]: keep each base.
         target.rope_parameters = {
             k: (
@@ -246,6 +255,8 @@ from ._utils import (
     attention_class_for_load,
     _REMOTE_CLASS_HUB_OPTIONS,
     resolve_attention_implementation,
+    requests_flex_attention,
+    _EXPLICIT_FLEX_ATTR,
     _get_text_only_config,
     _is_family_text_decoder,
     _config_get,
@@ -273,6 +284,7 @@ from ._uma_safetensors import is_integrated_unified_memory_gpu
 from ._utils import estimate_training_reserve_bytes as _zoo_reserve_estimate
 from ._remote_code_buffers import restore_remote_code_non_persistent_buffers
 from ._custom_dtype import cast_mixed_linear_inputs, resolve_dtype, trusted_custom_dtype
+from ._mamba_lora import patch_mamba_fused_lora
 from .remote_code_shims import apply_remote_code_shims
 from .grouped_linear_lora import register_grouped_linear_lora
 from .loader_utils import (
@@ -381,6 +393,7 @@ try:
     from huggingface_hub.utils import get_token
 except:
     from huggingface_hub.utils._token import get_token
+from .._gc_passes import collect_garbage
 from ..device_type import (
     xpu_keeps_explicit_bf16,
     xpu_vllm_refuses_bf16,
@@ -2786,6 +2799,14 @@ def _target_parameters_in_layers(
     return [key for key in keys if _in_layers(key, layers_to_transform, layers_pattern)] or None
 
 
+def _mamba_ssm_importable():
+    import importlib.util
+    try:
+        return importlib.util.find_spec("mamba_ssm") is not None
+    except (ImportError, ValueError):
+        return True  # unknown: keep the dense weights the fused kernel needs
+
+
 def _architecture_skip_modules(model_types):
     """Extra modules kept out of bitsandbytes; shared by the device-map planner and the load."""
     model_types = model_types or []
@@ -2796,6 +2817,9 @@ def _architecture_skip_modules(model_types):
     # Mamba's transformers 5 slow path does dt_proj.weight @ time_step, which fails on Params4bit; dt_proj is tiny.
     if any(mt == "mamba" for mt in model_types):
         skip.append("dt_proj")
+    # mamba_ssm's fused mamba_inner_fn reads these .weight as dense matrices; the slow path is fine with 4-bit.
+    if any(mt in ("mamba", "falcon_mamba") for mt in model_types) and _mamba_ssm_importable():
+        skip.extend(m for m in ("dt_proj", "x_proj", "out_proj") if m not in skip)
     # LongCat-Flash MLA: NF4 on q_b_proj / kv_b_proj badly hurts loss; both are small.
     if any(mt in ("longcat_flash", "longcat_flash_lsa") for mt in model_types):
         skip.extend(("q_b_proj", "kv_b_proj"))
@@ -3733,6 +3757,7 @@ class FastBaseModel:
             supports_sdpa = _attn_supports_sdpa,
             dtype = attn_dtype,
         )
+        _explicit_flex = requests_flex_attention(kwargs.get("attn_implementation", None))
 
         # FP8 models: get_model_name already redirected to the BF16 sibling if the model ships FP8 weights, so just update it here for sanity.
         auto_config.model_name = model_name
@@ -4090,12 +4115,26 @@ class FastBaseModel:
                         f"Unsloth: transformers cannot load this `{quant_method}` checkpoint in process."
                     )
                 quantizer_kwargs = {}
+                # Full finetuning must dequantize fp8 on load, else training casts fp8 storage without its scales.
+                _fp8_full_finetune = full_finetuning and str(quant_method).lower() == "fp8"
+                if (
+                    _fp8_full_finetune
+                    and user_quantization_config is None
+                    and quantizer is not None
+                    and "dequantize" not in inspect.signature(quantizer).parameters
+                ):
+                    raise RuntimeError(
+                        "Unsloth: full finetuning an FP8 checkpoint needs it dequantized on load, which this "
+                        "transformers version cannot do (its FineGrainedFP8Config has no `dequantize`). "
+                        "Upgrade transformers, use the BF16 version of the model, or train LoRA instead."
+                    )
                 if quant_method == "compressed-tensors" or quantizer is None:
                     pass
                 else:
                     # Cannot dequantize (MXFP4 would become BF16), except LoRA with zoo's packed experts.
                     if (
                         load_in_16bit
+                        or _fp8_full_finetune
                         or _mxfp4_lora_keeps_experts_packed(
                             quant_method,
                             full_finetuning,
@@ -4289,7 +4328,7 @@ class FastBaseModel:
                     prepare_fsdp2_qlora(model, bnb_compute_dtype)
                 # Any dequantizing fp8 load (explicit config, pre-sm89 / CPU fallback); else a no-op.
                 _drop_fp8_dequantize_conversions(model)
-                if load_in_16bit and not load_in_4bit and not load_in_8bit:
+                if (load_in_16bit or full_finetuning) and not load_in_4bit and not load_in_8bit:
                     _dequantize_leftover_fp8_params(
                         model,
                         model_name,
@@ -4483,9 +4522,7 @@ class FastBaseModel:
                 for jj, (name, module) in enumerate(model.named_modules()):
                     exec(custom_datatype)
                 cast_mixed_linear_inputs(model, torch_dtype)
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        collect_garbage(after = clean_gpu_cache)
 
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
         # The loader resolves this (caller's adapter repo vs resolved base model); the fallback below covers a direct call.
@@ -4863,13 +4900,13 @@ class FastBaseModel:
             tokenizer = tokenizer,
             float32_mixed_precision = float32_mixed_precision,
         )
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        collect_garbage(after = clean_gpu_cache)
         # Saving restores sentencepiece assets from the repo name alone, which carries no branch. Stamped here, not per processor branch, so a fallback cannot lose it.
         _mark_loaded_revision(tokenizer, _tokenizer_revision)
         model = _mark_forced_float32(model, do_forced_float32)
         model = _mark_full_finetuning(model, full_finetuning)
+        if _explicit_flex:
+            setattr(model, _EXPLICIT_FLEX_ATTR, True)
         # Last, so the host copies carry the fp32 recasts the passes above make.
         finish_block_swap_load(
             model, _block_swap_state, planned_prefetch_depth(device_map_planner_kwargs)
@@ -5168,9 +5205,7 @@ class FastBaseModel:
                     "Unsloth: LoRA finetuning for Llama 3.2 aka mllama models is not supported with fast_inference!"
                 )
 
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        collect_garbage(after = clean_gpu_cache)
         max_seq_length = model.max_seq_length
         # Passing loftq_config = None gives an error.
         loftq_config = validate_loftq_config(
@@ -5393,9 +5428,7 @@ class FastBaseModel:
             use_gradient_checkpointing = use_gradient_checkpointing,
         )
         skip_checkpointing(model, checkpoint_skip_layers)
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        collect_garbage(after = clean_gpu_cache)
         patch_saving_functions(model, vision = True)
         patch_peft_fast_inference(model)
 
@@ -5424,6 +5457,8 @@ class FastBaseModel:
     ):
         reject_alora(model)
         set_deepspeed_moe_leaf_modules(model)
+        # Mamba fused kernels read x_proj / dt_proj / out_proj .weight raw, skipping adapters on them.
+        patch_mamba_fused_lora(model)
         from ..import_fixes import fix_transformers_voxtral_realtime_inplace_audio_add
 
         fix_transformers_voxtral_realtime_inplace_audio_add()
@@ -5572,9 +5607,7 @@ class FastBaseModel:
         # Prevent Transformers Trainer from auto-wrapping Unsloth LoRA models in DP.
         _mark_unsloth_disable_data_parallel(model, disable = not full_finetuning)
 
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        collect_garbage(after = clean_gpu_cache)
         model.for_training = functools.partial(FastBaseModel.for_training, model)
         model.for_inference = functools.partial(FastBaseModel.for_inference, model)
         m = model

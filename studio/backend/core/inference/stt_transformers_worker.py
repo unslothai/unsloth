@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Whisper (Transformers) dictation in a spawn child, and the handle for it.
-
-A CUDA context costs ~700 MiB on a current card and is never returned while the
-process that created it lives, so an in-process load left the backend that much
-heavier for good: unloading the model frees the weights and nothing else (the
-rule is written down in core/inference/gpu_arbiter.py). whisper.cpp and
-llama.cpp dictation already serve from their own processes; this puts the
-Transformers engine on the same footing, so an idle unload ends a process and
-the context goes with it.
-
-Both sides live here: ``run_stt_worker`` is the child entrypoint (imported by
-name in the child, so it must stay at module scope for Windows spawn), and
-``WhisperWorker`` is the parent-side handle the sidecar holds instead of a
-model object.
-"""
+"""Whisper dictation in spawn child (CUDA context dies with it); run_stt_worker must be module-level."""
 
 from __future__ import annotations
 

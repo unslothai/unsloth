@@ -139,6 +139,11 @@ export const ko = {
     more: "더보기",
     addressPlaceholder: "검색어 또는 URL 입력",
     local: "로컬",
+    browserUse: {
+      label: "브라우저 사용",
+      description: "모델이 내장 브라우저를 제어하도록 허용",
+      unavailable: "브라우저를 사용하게 하려면 도구를 호출할 수 있는 모델을 불러오세요.",
+    },
     suggested: "추천",
     suggestedMenu: {
       open: "열기",
@@ -624,6 +629,36 @@ export const ko = {
     compactEmpty: "아직 압축할 내용이 없습니다",
     compactUnsupported: "대화 압축에는 도구를 지원하는 GGUF 또는 MLX 모델이 필요합니다",
   },
+  halloween: {
+    navLabel: "트릭 오어 트릿…",
+    title: "트릭 오어 트릿?!",
+    description: "Unsloth를 위해 오싹한 깜짝 선물을 준비했어요. 10월 말까지 만나 보세요.",
+    chooseTheme: "오싹한 테마 선택",
+    spookyGreetings: "오싹한 인사말",
+    spookyGreetingsDescription: "새 채팅을 시작하면 나무늘보가 깜짝 놀래 줘요.",
+    decorations: "거미와 박쥐",
+    decorationsDescription:
+      "할로윈 테마에서 모서리에 거미줄이 생기고, 가끔 거미나 박쥐가 나타납니다.",
+    surprise: "트릭 오어 트릿!",
+    surpriseDescription: "나무늘보가 테마를 골라 드려요.",
+    themesTitle: "오싹한 테마",
+    back: "뒤로",
+    footer: "Unsloth는 11월 1일 자정에 원래대로 돌아가요.",
+    removeNow: "지금 제거",
+    hideFromSidebar: "사이드바에서 숨기기",
+    greeting: {
+      pumpkins: "호박 조각이 끝났어요. 다음은 뭘까요?",
+      brewing: "자, 마법의 물약을 만들어 볼까요",
+      trickOrTreat: "트릭 오어 트릿?",
+      manor: "저택에 오신 것을 환영해요",
+      manorName: "{name}님, 저택에 오신 것을 환영해요",
+      happyHalloween: "해피 핼러윈",
+      happyHalloweenName: "{name}님, 해피 핼러윈",
+      spirits: "영혼들이 듣고 있어요…",
+      mysteries: "오늘 밤엔 어떤 비밀을 밝혀볼까요?",
+      conjure: "무엇을 마법으로 불러낼까요?",
+    },
+  },
   welcome: {
     goodToSeeYou: "반가워요",
     goodToSeeYouName: "{name}님, 반가워요",
@@ -784,6 +819,8 @@ export const ko = {
       guidedTour: "가이드 투어",
       help: "도움말",
       logOut: "로그아웃",
+      logOutNeedsPassword: "로그아웃하기 전에 설정 > 원격 액세스에서 비밀번호를 설정하세요. 다시 로그인하려면 필요합니다.",
+      logOutFailed: "안전하게 로그아웃하지 못했습니다. 잠시 후 다시 시도하세요.",
       shutdown: "종료",
     },
     commandPalette: {
@@ -928,6 +965,11 @@ export const ko = {
   },
   settings: {
     accounts: {
+      signsInAs: "{username}(으)로 로그인",
+      signsInAsOwner: "{alias} 또는 {username}(으)로 로그인",
+      signInName: "로그인 이름",
+      signInNameDescription: "이 설치에 계정이 둘 이상일 때 로그인할 때 입력하는 이름입니다. unsloth도 항상 사용할 수 있습니다. 비워 두면 unsloth만 사용합니다.",
+      signInNameSave: "이름 저장",
       title: "계정",
       description: "개별 Unsloth 계정을 만듭니다. 새 사용자는 일회용 설정 코드로 로그인한 뒤 비밀번호를 정합니다.",
       username: "사용자 이름",
@@ -1407,17 +1449,17 @@ export const ko = {
       installingRuntime: "설치 중…",
       installRuntimeFailed: "런타임을 설치하지 못했습니다.",
       installRuntimeError: "런타임 설치를 시작하지 못했습니다.",
-      unsupportedArch: "Windows 샌드박스(MXC)는 x64 Windows에서만 실행되므로 이 PC에서는 사용할 수 없습니다.",
+      unsupportedArch: "Windows 샌드박스(MXC)는 x64 및 ARM64 Windows에서만 실행되므로 이 PC에서는 사용할 수 없습니다.",
       builtinNeedsUpdate:
         "Windows 기본 제공 컨테이너에는 빌드 {required} 이상이 필요하지만 이 PC는 {current}입니다. 관리자 단계 없이 사용하려면 최신 Windows 업데이트를 설치하거나 아래의 대체 샌드박스를 켜세요.",
       unsupportedBuild: "Windows 샌드박스(MXC)는 Windows 11 24H2(빌드 26100) 이상이 필요하므로 이 PC에서는 사용할 수 없습니다.",
-      permissionsIntro: "도구가 먼저 묻는 시점과 Python 및 터미널을 OS 샌드박스 안에서도 실행할지 선택합니다.",
       permissionLabel: "도구 권한",
+      levelRowLabel: "샌드박스 수준",
       levelPickerTitle: "코드를 어떻게 격리할까요?",
       levelOff: "사용 안 함",
       levelOffShort: "전체 액세스는 샌드박스를 끕니다",
-      levelHighDetail: "OS 샌드박스. Python과 터미널이 소프트웨어 보호에 더해 OS 샌드박스(bubblewrap, Seatbelt 또는 MXC) 안에서 실행됩니다. 작동하는 OS 샌드박스가 없으면 위험한 호출은 먼저 묻습니다.",
-      levelLowDetail: "소프트웨어 샌드박스. Python과 터미널이 소프트웨어 보호만으로 OS 샌드박스 밖에서 실행됩니다. 전체 액세스가 아니면 위험한 호출은 먼저 묻습니다.",
+      levelHighDetail: "Python과 터미널이 소프트웨어 보호에 더해 OS 샌드박스(bubblewrap, Seatbelt 또는 MXC) 안에서 실행됩니다. 작동하는 OS 샌드박스가 없으면 위험한 호출은 먼저 묻습니다.",
+      levelLowDetail: "Python과 터미널이 소프트웨어 보호만으로 OS 샌드박스 밖에서 실행됩니다. 전체 액세스가 아니면 위험한 호출은 먼저 묻습니다.",
       levelLabel: "샌드박스",
       levelHigh: "높음",
       levelLow: "낮음",
@@ -2042,13 +2084,13 @@ export const ko = {
         },
         details: {
           ask:
-            "터미널 및 Python 코드, 웹 검색, 파일 편집, MCP 도구를 포함해 모든 도구 호출 전에 묻습니다. 외부 제공업체가 실행하는 도구는 멈추지 않습니다. 각 단계를 직접 확인하고 싶을 때 적합합니다.",
+            "터미널 및 Python 코드, 웹 검색, 파일 편집, MCP 도구를 포함해 모든 도구 호출 전에 묻습니다. 외부 제공업체가 실행하는 도구는 멈추지 않습니다.",
           auto:
             "일반적인 도구 호출은 알아서 실행하고, 자격 증명 읽기, 권한 상승, 파괴적인 명령 실행처럼 위험해 보이는 작업일 때만 묻습니다.",
           off:
-            "모든 도구 호출을 묻지 않고 실행합니다. Python과 터미널 코드는 여전히 샌드박스 안에서 실행되어 컴퓨터에서 접근할 수 있는 파일이 제한됩니다. 이 컴퓨터에 작동하는 OS 샌드박스가 없으면 위험한 Python 및 터미널 호출은 먼저 묻습니다.",
+            "모든 도구 호출을 묻지 않고 실행합니다. Python과 터미널 코드는 여전히 샌드박스 안에서 실행되어 컴퓨터에서 접근할 수 있는 파일이 제한됩니다. 작동하는 OS 샌드박스가 없으면 위험한 호출은 먼저 묻습니다.",
           full:
-            "모든 도구 호출을 묻지 않고 실행하며 코드 샌드박스를 꺼서, Python과 터미널 코드가 계정이 접근할 수 있는 모든 파일을 읽고 변경할 수 있습니다. 샌드박스 밖에서 작업해야 하는 신뢰할 수 있는 작업에 적합합니다.",
+            "모든 도구 호출을 묻지 않고 실행하며 코드 샌드박스를 꺼서, Python과 터미널 코드가 계정이 접근할 수 있는 모든 파일을 읽고 변경할 수 있습니다.",
         },
       },
     },
@@ -2186,6 +2228,12 @@ export const ko = {
         classic: "클래식",
         minimal: "미니멀",
         moreThemes: "더 많은 테마",
+        halloween: "할로윈",
+      },
+      trickOrTreat: {
+        label: "트릭 오어 트릿",
+        description:
+          "11월 1일까지 핼러윈 테마와 으스스한 인사말을 즐겨 보세요.",
       },
       custom: {
         chatWidth: {
@@ -2322,6 +2370,7 @@ export const ko = {
       liveMonitor: {
         title: "실시간 모니터",
         apiTitle: "API 모니터",
+        apiDescription: "다른 앱이 이 서버의 API로 보내는 내용을 도착하는 대로 확인합니다.",
         summary: "진행 중인 요청, 오류 및 토큰 사용량",
         status: "진행 중 {active}개 · 최근 {recent}개 · {model}",
         noModelLoaded: "로드된 모델 없음",
@@ -2340,7 +2389,7 @@ export const ko = {
         gpuUnusableDetail: "감지되었지만 PyTorch에서 사용할 수 없습니다",
         detailedView: "자세히 보기",
         detailedViewDescription:
-          "플로팅 창과 여기에 CPU 부하와 각 GPU의 부하, 온도, 전력을 표시합니다.",
+          "플로팅 창에 CPU 부하와 각 GPU의 부하, 온도, 전력을 표시합니다.",
         cpuLoad: "CPU 부하",
         gpuLoad: "GPU 부하",
         temperature: "온도",
@@ -2373,6 +2422,10 @@ export const ko = {
         used: "{value} 사용 중",
         free: "{value} 여유",
         total: "총 {value}",
+        usedOf: "{total} 중 {used} 사용 중",
+        segmentUsed: "GPU 사용 중",
+        segmentSystem: "시스템 사용 중",
+        segmentAvailable: "사용 가능",
       },
       llamaBackend: {
         title: "GGUF 추론 엔진",
@@ -2502,6 +2555,10 @@ export const ko = {
           hideDetailsAction: "자세히 숨기기",
           clearAction: "캐시 정리",
           clearOneAction: "정리",
+          showFolders: "폴더 표시",
+          hideFolders: "폴더 숨기기",
+          previousLocations: "이전 위치를 포함합니다. 기본 정리 버튼은 현재 캐시 폴더에 적용됩니다. 모델 버튼은 선택한 사본만 정리합니다.",
+          clearModelDescription: "이 캐시된 사본만 제거합니다. 필요할 때 다시 다운로드됩니다.",
           clearingAction: "정리하는 중...",
           confirmTitle: "캐시 파일을 정리할까요?",
           confirmDescription: "약 {size}의 공간이 확보됩니다.",
@@ -2559,6 +2616,8 @@ export const ko = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
+        mlxLm: "mlx-lm",
+        mlxVlm: "mlx-vlm",
         uptime: "가동 시간",
         processMemory: "프로세스 메모리",
         notInstalled: "설치되지 않음",
@@ -3304,6 +3363,7 @@ export const ko = {
       desktopAppVersionUnavailable: "확인할 수 없음",
       llamaCppVersion: "llama.cpp 버전",
       audioCppVersion: "audio.cpp 버전",
+      mlxVersion: "MLX 버전",
       whisperCppVersion: "whisper.cpp 버전",
       engines: {
         title: "엔진",
@@ -4192,7 +4252,6 @@ export const ko = {
       terminalStart: "> unsloth 학습을 시작합니다...",
       preparingResources: "> 모델과 데이터셋을 준비하는 중...",
       gettingReady: "> 실행을 위한 모든 준비를 하는 중...",
-      waitingForFirstStep: "> {message} | 첫 스텝을 기다리는 중... ({step})",
       resumingTraining: "학습을 재개하는 중...",
       startingTraining: "학습을 시작하는 중...",
       dataset: "데이터셋",
@@ -4557,6 +4616,7 @@ export const ko = {
       modelsTitle: "아직 파인튜닝된 모델이 없습니다",
       modelsDescription: "Unsloth에서 학습하거나 내보낸 모델이 여기에 표시됩니다.",
       createFolder: "폴더 만들기",
+      generateImage: "이미지 생성",
       generateVideo: "동영상 생성",
       generateAudio: "오디오 생성",
       trainModel: "모델 학습",

@@ -1,24 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""bitsandbytes 8-bit (and 32-bit) Adam / AdamW under native FSDP2, stepped on the local shards.
-
-bitsandbytes' kernels take plain tensors, and native FSDP2 parameters are DTensors. Each DTensor
-parameter's local shard is an ordinary tensor sharing the parameter's storage, and its gradient's local
-shard is the matching ordinary tensor, so bitsandbytes can step the shard in place. The optimizer
-keeps the DTensor parameters in its param_groups and its state keyed by them (the LR scheduler, the
-Trainer, gradient clipping, GradScaler and torch.distributed.checkpoint all see the same objects); only
-init_state / update_step hand bitsandbytes the local shards.
-
-The 8-bit state is quantized per 256-element block of each LOCAL shard, so it is not bitwise equal to
-one GPU, where the blocks run over the whole tensor. Which parameters get 8-bit state follows one GPU:
-bitsandbytes' `min_8bit_size` rule is applied to the full parameter size, not the shard size.
-
-state_dict() returns the state dequantized to float32, wrapped as DTensors laid out like each parameter,
-so the collective full-state save (get_optimizer_state_dict(full_state_dict = True)) gathers a
-world-size-independent checkpoint. load_state_dict() re-quantizes it: the inverse is exact when the
-blocks are unchanged (same world size), so a resume restores the same 8-bit state.
-"""
+"""bnb 8-bit (and 32-bit) Adam/AdamW on FSDP2: DTensor params stay in param_groups, only local
+shards go to bnb; 8-bit blocks per local shard, not bitwise 1-GPU; state_dict is world-size
+independent."""
 
 import contextlib
 import functools

@@ -25,6 +25,9 @@ const FORCE_DMABUF: &str = "WEBKIT_FORCE_DMABUF_RENDERER";
 const DISABLE_COMPOSITING: &str = "WEBKIT_DISABLE_COMPOSITING_MODE";
 // Skia rasterizes on the CPU even with GPU compositing on.
 const SKIA_CPU_RENDERING: &str = "WEBKIT_SKIA_ENABLE_CPU_RENDERING";
+// Composited video goes through GStreamer GL, which cannot create a context on NVIDIA with the
+// AppImage's bundled GStreamer: frames stay black. Without it WebKit uses the sink main already uses.
+const GST_DISABLE_GL_SINK: &str = "WEBKIT_GST_DISABLE_GL_SINK";
 // Ours, not WebKit's; compositing_setting parses it.
 const DISABLE_COMPOSITING_SETTING: &str = "UNSLOTH_WEBKIT_DISABLE_COMPOSITING";
 // The variables we set, so a relaunch (process::restart keeps env) tells ours from an operator's.
@@ -32,6 +35,9 @@ const APPLIED_WORKAROUND: &str = "UNSLOTH_WEBKIT_RENDERER_WORKAROUND";
 const FORCE_SHARED_MEMORY_MIN_VERSION: (u32, u32) = (2, 44);
 // Proprietary and open nvidia modules publish this; nouveau does not and is unaffected.
 const NVIDIA_DRIVER_VERSION_PATH: &str = "/proc/driver/nvidia/version";
+// Composited WebKit leaked a sync_file per frame on 580.173.02 and 580.178.04 (#10214, #10795),
+// not on 610.43.02 or 615.71.09. Older or unreadable branches keep compositing off.
+const NVIDIA_COMPOSITING_MIN_BRANCH: u32 = 610;
 
 const NVIDIA_REASON: &str = "NVIDIA driver loaded (no Wayland session)";
 const NVIDIA_APPIMAGE_X11_REASON: &str = "NVIDIA driver loaded (AppImage on X11)";
@@ -64,6 +70,8 @@ enum RenderingWorkaround {
     /// Only for a confirmed NVIDIA host: FORCE_DMABUF stands down the patched isNVIDIA() check so
     /// selection reaches FORCE_SHM. Unpatched libraries ignore it.
     ForceSharedMemoryOnNvidia,
+    /// The same, plus the non-GL video sink the bundled GStreamer needs.
+    ForceSharedMemoryOnNvidiaAppImage,
     DisableCompositingOnNvidiaX11,
     /// The CPU path on X11 off NVIDIA: SHM keeps a transport, unlike DISABLE_DMABUF.
     DisableCompositingOnX11,
@@ -80,6 +88,9 @@ impl RenderingWorkaround {
         match self {
             Self::ForceSharedMemory => &[FORCE_SHARED_MEMORY],
             Self::ForceSharedMemoryOnNvidia => &[FORCE_SHARED_MEMORY, FORCE_DMABUF],
+            Self::ForceSharedMemoryOnNvidiaAppImage => {
+                &[FORCE_SHARED_MEMORY, FORCE_DMABUF, GST_DISABLE_GL_SINK]
+            }
             Self::DisableCompositingOnNvidiaX11 => {
                 &[FORCE_SHARED_MEMORY, FORCE_DMABUF, DISABLE_COMPOSITING]
             }
@@ -231,11 +242,12 @@ fn rendering_plan(
     env: impl Fn(&str) -> Option<OsString>,
     webkit_version: (u32, u32, u32),
     gles_usable: bool,
-    nvidia_driver_loaded: bool,
+    nvidia_driver_branch: Option<u32>,
     wayland_socket: bool,
     x11_open: bool,
     gpu: GpuInputs,
 ) -> RenderingPlan {
+    let nvidia_driver_loaded = nvidia_driver_branch.is_some();
     // Either variable is an operator override when present (even `=0` or empty) unless the marker
     // says we wrote it. DISABLE_DMABUF=0 is how a host gets its accelerated path back.
     let ours = |variable: &str| claimed_by_this_app(&env, variable);
@@ -300,6 +312,16 @@ fn rendering_plan(
 
     // libepoxy loads GLES at runtime; without it no setting can keep DMA-BUF.
     let missing_appimage_gles = is_appimage && !gles_usable;
+    // Composited SHM on NVIDIA; an AppImage also needs the non-GL video sink, unless the operator
+    // chose one.
+    let nvidia_shared_memory = || {
+        let operator_sink = env(GST_DISABLE_GL_SINK).is_some() && !ours(GST_DISABLE_GL_SINK);
+        if is_appimage && !operator_sink {
+            RenderingWorkaround::ForceSharedMemoryOnNvidiaAppImage
+        } else {
+            RenderingWorkaround::ForceSharedMemoryOnNvidia
+        }
+    };
     // The operator asked for WebKit's DMA-BUF renderer; only a missing GLES library outranks it.
     // On Wayland that is the path WebKit bug 280210 can crash at launch, so it is supervised
     // like the setting's GPU path, and a crash recorded for this host sends it to the CPU path.
@@ -347,10 +369,7 @@ fn rendering_plan(
             }
             // NVIDIA X11's hardware transport fails; SHM keeps GPU compositing without it.
             GpuRendering::On if nvidia_driver_loaded && !wayland_session && shared_memory => {
-                return RenderingPlan::Apply(
-                    RenderingWorkaround::ForceSharedMemoryOnNvidia,
-                    GPU_ON_REASON,
-                );
+                return RenderingPlan::Apply(nvidia_shared_memory(), GPU_ON_REASON);
             }
             GpuRendering::On => {
                 return RenderingPlan::Gpu {
@@ -380,8 +399,8 @@ fn rendering_plan(
         }
     }
 
-    // Wayland: DISABLE_DMABUF (FORCE_SHM hits bug 315436). X11: SHM plus compositing off;
-    // DISABLE_DMABUF can leave no transport there. PRIME laptops opt out with the =0 variables.
+    // Wayland: DISABLE_DMABUF (FORCE_SHM hits bug 315436). X11: SHM, with compositing off below
+    // the minimum driver branch; DISABLE_DMABUF can leave no transport there.
     if nvidia_driver_loaded {
         let reason = if missing_appimage_gles {
             NVIDIA_APPIMAGE_GLES_REASON
@@ -398,8 +417,10 @@ fn rendering_plan(
             || !supports_force_shared_memory(webkit_version)
         {
             RenderingWorkaround::DisableDmabuf
-        } else if requested(false) {
-            RenderingWorkaround::ForceSharedMemoryOnNvidia
+        } else if requested(false)
+            || nvidia_driver_branch.is_some_and(|branch| branch >= NVIDIA_COMPOSITING_MIN_BRANCH)
+        {
+            nvidia_shared_memory()
         } else {
             RenderingWorkaround::DisableCompositingOnNvidiaX11
         };
@@ -486,8 +507,29 @@ fn x11_display_open(display: Option<OsString>, socket_dir: &str) -> bool {
         .is_ok()
 }
 
-fn nvidia_driver_loaded() -> bool {
-    std::path::Path::new(NVIDIA_DRIVER_VERSION_PATH).exists()
+/// None without the module; Some(0) when its version cannot be read, which keeps the fallback.
+fn nvidia_driver_branch() -> Option<u32> {
+    let path = std::path::Path::new(NVIDIA_DRIVER_VERSION_PATH);
+    if !path.exists() {
+        return None;
+    }
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    Some(driver_branch(&text).unwrap_or(0))
+}
+
+/// The major of the first dotted number on the `NVRM version:` line, e.g. 615 from
+/// `NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  615.71.09  Release Build ...`.
+fn driver_branch(text: &str) -> Option<u32> {
+    let line = text
+        .lines()
+        .find(|line| line.starts_with("NVRM version:"))?;
+    line.split_whitespace().find_map(|word| {
+        let (major, rest) = word.split_once('.')?;
+        let digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+        (digits(major) && rest.split('.').all(digits))
+            .then(|| major.parse().ok())
+            .flatten()
+    })
 }
 
 fn gles_is_usable() -> bool {
@@ -564,7 +606,7 @@ pub fn configure_renderer(
     let gles_usable = std::env::var_os(APPIMAGE).is_none() || gles_is_usable();
     let env = |name: &str| std::env::var_os(name);
     let webkit_version = runtime_webkit_version();
-    let nvidia = nvidia_driver_loaded();
+    let nvidia = nvidia_driver_branch();
     let wayland_socket = wayland_socket_present();
     let x11_open = x11_display_open(std::env::var_os(X11_DISPLAY), X11_SOCKET_DIR);
     let mut decision = RendererDecision {
@@ -610,8 +652,12 @@ pub fn configure_renderer(
         }
     }
     // After claim/release_claimed: the web process inherits exactly this environment.
-    decision.cpu_painting =
-        paints_on_cpu(|name| std::env::var_os(name), webkit_version, nvidia, gpu);
+    decision.cpu_painting = paints_on_cpu(
+        |name| std::env::var_os(name),
+        webkit_version,
+        nvidia.is_some(),
+        gpu,
+    );
     decision
 }
 
@@ -627,6 +673,8 @@ mod tests {
     use super::*;
 
     const MODERN_WEBKIT: (u32, u32, u32) = (2, 44, 0);
+    // The `bool` helpers model a loaded driver on the branch that leaked (#10795).
+    const LEAKING_NVIDIA_BRANCH: u32 = 580;
 
     fn plan_on_host(
         vars: &[(&str, &str)],
@@ -678,7 +726,7 @@ mod tests {
             },
             webkit_version,
             gles_usable,
-            nvidia_driver_loaded,
+            nvidia_driver_loaded.then_some(LEAKING_NVIDIA_BRANCH),
             wayland_socket,
             x11_open,
             GpuInputs::default(),
@@ -701,7 +749,7 @@ mod tests {
             },
             webkit_version,
             gles_usable,
-            nvidia_driver_loaded,
+            nvidia_driver_loaded.then_some(LEAKING_NVIDIA_BRANCH),
             named(vars, WAYLAND_DISPLAY),
             named(vars, X11_DISPLAY),
             gpu,
@@ -718,11 +766,167 @@ mod tests {
             },
             MODERN_WEBKIT,
             true,
-            nvidia_driver_loaded,
+            nvidia_driver_loaded.then_some(LEAKING_NVIDIA_BRANCH),
             live,
             named(vars, X11_DISPLAY),
             GpuInputs::default(),
         )
+    }
+
+    fn plan_on_nvidia_branch(vars: &[(&str, &str)], branch: u32) -> RenderingPlan {
+        rendering_plan(
+            |name| {
+                vars.iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| OsString::from(value))
+            },
+            MODERN_WEBKIT,
+            true,
+            Some(branch),
+            named(vars, WAYLAND_DISPLAY),
+            named(vars, X11_DISPLAY),
+            GpuInputs::default(),
+        )
+    }
+
+    #[test]
+    fn nvidia_x11_from_the_minimum_branch_keeps_compositing_on() {
+        let composited = RenderingWorkaround::ForceSharedMemoryOnNvidia;
+        let appimage: &[(&str, &str)] = &[(APPIMAGE, "/tmp/Unsloth.AppImage"), (X11_DISPLAY, ":0")];
+        let native: &[(&str, &str)] = &[(X11_DISPLAY, ":0")];
+        for branch in [610, 615, 700] {
+            assert_eq!(
+                plan_on_nvidia_branch(appimage, branch),
+                RenderingPlan::Apply(
+                    RenderingWorkaround::ForceSharedMemoryOnNvidiaAppImage,
+                    NVIDIA_APPIMAGE_X11_REASON
+                )
+            );
+            assert_eq!(
+                plan_on_nvidia_branch(native, branch),
+                RenderingPlan::Apply(composited, NVIDIA_REASON)
+            );
+        }
+        assert!(!composited.variables().contains(&DISABLE_COMPOSITING));
+    }
+
+    #[test]
+    fn a_composited_appimage_uses_the_non_gl_video_sink() {
+        let appimage: &[(&str, &str)] = &[(APPIMAGE, "/tmp/Unsloth.AppImage"), (X11_DISPLAY, ":0")];
+        assert_eq!(
+            RenderingWorkaround::ForceSharedMemoryOnNvidiaAppImage.variables(),
+            &[FORCE_SHARED_MEMORY, FORCE_DMABUF, GST_DISABLE_GL_SINK]
+        );
+        assert!(!RenderingWorkaround::ForceSharedMemoryOnNvidia
+            .variables()
+            .contains(&GST_DISABLE_GL_SINK));
+        // The opt-out composites too, so it needs the same sink.
+        let opted_out = [appimage, &[(DISABLE_COMPOSITING_SETTING, "0")]].concat();
+        assert_eq!(
+            plan_on_nvidia_branch(&opted_out, 580),
+            RenderingPlan::Apply(
+                RenderingWorkaround::ForceSharedMemoryOnNvidiaAppImage,
+                NVIDIA_APPIMAGE_X11_REASON
+            )
+        );
+        // An operator's sink choice, either way, is left alone.
+        for value in ["0", "1"] {
+            let operator = [appimage, &[(GST_DISABLE_GL_SINK, value)]].concat();
+            assert_eq!(
+                plan_on_nvidia_branch(&operator, 615),
+                RenderingPlan::Apply(
+                    RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                    NVIDIA_APPIMAGE_X11_REASON
+                ),
+                "{value}"
+            );
+        }
+        // Our own value from an earlier launch is not an operator's.
+        let relaunched = [
+            appimage,
+            &[
+                (GST_DISABLE_GL_SINK, "1"),
+                (FORCE_SHARED_MEMORY, "1"),
+                (FORCE_DMABUF, "1"),
+                (
+                    APPLIED_WORKAROUND,
+                    "WEBKIT_DMABUF_RENDERER_FORCE_SHM,WEBKIT_FORCE_DMABUF_RENDERER,WEBKIT_GST_DISABLE_GL_SINK",
+                ),
+            ],
+        ]
+        .concat();
+        assert_eq!(
+            plan_on_nvidia_branch(&relaunched, 615),
+            RenderingPlan::Apply(
+                RenderingWorkaround::ForceSharedMemoryOnNvidiaAppImage,
+                NVIDIA_APPIMAGE_X11_REASON
+            )
+        );
+    }
+
+    #[test]
+    fn older_or_unreadable_nvidia_branches_keep_compositing_off_everywhere() {
+        let native: &[(&str, &str)] = &[(X11_DISPLAY, ":0")];
+        for branch in [0, 470, 580, 595, 609] {
+            assert_eq!(
+                plan_on_nvidia_branch(native, branch),
+                RenderingPlan::Apply(
+                    RenderingWorkaround::DisableCompositingOnNvidiaX11,
+                    NVIDIA_REASON
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn the_setting_and_operator_overrides_outrank_the_branch_gate() {
+        let forced: &[(&str, &str)] = &[(X11_DISPLAY, ":0"), (DISABLE_COMPOSITING_SETTING, "1")];
+        assert_eq!(
+            plan_on_nvidia_branch(forced, 615),
+            RenderingPlan::Apply(
+                RenderingWorkaround::DisableCompositingOnNvidiaX11,
+                COMPOSITING_FORCED_REASON
+            )
+        );
+        let opted_out: &[(&str, &str)] = &[(X11_DISPLAY, ":0"), (DISABLE_COMPOSITING_SETTING, "0")];
+        assert_eq!(
+            plan_on_nvidia_branch(opted_out, 615),
+            RenderingPlan::Apply(
+                RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                NVIDIA_REASON
+            )
+        );
+        let operator: &[(&str, &str)] = &[(X11_DISPLAY, ":0"), (DISABLE_COMPOSITING, "1")];
+        assert_eq!(
+            plan_on_nvidia_branch(operator, 615),
+            RenderingPlan::PreserveEnvironment
+        );
+    }
+
+    #[test]
+    fn wayland_ignores_the_nvidia_branch() {
+        let wayland: &[(&str, &str)] = &[(WAYLAND_DISPLAY, "wayland-0")];
+        assert_eq!(
+            plan_on_nvidia_branch(wayland, 615),
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_WAYLAND_REASON)
+        );
+    }
+
+    #[test]
+    fn reads_the_branch_from_both_module_flavours() {
+        let open = "NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  615.71.09  \
+                    Release Build  (dvs-builder@U22-I3-F05-2-4)  Fri Sep  4 22:33:33 UTC 2026\n\
+                    GCC version:  gcc version 13.3.0 (Ubuntu 13.3.0-6ubuntu2~24.04.1)\n";
+        assert_eq!(driver_branch(open), Some(615));
+        let proprietary =
+            "NVRM version: NVIDIA UNIX x86_64 Kernel Module  580.173.02  Wed Jul 30 22:51:43 UTC 2026\n";
+        assert_eq!(driver_branch(proprietary), Some(580));
+        assert_eq!(
+            driver_branch("NVRM version: NVIDIA UNIX Kernel Module  470.256\n"),
+            Some(470)
+        );
+        assert_eq!(driver_branch("GCC version:  gcc version 13.3.0\n"), None);
+        assert_eq!(driver_branch(""), None);
     }
 
     fn named(vars: &[(&str, &str)], variable: &str) -> bool {
@@ -872,7 +1076,13 @@ mod tests {
         // X11 keeps the operator's environment as before.
         let x11 = [(FORCE_DMABUF, "1"), (X11_DISPLAY, ":0")];
         assert_eq!(
-            plan_with_setting(&x11, MODERN_WEBKIT, true, true, gpu(GpuRendering::Off, true)),
+            plan_with_setting(
+                &x11,
+                MODERN_WEBKIT,
+                true,
+                true,
+                gpu(GpuRendering::Off, true)
+            ),
             RenderingPlan::PreserveEnvironment
         );
     }
@@ -1475,7 +1685,7 @@ mod tests {
         assert_eq!(
             plan_on_graphics(nvidia_x11_off, true),
             RenderingPlan::Apply(
-                RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                RenderingWorkaround::ForceSharedMemoryOnNvidiaAppImage,
                 NVIDIA_APPIMAGE_X11_REASON
             )
         );
@@ -1799,6 +2009,22 @@ mod tests {
             ),
             RenderingPlan::Apply(
                 RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                GPU_ON_REASON
+            )
+        );
+        // The AppImage composites too, so it gets the non-GL video sink its GStreamer needs.
+        let appimage_x11: &[(&str, &str)] =
+            &[(APPIMAGE, "/tmp/Unsloth.AppImage"), (X11_DISPLAY, ":0")];
+        assert_eq!(
+            plan_with_setting(
+                appimage_x11,
+                MODERN_WEBKIT,
+                true,
+                true,
+                gpu(GpuRendering::On, false)
+            ),
+            RenderingPlan::Apply(
+                RenderingWorkaround::ForceSharedMemoryOnNvidiaAppImage,
                 GPU_ON_REASON
             )
         );

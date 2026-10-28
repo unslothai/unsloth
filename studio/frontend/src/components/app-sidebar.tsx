@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { BrushCleaningIcon } from "@/lib/brush-cleaning-icon";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import {
   Sidebar,
@@ -95,6 +96,12 @@ import {
 } from "@/features/audio/workflows";
 /* eslint-enable no-restricted-imports */
 import { cn } from "@/lib/utils";
+import {
+  hideTrickOrTreatRow,
+  useHalloweenSeasonEnd,
+  useTrickOrTreatVisible,
+} from "@/features/halloween/halloween-store";
+import { TrickOrTreatDialog } from "@/features/halloween/trick-or-treat-dialog";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
 import { copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { isTauri } from "@/lib/api-base";
@@ -107,6 +114,7 @@ import { NAV_FLYOUT_INTENT, NAV_TOOLTIP_INTENT } from "@/lib/hover-intent";
 import {
   Archive03Icon,
   Cancel01Icon,
+  CandyIcon,
   BadgeInfoIcon,
   ChefHatIcon,
   CloudIcon,
@@ -122,13 +130,12 @@ import {
   Folder02Icon,
   FlimSlateIcon,
   HelpCircleIcon,
-  Image03Icon,
+  Image01Icon,
   InformationCircleIcon,
   LibrariesIcon,
   Logout05Icon,
   MoreHorizontalIcon,
   MoreVerticalIcon,
-  PaintBrush02Icon,
   Search01Icon,
   PinIcon,
   PinOffIcon,
@@ -274,7 +281,9 @@ import { videoNavHint } from "@/config/hardware-verdict";
 import {
   AUTH_SESSION_ENDING_EVENT,
   clearAuthTokens,
+  fetchAuthStatus,
   logout,
+  markDesktopSignedOut,
   useIsAccountOwner,
 } from "@/features/auth";
 import { TOUR_OPEN_EVENT, getTourId, useTourAvailable } from "@/features/tour";
@@ -355,7 +364,7 @@ const SETTINGS_TAB_MENU_ITEMS: Record<
   { icon: typeof ZapIcon; labelKey: TranslationKey }
 > = {
   profile: { icon: UserCircleIcon, labelKey: "settings.tabs.profile" },
-  appearance: { icon: PaintBrush02Icon, labelKey: "settings.tabs.appearance" },
+  appearance: { icon: BrushCleaningIcon, labelKey: "settings.tabs.appearance" },
   resources: { icon: CpuIcon, labelKey: "settings.tabs.resources" },
   chat: { icon: MessageCircleIcon, labelKey: "settings.tabs.chat" },
   connections: { icon: CloudIcon, labelKey: "settings.tabs.connections" },
@@ -389,6 +398,12 @@ const CLOCK_NOTICE_ICON = withNoticeDot(Clock01Icon);
 
 // row kebab with centred dots: Hugeicons draws them half a unit low.
 const MoreVerticalCenteredIcon = MoreVerticalIcon.map(([tag, attrs]) => [
+  tag,
+  { ...attrs, transform: "translate(0 -0.5)" },
+]) as unknown as IconSvgElement;
+
+// The header ellipsis has the same half-unit vertical offset as the row kebab.
+const MoreHorizontalCenteredIcon = MoreHorizontalIcon.map(([tag, attrs]) => [
   tag,
   { ...attrs, transform: "translate(0 -0.5)" },
 ]) as unknown as IconSvgElement;
@@ -1019,7 +1034,8 @@ function MoreMenuItem({
     >
       <HugeiconsIcon icon={icon} strokeWidth={1.75} />
       <span className="min-w-0 flex-1 truncate">{label}</span>
-      {badge && <Badge variant="accent">{badge}</Badge>}
+      {/* -my-0.5: a 20px badge would make the row 36px. */}
+      {badge && <Badge variant="accent" className="-my-0.5">{badge}</Badge>}
       {spinner && <Spinner className="size-3.5 shrink-0 text-muted-foreground" />}
       {newAction && (
         <button
@@ -1094,7 +1110,7 @@ function MediaMoreSubmenu<Id extends string>({
       >
         <HugeiconsIcon icon={icon} strokeWidth={1.75} />
         <span className="min-w-0 flex-1 truncate">{label}</span>
-        {badge && <Badge variant="accent">{badge}</Badge>}
+        {badge && <Badge variant="accent" className="-my-0.5">{badge}</Badge>}
         {spinner && (
           <Spinner className="size-3.5 shrink-0 text-muted-foreground" />
         )}
@@ -1314,6 +1330,9 @@ export function AppSidebar() {
   const settingsShortcutLabel = useShortcutLabel("openSettings");
   const keyboardShortcutsLabel = useShortcutLabel("openKeyboardShortcuts");
   const isOwner = useIsAccountOwner();
+  const showTrickOrTreat = useTrickOrTreatVisible();
+  const [trickOrTreatOpen, setTrickOrTreatOpen] = useState(false);
+  useHalloweenSeasonEnd();
   const { pathname, search, href } = useRouterState({
     select: (s) => ({
       pathname: s.location.pathname,
@@ -3371,7 +3390,7 @@ export function AppSidebar() {
       },
     },
     images: {
-      icon: Image03Icon,
+      icon: Image01Icon,
       label: t("shell.navigation.images"),
       active: pathname === "/images" || pathname.startsWith("/images/"),
       onClick: () => {
@@ -4300,23 +4319,41 @@ export function AppSidebar() {
     </>
   );
 
-  useShortcut(
-    "logOut",
-    () => {
-      // Desktop signs out through the OS account menu, not here.
-      if (isTauri) return;
-      void (async () => {
-        if (!window.dispatchEvent(new Event(AUTH_SESSION_ENDING_EVENT, { cancelable: true }))) return;
-        try {
-          await logout();
-        } catch {
-          clearAuthTokens();
-        }
-        void navigate({ to: "/login" });
-      })();
-    },
-    { enabled: !isTauri },
-  );
+  async function signOut() {
+    // Multi-account Desktop signs back in with a password, and the seeded one was never shown.
+    if (isTauri && isOwner) {
+      // Unknown is not "no password to lose": stay signed in rather than risk a lockout.
+      const status = await fetchAuthStatus().catch(() => null);
+      if (!status) {
+        toast.error(t("shell.navigation.logOutFailed"));
+        return;
+      }
+      if (status.login_mode === "multi" && status.requires_password_change) {
+        toast.error(t("shell.navigation.logOutNeedsPassword"));
+        useSettingsDialogStore.getState().openDialog("remote-lan");
+        return;
+      }
+    }
+    if (!window.dispatchEvent(new Event(AUTH_SESSION_ENDING_EVENT, { cancelable: true }))) return;
+    // Marker before the revoke, else a relaunch or failing request signs straight back in.
+    if (isTauri) {
+      try {
+        await markDesktopSignedOut();
+      } catch {
+        toast.error(t("shell.navigation.logOutFailed"));
+        return;
+      }
+    }
+    // Best-effort revocation; ignore network errors so the local clear still runs.
+    try {
+      await logout();
+    } catch {
+      clearAuthTokens();
+    }
+    void navigate({ to: "/login" });
+  }
+
+  useShortcut("logOut", () => void signOut());
 
   /** Filing a pinned chat takes its pin, else Pinned keeps drawing it. */
   function fileChatsInSection(chatIds: string[], sectionId: string | null) {
@@ -4555,7 +4592,8 @@ export function AppSidebar() {
             aria-label={options.ariaLabel}
             className="sidebar-header-action"
           >
-            <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-icon" />
+            {/* Share the circle's viewport; the expanded viewBox preserves the original icon size. */}
+            <HugeiconsIcon icon={MoreHorizontalCenteredIcon} strokeWidth={1.75} viewBox="-4 -4 32 32" className="size-full" />
           </button>
         )}
       >
@@ -6198,6 +6236,35 @@ export function AppSidebar() {
                   </NavItem>
                 );
               })}
+              {showTrickOrTreat && (
+                <NavItem
+                  icon={CandyIcon}
+                  label={t("halloween.navLabel")}
+                  active={trickOrTreatOpen}
+                  testId="nav-row-trick-or-treat"
+                  className="group/halloween-item relative"
+                  onClick={() => setTrickOrTreatOpen(true)}
+                >
+                  <button
+                    type="button"
+                    aria-label={t("halloween.hideFromSidebar")}
+                    data-testid="nav-row-trick-or-treat-hide"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      hideTrickOrTreatRow();
+                    }}
+                    className="sidebar-row-action pr-2.5! group-hover/halloween-item:opacity-100 group-hover/halloween-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto group-data-[collapsible=icon]:hidden"
+                  >
+                    <span className="sidebar-row-action-glyph">
+                      <HugeiconsIcon
+                        icon={Cancel01Icon}
+                        strokeWidth={1.75}
+                        className="size-4"
+                      />
+                    </span>
+                  </button>
+                </NavItem>
+              )}
               {/* Unpinned destinations, behind one row. */}
               {overflowNavIds.length > 0 && (
                 <SidebarMenuItem>
@@ -6362,6 +6429,10 @@ export function AppSidebar() {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+        <TrickOrTreatDialog
+          open={trickOrTreatOpen}
+          onOpenChange={setTrickOrTreatOpen}
+        />
 
         {/* Pinned, the user's sections and Projects, in the order they were dragged into.
             Recents stays last, under them all. */}
@@ -6820,23 +6891,10 @@ export function AppSidebar() {
                   </DropdownMenuItem>
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
-              {!isTauri && (
-                <DropdownMenuItem
-                  onSelect={async () => {
-                    if (!window.dispatchEvent(new Event(AUTH_SESSION_ENDING_EVENT, { cancelable: true }))) return;
-                    // Best-effort revocation; ignore network errors so the local clear still runs.
-                    try {
-                      await logout();
-                    } catch {
-                      clearAuthTokens();
-                    }
-                    void navigate({ to: "/login" });
-                  }}
-                >
-                  <HugeiconsIcon icon={Logout05Icon} strokeWidth={1.75} className="size-icon" />
-                  <span>{t("shell.navigation.logOut")}</span>
-                </DropdownMenuItem>
-              )}
+              <DropdownMenuItem onSelect={() => void signOut()}>
+                <HugeiconsIcon icon={Logout05Icon} strokeWidth={1.75} className="size-icon" />
+                <span>{t("shell.navigation.logOut")}</span>
+              </DropdownMenuItem>
               {!isTauri && (
                 <DropdownMenuItem onSelect={() => setShutdownOpen(true)}>
                   <HugeiconsIcon icon={PowerIcon} strokeWidth={1.75} className="size-icon" />

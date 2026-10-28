@@ -10,13 +10,13 @@ import {
 } from "@/components/ui/popover";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
-import { Delete02Icon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
 import {
-  Bookmark,
-  ClipboardPaste,
-  ImageUp,
-} from "lucide-react";
+  ClipboardPasteIcon,
+  Delete02Icon,
+  Upload01Icon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { Bookmark } from "lucide-react";
 import { Fragment, useState } from "react";
 import { DEFAULT_PRESET_NAME } from "./preset-policy";
 import { Tick02Icon } from "@/lib/tick-icon";
@@ -191,10 +191,11 @@ export function MediaGenerationPresetControl({
           })}
         </div>
 
-        <div className="shrink-0 border-t border-border/60 bg-muted/20 p-3">
+        {/* px-2 as the preset list, so the name field and Save meet the rows' hover edges. */}
+        <div className="shrink-0 border-t border-border/60 bg-muted/20 px-2 py-3">
           <label
             htmlFor={`${kind}-generation-preset-name`}
-            className="mb-2 block text-xs font-medium"
+            className="mb-2 block px-1 text-xs font-medium"
           >
             Save current settings
           </label>
@@ -235,7 +236,7 @@ export function MediaGenerationPresetControl({
               }}
               className="mt-3 flex h-8 w-full items-center justify-center gap-1.5 rounded-full text-xs text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
             >
-              <ImageUp className="size-3.5" />
+              <HugeiconsIcon icon={Upload01Icon} strokeWidth={1.75} className="size-3.5" />
               Load settings from an image
             </button>
           ) : null}
@@ -249,7 +250,7 @@ export function MediaGenerationPresetControl({
               }}
               className="mt-1 flex h-8 w-full items-center justify-center gap-1.5 rounded-full text-xs text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
             >
-              <ClipboardPaste className="size-3.5" />
+              <HugeiconsIcon icon={ClipboardPasteIcon} strokeWidth={1.75} className="size-3.5" />
               Paste generation parameters
             </button>
           ) : null}

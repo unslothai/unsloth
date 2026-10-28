@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""HuggingFace Hub download worker, spawned as a subprocess so SIGKILL stops all chunk threads.
-
-Resume safety: downloads here MUST be single-stream sequential writers so the parent's SIGKILL then restart loop can rely on ``os.path.getsize(.incomplete)`` for the resume offset. Enforced by setting ``HF_HUB_DISABLE_XET=1`` and ``HF_HUB_ENABLE_HF_TRANSFER=0`` on the spawning side (see :mod:`hub.utils.download_registry`) for transport=http; passing ``max_workers=1`` to ``snapshot_download`` so files download serially and the at-most-one-active-`.incomplete` invariant holds globally; letting ``prepare_cache_for_transport`` purge any pre-existing ``.incomplete`` blobs not provably from the same sequential writer; and restoring huggingface_hub's 1.17 append-mode writer where safe (see :mod:`hub.utils.resumable_partials`), since 1.18+ writes a process-unique partial and unlinks it, leaving this loop nothing to resume from.
-
-If the final byte count does not match what HF declared, huggingface_hub raises ``EnvironmentError`` ("Consistency check failed: ..."), which is surfaced on stderr so the watcher can show the exact message to the user.
-"""
+"""HF download subprocess (SIGKILL stops chunk threads); resume needs single-stream writes, enforced
+by HF_HUB_DISABLE_XET=1, HF_HUB_ENABLE_HF_TRANSFER=0 (http), max_workers=1, purge of unprovable
+.incomplete blobs."""
 
 from __future__ import annotations
 
