@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """is_ltx23_checkpoint reads a checkpoint header once per file identity: a load asks twice (download
 estimate, then the load), and a GGUF header walk builds a view per tensor."""
 
@@ -88,7 +91,7 @@ def test_a_symlink_shares_its_targets_verdict(reads, tmp_path):
     try:
         link.symlink_to(blob)
     except (OSError, NotImplementedError):
-        pytest.skip("no symlinks here")
+        pytest.skip("os.symlink unavailable here (e.g. Windows without Developer Mode)")
     assert video_ltx2.is_ltx23_checkpoint(link) is True
     assert video_ltx2.is_ltx23_checkpoint(blob) is True
     assert len(calls) == 1
