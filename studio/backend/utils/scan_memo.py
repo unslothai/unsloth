@@ -19,6 +19,14 @@ _T = TypeVar("_T")
 _scope: ContextVar[Optional[dict]] = ContextVar("studio_scan_memo", default = None)
 # Set when the scope ends: a task or thread that copied the context and outlives it stops using it.
 _CLOSED = object()
+# Bumped on a cache mutation (move, delete, finished download); entries are keyed by it, so an
+# inventory retry inside the same scope recomputes the roots instead of rescanning the old ones.
+_generation = 0
+
+
+def invalidate_scan_memos() -> None:
+    global _generation
+    _generation += 1
 
 
 @contextmanager
@@ -42,6 +50,7 @@ def memoized(key: Hashable, compute: Callable[[], _T]) -> _T:
     memo = _scope.get()
     if memo is None or _CLOSED in memo:
         return compute()
+    key = (_generation, key)
     try:
         return memo[key]
     except KeyError:

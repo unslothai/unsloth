@@ -164,6 +164,26 @@ def test_hf_cache_setting_write_is_seen_by_the_next_scan(monkeypatch, tmp_path):
         assert hf_cache_settings.get_hf_cache_paths().cache_home == tmp_path / "custom"
 
 
+def test_a_cache_invalidation_mid_scan_is_seen_by_the_same_scan(monkeypatch, tmp_path):
+    # The inventory retry after an epoch change runs inside the scope that saw the old roots.
+    from hub.utils import inventory_scan
+
+    stored = {"value": None}
+    monkeypatch.setattr(hf_cache_settings, "_EXPLICIT_CACHE_ENV", {})
+    monkeypatch.setattr(hf_cache_settings, "_portable_cache_home", lambda: None)
+    monkeypatch.setattr(
+        hf_cache_settings,
+        "_stored_cache_home",
+        lambda: Path(stored["value"]) if stored["value"] else None,
+    )
+    with scan_memo():
+        before = hf_cache_settings.get_hf_cache_paths()
+        stored["value"] = str(tmp_path / "custom")
+        assert hf_cache_settings.get_hf_cache_paths() is before
+        inventory_scan.invalidate_hf_cache_scans()
+        assert hf_cache_settings.get_hf_cache_paths().cache_home == tmp_path / "custom"
+
+
 def test_known_hub_caches_returns_a_fresh_list_per_call(monkeypatch, tmp_path):
     monkeypatch.setattr(hf_cache_settings, "_known_hf_hub_caches", lambda: [tmp_path])
     with scan_memo():
