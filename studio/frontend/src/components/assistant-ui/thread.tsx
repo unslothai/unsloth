@@ -3115,17 +3115,24 @@ const Composer: FC<{
   const scrollThreadToBottom = useScrollThreadToBottom();
   const threadEmpty = useAuiState(({ thread }) => thread.isEmpty);
   const toggleWritingExpanded = () => {
-    // Welcome page: the bottom pin's stabilizer padding shifted the expanded frame up.
-    if (threadEmpty) {
-      if (isWritingExpanded) {
-        window.requestAnimationFrame(() => scrollThreadToBottom("instant"));
-      } else {
-        detachFromBottom();
-      }
-    }
     setIsWritingExpanded((expanded) => !expanded);
     inputRef.current?.focus({ preventScroll: true });
   };
+  // Welcome page: the bottom pin's stabilizer padding shifted the expanded frame up. On every
+  // transition (button, Escape, send), so collapsing always re-pins the toolbar into view.
+  const wasExpandedRef = useRef(false);
+  useLayoutEffect(() => {
+    const was = wasExpandedRef.current;
+    wasExpandedRef.current = isWritingExpanded;
+    if (!threadEmpty || was === isWritingExpanded) {
+      return;
+    }
+    if (isWritingExpanded) {
+      detachFromBottom();
+    } else {
+      window.requestAnimationFrame(() => scrollThreadToBottom("instant"));
+    }
+  }, [isWritingExpanded, threadEmpty, detachFromBottom, scrollThreadToBottom]);
   useExpandedComposerFill(editorRef, isWritingExpanded && !isDictating);
   // Cache line metrics so getComputedStyle runs once, not per keystroke.
   const lineMetricsRef = useRef<{ lineHeight: number; padding: number } | null>(

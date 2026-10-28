@@ -23,11 +23,12 @@ function scrollParent(el: HTMLElement): HTMLElement | null {
 
 function availableHeight(root: HTMLElement, compare: boolean): number {
   const rootRect = root.getBoundingClientRect();
-  const footer = root.closest(".aui-thread-viewport-footer");
-  if (footer || compare) {
+  // A conversation docks the composer beside the viewport, not inside it.
+  const dock = root.closest(".aui-thread-composer-dock");
+  if (dock || compare) {
     const panes = compare
       ? document.querySelector('[data-tour="chat-compare-view"]')
-      : root.closest(".aui-thread-viewport");
+      : dock?.parentElement?.querySelector(".aui-thread-viewport");
     const top =
       (panes?.getBoundingClientRect().top ?? 0) + cssPx(panes, "paddingTop");
     return rootRect.bottom - (top + EDGE_GAP_PX);
