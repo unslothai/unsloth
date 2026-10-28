@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from storage import api_usage_db, profile_stats_db, studio_db
+from storage import api_usage_db, profile_stats_db, rag_db, studio_db
 from utils.account_context import OWNER, AccountContext, account_thread, current_account_id, run_as
 from utils.paths import storage_roots as roots
 from utils.paths.lazy import LazyPath
@@ -34,6 +34,8 @@ def account_home(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_DOCUMENTS_HOME", str(tmp_path / "Documents"))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
     studio_db.close_wal_keeper()
+    rag_db.close_wal_keeper()
+    rag_db.start_wal_keepers()
     profile_stats_db._cache.clear()
     memos = []
     for name in (
@@ -52,6 +54,7 @@ def account_home(tmp_path, monkeypatch):
     for memo in memos:
         memo.clear()
     studio_db.close_wal_keeper()
+    rag_db.close_wal_keeper()
     profile_stats_db._cache.clear()
 
 
@@ -96,18 +99,24 @@ def test_each_database_gets_its_schema(account_home, module_name, table):
     assert module._schema_ready == set()
 
 
-def test_wal_keepers_can_close_one_account(account_home):
+@pytest.mark.parametrize("module_name", ["studio_db", "rag_db"])
+def test_wal_keepers_can_close_one_account(account_home, module_name):
+    module = importlib.import_module(f"storage.{module_name}")
+    path_fn = roots.rag_db_path if module_name == "rag_db" else roots.studio_db_path
     for account in ACCOUNTS:
-        assert run_as(account, studio_db.open_wal_keeper)
-    paths = {account: run_as(account, roots.studio_db_path) for account in ACCOUNTS}
-    alice = studio_db._wal_keepers[paths[ALICE]]
-    studio_db.close_wal_keeper_for(paths[ALICE])
+        if module_name == "studio_db":
+            assert run_as(account, studio_db.open_wal_keeper)
+        else:
+            run_as(account, module.get_connection).close()
+    paths = {account: run_as(account, path_fn).resolve() for account in ACCOUNTS}
+    alice = module._wal_keepers[paths[ALICE]]
+    module.close_wal_keeper_for(paths[ALICE])
     with pytest.raises(sqlite3.ProgrammingError, match = "closed"):
         alice.execute("SELECT 1")
     for account in (OWNER, BOB):
-        assert studio_db._wal_keepers[paths[account]].execute("SELECT 1").fetchone()[0] == 1
-    studio_db.close_wal_keeper()
-    assert studio_db._wal_keepers == {}
+        assert module._wal_keepers[paths[account]].execute("SELECT 1").fetchone()[0] == 1
+    module.close_wal_keeper()
+    assert module._wal_keepers == {}
 
 
 def test_a_managed_database_keeps_its_wal_across_a_connection_close(account_home):
@@ -130,15 +139,20 @@ def test_a_managed_database_keeps_its_wal_across_a_connection_close(account_home
     assert alice_db.with_name("studio.db-wal").exists()
 
 
-def test_retiring_an_account_releases_its_wal_keeper(account_home):
+@pytest.mark.parametrize("module_name", ["studio_db", "rag_db"])
+def test_retiring_an_account_releases_its_wal_keeper(account_home, module_name):
     from routes.accounts import retire_account_roots
 
-    studio_db.reset_schema_state_for_tests()
-    alice_db = run_as(ALICE, roots.studio_db_path)
-    run_as(ALICE, studio_db.get_connection).close()
-    keeper = studio_db._wal_keepers[alice_db]
+    module = importlib.import_module(f"storage.{module_name}")
+    path_fn = roots.rag_db_path if module_name == "rag_db" else roots.studio_db_path
+    module.reset_schema_state_for_tests()
+    alice_db = run_as(ALICE, path_fn).resolve()
+    workspace = run_as(ALICE, roots.workspace_root)
+    run_as(ALICE, module.get_connection).close()
+    keeper = module._wal_keepers[alice_db]
     retire_account_roots(ALICE)
-    assert alice_db not in studio_db._wal_keepers
+    assert alice_db not in module._wal_keepers
+    assert not workspace.exists(), "the keeper must not prevent the Windows retirement rename"
     with pytest.raises(sqlite3.ProgrammingError, match = "closed"):
         keeper.execute("SELECT 1")
 

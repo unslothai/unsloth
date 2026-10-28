@@ -94,6 +94,9 @@ def retire_account_roots(account: AccountContext):
     from storage.studio_db import close_wal_keeper_for
 
     close_wal_keeper_for(run_as(account, storage_roots.workspace_root) / "studio.db")
+    from storage import rag_db
+
+    rag_db.close_wal_keeper_for(run_as(account, storage_roots.rag_db_path))
     from core.inference import file_history
 
     file_history.close_store(run_as(account, storage_roots.account_path, "file_history"))

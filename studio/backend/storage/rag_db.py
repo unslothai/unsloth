@@ -37,6 +37,11 @@ class RagExtensionUnavailable(RuntimeError):
 
 _schema_lock = threading.Lock()
 _schema_ready: set[Path] = set()
+# An idle connection keeps ordinary per-operation closes from removing WAL/SHM.
+_wal_keepers: dict[Path, sqlite3.Connection] = {}
+_wal_keeper_paths: dict[Path, Path] = {}
+_wal_keeper_lock = threading.Lock()
+_wal_keepers_enabled = True
 # Warn once per process: the UI polls the KB list on a timer.
 _unavailable_lock = threading.Lock()
 _unavailable_warned = False
@@ -323,6 +328,11 @@ def get_connection() -> sqlite3.Connection:
                 except Exception:
                     conn.close()
                     raise
+    try:
+        _ensure_wal_keeper(db_path)
+    except Exception:
+        conn.close()
+        raise
     return conn
 
 
@@ -335,7 +345,77 @@ def get_metadata_connection() -> sqlite3.Connection:
     conn = sqlite_gate.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 5000")
+    try:
+        _ensure_wal_keeper(db_path)
+    except Exception:
+        conn.close()
+        raise
     return conn
+
+
+def _ensure_wal_keeper(db_path: Path) -> None:
+    if not _wal_keepers_enabled or db_path in _wal_keeper_paths:
+        return
+    with _wal_keeper_lock:
+        if not _wal_keepers_enabled:
+            return
+        resolved = db_path.resolve()
+        if resolved not in _wal_keepers:
+            # This connection never queries vectors or holds a transaction. Metadata-only
+            # retirement must still work when the optional vector extension is unavailable.
+            keeper = sqlite_gate.connect(db_path, check_same_thread = False)
+            try:
+                mode = keeper.execute("PRAGMA journal_mode").fetchone()[0]
+                if not isinstance(mode, str) or mode.lower() != "wal":
+                    keeper.close()
+                    # Metadata can open a new DELETE-mode DB before RAG initializes WAL.
+                    # Do not cache this result: a later operation may enable WAL.
+                    return
+                keeper.execute("SELECT 1 FROM sqlite_schema LIMIT 1").fetchall()
+            except Exception:
+                keeper.close()
+                raise
+            _wal_keepers[resolved] = keeper
+        # Remember both spellings so warm operations do not resolve paths repeatedly.
+        _wal_keeper_paths[db_path] = resolved
+        _wal_keeper_paths[resolved] = resolved
+
+
+def start_wal_keepers() -> None:
+    """Enable lazy keepers for a new backend lifespan without initializing RAG."""
+    global _wal_keepers_enabled
+    with _wal_keeper_lock:
+        _wal_keepers_enabled = True
+
+
+def _close_keeper(conn: sqlite3.Connection) -> None:
+    try:
+        conn.close()
+    except Exception as exc:
+        logger.warning("Could not close the rag.db WAL keeper: %s", exc)
+
+
+def close_wal_keeper_for(path: str | Path) -> None:
+    """Release one account's RAG database before its directories are retired."""
+    resolved = Path(path).resolve()
+    with _wal_keeper_lock:
+        keeper = _wal_keepers.pop(resolved, None)
+        if keeper is not None:
+            _close_keeper(keeper)
+        for spelling, target in tuple(_wal_keeper_paths.items()):
+            if target == resolved:
+                del _wal_keeper_paths[spelling]
+
+
+def close_wal_keeper() -> None:
+    """Release all keepers; late workers cannot reopen them after shutdown."""
+    global _wal_keepers_enabled
+    with _wal_keeper_lock:
+        _wal_keepers_enabled = False
+        for keeper in _wal_keepers.values():
+            _close_keeper(keeper)
+        _wal_keepers.clear()
+        _wal_keeper_paths.clear()
 
 
 def vec_table_dim(conn: sqlite3.Connection) -> int | None:

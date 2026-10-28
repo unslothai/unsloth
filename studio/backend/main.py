@@ -837,6 +837,10 @@ async def lifespan(app: FastAPI):
     if overlay_dir.is_dir():
         shutil.rmtree(overlay_dir, ignore_errors = True)
 
+    from storage import rag_db
+
+    rag_db.start_wal_keepers()
+
     # Before the first writer, so startup's own connections stop checkpointing too.
     try:
         from storage.studio_db import open_wal_keeper
@@ -1087,6 +1091,7 @@ async def lifespan(app: FastAPI):
     from storage.studio_db import close_wal_keeper
 
     close_wal_keeper()
+    rag_db.close_wal_keeper()
     try:
         storage.close_wal_keeper()
     except Exception as exc:

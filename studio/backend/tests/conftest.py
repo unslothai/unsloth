@@ -483,14 +483,23 @@ def _forget_the_cached_owner_identity():
 def _isolate_wal_keepers():
     """Close the WAL keepers a test opened, so a later test's assertion on _wal_keepers sees only
     its own."""
-    from storage import studio_db
+    from storage import rag_db, studio_db
 
     before = set(studio_db._wal_keepers)
     unsupported = set(studio_db._wal_unsupported)
+    rag_before = set(rag_db._wal_keepers)
+    rag_enabled = rag_db._wal_keepers_enabled
+    rag_db.start_wal_keepers()
     yield
     for path in set(studio_db._wal_keepers) - before:
         studio_db.close_wal_keeper_for(path)
     studio_db._wal_unsupported.intersection_update(unsupported)
+    for path in set(rag_db._wal_keepers) - rag_before:
+        rag_db.close_wal_keeper_for(path)
+    if rag_enabled:
+        rag_db.start_wal_keepers()
+    else:
+        rag_db.close_wal_keeper()
 
 
 @pytest.fixture(autouse = True)
