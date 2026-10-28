@@ -426,11 +426,15 @@ export const BUDGET = {
   // Cosmos3 video families (#14554): +466 B raw / +218 B transfer. Raised by that.
   // Lookup-table pricing (#14465): +1,517 B raw / +470 B transfer on top of the lines above (measured merged with
   // 4db3eaeb55, Node 24, 99 chunks).
+  // Chat pins synced through the server (#15293): the sync runtime is a lazy chunk, but the modules it shares
+  // with startup code (chat-settings-api, sidebar-organization-keys) split into their own eager chunks, plus the
+  // mount hook and store wiring: +3,074 B raw / +2,025 B transfer (6,958,762 -> 6,961,836 B raw, 2,099,260 ->
+  // 2,101,285 B transfer against 9c397197e0, Node 24, 106 -> 109 chunks). Raised by that growth.
   // DPO, ORPO and GRPO in Studio (#12601): +29,510 B raw / +9,218 B transfer over main's budget at the e3d92b48e
   // merge (the RL strings in the eager catalog, the RL settings and role mapping in the eager training store),
-  // carried onto main's budget at the cd7850ce2 merge.
-  transferBytes: 2_110_403,
-  rawBytes: 7_003_065,
+  // carried onto main's budget at each later merge of main.
+  transferBytes: 2_112_428,
+  rawBytes: 7_006_139,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.
