@@ -3283,7 +3283,16 @@ TEMPORARY_PATCH_OUTCOMES = {}
 
 def _run_temporary_patches(phase):
     import inspect
+    import os
 
+    # The loader owns UNSLOTH_FORCE_FLOAT32: every load rewrites it (fp16 + a FORCE_FLOAT32 family) and
+    # pre_compile re-runs every patch under that decision. A user "1" honoured at import installs the forced
+    # float32 forwards early, and a bf16 load that resolves to "0" replaces only some of them (Gemma3
+    # attention / RMSNorm), so the float32 embedding feeds bf16 attention: RoPE promotes query and key to
+    # float32, value stays bf16, and SDPA / flex attention refuse the mix. Import sees "0"; restored below.
+    user_force_float32 = os.environ.get("UNSLOTH_FORCE_FLOAT32")
+    if phase == "init":
+        os.environ["UNSLOTH_FORCE_FLOAT32"] = "0"
     # Nothing here may raise (this loop runs inside import unsloth); replace the per-phase entry, never extend it
     completed = []
     raised = []
@@ -3317,6 +3326,11 @@ def _run_temporary_patches(phase):
             )
         else:
             completed.append(temporary_patch)
+    if phase == "init":
+        if user_force_float32 is None:
+            os.environ.pop("UNSLOTH_FORCE_FLOAT32", None)
+        else:
+            os.environ["UNSLOTH_FORCE_FLOAT32"] = user_force_float32
 
 
 _run_temporary_patches("init")
