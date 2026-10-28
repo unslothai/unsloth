@@ -1029,12 +1029,13 @@ export function ResourcesTab() {
                 color: STORAGE_COLORS.free,
               },
             ];
-            const meta = [
+            const deviceLabel =
               ordinal === undefined
                 ? backendLabel
                 : `${t("settings.resources.gpu.deviceWithIndex", {
                     index: ordinal,
-                  })}, ${backendLabel}`,
+                  })}, ${backendLabel}`;
+            const telemetryText = [
               telemetry?.loadPct != null
                 ? `${t("settings.resources.liveMonitor.gpuLoad")} ${formatPercent(telemetry.loadPct)}`
                 : null,
@@ -1051,10 +1052,9 @@ export function ResourcesTab() {
               <div
                 key={`${device.index ?? index}-${device.name ?? "gpu"}`}
                 data-settings-label={device.name ?? undefined}
-                className="flex flex-col gap-4 py-3"
+                className="flex min-w-0 flex-wrap items-start justify-between gap-x-6 gap-y-3 py-3 max-[992px]:flex-col max-[992px]:items-stretch"
               >
-                {/* Same layout as the Storage overview below: heading, bar, legend. */}
-                <div className="flex min-h-8 min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                <div className="flex min-w-0 flex-1 flex-col gap-1">
                   <p className="flex min-w-0 items-center gap-2 text-sm font-semibold text-foreground">
                     <span className="truncate">
                       {device.name ?? t("settings.resources.gpu.unknownDevice")}
@@ -1074,45 +1074,55 @@ export function ResourcesTab() {
                       </span>
                     )}
                   </p>
-                  <span className="min-w-0 truncate text-xs tabular-nums text-muted-foreground">
-                    {meta}
+                  <span className="truncate text-xs text-muted-foreground">
+                    {deviceLabel}
+                    {sharedSplit && !hasSharedMemoryHeadroom(device) ? (
+                      <>
+                        {" · "}
+                        {sharedSplit.dedicated > 0
+                          ? t("settings.resources.environment.vramWithShared", {
+                              vram: formatGiB(sharedSplit.dedicated),
+                              shared: formatGiB(sharedSplit.shared),
+                            })
+                          : t("settings.resources.gpu.sharedWithSystemRam")}
+                      </>
+                    ) : null}
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    {t("settings.resources.gpu.usedOf", {
+                      used: usedText,
+                      total: totalText,
+                    })}
+                    {shared
+                      ? null
+                      : ` · ${t("settings.resources.gpu.free", { value: freeText })}`}
                   </span>
                 </div>
-                {hasSharedMemoryHeadroom(device) ? (
-                  <div className="text-sm text-muted-foreground">
-                    {t("settings.resources.gpu.estimatedAvailable", {
-                      value:
-                        sharedMemoryAvailableGb([device]) === null
-                          ? unknownLabel
-                          : formatGiB(device.vram_free_gb),
-                    })}
-                  </div>
-                ) : (
-                  // A dedicated card has two slices the footer already names, so only a shared pool gets a legend.
-                  <StorageBar
-                    segments={segments}
-                    totalBytes={isFiniteNumber(total) ? total : undefined}
-                    legend={shared}
-                  />
-                )}
-                <div className="text-xs text-muted-foreground">
-                  {t("settings.resources.gpu.usedOf", {
-                    used: usedText,
-                    total: totalText,
-                  })}
-                  {shared
-                    ? null
-                    : ` · ${t("settings.resources.gpu.free", { value: freeText })}`}
-                  {sharedSplit && !hasSharedMemoryHeadroom(device) ? (
-                    <>
-                      {" · "}
-                      {sharedSplit.dedicated > 0
-                        ? t("settings.resources.environment.vramWithShared", {
-                            vram: formatGiB(sharedSplit.dedicated),
-                            shared: formatGiB(sharedSplit.shared),
-                          })
-                        : t("settings.resources.gpu.sharedWithSystemRam")}
-                    </>
+                {/* Same 392px as the Model downloads control, so both blocks start on one edge.
+                    Below 992px the dialog stops filling its 960px cap and the row stacks. */}
+                <div className="flex w-[min(calc(392px*var(--ui-space-scale,1)),100%)] shrink-0 flex-col gap-2.5 pt-0.5 max-[992px]:w-full">
+                  {hasSharedMemoryHeadroom(device) ? (
+                    <div className="text-xs text-muted-foreground">
+                      {t("settings.resources.gpu.estimatedAvailable", {
+                        value:
+                          sharedMemoryAvailableGb([device]) === null
+                            ? unknownLabel
+                            : formatGiB(device.vram_free_gb),
+                      })}
+                    </div>
+                  ) : (
+                    // A dedicated card has two slices the line under its name already gives, so only a shared pool gets a legend.
+                    <StorageBar
+                      segments={segments}
+                      totalBytes={isFiniteNumber(total) ? total : undefined}
+                      legend={shared ? "inline" : false}
+                      barClassName="h-4"
+                    />
+                  )}
+                  {telemetryText ? (
+                    <span className="text-xs tabular-nums text-muted-foreground">
+                      {telemetryText}
+                    </span>
                   ) : null}
                 </div>
               </div>

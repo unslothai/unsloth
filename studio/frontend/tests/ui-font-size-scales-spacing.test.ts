@@ -411,11 +411,11 @@ test("composite settings controls shrink inside their row", () => {
       '"flex max-w-full shrink-0 flex-wrap items-center justify-end gap-1"',
     ),
   );
-  // The GPU heading wraps its device details under the name instead of squeezing it.
   const resources = readSrc("features/settings/tabs/resources-tab.tsx");
+  assert.ok(resources.includes("flex min-w-0 flex-wrap items-start justify-between"));
   assert.ok(
     resources.includes(
-      '"flex min-h-8 min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1"',
+      '"flex w-[min(calc(392px*var(--ui-space-scale,1)),100%)] shrink-0 flex-col',
     ),
   );
 });

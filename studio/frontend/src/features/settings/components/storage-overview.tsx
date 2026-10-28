@@ -65,11 +65,14 @@ export function StorageBar({
   segments,
   totalBytes,
   legend = true,
+  barClassName = "h-6",
 }: {
   segments: StorageSegment[];
   /** Width of the whole bar; defaults to the sum, so the slices fill it. */
   totalBytes?: number;
-  legend?: boolean;
+  /** "inline" puts each value beside its label, for a bar in a side column. */
+  legend?: boolean | "inline";
+  barClassName?: string;
 }) {
   const sum = segments.reduce(
     (acc, segment) => acc + Math.max(0, segment.bytes),
@@ -79,7 +82,9 @@ export function StorageBar({
   return (
     <>
       {/* A rounded rectangle, not a pill, by design. */}
-      <div className="flex h-6 overflow-hidden rounded-sm bg-muted">
+      <div
+        className={cn("flex overflow-hidden rounded-sm bg-muted", barClassName)}
+      >
         {scale > 0
           ? segments.map((segment) =>
               segment.bytes > 0 ? (
@@ -92,7 +97,21 @@ export function StorageBar({
             )
           : null}
       </div>
-      {legend ? (
+      {legend === "inline" ? (
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
+          {segments.map((segment) => (
+            <span key={segment.key} className="flex items-center gap-1.5">
+              <span
+                className={cn("size-2 shrink-0 rounded-full", segment.color)}
+              />
+              <span className="text-foreground/80">{segment.label}</span>
+              <span className="tabular-nums text-muted-foreground">
+                {segment.value}
+              </span>
+            </span>
+          ))}
+        </div>
+      ) : legend ? (
         <div className="flex flex-wrap gap-x-8 gap-y-3">
           {segments.map((segment) => (
             <div key={segment.key} className="flex flex-col gap-1">
