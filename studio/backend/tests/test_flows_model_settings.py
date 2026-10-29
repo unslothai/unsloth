@@ -304,6 +304,17 @@ def test_a_card_on_the_loaded_model_waits_when_its_load_differs(monkeypatch):
     rs.plan = plan
     assert engine._pick_gpu(rs, ["a", "b"]) == "b"
 
+
+def test_gguf_only_settings_on_a_card_with_model_unset_are_compared(monkeypatch):
+    layers = {"load": {"gpu_layers": 12}}
+    other = {"load": {"gpu_layers": 40}}
+    opts = model_settings.load_kwargs(other["load"], is_gguf = True)
+    assert opts and model_settings.card_load_kwargs(layers, GGUF) != opts
+    monkeypatch.setattr(_common, "_LOADED_OPTIONS", {"llm": (GGUF.lower(), _common.options_hash(opts), 0)})
+    rs = SimpleNamespace(plan = _plan({"a": layers, "b": other}), resident = {"llm": GGUF})
+    engine = engine_mod.FlowEngine.__new__(engine_mod.FlowEngine)
+    assert engine._pick_gpu(rs, ["a", "b"]) == "b"
+
 def test_an_explicit_zero_context_reaches_the_load(monkeypatch):
     # Manual GPU memory with Auto layers maps to max_seq_length 0: llama.cpp's fit sizes the context.
     loads = _load_fakes(monkeypatch, ["other/model"])

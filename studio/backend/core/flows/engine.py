@@ -1672,8 +1672,9 @@ class FlowEngine:
         def load_of(nid: str) -> Optional[str]:
             if nid not in loads:
                 params = plan.nodes[nid].get("params") or {}
+                slot, repo = model_of(nid)
                 loads[nid] = (
-                    options_hash(model_settings.card_load_kwargs(params))
+                    options_hash(model_settings.card_load_kwargs(params, None if repo else rs.resident.get(slot)))
                     if model_settings.LOAD in params or params.get(model_settings.USE_SAVED)
                     else None
                 )
