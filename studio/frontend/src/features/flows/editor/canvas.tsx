@@ -15,6 +15,7 @@ import {
   ReactFlow,
   SelectionMode,
   useReactFlow,
+  useUpdateNodeInternals,
 } from "@xyflow/react";
 import {
   type DragEvent,
@@ -124,6 +125,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
   const snapToGrid = useUiStore((s) => s.snapToGrid);
   const { screenToFlowPosition } = useReactFlow();
   const wireReconnect = useWireReconnect(!readOnly);
+  const updateNodeInternals = useRef(useUpdateNodeInternals());
 
   const deriver = useRef<RfDeriver | null>(null);
   deriver.current ??= new RfDeriver();
@@ -235,7 +237,16 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
           (change.selected ? selection.add : selection.remove).add(change.id);
         }
       }
-      if (nextBoxes) setBoxes(Object.keys(nextBoxes).length ? nextBoxes : null);
+      if (nextBoxes) {
+        setBoxes(Object.keys(nextBoxes).length ? nextBoxes : null);
+        // Handles move with a resize; React Flow re-reads their positions only when asked,
+        // since the size it holds is already the new one.
+        const resized = changes.flatMap((c) =>
+          c.type === "dimensions" && c.resizing !== undefined ? [c.id] : [],
+        );
+        if (resized.length)
+          requestAnimationFrame(() => updateNodeInternals.current(resized));
+      }
       if (nextDrag)
         setDrag(ended && !Object.keys(nextDrag).length ? null : nextDrag);
       if (nextSizes) setSizes(nextSizes);

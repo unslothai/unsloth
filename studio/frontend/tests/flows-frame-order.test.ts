@@ -40,4 +40,6 @@ test("a resize's sizes reach `measured`, so output wires follow the new right ed
   const handler = src.slice(src.indexOf("const onNodesChange"), src.indexOf("const onEdgesChange"));
   // The size update is its own branch, reached by resize changes too.
   assert.match(handler, /ended = true;\s*\}\s*\/\/[^\n]*\n[^\n]*\n\s*if \(change\.type === "dimensions" && change\.dimensions\)/);
+  // Handles moved with the edge: React Flow is asked to re-read them, live and on release.
+  assert.match(handler, /requestAnimationFrame\(\(\) => updateNodeInternals\.current\(resized\)\)/);
 });
