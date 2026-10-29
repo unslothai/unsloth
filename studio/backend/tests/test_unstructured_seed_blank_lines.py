@@ -32,7 +32,6 @@ def _previous_normalize(text):
 
 
 def test_blank_line_runs_use_the_literal_led_pattern():
-    # \n{3,} has no literal prefix for re to jump to, so it is tried at every offset.
     assert chunking._BLANK_LINE_RUN.pattern == r"\n\n\n+"
     calls = []
 
