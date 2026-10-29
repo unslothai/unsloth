@@ -326,27 +326,18 @@ def _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad):
 
 
 class PrefixGrouperCompileError(RuntimeError):
-    """The compiled flex kernel does not build on this GPU / torch; PrefixGrouper is off for the process."""
+    pass
 
 
-# One-time strict compile check, keyed on everything that picks the generated kernel. dynamo's
-# suppress_errors (set by unsloth_zoo) turns a compile failure into a silent eager flex_attention
-# fallback that materialises the full T x T scores, e.g. torch 2.6 (symbolic codegen errors) or
-# torch 2.7.1 on L4 (bf16 128/64 blocks need more shared memory than sm89 has).
+# unsloth_zoo's suppress_errors turns a failed compile into a silent eager flex fallback that
+# materialises T x T scores (torch 2.6 codegen bugs, torch 2.7.1 L4 shared-memory limit).
 _COMPILE_CHECKED: Dict[Tuple, bool] = {}
 _COMPILE_FAILURE: Optional[str] = None
-_COMPILE_CHECK_ON = os.environ.get(
-    "UNSLOTH_GRPO_PREFIX_GROUPER_COMPILE_CHECK", "1"
-).lower() not in (
-    "0",
-    "false",
-    "no",
-    "off",
-)
+_CHECK_ENV = os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_COMPILE_CHECK", "1")
+_COMPILE_CHECK_ON = _CHECK_ENV.lower() not in ("0", "false", "no", "off")
 
 
 def compile_check_failed() -> Optional[str]:
-    """Reason the compiled kernel failed its one-time check in this process, else None."""
     return _COMPILE_FAILURE
 
 
@@ -372,13 +363,7 @@ def _compile_failure_reason(root: BaseException) -> str:
 
 @torch._dynamo.disable
 def _checked_first_call(q, k, v, seg, block_mask, enable_gqa, scale, T, T_pad, key):
-    """First compiled call for this setup, with dynamo's suppress_errors off.
-
-    Runs the real call (block mask build included) plus a forward + backward on detached copies of
-    the same inputs, so the grad graph and its backward kernel are built too. Both use the shapes,
-    dtype and grad mode the trainer uses, so they are the graphs the following calls reuse: the
-    success path adds one attention forward + backward per process and setup, no extra compile.
-    """
+    """Real call plus fwd + bwd on detached copies, strict, so later calls reuse those graphs."""
     global _COMPILE_FAILURE
     try:
         with torch._dynamo.config.patch(suppress_errors = False):
@@ -391,11 +376,11 @@ def _checked_first_call(q, k, v, seg, block_mask, enable_gqa, scale, T, T_pad, k
                 torch.autograd.grad(oc.float().sum(), (qc, kc, vc))
                 del qc, kc, vc, oc
     except torch.cuda.OutOfMemoryError:
-        raise  # transient: the callers already fall back on OOM, and the next call checks again
+        raise  # transient: not cached, callers fall back
     except Exception as exc:
         root = _root_exception(exc)
         if isinstance(root, torch.cuda.OutOfMemoryError):
-            raise root from exc  # an OOM while compiling (BackendCompilerFailed) is transient too
+            raise root from exc
         reason = _compile_failure_reason(root)
         _COMPILE_CHECKED[key] = False
         _COMPILE_FAILURE = reason

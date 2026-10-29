@@ -66,10 +66,7 @@ _TOL_OK = float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_TOL", "0.7"))
 
 
 def prefix_grouper_enabled() -> bool:
-    """PrefixGrouper requires seq-packing on (it reuses its de-pad + scatter machinery).
-
-    Also off for the rest of the process once the compiled kernel failed its first-use check.
-    """
+    """PrefixGrouper requires seq-packing on and a flex kernel that passed its compile check."""
     return _ENABLED and compile_check_failed() is None
 
 
