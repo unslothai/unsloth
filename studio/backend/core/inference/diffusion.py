@@ -10101,7 +10101,6 @@ class DiffusionBackend:
                     )
                     if speed_deferred:
                         from .diffusion_qwenimage21_eager import install_for_pipe as q21_eager
-
                         q21_eager(pipe, logger)
                     # fp16-only cards: a guarded family stays float16; patch its overflow sites.
                     from .diffusion_fp16_guard import family_fp16_guard, install_fp16_guard

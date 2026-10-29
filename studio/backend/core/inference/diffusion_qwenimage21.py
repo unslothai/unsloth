@@ -178,7 +178,6 @@ def _layout_for(
 
 def _eager_fast(model: Any) -> bool:
     from .diffusion_qwenimage21_eager import active
-
     return active(model)
 
 
@@ -262,7 +261,6 @@ def _cached_step(
     broadcast = lay.tail_all_target and _eager_fast(model)
     if broadcast:
         from .diffusion_qwenimage21_eager import STATS
-
         STATS["mod_broadcast"] += 1
     return _cached_core(
         model,

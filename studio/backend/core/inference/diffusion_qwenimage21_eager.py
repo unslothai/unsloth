@@ -158,7 +158,6 @@ def _fusion(device: Any) -> Optional[tuple]:
     index = device.index
     if index not in _FUSION:
         from .diffusion_qwenimage21_rope import probe_fusion
-
         try:
             _FUSION[index] = probe_fusion(device)
         except Exception:  # noqa: BLE001 - unknown pairing: keep the stock RoPE
@@ -169,7 +168,12 @@ def _fusion(device: Any) -> Optional[tuple]:
 def _eligible(x: Any, norm: Any, freqs: Any) -> bool:
     import torch
 
-    if _FAILED[0] or not x.is_cuda or x.dim() != 4 or x.dtype not in (torch.bfloat16, torch.float16):
+    if (
+        _FAILED[0]
+        or not x.is_cuda
+        or x.dim() != 4
+        or x.dtype not in (torch.bfloat16, torch.float16)
+    ):
         return False
     dim = x.shape[-1]
     weight = getattr(norm, "weight", None)
@@ -256,15 +260,12 @@ def _norm_rope(x: Any, norm: Any, freqs: Any) -> Optional[Any]:
 def _make_prepare(mod: Any, stock: Any) -> Any:
     @functools.wraps(stock)
     def _qwenimage21_prepare_qkv(
-        attn,
-        hidden_states,
-        rotary_emb,
-        layer_cache,
-        kv_cache_mode,
-        cache_write_slice,
+        attn, hidden_states, rotary_emb, layer_cache, kv_cache_mode, cache_write_slice
     ):
         if rotary_emb is None or not active(attn):
-            return stock(attn, hidden_states, rotary_emb, layer_cache, kv_cache_mode, cache_write_slice)
+            return stock(
+                attn, hidden_states, rotary_emb, layer_cache, kv_cache_mode, cache_write_slice
+            )
         import torch
 
         query = attn.to_q(hidden_states)
@@ -338,7 +339,6 @@ def install(logger: Any = None) -> bool:
 def uninstall() -> None:
     try:
         import importlib
-
         mod = importlib.import_module(_MODULE)
     except Exception:  # noqa: BLE001
         return
