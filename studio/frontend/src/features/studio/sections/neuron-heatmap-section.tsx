@@ -762,7 +762,7 @@ function ColorLegend({
           <span className="mx-1 text-ui-10 text-muted-foreground/50">·</span>
           <Tooltip>
             <TooltipTrigger asChild>
-              <span className="cursor-default text-ui-10 text-muted-foreground select-none">
+              <span className="cursor-default whitespace-nowrap text-ui-10 text-muted-foreground select-none">
                 <span style={{ color: swatchColor }}>▼</span> {t("studio.interpretability.heatmap.pinned")}
               </span>
             </TooltipTrigger>
