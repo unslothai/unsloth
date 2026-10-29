@@ -1570,7 +1570,11 @@ class ExternalProviderClient:
         if (
             base.scheme == "https"
             and base.hostname == "opencode.ai"
-            and (base.path == "/inference/go" or base.path.startswith("/inference/go/"))
+            # /zen/go is the older Go base URL; the gateway still serves and enforces it.
+            and any(
+                base.path == prefix or base.path.startswith(prefix + "/")
+                for prefix in ("/inference/go", "/zen/go")
+            )
         ):
             # Hashed so the raw conversation ID never leaves Studio; titles and probes have no thread.
             headers["x-opencode-session"] = (
