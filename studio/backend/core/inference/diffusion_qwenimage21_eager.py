@@ -16,7 +16,6 @@ from .rocm_bf16 import is_rocm_torch
 
 EAGER_FAST_ENV = "UNSLOTH_DIFFUSION_Q21_EAGER_FAST"
 
-_MODULE = "diffusers.models.transformers.transformer_qwenimage21"
 _CLASS = "QwenImage21Transformer2DModel"
 # diffusers 0.41.0 / 0.42.1; the prepare copy below uses 0.42.1's head split, equal for both.
 _FINGERPRINTS: dict[str, frozenset] = {
@@ -313,9 +312,7 @@ def install(logger: Any = None) -> bool:
 
         if is_rocm_torch(torch) or not torch.cuda.is_available():
             return False
-        import importlib
-
-        mod = importlib.import_module(_MODULE)
+        from diffusers.models.transformers import transformer_qwenimage21 as mod
     except Exception:  # noqa: BLE001 - no CUDA, or diffusers without Qwen-Image 2.1
         return False
     with _LOCK:
@@ -335,8 +332,7 @@ def install(logger: Any = None) -> bool:
 
 def uninstall() -> None:
     try:
-        import importlib
-        mod = importlib.import_module(_MODULE)
+        from diffusers.models.transformers import transformer_qwenimage21 as mod
     except Exception:  # noqa: BLE001
         return
     with _LOCK:
