@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { AiSpeechIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, FileSearchIcon } from "@/lib/hugeicons-derived";
 import { createPortal } from "react-dom";
 import {
   canQueueTextAttachment,
@@ -432,7 +432,6 @@ import {
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  FileSearchIcon,
   FolderAttachmentIcon,
   Folder01Icon,
   FolderAddIcon,
@@ -2672,9 +2671,6 @@ const ThreadScrollToBottom: FC = () => {
   // unmounting would trip the hook's MutationObserver as a content change.
   const isAtBottom = useIsThreadAtBottom();
   const scrollToBottom = useScrollThreadToBottom();
-  const enabled = useChatPreferencesStore(
-    (state) => state.showScrollToBottomButton,
-  );
   return (
     <TooltipIconButton
       tooltip="Scroll to bottom"
@@ -2682,7 +2678,7 @@ const ThreadScrollToBottom: FC = () => {
       onClick={() => scrollToBottom("auto")}
       className={cn(
         "aui-thread-scroll-to-bottom pointer-events-auto rounded-full p-0 size-[calc(28px*var(--ui-space-scale,1))] bg-background shadow-[0_0_0_0.5px_rgb(0_0_0/0.15)] hover:bg-accent dark:shadow-[0_0_0_0.5px_rgb(255_255_255/0.2)] dark:bg-muted dark:hover:bg-accent",
-        (isAtBottom || !enabled) && "invisible pointer-events-none",
+        isAtBottom && "invisible pointer-events-none",
       )}
     >
       <ArrowDownIcon

@@ -381,6 +381,12 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_run_id ON training_metrics(run_id)")
+    # Partial on the resumed_later subquery's exact status list so no other query (or its tie order) changes plan.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_training_runs_resumed_later "
+        "ON training_runs(output_dir, started_at) "
+        "WHERE status IN ('stopped', 'completed', 'error', 'running')"
+    )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS api_usage_events (

@@ -191,6 +191,7 @@ import {
   matchAspect,
 } from "@/components/media-size-controls";
 import { cn } from "@/lib/utils";
+import { MediaHeaderActions } from "@/components/media-header-actions";
 import { isTauri } from "@/lib/api-base";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 import {
@@ -5949,15 +5950,15 @@ export function ImagesPage({
             )}
           </div>
         </div>
-        <div className="grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2 @[50rem]:grid-cols-[1fr_auto_1fr] @[50rem]:gap-0">
-          <div className="pointer-events-auto col-start-2 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)]">
+        <div className="grid h-full min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(max-content,1fr)]">
+          <div data-media-header-centre className="pointer-events-auto col-start-2 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)]">
             <PillTabs
               dataTour="images-mode"
               ariaLabel="Page mode"
               value={pageMode}
               onValueChange={(v) => setPageMode(v as "create" | "train")}
               fit={true}
-              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-7 @[68rem]:[&>button]:px-14 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
+              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-7 @[68rem]:[&>button]:px-14 [[data-media-header-tight]_&]:[&>button]:px-4 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
               tabs={[
                 { value: "create", label: "Create", icon: <HugeiconsIcon icon={SparklesIcon} className="size-3.5" /> },
                 { value: "train", label: "Train", icon: <HugeiconsIcon icon={TestTubeOutlineIcon} className="size-3.5" /> },
@@ -5965,16 +5966,14 @@ export function ImagesPage({
             />
           </div>
           {/* The chat header's right inset. */}
-          <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-[calc(var(--thread-scrollbar-gutter,10px)+0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))] pt-[var(--studio-chat-header-padding-top,11px)]">
-            <div className="pointer-events-auto flex min-w-0 items-center gap-1">
-              <MediaApiButton
-                kind="images"
-                model={status?.loaded ? (status.repo_id ?? null) : null}
-              />
-              <LibraryPageLink tab="images" iconOnly={true} />
-              <SiblingMediaPageLink to="/video" />
-            </div>
-          </div>
+          <MediaHeaderActions className="pr-[calc(var(--thread-scrollbar-gutter,10px)+0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
+            <MediaApiButton
+              kind="images"
+              model={status?.loaded ? (status.repo_id ?? null) : null}
+            />
+            <LibraryPageLink tab="images" iconOnly={true} />
+            <SiblingMediaPageLink to="/video" />
+          </MediaHeaderActions>
         </div>
       </div>
       {trainMounted && (

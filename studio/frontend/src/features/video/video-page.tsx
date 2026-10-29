@@ -176,6 +176,7 @@ import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { generatePhaseLabel, sameGenerateProgress } from "@/lib/media-generate-phase";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload } from "@/features/hub/download-manager";
+import { MediaHeaderActions } from "@/components/media-header-actions";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import { useIsMobileShell } from "@/hooks/use-mobile";
@@ -3834,7 +3835,7 @@ function VideoGenerator({
             )}
           </div>
         </div>
-        <div className="grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2 @[50rem]:grid-cols-[1fr_auto_1fr] @[50rem]:gap-0">
+        <div className="grid h-full min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(max-content,1fr)]">
           {pageMode !== "train" && status?.loaded && (
             <div className="pointer-events-auto col-start-1 mt-[var(--studio-chat-header-padding-top,11px)] flex h-[var(--studio-chat-control-height,34px)] min-w-0 flex-wrap content-start gap-x-3 overflow-hidden pl-4 text-ui-11 leading-[var(--studio-chat-control-height,34px)]">
               {status.family && <StatusChip label="Family" value={status.family} />}
@@ -3846,14 +3847,14 @@ function VideoGenerator({
               {status.speed_mode && <StatusChip label="Speed" value={status.speed_mode} />}
             </div>
           )}
-          <div className="pointer-events-auto col-start-2 row-start-1 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)]">
+          <div data-media-header-centre className="pointer-events-auto col-start-2 row-start-1 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)]">
             <PillTabs
               dataTour="video-mode"
               ariaLabel="Page mode"
               value={pageMode}
               onValueChange={(v) => setPageMode(v as "create" | "train")}
               fit={true}
-              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-7 @[68rem]:[&>button]:px-14 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
+              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-7 @[68rem]:[&>button]:px-14 [[data-media-header-tight]_&]:[&>button]:px-4 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
               tabs={[
                 { value: "create", label: "Create", icon: <HugeiconsIcon icon={SparklesIcon} className="size-3.5" /> },
                 { value: "train", label: "Train", icon: <HugeiconsIcon icon={TestTubeOutlineIcon} className="size-3.5" /> },
@@ -3861,16 +3862,14 @@ function VideoGenerator({
             />
           </div>
           {/* The chat header's right inset. */}
-          <div className="pointer-events-none col-start-3 row-start-1 flex min-w-0 items-start justify-end pr-[calc(var(--thread-scrollbar-gutter,10px)+0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))] pt-[var(--studio-chat-header-padding-top,11px)]">
-            <div className="pointer-events-auto flex min-w-0 items-center gap-1">
-              <MediaApiButton
-                kind="video"
-                model={status?.loaded ? (status.repo_id ?? null) : null}
-              />
-              <LibraryPageLink tab="videos" iconOnly={true} />
-              <SiblingMediaPageLink to="/images" />
-            </div>
-          </div>
+          <MediaHeaderActions className="pr-[calc(var(--thread-scrollbar-gutter,10px)+0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
+            <MediaApiButton
+              kind="video"
+              model={status?.loaded ? (status.repo_id ?? null) : null}
+            />
+            <LibraryPageLink tab="videos" iconOnly={true} />
+            <SiblingMediaPageLink to="/images" />
+          </MediaHeaderActions>
         </div>
       </div>
 

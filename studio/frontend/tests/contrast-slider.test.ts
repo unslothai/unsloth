@@ -280,7 +280,13 @@ test("text and lines head away from whatever they are drawn on", () => {
       "a surface scope leaves body text on the other surface's target",
     );
   }
-  assert.doesNotMatch(CSS, /\.diffusion-surface \{\s*--border-base/);
+  const media = ':is(:not([data-palette]), [data-palette="classic"], [data-palette="minimal"]) .diffusion-surface {';
+  assert.ok(CSS.includes(`html:not(.dark)${media}\n\t\t--border-base: #e9e9e9;`));
+  assert.ok(
+    CSS.includes(
+      `html[data-contrast-adjust]:not(.dark)${media}\n\t\t--border: color-mix(in oklab, var(--border-base), var(--contrast-target) var(--contrast-line-mix));`,
+    ),
+  );
 });
 
 test("the sidebar section labels follow the slider", () => {
