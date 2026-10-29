@@ -12,6 +12,7 @@ from peft import PeftModel, PeftModelForCausalLM
 
 import contextlib
 import json
+import re
 import sys
 import threading
 import torch
@@ -852,6 +853,12 @@ def _diffusion_frame_relay(
             logger.debug("Dropped a diffusion canvas frame: %s", exc)
 
     return on_frame
+
+
+# o200k_harmony's special tokens: the only <|...|> forms the gpt-oss harmony stream can leak.
+_HARMONY_PROTOCOL_TOKEN_RE = re.compile(
+    r"<\|(?:start|end|message|channel|constrain|return|call|startoftext|endoftext|endofprompt)\|>"
+)
 
 
 class InferenceBackend:
@@ -3682,9 +3689,9 @@ class InferenceBackend:
     ) -> str:
         """Strip leaked response-boundary tokens after streaming."""
         if self._is_gpt_oss_model():
-            # Strip harmony protocol tokens (e.g. <|return|>) that leak past HarmonyTextStreamer.
-            import re
-            text = re.sub(r"<\|[a-z_]+\|>", "", text)
+            # Strip harmony protocol tokens (e.g. <|return|>) that leak past HarmonyTextStreamer; only that
+            # vocabulary, so a literal like <|im_end|> the model writes in an answer is kept.
+            text = _HARMONY_PROTOCOL_TOKEN_RE.sub("", text)
             return text.strip()
 
         tokenizer = self.models.get(self.active_model_name, {}).get("tokenizer")
