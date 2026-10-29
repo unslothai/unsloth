@@ -13,6 +13,7 @@ import { type CSSProperties, memo, useEffect } from "react";
 import { create } from "zustand";
 import { useCatalogStore } from "../stores/catalog-store";
 import type { RfEdge, RfNode } from "./derive-rf";
+import { isWireObstacle, routingKey } from "./wire-obstacles";
 import type { RouteRequest, RouteResponse } from "./wire-router.worker";
 import {
   type WireEdgeInput,
@@ -103,7 +104,8 @@ function buildRequest(
   for (const node of lookup.values()) {
     const width = node.measured.width;
     const height = node.measured.height;
-    if (!(width && height) || node.hidden) continue;
+    if (!(width && height) || node.hidden || !isWireObstacle(node.type))
+      continue;
     const { x, y } = node.internals.positionAbsolute;
     if (node.type === "flowGroup") {
       zones.push({
@@ -192,11 +194,11 @@ export const WireRouterController = memo(function WireRouterController({
   scope: string;
 }) {
   const store = useStoreApi<RfNode, RfEdge>();
-  const nodes = useStore((s) => s.nodes);
+  const nodesKey = useStore((s) => routingKey(s.nodes));
   const edges = useStore((s) => s.edges);
 
   useEffect(() => {
-    if (!nodes || !edges) return;
+    if (!edges) return;
     pending = () => ({
       id: ++nextId,
       scope,
@@ -204,7 +206,7 @@ export const WireRouterController = memo(function WireRouterController({
       ...buildRequest(store.getState().nodeLookup, store.getState().edges),
     });
     pump();
-  }, [nodes, edges, scope, store]);
+  }, [nodesKey, edges, scope, store]);
 
   useEffect(
     () => () => {
