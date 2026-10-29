@@ -327,13 +327,13 @@ import {
   snapshotQueuedChatRunSettings,
   adoptLegacyDraft,
   latestDraft,
+  latestPasteDraft,
   publishDraft,
   subscribeDraft,
   composerDraftKey,
   composerPasteDraftKey,
   createPastedTextFile,
   pastedTextOf,
-  readPasteDraft,
   writePasteDraft,
   markThreadIncognito,
   markChatThreadDeleted,
@@ -4014,7 +4014,7 @@ const Composer: FC<{
         const text = pastedTextOf((attachment as { file?: File }).file);
         return text === undefined ? [] : [text];
       });
-    const missing = readPasteDraft(pasteDraftKey).filter((text) => {
+    const missing = latestPasteDraft().filter((text) => {
       const at = shown.indexOf(text);
       if (at === -1) return true;
       shown.splice(at, 1);

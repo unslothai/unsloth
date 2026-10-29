@@ -36,8 +36,16 @@ export function readPasteDraft(key: string): string[] {
   }
 }
 
+// This tab's pastes once it saves any, as `latest` is for its text.
+let latestPastes: string[] | null = null;
+
+export function latestPasteDraft(): string[] {
+  return latestPastes !== null ? [...latestPastes] : readPasteDraft(PASTE_DRAFT_KEY);
+}
+
 // A quota error here leaves the text draft untouched, hence separate slots.
 export function writePasteDraft(key: string, pastes: readonly string[]): void {
+  if (key === PASTE_DRAFT_KEY) latestPastes = [...pastes];
   try {
     if (pastes.length > 0) {
       window.localStorage.setItem(key, JSON.stringify(pastes));
@@ -90,6 +98,7 @@ export function adoptLegacyDraft(threadId: string | null): boolean {
       }
       adopted = true;
       seeded = null;
+      latestPastes = null;
     }
     storage.removeItem(`${LEGACY_DRAFT_PREFIX}${id}`);
     storage.removeItem(`${LEGACY_PASTE_DRAFT_PREFIX}${id}`);

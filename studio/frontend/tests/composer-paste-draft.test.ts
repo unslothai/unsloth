@@ -143,6 +143,23 @@ test("this tab keeps its own text after another tab saves", async () => {
   assert.equal(tab.latestDraft(), "mine");
 });
 
+test("a new tab starts from the saved pastes, then keeps its own", async () => {
+  writePasteDraft(composerPasteDraftKey(), ["saved paste"]);
+  const tab = await openTab();
+  assert.deepEqual(tab.latestPasteDraft(), ["saved paste"]);
+  tab.writePasteDraft(tab.composerPasteDraftKey(), []);
+  writePasteDraft(composerPasteDraftKey(), ["pasted in the other tab"]);
+  assert.deepEqual(tab.latestPasteDraft(), [], "a chat switch here does not pick it up");
+});
+
+test("an adopted per-chat paste reaches the restore", async () => {
+  const tab = await openTab();
+  tab.writePasteDraft(tab.composerPasteDraftKey(), []);
+  store.set("chat-draft-pastes:t1", '["old paste"]');
+  assert.equal(tab.adoptLegacyDraft("t1"), true);
+  assert.deepEqual(tab.latestPasteDraft(), ["old paste"]);
+});
+
 test("a failed adoption keeps the old draft rather than losing it", () => {
   store.set("chat-draft:t1", "unsent");
   failWrites = true;
