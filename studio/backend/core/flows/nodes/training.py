@@ -92,7 +92,11 @@ async def finetune(ctx: NodeContext) -> dict:
     memory_fields(params, config, objective)
     if params.get("dataset_streaming") and objective == "sft":
         config["dataset_streaming"] = True
-    if params.get("drafter_enabled") and objective == "sft" and config["training_type"] != TRAINING_TYPES["cpt"]:
+    if (
+        params.get("drafter_enabled")
+        and objective == "sft"
+        and config["training_type"] != TRAINING_TYPES["cpt"]
+    ):
         config["drafter"] = drafter_request(params)
     mapping = ctx.params.get("custom_format_mapping")
     prompt_col = str(ctx.params.get("prompt_column") or "").strip()
@@ -126,7 +130,11 @@ async def finetune(ctx: NodeContext) -> dict:
         config.pop("dataset_slice_end", None)
         eval_split = str(ctx.params.get("eval_split") or "").strip()
         train_split = source.get("split") or "train"
-        if source.get("source") == "hf" and eval_split not in ("", train_split) and config["eval_steps"] > 0:
+        if (
+            source.get("source") == "hf"
+            and eval_split not in ("", train_split)
+            and config["eval_steps"] > 0
+        ):
             # The train half is now a local upload, so the Hub eval split has to travel the same way.
             # The training split itself means "carve eval from the training rows", which the trainer still does.
             config["local_eval_datasets"] = [await hub_eval_upload(ctx, source, eval_split)]
@@ -278,7 +286,9 @@ def lora_fields(params: dict, config: dict) -> None:
     for name in LORA_VARIANTS:
         config[f"use_{name}"] = adapter and variant == name
     modules = [str(m).strip() for m in params.get("target_modules") or [] if str(m).strip()]
-    if config["training_type"] == TRAINING_TYPES["cpt"] and not set(CPT_EMBEDDING_MODULES) & set(modules):
+    if config["training_type"] == TRAINING_TYPES["cpt"] and not set(CPT_EMBEDDING_MODULES) & set(
+        modules
+    ):
         modules += CPT_EMBEDDING_MODULES
     config["target_modules"] = modules if adapter else []
     for key in VISION_LORA:
@@ -296,7 +306,9 @@ def schedule_fields(params: dict, config: dict, flow_seed: int) -> None:
     eval_steps = float(params.get("eval_steps") or 0)
     config["eval_steps"] = eval_steps
     # Patience needs evaluation, and the Train page sends 0 without it.
-    config["early_stopping_patience"] = int(params.get("early_stopping_patience") or 0) if eval_steps > 0 else 0
+    config["early_stopping_patience"] = (
+        int(params.get("early_stopping_patience") or 0) if eval_steps > 0 else 0
+    )
     seed = params.get("random_seed")
     config["random_seed"] = int(seed) if seed not in (None, "") else flow_seed % (2**31)
 
@@ -524,7 +536,12 @@ def _hub_rows(dataset: dict, token: Any, start: int, end: Optional[int]) -> Any:
     return load_dataset(ref, subset, split = split, token = token)
 
 
-def _load_rows(dataset: dict, token: Any, end: Optional[int], start: int = 0) -> list[dict]:
+def _load_rows(
+    dataset: dict,
+    token: Any,
+    end: Optional[int],
+    start: int = 0,
+) -> list[dict]:
     """Rows start..end (inclusive) of the dataset, already sliced."""
     from datasets import load_dataset
 
