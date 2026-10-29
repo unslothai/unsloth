@@ -91,7 +91,8 @@ export function trainingApiRequestFromPayload(
   return {
     model: payload.model_name || null,
     datasetName: payload.local_datasets.length > 0 ? datasetName : null,
-    datasetFromHub: payload.local_datasets.length === 0,
+    datasetFromHub:
+      payload.local_datasets.length === 0 && (Boolean(payload.hf_dataset) || payload.s3_config != null),
     nEpochs: payload.num_epochs,
     batchSize: payload.batch_size,
     seed: payload.random_seed,

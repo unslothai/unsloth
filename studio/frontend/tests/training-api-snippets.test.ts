@@ -180,6 +180,17 @@ test("a vision, audio, embedding or decision run keeps its run type and layer ch
   }
 });
 
+test("no dataset picked yet is not mistaken for a Hub dataset", () => {
+  const request = trainingApiRequestFromPayload(payload({ local_datasets: [] }), null);
+  assert.equal(request.datasetFromHub, false);
+  assert.equal(request.datasetName, null);
+  const s3 = trainingApiRequestFromPayload(
+    payload({ local_datasets: [], s3_config: { bucket: "b" } as TrainingStartRequest["s3_config"] }),
+    null,
+  );
+  assert.equal(s3.datasetFromHub, true);
+});
+
 test("a Hub or S3 dataset is flagged, and its fields never reach the example", () => {
   const request = trainingApiRequestFromPayload(
     payload({ hf_dataset: "org/data", subset: "x", local_datasets: [], format_type: "sharegpt" }),
