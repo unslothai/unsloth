@@ -1209,7 +1209,7 @@ export const he = {
       lastVisited: "ביקור אחרון",
     },
     tabs: {
-      sandbox: "ארגז חול",
+      sandbox: "אבטחה",
       accounts: "חשבונות",
       general: "כללי",
       profile: "פרופיל",
@@ -1494,7 +1494,7 @@ export const he = {
       },
     },
     sandbox: {
-      title: "ארגז חול",
+      title: "אבטחה",
       description:
         "האם קריאות לכלי Python ו-Terminal רצות בתוך ארגז חול של מערכת ההפעלה במחשב זה.",
       docs: "תיעוד",
@@ -1584,6 +1584,7 @@ export const he = {
         "הבעלים של שרת Unsloth זה מגדיר את ארגז החול של מערכת ההפעלה.",
     },
     debugging: {
+      description: "קרא את יומני Unsloth בלי לצאת מהאפליקציה.",
       logSection: "קובץ יומן",
       source: "קובץ יומן",
       sourceHint:
@@ -2457,7 +2458,8 @@ export const he = {
       description: "עקוב אחר החומרה והאחסון של שרת Unsloth זה.",
       liveUpdates: "עדכונים בזמן אמת",
       floatingWindow: "חלון צף",
-      disableOverlay: "השבת שכבת תצוגה",
+      showFloatingWindow: "הצג חלון צף",
+      showFloatingWindowDescription: "השאר את השימוש ב-CPU, ב-RAM וב-GPU גלוי מעל Unsloth.",
       liveMonitor: {
         title: "מוניטור חי",
         apiTitle: "מוניטור API",
@@ -2923,11 +2925,6 @@ export const he = {
       autoScrollManual: "ידני",
       autoScrollKeywords:
         "scroll autoscroll auto-scroll follow stick bottom jump streaming generating viewport lock hold auto manual גלילה אוטומטי ידני",
-      scrollToBottomButton: "לחצן גלילה לתחתית",
-      scrollToBottomButtonDescription:
-        "הצג לחצן לקפיצה חזרה להודעה האחרונה לאחר גלילה למעלה.",
-      scrollToBottomButtonKeywords:
-        "scroll bottom jump latest newest arrow down button floating hide show גלילה תחתית לחצן חץ",
       replyNotification: "התראה כשתשובה מסתיימת",
       replyNotificationDescription:
         "הצגת התראת מערכת כשתשובה מסתיימת בזמן ש-Unsloth ממוזער או ברקע.",
@@ -3465,9 +3462,9 @@ export const he = {
         sendsTo: "הבקשות נשלחות אל {provider}.",
         connectionMissing:
           "החיבור הזה אינו קיים עוד או שאין בו מודלי החלטות. בחר מודל אחר.",
-        addConnection:
-          "כדי להשתמש במודל החלטות מתארח, הוסף את TypeSafe,‏ Liquid AI או OpenRouter ב'חיבורים'.",
-        openConnections: "פתח את 'חיבורים'",
+        addConnection: "כדי להשתמש במודל החלטות מתארח, הוסף אותו במסך ",
+        connectionsLink: "חיבורים",
+        addConnectionSuffix: ".",
       },
       mcp: {
         title: "גישת סוכנים (MCP)",
@@ -5135,7 +5132,7 @@ export const he = {
       isolationRequired: "נדרש ארגז חול של מערכת ההפעלה",
       isolationAuto: "אוטומטי",
       isolationRequiredHint: "תגמולי Python רצים רק בתוך ארגז החול של מערכת ההפעלה; התחלה וניסיון מסרבים להם כשאין כזה במערכת.",
-      isolationAutoWarning: "כשאין ארגז חול של מערכת ההפעלה, תגמולי Python רצים עם אמצעי הגנה בתוכנה בלבד. הם לא מונעים מתגמול לקרוא את הקבצים שלך, לכתוב מחוץ לתיקייה שלו או להשתמש ברשת.",
+      isolationAutoWarning: "כשאין ארגז חול של מערכת ההפעלה, תגמולי Python רצים עם אמצעי הגנה בתוכנה בלבד. הם לא מונעים מתגמול לקרוא את הקבצים שלך או לכתוב מחוץ לתיקייה שלו. אף אחת מההגדרות לא מגבילה את הרשת: תגמול יכול להגיע לאינטרנט ולשירותים במחשב הזה.",
       scoreNone: "אין ציון",
     },
     prompt: {

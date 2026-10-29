@@ -1117,7 +1117,7 @@ export const de = {
       lastVisited: "Zuletzt besucht",
     },
     tabs: {
-      sandbox: "Sandbox",
+      sandbox: "Sicherheit",
       accounts: "Konten",
       general: "Allgemein",
       profile: "Profil",
@@ -1401,7 +1401,7 @@ export const de = {
       },
     },
     sandbox: {
-      title: "Sandbox",
+      title: "Sicherheit",
       description: "Ob Python- und Terminal-Tool-Aufrufe auf diesem Computer in einer OS-Sandbox laufen.",
       docs: "Dokumentation",
       docsLabel: "Sandbox-Dokumentation öffnen",
@@ -1476,6 +1476,7 @@ export const de = {
       managedNote: "Der Besitzer dieses Unsloth-Servers richtet die OS-Sandbox ein.",
     },
     debugging: {
+      description: "Lies die Unsloth-Logs, ohne die App zu verlassen.",
       logSection: "Protokolldatei",
       source: "Protokolldatei",
       sourceHint: "Die Modell-Runner schreiben eigene Protokolle. Ein fehlgeschlagener Ladevorgang oder eine fehlgeschlagene Generierung wird deshalb oft dort erklärt und nicht im Server-Protokoll.",
@@ -2386,7 +2387,8 @@ export const de = {
         "Überwachen Sie Hardware und Speicher dieses Unsloth-Servers.",
       liveUpdates: "Live-Updates",
       floatingWindow: "Schwebendes Fenster",
-      disableOverlay: "Overlay deaktivieren",
+      showFloatingWindow: "Schwebendes Fenster anzeigen",
+      showFloatingWindowDescription: "Zeigt CPU-, RAM- und GPU-Auslastung dauerhaft über Unsloth an.",
       liveMonitor: {
         title: "Live-Monitor",
         apiTitle: "API-Monitor",
@@ -2836,11 +2838,6 @@ export const de = {
       autoScrollManual: "Manuell",
       autoScrollKeywords:
         "scrollen automatisch mitscrollen folgen unten springen Streaming generieren Ansicht sperren scroll autoscroll follow",
-      scrollToBottomButton: "Schaltfläche „Nach unten scrollen“",
-      scrollToBottomButtonDescription:
-        "Eine Schaltfläche anzeigen, um nach dem Hochscrollen zur neuesten Nachricht zurückzuspringen.",
-      scrollToBottomButtonKeywords:
-        "scrollen unten springen neueste Pfeil Schaltfläche ausblenden scroll bottom button",
       replyNotification: "Benachrichtigen, wenn eine Antwort fertig ist",
       replyNotificationDescription:
         "Zeigt eine Systembenachrichtigung, wenn eine Antwort fertig ist, während Unsloth minimiert oder im Hintergrund ist.",
@@ -3377,8 +3374,9 @@ export const de = {
         loadError: "Die Einstellungen der Entscheidungs-API konnten nicht geladen werden.",
         sendsTo: "Anfragen gehen an {provider}.",
         connectionMissing: "Diese Verbindung gibt es nicht mehr oder sie hat keine Entscheidungsmodelle. Wähle ein anderes Modell.",
-        addConnection: "Für ein gehostetes Entscheidungsmodell füge TypeSafe, Liquid AI oder OpenRouter unter Verbindungen hinzu.",
-        openConnections: "Verbindungen öffnen",
+        addConnection: "Für ein gehostetes Entscheidungsmodell füge es unter ",
+        connectionsLink: "Verbindungen",
+        addConnectionSuffix: " hinzu.",
       },
       mcp: {
         title: "Agentenzugriff (MCP)",
@@ -5049,7 +5047,7 @@ export const de = {
       isolationRequired: "OS-Sandbox erforderlich",
       isolationAuto: "Automatisch",
       isolationRequiredHint: "Python-Belohnungen laufen nur in der OS-Sandbox; Start und Ausprobieren lehnen sie ab, wenn dieses System keine hat.",
-      isolationAutoWarning: "Ohne OS-Sandbox auf diesem System laufen Python-Belohnungen dann nur mit Software-Schutzmaßnahmen. Diese hindern eine Belohnung nicht daran, deine Dateien zu lesen, außerhalb ihres Ordners zu schreiben oder das Netzwerk zu nutzen.",
+      isolationAutoWarning: "Ohne OS-Sandbox auf diesem System laufen Python-Belohnungen dann nur mit Software-Schutzmaßnahmen. Diese hindern eine Belohnung nicht daran, deine Dateien zu lesen oder außerhalb ihres Ordners zu schreiben. Keine der beiden Einstellungen begrenzt das Netzwerk: Eine Belohnung kann das Internet und Dienste auf diesem Rechner erreichen.",
       scoreNone: "kein Wert",
       summary: {
         regexWhole: "Ganze Antwort passt zum Muster",

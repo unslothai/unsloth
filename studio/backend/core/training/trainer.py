@@ -54,7 +54,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable, Union
 from datasets import Dataset
 from core.training.eval_dataset import evaluation_enabled
-from core.training.rl import rl_log_metrics, with_reward_isolation
+from core.training.rl import (
+    UNSCORED_STEP_WARNING,
+    rl_log_metrics,
+    rl_unscored_step,
+    with_reward_isolation,
+)
 from utils.datasets.audio_decode import ensure_audio_decoding
 from utils.datasets.tokenizer_fingerprint import install_tokenizer_fingerprint
 from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
@@ -327,6 +332,10 @@ def _string_column_has_image_paths(dataset, name: str) -> Optional[bool]:
         column = dataset.data.column(name)
         if not (pa.types.is_string(column.type) or pa.types.is_large_string(column.type)):
             return None
+        indices = getattr(dataset, "_indices", None)
+        if indices is not None:
+            # A select() or shuffle() view: only its rows, not the whole backing table.
+            column = column.take(indices.column(0))
         return bool(pc.any(pc.match_substring_regex(column, _IMAGE_PATH_PATTERN)).as_py())
     except Exception:  # noqa: BLE001 - not an Arrow-backed dataset
         return None
@@ -1072,6 +1081,8 @@ class UnslothTrainer:
                 )
 
                 num_tokens = getattr(state, "num_input_tokens_seen", None)
+                if rl_unscored_step(logs):
+                    trainer_ref._record_warning(UNSCORED_STEP_WARNING)
 
                 trainer_ref._update_progress(
                     step = current_step,
@@ -1924,6 +1935,8 @@ class UnslothTrainer:
                     use_gradient_checkpointing
                 )
 
+            # Before get_peft_model: afterwards every LoRA model has a peft_config.
+            self._continues_adapter = bool(use_lora and getattr(self.model, "peft_config", None))
             if not use_lora:
                 if use_gradient_checkpointing != self._use_gradient_checkpointing:
                     logger.warning(
@@ -5126,6 +5139,7 @@ class UnslothTrainer:
                     reward_specs = training_args.get("reward_specs") or [],
                     sample_sink = self._emit_samples if self.sample_callbacks else None,
                     on_warning = self._record_warning,
+                    continues_adapter = getattr(self, "_continues_adapter", False),
                 )
                 if rl_tokenizer is not self.tokenizer:
                     self.trainer.processing_class = self.tokenizer

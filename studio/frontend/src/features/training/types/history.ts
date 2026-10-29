@@ -42,7 +42,7 @@ export interface TrainingRunMetrics {
   eval_loss_history: number[];
   eval_step_history: number[];
   /** DPO/ORPO/GRPO only; absent from older backends. */
-  rl_history?: ({ step: number } & Record<string, number>)[];
+  rl_history?: ({ step: number } & Record<string, number | null>)[];
   final_epoch: number | null;
   final_num_tokens: number | null;
 }

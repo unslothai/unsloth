@@ -1111,7 +1111,7 @@ export const ar = {
       lastVisited: "آخر ما تمت زيارته",
     },
     tabs: {
-      sandbox: "وضع الحماية",
+      sandbox: "الأمان",
       accounts: "الحسابات",
       general: "عام",
       profile: "الملف الشخصي",
@@ -1395,7 +1395,7 @@ export const ar = {
       },
     },
     sandbox: {
-      title: "وضع الحماية",
+      title: "الأمان",
       description: "ما إذا كانت استدعاءات أدوات Python والطرفية تعمل داخل وضع حماية نظام التشغيل على هذا الكمبيوتر.",
       docs: "التوثيق",
       docsLabel: "فتح توثيق وضع الحماية",
@@ -1471,6 +1471,7 @@ export const ar = {
       managedNote: "يُعدّ مالك خادم Unsloth هذا وضع حماية نظام التشغيل.",
     },
     debugging: {
+      description: "اقرأ سجلات Unsloth دون مغادرة التطبيق.",
       logSection: "ملف السجل",
       source: "ملف السجل",
       sourceHint: "تكتب مشغّلات النماذج سجلاتها الخاصة، لذا غالبًا ما يكون سبب فشل التحميل أو التوليد موضّحًا فيها لا في سجل الخادم.",
@@ -2355,7 +2356,8 @@ export const ar = {
       description: "راقب عتاد خادم Unsloth هذا ومساحة تخزينه.",
       liveUpdates: "التحديثات المباشرة",
       floatingWindow: "نافذة عائمة",
-      disableOverlay: "تعطيل التراكب",
+      showFloatingWindow: "إظهار النافذة العائمة",
+      showFloatingWindowDescription: "أبقِ استخدام المعالج والذاكرة ووحدة الرسوميات ظاهرًا فوق Unsloth.",
       liveMonitor: {
         title: "المراقبة المباشرة",
         apiTitle: "مراقبة API",
@@ -2794,11 +2796,6 @@ export const ar = {
       autoScrollManual: "يدوي",
       autoScrollKeywords:
         "تمرير تلقائي متابعة أسفل قفز بث إنشاء تثبيت scroll autoscroll follow",
-      scrollToBottomButton: "زر التمرير إلى الأسفل",
-      scrollToBottomButtonDescription:
-        "إظهار زر للعودة إلى أحدث رسالة بعد التمرير لأعلى.",
-      scrollToBottomButtonKeywords:
-        "تمرير أسفل أحدث سهم زر إخفاء scroll bottom button",
       replyNotification: "الإشعار عند انتهاء الرد",
       replyNotificationDescription:
         "إظهار إشعار من النظام عند انتهاء الرد بينما يكون Unsloth مصغرًا أو في الخلفية.",
@@ -3329,8 +3326,9 @@ export const ar = {
         loadError: "تعذّر تحميل إعدادات واجهة القرارات.",
         sendsTo: "تُرسَل الطلبات إلى {provider}.",
         connectionMissing: "هذا الاتصال لم يعد موجودًا أو لا يحتوي على نماذج قرارات. اختر نموذجًا آخر.",
-        addConnection: "لاستخدام نموذج قرارات مستضاف، أضف TypeSafe أو Liquid AI أو OpenRouter في الاتصالات.",
-        openConnections: "فتح الاتصالات",
+        addConnection: "لاستخدام نموذج قرارات مستضاف، أضفه في ",
+        connectionsLink: "الاتصالات",
+        addConnectionSuffix: ".",
       },
       mcp: {
         title: "وصول الوكلاء (MCP)",
@@ -4974,7 +4972,7 @@ export const ar = {
       isolationRequired: "صندوق حماية النظام مطلوب",
       isolationAuto: "تلقائي",
       isolationRequiredHint: "تعمل مكافآت Python داخل صندوق حماية النظام فقط؛ ويرفضها البدء والتجربة عندما لا يتوفر على هذا النظام.",
-      isolationAutoWarning: "عند عدم توفر صندوق حماية النظام، تعمل مكافآت Python بضمانات برمجية فقط، وهي لا تمنع المكافأة من قراءة ملفاتك أو الكتابة خارج مجلدها أو استخدام الشبكة.",
+      isolationAutoWarning: "عند عدم توفر صندوق حماية النظام، تعمل مكافآت Python بضمانات برمجية فقط، وهي لا تمنع المكافأة من قراءة ملفاتك أو الكتابة خارج مجلدها. ولا يقيّد أي من الإعدادين الشبكة: يمكن للمكافأة الوصول إلى الإنترنت وإلى الخدمات على هذا الجهاز.",
       scoreNone: "بلا نتيجة",
       summary: {
         regexWhole: "الرد كاملًا يطابق النمط",

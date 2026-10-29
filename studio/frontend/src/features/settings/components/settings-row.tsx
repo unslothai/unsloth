@@ -21,6 +21,7 @@ export function SettingsRow({
   destructive,
   className,
   below,
+  wideControl = false,
 }: {
   label: string;
   description?: ReactNode;
@@ -32,6 +33,8 @@ export function SettingsRow({
   destructive?: boolean;
   className?: string;
   below?: ReactNode;
+  /** Lets a control that shows a value it must not clip (a folder path) pass the shared cap. */
+  wideControl?: boolean;
 }) {
   return (
     <div
@@ -50,7 +53,7 @@ export function SettingsRow({
             {icon}
           </span>
         ) : null}
-        <div className="flex min-w-0 w-full max-w-lg flex-col gap-0.5">
+        <div className="flex min-w-0 w-full max-w-[calc(32rem*var(--ui-space-scale,1))] flex-col gap-0.5">
           <span className="text-sm font-medium text-foreground">
             {label}
             {hint ? (
@@ -94,6 +97,8 @@ export function SettingsRow({
           className={cn(
             "flex max-w-full shrink-0",
             !description && "items-center",
+            !wideControl &&
+              "max-w-[min(100%,calc(20rem*var(--ui-space-scale,1)))] [&>*]:max-w-full",
           )}
         >
           {children}

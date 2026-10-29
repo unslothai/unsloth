@@ -104,9 +104,14 @@ def install_fsdp_import_stub() -> bool:
     return True
 
 
+def _is_reward_mean(key: Any) -> bool:
+    return isinstance(key, str) and key.startswith("rewards/") and key.endswith("/mean")
+
+
 def rl_log_metrics(logs: dict) -> Optional[dict]:
     """GRPO/DPO/ORPO log keys (reward, rewards/<fn>/mean, kl, rewards/margins, ...) that the fixed
-    progress fields have no slot for."""
+    progress fields have no slot for. A reward that scored nothing (TRL logs NaN) stays as None,
+    so its chart series shows the gap instead of disappearing."""
     out = {}
     for key, value in logs.items():
         if not isinstance(key, str) or not key.startswith(_RL_LOG_PREFIXES):
@@ -116,9 +121,24 @@ def rl_log_metrics(logs: dict) -> Optional[dict]:
             or not isinstance(value, (int, float))
             or not math.isfinite(value)
         ):
+            if _is_reward_mean(key) and isinstance(value, float) and math.isnan(value):
+                out[key] = None
             continue
         out[key] = float(value)
     return out or None
+
+
+UNSCORED_STEP_WARNING = (
+    "Every reward returned no score (None) for a whole step, so that step had no learning "
+    "signal. Check that each reward returns a number for every completion."
+)
+
+
+def rl_unscored_step(logs: dict) -> bool:
+    """True when the step logged per-reward means and every one is NaN: TRL's "All reward
+    functions returned None", which otherwise only reaches the server log."""
+    means = [v for k, v in logs.items() if _is_reward_mean(k)]
+    return bool(means) and all(v is None or (isinstance(v, float) and math.isnan(v)) for v in means)
 
 
 # Columns each objective rebuilds; a reward's compare_to column of another name survives.
@@ -863,9 +883,12 @@ def build_rl_trainer(
     reward_specs: Optional[list[dict]] = None,
     sample_sink: Optional[Callable[[dict], None]] = None,
     on_warning: Optional[Callable[[str], None]] = None,
+    continues_adapter: bool = False,
 ):
     """Construct the TRL trainer for a non-SFT objective. Unsloth's PatchFastRL has already
-    swapped these classes for its own on import. ``sample_sink`` receives GRPO sample answers."""
+    swapped these classes for its own on import. ``sample_sink`` receives GRPO sample answers.
+    ``continues_adapter``: the model was loaded from a saved LoRA adapter rather than given a
+    fresh one."""
     import trl
 
     max_seq_length = int(config_args.get("max_seq_length") or 2048)
@@ -929,7 +952,8 @@ def build_rl_trainer(
         }
         if objective == "dpo":
             kwargs["ref_model"] = None
-            if getattr(model, "peft_config", None) and on_warning is not None:
+            # Every LoRA model has peft_config; only a loaded adapter makes the base a different reference.
+            if continues_adapter and on_warning is not None:
                 on_warning(
                     "DPO's reference here is the base model, not the LoRA adapter this run "
                     "continues from."

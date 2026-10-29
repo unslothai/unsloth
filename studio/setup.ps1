@@ -5489,7 +5489,8 @@ if ($NeedNodeForSetup) {
         Remove-Item Env:NODE_PATH -ErrorAction SilentlyContinue
         step "node" "$(node -v) | npm $(npm -v) (isolated)"
 
-        if (-not (Test-Path (Join-Path $FrontendDir "package-lock.json")) -and -not (Get-Command bun -ErrorAction SilentlyContinue)) {
+        # Only the frontend build uses bun (as in setup.sh); OXC-only Node (Desktop) skips it.
+        if (-not (Test-Path (Join-Path $FrontendDir "package-lock.json")) -and -not (Get-Command bun -ErrorAction SilentlyContinue) -and $NeedFrontendBuild) {
             substep "installing bun (faster frontend package installs)..."
             $prevEAP_bun = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
@@ -10113,12 +10114,14 @@ if (-not $llamaCppIsLink -and (
 
 Complete-FrontendBuildBackground
 
-# ── Precompile bytecode ── (uv installs without .pyc; only after a dependency pass, never fatal)
+# ── Precompile bytecode ── (opt-in: a whole-venv compile per update cost more than lazy compile on import; never fatal)
 $_pycPython = Join-Path $VenvDir 'Scripts\python.exe'
 $_pycHelper = Join-Path $PSScriptRoot 'precompile_bytecode.py'
-$_pycOptedOut = @(@($env:UV_COMPILE_BYTECODE, $env:UNSLOTH_STUDIO_COMPILE_BYTECODE) |
-    Where-Object { $_ -and (@('0', 'false', 'no', 'off') -contains $_.Trim().ToLowerInvariant()) }).Count -gt 0
-if (($script:SetupVenvChanged -or $env:UNSLOTH_SETUP_RERUN -eq '1') -and -not $_pycOptedOut -and
+$_pycSwitches = @(@($env:UV_COMPILE_BYTECODE, $env:UNSLOTH_STUDIO_COMPILE_BYTECODE) |
+    Where-Object { $_ } | ForEach-Object { $_.Trim().ToLowerInvariant() })
+$_pycOptedOut = @($_pycSwitches | Where-Object { @('0', 'false', 'no', 'off') -contains $_ }).Count -gt 0
+$_pycOptedIn = @($_pycSwitches | Where-Object { @('1', 'true', 'yes', 'on') -contains $_ }).Count -gt 0
+if (($script:SetupVenvChanged -or $env:UNSLOTH_SETUP_RERUN -eq '1') -and $_pycOptedIn -and -not $_pycOptedOut -and
     (Test-Path -LiteralPath $_pycPython -PathType Leaf) -and
     (Test-Path -LiteralPath $_pycHelper -PathType Leaf)) {
     step "python" "precompiling bytecode..."
