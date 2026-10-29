@@ -65,7 +65,13 @@ def _account_key(value):
 
 def _public_mcp_address(url: str) -> str:
     from fastapi import HTTPException
+    from core.inference.providers import _metadata_address, _metadata_host, managed_private_url_hint
+    from utils.managed_provider_url_settings import get_managed_private_provider_urls_allowed
+
+    private_allowed = get_managed_private_provider_urls_allowed()
     detail = "Managed accounts may only use public-network HTTP MCP servers."
+    if not private_allowed:
+        detail += managed_private_url_hint()
     try:
         parsed = urlsplit(url)
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
@@ -75,6 +81,8 @@ def _public_mcp_address(url: str) -> str:
         host = parsed.hostname
         if "%" in host:
             raise ValueError("Scoped addresses are not public")
+        if _metadata_host(host):
+            raise ValueError("Cloud metadata address")
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         addresses = socket.getaddrinfo(host, port, type = socket.SOCK_STREAM)
         if not addresses:
@@ -82,6 +90,10 @@ def _public_mcp_address(url: str) -> str:
         for *_, sockaddr in addresses:
             address = ipaddress.ip_address(sockaddr[0])
             address = getattr(address, "ipv4_mapped", None) or address
+            if _metadata_address(str(address)):
+                raise ValueError("Cloud metadata address")
+            if private_allowed:
+                continue
             if not address.is_global or address.is_multicast or address.is_reserved:
                 raise ValueError("Non-public address")
         return addresses[0][4][0]
