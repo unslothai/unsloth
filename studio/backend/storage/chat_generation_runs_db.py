@@ -959,8 +959,7 @@ def wait_for_events(
     after: int = 0,
     timeout: float = 15,
 ) -> list[dict[str, Any]]:
-    # Every notifying commit bumps this under the lock after committing, so an unchanged count means the
-    # unlocked read below already saw every commit that could have notified before the wait.
+    # Bumped under the lock after each notifying commit: unchanged means the unlocked read saw them all.
     seen = _EVENTS_COMMITS
     events = list_events(run_id, after)
     if events:

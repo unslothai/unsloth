@@ -63,7 +63,6 @@ def test_chunk_only_batches_do_not_parse_the_request(running_run, monkeypatch):
         runs_db.append_events("run-1", running_run, [("chunk", {"delta": f"t{i}"})])
     runs_db.finish_run("run-1", worker_token = running_run, status = "completed", finish_reason = "stop")
     original_list = runs_db.list_events
-    # One event per batch, so every chunk arrives in a chunk-only batch.
     monkeypatch.setattr(
         runs_db, "list_events", lambda run_id, after = 0, limit = 1000: original_list(run_id, after, 1)
     )
@@ -84,8 +83,7 @@ def test_chunk_only_batches_do_not_parse_the_request(running_run, monkeypatch):
             assert "run" not in frame
         else:
             assert len(frame["run"]["requestPayload"]["messages"]) == 20
-    # The route's ownership and opening checks plus one per batch holding a run event (3); chunk batches
-    # read only the run state.
+    # Ownership + opening checks, plus one per run-event batch (3).
     assert len(full_reads) == 5
 
 
