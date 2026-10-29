@@ -397,11 +397,13 @@ function runLintBatch(entries, budgetMs) {
 
   const entryByIndex = new Map(entries.map((entry) => [entry.index, entry]));
   const tempDir = mkdtempSync(join(tmpdir(), "oxlint-"));
+  const snippetPaths = [];
   try {
     for (const entry of entries) {
       const ext = LANG_TO_EXT[entry.lang] ?? "js";
       const filePath = join(tempDir, `snippet_${entry.index}.${ext}`);
       writeFileSync(filePath, entry.code, "utf8");
+      snippetPaths.push(filePath);
     }
 
     const oxlintBin = IS_WINDOWS
@@ -415,7 +417,9 @@ function runLintBatch(entries, budgetMs) {
       ...OXLINT_SUPPRESSED_RULES.flatMap((rule) => ["-A", rule]),
       "--format",
       "json",
-      tempDir,
+      // The files, not the folder: a folder walk honours a .gitignore above the temp dir (a temp
+      // dir inside an ignored tree lints nothing), while named files are always linted.
+      ...snippetPaths,
     ];
     const timeoutMs = Math.floor(budgetMs - OXLINT_BUDGET_MARGIN_MS - performance.now());
     if (timeoutMs < OXLINT_MIN_TIMEOUT_MS) {

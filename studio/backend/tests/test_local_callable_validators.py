@@ -135,3 +135,23 @@ def test_oxlint_never_loads_a_config_planted_around_the_snippets(
     assert not marker.exists()
     # Pinned to the shipped, empty config: the default rules still report.
     assert [result["code"] for result in results] == ["eslint(no-debugger)"]
+
+
+@real_oxlint
+def test_oxlint_lints_snippets_under_a_gitignored_temp_root(monkeypatch, tmp_path):
+    # A folder walk honours a .gitignore above it, so a temp root inside an ignored tree (a home
+    # directory kept in git with "*" ignored) linted nothing; the snippet files are named instead.
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check = True)
+    (tmp_path / ".gitignore").write_text("*\n", encoding = "utf-8")
+    oxc_tmp = tmp_path / "studio" / "oxc-validator"
+    oxc_tmp.mkdir(parents = True)
+    monkeypatch.setattr(validators, "oxc_validator_tmp_root", lambda: oxc_tmp)
+
+    results = validators._run_oxc_batch(
+        node_lang = "js",
+        validation_mode = "lint",
+        code_shape = "module",
+        code_values = ["debugger;\n", "export const x = 1;\n"],
+    )
+
+    assert [result["code"] for result in results] == ["eslint(no-debugger)", None]
