@@ -8,21 +8,29 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { edgeAdjacency, localProviderNamesKey, nodeConnectionStatus } = await import(
-  "../src/features/recipe-studio/utils/node-connection-status.ts"
+const { edgeAdjacency, localProviderNamesKey, nodeConnectionStatus } =
+  await import("../src/features/recipe-studio/utils/node-connection-status.ts");
+const { INFRA_NODE_KINDS } = await import(
+  "../src/features/recipe-studio/types/index.ts"
 );
-const { INFRA_NODE_KINDS } = await import("../src/features/recipe-studio/types/index.ts");
 
 type Edge = { id: string; source: string; target: string };
 type Config = { id: string; kind: string; name: string; is_local?: boolean };
 type Status = { isDisconnected: boolean; missingDataInput: boolean };
 
 // The per-node edge scan this replaces, kept verbatim as the oracle.
-function scanEdges(nodeId: string, config: Config | undefined, edges: Edge[], configs: Record<string, Config>): Status {
+function scanEdges(
+  nodeId: string,
+  config: Config | undefined,
+  edges: Edge[],
+  configs: Record<string, Config>,
+): Status {
   if (!config || config.kind === "markdown_note") {
     return { isDisconnected: false, missingDataInput: false };
   }
-  const nodeEdges = edges.filter((e) => e.source === nodeId || e.target === nodeId);
+  const nodeEdges = edges.filter(
+    (e) => e.source === nodeId || e.target === nodeId,
+  );
   const isDisconnected = nodeEdges.length === 0;
   let missingDataInput = false;
   if (config.kind === "llm" && !isDisconnected) {
@@ -44,17 +52,31 @@ function rng(seed: number): () => number {
   };
 }
 
-const KINDS = ["llm", "sampler", "expression", "seed", "validator", "markdown_note", "model_provider", "model_config", "tool_config"];
+const KINDS = [
+  "llm",
+  "sampler",
+  "expression",
+  "seed",
+  "validator",
+  "markdown_note",
+  "model_provider",
+  "model_config",
+  "tool_config",
+];
 
 function randomGraph(seed: number) {
   const r = rng(seed);
-  const pick = <T,>(xs: T[]): T => xs[Math.floor(r() * xs.length)] as T;
+  const pick = <T>(xs: T[]): T => xs[Math.floor(r() * xs.length)] as T;
   // Prototype names and ids with no config exercise the object lookup the scan does.
-  const ids = Array.from({ length: 2 + Math.floor(r() * 30) }, (_, i) => `n${i}`);
+  const ids = Array.from(
+    { length: 2 + Math.floor(r() * 30) },
+    (_, i) => `n${i}`,
+  );
   ids.push("__proto__", "constructor", "toString");
   const configs: Record<string, Config> = {};
   for (const id of ids) {
-    if (r() < 0.85 && id !== "__proto__") configs[id] = { id, kind: pick(KINDS), name: id };
+    if (r() < 0.85 && id !== "__proto__")
+      configs[id] = { id, kind: pick(KINDS), name: id };
   }
   const edges: Edge[] = [];
   const count = Math.floor(r() * ids.length * 2);
@@ -71,9 +93,20 @@ test("every node's status matches the per-node edge scan on random graphs", () =
   for (let seed = 1; seed <= 400; seed++) {
     const { ids, configs, edges } = randomGraph(seed);
     for (const id of ids) {
-      for (const config of [configs[id], undefined, { id, kind: "llm", name: id }]) {
+      for (const config of [
+        configs[id],
+        undefined,
+        { id, kind: "llm", name: id },
+      ]) {
         assert.deepEqual(
-          { ...nodeConnectionStatus(id, config as never, edges as never, configs as never) },
+          {
+            ...nodeConnectionStatus(
+              id,
+              config as never,
+              edges as never,
+              configs as never,
+            ),
+          },
           scanEdges(id, config, edges, configs),
           `seed ${seed}, node ${id}, kind ${config?.kind}`,
         );
@@ -91,9 +124,17 @@ test("the adjacency index is built once per edges array and a status is a shared
   };
   // Typing in a node replaces the configs object; an unchanged status must stay the same value,
   // or every node would re-render on every keystroke.
-  const before = nodeConnectionStatus("x", configs.x as never, edges as never, configs as never);
+  const before = nodeConnectionStatus(
+    "x",
+    configs.x as never,
+    edges as never,
+    configs as never,
+  );
   const typed = { ...configs, y: { ...configs.y } };
-  assert.equal(nodeConnectionStatus("x", typed.x as never, edges as never, typed as never), before);
+  assert.equal(
+    nodeConnectionStatus("x", typed.x as never, edges as never, typed as never),
+    before,
+  );
 });
 
 test("the local provider key changes only with the local provider names", () => {
@@ -104,10 +145,22 @@ test("the local provider key changes only with the local provider names", () => 
   };
   const key = localProviderNamesKey(base as never);
   assert.equal(key, JSON.stringify(["lp"]));
-  assert.equal(localProviderNamesKey({ ...base, c: { ...base.c, prompt: "hi there" } } as never), key);
   assert.equal(
-    localProviderNamesKey({ ...base, a: { ...base.a, is_local: true } } as never),
+    localProviderNamesKey({
+      ...base,
+      c: { ...base.c, prompt: "hi there" },
+    } as never),
+    key,
+  );
+  assert.equal(
+    localProviderNamesKey({
+      ...base,
+      a: { ...base.a, is_local: true },
+    } as never),
     JSON.stringify(["remote", "lp"]),
   );
-  assert.equal(localProviderNamesKey({ ...base, b: { ...base.b, name: "lp2" } } as never), JSON.stringify(["lp2"]));
+  assert.equal(
+    localProviderNamesKey({ ...base, b: { ...base.b, name: "lp2" } } as never),
+    JSON.stringify(["lp2"]),
+  );
 });

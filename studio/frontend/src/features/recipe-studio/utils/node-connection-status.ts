@@ -78,10 +78,15 @@ export function nodeConnectionStatus(
 }
 
 // One key per configs object, shared by every node: the store replaces the object on each change.
-const localProviderKeyByConfigs = new WeakMap<Record<string, NodeConfig>, string>();
+const localProviderKeyByConfigs = new WeakMap<
+  Record<string, NodeConfig>,
+  string
+>();
 
 /** Names of the local model providers, in config order, as one comparable string. */
-export function localProviderNamesKey(configs: Record<string, NodeConfig>): string {
+export function localProviderNamesKey(
+  configs: Record<string, NodeConfig>,
+): string {
   let key = localProviderKeyByConfigs.get(configs);
   if (key === undefined) {
     const names: string[] = [];

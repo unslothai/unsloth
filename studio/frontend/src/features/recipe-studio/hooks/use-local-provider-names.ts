@@ -7,6 +7,8 @@ import { localProviderNamesKey } from "../utils/node-connection-status";
 
 /** The same Set until the local provider names change, so typing in a node re-renders no other node for it. */
 export function useLocalProviderNames(): Set<string> {
-  const key = useRecipeStudioStore((state) => localProviderNamesKey(state.configs));
+  const key = useRecipeStudioStore((state) =>
+    localProviderNamesKey(state.configs),
+  );
   return useMemo(() => new Set<string>(JSON.parse(key) as string[]), [key]);
 }
