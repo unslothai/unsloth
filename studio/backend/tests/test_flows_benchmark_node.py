@@ -99,7 +99,7 @@ def test_adapter_is_scored_against_itself_off_and_failures_keep_the_row(monkeypa
     assert spec["baseline"] == {"mode": "adapter_off"} and spec["scorer"] == "reference"
     assert spec["local_adapter"] is True
     assert spec["model_providers"] == [{"name": "local", "is_local": True}]
-    assert out["score"] == 0.75
+    assert out["score"] == 75.0
     results = out["results"]
     assert (results["passed"], results["scored"], results["base_score"]) == (3, 4, 0.0)
     assert results["run_id"] == "r1" and len(results["preview"]) == 4
@@ -175,7 +175,7 @@ def test_lm_eval_refuses_an_adapter_and_scores_a_gguf_with_a_limit(monkeypatch):
         {"checkpoint_path": "unsloth/Qwen3-0.6B-GGUF", "model_source": "local", "task": "hellaswag", "limit": 10}
     ]
     # The Evals tab's headline metric, acc_norm for HellaSwag, not the first one listed.
-    assert out["score"] == 0.3 and out["results"]["metric"] == "acc_norm,none"
+    assert out["score"] == 30.0 and out["results"]["metric"] == "acc_norm,none"
     assert out["failures"]["rows"] == 3
 
 
@@ -284,7 +284,7 @@ def test_an_export_wired_into_model_loads_by_export_name_and_its_quant(monkeypat
     assert ctx.resident == {}
 
 
-def test_the_score_output_is_rounded(monkeypatch):
+def test_the_score_output_is_a_percent_with_two_decimals(monkeypatch):
     async def loaded(ctx):
         return "m", False
 
@@ -299,4 +299,4 @@ def test_the_score_output_is_rounded(monkeypatch):
         return found
 
     out = asyncio.run(benchmark.benchmark(_Ctx(routes)))
-    assert out["score"] == 0.6067 and out["results"]["score"] == 0.6067
+    assert out["score"] == 60.67 and out["results"]["score"] == 60.67

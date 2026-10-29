@@ -1587,7 +1587,7 @@ NODE_SPECS: list[dict] = [
             inp("dataset", "dataset", "Rows to score", optional = True),
         ],
         outputs = [
-            out("score", "number"),
+            out("score", "number", "Score %"),
             out("results", "dataset", "Per-row results"),
             out("failures", "dataset", "Failed rows"),
         ],
