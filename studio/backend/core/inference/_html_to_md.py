@@ -2381,6 +2381,8 @@ _MIN_MAIN_CONTENT_CHARS = 200
 # absent text = no such tag can tokenize, so that scope finds nothing and its pass is skipped
 _ARTICLE_START = re.compile(r"<article", re.IGNORECASE)
 _MAIN_START = re.compile(r"<main", re.IGNORECASE)
+# absent text = no generated span cells, so a pass needs no span-free scoring re-render
+_SPAN_ATTR = re.compile(r"(?:col|row)span", re.IGNORECASE)
 
 
 def html_to_markdown(
@@ -2398,10 +2400,8 @@ def html_to_markdown(
     rendered = ""
     full_rendered = ""
     if main_content:
-        # A scope whose tag never appears renders nothing, so its pass is skipped for its known empty result.
         has_article = _ARTICLE_START.search(source_html) is not None
-        # without <article> the first pass is the main scope or the whole page, and an accordion rescan or a
-        # short main scope means another pass follows, so it records; an article pass that settles the page does not
+        # without <article> the first pass may be followed by a title rescan or the whole-page pass
         tokens = _TokenLog(armed = not has_article)
         if has_article:
             length, rendered, articles, article_visible = _select_main_scope_render(
@@ -2416,6 +2416,8 @@ def html_to_markdown(
                 )
             else:
                 main_length, main_rendered, main_visible = 0, "", 0
+                # the whole-page pass follows and re-renders span pages to score them
+                tokens.armed = tokens.armed or _SPAN_ATTR.search(source_html) is not None
             if articles > 2 and main_length < _MIN_MAIN_CONTENT_CHARS:
                 main_length, full_rendered = _render_main_document(
                     source_html, site_links, span_limit, tokens

@@ -100,3 +100,19 @@ def test_a_page_without_article_is_tokenized_once(monkeypatch, name):
     h2m._TITLE_BUTTON_CACHE.clear()
     html_to_markdown(PAGES[name], main_content = True)
     assert len(feeds) == 1
+
+
+def test_an_article_page_without_main_replays_its_span_scoring_pass(monkeypatch):
+    # article pass, then the whole-page pass and its span-free scoring render: the last replays
+    html = f"<article><p>tiny</p></article><table><tr><td colspan='30'>c</td></tr></table><p>{_PROSE}</p>"
+    feeds = []
+    real = h2m._MarkdownRenderer.feed
+
+    def counted(self, data):
+        feeds.append(1)
+        return real(self, data)
+
+    monkeypatch.setattr(h2m._MarkdownRenderer, "feed", counted)
+    h2m._TITLE_BUTTON_CACHE.clear()
+    html_to_markdown(html, main_content = True)
+    assert len(feeds) == 2
