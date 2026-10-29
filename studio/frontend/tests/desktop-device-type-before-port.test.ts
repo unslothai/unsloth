@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Desktop renders before server-port names the backend: the placeholder base is port 0, which
-// never connects, so the device type read must not fetch it and must land where a refused fetch did.
+// Before server-port the base is port 0: the device type read must not fetch it and must land where a refused fetch did.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
@@ -66,7 +65,6 @@ test("no port-0 request before server-port, and the refused-fetch fallback state
   assert.equal(after.isChatOnly(), true);
   assert.equal(after.capabilitiesUnknown(), true);
 
-  // Once the port is known the read goes out and its answer is stored.
   setApiBase(8888);
   reply = {
     device_type: "mac",

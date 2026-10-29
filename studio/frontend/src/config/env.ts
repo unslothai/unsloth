@@ -129,8 +129,7 @@ export async function fetchDeviceType(options?: {
 }): Promise<DeviceType> {
   const { fetched } = usePlatformStore.getState();
   if (fetched && !options?.force) return usePlatformStore.getState().deviceType;
-  // Desktop before server-port: the placeholder port 0 never connects, so go straight to the
-  // fallback a refused fetch reaches.
+  // Desktop before server-port: port 0 never connects, so take the refused-fetch fallback.
   if (isTauri && getApiPort() === null) {
     return localPlatformFallback(options?.force);
   }
