@@ -10,7 +10,6 @@ from dataclasses import dataclass
 
 MAX_GITIGNORE_BYTES = 256 * 1024
 _MAX_GLOBSTARS = 3
-_RULE_FLAGS = re.compile("", re.DOTALL).flags
 
 
 @dataclass(frozen = True)
@@ -158,12 +157,12 @@ class Matcher:
 def _plan(rules) -> "tuple[tuple[bool, re.Pattern[str] | Rule], ...]":
     runs: list[tuple[bool, list]] = []
     for rule in rules:
-        pattern = rule.regex.pattern
-        if rule.regex.groupindex or not pattern.startswith("^") or rule.regex.flags != _RULE_FLAGS:
+        if rule.regex.groupindex:
             # Named groups (the atomic "*" emulation) would clash inside one regex: kept alone.
             runs.append((rule.negate, [rule]))
             continue
-        alternative = re.escape(rule.base + "/") + pattern[1:] if rule.base else pattern[1:]
+        body = rule.regex.pattern[1:]
+        alternative = re.escape(rule.base + "/") + body if rule.base else body
         if runs and runs[-1][0] == rule.negate and isinstance(runs[-1][1][0], str):
             runs[-1][1].append(alternative)
         else:

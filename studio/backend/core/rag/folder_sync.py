@@ -1093,7 +1093,6 @@ def _scan(
         directory_rel = "" if directory_rel == "." else directory_rel
         own_rules = _read_gitignore(directory, directory_rel)
         if own_rules:
-            # Built only where a .gitignore adds rules; other directories reuse their parent's.
             rules = (*rules, *own_rules)
             matcher = gitignore.Matcher(rules)
         with os.scandir(directory) as entries:
@@ -1106,7 +1105,7 @@ def _scan(
                     if _is_ignored_scan_dir(entry.name, full):
                         excluded.add(rel)
                         continue
-                    if rules and matcher.is_ignored(rel, True):
+                    if matcher and matcher.is_ignored(rel, True):
                         skipped["gitignored"] += 1
                         excluded.add(rel)
                         continue
@@ -1158,7 +1157,7 @@ def _scan(
                 ext = os.path.splitext(entry.name)[1].lower()
                 if ext not in config.UPLOAD_EXTS:
                     continue
-                if rules and matcher.is_ignored(rel, False):
+                if matcher and matcher.is_ignored(rel, False):
                     skipped["gitignored"] += 1
                     excluded.add(rel)
                     continue
