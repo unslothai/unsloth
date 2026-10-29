@@ -1800,6 +1800,7 @@ export function SharedComposer({
           cache_type_kv: ownConfig.kvCacheDtype ?? null,
           mlx_kv_quant: ownConfig.mlxKvQuant ?? null,
           mlx_int8_prefill: ownConfig.mlxInt8Prefill ?? false,
+          mlx_ane_prefill: ownConfig.mlxAnePrefill ?? false,
           mlx_ple_offload: ownConfig.mlxPleOffload ?? null,
           mlx_expert_offload: ownConfig.mlxExpertOffload ?? null,
           speculative_type: effectiveSpeculativeType,
