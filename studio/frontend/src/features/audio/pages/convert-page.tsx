@@ -21,7 +21,7 @@ import { type AudioGalleryClip, fetchAudioBlob } from "../api";
 import { audioModelLabel } from "../audio-workspace-utils";
 import { sourceFileUrl } from "../audio-run-request";
 import { ABCompare } from "../components/convert-ab-compare";
-import { Field } from "../components/field";
+import { Field, FieldLabel, FieldTag } from "../components/field";
 import {
   AudioHistoryProvider,
   AudioSourceInput,
@@ -147,7 +147,7 @@ function ConvertInputs({
       {pitchSupport.show ? (
         <div className="grid gap-1.5">
           {pitchSupport.auto ? (
-            <label
+            <FieldLabel
               htmlFor="convert-pitch-auto"
               className="flex items-center justify-between gap-3 text-ui-13 font-medium text-foreground"
             >
@@ -158,7 +158,7 @@ function ConvertInputs({
                 disabled={disabled}
                 onCheckedChange={store.setPitchAuto}
               />
-            </label>
+            </FieldLabel>
           ) : null}
           {pitchSupport.auto &&
           convert.pitchAuto &&
@@ -208,15 +208,15 @@ function SourceTextField({
   return (
     <div className="grid gap-1.5">
       <div className="flex items-center justify-between gap-2">
-        <label
+        <FieldLabel
           htmlFor={CONVERT_SOURCE_TEXT_FIELD_ID}
           className="text-ui-13 font-medium text-foreground"
         >
           What's said in the recording
-          <span className="ml-1.5 font-normal text-muted-foreground">
+          <FieldTag>
             Required
-          </span>
-        </label>
+          </FieldTag>
+        </FieldLabel>
         <Button
           type="button"
           variant="ghost"

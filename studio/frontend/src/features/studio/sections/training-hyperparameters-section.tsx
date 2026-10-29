@@ -171,7 +171,7 @@ export function TrainingHyperparametersSection({
           onValueChange={(value) => setTab(value as HyperparameterTab)}
           className="w-full"
         >
-          <div className="flex justify-center">
+          <div className="flex justify-start">
             <SegmentedTabsList
               value={tab}
               options={tabs}

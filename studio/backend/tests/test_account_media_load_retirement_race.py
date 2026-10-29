@@ -14,7 +14,7 @@ from fastapi import HTTPException
 
 from auth import policy
 from core.inference import diffusion, diffusion_device, diffusion_engine_router, video
-from core.inference import diffusion_compat
+from core.inference import diffusion_compat, diffusion_local_files
 from core.training import account_jobs as jobs
 from hub.services.models import account_access as access
 from models.inference import DiffusionLoadRequest
@@ -64,7 +64,7 @@ def engine(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(diffusion, "get_diffusion_backend", lambda: backend)
     monkeypatch.setattr(diffusion, "resolve_model_kind", lambda *a, **k: "pipeline")
-    monkeypatch.setattr(diffusion, "resolve_local_single_file", lambda path: None)
+    monkeypatch.setattr(diffusion_local_files, "resolve_local_single_file", lambda path: None)
     monkeypatch.setattr(diffusion, "_diffusion_backend", fake)
     monkeypatch.setattr(
         diffusion_device,

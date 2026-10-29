@@ -1,22 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Hardware-aware auto-policy for the diffusion loader: a pure decision layer.
-
-The loader historically planned memory from the GGUF file size BEFORE considering the dense
-transformer-quant fast path, which hid the fast path where it matters: where the GGUF-size plan
-picks offload, a dense int8/fp8 transformer (~half the bf16 bytes) often fits resident and beats
-the offloaded GGUF. This module supplies the pieces to fix that:
-
-  * a per-family bf16 component-size table (transformer / text encoders / VAE) with per-scheme
-    scaling, so a candidate's footprint is estimated BEFORE anything is downloaded; and
-  * ``resolve_dense_quant_candidate``, which turns a request + device into a concrete estimate the
-    loader re-plans memory against.
-
-It also builds the ``resolved`` record for status: per Advanced control, the engaged value plus
-its provenance (explicit / auto) and a short reason. Pure: no torch import at module import, so the
-decision logic unit-tests on CPU-only hosts.
-"""
+"""Decision layer for the diffusion loader: estimates dense int8/fp8 transformer footprints from a
+per-family bf16 size table before download, so the dense fast path is weighed before GGUF-size
+planning. Builds the resolved record (engaged value, provenance, reason); no torch import."""
 
 from __future__ import annotations
 

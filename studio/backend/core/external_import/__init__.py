@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Import another tool's local conversations into Studio, one Studio project per source project.
-
-Re-imports are how new turns arrive, so whatever the user changed in Studio wins: titles,
-project placement, archived flags, edited or deleted messages, deleted chats.
-"""
+"""Imports other tools' local chats, one project each; re-imports keep user edits in Studio."""
 
 from __future__ import annotations
 

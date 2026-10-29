@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in NVENC H.264 mp4 export (``UNSLOTH_STUDIO_VIDEO_ENCODER=nvenc``); libx264 on any failure. Not the default:
-larger files, and slower than libx264 on many-core hosts."""
+"""Opt-in NVENC H.264 mp4 export (UNSLOTH_STUDIO_VIDEO_ENCODER=nvenc), falls back to libx264 on
+failure; not default: larger files, slower on many-core hosts."""
 
 from __future__ import annotations
 

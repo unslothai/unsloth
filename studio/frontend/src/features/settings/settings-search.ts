@@ -60,6 +60,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
   appearance: [
     "settings.appearance.theme.label",
     "settings.appearance.palette.label",
+    "settings.appearance.trickOrTreat.label",
     "settings.appearance.custom.colors.accent",
     "settings.appearance.custom.colors.background",
     "settings.appearance.custom.colors.foreground",

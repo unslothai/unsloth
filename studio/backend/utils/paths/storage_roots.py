@@ -22,12 +22,20 @@ from loggers import get_logger
 from utils.account_context import current_account, is_owner_context
 from utils.paths.path_utils import drop_appledouble_metadata, host_normalize_path
 from utils.paths.private_tmp import private_tmp_dir, private_tmp_path
+from utils.scan_memo import memoized
 
 logger = get_logger(__name__)
 
 
 def _infer_studio_home_from_venv() -> Path | None:
     """Needs a share/studio.conf or bin shim sentinel, so a dev venv named unsloth_studio is ignored."""
+    return memoized(
+        ("studio_home_from_venv", sys.prefix, os.environ.get("UNSLOTH_STUDIO_APP")),
+        _infer_studio_home_from_venv_uncached,
+    )
+
+
+def _infer_studio_home_from_venv_uncached() -> Path | None:
     try:
         prefix = Path(sys.prefix).resolve()
     except (OSError, ValueError):
@@ -56,6 +64,10 @@ def _infer_studio_home_from_venv() -> Path | None:
 
 
 def _resolved(value: str) -> Path:
+    return memoized(("resolved", value), lambda: _resolved_uncached(value))
+
+
+def _resolved_uncached(value: str) -> Path:
     try:
         return Path(value).expanduser().resolve()
     except (OSError, ValueError):

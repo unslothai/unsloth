@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Lexical (FTS5) + dense (vec0 cosine) retrieval fused via Reciprocal Rank
-Fusion. ``dense_score`` is carried so callers can apply a similarity floor."""
+"""Lexical (FTS5) and dense (vec0 cosine) retrieval fused by Reciprocal Rank Fusion; dense_score is
+kept so callers can apply a similarity floor."""
 
 from __future__ import annotations
 

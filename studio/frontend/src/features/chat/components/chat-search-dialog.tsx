@@ -25,7 +25,7 @@ import {
   DashboardCircleIcon,
   FlimSlateIcon,
   Folder01Icon,
-  Image03Icon,
+  Image01Icon,
   PencilEdit02Icon,
   Search01Icon,
   BubbleChatTemporaryIcon,
@@ -146,7 +146,7 @@ const ACTIONS: Action[] = [
   },
   {
     id: "switchToImages",
-    icon: Image03Icon,
+    icon: Image01Icon,
     labelKey: "shell.search.generateImage",
   },
   {

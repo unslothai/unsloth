@@ -22,6 +22,7 @@ import {
   thinkToggleAriaLabel,
 } from "@/components/assistant-ui/think-aria-label";
 import { ComposerDraftPreview } from "@/components/assistant-ui/composer-draft-preview";
+import { useExpandedComposerFill } from "@/components/assistant-ui/use-expanded-composer-fill";
 import { useChatPreferencesStore } from "./stores/chat-preferences-store";
 import {
   composerSubmitIntent,
@@ -117,7 +118,7 @@ import {
   Bookmark02Icon,
   CodeIcon,
   Download01Icon,
-  FileDatabaseIcon,
+  FileSearchIcon,
   Folder01Icon,
   FolderAddIcon,
   Image03Icon,
@@ -1223,6 +1224,7 @@ export function SharedComposer({
     setIsWritingExpanded((expanded) => !expanded);
     textareaRef.current?.focus({ preventScroll: true });
   };
+  useExpandedComposerFill(editorRef, isWritingExpanded, true);
 
   const addFilesUntracked = useCallback(
     async (input: FileList | readonly File[] | null) => {
@@ -2487,7 +2489,7 @@ export function SharedComposer({
           setRagEnabled(!ragEnabled);
         }}
       >
-        <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
+        <HugeiconsIcon icon={FileSearchIcon} strokeWidth={2} />
         Chat with files
         {ragEnabled && !ragDisabled ? (
           <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />

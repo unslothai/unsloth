@@ -201,14 +201,30 @@ def fsdp2_keeps_fused_lora():
     return fsdp2_requested()
 
 
+def _zoo_gathers_fsdp2_lora():
+    """unsloth_zoo hands vLLM whole adapters from FSDP2 DTensor shards (older ones pass the shards)."""
+    try:
+        from unsloth_zoo import vllm_utils
+    except Exception:
+        return False
+    return hasattr(vllm_utils, "_lora_state_dict")
+
+
 def raise_if_fast_inference_under_fsdp2(fast_inference):
-    """Unsupported combination: refuse it before vLLM loads instead of failing mid-run (unsloth#3551)."""
-    if fast_inference and fsdp2_requested():
-        raise NotImplementedError(
-            "Unsloth: `fast_inference = True` (vLLM) is not supported with FSDP2.\n"
-            "Load the model with `fast_inference = False` to train with FSDP2, "
-            "or launch without FSDP2 to use vLLM."
-        )
+    """Refuse vLLM under accelerate's FSDP2 early (unsloth#3551); native FSDP2 keeps it (one engine per rank)."""
+    if not fast_inference or not fsdp2_requested():
+        return
+    from ..fsdp2_launch import unsloth_fsdp2_native_requested
+
+    if unsloth_fsdp2_native_requested() and _zoo_gathers_fsdp2_lora():
+        return
+    raise NotImplementedError(
+        "Unsloth: `fast_inference = True` (vLLM) is not supported with accelerate's FSDP2, or with an "
+        "unsloth_zoo that cannot gather FSDP2 adapters for vLLM (update unsloth_zoo).\n"
+        "Load the model with `fast_inference = False` to train with FSDP2, launch with "
+        "`UNSLOTH_FSDP2=1 torchrun ...` (Unsloth's native FSDP2 keeps vLLM), "
+        "or launch without FSDP2 to use vLLM."
+    )
 
 
 def prepare_device_map():

@@ -11,14 +11,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Keep compressed-tensors ``pack-quantized`` INT4/INT8 Linears packed for LoRA training.
-
-The checkpoint's own ``weight_packed`` / ``weight_scale`` / ``weight_zero_point`` / ``weight_g_idx``
-load straight into ``Int4PackedLinear`` (no decompress, no re-quantization). ``.weight`` is the packed
-int32 tensor carrying an ``Int4QuantState``, so Unsloth's LoRA kernels treat it like a bitsandbytes
-weight and decode it exactly per use (kernels/int4_packed.py). ``UNSLOTH_COMPRESSED_TENSORS_INT4=nf4``
-selects the older NF4 re-quantization instead.
-"""
+"""Keep compressed-tensors INT4/INT8 packed for LoRA; UNSLOTH_COMPRESSED_TENSORS_INT4=nf4 requantizes."""
 
 import contextlib
 import functools

@@ -41,6 +41,7 @@ from utils.models.checkpoints import has_preview_model, preview_ref
 from utils.paths import outputs_root, resolve_output_dir
 from utils.preview_sharing_settings import get_preview_sharing_enabled
 from utils.preview_token import sign_preview_ref
+from utils.scan_memo import in_scan_memo
 
 logger = get_logger(__name__)
 
@@ -116,6 +117,7 @@ def _summary_from_row(
     )
 
 
+@in_scan_memo
 def _summaries_from_rows(rows: list[dict], sharing_on: bool) -> list[TrainingRunSummary]:
     resource_cache: dict[str, bool] = {}
     return [_summary_from_row(row, sharing_on, resource_cache) for row in rows]
