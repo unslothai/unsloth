@@ -514,6 +514,13 @@ def test_hub_eval_split_survives_the_hold_out(monkeypatch):
     assert splits == ["train", "test"]
     evals = next(rows for name, rows in _uploads(ctx).items() if name.endswith("-test-eval.jsonl"))
     assert len(evals) == 5 and len(started[0]["local_eval_datasets"]) == 1
+    splits.clear()
+    started.clear()
+    ctx = _Ctx(_recipe_routes(started), holdout_percent = 10, eval_split = "train", eval_steps = 0.1)
+    ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/data", "split": "train"}}
+    with pytest.raises(RuntimeError, match = "started"):
+        asyncio.run(training.finetune(ctx))
+    assert splits == ["train"] and "local_eval_datasets" not in started[0]
 
 
 def test_one_column_for_two_rl_roles_is_refused():

@@ -125,8 +125,10 @@ async def finetune(ctx: NodeContext) -> dict:
         config.pop("dataset_slice_start", None)
         config.pop("dataset_slice_end", None)
         eval_split = str(ctx.params.get("eval_split") or "").strip()
-        if source.get("source") == "hf" and eval_split and config["eval_steps"] > 0:
+        train_split = source.get("split") or "train"
+        if source.get("source") == "hf" and eval_split not in ("", train_split) and config["eval_steps"] > 0:
             # The train half is now a local upload, so the Hub eval split has to travel the same way.
+            # The training split itself means "carve eval from the training rows", which the trainer still does.
             config["local_eval_datasets"] = [await hub_eval_upload(ctx, source, eval_split)]
     if dataset.get("source") == "hf":
         config["hf_dataset"] = dataset["ref"]
