@@ -78,9 +78,9 @@ def sandbox_refusal(reason: str, remediation: str = "") -> str:
             detail += "."
     return (
         f"Python rewards need the OS sandbox, and this system has none. {detail} To run them "
-        "with software safeguards only, which do not stop a reward from reading your files, "
-        "writing outside its folder or using the network, set Python reward isolation to Auto "
-        f'({ISOLATION_FIELD}: "auto").'
+        "with software safeguards only, which do not stop a reward from reading your files or "
+        "writing outside its folder, set Python reward isolation to Auto "
+        f'({ISOLATION_FIELD}: "auto"). Neither setting limits the network.'
     ).replace("  ", " ")
 
 
