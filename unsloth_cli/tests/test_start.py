@@ -8425,7 +8425,8 @@ def test_vibe_launch_keeps_user_home(fake_studio, monkeypatch):
 
 
 @pytest.mark.skipif(shutil.which("vibe") is None, reason = "needs the mistral-vibe CLI")
-def test_vibe_real_cli_reaches_unsloth(monkeypatch, tmp_path):
+@pytest.mark.parametrize("window", [40960, MODEL["context_length"]])
+def test_vibe_real_cli_reaches_unsloth(monkeypatch, tmp_path, window):
     requests = []
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -8435,18 +8436,28 @@ def test_vibe_real_cli_reaches_unsloth(monkeypatch, tmp_path):
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             requests.append((self.headers.get("Authorization"), body))
-            chunk = {
-                "choices": [{"index": 0, "delta": {"content": "pong"}, "finish_reason": "stop"}]
-            }
+            chunks = [
+                {"choices": [{"index": 0, "delta": {"content": "pong"}, "finish_reason": "stop"}]},
+                # Vibe 3 refuses a stream without usage; Studio sends it for include_usage.
+                {
+                    "choices": [],
+                    "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6},
+                },
+            ]
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
-            self.wfile.write(f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n".encode())
+            self.wfile.write("".join(f"data: {json.dumps(c)}\n\n" for c in chunks).encode())
+            self.wfile.write(b"data: [DONE]\n\n")
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target = server.serve_forever, daemon = True).start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
-    monkeypatch.setattr(start, "_connect", lambda *args, **kwargs: (base, "sk-unsloth-e2e", MODEL))
+    monkeypatch.setattr(
+        start,
+        "_connect",
+        lambda *args, **kwargs: (base, "sk-unsloth-e2e", {**MODEL, "context_length": window}),
+    )
     monkeypatch.setenv("VIBE_HOME", str(tmp_path / "vibe"))
     monkeypatch.chdir(tmp_path)
     try:
