@@ -581,6 +581,7 @@ class LlamaAdmissionQueue:
         "_reparking",
         "_changes",
         "_changed",
+        "_change_sleepers",
         "_change_events",
     )
 
@@ -610,6 +611,7 @@ class LlamaAdmissionQueue:
         # Bumped on every state change so polling waits wake on it; their poll stays as the fallback.
         self._changes = 0
         self._changed = threading.Condition(self._lock)
+        self._change_sleepers = 0
         self._change_events: dict = {}
 
     def _resize_pool_locked(self, capacity: int) -> None:
@@ -954,24 +956,28 @@ class LlamaAdmissionQueue:
             # A parked holder will return here; evicting would resume it against a fresh 1-slot pool.
             return self._in_use == 0 and not self._waiters and not self._parked
 
-    def _note_change_locked(self) -> None:
-        """Every state change runs _grant_waiters_locked, so that is where the polling waits get woken."""
-        self._changes += 1
-        self._changed.notify_all()
-        for loop, event in self._change_events.values():
-            try:
-                loop.call_soon_threadsafe(event.set)
-            except RuntimeError:
-                pass
-
     def wait_for_change(self, seen: int, timeout_s: float) -> None:
         """Sleeps up to ``timeout_s``, returning early once the state has changed since ``seen``."""
         with self._lock:
             if self._changes == seen:
-                self._changed.wait(max(0.0, timeout_s))
+                self._change_sleepers += 1
+                try:
+                    self._changed.wait(max(0.0, timeout_s))
+                finally:
+                    self._change_sleepers -= 1
 
     def _grant_waiters_locked(self) -> None:
-        self._note_change_locked()
+        # Every state change runs this, so it is where the polling waits get woken.
+        self._changes += 1
+        # notify_all probes lock ownership even with no sleeper, doubling reserve + release.
+        if self._change_sleepers:
+            self._changed.notify_all()
+        if self._change_events:
+            for loop, event in self._change_events.values():
+                try:
+                    loop.call_soon_threadsafe(event.set)
+                except RuntimeError:
+                    pass
         # Reparkers go first, or steady arrivals hold a growing run at its old size.
         if self._reparking > 0:
             return
