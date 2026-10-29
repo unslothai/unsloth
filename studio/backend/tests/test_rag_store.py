@@ -593,3 +593,28 @@ def test_a_legacy_archive_still_gets_two_different_ends(rag_home, rag_conn):
     assert oldest and newest
     assert oldest != newest, "both ends of the fetch returned the same rows"
     assert not set(oldest) & set(newest), (oldest, newest)
+
+
+def test_dense_packs_float32_rows_without_struct_and_the_query_once(rag_conn, monkeypatch):
+    np = pytest.importorskip("numpy")
+    texts = ["alpha alpha", "hotel golf", "alpha bravo"]
+    for i, scope in enumerate(("kb_a", "kb_b", "kb_c")):
+        doc = f"d{i}"
+        store.create_document(rag_conn, scope = scope, filename = "f", sha256 = doc, document_id = doc)
+        rows = np.asarray([embed(t) for t in texts], dtype = np.float32)
+        store.add_chunks(rag_conn, scope, doc, [_chunk(t, j) for j, t in enumerate(texts)], rows)
+    stored = rag_conn.execute("SELECT embedding FROM chunks_vec ORDER BY rowid").fetchall()
+    expected = [
+        store.struct.pack(f"{len(VOCAB)}f", *np.asarray(embed(t), dtype = np.float32).tolist())
+        for t in texts
+    ] * 3
+    assert [bytes(r[0]) for r in stored] == expected
+
+    packs = []
+    real_pack = store.struct.pack
+    monkeypatch.setattr(store.struct, "pack", lambda *a: packs.append(a) or real_pack(*a))
+    query = np.asarray(embed("alpha"), dtype = np.float32)
+    ranked = store.search_dense(rag_conn, ["kb_a", "kb_b", "kb_c"], query, 9)
+    as_list = store.search_dense(rag_conn, ["kb_a", "kb_b", "kb_c"], query.tolist(), 9)
+    assert ranked == as_list and ranked[0][1] > 0.99
+    assert len(packs) == 1

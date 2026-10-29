@@ -4,7 +4,8 @@
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Cancel01Icon, FileSearchIcon } from "@hugeicons/core-free-icons";
+import { FileSearchIcon } from "@/lib/hugeicons-derived";
+import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { FileGlyph } from "@/lib/file-icon";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 

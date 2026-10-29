@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { AiSpeechIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, FileSearchIcon } from "@/lib/hugeicons-derived";
 import { createPortal } from "react-dom";
 import {
   canQueueTextAttachment,
@@ -432,12 +432,12 @@ import {
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  FileSearchIcon,
   FolderAttachmentIcon,
   Folder01Icon,
   FolderAddIcon,
   Image03Icon,
   McpServerIcon,
+  Refresh01Icon,
   Scroll01Icon,
   Telescope02Icon,
   UndoIcon,
@@ -2064,6 +2064,9 @@ export const Thread: FC<{
   useEffect(() => {
     startGrammarPrewarm();
   }, []);
+  const composerAtBottom = useChatPreferencesStore(
+    (s) => s.newChatComposerAtBottom,
+  );
   // Intent-aware autoscroll replaces assistant-ui's built-in autoscroll to
   // prevent the streaming-mutation race that snaps the viewport back to the
   // bottom while the user scrolls up (see the hook for the full explanation).
@@ -2395,7 +2398,11 @@ export const Thread: FC<{
           />
 
           {!hideComposer && (
-            <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
+            <AuiIf
+              condition={({ thread }) =>
+                hideWelcome || !thread.isEmpty || composerAtBottom
+              }
+            >
               <ThreadComposerDock
                 disabled={isComposerAttachPending}
                 threadId={threadId}
@@ -2560,10 +2567,6 @@ const ThreadComposerDock: FC<{
       );
     },
   );
-  const showModelDisclaimer = useChatPreferencesStore(
-    (s) => s.showModelDisclaimer,
-  );
-
   const dockRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const el = dockRef.current;
@@ -2656,11 +2659,6 @@ const ThreadComposerDock: FC<{
             menuSide="top"
           />
         </div>
-        {showModelDisclaimer && (
-          <p className="composer-footer-note">
-            LLMs can make mistakes. Double-check responses.
-          </p>
-        )}
       </div>
     </div>
   );
@@ -2671,9 +2669,6 @@ const ThreadScrollToBottom: FC = () => {
   // unmounting would trip the hook's MutationObserver as a content change.
   const isAtBottom = useIsThreadAtBottom();
   const scrollToBottom = useScrollThreadToBottom();
-  const enabled = useChatPreferencesStore(
-    (state) => state.showScrollToBottomButton,
-  );
   return (
     <TooltipIconButton
       tooltip="Scroll to bottom"
@@ -2681,7 +2676,7 @@ const ThreadScrollToBottom: FC = () => {
       onClick={() => scrollToBottom("auto")}
       className={cn(
         "aui-thread-scroll-to-bottom pointer-events-auto rounded-full p-0 size-[calc(28px*var(--ui-space-scale,1))] bg-background shadow-[0_0_0_0.5px_rgb(0_0_0/0.15)] hover:bg-accent dark:shadow-[0_0_0_0.5px_rgb(255_255_255/0.2)] dark:bg-muted dark:hover:bg-accent",
-        (isAtBottom || !enabled) && "invisible pointer-events-none",
+        isAtBottom && "invisible pointer-events-none",
       )}
     >
       <ArrowDownIcon
@@ -2755,6 +2750,10 @@ const ThreadWelcome: FC<{
   const displayName = useUserProfileStore((s) => s.displayName);
   const nickname = useUserProfileStore((s) => s.nickname);
   const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
+  // At the bottom, Thread docks the composer and the greeting centres in the space above it.
+  const composerAtBottom = useChatPreferencesStore(
+    (s) => s.newChatComposerAtBottom,
+  );
   const spooky = useSpookyGreetings();
   const [welcome, setWelcome] = useState<Welcome>(DEFAULT_WELCOME);
   const t = useT();
@@ -2774,31 +2773,43 @@ const ThreadWelcome: FC<{
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
       {/* With a files panel showing (chat with files, or project sources), center the whole block. */}
-      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[27.5dvh] has-[.unsloth-files-panel]:justify-center has-[.unsloth-files-panel]:pt-0 has-[.unsloth-files-panel]:pb-[6dvh]">
+      <div
+        className={cn(
+          "aui-thread-welcome-center flex w-full grow flex-col items-center",
+          composerAtBottom
+            ? "justify-center pb-[calc(160px*var(--ui-space-scale,1))]"
+            : "justify-start pt-[27.5dvh] has-[.unsloth-files-panel]:justify-center has-[.unsloth-files-panel]:pt-0 has-[.unsloth-files-panel]:pb-[6dvh]",
+        )}
+      >
         {/* No padding, so the composer here is as wide as once it docks. */}
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9">
-          <div className="unsloth-welcome-greeting flex flex-row items-center justify-center gap-[calc(15px*var(--ui-space-scale,1))]">
-            {showGreetingSloth && !incognito && (
-              <MascotImg
-                src={currentEmojiSrc}
-                className={cn(
-                  "unsloth-welcome-sloth size-[calc(44px*var(--ui-space-scale,1))] -translate-y-[2px]",
-                  welcome.enlarge && "scale-[1.15]",
-                )}
-              />
-            )}
-            <h1 className="aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200">
-              {incognito
-                ? t("welcome.temporaryChat")
-                : t(welcome.key, welcome.name ? { name: welcome.name } : undefined)}
-            </h1>
-          </div>
+          {/* The setting hides the whole greeting; the incognito title is a status, so it stays. */}
+          {(showGreetingSloth || incognito) && (
+            <div className="unsloth-welcome-greeting flex flex-row items-center justify-center gap-[calc(15px*var(--ui-space-scale,1))]">
+              {!incognito && (
+                <MascotImg
+                  src={currentEmojiSrc}
+                  className={cn(
+                    "unsloth-welcome-sloth size-[calc(44px*var(--ui-space-scale,1))] -translate-y-[2px]",
+                    welcome.enlarge && "scale-[1.15]",
+                  )}
+                />
+              )}
+              <h1 className="aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200">
+                {incognito
+                  ? t("welcome.temporaryChat")
+                  : t(welcome.key, welcome.name ? { name: welcome.name } : undefined)}
+              </h1>
+            </div>
+          )}
           {incognito && (
             <p className="aui-thread-welcome-message-inner fade-in -mt-2 animate-in text-center font-heading font-normal text-muted-foreground text-sm duration-200">
               {t("welcome.temporaryChatDescription")}
             </p>
           )}
-          {!hideComposer && <ComposerAnimated threadId={threadId} />}
+          {!hideComposer && !composerAtBottom && (
+            <ComposerAnimated threadId={threadId} />
+          )}
         </div>
       </div>
     </div>
@@ -7596,7 +7607,7 @@ const MessageError: FC = () => {
               type="button"
               className="btn-fill aui-message-error-retry inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors "
             >
-              <RefreshGlyph strokeWidth={1.75} className="size-3.5" />
+              <HugeiconsIcon icon={Refresh01Icon} strokeWidth={1.75} className="size-3.5" />
               Retry
             </button>
           </ActionBarPrimitive.Reload>

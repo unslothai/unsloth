@@ -26,7 +26,6 @@ import {
 } from "@/features/auth";
 import {
   type ChatSearch,
-  hydrateModelDisclaimerPreference,
   loadChatPage,
   loadedChatPage,
   openFolderAsProject,
@@ -268,7 +267,6 @@ function ChatSettingsHydrationMount() {
   );
   useEffect(() => {
     void hydratePersistedSettings();
-    hydrateModelDisclaimerPreference().catch(() => undefined);
   }, [hydratePersistedSettings]);
   return null;
 }
@@ -514,14 +512,17 @@ function RootLayout() {
       : DEFAULT_DOCUMENT_TITLE;
   }, [documentTitle]);
 
+  // Desktop mounts this root before the port exists; authFetch retries keep the URL it started with.
+  const desktopShellReady = useDesktopShellReady();
+
   // Settings predating the server override map live only locally; backfill once after auth.
   useEffect(() => {
-    if (isAuthFlowRoute) {
+    if (isAuthFlowRoute || !desktopShellReady) {
       return;
     }
     void backfillModelOverrides();
     void hydratePins();
-  }, [isAuthFlowRoute]);
+  }, [isAuthFlowRoute, desktopShellReady]);
 
   useEffect(() => {
     if (isAuthFlowRoute) {
@@ -580,7 +581,6 @@ function RootLayout() {
   const pathLeasesSupported = useNativePathLeasesSupported();
   const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
   const openingFolder = useOpeningFolder();
-  const desktopShellReady = useDesktopShellReady();
   // Menu items for web shortcuts are live exactly while a mounted handler would take them.
   const sidebarMounted = useShortcutAvailable("toggleSidebar", hasAppMenus);
   const findMounted = useShortcutAvailable("findInPage", hasAppMenus);

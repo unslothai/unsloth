@@ -29,6 +29,7 @@ from .import_fixes import (
     fix_torch_check_is_size,
     fix_torchao_torch_symbol_skew,
     fix_torchao_pytree_register_constant,
+    disable_torchao_if_torch_too_old,
     propagate_torchao_fix_to_subprocesses,
     check_fbgemm_gpu_version,
     check_transformers_dependency_versions,
@@ -93,6 +94,8 @@ from ._torchao_nodist import fix_torchao_without_torch_distributed
 
 fix_torchao_without_torch_distributed()
 del fix_torchao_without_torch_distributed
+# After the torchao shims, before transformers imports torchao: a torchao too new for this torch reads as absent.
+disable_torchao_if_torch_too_old()
 disable_broken_causal_conv1d()
 disable_broken_vllm()
 fix_message_factory_issue()
@@ -121,6 +124,7 @@ del patch_torch_missing_attribute_error
 del fix_torch_check_is_size
 del fix_torchao_torch_symbol_skew
 del fix_torchao_pytree_register_constant
+del disable_torchao_if_torch_too_old
 del propagate_torchao_fix_to_subprocesses
 del check_fbgemm_gpu_version
 del check_transformers_dependency_versions

@@ -1117,7 +1117,7 @@ export const fr = {
       lastVisited: "Dernier visité",
     },
     tabs: {
-      sandbox: "Sandbox",
+      sandbox: "Sécurité",
       accounts: "Comptes",
       general: "Général",
       profile: "Profil",
@@ -1401,7 +1401,7 @@ export const fr = {
       },
     },
     sandbox: {
-      title: "Sandbox",
+      title: "Sécurité",
       description: "Indique si les appels d'outils Python et Terminal s'exécutent dans un bac à sable du système sur cet ordinateur.",
       docs: "Documentation",
       docsLabel: "Ouvrir la documentation du sandbox",
@@ -1476,6 +1476,7 @@ export const fr = {
       managedNote: "Le propriétaire de ce serveur Unsloth configure le bac à sable du système.",
     },
     debugging: {
+      description: "Consultez les journaux d'Unsloth sans quitter l'application.",
       logSection: "Fichier journal",
       source: "Fichier journal",
       sourceHint: "Les exécuteurs de modèles écrivent leurs propres journaux : un chargement ou une génération en échec y est donc souvent expliqué plutôt que dans le journal du serveur.",
@@ -2154,9 +2155,8 @@ export const fr = {
       uploadPhoto: "Importer une photo",
       removePhoto: "Retirer",
       pictureOptions: "Options de la photo de profil",
-      greetingSloth: "Paresseux dans le message d'accueil",
-      greetingSlothDescription:
-        "Afficher le paresseux dans le message d'accueil de la discussion.",
+      greetingSloth: "Message d'accueil",
+      greetingSlothDescription: "Afficher le message d'accueil dans les nouvelles discussions.",
       noPicture: "Aucune photo de profil",
       noneLabel: "Aucun",
       stats: {
@@ -2385,7 +2385,8 @@ export const fr = {
         "Surveillez le matériel et le stockage de ce serveur Unsloth.",
       liveUpdates: "Mises à jour en direct",
       floatingWindow: "Fenêtre flottante",
-      disableOverlay: "Désactiver la superposition",
+      showFloatingWindow: "Afficher la fenêtre flottante",
+      showFloatingWindowDescription: "Garde l'utilisation du CPU, de la RAM et du GPU visible par-dessus Unsloth.",
       liveMonitor: {
         title: "Moniteur en direct",
         apiTitle: "Moniteur d’API",
@@ -2833,11 +2834,6 @@ export const fr = {
       autoScrollManual: "Manuel",
       autoScrollKeywords:
         "défilement défiler automatique suivre bas sauter diffusion génération vue verrouiller scroll autoscroll follow",
-      scrollToBottomButton: "Bouton « Défiler vers le bas »",
-      scrollToBottomButtonDescription:
-        "Afficher un bouton pour revenir au dernier message après avoir fait défiler vers le haut.",
-      scrollToBottomButtonKeywords:
-        "défiler bas sauter dernier flèche bouton masquer scroll bottom button",
       replyNotification: "Notifier quand une réponse est terminée",
       replyNotificationDescription:
         "Affiche une notification système quand une réponse se termine alors qu'Unsloth est réduit ou en arrière-plan.",
@@ -2859,9 +2855,8 @@ export const fr = {
         "détails vitesse jetons statistiques couches déchargement verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Modifier la réponse sur les réponses",
       inlineEditResponseDescription: "Afficher Modifier la réponse sur chaque réponse, plutôt que dans le menu Plus.",
-      modelDisclaimer: "Afficher l'avertissement du modèle",
-      modelDisclaimerDescription:
-        'Afficher "Les LLM peuvent faire des erreurs" sous la zone de discussion.',
+      composerAtBottom: "Zone de saisie en bas",
+      composerAtBottomDescription: "Commencer les nouvelles discussions avec la zone de saisie en bas de la page plutôt qu'au centre.",
       projectAttachments: "Partager les fichiers dans tout le projet",
       projectAttachmentsDescription:
         "Rend les nouvelles pièces jointes accessibles à toutes les discussions du projet.",
@@ -3237,6 +3232,7 @@ export const fr = {
       readDocs: "Lire la documentation de l'API",
       noAccess: "Aucun accès API pour le moment.",
       accessTokens: "Jetons d’accès",
+      quickstartTitle: "Démarrage rapide",
       columnName: "Nom",
       columnToken: "Jeton",
       columnCreated: "Créé",
@@ -3377,8 +3373,9 @@ export const fr = {
         loadError: "Impossible de charger les réglages de l'API de décision.",
         sendsTo: "Les requêtes sont envoyées à {provider}.",
         connectionMissing: "Cette connexion n'existe plus ou n'a pas de modèle de décision. Choisissez un autre modèle.",
-        addConnection: "Pour utiliser un modèle de décision hébergé, ajoutez TypeSafe, Liquid AI ou OpenRouter dans Connexions.",
-        openConnections: "Ouvrir Connexions",
+        addConnection: "Pour utiliser un modèle de décision hébergé, ajoutez-le dans ",
+        connectionsLink: "Connexions",
+        addConnectionSuffix: ".",
       },
       mcp: {
         title: "Accès des agents (MCP)",

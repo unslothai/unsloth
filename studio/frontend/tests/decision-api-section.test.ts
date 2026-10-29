@@ -172,15 +172,18 @@ test("reports a resident model as loaded only when it is the selected one", () =
   assert.match(SECTION, /settings\.loadingModel === settings\.model/);
 });
 
-test("a failed first load still renders the section with its error", () => {
-  assert.match(SECTION, /if \(!settings\) \{\s*return error \?/);
+test("before settings load, the section renders its header with the error or a loading line", () => {
+  assert.match(
+    SECTION,
+    /if \(!settings\) \{[\s\S]*?\{header\}\s*<div>\s*\{errorLine \?\? \([\s\S]*?decisionApi\.loading/,
+  );
   assert.match(
     SECTION,
     /translate\("settings.apiKeys.decisionApi.loadError"\)/,
   );
 });
 
-test("Open Connections works off the dialog too, where the API page shows this card", () => {
+test("The Connections link works off the dialog too, where the API page shows this card", () => {
   assert.match(
     SECTION,
     /onClick=\{\(\) =>\s*useSettingsDialogStore\.getState\(\)\.openDialog\("connections"\)\s*\}/,

@@ -293,9 +293,8 @@
 	--bypass: #c99d00;
 	/* Full access in permission menus: ChatGPT's orange, a touch yellower. */
 	--full-access: #eb6702;
-	/* 2:1 on the page, so control outlines and dividers stay visible. */
-	--border-base: #b6b6b6;
-	--input-base: #b6b6b6;
+	--border-base: oklch(0.9208 0 0);
+	--input-base: oklch(0.9208 0 0);
 	--ring: #262626;
 	/* Derived from the live border/foreground so every palette and mode gets the right shade.
 	   Focus/hover uses soft; selected uses the deeper one. */
@@ -315,7 +314,7 @@
 	--sidebar-accent-base: #ececec;
 	--sidebar-accent-foreground-base: #262626;
 	--tabs-line-indicator-base: #ececec;
-	--sidebar-border-base: #b6b6b6;
+	--sidebar-border-base: #f2f2f2;
 	--sidebar-ring: #262626;
 	--destructive-foreground: oklch(1 0 0);
 	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
@@ -565,8 +564,8 @@
 	--accent-base: #ececec;
 	--accent-foreground-base: #1a1c1f;
 	--bypass: #9a7b1e;
-	--border-base: #b6b7b7;
-	--input-base: #b6b7b7;
+	--border-base: #e6e6e6;
+	--input-base: #e6e6e6;
 	--ring: #1a1c1f;
 	--chart-1: #339cff;
 	--chart-2: #8fa3b8;
@@ -579,7 +578,7 @@
 	--sidebar-primary-foreground: #ffffff;
 	--sidebar-accent-base: #ececec;
 	--sidebar-accent-foreground-base: #1a1c1f;
-	--sidebar-border-base: #b6b6b6;
+	--sidebar-border-base: #f2f2f2;
 	--sidebar-ring: #1a1c1f;
 
 	--nav-fg-base: #2d2f31;
@@ -632,8 +631,8 @@
 	--accent-base: #ebebeb;
 	--accent-foreground-base: #171717;
 	--bypass: #6f6f6f;
-	--border-base: #b6b6b6;
-	--input-base: #b6b6b6;
+	--border-base: #e2e2e2;
+	--input-base: #e2e2e2;
 	--ring: #171717;
 	--chart-1: #171717;
 	--chart-2: #4d4d4d;
@@ -646,7 +645,7 @@
 	--sidebar-primary-foreground: #ffffff;
 	--sidebar-accent-base: #ebebeb;
 	--sidebar-accent-foreground-base: #171717;
-	--sidebar-border-base: #b6b6b6;
+	--sidebar-border-base: #e8e8e8;
 	--sidebar-ring: #171717;
 
 	--nav-fg-base: #333333;
@@ -2992,6 +2991,19 @@ html[data-chat-font] .aui-root {
 		background-color: var(--panel-input-surface-hover);
 	}
 
+	/* Images and Video: a lighter border in the Standard, Classic and Minimal light themes. */
+	html:not(.dark):is(:not([data-palette]), [data-palette="classic"], [data-palette="minimal"]) .diffusion-surface {
+		--border-base: #e9e9e9;
+		--input-base: #e9e9e9;
+		--border: var(--border-base);
+		--input: var(--input-base);
+	}
+	/* The :root derivation is already substituted, so a scoped base must redo it for the slider. */
+	html[data-contrast-adjust]:not(.dark):is(:not([data-palette]), [data-palette="classic"], [data-palette="minimal"]) .diffusion-surface {
+		--border: color-mix(in oklab, var(--border-base), var(--contrast-target) var(--contrast-line-mix));
+		--input: color-mix(in oklab, var(--input-base), var(--contrast-target) var(--contrast-control-mix));
+	}
+
 	.panel-scroll-fade.is-scrolled {
 		-webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
 		mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
@@ -3130,17 +3142,6 @@ html[data-chat-font] .aui-root {
 	.panel-select-trigger:focus-visible {
 		outline: none;
 		box-shadow: 0 0 0 1px var(--ring-soft) !important;
-	}
-
-	/* Green track when on, slider-gray thumb in both states. */
-	.panel-switch[data-state="checked"] {
-		background-color: var(--primary) !important;
-	}
-	.panel-switch [data-slot="switch-thumb"] {
-		background-color: var(--panel-slider-fg) !important;
-	}
-	.panel-switch[data-state="checked"] [data-slot="switch-thumb"] {
-		background-color: #ffffff !important;
 	}
 
 	.tooltip-compact {
@@ -4374,7 +4375,7 @@ html[data-chat-font] .aui-root {
 			[data-slot="context-menu-item"],
 			[data-slot="context-menu-sub-trigger"]
 		)
-		svg:not(.unsloth-tick) {
+		svg:not(.unsloth-tick):not(.permission-mode-icon) {
 		width: var(--ui-icon-size) !important;
 		height: var(--ui-icon-size) !important;
 	}
