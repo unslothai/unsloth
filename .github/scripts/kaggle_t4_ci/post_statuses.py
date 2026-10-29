@@ -46,12 +46,7 @@ def _gh(args: list[str]) -> tuple[int, str, str]:
     return proc.returncode, (proc.stdout or "").strip(), (proc.stderr or "").strip()
 
 
-# What GitHub says when the commit is genuinely not there, measured:
-#     gh api repos/unslothai/unsloth/commits/deadbeef00
-#     {"message":"No commit found for SHA: deadbeef00", ..., "status":"422"}
-# Only that message releases the kernel. Status codes do not say it: 404 is
-# also an unreadable repository, 422 an ambiguous abbreviation, and reading
-# either as "gone" would delete the only copy of the result.
+# Only this message releases the kernel: 404 and 422 also mean unreadable or ambiguous.
 MISSING_MARKERS = ("no commit found",)
 
 
@@ -180,8 +175,6 @@ def main() -> int:
     Path(args.out).write_text(json.dumps(outcome, indent = 2), encoding = "utf-8")
     if not statuses:
         print("no statuses to post this pass")
-    # Red when a verdict could not be delivered: the kernel is kept for the
-    # next pass, but a delivery failure must not look like a quiet account.
     return 1 if outcome["failed"] else 0
 
 

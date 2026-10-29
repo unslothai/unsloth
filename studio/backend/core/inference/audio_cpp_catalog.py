@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The audio.cpp models Unsloth Studio can offer and the Audio pages each runs on: every umbrella
-folder, plus the Community repos the runtime's ``model_specs/`` download from. Public data only.
-"""
+"""audio.cpp models Studio offers and the Audio pages each runs on: umbrella folders plus Community
+repos the runtime's model_specs/ pulls from; public data only."""
 
 from __future__ import annotations
 

@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A loaded model only shows on the page that loaded it, so memory stays held with
-// nothing on screen saying so. This card lists what is resident from anywhere and
-// ejects it in place. It joins the shared bottom-right stack instead of pinning
-// itself, so the update banners and download panel never overlap it.
+// Joins the shared bottom-right stack so update banners and the download panel never overlap it.
 
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -19,6 +16,8 @@ import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { MessageCircleIcon } from "@/lib/hugeicons-derived";
+import { MicIcon } from "@/lib/mic-icon";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { SparkleIcon } from "@/lib/sparkle-icon";
 import { cn } from "@/lib/utils";
@@ -26,12 +25,10 @@ import {
   Cancel01Icon,
   DatabaseIcon,
   DragDropVerticalIcon,
+  FlimSlateIcon,
   Image01Icon,
   LockIcon,
-  Message01Icon,
-  Mic01Icon,
   RemoveCircleIcon,
-  Video01Icon,
 } from "@hugeicons/core-free-icons";
 import { Volume02Icon } from "@/lib/volume-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -56,16 +53,17 @@ import { useDragPosition } from "./use-drag-position";
 import { usePublishedCornerFrame } from "./use-published-corner-frame";
 import { useLoadedModels } from "./use-loaded-models";
 
-// Collapsing to the pill is deliberate, so it survives reloads. Expanded by
-// default: a card you have to open first answers nothing.
 const COLLAPSED_KEY = LOADED_MODELS_PREFERENCE_KEYS.collapsed;
 
-const KIND_ICONS: Record<LoadedModelKind, typeof SparkleIcon> = {
-  text: Message01Icon,
+// stt draws the filled MicIcon used everywhere else, which HugeiconsIcon would outline.
+const KIND_ICONS: Record<
+  Exclude<LoadedModelKind, "stt">,
+  typeof SparkleIcon
+> = {
+  text: MessageCircleIcon,
   tts: Volume02Icon,
   image: Image01Icon,
-  video: Video01Icon,
-  stt: Mic01Icon,
+  video: FlimSlateIcon,
   embedding: DatabaseIcon,
 };
 
@@ -159,11 +157,15 @@ function LoadedModelRow({
             className="flex min-w-0 flex-1 items-center gap-2 text-left"
           >
             <span className={ROW_ICON_CLASS}>
-              <HugeiconsIcon
-                icon={KIND_ICONS[entry.kind]}
-                strokeWidth={1.75}
-                className="size-[calc(15px*var(--ui-space-scale,1))]"
-              />
+              {entry.kind === "stt" ? (
+                <MicIcon className="size-[calc(15px*var(--ui-space-scale,1))]" />
+              ) : (
+                <HugeiconsIcon
+                  icon={KIND_ICONS[entry.kind]}
+                  strokeWidth={1.75}
+                  className="size-[calc(15px*var(--ui-space-scale,1))]"
+                />
+              )}
             </span>
             <span className="min-w-0 flex-1">
               <span className="block truncate text-ui-12p5 font-medium text-foreground">
@@ -185,8 +187,6 @@ function LoadedModelRow({
         </TooltipContent>
       </Tooltip>
       {entry.loading ? (
-        // Nothing resident to release yet, so the eject slot holds the spinner
-        // the toast is showing at the same moment.
         <span className="flex size-6 shrink-0 items-center justify-center">
           <Spinner
             className="size-3.5"
@@ -211,9 +211,7 @@ function LoadedModelRow({
                   label={t("floatingPanels.loadedModels.ejecting")}
                 />
               ) : (
-                // Eject, not dismiss: this releases the weights, which the
-                // header's X does not. Same glyph the model picker's own eject
-                // shortcut uses, so the action reads the same in both places.
+                // Eject releases weights, unlike the header's X.
                 <HugeiconsIcon
                   icon={RemoveCircleIcon}
                   strokeWidth={1.75}
@@ -268,10 +266,7 @@ export function LoadedModelsIndicator({
         useAudioWorkspaceStore.getState().workflow,
       );
       if (target.open === "settings") {
-        // Read on click, not at render: the settings barrel reaches back here
-        // through the General tab, so the binding is only safe once both
-        // modules have finished evaluating. The /settings route is no use, it
-        // redirects home and would take the user off the page they are on.
+        // Read on click, not at render: the settings barrel imports back here (circular).
         useSettingsDialogStore.getState().openDialog(target.tab);
         return;
       }
@@ -291,10 +286,7 @@ export function LoadedModelsIndicator({
   } = useDragPosition(LOADED_MODELS_PREFERENCE_KEYS.position);
   usePublishedCornerFrame(position ? null : element);
 
-  // A new load brings a closed card back: closing it means "not now", not "stop telling me", which
-  // is what the Settings toggle is for. Subscribed above the early return, so a dismissed card is
-  // still listening for the load that reopens it. On the start of the load, not the end, so it is
-  // up for the whole time the toast is.
+  // Subscribed above the early return so a dismissed card still hears the load that reopens it.
   useEffect(
     () =>
       subscribeModelLifecycle(({ loading }) => {
@@ -305,12 +297,8 @@ export function LoadedModelsIndicator({
     [],
   );
 
-  // A load started outside this tab raises no lifecycle event at all: the OpenAI-compatible API and
-  // auto-switch go nowhere near the frontend wrappers that announce one. The poll is the only
-  // witness, so a row appearing while the card is closed reopens it too, which is what the tooltip
-  // promises. The first poll after closing is the baseline, never a reopen: the ids are read fresh
-  // on mount, and a dismissal survives a reload, so treating what is already resident as new would
-  // make the card impossible to close.
+  // API loads raise no frontend event, so a new polled row reopens a closed card. The first
+  // poll after closing is the baseline, or the card could never be closed.
   const idsWhileClosedRef = useRef<Set<string> | null>(null);
   useEffect(() => {
     if (!dismissed) {
@@ -351,9 +339,6 @@ export function LoadedModelsIndicator({
     <div
       ref={panelRef}
       className={cn(
-        // Dragged: pinned where the user left it, out of the stack's flow.
-        // Otherwise anchored bottom-right, or flowing as a right-aligned row
-        // in the shared stack so overlays stack instead of overlapping.
         "pointer-events-none",
         position && "fixed z-[9999] w-fit",
         !position &&
@@ -484,7 +469,6 @@ export function LoadedModelsIndicator({
               </TooltipContent>
             </Tooltip>
           </div>
-          {/* Capped so four resident runtimes still leave the banners on screen. */}
           <div className="flex max-h-[min(272px,42dvh)] min-h-0 flex-col gap-0.5 overflow-y-auto">
             {cardState === "otherAccount" && (
               <NoteRow

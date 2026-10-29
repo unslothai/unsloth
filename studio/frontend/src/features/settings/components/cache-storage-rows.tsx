@@ -17,18 +17,23 @@ import {
 } from "@/features/hub/stores/inventory-events";
 import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
+import { Delete02Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  type CacheBreakdownEntry,
   type CacheEntry,
   type CacheInventory,
   type CacheKey,
   bulkPurgeKeys,
+  loadCacheBreakdown,
   loadCacheInventory,
   purgeCaches,
 } from "../api/caches";
-import { SettingsRow } from "./settings-row";
+import { SettingsCardRow } from "./storage-overview";
+import { HfCacheModelClear } from "./hf-cache-model-clear";
 
-/** Decimal units, matching the disk readings the Storage section already shows. */
+/** Decimal units, matching the Storage section's disk readings. */
 export function formatCacheSize(bytes: number): string {
   const safe = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
   if (safe >= 1e9) {
@@ -73,22 +78,14 @@ const OPT_IN_COST_KEYS: Partial<Record<CacheKey, TranslationKey>> = {
   hf_datasets: "settings.resources.storage.caches.datasetsCost",
 };
 
-/** Caches whose contents are the repositories the Hub inventory reports. */
 const HUB_INVENTORY_KEYS: ReadonlySet<CacheKey> = new Set<CacheKey>([
   "hf_hub",
   "hf_datasets",
 ]);
 
-/** What a confirmation is about: everything reclaimable, or one opt-in cache. */
 type PurgeTarget = { kind: "bulk" } | { kind: "single"; key: CacheKey };
 
-/**
- * The body of the confirmation for clearing one cache, as translation keys.
- *
- * The generic assurance ends with "downloaded models ... are not touched",
- * which is true of a bulk clear and the opposite of the truth for the model
- * cache itself, so the hub clear says only what it costs.
- */
+/** The generic text says downloaded models are untouched, which is false for the hub cache. */
 export function singleClearDescriptionKeys(key: CacheKey): TranslationKey[] {
   const cost = OPT_IN_COST_KEYS[key];
   const spared: TranslationKey[] =
@@ -96,101 +93,275 @@ export function singleClearDescriptionKeys(key: CacheKey): TranslationKey[] {
   return cost ? [cost, ...spared] : spared;
 }
 
-function presentCaches(inventory: CacheInventory | null): CacheEntry[] {
+export function presentCaches(inventory: CacheInventory | null): CacheEntry[] {
   if (!inventory) return [];
-  return inventory.caches.filter((entry) => entry.present);
+  return inventory.caches
+    .filter((entry) => entry.present)
+    .sort(
+      (first, second) =>
+        second.sizeBytes - first.sizeBytes ||
+        first.key.localeCompare(second.key),
+    );
 }
 
-export function CacheStorageRows() {
+// A slow cache can answer from its last walk while it re-walks; ask again until every size is current.
+const FOLLOW_UP_MS = 2000;
+const FOLLOW_UP_LIMIT = 60;
+
+export function useCacheStorage() {
   const t = useT();
   const [inventory, setInventory] = useState<CacheInventory | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState(false);
-  const [target, setTarget] = useState<PurgeTarget | null>(null);
   const [clearing, setClearing] = useState(false);
 
-  // A measurement installs itself only while it is the newest one asked for.
-  // Two can overlap and finish in either order, so without this the rows can
-  // settle on the folder the user moved off. A purge claims a number too.
+  // Only the newest measurement installs itself; overlapping ones finish in any order.
   const latestRequest = useRef(0);
+  const followUp = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const refresh = useCallback(
-    async (options: { refresh?: boolean } = {}) => {
-      const request = ++latestRequest.current;
-      setLoading(true);
-      try {
-        const next = await loadCacheInventory(options);
-        if (request !== latestRequest.current) return;
-        setInventory(next);
-        setLoadError(null);
-      } catch (error) {
-        if (request !== latestRequest.current) return;
-        setLoadError(
-          error instanceof Error
-            ? error.message
-            : t("settings.resources.storage.caches.measureFailed"),
-        );
-      } finally {
-        if (request === latestRequest.current) setLoading(false);
-      }
+  const cancelFollowUp = useCallback(() => {
+    if (followUp.current !== null) clearTimeout(followUp.current);
+    followUp.current = null;
+  }, []);
+
+  const scheduleFollowUp = useCallback(
+    (wanted: boolean, request: number, run: () => void) => {
+      if (!wanted) return;
+      followUp.current = setTimeout(() => {
+        followUp.current = null;
+        if (request === latestRequest.current) run();
+      }, FOLLOW_UP_MS);
     },
-    [t],
+    [],
   );
 
-  // Models Folder sits above these rows in the same section and saving it bumps
-  // the inventory version. Without this the Hugging Face rows keep the old
-  // folder's path and size beside a Clear that acts on the new one.
+  const refresh = useCallback(
+    async (options: { refresh?: boolean } = {}, firstAttempt = 0) => {
+      cancelFollowUp();
+      // A follow-up only swaps in the newer sizes: no measuring state, and a failed one keeps the rows.
+      const load = async (attempt: number) => {
+        const request = ++latestRequest.current;
+        if (attempt === 0) setLoading(true);
+        try {
+          const next = await loadCacheInventory(attempt === 0 ? options : {});
+          if (request !== latestRequest.current) return;
+          setInventory(next);
+          setLoadError(null);
+          scheduleFollowUp(
+            next.refreshing && attempt < FOLLOW_UP_LIMIT,
+            request,
+            () => void load(attempt + 1),
+          );
+        } catch (error) {
+          if (request !== latestRequest.current || attempt > 0) return;
+          setLoadError(
+            error instanceof Error
+              ? error.message
+              : t("settings.resources.storage.caches.measureFailed"),
+          );
+        } finally {
+          if (attempt === 0 && request === latestRequest.current) {
+            setLoading(false);
+          }
+        }
+      };
+      await load(firstAttempt);
+    },
+    [t, cancelFollowUp, scheduleFollowUp],
+  );
+
+  // Saving Models Folder bumps the inventory version; re-measure so rows match the new folder.
   const inventoryVersion = useInventoryVersion();
   const measuredVersion = useRef(inventoryVersion);
 
   useEffect(() => {
-    // A move must force the re-measure, since the memoised reading is the one
-    // being replaced. The first load is not forced: a cold walk costs seconds.
+    // A move forces a re-measure; the first load does not, since a cold walk costs seconds.
     const moved = measuredVersion.current !== inventoryVersion;
     measuredVersion.current = inventoryVersion;
     void refresh(moved ? { refresh: true } : {});
+    // Leaving the page also drops a follow-up read still in flight.
+    return () => {
+      latestRequest.current += 1;
+      if (followUp.current !== null) clearTimeout(followUp.current);
+      followUp.current = null;
+    };
   }, [refresh, inventoryVersion]);
 
   const entries = presentCaches(inventory);
   const bulkKeys = inventory ? bulkPurgeKeys(inventory) : [];
   const reclaimable = inventory?.reclaimableBytes ?? 0;
 
-  const runPurge = async (keys: readonly CacheKey[]) => {
+  const runPurge = async (keys: readonly CacheKey[]): Promise<boolean> => {
     setClearing(true);
+    cancelFollowUp();
     const request = ++latestRequest.current;
     try {
       const outcome = await purgeCaches(keys);
-      if (request === latestRequest.current) setInventory(outcome.inventory);
+      if (request === latestRequest.current) {
+        setInventory(outcome.inventory);
+        scheduleFollowUp(
+          outcome.inventory.refreshing,
+          request,
+          () => void refresh({}, 1),
+        );
+      }
       if (keys.some((key) => HUB_INVENTORY_KEYS.has(key))) {
-        // Every cached model or dataset just went, so the Hub and the picker
-        // hear about it the way they do for a delete. The mark takes our own
-        // bump, or the rows would pay a cold walk for what they already hold.
+        // Our own bump is marked so the rows skip a cold walk for data they already hold.
         bumpInventoryVersion();
         measuredVersion.current = getInventoryVersion();
       }
-      setTarget(null);
       const failures = outcome.results.flatMap((result) => result.errors);
       if (failures.length > 0) {
         toast.warning(t("settings.resources.storage.caches.partial"), {
           description: failures[0],
         });
-        return;
+        return true;
       }
       toast.success(
         t("settings.resources.storage.caches.cleared", {
           size: formatCacheSize(outcome.freedBytes),
         }),
       );
+      return true;
     } catch (error) {
       toast.error(t("settings.resources.storage.caches.clearFailed"), {
         description: error instanceof Error ? error.message : undefined,
       });
+      return false;
     } finally {
       setClearing(false);
-      // Whatever measurement this superseded will not clear it.
       if (request === latestRequest.current) setLoading(false);
     }
+  };
+
+  return {
+    inventory,
+    loading,
+    loadError,
+    clearing,
+    entries,
+    bulkKeys,
+    reclaimable,
+    refresh,
+    runPurge,
+  };
+}
+
+export type CacheStorage = ReturnType<typeof useCacheStorage>;
+
+const HF_REPO_PREFIX = /^(models|datasets|spaces)--/;
+
+export function HuggingFaceCacheFolders({
+  entry,
+  version,
+  disabled = false,
+}: { entry: CacheEntry; version: CacheInventory | null; disabled?: boolean }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const [rows, setRows] = useState<CacheBreakdownEntry[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    let current = true;
+    setRows(null);
+    setError(null);
+    void loadCacheBreakdown(entry.key).then(
+      (next) => {
+        if (current) {
+          setRows(
+            next.filter((row) => row.sizeBytes > 0 || row.deleteAllowed),
+          );
+        }
+      },
+      (reason) => {
+        if (current) {
+          setError(reason instanceof Error ? reason.message : String(reason));
+        }
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [open, entry.key, version]);
+  return (
+    <div className="mt-1 min-w-0">
+      <Button
+        variant="ghost"
+        size="xs"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        {t(
+          open
+            ? "settings.resources.storage.caches.hideFolders"
+            : "settings.resources.storage.caches.showFolders",
+        )}
+      </Button>
+      {open ? (
+        <div
+          className="mt-1 flex flex-col gap-1 text-xs text-muted-foreground"
+          aria-live="polite"
+        >
+          {error ? (
+            <span role="alert">{error}</span>
+          ) : rows === null ? (
+            t("settings.resources.storage.caches.measuring")
+          ) : rows.length === 0 ? (
+            t("settings.resources.storage.caches.empty")
+          ) : (
+            rows.map((row) => (
+              <div
+                key={row.path}
+                title={row.path}
+                className="flex min-w-0 justify-between gap-4"
+              >
+                <span className="truncate font-mono">
+                  {row.repoId ??
+                    row.name.replace(HF_REPO_PREFIX, "").replaceAll("--", "/")}
+                </span>
+                <div className="flex shrink-0 items-center gap-2">
+                  <span className="tabular-nums">
+                    {formatCacheSize(row.sizeBytes)}
+                  </span>
+                  <span className="w-12">
+                    {row.deleteAllowed &&
+                    row.repoType === "model" &&
+                    row.repoId &&
+                    row.cachePath ? (
+                      <HfCacheModelClear
+                        repoId={row.repoId}
+                        cachePath={row.cachePath}
+                        disabled={disabled}
+                      />
+                    ) : null}
+                  </span>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+export function CacheStorageRows({ cache }: { cache: CacheStorage }) {
+  const t = useT();
+  const {
+    inventory,
+    loading,
+    loadError,
+    clearing,
+    entries,
+    bulkKeys,
+    reclaimable,
+  } = cache;
+  const [expanded, setExpanded] = useState(false);
+  const [target, setTarget] = useState<PurgeTarget | null>(null);
+  const runPurge = async (keys: readonly CacheKey[]) => {
+    if (await cache.runPurge(keys)) setTarget(null);
   };
 
   const confirmTitle =
@@ -210,7 +381,7 @@ export function CacheStorageRows() {
 
   return (
     <>
-      <SettingsRow
+      <SettingsCardRow
         label={t("settings.resources.storage.caches.label")}
         description={
           loadError
@@ -224,43 +395,31 @@ export function CacheStorageRows() {
         }
         hint={t("settings.resources.storage.caches.hint")}
       >
-        <div className="flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-8"
-            disabled={loading || clearing}
-            onClick={() => void refresh({ refresh: true })}
-          >
-            {t("settings.resources.storage.caches.recheckAction")}
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-8"
-            disabled={loading || clearing}
-            onClick={() => setExpanded((open) => !open)}
-          >
-            {expanded
-              ? t("settings.resources.storage.caches.hideDetailsAction")
-              : t("settings.resources.storage.caches.detailsAction")}
-          </Button>
-          <Button
-            variant="destructive"
-            size="sm"
-            className="h-8"
-            disabled={
-              loading || clearing || loadError !== null || bulkKeys.length === 0
-            }
-            onClick={() => setTarget({ kind: "bulk" })}
-          >
-            {t("settings.resources.storage.caches.clearAction")}
-          </Button>
-        </div>
-      </SettingsRow>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={loading || clearing}
+          onClick={() => setExpanded((open) => !open)}
+        >
+          {expanded
+            ? t("settings.resources.storage.caches.hideDetailsAction")
+            : t("settings.resources.storage.caches.detailsAction")}
+        </Button>
+        <Button
+          variant="destructive"
+          size="sm"
+          disabled={
+            loading || clearing || loadError !== null || bulkKeys.length === 0
+          }
+          onClick={() => setTarget({ kind: "bulk" })}
+        >
+          <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+          {t("settings.resources.storage.caches.clearAction")}
+        </Button>
+      </SettingsCardRow>
 
       {expanded ? (
-        <div className="flex flex-col pl-3.5">
+        <div className="flex flex-col pb-2">
           {entries.length === 0 ? (
             <p className="py-2 text-xs text-muted-foreground">
               {t("settings.resources.storage.caches.empty")}
@@ -269,17 +428,17 @@ export function CacheStorageRows() {
             entries.map((entry) => (
               <div
                 key={entry.key}
-                className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 py-2"
+                className="flex flex-wrap items-start justify-between gap-2 border-t border-border/60 py-2.5"
               >
-                <div className="flex min-w-0 flex-col gap-0.5">
+                <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                   <span className="text-sm text-foreground">
                     {t(CACHE_NAME_KEYS[entry.key])}
                   </span>
                   <span
-                    title={entry.paths.join("\n")}
+                    title={(entry.measuredPaths ?? entry.paths).join("\n")}
                     className="max-w-lg truncate font-mono text-ui-11 text-muted-foreground"
                   >
-                    {entry.paths[0] ?? ""}
+                    {(entry.measuredPaths ?? entry.paths)[0] ?? ""}
                   </span>
                   {entry.optIn && OPT_IN_COST_KEYS[entry.key] ? (
                     <span className="text-xs text-amber-600 dark:text-amber-400">
@@ -293,23 +452,27 @@ export function CacheStorageRows() {
                       })}
                     </span>
                   ) : null}
+                  {entry.measuredPaths?.some(
+                    (path) => !entry.paths.includes(path),
+                  ) ? (
+                    <span className="text-xs text-muted-foreground">
+                      {t("settings.resources.storage.caches.previousLocations")}
+                    </span>
+                  ) : null}
                 </div>
-                <div className="flex items-center gap-3">
+                <div data-title-line-control={true} className="flex shrink-0 gap-3">
                   <span className="text-xs tabular-nums text-muted-foreground">
                     {formatCacheSize(entry.sizeBytes)}
                   </span>
                   <Button
                     variant="ghost"
                     size="xs"
-                    // loading and loadError, like the buttons above: the rows
-                    // show the last inventory that arrived while a clear
-                    // resolves its key against the current folder.
                     disabled={
                       loading ||
                       clearing ||
                       loadError !== null ||
                       !entry.purgeable ||
-                      entry.entryCount === 0
+                      (entry.clearEntryCount ?? entry.entryCount) === 0
                     }
                     onClick={() =>
                       entry.optIn
@@ -320,6 +483,16 @@ export function CacheStorageRows() {
                     {t("settings.resources.storage.caches.clearOneAction")}
                   </Button>
                 </div>
+                {/* Own line: inside the title column it widens it and wraps the controls below. */}
+                {entry.key === "hf_hub" || entry.key === "hf_datasets" ? (
+                  <div className="min-w-0 basis-full">
+                    <HuggingFaceCacheFolders
+                      entry={entry}
+                      version={inventory}
+                      disabled={loading || clearing}
+                    />
+                  </div>
+                ) : null}
               </div>
             ))
           )}

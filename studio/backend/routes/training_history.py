@@ -41,6 +41,7 @@ from utils.models.checkpoints import has_preview_model, preview_ref
 from utils.paths import outputs_root, resolve_output_dir
 from utils.preview_sharing_settings import get_preview_sharing_enabled
 from utils.preview_token import sign_preview_ref
+from utils.scan_memo import in_scan_memo
 
 logger = get_logger(__name__)
 
@@ -70,11 +71,7 @@ def _canonical_output_dir(output_dir: Optional[str]) -> Optional[Path]:
 
 
 def _preview_fields(output_dir: Optional[str], sharing_on: bool) -> dict:
-    """Previewability + the signed `/p` share ref for a run's output dir. The signature is what makes the share
-    link a capability: these routes are authenticated, so only the run's owner ever receives it. When public
-    sharing is switched off, omit the signature so the UI hides the copy-link affordance (and the link would 404
-    anyway). ``sharing_on`` is resolved once per request.
-    """
+    """The signed /p ref is a capability, omitted when public sharing is off so the UI hides the link."""
     ref = preview_ref(output_dir)
     return {
         "has_preview_model": has_preview_model(output_dir),
@@ -91,8 +88,7 @@ def _resume_blocked_reason(row: dict) -> Optional[str]:
     from core.training.resume import has_resume_state, training_run_config
 
     try:
-        # A row whose checkpoint is gone is refused for that reason, not provenance: asking the gate
-        # anyway hands the client a provenance sentence for a missing checkpoint.
+        # A missing checkpoint is refused for that reason, not provenance.
         if not has_resume_state(row.get("output_dir")):
             return None
         return resource_provenance_resume_blocker(training_run_config(row))
@@ -121,6 +117,7 @@ def _summary_from_row(
     )
 
 
+@in_scan_memo
 def _summaries_from_rows(rows: list[dict], sharing_on: bool) -> list[TrainingRunSummary]:
     resource_cache: dict[str, bool] = {}
     return [_summary_from_row(row, sharing_on, resource_cache) for row in rows]
@@ -152,9 +149,7 @@ def _delete_run_output_dir(run_id: str, output_dir: str) -> Union[Path, bool]:
 
     staged = resolved.with_name(f".{resolved.name}.deleting-{uuid.uuid4().hex}")
     try:
-        # A same-parent rename, not an rmtree: the run is logically gone immediately but the bytes survive until the
-        # database row is committed, so a failed row delete can roll the whole operation back.
-        # _purge_staged_output_dir does the destructive half.
+        # Rename, not rmtree, so a failed row delete can roll back.
         resolved.rename(staged)
         return staged
     except OSError:
@@ -203,12 +198,7 @@ _ArtifactDeleteOutcome = Literal["deleted", "active", "shared", "failed"]
 def _delete_run_output_dir_guarded(
     run_id: str, output_dir: str
 ) -> tuple[_ArtifactDeleteOutcome, Optional[Path], Optional[Path]]:
-    """Move the run's artifacts aside, reversibly, instead of destroying them. Deleting the directory
-    outright and only then removing the database row leaves an unrecoverable half-state if the row
-    delete fails: the artifacts are gone and the row survives with ``output_dir`` still populated,
-    which is indistinguishable from the legitimate "history kept, files kept" outcome. A same-parent
-    rename is atomic and costs nothing, so the destructive step can wait until the row is actually
-    gone. Returns the outcome plus (original, staged) paths when there is something to purge."""
+    """Stages artifacts by atomic rename so a failed row delete cannot leave files gone but the row kept."""
     from core.training.lifecycle import training_lifecycle_guard
     with training_lifecycle_guard():
         if _output_dirs_overlap(output_dir, _active_training_output_dir()):
@@ -253,10 +243,7 @@ def _restore_staged_output_dir(original: Path, staged: Path) -> bool:
 
 
 def _purge_staged_output_dir(run_id: str, original: Path, staged: Path) -> bool:
-    """Remove the staged copy once the row is gone. Returns whether the bytes are actually gone. The
-    staged name is hidden and randomized and the row is already deleted, so reporting a failed
-    rmtree as success would strand every byte under a name nothing can find again. Put the directory
-    back under its own name instead and let the caller say the artifacts were kept."""
+    """Returns false when bytes remain: the staged name is hidden, so a failed rmtree must restore it."""
     try:
         shutil.rmtree(staged)
         logger.info("Deleted adapter directory for run %s: %s", run_id, staged)
@@ -286,8 +273,7 @@ async def list_training_runs(
         result["runs"],
         sharing_on,
     )
-    # A run persists the resolved path as `model_name`, and this route answers days later with
-    # no handle left in context.
+    # Persisted path is `model_name`, and this route answers days later with no handle in context.
     from hub.utils.host_paths import redact_host_paths
 
     return redact_host_paths(
@@ -440,8 +426,7 @@ async def delete_training_run(
                 _restore_staged_output_dir, staged_original, staged_path
             )
             if not restored:
-                # Both halves failed: the row survives pointing at a directory that is no longer
-                # there. Name the staged path, or the artifacts are unreachable.
+                # Both halves failed: name the staged path or the artifacts are unreachable.
                 raise HTTPException(
                     status_code = 500,
                     detail = {

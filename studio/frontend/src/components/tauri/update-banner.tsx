@@ -13,7 +13,8 @@ import type {
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
 import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
-import { CircleAlert, Download } from "lucide-react";
+import { AlertCircleIcon, Download01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { useState } from "react";
 
@@ -76,7 +77,7 @@ export function UpdateBanner({
     : isExternalServer;
   const currentVersion = formatVersion(info?.currentVersion);
   const latestVersion = formatVersion(info?.version);
-  const Icon = showFailure ? CircleAlert : Download;
+  const icon = showFailure ? AlertCircleIcon : Download01Icon;
   const notesTargetVersion = info?.version?.replace(LEADING_V, "") ?? null;
   const notesOpen =
     notesTargetVersion !== null && notesVersion === notesTargetVersion;
@@ -148,7 +149,8 @@ export function UpdateBanner({
             </button>
 
             <div className="flex min-w-0 shrink-0 items-start gap-4 pr-6">
-              <Icon
+              <HugeiconsIcon
+                icon={icon}
                 aria-hidden="true"
                 className="mt-1 size-5 shrink-0 text-foreground"
                 strokeWidth={1.75}
@@ -235,7 +237,8 @@ export function UpdateBanner({
                   </Button>
                   <Button
                     size="sm"
-                    className="-mr-1 h-auto rounded-full px-3.5 py-2 text-ui-13"
+                    variant="primary"
+                    className="-mr-1 rounded-full text-ui-13"
                     onClick={onInstall}
                     disabled={installDisabled}
                   >
@@ -256,6 +259,7 @@ export function UpdateBanner({
                   </Button>
                   <Button
                     size="sm"
+                    variant="primary"
                     className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
                     onClick={onInstall}
                     disabled={installDisabled}

@@ -341,7 +341,7 @@ def test_every_tracked_python_file_is_already_formatted(tmp_path):
         pytest.fail(
             f"this guard cannot run in CI: {_RUFF_REASON}.\n"
             "  The runner installs the pinned ruff in its own step (see the "
-            "'Install the pinned ruff (formatter fixed-point guard)' step in "
+            "'Install the pinned ruff-unsloth (formatter fixed-point guard)' step in "
             ".github/workflows/studio-backend-ci.yml).\n"
             "  Skipping here would report a green formatting guard that checked no files."
         )

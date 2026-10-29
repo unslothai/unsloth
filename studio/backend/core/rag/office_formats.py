@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Text from Office, OpenDocument, e-book, email and RTF files, using only the stdlib.
-
-Each reader returns ``[(text, page_number), ...]``: one entry per slide (numbered), or
-per sheet / chapter (unnumbered). Table rows are joined with " | ", as for .docx.
-"""
+"""Stdlib readers for Office, OpenDocument, e-book, email and RTF; (text, page_number) per slide,
+unnumbered per sheet or chapter; table rows joined by ' | '."""
 
 from __future__ import annotations
 

@@ -32,7 +32,6 @@ import {
   BubbleChatTemporaryIcon,
   Cancel01Icon,
   CollapseIcon,
-  Copy01Icon,
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
@@ -47,6 +46,7 @@ import {
   ViewIcon,
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { ForkIcon } from "@/lib/fork-icon";
 import { type ReactNode, useSyncExternalStore } from "react";
@@ -72,7 +72,11 @@ import {
   getSidebarItemThreadIds,
   regenerateChatTitleWithToast,
 } from "./chat-row-menu";
-import { OpenChatFolderItem, UploadToChatFolderItem } from "./open-chat-folder-item";
+import {
+  chatFolderSessionId,
+  OpenChatFolderItem,
+  UploadToChatFolderItem,
+} from "./open-chat-folder-item";
 
 const MENU = "library-actions-menu";
 const ICON = "size-icon";
@@ -233,6 +237,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
       >
         {t("library.menu.regenerateTitle")}
       </Item>
+      <DropdownMenuSeparator className="mx-3" />
       <Item
         icon={menu.pinned ? PinOffIcon : PinIcon}
         onSelect={menu.togglePin}
@@ -289,6 +294,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
       >
         {t("library.chats.menu.fork")}
       </Item>
+      <DropdownMenuSeparator className="mx-3" />
       <DropdownMenuSub>
         <DropdownMenuSubTrigger className="gap-2.5">
           <HugeiconsIcon
@@ -397,6 +403,8 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
           ))}
         </DropdownMenuSubContent>
       </DropdownMenuSub>
+      {/* Only with the folder items, or it doubles the next separator. */}
+      {chatFolderSessionId(menu.item) ? <DropdownMenuSeparator className="mx-3" /> : null}
       <OpenChatFolderItem item={menu.item} />
       <UploadToChatFolderItem item={menu.item} />
       <DropdownMenuSeparator className="mx-3" />
@@ -410,7 +418,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
   );
 }
 
-/** A saved chat's "…" menu, or the temporary toggle on a new chat. Turning a saved chat temporary is not offered: it would quietly stop saving a chat the user kept. */
+/** A saved chat's menu, or the temporary toggle on a new chat. Saved chats cannot turn temporary. */
 export function ChatHeaderMenu({
   temporary,
   onToggleTemporary,

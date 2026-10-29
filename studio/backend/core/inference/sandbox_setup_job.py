@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""One-click OS sandbox setup from Unsloth: install bubblewrap on Linux, install and prepare MXC on Windows.
-
-Nothing from a request reaches the command line: the operation name picks a constant plan.
-"""
+"""Installs bubblewrap or MXC; request input never reaches the command line, only a fixed plan."""
 
 from __future__ import annotations
 
@@ -233,10 +230,7 @@ def _joined(running: SetupJob, operation: str) -> SetupJob:
 
 
 def start(operation: str, interactive: bool = True) -> SetupJob:
-    """Start the setup for `operation`, or return the run of the same operation already in progress.
-
-    ``interactive=False`` (a remote start) refuses any step that would prompt on this computer.
-    """
+    """A remote start (interactive=False) refuses any step that would prompt on this computer."""
     global _current
     from . import mxc_host_prep_job
 

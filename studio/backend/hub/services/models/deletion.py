@@ -878,17 +878,7 @@ def _diffusion_blocks_delete(repo_id: str) -> Optional[str]:
 
 
 def any_model_load_blocks_cache_clear() -> Optional[str]:
-    """The refusal detail if ANY inference backend is holding a cached model, else None.
-
-    The guards above ask whether one repo is in use. Emptying the whole Hugging Face cache is
-    every repo at once, so there is no repo to match on and anything loaded or loading is enough.
-    sd.cpp in particular re-reads its companion VAE and text-encoder files for every generation,
-    so a clear can break a model that was loaded long before it.
-
-    Fail-open on ACQUIRE, like the guards above: a backend that cannot be reached is not holding
-    anything this process can see. A backend that IS reachable and raises while being asked is a
-    different matter, and the caller fails closed on it rather than unlink weights blindly.
-    """
+    """Any loaded model blocks a clear (sd.cpp rereads companion files); a raising backend fails closed."""
     try:
         from core.inference import model_slots
         from routes.inference import get_llama_cpp_backend
@@ -909,10 +899,8 @@ def any_model_load_blocks_cache_clear() -> Optional[str]:
         if kept_loading:
             return "A model load is using the cache; wait for it to finish"
 
-    # is_active above only covers a live llama-server process, which an HF-backed chat load does
-    # not have until its GGUF finished downloading: minutes, per chat_load_active's own docstring.
-    # Those files come down through hf_hub_download_with_xet_fallback rather than the download
-    # registry, so the reservation taken later in the purge does not cover them either.
+    # An HF-backed chat load has no llama-server until its GGUF downloads, and those files
+    # bypass the download registry, so is_active and the reservation miss it.
     try:
         from core.inference.llama_cpp import chat_load_active
         loading_chat = chat_load_active()
@@ -952,18 +940,11 @@ def any_model_load_blocks_cache_clear() -> Optional[str]:
             return "Unload the model before clearing the model cache"
         if any(getattr(held, "loading_repo_ids", tuple)()):
             return f"An {label} model load is using the cache; wait for it to finish"
-        # A cancelled load leaves loading_repo_ids() at once but keeps its repos in
-        # draining_repo_ids() while the worker thread reads on inside _prefetch_files,
-        # holding no lock. _diffusion_blocks_delete already refuses on that; emptying the
-        # whole cache is every repo at once, so it cannot ask less than the per-repo path.
+        # Cancelled loads keep reading in _prefetch_files while draining; clear-all must refuse too.
         if any(getattr(held, "draining_repo_ids", tuple)()):
             return f"An {label} model load is still unwinding; wait for it to finish"
 
-    # Dictation is the fifth backend and the one none of the four above reports. Its sidecars are
-    # managed by stt_registry, and stt_sidecar resolves their checkpoints under the SAME hub cache
-    # this clear empties (_find_complete_cached_snapshot -> _repo_cache_dir -> hub_cache), so a
-    # resident Whisper / Parakeet worker re-reading its snapshot is exactly the case the docstring
-    # above says is enough on its own.
+    # Dictation sidecars read the same hub cache, so a resident STT worker blocks the clear.
     try:
         from core.inference import stt_registry
         dictation = stt_registry.resident()
@@ -1053,15 +1034,7 @@ async def delete_cached_model_response(
     cache_path: Optional[str] = None,
     only_if_orphan: bool = False,
 ):
-    """Delete a cached model repo (or a specific GGUF variant) from the HF cache.
-
-    When *variant* is provided, only the GGUF files matching that quant label
-    are removed (e.g. ``UD-Q4_K_XL``).  Otherwise the entire repo is deleted.
-    Refuses if the model is currently loaded for inference.
-
-    *only_if_orphan* is Free up space's precondition: 409 rather than delete when the repo has
-    become an installed checkpoint since the list the caller is acting on was built.
-    """
+    """only_if_orphan turns a repo that became an installed checkpoint since listing into a 409."""
     account_access.require_installation_owner()
     from core.inference.audio_cpp_models import cached_folder_target, folder_row_for_download
 
@@ -1104,16 +1077,25 @@ async def delete_cached_model_response(
             detail = f"Invalid gguf_variant: {variant!r}",
         )
     guard_id = (await asyncio.to_thread(folder_row_for_download, repo_id, variant) or (repo_id,))[0]
+    # A base listed from its artifact mirror's copy deletes that copy, so guard both identities.
+    mirror_id = (
+        await asyncio.to_thread(cache_inventory.artifact_mirror_delete_id, repo_id, cache_path)
+        if variant is None
+        else None
+    )
+    guard_ids = (guard_id, mirror_id) if mirror_id else (guard_id,)
 
     # Fail closed with 503 rather than unlink weights under a running process.
     def _load_state_blocks_delete() -> Optional[str]:
-        if _llama_cpp_blocks_delete(guard_id, variant) or (
-            _inference_backend_blocks_delete(guard_id)
-        ):
-            return "Unload the model before deleting"
-        if _audio_cpp_blocks_delete(guard_id):
-            return "Unload the audio model before deleting"
-        return _diffusion_blocks_delete(guard_id) or _video_blocks_delete(guard_id)
+        for gid in guard_ids:
+            if _llama_cpp_blocks_delete(gid, variant) or _inference_backend_blocks_delete(gid):
+                return "Unload the model before deleting"
+            if _audio_cpp_blocks_delete(gid):
+                return "Unload the audio model before deleting"
+            blocked = _diffusion_blocks_delete(gid) or _video_blocks_delete(gid)
+            if blocked:
+                return blocked
+        return None
 
     try:
         blocks_detail = await asyncio.to_thread(_load_state_blocks_delete)
@@ -1130,13 +1112,23 @@ async def delete_cached_model_response(
         )
 
     repo_key = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")
-    if not downloads.registry.begin_delete(repo_key, variant):
-        detail = (
-            f"Cancel the {variant} download before deleting it."
-            if variant is not None
-            else "Cancel the active downloads before deleting."
+    reserved_keys = [repo_key]
+    if mirror_id:
+        reserved_keys.append(
+            await asyncio.to_thread(resolve_cached_repo_id_case, mirror_id, repo_type = "model")
         )
-        raise HTTPException(status_code = 400, detail = detail)
+    reserved: list[str] = []
+    for key in reserved_keys:
+        if not downloads.registry.begin_delete(key, variant):
+            for held in reserved:
+                downloads.registry.end_delete(held, variant)
+            detail = (
+                f"Cancel the {variant} download before deleting it."
+                if variant is not None
+                else "Cancel the active downloads before deleting."
+            )
+            raise HTTPException(status_code = 400, detail = detail)
+        reserved.append(key)
     try:
         # recheck after reserving the scope so a concurrent load claim is visible.
         try:
@@ -1167,7 +1159,7 @@ async def delete_cached_model_response(
                 )
         result = await asyncio.to_thread(
             _delete_cached_model_blocking,
-            repo_id,
+            mirror_id or repo_id,
             variant,
             hf_token,
             cache_path,
@@ -1187,9 +1179,10 @@ async def delete_cached_model_response(
         from core.inference.audio_cpp_models import forget
 
         forget()
-        return result
+        return {**result, "repo_id": repo_id} if mirror_id else result
     finally:
-        downloads.registry.end_delete(repo_key, variant)
+        for key in reserved:
+            downloads.registry.end_delete(key, variant)
         cache_inventory.invalidate_hf_cache_scans()
 
 
@@ -1254,9 +1247,8 @@ def _delete_cached_model_blocking(
         from hub.utils import companion_assets
 
         try:
-            copies = companion_cleanup._repos_by_id(cache_inventory.all_hf_cache_scans()).get(
-                repo_id.strip().lower(), []
-            )
+            scans = cache_inventory.all_hf_cache_scans()
+            copies = companion_cleanup._repos_by_id(scans).get(repo_id.strip().lower(), [])
             # check only this root; a full copy elsewhere must not block deleting this orphan row.
             if cache_path:
                 wanted = Path(cache_path)
@@ -1268,7 +1260,7 @@ def _delete_cached_model_blocking(
                 if not copies:
                     # An empty match means the target root is not in this scan, and concluding "orphan" from copies we did not look at is the fail-open this precondition prevents; raising lands in the 503.
                     raise RuntimeError(f"cache root not present in the scan: {cache_path}")
-            still_orphan = not any(companion_assets.repo_holds_denoiser(repo) for repo in copies)
+            still_orphan = not any(companion_assets.repo_is_install(repo, scans) for repo in copies)
         except Exception as e:
             logger.warning(f"Orphan re-check failed for {repo_id}; refusing delete: {e}")
             raise HTTPException(

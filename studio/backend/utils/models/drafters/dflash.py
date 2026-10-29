@@ -27,12 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 def is_dflash_architecture(path: str) -> bool:
-    """Whether a GGUF really is a DFlash sidecar, decided by its header.
-
-    ``dflash-`` is a filename convention an ordinary weight can satisfy, by accident or otherwise, and llama-server only discovers that at startup: it refuses the file as ``--model-draft`` and the load falls back to no speculation, after the bytes were already fetched. A DFlash sidecar declares ``general.architecture = dflash``, which no real weight does, so that is what settles it.
-
-    Kept here, beside the naming rules, because the local scan (detect_dflash_file) and the download / cache reuse in llama_cpp all have to apply it: a remote path that trusted the prefix alone would download gigabytes the launch then cannot use.
-    """
+    """Decided by header general.architecture = dflash, which no real weight declares; a dflash- filename can name a real weight, so downloads trust only the header."""
     return (read_gguf_architecture(str(path)) or "").lower() == "dflash"
 
 
@@ -41,16 +36,7 @@ def detect_dflash_file(
     search_root: Optional[str] = None,
     accept: Optional[Callable[[str], bool]] = None,
 ) -> Optional[str]:
-    """Find a DFlash sidecar for a local GGUF model.
-
-    Two things differ from detect_dspark_file, both forced by how DFlash is published. Root level only: ``dspark/`` is always a publisher's companion folder so that scan is safe, while ``dflash/`` is a family name a user picks for real weights (the reason llama_cpp._DRAFTER_DIR_KINDS leaves it out), so reaching into it would launch a weight copy as --model-draft. And no filename pairing: the published sidecar is ``dflash-kquant.gguf``, which names no model family at all, so _drafter_matches_weight would reject the one file this exists to find. The header is checked instead, since a DFlash sidecar declares ``general.architecture = dflash`` which no real weight does, and that also settles the adversarial case, a model merely CALLED DFlash (``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf``) reporting its own architecture.
-
-    A sidecar that does name a family (``dflash-Qwen3.6-27B-BF16.gguf``, the scheme ggml-org uses) still wins over an unnamed one for the weight it matches, so a multi-model folder attaches the specific sidecar first.
-
-    ``accept`` filters candidates in preference order, so a caller with extra rules (a native lease) keeps scanning instead of treating the first rejection as no sidecar at all.
-    """
-
-    # Imported per call: model_config imports this module.
+    """Root level only, not dflash/ (a family name for real weights); header checked, since dflash-kquant.gguf names no family; a family-named sidecar ranks first."""
     from utils.models.model_config import _local_gguf_load_path
 
     def _rank(candidate: Path) -> tuple[int, int, int, int, str]:
@@ -67,8 +53,7 @@ def detect_dflash_file(
     p = Path(path)
     weight_name = p.name if p.suffix.lower() == ".gguf" else None
     start_dir = p.parent if p.is_file() else p
-    # Not assets/: the published sidecar names no family, so in Hermes' shared pool it
-    # could not be told apart from another download's, and Hermes stages no DFlash.
+    # Not assets/: the sidecar names no family, so it is ambiguous in Hermes' shared pool.
     dirs = [start_dir]
     if search_root is not None:
         dirs.append(Path(search_root))

@@ -109,7 +109,7 @@ export function TrainingHyperparametersSection({
       setRandomSeed: state.setRandomSeed,
     })),
   );
-  // Only mounted in advanced mode, so start expanded when the user switches to it.
+  // Only mounted in advanced mode, so start expanded.
   const [open, setOpen] = useState(true);
   const [tab, setTab] = useState<HyperparameterTab>("optimization");
   const isMac = platformDeviceType === "mac";
@@ -140,7 +140,7 @@ export function TrainingHyperparametersSection({
           onValueChange={(value) => setTab(value as HyperparameterTab)}
           className="w-full"
         >
-          <div className="flex justify-center">
+          <div className="flex justify-start">
             <SegmentedTabsList
               value={tab}
               options={tabs}
