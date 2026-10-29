@@ -4641,6 +4641,49 @@ def test_mlx_spoken_reply(monkeypatch, samples, cancel_at, reply):
     assert seen["prompt"] == "Respond with interleaved text and audio.\n\nBe brief."
 
 
+@pytest.mark.parametrize(
+    ("config", "served", "zoo", "expected"),
+    [
+        ({"model_type": "lfm3_audio"}, False, True, True),
+        ({"model_type": "oxr"}, False, False, False),
+        # mlx-lm serves it, so it stays on the text path whatever mlx-vlm declares.
+        (
+            {"model_type": "gemma3", "architectures": ["Gemma3ForConditionalGeneration"]},
+            True,
+            True,
+            False,
+        ),
+        (None, False, True, False),
+        ({}, False, True, False),
+    ],
+)
+def test_zoo_multimodal_detection_only_for_mlx_vlm_only_families(
+    monkeypatch, config, served, zoo, expected
+):
+    from core.inference import mlx_inference
+    from utils.models import model_config
+
+    asked = []
+    monkeypatch.setattr(model_config, "_read_raw_config_json", lambda name, token: config)
+    monkeypatch.setattr(mlx_inference, "_mlx_lm_serves", lambda model_type: served)
+    loader = SimpleNamespace(_is_vlm = lambda cfg: asked.append(cfg) or zoo)
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.loader", loader)
+
+    assert mlx_inference._zoo_declares_multimodal("repo") is expected
+    assert asked == ([config] if config and not served else [])
+
+
+def test_zoo_multimodal_detection_fails_open_to_text(monkeypatch):
+    from core.inference import mlx_inference
+    from utils.models import model_config
+
+    def unreadable(name, token):
+        raise OSError("offline")
+
+    monkeypatch.setattr(model_config, "_read_raw_config_json", unreadable)
+    assert mlx_inference._zoo_declares_multimodal("repo") is False
+
+
 def test_mlx_audio_input_normalizes_split_native_reasoning_channels(monkeypatch):
     from core.inference import mlx_inference
     from core.inference.mlx_inference import MLXInferenceBackend

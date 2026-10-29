@@ -1738,15 +1738,27 @@ def _discard_video_clip(path: str) -> None:
 _SPEECH_REPLY_SYSTEM_PROMPT = "Respond with interleaved text and audio."
 
 
+def _mlx_lm_serves(model_type) -> bool:
+    from importlib.util import find_spec
+
+    from mlx_lm.utils import MODEL_REMAPPING
+    return find_spec(f"mlx_lm.models.{MODEL_REMAPPING.get(model_type, model_type)}") is not None
+
+
 def _zoo_declares_multimodal(model_name, hf_token = None) -> bool:
-    """unsloth_zoo's verdict from mlx-vlm's own configs, for families the transformers registry
-    does not know (an audio-only speech model, a tower under another name)."""
+    """unsloth_zoo's verdict from mlx-vlm's own configs, for mlx-vlm-only families the transformers
+    registry does not know (an audio-only speech model, a tower under another name)."""
     try:
-        from unsloth_zoo.mlx.loader import _is_vlm
         from utils.models.model_config import _read_raw_config_json
 
         config = _read_raw_config_json(model_name, hf_token)
-        return bool(config) and _is_vlm(config)
+        model_type = (config or {}).get("model_type")
+        # A type mlx-lm serves keeps its text path, and skips zoo's scan of every mlx-vlm family.
+        if not isinstance(model_type, str) or not model_type or _mlx_lm_serves(model_type):
+            return False
+        from unsloth_zoo.mlx.loader import _is_vlm
+
+        return _is_vlm(config)
     except Exception as exc:  # noqa: BLE001 -- detection must never fail a load
         logger.debug("unsloth_zoo multimodal detection skipped for %s (%s)", model_name, exc)
         return False
