@@ -4456,11 +4456,11 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
         assert priced - floor == row * 32768 < scores
 
     def test_the_decode_step_still_scores_where_that_is_the_wider_of_the_two(self):
-        widths = (3584, 18944, 128, 1, 64, 0)
+        widths = (3584, 18944, 256, 1, 64, 0)
         row = mm._dequantized_row_bytes(widths, 2, 8, 64, 2048)
-        floor = mm._compute_bytes(widths, 2, 2048, [], 32768, None)
+        floor = mm._compute_bytes(widths[:3], 2, 2048, [], 32768, None)
         charged = mm._compute_bytes(widths, 2, 2048, [], 32768, 2048, 8, 64) - floor
-        assert row is not None and charged == (32769) * 128 * 2 * mm._SCORE_LIVE
+        assert row is not None and charged == (32769) * 256 * 2 * mm._SCORE_LIVE
         assert charged > row * 32768
 
     def test_a_full_width_cache_is_charged_the_scores_mlx_builds_below_nax(self):
