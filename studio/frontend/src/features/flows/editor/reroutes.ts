@@ -63,33 +63,6 @@ export function wireHandles(
   };
 }
 
-function chainRoot(graph: DocGraph, rerouteId: string): string {
-  let cursor = rerouteId;
-  const seen = new Set<string>();
-  while (!seen.has(cursor)) {
-    seen.add(cursor);
-    const into = wireInto(graph, cursor);
-    if (!into || !graph.reroutes[into.source]) break;
-    cursor = into.source;
-  }
-  return cursor;
-}
-
-/** Typed inputs an empty chain would reach, its current consumers plus `extra`. */
-function chainReach(graph: DocGraph, rerouteId: string, extra: PortRef[]): PortSpec[] {
-  return [...rerouteDownstream(graph, chainRoot(graph, rerouteId)), ...extra]
-    .map((ref) => portSpec(graph, ref, "in"))
-    .filter((port): port is PortSpec => !!port && port.type !== "any");
-}
-
-/** Some one output type could feed every port (no typed port at all is no constraint). */
-function feedable(ports: PortSpec[]): boolean {
-  return (
-    ports.length === 0 ||
-    ports.some((type) => ports.every((port) => typesCompatible(type, port)))
-  );
-}
-
 /** Whether a new input `port` could hang off this reroute's output. */
 export function rerouteCanFeed(
   graph: DocGraph,
@@ -98,9 +71,7 @@ export function rerouteCanFeed(
 ): boolean {
   if (port.type === "flow") return false;
   const source = portSpec(graph, rerouteUpstream(graph, rerouteId), "out");
-  if (source) return typesCompatible(source, port);
-  const reach = chainReach(graph, rerouteId, []);
-  return port.type === "any" || feedable([...reach, port]);
+  return !source || typesCompatible(source, port);
 }
 
 export interface RerouteRequest {
@@ -170,18 +141,9 @@ export function checkRerouteConnection(
     if (!port) return { ok: false, reason: "Unknown port" };
     multi = !!port.multi;
   }
+  // An empty chain takes any mix of inputs: some outputs are typed `any` (Get JSON's value, a
+  // file) and feed them all. The source is checked against every one once it is wired in.
   const source = portSpec(graph, upstream, "out");
-  if (!source && fromReroute) {
-    const reach = chainReach(graph, req.source, targets);
-    if (!feedable(reach)) {
-      const [first] = reach;
-      const clash = reach.find((port) => !typesCompatible(first, port)) ?? first;
-      return {
-        ok: false,
-        reason: `${first.type} cannot connect to ${clash.type}`,
-      };
-    }
-  }
   const edges = Object.values(graph.edges);
   for (const ref of targets) {
     const port = portSpec(graph, ref, "in");

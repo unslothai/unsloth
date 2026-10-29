@@ -116,36 +116,18 @@ test("an empty reroute takes a wire in or out, and types itself from what is wir
   assert.equal(reroutePort(graph(), "r1").type, "image");
 });
 
-test("an empty reroute already feeding a typed input refuses an incompatible second one", () => {
+test("an empty reroute feeds any mix of inputs; the source wired in later must fit them all", () => {
   fresh([]);
   useDocStore.getState().addReroute({ id: "r1", pos: [300, 10] });
-  assert.equal(
-    tryConnect({
-      source: "r1",
-      sourceHandle: REROUTE_OUT_HANDLE,
-      target: "img",
-      targetHandle: inHandle("init_image"),
-    }),
-    null,
-  );
+  const to = (target: string, port: string) =>
+    tryConnect({ source: "r1", sourceHandle: REROUTE_OUT_HANDLE, target, targetHandle: inHandle(port) });
+  assert.equal(to("img", "init_image"), null);
+  // An `any` output (Get JSON's value, a file) feeds an image and a text input alike.
+  assert.equal(to("llm", "prompt"), null);
+  assert.equal(to("out", "value"), null);
   assert.match(
-    tryConnect({
-      source: "r1",
-      sourceHandle: REROUTE_OUT_HANDLE,
-      target: "llm",
-      targetHandle: inHandle("prompt"),
-    }) ?? "",
-    /image cannot connect to text/,
-  );
-  // Anything still goes into an `any` input.
-  assert.equal(
-    tryConnect({
-      source: "r1",
-      sourceHandle: REROUTE_OUT_HANDLE,
-      target: "out",
-      targetHandle: inHandle("value"),
-    }),
-    null,
+    tryConnect({ source: "src", sourceHandle: outHandle("text"), target: "r1", targetHandle: REROUTE_IN_HANDLE }) ?? "",
+    /text cannot connect to image/,
   );
 });
 
@@ -372,7 +354,7 @@ test("undo takes a reroute split back in one step", () => {
   assert.deepEqual(plain(), ["e1:src.text->llm.prompt"]);
 });
 
-test("an empty reroute fans out to any inputs one output type could feed together", () => {
+test("a typed source into a reroute is checked against every input the chain feeds", () => {
   useDocStore.getState().load(
     doc(
       [
@@ -380,41 +362,21 @@ test("an empty reroute fans out to any inputs one output type could feed togethe
         node("num", "input.number", [0, 200]),
         node("jg", "json.get", [600, 0]),
         node("llm", "llm.generate", [600, 200]),
-        node("img", "image.generate", [600, 400]),
       ],
       [],
     ),
   );
   useDocStore.getState().addReroute({ id: "r1", pos: [300, 10] });
-  const to = (target: string, port: string) =>
-    tryConnect({
-      source: "r1",
-      sourceHandle: REROUTE_OUT_HANDLE,
-      target,
-      targetHandle: inHandle(port),
-    });
-  assert.equal(to("jg", "json"), null);
-  // A text output feeds json and text alike, so the reroute may feed both.
-  assert.equal(to("llm", "prompt"), null);
-  // Nothing feeds json, text and an image at once.
-  assert.match(to("img", "init_image") ?? "", /cannot connect/);
-  assert.equal(
-    tryConnect({
-      source: "src",
-      sourceHandle: outHandle("text"),
-      target: "r1",
-      targetHandle: REROUTE_IN_HANDLE,
-    }),
-    null,
-  );
+  for (const [target, port] of [["jg", "json"], ["llm", "prompt"]] as const)
+    tryConnect({ source: "r1", sourceHandle: REROUTE_OUT_HANDLE, target, targetHandle: inHandle(port) });
+  // A text output feeds json and text alike; a number does not feed text.
   assert.match(
-    tryConnect({
-      source: "num",
-      sourceHandle: outHandle("value"),
-      target: "r1",
-      targetHandle: REROUTE_IN_HANDLE,
-    }) ?? "",
+    tryConnect({ source: "num", sourceHandle: outHandle("value"), target: "r1", targetHandle: REROUTE_IN_HANDLE }) ?? "",
     /cannot connect/,
+  );
+  assert.equal(
+    tryConnect({ source: "src", sourceHandle: outHandle("text"), target: "r1", targetHandle: REROUTE_IN_HANDLE }),
+    null,
   );
 });
 
@@ -458,7 +420,7 @@ test("a reroute never adds a second copy of a wire a multi input already has", (
   assert.equal(plain().length, 1);
 });
 
-test("an empty reroute into an `any` input connects, and Quick Add offers what the whole chain could feed", async () => {
+test("an empty reroute into an `any` input connects, and Quick Add offers what the chain could feed", async () => {
   fresh([]);
   useDocStore.getState().addReroute({ id: "r1", pos: [300, 10] });
   assert.equal(
@@ -475,7 +437,9 @@ test("an empty reroute into an `any` input connects, and Quick Add offers what t
   );
   useDocStore.getState().addReroute({ id: "r2", pos: [300, 10] });
   tryConnect({ source: "r2", sourceHandle: REROUTE_OUT_HANDLE, target: "jg", targetHandle: inHandle("json") });
-  assert.equal(rerouteCanFeed(graph(), "r2", text), true, "a text output feeds json and text");
-  assert.equal(rerouteCanFeed(graph(), "r2", image), false);
-  assert.equal(rerouteCanFeed(graph(), "r2", json), true);
+  assert.equal(rerouteCanFeed(graph(), "r2", text), true);
+  assert.equal(rerouteCanFeed(graph(), "r2", image), true, "an empty chain takes any input");
+  tryConnect({ source: "src", sourceHandle: outHandle("text"), target: "r2", targetHandle: REROUTE_IN_HANDLE });
+  assert.equal(rerouteCanFeed(graph(), "r2", json), true, "text feeds json");
+  assert.equal(rerouteCanFeed(graph(), "r2", image), false, "text does not feed an image");
 });
