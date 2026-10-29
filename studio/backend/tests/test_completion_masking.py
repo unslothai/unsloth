@@ -523,7 +523,6 @@ def test_gemma4_turn_text_inside_tool_output_stays_masked():
 
 def test_truncated_drops_count_only_dropped_rows_at_the_cap():
     rows = [[1] * 8, [2] * 8, [3] * 3, [1] * 8]
-    # One copy of the duplicate row survived, as did the long row 2.
     assert count_truncated_drops(rows, [[2] * 8, [1] * 8], 8) == 1
     assert count_truncated_drops(rows, [[2] * 8], 8) == 2
     assert count_truncated_drops(rows, rows, 8) == 0
