@@ -27,7 +27,13 @@ class _Module:
 class _Recorder(mem._GroupPinner):
     """Records when its pin ran instead of pinning; ``hold`` keeps it busy until set."""
 
-    def __init__(self, name, log, hold = None, fast = False):
+    def __init__(
+        self,
+        name,
+        log,
+        hold = None,
+        fast = False,
+    ):
         super().__init__(_Module(name), [_Group()], None, None)
         self.name = name
         self.log = log
@@ -49,7 +55,11 @@ def _late(by, *names):
     return tuple(by[n].module if n in by else _Module(n) for n in names)
 
 
-def _pipe(log, holds, fast = False):
+def _pipe(
+    log,
+    holds,
+    fast = False,
+):
     pipe = _Pipe()
     pinners = [
         _Recorder(name, log, holds.get(name), fast)
@@ -116,7 +126,9 @@ def test_kill_switch_keeps_every_pinner_in_the_render_wait(monkeypatch):
     assert all(("end", name) in log for name in by)
 
 
-@pytest.mark.parametrize("late", [(), ("missing",), ("transformer", "transformer_2", "text_encoder")])
+@pytest.mark.parametrize(
+    "late", [(), ("missing",), ("transformer", "transformer_2", "text_encoder")]
+)
 def test_nothing_is_deferred_without_both_a_late_and_an_early_pinner(monkeypatch, late):
     monkeypatch.delenv(mem.LATE_EXPERT_PIN_ENV, raising = False)
     pipe, by = _pipe([], {})

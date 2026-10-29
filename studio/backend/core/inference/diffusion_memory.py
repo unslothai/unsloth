@@ -7018,7 +7018,11 @@ def start_background_pins(pipe: Any) -> int:
     return len(pinners)
 
 
-def finish_background_pins(pipe: Any, cancel: Any = None, include_late: bool = True) -> float:
+def finish_background_pins(
+    pipe: Any,
+    cancel: Any = None,
+    include_late: bool = True,
+) -> float:
     """Blocks until deferred pinners finish, since a render overlapping one runs measurably slower."""
     import time
 
@@ -7043,7 +7047,11 @@ _LATE_PIN_PROBE_S = 0.2
 _LATE_PIN_PARALLEL_BPS = 3 << 30
 
 
-def defer_late_expert_pins(pipe: Any, late_modules: Any, logger: Any = None) -> int:
+def defer_late_expert_pins(
+    pipe: Any,
+    late_modules: Any,
+    logger: Any = None,
+) -> int:
     """Pin ``late_modules`` after the other pinners of ``pipe`` when pinning is disk-bound; the render waits only for
     those, and a late group's onload still waits for its own pin. A returning Wan2.2-A14B load read both experts and
     the encoder from disk at once, and its first render waited 47.8 s for all three (A100)."""
