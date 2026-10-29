@@ -170,6 +170,7 @@ from .diffusion_flux3 import REFERENCE_AREA as FLUX3_REFERENCE_AREA
 from .diffusion_small_host import (
     INT8_DENOISER_NAMES,
     decide_small_host,
+    download_first_enabled as small_host_download_first,
     engaged_on as small_host_engaged_on,
     host_commit_mib,
     host_ram_mib,
@@ -3336,6 +3337,22 @@ def _peak_model_identity(
             base_revision = f"{base_revision}:{weights}"
         identity += f"+{base}@{base_revision}"
     return identity
+
+
+def _small_host_fetch(
+    pipeline_cls: Any,
+    repo: Any,
+    pipe_kwargs: dict,
+    local_dir: Optional[str],
+    local_files_only: bool,
+) -> Optional[Callable[[], Any]]:
+    """``from_pretrained``'s own download, run before the small-host decision; None offline or with a staged snapshot."""
+    if local_files_only or local_dir or not isinstance(repo, str) or _is_local_path(repo):
+        return None
+    download = getattr(pipeline_cls, "download", None)
+    if not callable(download):
+        return None
+    return lambda: download(repo, **pipe_kwargs)
 
 
 def _conditioning_cache_hits(pipe: Any) -> int:
@@ -9264,6 +9281,13 @@ class DiffusionBackend:
                                         target,
                                         dtype,
                                         lora_active = _has_active_lora(loras),
+                                        fetch = _small_host_fetch(
+                                            pipeline_cls,
+                                            fetch_base,
+                                            pipe_kwargs,
+                                            _base_local_dir,
+                                            local_files_only,
+                                        ),
                                     )
                                     if small_host is not None and small_host.engaged:
                                         pipe_kwargs["torch_dtype"] = small_host_torch_dtype_map(
@@ -9583,6 +9607,13 @@ class DiffusionBackend:
                                     target,
                                     dtype,
                                     lora_active = _has_active_lora(loras),
+                                    fetch = _small_host_fetch(
+                                        pipeline_cls,
+                                        fetch_base,
+                                        pipe_kwargs,
+                                        _base_local_dir,
+                                        local_files_only,
+                                    ),
                                 )
                                 if small_host is not None and small_host.engaged:
                                     pipe_kwargs["torch_dtype"] = small_host_torch_dtype_map(
@@ -11974,10 +12005,30 @@ class DiffusionBackend:
         return unified_memory_shortfall_message(plan, family = fam.name)
 
     def _small_host_decision(
-        self, source: Any, pipe_kwargs: dict, target: Any, dtype: Any, *, lora_active: bool
+        self,
+        source: Any,
+        pipe_kwargs: dict,
+        target: Any,
+        dtype: Any,
+        *,
+        lora_active: bool,
+        fetch: Optional[Callable[[], Any]] = None,
     ) -> Any:
-        """Small-host decision for a pipeline load; raises its refusal, None without a local snapshot."""
+        """Small-host decision for a pipeline load; raises its refusal, None without a local snapshot.
+        ``fetch`` downloads what ``from_pretrained`` would when the snapshot holds no weights yet."""
         snapshot = resolve_snapshot_dir(source, hub_cache_dir())
+        if (
+            fetch is not None
+            and small_host_download_first()
+            and (snapshot is None or not stored_components(snapshot))
+        ):
+            fetched = fetch()
+            snapshot = resolve_snapshot_dir(fetched, None) if fetched else snapshot
+            if snapshot is not None:
+                logger.info(
+                    "diffusion.small_host: downloaded the weights before the host-RAM decision (%s)",
+                    snapshot,
+                )
         if snapshot is None:
             return None
         comps = {
