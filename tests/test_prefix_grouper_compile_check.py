@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+
 """PrefixGrouper's one-time strict compile check.
 
 unsloth_zoo sets dynamo's suppress_errors, so a flex kernel that fails to compile silently runs
