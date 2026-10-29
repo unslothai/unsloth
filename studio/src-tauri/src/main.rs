@@ -70,6 +70,11 @@ use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 /// RunEvent::Exit). Exactly one runs cleanup; the others block, so the process never exits mid-reap.
 static TERMINATION_CLEANUP: Mutex<bool> = Mutex::new(false);
 
+/// Supervisor control and native signals share the first-request state. A repeated native
+/// signal must still force exit when cleanup began through the supervisor's control channel.
+#[cfg(unix)]
+static UNIX_TERMINATION_REQUESTED: AtomicBool = AtomicBool::new(false);
+
 const IN_APP_RELAUNCH_MARKER_FILE: &str = "in-app-relaunch-v1";
 
 const CLOSE_TO_TRAY_PREFERENCE_FILE: &str = "close-to-tray-v1";
@@ -1482,16 +1487,14 @@ fn setup_unix_termination_signals(app: &tauri::App) -> Result<(), Box<dyn std::e
                 app.exit(exit_code);
             };
 
-            let mut cleanup_started = false;
             for signal in signals.forever() {
                 let name = signal_hook::low_level::signal_name(signal).unwrap_or("unknown signal");
                 let exit_code = 128 + signal;
-                if cleanup_started {
+                if UNIX_TERMINATION_REQUESTED.swap(true, Ordering::SeqCst) {
                     // A repeat signal means stop waiting: exit straight away.
                     warn!("Received {name} ({signal}) while cleaning up, exiting immediately");
                     std::process::exit(exit_code);
                 }
-                cleanup_started = true;
                 info!("Received Unix termination signal {name} ({signal})");
 
                 // Clean up on another thread so this one can still observe a repeat signal.
@@ -2571,6 +2574,10 @@ fn main() {
             {
                 let handle = app.handle().clone();
                 linux_gpu_supervisor::start_control_reader(move || {
+                    // A control close after a native signal is a duplicate shutdown request.
+                    if UNIX_TERMINATION_REQUESTED.swap(true, Ordering::SeqCst) {
+                        return;
+                    }
                     info!("GPU rendering supervisor asked the app to exit");
                     let handle = handle.clone();
                     let _ = std::thread::Builder::new()
