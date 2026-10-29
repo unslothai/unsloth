@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Gemma 4 sometimes drops its ``<|tool_call>`` wrapper. The healer promotes that bare ``call:NAME{...}``,
+and its ``<|"|>``-quoted values must decode as they do inside the wrapper, not keep the delimiters."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from core.inference.tool_call_parser import parse_tool_calls_from_text
+
+ENABLED = {"web_search", "search_docs"}
+
+
+def _calls(text):
+    return [
+        (c["function"]["name"], json.loads(c["function"]["arguments"]))
+        for c in parse_tool_calls_from_text(text, enabled_tool_names = ENABLED)
+    ]
+
+
+@pytest.mark.parametrize("lead", ["", "Let me look that up.\n"])
+def test_bare_call_decodes_gemma_quotes_like_the_wrapped_one(lead):
+    body = 'call:search_docs{query:<|"|>a, b {c}<|"|>,limit:5,exact:true}'
+    want = [("search_docs", {"query": "a, b {c}", "limit": 5, "exact": True})]
+    assert _calls(lead + body) == want
+    assert _calls("<|tool_call>" + body + "<tool_call|>") == want
+
+
+@pytest.mark.parametrize("body", ["call:web_search{query:x}", 'call:web_search{query:"x"}'])
+def test_unquoted_bare_bodies_are_unchanged(body):
+    assert _calls(body) == [("web_search", {"query": "x"})]

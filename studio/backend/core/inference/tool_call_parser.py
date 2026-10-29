@@ -384,6 +384,8 @@ _GEMMA_STR_END = '<|"|>'
 _GEMMA_TC_END = "<tool_call|>"
 
 # skip_special_tokens strips the wrapper, so streamed Gemma calls arrive bare.
+# A value OPENED by Gemma's string delimiter (``key:<|"|>``); a literal one inside another quote is data.
+_GEMMA_QUOTED_VALUE_RE = re.compile(r'(?:^|[{,\[])\s*[A-Za-z_][\w.\-]*\s*:\s*<\|"\|>')
 _GEMMA_BARE_TC_RE = re.compile(r"(?<!\w)call\s*:\s*([\w\.\-]+)\s*\{")
 # Partial prefix so the streaming buffer holds it instead of leaking visible text.
 _GEMMA_BARE_TC_PREFIX_RE = re.compile(r"(?<!\w)call\s*(?::\s*[\w\.\-]*)?$")
@@ -3018,7 +3020,12 @@ def _parse_gemma_tool_calls(
             code_spans, code_from = None, cursor
         body = content[body_start + 1 : end]
         try:
-            args = _gemma_parse_stripped_body(body)
+            # <|"|>-quoted values need the wrapped path's decoder; the quote-less parser keeps the delimiters.
+            args = (
+                _tool_healing._gemma_arguments_to_json(body)
+                if _GEMMA_QUOTED_VALUE_RE.search(body)
+                else _gemma_parse_stripped_body(body)
+            )
         except Exception:
             args = {}
         out.append(
