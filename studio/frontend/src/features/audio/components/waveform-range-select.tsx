@@ -3,7 +3,7 @@
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { Add01Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
+import { Cancel01Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type KeyboardEvent,
@@ -346,7 +346,7 @@ export function WaveformRangeSelect({
               requestAnimationFrame(() => focusChip(at));
             }}
           >
-            <HugeiconsIcon icon={Add01Icon} className="size-3" />
+            <HugeiconsIcon icon={PlusSignIcon} className="size-3" />
             {ranges.length === 0 ? "Select a part" : "Add a part"}
           </Button>
         ) : null}

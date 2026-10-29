@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Hand, type LucideProps, ShieldCheck } from "lucide-react";
 import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui";
 import type { ComponentType } from "react";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
@@ -29,6 +28,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ChevronDownStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron-icons";
+import { HandIcon, ShieldCheckIcon } from "@/lib/hugeicons-derived";
 import { ShieldAlertGlyph } from "@/lib/shield-alert-icon";
 import { SparklesGlyph } from "@/lib/sparkles-icon";
 import { openExternalLink } from "@/lib/open-link";
@@ -58,9 +58,26 @@ import {
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 
-/** The hand reads larger than the shields; scale keeps its box. */
-function ApprovalHandIcon({ className, ...props }: LucideProps) {
-  return <Hand className={cn("scale-[0.92]", className)} {...props} />;
+type GlyphProps = { className?: string; strokeWidth?: number };
+
+function ApprovalHandIcon({ className, strokeWidth }: GlyphProps) {
+  return (
+    <HugeiconsIcon
+      icon={HandIcon}
+      className={className}
+      strokeWidth={strokeWidth}
+    />
+  );
+}
+
+function ShieldCheckGlyph({ className, strokeWidth }: GlyphProps) {
+  return (
+    <HugeiconsIcon
+      icon={ShieldCheckIcon}
+      className={className}
+      strokeWidth={strokeWidth}
+    />
+  );
 }
 
 /** Full access stays last: it disables approval prompts and the sandbox. */
@@ -80,7 +97,7 @@ export const PERMISSION_MODE_OPTIONS: readonly {
     value: "auto",
     label: "Approve for me",
     description: "Only ask for actions that look risky",
-    icon: ShieldCheck,
+    icon: ShieldCheckGlyph,
   },
   {
     value: "off",
@@ -359,7 +376,13 @@ export function PermissionModeMenuItems({
             option.value === "full" && "menu-item-full-access",
           )}
         >
-          <option.icon className="mt-0.5 size-4 shrink-0" strokeWidth={2} />
+          <option.icon
+            className={cn(
+              "permission-mode-icon mt-[calc(0.14rem*var(--ui-font-scale,1))] size-[calc(var(--ui-icon-size)*1.15)] shrink-0",
+              option.value === "ask" && "scale-[0.94]",
+            )}
+            strokeWidth={2}
+          />
           <span className="flex min-w-0 flex-1 flex-col gap-0.5">
             <span className="text-ui-13 leading-tight">{option.label}</span>
             <span className="text-xs font-normal leading-snug text-muted-foreground">

@@ -2761,6 +2761,107 @@ def test_the_route_precheck_only_refuses_what_the_launch_would(tmp_path, monkeyp
     assert backend.host_offload_warning_for_intent(_load_intent(gguf)) is None
 
 
+def test_the_route_precheck_skips_the_gpu_probe_when_the_file_fits_in_ram(tmp_path, monkeypatch):
+    """A GGUF within RAM less headroom cannot warn, so the route skips the GPU probe."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 4, free_mib = 20_000, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+    _host_totals(monkeypatch, backend, vram_total_mib = 24_000, ram_total_mib = 32_000)
+    calls = []
+
+    def probe(_binary = None, **_kw):
+        calls.append(_binary)
+        return [(0, 24_000, 24_000)]
+
+    backend._get_gpu_memory = probe
+    assert backend.host_offload_warning_for_intent(_load_intent(gguf)) is None
+    assert calls == []
+    # -m is last-wins at launch.
+    big = tmp_path / "big.gguf"
+    big.write_bytes(b"x")
+    backend._get_gguf_size_bytes = lambda path: int((100 if path == str(big) else 4) * 1024**3)
+    verdict = backend.host_offload_warning_for_intent(
+        _load_intent(gguf, extra_args = ["-m", str(big)])
+    )
+    assert verdict is not None and calls == ["/fake/llama-server"]
+
+
+@pytest.mark.parametrize("ram_total_mib", [32_000, 8_000, 1_000])
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [],
+        [(0, 1, 1)],
+        [(0, 20_000, 24_000)],
+        [(0, 20_000, 24_000), (1, 7_000, 8_192)],
+        [(0, 20_000, 0)],
+        [(0, 20_000, 24_000), (1, 9_000, 0)],
+        "raise",
+    ],
+    ids = [
+        "no_gpu",
+        "one_mib_gpu",
+        "one_gpu",
+        "multi_gpu",
+        "igpu_or_mig_total_0",
+        "mixed_total_0",
+        "probe_fails",
+    ],
+)
+def test_the_route_precheck_answers_as_the_full_preflight(
+    tmp_path, monkeypatch, rows, ram_total_mib
+):
+    """The skip only ever returns what the probing path returns, at and around the edge."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 1, free_mib = 20_000, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+    _host_totals(monkeypatch, backend, vram_total_mib = 24_000, ram_total_mib = ram_total_mib)
+
+    def probe(_binary = None, **_kw):
+        if rows == "raise":
+            raise RuntimeError("probe failed")
+        return list(rows)
+
+    backend._get_gpu_memory = probe
+    other = tmp_path / "other.gguf"
+    other.write_bytes(b"x")
+    mib = 1024 * 1024
+    edge = (ram_total_mib - 2048) * mib
+    sizes = [0, 1, 512 * mib, edge - 1, edge, edge + 1, edge + mib + 1, edge + 1024 * mib]
+    sizes = [s for s in (*sizes, 3 * edge + 7, 100 * 1024**3) if s >= 0]
+    full = LlamaCppBackend._host_offload_fits_without_gpus
+    warned = 0
+    for opt_out in (False, True):
+        if opt_out:
+            monkeypatch.setenv("UNSLOTH_ALLOW_HOST_OFFLOAD", "1")
+        else:
+            monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
+        for override_model in (False, True):
+            target = str(other if override_model else gguf)
+            extra = ["-m", str(other)] if override_model else None
+            for size in sizes:
+                for discount in (0, size // 3):
+                    backend._lazy_read_host_bytes = lambda *_a, _d = discount, **_k: _d
+                    backend._get_gguf_size_bytes = lambda path, _s = size: (
+                        _s if path == target else 1
+                    )
+                    monkeypatch.setattr(
+                        LlamaCppBackend, "_host_offload_fits_without_gpus", lambda *_a, **_k: False
+                    )
+                    expected = backend.host_offload_warning_for_intent(
+                        _load_intent(gguf, extra_args = extra)
+                    )
+                    monkeypatch.setattr(LlamaCppBackend, "_host_offload_fits_without_gpus", full)
+                    got = backend.host_offload_warning_for_intent(
+                        _load_intent(gguf, extra_args = extra)
+                    )
+                    assert got == expected, (opt_out, override_model, size, discount)
+                    warned += expected is not None
+    # Else the grid compares only Nones.
+    if rows in ([(0, 1, 1)], [(0, 20_000, 24_000)], [(0, 20_000, 24_000), (1, 7_000, 8_192)]):
+        assert warned
+
+
 def test_an_arch_gated_cpu_launch_prices_the_whole_model(tmp_path, monkeypatch):
     """The arch gate empties the pool AND masks every card, so the child is knowingly
     on the CPU rather than unprobed. Abstaining there ran an oversized GGUF wholly from

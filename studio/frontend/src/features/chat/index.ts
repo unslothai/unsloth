@@ -66,11 +66,6 @@ export { requestReplyFinishedPermission } from "./utils/reply-finished-notificat
 export { forgetAgentsMd } from "./utils/agents-md";
 export { refreshContextUsage } from "./utils/refresh-context-usage";
 export {
-  hydrateModelDisclaimerPreference,
-  refreshModelDisclaimerPreference,
-  saveModelDisclaimerPreference,
-} from "./sync-model-disclaimer-preference";
-export {
   ChatComposerFocusableContext,
   pythonToolRunsInStudio,
   useChatActive,
