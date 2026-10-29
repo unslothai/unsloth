@@ -3105,6 +3105,7 @@ export const it = {
       readDocs: "Leggi la documentazione delle API",
       noAccess: "Nessun accesso API configurato.",
       accessTokens: "Token di accesso",
+      quickstartTitle: "Avvio rapido",
       columnName: "Nome",
       columnToken: "Token",
       columnCreated: "Creato",

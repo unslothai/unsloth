@@ -3205,6 +3205,7 @@ export const ru = {
       readDocs: "Читать документацию API",
       noAccess: "Доступа к API пока нет.",
       accessTokens: "Токены доступа",
+      quickstartTitle: "Быстрый старт",
       columnName: "Имя",
       columnToken: "Токен",
       columnCreated: "Создан",

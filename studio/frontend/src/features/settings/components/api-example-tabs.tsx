@@ -161,6 +161,7 @@ export function ApiExamplesPanel({
   keylessTools: boolean;
   keylessExposure: KeylessApiAccessExposure | null;
 }): ReactElement {
+  const t = useT();
   const isOwner = useIsAccountOwner();
   const [kind, setKind] = useState<ApiExampleKind>("chat");
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -177,6 +178,9 @@ export function ApiExamplesPanel({
   const keyless = { keylessScope, keylessExposure };
   return (
     <div ref={panelRef} className="flex min-w-0 scroll-mt-6 flex-col gap-4">
+      <h2 className="settings-heading text-base font-semibold font-heading">
+        {t("settings.apiKeys.quickstartTitle")}
+      </h2>
       <ApiExampleTabNav kind={kind} onChange={setKind} className="-ml-1" />
       {kind === "chat" ? (
         <UsageExamples

@@ -3420,6 +3420,7 @@ export const sv = {
       readDocs: "Läs API-dokumentationen",
       noAccess: "Ingen API-åtkomst ännu.",
       accessTokens: "Åtkomsttoken",
+      quickstartTitle: "Snabbstart",
       columnName: "Namn",
       columnToken: "Token",
       columnCreated: "Skapad",
