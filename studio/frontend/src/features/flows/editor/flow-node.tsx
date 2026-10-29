@@ -2,7 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Badge } from "@/components/ui/badge";
-import { type NodeProps, useStore } from "@xyflow/react";
+import {
+  type ControlPosition,
+  NodeResizeControl,
+  type NodeProps,
+  type OnResizeEnd,
+  ResizeControlVariant,
+  useStore,
+} from "@xyflow/react";
 import { memo } from "react";
 import { useCatalogStore } from "../stores/catalog-store";
 import { useDocStore } from "../stores/doc-store";
@@ -18,6 +25,7 @@ import {
   inHandle,
   outHandle,
 } from "./connection-rules";
+import { CARD_MIN_WIDTH, cardMinHeight } from "./card-size";
 import type { RfNode } from "./derive-rf";
 import { nodeIcon } from "./icons";
 import { LLM_SETTINGS_NODES } from "./llm-settings";
@@ -99,14 +107,14 @@ function OutputPreview({
       <img
         src={runtime.preview}
         alt=""
-        className="aspect-square w-full rounded-md object-cover"
+        className="aspect-square w-full rounded-md object-cover group-data-[sized]/node:aspect-auto group-data-[sized]/node:h-full group-data-[sized]/node:object-contain"
         draggable={false}
       />
     );
   }
   if ((runtime.status === "running" || !runtime.outputs) && runtime.text) {
     return (
-      <p className="line-clamp-4 whitespace-pre-wrap text-ui-11 leading-snug text-foreground">
+      <p className="line-clamp-4 whitespace-pre-wrap text-ui-11 leading-snug text-foreground group-data-[sized]/node:line-clamp-none">
         {runtime.text}
       </p>
     );
@@ -145,7 +153,7 @@ function OutputValues({
       return (
         <MediaThumb
           media={value}
-          className="max-h-48 w-full rounded-md object-cover"
+          className="max-h-48 w-full rounded-md object-cover group-data-[sized]/node:h-full group-data-[sized]/node:max-h-full group-data-[sized]/node:object-contain"
         />
       );
     }
@@ -173,7 +181,7 @@ function OutputValues({
     if (isStructuredValue(value)) return <StructuredBadge value={value} />;
     if (typeof value === "string") {
       return (
-        <p className="line-clamp-4 whitespace-pre-wrap text-ui-11 leading-snug text-foreground">
+        <p className="line-clamp-4 whitespace-pre-wrap text-ui-11 leading-snug text-foreground group-data-[sized]/node:line-clamp-none">
           {value}
         </p>
       );
@@ -203,6 +211,48 @@ function OutputValues({
     );
   }
   return null;
+}
+
+const SIDES: ControlPosition[] = ["top", "bottom", "left", "right"];
+const CORNERS: ControlPosition[] = [
+  "top-left",
+  "top-right",
+  "bottom-left",
+  "bottom-right",
+];
+/** Invisible edge and corner handles; one undo step per resize, committed on release. */
+function CardResizer({ id, minHeight }: { id: string; minHeight: number }) {
+  const onResizeEnd: OnResizeEnd = (_, p) =>
+    useDocStore.getState().updateNode(id, {
+      pos: [Math.round(p.x), Math.round(p.y)],
+      size: [Math.round(p.width), Math.round(p.height)],
+    });
+  const common = { minWidth: CARD_MIN_WIDTH, minHeight, onResizeEnd };
+  return (
+    <>
+      {SIDES.map((position) => (
+        <NodeResizeControl
+          key={position}
+          {...common}
+          position={position}
+          variant={ResizeControlVariant.Line}
+          className={
+            position === "top" || position === "bottom"
+              ? "!h-2 !border-0"
+              : "!w-2 !border-0"
+          }
+        />
+      ))}
+      {CORNERS.map((position) => (
+        <NodeResizeControl
+          key={position}
+          {...common}
+          position={position}
+          className="!size-3 !border-transparent !bg-transparent"
+        />
+      ))}
+    </>
+  );
 }
 
 function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
@@ -253,8 +303,11 @@ function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
       runtime={runtime}
       disabled={node.disabled}
       lowDetail={lowDetail}
+      sized={!!node.size && !collapsed}
       data-node-id={id}
     >
+      {/* First, so the port handles paint above the side handles. */}
+      {!collapsed && <CardResizer id={id} minHeight={cardMinHeight(spec)} />}
       <NodeCardHeader
         icon={look.icon?.(node) ?? nodeIcon(spec.icon)}
         tone={look.tone ? look.tone(node) : CATEGORY_TONES[spec.category]}
@@ -280,7 +333,7 @@ function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
           />
         )
       ) : (
-        <div className="flex flex-col gap-1.5 py-2">
+        <div className="flex flex-col gap-1.5 py-2 group-data-[sized]/node:min-h-0 group-data-[sized]/node:flex-1 group-data-[sized]/node:[overflow-y:clip]">
           {Ports ? (
             <Ports node={node} collapsed={false} />
           ) : (
@@ -306,7 +359,7 @@ function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
             runtime.partial ||
             runtime.text ||
             runtime.preview) && (
-            <div className="flow-detail px-3">
+            <div className="flow-detail px-3 group-data-[sized]/node:flex group-data-[sized]/node:min-h-0 group-data-[sized]/node:flex-1 group-data-[sized]/node:flex-col">
               <OutputPreview runtime={runtime} spec={spec} />
             </div>
           )}

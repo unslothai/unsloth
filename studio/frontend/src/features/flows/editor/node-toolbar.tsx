@@ -9,16 +9,14 @@ import { useCatalogStore } from "../stores/catalog-store";
 import { useDocStore } from "../stores/doc-store";
 import { useRuntimeStore } from "../stores/runtime-store";
 import { useUiStore } from "../stores/ui-store";
-import { quickModelParam, toolbarNodeId } from "./canvas-rules";
+import { toolbarNodeId } from "./canvas-rules";
 import { Delete02Icon, DiceIcon, Download01Icon, PlayIcon } from "./icon-data";
 import { downloadNodeOutput, rerollNode, runToNode } from "./node-actions";
-import { ParamField } from "./param-fields";
 
-// Room the toolbar needs above a card: one row, or the row plus the model picker.
+// Room the one-row toolbar needs above a card.
 const TOOLBAR_ROOM = 48;
-const TOOLBAR_ROOM_MODEL = 128;
 
-/** Non-scaling by design: NodeToolbar sits outside the zoomed viewport, so it keeps its screen
+/** Actions only; settings live in the inspector. Non-scaling by design: NodeToolbar sits outside the zoomed viewport, so it keeps its screen
  *  size at any zoom while staying anchored to the card. */
 function SelectedNodeToolbarImpl({ readOnly }: { readOnly: boolean }) {
   const nodeId = useUiStore((s) =>
@@ -34,18 +32,16 @@ function SelectedNodeToolbarImpl({ readOnly }: { readOnly: boolean }) {
     (s) => !!(nodeId && s.nodes[nodeId]?.outputs),
   );
   const { deleteElements } = useReactFlow();
-  const room = quickModelParam(spec) ? TOOLBAR_ROOM_MODEL : TOOLBAR_ROOM;
   // Above the card, or below it when the card's top is too close to the canvas edge to fit it.
   const below = useStore((s) => {
     const internal = nodeId ? s.nodeLookup.get(nodeId) : undefined;
     return (
       !!internal &&
       internal.internals.positionAbsolute.y * s.transform[2] + s.transform[1] <
-        room
+        TOOLBAR_ROOM
     );
   });
   if (!nodeId || !node || !spec) return null;
-  const modelParam = quickModelParam(spec);
   return (
     <NodeToolbar
       nodeId={nodeId}
@@ -98,23 +94,6 @@ function SelectedNodeToolbarImpl({ readOnly }: { readOnly: boolean }) {
       >
         <HugeiconsIcon icon={Delete02Icon} size={12} />
       </Button>
-      {modelParam && (
-        <div className="w-56" data-testid="node-toolbar-model">
-          <ParamField
-            spec={modelParam}
-            value={node.params[modelParam.id]}
-            onChange={(value) =>
-              useDocStore
-                .getState()
-                .updateParams(
-                  nodeId,
-                  { [modelParam.id]: value },
-                  `param:${nodeId}:${modelParam.id}`,
-                )
-            }
-          />
-        </div>
-      )}
     </NodeToolbar>
   );
 }

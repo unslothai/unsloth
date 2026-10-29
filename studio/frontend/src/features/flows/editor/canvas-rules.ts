@@ -81,10 +81,6 @@ export function toolbarNodeId(
   return isBlock(selected[0]) ? selected[0] : null;
 }
 
-export function quickModelParam(spec: NodeSpec | undefined): ParamSpec | null {
-  return spec?.params.find((p) => p.kind === "model") ?? null;
-}
-
 export type OutputDownload =
   | { kind: "media"; media: MediaValue; filename: string }
   | { kind: "json"; text: string; filename: string };

@@ -9,3 +9,9 @@
 .flows-armed .react-flow__pane {
 	cursor: copy;
 }
+/* The Runs button outlines once in the run's status colour when a run ends. */
+@keyframes flows-runs-pulse {
+  0% { box-shadow: 0 0 0 0 var(--flows-pulse); }
+  100% { box-shadow: 0 0 0 6px transparent; }
+}
+.flows-runs-pulse { animation: flows-runs-pulse 1.2s ease-out 2; }

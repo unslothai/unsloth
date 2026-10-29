@@ -124,7 +124,16 @@ _LLM_SETTINGS = [
         step = 0.05,
         advanced = True,
     ),
-    P("presence_penalty", "number", None, "Presence penalty", min = 0, max = 2, step = 0.1, advanced = True),
+    P(
+        "presence_penalty",
+        "number",
+        None,
+        "Presence penalty",
+        min = 0,
+        max = 2,
+        step = 0.1,
+        advanced = True,
+    ),
     P(
         "reasoning_effort",
         "select",

@@ -15,6 +15,7 @@ import {
   ReactFlow,
   SelectionMode,
   useReactFlow,
+  useUpdateNodeInternals,
 } from "@xyflow/react";
 import {
   type DragEvent,
@@ -39,10 +40,12 @@ import {
 import {
   GROUP_PREFIX,
   NOTE_PREFIX,
+  type Boxes,
   RfDeriver,
   type RfEdge,
   type RfNode,
 } from "./derive-rf";
+import { useWireReconnect } from "./use-wire-reconnect";
 import { addFileNodes } from "./file-drop";
 import { FlowEdgeView } from "./flow-edge";
 import { FlowNodeView } from "./flow-node";
@@ -121,6 +124,8 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
   const selectedEdges = useUiStore((s) => s.selectedEdges);
   const snapToGrid = useUiStore((s) => s.snapToGrid);
   const { screenToFlowPosition } = useReactFlow();
+  const wireReconnect = useWireReconnect(!readOnly);
+  const updateNodeInternals = useRef(useUpdateNodeInternals());
 
   const deriver = useRef<RfDeriver | null>(null);
   deriver.current ??= new RfDeriver();
@@ -136,14 +141,25 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
   sizesRef.current = sizes;
   const dragRef = useRef<Positions | null>(null);
   dragRef.current = drag;
+  // Sizes under a resize handle, drawn live and committed by the card on release.
+  const [boxes, setBoxes] = useState<Boxes | null>(null);
+  const boxesRef = useRef(boxes);
+  boxesRef.current = boxes;
 
   const selectedSet = useMemo(
     () => new Set([...selectedNodes, ...selectedEdges]),
     [selectedNodes, selectedEdges],
   );
   const nodes = useMemo(
-    () => (deriver.current as RfDeriver).nodes(graph, selectedSet, drag, sizes),
-    [graph, selectedSet, drag, sizes],
+    () =>
+      (deriver.current as RfDeriver).nodes(
+        graph,
+        selectedSet,
+        drag,
+        sizes,
+        boxes,
+      ),
+    [graph, selectedSet, drag, sizes, boxes],
   );
   const edges = useMemo(
     () => (deriver.current as RfDeriver).edges(graph, selectedSet, portTypeOf),
@@ -154,12 +170,27 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
     (changes: NodeChange<RfNode>[]) => {
       const drag = dragRef.current;
       const sizes = sizesRef.current;
+      const boxes = boxesRef.current;
       let nextDrag: Positions | null = null;
       let nextSizes: Map<string, Size> | null = null;
+      let nextBoxes: Boxes | null = null;
+      let ended = false;
+      const resizing = new Set(
+        changes.flatMap((c) =>
+          c.type === "dimensions" && c.resizing ? [c.id] : [],
+        ),
+      );
       let selection: { add: Set<string>; remove: Set<string> } | null = null;
       for (const change of changes) {
         if (change.type === "position" && change.position) {
-          if (change.dragging) {
+          if (
+            !change.dragging &&
+            (resizing.has(change.id) || boxes?.[change.id])
+          ) {
+            // A resize from a top or left handle moves the card too.
+            nextDrag ??= { ...(drag ?? {}) };
+            nextDrag[change.id] = change.position;
+          } else if (change.dragging) {
             nextDrag ??= { ...(drag ?? {}) };
             nextDrag[change.id] = change.position;
             const group = dragMembers.current;
@@ -171,7 +202,24 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
               }
             }
           }
-        } else if (change.type === "dimensions" && change.dimensions) {
+        } else if (change.type === "dimensions" && change.resizing) {
+          nextBoxes ??= { ...(boxes ?? {}) };
+          nextBoxes[change.id] = change.dimensions ?? nextBoxes[change.id];
+          nextDrag ??= { ...(drag ?? {}) };
+        } else if (
+          change.type === "dimensions" &&
+          change.resizing === false &&
+          boxes?.[change.id]
+        ) {
+          nextBoxes ??= { ...boxes };
+          delete nextBoxes[change.id];
+          nextDrag ??= { ...(drag ?? {}) };
+          delete nextDrag[change.id];
+          ended = true;
+        }
+        // Every new size reaches `measured`, a resize's too: the DOM already has the final size
+        // when the handle is released, so no later measurement would report it.
+        if (change.type === "dimensions" && change.dimensions) {
           const current = (nextSizes ?? sizes).get(change.id);
           if (
             !current ||
@@ -189,7 +237,18 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
           (change.selected ? selection.add : selection.remove).add(change.id);
         }
       }
-      if (nextDrag) setDrag(nextDrag);
+      if (nextBoxes) {
+        setBoxes(Object.keys(nextBoxes).length ? nextBoxes : null);
+        // Handles move with a resize; React Flow re-reads their positions only when asked,
+        // since the size it holds is already the new one.
+        const resized = changes.flatMap((c) =>
+          c.type === "dimensions" && c.resizing !== undefined ? [c.id] : [],
+        );
+        if (resized.length)
+          requestAnimationFrame(() => updateNodeInternals.current(resized));
+      }
+      if (nextDrag)
+        setDrag(ended && !Object.keys(nextDrag).length ? null : nextDrag);
       if (nextSizes) setSizes(nextSizes);
       if (selection) {
         const ui = useUiStore.getState();
@@ -460,6 +519,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
         onConnectEnd={onConnectEnd}
         isValidConnection={isValidConnection}
         onDelete={onDelete}
+        {...wireReconnect}
         onNodeDoubleClick={onNodeDoubleClick}
         onDragOver={onDragOver}
         onDrop={onDrop}

@@ -70,6 +70,8 @@ export interface FlowNode {
   v: number;
   params: Record<string, unknown>;
   pos: [number, number];
+  /** Width and height set by resizing the card; absent keeps the automatic size. */
+  size?: [number, number] | null;
   label?: string | null;
   group?: string | null;
   collapsed?: boolean;

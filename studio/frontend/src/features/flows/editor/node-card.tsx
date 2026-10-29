@@ -79,6 +79,7 @@ export function NodeCard({
   runtime,
   disabled,
   lowDetail,
+  sized,
   className,
   children,
   ...props
@@ -86,19 +87,23 @@ export function NodeCard({
   runtime: NodeRuntime;
   disabled?: boolean;
   lowDetail?: boolean;
+  /** Resized by hand: fill the stored box instead of the default width. */
+  sized?: boolean;
   className?: string;
   children: ReactNode;
 } & Omit<ComponentProps<"div">, "children">) {
   return (
     <BaseNode
       className={cn(
-        "corner-squircle group/node w-65 min-w-0 overflow-visible border-border/60 shadow-sm",
+        "corner-squircle group/node min-w-0 overflow-visible border-border/60 shadow-sm",
+        sized ? "flex h-full w-full flex-col" : "w-65",
         STATUS_BORDER[runtime.status],
         disabled && "opacity-45",
         lowDetail && "[&_.flow-detail]:invisible",
         className,
       )}
       data-status={runtime.status}
+      data-sized={sized || undefined}
       {...props}
     >
       {children}

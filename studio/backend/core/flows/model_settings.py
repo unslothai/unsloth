@@ -56,7 +56,12 @@ def find_saved(by_model: Any, model_id: Optional[str]) -> Optional[dict]:
     return entry if isinstance(entry, dict) else None
 
 
-def overlay(params: dict, saved: Optional[dict], spec: dict, skip: set[str] = frozenset()) -> dict:
+def overlay(
+    params: dict,
+    saved: Optional[dict],
+    spec: dict,
+    skip: set[str] = frozenset(),
+) -> dict:
     """``params`` with the saved values the node has a param for. Unsaved keys keep the card's own."""
     if not saved:
         return params
@@ -89,7 +94,6 @@ def overlay(params: dict, saved: Optional[dict], spec: dict, skip: set[str] = fr
 def read_saved(model_id: Optional[str]) -> Optional[dict]:
     try:
         from storage.studio_db import list_chat_settings
-
         return find_saved(list_chat_settings().get("inferenceParamsByModel"), model_id)
     except Exception:
         logger.debug("flows: could not read saved model settings", exc_info = True)

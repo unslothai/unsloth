@@ -18,6 +18,37 @@ export const GROUP_PREFIX = GROUP_KEY;
 export const NOTE_PREFIX = NOTE_KEY;
 
 type Positions = Record<string, { x: number; y: number }>;
+/** A size set live by a resize handle, before it is committed on release. */
+export type Boxes = Record<string, { width: number; height: number }>;
+
+/**
+ * How many frames enclose each frame. Frames sit under the cards, nested ones above the frames
+ * around them, so an outer frame drawn later never covers an inner frame's header.
+ */
+export function groupDepths(graph: DocGraph): Map<string, number> {
+  const depths = new Map<string, number>();
+  for (const id of graph.groupOrder) {
+    const [x, y, w, h] = graph.groups[id].rect;
+    let depth = 0;
+    for (const other of graph.groupOrder) {
+      if (other === id) continue;
+      const [ox, oy, ow, oh] = graph.groups[other].rect;
+      const inside = ox <= x && oy <= y && ox + ow >= x + w && oy + oh >= y + h;
+      const same = ox === x && oy === y && ow === w && oh === h;
+      // Identical frames stack in document order.
+      if (
+        inside &&
+        (!same ||
+          graph.groupOrder.indexOf(other) < graph.groupOrder.indexOf(id))
+      )
+        depth += 1;
+    }
+    depths.set(id, depth);
+  }
+  return depths;
+}
+
+const GROUP_Z = -100;
 
 export class RfDeriver {
   private nodeCache = new Map<
@@ -28,6 +59,7 @@ export class RfDeriver {
       x: number;
       y: number;
       size: { width: number; height: number } | undefined;
+      box: unknown;
       rf: RfNode;
     }
   >();
@@ -40,6 +72,7 @@ export class RfDeriver {
       x: number;
       y: number;
       size: unknown;
+      box: unknown;
       rf: RfNode;
     }
   >();
@@ -51,6 +84,7 @@ export class RfDeriver {
       x: number;
       y: number;
       size: unknown;
+      box: unknown;
       rf: RfNode;
     }
   >();
@@ -66,10 +100,12 @@ export class RfDeriver {
     selected: ReadonlySet<string>,
     drag: Positions | null,
     sizes?: ReadonlyMap<string, { width: number; height: number }>,
+    boxes?: Boxes | null,
   ): RfNode[] {
     const next: RfNode[] = [];
     let changed = false;
     const seen = new Set<string>();
+    const depths = graph.groupOrder.length > 1 ? groupDepths(graph) : undefined;
     for (const groupId of graph.groupOrder) {
       const group = graph.groups[groupId];
       const rfId = GROUP_PREFIX + groupId;
@@ -77,14 +113,18 @@ export class RfDeriver {
       const pos = drag?.[rfId] ?? { x: group.rect[0], y: group.rect[1] };
       const isSelected = selected.has(rfId);
       const size = sizes?.get(rfId);
+      const box = boxes?.[rfId];
+      const zIndex = GROUP_Z + (depths?.get(groupId) ?? 0);
       const cached = this.groupCache.get(groupId);
       if (
         cached &&
+        cached.rf.zIndex === zIndex &&
         cached.source === group &&
         cached.selected === isSelected &&
         cached.x === pos.x &&
         cached.y === pos.y &&
-        cached.size === size
+        cached.size === size &&
+        cached.box === box
       ) {
         next.push(cached.rf);
         continue;
@@ -96,8 +136,8 @@ export class RfDeriver {
         position: pos,
         data: { groupId },
         selected: isSelected,
-        style: { width: group.rect[2], height: group.rect[3] },
-        zIndex: -1,
+        style: box ?? { width: group.rect[2], height: group.rect[3] },
+        zIndex,
         dragHandle: ".flow-group-drag",
         ...(size ? { measured: size } : {}),
       };
@@ -107,6 +147,7 @@ export class RfDeriver {
         x: pos.x,
         y: pos.y,
         size,
+        box,
         rf,
       });
       next.push(rf);
@@ -118,6 +159,7 @@ export class RfDeriver {
       const pos = drag?.[rfId] ?? { x: note.rect[0], y: note.rect[1] };
       const isSelected = selected.has(rfId);
       const size = sizes?.get(rfId);
+      const box = boxes?.[rfId];
       const cached = this.noteCache.get(noteId);
       if (
         cached &&
@@ -125,7 +167,8 @@ export class RfDeriver {
         cached.selected === isSelected &&
         cached.x === pos.x &&
         cached.y === pos.y &&
-        cached.size === size
+        cached.size === size &&
+        cached.box === box
       ) {
         next.push(cached.rf);
         continue;
@@ -137,7 +180,7 @@ export class RfDeriver {
         position: pos,
         data: { noteId },
         selected: isSelected,
-        style: { width: note.rect[2], height: note.rect[3] },
+        style: box ?? { width: note.rect[2], height: note.rect[3] },
         ...(size ? { measured: size } : {}),
       };
       this.noteCache.set(noteId, {
@@ -146,6 +189,7 @@ export class RfDeriver {
         x: pos.x,
         y: pos.y,
         size,
+        box,
         rf,
       });
       next.push(rf);
@@ -156,6 +200,7 @@ export class RfDeriver {
       const pos = drag?.[id] ?? { x: node.pos[0], y: node.pos[1] };
       const isSelected = selected.has(id);
       const size = sizes?.get(id);
+      const box = boxes?.[id];
       const cached = this.nodeCache.get(id);
       if (
         cached &&
@@ -163,7 +208,8 @@ export class RfDeriver {
         cached.selected === isSelected &&
         cached.x === pos.x &&
         cached.y === pos.y &&
-        cached.size === size
+        cached.size === size &&
+        cached.box === box
       ) {
         next.push(cached.rf);
         continue;
@@ -181,6 +227,11 @@ export class RfDeriver {
         data,
         selected: isSelected,
         // The whole card drags; its controls opt out with `nodrag`.
+        ...(box || (node.size && !node.collapsed)
+          ? {
+              style: box ?? { width: node.size?.[0], height: node.size?.[1] },
+            }
+          : {}),
         ...(size ? { measured: size } : {}),
       };
       this.nodeCache.set(id, {
@@ -189,6 +240,7 @@ export class RfDeriver {
         x: pos.x,
         y: pos.y,
         size,
+        box,
         rf,
       });
       next.push(rf);
