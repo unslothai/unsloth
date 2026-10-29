@@ -750,6 +750,75 @@ def test_jsonl_export_stays_a_plain_file_without_images(tmp_path: Path, monkeypa
         file_path.unlink(missing_ok = True)
 
 
+def _schema_transform_artifact(tmp_path: Path, monkeypatch) -> Path:
+    dataset_path = tmp_path / "recipe-datasets" / "job-schema-transform"
+    _write_parquet_rows(dataset_path / "parquet-files", [{"question": "Q1", "answer": "A1"}])
+    _write_parquet_rows(
+        dataset_path / "processors-files" / "chat_format",
+        [
+            {
+                "messages": [
+                    {"role": "user", "content": "Q1"},
+                    {"role": "assistant", "content": "A1"},
+                ]
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "core.data_recipe.export._resolve_recipe_artifact_path",
+        lambda artifact_path: dataset_path,
+    )
+    return dataset_path
+
+
+def test_jsonl_export_includes_schema_transform_output(tmp_path: Path, monkeypatch):
+    dataset_path = _schema_transform_artifact(tmp_path, monkeypatch)
+
+    from core.data_recipe.export import download_filename
+
+    assert (
+        download_filename(artifact_path = str(dataset_path), export_format = "jsonl", stem = "run")
+        == "run.jsonl.zip"
+    )
+    file_path, media_type, download_name = build_dataset_download(
+        artifact_path = str(dataset_path),
+        export_format = "jsonl",
+        filename_stem = "run",
+    )
+    try:
+        assert (media_type, download_name) == ("application/zip", "run.jsonl.zip")
+        with zipfile.ZipFile(file_path) as archive:
+            names = sorted(archive.namelist())
+            rows = archive.read("run.jsonl").decode("utf-8")
+            transformed = archive.read("processors/chat_format.jsonl").decode("utf-8")
+    finally:
+        file_path.unlink(missing_ok = True)
+    assert names == ["processors/chat_format.jsonl", "run.jsonl"]
+    assert json.loads(rows.strip()) == {"question": "Q1", "answer": "A1"}
+    assert json.loads(transformed.strip()) == {
+        "messages": [
+            {"role": "user", "content": "Q1"},
+            {"role": "assistant", "content": "A1"},
+        ]
+    }
+
+
+def test_parquet_export_includes_schema_transform_output(tmp_path: Path, monkeypatch):
+    dataset_path = _schema_transform_artifact(tmp_path, monkeypatch)
+
+    file_path, _, _ = build_dataset_download(
+        artifact_path = str(dataset_path),
+        export_format = "parquet",
+        filename_stem = "run",
+    )
+    try:
+        with zipfile.ZipFile(file_path) as archive:
+            names = sorted(archive.namelist())
+    finally:
+        file_path.unlink(missing_ok = True)
+    assert names == ["batch_00000.parquet", "processors/chat_format/batch_00000.parquet"]
+
+
 def test_jsonl_reader_preserves_columns_named_like_old_reader_helpers(tmp_path: Path):
     from core.data_recipe.export import _write_jsonl_from_parquet
 
