@@ -44,3 +44,10 @@ test("the run bar sits on the editor body, so opening the Nodes panel or the ins
   assert.ok(!/paletteOpen|inspector/i.test(bar.replace(/\/\*[\s\S]*?\*\//g, "")), "its position ignores panel state");
   assert.match(bar, /bottom: drawerOpen \? DRAWER_CLEARANCE : "0\.75rem"/);
 });
+
+test("the game player starts below the titlebar too, so the window buttons never cover its HUD", () => {
+  const page = read("features/flows/player/flow-player-page.tsx");
+  const outer = page.slice(page.indexOf("return ("), page.indexOf('data-testid="flow-player-page"'));
+  assert.match(outer, /pt-\[var\(--studio-non-chat-content-top-inset,var\(--studio-content-top-inset,0px\)\)\]/);
+  assert.ok(outer.indexOf("pt-[var(") < outer.indexOf("ref={box}"), "the inset wraps the player box");
+});
