@@ -954,6 +954,38 @@ def test_a_run_asks_the_loaded_model_for_text_only(monkeypatch):
     assert request.state.keyless_api_admitted is False
 
 
+def test_a_run_reads_the_memory_and_the_project_instructions_as_chat_does(monkeypatch):
+    from core import agents_md
+
+    agents_md.write_memory("I prefer metric units.")
+    studio_db.upsert_chat_project(
+        {
+            "id": "proj-1",
+            "name": "Weather",
+            "instructions": "Always answer in French.",
+            "createdAt": 1,
+            "updatedAt": 1,
+        }
+    )
+    monkeypatch.setattr(db, "now_ms", lambda: ms("2026-10-14T06:00:00+00:00"))
+    note = scheduler_module.system_prompt({"timezone": "UTC"}, db.now_ms())
+    producer = FakeProducer(completion("Il fait beau."))
+
+    generate(monkeypatch, producer, make_task(projectId = "proj-1"))
+
+    system, user = producer.payload.messages
+    assert system.content.startswith("<agents_md>\n# Source: ")
+    assert system.content.endswith(
+        "I prefer metric units.\n</agents_md>\n\n"
+        "<project_instructions>\nAlways answer in French.\n</project_instructions>\n\n" + note
+    )
+    assert user.content == "Write a haiku about mornings."
+
+    agents_md.set_memory_enabled(False)
+    generate(monkeypatch, producer, make_task(id = "task-2"))
+    assert producer.payload.messages[0].content == note
+
+
 @pytest.mark.parametrize("primary", [None, "gemma-3"])
 def test_a_run_names_the_one_model_kept_alongside_only_when_the_primary_is_empty(
     monkeypatch, primary
