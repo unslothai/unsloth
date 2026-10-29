@@ -69,7 +69,12 @@ def _knowledge_base_results(step: int) -> str:
     return text + RAG_SOURCES_SENTINEL + json.dumps(sources)
 
 
-def _synthesis_prompt(monkeypatch, knowledge_base) -> str:
+def _synthesis_prompt(
+    monkeypatch,
+    knowledge_base,
+    context_length = None,
+    query = "pump",
+) -> str:
     from core import research_runs as worker
 
     supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
@@ -97,7 +102,9 @@ def _synthesis_prompt(monkeypatch, knowledge_base) -> str:
         "run-1",
         {
             "title": "Pump",
-            "steps": [{"title": f"Step {step}", "query": f"pump {step}"} for step in range(STEPS)],
+            "steps": [
+                {"title": f"{query} {step}", "query": f"{query} {step}"} for step in range(STEPS)
+            ],
         },
     )
     research_db.approve("run-1", planned["planRevision"], planned["planHash"])
@@ -116,7 +123,7 @@ def _synthesis_prompt(monkeypatch, knowledge_base) -> str:
             return REPORT, "", "stop", None
         return "not json", "", "stop", None
 
-    monkeypatch.setattr(worker, "_loaded_context_length", lambda _inf = None: None)
+    monkeypatch.setattr(worker, "_loaded_context_length", lambda _inf = None: context_length)
     monkeypatch.setattr(worker, "execute_tool", fake_execute_tool)
     monkeypatch.setattr(supervisor, "_stream_completion", fake_stream_completion)
     asyncio.run(supervisor._process(research_db.claim_next(supervisor.worker_id)))
@@ -137,3 +144,16 @@ def test_web_results_keep_their_room_when_the_documents_match_nothing(research_h
     )
 
     assert all(f"web-{step}-{rank}" in prompt for step in range(STEPS) for rank in range(5))
+
+
+def test_small_context_keeps_web_results_when_the_documents_match_nothing(
+    research_home, monkeypatch
+):
+    prompt = _synthesis_prompt(
+        monkeypatch,
+        lambda _step: "No matching chunks were found in the knowledge base.",
+        context_length = 8_192,
+        query = "centrifugal pump cooling data sheet maintenance interval seal replacement guide",
+    )
+
+    assert all(f"web-{step}-0" in prompt for step in range(STEPS))

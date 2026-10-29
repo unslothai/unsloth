@@ -822,8 +822,25 @@ def _synthesis_evidence_budget(
     )
 
 
+def _water_fill(lengths: list[int], available: int) -> list[int]:
+    limits = [0] * len(lengths)
+    for position, index in enumerate(sorted(range(len(lengths)), key = lambda i: lengths[i])):
+        limits[index] = min(lengths[index], available // (len(lengths) - position))
+        available -= limits[index]
+    return limits
+
+
+def _truncate_evidence(text: str, limit: int) -> str:
+    suffix = "\n[Evidence truncated]"
+    if len(text) <= limit:
+        return text
+    if limit <= len(suffix):
+        return text[:limit]
+    return text[: limit - len(suffix)].rstrip() + suffix
+
+
 def _bounded_synthesis_evidence(
-    notes: list[str], max_chars: int = _MAX_SYNTHESIS_EVIDENCE_CHARS
+    notes: list[str | tuple[str, ...]], max_chars: int = _MAX_SYNTHESIS_EVIDENCE_CHARS
 ) -> str:
     if not notes:
         return "(none)"
@@ -832,24 +849,31 @@ def _bounded_synthesis_evidence(
     # Split evenly: a per-note floor lets early notes eat the budget and drop later steps entirely.
     separator = "\n\n"
     available = max(0, max_chars - len(separator) * (len(notes) - 1))
-    limits = [0] * len(notes)
-    for position, index in enumerate(sorted(range(len(notes)), key = lambda i: len(notes[i]))):
-        limits[index] = min(len(notes[index]), available // (len(notes) - position))
-        available -= limits[index]
-    suffix = "\n[Evidence truncated]"
+    # A (heading, *parts) note pays its heading once and splits the rest of its share across parts.
+    texts = [
+        note if isinstance(note, str) else f"{note[0]}\n" + separator.join(note[1:])
+        for note in notes
+    ]
+    limits = _water_fill([len(text) for text in texts], available)
     bounded = []
-    for note, limit in zip(notes, limits):
-        if len(note) <= limit:
-            bounded.append(note)
-        elif limit <= len(suffix):
-            bounded.append(note[:limit])
-        else:
-            bounded.append(note[: limit - len(suffix)].rstrip() + suffix)
+    for note, text, limit in zip(notes, texts, limits):
+        parts = [] if isinstance(note, str) else list(note[1:])
+        room = limit - len(text) + sum(map(len, parts))
+        if len(text) <= limit or not parts or room <= 0:
+            bounded.append(_truncate_evidence(text, limit))
+            continue
+        part_limits = _water_fill([len(part) for part in parts], room)
+        bounded.append(
+            f"{note[0]}\n"
+            + separator.join(
+                _truncate_evidence(part, part_limit) for part, part_limit in zip(parts, part_limits)
+            )
+        )
     return separator.join(bounded)[:max_chars]
 
 
 def _fit_synthesis_context(
-    notes: list[str],
+    notes: list[str | tuple[str, ...]],
     prioritized_payloads: list[dict[str, Any]],
     fixed_chars: int = 0,
     inference: dict[str, Any] | None = None,
@@ -2288,7 +2312,7 @@ class ResearchSupervisor:
             if selected_mcp
             else []
         )
-        notes: list[str] = []
+        notes: list[str | tuple[str, ...]] = []
         decision_notes: list[str] = []
         research_state: dict[str, Any] = {}
         sources: list[dict] = []
@@ -2384,9 +2408,15 @@ class ResearchSupervisor:
                 completed_steps += 1
             title = str(step.get("title") or "Recovered research step")
             heading = f"### {title} ({action})\nInput: {argument}"
-            notes.append(f"{heading}\nResult:\n{web_evidence}")
-            if rag_evidence or mcp_evidence:
-                notes.append(f"{heading}\nKnowledge base:\n{rag_evidence}{mcp_evidence}")
+            notes.append(
+                (
+                    heading,
+                    f"Result:\n{web_evidence}",
+                    f"Knowledge base:\n{rag_evidence}{mcp_evidence}",
+                )
+                if rag_evidence or mcp_evidence
+                else f"{heading}\nResult:\n{web_evidence}"
+            )
             decision_notes.append(f"{heading}\nResult:\n{web_evidence}")
 
         start_position = (
@@ -2696,9 +2726,16 @@ class ResearchSupervisor:
                 [source for source in rag_sources if source.get("kind") == "mcp"]
             )
             heading = f"### {action['title']} ({action['action']})\nInput: {argument}"
-            notes.append(f"{heading}\nResult:\n{result[:12000]}")
-            if rag_result or mcp_evidence:
-                notes.append(f"{heading}\nKnowledge base:\n{rag_result[:6000]}{mcp_evidence}")
+            web_part = f"Result:\n{result[:12000]}"
+            rag_part = f"Knowledge base:\n{rag_result[:6000]}{mcp_evidence}"
+            # Text-only replies such as "No matching chunks" stay behind the web results, cut first.
+            notes.append(
+                (heading, web_part, rag_part)
+                if rag_sources
+                else f"{heading}\n{web_part}\n\n{rag_part}"
+                if rag_result
+                else f"{heading}\n{web_part}"
+            )
             decision_notes.append(f"{heading}\nResult:\n{result[:12000]}")
             clean_result = strip_result_for_model(result, "web_search")
             if step_failed:
