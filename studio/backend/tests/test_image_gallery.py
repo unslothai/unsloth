@@ -779,7 +779,6 @@ def test_save_many_keeps_the_images_before_a_failed_encode(monkeypatch):
 
 
 def test_save_many_still_saves_through_save(monkeypatch):
-    # A wrapper of save (route tests, account guards) sees every image of a batch.
     _many_cpus(monkeypatch)
     seen = []
     real_save = gallery.save
@@ -794,7 +793,6 @@ def test_save_many_still_saves_through_save(monkeypatch):
 
 
 def test_save_many_keeps_batch_order_when_writes_share_an_mtime(monkeypatch):
-    # A coarse filesystem clock (Windows) stamps back-to-back writes alike; the listing sorts by mtime.
     _many_cpus(monkeypatch)
     real_replace = os.replace
 

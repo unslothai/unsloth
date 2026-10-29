@@ -509,7 +509,6 @@ def test_generate_batch_size_persists_each_image(client):
 
 
 def test_generate_batch_persists_through_one_save_many(client, monkeypatch):
-    # The batch's PNGs encode together, while each image is still saved in order.
     batches = []
     real = gallery_module.save_many
 
