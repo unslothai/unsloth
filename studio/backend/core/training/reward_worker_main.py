@@ -7,6 +7,7 @@ The sandbox gives the process no stdin (MXC), so requests and replies are files 
 ``req-<n>.json`` in, ``res-<n>.json`` out, each written to a temp name and renamed into place.
 """
 
+import copy
 import inspect
 import json
 import math
@@ -208,7 +209,9 @@ def main():
                 result["errors"][name] = errors.get(name, "reward is not loaded")
                 continue
             try:
-                result["scores"][name] = _score(fn, request)
+                # Each reward gets its own copy: one that edits its inputs in place must not
+                # change what the next one scores (training calls them one request each).
+                result["scores"][name] = _score(fn, copy.deepcopy(request))
             except BaseException as exc:  # noqa: BLE001 - one bad reward must not end the run's worker
                 result["errors"][name] = _error_line(exc)
         put(os.path.join(workdir, "res-%d.json" % seq), result)
