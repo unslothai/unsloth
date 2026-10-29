@@ -473,7 +473,7 @@ test("wires crossing the same gap share it as parallel lanes, centred between th
   assert.ok(Math.abs(mid - 320) <= 12, `bundle centred near the gap's middle (at ${mid})`);
 });
 
-function assertFanIn(rects: Rect[], edges: EdgeIn[], routes: Map<string, Route>, target: Rect): void {
+function assertFanIn(edges: EdgeIn[], routes: Map<string, Route>, target: Rect): void {
   const port = wirePortPoint(target, "left");
   const merge = { x: port.x - 24, y: port.y };
   const into = edges.filter((edge) => edge.target === target.id).map((edge) => routes.get(edge.id) as Route);
@@ -512,7 +512,7 @@ test("wires into one input join one lane a fixed distance out, with one junction
   const edges = [wire("image", "make"), wire("above", "make"), wire("below", "make")];
   const { routes } = routeWires(rects, edges);
   assertWireRules(rects, edges, routes);
-  assertFanIn(rects, edges, routes, rects[1]);
+  assertFanIn(edges, routes, rects[1]);
 });
 
 test("a wire into a different input still hops the fan-in it crosses", () => {
@@ -532,7 +532,7 @@ test("a wire into a different input still hops the fan-in it crosses", () => {
   ];
   const { routes } = routeWires(rects, edges);
   assertWireRules(rects, edges, routes);
-  assertFanIn(rects, edges, routes, rects[1]);
+  assertFanIn(edges, routes, rects[1]);
   const crossing = routes.get("cross->other") as Route;
   const fanIn = edges.filter((e) => e.target === "make").map((e) => routes.get(e.id) as Route);
   assert.ok(
