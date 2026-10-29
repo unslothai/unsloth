@@ -46,10 +46,16 @@ import {
 } from "./derive-rf";
 import { addFileNodes } from "./file-drop";
 import {
-  SuperCardSelectionToolbar,
+  OpenSuperCards,
+  SuperCardCombineToolbar,
   SuperCardView,
   useSuperCardView,
 } from "./super-card-node";
+import {
+  SUPER_PREFIX,
+  multiSelectKeys,
+  superCardDragMembers,
+} from "./super-cards";
 import { FlowEdgeView } from "./flow-edge";
 import { FlowNodeView } from "./flow-node";
 import { GroupFrame, NoteFrame } from "./frame-nodes";
@@ -67,7 +73,9 @@ const SNAP_GRID: [number, number] = [16, 16];
 const VISIBLE_ONLY_THRESHOLD = 300;
 const PRO_OPTIONS = { hideAttribution: true };
 const DELETE_KEYS = ["Delete", "Backspace"];
-const MULTI_SELECT_KEYS = ["Meta", "Control", "Shift"];
+const MULTI_SELECT_KEYS = multiSelectKeys(
+  typeof navigator === "undefined" ? "" : navigator.platform,
+);
 const FIT_VIEW_OPTIONS = { padding: 0.2, maxZoom: 1.1 };
 
 type Size = { width: number; height: number };
@@ -230,13 +238,22 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
     }
   }, []);
 
-  const view = useSuperCardView(nodes, edges);
+  const view = useSuperCardView(nodes, edges, selectedSet);
 
   const onNodeDragStart = useCallback(
     (_: ReactMouseEvent, node: RfNode) => {
       dragMembers.current = null;
-      if (!node.id.startsWith(GROUP_PREFIX)) return;
       const doc = useDocStore.getState().graph;
+      const folded = superCardDragMembers(node, doc);
+      if (folded) {
+        dragMembers.current = {
+          groupRfId: node.id,
+          origin: node.position,
+          members: folded,
+        };
+        return;
+      }
+      if (!node.id.startsWith(GROUP_PREFIX)) return;
       const group = doc.groups[node.id.slice(GROUP_PREFIX.length)];
       if (!group) return;
       const members = new Map<string, { x: number; y: number }>();
@@ -258,15 +275,20 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
   );
 
   const onNodeDragStop = useCallback(() => {
+    const card = dragMembers.current?.groupRfId.startsWith(SUPER_PREFIX);
     dragMembers.current = null;
     const current = dragRef.current;
     if (current) {
       const positions: Record<string, [number, number]> = {};
       for (const [id, p] of Object.entries(current))
         positions[id] = [Math.round(p.x), Math.round(p.y)];
+      // A super card moves its blocks without changing which group they are in.
       useDocStore
         .getState()
-        .moveNodes(positions, groupMembership(positions, sizesRef.current));
+        .moveNodes(
+          positions,
+          card ? undefined : groupMembership(positions, sizesRef.current),
+        );
     }
     setDrag(null);
   }, []);
@@ -515,7 +537,8 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
           showInteractive={false}
           className="!rounded-lg !border !border-border !shadow-none"
         />
-        <SuperCardSelectionToolbar readOnly={readOnly} />
+        <SuperCardCombineToolbar readOnly={readOnly} />
+        <OpenSuperCards readOnly={readOnly} />
         <SelectedNodeToolbar readOnly={readOnly} />
       </ReactFlow>
     </div>

@@ -3,41 +3,60 @@
 
 import { Button } from "@/components/ui/button";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type NodeProps, NodeToolbar, Position, useStore } from "@xyflow/react";
-import { memo, useMemo } from "react";
+import {
+  type NodeProps,
+  NodeToolbar,
+  Position,
+  type ReactFlowState,
+  ViewportPortal,
+  useReactFlow,
+  useStore,
+} from "@xyflow/react";
+import { memo, useCallback, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useCatalogStore } from "../stores/catalog-store";
 import { useDocStore } from "../stores/doc-store";
 import { IDLE_RUNTIME, useRuntimeStore } from "../stores/runtime-store";
 import { useUiStore } from "../stores/ui-store";
-import { GROUP_PREFIX, type RfEdge, type RfNode } from "./derive-rf";
-import { ArrowExpand01Icon, PackageIcon } from "./icon-data";
+import type { RfEdge, RfNode } from "./derive-rf";
+import {
+  ArrowExpand01Icon,
+  ArrowShrink01Icon,
+  Layers01Icon,
+  UngroupLayersIcon,
+} from "./icon-data";
 import {
   NodeCard,
   NodeCardHeader,
   NodePorts,
   NodeStatusBadges,
 } from "./node-card";
-import { makeSuperCard, setSuperCard } from "./super-card-actions";
 import {
+  combineSelection,
+  setSuperCardOpen,
+  ungroupSuperCard,
+} from "./super-card-actions";
+import {
+  SUPER_PREFIX,
   type SuperCardData,
   applySuperCards,
-  collapsedGroups,
+  combinableSelection,
+  readSuperCards,
   rollUpStatus,
-  superCardTitle,
 } from "./super-cards";
+
+const FOCUS_MIN_ZOOM = 0.8;
 
 const lowDetailSelector = (s: { transform: [number, number, number] }) =>
   s.transform[2] < 0.45;
 
 function SuperCardViewImpl({ data }: NodeProps<RfNode>) {
-  const { groupId, memberIds, inputs, outputs } = data as SuperCardData;
-  const group = useDocStore((s) => s.graph.groups[groupId]);
+  const { cardId, title, memberIds, inputs, outputs } =
+    data as unknown as SuperCardData;
   const rollup = useRuntimeStore(
     useShallow((s) => rollUpStatus(memberIds.map((id) => s.nodes[id]?.status))),
   );
   const lowDetail = useStore(lowDetailSelector);
-  if (!group) return null;
   const steps = memberIds.length;
   const progress =
     rollup.status === "running" && rollup.total > 1
@@ -52,17 +71,17 @@ function SuperCardViewImpl({ data }: NodeProps<RfNode>) {
       }}
       lowDetail={lowDetail}
       className="w-72"
-      data-super-card={groupId}
+      data-super-card={cardId}
       onDoubleClick={(event) => {
         event.stopPropagation();
-        setSuperCard(groupId, false);
+        setSuperCardOpen(cardId, true);
       }}
     >
       <NodeCardHeader
-        icon={PackageIcon}
-        accent={group.color ?? "#8b5cf6"}
-        title={superCardTitle(group)}
-        subtitle={`${steps} ${steps === 1 ? "step" : "steps"}${progress}`}
+        icon={Layers01Icon}
+        accent="#8b5cf6"
+        title={title}
+        subtitle={`${steps} ${steps === 1 ? "block" : "blocks"}${progress}`}
       >
         <NodeStatusBadges
           runtime={{ ...IDLE_RUNTIME, status: rollup.status }}
@@ -77,7 +96,7 @@ function SuperCardViewImpl({ data }: NodeProps<RfNode>) {
           data-testid="super-card-open"
           onClick={(event) => {
             event.stopPropagation();
-            setSuperCard(groupId, false);
+            setSuperCardOpen(cardId, true);
           }}
         >
           <HugeiconsIcon icon={ArrowExpand01Icon} size={12} />
@@ -98,65 +117,213 @@ function SuperCardViewImpl({ data }: NodeProps<RfNode>) {
 
 export const SuperCardView = memo(SuperCardViewImpl);
 
-/** "Make super card" over a multi-selection, or "Collapse" over one selected group. */
-function SuperCardSelectionToolbarImpl({ readOnly }: { readOnly: boolean }) {
-  const target = useUiStore(
-    useShallow((s) => {
-      if (readOnly) return [] as string[];
-      const { graph, meta } = useDocStore.getState();
-      const frames = s.selectedNodes.filter((id) =>
-        id.startsWith(GROUP_PREFIX),
-      );
-      const blocks = s.selectedNodes.filter((id) => graph.nodes[id]);
-      if (frames.length === 1 && !blocks.length) {
-        const groupId = frames[0].slice(GROUP_PREFIX.length);
-        return collapsedGroups(meta.editor, graph).has(groupId) ? [] : frames;
-      }
-      return !frames.length && blocks.length >= 2 ? blocks : [];
-    }),
+type Rect = { x: number; y: number; w: number; h: number };
+
+function useRects(nodeIds: string[]): Rect[] {
+  const key = useStore(
+    useCallback(
+      (state: ReactFlowState) =>
+        JSON.stringify(
+          nodeIds.flatMap((id): Rect[] => {
+            const node = state.nodeLookup.get(id);
+            if (!node) return [];
+            const { x, y } = node.internals.positionAbsolute;
+            return [
+              {
+                x,
+                y,
+                w: node.measured.width ?? 0,
+                h: node.measured.height ?? 0,
+              },
+            ];
+          }),
+        ),
+      [nodeIds],
+    ),
   );
-  if (!target.length) return null;
-  const isFrame = target[0].startsWith(GROUP_PREFIX);
+  return useMemo(() => JSON.parse(key) as Rect[], [key]);
+}
+
+function Outline({ rect, pad }: { rect: Rect; pad: number }) {
   return (
-    <NodeToolbar
-      nodeId={target}
-      isVisible={true}
-      position={Position.Top}
-      offset={8}
-      className="nodrag nopan nowheel flex items-center gap-1 rounded-lg border border-border bg-popover p-1 shadow-[var(--popup-shadow)]"
-    >
-      <Button
-        type="button"
-        variant="ghost"
-        size="xs"
-        title="Fold these blocks into one card; open it again any time"
-        data-testid="make-super-card"
-        onClick={() => void makeSuperCard()}
-      >
-        <HugeiconsIcon icon={PackageIcon} size={12} />
-        {isFrame ? "Collapse to super card" : "Make super card"}
-      </Button>
-    </NodeToolbar>
+    <div
+      className="pointer-events-none absolute rounded-2xl border-2 border-dashed border-primary/60"
+      style={{
+        transform: `translate(${rect.x - pad}px, ${rect.y - pad}px)`,
+        width: rect.w + pad * 2,
+        height: rect.h + pad * 2,
+      }}
+    />
   );
 }
 
-export const SuperCardSelectionToolbar = memo(SuperCardSelectionToolbarImpl);
+/** Two or more selected blocks get the combine button above them and a dashed outline each,
+ *  the same affordance as Recipe Studio's super cards. */
+function SuperCardCombineToolbarImpl({ readOnly }: { readOnly: boolean }) {
+  const nodeIds = useUiStore(
+    useShallow((s) => {
+      if (readOnly) return [] as string[];
+      const { graph, meta } = useDocStore.getState();
+      return combinableSelection(
+        s.selectedNodes,
+        graph,
+        readSuperCards(meta.editor, graph),
+      );
+    }),
+  );
+  const rects = useRects(nodeIds);
+  const { fitView, getEdges } = useReactFlow();
+  if (nodeIds.length < 2) return null;
+  const onCombine = () => {
+    const id = combineSelection();
+    if (!id) return;
+    const cardRfId = SUPER_PREFIX + id;
+    // Frame the new card and what it wires to, never below a readable zoom.
+    window.setTimeout(() => {
+      const ids = new Set([cardRfId]);
+      for (const edge of getEdges()) {
+        if (edge.source === cardRfId) ids.add(edge.target);
+        if (edge.target === cardRfId) ids.add(edge.source);
+      }
+      void fitView({
+        nodes: [...ids].map((nodeId) => ({ id: nodeId })),
+        minZoom: FOCUS_MIN_ZOOM,
+        maxZoom: 1.1,
+        padding: 0.25,
+        duration: 300,
+      });
+    }, 60);
+  };
+  return (
+    <>
+      <ViewportPortal>
+        {rects.map((rect, i) => (
+          <Outline key={nodeIds[i]} rect={rect} pad={7} />
+        ))}
+      </ViewportPortal>
+      <NodeToolbar
+        nodeId={nodeIds}
+        isVisible={true}
+        position={Position.Top}
+        offset={14}
+        className="nodrag nopan"
+      >
+        <Button
+          type="button"
+          size="sm"
+          className="corner-squircle shadow-md"
+          data-testid="combine-super-card"
+          onClick={onCombine}
+        >
+          <HugeiconsIcon icon={Layers01Icon} className="size-4" />
+          Combine {nodeIds.length} blocks into a super card
+        </Button>
+      </NodeToolbar>
+    </>
+  );
+}
 
-/** The canvas's nodes and edges with every collapsed group folded into its card. */
+export const SuperCardCombineToolbar = memo(SuperCardCombineToolbarImpl);
+
+function OpenSuperCard({
+  id,
+  title,
+  members,
+  readOnly,
+}: {
+  id: string;
+  title: string;
+  members: string[];
+  readOnly: boolean;
+}) {
+  const rects = useRects(members);
+  if (!rects.length) return null;
+  const x = Math.min(...rects.map((r) => r.x));
+  const y = Math.min(...rects.map((r) => r.y));
+  const box = {
+    x,
+    y,
+    w: Math.max(...rects.map((r) => r.x + r.w)) - x,
+    h: Math.max(...rects.map((r) => r.y + r.h)) - y,
+  };
+  return (
+    <>
+      <ViewportPortal>
+        <Outline rect={box} pad={16} />
+      </ViewportPortal>
+      <NodeToolbar
+        nodeId={members}
+        isVisible={true}
+        position={Position.Top}
+        offset={24}
+        className="nodrag nopan flex items-center gap-1 rounded-lg border border-border bg-popover p-1 pl-2 shadow-[var(--popup-shadow)]"
+        data-open-super-card={id}
+      >
+        <HugeiconsIcon icon={Layers01Icon} size={14} className="text-primary" />
+        <span className="max-w-48 truncate text-ui-12 font-medium">
+          {title}
+        </span>
+        <Button
+          type="button"
+          variant="ghost"
+          size="xs"
+          data-testid="super-card-collapse"
+          onClick={() => setSuperCardOpen(id, false)}
+        >
+          <HugeiconsIcon icon={ArrowShrink01Icon} size={12} />
+          Collapse
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="xs"
+          disabled={readOnly}
+          data-testid="super-card-ungroup"
+          onClick={() => ungroupSuperCard(id)}
+        >
+          <HugeiconsIcon icon={UngroupLayersIcon} size={12} />
+          Ungroup
+        </Button>
+      </NodeToolbar>
+    </>
+  );
+}
+
+/** Open cards draw a dashed outline round their blocks, with Collapse and Ungroup above it. */
+function OpenSuperCardsImpl({ readOnly }: { readOnly: boolean }) {
+  const graph = useDocStore((s) => s.graph);
+  const editor = useDocStore((s) => s.meta.editor);
+  const open = useMemo(
+    () => readSuperCards(editor, graph).filter((c) => c.open),
+    [editor, graph],
+  );
+  return open.map((card) => (
+    <OpenSuperCard
+      key={card.id}
+      id={card.id}
+      title={card.title}
+      members={card.members}
+      readOnly={readOnly}
+    />
+  ));
+}
+
+export const OpenSuperCards = memo(OpenSuperCardsImpl);
+
+/** The canvas's nodes and edges with every closed super card folded in. */
 export function useSuperCardView(
   nodes: RfNode[],
   edges: RfEdge[],
+  selected: ReadonlySet<string>,
 ): { nodes: RfNode[]; edges: RfEdge[] } {
   const graph = useDocStore((s) => s.graph);
   const editor = useDocStore((s) => s.meta.editor);
   const specs = useCatalogStore((s) => s.specs);
   const portColors = useCatalogStore((s) => s.catalog?.port_colors);
-  const collapsed = useMemo(
-    () => collapsedGroups(editor, graph),
-    [editor, graph],
-  );
+  const cards = useMemo(() => readSuperCards(editor, graph), [editor, graph]);
   return useMemo(
-    () => applySuperCards(nodes, edges, graph, collapsed, specs, portColors),
-    [nodes, edges, graph, collapsed, specs, portColors],
+    () =>
+      applySuperCards(nodes, edges, graph, cards, specs, portColors, selected),
+    [nodes, edges, graph, cards, specs, portColors, selected],
   );
 }

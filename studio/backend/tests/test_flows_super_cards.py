@@ -16,7 +16,7 @@ def _plan(d: dict) -> dict:
     return plan
 
 
-def test_a_collapsed_super_card_compiles_to_the_same_plan():
+def test_a_super_card_compiles_to_the_same_plan():
     open_doc = doc(
         [
             node("a", "input.text", value = "x"),
@@ -31,6 +31,11 @@ def test_a_collapsed_super_card_compiles_to_the_same_plan():
         ],
         groups = [{"id": "g", "label": "Wrap", "rect": [0, 0, 400, 300]}],
     )
-    collapsed = copy.deepcopy(open_doc)
-    collapsed["editor"] = {"super_cards": ["g"]}
-    assert _plan(collapsed) == _plan(open_doc)
+    for cards in (
+        [{"id": "sc1", "title": "Wrap", "members": ["t", "t2"]}],
+        [{"id": "sc1", "title": "Wrap", "members": ["t", "t2"], "open": True}],
+        ["g"],  # the earlier group-id format
+    ):
+        combined = copy.deepcopy(open_doc)
+        combined["editor"] = {"super_cards": cards}
+        assert _plan(combined) == _plan(open_doc)

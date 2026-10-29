@@ -18,12 +18,17 @@ const { edgeHandles } = await import(
 );
 const {
   applySuperCards,
-  collapsedGroups,
   foldLayout,
+  multiSelectKeys,
+  readSuperCards,
   rollUpStatus,
+  superCardDragMembers,
   superCardTitle,
-  withSuperCard,
 } = await import("../src/features/flows/editor/super-cards.ts");
+const { combineSelection, setSuperCardOpen, ungroupSuperCard } = await import(
+  "../src/features/flows/editor/super-card-actions.ts"
+);
+const { useUiStore } = await import("../src/features/flows/stores/ui-store.ts");
 
 // prompt -> [template -> image] -> preview, with a second preview fed by the template.
 function comic() {
@@ -57,39 +62,94 @@ function comic() {
   return d;
 }
 
-function view(collapsed: string[]) {
+function view(
+  extra: {
+    id: string;
+    type: string;
+    position: { x: number; y: number };
+    data: Record<string, unknown>;
+  }[] = [],
+) {
   const state = useDocStore.getState();
   const deriver = new RfDeriver();
-  const nodes = deriver.nodes(state.graph, new Set(), null);
+  const nodes = [...deriver.nodes(state.graph, new Set(), null), ...extra];
   const edges = deriver.edges(state.graph, new Set(), () => "any");
   return applySuperCards(
-    nodes,
+    nodes as never,
     edges,
     state.graph,
-    collapsedGroups({ super_cards: collapsed }, state.graph),
+    readSuperCards(state.meta.editor, state.graph),
     specs,
     catalog.port_colors,
   );
 }
 
-test("a collapsed group shows as one card with the wires that cross its frame as ports", () => {
+function select(...ids: string[]) {
+  useUiStore.getState().setSelection(ids, []);
+}
+
+function cards() {
+  const { meta, graph } = useDocStore.getState();
+  return readSuperCards(meta.editor, graph);
+}
+
+function withoutEditor() {
+  const { editor: _e, ...rest } = documentFromState(useDocStore.getState());
+  return rest;
+}
+
+test("Cmd adds to the selection on a Mac, Ctrl on Windows and Linux, Shift everywhere", () => {
+  assert.deepEqual(multiSelectKeys("MacIntel"), ["Meta", "Shift"]);
+  assert.deepEqual(multiSelectKeys("iPad"), ["Meta", "Shift"]);
+  assert.deepEqual(multiSelectKeys("Win32"), ["Control", "Shift"]);
+  assert.deepEqual(multiSelectKeys("Linux x86_64"), ["Control", "Shift"]);
+  assert.deepEqual(multiSelectKeys(""), ["Control", "Shift"]);
+});
+
+test("combining two or more selected blocks makes one closed card and selects it", () => {
   useDocStore.getState().load(comic());
-  const { nodes, edges } = view(["g"]);
+  const before = withoutEditor();
+  select("tpl");
+  assert.equal(combineSelection(), null, "one block is not a card");
+  select("tpl", "img");
+  assert.equal(combineSelection(), "sc1");
+  // Exactly a group's blocks: the card takes the group's name.
+  assert.deepEqual(cards(), [
+    { id: "sc1", title: "Comic panel", members: ["tpl", "img"] },
+  ]);
+  assert.deepEqual(useUiStore.getState().selectedNodes, ["super:sc1"]);
+  // Only editor state changed, so the compiled plan is the same.
+  assert.deepEqual(withoutEditor(), before);
+  // A block already in a card can't go into a second one.
+  select("img", "view");
+  assert.equal(combineSelection(), null);
+  select("prompt", "raw");
+  assert.equal(combineSelection(), "sc2");
+  assert.equal(cards()[1].title, "Super card 2");
+});
+
+test("a closed card shows the wires that cross into it as ports and hides its group frame", () => {
+  useDocStore.getState().load(comic());
+  select("tpl", "img");
+  combineSelection();
+  const { nodes, edges } = view();
   assert.deepEqual(nodes.map((n) => n.id).sort(), [
-    "group:g",
     "prompt",
     "raw",
+    "super:sc1",
     "view",
   ]);
-  const card = nodes.find((n) => n.id === "group:g");
+  const card = nodes.find((n) => n.id === "super:sc1");
   assert.equal(card?.type, "flowSuperCard");
-  assert.deepEqual(card?.position, { x: 280, y: -40 });
+  assert.deepEqual(card?.position, { x: 300, y: 0 });
   const data = card?.data as unknown as {
     memberIds: string[];
+    foldedIds: string[];
     inputs: { handleId: string; label: string }[];
     outputs: { handleId: string; label: string }[];
   };
   assert.deepEqual(data.memberIds, ["tpl", "img"]);
+  assert.deepEqual(data.foldedIds, ["group:g"]);
   assert.deepEqual(
     data.inputs.map((p) => p.label),
     ["Panel script · Values"],
@@ -101,17 +161,10 @@ test("a collapsed group shows as one card with the wires that cross its frame as
   );
   // The inner wire is gone; the three crossing wires end on the card's own handles.
   assert.deepEqual(edges.map((e) => e.id).sort(), ["e1", "e3", "e4"]);
+  const ports = [...data.inputs, ...data.outputs].map((p) => p.handleId);
   for (const e of edges) {
-    const handles = [
-      ...(e.source === "group:g" ? [e.sourceHandle] : []),
-      ...(e.target === "group:g" ? [e.targetHandle] : []),
-    ];
-    assert.equal(handles.length, 1);
-    const ports = [...data.inputs, ...data.outputs].map((p) => p.handleId);
-    assert.ok(
-      ports.includes(handles[0] as string),
-      `${e.id} lands on a card port`,
-    );
+    const handle = e.source === "super:sc1" ? e.sourceHandle : e.targetHandle;
+    assert.ok(ports.includes(handle as string), `${e.id} lands on a card port`);
   }
 });
 
@@ -119,7 +172,9 @@ test("wires from one inner port to several outside blocks share one output port"
   const d = comic();
   d.edges.push(edge("e5", "img", "image", "raw", "value"));
   useDocStore.getState().load(d);
-  const card = view(["g"]).nodes.find((n) => n.id === "group:g");
+  select("tpl", "img");
+  combineSelection();
+  const card = view().nodes.find((n) => n.id === "super:sc1");
   const outputs = (card?.data as unknown as { outputs: { label: string }[] })
     .outputs;
   assert.equal(
@@ -128,87 +183,98 @@ test("wires from one inner port to several outside blocks share one output port"
   );
 });
 
-test("an open group renders exactly as before", () => {
+test("opening a card renders exactly as before; collapse folds it again; ungroup drops it", () => {
   useDocStore.getState().load(comic());
-  const state = useDocStore.getState();
-  const deriver = new RfDeriver();
-  const nodes = deriver.nodes(state.graph, new Set(), null);
-  const edges = deriver.edges(state.graph, new Set(), () => "any");
-  const out = applySuperCards(nodes, edges, state.graph, new Set(), specs);
-  assert.equal(out.nodes, nodes);
-  assert.equal(out.edges, edges);
-  // A stale id for a deleted group is ignored.
-  assert.equal(collapsedGroups({ super_cards: ["gone"] }, state.graph).size, 0);
-});
-
-test("collapse and expand keep every node, edge and position; only editor state changes", () => {
-  useDocStore.getState().load(comic());
-  const before = documentFromState(useDocStore.getState());
-  const store = useDocStore.getState();
-  store.setMeta({ editor: withSuperCard(store.meta.editor, "g", true) });
-  const collapsed = documentFromState(useDocStore.getState());
-  assert.deepEqual(collapsed.editor, { super_cards: ["g"] });
-  const { editor: _a, ...collapsedRest } = collapsed;
-  const { editor: _b, ...beforeRest } = before;
-  assert.deepEqual(collapsedRest, beforeRest);
-  // Autosave sees the collapse as an edit.
-  assert.notEqual(documentSignature(collapsed), documentSignature(before));
-
-  const again = useDocStore.getState();
-  again.setMeta({ editor: withSuperCard(again.meta.editor, "g", false) });
-  assert.deepEqual(documentFromState(useDocStore.getState()), before);
-  const flat = view([]);
+  const flat = view();
+  select("tpl", "img");
+  combineSelection();
+  setSuperCardOpen("sc1", true);
+  assert.equal(cards()[0].open, true);
+  assert.deepEqual(useUiStore.getState().selectedNodes, ["tpl", "img"]);
+  const open = view();
   assert.deepEqual(
-    flat.edges.map((e) => [
+    open.nodes.map((n) => n.id),
+    flat.nodes.map((n) => n.id),
+  );
+  assert.deepEqual(
+    open.edges.map((e) => [
       e.id,
       e.source,
       e.sourceHandle,
       e.target,
       e.targetHandle,
     ]),
-    before.edges.map((e) => {
+    useDocStore.getState().graph.edgeOrder.map((id) => {
+      const e = useDocStore.getState().graph.edges[id];
       const h = edgeHandles(e);
       return [e.id, e.source, h.sourceHandle, e.target, h.targetHandle];
     }),
   );
+  setSuperCardOpen("sc1", false);
+  assert.ok(view().nodes.some((n) => n.id === "super:sc1"));
+  ungroupSuperCard("sc1");
+  assert.deepEqual(cards(), []);
+  assert.equal(useDocStore.getState().meta.editor?.super_cards, undefined);
 });
 
-test("undo puts a collapsed card back open, redo folds it again", () => {
+test("combine, open and ungroup are edits: autosave sees them and undo/redo walk them back", () => {
   useDocStore.getState().load(comic());
-  const store = useDocStore.getState();
-  store.setMeta({ editor: withSuperCard(store.meta.editor, "g", true) });
-  assert.ok(
-    collapsedGroups(
-      useDocStore.getState().meta.editor,
-      useDocStore.getState().graph,
-    ).has("g"),
+  const plain = documentSignature(documentFromState(useDocStore.getState()));
+  select("tpl", "img");
+  combineSelection();
+  assert.notEqual(
+    documentSignature(documentFromState(useDocStore.getState())),
+    plain,
   );
+  setSuperCardOpen("sc1", true);
   useDocStore.getState().undo();
-  assert.equal(
-    collapsedGroups(
-      useDocStore.getState().meta.editor,
-      useDocStore.getState().graph,
-    ).size,
-    0,
+  assert.equal(cards()[0].open, undefined);
+  useDocStore.getState().undo();
+  assert.deepEqual(cards(), []);
+  useDocStore.getState().redo();
+  assert.deepEqual(
+    cards().map((c) => c.id),
+    ["sc1"],
   );
   useDocStore.getState().redo();
-  assert.ok(
-    collapsedGroups(
-      useDocStore.getState().meta.editor,
-      useDocStore.getState().graph,
-    ).has("g"),
-  );
+  assert.equal(cards()[0].open, true);
 });
 
-test("two collapsed cards wire card to card", () => {
+test("flows saved with the earlier group-id format still load as cards", () => {
   const d = comic();
-  d.nodes = d.nodes.map((n) => (n.id === "view" ? { ...n, group: "h" } : n));
-  d.groups.push({ id: "h", label: "Out", rect: [880, -40, 300, 200] });
+  d.editor = { super_cards: ["g", "gone"] };
   useDocStore.getState().load(d);
-  const { edges } = view(["g", "h"]);
-  const e3 = edges.find((e) => e.id === "e3");
-  assert.equal(e3?.source, "group:g");
-  assert.equal(e3?.target, "group:h");
+  assert.deepEqual(cards(), [
+    { id: "g", title: "Comic panel", members: ["tpl", "img"] },
+  ]);
+  assert.ok(view().nodes.some((n) => n.id === "super:g"));
+});
+
+test("two closed cards wire card to card", () => {
+  useDocStore.getState().load(comic());
+  select("tpl", "img");
+  combineSelection();
+  select("view", "raw");
+  combineSelection();
+  const e3 = view().edges.find((e) => e.id === "e3");
+  assert.equal(e3?.source, "super:sc1");
+  assert.equal(e3?.target, "super:sc2");
+});
+
+test("dragging a card carries its blocks and its folded group frame", () => {
+  useDocStore.getState().load(comic());
+  select("tpl", "img");
+  combineSelection();
+  const card = view().nodes.find((n) => n.id === "super:sc1");
+  const members = superCardDragMembers(
+    card as never,
+    useDocStore.getState().graph,
+  );
+  assert.deepEqual(Object.fromEntries(members ?? []), {
+    tpl: { x: 300, y: 40 },
+    img: { x: 600, y: 0 },
+    "group:g": { x: 280, y: -40 },
+  });
 });
 
 test("the card rolls its blocks' run status into one", () => {
@@ -236,10 +302,10 @@ test("a recipe group's card is titled as a recipe", () => {
   assert.equal(superCardTitle({ label: "Comic panel" }), "Comic panel");
 });
 
-test("auto layout places a collapsed card as one block and moves its members with it", () => {
+test("auto layout places a closed card as one block and moves its blocks with it", () => {
   useDocStore.getState().load(comic());
-  const store = useDocStore.getState();
-  store.setMeta({ editor: withSuperCard(store.meta.editor, "g", true) });
+  select("tpl", "img");
+  combineSelection();
   const state = useDocStore.getState();
   const request = {
     direction: "LR" as const,
@@ -254,23 +320,25 @@ test("auto layout places a collapsed card as one block and moves its members wit
     height: 120,
   }));
   assert.deepEqual(folded.request.nodes.map((n) => n.id).sort(), [
-    "group:g",
     "prompt",
     "raw",
+    "super:sc1",
     "view",
   ]);
   assert.deepEqual(
     folded.request.edges.map((e) => `${e.source}>${e.target}`).sort(),
-    ["group:g>raw", "group:g>view", "prompt>group:g"],
+    ["prompt>super:sc1", "super:sc1>raw", "super:sc1>view"],
   );
-  const result = folded.unfold({ "group:g": [380, 60], prompt: [0, 0] });
-  assert.deepEqual(result["group:g"], [380, 60]);
-  assert.deepEqual(result.tpl, [400, 140]);
-  assert.deepEqual(result.img, [700, 100]);
+  const result = folded.unfold({ "super:sc1": [380, 60], prompt: [0, 0] });
+  assert.equal(result["super:sc1"], undefined);
+  assert.deepEqual(result.tpl, [380, 100]);
+  assert.deepEqual(result.img, [680, 60]);
 });
 
-test("other things drawn inside a collapsed frame fold with it", () => {
+test("notes and reroutes drawn among a card's blocks fold with it", () => {
   useDocStore.getState().load(comic());
+  select("tpl", "img");
+  combineSelection();
   const state = useDocStore.getState();
   const deriver = new RfDeriver();
   const nodes = [
@@ -278,13 +346,13 @@ test("other things drawn inside a collapsed frame fold with it", () => {
     {
       id: "rr1",
       type: "flowReroute",
-      position: { x: 500, y: 200 },
+      position: { x: 500, y: 100 },
       data: { nodeId: "rr1" },
     },
     {
       id: "note:n1",
       type: "flowNote",
-      position: { x: 300, y: 200 },
+      position: { x: 320, y: 100 },
       data: { noteId: "n1" },
     },
     {
@@ -304,9 +372,14 @@ test("other things drawn inside a collapsed frame fold with it", () => {
       targetHandle: "in",
     },
   ];
-  const out = applySuperCards(nodes, edges, state.graph, new Set(["g"]), specs);
+  const out = applySuperCards(
+    nodes as never,
+    edges,
+    state.graph,
+    readSuperCards(state.meta.editor, state.graph),
+    specs,
+  );
   assert.ok(!out.nodes.some((n) => n.id === "rr1" || n.id === "note:n1"));
   assert.ok(out.nodes.some((n) => n.id === "note:n2"));
-  const w1 = out.edges.find((e) => e.id === "w1");
-  assert.equal(w1?.target, "group:g");
+  assert.equal(out.edges.find((e) => e.id === "w1")?.target, "super:sc1");
 });

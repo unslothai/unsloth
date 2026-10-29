@@ -3,35 +3,63 @@
 
 import { useDocStore } from "../stores/doc-store";
 import { useUiStore } from "../stores/ui-store";
-import { GROUP_PREFIX } from "./derive-rf";
-import { withSuperCard } from "./super-cards";
-import { groupSelection } from "./use-editor-shortcuts";
+import {
+  SUPER_PREFIX,
+  type SuperCard,
+  combineSuperCard,
+  readSuperCards,
+  updateSuperCard,
+} from "./super-cards";
 
-export function setSuperCard(groupId: string, collapsed: boolean): void {
-  const doc = useDocStore.getState();
-  if (!doc.graph.groups[groupId]) return;
-  doc.setMeta({ editor: withSuperCard(doc.meta.editor, groupId, collapsed) });
-  const ui = useUiStore.getState();
-  ui.setSelection([GROUP_PREFIX + groupId], []);
+function nextId(cards: SuperCard[]): string {
+  let max = 0;
+  for (const { id } of cards) {
+    const match = /^sc(\d+)$/.exec(id);
+    if (match) max = Math.max(max, Number(match[1]));
+  }
+  return `sc${max + 1}`;
 }
 
-/** Collapse the selected group, or group the selected blocks and collapse that. */
-export function makeSuperCard(): string | null {
+/** Combine the selected blocks into one closed super card and select it. */
+export function combineSelection(): string | null {
+  const doc = useDocStore.getState();
   const ui = useUiStore.getState();
-  const frames = ui.selectedNodes.filter((id) => id.startsWith(GROUP_PREFIX));
-  const graph = useDocStore.getState().graph;
-  const blocks = ui.selectedNodes.filter((id) => graph.nodes[id]);
-  let groupId: string | undefined;
-  if (frames.length === 1 && !blocks.length) {
-    groupId = frames[0].slice(GROUP_PREFIX.length);
-  } else if (blocks.length) {
-    const before = new Set(graph.groupOrder);
-    groupSelection(undefined, "Super card");
-    groupId = useDocStore
-      .getState()
-      .graph.groupOrder.find((id) => !before.has(id));
-  }
-  if (!groupId) return null;
-  setSuperCard(groupId, true);
-  return groupId;
+  const id = nextId(readSuperCards(doc.meta.editor, doc.graph));
+  const result = combineSuperCard(
+    doc.meta.editor,
+    doc.graph,
+    ui.selectedNodes,
+    id,
+  );
+  if (!result) return null;
+  doc.setMeta({ editor: result.editor });
+  ui.setSelection([SUPER_PREFIX + id], []);
+  return id;
+}
+
+export function setSuperCardOpen(id: string, open: boolean): void {
+  const doc = useDocStore.getState();
+  const card = readSuperCards(doc.meta.editor, doc.graph).find(
+    (c) => c.id === id,
+  );
+  if (!card) return;
+  doc.setMeta({
+    editor: updateSuperCard(doc.meta.editor, doc.graph, id, { open }),
+  });
+  useUiStore
+    .getState()
+    .setSelection(open ? card.members : [SUPER_PREFIX + id], []);
+}
+
+/** Drop the card; its blocks stay exactly where they are. */
+export function ungroupSuperCard(id: string): void {
+  const doc = useDocStore.getState();
+  const card = readSuperCards(doc.meta.editor, doc.graph).find(
+    (c) => c.id === id,
+  );
+  if (!card) return;
+  doc.setMeta({
+    editor: updateSuperCard(doc.meta.editor, doc.graph, id, null),
+  });
+  useUiStore.getState().setSelection(card.members, []);
 }
