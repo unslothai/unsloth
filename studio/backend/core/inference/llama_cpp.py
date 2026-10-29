@@ -20032,12 +20032,13 @@ class LlamaCppBackend:
 
         # Header-rejected basenames, so the search moves past an impostor to the real sidecar.
         rejected: set[str] = set()
-        # Asked at most once per call; the loops below run the picker repeatedly.
-        remote_sizes: Optional[dict[str, int]] = None
+        # An answer is asked at most once per call (the loops below run the picker repeatedly); an empty one, which
+        # is also what a failed model_info returns, is asked again as before.
+        remote_sizes: dict[str, int] = {}
 
         def _remote_sizes() -> dict[str, int]:
             nonlocal remote_sizes
-            if remote_sizes is None:
+            if not remote_sizes:
                 remote_sizes = self._remote_root_gguf_sizes(hf_repo, hf_token)
             return remote_sizes
 
