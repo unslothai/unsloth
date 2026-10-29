@@ -3,17 +3,23 @@
 
 import { Button } from "@/components/ui/button";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { NodeToolbar, Position } from "@xyflow/react";
+import { NodeToolbar, Position, useReactFlow, useStore } from "@xyflow/react";
 import { memo } from "react";
 import { useCatalogStore } from "../stores/catalog-store";
 import { useDocStore } from "../stores/doc-store";
 import { useRuntimeStore } from "../stores/runtime-store";
 import { useUiStore } from "../stores/ui-store";
 import { quickModelParam, toolbarNodeId } from "./canvas-rules";
-import { DiceIcon, Download01Icon, PlayIcon } from "./icon-data";
+import { Delete02Icon, DiceIcon, Download01Icon, PlayIcon } from "./icon-data";
 import { downloadNodeOutput, rerollNode, runToNode } from "./node-actions";
 import { ParamField } from "./param-fields";
 
+// Room the toolbar needs above a card: one row, or the row plus the model picker.
+const TOOLBAR_ROOM = 48;
+const TOOLBAR_ROOM_MODEL = 128;
+
+/** Non-scaling by design: NodeToolbar sits outside the zoomed viewport, so it keeps its screen
+ *  size at any zoom while staying anchored to the card. */
 function SelectedNodeToolbarImpl({ readOnly }: { readOnly: boolean }) {
   const nodeId = useUiStore((s) =>
     toolbarNodeId(
@@ -27,13 +33,24 @@ function SelectedNodeToolbarImpl({ readOnly }: { readOnly: boolean }) {
   const hasOutput = useRuntimeStore(
     (s) => !!(nodeId && s.nodes[nodeId]?.outputs),
   );
+  const { deleteElements } = useReactFlow();
+  const room = quickModelParam(spec) ? TOOLBAR_ROOM_MODEL : TOOLBAR_ROOM;
+  // Above the card, or below it when the card's top is too close to the canvas edge to fit it.
+  const below = useStore((s) => {
+    const internal = nodeId ? s.nodeLookup.get(nodeId) : undefined;
+    return (
+      !!internal &&
+      internal.internals.positionAbsolute.y * s.transform[2] + s.transform[1] <
+        room
+    );
+  });
   if (!nodeId || !node || !spec) return null;
   const modelParam = quickModelParam(spec);
   return (
     <NodeToolbar
       nodeId={nodeId}
       isVisible={true}
-      position={Position.Top}
+      position={below ? Position.Bottom : Position.Top}
       offset={8}
       className="nodrag nopan nowheel flex items-center gap-1 rounded-lg border border-border bg-popover p-1 shadow-[var(--popup-shadow)]"
     >
@@ -69,6 +86,18 @@ function SelectedNodeToolbarImpl({ readOnly }: { readOnly: boolean }) {
           <HugeiconsIcon icon={Download01Icon} size={12} /> Download
         </Button>
       )}
+      <Button
+        type="button"
+        variant="ghost"
+        size="xs"
+        title="Delete this block (Delete)"
+        aria-label="Delete block"
+        data-testid="node-toolbar-delete"
+        className="text-muted-foreground hover:text-destructive"
+        onClick={() => void deleteElements({ nodes: [{ id: nodeId }] })}
+      >
+        <HugeiconsIcon icon={Delete02Icon} size={12} />
+      </Button>
       {modelParam && (
         <div className="w-56" data-testid="node-toolbar-model">
           <ParamField

@@ -32,8 +32,11 @@ import {
 import { runFlow, stopFlow } from "./run-controller";
 import { flushSave } from "./use-autosave";
 
-/** Run and the flow's other actions, floating at the bottom of the canvas the way Recipe
- *  Studio's RunValidateFloatingControls do, so the window corners stay clear. */
+// Clears the run drawer (h-65) under the canvas column.
+const DRAWER_CLEARANCE = "calc(16.25rem + 0.75rem)";
+
+/** Run and the flow's other actions, floating bottom centre the way Recipe Studio's
+ *  RunValidateFloatingControls do, so the window corners stay clear. */
 function RunBarImpl({
   onPlay,
   onApp,
@@ -54,7 +57,10 @@ function RunBarImpl({
   const [dialog, setDialog] = useState<"run" | "plan" | "share" | null>(null);
 
   return (
-    <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center">
+    <div
+      className="pointer-events-none absolute inset-x-0 z-20 flex justify-center"
+      style={{ bottom: drawerOpen ? DRAWER_CLEARANCE : "0.75rem" }}
+    >
       <div
         className="pointer-events-auto flex items-center gap-2"
         data-testid="flows-run-bar"

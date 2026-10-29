@@ -120,35 +120,36 @@ function EditorBody({
         </Alert>
       )}
       {!readOnly && <CapabilityBanner flowId={flowId} />}
-      <div className="flex min-h-0 flex-1">
+      <div className="relative flex min-h-0 flex-1">
         {paletteOpen && !readOnly && <Palette onDrop={dropAt} />}
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="relative min-h-0 flex-1">
             <FlowCanvas readOnly={readOnly} />
-            <RunBar
-              onPlay={() =>
-                leaveAfterSave(
-                  () =>
-                    void navigate({
-                      to: "/flows/$flowId/play",
-                      params: { flowId },
-                    }),
-                )
-              }
-              onApp={() =>
-                leaveAfterSave(
-                  () =>
-                    void navigate({
-                      to: "/flows/$flowId/app",
-                      params: { flowId },
-                    }),
-                )
-              }
-            />
           </div>
           <RunDrawer />
         </div>
         <Inspector />
+        {/* Over the whole editor body, not the canvas, so it stays put as panels open. */}
+        <RunBar
+          onPlay={() =>
+            leaveAfterSave(
+              () =>
+                void navigate({
+                  to: "/flows/$flowId/play",
+                  params: { flowId },
+                }),
+            )
+          }
+          onApp={() =>
+            leaveAfterSave(
+              () =>
+                void navigate({
+                  to: "/flows/$flowId/app",
+                  params: { flowId },
+                }),
+            )
+          }
+        />
       </div>
       <QuickAdd />
     </div>

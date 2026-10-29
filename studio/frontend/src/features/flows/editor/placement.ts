@@ -18,18 +18,24 @@ export function stopPlacement(): void {
   if (usePlacement.getState().armed) usePlacement.setState({ armed: null });
 }
 
-const GRID = 16;
+/** The snap step, equal to the canvas dot gap so snapped cards sit on the dots. */
+export const GRID = 20;
 // A new card's top-left sits this far up-left of the pointer, so the pointer lands on its header.
 const GRAB: [number, number] = [130, 20];
+
+export function snapPoint(
+  [x, y]: [number, number],
+  snap: boolean,
+): [number, number] {
+  return snap
+    ? [Math.round(x / GRID) * GRID, Math.round(y / GRID) * GRID]
+    : [Math.round(x), Math.round(y)];
+}
 
 /** Where a node placed at `flow` (the pointer, in flow coordinates) goes. */
 export function placementPosition(
   flow: { x: number; y: number },
   snap: boolean,
 ): [number, number] {
-  const x = flow.x - GRAB[0];
-  const y = flow.y - GRAB[1];
-  return snap
-    ? [Math.round(x / GRID) * GRID, Math.round(y / GRID) * GRID]
-    : [Math.round(x), Math.round(y)];
+  return snapPoint([flow.x - GRAB[0], flow.y - GRAB[1]], snap);
 }

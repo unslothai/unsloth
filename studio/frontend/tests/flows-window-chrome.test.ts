@@ -29,7 +29,18 @@ test("the toolbar holds no run or share actions; they float at the bottom of the
   const bar = read("features/flows/editor/run-bar.tsx");
   for (const id of ["flows-run", "flows-stop", "flows-play", "flows-open-app", "flows-plan", "flows-share"])
     assert.ok(bar.includes(`"${id}"`), `${id} missing from the run bar`);
-  assert.match(bar, /absolute inset-x-0 bottom-3 z-20 flex justify-center/);
+  assert.match(bar, /absolute inset-x-0 z-20 flex justify-center/);
   assert.match(bar, /title="Run \(Ctrl\+Enter\)"/);
   assert.match(read("features/flows/editor/flows-editor-page.tsx"), /<RunBar\b/);
+});
+
+test("the run bar sits on the editor body, so opening the Nodes panel or the inspector never moves it", () => {
+  const page = read("features/flows/editor/flows-editor-page.tsx");
+  const body = page.slice(page.indexOf('<div className="relative flex min-h-0 flex-1">'));
+  const canvasColumn = body.slice(body.indexOf('<div className="relative min-h-0 flex-1">'), body.indexOf("<RunDrawer />"));
+  assert.ok(!canvasColumn.includes("<RunBar"), "the bar is not inside the canvas column");
+  assert.ok(body.indexOf("<RunBar") > body.indexOf("<Inspector />"), "the bar is a child of the body row");
+  const bar = read("features/flows/editor/run-bar.tsx");
+  assert.ok(!/paletteOpen|inspector/i.test(bar.replace(/\/\*[\s\S]*?\*\//g, "")), "its position ignores panel state");
+  assert.match(bar, /bottom: drawerOpen \? DRAWER_CLEARANCE : "0\.75rem"/);
 });

@@ -41,10 +41,10 @@ test("Esc, right-click and leaving the editor all stop placement", () => {
 
 test("a placed node lands with its header under the pointer, on the grid when snap is on", () => {
   assert.deepEqual(placementPosition({ x: 500, y: 300 }, false), [370, 280]);
-  assert.deepEqual(placementPosition({ x: 507.4, y: 301 }, true), [384, 288]);
+  assert.deepEqual(placementPosition({ x: 507.4, y: 301 }, true), [380, 280]);
   const [x, y] = placementPosition({ x: -45, y: 13 }, true);
-  assert.equal(Math.abs(x % 16), 0);
-  assert.equal(Math.abs(y % 16), 0);
+  assert.equal(Math.abs(x % 20), 0);
+  assert.equal(Math.abs(y % 20), 0);
 });
 
 test("only empty canvas places; clicks on nodes and groups do not", () => {
