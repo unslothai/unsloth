@@ -262,3 +262,13 @@ test("the card's hint uses the saved load when the card follows it", () => {
   );
   assert.equal(s.effectiveLoad({ ...card, use_model_settings: false }, { max_seq_length: 32768 }), null);
 });
+
+test("Context Length writes Chat's context pin and drops a stale max_seq_length", () => {
+  assert.deepEqual(
+    s.withLoadField({ max_seq_length: 65536, n_parallel: 2 }, s.CONTEXT_PIN, 8192),
+    { n_parallel: 2, custom_context_length: 8192 },
+  );
+  assert.equal(s.contextPin({ custom_context_length: 8192, max_seq_length: 4096 }), 8192);
+  assert.equal(s.contextPin({ max_seq_length: 4096 }), 4096);
+  assert.equal(s.contextPin(null), undefined);
+});

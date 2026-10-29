@@ -333,6 +333,18 @@ async def _resident_variant(ctx: Any, slot: str, repo: str) -> Optional[str]:
     return variant.lower() if isinstance(variant, str) else None
 
 
+async def resident_gguf_variant(ctx: Any) -> Optional[str]:
+    """The quant the loaded chat model runs, as its status spells it, or None."""
+    from studio_mcp import loading
+
+    try:
+        _slots, status = await loading._resident(_caller(ctx))
+    except Exception:
+        return None
+    variant = status.get("gguf_variant") if isinstance(status, dict) else None
+    return variant if isinstance(variant, str) and variant else None
+
+
 async def ensure_model(
     ctx: Any,
     model_kind: str,

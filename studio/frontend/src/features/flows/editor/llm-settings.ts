@@ -217,6 +217,15 @@ export function loadPatch(
   };
 }
 
+/** Chat's context pin. The loader reads it before `max_seq_length`, and alone under Manual GPU memory with
+ *  Auto layers, so the Context Length control writes this one. */
+export const CONTEXT_PIN = "custom_context_length";
+
+export function contextPin(load: LoadSettings | null | undefined): number | undefined {
+  const pin = load?.[CONTEXT_PIN] ?? load?.max_seq_length;
+  return typeof pin === "number" ? pin : undefined;
+}
+
 /** One load setting changed; undefined or "" removes it, so the model's own default applies. */
 export function withLoadField(
   load: LoadSettings | null | undefined,
@@ -224,6 +233,8 @@ export function withLoadField(
   value: unknown,
 ): LoadSettings | null {
   const next: LoadSettings = { ...(load ?? {}) };
+  // A saved max_seq_length would otherwise win over the pin wherever the loader prefers it.
+  if (key === CONTEXT_PIN) delete next.max_seq_length;
   if (value === undefined || value === null || value === "") delete next[key];
   else next[key] = value;
   return Object.keys(next).length > 0 ? next : null;
@@ -264,7 +275,7 @@ export function reloadHint(
     return `Reloads the model: ${repo.split("/").pop()} vs ${loaded.checkpoint.split("/").pop()} loaded`;
   const load = (params.load as LoadSettings | null) ?? {};
   const diffs: string[] = [];
-  const ctx = load.max_seq_length;
+  const ctx = contextPin(load);
   if (typeof ctx === "number" && loaded.contextLength && ctx !== loaded.contextLength)
     diffs.push(`context ${tokens(ctx)} vs ${tokens(loaded.contextLength)} loaded`);
   const kv = load.kv_cache_dtype;

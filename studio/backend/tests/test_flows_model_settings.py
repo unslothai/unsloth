@@ -298,3 +298,33 @@ def test_an_explicit_zero_context_reaches_the_load(monkeypatch):
     asyncio.run(_ensure({"model": {"repo": GGUF, "variant": None}, "load": load}))
     assert loads[0]["max_seq_length"] == 0
     assert _common._load_context(None) == _common.FLOW_CHAT_CONTEXT
+
+
+def test_a_card_on_the_loaded_model_keeps_its_quant_through_a_reload(monkeypatch):
+    loads = _load_fakes(monkeypatch, [GGUF])
+
+    async def resident(caller):
+        return {"llm": [GGUF]}, {"is_gguf": True, "serving": [GGUF], "gguf_variant": "UD-Q4_K_XL"}
+
+    monkeypatch.setattr(loading, "_resident", resident)
+    asyncio.run(_ensure({"model": None, "load": {"custom_context_length": 4096}}))
+    assert loads[0]["variant"] == "UD-Q4_K_XL" and loads[0]["max_seq_length"] == 4096
+
+    seen = []
+    monkeypatch.setattr(model_settings, "read_saved", lambda model_id: None)
+    monkeypatch.setattr(
+        model_settings, "saved_load", lambda model_id, variant = None: seen.append(variant) or {}
+    )
+
+    async def fake_resident_name(ctx, kind):
+        return GGUF
+
+    monkeypatch.setattr(_common, "resident_name", fake_resident_name)
+    params = param_values(GENERATE, {"params": {"use_model_settings": True}})
+    asyncio.run(engine_mod._apply_saved_settings(_Ctx(), GENERATE, params, set()))
+    assert seen == ["UD-Q4_K_XL"]
+
+
+def test_the_context_pin_wins_under_manual_auto_layers():
+    load = {"gpu_memory_mode": "manual", "custom_context_length": 12288}
+    assert model_settings.load_kwargs(load, is_gguf = True)["max_seq_length"] == 12288

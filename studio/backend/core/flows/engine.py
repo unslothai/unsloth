@@ -2185,13 +2185,15 @@ async def _apply_saved_settings(ctx: Any, spec: dict, params: dict, bound: set[s
     """In place, before the cache key: a saved setting that changes must miss the cache."""
     choice = params.get("model")
     model_id = choice.get("repo") if isinstance(choice, dict) else None
+    variant = choice.get("variant") if isinstance(choice, dict) else None
     if not model_id:
-        from core.flows.nodes._common import resident_name
+        from core.flows.nodes._common import resident_gguf_variant, resident_name
+
         model_id = await resident_name(ctx, spec["model_kind"])
+        variant = await resident_gguf_variant(ctx) if model_id else None
     saved = await asyncio.to_thread(model_settings.read_saved, model_id)
     params.update(model_settings.overlay(params, saved, spec, bound))
     if any(p["id"] == model_settings.LOAD for p in spec["params"]):
-        variant = choice.get("variant") if isinstance(choice, dict) else None
         load = await asyncio.to_thread(model_settings.saved_load, model_id, variant)
         if load:
             params[model_settings.LOAD] = {**(params.get(model_settings.LOAD) or {}), **load}

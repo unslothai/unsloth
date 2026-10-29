@@ -44,7 +44,7 @@ import {
   SPECULATIVE_TYPES,
 } from "@/lib/speculative-modes";
 import { type ReactNode, useEffect, useState } from "react";
-import type { LoadSettings } from "./llm-settings";
+import { CONTEXT_PIN, type LoadSettings, contextPin } from "./llm-settings";
 
 const ROW_CLASS = "flex min-h-8 items-center justify-between gap-3";
 const LABEL_CLASS =
@@ -241,11 +241,11 @@ export function LlmLoadSettings({
       >
         <NumberField
           label="Context Length"
-          value={load.max_seq_length}
+          value={contextPin(load)}
           min={MAX_SEQ_LENGTH_MIN}
           max={MAX_SEQ_LENGTH_MAX}
           placeholder="Auto"
-          onChange={set("max_seq_length")}
+          onChange={(value) => onChange(CONTEXT_PIN, value)}
         />
       </Row>
       {gguf && (

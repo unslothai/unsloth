@@ -12,7 +12,15 @@ from typing import Any, Optional
 
 from core.flows import model_settings
 from core.flows.model_settings import request_params
-from core.flows.nodes._common import as_text, first_json, lookup, render, resident_name, template_vars
+from core.flows.nodes._common import (
+    as_text,
+    first_json,
+    lookup,
+    render,
+    resident_gguf_variant,
+    resident_name,
+    template_vars,
+)
 from core.flows.registry import FlowNodeError, NodeContext, handler
 
 
@@ -57,7 +65,9 @@ async def _model_and_load(ctx: NodeContext, kind: str) -> tuple[Any, Optional[di
         repo = await resident_name(ctx, kind)
         if not repo:
             return choice, None
-        choice = {"repo": repo, "variant": None}
+        # The loaded quant, or a reload for different settings would fall back to the repo's default one.
+        variant = await resident_gguf_variant(ctx)
+        choice = {"repo": repo, "variant": variant}
     return choice, model_settings.load_kwargs(load, is_gguf = model_settings.looks_gguf(repo, variant))
 
 
