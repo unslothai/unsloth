@@ -234,12 +234,8 @@ def _llama_cpp_has_gpu() -> bool:
         key = (binary, os.stat(binary).st_mtime_ns)
         if _LLAMA_GPU_CACHE and _LLAMA_GPU_CACHE[0][1] == key:
             checked, _, answer = _LLAMA_GPU_CACHE[0]
-            if time.monotonic() - checked >= 60 and _LLAMA_GPU_REFRESH.acquire(
-                blocking = False
-            ):
-                threading.Thread(
-                    target = _refresh_llama_gpu, args = (binary, key), daemon = True
-                ).start()
+            if time.monotonic() - checked >= 60 and _LLAMA_GPU_REFRESH.acquire(blocking = False):
+                threading.Thread(target = _refresh_llama_gpu, args = (binary, key), daemon = True).start()
             return answer
         return _probe_llama_gpu(binary, key)
     except Exception:
