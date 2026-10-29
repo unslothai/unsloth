@@ -42,7 +42,14 @@ class _Pipe:
         self.transformer = transformer
 
 
-def _edit_loop(model, steps = 4, *, neg_len = 3, scale = 4.0, swap_neg_at = None):
+def _edit_loop(
+    model,
+    steps = 4,
+    *,
+    neg_len = 3,
+    scale = 4.0,
+    swap_neg_at = None,
+):
     """The diffusers Qwen-Image-Edit-Plus loop: one ``latent_model_input`` per step (target + source image tokens),
     cond then uncond call with their own prompt lengths and masks, normalised true CFG."""
     g = torch.Generator().manual_seed(1)
@@ -68,9 +75,9 @@ def _edit_loop(model, steps = 4, *, neg_len = 3, scale = 4.0, swap_neg_at = None
                 attention_kwargs = None,
                 return_dict = False,
             )
-            cond = model(
-                encoder_hidden_states_mask = pos_mask, encoder_hidden_states = pos, **common
-            )[0][:, : latents.size(1)]
+            cond = model(encoder_hidden_states_mask = pos_mask, encoder_hidden_states = pos, **common)[
+                0
+            ][:, : latents.size(1)]
             uncond = model(
                 encoder_hidden_states_mask = neg_mask, encoder_hidden_states = neg, **common
             )[0][:, : latents.size(1)]
@@ -119,7 +126,11 @@ def test_a_changed_second_branch_reruns_plain():
     got, outs = _edit_loop(model, steps = 5, swap_neg_at = 3)
     assert torch.equal(got, ref)
     assert all(torch.equal(a, b) for a, b in zip(outs, ref_outs))
-    assert router.stats["misses"] == 1 and router.stats["paired_steps"] == 4 and router.stats["hits"] == 3
+    assert (
+        router.stats["misses"] == 1
+        and router.stats["paired_steps"] == 4
+        and router.stats["hits"] == 3
+    )
 
 
 def test_kill_switch_keeps_the_batch_router(monkeypatch):
@@ -135,7 +146,10 @@ def test_kill_switch_keeps_the_batch_router(monkeypatch):
 
 
 def test_declines_a_resident_or_unhooked_denoiser():
-    assert cb.cfg_pair_decline(_Pipe(_tiny()), offload_policy = "none") == "the denoiser stays on the card"
+    assert (
+        cb.cfg_pair_decline(_Pipe(_tiny()), offload_policy = "none")
+        == "the denoiser stays on the card"
+    )
     model = _offload(_tiny())
     assert cb.cfg_pair_decline(_Pipe(model), offload_policy = "group") is None
     pipe = _Pipe(model)

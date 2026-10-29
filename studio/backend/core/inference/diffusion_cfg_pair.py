@@ -37,7 +37,6 @@ class _Captured(Exception):
 
 def _bg() -> Any:
     from . import diffusion_block_graph as bg
-
     return bg
 
 
@@ -83,7 +82,6 @@ def _spec(module: Any) -> Optional[tuple]:
 def _streams_a_block(module: Any) -> bool:
     try:
         from .diffusion_memory import _offload_groups
-
         return any(
             not getattr(g, "_unsloth_resident", False)
             and getattr(g, "offload_leader", None) is not module
@@ -156,14 +154,7 @@ class PairedForward:
         self.inject_list = torch.nn.ModuleList([self.inject])
         self.blocks_attr, self.carry = _spec(module)
 
-    def run(
-        self,
-        module: Any,
-        outer: Any,
-        root_fn: Any,
-        first: tuple,
-        second: tuple,
-    ) -> tuple:
+    def run(self, module: Any, outer: Any, root_fn: Any, first: tuple, second: tuple) -> tuple:
         """(first output, second output). ``outer`` is the hooked forward a plain first-branch call goes through."""
         (args1, kwargs1), (args2, kwargs2) = first, second
         if args1 or args2:
