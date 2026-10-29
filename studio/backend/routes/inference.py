@@ -44943,7 +44943,11 @@ def _anthropic_message_from_openai_completion(
 
     healing_active = bool(allowed_tools)
     healed_events = (
-        heal_openai_message_events(message, allowed_tools, openai_tools) if healing_active else None
+        heal_openai_message_events(
+            message, allowed_tools, openai_tools, allow_incomplete = finish_reason != "length"
+        )
+        if healing_active
+        else None
     )
 
     content_blocks = []

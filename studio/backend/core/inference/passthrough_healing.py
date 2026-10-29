@@ -183,13 +183,16 @@ def heal_openai_message_events(
     msg: dict,
     allowed_tools: set,
     tools: Optional[list] = None,
+    allow_incomplete: bool = True,
 ) -> Optional[list]:
     if not isinstance(msg, dict) or msg.get("tool_calls"):
         return None
     content = msg.get("content")
     if not isinstance(content, str) or not _has_heal_signal(content):
         return None
-    parsed, spans = parse_tool_calls_from_text(content, allow_incomplete = True, with_spans = True)
+    parsed, spans = parse_tool_calls_from_text(
+        content, allow_incomplete = allow_incomplete, with_spans = True
+    )
     tool_schemas = _tool_schemas_by_name(tools) if tools is not None else None
     events: list = []
     pos = 0

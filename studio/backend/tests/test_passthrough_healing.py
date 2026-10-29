@@ -1093,6 +1093,20 @@ class TestAnthropicPassthroughHealingText:
 
         asyncio.run(_run())
 
+    def test_call_cut_at_max_tokens_is_not_runnable(self, monkeypatch):
+        async def _run():
+            cut = "<tool_call><function=lookup><parameter=q>line1\nli"
+            data = await self._drive(
+                monkeypatch, _upstream_message(LOOKUP_XML + cut, finish_reason = "length")
+            )
+            (tool_use,) = [b for b in data["content"] if b["type"] == "tool_use"]
+            assert tool_use["input"] == {"q": "x"}
+            text = "".join(b["text"] for b in data["content"] if b["type"] == "text")
+            assert text == cut
+            assert data["stop_reason"] == "max_tokens"
+
+        asyncio.run(_run())
+
 
 class TestAnthropicEmitterHealing:
     def _events(
