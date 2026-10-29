@@ -85,6 +85,24 @@ def _frames(path) -> tuple[int, int, int]:
         return w.getframerate(), w.getnchannels(), w.getnframes()
 
 
+def test_transcode_writes_the_wav_header_sizes_once_at_close(tmp_path, monkeypatch):
+    src = tmp_path / "clip.wav"
+    src.write_bytes(encode("wav", "pcm_s16le", 44100, "stereo", 1.5))
+    patches = []
+    real = wave.Wave_write._patchheader
+
+    def patch(self):
+        patches.append(self._datawritten)
+        return real(self)
+
+    monkeypatch.setattr(wave.Wave_write, "_patchheader", patch)
+    dst = tmp_path / "out.wav"
+    info = audio_inputs.transcode(src, dst)
+    assert patches == [os.path.getsize(dst) - 44]
+    assert _frames(dst) == (44100, 2, int(round(44100 * 1.5)))
+    assert info == {"duration_s": 1.5, "sample_rate": 44100, "channels": 2}
+
+
 @pytest.fixture
 def client():
     from routes import inference

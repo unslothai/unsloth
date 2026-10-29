@@ -177,7 +177,7 @@ def transcode(
                 raise AudioInputError(
                     413, f"Audio is longer than {int(max_seconds // 60)} minutes."
                 )
-            out.writeframes(block.to_ndarray().reshape(-1)[: take * channels].tobytes())
+            out.writeframesraw(block.to_ndarray().reshape(-1)[: take * channels].tobytes())
             frames += take
             if cut and frames >= ceiling:
                 return True

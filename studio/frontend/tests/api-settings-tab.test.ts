@@ -68,7 +68,9 @@ test("one tab row holds every example, with no jump links above it; Agents opens
   ]) {
     assert.match(tabs, card);
   }
-  assert.doesNotMatch(tabs, /<h2|<h3/);
+  assert.equal(tabs.match(/<h2/g)?.length, 1);
+  assert.match(tabs, /<h2[^>]*>\s*\{t\("settings\.apiKeys\.quickstartTitle"\)\}/);
+  assert.doesNotMatch(tabs, /<h3/);
   assert.match(tabs, /entry\.id === "agents"\s*\? useSettingsDialogStore\.getState\(\)\.openDialog\("agents"\)/);
   assert.match(tabs, /\.\.\.\(isOwner\s*\? \[[\s\S]*?id: "agents" as const/);
   for (const [target, tab] of [["api-keys-media-api", "media"], ["api-keys-audio-api", "audio"], ["api-keys-decision-api", "decision"]]) {

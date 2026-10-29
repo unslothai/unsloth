@@ -73,6 +73,7 @@ function harness() {
       "@/lib/file-icon": {},
       "@hugeicons/react": {},
       "@hugeicons/core-free-icons": {},
+      "@/lib/hugeicons-derived": {},
       "@/lib/chevron-icons": {},
       "@/components/ui/dropdown-menu": {},
       "@/features/chat/hooks/use-rag-tool-disabled": {
