@@ -108,6 +108,7 @@ let hardwareWaitSpent = false;
 /** A repair or restart replaced the backend: its predecessor's verdict is no longer measured. Platform fields stay. */
 export function forgetMeasuredVerdict(): void {
   hardwareWaitSpent = false;
+  backendGeneration += 1;
   // The old deferred flag would mask staleness, so a failed first read would look settled.
   usePlatformStore.setState({ verdictStale: true, detectionDeferred: false });
 }
@@ -123,6 +124,26 @@ function localPlatformFallback(force?: boolean): DeviceType {
   return deviceType;
 }
 
+// Bumped on a backend replacement so a read sent to the old backend is never joined.
+let backendGeneration = 0;
+
+// main.tsx and __root.tsx's beforeLoad both read at startup: an unforced call joins an unforced
+// read in flight for the same token, URL and backend generation. Forced refreshes never share.
+let sharedHealthRead: {
+  token: string | null;
+  url: string;
+  generation: number;
+  promise: Promise<DeviceType>;
+} | null = null;
+
+function readAuthToken(): string | null {
+  // device_type is only reported to authed callers. Read the token directly: importing
+  // features/auth would cycle.
+  return typeof window === "undefined"
+    ? null
+    : localStorage.getItem("unsloth_auth_token");
+}
+
 // `force` re-reads /api/health even if cached, to pick up a late-arriving tunnel URL.
 export async function fetchDeviceType(options?: {
   force?: boolean;
@@ -133,14 +154,45 @@ export async function fetchDeviceType(options?: {
   if (isTauri && getApiPort() === null) {
     return localPlatformFallback(options?.force);
   }
+  if (options?.force) return readHealth(options);
 
+  let token: string | null;
   try {
-    // device_type is only reported to authed callers. Read the token directly: importing
-    // features/auth would cycle.
-    const token =
-      typeof window === "undefined"
-        ? null
-        : localStorage.getItem("unsloth_auth_token");
+    token = readAuthToken();
+  } catch {
+    // Same fallback as a failed read; readHealth records it.
+    return readHealth(options);
+  }
+  const url = apiUrl("/api/health");
+  const shared = sharedHealthRead;
+  if (
+    shared !== null &&
+    shared.token === token &&
+    shared.url === url &&
+    shared.generation === backendGeneration
+  ) {
+    return shared.promise;
+  }
+  const entry = {
+    token,
+    url,
+    generation: backendGeneration,
+    promise: readHealth(options, token),
+  };
+  sharedHealthRead = entry;
+  const release = () => {
+    if (sharedHealthRead === entry) sharedHealthRead = null;
+  };
+  entry.promise.then(release, release);
+  return entry.promise;
+}
+
+async function readHealth(
+  options: { force?: boolean } | undefined,
+  knownToken?: string | null,
+): Promise<DeviceType> {
+  try {
+    const token = knownToken === undefined ? readAuthToken() : knownToken;
     // Re-read while the backend is still detecting: chat_only is its pre-detection default and
     // __root.tsx's beforeLoad acts on it.
     const headers = token ? { Authorization: `Bearer ${token}` } : undefined;

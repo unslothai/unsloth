@@ -13,6 +13,8 @@ from unsloth.kernels import fp8 as F8
 @pytest.fixture
 def spies(monkeypatch):
     calls = []
+    # NVIDIA routing; ROCm runners report a HIP version and keep the compiled path (tested below).
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
     monkeypatch.setattr(F8, "_fp8_rowwise_backend", lambda device: "scaled_mm")
     monkeypatch.setattr(F8, "_FP8_ROWWISE_DIRECT", True)
     monkeypatch.setattr(
@@ -118,7 +120,9 @@ def test_direct_path_is_bitwise_equal_to_the_compiled_path(dtype):
                             route = F8._fp8_rowwise_direct_route(X, w, s)
                             assert route == (
                                 "scaled_mm"
-                                if 2 * rows > 64 and N % 16 == 0 and K % 16 == 0
+                                if 2 * rows > F8._fp8_dequant_max_rows(X.device, N * K)
+                                and N % 16 == 0
+                                and K % 16 == 0
                                 else "dequant"
                             )
                             ref = F8._fbgemm_fp8_linear_compiled(X, w, s, b)
@@ -140,3 +144,11 @@ def test_compile_disabled_keeps_the_eager_wrapper():
     assert F8._fp8_rowwise_direct_enabled("1", compile_disabled = False) is True
     for off in ("0", "false", "No", " off "):
         assert F8._fp8_rowwise_direct_enabled(off, compile_disabled = False) is False
+
+
+def test_rocm_keeps_the_compiled_path(spies, monkeypatch):
+    monkeypatch.setattr(torch.version, "hip", "7.0", raising = False)
+    with FakeTensorMode(), torch.no_grad():
+        assert F8.fbgemm_fp8_linear(*_args(32)) == "compiled"
+        assert F8.fbgemm_fp8_linear(*_args(128)) == "compiled"
+    assert spies == ["compiled", "compiled"]

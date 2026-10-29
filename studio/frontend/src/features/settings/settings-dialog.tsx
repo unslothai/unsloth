@@ -549,7 +549,7 @@ export function SettingsDialog() {
                 )}
               </div>
               {results ? (
-                <div className="hover-scrollbar flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-1 py-1 group-data-stacked/settings:hidden">
+                <div className="hover-scrollbar -mr-2 flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto py-1 pl-1 pr-0.5 group-data-stacked/settings:hidden">
                   {results.length === 0 ? (
                     <p className="px-3 py-2 text-sm text-muted-foreground">
                       {t("settings.dialog.searchNoResults")}
@@ -593,7 +593,7 @@ export function SettingsDialog() {
                 onScroll={onRailScroll}
                 className={cn(
                   // A short window leaves the list taller than the clipped sidebar, so scroll it.
-                  "hover-scrollbar settings-rail-fade flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-1 py-1",
+                  "hover-scrollbar settings-rail-fade -mr-2 flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto py-1 pl-1 pr-0.5 group-data-stacked/settings:mr-0",
                   railFadeClass,
                   "group-data-stacked/settings:flex-none group-data-stacked/settings:flex-row group-data-stacked/settings:overflow-x-auto group-data-stacked/settings:py-0",
                   results !== null && "group-data-stacked/settings:flex hidden",

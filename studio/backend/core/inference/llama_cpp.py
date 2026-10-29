@@ -134,6 +134,9 @@ from core.inference.llama_server_args import (
     fit_target_margin_in,
     MANAGED_DIO_FLAGS,
     no_reserve_requires_dio,
+    keep_resident_lock_applicable,
+    keep_resident_lock_flags,
+    load_mode_support,
     resolve_launch_load_mode,
     resolve_effective_load_state,
     resolve_effective_memory_state,
@@ -26132,7 +26135,7 @@ class LlamaCppBackend:
                             extra_args,
                             binary = binary,
                             requested_load_mode = load_mode,
-                            supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                            supports_load_mode = load_mode_support(server_caps),
                             settings = _mem_settings,
                             layers_fixed = _caller_owns_budget or _paravirtual_cpu_forced,
                             mtp_may_engage = _mtp_will_engage,
@@ -26311,9 +26314,7 @@ class LlamaCppBackend:
                                         extra_args,
                                         binary = binary,
                                         requested_load_mode = load_mode,
-                                        supports_load_mode = bool(
-                                            server_caps.get("supports_load_mode")
-                                        ),
+                                        supports_load_mode = load_mode_support(server_caps),
                                         settings = _mem_settings,
                                         layers_fixed = _caller_owns_budget or _paravirtual_cpu_forced,
                                         mtp_may_engage = False,
@@ -28964,7 +28965,7 @@ class LlamaCppBackend:
                 # Armed here, not at load start: rows from before the Hub download are stale.
                 _arm_load_probe_memo()
                 _mem_dio_possible = no_reserve_requires_dio(
-                    supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                    supports_load_mode = load_mode_support(server_caps),
                     gpu_offload_confirmed = True,
                 )
                 # NOT gated on the toggle: the answer is this launch's recorded placement
@@ -29014,7 +29015,7 @@ class LlamaCppBackend:
                 )
                 _mem_managed, _mem_extras = apply_model_memory_policy(
                     extra_args,
-                    supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                    supports_load_mode = load_mode_support(server_caps),
                     weights_in_host_memory = _mem_host_resident,
                     gpu_offload_confirmed = _mem_gpu_offload_confirmed,
                     env = _fit_load_mode_env_view,
@@ -29048,7 +29049,7 @@ class LlamaCppBackend:
                 _resolved_load_mode = load_mode or _fit_load_mode
                 _load_mode_managed, _mem_extras = apply_load_mode_policy(
                     _mem_extras,
-                    supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                    supports_load_mode = load_mode_support(server_caps),
                     weights_in_host_memory = _mem_host_resident,
                     requested_load_mode = _resolved_load_mode,
                     settings = _mem_settings,
@@ -29062,7 +29063,7 @@ class LlamaCppBackend:
                 def _ask(pair, env_view):
                     return resolve_launch_load_mode(
                         extra_args,
-                        supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                        supports_load_mode = load_mode_support(server_caps),
                         weights_in_host_memory = _mem_host_resident,
                         gpu_offload_confirmed = _mem_gpu_offload_confirmed,
                         requested_load_mode = _resolved_load_mode,
@@ -29138,7 +29139,7 @@ class LlamaCppBackend:
                     def _for(pair, env_view):
                         return resolve_launch_load_mode(
                             extra_args,
-                            supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                            supports_load_mode = load_mode_support(server_caps),
                             weights_in_host_memory = host_resident,
                             gpu_offload_confirmed = confirmed,
                             requested_load_mode = _resolved_load_mode,
@@ -29170,6 +29171,19 @@ class LlamaCppBackend:
                     and is_vulkan_backend
                     and not self._vulkan_probe_answered(binary)
                 )
+                # An unknown build gets no lock, so none is owed either.
+                self._memory_mlock_applicable = keep_resident_lock_applicable(
+                    self._memory_mlock_applicable, load_mode_support(server_caps)
+                )
+                if (
+                    _mem_should_mlock
+                    and _mem_host_resident
+                    and load_mode_support(server_caps) is None
+                ):
+                    logger.info(
+                        "Model Memory: skipping page-lock, the llama-server --help "
+                        "probe was inconclusive and newer builds reject --mlock."
+                    )
                 if _mem_should_mlock and not _mem_host_resident:
                     logger.info(
                         "Model Memory: skipping page-lock, the weights are fully "
@@ -30617,19 +30631,20 @@ class LlamaCppBackend:
                             )
                             # With --fit off, -ngl defaults to every layer, so the host-resident verdict may no longer hold.
                             if _mem_should_mlock and not _mem_host_resident:
-                                _run.extend(
-                                    ["--load-mode", "mmap+mlock"]
-                                    if server_caps.get("supports_load_mode")
-                                    else ["--mlock"]
+                                _retry_lock = keep_resident_lock_flags(
+                                    load_mode_support(server_caps)
                                 )
+                                _run.extend(_retry_lock)
                                 _mem_host_resident = True
-                                self._memory_mlock_applicable = True
-                                self._memory_policy_active = True
-                                logger.info(
-                                    "Model Memory: re-applying the page-lock for "
-                                    "the --fit on retry; the full-offload "
-                                    "prediction did not hold."
-                                )
+                                # An unknown build gets no lock, so none is owed either.
+                                self._memory_mlock_applicable = bool(_retry_lock)
+                                if _retry_lock:
+                                    self._memory_policy_active = True
+                                    logger.info(
+                                        "Model Memory: re-applying the page-lock for "
+                                        "the --fit on retry; the full-offload "
+                                        "prediction did not hold."
+                                    )
                             run_cmd = _run
                             self._record_memory_state(_run, env)
                             _did_fit_retry = True
@@ -31457,7 +31472,7 @@ class LlamaCppBackend:
                         if _retry_host_resident and not _mem_host_resident:
                             _retry_managed, _ = apply_model_memory_policy(
                                 extra_args,
-                                supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                                supports_load_mode = load_mode_support(server_caps),
                                 # Not the requested load mode: the first launch
                                 # emitted it and this call only ADDS, so a second
                                 # copy would land after the extras and mark
@@ -31473,7 +31488,9 @@ class LlamaCppBackend:
                                 # flag. Nothing is stripped, so kept extras survive.
                                 cmd.extend(_retry_managed)
                             _mem_host_resident = _retry_host_resident
-                            self._memory_mlock_applicable = _retry_host_resident
+                            self._memory_mlock_applicable = keep_resident_lock_applicable(
+                                _retry_host_resident, load_mode_support(server_caps)
+                            )
                             # Stays active if it already was: the flag also
                             # covers extras this policy touched and env it
                             # scrubbed, neither of which the respawn undoes.
@@ -33848,7 +33865,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _pid_start_identity(pid: int) -> str:
-        """True when the parent still runs, so the server is not orphaned; uncertainty reads as alive so a live server is never mistakenly reaped"""
+        """Process start time as a string ('' when unknown); a recycled PID will not match it."""
         try:
             import psutil
             try:
@@ -33869,7 +33886,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _pid_parent_is_alive(pid: int) -> bool:
-        """Reaps only true orphans so a second backend cannot kill a live server; recycled PIDs are rejected by start time and name; SIGKILL becomes SIGTERM on Windows"""
+        """True when the parent still runs, so the server is not orphaned; uncertainty reads as alive."""
         try:
             import psutil
 
@@ -33894,7 +33911,7 @@ class LlamaCppBackend:
             if ppid <= 1:
                 return False
             return Path(f"/proc/{ppid}").exists()
-        return False
+        return True  # no psutil and no /proc: unknown
 
     @staticmethod
     def _unlink_pidfile(path: Path) -> None:
@@ -33927,7 +33944,6 @@ class LlamaCppBackend:
             return 0  # never our own pid; leave the record alone
 
         if cls._pid_parent_is_alive(pid):
-            # Kills only Unsloth-root or env-override servers, gathering all candidates first so a failed scan kills none; a positive count arms the VRAM settle wait
             return 0
 
         # Parent is gone: candidate orphan. Reject a PID recycled to something else.
@@ -34143,7 +34159,6 @@ class LlamaCppBackend:
 
             # -- Ownership check, orphan check, kill ---------------------------
             for pid, binary, kill in candidates:
-                # atexit: log streams may be closed, so log nothing; stdlib loggers need raiseExceptions off, while the except covers structlog; neither alone is enough
                 if not _is_signalable_pid(pid):
                     continue
                 # Ownership: exact match OR binary under a known root.
