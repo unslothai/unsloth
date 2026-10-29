@@ -467,12 +467,6 @@ def _nvfp4_gate_failure(family) -> Optional[str]:
         return None
 
 
-_TRAIN_DENY_NVFP4_REASON = (
-    "nvfp4 is inference-only: the accuracy gate behind it measures a frozen forward at a "
-    "per-layer policy, and no training run has been measured on 4-bit frozen linears"
-)
-
-
 def _family_train_denied(
     family,
     scheme: str,

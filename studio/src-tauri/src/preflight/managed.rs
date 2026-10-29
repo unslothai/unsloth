@@ -1055,6 +1055,108 @@ fn working_directory_reason() -> Option<String> {
     Some(context_reason(&error))
 }
 
+pub(super) struct LaunchCliProbe {
+    bin: PathBuf,
+    started: Instant,
+    handle: tauri::async_runtime::JoinHandle<Result<bool, String>>,
+}
+
+type PendingLaunchCliProbe = tokio::sync::oneshot::Receiver<Option<LaunchCliProbe>>;
+
+/// Filled before the setup thread runs, so an early preflight still waits for its spawn.
+static LAUNCH_CLI_PROBE: std::sync::Mutex<Option<PendingLaunchCliProbe>> =
+    std::sync::Mutex::new(None);
+
+const LAUNCH_CLI_PROBE_MAX_AGE: Duration = Duration::from_secs(30);
+
+/// The first preflight for the same CLI reuses a passing `-h` from here. Off the main thread:
+/// finding the CLI touches the disk and the runtime's first use builds it.
+pub(crate) fn start_launch_cli_probe() {
+    let pending = begin_launch_cli_probe();
+    let spawned = std::thread::Builder::new()
+        .name("launch-cli-probe".to_string())
+        .spawn(move || {
+            let probe = crate::process::find_unsloth_binary()
+                .filter(|_| crate::process::managed_cli_context_error().is_none())
+                .map(spawn_launch_cli_probe);
+            let _ = pending.send(probe);
+        });
+    if let Err(error) = spawned {
+        warn!("Could not start the launch CLI probe: {error}");
+    }
+}
+
+pub(super) fn begin_launch_cli_probe() -> tokio::sync::oneshot::Sender<Option<LaunchCliProbe>> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    if let Ok(mut slot) = LAUNCH_CLI_PROBE.lock() {
+        *slot = Some(receiver);
+    }
+    sender
+}
+
+fn spawn_launch_cli_probe(bin: PathBuf) -> LaunchCliProbe {
+    let probe_bin = bin.clone();
+    let handle =
+        tauri::async_runtime::spawn(async move { run_cli_probe(&probe_bin, &["-h"]).await });
+    launch_cli_probe_task(bin, handle)
+}
+
+pub(super) fn launch_cli_probe_task(
+    bin: PathBuf,
+    handle: tauri::async_runtime::JoinHandle<Result<bool, String>>,
+) -> LaunchCliProbe {
+    LaunchCliProbe {
+        bin,
+        started: Instant::now(),
+        handle,
+    }
+}
+
+#[cfg(test)]
+pub(super) fn install_launch_cli_probe(bin: PathBuf) {
+    let _ = begin_launch_cli_probe().send(Some(spawn_launch_cli_probe(bin)));
+}
+
+#[cfg(test)]
+pub(super) fn install_launch_cli_probe_task(
+    bin: PathBuf,
+    handle: tauri::async_runtime::JoinHandle<Result<bool, String>>,
+) {
+    let _ = begin_launch_cli_probe().send(Some(launch_cli_probe_task(bin, handle)));
+}
+
+/// `true` only for a recent passing launch `-h` on this CLI, taken once. Any CLI's probe is
+/// awaited: its spawn holds the runtime launch guard, which a spawn beside it reads as busy.
+async fn launch_cli_probe_passed(bin: &Path) -> bool {
+    let pending = match LAUNCH_CLI_PROBE.lock() {
+        Ok(mut slot) => slot.take(),
+        Err(_) => None,
+    };
+    let Some(pending) = pending else {
+        return false;
+    };
+    let Ok(Some(probe)) = pending.await else {
+        return false;
+    };
+    let passed = matches!(probe.handle.await, Ok(Ok(true)));
+    if probe.bin != bin {
+        info!(
+            "Managed preflight: launch -h probe was for {:?}, not {:?}; not reused",
+            probe.bin, bin
+        );
+        return false;
+    }
+    let age = probe.started.elapsed();
+    let fresh = age <= LAUNCH_CLI_PROBE_MAX_AGE;
+    info!(
+        "Managed preflight: launch -h probe passed={} age={}ms reused={}",
+        passed,
+        age.as_millis(),
+        passed && fresh
+    );
+    passed && fresh
+}
+
 pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
     let started = Instant::now();
 
@@ -1070,8 +1172,32 @@ pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
         };
     }
 
-    // Always run `-h` first: a matching fingerprint does not prove the CLI still launches.
-    match run_cli_probe(&bin, &["-h"]).await {
+    // Fingerprint taken before any probe, so an answer is cached against the tree the CLI read.
+    let fingerprint_before = managed_bin_fingerprint(&bin);
+    let cache_hit = fingerprint_before
+        .as_ref()
+        .is_some_and(|fingerprint| read_cached_capability(fingerprint).is_some());
+
+    // `-h` decides first: a fingerprint does not prove the CLI launches, and a failing `-h` wins over
+    // a capability answer. Awaited before any spawn below, which would find its guard held.
+    let launch_help_passed = launch_cli_probe_passed(&bin).await;
+    let help_probe = async {
+        if launch_help_passed {
+            Ok(true)
+        } else {
+            run_cli_probe(&bin, &["-h"]).await
+        }
+    };
+
+    // A cache miss overlaps both Python starts; one task, so the spawns take the guard in turn.
+    let (cli_probe, capability_probe) = if cache_hit {
+        (help_probe.await, None)
+    } else {
+        let (help, capability) = tokio::join!(help_probe, probe_cli_capability(&bin));
+        (help, Some(capability))
+    };
+
+    match cli_probe {
         // The CLI was never asked, so do not report a broken install.
         Err(error) => {
             info!(
@@ -1099,20 +1225,16 @@ pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
         Ok(true) => {}
     }
 
-    // Fingerprint taken before the probe, so the answer is cached against the tree the CLI read.
-    let fingerprint_before = managed_bin_fingerprint(&bin);
-    if let Some(fingerprint) = fingerprint_before.as_ref() {
-        if read_cached_capability(fingerprint).is_some() {
-            info!(
-                "Managed preflight: using cached desktop capability for {:?} in {}ms",
-                bin,
-                started.elapsed().as_millis()
-            );
-            return ManagedProbe::Ready { bin };
-        }
-    }
+    let Some(capability_probe) = capability_probe else {
+        info!(
+            "Managed preflight: using cached desktop capability for {:?} in {}ms",
+            bin,
+            started.elapsed().as_millis()
+        );
+        return ManagedProbe::Ready { bin };
+    };
 
-    let capability = match probe_cli_capability(&bin).await {
+    let capability = match capability_probe {
         Ok(capability) => capability,
         Err(error) => {
             info!(

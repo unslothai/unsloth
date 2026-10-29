@@ -508,6 +508,12 @@ class GroupPrefetcher:
         carried = getattr(self, "carried", None)
         if carried:
             carried.discard(gid)
+        if gid in self.ready and self._keeps_for_next(gid):
+            # the next forward runs it first: re-uploading the same weights would only wait on the copy
+            self.__dict__.setdefault("carried", set()).add(gid)
+            self.stats["kept"] = self.stats.get("kept", 0) + 1
+            self._fill()
+            return
         if gid in self.ready:
             self._release(group, self.ready.pop(gid))
         else:
@@ -585,6 +591,19 @@ class GroupPrefetcher:
             ahead += 1
         if ahead < self.depth and self.pos >= len(self.order) and self.may_carry():
             self._carry(ahead)
+
+    def _keeps_for_next(self, gid: int) -> bool:
+        """``keep_first``: keep the top-level group on device; the next forward needs it first."""
+        order = self.order
+        return bool(
+            getattr(self, "keep_first", False)
+            and self.active
+            and self.on_order
+            and order
+            and self.pos >= len(order)
+            and order[0] == gid
+            and self.may_carry()
+        )
 
     def carry_usable(self) -> bool:
         return bool(
@@ -1180,6 +1199,18 @@ def cross_forward_render(pipe: Any, enabled: bool = True) -> Iterator[list]:
                 _disarm(pf)
             except Exception:  # noqa: BLE001 - leave the render's own error to surface
                 pass
+
+
+def end_cross_forward(pipe: Any) -> int:
+    """Disarm ``pipe``'s prefetchers, drop their carry; returns carried copies read so far."""
+    hits = 0
+    for pf in _pipe_prefetchers(pipe):
+        try:
+            _disarm(pf)
+            hits += int(pf.stats.get("carried_hits", 0))
+        except Exception:  # noqa: BLE001 - leave the render's own error to surface
+            pass
+    return hits
 
 
 _UNKNOWN = object()

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Literal, Optional, get_args
 
 from loggers import get_logger
+from utils.scan_memo import memoized
 
 from hub.utils.paths import cache_root
 
@@ -213,6 +214,13 @@ def _entry_key(
 
 def normalize_hub_cache(hub_cache: str | Path) -> str:
     """Resolves, then applies normcase, so manifest writers and readers derive the same state key."""
+    return memoized(
+        ("normalize_hub_cache", os.fspath(hub_cache)),
+        lambda: _normalize_hub_cache_uncached(hub_cache),
+    )
+
+
+def _normalize_hub_cache_uncached(hub_cache: str | Path) -> str:
     try:
         resolved = str(Path(hub_cache).expanduser().resolve(strict = False))
     except (OSError, RuntimeError, ValueError):

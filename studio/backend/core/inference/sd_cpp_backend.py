@@ -1267,42 +1267,61 @@ _ROCM_RUNTIME_SONAMES: tuple[str, ...] = (
 )
 
 
-def rocm_runtime_resolvable() -> Optional[bool]:
-    """Uses ctypes, not ``ldconfig -p``: its cache can omit ROCm libraries the loader still resolves."""
+_ROCM_SONAME_PROBE = (
+    "import ctypes, sys\n"
+    "for name in sys.argv[1:]:\n"
+    "    try:\n"
+    "        ctypes.CDLL(name)\n"
+    "    except OSError:\n"
+    "        print(name)\n"
+)
+_rocm_missing_memo: Optional[tuple[Optional[list[str]]]] = None
+
+
+def _rocm_missing_sonames_fresh() -> Optional[list[str]]:
+    """Fresh process, not in-process ctypes: torch's ROCm wheel already loaded its own sonames here, which sd-cli never sees."""
+    global _rocm_missing_memo
     if os.name != "posix" or sys.platform == "darwin":
         return None
+    if _rocm_missing_memo is not None:
+        return _rocm_missing_memo[0]
+    import subprocess
+
+    from utils.child_stdio import utf8_child_env
+
     try:
-        import ctypes
-    except Exception:  # noqa: BLE001 - no ctypes, so nothing can be established
-        return None
-    for soname in _ROCM_RUNTIME_SONAMES:
-        try:
-            ctypes.CDLL(soname)
-        except OSError:
-            return False
-        except Exception:  # noqa: BLE001 - an unexpected loader failure establishes nothing
-            return None
-    return True
+        # -X utf8 as well: -I ignores the PYTHONIOENCODING utf8_child_env sets.
+        proc = subprocess.run(
+            [sys.executable, "-X", "utf8", "-I", "-c", _ROCM_SONAME_PROBE, *_ROCM_RUNTIME_SONAMES],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            env = utf8_child_env(),
+            timeout = 20,
+        )
+        result = (
+            [line for line in proc.stdout.split() if line in _ROCM_RUNTIME_SONAMES]
+            if proc.returncode == 0
+            else None
+        )
+    except Exception:  # noqa: BLE001 - a probe that cannot run establishes nothing
+        result = None
+    _rocm_missing_memo = (result,)
+    return result
+
+
+def rocm_runtime_resolvable() -> Optional[bool]:
+    """Uses the real loader, not ``ldconfig -p``: its cache can omit ROCm libraries the loader still resolves."""
+    missing = _rocm_missing_sonames_fresh()
+    return None if missing is None else not missing
 
 
 def rocm_runtime_missing_sonames() -> Optional[list[str]]:
     """The ROCm runtime libraries the loader cannot open here: [] when all load, None when it cannot be asked
-    (Windows, macOS, no ctypes, an unexpected loader error), which says nothing either way."""
-    if os.name != "posix" or sys.platform == "darwin":
-        return None
-    try:
-        import ctypes
-    except Exception:  # noqa: BLE001
-        return None
-    missing = []
-    for soname in _ROCM_RUNTIME_SONAMES:
-        try:
-            ctypes.CDLL(soname)
-        except OSError:
-            missing.append(soname)
-        except Exception:  # noqa: BLE001 - an unexpected loader failure establishes nothing
-            return None
-    return missing
+    (Windows, macOS, an unexpected probe failure), which says nothing either way."""
+    missing = _rocm_missing_sonames_fresh()
+    return None if missing is None else list(missing)
 
 
 ACCELERATOR_FALLBACK_CLEAR_HINT = (
@@ -1944,6 +1963,9 @@ def accelerator_runtime_failure_state() -> dict:
 
 def clear_accelerator_runtime_failures() -> None:
     """Forget every note (``DELETE /settings/diffusion-accelerator-fallback``). BOTH halves: the in-process mirror would otherwise keep diverting."""
+    global _rocm_missing_memo
+    # Clearing is the retry after fixing the runtime, so re-probe it.
+    _rocm_missing_memo = None
     _accelerator_runtime_failures.clear()
     _persist_accelerator_runtime_failures({})
 
@@ -2438,7 +2460,8 @@ def _native_condition_images(
                 canvas.paste(img, ((canvas.width - iw) // 2, (canvas.height - ih) // 2))
                 img = canvas
         buf = io.BytesIO()
-        img.save(buf, format = "PNG")
+        # Transport only (sd.cpp decodes it back): zlib level 1 is lossless and faster than Pillow's default.
+        img.save(buf, format = "PNG", compress_level = 1)
         blobs.append(buf.getvalue())
     return int(width), int(height), blobs
 
@@ -2538,7 +2561,9 @@ def note_unlaunchable_accelerator_build(
             accelerator,
             fallback_accelerator_for(accelerator),
         )
-        note_accelerator_runtime_failure(accelerator, proven = False, card = card)
+        note_accelerator_runtime_failure(
+            accelerator, proven = accelerator_probe_failure_is_decisive(accelerator), card = card
+        )
     except Exception as exc:  # noqa: BLE001
         logger.debug("could not record the sd.cpp launch failure: %s", exc)
 
@@ -2607,6 +2632,32 @@ def _pin_fingerprint() -> dict:
     return {"bundle": want, **_host_fingerprint()}
 
 
+def _skip_unloadable_rocm(accelerator: str) -> str:
+    """Before any fetch: a stalled or cut-short ~300 MB ROCm download records no strike, so every load would retry it."""
+    klass = _accelerator_class_of(accelerator)
+    nxt = fallback_accelerator_for(klass) if klass == "rocm" else None
+    if not nxt:
+        return accelerator
+    try:
+        # Only the default release is known to need the host runtime; an override may bundle it.
+        inst = _installer_module()
+        if inst._repo() != inst.DEFAULT_REPO or inst._pinned_tag() != inst.DEFAULT_TAG:
+            return accelerator
+        if rocm_runtime_resolvable() is not False:
+            return accelerator
+        if not accelerator_runtime_failed(klass):
+            logger.warning(
+                "sd_cpp.rocm_runtime_absent: %s; installing the %s build instead",
+                accelerator_fallback_reason(klass),
+                nxt,
+            )
+            note_accelerator_runtime_failure(klass, proven = True)
+    except Exception as exc:  # noqa: BLE001 - a failed preflight leaves the request as it was
+        logger.debug("ROCm runtime preflight failed: %s", exc)
+        return accelerator
+    return nxt
+
+
 def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu") -> Optional[str]:
     """Never raises: None means no usable binary and tells the router to fall back to diffusers."""
     found = find_sd_cpp_binary()
@@ -2615,6 +2666,8 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
         return found
     if not allow_install:
         return found
+    # Only once a fetch is due: an installed build may carry its runtime beside the binary.
+    accelerator = _skip_unloadable_rocm(accelerator)
     with _install_lock:
         found = find_sd_cpp_binary()
         usable = bool(found) and _usable_or_discard_managed(found)
@@ -2660,6 +2713,7 @@ def ensure_sd_server_binary(
         return found
     if not allow_install:
         return found
+    accelerator = _skip_unloadable_rocm(accelerator)
     with _install_lock:
         found = find_sd_server_binary()
         usable = bool(found) and _usable_or_discard_managed(found)
@@ -2740,6 +2794,18 @@ class _SdState:
 
     def spawn_env(self) -> Optional[dict[str, str]]:
         return dict(self.child_env) or None
+
+    @property
+    def placed_ordinal(self) -> Optional[int]:
+        """Torch ordinal of ``physical_gpu_id``; without it card-sharing helpers (upsampler) split over all GPUs."""
+        if self.physical_gpu_id is None or self.off_torch_device is not None:
+            return None
+        try:
+            from utils.hardware import get_parent_visible_gpu_ids
+            visible = [int(i) for i in get_parent_visible_gpu_ids()]
+            return visible.index(int(self.physical_gpu_id))
+        except Exception:  # noqa: BLE001
+            return None
 
 
 def _offload_with_device_pin_impl(

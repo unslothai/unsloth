@@ -2125,6 +2125,75 @@ def fix_transformers_flash_attention_mrope_packed_sequence():
     )
 
 
+_PACKED_ROWS_PATCH_FLAG = "_unsloth_patched_mrope_packed_rows"
+_PACKED_ROWS_CHECKED = [None, None, False]
+
+
+def _packed_row_varlen_kwargs(query, attention_mask, kwargs):
+    """cu_seqlens from an Unsloth packed row whose layers got mRoPE ids, else None."""
+    if kwargs.get("packed_seq_lengths") is None:
+        return None
+    import torch
+
+    position_ids = kwargs.get("position_ids")
+    if (
+        attention_mask is not None
+        or kwargs.get("cu_seq_lens_q") is not None
+        or not isinstance(position_ids, torch.Tensor)
+        or position_ids.dim() <= 2
+        or query.dim() != 4
+        or query.shape[0] != 1
+    ):
+        return None
+    from .utils.packing import get_packed_info_from_kwargs
+
+    info = get_packed_info_from_kwargs(kwargs, query.device)
+    if info is None:
+        return None
+    _, cu_seqlens, max_seqlen = info
+    # One host read per batch, not per layer: rows that do not cover the query keep the original path.
+    if not torch.compiler.is_compiling():
+        checked = _PACKED_ROWS_CHECKED
+        if checked[0] is not cu_seqlens or checked[1] != query.shape[1]:
+            checked[:] = [cu_seqlens, query.shape[1], int(cu_seqlens[-1]) == query.shape[1]]
+        if not checked[2]:
+            return None
+    return {
+        "cu_seq_lens_q": cu_seqlens,
+        "cu_seq_lens_k": cu_seqlens,
+        "max_length_q": max_seqlen,
+        "max_length_k": max_seqlen,
+    }
+
+
+def fix_transformers_flash_attention_mrope_packed_rows():
+    """Qwen3.5 / Qwen3.5-MoE on transformers 5.3 give decoder layers 3-row mRoPE ids, which cannot mark
+    document starts: take a packed row's boundaries from `packed_seq_lengths` instead."""
+    try:
+        from transformers.integrations import flash_attention as fa_integration
+    except Exception:
+        return
+    current = getattr(fa_integration, "_flash_attention_forward", None)
+    if current is None or getattr(current, _PACKED_ROWS_PATCH_FLAG, False):
+        return
+
+    @functools.wraps(current)
+    def _flash_attention_forward(
+        query_states, key_states, value_states, attention_mask, *args, **kwargs
+    ):
+        varlen = _packed_row_varlen_kwargs(query_states, attention_mask, kwargs)
+        if varlen is not None:
+            kwargs.update(varlen)
+        return current(query_states, key_states, value_states, attention_mask, *args, **kwargs)
+
+    setattr(_flash_attention_forward, _PACKED_ROWS_PATCH_FLAG, True)
+    fa_integration._flash_attention_forward = _flash_attention_forward
+    logger.info(
+        "Unsloth: Patching transformers flash attention so packed rows with mRoPE layer "
+        "position ids keep their documents apart"
+    )
+
+
 _CHUNKED_MASK_PATCH_FLAG = "_unsloth_patched_chunked_block_sequence_ids"
 _BLOCK_SEQUENCE_IDS = "block_sequence_ids"
 
@@ -7700,7 +7769,8 @@ def _sdpa_grad_layout_function():
 
         @staticmethod
         def forward(out):
-            return out.view_as(out)
+            # Not a view: view outputs reject in-place consumers; Inductor drops the clone.
+            return out.clone()
 
         @staticmethod
         def setup_context(ctx, inputs, output):

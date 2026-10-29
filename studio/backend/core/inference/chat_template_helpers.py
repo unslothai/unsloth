@@ -22,7 +22,6 @@ _UNPARSED = object()
 
 _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
-_GEMMA_CHANNEL_START = "<|channel>"
 _GEMMA_THOUGHT_OPEN = "<|channel>thought"
 _GEMMA_THOUGHT_CLOSE = "<channel|>"
 _GEMMA_TEMPLATE_OPENERS = (

@@ -292,12 +292,6 @@ def source_shards(
     return None
 
 
-def _source_shards_in(base: str, component: str, cache_dir: Optional[str]) -> Optional[list[str]]:
-    for found in _shard_sets_in(base, component, cache_dir):
-        return found
-    return None
-
-
 def _shard_sets_in(base: str, component: str, cache_dir: Optional[str]):
     candidates = [str(base)]
     try:
@@ -589,7 +583,6 @@ _REMOTE_MEMO: dict[tuple, tuple] = {}
 _GONE = "gone"
 # Shared hub_reachability verdict: after one failure, lookups answer "unknown" (local snapshot stands) for the TTL.
 _UNREACHABLE = _reach._UNREACHABLE
-_connection_failed = _reach.connection_failed
 _endpoint = _reach.endpoint
 
 

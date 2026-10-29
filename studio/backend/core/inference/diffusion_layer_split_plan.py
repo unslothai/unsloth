@@ -385,14 +385,6 @@ def plan_layer_split(
     )
 
 
-_BLOCK_LIST_ATTRS: tuple[str, ...] = (
-    "transformer_blocks",
-    "single_transformer_blocks",
-    "blocks",
-    "layers",
-)
-
-
 def split_blocks(module: Any) -> Optional[list[tuple[str, Any]]]:
     """The denoiser's repeated blocks in forward order as ``(qualified name, module)`` (the engine's own list, so a
     plan's indices name the blocks it places); None when the engine cannot cut this denoiser."""

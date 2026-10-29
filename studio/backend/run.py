@@ -1576,6 +1576,24 @@ def _wait_for_server_shutdown(timeout: Optional[float] = _SERVER_SHUTDOWN_JOIN_T
     _flush_standard_streams()
 
 
+def _exit_without_finalizing() -> NoReturn:
+    """Exit as the interpreter would, minus finalization: freeing a loaded backend's heap takes seconds."""
+    import atexit
+    import threading
+
+    # CPython's exit order. Unbounded join: to_thread work (dataset import, export) must finish its writes.
+    threading._shutdown()
+    atexit._run_exitfuncs()
+    status = 0
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            # CPython's own exit status when it cannot flush a standard stream.
+            status = 120
+    os._exit(status)
+
+
 _server = None
 _server_thread = None
 # "https" for an --ssl-certfile launch, used by every URL the launch prints for itself
@@ -2427,7 +2445,16 @@ def run_server(
         pass
     write_startup_marker()
 
-    from main import app, setup_frontend, _desktop_owner, _IS_COLAB
+    import gc
+
+    # The import builds ~330k long-lived objects the default threshold rescans ~270 times; 0 (GC off) is left alone.
+    _gc_threshold = gc.get_threshold()
+    if _gc_threshold[0]:
+        gc.set_threshold(max(_gc_threshold[0], 100_000), *_gc_threshold[1:])
+    try:
+        from main import app, setup_frontend, _desktop_owner, _IS_COLAB
+    finally:
+        gc.set_threshold(*_gc_threshold)
 
     # A callable, re-asked at shutdown. On app.state: main.py must not import this module.
     app.state.live_sibling_backend = live_sibling_backend
@@ -3094,3 +3121,4 @@ if __name__ == "__main__":
     while not _shutdown_event.is_set():
         _shutdown_event.wait(timeout = 1)
     _wait_for_server_shutdown()
+    _exit_without_finalizing()
