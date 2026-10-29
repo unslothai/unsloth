@@ -4,6 +4,7 @@
 // llama-bench: llama.cpp's own prompt-processing and generation benchmark on the picked
 // GGUF, drawn with Config sweeps' setup column, tiles and live card.
 
+import { LogPane } from "@/components/log-pane";
 import { SectionCard } from "@/components/section-card";
 import { SegmentedTabsList } from "@/components/segmented-tabs";
 import { Button } from "@/components/ui/button";
@@ -11,6 +12,7 @@ import { Progress } from "@/components/ui/progress";
 import { Tabs } from "@/components/ui/tabs";
 import { useLocale } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { stripAnsi } from "@/lib/strip-ansi";
 import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
@@ -24,13 +26,16 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "sonner";
 import {
   type ReactElement,
-  type ReactNode,
   useEffect,
   useMemo,
   useState,
 } from "react";
+import { BarChart } from "../components/bar-chart";
 import { BENCH_CARD, RUN_BUTTON } from "../components/bench-ui";
+import { niceMax } from "../components/chart-math";
+import { useFamilyColors } from "../components/family-colors";
 import { CountInput, Field } from "../components/setup-panel";
+import { StatTile } from "../components/stat-tile";
 import { ago } from "../lib/ago";
 import { modelShort } from "../lib/bench-math";
 import type {
@@ -224,70 +229,47 @@ function LlamaBenchSetup({
   );
 }
 
-function Tile({
-  label,
-  value,
-  detail,
-}: {
-  label: string;
-  value: ReactNode;
-  detail?: ReactNode;
-}): ReactElement {
-  return (
-    <div className={cn(BENCH_CARD, "flex min-w-0 flex-col gap-1.5 px-5 py-4")}>
-      <span className="text-ui-11 font-medium tracking-nav text-muted-foreground">
-        {label}
-      </span>
-      <span className="truncate font-heading text-ui-22 font-semibold leading-tight tracking-[-0.02em] tabular-nums text-foreground">
-        {value}
-      </span>
-      {detail && (
-        <span className="truncate text-ui-11 text-muted-foreground">
-          {detail}
-        </span>
-      )}
-    </div>
-  );
-}
-
 /** pp and tg differ by an order of magnitude, so each gets its own scale. */
 function RateBars({
   title,
   rows,
+  color,
 }: {
   title: string;
   rows: LlamaBenchRow[];
+  color: string;
 }): ReactElement | null {
   if (rows.length === 0) return null;
-  const max = Math.max(...rows.map((r) => r.avg_ts + (r.stddev_ts || 0)));
+  const max = niceMax(
+    Math.max(...rows.map((r) => r.avg_ts + (r.stddev_ts || 0))),
+  );
   return (
-    <div className="flex flex-col gap-1.5">
-      <span className="text-ui-11 font-medium uppercase tracking-[0.05em] text-muted-foreground/70">
-        {title}
-      </span>
-      {rows.map((r) => (
-        <div
-          key={r.test}
-          className="grid grid-cols-[calc(96px*var(--ui-space-scale,1))_minmax(0,1fr)_calc(112px*var(--ui-space-scale,1))] items-center gap-3"
-          title={`${r.test}: ${r.samples_ts.map(rate).join(", ")} tok/s`}
-        >
-          <span className="truncate text-right font-mono text-ui-12 text-foreground/85">
-            {r.test}
-          </span>
-          <span className="relative h-3 rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)]">
-            <span
-              className="absolute inset-y-0 left-0 rounded-full bg-primary transition-[width] duration-500 ease-out"
-              style={{ width: `${(r.avg_ts / max) * 100}%` }}
-            />
-          </span>
-          <span className="text-ui-12 tabular-nums text-muted-foreground">
-            <span className="font-semibold text-foreground">
-              {rate(r.avg_ts)}
-            </span>{" "}
-            ± {rate(r.stddev_ts || 0)} t/s
-          </span>
-        </div>
-      ))}
+    <div className="overflow-hidden rounded-xl">
+      <BarChart
+        title={title}
+        groups={[
+          {
+            label: title,
+            rows: rows.map((r) => ({
+              key: r.test,
+              label: r.test,
+              value: r.avg_ts,
+              low: r.avg_ts - (r.stddev_ts || 0),
+              high: r.avg_ts + (r.stddev_ts || 0),
+              color,
+              tail: `± ${rate(r.stddev_ts || 0)}`,
+              tip: [
+                `${title} · ${r.test}`,
+                `${rate(r.avg_ts)} ± ${rate(r.stddev_ts || 0)} t/s`,
+                `${r.samples_ts.map(rate).join(", ")} tok/s`,
+              ],
+            })),
+          },
+        ]}
+        max={max}
+        format={(v) => `${rate(v)} t/s`}
+        axisLabel="Tokens / sec"
+      />
     </div>
   );
 }
@@ -314,22 +296,23 @@ function Results({
       (a, r) => (!a || r.avg_ts > a.avg_ts ? r : a),
       null,
     );
+  const palette = useFamilyColors();
   const bestPp = best(pp);
   const bestTg = best(tg);
   return (
     <div className="flex flex-col gap-4">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <Tile
+        <StatTile
           label="Prompt processing"
           value={bestPp ? `${rate(bestPp.avg_ts)} t/s` : "—"}
           detail={bestPp ? `best, at ${bestPp.test}` : undefined}
         />
-        <Tile
+        <StatTile
           label="Generation"
           value={bestTg ? `${rate(bestTg.avg_ts)} t/s` : "—"}
           detail={bestTg ? `best, at ${bestTg.test}` : undefined}
         />
-        <Tile
+        <StatTile
           label="Model"
           value={variant ?? meta.model_type ?? modelShort(model)}
           detail={
@@ -339,8 +322,8 @@ function Results({
           }
         />
       </div>
-      <section className={cn(BENCH_CARD, "flex flex-col gap-5 p-4 sm:p-5")}>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+      <section className={cn(BENCH_CARD, "flex flex-col gap-3 p-3 sm:p-4")}>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-1">
           <span className="text-ui-13 font-medium text-foreground">
             Throughput
           </span>
@@ -370,8 +353,8 @@ function Results({
             Copy as markdown
           </Button>
         </div>
-        <RateBars title="Prompt processing" rows={pp} />
-        <RateBars title="Generation" rows={tg} />
+        <RateBars title="Prompt processing" rows={pp} color={palette.mtp} />
+        <RateBars title="Generation" rows={tg} color={palette.ngram} />
       </section>
     </div>
   );
@@ -442,11 +425,10 @@ function LiveCard(): ReactElement | null {
               {showLog ? "Hide log" : "Show log"}
             </button>
             {showLog && (
-              <div className="max-h-48 overflow-y-auto rounded-xl bg-black/80 p-3 font-mono text-xs leading-relaxed text-white/80">
-                {job.log.map((line, i) => (
-                  <div key={i}>{line}</div>
-                ))}
-              </div>
+              <LogPane
+                text={job.log.map(stripAnsi).join("\n")}
+                className="h-[min(20rem,40vh)]"
+              />
             )}
           </>
         )}
