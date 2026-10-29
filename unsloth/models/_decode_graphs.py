@@ -129,7 +129,14 @@ class _StepStatics:
 
     __slots__ = ("rope_len", "slot", "kv_len", "mask", "attention", "span", "keep", "drop")
 
-    def __init__(self, rope_len, slot, span = None, keep = None, drop = None):
+    def __init__(
+        self,
+        rope_len,
+        slot,
+        span = None,
+        keep = None,
+        drop = None,
+    ):
         self.rope_len = rope_len
         self.slot = slot
         self.kv_len = None
@@ -453,7 +460,12 @@ def _eligible(model, layers):
     return None
 
 
-def _full_span(model, kv_len, cap, bsz = 1):
+def _full_span(
+    model,
+    kv_len,
+    cap,
+    bsz = 1,
+):
     """The cache rows a whole-step graph attends over, or None for the segmented capture."""
     if not FULL or bsz > FULL_MAX_BSZ:
         return None
@@ -676,7 +688,9 @@ def decode_step(
         state.captures += 1
     st = step.statics
     st.kv_len = kv_len
-    st.mask = None if span is not None else mask_fn(model, attention_mask, bsz, 1, s["like"], seq_len)
+    st.mask = (
+        None if span is not None else mask_fn(model, attention_mask, bsz, 1, s["like"], seq_len)
+    )
     try:
         step.replay()
     finally:
