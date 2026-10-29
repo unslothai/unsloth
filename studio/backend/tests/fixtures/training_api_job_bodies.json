@@ -200,13 +200,13 @@
       "q_proj",
       "v_proj"
     ],
-    "gradient_checkpointing": "true",
     "vision_image_size": 448,
     "trust_remote_code": true,
     "dataset_slice_start": 10,
     "dataset_slice_end": 500,
     "embedding_learning_rate": 0.000005,
     "save_steps": 25,
+    "gradient_checkpointing": "true",
     "max_grad_norm": 0.5,
     "max_grad_value": 2,
     "train_on_completions": true

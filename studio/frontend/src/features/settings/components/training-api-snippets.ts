@@ -112,6 +112,7 @@ const EXTRA_DEFAULTS = {
   "dataset_slice_end": null,
   "embedding_learning_rate": null,
   "save_steps": 100,
+  "gradient_checkpointing": "",
   "max_grad_norm": null,
   "max_grad_value": null,
   "model_subfolder": null,
@@ -161,7 +162,6 @@ function trainingExtras(payload: TrainingStartRequest): Record<string, unknown> 
       if (payload[flag]) extras[flag] = true;
     }
   }
-  extras.gradient_checkpointing = payload.gradient_checkpointing;
   for (const [key, fallback] of Object.entries(EXTRA_DEFAULTS)) {
     const value = payload[key as keyof typeof EXTRA_DEFAULTS];
     if (value != null && value !== "" && value !== fallback) extras[key] = value;
