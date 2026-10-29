@@ -24,7 +24,6 @@ import {
   ApiIcon,
   BotIcon,
   Cancel01Icon,
-  ChipIcon,
   CloudIcon,
   ComputerTerminal01Icon,
   DatabaseSettingIcon,
@@ -38,7 +37,7 @@ import {
   UserCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { ShieldCogIcon } from "@/lib/shield-cog-icon";
-import { MessageCircleIcon } from "@/lib/hugeicons-derived";
+import { ChipIcon, MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
 import {

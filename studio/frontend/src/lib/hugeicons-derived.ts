@@ -142,3 +142,15 @@ export const SpeedMeterIcon: IconSvgElement = [
   ["circle", { cx: "12", cy: "12.5", r: "2.25", stroke: "currentColor", strokeWidth: "1.5", key: "2" }],
   ["path", { d: "M13.59 10.91L18.01 6.49", stroke: "currentColor", strokeLinecap: "round", strokeWidth: "1.5", key: "3" }],
 ];
+
+// Hugeicons computer and chip as drawn in core-free-icons 4.4; the installed 4.1 draws older versions.
+export const ComputerIcon: IconSvgElement = [
+  ["path", { d: "M14 21H16M14 21C13.1716 21 12.5 20.3284 12.5 19.5V17L12 17M14 21H10M10 21H8M10 21C10.8284 21 11.5 20.3284 11.5 19.5V17L12 17M12 17V21", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "0" }],
+  ["path", { d: "M16 3H8C5.17157 3 3.75736 3 2.87868 3.87868C2 4.75736 2 6.17157 2 9V11C2 13.8284 2 15.2426 2.87868 16.1213C3.75736 17 5.17157 17 8 17H16C18.8284 17 20.2426 17 21.1213 16.1213C22 15.2426 22 13.8284 22 11V9C22 6.17157 22 4.75736 21.1213 3.87868C20.2426 3 18.8284 3 16 3Z", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "1" }],
+];
+
+export const ChipIcon: IconSvgElement = [
+  ["path", { d: "M13 20H11C7.70017 20 6.05025 20 5.02513 18.9749C4 17.9497 4 16.2998 4 13V11C4 7.70017 4 6.05025 5.02513 5.02513C6.05025 4 7.70017 4 11 4H13C16.2998 4 17.9497 4 18.9749 5.02513C20 6.05025 20 7.70017 20 11V13C20 16.2998 20 17.9497 18.9749 18.9749C17.9497 20 16.2998 20 13 20Z", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "0" }],
+  ["path", { d: "M22 9.00003L20 9.00003M4 9.00003L2 9.00003M20 15L22 15M4 15H2M9 2L9 4M9 20L9 22M15 4L15 2M15 20L15 22", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "1" }],
+  ["path", { d: "M12 16C13.8856 16 14.8284 16 15.4142 15.4142C16 14.8284 16 13.8856 16 12C16 10.1144 16 9.17157 15.4142 8.58579C14.8284 8 13.8856 8 12 8C10.1144 8 9.17157 8 8.58579 8.58579C8 9.17157 8 10.1144 8 12C8 13.8856 8 14.8284 8.58579 15.4142C9.17157 16 10.1144 16 12 16Z", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "2" }],
+];

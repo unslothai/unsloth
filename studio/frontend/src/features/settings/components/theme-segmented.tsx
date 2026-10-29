@@ -4,13 +4,13 @@
 import { cn } from "@/lib/utils";
 import { useT, type TranslationKey } from "@/i18n";
 import {
-  ComputerIcon,
   Sun03Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
 import { useTheme, type Theme } from "../stores/theme-store";
 import { MoonIcon } from "@/lib/lucide-derived";
+import { ComputerIcon } from "@/lib/hugeicons-derived";
 
 const OPTIONS: {
   value: Theme;

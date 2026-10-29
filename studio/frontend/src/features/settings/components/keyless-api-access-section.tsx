@@ -18,7 +18,7 @@ import {
   loadKeylessApiAccess,
   updateKeylessApiAccess,
 } from "@/features/settings/api/keyless-api-access";
-import { ComputerIcon } from "@hugeicons/core-free-icons";
+import { ComputerIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useState } from "react";
 import { SettingsRow } from "./settings-row";

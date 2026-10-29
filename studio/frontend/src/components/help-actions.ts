@@ -3,10 +3,10 @@
 
 import { type SettingsTab, settingsTabVisible, useSettingsDialogStore } from "@/features/settings";
 import type { TranslationKey } from "@/i18n";
+import { ChipIcon } from "@/lib/hugeicons-derived";
 import { openLink } from "@/lib/open-link";
 import {
   Book03Icon,
-  ChipIcon,
   ComputerTerminal01Icon,
   EnergyRectangleIcon,
   MessageNotification01Icon,

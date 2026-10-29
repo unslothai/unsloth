@@ -3,7 +3,6 @@
 
 import { BrushCleaningIcon } from "@/lib/brush-cleaning-icon";
 import {
-  ChipIcon,
   CloudIcon,
   CursorInfo02Icon,
   DragDropVerticalIcon,
@@ -14,7 +13,7 @@ import {
   UserCircleIcon,
   ApiIcon,
 } from "@hugeicons/core-free-icons";
-import { MessageCircleIcon } from "@/lib/hugeicons-derived";
+import { ChipIcon, MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Reorder, useDragControls } from "motion/react";
 import { Switch } from "@/components/ui/switch";

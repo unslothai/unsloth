@@ -117,7 +117,6 @@ import {
   CandyIcon,
   BadgeInfoIcon,
   ChefHatIcon,
-  ChipIcon,
   CloudIcon,
   CursorInfo02Icon,
   DashboardCircleIcon,
@@ -159,6 +158,7 @@ import {
 import { Copy01Icon } from "@/lib/copy-icon";
 import {
   AiSpeechIcon,
+  ChipIcon,
   MessageCircleIcon,
   TestTubeOutlineIcon,
   withNoticeDot,

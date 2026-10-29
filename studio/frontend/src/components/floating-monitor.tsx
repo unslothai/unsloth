@@ -40,8 +40,9 @@ import {
   getFloatingMonitorLayout,
 } from "./floating-monitor-layout";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
-import { Cancel01Icon, ChipIcon, DragDropVerticalIcon } from "@hugeicons/core-free-icons";
+import { Cancel01Icon, DragDropVerticalIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ChipIcon } from "@/lib/hugeicons-derived";
 
 function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, value));
