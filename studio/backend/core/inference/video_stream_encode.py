@@ -239,11 +239,9 @@ class StreamEncode:
                 frames = host.numpy()
                 if container is None:
                     container = av.open(self.path, mode = "w", format = "mp4")
-                    stream = container.add_stream("libx264", rate = self.fps)
-                    stream.width = int(frames.shape[2])
-                    stream.height = int(frames.shape[1])
-                    stream.pix_fmt = "yuv420p"
-                    stream.codec_context.thread_type = "FRAME"
+                    from .video_encode import add_x264_stream
+
+                    stream = add_x264_stream(container, self.fps, frames.shape[2], frames.shape[1])
                     if self.audio_sample_rate is not None:
                         from diffusers.utils.export_utils import _prepare_audio_stream
                         self._audio_stream = _prepare_audio_stream(
