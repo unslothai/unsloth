@@ -45,11 +45,15 @@ test("the lightbox backdrop is a faint grey in light mode and near black in dark
 
 test("the video player uses Studio's icons and full screen turns into exit full screen", () => {
   const video = read("features/browser/video-file.tsx");
-  // Studio's play and full screen glyphs are lucide's; everything else here stays Hugeicons.
-  assert.match(video, /import \{ Maximize2, Minimize2, PlayIcon \} from "lucide-react";/);
+  // Studio's play glyph is lucide's; full screen uses Studio's shared expand and contract pair.
+  assert.match(video, /import \{ PlayIcon \} from "lucide-react";/);
+  assert.match(video, /import \{ ContractArrowsIcon, ExpandArrowsIcon \} from "@\/lib\/expand-icons";/);
   assert.match(video, /addEventListener\("fullscreenchange", sync\)/);
-  assert.match(video, /\{fullscreened \? \(\s*<Minimize2 [^>]*\/>\s*\) : \(\s*<Maximize2 [^>]*\/>\s*\)\}/);
-  assert.doesNotMatch(video, /ArrowShrink01Icon|ArrowExpand01Icon/);
+  assert.match(
+    video,
+    /\{fullscreened \? \(\s*<HugeiconsIcon icon=\{ContractArrowsIcon\}[^>]*\/>\s*\) : \(\s*<HugeiconsIcon icon=\{ExpandArrowsIcon\}[^>]*\/>\s*\)\}/,
+  );
+  assert.doesNotMatch(video, /ArrowShrink01Icon|ArrowExpand01Icon|Maximize2|Minimize2/);
   assert.match(video, /fullscreened \? t\("browser\.video\.exitFullscreen"\) : t\("browser\.video\.fullscreen"\)/);
 });
 

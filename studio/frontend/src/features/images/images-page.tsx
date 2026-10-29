@@ -36,7 +36,7 @@ import {
   UndoIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { History as HistoryIcon, Maximize2, Shuffle } from "lucide-react";
+import { History as HistoryIcon, Shuffle } from "lucide-react";
 import { MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { MediaViewer } from "@/components/media-viewer";
 import { shortPrompt } from "@/lib/prompt-text";
@@ -462,6 +462,7 @@ import {
   TrainBaseSelector,
   type TrainFamilyOption,
 } from "./train/train-base-selector";
+import { ExpandArrowsIcon } from "@/lib/expand-icons";
 
 function withEngagedFamily(
   { repoId, kind, filename, textEncoderFiles, vaeFile }: RememberedImageModel,
@@ -7085,7 +7086,7 @@ export function ImagesPage({
                       openViewer();
                     }}
                   >
-                    <Maximize2 strokeWidth={1.5} className="size-4" />
+                    <HugeiconsIcon icon={ExpandArrowsIcon} strokeWidth={1.5} className="size-4" />
                   </Button>
                   <RecipePopover image={selected} onRestore={restoreSettings} active={active} />
                   <DropdownMenu>

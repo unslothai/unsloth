@@ -259,7 +259,7 @@ import {
 import { stopButtonLabel } from "@/features/images/lib/generation-stop";
 import { type Playback, fetchWithFreshLink, playWithMutedFallback, readPlayback } from "./viewer";
 import { videoThumbnailQueue, withThumbnailRetries } from "./thumbnail-request-queue";
-import { Maximize2 } from "lucide-react";
+import { ExpandArrowsIcon } from "@/lib/expand-icons";
 
 const VIDEO_EXAMPLE_PROMPT =
   "A slow cinematic shot down a quiet Kyoto street at sunrise, cherry blossom petals drifting in the air, a shopkeeper opening a wooden storefront, warm natural light.";
@@ -4631,7 +4631,7 @@ function VideoGenerator({
                       openViewer();
                     }}
                   >
-                    <Maximize2 strokeWidth={1.5} className="size-4" />
+                    <HugeiconsIcon icon={ExpandArrowsIcon} strokeWidth={1.5} className="size-4" />
                   </Button>
                   <RecipePopover video={selected} onRestore={restoreSettings} active={active} />
                   <DropdownMenu>

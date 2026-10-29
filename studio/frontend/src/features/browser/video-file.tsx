@@ -24,7 +24,8 @@ import { PauseIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { canCopyVideoFrame, copyVideoFrame, registerTabVideo } from "./video-registry";
-import { Maximize2, Minimize2, PlayIcon } from "lucide-react";
+import { PlayIcon } from "lucide-react";
+import { ContractArrowsIcon, ExpandArrowsIcon } from "@/lib/expand-icons";
 
 const RATES = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
 const SEEK_SECONDS = 5;
@@ -301,9 +302,9 @@ export function VideoFile({
           className={CONTROL}
         >
           {fullscreened ? (
-            <Minimize2 strokeWidth={1.75} className="size-4.5" />
+            <HugeiconsIcon icon={ContractArrowsIcon} strokeWidth={1.75} className="size-4.5" />
           ) : (
-            <Maximize2 strokeWidth={1.75} className="size-4.5" />
+            <HugeiconsIcon icon={ExpandArrowsIcon} strokeWidth={1.75} className="size-4.5" />
           )}
         </button>
       </div>
