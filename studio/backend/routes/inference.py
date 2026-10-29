@@ -58,6 +58,7 @@ from utils.account_context import (
 )
 from utils.security.consent import MANAGED_REMOTE_CODE_REFUSAL, managed_remote_code_refused
 from loggers import get_logger
+from utils.scan_memo import in_scan_memo
 from loggers.media_progress import (
     log_media_generation_progress,
     log_media_load_progress,
@@ -130,6 +131,7 @@ from core.inference.audio_errors import (
 )
 from core.inference.audio_cpp_outputs import NO_STEMS
 from core.inference import context_refusal
+from core.inference.gen_stepper import ThreadStepper
 from core.inference.context_window import (
     estimate_message_tokens as _estimate_message_tokens,
     estimate_messages_tokens as _estimate_messages_tokens,
@@ -145,6 +147,7 @@ from core.inference.memory_contract import (
 from core.inference.stream_errors import (
     KV_STARVATION_MESSAGE,
     LlamaStreamError,
+    error_message_from_chunk,
     is_kv_starvation,
 )
 from core.inference.orchestrator import (
@@ -312,6 +315,7 @@ _LOST_CONNECTION_MSG = (
 _OVERSIZE_TOKENS_RE = _re.compile(
     r"request \((\d+) tokens?\) exceeds the available context size \((\d+) tokens?\)"
 )
+_LLAMA_CLIENT_ERROR_RE = _re.compile(r"llama-server returned 4\d\d: (.*)", _re.DOTALL)
 
 
 def _friendly_error(exc: Exception) -> str:
@@ -351,6 +355,14 @@ def _friendly_error(exc: Exception) -> str:
     # After the token-count regex, before the catch-all, so stream failures keep their cause.
     if isinstance(exc, LlamaStreamError):
         return exc.friendly
+    client_error = _LLAMA_CLIENT_ERROR_RE.match(msg)
+    if client_error:
+        body = client_error.group(1)
+        try:
+            body = error_message_from_chunk(json.loads(body)) or body
+        except ValueError:
+            pass
+        return _friendly_upstream_error(body[:500])
     return "An internal error occurred"
 
 
@@ -1261,28 +1273,40 @@ def _normalize_openai_passthrough_sse_line(
     raw_line: str, *, cap_parallel_tool_calls: bool = False
 ) -> str:
     """Relay comments, [DONE] and unparsable lines as-is; re-serialize only when a compat fix applies."""
+    return _normalize_openai_passthrough_sse_line_and_data(
+        raw_line, cap_parallel_tool_calls = cap_parallel_tool_calls
+    )[0]
+
+
+_SSE_LINE_UNPARSED = object()
+
+
+def _normalize_openai_passthrough_sse_line_and_data(
+    raw_line: str, *, cap_parallel_tool_calls: bool = False
+) -> tuple[str, Any]:
+    """The normalized line plus its decoded JSON when the check had to parse it, so the relay need not."""
     if not raw_line.startswith("data:"):
-        return raw_line
+        return raw_line, _SSE_LINE_UNPARSED
     # Fast path: skip the JSON parse when neither key appears in the line.
     if '"reasoning_content"' not in raw_line and not (
         cap_parallel_tool_calls and '"tool_calls"' in raw_line
     ):
-        return raw_line
+        return raw_line, _SSE_LINE_UNPARSED
     payload = raw_line[len("data:") :].lstrip()
     if payload.strip() in ("", "[DONE]"):
-        return raw_line
+        return raw_line, _SSE_LINE_UNPARSED
     try:
         obj = json.loads(payload)
     except Exception:
-        return raw_line
+        return raw_line, _SSE_LINE_UNPARSED
     if not isinstance(obj, dict):
-        return raw_line
+        return raw_line, obj
     changed = _add_empty_content_to_reasoning_deltas(obj)
     if cap_parallel_tool_calls and _drop_parallel_tool_call_deltas(obj):
         changed = True
     if not changed:
-        return raw_line
-    return "data: " + json.dumps(obj, separators = (",", ":"), ensure_ascii = False)
+        return raw_line, obj
+    return "data: " + json.dumps(obj, separators = (",", ":"), ensure_ascii = False), obj
 
 
 def _prompt_tokens_details(upstream):
@@ -5601,13 +5625,18 @@ def _full_access_tip(code_tools: list[str]) -> str:
 
 # Avoid the word 'greetings': small models then greet instead of researching.
 _TOOL_RESEARCH_TIP = (
-    "Deep Research is turned on for this conversation. For any question about the world "
-    "-- facts, events, laws, products, papers, prices, comparisons, anything that may have "
-    "changed since your training -- call deep_research instead of answering from memory, "
-    "even when you think you know the answer: the user asked for a researched, cited "
-    "report and your knowledge has a cutoff. If a message has no question in it, such as a "
-    "hello, a thanks, or a remark about you, reply normally. If a topic is too vague to "
-    "research well, ask one short clarifying question first."
+    "Deep Research is turned on for this conversation. For factual questions or requests "
+    "to investigate a topic, compare information, or write a research report, call "
+    "deep_research before drafting an answer, outline, or report, even if you know the "
+    "answer. A research request may be a command or a brief in pasted text or an "
+    "attachment; it does not need to be phrased as a question. Hand off the whole request "
+    "in one concise, self-contained research question covering its main topics and requested "
+    "outputs. Summarize the brief in a few sentences rather than copying it or answering it. "
+    "The research workflow gathers sources and "
+    "writes the report; do not use it only to fill gaps in an answer you write from memory. "
+    "Reply normally to a hello, thanks, or a remark about you, and to requests only to "
+    "rewrite or transform supplied text without outside research. If the topic is too "
+    "vague to research well, ask one short clarifying question first."
 )
 
 _TOOL_ARTIFACT_TIP = (
@@ -7287,6 +7316,17 @@ def _monitor_openai_sse_line(
     try:
         data = json.loads(data_str)
     except json.JSONDecodeError:
+        return None
+    return _monitor_openai_sse_data(monitor_id, data, context_length)
+
+
+def _monitor_openai_sse_data(
+    monitor_id: Optional[str],
+    data: Any,
+    context_length = None,
+) -> Optional[str]:
+    """Core of ``_monitor_openai_sse_line`` for a data line the caller already decoded."""
+    if not monitor_id:
         return None
     if isinstance(data, dict):
         error_message = _monitor_openai_error_message(data)
@@ -10819,6 +10859,7 @@ async def _maybe_auto_switch_model(
         model_load_gate,
         note_admitted_inference,
         preview_swapped_since_entry,
+        stash_is_mlx,
     )
 
     generation_cancel_event = getattr(
@@ -10954,6 +10995,7 @@ async def _maybe_auto_switch_model(
         resolved = None
         repo_level_companion_resolution = False
         stashed_gguf_companion_roots: tuple[str, ...] = ()
+        stashed_mlx = False
         if auto_switch_on and not reload_only:
             # audio.cpp GGUFs load via the audio worker, not llama-server; the HF cache resolves them.
             resolved = await asyncio.to_thread(_audio_cpp_switch_target, requested_model)
@@ -11010,6 +11052,7 @@ async def _maybe_auto_switch_model(
             else:  # pre-3-tuple stash: fall back to the path as the override key
                 target_id, variant = last
                 override_id = target_id
+            stashed_mlx = stash_is_mlx(last)
             # Held-back keyless callers may restore only the model they named; check before loading.
             if keyless_held_back and not reload_only:
                 requested_base, requested_variant = split_model_ref(requested_model)
@@ -11034,8 +11077,11 @@ async def _maybe_auto_switch_model(
         # Not inferred from the quant; audio.cpp GGUFs are read only by audiocpp_server.
         from core.inference.audio_cpp_models import looks_like_audio_cpp
 
-        target_is_gguf = not looks_like_audio_cpp(target_id) and await asyncio.to_thread(
-            local_target_is_gguf, target_id, override_id
+        # A cold resolver index reads an unknown repo id as GGUF, so trust the stash's own format.
+        target_is_gguf = (
+            not stashed_mlx
+            and not looks_like_audio_cpp(target_id)
+            and await asyncio.to_thread(local_target_is_gguf, target_id, override_id)
         )
         gguf_companion_roots: tuple[str, ...] = ()
         if target_is_gguf:
@@ -11776,13 +11822,16 @@ def _chat_fit_kwargs(
     placement,
     policy: Optional[str] = None,
     credit_gb: Optional[dict] = None,
+    mlx_need_mib: Optional[int] = None,
+    mlx_credit_mib: int = 0,
 ) -> dict:
     """How the CHAT acquire shares the GPU under When they fit / Always.
 
-    audio.cpp and native audio are priced from the placement estimate. A GGUF launch prices itself (it refuses a
-    partial fit and load_model_gated makes room). Anything else has no estimate before launch: When they fit
-    evicts first, Always tries the load and turns an out-of-memory failure into its refusal. ``credit_gb`` is what
-    the outgoing primary frees per GPU when this load replaces it.
+    audio.cpp and native audio are priced from the placement estimate, an MLX load on Apple Silicon from
+    ``mlx_need_mib``. A GGUF launch prices itself (it refuses a partial fit and load_model_gated makes room).
+    Anything else has no estimate before launch: When they fit evicts first, Always tries the load and turns an
+    out-of-memory failure into its refusal. ``credit_gb`` is what the outgoing primary frees per GPU when this
+    load replaces it.
     """
     if policy is None:
         from core.inference.gpu_residency import current_policy
@@ -11804,9 +11853,40 @@ def _chat_fit_kwargs(
             int(g): int((placement.native_required_gb / len(gpus) - credit.get(int(g), 0.0)) * 1024)
             for g in gpus
         }
-    elif policy == "fit" and not (config.is_gguf and _primary_can_retry_fit.get()):
+    elif mlx_need_mib is not None:
+        from core.inference.gpu_residency import ChatNeed
+        kwargs["need_mib"] = ChatNeed({0: int(mlx_need_mib)}, credit_mib = mlx_credit_mib)
+    elif not (config.is_gguf and _primary_can_retry_fit.get()) and (
+        policy == "fit" or (not config.is_gguf and _unified_metal_host())
+    ):
+        # Unified memory pages past the budget: Always gets no OOM to refuse on.
         kwargs["evict_first"] = True
     return kwargs
+
+
+def _unified_metal_host() -> bool:
+    from core.inference.gpu_residency import _on_metal
+    return _on_metal()
+
+
+def _mlx_cache_bounded(entry: dict, slots: int = 1) -> bool:
+    from core.inference.gpu_residency import mlx_cache_bounded
+    return mlx_cache_bounded(entry, slots)
+
+
+def _note_mlx_slots(backend, slots: int) -> None:
+    """A batch opened at a wider setting keeps its width after the setting drops, so the reservation never shrinks."""
+    entry = backend.models.get(backend.active_model_name or "") or {}
+    growth = entry.get("mlx_growth")
+    if isinstance(growth, dict):
+        growth["slots"] = max(int(growth.get("slots", 1)), int(slots))
+        if not _mlx_cache_bounded(entry, growth["slots"]):
+            entry.pop("mlx_growth")
+
+
+def _mlx_slots_outgrow_price(backend, n_parallel) -> bool:
+    from core.inference.gpu_residency import mlx_slots_outgrow_price
+    return mlx_slots_outgrow_price(backend, n_parallel)
 
 
 def _outgoing_chat_credit_gb(
@@ -14671,6 +14751,118 @@ def _mlx_estimate_drafter(
     return None, None, True
 
 
+class _MlxLoadEstimate(NamedTuple):
+    breakdown: Any
+    fitted_ctx: Optional[int]
+    offloadable: tuple
+    retains_history: bool
+    offloaded: bool = False
+
+
+def _mlx_load_estimate(
+    request, config, model_identifier
+) -> tuple[Optional[str], Optional[_MlxLoadEstimate]]:
+    """``(refusal reason, None)`` or ``(None, estimate)`` of what an MLX load of *request* occupies."""
+    if not _mlx_estimate_available():
+        return "not_gguf", None
+    from core.inference.native_audio import is_native_audio_model
+
+    if getattr(config, "audio_cpp", None) is not None or is_native_audio_model(model_identifier):
+        return "not_gguf", None
+    if getattr(config, "is_lora", False):
+        return "unsizable", None
+    model_dir = _local_mlx_model_dir(config)
+    if not model_dir:
+        return "not_downloaded", None
+    from core.inference.mlx_inference import (
+        mlx_kv_quant_is_refused,
+        mlx_vlm_snapshot_store_available,
+    )
+    from core.inference.mlx_memory import mlx_memory_breakdown
+
+    load_in_4bit = _mlx_estimate_load_in_4bit(config, request)
+    kv_bits = _mlx_estimate_kv_bits(request.mlx_kv_quant, request.mlx_kv_bits)
+    # A width the cache takes makes the window a budget, pinned or fit.
+    if kv_bits is not None and mlx_kv_quant_is_refused(model_dir, kv_bits):
+        kv_bits = None
+    named_ctx = request.max_seq_length or 0
+    offload, offloadable, offload_baseline = _mlx_estimate_offload(
+        request, config, model_identifier, model_dir, load_in_4bit, kv_bits
+    )
+    drafter, fitted_ctx, speculates = _mlx_estimate_drafter(
+        request,
+        model_identifier,
+        model_dir,
+        _mlx_estimate_ceiling(model_dir),
+        load_in_4bit,
+        offload,
+        offload_baseline,
+    )
+    route = {**({"vision": True} if speculates else {}), **offload}
+    if not named_ctx and drafter is None:
+        fitted_ctx = _mlx_estimate_fitted_context(config, model_dir, load_in_4bit, kv_bits, **route)
+    priced_ctx = named_ctx or fitted_ctx or _mlx_estimate_ceiling(model_dir)
+    if not priced_ctx:
+        return "unsizable", None
+    breakdown = mlx_memory_breakdown(
+        model_dir,
+        n_ctx = priced_ctx,
+        kv_bits = kv_bits,
+        load_in_4bit = load_in_4bit,
+        **route,
+        **({} if drafter is None else {"drafter": drafter}),
+    )
+    if breakdown is None:
+        return "unsizable", None
+    retains_history = (
+        not (getattr(config, "is_vision", False) or speculates)
+        or mlx_vlm_snapshot_store_available()
+    )
+    return None, _MlxLoadEstimate(
+        breakdown, fitted_ctx, offloadable, retains_history, "offload" in offload
+    )
+
+
+def _mlx_chat_need(
+    request,
+    config,
+    model_identifier,
+    slots: int = 1,
+) -> Optional[tuple[int, dict]]:
+    """``(need MiB, growth)`` of an MLX chat load serving ``slots`` rows, or None; rows prefill as one batch."""
+    if getattr(config, "is_gguf", False) or not _unified_metal_host():
+        return None
+    try:
+        _, estimate = _mlx_load_estimate(request, config, model_identifier)
+        # Offload workspaces allocate at prefill but are priced as weights.
+        if estimate is None or estimate.offloaded:
+            return None
+        from core.inference.mlx_inference import mlx_memory_budget
+
+        reserve = 0
+        if estimate.retains_history:
+            without, within = (
+                mlx_memory_budget(retains_history = False),
+                mlx_memory_budget(retains_history = True),
+            )
+            reserve = max(0, (without or 0) - (within or 0))
+    except Exception as exc:
+        logger.info("MLX load of %s left unpriced: %s", model_identifier, exc)
+        return None
+    from core.inference.llama_server_args import clamp_parallel_slots
+
+    mib = 1024 * 1024
+    one_row = -(-(int(estimate.breakdown.total_bytes) + reserve) // mib)
+    row = -(-int(estimate.breakdown.kv_bytes + estimate.breakdown.compute_bytes) // mib)
+    slots = clamp_parallel_slots(slots)
+    growth = {
+        "mib": max(0, one_row - int(estimate.breakdown.weights_bytes) // mib),
+        "row_mib": row,
+        "slots": slots,
+    }
+    return one_row + (slots - 1) * row, growth
+
+
 def _mlx_estimate_available() -> bool:
     """Whether this host would actually run the load through MLX."""
     try:
@@ -17495,6 +17687,9 @@ async def load_model_gated(
                 _note_activity()
         # Record provenance once resident, here so the fast paths are covered; outside the gate. Preview keeps False: only an explicit UI load pins.
         get_llama_cpp_backend()._loaded_by_user_action = user_initiated
+        standard = _peek_inference_backend()
+        if getattr(standard, "active_model_name", None):
+            standard._loaded_by_user_action = user_initiated
         # Every other model this load unloaded is listed too, under its model id: idle kept models,
         # kept models a vLLM/SGLang load retired and media a chat load freed.
         evicted += [
@@ -18415,6 +18610,21 @@ async def _load_model_impl(
             _inherit_resident_load_in_4bit(backend, request, model_identifier)
             await asyncio.to_thread(reap_dead_worker, backend)
             if (
+                not request.max_seq_length
+                and _same_loaded_identifier(backend.active_model_name, model_identifier)
+                and _mlx_slots_outgrow_price(backend, _n_parallel)
+            ):
+                # A reload for more rows keeps the context the resident was asked for.
+                request.max_seq_length = (
+                    int(
+                        (backend.models.get(backend.active_model_name) or {}).get(
+                            "max_seq_length_requested"
+                        )
+                        or 0
+                    )
+                    or request.max_seq_length
+                )
+            if (
                 _same_loaded_identifier(backend.active_model_name, model_identifier)
                 and (backend.models.get(backend.active_model_name) or {}).get("engine", "auto")
                 == request.engine
@@ -18430,10 +18640,11 @@ async def _load_model_impl(
                 )
                 # Without this the route reports already_loaded and nothing moves.
                 and _resident_audio_placement_matches(backend, request)
+                and not _mlx_slots_outgrow_price(backend, _n_parallel)
             ):
                 api_monitor.discard(_load_event)  # nothing loaded, no monitor row
                 logger.info(f"Model already loaded (Unsloth): {model_log_label}, skipping reload")
-                backend.set_parallel_slots(_n_parallel)
+                _note_mlx_slots(backend, backend.set_parallel_slots(_n_parallel))
                 # A no-op Unsloth load of a preview-owned checkpoint still claims it.
                 _set_preview_resident(None)
                 inference_config = load_inference_config(backend.active_model_name)
@@ -18783,6 +18994,7 @@ async def _load_model_impl(
                 logger.warning("Loading an oversized GGUF: %s", _host_offload_warning)
 
         expected_native_owner = None
+        mlx_chat_need = None
         post_media_handoff_gpu = None
         post_media_handoff_needed_gb = None
         post_chat_handoff_expected_free_gb = None
@@ -18836,8 +19048,24 @@ async def _load_model_impl(
                 )
                 if post_chat_handoff_expected_free_gb is None:
                     post_chat_handoff_expected_free_gb = chat_wait_gb
+                mlx_chat_need = await asyncio.to_thread(
+                    _mlx_chat_need, request, config, model_identifier, _n_parallel
+                )
+                mlx_credit_mib = 0
+                if mlx_chat_need is not None:
+                    from core.inference.gpu_residency import mlx_replaced_credit_mib
+
+                    # No llama-server credit: its footprint mixes CPU-only buffers with Metal ones.
+                    mlx_credit_mib = await asyncio.to_thread(mlx_replaced_credit_mib, backend)
                 handoff_kwargs.update(
-                    _chat_fit_kwargs(config, placement, multi_model_mode, outgoing_chat_gb)
+                    _chat_fit_kwargs(
+                        config,
+                        placement,
+                        multi_model_mode,
+                        outgoing_chat_gb,
+                        mlx_need_mib = None if mlx_chat_need is None else mlx_chat_need[0],
+                        mlx_credit_mib = mlx_credit_mib,
+                    )
                 )
                 await asyncio.to_thread(
                     acquire_for_request,
@@ -19216,6 +19444,29 @@ async def _load_model_impl(
             _resident_entry["gpu_ids_requested"] = (
                 list(request.gpu_ids) if request.gpu_ids else None
             )
+            if mlx_chat_need is not None and _mlx_cache_bounded(
+                _resident_entry, mlx_chat_need[1]["slots"]
+            ):
+                from core.inference.gpu_residency import mlx_worker_footprint_mib
+                _resident_entry["mlx_growth"] = {
+                    **mlx_chat_need[1],
+                    "footprint_mib": mlx_worker_footprint_mib(backend),
+                }
+            elif mlx_chat_need is not None:
+                # Admitted at a price the loaded cache does not keep to: settle as an unpriced load would have.
+                from core.inference.gpu_arbiter import (
+                    GpuBusyForAnotherAccountError,
+                    MultiModelAlwaysRefusal,
+                )
+                from core.inference.gpu_residency import settle_unpriced_chat_beside_media
+                try:
+                    await asyncio.to_thread(settle_unpriced_chat_beside_media, multi_model_mode)
+                except (MultiModelAlwaysRefusal, GpuBusyForAnotherAccountError) as exc:
+                    await asyncio.to_thread(backend.unload_model, config.identifier)
+                    await asyncio.to_thread(backend._shutdown_subprocess, 5.0)
+                    if isinstance(exc, GpuBusyForAnotherAccountError):
+                        raise exc.as_http_exception() from exc
+                    raise
 
         if request._advertised_id:
             backend._openai_advertised_id = request._advertised_id
@@ -20579,64 +20830,15 @@ async def estimate_memory(
         if config is None:
             return EstimateMemoryResponse(available = False, reason = "unsizable")
         if not getattr(config, "is_gguf", False):
-            if not _mlx_estimate_available():
-                return EstimateMemoryResponse(available = False, reason = "not_gguf")
-            from core.inference.native_audio import is_native_audio_model
-
-            if getattr(config, "audio_cpp", None) is not None or is_native_audio_model(
-                model_identifier
-            ):
-                return EstimateMemoryResponse(available = False, reason = "not_gguf")
-            if getattr(config, "is_lora", False):
-                return EstimateMemoryResponse(available = False, reason = "unsizable")
-            model_dir = _local_mlx_model_dir(config)
-            if not model_dir:
-                return EstimateMemoryResponse(available = False, reason = "not_downloaded")
-            from core.inference.mlx_inference import mlx_kv_quant_is_refused
-            from core.inference.mlx_memory import mlx_memory_breakdown
-
-            mlx_load_in_4bit = _mlx_estimate_load_in_4bit(config, request)
-            mlx_kv_bits = _mlx_estimate_kv_bits(request.mlx_kv_quant, request.mlx_kv_bits)
-            # A width the cache takes applies under a pin or a fit alike: the window is then a budget.
-            if mlx_kv_bits is not None and mlx_kv_quant_is_refused(model_dir, mlx_kv_bits):
-                mlx_kv_bits = None
-            mlx_named_ctx = request.max_seq_length or 0
-            mlx_offload, mlx_offloadable, mlx_offload_baseline = _mlx_estimate_offload(
-                request, config, model_identifier, model_dir, mlx_load_in_4bit, mlx_kv_bits
-            )
-            mlx_drafter, mlx_fitted_ctx, mlx_speculates = _mlx_estimate_drafter(
-                request,
-                model_identifier,
-                model_dir,
-                _mlx_estimate_ceiling(model_dir),
-                mlx_load_in_4bit,
-                mlx_offload,
-                mlx_offload_baseline,
-            )
-            mlx_route = {**({"vision": True} if mlx_speculates else {}), **mlx_offload}
-            if not mlx_named_ctx and mlx_drafter is None:
-                mlx_fitted_ctx = _mlx_estimate_fitted_context(
-                    config, model_dir, mlx_load_in_4bit, mlx_kv_bits, **mlx_route
-                )
-            mlx_priced_ctx = mlx_named_ctx or mlx_fitted_ctx or _mlx_estimate_ceiling(model_dir)
-            if not mlx_priced_ctx:
-                return EstimateMemoryResponse(available = False, reason = "unsizable")
-            mlx_breakdown = mlx_memory_breakdown(
-                model_dir,
-                n_ctx = mlx_priced_ctx,
-                kv_bits = mlx_kv_bits,
-                load_in_4bit = mlx_load_in_4bit,
-                **mlx_route,
-                **({} if mlx_drafter is None else {"drafter": mlx_drafter}),
-            )
-            if mlx_breakdown is None:
-                return EstimateMemoryResponse(available = False, reason = "unsizable")
+            reason, mlx = _mlx_load_estimate(request, config, model_identifier)
+            if mlx is None:
+                return EstimateMemoryResponse(available = False, reason = reason)
             return EstimateMemoryResponse(
                 **project_estimate_memory_response(
                     build_memory_estimate(
-                        dataclasses.replace(mlx_breakdown, offloadable = mlx_offloadable),
+                        dataclasses.replace(mlx.breakdown, offloadable = mlx.offloadable),
                         quant_file_bytes = 0,
-                        context_fitted = mlx_fitted_ctx,
+                        context_fitted = mlx.fitted_ctx,
                     )
                 )
             )
@@ -21110,6 +21312,15 @@ async def cancel_inference(request: Request, current_subject: str = Depends(get_
 async def confirm_tool_call(
     request: ToolConfirmRequest, current_subject: str = Depends(get_current_subject)
 ):
+    full_access = request.permission_mode == "full"
+    if full_access and (
+        not auth_policy.full_access_permitted() or auth_policy.api_full_access_refused()
+    ):
+        raise HTTPException(
+            status_code = 403,
+            detail = "Full access is only available to the installation owner in the Unsloth UI "
+            "(API callers require UNSLOTH_STUDIO_ALLOW_API_FULL_ACCESS=1).",
+        )
     # Approving a host-path call unsandboxes it: like Full access, the UI's choice, not an API key's. Deny stays open.
     if (
         request.decision == "allow"
@@ -21126,10 +21337,12 @@ async def confirm_tool_call(
         request.approval_id,
         request.decision,
         session_id = request.session_id,
+        full_access = full_access,
     )
     if not matched:
         raise HTTPException(status_code = 404, detail = "No pending tool call confirmation")
-    return {"resolved": True}
+    # An older backend ignores the new request field; clients require this acknowledgement.
+    return {"resolved": True, **({"full_access_granted": True} if full_access else {})}
 
 
 @studio_router.post("/browser-action-result")
@@ -21413,6 +21626,7 @@ async def generate_stream(
                 presence_penalty = request.presence_penalty,
                 cancel_event = cancel_event,
             )
+            gen_step = ThreadStepper(gen).next
             _DONE = object()
             while True:
                 if cancel_event.is_set():
@@ -21421,7 +21635,7 @@ async def generate_stream(
                     # Flag failed so the middleware does not claim the model on a cancelled stream.
                     mark_response_failed(_gs_scope)
                     break
-                chunk = await asyncio.to_thread(next, gen, _DONE)
+                chunk = await gen_step(_DONE)
                 if chunk is _DONE:
                     if cancel_event.is_set():
                         mark_response_failed(_gs_scope)
@@ -30609,6 +30823,7 @@ async def produce_openai_chat_completions(
                         yield _chat_role_chunk(completion_id, created, model_name)
 
                         gen = audio_input_generate()
+                        gen_step = ThreadStepper(gen).next
                         _DONE = object()
                         cancelled = False
                         while True:
@@ -30622,7 +30837,7 @@ async def produce_openai_chat_completions(
                                 api_monitor.finish(monitor_id, "cancelled")
                                 mark_current_response_failed()
                                 return
-                            chunk_text = await asyncio.to_thread(next, gen, _DONE)
+                            chunk_text = await gen_step(_DONE)
                             if chunk_text is _DONE:
                                 if cancel_event.is_set():
                                     cancelled = True
@@ -31266,6 +31481,9 @@ async def produce_openai_chat_completions(
 
             def gguf_generate_with_tools():
                 from core.inference.skill_mentions import load_mentioned_skills
+                from state.tool_approvals import LiveToolPermissions
+
+                gguf_live_permissions = LiveToolPermissions(payload.session_id, cancel_event)
 
                 skill_instruction_ids = set()
                 yield from load_mentioned_skills(
@@ -31282,8 +31500,10 @@ async def produce_openai_chat_completions(
                     context_length = llama_backend.context_length,
                     continue_final_message = _continue_final_message(payload, thought = True),
                     protected_message_ids = skill_instruction_ids,
+                    permission_upgrade = gguf_live_permissions,
                 )
                 yield from llama_backend.generate_chat_completion_with_tools(
+                    live_permissions = gguf_live_permissions,
                     instruction_anchor_ids = skill_instruction_ids,
                     messages = gguf_messages,
                     replayed_image_parts = tuple(_gguf_replayed_image_parts),
@@ -31478,6 +31698,7 @@ async def produce_openai_chat_completions(
                     context_refusal.open_slot()
                     # In a thread so the event loop stays free for disconnect detection.
                     gen = gguf_generate_with_tools()
+                    gen_step = ThreadStepper(gen).next
                     prev_text = ""
                     _gguf_display_strip = _StreamingDisplayStrip(
                         auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
@@ -31522,9 +31743,7 @@ async def produce_openai_chat_completions(
                             resume_before_next = False
                             await _park_admission(False)
 
-                        next_task = asyncio.create_task(
-                            asyncio.to_thread(next, gen, _tool_sentinel)
-                        )
+                        next_task = asyncio.create_task(gen_step(_tool_sentinel))
                         try:
                             # asyncio.wait never cancels next_task, matching the finally-drain shield.
                             wait_timeout = (
@@ -32200,6 +32419,7 @@ async def produce_openai_chat_completions(
 
                     # In a thread so the event loop stays free for disconnect detection.
                     gen = gguf_generate()
+                    gen_step = ThreadStepper(gen).next
                     prev_text = ""
                     reasoning_extractor = _new_chat_reasoning_extractor()
                     _stream_usage = None
@@ -32214,9 +32434,7 @@ async def produce_openai_chat_completions(
                             mark_current_response_failed()
                             api_monitor.finish(monitor_id, "cancelled")
                             return
-                        next_task = asyncio.create_task(
-                            asyncio.to_thread(next, gen, _gguf_sentinel)
-                        )
+                        next_task = asyncio.create_task(gen_step(_gguf_sentinel))
                         try:
                             # Stall-timeout wait: keepalive while the generator stays
                             # silent (e.g. no-tool prefill). asyncio.wait never cancels
@@ -33346,6 +33564,7 @@ async def produce_openai_chat_completions(
                 yield _chat_role_chunk(completion_id, created, model_name)
 
                 gen = sf_generate_with_tools()
+                gen_step = ThreadStepper(gen).next
                 prev_text = ""
                 _sf_display_strip = _StreamingDisplayStrip(
                     auto_heal_tool_calls = _sf_auto_heal_tool_calls,
@@ -33380,9 +33599,7 @@ async def produce_openai_chat_completions(
                         return
 
                     # Keepalive so silent backend segments do not exceed proxy timeouts.
-                    _sf_next_task = asyncio.create_task(
-                        asyncio.to_thread(next, gen, _sf_tool_sentinel)
-                    )
+                    _sf_next_task = asyncio.create_task(gen_step(_sf_tool_sentinel))
                     wait_timeout = (
                         TOOL_APPROVAL_FLUSH_DELAY_S
                         if approval_flush_pending
@@ -34041,13 +34258,14 @@ async def produce_openai_chat_completions(
                 # Worker thread: a blocking _gen_lock in compare mode would otherwise freeze the loop.
                 _DONE = object()  # sentinel for generator exhaustion
                 gen = generate()
+                gen_step = ThreadStepper(gen).next
                 while True:
                     if cancel_event.is_set():
                         backend.reset_generation_state(cancel_event)
                         mark_current_response_failed()
                         break
                     # next(gen, _DONE) avoids StopIteration, which can't cross asyncio futures.
-                    _next_task = asyncio.create_task(asyncio.to_thread(next, gen, _DONE))
+                    _next_task = asyncio.create_task(gen_step(_DONE))
                     while True:
                         _done_tasks, _ = await asyncio.wait(
                             {_next_task},
@@ -35831,6 +36049,7 @@ async def _openai_catalog_with_aliases(quant_pins: bool = False) -> list[dict]:
 # compatibility alias for the canonical OpenAI path.
 @router.get("/models/", include_in_schema = False)
 @router.get("/models")
+@in_scan_memo
 async def openai_list_models(
     output_modalities: Optional[str] = None, current_subject: str = Depends(get_current_subject)
 ):
@@ -36438,11 +36657,12 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
                     )
                 _DONE = object()
                 gen = generate(prompt_ids) if budget != 0 else iter(())
+                gen_step = ThreadStepper(gen).next
                 prev = ""
                 while True:
                     if cancel_event.is_set():
                         break
-                    next_task = asyncio.create_task(asyncio.to_thread(next, gen, _DONE))
+                    next_task = asyncio.create_task(gen_step(_DONE))
                     while not (
                         await asyncio.wait(
                             {next_task}, timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
@@ -38616,9 +38836,11 @@ class _ResponsesStreamTranslator:
         self.healer = healer
         self.healed_tc_index = 0
         self.terminated = False
+        self.sequence_number = 0
 
-    @staticmethod
-    def sse(event_name: str, payload: dict) -> str:
+    def sse(self, event_name: str, payload: dict) -> str:
+        payload = {**payload, "sequence_number": self.sequence_number}
+        self.sequence_number += 1
         return f"event: {event_name}\ndata: {json.dumps(payload)}\n\n"
 
     def _healed_tc(self, call: dict):
@@ -39653,6 +39875,7 @@ async def _responses_stream(
             + json.dumps(
                 {
                     "type": "response.failed",
+                    "sequence_number": 0,
                     "response": {
                         "id": resp_id,
                         "object": "response",
@@ -43611,6 +43834,7 @@ async def _anthropic_tool_stream(
             # The respawn refit records the refusal from the worker thread, so open the slot out here first.
             context_refusal.open_slot()
             gen = run_gen()
+            gen_step = ThreadStepper(gen).next
             _next_task = None
             # The in-loop poll fires only between events, so a mid-prefill disconnect needs a watcher.
             disconnect_watcher = asyncio.create_task(
@@ -43624,7 +43848,7 @@ async def _anthropic_tool_stream(
                         mark_response_failed(getattr(request, "scope", None))
                         return
                     # Stall keepalive: silent backend segments must not idle the SSE stream past proxy timeouts.
-                    _next_task = asyncio.create_task(asyncio.to_thread(next, gen, _sentinel))
+                    _next_task = asyncio.create_task(gen_step(_sentinel))
                     while True:
                         _done_tasks, _ = await asyncio.wait(
                             {_next_task},
@@ -43705,6 +43929,7 @@ async def _anthropic_plain_stream(
             captured_finish_reason = None
 
             gen = run_gen()
+            gen_step = ThreadStepper(gen).next
             _next_task = None
             # Watcher cancels on disconnect since the in-loop poll only runs between chunks, not mid-prefill.
             disconnect_watcher = asyncio.create_task(
@@ -43718,7 +43943,7 @@ async def _anthropic_plain_stream(
                         mark_response_failed(getattr(request, "scope", None))
                         return
                     # Stall keepalive each window while next(gen) runs in a worker.
-                    _next_task = asyncio.create_task(asyncio.to_thread(next, gen, _sentinel))
+                    _next_task = asyncio.create_task(gen_step(_sentinel))
                     while True:
                         _done_tasks, _ = await asyncio.wait(
                             {_next_task},
@@ -43884,7 +44109,7 @@ def _anthropic_tool_response_from_events(
     parse_think = True,
     think_provenance = None,
 ):
-    """Deltas merge into trailing text, tool_use opens a new block; prev_text resets on tool_end."""
+    """Deltas merge into trailing text; tool_end or empty status resets the cumulative cursor."""
     content_blocks: list = []
     tool_blocks_by_id: dict[
         str, Union[AnthropicResponseToolUseBlock, AnthropicResponseServerToolUseBlock]
@@ -43922,6 +44147,8 @@ def _anthropic_tool_response_from_events(
                     # The wrap belongs to the block that OPENS this turn's span (a client tool_use can interrupt it).
                     if _span_guard.claimed and new.startswith("<think>"):
                         _block_wrap[len(content_blocks) - 1] = _span_guard.claimed_wrap
+        elif etype == "status" and not event.get("text"):
+            prev_text = ""
         elif etype == "tool_start":
             tool_call_id = event["tool_call_id"]
             arguments = event.get("arguments", {})
@@ -46078,15 +46305,16 @@ async def _openai_passthrough_stream_admitted(
                         yield raw_line + "\n\n"
                         monitor_done = True
                         break
-                    raw_line = _normalize_openai_passthrough_sse_line(
+                    raw_line, chunk_data = _normalize_openai_passthrough_sse_line_and_data(
                         raw_line,
                         cap_parallel_tool_calls = payload.parallel_tool_calls is False,
                     )
-                    data_text = raw_line[5:].strip()
-                    try:
-                        chunk_data = json.loads(data_text)
-                    except json.JSONDecodeError:
-                        chunk_data = None
+                    if chunk_data is _SSE_LINE_UNPARSED:
+                        data_text = raw_line[5:].strip()
+                        try:
+                            chunk_data = json.loads(data_text)
+                        except json.JSONDecodeError:
+                            chunk_data = None
                     if isinstance(chunk_data, dict):
                         if isinstance(chunk_data.get("id"), str):
                             last_chunk_id = chunk_data["id"]
@@ -46108,7 +46336,10 @@ async def _openai_passthrough_stream_admitted(
                             saw_stream_error = True
                             mark_response_failed(getattr(request, "scope", None))
                     if not client_wants_progress and _is_prefill_progress_only(chunk_data):
-                        _monitor_openai_sse_line(monitor_id, raw_line, llama_backend.context_length)
+                        # chunk_data decodes raw_line (a data: line), so skip the monitor's re-parse.
+                        _monitor_openai_sse_data(
+                            monitor_id, chunk_data, llama_backend.context_length
+                        )
                         if progress_keepalive.due():
                             yield _OPENAI_PREFILL_PROGRESS_SSE
                         continue
@@ -46148,10 +46379,17 @@ async def _openai_passthrough_stream_admitted(
                         yield finish_line + "\n\n"
                         saw_finish_reason = True
                     for out_line in out_lines:
-                        monitor_event = _monitor_openai_sse_line(
-                            monitor_id,
-                            out_line,
-                            llama_backend.context_length,
+                        monitor_event = (
+                            # The healer leaves chunk_data untouched whenever it relays raw_line.
+                            _monitor_openai_sse_data(
+                                monitor_id, chunk_data, llama_backend.context_length
+                            )
+                            if out_line is raw_line and chunk_data is not None
+                            else _monitor_openai_sse_line(
+                                monitor_id,
+                                out_line,
+                                llama_backend.context_length,
+                            )
                         )
                         if monitor_event == "error":
                             saw_stream_error = True
@@ -46749,6 +46987,7 @@ def _mlx_fallback_load_gate(request, gpu_ordinal, multi_model_mode):
     from core.inference.gpu_arbiter import DIFFUSION
     from core.inference.gpu_residency import (
         ChatLoadInFlightRefusal,
+        forget_media_price,
         media_fit_kwargs,
         refuse_unless_fits,
     )
@@ -46765,7 +47004,8 @@ def _mlx_fallback_load_gate(request, gpu_ordinal, multi_model_mode):
                     DIFFUSION,
                     policy = fit.get("policy", "off"),
                     gpu_ids = fit.get("gpu_ids"),
-                    need_mib = fit.get("need_mib"),
+                    # The price is the MLX load's; this diffusers load has none.
+                    need_mib = None,
                     cancel = cancel,
                 )
             except (HTTPException, ChatLoadInFlightRefusal, RuntimeError) as exc:
@@ -46783,6 +47023,7 @@ def _mlx_fallback_load_gate(request, gpu_ordinal, multi_model_mode):
             ):
                 if ref and _repo_is_in_the_hub_cache(ref) is not True:
                     _note_load_fetched_with_a_request_token(ref, request.hf_token)
+            forget_media_price(DIFFUSION, cancel)
             return start()
 
     return gate
@@ -46952,10 +47193,10 @@ async def diffusion_download_plan(
     await _refuse_disabled_nvfp4_checkpoint(request)
     from core.inference.diffusion import (
         get_diffusion_backend,
-        resolve_local_single_file,
         split_local_checkpoint_path,
         resolve_model_kind,
     )
+    from core.inference.diffusion_local_files import resolve_local_single_file
     from core.inference.diffusion_engine_router import predict_engine
     from core.inference.diffusion_hub_evidence import prefetch_for_pick
     from core.inference.sd_cpp_engine import ENGINE_MLX, ENGINE_SD_CPP
@@ -47192,10 +47433,10 @@ async def load_diffusion_model_gated(
     ]
     from core.inference.diffusion import (
         get_diffusion_backend,
-        resolve_local_single_file,
         split_local_checkpoint_path,
         resolve_model_kind,
     )
+    from core.inference.diffusion_local_files import resolve_local_single_file
     from core.inference.diffusion_device import (
         resolve_diffusion_device_target,
         resolve_selected_cuda_ordinal,
@@ -50070,6 +50311,105 @@ def _image_generation_defaults(status: dict) -> tuple[int, float]:
     )
 
 
+async def _batched_openai_images(
+    backend: Any,
+    status: dict,
+    body: ImageGenerationRequest,
+    width: int,
+    height: int,
+    steps: int,
+    guidance: float,
+    expected_load: Any,
+) -> Optional[dict]:
+    from core.inference import image_request_batching
+    from core.inference.diffusion_engine_router import ENGINE_DIFFUSERS, active_engine_name
+    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+    from core.inference.diffusion_flux3 import FLUX3_FAMILY_NAMES
+    from core.inference.generation_ticket import (
+        GenerationTicket,
+        TicketStopEvent,
+        generation_ticket,
+    )
+
+    holder = getattr(backend, "generation_holder", None)
+    if (
+        holder is None
+        or active_engine_name() != ENGINE_DIFFUSERS
+        or status.get("family") in FLUX3_FAMILY_NAMES
+    ):
+        return None
+
+    ticket = GenerationTicket()
+    stopped = TicketStopEvent(ticket)
+
+    # Wait only for the generation found on arrival, so a later one taking the slot cannot starve the batch.
+    arrived_behind: list = []
+
+    def busy() -> bool:
+        if stopped.is_set():
+            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+        try:
+            current = holder()
+        except Exception:  # noqa: BLE001 -- no busy signal; render individually
+            return False
+        if current is None:
+            return False
+        if not arrived_behind:
+            arrived_behind.append(current)
+        return current is arrived_behind[0]
+
+    async def run_batch(prompts: list[str], seeds: list[int]) -> dict:
+        with generation_ticket(ticket):
+            try:
+                return await asyncio.to_thread(
+                    backend.generate,
+                    prompt = prompts[0],
+                    negative_prompt = body.negative_prompt,
+                    width = width,
+                    height = height,
+                    steps = steps,
+                    guidance = guidance,
+                    prompts = prompts,
+                    seeds = seeds,
+                    batch_size = len(seeds),
+                    expected_load = expected_load,
+                )
+            except Exception as exc:
+                # An engine Stop sets the bound event, not ``stopped``: no member may retry alone.
+                if ticket.cancelled() and not cancelled(exc):
+                    raise RuntimeError(DIFFUSION_CANCELLED_MSG) from exc
+                raise
+
+    key = (
+        current_account_id(),
+        expected_load,
+        width,
+        height,
+        steps,
+        guidance,
+        body.negative_prompt or None,
+    )
+
+    def cancelled(exc: BaseException) -> bool:
+        return isinstance(exc, RuntimeError) and str(exc) == DIFFUSION_CANCELLED_MSG
+
+    waiter = getattr(backend, "generation_waiter", None)
+    with waiter(stopped) if waiter is not None else nullcontext():
+        result = await image_request_batching.generate(
+            key,
+            body.prompt,
+            body.n,
+            body.seed,
+            busy = busy,
+            run_batch = run_batch,
+            shared_outcome = cancelled,
+        )
+        # A Stop recorded while the batch ran is final: never fall back to rendering alone or retry.
+        if result is None and stopped.is_set():
+            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+        return result
+
+
 # Split out so the monitor row can wrap the whole handler without reindenting it.
 async def _generate_openai_images(
     body: ImageGenerationRequest,
@@ -50129,23 +50469,28 @@ async def _generate_openai_images(
         steps, guidance = await asyncio.to_thread(_image_generation_defaults, status)
         steps = steps if body.steps is None else body.steps
         guidance = guidance if body.guidance is None else body.guidance
+        expected_load = load_identity(
+            status.get("repo_id"), status.get("base_repo"), status.get("family")
+        )
         reset_media_generation_progress("image")
         try:
             with account_access.media_generation("diffusion"):
-                result = await asyncio.to_thread(
-                    backend.generate,
-                    prompt = body.prompt,
-                    negative_prompt = body.negative_prompt,
-                    width = width,
-                    height = height,
-                    steps = steps,
-                    guidance = guidance,
-                    seed = body.seed,
-                    batch_size = body.n,
-                    expected_load = load_identity(
-                        status.get("repo_id"), status.get("base_repo"), status.get("family")
-                    ),
+                result = await _batched_openai_images(
+                    backend, status, body, width, height, steps, guidance, expected_load
                 )
+                if result is None:
+                    result = await asyncio.to_thread(
+                        backend.generate,
+                        prompt = body.prompt,
+                        negative_prompt = body.negative_prompt,
+                        width = width,
+                        height = height,
+                        steps = steps,
+                        guidance = guidance,
+                        seed = body.seed,
+                        batch_size = body.n,
+                        expected_load = expected_load,
+                    )
             break
         except DiffusionModelReplacedError:
             if attempt > 0:
@@ -50203,7 +50548,6 @@ async def _generate_openai_images(
         "workflow": result.get("workflow"),
         "created_at": float(created),
     }
-    # The diffusers batch shares one seed; the native batch uses a distinct seed per image, so record each image's own seed.
     per_image_seeds = result.get("seeds")
 
     def _persist() -> list[ImageGenerationData]:

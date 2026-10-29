@@ -117,8 +117,6 @@ _OPTIONAL_IDENTITY_FIELDS = frozenset(
 )
 # Bundle side only: an incoming None is the route's unresolved pre-trainer identity ("cannot tell").
 _LEGACY_IDENTITY_DEFAULTS: dict[str, str] = {"bucketing": "off"}
-# What source_revision() returns when it cannot resolve a revision offline.
-_UNRESOLVED_REVISION = "unresolved"
 
 
 def _revision_is_comparable(value: Any) -> bool:

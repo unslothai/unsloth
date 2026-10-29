@@ -829,3 +829,42 @@ def test_auto_fallback_stays_quiet(fake, monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger = fi.__name__):
         assert fi.maybe_activate_flash_attention_impl(_model()) is None
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+@pytest.mark.parametrize("value", ["fa3", "fa4", "auto"])
+@pytest.mark.parametrize("case", ["device", "registry"])
+def test_explicit_fallback_warns_once_through_trainer_setup(fake, monkeypatch, caplog, value, case):
+    import logging
+
+    from unsloth.utils import packing
+
+    monkeypatch.setitem(fi.FLASH_IMPL_STATE, "logged", set())
+    monkeypatch.setenv(fi._ENV, value)
+    if case == "device":
+        monkeypatch.setattr(fi, "_device_majors", lambda: {8})
+        reason = "no supported impl for devices sm[8]"
+    else:
+        monkeypatch.setattr(fi, "_registry", lambda: None)
+        reason = "torch has no flash attention impl registry (< 2.11)"
+    calls = []
+
+    class Trainer:
+        def train(self):
+            calls.append(fake.current_impl)
+            return "done"
+
+    collator = types.SimpleNamespace(padding_free = True, _unsloth_padding_free_lengths_wrapped = True)
+    trainer = Trainer()
+    trainer.model, trainer.data_collator = _model(), collator
+    with caplog.at_level(logging.WARNING, logger = fi.__name__):
+        packing.enable_padding_free_metadata(trainer.model, trainer)
+        packing.enable_padding_free_metadata(trainer.model, trainer)
+        assert trainer.train() == "done" and trainer.train() == "done"
+    assert calls == [None, None]
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    if value == "auto":
+        assert warnings == []
+        assert ("train" in vars(trainer)) == (case == "device")
+    else:
+        assert warnings == [f"Unsloth: {fi._ENV}={value} not used: {reason}"]
+    assert fake.probes == [] and fake.current_impl is None

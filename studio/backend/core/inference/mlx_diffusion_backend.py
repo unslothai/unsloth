@@ -480,7 +480,7 @@ class MfluxRuntime:
         return image
 
     def free_working_set_bytes(self) -> Optional[int]:
-        """Metal's recommended working set minus what MLX holds live now (the resident model), or None."""
+        """Metal working set minus live MLX, capped by system headroom less a chat worker's reserved growth."""
         import mlx.core as mx
 
         try:
@@ -490,13 +490,26 @@ class MfluxRuntime:
             return None
         if budget <= 0:
             return None
-        return budget - int(mx.get_active_memory())
+        free = budget - int(mx.get_active_memory())
+        try:
+            from core.inference.gpu_residency import shared_metal_headroom_bytes
+            shared = shared_metal_headroom_bytes()
+        except Exception:  # noqa: BLE001 -- this process's reading alone, as before
+            shared = None
+        return free if shared is None else min(free, shared)
 
     def _plan_vae_tiling(self, model: Any, width: int, height: int) -> None:
         from mflux.models.common.vae.tiling_config import TilingConfig
 
+        try:
+            from core.inference.gpu_residency import metal_media_priced
+
+            # Price reserved the tiled decode; a chat model may join mid-generation on it.
+            priced = metal_media_priced()
+        except Exception:  # noqa: BLE001
+            priced = False
         tiled = TilingConfig.may_tile_implicitly(model) and vae_tiling_needed(
-            width, height, self.free_working_set_bytes()
+            width, height, 0 if priced else self.free_working_set_bytes()
         )
         model.tiling_config = TilingConfig() if tiled else None
         self.last_vae_tiled = tiled

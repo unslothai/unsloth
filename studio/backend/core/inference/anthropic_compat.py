@@ -693,6 +693,10 @@ class AnthropicStreamEmitter:
         elif etype == "metadata":
             self._usage = event.get("usage", {})
             return []
+        elif etype == "status" and not event.get("text"):
+            # A new cumulative segment can start without a tool_end (a rejected call).
+            self._prev_text = ""
+            return []
         return []
 
     def finish(

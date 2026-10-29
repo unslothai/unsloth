@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import contextlib
+import functools
 import json
 import os
 import re
@@ -15,7 +16,6 @@ from pathlib import Path, PureWindowsPath
 from typing import List, Optional, Tuple
 
 import typer
-import yaml
 
 _HUB_REPO_RE = re.compile(r"[\w.\-]+/[\w.\-]+")
 _TOKENIZER_FILES = ("tokenizer_config.json", "tokenizer.json", "tokenizer.model")
@@ -255,13 +255,17 @@ def _base_vocab_size(model: str) -> int:
     return getattr(getattr(config, "text_config", None) or config, "vocab_size", 0) or 0
 
 
-class _TaskYamlLoader(yaml.SafeLoader):
-    """safe_load that tolerates lm-eval's custom tags (!function utils.fn)."""
+@functools.cache
+def _task_yaml_loader():
+    import yaml
 
+    class _TaskYamlLoader(yaml.SafeLoader):
+        """safe_load that tolerates lm-eval's custom tags (!function utils.fn)."""
 
-_TaskYamlLoader.add_multi_constructor(
-    "!", lambda loader, suffix, node: getattr(node, "value", None)
-)
+    _TaskYamlLoader.add_multi_constructor(
+        "!", lambda loader, suffix, node: getattr(node, "value", None)
+    )
+    return _TaskYamlLoader
 
 
 def _doc_column(key: str) -> str:
@@ -299,15 +303,19 @@ def make_dataset_task(
         ],
         "metric_list": [{"metric": "exact_match", "aggregation": "mean", "higher_is_better": True}],
     }
+    import yaml
+
     out_dir.mkdir(parents = True, exist_ok = True)
     (out_dir / f"{name}.yaml").write_text(yaml.safe_dump(spec, sort_keys = False), encoding = "utf-8")
 
 
 def _yaml_task_name(path: Path) -> Tuple[str, bool]:
     """(registered name, needs its directory on the include path)."""
+    import yaml
+
     text = path.read_text(encoding = "utf-8")
     try:
-        spec = yaml.load(text, Loader = _TaskYamlLoader)
+        spec = yaml.load(text, Loader = _task_yaml_loader())
     except yaml.YAMLError as e:
         raise ValueError(f"Invalid YAML in custom task file '{path}': {e}") from e
     if not isinstance(spec, dict):

@@ -553,7 +553,9 @@ def scope_flash_attention_impl_to_train(
     """Active only during trainer.train: FA4's launch cost makes decode attention ~6x slower."""
     if trainer is None or getattr(trainer, "_unsloth_flash_impl_wrapped", False):
         return
-    if _requested() is None or _registry() is None:
+    requested = _requested()
+    # Explicit fa3 / fa4 still wraps without a registry so train() reports the fallback.
+    if requested is None or (requested == "auto" and _registry() is None):
         return
     original = getattr(trainer, "train", None)
     if not callable(original):

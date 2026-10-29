@@ -436,13 +436,12 @@ async function downloadVideo(
   src: string,
   video: GalleryVideo,
   format: VideoExportFormat = "mp4",
-) {
+): Promise<string | undefined> {
   if (format === "mp4") {
-    await downloadUrlStreaming(src, exportFilename(video, format));
-    return;
+    return downloadUrlStreaming(src, exportFilename(video, format));
   }
   const blob = await fetchGalleryVideoExport(video.id, format);
-  await downloadFile(blob, exportFilename(video, format), blob.type);
+  return downloadFile(blob, exportFilename(video, format), blob.type);
 }
 
 function formatTimestamp(iso: string): string {
@@ -1903,10 +1902,10 @@ function VideoGenerator({
       const toastId =
         format === "mp4" ? null : toast.loading(`Converting to ${format.toUpperCase()}…`);
       try {
-        await downloadVideo(src, video, format);
+        const savedFileName = await downloadVideo(src, video, format);
         if (toastId !== null) toast.dismiss(toastId);
-        if (isTauri) {
-          toast.success("Video saved", { description: exportFilename(video, format) });
+        if (savedFileName !== undefined) {
+          toast.success("Video saved", { description: savedFileName });
         }
       } catch (err) {
         if (toastId !== null) toast.dismiss(toastId);
@@ -3803,7 +3802,7 @@ function VideoGenerator({
               resolveDownloadFootprint={resolveDownloadFootprint}
               onEject={status?.loaded ? handleUnload : undefined}
               variant="ghost"
-              className="!h-[calc(34px*var(--ui-space-scale,1))]"
+              className="ml-1.5 max-w-full overflow-hidden !pl-2.5 !pr-1.5 !h-[var(--studio-chat-control-height,34px)]"
               task={VIDEO_GEN_TASKS}
               catalog={VIDEO_CATALOG}
               opaqueKind={opaqueKind}

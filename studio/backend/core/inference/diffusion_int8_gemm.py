@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""int8 GEMM with torchao dequant epilogue in Triton, bf16 out; sm80/sm89/sm120 only, else stock
+"""int8 GEMM with torchao dequant epilogue in Triton, bf16 out; sm80/sm89/sm120 measured, other sm80+ behind a
+bit-exact probe and a latency check (UNSLOTH_DIFFUSION_INT8_GEMM_UNLISTED=0 keeps them stock), sm100 / sm103 stock
 (ROCm and CPU never reach it); Linear output bit-identical, compiled block not end to end;
+sm120 loads its operands through TMA descriptors (UNSLOTH_DIFFUSION_INT8_GEMM_TMA=0 keeps pointer loads);
 UNSLOTH_DIFFUSION_INT8_GEMM=0 disables."""
 
 from __future__ import annotations
@@ -19,6 +21,8 @@ INT8_GEMM_CONVROT_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT"
 INT8_GEMM_STREAMED_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_STREAMED"
 INT8_GEMM_TILES_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_TILES"
 INT8_SWIGLU_STREAMED_ENV = "UNSLOTH_DIFFUSION_INT8_SWIGLU_STREAMED"
+INT8_GEMM_UNLISTED_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_UNLISTED"
+INT8_GEMM_TMA_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_TMA"
 _MIN_TRITON = (3, 2)
 # torch._int_mm needs M > 16; below that the stock path (safe_int_mm padding) stays in charge.
 _MIN_ROWS = 17
@@ -36,6 +40,7 @@ _LOCK = threading.Lock()
 _OP_HANDLE: Any = None
 # Engagement census; never read inside a traced region.
 _CALLS = [0]
+_TMA_CALLS = [0]
 
 # (BLOCK_M, BLOCK_N, BLOCK_K, GROUP_M, num_warps, num_stages) per (major, minor), tuned on DiT shapes. Absent = off.
 _ARCH_CONFIG = {
@@ -50,8 +55,10 @@ _ARCH_CONFIG = {
     (8, 9): (256, 128, 128, 8, 8, 3),  # L4
     (12, 0): (128, 128, 64, 8, 4, 4),  # RTX PRO 6000
 }
-# When the arch tile does not fit this part's shared memory.
+# When the arch tile does not fit this part's shared memory, and the unlisted archs' tile (64 KB of stages: fits 99 KB).
 _FALLBACK_CONFIG = (128, 128, 64, 8, 4, 4)
+# Measured slower than cuBLAS: not probed unless forced.
+_UNLISTED_SKIP = ((10, 0), (10, 3))
 
 # First match wins, bounds inclusive. No L4 rule on purpose: power-capped clocks lose end to end.
 # (major, minor) -> ((N_lo, N_hi, K_lo, K_hi, tile), ...), M >= _SHAPE_MIN_M only.
@@ -64,6 +71,10 @@ _SHAPE_TILES: dict = {
     ),
 }
 _SHAPE_MIN_M = 1024
+
+# Same kernel and epilogue with host TMA descriptors for A / W, one tile for M >= _SHAPE_MIN_M (replaces
+# _SHAPE_TILES there); below that the pointer-load kernel is faster.
+_TMA_CONFIG = {(12, 0): (128, 128, 64, 8, 4, 4)}
 
 
 def int8_gemm_mode() -> str:
@@ -96,6 +107,17 @@ def tiles_enabled() -> bool:
     return raw not in ("0", "off", "false", "no")
 
 
+def tma_enabled() -> bool:
+    raw = (os.environ.get(INT8_GEMM_TMA_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+def tma_config(capability: Optional[tuple]) -> Optional[tuple]:
+    if capability is None or not tma_enabled():
+        return None
+    return _TMA_CONFIG.get((int(capability[0]), int(capability[1])))
+
+
 def _triton_version_ok(version: Optional[str] = None) -> bool:
     if version is None:
         try:
@@ -107,6 +129,33 @@ def _triton_version_ok(version: Optional[str] = None) -> bool:
 
     match = re.match(r"(\d+)\.(\d+)", version)
     return bool(match) and (int(match.group(1)), int(match.group(2))) >= _MIN_TRITON
+
+
+def unlisted_mode() -> str:
+    """'off', 'force' (no latency check) or 'auto' for the sm80+ archs without an ``_ARCH_CONFIG`` tile."""
+    gemm = int8_gemm_mode()
+    if gemm != "auto":
+        return gemm
+    raw = (os.environ.get(INT8_GEMM_UNLISTED_ENV) or "").strip().lower()
+    if raw in ("0", "off", "false", "no"):
+        return "off"
+    if raw in ("1", "on", "true", "yes", "force"):
+        return "force"
+    return "auto"
+
+
+def unlisted_arch(capability: Optional[tuple]) -> bool:
+    if capability is None:
+        return False
+    cap = (int(capability[0]), int(capability[1]))
+    return cap >= (8, 0) and cap not in _ARCH_CONFIG
+
+
+def unlisted_wanted(capability: Optional[tuple], mode: Optional[str] = None) -> bool:
+    mode = unlisted_mode() if mode is None else mode
+    if mode == "off" or not unlisted_arch(capability):
+        return False
+    return mode == "force" or (int(capability[0]), int(capability[1])) not in _UNLISTED_SKIP
 
 
 def arch_config(capability: Optional[tuple], mode: Optional[str] = None) -> Optional[tuple]:
@@ -207,11 +256,69 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         mask = (offs_m[:, None] < M) & (offs_n[None, :] < N)
         tl.store(c_ptrs, y.to(tl.bfloat16), mask = mask)
 
-    return types.SimpleNamespace(i8mm_dq = i8mm_dq)
+    @triton.jit
+    def i8mm_dq_tma(
+        a_desc,
+        w_desc,
+        xs_ptr,
+        ws_ptr,
+        b_ptr,
+        c_ptr,
+        M,
+        N,
+        K,
+        stride_cm,
+        HAS_BIAS: tl.constexpr,
+        XS_FP32: tl.constexpr,
+        WS_FP32: tl.constexpr,
+        BLOCK_M: tl.constexpr,
+        BLOCK_N: tl.constexpr,
+        BLOCK_K: tl.constexpr,
+        GROUP_M: tl.constexpr,
+    ):
+        pid = tl.program_id(0)
+        num_pid_m = tl.cdiv(M, BLOCK_M)
+        num_pid_n = tl.cdiv(N, BLOCK_N)
+        num_pid_in_group = GROUP_M * num_pid_n
+        group_id = pid // num_pid_in_group
+        first_pid_m = group_id * GROUP_M
+        group_size_m = min(num_pid_m - first_pid_m, GROUP_M)
+        pid_m = first_pid_m + ((pid % num_pid_in_group) % group_size_m)
+        pid_n = (pid % num_pid_in_group) // group_size_m
+        om = pid_m * BLOCK_M
+        on = pid_n * BLOCK_N
+        acc = tl.zeros((BLOCK_M, BLOCK_N), dtype = tl.int32)
+        for k in range(0, tl.cdiv(K, BLOCK_K)):
+            a = a_desc.load([om, k * BLOCK_K])
+            b = w_desc.load([on, k * BLOCK_K])
+            acc = tl.dot(a, b.T, acc, out_dtype = tl.int32)
+
+        offs_m = om.to(tl.int64) + tl.arange(0, BLOCK_M)
+        offs_n = on.to(tl.int64) + tl.arange(0, BLOCK_N)
+        rm = offs_m % M
+        rn = offs_n % N
+        xs = tl.load(xs_ptr + rm).to(tl.float32)
+        ws = tl.load(ws_ptr + rn).to(tl.float32)
+        if XS_FP32:
+            y = acc.to(tl.float32)
+        else:
+            y = _rbf16(tl.extra.cuda.libdevice.int2float_rn(acc))
+        y = _rbf16(y * xs[:, None])
+        y = tl.extra.cuda.libdevice.mul_rn(y, ws[None, :])
+        if not WS_FP32:
+            y = _rbf16(y)
+        if HAS_BIAS:
+            y = tl.extra.cuda.libdevice.add_rn(y, tl.load(b_ptr + rn).to(tl.float32)[None, :])
+        c_ptrs = c_ptr + offs_m[:, None] * stride_cm + offs_n[None, :]
+        mask = (offs_m[:, None] < M) & (offs_n[None, :] < N)
+        tl.store(c_ptrs, y.to(tl.bfloat16), mask = mask)
+
+    return types.SimpleNamespace(i8mm_dq = i8mm_dq, i8mm_dq_tma = i8mm_dq_tma)
 
 
 # device index -> probed tile (None = stock).
 _DEVICE_CFG: dict = {}
+_DEVICE_TMA: dict = {}
 # device index -> the per-shape rules whose tile passed the probe on that device.
 _DEVICE_TILES: dict = {}
 
@@ -269,6 +376,52 @@ def _launch(a: Any, w: Any, xs: Any, ws: Any, bias: Any, cfg: tuple) -> Any:
     return out
 
 
+@lru_cache(maxsize = 1)
+def _tensor_descriptor() -> Any:
+    try:
+        from triton.tools.tensor_descriptor import TensorDescriptor
+    except Exception:  # noqa: BLE001 - Triton before host descriptors
+        return None
+    return TensorDescriptor
+
+
+def _launch_tma(a: Any, w: Any, xs: Any, ws: Any, bias: Any, cfg: tuple) -> Any:
+    import torch
+    import triton
+
+    k = _kernels()
+    desc = _tensor_descriptor()
+    m, kk = a.shape
+    n = w.shape[0]
+    bm, bn, bk, gm, warps, stages = cfg
+    out = torch.empty((m, n), device = a.device, dtype = torch.bfloat16)
+    grid = (triton.cdiv(m, bm) * triton.cdiv(n, bn),)
+    with torch.cuda.device(a.device):
+        k.i8mm_dq_tma[grid](
+            desc.from_tensor(a, [bm, bk]),
+            desc.from_tensor(w, [bn, bk]),
+            xs,
+            ws,
+            bias if bias is not None else ws,
+            out,
+            m,
+            n,
+            kk,
+            out.stride(0),
+            HAS_BIAS = bias is not None,
+            XS_FP32 = xs.dtype == torch.float32,
+            WS_FP32 = ws.dtype == torch.float32,
+            BLOCK_M = bm,
+            BLOCK_N = bn,
+            BLOCK_K = bk,
+            GROUP_M = gm,
+            num_warps = warps,
+            num_stages = stages,
+            enable_fp_fusion = False,
+        )
+    return out
+
+
 def _aligned(a: Any, w: Any) -> bool:
     """K, N, both row strides and both int8 base pointers on 16 bytes. Triton specialises on these, and an off-16 variant
     spills; the driver then reserves that local memory device-wide for the process, outside PyTorch's allocator."""
@@ -293,6 +446,11 @@ def tile_for(index: Any, m: int, n: int, k: int) -> Optional[tuple]:
     return cfg
 
 
+def tma_tile_for(index: Any, m: int) -> Optional[tuple]:
+    tile = _DEVICE_TMA.get(index)
+    return None if m < _SHAPE_MIN_M else tile
+
+
 def _run(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
     """Op body: the probed tile for this device and shape, else (launch failure, ``_aligned`` false) the stock
     epilogue."""
@@ -301,6 +459,14 @@ def _run(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
     index = a.device.index
     cfg = tile_for(index, a.shape[0], w.shape[0], a.shape[1])
     if cfg is not None and w.stride(-1) == 1 and w.device == a.device and _aligned(a, w):
+        tma = tma_tile_for(index, a.shape[0])
+        if tma is not None:
+            try:
+                out = _launch_tma(a, w, xs, ws, bias, tma)
+                _TMA_CALLS[0] += 1
+                return out
+            except Exception:  # noqa: BLE001 - pointer loads, same math
+                _DEVICE_TMA[index] = None
         try:
             return _launch(a, w, xs, ws, bias, cfg)
         except Exception:  # noqa: BLE001 - a failed launch keeps the stock math
@@ -308,6 +474,8 @@ def _run(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
                 _DEVICE_TILES[index] = ()  # drop the shape tiles, keep the probed default
                 return _run(a, w, xs, ws, bias)
             _DEVICE_CFG[index] = None
+            if index in _UNLISTED_CARDS:
+                _UNLISTED_PROBE[index] = False
     return reference(a, w, xs, ws, bias)
 
 
@@ -349,12 +517,26 @@ def shape_tiles(capability: Optional[tuple]) -> tuple:
     return tuple(_SHAPE_TILES.get((int(capability[0]), int(capability[1])), ()))
 
 
+def _tma_probe(index: int, capability: tuple) -> Optional[tuple]:
+    """This arch's TMA tile when its kernel matches the eager epilogue bit for bit (``_probe``), else None."""
+    tma = tma_config(capability)
+    try:
+        ok = tma is not None and _tensor_descriptor() is not None and _probe(index, tma, tma = True)
+    except Exception:  # noqa: BLE001 - pointer loads stay
+        ok = False
+    return tma if ok else None
+
+
 def device_config(index: int) -> Optional[tuple]:
     """Probe once per device: arch gate, Triton, op registration, then a launch that must match the eager torchao
     epilogue bit for bit (bf16 and fp32 activation scales, bias, ragged M / N / K). None keeps the stock path. Each
-    per-shape tile is probed the same way; one that fails leaves its shapes on the default tile."""
+    per-shape tile is probed the same way; one that fails leaves its shapes on the default tile. Unlisted archs:
+    ``unlisted_config``, re-read per call so its switch acts between loads."""
+    if index in _UNLISTED_CARDS:
+        return unlisted_config(index)
     if index in _DEVICE_CFG:
         return _DEVICE_CFG[index]
+    _DEVICE_TMA.pop(index, None)
     cfg = None
     rules: tuple = ()
     try:
@@ -367,6 +549,9 @@ def device_config(index: int) -> Optional[tuple]:
             and _op() is not None
         ):
             cap = torch.cuda.get_device_capability(index)
+            if unlisted_arch(cap):
+                _UNLISTED_CARDS.add(index)
+                return unlisted_config(index)
             want = arch_config(cap)
             for cand in (want, _FALLBACK_CONFIG) if want is not None else ():
                 if cand is not None and _probe(index, cand):
@@ -379,9 +564,105 @@ def device_config(index: int) -> Optional[tuple]:
                     if tile not in ok:
                         ok[tile] = tile == cfg or _probe(index, tile)
                 rules = tuple(rule for rule in shape_tiles(cap) if ok[rule[4]])
+                tma = _tma_probe(index, cap)
+                if tma is not None:
+                    _DEVICE_TMA[index] = tma
     except Exception:  # noqa: BLE001
         cfg = None
     _DEVICE_TILES[index] = rules if cfg is not None else ()
+    _DEVICE_CFG[index] = cfg
+    return cfg
+
+
+_UNLISTED_CARDS: set = set()
+_UNLISTED_PROBE: dict = {}
+_UNLISTED_OK: dict = {}
+_UNLISTED_TIMING: dict = {}
+# (M, N, K): Qwen-Image-2.1 attention projection, MLP in, MLP down
+_UNLISTED_LATENCY_SHAPES = ((2048, 4096, 4096), (2048, 12288, 4096), (2048, 4096, 12288))
+
+
+def _unlisted_latency(index: int, cfg: tuple) -> dict:
+    """{"fused": us, "stock": us} summed over ``_UNLISTED_LATENCY_SHAPES``, each arm captured in a CUDA graph and
+    replayed, best of seven interleaved rounds. Stock = cuBLAS ``_int_mm``; its epilogue fuses into the consumer, so
+    each arm ends in one read of its output (int32 for stock, bf16 here) standing in for that consumer."""
+    import torch
+    from .diffusion_cuda_graph import CAPTURE_MODE, _capturing, synchronize_outside_capture
+
+    dev = torch.device("cuda", index)
+    g = torch.Generator(device = "cpu").manual_seed(5)
+    ops = []
+    for m, n, k in _UNLISTED_LATENCY_SHAPES:
+        a = torch.randint(-127, 128, (m, k), generator = g, dtype = torch.int8).to(dev)
+        w = torch.randint(-127, 128, (n, k), generator = g, dtype = torch.int8).to(dev)
+        xs = torch.full((m,), 1e-3, device = dev, dtype = torch.bfloat16)
+        ws = torch.full((n,), 1e-3, device = dev, dtype = torch.bfloat16)
+        ops.append((a, w, xs, ws))
+    fns = {
+        "fused": lambda a, w, xs, ws: _launch(a, w, xs, ws, None, cfg).amax(),
+        "stock": lambda a, w, xs, ws: torch._int_mm(a, w.t()).amax(),
+    }
+    reps = 2
+    graphs = {}
+    with torch.cuda.device(dev):
+        side = torch.cuda.Stream(dev)
+        side.wait_stream(torch.cuda.current_stream(dev))
+        with torch.cuda.stream(side):
+            for fn in fns.values():
+                for op in ops:
+                    fn(*op)  # compile / autotune outside the capture
+        torch.cuda.current_stream(dev).wait_stream(side)
+        synchronize_outside_capture(dev)
+        for name, fn in fns.items():
+            graph = torch.cuda.CUDAGraph()
+            with _capturing(), torch.cuda.graph(graph, capture_error_mode = CAPTURE_MODE):
+                for _ in range(reps):
+                    for op in ops:
+                        fn(*op)
+            graphs[name] = graph
+        for graph in graphs.values():
+            graph.replay()
+        synchronize_outside_capture(dev)
+        start, end = torch.cuda.Event(enable_timing = True), torch.cuda.Event(enable_timing = True)
+        best = {name: float("inf") for name in graphs}
+        for _ in range(7):
+            for name, graph in graphs.items():
+                start.record()
+                graph.replay()
+                end.record()
+                end.synchronize()
+                best[name] = min(best[name], start.elapsed_time(end) * 1000.0 / reps)
+        del graphs
+    return best
+
+
+def unlisted_config(index: int) -> Optional[tuple]:
+    """Unlisted sm80+ card: ``_FALLBACK_CONFIG`` when it passed the bit-exact probe (once per device) and the latency
+    check (once per (device, mode); skipped under force), else None. Outside any trace / capture."""
+    import torch
+
+    mode = unlisted_mode()
+    cfg = None
+    try:
+        if unlisted_wanted(torch.cuda.get_device_capability(index), mode):
+            if index not in _UNLISTED_PROBE:
+                _UNLISTED_PROBE[index] = _probe(index, _FALLBACK_CONFIG)
+            if _UNLISTED_PROBE[index]:
+                key = (index, mode)
+                if key not in _UNLISTED_OK:
+                    ok = True
+                    if mode != "force":
+                        try:
+                            timing = _unlisted_latency(index, _FALLBACK_CONFIG)
+                            _UNLISTED_TIMING[index] = {k: round(v, 1) for k, v in timing.items()}
+                            ok = timing["fused"] <= timing["stock"]
+                        except Exception:  # noqa: BLE001 - main's path stays
+                            ok = False
+                    _UNLISTED_OK[key] = ok
+                cfg = _FALLBACK_CONFIG if _UNLISTED_OK[key] else None
+    except Exception:  # noqa: BLE001
+        cfg = None
+    _DEVICE_TILES[index] = ()
     _DEVICE_CFG[index] = cfg
     return cfg
 
@@ -394,9 +675,14 @@ _PROBE_SHAPES = (
 )
 
 
-def _probe(index: int, cfg: tuple) -> bool:
+def _probe(
+    index: int,
+    cfg: tuple,
+    tma: bool = False,
+) -> bool:
     import torch
 
+    launch = _launch_tma if tma else _launch
     dev = torch.device("cuda", index)
     g = torch.Generator(device = "cpu").manual_seed(0)
     try:
@@ -408,12 +694,12 @@ def _probe(index: int, cfg: tuple) -> bool:
             ws = (torch.rand(n, generator = g) * 0.002 + 1e-5).to(torch.bfloat16).to(dev)
             ws = ws.float() if xs32 else ws
             b = (torch.randn(n, generator = g) * 0.1).to(torch.bfloat16).to(dev) if bias else None
-            if not torch.equal(_launch(a, w, xs, ws, b, cfg), reference(a, w, xs, ws, b)):
+            if not torch.equal(launch(a, w, xs, ws, b, cfg), reference(a, w, xs, ws, b)):
                 return False
         a, w = tie_operands(dev)
         xs = torch.ones(a.shape[0], device = dev, dtype = torch.bfloat16)
         ws = torch.ones(w.shape[0], device = dev, dtype = torch.bfloat16)
-        if not torch.equal(_launch(a, w, xs, ws, None, cfg), reference(a, w, xs, ws, None)):
+        if not torch.equal(launch(a, w, xs, ws, None, cfg), reference(a, w, xs, ws, None)):
             return False
         from .diffusion_cuda_graph import synchronize_outside_capture
 
@@ -847,6 +1133,35 @@ def _gates(capability: Optional[tuple]) -> tuple:
     return gemm, rotq
 
 
+def _unlisted_rotated(index: int) -> bool:
+    """Unlisted card: ``rotq_h16`` armed for it (probe + its own latency check). Takes no ``diffusion_int8_fused``
+    lock: its SwiGLU fusion reaches this through ``rotated_ff`` while holding it."""
+    if not convrot_enabled():
+        return False
+    try:
+        from . import diffusion_convrot_quant as cq
+        from .diffusion_int8_fused import _act_quant_device_ok, _act_quant_op
+
+        actq = None
+        if (index, cq.unlisted_mode()) not in cq._UNLISTED_DEVICE:
+            actq = _act_quant_op() if _act_quant_device_ok(index) else None
+        return bool(cq.unlisted_device_ok(index, actq))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def rotated_swapped(index: int) -> Optional[bool]:
+    """On an unlisted card (outside any trace): True when rotated Linears go through this swap (fused GEMM and the
+    ``rotq_h16`` rotation + act quant both on), so the Qwen-Image-2.1 / Z-Image stock fusions stand down. False keeps
+    them, exactly as on main. None on a listed arch (``_gates`` decides)."""
+    import torch
+
+    cap = torch.cuda.get_device_capability(index)
+    if not unlisted_arch(cap) or _gates(cap)[1] or int8_gemm_mode() == "off":
+        return None
+    return _unlisted_rotated(index) and device_config(index) is not None
+
+
 def install(
     transformer: Any,
     logger: Any = None,
@@ -874,7 +1189,9 @@ def install(
             return 0
         if not _triton_version_ok() or _kernels() is None:
             return 0
-        gemm, rotq = _gates(torch.cuda.get_device_capability(torch.cuda.current_device()))
+        cap = torch.cuda.get_device_capability(torch.cuda.current_device())
+        gemm, rotq = _gates(cap)
+        gemm = gemm or unlisted_wanted(cap)
         if not (gemm or rotq):
             return 0
     except Exception:  # noqa: BLE001
@@ -970,7 +1287,26 @@ def _swap_on(
     from .diffusion_convrot_quant import rotquant_device_config
 
     gemm = device_config(index) is not None
-    rotq = any(r[1] is not None for _, r in recs) and rotquant_device_config(index) is not None
+    rotated = any(r[1] is not None for _, r in recs)
+    rotq = rotated and rotquant_device_config(index) is not None
+    if gemm and rotated and not rotq and index in _UNLISTED_CARDS:
+        # unlisted card: rotated Linears only with rotq_h16; else the stock fusions keep them, as on main
+        rotq = _unlisted_rotated(index)
+        if not rotq:
+            recs = [(m, r) for m, r in recs if r[1] is None]
+            if logger is not None:
+                logger.info(
+                    "diffusion.int8_gemm: rotated Linears keep the stock path on cuda:%d (rotq_h16 off)",
+                    index,
+                )
+    if not gemm and logger is not None and _UNLISTED_TIMING.get(index):
+        t = _UNLISTED_TIMING[index]
+        logger.info(
+            "diffusion.int8_gemm: fused-dequant GEMM kept off on cuda:%d (latency check: %.0f vs %.0f us cuBLAS)",
+            index,
+            t["fused"],
+            t["stock"],
+        )
     if not gemm:
         # no fused GEMM here: only rotated Linears gain (one kernel instead of rotation GEMM + act quant)
         recs = [(m, r) for m, r in recs if r[1] is not None] if rotq else []
@@ -1018,11 +1354,20 @@ def _swap_on(
         )
     if logger is not None and count:
         from .diffusion_convrot_quant import _H16_DEVICE
+        timing = _UNLISTED_TIMING.get(index) if gemm else None
         logger.info(
-            "diffusion.int8_gemm: %d int8 Linear(s) %s on sm_%d%d%s%s",
+            "diffusion.int8_gemm: %d int8 Linear(s) %s on sm_%d%d%s%s%s",
             count,
-            "run the fused-dequant GEMM (bf16 out)" if gemm else "keep cuBLAS",
+            (
+                "run the fused-dequant GEMM (bf16 out"
+                + (", TMA loads)" if _DEVICE_TMA.get(index) else ")")
+            )
+            if gemm
+            else "keep cuBLAS",
             *torch.cuda.get_device_capability(index),
+            f" (latency check: {timing['fused']:.0f} vs {timing['stock']:.0f} us cuBLAS)"
+            if timing
+            else "",
             (
                 ", ConvRot rotation fused into the act quant ("
                 + ("H16 x H16 kernel" if _H16_DEVICE.get(index) else "dense rotation kernel")
@@ -1112,3 +1457,7 @@ def is_installed(module: Any) -> bool:
 
 def call_count() -> int:
     return _CALLS[0]
+
+
+def tma_call_count() -> int:
+    return _TMA_CALLS[0]

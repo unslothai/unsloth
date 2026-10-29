@@ -77,7 +77,7 @@ from utils.upload_limits import (
     upload_limit_bytes,
     upload_limit_label,
 )
-from utils.cache_inventory import CACHE_KEYS, cache_inventory, purge_caches
+from utils.cache_inventory import CACHE_KEYS, cache_inventory, cache_breakdown, purge_caches
 from utils.xet_notice_settings import reserve_xet_notice
 from utils.chat_preferences_settings import (
     get_show_model_disclaimer,
@@ -903,6 +903,10 @@ class CacheEntryResponse(BaseModel):
     # Clearing costs a re-download, so it is never folded into a clear-everything action.
     opt_in: bool
     paths: list[str]
+    measured_paths: list[str] = Field(default_factory = list)
+    clear_size_bytes: Optional[int] = None
+    clear_entry_count: Optional[int] = None
+    system_disk_bytes: Optional[int] = None
     size_bytes: int
     entry_count: int
     present: bool
@@ -916,6 +920,7 @@ class CacheInventoryResponse(BaseModel):
     reclaimable_bytes: int
     free_bytes: Optional[int] = None
     total_disk_bytes: Optional[int] = None
+    refreshing: bool = False
 
 
 class CachePurgePayload(BaseModel):
@@ -1394,6 +1399,19 @@ async def get_caches(
     # Cold walks of a large hub or triton cache take seconds, so this runs off the event loop.
     inventory = await asyncio.to_thread(cache_inventory, refresh = refresh)
     return CacheInventoryResponse(**inventory)
+
+
+@_owner_settings_router.get("/caches/{key}/breakdown")
+async def get_cache_breakdown(
+    key: str,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    require_ui_session(via_api_key)
+    try:
+        return await asyncio.to_thread(cache_breakdown, key)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
 
 @_owner_settings_router.post("/caches/purge", response_model = CachePurgeResponse)
@@ -3259,14 +3277,6 @@ def _gguf_conversion_name_matches(hit_name: str, base: str) -> bool:
     return name == base or name in {f"{base}-gguf", f"{base}_gguf", f"{base}.gguf"}
 
 
-def _gguf_files_for_pick(names: list[str], picked: str) -> Optional[list[str]]:
-    """The complete downloadable file family for a picked GGUF. llama-server opens split siblings implicitly,
-    so a single selected shard is not a usable plan, and incomplete published families are rejected.
-    Deferred to the loader so the plan offered here and the transfer name one set."""
-    from core.rag.embed_llama_server import LlamaServerBackend
-    return LlamaServerBackend._split_family(names, picked)
-
-
 def _pick_downloadable_gguf(names: list[str]) -> Optional[list[str]]:
     """Pick the loader's preferred GGUF, skipping torn split families."""
     from core.rag.embed_llama_server import LlamaServerBackend
@@ -4810,6 +4820,17 @@ class PersonalizationAppearance(BaseModel):
         "taro",
         "wasabi",
         "yuzu",
+        "pumpkin",
+        "bloody-valentine",
+        "the-thing",
+        "alien",
+        "gothic",
+        "hexberry",
+        "candycorn",
+        "black-cat",
+        "trick-or-treat",
+        "ghost-ship",
+        "midnight-haunt",
     ] = "standard"
     language: Optional[str] = Field(None, max_length = 20)
     customization: PersonalizationCustomization = Field(

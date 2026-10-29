@@ -513,7 +513,7 @@ def _local_name_needles(model) -> list[Optional[str]]:
 def _local_family_needles(model) -> tuple[str, ...]:
     needles = _local_name_needles(model)
     try:
-        from core.inference.diffusion import resolve_local_single_file
+        from core.inference.diffusion_local_files import resolve_local_single_file
         single = resolve_local_single_file(model.path)
         if single:
             needles.append(single)
@@ -555,7 +555,6 @@ def _local_model_task(model) -> Optional[str]:
     if not _local_is_diffusers(model):
         return None
     try:
-        from core.inference.video import _is_trusted_video_repo
         from core.inference.video_families import (
             detect_video_family,
             unsupported_video_checkpoint_reason,
@@ -565,7 +564,11 @@ def _local_model_task(model) -> Optional[str]:
         if not unsupported_video_checkpoint_reason(*_local_name_needles(model), path):
             for needle in _local_family_needles(model):
                 family = detect_video_family(needle)
-                if family is None or not _is_trusted_video_repo(path):
+                if family is None:
+                    continue
+                from core.inference.video import _is_trusted_video_repo
+
+                if not _is_trusted_video_repo(path):
                     continue
                 if _pipeline_only_video_family(family) and not _is_diffusers_pipeline_dir(
                     Path(path)
@@ -726,11 +729,11 @@ def _untrusted_repo_single_files_loadable(repo_info, selected: Optional[Path] = 
 def _cached_repo_task(repo_info, selected: Optional[Path] = None) -> Optional[str]:
     repo_id = getattr(repo_info, "repo_id", "") or ""
     try:
-        from core.inference.video import _is_trusted_video_repo
         from core.inference.video_families import detect_video_family
-
         family = detect_video_family(repo_id)
         if family is not None:
+            from core.inference.video import _is_trusted_video_repo
+
             if _pipeline_only_video_family(family):
                 # Generator-first: nvidia/Cosmos3-Edge also has a reasoner root config.json but lists as video.
                 trusted = _is_trusted_video_repo(repo_id) and _repo_has_pipeline_index(
