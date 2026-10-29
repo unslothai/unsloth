@@ -7,8 +7,6 @@
 //   depth  throughput against draft depth, one line per speculative family
 // The SVG carries literal colours, so Download SVG / PNG saves what is on screen.
 
-import { cn } from "@/lib/utils";
-import { useTheme } from "@/features/settings";
 import { type ReactElement, type RefObject, memo, useState } from "react";
 import {
   type AggRow,
@@ -20,106 +18,22 @@ import {
   fmtPct,
   fmtRate,
 } from "../lib/bench-math";
+import { BarRows, type BarRow, barRowsHeight } from "./bar-chart";
+import {
+  type Tip,
+  ChartFrame,
+  chartHead,
+  chartHeight,
+  footerLines,
+  useInk,
+} from "./chart-frame";
+import { AXIS_H, RIGHT_W, TOP, W, clip, niceMax, tickText, ticks } from "./chart-math";
 import { useFamilyColors } from "./family-colors";
 
 export type ChartKind = "bars" | "runs" | "depth";
 
-let probe: CanvasRenderingContext2D | null | undefined;
-
-/** Any CSS colour folded to #rrggbb, since many SVG viewers can't paint oklch(). */
-function toPortableColor(value: string): string {
-  if (typeof document === "undefined") return value;
-  if (probe === undefined) {
-    const canvas = document.createElement("canvas");
-    canvas.width = 1;
-    canvas.height = 1;
-    probe = canvas.getContext("2d", { willReadFrequently: true });
-  }
-  if (!probe) return value;
-  probe.clearRect(0, 0, 1, 1);
-  probe.fillStyle = "#000";
-  probe.fillStyle = value;
-  probe.fillRect(0, 0, 1, 1);
-  const [r, g, b, a] = probe.getImageData(0, 0, 1, 1).data;
-  const hex = (n: number) => n.toString(16).padStart(2, "0");
-  return a === 255
-    ? `#${hex(r)}${hex(g)}${hex(b)}`
-    : `rgba(${r}, ${g}, ${b}, ${(a / 255).toFixed(3)})`;
-}
-
-function useInk(): { ink: string; muted: string; grid: string; card: string } {
-  // Subscribing re-renders on a theme flip, which is when the tokens change.
-  useTheme();
-  const style = getComputedStyle(document.documentElement);
-  const read = (n: string, fallback: string) =>
-    toPortableColor(style.getPropertyValue(n).trim() || fallback);
-  return {
-    ink: read("--foreground", "#111"),
-    muted: read("--muted-foreground", "#777"),
-    grid: read("--border", "#ddd"),
-    card: read("--card", "#fff"),
-  };
-}
-
-const W = 1000;
-const LABEL_W = 300;
-const RIGHT_W = 170;
-const ROW_H_FULL = 46;
-const BAR_H_FULL = 26;
-const TOP = 18;
-const AXIS_H = 52;
 const LINE_H = 320;
 const LEFT_AXIS = 70;
-const FOOT_LINE = 17;
-const FONT = "Inter Variable, ui-sans-serif, system-ui, sans-serif";
-
-/** SVG text never wraps: break long footer lines on their " · " joins, about 160 chars at 11px. */
-const FOOT_CHARS = 160;
-function wrapFooter(lines: string[]): string[] {
-  const out: string[] = [];
-  for (const line of lines) {
-    let cur = "";
-    for (const part of line.split(" · ")) {
-      const next = cur ? `${cur} · ${part}` : part;
-      if (cur && next.length > FOOT_CHARS) {
-        out.push(cur);
-        cur = part;
-      } else cur = next;
-    }
-    if (cur) out.push(cur);
-  }
-  return out;
-}
-
-function niceMax(max: number): number {
-  if (max <= 0) return 1;
-  const base = 10 ** Math.floor(Math.log10(max));
-  for (const m of [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10])
-    if (m * base >= max * 1.08) return m * base;
-  return 10 * base;
-}
-
-function ticks(max: number): number[] {
-  return Array.from({ length: 6 }, (_, i) =>
-    Number(((i * max) / 5).toFixed(6)),
-  );
-}
-
-function tickText(t: number): string {
-  return Number.isInteger(t) ? String(t) : t.toFixed(1);
-}
-
-/** A bar anchored flat at the baseline with only its data end rounded. */
-function barPath(
-  x0: number,
-  x1: number,
-  y: number,
-  h: number,
-  r: number,
-): string {
-  const rr = Math.min(r, Math.max(0, x1 - x0), h / 2);
-  return `M${x0},${y} H${x1 - rr} a${rr},${rr} 0 0 1 ${rr},${rr} V${y + h - rr} a${rr},${rr} 0 0 1 -${rr},${rr} H${x0} Z`;
-}
 
 /** Push overlapping end labels apart, keeping their order. */
 function spreadLabels(
@@ -140,22 +54,12 @@ function spreadLabels(
   return out;
 }
 
-function clip(s: string, n: number): string {
-  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
-}
-
 export interface PendingRow {
   label: string;
   family: Family;
   /** "Queued", "Loading", "Measuring 2/3" */
   status: string;
   active: boolean;
-}
-
-interface Tip {
-  x: number;
-  y: number;
-  lines: string[];
 }
 
 export const BenchChart = memo(function BenchChart({
@@ -187,174 +91,55 @@ export const BenchChart = memo(function BenchChart({
   const { ink, muted, grid, card } = useInk();
   const [tip, setTip] = useState<Tip | null>(null);
   const baseline = rows.find((r) => r.isBaseline) ?? null;
-  const head = bare ? 8 : subtitle ? 70 : 48;
+  const head = chartHead(bare, subtitle);
 
   let plotH: number;
   let body: ReactElement;
   const points: Tip[] = [];
 
   if (kind === "bars") {
-    const count = rows.length + pending.length;
-    const ROW_H = count > 14 ? 28 : count > 9 ? 34 : ROW_H_FULL;
-    const BAR_H = count > 14 ? 17 : count > 9 ? 21 : BAR_H_FULL;
-    const FS = count > 14 ? 12.5 : 13.5;
-    plotH = TOP + count * ROW_H + AXIS_H;
-    const maxVal = niceMax(Math.max(10, ...rows.map((r) => r.max)));
-    const plotW = W - LABEL_W - RIGHT_W;
-    const x = (v: number) => LABEL_W + (v / maxVal) * plotW;
-    const bottom = TOP + count * ROW_H;
+    const groups = [
+      {
+        rows: rows.map(
+          (r): BarRow => ({
+            label: r.label,
+            value: r.mean,
+            low: r.min,
+            high: r.max,
+            color: palette[r.family],
+            quiet: r.isBaseline,
+            tail: r.isBaseline ? "baseline" : fmtPct(r.pct),
+            tip: [
+              r.label,
+              `${fmtRate(r.mean)}${r.n > 1 ? ` · ${r.min.toFixed(1)}–${r.max.toFixed(1)} over ${r.n} runs` : " · 1 run"}`,
+              [
+                r.ttftMs !== null ? `first token ${fmtMs(r.ttftMs)}` : "",
+                r.loadMs !== null ? `load ${fmtMs(r.loadMs)}` : "",
+              ]
+                .filter(Boolean)
+                .join(" · "),
+              r.acceptRate !== null
+                ? `${Math.round(r.acceptRate * 100)}% of drafted tokens accepted`
+                : "",
+              r.clientOnly ? "No server timings; timed in the browser" : "",
+            ].filter(Boolean),
+          }),
+        ),
+      },
+    ];
+    const queued = pending.map((p) => ({ ...p, color: palette[p.family] }));
+    plotH = barRowsHeight(groups, queued);
     body = (
-      <g>
-        {ticks(maxVal).map((t) => (
-          <g key={t}>
-            <line
-              x1={x(t)}
-              x2={x(t)}
-              y1={TOP - 6}
-              y2={bottom}
-              stroke={grid}
-              strokeWidth={1}
-            />
-            <text
-              x={x(t)}
-              y={bottom + 20}
-              fontSize={12}
-              textAnchor="middle"
-              fill={muted}
-            >
-              {tickText(t)}
-            </text>
-          </g>
-        ))}
-        <text
-          x={LABEL_W + plotW / 2}
-          y={bottom + 42}
-          fontSize={12.5}
-          textAnchor="middle"
-          fill={muted}
-        >
-          Generation throughput (tokens / sec)
-        </text>
-        {rows.map((r, i) => {
-          const y = TOP + i * ROW_H + (ROW_H - BAR_H) / 2;
-          const cy = y + BAR_H / 2;
-          const value = fmtRate(r.mean);
-          const tail = r.isBaseline ? "baseline" : fmtPct(r.pct);
-          const lines = [
-            r.label,
-            `${value}${r.n > 1 ? ` · ${r.min.toFixed(1)}–${r.max.toFixed(1)} over ${r.n} runs` : " · 1 run"}`,
-            [
-              r.ttftMs !== null ? `first token ${fmtMs(r.ttftMs)}` : "",
-              r.loadMs !== null ? `load ${fmtMs(r.loadMs)}` : "",
-            ]
-              .filter(Boolean)
-              .join(" · "),
-            r.acceptRate !== null
-              ? `${Math.round(r.acceptRate * 100)}% of drafted tokens accepted`
-              : "",
-            r.clientOnly ? "No server timings; timed in the browser" : "",
-          ].filter(Boolean);
-          return (
-            <g
-              key={r.label}
-              onMouseEnter={() => setTip({ x: x(r.mean), y: head + cy, lines })}
-              onMouseLeave={() => setTip(null)}
-            >
-              <rect
-                x={0}
-                y={TOP + i * ROW_H}
-                width={W}
-                height={ROW_H}
-                fill="transparent"
-              />
-              <text
-                x={LABEL_W - 14}
-                y={cy + 4.5}
-                fontSize={FS}
-                textAnchor="end"
-                fill={r.isBaseline ? muted : ink}
-              >
-                {clip(r.label, 40)}
-              </text>
-              <path
-                d={barPath(
-                  LABEL_W,
-                  Math.max(LABEL_W + 2, x(r.mean)),
-                  y,
-                  BAR_H,
-                  4,
-                )}
-                fill={palette[r.family]}
-              />
-              {r.n > 1 && r.max > r.min && (
-                <g stroke={ink} strokeOpacity={0.55} strokeWidth={1.5}>
-                  <line x1={x(r.min)} x2={x(r.max)} y1={cy} y2={cy} />
-                  <line x1={x(r.min)} x2={x(r.min)} y1={cy - 4} y2={cy + 4} />
-                  <line x1={x(r.max)} x2={x(r.max)} y1={cy - 4} y2={cy + 4} />
-                </g>
-              )}
-              <text x={x(r.max) + 12} y={cy + 4.5} fontSize={FS} fill={ink}>
-                <tspan fontWeight={650}>{value}</tspan>
-                <tspan dx={8} fill={muted}>
-                  {tail}
-                </tspan>
-              </text>
-            </g>
-          );
-        })}
-        {pending.map((p, j) => {
-          const i = rows.length + j;
-          const y = TOP + i * ROW_H + (ROW_H - BAR_H) / 2;
-          const cy = y + BAR_H / 2;
-          const color = palette[p.family];
-          return (
-            <g key={`pending-${p.label}`}>
-              <text
-                x={LABEL_W - 14}
-                y={cy + 4.5}
-                fontSize={FS}
-                textAnchor="end"
-                fill={p.active ? ink : muted}
-              >
-                {clip(p.label, 40)}
-              </text>
-              <rect
-                x={LABEL_W}
-                y={y}
-                width={plotW}
-                height={BAR_H}
-                rx={4}
-                fill={p.active ? color : grid}
-                fillOpacity={p.active ? 0.16 : 0.35}
-              />
-              {p.active && (
-                <rect x={LABEL_W} y={y} width={4} height={BAR_H} rx={2} fill={color} />
-              )}
-              <text
-                x={LABEL_W + 14}
-                y={cy + 4.5}
-                fontSize={12}
-                fill={p.active ? ink : muted}
-              >
-                {p.status}
-              </text>
-            </g>
-          );
-        })}
-        {baseline && (
-          <g>
-            <line
-              x1={x(baseline.mean)}
-              x2={x(baseline.mean)}
-              y1={TOP - 8}
-              y2={bottom}
-              stroke={muted}
-              strokeWidth={1.5}
-              strokeDasharray="5 4"
-            />
-          </g>
-        )}
-      </g>
+      <BarRows
+        groups={groups}
+        pending={queued}
+        max={niceMax(Math.max(10, ...rows.map((r) => r.max)))}
+        format={fmtRate}
+        axisLabel="Generation throughput (tokens / sec)"
+        marker={baseline?.mean ?? null}
+        ink={{ ink, muted, grid, card }}
+        onTip={(t) => setTip(t && { ...t, y: head + t.y })}
+      />
     );
   } else if (kind === "runs") {
     plotH = TOP + LINE_H + AXIS_H;
@@ -614,12 +399,8 @@ export const BenchChart = memo(function BenchChart({
     );
   }
 
-  const footLines = bare ? [] : wrapFooter(footer);
-  const height =
-    head +
-    plotH +
-    (footLines.length ? 10 + footLines.length * FOOT_LINE : 0) +
-    10;
+  const footLines = footerLines(bare, footer);
+  const height = chartHeight(head, plotH, footLines);
   const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
     if (kind === "bars" || points.length === 0) return;
     const rect = e.currentTarget.getBoundingClientRect();
@@ -638,65 +419,23 @@ export const BenchChart = memo(function BenchChart({
   };
 
   return (
-    <div className="relative mx-auto max-w-[calc(1000px*var(--ui-space-scale,1))]">
-      <svg
-        ref={svgRef}
-        viewBox={`0 0 ${W} ${height}`}
-        width="100%"
-        className="mx-auto block max-w-[calc(1000px*var(--ui-space-scale,1))]"
-        role="img"
-        aria-label={title}
-        style={{ fontFamily: FONT }}
-        onMouseMove={onMove}
-        onMouseLeave={() => setTip(null)}
-      >
-        <rect x={0} y={0} width={W} height={height} fill={card} />
-        {!bare && (
-          <text x={24} y={30} fontSize={18} fontWeight={650} fill={ink}>
-            {title}
-          </text>
-        )}
-        {!bare && subtitle && (
-          <text x={24} y={52} fontSize={12.5} fill={muted}>
-            {subtitle}
-          </text>
-        )}
-        <g transform={`translate(0, ${head})`}>{body}</g>
-        {footLines.map((line, i) => (
-          <text
-            key={`${i}-${line}`}
-            x={24}
-            y={head + plotH + 14 + i * FOOT_LINE}
-            fontSize={11}
-            fill={muted}
-          >
-            {line}
-          </text>
-        ))}
-      </svg>
-      {tip && (
-        <div
-          className="pointer-events-none absolute z-10 min-w-44 rounded-lg border border-border/60 bg-popover px-3 py-2 text-ui-12 shadow-lg"
-          style={{
-            left: `${(Math.min(tip.x, W - 300) / W) * 100}%`,
-            top: `${(tip.y / height) * 100}%`,
-            transform: "translate(14px, 10px)",
-          }}
-        >
-          {tip.lines.map((l, i) => (
-            <p
-              key={l}
-              className={cn(
-                i === 0
-                  ? "font-semibold text-foreground"
-                  : "tabular-nums text-muted-foreground",
-              )}
-            >
-              {l}
-            </p>
-          ))}
-        </div>
-      )}
-    </div>
+    <ChartFrame
+      title={title}
+      subtitle={subtitle}
+      footLines={footLines}
+      bare={bare}
+      head={head}
+      plotH={plotH}
+      height={height}
+      card={card}
+      ink={ink}
+      muted={muted}
+      svgRef={svgRef}
+      tip={tip}
+      onMouseMove={onMove}
+      onMouseLeave={() => setTip(null)}
+    >
+      {body}
+    </ChartFrame>
   );
 });

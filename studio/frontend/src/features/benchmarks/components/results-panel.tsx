@@ -66,33 +66,8 @@ import { BENCH_CARD } from "./bench-ui";
 import { BenchChart, type ChartKind, type PendingRow } from "./bench-chart";
 import { svgToPng, svgToString } from "./chart-export";
 import { useFamilyColors } from "./family-colors";
+import { StatTile } from "./stat-tile";
 import { useFitToViewport } from "./use-fit-to-viewport";
-
-function Tile({
-  label,
-  value,
-  detail,
-}: {
-  label: string;
-  value: ReactNode;
-  detail?: ReactNode;
-}): ReactElement {
-  return (
-    <div className={cn(CARD, "flex min-w-0 flex-col gap-1.5 px-5 py-4")}>
-      <span className="text-ui-11 font-medium tracking-nav text-muted-foreground">
-        {label}
-      </span>
-      <span className="truncate font-heading text-ui-22 font-semibold leading-tight tracking-[-0.02em] tabular-nums text-foreground">
-        {value}
-      </span>
-      {detail && (
-        <span className="truncate text-ui-11 text-muted-foreground">
-          {detail}
-        </span>
-      )}
-    </div>
-  );
-}
 
 const CHART_KIND_LABEL: Record<ChartKind, string> = {
   bars: "Throughput",
@@ -212,7 +187,7 @@ function visibleRows(rows: AggRow[], expanded: boolean): AggRow[] {
   if (expanded || rows.length <= TOP_ROWS + 1) return rows;
   const base = rows.find((r) => r.isBaseline);
   const rest = rows.filter((r) => !r.isBaseline).slice(0, TOP_ROWS);
-  return base ? [...rest, base] : rest;
+  return base ? [...rest, base].sort((a, b) => b.mean - a.mean) : rest;
 }
 
 function NoteChip({
@@ -481,12 +456,12 @@ export function RunResults({
         </SectionCard>
       )}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <Tile
+        <StatTile
           label="Fastest"
           value={hl.best ? fmtRate(hl.best.mean) : "—"}
           detail={hl.best?.label ?? "Waiting on the first row"}
         />
-        <Tile
+        <StatTile
           label="Speedup"
           value={
             hl.speedup
