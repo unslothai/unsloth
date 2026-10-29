@@ -624,3 +624,22 @@ def test_a_slow_song_sends_a_heartbeat_and_still_returns_its_clip(monkeypatch):
     assert result["structuredContent"]["clips"][0]["id"] == "clip-1"
     assert len(progress) >= 2
     assert all(p["message"].startswith("Generating audio") for p in progress)
+
+
+def test_options_are_checked_against_the_speech_model_kept_beside_the_chat_model(monkeypatch):
+    chat = {
+        "active_model": "unsloth/Qwen-GGUF",
+        "serving": ["unsloth/Qwen-GGUF", "org/Speech"],
+        "serving_checkpoints": ["unsloth/Qwen-GGUF", "org/Speech"],
+    }
+    speech = {**CUSTOM_VOICE, "active_model": "org/Speech", "is_audio": True}
+    status = (
+        lambda request, body: speech if request.query_params.get("model") == "org/Speech" else chat
+    )
+    args = {"workflow": "speak", "text": "Hi", "options": {"voice": "Bob"}}
+    result, studio = _generate(monkeypatch, args, routes = {("GET", "/api/inference/status"): status})
+    assert (
+        result["isError"] is True
+        and "'Bob' is not one of: vivian, ryan" in result["content"][0]["text"]
+    )
+    assert bodies(studio, "/v1/audio/run") == []

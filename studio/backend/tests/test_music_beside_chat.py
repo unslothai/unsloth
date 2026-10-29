@@ -24,7 +24,7 @@ _TESTS_DIR = str(Path(__file__).resolve().parent)
 if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
 
-from test_audio_run_route import _music_info  # noqa: E402
+from test_audio_run_route import _music_info, _speak_info  # noqa: E402
 from test_multi_model_serving import FakeLlama, FakeOrchestrator  # noqa: E402
 
 ACE_STEP = "audio-cpp/audio.cpp-gguf/ACE-Step1.5-GGUF"
@@ -136,3 +136,38 @@ def test_an_omitted_model_generates_on_the_one_kept_music_model(chat_model):
     music = _keep_music_model()
     _run_music(None)
     assert MusicOrchestrator.generated == [music.orchestrator]
+
+
+SPEECH = "org/Speech-Model"
+
+
+class SpeechOrchestrator(MusicOrchestrator):
+    def load(self):
+        self.active_model_name = SPEECH
+        self.models = {SPEECH: _speak_info()}
+
+
+def test_an_omitted_model_speaks_on_the_one_speech_model_kept_beside_chat(chat_model):
+    """Speak, clone, edit, convert and /v1/audio/speech all reach the backend through _generate_tts_wav."""
+    from models.inference import ChatCompletionRequest
+
+    speech = model_slots.ExtraSlot(FakeLlama(), SpeechOrchestrator(), "owner")
+    speech.orchestrator.load()
+    model_slots.slots.extend([_keep_music_model_slot(), speech])
+    payload = ChatCompletionRequest(messages = [{"role": "user", "content": "hello"}])
+
+    async def run():
+        try:
+            await inf._generate_tts_wav("hello", payload, _Request(), "s")
+        except Exception as exc:  # noqa: BLE001 - the stub stops every run that gets this far
+            return exc
+        return None
+
+    result = asyncio.run(run())
+    assert MusicOrchestrator.generated == [speech.orchestrator], result
+
+
+def _keep_music_model_slot():
+    music = model_slots.ExtraSlot(FakeLlama(), MusicOrchestrator(), "owner")
+    music.orchestrator.load()
+    return music

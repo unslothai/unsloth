@@ -127,12 +127,34 @@ def _music_slot(name):
     return slot
 
 
-def _omitted_music_backend():
+def _omitted_music_backend(workflow = "music"):
     async def run():
-        await inf._route_to_kept_music_model()
+        await inf._route_to_kept_audio_model(workflow)
         return inf.get_inference_backend()
 
     return asyncio.run(run())
+
+
+def _speech_slot(name, audio_type = "csm"):
+    slot = model_slots.ExtraSlot(FakeLlama(), FakeOrchestrator(name), "owner")
+    slot.orchestrator.models[name] = {"is_audio": True, "audio_type": audio_type}
+    return slot
+
+
+def test_an_omitted_speech_model_runs_on_the_one_speech_model_kept_beside_chat(backends):
+    music = _music_slot("audio-cpp/audio.cpp-gguf/ACE-Step1.5-GGUF")
+    speech = _speech_slot("org/Speech")
+    model_slots.slots.extend([music, speech])
+    # Speak goes to the speech model, never to the music one; music the other way round.
+    assert _omitted_music_backend("speak") is speech.orchestrator
+    assert _omitted_music_backend("music") is music.orchestrator
+
+
+def test_an_omitted_separation_model_runs_on_the_one_kept_beside_chat(backends):
+    sep = model_slots.ExtraSlot(FakeLlama(), FakeOrchestrator("org/Sep"), "owner")
+    sep.orchestrator.models["org/Sep"] = {"is_audio": True, "audio_workflows": ["separate"]}
+    model_slots.slots.extend([_speech_slot("org/Speech"), sep])
+    assert _omitted_music_backend("separate") is sep.orchestrator
 
 
 def test_an_omitted_music_model_runs_on_the_one_kept_beside_chat(backends):

@@ -22562,6 +22562,9 @@ async def _generate_tts_wav(
             }
         ),
     )
+    if requested_model == _RELOAD_ONLY_MODEL:
+        # No model named: a speech model kept beside the chat model answers, as the primary would.
+        await _route_to_kept_audio_model(workflow or "speak")
     # Recheck once a context exists: before the restore, nothing loaded passes everything.
     _raise_if_prompt_leaves_no_speech_budget(text)
 
@@ -23318,18 +23321,52 @@ def _clamp_note(
         warnings.append(f"duration_s {asked:g} clamped to {used:g}")
 
 
-def _serves_music() -> bool:
+def _resident_audio_workflows() -> list[str]:
+    """The Audio page workflows the model in this context serves (the primary, or a routed kept slot)."""
+    from core.inference.audio_workflows import status_audio_workflows
+
+    llama = get_llama_cpp_backend()
+    if (
+        getattr(llama, "is_loaded", False)
+        and getattr(llama, "_is_audio", False)
+        and getattr(llama, "_audio_type", None) in _GGUF_TTS_AUDIO_TYPES
+    ):
+        return status_audio_workflows(True, llama._audio_type)
     backend = _peek_inference_backend()
     active = getattr(backend, "active_model_name", None)
-    return bool(active and (backend.models.get(active) or {}).get("audio_music"))
+    info = (backend.models.get(active) or {}) if active else {}
+    workflows = (
+        list(info.get("audio_workflows") or status_audio_workflows(True, info.get("audio_type")))
+        if info.get("is_audio")
+        else []
+    )
+    # The music route reads audio_music, so it decides music, as it does there.
+    return (
+        [*workflows, "music"] if info.get("audio_music") and "music" not in workflows else workflows
+    )
 
 
-async def _route_to_kept_music_model() -> None:
-    """An omitted model means the loaded music model, which may be kept beside the chat model."""
-    if routed_slot.get() is not None or await asyncio.to_thread(_serves_music):
+# Workflows a model must name to serve; any other speech model can try the rest (the route checks).
+_DEDICATED_AUDIO_WORKFLOWS = frozenset({"music", "separate", "transcribe"})
+
+
+def _serves_audio_workflow(workflow: str) -> bool:
+    workflows = _resident_audio_workflows()
+    if workflow in _DEDICATED_AUDIO_WORKFLOWS:
+        return workflow in workflows
+    return any(w not in _DEDICATED_AUDIO_WORKFLOWS for w in workflows)
+
+
+async def _route_to_kept_audio_model(workflow: str) -> None:
+    """An omitted model means the loaded one for ``workflow``, which may be kept beside the chat model."""
+    if routed_slot.get() is not None or await asyncio.to_thread(_serves_audio_workflow, workflow):
         return
     kept = await asyncio.to_thread(
-        lambda: [s for s in model_slots.visible() if model_slots.in_slot(s, _serves_music)]
+        lambda: [
+            s
+            for s in model_slots.visible()
+            if model_slots.in_slot(s, lambda: _serves_audio_workflow(workflow))
+        ]
     )
     # Several: which one is not ours to guess; the caller names it.
     if len(kept) == 1 and model_slots.reserve(kept[0]):
@@ -23356,7 +23393,7 @@ async def _run_music_workflow(
         require_audio_workflow = "music",
     )
     if not body.model:
-        await _route_to_kept_music_model()
+        await _route_to_kept_audio_model("music")
     backend = await asyncio.to_thread(get_inference_backend)
     if not backend.active_model_name:
         raise HTTPException(
@@ -24051,6 +24088,8 @@ async def _run_separation(
         claim_resident = False,
         require_audio_workflow = "separate",
     )
+    if not body.model:
+        await _route_to_kept_audio_model("separate")
     backend = await asyncio.to_thread(get_inference_backend)
     model_info = (
         backend.models.get(backend.active_model_name, {}) if backend.active_model_name else {}
