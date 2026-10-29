@@ -71,10 +71,12 @@ def test_import_raises_the_old_names_when_only_they_exist(monkeypatch):
     assert fake.accumulated_cache_size_limit == 2048
 
 
+@pytest.mark.skipif(
+    not hasattr(torch._dynamo.config, "recompile_limit"),
+    reason = "torch < 2.7 has no recompile_limit; the old names are covered by the test above",
+)
 def test_import_raises_the_new_names_when_present(monkeypatch):
     config = torch._dynamo.config
-    if not hasattr(config, "recompile_limit"):
-        pytest.skip("torch < 2.7 has no recompile_limit")
     monkeypatch.setattr(config, "recompile_limit", 8)
     monkeypatch.setattr(config, "accumulated_recompile_limit", 256)
     _load_kernel()

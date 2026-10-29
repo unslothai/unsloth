@@ -28,9 +28,8 @@ from torch.nn.attention.flex_attention import (
 )
 
 
-# PrefixGrouper needs torch >= 2.7. On torch 2.6 inductor cannot compile the dynamic block mask
-# (ZeroDivisionError) or the flex kernel (NameError on symbolic block sizes); with dynamo's
-# suppress_errors both fall back to eager flex_attention, which builds the full T x T scores.
+# torch 2.6 inductor cannot compile the dynamic block mask or the flex kernel; suppress_errors then
+# falls back to eager flex_attention, which materialises the full T x T scores.
 PREFIX_GROUPER_MIN_TORCH = (2, 7)
 
 
@@ -45,21 +44,18 @@ def torch_supports_prefix_grouper(version = None) -> bool:
 TORCH_SUPPORTS_PREFIX_GROUPER = torch_supports_prefix_grouper()
 
 
-# Many distinct segment lengths: at the default recompile_limit (8) the kernel silently reuses a
-# mismatched specialisation.
-# torch < 2.7 names these cache_size_limit / accumulated_cache_size_limit; setting an unknown
-# dynamo config raises AttributeError, which the lazy importers swallow and turn PrefixGrouper off.
-def _raise_dynamo_limit(names, default, floor):
+# At the default recompile_limit (8) the many segment lengths silently reuse a mismatched
+# specialisation. Older torch names it cache_size_limit; unknown dynamo config names raise.
+def _raise_dynamo_limit(names, floor):
     config = torch._dynamo.config
     name = next((n for n in names if hasattr(config, n)), None)
     if name is not None:
-        setattr(config, name, max(getattr(config, name, default), floor))
+        setattr(config, name, max(getattr(config, name), floor))
 
 
-# PrefixGrouper stays off below torch 2.7, so leave the global dynamo limits alone there.
 if TORCH_SUPPORTS_PREFIX_GROUPER:
-    _raise_dynamo_limit(("recompile_limit", "cache_size_limit"), 8, 256)
-    _raise_dynamo_limit(("accumulated_recompile_limit", "accumulated_cache_size_limit"), 256, 2048)
+    _raise_dynamo_limit(("recompile_limit", "cache_size_limit"), 256)
+    _raise_dynamo_limit(("accumulated_recompile_limit", "accumulated_cache_size_limit"), 2048)
 
 
 # dynamic=True is required: T changes almost every GRPO batch, and dynamic=False recompiles per T (~14s each).

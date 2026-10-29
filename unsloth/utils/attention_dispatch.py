@@ -1048,8 +1048,6 @@ if os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER", "1").lower() not in ("0", "fals
             TORCH_SUPPORTS_PREFIX_GROUPER as _pg_torch_ok,
             flex_shared_prefix_attention as _flex_shared_prefix_attention,
         )
-
-        # PrefixGrouper is off below torch 2.7 (see prefix_grouper_enabled); keep the kernel unresolved there.
         if not _pg_torch_ok:
             _flex_shared_prefix_attention = None
     except Exception:
