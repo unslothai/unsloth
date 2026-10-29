@@ -16,7 +16,9 @@ from models.training import TrainingStartRequest
 from routes import openai_fine_tuning
 
 BODIES = json.loads(
-    (Path(__file__).parent / "fixtures" / "training_api_job_bodies.json").read_text()
+    (Path(__file__).parent / "fixtures" / "training_api_job_bodies.json").read_text(
+        encoding = "utf-8"
+    )
 )
 FILE_ID = "file-0123456789abcdef0123456789abcdef"
 UPLOADED = Path(f"/uploads/{FILE_ID}.jsonl")
