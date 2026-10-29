@@ -416,7 +416,6 @@ def llm_conversion_advisor(
     model_name: Optional[str] = None,
     model_type: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
-    # One column cannot hold both a prompt and a response: skip loading the helper model.
     if len(column_names) < 2:
         return {"success": False, "warning": NO_ROLE_SPLIT_WARNING}
 

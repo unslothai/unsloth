@@ -94,7 +94,6 @@ def test_text_plus_metadata_reports_no_split_and_logs_notes(backend, warnings, r
     result = _advise(["text", "id"])
 
     assert result == {"success": False, "warning": llm_assist.NO_ROLE_SPLIT_WARNING}
-    # The system-prompt pass is not spent on a mapping that will be rejected.
     assert backend.calls == 2
     assert any("plain prose, nothing to answer" in line for line in warnings)
 
