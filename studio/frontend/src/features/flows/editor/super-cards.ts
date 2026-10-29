@@ -4,12 +4,7 @@
 import type { DocGraph, DocMeta } from "../stores/doc-store";
 import type { NodeSpec, NodeStatus } from "../types";
 import { parseHandle } from "./connection-rules";
-import {
-  GROUP_PREFIX,
-  NOTE_PREFIX,
-  type RfEdge,
-  type RfNode,
-} from "./derive-rf";
+import { GROUP_PREFIX, type RfEdge, type RfNode } from "./derive-rf";
 import type { LayoutRequest, LayoutResult } from "./layout-core";
 import type { PortRowSpec } from "./node-card";
 
@@ -29,8 +24,8 @@ export interface SuperCardData {
   cardId: string;
   title: string;
   memberIds: string[];
-  /** Group frames and notes folded in with the blocks; they move with the card. */
-  foldedIds: string[];
+  /** Frames, notes and reroutes folded in with the blocks, where they sit; they move with the card. */
+  folded: { id: string; x: number; y: number }[];
   inputs: PortRowSpec[];
   outputs: PortRowSpec[];
   [key: string]: unknown;
@@ -325,8 +320,10 @@ export function applySuperCards(
       cardId: card.id,
       title: card.title,
       memberIds: card.members,
-      foldedIds: [...owner].flatMap(([id, owner]) =>
-        owner === card.id && !graph.nodes[id] ? [id] : [],
+      folded: nodes.flatMap((n) =>
+        owner.get(n.id) === card.id && !graph.nodes[n.id]
+          ? [{ id: n.id, x: n.position.x, y: n.position.y }]
+          : [],
       ),
       inputs: sorted(inputs.get(card.id)),
       outputs: sorted(outputs.get(card.id)),
@@ -352,23 +349,16 @@ export function applySuperCards(
 /** Where everything folded into a closed card sits, so dragging the card carries it along. */
 export function superCardDragMembers(
   node: RfNode,
-  graph: Pick<DocGraph, "nodes" | "groups" | "notes">,
+  graph: Pick<DocGraph, "nodes">,
 ): Map<string, { x: number; y: number }> | null {
   if (node.type !== "flowSuperCard") return null;
-  const { memberIds, foldedIds } = node.data as unknown as SuperCardData;
+  const { memberIds, folded } = node.data as unknown as SuperCardData;
   const members = new Map<string, { x: number; y: number }>();
   for (const id of memberIds) {
     const n = graph.nodes[id];
     if (n) members.set(id, { x: n.pos[0], y: n.pos[1] });
   }
-  for (const id of foldedIds) {
-    const frame = id.startsWith(GROUP_PREFIX)
-      ? graph.groups[id.slice(GROUP_PREFIX.length)]
-      : id.startsWith(NOTE_PREFIX)
-        ? graph.notes[id.slice(NOTE_PREFIX.length)]
-        : undefined;
-    if (frame) members.set(id, { x: frame.rect[0], y: frame.rect[1] });
-  }
+  for (const { id, x, y } of folded) members.set(id, { x, y });
   return members;
 }
 

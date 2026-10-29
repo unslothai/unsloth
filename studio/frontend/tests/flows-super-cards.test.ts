@@ -144,12 +144,12 @@ test("a closed card shows the wires that cross into it as ports and hides its gr
   assert.deepEqual(card?.position, { x: 300, y: 0 });
   const data = card?.data as unknown as {
     memberIds: string[];
-    foldedIds: string[];
+    folded: { id: string; x: number; y: number }[];
     inputs: { handleId: string; label: string }[];
     outputs: { handleId: string; label: string }[];
   };
   assert.deepEqual(data.memberIds, ["tpl", "img"]);
-  assert.deepEqual(data.foldedIds, ["group:g"]);
+  assert.deepEqual(data.folded, [{ id: "group:g", x: 280, y: -40 }]);
   assert.deepEqual(
     data.inputs.map((p) => p.label),
     ["Panel script · Values"],
@@ -381,5 +381,10 @@ test("notes and reroutes drawn among a card's blocks fold with it", () => {
   );
   assert.ok(!out.nodes.some((n) => n.id === "rr1" || n.id === "note:n1"));
   assert.ok(out.nodes.some((n) => n.id === "note:n2"));
+  // Dragging the card carries them, where they sit.
+  const card = out.nodes.find((n) => n.id === "super:sc1");
+  const members = superCardDragMembers(card as never, state.graph);
+  assert.deepEqual(members?.get("rr1"), { x: 500, y: 100 });
+  assert.deepEqual(members?.get("note:n1"), { x: 320, y: 100 });
   assert.equal(out.edges.find((e) => e.id === "w1")?.target, "super:sc1");
 });
