@@ -89,6 +89,8 @@ class FlowNode(_Strict):
     v: int = Field(default = 1, ge = 1)
     params: dict[str, Any] = Field(default_factory = dict)
     pos: tuple[float, float] = (0.0, 0.0)
+    # Width and height after a resize in the editor; None keeps the automatic size.
+    size: Optional[tuple[float, float]] = None
     label: Optional[str] = Field(default = None, max_length = 200)
     group: Optional[str] = Field(default = None, max_length = 64)
     collapsed: bool = False
