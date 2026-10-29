@@ -40,7 +40,6 @@ export const EMPTY_TRANSCRIPT_DETAILS = detailsFrom({});
 
 export const SPEAKER_NAME_MAX_LENGTH = 40;
 
-/** In a gap the previous segment stays current. */
 export function activeSegmentIndex(
   seconds: number,
   segments: readonly TranscriptSegment[],

@@ -6,46 +6,19 @@ import test from "node:test";
 import { readSrc } from "./helpers/kit.ts";
 
 const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
-const slice = (from: string, to: string) => {
-  const start = runtime.indexOf(from);
-  const end = runtime.indexOf(to, start);
-  assert.ok(start >= 0 && end > start, from);
-  return runtime.slice(start, end);
-};
-const pick = new Function(
-  "pendingLoadConfig",
-  "stateBeforeUnload",
-  "targetIsDiffusion",
-  "reconcilePersistedGpuIds",
-  "resetsPerModelSettings",
-  "reconcileTensorSplit",
-  `let loadSplitRatio = null;
-  ${slice("const stagedGpuIds =", "let loadSpeculativeType")}
-  ${slice("const validateGpuIds =", "// The reset below")}
-  if (resetsPerModelSettings) {
-    ${slice("loadSelectedGpuIds = stagedGpuIds;", "loadGpuLayers =")}
-  }
-  return { validateGpuIds, loadSelectedGpuIds };`,
-) as (...args: unknown[]) => { validateGpuIds: unknown; loadSelectedGpuIds: unknown };
-const reconcile = (ids: number[] | null) => ids;
 
 test("a switch validates the GPUs the load will use", () => {
-  const cases: [unknown, boolean][] = [
-    [{ selectedGpuIds: [1] }, true],
-    [{ selectedGpuIds: null }, true],
-    [undefined, true],
-    [{ selectedGpuIds: [1] }, false],
-    [undefined, false],
-  ];
-  for (const [pending, resets] of cases) {
-    const { validateGpuIds, loadSelectedGpuIds } = pick(
-      pending,
-      { selectedGpuIds: [3], selectedGpuIndexKind: null },
-      false,
-      reconcile,
-      resets,
-      () => null,
-    );
-    assert.deepEqual(validateGpuIds, loadSelectedGpuIds, JSON.stringify([pending, resets]));
-  }
+  assert.doesNotMatch(runtime, /validateGpuIds/);
+  const reset = runtime.indexOf("loadSelectedGpuIds = stagedGpuIds;");
+  const request = runtime.indexOf(
+    "const loadRequest = (): LoadModelRequest =>",
+  );
+  const validate = runtime.indexOf("await validateModel({");
+  assert.ok(reset > 0 && reset < request && request < validate);
+  assert.match(
+    runtime.slice(request, validate),
+    /gpu_ids: loadSelectedGpuIds \?\? undefined,/,
+  );
+  assert.match(runtime, /await validateModel\(\{\s*\.\.\.loadRequest\(\),/);
+  assert.match(runtime, /await loadModel\(\{\s*\.\.\.loadRequest\(\),/);
 });

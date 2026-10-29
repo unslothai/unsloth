@@ -66,8 +66,15 @@ def _forward_fake_quant_linears():
 
 def _has_activation_fake_quantizer(proj):
     # Fused LoRA skips per-layer activation fake quantizers; explicit children, as proj.modules() is slow per call.
+    # A plain nn.Linear (after merge_and_unload / unload) has no lora_A / lora_B: check the layer itself.
     forward_fake_quant_linears = _forward_fake_quant_linears()
-    for module in (getattr(proj, "base_layer", proj), *proj.lora_A.values(), *proj.lora_B.values()):
+    modules = proj._modules
+    lora_A, lora_B = modules.get("lora_A"), modules.get("lora_B")
+    for module in (
+        modules.get("base_layer", proj),
+        *(() if lora_A is None else lora_A.values()),
+        *(() if lora_B is None else lora_B.values()),
+    ):
         if module._modules.get("activation_fake_quantizer") is not None or isinstance(
             module, forward_fake_quant_linears
         ):
@@ -139,12 +146,27 @@ def _needs_peft_forward(proj, adapter):
 
 
 def _base_weight_requires_grad(proj):
-    base = proj._modules.get("base_layer")
-    W = None if base is None else base._parameters.get("weight")
+    # A plain nn.Linear (after merge_and_unload() / unload()) is its own base layer.
+    base = proj._modules.get("base_layer", proj)
+    W = base._parameters.get("weight")
     return W is not None and W.requires_grad
 
 
 _is_any_autocast_enabled = getattr(torch._C, "_is_any_autocast_enabled", None)
+
+
+def _active_lora_requires_grad(projs):
+    # A trainable active adapter elsewhere in the block makes autograd run the fused backward even when X
+    # needs no grad (frozen embeddings without an input-grad hook) and only some projections are merged.
+    for proj in projs:
+        adapter = _active_lora_adapter(proj)
+        if adapter is None:
+            continue
+        for module in (proj.lora_A[adapter], proj.lora_B[adapter]):
+            for p in module.parameters():
+                if p.requires_grad:
+                    return True
+    return False
 
 
 def _autocast_dtype_mismatch(X):
@@ -223,7 +245,11 @@ def _lora_dropout_and_bias(projs, X):
             # forward of DPO / GRPO), but their backward needs LoRA weights, so PEFT runs it under grad.
             if grad_enabled is None:
                 grad_enabled = torch.is_grad_enabled()
-            if grad_enabled and (X.requires_grad or _base_weight_requires_grad(proj)):
+            if grad_enabled and (
+                X.requires_grad
+                or _base_weight_requires_grad(proj)
+                or _active_lora_requires_grad(projs)
+            ):
                 return None
             dropout_p.append(0.0)
             biases.append(None)
@@ -1138,8 +1164,6 @@ def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
                 if W_quant is None and W.ndim == 2 and W.shape[1] == 1:
                     W_quant = _base_quant_state(self.base_layer, W)
                 return _apply(LoRA_W, x, W, W_quant, lora_A, lora_B, scaling)
-            pass
-        pass
 
         result = self.base_layer(x, *args, **kwargs)
         # Per Tim Dettmers: for 4bit, defensively clone, since backprop can fail on a manipulated view.

@@ -2355,6 +2355,7 @@ class TestTheConversionWorkingDirectoryIsMeasured:
             lambda left, right: str(left).startswith("/tmp") != str(right).startswith("/tmp"),
         )
         monkeypatch.setattr(S, "_gguf_conversion_directory", lambda directory: state["conversion"])
+        monkeypatch.setattr(S, "_gguf_conversion_is_staged", lambda directory: False)
         monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)
         monkeypatch.delenv("UNSLOTH_PREWARM_HUB_CACHE", raising = False)
         return state
@@ -2401,6 +2402,16 @@ class TestTheConversionWorkingDirectoryIsMeasured:
         monkeypatch.setenv("UNSLOTH_DISK_PREFLIGHT", "0")
         assert self._preflight() == ("/kaggle/working/model", True)
 
+    def test_a_staged_conversion_does_not_charge_the_working_directory(self, kaggle, monkeypatch):
+        """Staged inside the `_gguf` folder, the intermediate never touches /kaggle/working."""
+        seen = []
+        monkeypatch.setattr(
+            S, "_gguf_conversion_is_staged", lambda directory: seen.append(directory) or True
+        )
+        kaggle.update(cwd_free = 1 * GB)
+        assert self._preflight() == (self.TMP, True)
+        assert seen == [f"{self.TMP}_gguf"]
+
 
 class TestWhereTheConversionWrites:
     """`_gguf_conversion_directory` mirrors `convert_to_gguf`'s own rule."""
@@ -2419,6 +2430,26 @@ class TestWhereTheConversionWrites:
 
         monkeypatch.setattr(S.os, "getcwd", boom)
         assert S._gguf_conversion_directory("model") is None
+
+
+class TestTheStagingPrediction:
+    """`_gguf_conversion_is_staged` must agree with `_gguf_conversion_staging`."""
+
+    def test_a_writable_parent_stages(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(S, "IS_WINDOWS", False)
+        target = tmp_path / "a" / "model_gguf"
+        assert S._gguf_conversion_is_staged(str(target))
+        staging, created = S._gguf_conversion_staging(str(target))
+        assert staging is not None and created
+
+    def test_an_unwritable_parent_does_not(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(S, "IS_WINDOWS", False)
+        monkeypatch.setattr(S, "_directory_is_writable", lambda directory: False)
+        assert not S._gguf_conversion_is_staged(str(tmp_path / "model_gguf"))
+
+    def test_windows_keeps_the_working_directory_charge(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(S, "IS_WINDOWS", True)
+        assert not S._gguf_conversion_is_staged(str(tmp_path / "model_gguf"))
 
     def test_the_probe_answers_for_real_directories(self, tmp_path):
         assert S._directory_is_writable(str(tmp_path)) is True
@@ -2455,6 +2486,7 @@ class TestAColocatedConversionIsChargedWithTheCheckpoint:
         )
         monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
         monkeypatch.setattr(S, "_gguf_conversion_directory", lambda directory: "work")
+        monkeypatch.setattr(S, "_gguf_conversion_is_staged", lambda directory: False)
         monkeypatch.setattr(S, "_filesystem_id", lambda path: state["devices"].get(str(path)))
         monkeypatch.setattr(S, "IS_KAGGLE_ENVIRONMENT", False)
         monkeypatch.setattr(S, "IS_COLAB_ENVIRONMENT", False)
@@ -2483,6 +2515,7 @@ class TestAColocatedConversionIsChargedWithTheCheckpoint:
     def test_an_unmeasurable_working_directory_charges_nothing_extra(self, colocated, monkeypatch):
         """`_shares_filesystem` says no to what it cannot see, so this is unchanged."""
         monkeypatch.setattr(S, "_gguf_conversion_directory", lambda directory: None)
+        monkeypatch.setattr(S, "_gguf_conversion_is_staged", lambda directory: False)
         assert self._preflight() == ("model", True)
 
     def test_the_predicate_never_guesses(self, monkeypatch):
@@ -2515,6 +2548,7 @@ class TestTheMergeGuardAndTheConversionAreTwoPhases:
         )
         monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
         monkeypatch.setattr(S, "_gguf_conversion_directory", lambda directory: "work")
+        monkeypatch.setattr(S, "_gguf_conversion_is_staged", lambda directory: False)
         monkeypatch.setattr(
             S,
             "_filesystem_id",
@@ -3035,6 +3069,7 @@ class TestThePrewarmedCacheIsChargedToItsOwnFilesystem:
         )
         monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
         monkeypatch.setattr(S, "_gguf_conversion_directory", lambda directory: "work")
+        monkeypatch.setattr(S, "_gguf_conversion_is_staged", lambda directory: False)
         monkeypatch.setattr(
             S, "_filesystem_id", lambda path: devices.get(str(path), state["cache_device"])
         )
@@ -3206,6 +3241,7 @@ class TestTheCacheIsChargedOnTheConversionFilesystem:
         monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
         monkeypatch.setattr(S, "_fallback_checkpoint_extra_bytes", lambda model, *_: 0)
         monkeypatch.setattr(S, "_gguf_conversion_directory", lambda directory: self.WORK)
+        monkeypatch.setattr(S, "_gguf_conversion_is_staged", lambda directory: False)
         monkeypatch.setattr(S, "_hub_cache_directory", lambda: self.CACHE)
         monkeypatch.setattr(S, "IS_KAGGLE_ENVIRONMENT", False)
         monkeypatch.setattr(S, "IS_COLAB_ENVIRONMENT", False)
@@ -3306,6 +3342,7 @@ class TestACacheOnAnotherFilesystemIsNotChargedToTheOutputDisk:
         monkeypatch.setattr(S, "free_bytes", lambda path: state["free"])
         monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
         monkeypatch.setattr(S, "_gguf_conversion_directory", lambda directory: "work")
+        monkeypatch.setattr(S, "_gguf_conversion_is_staged", lambda directory: False)
         monkeypatch.setattr(
             S, "_filesystem_id", lambda path: devices.get(str(path), state["cache_device"])
         )

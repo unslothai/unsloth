@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Which drafter an MLX load speculates with: ``speculative_type`` and ``spec_draft_model`` resolved
-against the target's own MTP head and the companion drafters already in the local Hugging Face cache."""
+"""Resolves MLX speculative_type and spec_draft_model to the target's MTP head or cached drafters."""
 
 from __future__ import annotations
 
@@ -200,11 +199,7 @@ def _cached_repos():
 
 
 def cached_drafters(target_name: str, target_config: dict) -> list:
-    """``(repo, source, named)`` for each cached drafter with weights whose config fits the target's shape.
-
-    ``named`` drafters carry the target's model name and come first, in auto's order; the rest fit
-    by shape alone (another generation or fine-tune of the same architecture) and follow.
-    """
+    """Drafters named for the target come first, then same-architecture ones that fit by shape alone."""
     from utils.utils import hf_cache_snapshot_dir_for_repo
 
     target, found = _alnum(target_name), []
@@ -299,6 +294,13 @@ def resolve_speculation(
     if not sources and reason is None:
         reason = DRAFTER_NOT_FOUND
     return SpecResolution(mode, tuple(sources), copies = True, reason = reason)
+
+
+def offload_drafter(speculative_type, spec_draft_model, **where) -> Optional[tuple]:
+    """``(path, builtin)`` of the drafter a load tries first, for an auto offload plan to make room for.
+    ``where`` as ``resolve_speculation`` takes it."""
+    sources = resolve_speculation(speculative_type, spec_draft_model, **where).sources
+    return (sources[0].path, sources[0].builtin) if sources else None
 
 
 def speculates_on_route(

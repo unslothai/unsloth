@@ -51,6 +51,11 @@ for _up in Path(__file__).resolve().parents:
             sys.path.insert(0, str(_repo_shared))
         break
 
+# pytest 9.2's monkeypatch deletes a torch config entry on undo instead of restoring it; see torch_config_guard.py.
+from torch_config_guard import install_monkeypatch_fix  # noqa: E402
+
+install_monkeypatch_fix()
+
 # Let the diffusion patch backend lazily import unsloth_zoo on a CPU-only test host: unsloth_zoo runs accelerator
 # detection at import and raises without a GPU unless this is set. setdefault so an explicit override wins.
 os.environ.setdefault("UNSLOTH_ALLOW_CPU", "1")
@@ -98,6 +103,24 @@ def _no_vae_structural_verdict_cache(monkeypatch):
     monkeypatch.setenv("UNSLOTH_VAE_FUSED_STRUCTURAL_CACHE", "0")
 
 
+@pytest.hookimpl(trylast = True)
+def pytest_collection_modifyitems(config, items):
+    """After xdist tags grouped tests; see tests/_shared/xdist_group_check.py."""
+    from xdist_group_check import check
+    check(config, items)
+
+
+@pytest.fixture(autouse = True)
+def _no_deleted_torch_config_entries():
+    """A test that leaves a dynamo / inductor config entry deleted errors at its own teardown; see
+    tests/_shared/torch_config_guard.py."""
+    from torch_config_guard import check_after_test, install_delete_recorder
+
+    install_delete_recorder()
+    yield
+    check_after_test()
+
+
 @pytest.fixture(autouse = True)
 def _zoo_without_gdn_decode_kernel(monkeypatch):
     # Whether Qwen3.5 / Qwen3-Next ask for causal-conv1d depends on the installed unsloth_zoo; pin the
@@ -112,9 +135,65 @@ def _zoo_without_gdn_decode_kernel(monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _sd_cpp_windows_rocm_ignores_the_host_dlls(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_SD_CPP_WINDOWS_ROCM", "1")
+
+
+@pytest.fixture(autouse = True)
 def _no_real_mxc_drive_aliases(monkeypatch):
     # Windows hosts would map real drive letters; MXC tests opt back in.
     monkeypatch.setenv("UNSLOTH_MXC_DRIVE_ALIAS", "0")
+
+
+@pytest.fixture(autouse = True)
+def _forget_hub_unreachable_verdict():
+    # Per-process Hub verdict must not leak between tests.
+    def _forget():
+        reach = sys.modules.get("core.inference.hub_reachability")
+        if reach is not None:
+            reach._UNREACHABLE.clear()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
+def _forget_mcp_discovery_state():
+    # Discovered tools and failed-probe cool-offs are keyed by server id, and most tests reuse "s1": a cool-off
+    # one test records made a later test on the worker skip discovery for its own "s1". A scoped HTTP session a
+    # test leaves cached is the same: test_mcp_http_sessions asserts the cache is empty after its own calls.
+    def _forget():
+        client = sys.modules.get("core.inference.mcp_client")
+        if client is not None:
+            client._tool_cache.clear()
+            client._probe_cooloff_until.clear()
+            if client._mcp_sessions:
+                try:
+                    client.close_mcp_sessions(all_accounts = True)
+                except AttributeError:
+                    # A test's monkeypatched stand-in sessions (SimpleNamespace) have no close(); its own
+                    # monkeypatch puts the real dict back.
+                    pass
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
+def _forget_queued_media_requests():
+    def _forget():
+        video_routes = sys.modules.get("routes.video")
+        if video_routes is not None:
+            video_routes._VIDEO_QUEUE.clear()
+        batching = sys.modules.get("core.inference.image_request_batching")
+        if batching is not None:
+            batching._OPEN.clear()
+
+    _forget()
+    yield
+    _forget()
 
 
 @pytest.fixture(autouse = True)
@@ -209,6 +288,29 @@ def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
     contain_installer_venv_root(monkeypatch, tmp_path_factory)
 
 
+# apply_hub_settings() writes these straight into os.environ, and importing the app runs it. A test
+# that left ModelScope selected put every later test on its xdist worker on that source, so the
+# auth-check probe in test_hub_token_caller_identity.py built huggingface.co URLs for a mirror.
+_HUB_SETTINGS_ENV = (
+    "UNSLOTH_STUDIO_HUB_SOURCE",
+    "HF_ENDPOINT",
+    "HF_DATASETS_SERVER",
+    "NO_PROXY",
+    "no_proxy",
+)
+
+
+@pytest.fixture(autouse = True)
+def _restore_hub_settings_env():
+    saved = {name: os.environ.get(name) for name in _HUB_SETTINGS_ENV}
+    yield
+    for name, value in saved.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+
+
 @pytest.fixture(autouse = True)
 def _reset_gpu_query_cache():
     # Only if already imported: importing utils.hardware would change import-order tests.
@@ -226,6 +328,12 @@ def _reset_gpu_query_cache():
         if amd is not None and hasattr(amd, "_hip_id_map_lock"):
             with amd._hip_id_map_lock:
                 amd._hip_id_map_cache = None
+        # The last NVML inventory is class state the launch pins the child from: a MIG
+        # probe test leaving its slices there pinned later launches to MIG-dddd4444-0.
+        llama = sys.modules.get("core.inference.llama_cpp")
+        backend = getattr(llama, "LlamaCppBackend", None)
+        if backend is not None and "_NVML_ROWS" in vars(backend):
+            backend._NVML_ROWS = []
 
     _reset()
     yield
@@ -263,6 +371,26 @@ def _isolate_studio_home(_studio_home_root, monkeypatch):
     for name, module in tuple(sys.modules.items()):
         if name.startswith(("storage.", "hub.storage.")) and hasattr(module, "_schema_ready"):
             monkeypatch.setattr(module, "_schema_ready", set())
+
+
+def _drain_sandbox_movers(timeout: float = 30.0) -> None:
+    import threading
+
+    from .thread_drain import join_when_started
+    for thread in threading.enumerate():
+        if thread.name == "sandbox-migrate" and not join_when_started(thread, timeout = timeout):
+            raise RuntimeError("a background sandbox migration did not finish within 30s")
+
+
+@pytest.fixture(autouse = True)
+def _no_sandbox_mover_outlives_its_test(monkeypatch):
+    # get_sandbox_workdir starts a background mover that reads the legacy root from HOME when it gets
+    # scheduled, not when it starts: one left running moved the next test's legacy folder into the
+    # previous test's root. Requesting monkeypatch drains it before HOME is put back, so a late mover
+    # never reads the real home either.
+    _drain_sandbox_movers()
+    yield
+    _drain_sandbox_movers()
 
 
 def pytest_configure(config):
@@ -390,14 +518,23 @@ def _forget_the_cached_owner_identity():
 def _isolate_wal_keepers():
     """Close the WAL keepers a test opened, so a later test's assertion on _wal_keepers sees only
     its own."""
-    from storage import studio_db
+    from storage import rag_db, studio_db
 
     before = set(studio_db._wal_keepers)
     unsupported = set(studio_db._wal_unsupported)
+    rag_before = set(rag_db._wal_keepers)
+    rag_enabled = rag_db._wal_keepers_enabled
+    rag_db.start_wal_keepers()
     yield
     for path in set(studio_db._wal_keepers) - before:
         studio_db.close_wal_keeper_for(path)
     studio_db._wal_unsupported.intersection_update(unsupported)
+    for path in set(rag_db._wal_keepers) - rag_before:
+        rag_db.close_wal_keeper_for(path)
+    if rag_enabled:
+        rag_db.start_wal_keepers()
+    else:
+        rag_db.close_wal_keeper()
 
 
 @pytest.fixture(autouse = True)
@@ -453,17 +590,93 @@ def _hf_cache_is_empty(_empty_hf_hub_cache, monkeypatch):
     monkeypatch.setattr(constants, "HF_HUB_CACHE", _empty_hf_hub_cache)
 
 
+_REAL_APPLE_METAL_BUDGET = None
+
+
 @pytest.fixture(autouse = True)
 def _no_live_metal_wired_ceiling(monkeypatch):
     """Keep Metal context verdicts off the host's live GPU memory."""
+    import inspect
+
     from core.inference.llama_cpp import LlamaCppBackend
 
+    global _REAL_APPLE_METAL_BUDGET
+    if _REAL_APPLE_METAL_BUDGET is None:
+        _REAL_APPLE_METAL_BUDGET = inspect.getattr_static(
+            LlamaCppBackend, "_apple_metal_memory_budget_bytes"
+        )
     monkeypatch.setattr(
         LlamaCppBackend, "_apple_metal_wired_ceiling_bytes", staticmethod(lambda: 0)
     )
     monkeypatch.setattr(
         LlamaCppBackend, "_apple_metal_wired_headroom_bytes", staticmethod(lambda: None)
     )
+    # On a Mac the real budget is non-zero, which sends every GGUF load down the Metal
+    # context-fit path and adds its "cannot size the KV cache" notice to loads that tests
+    # written against a CPU or CUDA host expect to be silent. Tests of the budget itself,
+    # or of the Metal path, set it explicitly or ask for real_apple_metal_budget.
+    monkeypatch.setattr(
+        LlamaCppBackend, "_apple_metal_memory_budget_bytes", staticmethod(lambda: 0)
+    )
+
+
+@pytest.fixture
+def real_apple_metal_budget(monkeypatch):
+    """The real budget probe, for the tests of the probe itself."""
+    from core.inference.llama_cpp import LlamaCppBackend
+    monkeypatch.setattr(
+        LlamaCppBackend, "_apple_metal_memory_budget_bytes", _REAL_APPLE_METAL_BUDGET
+    )
+
+
+# Below the ephemeral range on Linux (32768+), macOS and Windows (49152+), one block per xdist worker.
+_ENGINE_PORT_BASE = 21000
+_ENGINE_PORTS_PER_WORKER = 250
+_engine_port_counter = itertools.count()
+
+
+@pytest.fixture(autouse = True)
+def _engine_ports_no_other_worker_can_take(monkeypatch):
+    """managed_engine._free_port releases an ephemeral port that the engine binds later. In that
+    gap any bind(0) on the runner, such as another worker's test server, can be handed the same
+    port and answer /health, and a start that should time out returns ready. Each worker gets its
+    own ports below the ephemeral range instead, which bind(0) never hands out."""
+    module = sys.modules.get("core.inference.managed_engine")
+    if module is None:
+        return
+    import socket
+
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "gw0")
+    index = int(worker[2:]) if worker[2:].isdigit() else 0
+    base = _ENGINE_PORT_BASE + (index % 40) * _ENGINE_PORTS_PER_WORKER
+
+    def _worker_port(limit = None):
+        for _ in range(_ENGINE_PORTS_PER_WORKER):
+            port = base + next(_engine_port_counter) % _ENGINE_PORTS_PER_WORKER
+            with socket.socket() as sock:
+                try:
+                    sock.bind(("127.0.0.1", port))
+                except OSError:
+                    continue
+            return port
+        raise RuntimeError("no free engine port left in this worker's block")
+
+    _worker_port.__wrapped__ = module._free_port
+    monkeypatch.setattr(module, "_free_port", _worker_port)
+
+
+@pytest.fixture
+def real_engine_free_port(monkeypatch):
+    """The real allocator, for the tests of the allocator itself."""
+    from core.inference import managed_engine
+    monkeypatch.setattr(managed_engine, "_free_port", managed_engine._free_port.__wrapped__)
+
+
+@pytest.fixture(autouse = True)
+def _not_on_metal(monkeypatch):
+    """Keep co-residency verdicts off the host's device: on a Mac they take the Metal paths."""
+    from core.inference import gpu_residency
+    monkeypatch.setattr(gpu_residency, "_on_metal", lambda: False)
 
 
 @pytest.fixture(autouse = True)
@@ -747,6 +960,12 @@ def _hub_reachable_without_probing(monkeypatch):
     )
 
 
+@pytest.fixture(autouse = True)
+def _no_hub_mirror_probe(monkeypatch):
+    """Saving a mirror endpoint would start a background probe; test_hub_mirror_probe.py turns it back on."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HUB_PROBE", "0")
+
+
 @pytest.fixture(scope = "session")
 def studio_server(request):
     """Yields (base_url, api_key): UNSLOTH_E2E_BASE_URL if set, else a managed server started lazily."""
@@ -823,14 +1042,26 @@ def rag_home(tmp_path, monkeypatch, linkable_temp_base):
         root.mkdir(parents = True, exist_ok = True)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(root))
     monkeypatch.setattr(rag_db, "_schema_ready", set())
-    return root
+    yield root
+    from core.rag import vec_cache
+
+    # A background build still holding the db would block its removal on Windows.
+    vec_cache.drain()
+    vec_cache.clear()
 
 
 @pytest.fixture
 def rag_conn(rag_home):
     """A fresh RAG connection bound to the isolated ``rag_home`` database."""
+    import sqlite3
+
     from storage import rag_db
 
+    # Same gate as the RAG tests that skip on their own: an interpreter whose sqlite3 cannot load
+    # extensions (the macos-15 runner's) never has RAG, and the product reports that rather than
+    # failing. Anything else that stops sqlite-vec loading still errors here.
+    if not rag_db.RAG_AVAILABLE or not hasattr(sqlite3.Connection, "enable_load_extension"):
+        pytest.skip("sqlite-vec cannot be loaded by this Python's sqlite3")
     conn = rag_db.get_connection()
     try:
         yield conn

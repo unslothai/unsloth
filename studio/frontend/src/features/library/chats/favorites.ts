@@ -6,7 +6,6 @@ import { useMemo } from "react";
 import { useChatFavoritesStore } from "./favorites-store";
 import { matchesTerms, searchTerms } from "./model";
 
-/** Starred chats, projects and sections Favorites lists for `query`, excluding archived chats. */
 export function useFavoriteChatMatches(query: string, enabled: boolean): number {
   const { items } = useChatSidebarItems({ enabled, requireMessages: false });
   const { projects } = useChatProjects();

@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Encode a Wan or MiniMax-H3 clip while its VAE is still decoding.
-
-The streamed mp4 is used only when its frames equal the final frames bit for bit, else the clip is encoded as
-before. H3 declares its audio stream up front as ``encode_x264`` does and muxes the soundtrack at the end.
-``UNSLOTH_STUDIO_VIDEO_STREAM_ENCODE=0`` turns it off.
-"""
+"""Encodes a Wan or MiniMax-H3 clip while its VAE decodes; the streamed mp4 is used only if its
+frames equal the final frames bit for bit, else re-encoded; H3 declares audio up front (as
+encode_x264) and muxes it last; UNSLOTH_STUDIO_VIDEO_STREAM_ENCODE=0 disables."""
 
 from __future__ import annotations
 
@@ -19,7 +16,11 @@ import threading
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
+from .host_pinning import host_pinning_allowed
+
 STREAM_ENCODE_ENV = "UNSLOTH_STUDIO_VIDEO_STREAM_ENCODE"
+# Kill switch: "0" hides the decode below the session's wrapper from chain walkers again (as before).
+STREAM_CHAIN_ENV = "UNSLOTH_STUDIO_VIDEO_STREAM_ENCODE_CHAIN"
 QUEUE_DEPTH = 8
 _STOP = object()
 
@@ -28,6 +29,13 @@ STATS = {"streamed": 0, "fallback": 0, "last": ""}
 
 def stream_encode_enabled() -> bool:
     return os.environ.get(STREAM_ENCODE_ENV, "").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _expose_inner(wrapper: Any, original: Any) -> Any:
+    """Set ``__wrapped__`` so diffusion_vae_oom's chain walkers see the untiled gate below this wrapper."""
+    if os.environ.get(STREAM_CHAIN_ENV, "").strip().lower() not in ("0", "false", "no", "off"):
+        wrapper.__wrapped__ = original
+    return wrapper
 
 
 def _note(outcome: str, reason: str, logger: Any) -> None:
@@ -132,7 +140,7 @@ class StreamEncode:
                 self._side = torch.cuda.Stream(device = device)
             ready = torch.cuda.Event()
             ready.record(torch.cuda.current_stream(device))
-            host = torch.empty(x.shape, dtype = torch.uint8, pin_memory = True)
+            host = torch.empty(x.shape, dtype = torch.uint8, pin_memory = host_pinning_allowed(device))
             with torch.cuda.stream(self._side):
                 self._side.wait_event(ready)
                 host.copy_(x, non_blocking = True)
@@ -176,7 +184,7 @@ class StreamEncode:
                     self._decoding = False
                     self._decoded = True
 
-            return decode
+            return _expose_inner(decode, original)
 
         def _tiled_wrapper(original: Any) -> Any:
             def tiled_decode(*args: Any, **kwargs: Any) -> Any:
@@ -396,7 +404,7 @@ class H3StreamEncode(StreamEncode):
             pair = []
             for values in self._pixel:
                 host = torch.tensor(values, dtype = torch.float32)
-                if device.type == "cuda":
+                if device.type == "cuda" and host_pinning_allowed(device):
                     host = host.pin_memory()
                 pair.append(host.to(device, non_blocking = True).view(1, -1, 1, 1, 1))
             held = (device, tuple(pair))
@@ -462,7 +470,7 @@ class H3StreamEncode(StreamEncode):
                     self._decoding = False
                     self._decoded = True
 
-            return decode
+            return _expose_inner(decode, original)
 
         def _inner_wrapper(original: Any) -> Any:
             def _decode(*args: Any, **kwargs: Any) -> Any:
@@ -559,6 +567,17 @@ def claim_stream(
     return session.take(video_frames, fps, audio, audio_sample_rate)
 
 
+def _decodes_on_cuda(pipe: Any, decoder: Any, torch: Any) -> bool:
+    """True if resident on CUDA, or offloaded to host while the pipeline executes on CUDA."""
+    if next(decoder.parameters()).device.type == "cuda":
+        return True
+    try:
+        device = torch.device(getattr(pipe, "_execution_device", None) or "cpu")
+    except Exception:  # noqa: BLE001 - no execution device: a CPU render
+        return False
+    return device.type == "cuda"
+
+
 def open_stream_encode(
     pipe: Any,
     fps: int,
@@ -566,7 +585,7 @@ def open_stream_encode(
     engage: bool,
     logger: Any = None,
 ) -> Optional[StreamEncode]:
-    """A session for a resident CUDA ``AutoencoderKLWan`` with libx264 frame threads, or None."""
+    """A session for an ``AutoencoderKLWan`` decoding on CUDA with libx264 frame threads, or None."""
     if not engage or not stream_encode_enabled():
         return None
     from .video_encode import frame_threads_enabled
@@ -587,7 +606,9 @@ def open_stream_encode(
         import av  # noqa: F401
         import torch
 
-        if not torch.cuda.is_available() or next(decoder.parameters()).device.type != "cuda":
+        if not torch.cuda.is_available():
+            return None
+        if not _decodes_on_cuda(pipe, decoder, torch):
             return None
         return StreamEncode(vae, processor, fps, logger)
     except Exception:  # noqa: BLE001 - no PyAV, no CUDA or no parameters: encode afterwards

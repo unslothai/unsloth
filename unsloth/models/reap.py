@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""REAP expert pruning (Router-weighted Expert Activation Pruning, arXiv:2510.13999).
-
-Same saliency, expert selection and schedule as llm-compressor's ``REAPPruningModifier``: each
-decoder layer is calibrated on the outputs of the already pruned layers before it, its lowest
-saliency experts are dropped, and the pruned layer produces the next layer's inputs. Expert
-outputs come from the model's own fused experts kernel (one call with every routed (token, slot)
-pair as its own row) instead of per-expert Linear modules, so no extra dependency is needed.
-"""
+"""REAP expert pruning (llm-compressor REAPPruningModifier), layer by layer on already-pruned inputs."""
 
 import inspect
 import json
@@ -636,6 +629,16 @@ def _model_parallel_layout(model):
     return None
 
 
+def _has_unmerged_adapters(model):
+    # PEFT < 0.19 leaves `peft_config` on the model after `merge_and_unload`, so look for modules whose
+    # class (or a base, as for custom LoRA layers) comes from PEFT: PeftModel, tuners, adapter wrappers.
+    return any(
+        (cls.__module__ or "").split(".", 1)[0] == "peft"
+        for module in model.modules()
+        for cls in type(module).__mro__
+    )
+
+
 @torch.no_grad()
 def reap_prune(
     model,
@@ -680,7 +683,7 @@ def reap_prune(
     """
     if not 0.0 < float(sparsity) < 1.0:
         raise ValueError(f"Unsloth: REAP sparsity must be in (0, 1), got {sparsity}.")
-    if hasattr(model, "peft_config"):
+    if _has_unmerged_adapters(model):
         raise RuntimeError(
             "Unsloth: run REAP on the base model before `get_peft_model`, or merge the LoRA "
             "adapters first (`model = model.merge_and_unload()`)."

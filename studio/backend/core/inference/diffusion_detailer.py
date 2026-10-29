@@ -718,20 +718,24 @@ def _detail_images(
         inherited: dict = {}
 
         def _inpaint(crop, mask, seed, det_prompt, det_negative):
-            out = generate(
-                prompt = det_prompt,
-                negative_prompt = det_negative,
-                width = crop.width,
-                height = crop.height,
-                steps = step_count,
-                guidance = cfg,
-                seed = seed,
-                batch_size = 1,
-                init_image = _png_b64(crop),
-                mask_image = _png_b64(mask),
-                strength = settings.denoise,
-                **generate_kwargs,
-            )
+            from core.inference import diffusion_bg_compile
+
+            # Every box is its own size: run eager and uncounted so no crop compiles, captures or feeds the compiler.
+            with diffusion_bg_compile.auxiliary_pass():
+                out = generate(
+                    prompt = det_prompt,
+                    negative_prompt = det_negative,
+                    width = crop.width,
+                    height = crop.height,
+                    steps = step_count,
+                    guidance = cfg,
+                    seed = seed,
+                    batch_size = 1,
+                    init_image = _png_b64(crop),
+                    mask_image = _png_b64(mask),
+                    strength = settings.denoise,
+                    **generate_kwargs,
+                )
             if not same_build(result, out):
                 raise ValueError("the model changed")
             if det_negative and out.get("negative_prompt") and not result.get("negative_prompt"):
