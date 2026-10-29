@@ -2235,6 +2235,8 @@ export const es = {
         on: "Activado",
         off: "Desactivado",
         oldWebkitWarning: "WebKitGTK {version} en Wayland: el renderizado por GPU puede fallar al iniciar en NVIDIA con escalado fraccionario (WebKit bug 280210). Si ocurre, Unsloth vuelve por sí solo al renderizado por CPU. En WebKitGTK 2.50.4 no mostró ninguna mejora medible (8 fps en ambos casos), así que no se recomienda Activado aquí.",
+        oldDriverWarning:
+          "Controlador NVIDIA {version} en X11: Unsloth mantiene desactivado el renderizado por GPU hasta que el controlador sea 610 o posterior. Los controladores anteriores pierden un descriptor de archivo por fotograma y la ventana deja de dibujarse en pocos minutos.",
         fallbackNote: "El renderizado por GPU falló al iniciar en este sistema, así que Unsloth usa el renderizado por CPU.",
         tryAgain: "Probar la GPU de nuevo",
         envOverride: "Definido por la variable de entorno {name}. Este ajuste no tiene efecto hasta que se elimine.",

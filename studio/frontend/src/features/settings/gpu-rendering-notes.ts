@@ -11,6 +11,7 @@ export type GpuRenderingNote =
   | { kind: "envOverride"; name: string }
   | { kind: "fallbackNote" }
   | { kind: "oldWebkitWarning"; version: string }
+  | { kind: "oldDriverWarning"; version: string }
   | { kind: "restartPending" };
 
 /** Notes shown under the GPU rendering row, in display order. */
@@ -26,6 +27,9 @@ export function gpuRenderingNotes(
   if (status.fallbackActive) notes.push({ kind: "fallbackNote" });
   if (selected === "on" && status.oldWebkitWarning) {
     notes.push({ kind: "oldWebkitWarning", version: status.oldWebkitWarning });
+  }
+  if (selected === "on" && status.oldDriverWarning) {
+    notes.push({ kind: "oldDriverWarning", version: status.oldDriverWarning });
   }
   if (status.restartRequired) notes.push({ kind: "restartPending" });
   return notes;

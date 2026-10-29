@@ -2203,6 +2203,8 @@ export const ko = {
         on: "켜기",
         off: "끄기",
         oldWebkitWarning: "Wayland의 WebKitGTK {version}: 배율을 소수로 설정한 NVIDIA 환경에서는 GPU 렌더링이 시작 시 충돌할 수 있습니다(WebKit bug 280210). 이 경우 Unsloth가 자동으로 CPU 렌더링으로 돌아갑니다. WebKitGTK 2.50.4에서는 측정 가능한 속도 향상이 없었으므로(두 경우 모두 8 fps) 여기서는 켜기를 권장하지 않습니다.",
+        oldDriverWarning:
+          "X11의 NVIDIA 드라이버 {version}: 드라이버가 610 이상이 될 때까지 Unsloth는 GPU 렌더링을 끈 상태로 유지합니다. 이전 드라이버는 프레임마다 파일 디스크립터를 누수하며, 몇 분 안에 창이 더 이상 그려지지 않습니다.",
         fallbackNote: "이 시스템에서 GPU 렌더링이 시작 시 충돌하여 Unsloth가 CPU 렌더링을 사용하고 있습니다.",
         tryAgain: "GPU 다시 시도",
         envOverride: "{name} 환경 변수로 설정되어 있습니다. 이 변수를 제거하기 전까지는 이 설정이 적용되지 않습니다.",

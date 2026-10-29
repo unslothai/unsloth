@@ -2192,6 +2192,8 @@ export const ja = {
         on: "オン",
         off: "オフ",
         oldWebkitWarning: "Wayland 上の WebKitGTK {version}: 分数スケーリングを使う NVIDIA 環境では、GPU レンダリングが起動時にクラッシュすることがあります (WebKit bug 280210)。その場合、Unsloth は自動的に CPU レンダリングに戻ります。WebKitGTK 2.50.4 では測定できる高速化はなかった (どちらも 8 fps) ため、ここではオンはおすすめしません。",
+        oldDriverWarning:
+          "X11 上の NVIDIA ドライバー {version}: ドライバーが 610 以降になるまで、Unsloth は GPU レンダリングをオフのままにします。古いドライバーはフレームごとにファイル記述子をリークし、数分でウィンドウが描画されなくなります。",
         fallbackNote: "このシステムでは GPU レンダリングが起動時にクラッシュしたため、Unsloth は CPU レンダリングを使用しています。",
         tryAgain: "GPU をもう一度試す",
         envOverride: "環境変数 {name} で設定されています。これを削除するまで、この設定は効果がありません。",

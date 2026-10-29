@@ -2239,6 +2239,8 @@ export const fr = {
         on: "Activé",
         off: "Désactivé",
         oldWebkitWarning: "WebKitGTK {version} sous Wayland : le rendu GPU peut planter au lancement sur NVIDIA avec une mise à l’échelle fractionnaire (WebKit bug 280210). Dans ce cas, Unsloth repasse de lui-même au rendu CPU. Sous WebKitGTK 2.50.4, il n’a apporté aucun gain mesurable (8 fps dans les deux cas), donc Activé n’est pas recommandé ici.",
+        oldDriverWarning:
+          "Pilote NVIDIA {version} sous X11 : Unsloth laisse le rendu GPU désactivé tant que le pilote n'est pas en version 610 ou plus récente. Les pilotes plus anciens perdent un descripteur de fichier par image et la fenêtre cesse de s'afficher en quelques minutes.",
         fallbackNote: "Le rendu GPU a planté au lancement sur ce système, donc Unsloth utilise le rendu CPU.",
         tryAgain: "Réessayer le GPU",
         envOverride: "Défini par la variable d’environnement {name}. Ce réglage n’a aucun effet tant qu’elle n’est pas supprimée.",

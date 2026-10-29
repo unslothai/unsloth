@@ -98,6 +98,14 @@ function GpuRenderingRow() {
                   })}
                 </span>
               );
+            case "oldDriverWarning":
+              return (
+                <span key={note.kind} className={`${NOTE_CLASS} text-muted-foreground`}>
+                  {t("settings.appearance.gpuRendering.oldDriverWarning", {
+                    version: note.version,
+                  })}
+                </span>
+              );
             case "restartPending":
               return (
                 <div key={note.kind} className="flex items-center gap-2">
