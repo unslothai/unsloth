@@ -168,7 +168,12 @@ def test_catalog_marks_what_studio_can_train():
     assert entry["category"] == "sft" and entry["studio_task"] == "text"
     assert catalog._entry("Zephyr_(7B)-DPO.ipynb", {}, {})["studio_task"] == "text"
     assert catalog._entry("Qwen3_(4B)-GRPO.ipynb", {}, {})["studio_task"] == "text"
-    assert catalog._entry("gpt_oss_(20B)_Reinforcement_Learning_2048_Game.ipynb", {}, {})["studio_task"] is None
+    assert (
+        catalog._entry("gpt_oss_(20B)_Reinforcement_Learning_2048_Game.ipynb", {}, {})[
+            "studio_task"
+        ]
+        is None
+    )
     assert catalog._entry("EmbeddingGemma_(300M).ipynb", {}, {})["studio_task"] == "embedding"
     assert catalog._entry("Llama3.2_(1B)-Phone_Deployment.ipynb", {}, {})["studio_task"] is None
 
