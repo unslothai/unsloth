@@ -1084,14 +1084,18 @@ def _scan(
     found: dict[str, dict] = {}
     mount_points = _mount_points()
     root_identities = frozenset({identity}) if identity[1] not in (None, 0) else frozenset()
-    pending = [(root, frozenset({_path_key(root)}), root_identities, 0, ())]
+    pending = [(root, frozenset({_path_key(root)}), root_identities, 0, (), None)]
     # Collect past the cap so the kept set is the sorted first FOLDER_MAX_FILES, stable across scans.
     hard_cap = config.FOLDER_MAX_FILES * 2 if config.FOLDER_MAX_FILES else 0
     while pending:
-        directory, ancestor_paths, ancestor_identities, depth, rules = pending.pop()
+        directory, ancestor_paths, ancestor_identities, depth, rules, matcher = pending.pop()
         directory_rel = os.path.relpath(directory, root).replace(os.sep, "/")
         directory_rel = "" if directory_rel == "." else directory_rel
-        rules = (*rules, *_read_gitignore(directory, directory_rel))
+        own_rules = _read_gitignore(directory, directory_rel)
+        if own_rules:
+            # Built only where a .gitignore adds rules; other directories reuse their parent's.
+            rules = (*rules, *own_rules)
+            matcher = gitignore.Matcher(rules)
         with os.scandir(directory) as entries:
             for entry in entries:
                 full = entry.path
@@ -1102,7 +1106,7 @@ def _scan(
                     if _is_ignored_scan_dir(entry.name, full):
                         excluded.add(rel)
                         continue
-                    if rules and gitignore.is_ignored(rel, True, rules):
+                    if rules and matcher.is_ignored(rel, True):
                         skipped["gitignored"] += 1
                         excluded.add(rel)
                         continue
@@ -1143,6 +1147,7 @@ def _scan(
                             child_identities,
                             depth + 1,
                             rules,
+                            matcher,
                         )
                     )
                     continue
@@ -1153,7 +1158,7 @@ def _scan(
                 ext = os.path.splitext(entry.name)[1].lower()
                 if ext not in config.UPLOAD_EXTS:
                     continue
-                if rules and gitignore.is_ignored(rel, False, rules):
+                if rules and matcher.is_ignored(rel, False):
                     skipped["gitignored"] += 1
                     excluded.add(rel)
                     continue

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 MAX_GITIGNORE_BYTES = 256 * 1024
 _MAX_GLOBSTARS = 3
+_RULE_FLAGS = re.compile("", re.DOTALL).flags
 
 
 @dataclass(frozen = True)
@@ -128,6 +129,57 @@ def parse(text: str, base: str) -> list[Rule]:
             continue
         rules.append(Rule(base, regex, negate, dir_only))
     return rules
+
+
+class Matcher:
+    """``is_ignored`` for one rule list, compiled once. Each run of adjacent rules that share
+    ``negate`` becomes one regex over the whole relative path, so a path costs one match per run
+    instead of one per rule; files get a plan without the directory-only rules. The last run that
+    matches decides, as the last matching rule does."""
+
+    __slots__ = ("_dir_plan", "_file_plan")
+
+    def __init__(self, rules: "tuple[Rule, ...] | list[Rule]"):
+        self._dir_plan = _plan(rules)
+        self._file_plan = _plan([rule for rule in rules if not rule.dir_only])
+
+    def is_ignored(self, rel: str, is_dir: bool) -> bool:
+        for negate, matcher in self._dir_plan if is_dir else self._file_plan:
+            if isinstance(matcher, Rule):
+                if matcher.base:
+                    prefix = matcher.base + "/"
+                    if not rel.startswith(prefix) or not matcher.regex.match(rel[len(prefix) :]):
+                        continue
+                elif not matcher.regex.match(rel):
+                    continue
+            elif not matcher.match(rel):
+                continue
+            return not negate
+        return False
+
+
+def _plan(rules) -> "tuple[tuple[bool, re.Pattern[str] | Rule], ...]":
+    """(negate, matcher) runs, last rule first."""
+    runs: list[tuple[bool, list]] = []
+    for rule in rules:
+        pattern = rule.regex.pattern
+        if rule.regex.groupindex or not pattern.startswith("^") or rule.regex.flags != _RULE_FLAGS:
+            # Named groups (the atomic "*" emulation) would clash inside one regex: kept alone.
+            runs.append((rule.negate, [rule]))
+            continue
+        alternative = re.escape(rule.base + "/") + pattern[1:] if rule.base else pattern[1:]
+        if runs and runs[-1][0] == rule.negate and isinstance(runs[-1][1][0], str):
+            runs[-1][1].append(alternative)
+        else:
+            runs.append((rule.negate, [alternative]))
+    plan = []
+    for negate, members in reversed(runs):
+        if isinstance(members[0], str):
+            body = "(?:" + ")|(?:".join(members) + ")"
+            plan.append((negate, re.compile(f"^(?:{body})", re.DOTALL)))
+        else:
+            plan.append((negate, members[0]))
+    return tuple(plan)
 
 
 def is_ignored(rel: str, is_dir: bool, rules: tuple[Rule, ...]) -> bool:
