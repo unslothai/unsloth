@@ -60,8 +60,7 @@ def below_hook_ref(block: Any) -> Any:
 
 
 def root_forward(module: Any, fallback: Any = None) -> Any:
-    """The forward the denoiser's own hooks call (below its top-level offload hook), else ``fallback`` when that is
-    the plain bound forward."""
+    """The forward below the denoiser's top-level offload hook, else ``fallback`` if that is the plain forward."""
     bg = _bg()
     for r in _hook_refs(module):
         fn = getattr(r, "forward", None)
@@ -92,7 +91,6 @@ def _streams_a_block(module: Any) -> bool:
 
 
 def pair_decline(module: Any, fallback_forward: Any = None) -> Optional[str]:
-    """Why the guidance branches of ``module`` cannot share each streamed block's upload, else None."""
     if not cfg_pair_enabled():
         return f"{CFG_PAIR_ENV}=0"
     spec = _spec(module)
@@ -141,9 +139,7 @@ def _modules() -> tuple:
 
 
 class PairedForward:
-    """Runs the first branch through the stock forward; the second branch rides its block calls. The second
-    branch's prologue and epilogue come from the stock forward too, on a one-block list (a probe that records the
-    first block's arguments, then the second branch's last block output)."""
+    """Second branch rides the first's block calls; its prologue/epilogue run the stock forward on a one-block list."""
 
     def __init__(self, module: Any) -> None:
         import torch

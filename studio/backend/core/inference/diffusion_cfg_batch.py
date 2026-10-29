@@ -221,8 +221,7 @@ def cfg_pair_decline(
     offload_policy: Optional[str] = None,
     graphs: bool = True,
 ) -> Optional[str]:
-    """Why a streamed denoiser's guidance branches cannot share each block's upload, else None. ``graphs=False``
-    ignores the CUDA graphs armed so far (asked before the after-placement graph decision)."""
+    """Why guidance branches cannot pair per streamed block, else None. ``graphs=False`` ignores armed CUDA graphs."""
     from .diffusion_cfg_pair import pair_decline
 
     torch = _torch()
