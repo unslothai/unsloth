@@ -658,8 +658,10 @@ def account_counts() -> tuple[int, int]:
 
 def validate_account_username(username: str) -> str:
     username = username.casefold()
-    if re.fullmatch(r"[a-z0-9_-]{3,32}", username) is None:
-        raise ValueError("Username must contain 3 to 32 letters, digits, underscores or hyphens")
+    if re.fullmatch(r"[a-z0-9_.-]{3,32}", username) is None:
+        raise ValueError(
+            "Username must contain 3 to 32 letters, digits, dots, underscores or hyphens"
+        )
     if username in {"unsloth", "owner", "admin", "root", "system"}:
         raise ValueError("This username is reserved")
     return username

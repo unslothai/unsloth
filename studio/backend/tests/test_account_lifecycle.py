@@ -165,13 +165,16 @@ def test_accounts_requires_authentication(auth_env, method, suffix, payload):
     [
         ("abc", True, "abc"),
         ("A_L-I9", True, "a_l-i9"),
+        ("FirstName.LastName", True, "firstname.lastname"),
         ("a" * 32, True, "a" * 32),
+        ("a." + "b" * 30, True, "a." + "b" * 30),
         ("ab", False, None),
         ("a" * 33, False, None),
+        ("a." + "b" * 31, False, None),
         ("", False, None),
         ("alice ", False, None),
         (" ali", False, None),
-        ("a.b", False, None),
+        ("a.b", True, "a.b"),
         ("a/b", False, None),
         ("a\\b", False, None),
         ("álice", False, None),
@@ -188,6 +191,7 @@ def test_username_validation(auth_env, username, valid, canonical):
     assert response.status_code == (201 if valid else 422)
     if valid:
         assert response.json()["account"]["username"] == canonical
+        assert create(auth_env[0], username.upper()).status_code == 409
     else:
         assert storage.count_active_accounts() == 1
 
@@ -214,13 +218,15 @@ def test_create_code_hash_expiry_duplicate_and_public_fields(auth_env):
     assert create(client, "Alice").status_code == 409
 
 
-@pytest.mark.parametrize("username", ["alice", "bob"])
+@pytest.mark.parametrize("username", ["alice", "bob", "first.last"])
 def test_setup_single_use_then_change_password_without_owner_side_effects(auth_env, username):
     client, _, _ = auth_env
     desktop = storage.create_desktop_secret()
     storage._BOOTSTRAP_PW_PATH.write_bytes(b"owner-bootstrap\n")
     owner_before = storage.get_user_record("unsloth")
-    body = create(client, username).json()
+    response = create(client, username)
+    assert response.status_code == 201
+    body = response.json()
     response = login(client, username.upper(), body["setup_code"])
     assert response.status_code == 200
     session = response.json()
@@ -948,24 +954,25 @@ def set_alias(
     )
 
 
-def test_owner_signs_in_with_a_chosen_name_and_unsloth_keeps_working(auth_env):
+@pytest.mark.parametrize("alias", ["Riley", "First.Last"])
+def test_owner_signs_in_with_a_chosen_name_and_unsloth_keeps_working(auth_env, alias):
     client, _, _ = auth_env
     assert create(client, "alice").status_code == 201
-    response = set_alias(client, "Riley")
-    assert response.status_code == 200 and response.json() == {"login_alias": "riley"}
-    for name in ("Riley", "riley", "unsloth"):
+    response = set_alias(client, alias)
+    assert response.status_code == 200 and response.json() == {"login_alias": alias.casefold()}
+    for name in (alias, alias.casefold(), "unsloth"):
         session = login(client, name, "owner-password")
         assert session.status_code == 200, name
         assert session.json()["account_id"] == "owner"
-    assert login(client, "riley", "wrong-password").status_code == 401
+    assert login(client, alias, "wrong-password").status_code == 401
     owner = next(
         a
         for a in client.get("/api/accounts", headers = headers()).json()["accounts"]
         if a["role"] == "owner"
     )
-    assert owner["username"] == "unsloth" and owner["login_alias"] == "riley"
+    assert owner["username"] == "unsloth" and owner["login_alias"] == alias.casefold()
     assert set_alias(client, "unsloth").json() == {"login_alias": None}
-    assert login(client, "riley", "owner-password").status_code == 401
+    assert login(client, alias, "owner-password").status_code == 401
 
 
 @pytest.mark.parametrize(
@@ -980,10 +987,11 @@ def test_owner_sign_in_name_is_validated_like_a_username(auth_env, alias, status
     assert storage.list_accounts()[0]["login_alias"] is None
 
 
-def test_owner_sign_in_name_cannot_be_taken_by_a_new_account(auth_env):
+@pytest.mark.parametrize("alias", ["riley", "first.last"])
+def test_owner_sign_in_name_cannot_be_taken_by_a_new_account(auth_env, alias):
     client, _, _ = auth_env
-    assert set_alias(client, "riley").status_code == 200
-    assert create(client, "RILEY").status_code == 409
+    assert set_alias(client, alias).status_code == 200
+    assert create(client, alias.upper()).status_code == 409
     assert storage.count_active_accounts() == 1
 
 
@@ -1033,15 +1041,16 @@ def test_owner_sign_in_name_trims_and_unsloth_or_blank_clears_it(auth_env, alias
     assert set_alias(client, alias).json() == {"login_alias": stored}
 
 
-def test_owner_sign_in_name_and_usernames_collide_after_case_folding_either_way(auth_env):
+@pytest.mark.parametrize("suffix", ["", ".last"])
+def test_owner_sign_in_name_and_usernames_collide_after_case_folding_either_way(auth_env, suffix):
     client, _, _ = auth_env
     # validate_account_username casefolds before its ASCII check: "ſ" folds to "s", "K" (Kelvin) to "k".
-    assert create(client, "sam").status_code == 201
-    assert set_alias(client, "ſam").status_code == 409
-    assert set_alias(client, "Kai").json() == {"login_alias": "kai"}
-    assert create(client, "Kai").status_code == 409
+    assert create(client, "sam" + suffix).status_code == 201
+    assert set_alias(client, "ſam" + suffix).status_code == 409
+    assert set_alias(client, "Kai" + suffix).json() == {"login_alias": "kai" + suffix}
+    assert create(client, "Kai" + suffix).status_code == 409
     assert set_alias(client, "rilëy").status_code == 400
-    assert {a["username"] for a in storage.list_accounts()} == {"unsloth", "sam"}
+    assert {a["username"] for a in storage.list_accounts()} == {"unsloth", "sam" + suffix}
 
 
 def test_alias_signs_in_as_the_owner_identity_and_survives_alias_changes(auth_env):

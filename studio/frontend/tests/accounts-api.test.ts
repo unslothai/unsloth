@@ -94,6 +94,20 @@ test("regeneration is keyed by the account id, encoded as one path segment", asy
   });
 });
 
+test("creation preserves dots in normalized usernames", async () => {
+  const setup = backendSetup("one-time-code");
+  setup.account.username = "firstname.lastname";
+  const c = client(() => Response.json(setup));
+  assert.equal(
+    (await c.api.createAccount(" FirstName.LastName ")).username,
+    "firstname.lastname",
+  );
+  assert.equal(
+    c.requests[0].init?.body,
+    JSON.stringify({ username: "firstname.lastname" }),
+  );
+});
+
 test("deactivate, reactivate and delete accept empty success bodies and refresh policy", async () => {
   const c = client(() => new Response(null, { status: 204 }));
   await c.api.setAccountActive("alice-id", false);
@@ -134,7 +148,7 @@ test("a rejected username reports the field error FastAPI sends as an array", as
         detail: [
           {
             loc: ["body", "username"],
-            msg: "Value error, Username must contain 3 to 32 letters, digits, - or _.",
+            msg: "Value error, Username must contain 3 to 32 letters, digits, dots, underscores or hyphens",
           },
         ],
       },
@@ -142,7 +156,7 @@ test("a rejected username reports the field error FastAPI sends as an array", as
     ),
   );
   await assert.rejects(
-    c.api.createAccount("bad.name"),
+    c.api.createAccount("bad/name"),
     /username: Value error, Username must contain 3 to 32 letters/,
   );
 });
