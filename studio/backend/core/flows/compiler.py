@@ -598,7 +598,12 @@ EXPORT = "train.export"
 def _check_benchmark(nid: str, nodes: dict, specs: dict, inputs: dict) -> list[dict]:
     wired = inputs.get(nid, {})
     if "checkpoint" in wired and "model" in wired:
-        return [issue("Benchmark scores one model: wire its Checkpoint or its Model, not both", node_id = nid)]
+        return [
+            issue(
+                "Benchmark scores one model: wire its Checkpoint or its Model, not both",
+                node_id = nid,
+            )
+        ]
     task = str((nodes[nid].get("params") or {}).get("task") or "Recipe held-out")
     if task == "Recipe held-out":
         return []
@@ -611,7 +616,10 @@ def _check_benchmark(nid: str, nodes: dict, specs: dict, inputs: dict) -> list[d
             )
         ]
     for src, _port in wired.get("model", []):
-        if specs[src]["type"] == EXPORT and str((nodes[src].get("params") or {}).get("format") or "gguf") != "gguf":
+        if (
+            specs[src]["type"] == EXPORT
+            and str((nodes[src].get("params") or {}).get("format") or "gguf") != "gguf"
+        ):
             return [issue(f"{task} scores a GGUF: set Export Model's Format to GGUF", node_id = nid)]
     return []
 

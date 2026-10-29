@@ -256,7 +256,12 @@ def test_a_local_file_is_streamed_too(monkeypatch):
     }
 
 
-def _bench_flow(task, *, via_export = None, both = False):
+def _bench_flow(
+    task,
+    *,
+    via_export = None,
+    both = False,
+):
     from core.flows.compiler import compile_flow, parse_document
 
     from ._flows_helpers import doc, edge, node
@@ -269,7 +274,10 @@ def _bench_flow(task, *, via_export = None, both = False):
     edges = [edge("data", "dataset", "train", "dataset")]
     if via_export:
         nodes.append(node("export", "train.export", format = via_export))
-        edges += [edge("train", "checkpoint", "export", "checkpoint"), edge("export", "model", "bench", "model")]
+        edges += [
+            edge("train", "checkpoint", "export", "checkpoint"),
+            edge("export", "model", "bench", "model"),
+        ]
     if both or not via_export:
         edges.append(edge("train", "checkpoint", "bench", "checkpoint"))
     parsed, errors = parse_document(doc(nodes, edges))
@@ -282,7 +290,9 @@ def test_an_lm_eval_task_on_a_fine_tune_checkpoint_is_refused_at_plan_time():
 
     with pytest.raises(CompileError) as found:
         _bench_flow("GSM8K")
-    assert "Export Model" in str(found.value.issues) and "Recipe held-out" in str(found.value.issues)
+    assert "Export Model" in str(found.value.issues) and "Recipe held-out" in str(
+        found.value.issues
+    )
     _bench_flow("Recipe held-out")
     _bench_flow("GSM8K", via_export = "gguf")
     with pytest.raises(CompileError, match = "Format to GGUF"):
@@ -298,7 +308,9 @@ def test_an_export_wired_into_model_loads_by_export_name_and_its_quant(monkeypat
 
     async def resolve_by(deadline, caller, **kwargs):
         asked.update(kwargs)
-        return SimpleNamespace(ref = "ref:exports/flows-run-1-gguf", is_lora = False, gguf_variant = "Q4_K_M")
+        return SimpleNamespace(
+            ref = "ref:exports/flows-run-1-gguf", is_lora = False, gguf_variant = "Q4_K_M"
+        )
 
     async def load_llm(caller, job, **kwargs):
         loads.append(kwargs)
@@ -307,11 +319,22 @@ def test_an_export_wired_into_model_loads_by_export_name_and_its_quant(monkeypat
     monkeypatch.setattr("studio_mcp.loading.load_llm", load_llm)
     monkeypatch.setattr(benchmark, "note_loaded", lambda *a: None)
     ctx = _Ctx(lambda *a: {}, task = "GSM8K")
-    ctx.inputs = {"model": {"kind": "model", "model_kind": "chat", "repo": "flows-run-1-gguf", "variant": "Q4_K_M"}}
+    ctx.inputs = {
+        "model": {
+            "kind": "model",
+            "model_kind": "chat",
+            "repo": "flows-run-1-gguf",
+            "variant": "Q4_K_M",
+        }
+    }
     ctx.resident = {"llm": "old"}
     ctx.set_status = lambda *a, **k: None
     assert asyncio.run(benchmark._load_target(ctx)) == ("flows-run-1-gguf", False)
-    assert asked["export"] == "flows-run-1-gguf" and asked["variant"] == "Q4_K_M" and asked["checkpoint"] is None
+    assert (
+        asked["export"] == "flows-run-1-gguf"
+        and asked["variant"] == "Q4_K_M"
+        and asked["checkpoint"] is None
+    )
     assert loads[0]["model"] == "ref:exports/flows-run-1-gguf" and loads[0]["variant"] == "Q4_K_M"
     assert ctx.resident == {}
 

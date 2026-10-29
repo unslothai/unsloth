@@ -112,7 +112,8 @@ def distinct(rows: list[dict]) -> list[dict]:
     for row in rows:
         prompt, reference = _norm(row["failed_prompt"]), _norm(row["failed_reference"])
         if any(
-            reference == ref and (prompt == seen or SequenceMatcher(None, prompt, seen).ratio() >= NEAR_SAME)
+            reference == ref
+            and (prompt == seen or SequenceMatcher(None, prompt, seen).ratio() >= NEAR_SAME)
             for seen, ref, _ in kept
         ):
             continue
@@ -131,7 +132,9 @@ def seed_rows(
     """``rows`` seed rows: up to ``failure_percent`` of them rewrite a distinct failure, each failure at
     most ``per_failure`` times; the rest are fresh."""
     rows = max(1, rows)
-    kept = distinct([r for r in (failure_row(f, prompt_column, reference_column) for f in failures) if r])
+    kept = distinct(
+        [r for r in (failure_row(f, prompt_column, reference_column) for f in failures) if r]
+    )
     take = min(rows, round(rows * failure_percent / 100), len(kept) * max(1, per_failure))
     found = [dict(kept[i % len(kept)]) for i in range(take)]
     found += [{"origin": "fresh", **{c: "" for c in FIELDS}} for _ in range(rows - take)]
