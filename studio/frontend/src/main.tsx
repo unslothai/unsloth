@@ -20,19 +20,35 @@ import {
 } from "./components/assistant-ui/reasoning-row-containment";
 import { fetchDeviceType } from "./config/env";
 import { refreshSession } from "./features/auth/api";
+import { getPostAuthRoute, hasAuthToken } from "./features/auth/session";
+import { loadChatPage } from "./features/chat/load-chat-page";
 import {
   applyInterfaceScaleBeforeFirstPaint,
   useInterfaceScaleStore,
 } from "./features/settings/stores/interface-scale-store";
 import { initializeLocale } from "./i18n";
 import { isTauri } from "./lib/api-base";
+import { markAppSessionStart } from "./lib/app-session-start";
 import { setHubSessionRefresh } from "./lib/hf-endpoint";
 import { watchInputModality } from "./lib/input-modality";
 import { watchMacStrayKeyText } from "./lib/mac-stray-key-text";
 import { watchOverlayScrollbarGutter } from "./lib/overlay-scrollbar";
 import { watchSpellCheck } from "./lib/spellcheck";
 
+markAppSessionStart();
 setHubSessionRefresh(refreshSession);
+
+// Chat is where a signed-in session lands ("/" redirects there), so its page is fetched alongside the
+// startup bundle and the first render waits for it, as it did when the page was part of that bundle.
+const startPath = window.location.pathname;
+const chatPageAtStart =
+  startPath === "/chat" ||
+  (startPath === "/" && hasAuthToken() && getPostAuthRoute() === "/chat")
+    ? loadChatPage().then(
+        () => undefined,
+        () => undefined,
+      )
+    : null;
 
 const rootElement = document.getElementById("root");
 if (!rootElement) {
@@ -88,12 +104,33 @@ const localeInitialization = initializeLocale();
 const interfaceScaleInitialization = applyInterfaceScaleBeforeFirstPaint(
   useInterfaceScaleStore.getState().scale,
 );
-if (typeof localeInitialization !== "string" || isTauri) {
-  Promise.all([localeInitialization, interfaceScaleInitialization]).then(
-    renderApp,
-  );
+if (typeof localeInitialization !== "string" || isTauri || chatPageAtStart) {
+  Promise.all([
+    localeInitialization,
+    interfaceScaleInitialization,
+    chatPageAtStart,
+  ]).then(renderApp);
 } else {
   renderApp();
+}
+
+// Any other first screen: fetch Chat once the browser is idle, so opening it later does not wait.
+if (!chatPageAtStart) {
+  const prefetchChatPage = () => {
+    loadChatPage().catch(() => undefined);
+  };
+  const whenIdle = () => {
+    if (typeof window.requestIdleCallback === "function") {
+      window.requestIdleCallback(prefetchChatPage, { timeout: 5000 });
+    } else {
+      window.setTimeout(prefetchChatPage, 1000);
+    }
+  };
+  if (document.readyState === "complete") {
+    whenIdle();
+  } else {
+    window.addEventListener("load", whenIdle, { once: true });
+  }
 }
 
 fetchDeviceType().catch(() => undefined);

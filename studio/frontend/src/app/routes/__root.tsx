@@ -21,9 +21,10 @@ import {
   useIsAccountOwner,
 } from "@/features/auth";
 import {
-  ChatPage,
   type ChatSearch,
   hydrateModelDisclaimerPreference,
+  loadChatPage,
+  loadedChatPage,
   openFolderAsProject,
   startLlamaCppAutoReload,
   StopRunningChatsDialog,
@@ -160,6 +161,18 @@ function RouteBoundary({
       {children}
     </Suspense>
   );
+}
+
+// Loaded on first use so other screens start without it. Startup on Chat and the idle prefetch
+// load it before it mounts, so it renders straight away; only a mount that beats them suspends.
+const LazyChatPage = lazy(() =>
+  loadChatPage().then((m) => ({ default: m.ChatPage })),
+);
+
+function ChatPage(props: { search: ChatSearch; active: boolean }) {
+  // Chosen once: switching component type later would remount the page and drop its state.
+  const [Page] = useState(() => loadedChatPage() ?? LazyChatPage);
+  return <Page {...props} />;
 }
 
 // Mounted persistently below so an in-flight batch survives leaving the tab; lazy on first visit.
@@ -697,7 +710,9 @@ function RootLayout() {
                   }
                   inert={!isChatRoute || undefined}
                 >
-                  <ChatPage search={chatSearch} active={isChatRoute} />
+                  <Suspense fallback={null}>
+                    <ChatPage search={chatSearch} active={isChatRoute} />
+                  </Suspense>
                 </div>
               )}
               {/* `active` force-closes body-portaled overlays so none bleed over another tab while hidden. */}
