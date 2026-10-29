@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Condition images and output geometry for the reference and unified-edit workflows, shared by
-the diffusers and sd.cpp engines.
-
-Localized editing follows the official Qwen-Image-2.1 demo conventions, which are generative
-guides rather than inpainting masks: nothing here keeps pixels outside the region.
-
-- ``annotate``: coloured marks (outlines, arrows) drawn ON the source. The instruction names the
-  colours and asks for the marks to be left out of the result.
-- ``paint``: an opaque white region painted ON the source. The instruction refers to the white
-  area.
-- ``mask``: a separate white-on-black mask at the source's geometry, sent as Image 2 right after
-  the source. The instruction refers to the marked area.
-"""
+"""Reference/edit image modes (annotate, paint, mask) are generative guides, not inpainting masks."""
 
 from __future__ import annotations
 
@@ -93,10 +81,7 @@ def check_output_size(fam: Any, width: int, height: int) -> None:
 
 
 def match_source_size(fam: Any, source_size: tuple[int, int], resolution: int) -> tuple[int, int]:
-    """Output (width, height) with the source's aspect ratio at a ``resolution`` squared area, on
-    the family grid and inside its bounds. Upstream's ``calculate_dimensions`` rounding, but from
-    Image 1 rather than the LAST reference. A source too elongated for both bounds keeps the short
-    side at the minimum and caps the long side, so the size is always one the request accepts."""
+    """Source aspect ratio at the target area, snapped to the family grid and bounds, from Image 1."""
     multiple = int(getattr(fam, "dimension_multiple", 16) or 16)
     max_side = int(getattr(fam, "max_output_side", 2048) or 2048)
     max_pixels = int(getattr(fam, "max_output_pixels", 2048 * 2048) or 2048 * 2048)
@@ -247,7 +232,9 @@ def edit_takes_extra_images(fam: Any) -> bool:
 def conditioning_capabilities(fam: Any, workflows: Sequence[str]) -> dict[str, Any]:
     """What the UI may offer for ``fam`` given the ``workflows`` the active engine runs for it.
     Localized editing is advertised only where the unified edit workflow itself is."""
-    unified = bool(getattr(fam, "unified_edit", False)) and "edit" in workflows
+    localized = bool(getattr(fam, "unified_edit", False)) and "edit" in workflows
+    # The page's unified Edit form (Image 1 + extras, output sized from Image 1) fits a reference-edit family too.
+    unified = localized or (bool(getattr(fam, "reference_edit", False)) and "edit" in workflows)
     return {
         "max_condition_images": int(getattr(fam, "max_condition_images", 4) or 4),
         "alpha": (getattr(fam, "condition_image_mode", "RGB") or "RGB") == "RGBA",
@@ -258,5 +245,5 @@ def conditioning_capabilities(fam: Any, workflows: Sequence[str]) -> dict[str, A
         "unified_edit": unified,
         # Edit-only families whose edit takes the extra images too (the UI shows them on the Edit tab).
         "multi_image_edit": edit_takes_extra_images(fam) and "edit" in workflows,
-        "localized_edit_modes": list(LOCALIZED_EDIT_MODES) if unified else [],
+        "localized_edit_modes": list(LOCALIZED_EDIT_MODES) if localized else [],
     }

@@ -58,6 +58,9 @@ class FakeVideoBackend:
     def generate_progress(self):
         return {"active": False, "phase": "completed", "step": 5, "total": 5, "video": CLIP}
 
+    def loading_repo_ids(self):
+        return ()
+
     def cancel_generate(self, *args, **kwargs):
         from utils.account_context import current_account
         self.cancelled.append(current_account().username)

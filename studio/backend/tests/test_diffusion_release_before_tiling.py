@@ -502,3 +502,44 @@ def test_the_untiled_encode_check_prices_the_fp32_encode_of_an_fp16_decode_vae(m
     assert abs(diffusion._untiled_encode_shortfall_mib(vae, x) - fp16) <= 1
     vae._unsloth_fp16_decode = True
     assert abs(diffusion._untiled_encode_shortfall_mib(vae, x) - fp32) <= 1
+
+
+@pytest.fixture
+def graph_held_card(monkeypatch):
+    """1000 MiB driver free plus 600 MiB cached, 500 MiB of it a CUDA graph pool's free blocks."""
+    torch = pytest.importorskip("torch")
+    import core.inference.diffusion_memory as dm
+
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device = None: (1000 * 2**20, 0))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: 600 * 2**20)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: 0)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(dm, "user_budget_reserve_bytes", lambda device, total: 0)
+    monkeypatch.setattr(dm, "_graph_held_cache_bytes", lambda device = None: 500 * 2**20)
+    return types.SimpleNamespace(type = "cuda", index = 0)
+
+
+def test_the_untiled_decode_check_does_not_count_graph_held_cache(monkeypatch, graph_held_card):
+    import core.inference.diffusion_vae_tiling as tiling
+
+    monkeypatch.setattr(tiling, "_geometry", lambda vae: (8, 32, 4))
+    param = types.SimpleNamespace(element_size = lambda: 2)
+    vae = types.SimpleNamespace(decoder = types.SimpleNamespace(parameters = lambda: iter([param])))
+    z = types.SimpleNamespace(shape = (1, 4, 1, 1), dim = lambda: 4, device = graph_held_card)
+    mib, _ = tiling._free_mib(vae, z)
+    assert abs(mib - 1100) < 1
+    mib, _ = tiling._free_mib(vae, z, cached = False)
+    assert abs(mib - 1000) < 1
+
+
+def test_the_untiled_encode_check_does_not_count_graph_held_cache(monkeypatch, graph_held_card):
+    import core.inference.diffusion_vae_tiling as tiling
+
+    monkeypatch.setattr(tiling, "_geometry", lambda vae: (16, 32, 4))
+    monkeypatch.setattr(tiling, "_fused", lambda vae: False)
+    param = types.SimpleNamespace(element_size = lambda: 2)
+    vae = type("AutoencoderKLQwenImage21", (), {})()
+    vae.encoder = types.SimpleNamespace(parameters = lambda: iter([param]))
+    x = types.SimpleNamespace(shape = (1, 4, 1, 1024, 1024), dim = lambda: 5, device = graph_held_card)
+    want = 64 * 64 * 0.6 / tiling.FREE_FRACTION - 1100
+    assert abs(diffusion._untiled_encode_shortfall_mib(vae, x) - want) <= 1

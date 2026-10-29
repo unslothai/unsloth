@@ -9,6 +9,7 @@ import ast
 import importlib.util
 import inspect
 import os
+import re
 import sys
 import textwrap
 import types as _types
@@ -223,7 +224,7 @@ def test_vision_downgrade_preserves_multi_gpu_intent():
     src = inspect.getsource(LlamaCppBackend.load_model)
     assert "_layer_min_gpus = max(_layer_min_gpus, len(gpus))" in src
     assert src.count("min_gpus = _layer_min_gpus") >= 2
-    assert "_tiered_subsets(ranked, _auto_min_gpus)" in src
+    assert re.search(r"_tiered_subsets\(\s*ranked,\s*_auto_min_gpus[,)]", src)
     auto = src.find("_auto_min_gpus = max(")
     assert auto != -1 and "_layer_min_gpus" in src[auto : auto + 200]
 
@@ -430,7 +431,7 @@ def test_auto_context_layer_loops_capped_to_usable_gpus():
         "range(max(1, _layer_min_gpus), len(ranked) + 1)" not in src
     ), "auto-context loops must cap _layer_min_gpus to usable GPUs, not use it raw"
     assert "_auto_min_gpus" in src
-    assert "_tiered_subsets(ranked, _auto_min_gpus)" in src
+    assert re.search(r"_tiered_subsets\(\s*ranked,\s*_auto_min_gpus[,)]", src)
     # the eligibility threshold is the per-device layer overhead, not bare > 0
     auto = src.find("_auto_min_gpus = max(")
     assert auto != -1

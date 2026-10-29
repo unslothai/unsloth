@@ -26,7 +26,6 @@ import { cn, formatCompact } from "@/lib/utils";
 import {
   Calendar03Icon,
   CalendarAdd01Icon,
-  Copy01Icon,
   CpuIcon,
   CubeIcon,
   Database02Icon,
@@ -37,9 +36,10 @@ import {
   LayersLogoIcon,
   LibrariesIcon,
   LicenseIcon,
+  LinkSquare02Icon,
   PackageIcon,
-  Share05Icon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { TextToSpeechIcon } from "@/lib/hugeicons-derived";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -86,7 +86,7 @@ function ViewRepositoryButton({
     "inline-flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors";
   const icon = (
     <HugeiconsIcon
-      icon={Share05Icon}
+      icon={LinkSquare02Icon}
       strokeWidth={1.75}
       className="size-[calc(13px*var(--ui-space-scale,1))]"
     />
@@ -287,7 +287,7 @@ function ModelStatusChips({
   unslothSupport: UnslothSupport;
   vramInfo: VramInfo;
 }) {
-  // The Images/Video pages run these, so they are not "unsupported" to a user even though chat cannot load them.
+  // Images/Video pages run these, so they are not unsupported even though chat cannot.
   const showUnsupported =
     !isDataset &&
     unslothSupport.status === "unsupported" &&
@@ -422,7 +422,6 @@ export type ModelInspectorRuntime = {
     status: "fits" | "tight" | "exceeds";
   } | null;
   gpuGb?: number;
-  /** GPUs gpuGb sums, for the loader's per-card VRAM reserve. */
   gpuCount?: number;
   systemRamGb?: number;
 };
@@ -482,9 +481,7 @@ export const ModelInspector = memo(function ModelInspector({
   const datasetSize = useDatasetSize(datasetRepoId, {
     token: hfToken || undefined,
   });
-  // Inventory rows are snapshots; the download manager is the live source of
-  // truth. When a download is in flight, route through the download-aware section
-  // so progress/cancel stays visible across refreshes.
+  // Inventory rows are snapshots; route active downloads through the download-aware section.
   const activeDownloadRepoId = model?.hubRepoId ?? null;
   const hasActiveHubDownload = useDownloadManagerStore((state) =>
     activeDownloadRepoId

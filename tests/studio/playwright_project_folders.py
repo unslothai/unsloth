@@ -12,6 +12,7 @@ import asyncio
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from playwright.async_api import async_playwright, expect
@@ -26,6 +27,22 @@ parser.add_argument("--out", type = Path, default = Path("work/project-folders-r
 ARGS = parser.parse_args()
 OUT = ARGS.out.resolve()
 MANAGED_FOLDER = "Unsloth-managed folder"  # working-folder-picker.tsx with no folder set
+
+# The picker button's three labels, read from the component rather than copied: #15080 dropped the
+# ellipses ("Choose folder…" -> "Choose folder", "Change…" -> "Change folder") and every lookup here
+# then timed out on a dialog that worked. The flow below is what this suite checks, not the wording.
+_PICKER = (
+    Path(__file__).resolve().parents[2]
+    / "studio/frontend/src/features/chat/components/working-folder-picker.tsx"
+)
+_LABELS = re.search(
+    r'\{picking \? "([^"]+)" : value \? "([^"]+)" : "([^"]+)"\}',
+    _PICKER.read_text(encoding = "utf-8"),
+)
+assert (
+    _LABELS
+), f"{_PICKER.name} no longer spells the picker button as picking ? ... : value ? ... : ..."
+CHOOSING, CHANGE, CHOOSE = _LABELS.groups()
 
 
 async def scene(
@@ -149,7 +166,7 @@ async def scene(
     await page.get_by_label("Project name", exact = True).fill("My project")
     observations = {
         "workingFolderControls": await dialog.get_by_role(
-            "button", name = "Choose folder…", exact = True
+            "button", name = CHOOSE, exact = True
         ).count(),
         "sourceFolderLabels": await dialog.get_by_text("Source folders", exact = True).count(),
         "technicalBackendCopy": "managed desktop backend" in await dialog.inner_text(),
@@ -159,12 +176,12 @@ async def scene(
     await dialog.screenshot(path = str(OUT / f"{label}-dialog.png"), animations = "disabled")
     if exercise:
         if mode == "desktop":
-            choose = dialog.get_by_role("button", name = "Choose folder…", exact = True)
+            choose = dialog.get_by_role("button", name = CHOOSE, exact = True)
             await expect(choose).to_be_enabled()
             await choose.click()
             if pending:
                 await expect(
-                    dialog.get_by_role("button", name = "Choosing folder…", exact = True)
+                    dialog.get_by_role("button", name = CHOOSING, exact = True)
                 ).to_be_disabled()
                 await page.keyboard.press("Escape")
                 await expect(dialog).to_be_visible()
@@ -193,7 +210,7 @@ async def scene(
                     dialog.get_by_role("button", name = "Create project", exact = True)
                 ).to_be_disabled()
                 await page.screenshot(path = str(OUT / f"{label}-expired.png"), animations = "disabled")
-                await dialog.get_by_role("button", name = "Change…", exact = True).click()
+                await dialog.get_by_role("button", name = CHANGE, exact = True).click()
                 await dialog.get_by_role("button", name = "Create project", exact = True).click()
             if not (lost or lost_put):
                 await expect(page.get_by_test_id("created")).not_to_be_empty()
@@ -229,13 +246,11 @@ async def scene(
                     )
                 ).to_be_visible()
                 await page.evaluate("window.__cancelPick=true")
-                await dialog.get_by_role("button", name = "Change…", exact = True).click()
-                await expect(
-                    dialog.get_by_role("button", name = "Change…", exact = True)
-                ).to_be_enabled()
+                await dialog.get_by_role("button", name = CHANGE, exact = True).click()
+                await expect(dialog.get_by_role("button", name = CHANGE, exact = True)).to_be_enabled()
                 assert not folder_requests
                 await page.evaluate("window.__cancelPick=false; window.__rejectUpdate=true")
-                await dialog.get_by_role("button", name = "Change…", exact = True).click()
+                await dialog.get_by_role("button", name = CHANGE, exact = True).click()
                 await expect(
                     page.get_by_text("Could not change the working folder", exact = True)
                 ).to_be_visible()
@@ -243,7 +258,7 @@ async def scene(
                     dialog.get_by_text("/review/existing-project", exact = True)
                 ).to_be_visible()
                 await page.evaluate("window.__delayUpdate=true")
-                await dialog.get_by_role("button", name = "Change…", exact = True).click()
+                await dialog.get_by_role("button", name = CHANGE, exact = True).click()
                 await expect(dialog.get_by_role("button", name = "Save", exact = True)).to_be_disabled()
                 await expect(
                     dialog.get_by_role("button", name = "Cancel", exact = True)
@@ -273,9 +288,7 @@ async def scene(
                 assert [r["method"] for r in folder_requests] == ["PUT", "PUT", "DELETE"]
         else:
             if mode in ("unsupported", "guest"):
-                await expect(
-                    dialog.get_by_role("button", name = "Choose folder…", exact = True)
-                ).to_be_disabled()
+                await expect(dialog.get_by_role("button", name = CHOOSE, exact = True)).to_be_disabled()
             await dialog.get_by_role("button", name = "Create project", exact = True).click()
             await expect(page.get_by_test_id("created")).not_to_be_empty()
             assert "nativePathLease" not in requests[-1]
@@ -374,7 +387,7 @@ async def ambiguous_create(browser, label, base_url, choice):
     await expect(dialog).to_be_visible(timeout = 90000)
     await page.get_by_label("Project name", exact = True).fill("My project")
     create = dialog.get_by_role("button", name = "Create project", exact = True)
-    await dialog.get_by_role("button", name = "Choose folder…", exact = True).click()
+    await dialog.get_by_role("button", name = CHOOSE, exact = True).click()
     await page.evaluate("window.__failGet = true")
     await create.click()
     await expect(dialog.get_by_role("alert")).to_contain_text(
@@ -388,11 +401,11 @@ async def ambiguous_create(browser, label, base_url, choice):
         assert [r["method"] for r in folder_requests] == ["DELETE"]
         assert stored["workingFolder"] is None
     else:
-        await dialog.get_by_role("button", name = "Change…", exact = True).click()
+        await dialog.get_by_role("button", name = CHANGE, exact = True).click()
         await create.click()
         # The second grant was spent on the conflict, and the saved folder is the first one.
         await expect(dialog.get_by_role("alert")).to_contain_text("Choose the folder again")
-        await dialog.get_by_role("button", name = "Change…", exact = True).click()
+        await dialog.get_by_role("button", name = CHANGE, exact = True).click()
         await create.click()
         await expect(page.get_by_test_id("created")).to_have_text(posts[0]["id"])
         assert folder_requests == [{"method": "PUT", "body": {"nativePathLease": "native-grant-3"}}]

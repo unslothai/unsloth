@@ -15,7 +15,7 @@ import {
 } from "@/features/browser";
 import { useT } from "@/i18n";
 import { CursorInWindowIcon } from "@/lib/browser-use-icon";
-import { Add01Icon, ArrowUpRight01Icon, Cancel01Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
+import { Cancel01Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useState } from "react";
 import { SettingsRow } from "../components/settings-row";
@@ -23,7 +23,7 @@ import { SettingsSection } from "../components/settings-section";
 
 type Column = keyof SiteRule;
 
-const BROWSER_USE_DOCS_URL = "https://unsloth.ai/docs/basics/browser-use";
+export const BROWSER_USE_DOCS_URL = "https://unsloth.ai/docs/basics/browser-use";
 
 function RuleSelect({
   column,
@@ -72,8 +72,8 @@ function RuleSelect({
   );
 }
 
-// Each choice carries its own heading and wraps to the next line rather than cutting its label, at any text size.
-const CHOICES = "grid grid-cols-[repeat(auto-fit,minmax(calc(11.5rem*var(--ui-space-scale,1)),1fr))] gap-x-2 gap-y-2";
+// 2x2, not auto-fit: auto-fit left the fourth choice alone on its own row.
+const CHOICES = "grid grid-cols-1 gap-x-4 gap-y-3 @[30rem]/perms:grid-cols-2";
 
 function PermissionsTable() {
   const t = useT();
@@ -102,7 +102,7 @@ function PermissionsTable() {
   };
 
   const row = (name: string, rule: SiteRule, site: string | null) => (
-    <div key={site ?? "default"} className="flex flex-col gap-1.5 border-b border-border/60 py-2.5 last:border-b-0">
+    <div key={site ?? "default"} className="flex flex-col gap-2.5 border-b border-border/60 py-4 first:pt-3 last:border-b-0 last:pb-5">
       <div className="flex min-h-8 items-center gap-2">
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground" title={name}>
           {name}
@@ -121,8 +121,8 @@ function PermissionsTable() {
       </div>
       <div className={CHOICES}>
         {columns.map(([column, title]) => (
-          <div key={column} className="flex min-w-0 flex-col gap-1">
-            <span className="text-xs text-muted-foreground">{title}</span>
+          <div key={column} className="flex min-w-0 flex-col gap-1.5">
+            <span className="px-1 text-xs text-muted-foreground">{title}</span>
             <RuleSelect
               column={column}
               value={rule[column]}
@@ -146,12 +146,12 @@ function PermissionsTable() {
       description={t("browser.agentSettings.permissionsDescription")}
       action={
         <Button variant="outline" size="sm" onClick={() => setDraft("")} disabled={draft !== null}>
-          <HugeiconsIcon icon={Add01Icon} strokeWidth={1.75} className="size-4" />
+          <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-4" />
           {t("browser.agentSettings.addSite")}
         </Button>
       }
     >
-      <div className="mt-2 flex flex-col rounded-xl border border-border/80 px-3 py-1">
+      <div className="@container/perms mt-2 flex flex-col rounded-2xl border border-border/80 px-4">
         {row(t("browser.agentSettings.default"), permissions.defaults, null)}
         {sites.map((site) => row(site, permissions.sites[site] ?? DEFAULT_AGENT_RULE, site))}
         {draft !== null ? (
@@ -206,19 +206,6 @@ export function BrowserAgentSettings() {
     <>
       <SettingsSection
         title={t("browser.agentSettings.title")}
-        action={
-          // title, not aria-label, so the accessible name stays the visible text (as the Sandbox tab's).
-          <a
-            href={BROWSER_USE_DOCS_URL}
-            target="_blank"
-            rel="noreferrer"
-            title={t("browser.agentSettings.docsLabel")}
-            className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          >
-            {t("browser.agentSettings.docs")}
-            <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
-          </a>
-        }
       >
         <SettingsRow
           icon={<HugeiconsIcon icon={CursorInWindowIcon} strokeWidth={1.75} className="me-1.5 size-7" />}
