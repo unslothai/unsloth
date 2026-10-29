@@ -377,10 +377,16 @@ jobs:
           # catch-all's 1258 s. The two globs are every *gloo* file except test_fs*, which is
           # fsdp2's: an explicit file root cannot be filtered by --ignore, so the split is done in
           # the globs themselves.
+          # That shard then ran 1975 to 1990 s of the cap on main; the pipeline schedule suite pushed
+          # it to 2090 s and past the cap, so the pipeline parallel files (test_pp*) run beside it.
           - shard: gloo
             selection: >-
-              tests/test_[!f]*gloo*.py
+              tests/test_[!fp]*gloo*.py
               tests/test_f[!s]*gloo*.py
+              tests/test_p[!p]*gloo*.py
+          - shard: gloo-pp
+            selection: >-
+              tests/test_pp*gloo*.py
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
