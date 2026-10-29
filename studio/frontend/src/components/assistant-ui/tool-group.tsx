@@ -43,7 +43,7 @@ import {
 } from "./tool-activity-open-state";
 // eslint-disable-next-line no-restricted-imports -- this file is in the startup cycle; the chat barrel closes it.
 import { foldIsActive } from "@/features/chat/utils/display-visibility";
-import { WrenchIcon } from "@/lib/lucide-derived";
+import { WrenchIcon } from "@/lib/wrench-icon";
 
 const ANIMATION_DURATION = 200;
 

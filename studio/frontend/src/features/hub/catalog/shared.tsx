@@ -8,8 +8,8 @@ import {
 } from "@/components/ui/tooltip";
 import { BulbIcon } from "@/lib/bulb-icon";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
-import { WrenchIcon } from "@/lib/lucide-derived";
 import { cn } from "@/lib/utils";
+import { WrenchIcon } from "@/lib/wrench-icon";
 import {
   Chat01Icon,
   CodeIcon,
