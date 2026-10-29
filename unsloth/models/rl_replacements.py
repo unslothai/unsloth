@@ -4824,6 +4824,71 @@ def _unsloth_grpo_is_metric_values(delta, flat_is_ratio, mask, sequence_level):
     return delta[keep], per_row
 
 
+def _unsloth_grpo_nanmin(tensor):
+    # Sync-free trl nanmin: same value, all-NaN still returns NaN.
+    is_nan = torch.isnan(tensor)
+    smallest = torch.where(is_nan, float("inf"), tensor).min()
+    return torch.where(is_nan.all(), float("nan"), smallest)
+
+
+def _unsloth_grpo_nanmax(tensor):
+    is_nan = torch.isnan(tensor)
+    largest = torch.where(is_nan, float("-inf"), tensor).max()
+    return torch.where(is_nan.all(), float("nan"), largest)
+
+
+def _unsloth_grpo_flush_metrics(trainer):
+    # float32 holds fp16 / bf16 / fp32 exactly (same as .item()) and avoids float64 on FP64-less XPUs.
+    pending = trainer.__dict__.get("_unsloth_pending_metrics")
+    if not pending:
+        return
+    trainer._unsloth_pending_metrics = []
+    by_key = {}
+    for i, (_, value) in enumerate(pending):
+        if value.dtype == torch.float64 or not value.is_floating_point():
+            dtype = value.dtype if value.dtype == torch.float64 else torch.int64
+        else:
+            dtype = torch.float32
+        by_key.setdefault((value.device, dtype), []).append(i)
+    values = [None] * len(pending)
+    for (_, dtype), idx in by_key.items():
+        host = torch.stack([pending[i][1].reshape(()).to(dtype) for i in idx]).tolist()
+        for i, v in zip(idx, host):
+            values[i] = v
+    for (target, _), v in zip(pending, values):
+        target.append(v)
+
+
+def _unsloth_grpo_defer_metric(trainer, target, value):
+    # target.append(value.item()), but read once per log instead of one sync per metric.
+    if not torch.is_tensor(value):
+        target.append(value)
+        return
+    pending = trainer.__dict__.get("_unsloth_pending_metrics")
+    if pending is None:
+        pending = trainer._unsloth_pending_metrics = []
+        _instance_log = trainer.__dict__.get("log")
+        # weakref: a strong ref from trainer.__dict__ would be a reference cycle keeping the trainer alive.
+        import weakref
+
+        try:
+            _trainer_ref = weakref.ref(trainer)
+        except TypeError:
+            _trainer_ref = lambda: trainer  # noqa: E731  objects without weakref support
+
+        def log(*args, **kwargs):
+            owner = _trainer_ref()
+            _unsloth_grpo_flush_metrics(owner)
+            if _instance_log is not None:
+                return _instance_log(*args, **kwargs)
+            return type(owner).log(owner, *args, **kwargs)
+
+        trainer.log = log
+    pending.append((target, value.detach()))
+    if len(pending) >= 4096:
+        _unsloth_grpo_flush_metrics(trainer)
+
+
 def _unsloth_grpo_is_sequence_level(args_mode):
     # One IS ratio per sequence: TRL's sequence_* and unsloth_zoo's geometric_* (verl seq_mean_k1),
     # with the UNSLOTH_GRPO_VLLM_IS_MODE override unsloth_zoo's grpo_accumulated_loss applies.
@@ -4853,6 +4918,10 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_accumulation_steps))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_metric_values))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_sequence_level))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_nanmin))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_nanmax))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_flush_metrics))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_defer_metric))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weight_mode))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_rollout_logps_as_old))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_trl_masks_unscorable))
@@ -5231,11 +5300,13 @@ def grpo_trainer_compute_loss(function_name, function):
         if "train" in self._metrics:
             # model.training like TRL; should_evaluate is False under eval_on_start and evaluate().
             mode = "train" if self.model.training else "eval"
-            self._metrics[mode]["completion_length"].append(completion_length.item())
-            self._metrics[mode]["kl"].append(mean_kl.item())
+            _unsloth_grpo_defer_metric(
+                self, self._metrics[mode]["completion_length"], completion_length
+            )
+            _unsloth_grpo_defer_metric(self, self._metrics[mode]["kl"], mean_kl)
         else:
-            self._metrics["completion_length"].append(completion_length.item())
-            self._metrics["kl"].append(mean_kl.item())
+            _unsloth_grpo_defer_metric(self, self._metrics["completion_length"], completion_length)
+            _unsloth_grpo_defer_metric(self, self._metrics["kl"], mean_kl)
 
         if delta is not None and (
             (self.use_vllm and getattr(self, "vllm_importance_sampling_correction", False))
@@ -5260,11 +5331,15 @@ def grpo_trainer_compute_loss(function_name, function):
                 if delta.numel() > 0
                 else torch.tensor(0.0, device = self.model.device)
             )
-            self._metrics[mode]["sampling/sampling_logp_difference/mean"].append(
-                self.accelerator.gather(mean_delta).mean().item()
+            _unsloth_grpo_defer_metric(
+                self,
+                self._metrics[mode]["sampling/sampling_logp_difference/mean"],
+                self.accelerator.gather(mean_delta).mean(),
             )
-            self._metrics[mode]["sampling/sampling_logp_difference/max"].append(
-                self.accelerator.gather(max_delta).max().item()
+            _unsloth_grpo_defer_metric(
+                self,
+                self._metrics[mode]["sampling/sampling_logp_difference/max"],
+                self.accelerator.gather(max_delta).max(),
             )
 
             min_importance_sampling_ratio = (
@@ -5282,20 +5357,24 @@ def grpo_trainer_compute_loss(function_name, function):
                 if flat_is_ratio.numel() > 0
                 else torch.tensor(0.0, device = self.model.device)
             )
-            self._metrics[mode]["sampling/importance_sampling_ratio/min"].append(
+            _unsloth_grpo_defer_metric(
+                self,
+                self._metrics[mode]["sampling/importance_sampling_ratio/min"],
                 self.accelerator.gather(min_importance_sampling_ratio)
                 .nan_to_num(nan = float("inf"))
-                .min()
-                .item()
+                .min(),
             )
-            self._metrics[mode]["sampling/importance_sampling_ratio/mean"].append(
-                self.accelerator.gather(mean_importance_sampling_ratio).nanmean().item()
+            _unsloth_grpo_defer_metric(
+                self,
+                self._metrics[mode]["sampling/importance_sampling_ratio/mean"],
+                self.accelerator.gather(mean_importance_sampling_ratio).nanmean(),
             )
-            self._metrics[mode]["sampling/importance_sampling_ratio/max"].append(
+            _unsloth_grpo_defer_metric(
+                self,
+                self._metrics[mode]["sampling/importance_sampling_ratio/max"],
                 self.accelerator.gather(max_importance_sampling_ratio)
                 .nan_to_num(nan = float("-inf"))
-                .max()
-                .item()
+                .max(),
             )
 
         completion_token_count = completion_mask.sum().clamp(min = 1.0)
@@ -5320,21 +5399,33 @@ def grpo_trainer_compute_loss(function_name, function):
             clip_ratio = masked_batch_mean(is_region_clipped.float())
 
             gathered_low_clip = self.accelerator.gather(low_clip)
-            self._metrics[mode]["clip_ratio/low_mean"].append(gathered_low_clip.nanmean().item())
-            self._metrics[mode]["clip_ratio/low_min"].append(nanmin(gathered_low_clip).item())
+            _unsloth_grpo_defer_metric(
+                self, self._metrics[mode]["clip_ratio/low_mean"], gathered_low_clip.nanmean()
+            )
+            _unsloth_grpo_defer_metric(
+                self,
+                self._metrics[mode]["clip_ratio/low_min"],
+                _unsloth_grpo_nanmin(gathered_low_clip),
+            )
             gathered_high_clip = self.accelerator.gather(high_clip)
-            self._metrics[mode]["clip_ratio/high_mean"].append(gathered_high_clip.nanmean().item())
-            self._metrics[mode]["clip_ratio/high_max"].append(nanmax(gathered_high_clip).item())
+            _unsloth_grpo_defer_metric(
+                self, self._metrics[mode]["clip_ratio/high_mean"], gathered_high_clip.nanmean()
+            )
+            _unsloth_grpo_defer_metric(
+                self,
+                self._metrics[mode]["clip_ratio/high_max"],
+                _unsloth_grpo_nanmax(gathered_high_clip),
+            )
             gathered_clip_ratio = self.accelerator.gather(clip_ratio)
-            self._metrics[mode]["clip_ratio/region_mean"].append(
-                gathered_clip_ratio.nanmean().item()
+            _unsloth_grpo_defer_metric(
+                self, self._metrics[mode]["clip_ratio/region_mean"], gathered_clip_ratio.nanmean()
             )
         elif self.loss_type == "cispo":
             is_cispo_clipped = (coef_1 > self.epsilon_high) & (advantages > 0)
             cispo_clip_ratio = masked_batch_mean(is_cispo_clipped.float())
             gathered_cispo_clip_ratio = self.accelerator.gather(cispo_clip_ratio)
-            self._metrics[mode]["cispo_clip_ratio"].append(
-                gathered_cispo_clip_ratio.nanmean().item()
+            _unsloth_grpo_defer_metric(
+                self, self._metrics[mode]["cispo_clip_ratio"], gathered_cispo_clip_ratio.nanmean()
             )
 
         return loss

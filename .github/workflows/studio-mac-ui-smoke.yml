@@ -98,6 +98,8 @@ jobs:
     # Phases share one install; the cap still bounds a hang holding a macOS slot.
     timeout-minutes: 100
     env:
+      # A release published mid-run puts an update card over the controls the scripts click.
+      UNSLOTH_DISABLE_UPDATE_CHECK: '1'
       GGUF_REPO: unsloth/gemma-3-270m-it-GGUF
       GGUF_VARIANT: UD-Q4_K_XL
       GGUF_FILE: gemma-3-270m-it-UD-Q4_K_XL.gguf

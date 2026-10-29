@@ -103,6 +103,8 @@ jobs:
           - arm: null-control
             label: Merge base vs itself, the null
     env:
+      # A release published mid-run puts an update card over the controls the scripts click.
+      UNSLOTH_DISABLE_UPDATE_CHECK: '1'
       PORT_A: '18904'
       PORT_B: '18905'
       HOME_A: ${{ github.workspace }}/.parity/home_a
@@ -371,6 +373,9 @@ jobs:
     name: Parity verdict, scored against the null
     needs: arms
     runs-on: ubuntu-latest
+    env:
+      # A release published mid-run puts an update card over the controls the scripts click.
+      UNSLOTH_DISABLE_UPDATE_CHECK: '1'
     permissions:
       contents: read
       pull-requests: read  # the PR's labels as they are now; see "Read the PR's labels"

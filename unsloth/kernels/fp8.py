@@ -1981,6 +1981,66 @@ if hasattr(torch._dynamo, "assume_constant_result"):
     _fp8_rowwise_backend = torch._dynamo.assume_constant_result(_fp8_rowwise_backend)
 
 
+def _scaled_mm_out_dtype(dtype):
+    """Rowwise torch._scaled_mm output dtype for activations of `dtype`. torch 2.10's rowwise CUTLASS
+    kernel picks its output element type from the bias dtype, so without a bias an fp16 output buffer
+    receives bf16 bits (every value garbage); ask for bf16 and let the caller cast back."""
+    return torch.bfloat16 if dtype == torch.float16 else dtype
+
+
+def _parse_fp8_dequant_max_rows(value):
+    try:
+        rows = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return rows if rows >= 0 else None
+
+
+# The scaled_mm backend dequantizes the weight and runs a 16-bit GEMM up to this many rows, and quantizes the
+# activation per row for torch._scaled_mm above it (FBGEMM quantizes at every row count).
+# UNSLOTH_FP8_DEQUANT_MAX_ROWS sets it for every weight.
+_FP8_DEQUANT_MAX_ROWS_ENV = _parse_fp8_dequant_max_rows(
+    os.environ.get("UNSLOTH_FP8_DEQUANT_MAX_ROWS")
+)
+_FP8_DEQUANT_MAX_ROWS = 64 if _FP8_DEQUANT_MAX_ROWS_ENV is None else _FP8_DEQUANT_MAX_ROWS_ENV
+# A 16-bit weight copy larger than L2 makes dequant memory bound (L4, Llama-8B MLP: 1180 us vs 255 us for
+# _scaled_mm at 17-64 rows), while L2-resident weights stay launch bound and dequant wins (Qwen3-1.7B decode).
+_FP8_LARGE_WEIGHT_DEQUANT_MAX_ROWS = 16
+
+
+# Measured on sm89 only (L4); elsewhere (H100 without FBGEMM: 50 MiB L2) the 64 row default stays.
+_FP8_LARGE_WEIGHT_CAPABILITIES = ((8, 9),)
+
+
+@functools.lru_cache(maxsize = None)
+def _probe_fp8_l2_cache_bytes(device):
+    """L2 bytes for the large-weight gate, 0 (gate off) when unknown or on an unmeasured arch."""
+    try:
+        props = torch.cuda.get_device_properties(device)
+        if (props.major, props.minor) not in _FP8_LARGE_WEIGHT_CAPABILITIES:
+            return 0
+        return int(getattr(props, "L2_cache_size", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _fp8_l2_cache_bytes(device):
+    return _probe_fp8_l2_cache_bytes(device)
+
+
+if hasattr(torch._dynamo, "assume_constant_result"):
+    _fp8_l2_cache_bytes = torch._dynamo.assume_constant_result(_fp8_l2_cache_bytes)
+
+
+def _fp8_dequant_max_rows(device, weight_numel):
+    """Largest row count the scaled_mm backend still serves with dequant + 16-bit GEMM for this weight."""
+    if _FP8_DEQUANT_MAX_ROWS_ENV is None:
+        l2 = _fp8_l2_cache_bytes(device)
+        if l2 > 0 and weight_numel * 2 > l2:
+            return _FP8_LARGE_WEIGHT_DEQUANT_MAX_ROWS
+    return _FP8_DEQUANT_MAX_ROWS
+
+
 class FbgemmFp8Linear_matmul(torch.autograd.Function):
     @staticmethod
     def forward(
@@ -2030,8 +2090,9 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
             and rowwise
             and (weight.shape[0] % 16 == 0 and weight.shape[1] % 16 == 0)
             and x.shape[-1] == weight.shape[1]
-            # Decode-sized calls: compiled dequant + GEMV beats quantizing the activation.
-            and x.numel() > 64 * x.shape[-1]
+            # Decode-sized calls: dequant + 16-bit GEMM beats quantizing the activation unless the weight
+            # spills L2.
+            and x.numel() > _fp8_dequant_max_rows(x.device, weight.numel()) * x.shape[-1]
         ):
             output_shape = (*x.shape[:-1], -1)
             x_quantized, x_scale = _quantize_fp8_per_row(
@@ -2044,11 +2105,12 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
                 weight.t(),
                 scale_a = x_scale,
                 scale_b = weight_scale.to(torch.float32).view(1, -1),
-                out_dtype = x.dtype,
+                out_dtype = _scaled_mm_out_dtype(x.dtype),
                 use_fast_accum = True,
             )
             output = output + bias if bias is not None else output
-            # FbgemmFp8Linear keeps its bias in float32; only cast when it promoted (a no-op .to() aliases).
+            # fp16 comes back as bf16 (_scaled_mm_out_dtype) and FbgemmFp8Linear keeps its bias in float32:
+            # cast only when the dtype differs (a no-op .to() aliases).
             if output.dtype != x.dtype:
                 output = output.to(x.dtype)
             output = output.reshape(output_shape)
@@ -2079,7 +2141,7 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
 
 
 @torch_compile
-def fbgemm_fp8_linear(
+def _fbgemm_fp8_linear_compiled(
     X,
     weight,
     weight_scale,
@@ -2088,6 +2150,219 @@ def fbgemm_fp8_linear(
     return FbgemmFp8Linear_matmul.apply(
         X, weight, weight_scale, bias, _fp8_rowwise_backend(X.device)
     )
+
+
+# Rowwise FP8 inference: the compiled wrapper costs 75-95 us host time vs 10-80 us GPU at decode, so launch
+# Inductor's kernels directly (bitwise equal). UNSLOTH_FP8_ROWWISE_DIRECT=0 disables it.
+try:
+    from unsloth_zoo.temporary_patches.common import UNSLOTH_COMPILE_DISABLE as _COMPILE_DISABLED
+except ImportError:
+    _COMPILE_DISABLED = os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") in ("1", "partial")
+
+
+def _fp8_rowwise_direct_enabled(setting, compile_disabled):
+    # With UNSLOTH_COMPILE_DISABLE the wrapper runs eagerly (scale rounded to the activation dtype before the
+    # multiply), so the direct path, which matches the compiled numerics, would change outputs there.
+    if compile_disabled:
+        return False
+    return setting.strip().lower() not in ("0", "false", "no", "off")
+
+
+_FP8_ROWWISE_DIRECT = _fp8_rowwise_direct_enabled(
+    os.environ.get("UNSLOTH_FP8_ROWWISE_DIRECT", "1"), _COMPILE_DISABLED
+)
+# Past this many rows the call is GPU bound and the compiled wrapper costs nothing extra; keep it there.
+_FP8_ROWWISE_DIRECT_MAX_ROWS = 4096
+
+
+@triton.jit
+def _fp8_act_quant_per_row_kernel(
+    x_ptr,
+    y_ptr,
+    s_ptr,
+    ub_ptr,
+    K,
+    stride_xm,
+    HAS_UB: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    ONE_BLOCK: tl.constexpr,
+):
+    # Same fp32 math Inductor emits for _quantize_fp8_per_row; [1, BLOCK_K] tile is faster than 1D on sm120.
+    row = tl.program_id(0).to(tl.int64)
+    x_row = x_ptr + row * stride_xm
+    y_row = y_ptr + row * K
+    offs = tl.arange(0, BLOCK_K)[None, :]
+    if ONE_BLOCK:
+        x = tl.load(x_row + offs, mask = offs < K, other = 0.0).to(tl.float32)
+        row_max = tl.max(tl.abs(x), axis = 1)
+        nans = tl.sum((x != x).to(tl.int32), axis = 1)
+    else:
+        amax = tl.zeros((1, BLOCK_K), dtype = tl.float32)
+        nan_count = tl.zeros((1, BLOCK_K), dtype = tl.int32)
+        for k in range(0, K, BLOCK_K):
+            xk = tl.load(x_row + k + offs, mask = k + offs < K, other = 0.0).to(tl.float32)
+            amax = tl.maximum(amax, tl.abs(xk))
+            nan_count += (xk != xk).to(tl.int32)
+        row_max = tl.max(amax, axis = 1)
+        nans = tl.sum(nan_count, axis = 1)
+    # torch.amax / clamp propagate NaN; tl.max and tl.maximum drop it by default.
+    row_max = tl.where(nans > 0, float("nan"), row_max)
+    if HAS_UB:
+        row_max = tl.minimum(
+            row_max, tl.load(ub_ptr).to(tl.float32), propagate_nan = tl.PropagateNan.ALL
+        )
+    scale = tl.maximum(row_max / 448.0, 1.0 / (448.0 * 512.0), propagate_nan = tl.PropagateNan.ALL)
+    if ONE_BLOCK:
+        y = tl.maximum(x / scale[:, None], -448.0, propagate_nan = tl.PropagateNan.ALL)
+        y = tl.minimum(y, 448.0, propagate_nan = tl.PropagateNan.ALL)
+        tl.store(y_row + offs, y.to(tl.float8e4nv), mask = offs < K)
+    else:
+        for k in range(0, K, BLOCK_K):
+            mask = k + offs < K
+            xk = tl.load(x_row + k + offs, mask = mask, other = 0.0).to(tl.float32)
+            y = tl.maximum(xk / scale[:, None], -448.0, propagate_nan = tl.PropagateNan.ALL)
+            y = tl.minimum(y, 448.0, propagate_nan = tl.PropagateNan.ALL)
+            tl.store(y_row + k + offs, y.to(tl.float8e4nv), mask = mask)
+    tl.store(s_ptr + row + tl.arange(0, 1), scale)
+
+
+@triton.jit
+def _fp8_rowwise_dequant_kernel(w_ptr, s_ptr, y_ptr, numel, K, BLOCK: tl.constexpr):
+    # One fp32 multiply, one rounding, as Inductor fuses it (eager x.to(dtype) * s.to(dtype) rounds twice).
+    offs = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
+    mask = offs < numel
+    w = tl.load(w_ptr + offs, mask = mask, other = 0.0).to(tl.float32)
+    s = tl.load(s_ptr + offs // K, mask = mask, other = 0.0).to(tl.float32)
+    tl.store(y_ptr + offs, (w * s).to(y_ptr.dtype.element_ty), mask = mask)
+
+
+def _fp8_rowwise_direct_route(X, weight, weight_scale):
+    """The compiled branch an eager call would take, when the direct path reproduces it; else None."""
+    # Training first: it never takes the direct path, so it pays only these checks.
+    if torch.is_grad_enabled() and (
+        X.requires_grad or weight.requires_grad or weight_scale.requires_grad
+    ):
+        return None
+    if not (
+        _FP8_ROWWISE_DIRECT
+        and X.is_cuda
+        and X.dtype in (torch.bfloat16, torch.float16)
+        and weight.dtype == torch.float8_e4m3fn
+        and weight.dim() == 2
+        and weight_scale.dim() == 2
+        and torch.version.hip is None
+    ):
+        return None
+    N, K = weight.shape
+    if (
+        weight_scale.shape[0] != N
+        or weight_scale.shape[1] != 1
+        or X.shape[-1] != K
+        or N <= 1
+        or X.numel() == 0
+        or X.numel() > _FP8_ROWWISE_DIRECT_MAX_ROWS * K
+        or weight_scale.dtype not in (torch.float32, torch.bfloat16, torch.float16)
+    ):
+        return None
+    if (
+        not weight.is_contiguous()
+        or not weight_scale.is_contiguous()
+        or X.device != weight.device
+        or weight_scale.device != weight.device
+        or _fp8_e4m3fn_unsupported_in_trace(weight)
+    ):
+        return None
+    backend = _fp8_rowwise_backend(X.device)
+    if backend == "fbgemm" and N % 8 == 0 and K % 8 == 0:
+        return None
+    if (
+        backend == "scaled_mm"
+        and N % 16 == 0
+        and K % 16 == 0
+        and X.numel() > _fp8_dequant_max_rows(X.device, N * K) * K
+    ):
+        scale_ub = getattr(weight, "input_scale_ub", None)
+        if scale_ub is not None and (
+            not isinstance(scale_ub, torch.Tensor)
+            or scale_ub.numel() != 1
+            or scale_ub.device != X.device
+        ):
+            return None
+        return "scaled_mm"
+    return "dequant"
+
+
+def _fp8_rowwise_direct(X, weight, weight_scale, bias, route):
+    K = X.shape[-1]
+    output_shape = (*X.shape[:-1], -1)
+    if route == "scaled_mm":
+        x2 = X.reshape(-1, K)
+        if x2.stride(-1) != 1:
+            x2 = x2.contiguous()
+        M = x2.shape[0]
+        x_quantized = torch.empty((M, K), device = X.device, dtype = torch.float8_e4m3fn)
+        x_scale = torch.empty((M, 1), device = X.device, dtype = torch.float32)
+        scale_ub = getattr(weight, "input_scale_ub", None)
+        block_k = min(triton.next_power_of_2(K), 16384)
+        with _fp8_triton_device_context(X, static_device_count = True):
+            _fp8_act_quant_per_row_kernel[(M,)](
+                x2,
+                x_quantized,
+                x_scale,
+                x_scale if scale_ub is None else scale_ub,
+                K,
+                x2.stride(0),
+                HAS_UB = scale_ub is not None,
+                BLOCK_K = block_k,
+                ONE_BLOCK = block_k >= K,
+                num_warps = 4 if block_k <= 4096 else 16,
+                enable_fp_fusion = True,
+            )
+        output = torch._scaled_mm(
+            x_quantized,
+            weight.t(),
+            scale_a = x_scale,
+            scale_b = (
+                weight_scale if weight_scale.dtype == torch.float32 else weight_scale.float()
+            ).view(1, -1),
+            out_dtype = _scaled_mm_out_dtype(X.dtype),
+            use_fast_accum = True,
+        )
+    else:
+        W_deq = torch.empty(weight.shape, device = weight.device, dtype = X.dtype)
+        numel = W_deq.numel()
+        with _fp8_triton_device_context(weight, static_device_count = True):
+            _fp8_rowwise_dequant_kernel[(triton.cdiv(numel, 1024),)](
+                weight,
+                weight_scale,
+                W_deq,
+                numel,
+                K,
+                BLOCK = 1024,
+                num_warps = 4,
+                enable_fp_fusion = True,
+            )
+        output = torch_matmul(X, W_deq.t())
+    if bias is not None:
+        output = output + bias
+    # fp16 comes back as bf16 (_scaled_mm_out_dtype) and FbgemmFp8Linear keeps its bias in float32:
+    # cast only when the dtype differs (a no-op .to() aliases).
+    if output.dtype != X.dtype:
+        output = output.to(X.dtype)
+    return output.reshape(output_shape) if route == "scaled_mm" else output
+
+
+def fbgemm_fp8_linear(
+    X,
+    weight,
+    weight_scale,
+    bias = None,
+):
+    if not torch.compiler.is_compiling():
+        route = _fp8_rowwise_direct_route(X, weight, weight_scale)
+        if route is not None:
+            return _fp8_rowwise_direct(X, weight, weight_scale, bias, route)
+    return _fbgemm_fp8_linear_compiled(X, weight, weight_scale, bias)
 
 
 class FP8_fbgemm_block_linear(torch.autograd.Function):

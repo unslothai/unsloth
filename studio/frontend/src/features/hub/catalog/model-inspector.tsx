@@ -36,8 +36,8 @@ import {
   LayersLogoIcon,
   LibrariesIcon,
   LicenseIcon,
-  PackageIcon,
   LinkSquare02Icon,
+  PackageIcon,
 } from "@hugeicons/core-free-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { TextToSpeechIcon } from "@/lib/hugeicons-derived";

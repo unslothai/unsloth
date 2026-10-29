@@ -2328,24 +2328,27 @@ def _visible_chars(text: str) -> int:
     return sum(_visible_len(line) for line in text.split("\n") if line.strip())
 
 
+_BACKTICK_RUN = re.compile(r"`+")
+
+
 def _fence_for(raw: str) -> str:
     """Fence long enough to survive backticks in *raw*, as CommonMark requires:
     a literal ``` line inside the block would otherwise close it early."""
-    longest = run = 0
-    for char in raw:
-        run = run + 1 if char == "`" else 0
-        longest = max(longest, run)
-    return "`" * max(3, longest + 1)
+    if "`" not in raw:
+        return "```"
+    return "`" * max(3, max(map(len, _BACKTICK_RUN.findall(raw))) + 1)
 
 
 def _visible_len(line: str) -> int:
     """Length of *line* without Markdown link destinations. A tracking URL is not
     prose: a card holding one [Read](/x?<300 bytes>) otherwise scored 339 visible
-    characters off 4 and displaced the article. Scanned, so no backtracking."""
+    characters off 4 and displaced the article. Linear: once a destination fails to
+    close, the rest are answered from one table instead of a rescan each."""
     if "[" not in line and "\\" not in line:
         return len(line)
     total, i, n = 0, 0, len(line)
     open_bracket = False
+    closes = None
     while i < n:
         if line[i] == "\\":
             total += 2
@@ -2355,15 +2358,22 @@ def _visible_len(line: str) -> int:
             open_bracket = True
         # With no opening bracket, "](" is literal and the parens after it are prose.
         if open_bracket and line[i] == "]" and i + 1 < n and line[i + 1] == "(":
-            # Destinations may hold balanced or escaped parens, so the first ) does not end them.
-            j, depth = i + 2, 1
-            while j < n and depth:
-                char = line[j]
-                if char == "\\":
-                    j += 2
-                    continue
-                depth += (char == "(") - (char == ")")
-                j += 1
+            if closes is None:
+                # Destinations may hold balanced or escaped parens, so the first ) does not end them.
+                j, depth = i + 2, 1
+                while j < n and depth:
+                    char = line[j]
+                    if char == "\\":
+                        j += 2
+                        continue
+                    depth += (char == "(") - (char == ")")
+                    j += 1
+                if depth:
+                    # Unclosed: later candidates would rescan this tail, so index it once.
+                    closes = _destination_ends(line)
+            else:
+                j = closes.get(i + 2, -1)
+                depth = j < 0
             if depth:
                 total += 1
                 i += 1
@@ -2376,11 +2386,41 @@ def _visible_len(line: str) -> int:
     return total
 
 
+def _destination_ends(line: str) -> dict:
+    """End of the destination scan from each reachable position, for scans that close. All scans
+    step over the same positions, so a scan from p closes where the paren-depth prefix sum first
+    drops below its value at p."""
+    steps: list[int] = []
+    sums: list[int] = []
+    depth, k, n = 0, 0, len(line)
+    while k < n:
+        steps.append(k)
+        sums.append(depth)
+        char = line[k]
+        if char == "\\":
+            k += 2
+            continue
+        depth += (char == "(") - (char == ")")
+        k += 1
+    ends: dict = {}
+    first_at: dict = {}  # prefix sum -> earliest later step index
+    sums.append(depth)
+    for m in range(len(steps), -1, -1):
+        if m < len(steps):
+            after = first_at.get(sums[m] - 1)
+            if after is not None:
+                ends[steps[m]] = steps[after - 1] + 1
+        first_at[sums[m]] = m
+    return ends
+
+
 # Scoped conversions shorter than this are rejected as main content, e.g. an empty article stub
 _MIN_MAIN_CONTENT_CHARS = 200
-# absent text = no such tag can tokenize, so that scope finds nothing
+# absent text = no such tag can tokenize, so that scope finds nothing and its pass is skipped
 _ARTICLE_START = re.compile(r"<article", re.IGNORECASE)
 _MAIN_START = re.compile(r"<main", re.IGNORECASE)
+# absent text = no generated span cells, so a pass needs no span-free scoring re-render
+_SPAN_ATTR = re.compile(r"(?:col|row)span", re.IGNORECASE)
 
 
 def html_to_markdown(
@@ -2398,20 +2438,25 @@ def html_to_markdown(
     rendered = ""
     full_rendered = ""
     if main_content:
-        tokens = _TokenLog(armed = _ARTICLE_START.search(source_html) is None)
-        length, rendered, articles, article_visible = _select_main_scope_render(
-            source_html, "article", site_links, span_limit, tokens
-        )
+        has_article = _ARTICLE_START.search(source_html) is not None
+        # without <article> the first pass may be followed by a title rescan or the whole-page pass
+        tokens = _TokenLog(armed = not has_article)
+        if has_article:
+            length, rendered, articles, article_visible = _select_main_scope_render(
+                source_html, "article", site_links, span_limit, tokens
+            )
+        else:
+            length, rendered, articles, article_visible = 0, "", 0, 0
         if length < _MIN_MAIN_CONTENT_CHARS or articles > 1:
-            # no <main> = main scope scores 0, so the whole-page pass below runs
-            tokens.armed = _MAIN_START.search(source_html) is None and (
-                articles > 2 or length < _MIN_MAIN_CONTENT_CHARS
-            )
-            main_length, main_rendered, _, main_visible = _select_main_scope_render(
-                source_html, "main", site_links, span_limit, tokens
-            )
+            if _MAIN_START.search(source_html) is not None:
+                main_length, main_rendered, _, main_visible = _select_main_scope_render(
+                    source_html, "main", site_links, span_limit, tokens
+                )
+            else:
+                main_length, main_rendered, main_visible = 0, "", 0
+                # the whole-page pass follows and re-renders span pages to score them
+                tokens.armed = tokens.armed or _SPAN_ATTR.search(source_html) is not None
             if articles > 2 and main_length < _MIN_MAIN_CONTENT_CHARS:
-                tokens.armed = False
                 main_length, full_rendered = _render_main_document(
                     source_html, site_links, span_limit, tokens
                 )
@@ -2423,7 +2468,6 @@ def html_to_markdown(
                 length, rendered = main_length, main_rendered
         if length < _MIN_MAIN_CONTENT_CHARS:
             if not full_rendered:
-                tokens.armed = False
                 _, full_rendered = _render_main_document(
                     source_html, site_links, span_limit, tokens
                 )

@@ -609,6 +609,29 @@ def _multi_lora_available() -> bool:
     return _multi_lora
 
 
+_multi_lora_experts: Optional[bool] = None
+
+
+def _multi_lora_experts_available() -> bool:
+    """Whether the installed multi-LoRA kernels train fused MoE experts (inject_multi_lora_experts)."""
+    global _multi_lora_experts
+    if _multi_lora_experts is None:
+        try:
+            spec = importlib.util.find_spec("unsloth")
+            roots = list(spec.submodule_search_locations or []) if spec is not None else []
+        except (ImportError, ValueError):
+            roots = []
+        _multi_lora_experts = any(
+            "def inject_multi_lora_experts"
+            in (Path(root) / "kernels" / "multi_lora.py").read_text(
+                encoding = "utf-8", errors = "replace"
+            )
+            for root in roots
+            if (Path(root) / "kernels" / "multi_lora.py").is_file()
+        )
+    return _multi_lora_experts
+
+
 def _batchable(request: TrainingStartRequest) -> bool:
     """Text LoRA/QLoRA on local files with nothing the batched trainer does not run; the rest trains alone."""
     from core.training.eval_dataset import evaluation_enabled
@@ -655,19 +678,87 @@ def _batch_key(entry: _Queued) -> Optional[tuple]:
 
 
 _MOE_COUNT_KEYS = ("num_experts", "n_routed_experts", "num_local_experts")
+# multi_lora_trainer.BATCHED_MOE_MODEL_TYPES.
+_BATCHED_MOE_TYPES = frozenset({"qwen3_moe", "qwen3_5_moe", "qwen3_5_moe_text"})
+# Recurrent / conv state is not checked batched; Gated DeltaNet ("linear_attention") is, and is not matched here.
+_SSM_MODEL_TYPES = frozenset(
+    {
+        "mamba",
+        "mamba2",
+        "falcon_mamba",
+        "falcon_h1",
+        "jamba",
+        "zamba",
+        "zamba2",
+        "nemotron_h",
+        "bamba",
+        "granitemoehybrid",
+        "lfm2",
+        "lfm2_moe",
+        "lfm2_vl",
+        "plamo2",
+        "hymba",
+        "mamba_ssm",
+    }
+)
+_SSM_LAYER_TYPES = ("mamba", "ssm", "conv", "mamba2")
+_SSM_KEYS = (
+    "ssm_state_size",
+    "mamba_d_state",
+    "mamba_n_heads",
+    "mamba_d_conv",
+    "state_size",
+    "conv_L_cache",
+)
+
+
+def _configs(config: dict) -> list[dict]:
+    return [c for c in (config, config.get("text_config") or {}) if isinstance(c, dict) and c]
 
 
 def _moe_config(config: dict) -> bool:
-    for cfg in (config, config.get("text_config") or {}):
+    for cfg in _configs(config):
         count = next((cfg[k] for k in _MOE_COUNT_KEYS if cfg.get(k) is not None), None)
         if count is not None:
             return isinstance(count, int) and count > 0
     return False
 
 
+def _moe_batches(config: dict, request: TrainingStartRequest) -> bool:
+    from utils.transformers_version import get_transformers_tier
+    configs = _configs(config)
+    return (
+        any(c.get("model_type") in _BATCHED_MOE_TYPES for c in configs)
+        and not any(c.get("output_router_logits") for c in configs)
+        and _multi_lora_experts_available()
+        # The worker's transformers: 4.57 holds experts as per-expert Linears, which train alone.
+        and get_transformers_tier(request.model_name, request.hf_token, probe = False) != "457"
+    )
+
+
+def _ssm_config(config: dict) -> bool:
+    for cfg in _configs(config):
+        if cfg.get("model_type") in _SSM_MODEL_TYPES:
+            return True
+        kinds = (
+            cfg.get("layer_types")
+            or cfg.get("layers_block_type")
+            or cfg.get("hybrid_override_pattern")
+        )
+        if isinstance(kinds, str):
+            kinds = [kinds]
+        if isinstance(kinds, (list, tuple)) and any(
+            isinstance(k, str) and any(tag in k.lower() for tag in _SSM_LAYER_TYPES) for k in kinds
+        ):
+            return True
+        if any(cfg.get(k) is not None for k in _SSM_KEYS):
+            return True
+    return False
+
+
 async def _trains_alone(request: TrainingStartRequest) -> bool:
     """Outside what the batched trainer runs: text-diffusion models (own denoising objective), saved LoRA
-    adapters (continued in place alone) and MoE models (fused experts train via target_parameters alone)."""
+    adapters (continued in place alone), state-space / conv mixers, and MoE layouts it has no expert LoRA for."""
     from utils.models.diffusion_lm import diffusion_lm_profile_for_model
     from utils.models.model_config import _read_raw_config_json, get_base_model_from_lora_identifier
 
@@ -687,7 +778,9 @@ async def _trains_alone(request: TrainingStartRequest) -> bool:
             config = _read_raw_config_json(request.model_name, request.hf_token)
         except Exception:
             return True
-        return config is None or _moe_config(config)
+        if config is None or _ssm_config(config):
+            return True
+        return _moe_config(config) and not _moe_batches(config, request)
 
     return await asyncio.to_thread(probe)
 
