@@ -189,6 +189,26 @@ def test_a_reply_whose_own_decode_fails_is_answered_alone_and_the_batch_decodes_
     assert session.rows == [("r2", None)] and not session.closed
 
 
+def test_a_failed_reply_whose_siblings_cannot_be_withdrawn_is_still_answered():
+    batch, resp = _batch()
+    batch.admit(_cmd("r1", rows = [{"seed": 1}, {"seed": 2}], parallel_slots = 4), None)
+    batch.admit(_cmd("r2", parallel_slots = 4), None)
+    session = batch.session
+
+    def step(_waiting):
+        session.rows.remove(("r1", 0))
+        yield ("r1", 0), ValueError("schema")
+
+    def withdraw(_handles):
+        raise RuntimeError("metal")
+        yield
+
+    session.step, session.withdraw = step, withdraw
+    batch.step()
+    errors = {m["request_id"]: m["error"] for m in resp.sent if m["type"] == "gen_error"}
+    assert errors == {"r1": "schema", "r2": "schema"} and batch.session is None
+
+
 def test_raw_completion_rows_join_the_batch_and_decode_alone_through_the_completion_path():
     batch, _ = _batch()
     cmd = _cmd(

@@ -11607,3 +11607,18 @@ def test_mlx_precision_folder_loads_from_its_own_download(monkeypatch, tmp_path)
     assert calls[-1][0] == (repo,)
     assert backend.models[repo]["gguf_variant"] is None
     assert len(fetched) == 1
+
+
+def test_a_batch_row_without_an_independent_detokenizer_is_refused_not_crashed():
+    from core.inference import mlx_inference
+    from core.inference.worker import RowRefused
+
+    decoder = SimpleNamespace(suppresses = lambda _id: False)
+    mlx_inference._require_row_detokenizer(None)
+    mlx_inference._require_row_detokenizer(
+        mlx_inference._MlxStreamedText(SimpleNamespace(), decoder, None, ())
+    )
+    with pytest.raises(RowRefused, match = "detokenizer"):
+        mlx_inference._require_row_detokenizer(
+            mlx_inference._MlxStreamedText(None, decoder, None, ())
+        )

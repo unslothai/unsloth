@@ -1628,13 +1628,14 @@ class _ResidentBatch:
             return True
         logger.error("A batched reply failed: %s", exc, exc_info = exc)
         stack = "".join(traceback.format_exception(exc, limit = 20))
-        if not self._forget(request_id, withdraw = True):
-            self._fail_all(exc)
-            return False
+        taken_back = self._forget(request_id, withdraw = True)
+        # _forget already dropped it from _owed, so _fail_all would not answer it.
         _send_response(
             self.resp_queue, {**_generation_error_payload(request_id, exc), "stack": stack}
         )
-        return True
+        if not taken_back:
+            self._fail_all(exc)
+        return taken_back
 
     def _fail_all(self, exc: BaseException) -> None:
         """Give up on the batch: every request in it is owed an error, not silence."""

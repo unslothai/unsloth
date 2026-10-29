@@ -1996,6 +1996,12 @@ class _MlxStreamedText:
         return closing
 
 
+def _require_row_detokenizer(streamed):
+    """A batch row feeds ids one at a time, so unlike the single path it has no runtime text to fall back on."""
+    if streamed is not None and streamed._detokenizer is None:
+        raise RowRefused("no independent detokenizer to decode this row's ids")
+
+
 def _native_reply_text(decoder, token_ids, stop_ids, prefix) -> str:
     """A native-protocol reply re-decoded from its ids. A runtime may stop on an allowlisted
     control (<|end_message|>): the trailing stop id stays only when it closes an open envelope,
@@ -6864,6 +6870,7 @@ class MLXInferenceBackend:
             if preserve_native_channels
             else None
         )
+        _require_row_detokenizer(streamed)
         if streamed is not None:
             decode = None
         elif native_token_decoder is not None:
@@ -7244,6 +7251,7 @@ class MLXInferenceBackend:
                 self._tokenizer,
                 _mlx_stop_token_ids(self._tokenizer, self._model),
             )
+            _require_row_detokenizer(streamed)
 
         return _VLMRowPlan(
             prompt = prompt,
