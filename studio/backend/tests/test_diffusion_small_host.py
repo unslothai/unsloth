@@ -481,7 +481,13 @@ def test_lora_refused_and_status_reports_the_int8_route():
     assert not _small_host_int8(object())
 
 
-def _decide_with_fetch(tmp_path, monkeypatch, *, weights_cached, fetch_result = "dl"):
+def _decide_with_fetch(
+    tmp_path,
+    monkeypatch,
+    *,
+    weights_cached,
+    fetch_result = "dl",
+):
     """The pipeline decision on ``tmp_path`` (a config-only or a full snapshot) with a counting ``fetch``."""
     from core.inference import diffusion as dif
 
@@ -493,7 +499,9 @@ def _decide_with_fetch(tmp_path, monkeypatch, *, weights_cached, fetch_result = 
     monkeypatch.setattr(
         dif,
         "stored_components",
-        lambda snapshot: dict(QWEN_GGUF_COMPANIONS) if (weights_cached or str(snapshot) == str(full)) else {},
+        lambda snapshot: dict(QWEN_GGUF_COMPANIONS)
+        if (weights_cached or str(snapshot) == str(full))
+        else {},
     )
     calls = []
 
