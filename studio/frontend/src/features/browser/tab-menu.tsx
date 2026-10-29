@@ -24,7 +24,6 @@ import { openExternalLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
-  Add01Icon,
   BubbleChatAddIcon,
   BubbleChatTemporaryIcon,
   Cancel01Icon,
@@ -33,11 +32,12 @@ import {
   PencilEdit02Icon,
   PinIcon,
   PinOffIcon,
+  PlusSignIcon,
+  Refresh01Icon,
   VolumeHighIcon,
   VolumeMute02Icon,
 } from "@hugeicons/core-free-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
-import { ReloadIcon } from "@/lib/reload-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { type ComponentType, Fragment, type ReactNode } from "react";
@@ -210,12 +210,12 @@ export function TabMenuItems({
     ],
     [
       strip && tab ? (
-        <Row key="newTabRight" P={P} icon={Add01Icon} onSelect={() => store.newTabAfter(tab.id)}>
+        <Row key="newTabRight" P={P} icon={PlusSignIcon} onSelect={() => store.newTabAfter(tab.id)}>
           {t("browser.tabMenu.newTabRight")}
         </Row>
       ) : null,
       tab && kind !== "newtab" ? (
-        <Row key="reload" P={P} icon={ReloadIcon} onSelect={() => reloadTab(tab)}>
+        <Row key="reload" P={P} icon={Refresh01Icon} onSelect={() => reloadTab(tab)}>
           {t("browser.reload")}
         </Row>
       ) : null,

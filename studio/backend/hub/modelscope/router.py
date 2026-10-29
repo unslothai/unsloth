@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The Hugging Face Hub API, read-only, over ModelScope: ``HF_ENDPOINT`` points here.
-
-A loopback server on its own thread serves this process and its workers, since a
-synchronous Hub call made on the main event loop could never be answered by it;
-the browser uses a mount in the main app, whose catalog routes need Studio auth.
-"""
+"""Read-only Hub API over ModelScope for HF_ENDPOINT: loopback server on its own thread, not the
+main event loop; browser uses the main-app mount, whose catalog routes need Studio auth"""
 
 from __future__ import annotations
 

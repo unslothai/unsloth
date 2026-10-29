@@ -30,7 +30,7 @@ import {
   Download01Icon,
   Folder01Icon,
   FolderExportIcon,
-  Image02Icon,
+  ImageIcon,
   MoreHorizontalIcon,
   PencilEdit02Icon,
   Upload01Icon,
@@ -108,7 +108,7 @@ const EMPTY_COPY: Record<LibraryTab, EmptyCopy> = {
   suggested: [Upload01Icon, "library.empty.suggestedTitle", "library.empty.suggestedDescription"],
   favorites: [StarPointedIcon, "library.empty.favoritesTitle", "library.empty.favoritesDescription"],
   folders: [Folder01Icon, "library.empty.foldersTitle", "library.empty.foldersDescription"],
-  images: [Image02Icon, "library.empty.imagesTitle", "library.empty.imagesDescription"],
+  images: [ImageIcon, "library.empty.imagesTitle", "library.empty.imagesDescription"],
   videos: [FlimSlateIcon, "library.empty.videosTitle", "library.empty.videosDescription"],
   audio: [AiSpeechIcon, "library.empty.audioTitle", "library.empty.audioDescription"],
   models: [TestTubeOutlineIcon, "library.empty.modelsTitle", "library.empty.modelsDescription"],
@@ -816,7 +816,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     if (tab === "folders") {
       return (
         <Button
-          variant="dark"
+          variant="muted"
           className="rounded-full"
           onClick={() => setNameDialog({ mode: "create", parentId: null })}
         >

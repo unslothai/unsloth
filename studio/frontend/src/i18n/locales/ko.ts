@@ -629,6 +629,36 @@ export const ko = {
     compactEmpty: "아직 압축할 내용이 없습니다",
     compactUnsupported: "대화 압축에는 도구를 지원하는 GGUF 또는 MLX 모델이 필요합니다",
   },
+  halloween: {
+    navLabel: "트릭 오어 트릿…",
+    title: "트릭 오어 트릿?!",
+    description: "Unsloth를 위해 오싹한 깜짝 선물을 준비했어요. 10월 말까지 만나 보세요.",
+    chooseTheme: "오싹한 테마 선택",
+    spookyGreetings: "오싹한 인사말",
+    spookyGreetingsDescription: "새 채팅을 시작하면 나무늘보가 깜짝 놀래 줘요.",
+    decorations: "거미와 박쥐",
+    decorationsDescription:
+      "할로윈 테마에서 모서리에 거미줄이 생기고, 가끔 거미나 박쥐가 나타납니다.",
+    surprise: "트릭 오어 트릿!",
+    surpriseDescription: "나무늘보가 테마를 골라 드려요.",
+    themesTitle: "오싹한 테마",
+    back: "뒤로",
+    footer: "Unsloth는 11월 1일 자정에 원래대로 돌아가요.",
+    removeNow: "지금 제거",
+    hideFromSidebar: "사이드바에서 숨기기",
+    greeting: {
+      pumpkins: "호박 조각이 끝났어요. 다음은 뭘까요?",
+      brewing: "자, 마법의 물약을 만들어 볼까요",
+      trickOrTreat: "트릭 오어 트릿?",
+      manor: "저택에 오신 것을 환영해요",
+      manorName: "{name}님, 저택에 오신 것을 환영해요",
+      happyHalloween: "해피 핼러윈",
+      happyHalloweenName: "{name}님, 해피 핼러윈",
+      spirits: "영혼들이 듣고 있어요…",
+      mysteries: "오늘 밤엔 어떤 비밀을 밝혀볼까요?",
+      conjure: "무엇을 마법으로 불러낼까요?",
+    },
+  },
   welcome: {
     goodToSeeYou: "반가워요",
     goodToSeeYouName: "{name}님, 반가워요",
@@ -789,6 +819,8 @@ export const ko = {
       guidedTour: "가이드 투어",
       help: "도움말",
       logOut: "로그아웃",
+      logOutNeedsPassword: "로그아웃하기 전에 설정 > 원격 액세스에서 비밀번호를 설정하세요. 다시 로그인하려면 필요합니다.",
+      logOutFailed: "안전하게 로그아웃하지 못했습니다. 잠시 후 다시 시도하세요.",
       shutdown: "종료",
     },
     commandPalette: {
@@ -933,6 +965,11 @@ export const ko = {
   },
   settings: {
     accounts: {
+      signsInAs: "{username}(으)로 로그인",
+      signsInAsOwner: "{alias} 또는 {username}(으)로 로그인",
+      signInName: "로그인 이름",
+      signInNameDescription: "이 설치에 계정이 둘 이상일 때 로그인할 때 입력하는 이름입니다. unsloth도 항상 사용할 수 있습니다. 비워 두면 unsloth만 사용합니다.",
+      signInNameSave: "이름 저장",
       title: "계정",
       description: "개별 Unsloth 계정을 만듭니다. 새 사용자는 일회용 설정 코드로 로그인한 뒤 비밀번호를 정합니다.",
       username: "사용자 이름",
@@ -1073,7 +1110,7 @@ export const ko = {
       lastVisited: "마지막으로 본 탭",
     },
     tabs: {
-      sandbox: "샌드박스",
+      sandbox: "보안",
       accounts: "계정",
       general: "일반",
       profile: "프로필",
@@ -1357,7 +1394,7 @@ export const ko = {
       },
     },
     sandbox: {
-      title: "샌드박스",
+      title: "보안",
       description: "이 컴퓨터에서 Python 및 터미널 도구 호출을 OS 샌드박스 안에서 실행할지 여부입니다.",
       docs: "문서",
       docsLabel: "샌드박스 문서 열기",
@@ -1412,7 +1449,7 @@ export const ko = {
       installingRuntime: "설치 중…",
       installRuntimeFailed: "런타임을 설치하지 못했습니다.",
       installRuntimeError: "런타임 설치를 시작하지 못했습니다.",
-      unsupportedArch: "Windows 샌드박스(MXC)는 x64 Windows에서만 실행되므로 이 PC에서는 사용할 수 없습니다.",
+      unsupportedArch: "Windows 샌드박스(MXC)는 x64 및 ARM64 Windows에서만 실행되므로 이 PC에서는 사용할 수 없습니다.",
       builtinNeedsUpdate:
         "Windows 기본 제공 컨테이너에는 빌드 {required} 이상이 필요하지만 이 PC는 {current}입니다. 관리자 단계 없이 사용하려면 최신 Windows 업데이트를 설치하거나 아래의 대체 샌드박스를 켜세요.",
       unsupportedBuild: "Windows 샌드박스(MXC)는 Windows 11 24H2(빌드 26100) 이상이 필요하므로 이 PC에서는 사용할 수 없습니다.",
@@ -1433,6 +1470,7 @@ export const ko = {
       managedNote: "OS 샌드박스는 이 Unsloth 서버의 소유자가 설정합니다.",
     },
     debugging: {
+      description: "앱을 벗어나지 않고 Unsloth 로그를 확인하세요.",
       logSection: "로그 파일",
       source: "로그 파일",
       sourceHint: "모델 실행기는 별도의 로그를 기록하므로, 모델 로드나 생성 실패 원인은 서버 로그보다 해당 로그에서 확인되는 경우가 많습니다.",
@@ -2082,8 +2120,8 @@ export const ko = {
       uploadPhoto: "사진 업로드",
       removePhoto: "제거",
       pictureOptions: "프로필 사진 옵션",
-      greetingSloth: "인사말에 나무늘보 표시",
-      greetingSlothDescription: "채팅 인사말에 나무늘보를 표시합니다.",
+      greetingSloth: "인사말",
+      greetingSlothDescription: "새 채팅에 인사말을 표시합니다.",
       noPicture: "프로필 사진 없음",
       noneLabel: "없음",
       stats: {
@@ -2173,6 +2211,12 @@ export const ko = {
         classic: "클래식",
         minimal: "미니멀",
         moreThemes: "더 많은 테마",
+        halloween: "할로윈",
+      },
+      trickOrTreat: {
+        label: "트릭 오어 트릿",
+        description:
+          "11월 1일까지 핼러윈 테마와 으스스한 인사말을 즐겨 보세요.",
       },
       custom: {
         chatWidth: {
@@ -2305,7 +2349,8 @@ export const ko = {
       description: "이 Unsloth 서버의 하드웨어와 저장소를 모니터링합니다.",
       liveUpdates: "실시간 업데이트",
       floatingWindow: "플로팅 창",
-      disableOverlay: "오버레이 비활성화",
+      showFloatingWindow: "플로팅 창 표시",
+      showFloatingWindowDescription: "Unsloth 위에 CPU, RAM, GPU 사용량을 계속 표시합니다.",
       liveMonitor: {
         title: "실시간 모니터",
         apiTitle: "API 모니터",
@@ -2328,7 +2373,7 @@ export const ko = {
         gpuUnusableDetail: "감지되었지만 PyTorch에서 사용할 수 없습니다",
         detailedView: "자세히 보기",
         detailedViewDescription:
-          "플로팅 창과 여기에 CPU 부하와 각 GPU의 부하, 온도, 전력을 표시합니다.",
+          "플로팅 창에 CPU 부하와 각 GPU의 부하, 온도, 전력을 표시합니다.",
         cpuLoad: "CPU 부하",
         gpuLoad: "GPU 부하",
         temperature: "온도",
@@ -2361,6 +2406,10 @@ export const ko = {
         used: "{value} 사용 중",
         free: "{value} 여유",
         total: "총 {value}",
+        usedOf: "{total} 중 {used} 사용 중",
+        segmentUsed: "GPU 사용 중",
+        segmentSystem: "시스템 사용 중",
+        segmentAvailable: "사용 가능",
       },
       llamaBackend: {
         title: "GGUF 추론 엔진",
@@ -2490,6 +2539,10 @@ export const ko = {
           hideDetailsAction: "자세히 숨기기",
           clearAction: "캐시 정리",
           clearOneAction: "정리",
+          showFolders: "폴더 표시",
+          hideFolders: "폴더 숨기기",
+          previousLocations: "이전 위치를 포함합니다. 기본 정리 버튼은 현재 캐시 폴더에 적용됩니다. 모델 버튼은 선택한 사본만 정리합니다.",
+          clearModelDescription: "이 캐시된 사본만 제거합니다. 필요할 때 다시 다운로드됩니다.",
           clearingAction: "정리하는 중...",
           confirmTitle: "캐시 파일을 정리할까요?",
           confirmDescription: "약 {size}의 공간이 확보됩니다.",
@@ -2735,11 +2788,6 @@ export const ko = {
       autoScrollManual: "수동",
       autoScrollKeywords:
         "스크롤 자동 스크롤 따라가기 아래 이동 스트리밍 생성 고정 scroll autoscroll follow",
-      scrollToBottomButton: "맨 아래로 스크롤 버튼",
-      scrollToBottomButtonDescription:
-        "위로 스크롤한 뒤 최신 메시지로 돌아가는 버튼을 표시합니다.",
-      scrollToBottomButtonKeywords:
-        "스크롤 맨 아래 최신 화살표 버튼 숨기기 scroll bottom button",
       replyNotification: "응답이 끝나면 알림",
       replyNotificationDescription:
         "Unsloth가 최소화되었거나 백그라운드에 있을 때 응답이 끝나면 시스템 알림을 표시합니다.",
@@ -2761,9 +2809,8 @@ export const ko = {
         "세부 속도 토큰 통계 레이어 오프로드 verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "응답에 응답 편집 표시",
       inlineEditResponseDescription: "응답 편집을 더보기 메뉴 대신 모든 응답에 표시합니다.",
-      modelDisclaimer: "모델 고지 표시",
-      modelDisclaimerDescription:
-        '채팅 상자 아래에 "LLMs can make mistakes" 문구를 표시합니다.',
+      composerAtBottom: "입력창을 아래에",
+      composerAtBottomDescription: "새 채팅에서 입력창을 가운데가 아닌 페이지 아래쪽에 표시합니다.",
       projectAttachments: "프로젝트 전체에서 파일 공유",
       projectAttachmentsDescription:
         "새 채팅 첨부 파일을 프로젝트의 모든 채팅에서 사용할 수 있게 합니다.",
@@ -3127,6 +3174,7 @@ export const ko = {
       readDocs: "API 문서 읽기",
       noAccess: "아직 액세스 토큰이 없습니다.",
       accessTokens: "액세스 토큰",
+      quickstartTitle: "빠른 시작",
       columnName: "이름",
       columnToken: "토큰",
       columnCreated: "생성",
@@ -3266,8 +3314,9 @@ export const ko = {
         loadError: "판단 API 설정을 불러오지 못했습니다.",
         sendsTo: "요청은 {provider}(으)로 전송됩니다.",
         connectionMissing: "이 연결이 없거나 판단 모델이 없습니다. 다른 모델을 선택하세요.",
-        addConnection: "호스팅된 판단 모델을 사용하려면 연결에서 TypeSafe, Liquid AI 또는 OpenRouter를 추가하세요.",
-        openConnections: "연결 열기",
+        addConnection: "호스팅된 판단 모델을 사용하려면 ",
+        connectionsLink: "연결",
+        addConnectionSuffix: "에서 추가하세요.",
       },
       mcp: {
         title: "에이전트 액세스 (MCP)",
@@ -4298,7 +4347,6 @@ export const ko = {
       terminalStart: "> unsloth 학습을 시작합니다...",
       preparingResources: "> 모델과 데이터셋을 준비하는 중...",
       gettingReady: "> 실행을 위한 모든 준비를 하는 중...",
-      waitingForFirstStep: "> {message} | 첫 스텝을 기다리는 중... ({step})",
       resumingTraining: "학습을 재개하는 중...",
       startingTraining: "학습을 시작하는 중...",
       dataset: "데이터셋",

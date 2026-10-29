@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Gate torch.compile on Triton's C toolchain, on Windows (#7595). `import triton` succeeding does not
-mean a compile will: Triton's clang-cl JIT dies on `'stdlib.h'` mid-run when the CRT headers are absent.
-It passes its own `/I` dirs and never reads `INCLUDE`, so there is nothing to repair, only a state to refuse."""
+"""Gates torch.compile on Windows: triton imports without CRT headers, and clang-cl ignores INCLUDE."""
 
 from __future__ import annotations
 

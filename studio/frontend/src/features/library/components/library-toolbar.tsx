@@ -16,7 +16,7 @@ import {
   FlimSlateIcon,
   Folder01Icon,
   GridViewIcon,
-  Image02Icon,
+  ImageIcon,
   LeftToRightListBulletIcon,
   Note01Icon,
   Pdf01Icon,
@@ -54,7 +54,7 @@ const SOURCE_OPTIONS: MenuOption<LibrarySource>[] = [
 ];
 
 const TYPE_OPTIONS: MenuOption<LibraryTypeFilter>[] = [
-  { value: "images", label: "library.tabs.images", icon: Image02Icon },
+  { value: "images", label: "library.tabs.images", icon: ImageIcon },
   { value: "videos", label: "library.tabs.videos", icon: FlimSlateIcon },
   { value: "audio", label: "library.tabs.audio", icon: AiSpeechIcon },
   { value: "documents", label: "library.toolbar.documents", icon: FileEmpty02Icon },
@@ -286,7 +286,7 @@ export type NewAction =
 
 const NEW_OPTIONS: MenuOption<NewAction>[] = [
   { value: "note", label: "library.create.note", icon: Note01Icon },
-  { value: "image", label: "library.create.image", icon: Image02Icon },
+  { value: "image", label: "library.create.image", icon: ImageIcon },
   { value: "video", label: "library.create.video", icon: FlimSlateIcon },
   { value: "audio", label: "library.create.audio", icon: AiSpeechIcon },
   { value: "model", label: "library.create.model", icon: TestTubeOutlineIcon },

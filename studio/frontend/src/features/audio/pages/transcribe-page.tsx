@@ -33,7 +33,7 @@ import {
   type AudioSourceInputHandle,
 } from "../components/audio-source-input";
 import { SendToItems } from "../components/clip-card";
-import { Field } from "../components/field";
+import { Field, FieldLabel } from "../components/field";
 import { TranscriptView } from "../components/transcript-view";
 import {
   TranscriptExportItems,
@@ -80,7 +80,7 @@ function SwitchRow({
   const id = `transcribe-${name}`;
   return (
     <div className="grid gap-1.5">
-      <label
+      <FieldLabel
         htmlFor={id}
         className="flex items-center justify-between gap-3 text-ui-13 font-medium text-foreground"
       >
@@ -103,7 +103,7 @@ function SwitchRow({
             aria-describedby={`${id}-hint`}
           />
         )}
-      </label>
+      </FieldLabel>
       <p
         id={`${id}-hint`}
         className="text-ui-11p5 leading-snug text-muted-foreground"

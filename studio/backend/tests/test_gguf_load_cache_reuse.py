@@ -84,6 +84,8 @@ from core.inference.llama_cpp import (
 )
 from core.inference.openai_auto_download import _DISK_RESERVE_BYTES
 
+from ._fake_llama_server import fake_llama_server
+
 
 REPO = "unsloth/gemma-test-GGUF"
 VARIANT = "UD-Q4_K_XL"
@@ -670,16 +672,23 @@ class TestLoadReusesCachedCopy:
         backend._begin_load_warnings()
         assert backend.last_load_warning == "Q4_K_M was loaded instead."
 
-    def test_low_disk_fallback_load_records_the_served_variant(self, hf_cache, tmp_path):
+    def test_low_disk_fallback_load_records_the_served_variant(
+        self, hf_cache, tmp_path, monkeypatch
+    ):
         backend = LlamaCppBackend()
         served = tmp_path / "gemma-test-Q4_K_M.gguf"
         served.write_bytes(b"GGUF" + b"\0" * 4096)
-        backend._find_llama_server_binary = lambda *_a, **_k: "/usr/bin/true"
+        fake_server = fake_llama_server(tmp_path / "bin")
+        backend._find_llama_server_binary = lambda *_a, **_k: fake_server
         backend._remote_non_chat_gguf_refusal = lambda **_k: None
         backend._non_chat_gguf_refusal_for_path = lambda *_a, **_k: None
         backend._non_chat_gguf_refusal = lambda *_a, **_k: None
         backend._kill_process = lambda *_a, **_k: None
         backend._wait_for_health = lambda timeout = 600.0, interval = 0.5, cancelled = None: True
+        # Apple's unified-memory planner adds a notice for this header-only GGUF.
+        monkeypatch.setattr(
+            LlamaCppBackend, "_apple_metal_memory_budget_bytes", staticmethod(lambda: 0)
+        )
 
         def _start(cmd, env, **_kwargs):
             backend._process = Mock(pid = 424242, returncode = None)

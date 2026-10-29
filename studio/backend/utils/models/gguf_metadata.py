@@ -1,15 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""``general.*`` reader for GGUF headers, used by ``detect_mmproj_file`` to
-pair weights and projectors via ``general.base_model.0.repo_url``."""
+"""GGUF general.* reader; detect_mmproj_file pairs projectors via general.base_model.0.repo_url."""
 
 from __future__ import annotations
 
+import io
 import os
 import re
+import stat
 import struct
 import threading
+import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import BinaryIO, Dict, Optional, Tuple
 
@@ -359,6 +362,191 @@ _FIXED_VTYPE_SIZES: Dict[int, int] = {
     12: 8,
 }
 
+_U64_AT = struct.Struct("<Q").unpack_from
+_STRING_SCAN_CHUNK = 1 << 18
+# Longer entries are left to the caller's own per-entry loop, which owns the length checks.
+_STRING_SCAN_MAX = 1 << 20
+
+
+def _can_rewind(f) -> bool:
+    """False for forward-only streams and ``mmap`` before 3.13: the walks seek back after reading ahead."""
+    seekable = getattr(f, "seekable", None)
+    try:
+        return bool(seekable()) if callable(seekable) else False
+    except Exception:  # noqa: BLE001 -- unknown wrapper: take the per-entry path
+        return False
+
+
+# Per-process memo of finished string-array walks, keyed on (dev, ino, size, mtime_ns, ctime_ns),
+# offset, count. Remembered only if unchanged across the walk and settled for _WALK_MEMO_SETTLE_NS,
+# so a same-size rewrite within one timestamp tick (FAT 2 s, HFS+ 1 s) still moves a timestamp.
+_WALK_MEMO: "OrderedDict[tuple, tuple]" = OrderedDict()
+_WALK_MEMO_LOCK = threading.Lock()
+_WALK_MEMO_MAX_ENTRIES = 256
+_WALK_MEMO_MAX_KEPT_BYTES = 1 << 20
+_WALK_MEMO_SETTLE_NS = 3_000_000_000
+
+
+def _walk_file_state(f) -> Optional[tuple]:
+    if type(f) is not io.BufferedReader and type(f) is not io.FileIO:
+        return None
+    try:
+        st = os.fstat(f.fileno())
+    except (OSError, ValueError):
+        return None
+    ino = getattr(st, "st_ino", 0)
+    if not ino or not stat.S_ISREG(st.st_mode):
+        return None
+    return (st.st_dev, ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
+def _walk_memo_lookup(f, count: int, tag) -> Tuple[Optional[tuple], Optional[tuple], int]:
+    """Return ``(memo key or None, remembered result or None, walk start time ns)``."""
+    started = time.time_ns()
+    state = _walk_file_state(f)
+    if state is None:
+        return None, None, started
+    try:
+        key = state + (f.tell(), count, tag)
+    except (OSError, ValueError):
+        return None, None, started
+    with _WALK_MEMO_LOCK:
+        hit = _WALK_MEMO.get(key)
+        if hit is not None:
+            _WALK_MEMO.move_to_end(key)
+    return key, hit, started
+
+
+def _walk_memo_store(f, key: tuple, started: int, *items: Tuple[tuple, tuple]) -> None:
+    state = key[:5]
+    if max(state[3], state[4]) > started - _WALK_MEMO_SETTLE_NS:
+        return
+    if _walk_file_state(f) != state:
+        return
+    with _WALK_MEMO_LOCK:
+        for item_key, value in items:
+            _WALK_MEMO[item_key] = value
+            _WALK_MEMO.move_to_end(item_key)
+        while len(_WALK_MEMO) > _WALK_MEMO_MAX_ENTRIES:
+            _WALK_MEMO.popitem(last = False)
+
+
+def skip_gguf_strings(f, count: int) -> int:
+    """Skip up to ``count`` GGUF strings (u64 length + bytes) through one buffer; return how many,
+    with ``f`` at the next. Stops at an entry over 1 MiB, a length cut short by EOF, or a stream
+    that cannot rewind, so the caller's per-entry loop handles the rest exactly as before. A walk
+    already done on the same unchanged file is replayed as one seek."""
+    if not _can_rewind(f):
+        return 0
+    key, hit, started = _walk_memo_lookup(f, count, None)
+    if hit is not None:
+        f.seek(hit[1])
+        return hit[0]
+    done = _skip_gguf_strings_walk(f, count)
+    if key is not None:
+        _walk_memo_store(f, key, started, (key, (done, f.tell())))
+    return done
+
+
+def _skip_gguf_strings_walk(f, count: int) -> int:
+    unpack = _U64_AT
+    buf = b""
+    size = pos = done = 0
+    while True:
+        i = done
+        try:
+            for i in range(done, count):
+                n = unpack(buf, pos)[0]
+                if n > _STRING_SCAN_MAX:
+                    break
+                pos += 8 + n
+            else:
+                i = count
+        except struct.error:  # length field not in the buffer
+            pass
+        done = i
+        if done == count or pos + 8 <= size:
+            break
+        # The buffer ends at the file position; refill from buf[pos].
+        if pos >= size:
+            if pos > size:
+                f.seek(pos - size, 1)
+            buf = f.read(_STRING_SCAN_CHUNK)
+        else:
+            buf = buf[pos:] + f.read(_STRING_SCAN_CHUNK)
+        pos = 0
+        size = len(buf)
+        if size < 8:
+            break
+    f.seek(pos - size, 1)
+    return done
+
+
+def take_gguf_strings_by_first_byte(
+    f, count: int, first_bytes: frozenset[int]
+) -> Tuple[int, list[bytes]]:
+    """``skip_gguf_strings`` that returns ``(entries read, raw entries whose first byte is in
+    first_bytes)``; also stops at an entry cut short by EOF, leaving ``f`` at it."""
+    if not _can_rewind(f):
+        return 0, []
+    tag = ("take", first_bytes)
+    key, hit, started = _walk_memo_lookup(f, count, tag)
+    if hit is not None:
+        f.seek(hit[1])
+        return hit[0], list(hit[2])
+    done, kept = _take_gguf_strings_walk(f, count, first_bytes)
+    if key is not None and sum(map(len, kept)) <= _WALK_MEMO_MAX_KEPT_BYTES:
+        end = f.tell()
+        items = [(key, (done, end, tuple(kept)))]
+        if done == count:
+            # Every entry was whole and at most 1 MiB, so a skip of the same array ends here too.
+            items.append((key[:-1] + (None,), (done, end)))
+        _walk_memo_store(f, key, started, *items)
+    return done, kept
+
+
+def _take_gguf_strings_walk(f, count: int, first_bytes: frozenset[int]) -> Tuple[int, list[bytes]]:
+    kept: list[bytes] = []
+    unpack = _U64_AT
+    keep = kept.append
+    buf = b""
+    size = pos = done = 0
+    eof = False
+    while True:
+        i = done
+        try:
+            for i in range(done, count):
+                n = unpack(buf, pos)[0]
+                end = pos + 8 + n
+                if end > size or n > _STRING_SCAN_MAX:
+                    break
+                if n and buf[pos + 8] in first_bytes:
+                    keep(buf[pos + 8 : end])
+                pos = end
+            else:
+                i = count
+        except struct.error:  # length field not in the buffer
+            pass
+        progressed = i > done
+        done = i
+        if done == count:
+            break
+        if pos + 8 <= size and unpack(buf, pos)[0] > _STRING_SCAN_MAX:
+            break
+        if eof and not progressed:
+            break
+        # pos never passes size here; refill with at least the whole next entry.
+        want = _STRING_SCAN_CHUNK
+        if pos + 8 <= size:
+            want = max(want, 8 + unpack(buf, pos)[0])
+        more = f.read(want)
+        eof = len(more) < want
+        buf = buf[pos:] + more
+        pos = 0
+        size = len(buf)
+    f.seek(pos - size, 1)
+    return done, kept
+
 
 def _skip_gguf_value(f, vtype: int) -> bool:
     """Advance past one GGUF value. ``f.seek(.., 1)`` past EOF is legal on a regular file, so truncation is caught on the next read; return False only for unknown types or sanity-bound overflow."""
@@ -379,7 +567,7 @@ def _skip_gguf_value(f, vtype: int) -> bool:
         if alen > 1 << 30:
             return False
         if atype == 8:
-            for _ in range(alen):
+            for _ in range(alen - skip_gguf_strings(f, alen)):
                 slen_bytes = f.read(8)
                 if len(slen_bytes) < 8:
                     return False

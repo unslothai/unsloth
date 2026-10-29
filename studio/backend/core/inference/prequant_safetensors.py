@@ -1,48 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Read and write a pre-quantized checkpoint as ``.safetensors`` instead of a ``torch.save`` pickle.
-
-torchao's weight subclasses (``Float8Tensor``, ``Int8Tensor``, ``NVFP4Tensor``, ...) are wrapper
-tensors: several plain tensors plus reconstruction metadata behind one logical weight. safetensors
-stores flat tensors only, which is why every pre-quant artifact Unsloth has published so far is a
-pickle. torchao >= 0.16 closes that gap with ``flatten_tensor_state_dict`` /
-``unflatten_tensor_state_dict``, the same pair ``transformers`` and ``diffusers`` use for their own
-torchao checkpoints, so the subclass is split into ``<fqn>._weight_qdata`` / ``._weight_scale`` and a
-JSON description of how to put it back.
-
-Why bother, given the pickle is already read under ``weights_only`` plus a constructor allowlist:
-
-- That allowlist is a real gate, not a formality. ``restricted_prequant_load_supported`` returns
-  False when torch cannot express it or when torchao does not ship a scheme's constructors, and the
-  callers in ``video.py`` then refuse the checkpoint outright and fall back to dense. A safetensors
-  artifact has no constructors to allowlist, so that whole failure mode does not apply to it.
-- A pickle has to be parsed before anything about it is known. A safetensors header is a JSON blob at
-  the front of the file, so the scheme / base model / filter checks run off a few KB, before a single
-  weight byte is read, and a mismatched artifact costs a header read rather than a full parse.
-- mmap, lazy per-tensor reads, the Hub's file viewer and cross-framework reads all come for free.
-
-**On-disk layout.** Tensors are exactly what ``flatten_tensor_state_dict`` produces. The header is
-torchao's own metadata (``tensor_names`` plus one JSON entry per weight, which is what makes the file
-readable by anything that understands torchao checkpoints) with two namespaced keys added:
-
-    "unsloth_format"   -> the same format tag the pickle carries in ckpt["format"]
-    "unsloth_metadata" -> JSON of the same dict the pickle carries in ckpt["metadata"]
-
-``is_metadata_torchao`` walks ``tensor_names`` only, so the extra keys do not disturb it.
-
-**Writing needs a newer torchao than reading does.** Only the new-style subclasses can be flattened,
-and through torchao 0.17 the int8 config still produces the legacy
-``LinearActivationQuantizedTensor`` over an ``AffineQuantizedTensor``; 0.18 produces ``Int8Tensor``,
-which flattens. Both versions RECONSTRUCT an ``Int8Tensor`` file happily, so this binds the machine
-that builds an artifact, never the one that loads it. fp8 has been flattenable since 0.16.
-
-**No new format tag.** The tags (``..._v1``, the rotated ``..._v2``) describe what the WEIGHTS mean,
-and that is unchanged by the container; a rotated safetensors artifact is still ``_v2`` and still
-refused by a build that cannot rotate. Old builds are kept away from these files by the FILENAME,
-not the tag: they resolve ``<Model>-<SCHEME>.pt`` and know nothing of a ``.safetensors`` sibling, so
-a repo can host both and each build reads the one it understands.
-"""
+"""Safetensors pre-quants with no new format tag; old builds ignore the sibling and read the .pt by
+filename; int8 write needs torchao >= 0.18, reading works on older"""
 
 from __future__ import annotations
 

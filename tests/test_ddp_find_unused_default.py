@@ -391,7 +391,5 @@ def test_full_finetune_vlm_text_only_batches_train_under_ddp(tmp_path):
 
 
 def _free_port():
-    import socket
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()

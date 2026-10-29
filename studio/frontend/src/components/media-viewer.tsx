@@ -9,7 +9,7 @@ import {
   Delete02Icon,
   Download01Icon,
   Folder01Icon,
-  Image02Icon,
+  ImageIcon,
   MoreHorizontalIcon,
 } from "@hugeicons/core-free-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
@@ -432,7 +432,7 @@ export function MediaViewer({
                 )}
                 title={typeof meta === "string" && meta ? `${title}\n${meta}` : title}
               >
-                <HugeiconsIcon icon={Image02Icon} strokeWidth={1.75} className="size-4.5 shrink-0" />
+                <HugeiconsIcon icon={ImageIcon} strokeWidth={1.75} className="size-4.5 shrink-0" />
                 <DialogTitle className="truncate text-sm font-medium">{title}</DialogTitle>
                 <DialogDescription className="sr-only">{meta}</DialogDescription>
               </div>

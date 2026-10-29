@@ -21,6 +21,11 @@ const TERMINAL_STATUSES = new Set(["completed", "stopped", "error"]);
 // Older backends only carry the preparation counts in the status text.
 const LEGACY_PREPARING = /Preparing \(([^()]+?) (\d+)\/(\d+)\)/;
 
+// The heading renders this as-is: "stopped" -> "Stopped".
+function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 function backendNote(message: string | null | undefined): string | null {
   return message && !PHASE_MESSAGE.test(message) ? message : null;
 }
@@ -94,7 +99,7 @@ export function diffusionTrainingProgress(status: Status | null) {
         ? "Training complete"
         : running && !terminal
           ? "Training"
-          : (status?.status ?? ""),
+          : capitalize(status?.status ?? ""),
     detail: status?.message ?? null,
     count:
       status && status.total_steps > 0

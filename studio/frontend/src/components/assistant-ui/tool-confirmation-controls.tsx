@@ -4,6 +4,11 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
+import { AlertDialog } from "@/components/ui/alert-dialog";
+import { getAuthSessionEpoch } from "@/features/auth";
+import { useFullAccessAllowed } from "@/features/auth/account-session";
+import { FullAccessConfirmContent } from "@/features/chat/permission-mode-select";
+import { hasChatFullAccess, withChatFullAccess } from "@/features/chat/utils/chat-full-access";
 import {
   resolveToolConfirmation,
   ToolApprovalGoneError,
@@ -39,6 +44,15 @@ export function ToolConfirmationControls({
       ? s.toolConfirmations[toolCallId]
       : undefined,
   );
+  const fullAccessAllowed = useFullAccessAllowed();
+  const permissionMode = useChatRuntimeStore((s) =>
+    withChatFullAccess(s, s.chatFullAccessGrants, confirmation?.threadId).permissionMode,
+  );
+  const grantChatFullAccess = useChatRuntimeStore((s) => s.grantChatFullAccess);
+  const chatFullAccess = useChatRuntimeStore((s) =>
+    fullAccessAllowed && confirmation && !confirmation.imageDisclosure &&
+    hasChatFullAccess(s.chatFullAccessGrants, confirmation.threadId, confirmation.runId),
+  );
   const allowToolAlways = useChatRuntimeStore((s) => s.allowToolAlways);
   const clearToolConfirmation = useChatRuntimeStore(
     (s) => s.clearToolConfirmation,
@@ -52,6 +66,7 @@ export function ToolConfirmationControls({
       (s.alwaysAllowToolsBySession.get(autoAllowKey)?.has(toolName) ?? false),
   );
 
+  const [fullAccessOpen, setFullAccessOpen] = useState(false);
   const [decided, setDecided] = useState(false);
   const [pending, setPending] = useState<"allow" | "deny" | null>(null);
   // "retry" can succeed on another press; "gone" means the backend no longer holds the approval.
@@ -65,8 +80,10 @@ export function ToolConfirmationControls({
   const showControls = awaiting && !decided;
 
   const resolve = useCallback(
-    async (decision: "allow" | "deny", alsoAlways = false) => {
+    async (decision: "allow" | "deny", alsoAlways = false, fullAccess = false) => {
       if (!toolCallId || !confirmation) return;
+      const epoch = getAuthSessionEpoch();
+      const choiceVersion = useChatRuntimeStore.getState().chatPermissionChoiceVersion;
       setPending(decision);
       setFailure(null);
       try {
@@ -74,8 +91,20 @@ export function ToolConfirmationControls({
           confirmation.sessionId,
           confirmation.approvalId,
           decision,
+          fullAccess,
         );
-        if (ok) {
+        if (ok && getAuthSessionEpoch() === epoch) {
+          if (fullAccess && confirmation.runId &&
+            useChatRuntimeStore.getState().chatPermissionChoiceVersion === choiceVersion) {
+            // Autosave may adopt the first turn while the POST is in flight.
+            const current = useChatRuntimeStore.getState().toolConfirmations[toolCallId];
+            const target = current?.approvalId === confirmation.approvalId ? current : confirmation;
+            grantChatFullAccess({
+              runId: confirmation.runId,
+              sessionId: confirmation.sessionId,
+              threadId: target.threadId,
+            });
+          }
           // Record the session grant only after the backend accepted, or a failed press auto-approves.
           if (alsoAlways && autoAllowKey) allowToolAlways(autoAllowKey, toolName);
           // Hide only once the backend confirms, or the generation stays blocked with no retry.
@@ -95,16 +124,18 @@ export function ToolConfirmationControls({
       confirmation,
       clearToolConfirmation,
       allowToolAlways,
+      grantChatFullAccess,
       autoAllowKey,
       toolName,
     ],
   );
 
   useEffect(() => {
-    if (showControls && autoAllowed && pending === null && !failed) {
-      void resolve("allow");
+    if (showControls && (autoAllowed || chatFullAccess) && pending === null && !failed) {
+      // A sibling loop in this chat needs its own backend policy upgrade.
+      void resolve("allow", false, !!chatFullAccess);
     }
-  }, [showControls, autoAllowed, pending, failed, resolve]);
+  }, [showControls, autoAllowed, chatFullAccess, pending, failed, resolve]);
 
   // Chords only while this card asks and the chat is visible; with a second request parked, both
   // cards fall back to buttons.
@@ -117,11 +148,12 @@ export function ToolConfirmationControls({
   const keyboardReady =
     !disclosure &&
     chatActive &&
+    !fullAccessOpen &&
     soleRequest &&
     !selectionActive &&
     showControls &&
     pending === null &&
-    !(autoAllowed && !failed);
+    !((autoAllowed || chatFullAccess) && !failed);
   // The Chat route stays mounted under a dialog, so `keyboardReady` still says
   // yes while the request is hidden behind one. Answering a tool call the user
   // cannot see must not be reachable by accident, so both chords ask here, before the key is taken.
@@ -141,7 +173,7 @@ export function ToolConfirmationControls({
 
   if (!showControls) return null;
   // Auto-approved tools resolve silently unless the post fails.
-  if (autoAllowed && !failed) return null;
+  if ((autoAllowed || chatFullAccess) && !failed) return null;
 
   return (
     <div className="flex flex-wrap items-center gap-2 pt-1">
@@ -177,6 +209,27 @@ export function ToolConfirmationControls({
       >
         Deny
       </Button>
+      {!disclosure && fullAccessAllowed && permissionMode !== "full" && confirmation?.sessionId && confirmation?.runId ? (
+        <>
+          <Button
+            size="xs"
+            variant="destructive"
+            disabled={pending !== null || failure === "gone"}
+            onClick={() => setFullAccessOpen(true)}
+          >
+            Full Access
+          </Button>
+          <AlertDialog open={fullAccessOpen} onOpenChange={setFullAccessOpen}>
+            <FullAccessConfirmContent
+              onConfirm={() => {
+                setFullAccessOpen(false);
+                void resolve("allow", false, true);
+              }}
+              onClose={() => setFullAccessOpen(false)}
+            />
+          </AlertDialog>
+        </>
+      ) : null}
       {failure !== null ? (
         <span className="text-xs text-destructive">
           {failure === "gone"

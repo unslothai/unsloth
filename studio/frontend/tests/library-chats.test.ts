@@ -411,14 +411,22 @@ test("sections have created and last modified dates, and Last modified is the de
   assert.doesNotMatch(readSrc("features/library/chats/chats-items.tsx"), /field="updated"/);
 });
 
-test("chat, project and section cards are a little shorter than square, dated bottom left", () => {
+test("chat, project and section cards are square like folder and file cards, dated bottom left", () => {
   const items = readSrc("features/library/chats/chats-items.tsx");
   const card = items.slice(items.indexOf("const CARD = cn("), items.indexOf("const ICON ="));
   assert.doesNotMatch(card, /aspect-\[/);
   assert.match(card, /min-h-0 min-w-0/);
-  assert.match(card, /CHAT_CARD_ROW_MIN =\s*"calc\(var\(--spacing\) \* 26 \+ 2\.75 \* var\(--text-ui-14\) \+ 3 \* var\(--text-ui-12\)\)"/);
+  assert.match(items, /export const CHAT_CARD_ROW_MIN = CARD_MIN_HEIGHT;/);
+  assert.match(
+    readSrc("features/library/surface.ts"),
+    /CARD_MIN_HEIGHT =\s*"calc\(var\(--spacing\) \* 26 \+ 2\.75 \* var\(--text-ui-13\) \+ 3 \* var\(--text-ui-11p5\)\)"/,
+  );
+  assert.equal(
+    readSrc("features/library/components/library-cards.tsx").split("minHeight: CARD_MIN_HEIGHT").length - 1,
+    3,
+  );
   const grid = readSrc("features/library/components/library-cards.tsx");
-  assert.match(grid, /max\(\$\{minRowHeight\}, calc\(\(100cqw - \$\{columns - 1\} \* var\(--spacing\) \* 5\) \/ \$\{columns\} \* 7 \/ 8\)\)/);
+  assert.match(grid, /max\(\$\{minRowHeight\}, calc\(\(100cqw - \$\{columns - 1\} \* var\(--spacing\) \* 5\) \/ \$\{columns\}\)\)/);
   assert.match(grid, /<div className="@container">\{grid\}<\/div>/);
   const library = readSrc("features/library/chats/chats-library.tsx");
   assert.doesNotMatch(library, /<CardGrid(?! minRowHeight=\{CHAT_CARD_ROW_MIN\})/);
@@ -441,7 +449,7 @@ test("chat, project and section tiles share one box and hover tint", () => {
 test("grid cards share a two-line title and a footer of contents over date", () => {
   const items = readSrc("features/library/chats/chats-items.tsx");
   assert.match(items, /const CARD_TITLE =\s*"[^"]*\[overflow-wrap:anywhere\]/);
-  assert.match(items, /const CARD_TITLE =\s*"[^"]*font-medium text-ui-14 /);
+  assert.match(items, /const CARD_TITLE =\s*"[^"]*font-medium text-ui-13 /);
   const footer = items.slice(items.indexOf("function CardFooter("), items.indexOf("const CARD_TITLE"));
   assert.match(footer, /flex-col items-start/);
   assert.match(footer, /\{meta && <span className="w-full min-w-0 truncate">\{meta\}<\/span>\}\s*<span className="truncate">\{date\}<\/span>/);
@@ -507,7 +515,30 @@ test("every library toolbar's search narrows with the header row, so it never re
   for (const file of ["features/library/components/library-toolbar.tsx", "features/library/chats/chats-toolbar.tsx"]) {
     assert.match(readSrc(file), /w-\[clamp\(10rem,calc\(100cqw-30rem\),min\(15rem,24vw\)\)\]/, file);
   }
-  assert.match(readSrc("features/library/components/library-header.tsx"), /className="@container /);
+  assert.match(readSrc("features/library/components/library-header.tsx"), /"@container flex"/);
+});
+
+test("a library toolbar too wide for the row stacks under the title instead of covering it", () => {
+  const header = readSrc("features/library/components/library-header.tsx");
+  assert.match(header, /setStacked\(needed \+ GAP_PX \+ titleRoom > bar\.clientWidth\)/);
+  assert.match(header, /\{stacked \? \[heading, bar\] : \[bar, heading\]\}/);
+  assert.match(header, /reserve=\{covered && !stacked \? controlsWidth \+ GAP_PX : 0\}/);
+});
+
+test("only image previews keep their own shape; video and other previews are square", () => {
+  const cards = readSrc("features/library/components/library-cards.tsx");
+  assert.match(cards, /<ImageThumb item=\{item\} square=\{square \|\| fileKind\(item\) !== "image"\} \/>/);
+});
+
+test("library card columns widen with the interface zoom and text size", () => {
+  const cards = readSrc("features/library/components/library-cards.tsx");
+  assert.match(cards, /useColumnCount\(container, minWidth, max, CARD_COLUMN_GAP_PX, wideMinWidth\)/);
+  const hooks = readSrc("features/library/hooks.ts");
+  assert.match(hooks, /const scale = baseGap && gap > 0 \? gap \/ baseGap : 1;/);
+  assert.match(hooks, /\(width \* scale \+ gap\)/);
+  assert.match(hooks, /Math\.max\(2, Math\.min\(maxColumns, fits\(minColumnWidth\)\), wide\)/);
+  assert.match(readSrc("features/library/settings-store.ts"), /medium: \{ minWidth: 170, max: 5, wideMinWidth: 225 \}/);
+  assert.match(hooks, /subscribeLayoutScale\(measure\)/);
 });
 
 test("the library header row casts a light shadow once stuck", () => {
@@ -707,4 +738,12 @@ test("a favorite project dates from its own last edit, as the Projects view does
 test("a date sort on Sections also picks the date the rows show", () => {
   const library = readSrc("features/library/chats/chats-library.tsx");
   assert.match(library, /sectionSort: \{ key, desc \}, \.\.\.\(isDateField\(key\) \? \{ dateField: key \} : \{\}\)/);
+});
+
+test("every Library empty-state button uses Upload files' muted pill", () => {
+  for (const file of ["features/library/library-page.tsx", "features/library/chats/chats-library.tsx"]) {
+    const src = readSrc(file);
+    assert.doesNotMatch(src, /variant="dark"/, file);
+    assert.match(src, /variant="muted"\s+className="rounded-full"/, file);
+  }
 });

@@ -1,13 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Install a prebuilt ``sd-cli`` (stable-diffusion.cpp) for the native diffusion engine, the analogue of the chat backend's prebuilt llama-server. stable-diffusion.cpp publishes per-platform release zips (macOS-arm64/Metal, Linux x86_64 CPU, plus Vulkan / ROCm / Windows variants), so on Apple Silicon and CPU there is nothing to compile: resolve the asset, download, extract into ``~/.unsloth/stable-diffusion.cpp``, and the engine's finder picks it up. ``resolve_release_asset``, the host -> asset choice, is a pure function so the matching matrix is unit-tested without any network. CUDA / ROCm / XPU hosts stay on diffusers and never need this.
-
-Usage:
-    python studio/install_sd_cpp_prebuilt.py            # auto-detect host
-    python studio/install_sd_cpp_prebuilt.py --accelerator vulkan
-    python studio/install_sd_cpp_prebuilt.py --print-asset   # resolve only
-"""
+"""Installs prebuilt sd-cli (stable-diffusion.cpp) into ~/.unsloth/stable-diffusion.cpp, the
+analogue of the chat backend's llama-server; resolve_release_asset is pure, so host matching is
+tested offline. CUDA, ROCm and XPU hosts stay on diffusers."""
 
 from __future__ import annotations
 

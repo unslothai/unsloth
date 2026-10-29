@@ -4,6 +4,7 @@
 import { useEffect, useRef } from "react";
 import { Switch } from "@/components/ui/switch";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
+import { TrickOrTreatSettingsRow } from "@/features/halloween/trick-or-treat-settings-row";
 import { useT } from "@/i18n";
 import {
   ActiveColorControl,
@@ -70,6 +71,7 @@ export function AppearanceTab() {
         <SettingsRow label={t("settings.appearance.palette.label")}>
           <ColorThemeSelect />
         </SettingsRow>
+        <TrickOrTreatSettingsRow />
         <SettingsRow label={t("settings.appearance.custom.colors.accent")}>
           <ActiveColorControl
             colorKey="accent"
@@ -160,14 +162,6 @@ export function AppearanceTab() {
         >
           <FontSmoothingSwitch />
         </SettingsRow>
-        <SettingsRow
-          label={t("settings.appearance.layout.compactSidebar")}
-          description={t(
-            "settings.appearance.layout.compactSidebarDescription",
-          )}
-        >
-          <Switch checked={pinned} onCheckedChange={setPinned} />
-        </SettingsRow>
       </SettingsSection>
 
       <div ref={sidebarNavSectionRef} className="scroll-mt-4">
@@ -175,6 +169,14 @@ export function AppearanceTab() {
           title={t("settings.appearance.sidebarNav.title")}
           description={t("settings.appearance.sidebarNav.description")}
         >
+          <SettingsRow
+            label={t("settings.appearance.layout.compactSidebar")}
+            description={t(
+              "settings.appearance.layout.compactSidebarDescription",
+            )}
+          >
+            <Switch checked={pinned} onCheckedChange={setPinned} />
+          </SettingsRow>
           <div className="pt-3">
             <SidebarNavCustomizer />
           </div>

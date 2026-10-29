@@ -1,25 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Streaming wrapper around blocking server-side tool execution.
-
-``stream_tool_execution`` runs a blocking tool call in a worker thread and
-turns it into a generator that yields:
-
-* ``{"type": "tool_output", "tool_name", "tool_call_id", "text"}`` -- an
-  incremental stdout/stderr chunk (python/terminal tools) for live UI output,
-  or, with empty ``text``, a dict the tool passed to its callback (the browser
-  tools' ``browser_action`` requests for the chat tab);
-* ``{"type": "heartbeat"}`` -- emitted whenever nothing else has been yielded
-  for ``heartbeat_interval_s`` seconds, so the SSE route can write a
-  keepalive and reverse proxies (Cloudflare tunnels cap idle streams at
-  ~100 s) never see a silent connection while a tool runs;
-
-and *returns* the tool's final result string via ``StopIteration.value``
-(``result = yield from stream_tool_execution(...)``). The returned result is
-byte-identical to calling the tool directly, so tool-result parsing, nudging,
-and healing downstream are untouched.
-"""
+"""Streams tool output and heartbeats (proxies cap idle at ~100 s); returns the result unchanged."""
 
 from __future__ import annotations
 
