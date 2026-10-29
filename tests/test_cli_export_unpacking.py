@@ -51,6 +51,9 @@ class _FakeExportBackend:
 
 def _install_fake_studio_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     """Inject a fake studio.backend.core.export into sys.modules so the CLI's lazy import binds to it; parent packages stubbed to skip the structlog-dependent tree."""
+    # The CLI puts studio/backend on sys.path, whose tests/ package then shadows the repo's for any
+    # process spawned later in this worker (`No module named 'tests.<file>'`): restore it afterwards.
+    monkeypatch.setattr(sys, "path", list(sys.path))
     # Load the real CLI first: the stubs below shadow studio.backend.utils, which it imports.
     importlib.import_module("unsloth_cli.commands.export")
 
@@ -182,3 +185,23 @@ def test_cli_export_forwards_hf_token_to_checkpoint_load(
 
     assert result.exit_code == 0, f"CLI error:\n{result.output}"
     assert _FakeExportBackend.last_load.get("hf_token") == "hf_cli_token"
+
+
+def test_an_export_run_leaves_sys_path_as_it_found_it(runner: CliRunner, tmp_path: Path) -> None:
+    """The run puts studio/backend first on sys.path, and studio/backend/tests is a package: left
+    there, every later `spawn` child in the worker resolves `tests.<file>` to it and dies."""
+    before = list(sys.path)
+    ckpt = tmp_path / "ckpt"
+    ckpt.mkdir()
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        _install_fake_studio_backend(monkeypatch)
+        from unsloth_cli.commands import export as export_cmd
+
+        app = typer.Typer()
+        app.command("export")(export_cmd.export)
+        app.command("noop")(lambda: None)
+        result = runner.invoke(app, ["export", str(ckpt), str(tmp_path / "out"), "--format", "lora"])
+        assert result.exit_code == 0, result.output
+        # Non-vacuous: the run did change sys.path, which the restore below has to undo.
+        assert sys.path != before
+    assert sys.path == before
