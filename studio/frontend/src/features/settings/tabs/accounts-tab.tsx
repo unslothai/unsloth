@@ -208,7 +208,7 @@ function OwnerAccountsTab() {
         >
           {t("settings.accounts.title")}
         </h1>
-        <p className="max-w-lg text-xs text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           {t("settings.accounts.description")}
         </p>
       </header>
