@@ -94,12 +94,11 @@ def _drop_invalid_text_rows(
     allow_empty: bool = False,
 ) -> tuple[Dataset, list[RawTextNotice]]:
     # Drops rows whose 'text' is null, non-string or blank before tokenizing; also works when streaming.
-    filtered_dataset = dataset.filter(
-        lambda ex: isinstance(ex["text"], str) and bool(ex["text"].strip())
-    )
-
-    # Streaming datasets have no __len__, so skip the len()-based diagnostics.
+    # Streaming datasets have no __len__: they filter lazily per row and skip the len()-based diagnostics.
     if not hasattr(dataset, "__len__"):
+        filtered_dataset = dataset.filter(
+            lambda ex: isinstance(ex["text"], str) and bool(ex["text"].strip())
+        )
         return filtered_dataset, [
             RawTextNotice(
                 message = (
@@ -110,6 +109,12 @@ def _drop_invalid_text_rows(
             )
         ]
 
+    # A whole map-style dataset is filtered up front: batched over 'text' alone, the per-row call overhead dominated.
+    filtered_dataset = dataset.filter(
+        lambda texts: [isinstance(text, str) and bool(text.strip()) for text in texts],
+        input_columns = "text",
+        batched = True,
+    )
     dropped_rows = len(dataset) - len(filtered_dataset)
     if not dropped_rows:
         return filtered_dataset, []
@@ -210,6 +215,13 @@ def prepare_raw_text_dataset(
                 text = ex["text"]
                 return {"text": text if text.endswith(_eos) else text + _eos}
 
-            dataset = dataset.map(_append_eos)
+            def _append_eos_batch(texts, _eos = eos_token):
+                return {"text": [text if text.endswith(_eos) else text + _eos for text in texts]}
+
+            # Batching only the map-style pass: a batched streaming filter + map iterates ~10x slower.
+            if hasattr(dataset, "__len__"):
+                dataset = dataset.map(_append_eos_batch, input_columns = "text", batched = True)
+            else:
+                dataset = dataset.map(_append_eos)
 
     return RawTextPreparationResult(dataset = dataset, notices = notices, source_column = renamed_col)
