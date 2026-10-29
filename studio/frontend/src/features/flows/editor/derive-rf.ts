@@ -180,7 +180,7 @@ export class RfDeriver {
         position: pos,
         data,
         selected: isSelected,
-        dragHandle: ".flow-node-drag",
+        // The whole card drags; its controls opt out with `nodrag`.
         ...(size ? { measured: size } : {}),
       };
       this.nodeCache.set(id, {

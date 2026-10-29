@@ -104,7 +104,7 @@ function GroupFrameImpl({ data, selected }: NodeProps<RfNode>) {
 }
 
 /** Recipe Studio's markdown note: rendered when idle, double-click to edit. */
-function NoteFrameImpl({ data, selected }: NodeProps<RfNode>) {
+function NoteFrameImpl({ data }: NodeProps<RfNode>) {
   const noteId = (data as { noteId: string }).noteId;
   const note = useDocStore((s) => s.graph.notes[noteId]);
   const upsertNote = useDocStore((s) => s.upsertNote);
@@ -112,7 +112,8 @@ function NoteFrameImpl({ data, selected }: NodeProps<RfNode>) {
   if (!note) return null;
   const color =
     note.color?.toLowerCase() === DEFAULT_NOTE ? undefined : note.color;
-  const showEditor = editing || !note.text;
+  // Editing only after a double-click: an empty note shows its placeholder and still drags.
+  const showEditor = editing;
   return (
     <BaseNode
       className="corner-squircle h-full w-full min-w-0 overflow-hidden rounded-xl border-border/60 shadow-sm"
@@ -127,8 +128,9 @@ function NoteFrameImpl({ data, selected }: NodeProps<RfNode>) {
       }}
       title={showEditor ? undefined : "Double-click to edit"}
     >
+      {/* Always mounted (handles stay invisible): resizing needs no click to select first. */}
       <NodeResizer
-        isVisible={selected}
+        isVisible={true}
         minWidth={140}
         minHeight={60}
         {...RESIZER}
@@ -147,13 +149,15 @@ function NoteFrameImpl({ data, selected }: NodeProps<RfNode>) {
           className="nodrag nowheel h-full min-h-0 w-full resize-none rounded-xl border-0 bg-transparent text-xs leading-snug shadow-none focus-visible:ring-0 dark:bg-transparent"
           placeholder="Write a note…"
           value={note.text}
-          // An empty note shows its editor without editing set; typing must not swap it out.
-          onFocus={() => setEditing(true)}
           onBlur={() => setEditing(false)}
           onChange={(e) =>
             upsertNote({ ...note, text: e.target.value }, `note:${note.id}`)
           }
         />
+      ) : !note.text ? (
+        <p className="px-3 py-2 text-muted-foreground text-xs">
+          Double-click to write a note…
+        </p>
       ) : (
         <BaseNodeContent className="nowheel h-full overflow-y-auto px-3 py-2">
           <Suspense
