@@ -447,7 +447,10 @@ export function gpuDeviceCacheReady(): boolean {
 }
 
 export async function ensureGpuDeviceCache(): Promise<void> {
-  await fetchSystemInfo();
+  // A failed or timed-out fetch leaves the cache cold, and Automatic would then load with no default pick.
+  if ((await fetchSystemInfo()) === null) {
+    await fetchSystemInfo();
+  }
 }
 
 /** null before fetch, [] when pinning is unavailable. */

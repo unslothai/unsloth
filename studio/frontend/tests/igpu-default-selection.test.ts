@@ -130,6 +130,7 @@ test("an Automatic selection sends the default ids, a manual pick is kept", () =
 });
 
 let snapshot: unknown = null;
+let fetchResults: unknown[] = [];
 const hooks = loadWithStubs<typeof GpuHooks>(
   new URL("../src/hooks/use-gpu-info.ts", import.meta.url),
   {
@@ -138,7 +139,10 @@ const hooks = loadWithStubs<typeof GpuHooks>(
       useEffect: () => {},
       useMemo: (read: () => unknown) => read(),
     },
-    "./use-system": { getCachedSystemInfo: () => snapshot },
+    "./use-system": {
+      getCachedSystemInfo: () => snapshot,
+      fetchSystemInfo: async () => fetchResults.shift() ?? null,
+    },
     "@/lib/dense-quant-schemes": { normalizeDenseQuantSchemes },
     "@/lib/offload-fit-tiers": { normalizeReportedOffloadFitTiers },
   },
@@ -170,6 +174,15 @@ test("Automatic gets its default pick only once devices are cached", () => {
     ids: [0, 1],
     indexKind: "physical",
   });
+});
+
+test("a failed device cache warm is retried once", async () => {
+  fetchResults = [null, { status: "ready" }, { status: "ready" }];
+  await hooks.ensureGpuDeviceCache();
+  assert.equal(fetchResults.length, 1);
+  fetchResults = [{ status: "ready" }, { status: "ready" }];
+  await hooks.ensureGpuDeviceCache();
+  assert.equal(fetchResults.length, 1);
 });
 
 test("chat load paths warm the device cache even for an Automatic pick", () => {
