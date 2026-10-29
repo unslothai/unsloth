@@ -35220,7 +35220,8 @@ class LlamaCppBackend:
 
             try:
                 # trust_env=False: an HTTP proxy can 503 for 127.0.0.1 and hang the load.
-                resp = httpx.get(url, timeout = 2.0, trust_env = False)
+                # Shared context: httpx otherwise loads the CA bundle on every probe.
+                resp = httpx.get(url, timeout = 2.0, trust_env = False, verify = _local_ssl_context())
                 if resp.status_code == 200:
                     # A cancel during the 2s probe must not publish the dropped model.
                     if cancelled is not None and cancelled():
