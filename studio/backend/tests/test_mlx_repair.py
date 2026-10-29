@@ -53,7 +53,6 @@ def test_uv_cmd_targets_this_interpreter_with_mlx_packages(monkeypatch):
     assert cmd is not None
     assert cmd[:5] == ["/usr/bin/uv", "pip", "install", "--python", sys.executable]
     assert set(mr.MLX_PACKAGES) <= set(cmd)
-    # Floor: an older mlx-vlm imports but breaks VLM Train/Export. Ceiling: unattended install.
     assert "mlx-vlm>=0.4.4,<=0.7.11" in cmd
     # Pinned, not floored: see _MLX_INSTALL_SPECS.
     assert "mlx==0.32.4" in cmd
