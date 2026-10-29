@@ -527,6 +527,10 @@ def wrap_ulysses_mixer_forward(module, get_cp_manager) -> None:
 
 _SLIDING_BLOCK_MASKS = {}
 _FLEX = {}
+# Flex outcome per call class: True once it ran (with its backward when training), False once it
+# failed. A failure on one class (dtype, head size, block alignment) keeps flex for the others.
+_FLEX_STATUS = {}
+_FLEX_BLOCK = 128
 
 
 def _flex_sliding_attention(*, config, context, Q, K, V, window, scale):
@@ -555,6 +559,45 @@ def _flex_sliding_attention(*, config, context, Q, K, V, window, scale):
         Q, K, V, block_mask = block_mask, scale = scale, enable_gqa = config.n_groups != 1
     )
     return out.transpose(1, 2)
+
+
+def _flex_device_ok(query) -> bool:
+    # flex_attention has no CPU backward and the dense path is the CPU reference.
+    return query.is_cuda
+
+
+def _flex_or_dense(*, config, context, Q, K, V, window, scale):
+    """Flex sliding attention, or the dense windowed SDPA path for a call class flex cannot run."""
+    from .attention_dispatch import _run_attention
+
+    needs_backward = bool(context.training) and not torch.is_inference_mode_enabled()
+    key = (
+        Q.device.type, Q.dtype, Q.shape[-1], config.n_groups != 1, window,
+        context.q_len % _FLEX_BLOCK == 0, needs_backward,
+    )
+    if _FLEX_STATUS.get(key) is not False:
+        flex = functools.partial(
+            _flex_sliding_attention, config = config, context = context, window = window, scale = scale
+        )
+        try:
+            if key not in _FLEX_STATUS and needs_backward:
+                # The backward compiles on the first loss.backward(), past any fallback here (head
+                # sizes whose backward exceeds shared memory): run it once per class now. Also
+                # under reentrant checkpointing, whose first forward runs without grad.
+                q, k, v = (t.detach().requires_grad_() for t in (Q, K, V))
+                with torch.enable_grad():
+                    torch.autograd.grad(flex(Q = q, K = k, V = v).sum(), (q, k, v))
+                del q, k, v
+            out = flex(Q = Q, K = K, V = V)
+            _FLEX_STATUS[key] = True
+            return out
+        except torch.OutOfMemoryError:
+            raise
+        except Exception as error:
+            # A compile failure (old torch, unsupported head size or dtype) keeps the dense path.
+            _FLEX_STATUS[key] = False
+            print(f"Unsloth: Ulysses flex sliding attention unavailable ({error}); using SDPA.")
+    return _run_attention(config = config, context = context, Q = Q, K = K, V = V)
 
 
 def _ulysses_hf_attention(module, query, key, value, attention_mask, *, group, **kwargs):
@@ -617,21 +660,9 @@ def _ulysses_hf_attention(module, query, key, value, attention_mask, *, group, *
         and window is not None
         and 0 < window < q_len * dist.get_world_size(group)
         and seq_info is None
-        and query.is_cuda
-        and not _FLEX.get("broken")
+        and _flex_device_ok(query)
     ):
-
-        def run(*, config, context, Q, K, V):
-            try:
-                return _flex_sliding_attention(
-                    config = config, context = context, Q = Q, K = K, V = V,
-                    window = window, scale = scaling,
-                )
-            except Exception as error:
-                # A flex compile failure (old torch, unsupported head size) keeps the dense path.
-                _FLEX["broken"] = True
-                print(f"Unsloth: Ulysses flex sliding attention unavailable ({error}); using SDPA.")
-                return _run_attention(config = config, context = context, Q = Q, K = K, V = V)
+        run = functools.partial(_flex_or_dense, window = window, scale = scaling)
 
     out = ulysses_attention(run, config, context, query, key, value, group)
     return (out if v_dim == head_dim else out[..., :v_dim]), None

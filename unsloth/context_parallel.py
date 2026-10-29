@@ -157,6 +157,21 @@ def _unsupported_attention(config, backend = "ring") -> Optional[str]:
     return None
 
 
+def _fast_forward_drops_window(model) -> bool:
+    """The Gemma 4 window exemption holds only for Hugging Face attention, which passes the window
+    to the Ulysses dispatcher; a module running Llama's fast forward would drop it."""
+    from .models.llama import LlamaAttention_fast_forward, runs_fast_forward
+
+    config = getattr(model, "config", None)
+    configs = (config, getattr(config, "text_config", None))
+    if not any(getattr(c, "model_type", None) in _ULYSSES_SLIDING_MODEL_TYPES for c in configs):
+        return False
+    return any(
+        name.endswith("self_attn") and runs_fast_forward(module, LlamaAttention_fast_forward)
+        for name, module in model.named_modules()
+    )
+
+
 def _attention_head_counts(config) -> set:
     """(attention heads, key / value heads) pairs to check against the Ulysses split.
 
@@ -727,6 +742,8 @@ def _check_cp_model(
 ) -> None:
     model_config = getattr(model, "config", None)
     unsupported = _unsupported_attention(model_config, backend)
+    if unsupported is None and backend == "ulysses" and _fast_forward_drops_window(model):
+        unsupported = "sliding window attention through Llama's fast forward"
     if unsupported is not None:
         raise NotImplementedError(
             f"Unsloth: {backend} context parallelism does not support {unsupported}."
