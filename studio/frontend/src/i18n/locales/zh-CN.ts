@@ -1108,7 +1108,7 @@ export const zhCN = {
       lastVisited: "上次访问",
     },
     tabs: {
-      sandbox: "沙盒",
+      sandbox: "安全",
       accounts: "账户",
       general: "通用",
       profile: "个人资料",
@@ -1392,7 +1392,7 @@ export const zhCN = {
       },
     },
     sandbox: {
-      title: "沙盒",
+      title: "安全",
       description: "Python 和终端工具调用是否在此计算机上的系统沙箱中运行。",
       docs: "文档",
       docsLabel: "打开沙盒文档",
@@ -1468,6 +1468,7 @@ export const zhCN = {
       managedNote: "操作系统沙盒由此 Unsloth 服务器的所有者设置。",
     },
     debugging: {
+      description: "无需离开应用即可查看 Unsloth 日志。",
       logSection: "日志文件",
       source: "日志文件",
       sourceHint: "模型运行器会各自写入日志，因此加载或生成失败的原因通常记录在那里，而不是服务器日志中。",
@@ -2326,7 +2327,8 @@ export const zhCN = {
       description: "监控此 Unsloth 服务器的硬件和存储。",
       liveUpdates: "实时更新",
       floatingWindow: "悬浮窗口",
-      disableOverlay: "禁用悬浮层",
+      showFloatingWindow: "显示悬浮窗口",
+      showFloatingWindowDescription: "在 Unsloth 上方持续显示 CPU、内存和 GPU 使用情况。",
       liveMonitor: {
         title: "实时监控",
         apiTitle: "API 监控",
@@ -2751,11 +2753,6 @@ export const zhCN = {
       autoScrollManual: "手动",
       autoScrollKeywords:
         "滚动 自动滚动 跟随 底部 跳转 流式 生成 锁定 scroll autoscroll follow",
-      scrollToBottomButton: "滚动到底部按钮",
-      scrollToBottomButtonDescription:
-        "向上滚动后显示一个按钮，用于跳回最新消息。",
-      scrollToBottomButtonKeywords:
-        "滚动 底部 跳转 最新 箭头 按钮 隐藏 scroll bottom button",
       replyNotification: "回复完成时通知",
       replyNotificationDescription:
         "当 Unsloth 最小化或在后台时，回复完成后显示系统通知。",
@@ -3134,6 +3131,7 @@ export const zhCN = {
       readDocs: "阅读 API 文档",
       noAccess: "还没有 API 访问权限。",
       accessTokens: "访问 token",
+      quickstartTitle: "快速开始",
       columnName: "名称",
       columnToken: "Token",
       columnCreated: "创建时间",
@@ -3273,8 +3271,9 @@ export const zhCN = {
         loadError: "无法加载决策 API 设置。",
         sendsTo: "请求将发送到 {provider}。",
         connectionMissing: "此连接已不存在或没有决策模型。请选择其他模型。",
-        addConnection: "要使用托管的决策模型，请在连接中添加 TypeSafe、Liquid AI 或 OpenRouter。",
-        openConnections: "打开连接",
+        addConnection: "要使用托管的决策模型，请在",
+        connectionsLink: "连接",
+        addConnectionSuffix: "中添加。",
       },
       mcp: {
         title: "智能体访问 (MCP)",

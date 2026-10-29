@@ -826,7 +826,7 @@ def clear(include_archived: bool = False, *, return_ids: bool = False) -> int | 
             return [] if return_ids else 0
         cleared: list[str] = []
         for path in paths:
-            if _read_meta(_sidecar_path(path.stem)) is None:
+            if _read_meta(_sidecar_path(path.stem, directory)) is None:
                 continue
             if not include_archived and gallery_flags.is_archived(flags, path.stem):
                 continue
@@ -837,7 +837,7 @@ def clear(include_archived: bool = False, *, return_ids: bool = False) -> int | 
             removed += 1
             cleared.append(path.stem)
             try:
-                _sidecar_path(path.stem).unlink()
+                _sidecar_path(path.stem, directory).unlink()
             except OSError:
                 pass
         # Once every owned clip is gone nothing is left to protect, so replace an unreadable store now or every later default clear still refuses.

@@ -33,7 +33,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { BulbIcon } from "@/lib/bulb-icon";
-import { AiSpeechIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, FileSearchIcon } from "@/lib/hugeicons-derived";
 import { InternetGlyph } from "@/lib/internet-icon";
 import { MicIcon } from "@/lib/mic-icon";
 import { MenuTickIcon, Tick02Icon } from "@/lib/tick-icon";
@@ -118,7 +118,6 @@ import {
   Bookmark02Icon,
   CodeIcon,
   Download01Icon,
-  FileDatabaseIcon,
   Folder01Icon,
   FolderAddIcon,
   Image03Icon,
@@ -2489,7 +2488,7 @@ export function SharedComposer({
           setRagEnabled(!ragEnabled);
         }}
       >
-        <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
+        <HugeiconsIcon icon={FileSearchIcon} strokeWidth={2} />
         Chat with files
         {ragEnabled && !ragDisabled ? (
           <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />

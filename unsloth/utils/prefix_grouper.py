@@ -229,21 +229,33 @@ def build_group_layout(
     total_rows, L = input_ids.shape
     keep = input_ids != pad_id
     # Completion start column per row, matching create_completion_attention_mask / _pk_cstart.
-    cstart = ((L - logits_to_keep) - left_pad_tokens_per_prompt).to(torch.long)
-    cstart_cpu = cstart.tolist()
-    ids_cpu = input_ids.tolist()
+    cstart = ((L - logits_to_keep) - left_pad_tokens_per_prompt).to(device = device, dtype = torch.long)
     # GRPO rows are one contiguous real run; the O(B*L) scan is only a fallback.
     n_real = keep.sum(dim = 1)
     first = torch.argmax(keep.to(torch.int8), dim = 1)
     ar = torch.arange(L, device = device)
-    contiguous = bool(
-        (keep == ((ar >= first.unsqueeze(1)) & (ar < (first + n_real).unsqueeze(1)))).all()
-    )
-    if contiguous:
-        real_cols_cpu = [list(range(f, f + n)) for f, n in zip(first.tolist(), n_real.tolist())]
+    contiguous = (keep == ((ar >= first.unsqueeze(1)) & (ar < (first + n_real).unsqueeze(1)))).all()
+    # One device-to-host read for everything below.
+    host = torch.cat(
+        [
+            input_ids.reshape(-1).to(torch.long),
+            cstart.reshape(-1),
+            first.to(torch.long),
+            n_real.to(torch.long),
+            contiguous.to(torch.long).reshape(1),
+        ]
+    ).tolist()
+    n_ids = total_rows * L
+    ids_cpu = [host[r * L : (r + 1) * L] for r in range(total_rows)]
+    cstart_cpu = host[n_ids : n_ids + total_rows]
+    first_cpu = host[n_ids + total_rows : n_ids + 2 * total_rows]
+    n_real_cpu = host[n_ids + 2 * total_rows : n_ids + 3 * total_rows]
+    if host[-1]:
+        real_cols_cpu = [list(range(f, f + n)) for f, n in zip(first_cpu, n_real_cpu)]
     else:
-        keep_cpu = keep.tolist()
-        real_cols_cpu = [[c for c in range(L) if keep_cpu[r][c]] for r in range(total_rows)]
+        real_cols_cpu = [
+            [c for c in range(L) if ids_cpu[r][c] != pad_id] for r in range(total_rows)
+        ]
 
     groups = _build_groups(ids_cpu, real_cols_cpu, cstart_cpu, num_generations, total_rows)
     if groups is None:
@@ -304,7 +316,8 @@ def build_group_layout(
     flat_ids = input_ids[fr, fc].unsqueeze(0)  # [1, T] (grad-safe gather)
     position_ids = torch.tensor(pos_list, device = device, dtype = torch.long).unsqueeze(0)
 
-    max_left_pad = int(left_pad_tokens_per_prompt.max().item()) if total_rows else 0
+    # cstart = (L - logits_to_keep) - left_pad, so max left pad comes from the host copy.
+    max_left_pad = ((L - logits_to_keep) - min(cstart_cpu)) if total_rows else 0
     W = logits_to_keep + max_left_pad
 
     # The logic is structural, so key on (num_groups, group_sizes), not exact lengths.

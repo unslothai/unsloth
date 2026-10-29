@@ -64,6 +64,54 @@ def _base():
     return Qwen3ForCausalLM(config).float()
 
 
+def _qwen3_5(moe: bool):
+    """Tiny Qwen3.5 text model: one Gated DeltaNet (linear attention) layer, one full attention layer; ``moe``
+    swaps the MLPs for fused experts plus a shared expert, as in Qwen3.6-35B-A3B."""
+    import transformers
+
+    torch.manual_seed(0)
+    common = dict(
+        vocab_size = 64,
+        hidden_size = 32,
+        num_hidden_layers = 2,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        head_dim = 8,
+        max_position_embeddings = 128,
+        use_cache = False,
+        tie_word_embeddings = False,
+        layer_types = ["linear_attention", "full_attention"],
+        linear_num_key_heads = 2,
+        linear_num_value_heads = 4,
+        linear_key_head_dim = 8,
+        linear_value_head_dim = 8,
+        linear_conv_kernel_dim = 4,
+    )
+    if moe:
+        config = transformers.Qwen3_5MoeTextConfig(
+            **common,
+            num_experts = 4,
+            num_experts_per_tok = 2,
+            moe_intermediate_size = 16,
+            shared_expert_intermediate_size = 16,
+        )
+        return transformers.Qwen3_5MoeForCausalLM(config).float()
+    config = transformers.Qwen3_5TextConfig(**common, intermediate_size = 64)
+    return transformers.Qwen3_5ForCausalLM(config).float()
+
+
+def _kind_targets(kind):
+    # Lone runs train fused experts for the default targets; a bare "all-linear" string reaches no experts there.
+    return {"target_modules": []} if kind == "moe" else {}
+
+
+def _kind_base(kind):
+    if kind == "dense":
+        return _base()
+    pytest.importorskip("transformers", minversion = "5.2")
+    return _qwen3_5(moe = kind == "moe")
+
+
 def _texts(n, seed):
     g = torch.Generator().manual_seed(seed)
     out = []
@@ -131,10 +179,11 @@ def _run(
     trainer_attrs = None,
     datasets = None,
     model_attrs = None,
+    base = None,
     wrap_tokenizer = None,
     **extra,
 ):
-    base = _base()
+    base = _base() if base is None else base
     for name, value in (model_attrs or {}).items():
         setattr(base, name, value)
     pristine = copy.deepcopy(base)
@@ -534,6 +583,85 @@ def test_batched_member_trains_as_it_would_alone(batched_run, monkeypatch):
         torch.testing.assert_close(batched[key], alone[key], atol = 1e-5, rtol = 1e-4)
 
 
+@pytest.mark.parametrize("kind", ["dense", "hybrid", "moe"])
+def test_a_neighbour_never_moves_a_members_training(monkeypatch, tmp_path, kind):
+    """Job B batched beside A, then beside a different A (data, rate, rank, seed): B's losses and adapter match."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    other = dict(MEMBERS[0], rows = 10, lr = 3e-2, r = 2, alpha = 2, seed = 99)
+    runs = []
+    for neighbour in (MEMBERS[0], other):
+        events, _, _ = _run(
+            monkeypatch, [neighbour, MEMBERS[1]], base = _kind_base(kind), **_kind_targets(kind)
+        )
+        mine = _member_events(events, "job_b")
+        losses = [e["loss"] for e in mine if e["type"] == "progress"]
+        runs.append(
+            (losses, load_file(os.path.join(mine[0]["output_dir"], "adapter_model.safetensors")))
+        )
+    (loss_1, adapter_1), (loss_2, adapter_2) = runs
+    assert len(loss_1) == EXPECTED_STEPS["job_b"] + 1
+    assert loss_2 == pytest.approx(loss_1, rel = 1e-5)
+    assert adapter_1.keys() == adapter_2.keys()
+    for key in adapter_1:
+        torch.testing.assert_close(adapter_2[key], adapter_1[key], atol = 1e-6, rtol = 1e-5)
+
+
+@pytest.mark.parametrize("kind", ["hybrid", "moe"])
+def test_a_hybrid_or_moe_member_trains_as_it_would_alone(monkeypatch, tmp_path, kind):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    batched, _, _ = _run(monkeypatch, MEMBERS[:2], base = _kind_base(kind), **_kind_targets(kind))
+    alone, _, _ = _run(monkeypatch, [MEMBERS[1]], base = _kind_base(kind), **_kind_targets(kind))
+    out = {}
+    for name, events in (("batched", batched), ("alone", alone)):
+        mine = _member_events(events, "job_b")
+        assert mine[-1]["type"] == "complete"
+        out[name] = (
+            [e["loss"] for e in mine if e["type"] == "progress"],
+            load_file(os.path.join(mine[0]["output_dir"], "adapter_model.safetensors")),
+            json.load(open(os.path.join(mine[0]["output_dir"], "adapter_config.json"))),
+        )
+    assert out["batched"][0][1:] == pytest.approx(out["alone"][0][1:], rel = 1e-4)
+    for key, value in out["alone"][1].items():
+        torch.testing.assert_close(out["batched"][1][key], value, atol = 1e-5, rtol = 1e-4)
+    # Every adapter trained, dense and expert alike (injecting experts must not freeze the dense ones).
+    trained = {
+        k: v.abs().max() > 0 for k, v in out["batched"][1].items() if k.endswith("lora_B.weight")
+    }
+    assert trained and all(trained.values()), [k for k, ok in trained.items() if not ok][:3]
+    if kind == "moe":
+        config = out["batched"][2]
+        assert sorted(config["target_parameters"]) == [
+            "mlp.experts.down_proj",
+            "mlp.experts.gate_up_proj",
+        ]
+        experts = [
+            k for k in out["batched"][1] if ".mlp.experts." in k and k.endswith("lora_B.weight")
+        ]
+        assert len(experts) == 4 and all(out["batched"][1][k].abs().max() > 0 for k in experts)
+    else:
+        # Gated DeltaNet projections train exactly when all-linear asks for them, as alone.
+        assert any(".linear_attn.in_proj_qkv." in k for k in out["batched"][1])
+
+
+def test_an_allowlisted_moe_with_a_router_aux_loss_trains_alone(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    pytest.importorskip("transformers", minversion = "5.2")
+    base = _qwen3_5(moe = True)
+    base.config.output_router_logits = True
+    events, _, _ = _run(monkeypatch, MEMBERS[:2], base = base, target_modules = [])
+    assert [e["type"] for e in events if e.get("member_run_id")] == ["error", "error"]
+    assert "auxiliary loss" in events[-1]["error"]
+
+
+def test_a_state_space_model_trains_alone(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    base = _base()
+    base.model.layers[0].mixer = type("MambaMixer", (torch.nn.Module,), {})()
+    events, _, _ = _run(monkeypatch, MEMBERS[:2], base = base)
+    assert [e["type"] for e in events if e.get("member_run_id")] == ["error", "error"]
+    assert "state-space" in events[-1]["error"]
+
+
 PACKED = [
     dict(
         run_id = "job_a",
@@ -681,6 +809,70 @@ def test_pack_rows_keeps_each_documents_labels_with_its_tokens():
     assert docs == sorted(rows)
 
 
+def _force_member_loss_scale(monkeypatch, poison = None):
+    """fp16's per-member loss scale on this CPU run; ``poison`` = (slot, call) overflows that member there."""
+    monkeypatch.setattr(mlt, "_fp16_loss_scale", lambda fp16, n: mlt._MemberLossScale(n))
+    if poison is None:
+        return
+    real, calls = mlt._MemberLossScale.unscale_, []
+
+    def unscale_(self, slot, params):
+        if slot == poison[0]:
+            calls.append(slot)
+            if len(calls) == poison[1]:
+                for p in params:
+                    if p.grad is not None:
+                        p.grad.fill_(float("inf"))
+        return real(self, slot, params)
+
+    monkeypatch.setattr(mlt._MemberLossScale, "unscale_", unscale_)
+
+
+def test_member_loss_scale_trains_as_unscaled(batched_run, monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    events, _, _ = batched_run
+    _force_member_loss_scale(monkeypatch)
+    scaled, _, _ = _run(monkeypatch, MEMBERS)
+    for m in MEMBERS:
+        losses, state = _final(events, m["run_id"])
+        scaled_losses, scaled_state = _final(scaled, m["run_id"])
+        assert scaled_losses == pytest.approx(losses, rel = 1e-5)
+        for key in state:
+            torch.testing.assert_close(scaled_state[key], state[key], atol = 1e-6, rtol = 1e-5)
+
+
+def test_an_fp16_overflow_skips_only_that_members_step(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    _force_member_loss_scale(monkeypatch)
+    clean, _, _ = _run(monkeypatch, MEMBERS)
+    _force_member_loss_scale(monkeypatch, poison = (0, 1))
+    hit, _, _ = _run(monkeypatch, MEMBERS)
+    for run_id in ("job_b", "job_c"):
+        losses, state = _final(clean, run_id)
+        hit_losses, hit_state = _final(hit, run_id)
+        assert hit_losses == losses
+        for key in state:
+            torch.testing.assert_close(hit_state[key], state[key], atol = 0, rtol = 0)
+    a = [e for e in _member_events(hit, "job_a") if e["type"] == "progress" and e["step"] > 0]
+    # Its first step was skipped: no gradient norm, and the next step trains at the rate it would have used.
+    assert a[0]["grad_norm"] is None and a[1]["grad_norm"] is not None
+    assert a[1]["learning_rate"] == a[0]["learning_rate"]
+    hit_a, clean_a = _final(hit, "job_a")[1], _final(clean, "job_a")[1]
+    assert any(not torch.equal(hit_a[k], clean_a[k]) for k in clean_a)
+
+
+def test_member_loss_scale_follows_grad_scaler_rules():
+    scale = mlt._MemberLossScale(2, init_scale = 8.0, growth_interval = 2)
+    p = torch.nn.Parameter(torch.zeros(3))
+    for _ in range(2):
+        p.grad = torch.full((3,), 16.0)
+        assert scale.unscale_(1, [p]) and torch.equal(p.grad, torch.full((3,), 2.0))
+    assert scale.scale == [8.0, 16.0]
+    p.grad = torch.tensor([1.0, float("nan"), 0.0])
+    assert not scale.unscale_(0, [p]) and p.grad is None
+    assert scale.scale == [4.0, 16.0] and scale.good_steps == [0, 2 % 2]
+
+
 def test_pack_rows_on_trl_without_packing_strategies(monkeypatch):
     import trl.data_utils
 
@@ -771,3 +963,33 @@ def test_packing_is_refused_where_packed_documents_see_each_other(monkeypatch, t
     events, _, _ = _run(monkeypatch, PACKED[:2], max_seq_length = 24)
     assert seen == []
     assert all(_member_events(events, m["run_id"])[-1]["type"] == "complete" for m in PACKED[:2])
+
+
+def test_an_expert_only_moe_target_trains_batched(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    events, _, _ = _run(
+        monkeypatch, MEMBERS[:2], base = _kind_base("moe"), target_modules = ["gate_up_proj"]
+    )
+    mine = _member_events(events, "job_b")
+    assert mine[-1]["type"] == "complete", mine[-1]
+    adapter = load_file(os.path.join(mine[0]["output_dir"], "adapter_model.safetensors"))
+    assert adapter and all(".mlp.experts." in k for k in adapter), sorted(adapter)[:3]
+    assert all(v.abs().max() > 0 for k, v in adapter.items() if k.endswith("lora_B.weight"))
+
+
+def test_routing_check_runs_on_a_kernel_without_expert_support(monkeypatch):
+    import sys
+    import types
+
+    import unsloth.kernels
+
+    multi_lora_trainer = mlt
+    from unsloth.kernels import multi_lora
+
+    model = torch.nn.Sequential(torch.nn.Linear(4, 4))
+    multi_lora.inject_multi_lora(model, ["0"], 2, 2, 2)
+    # An Unsloth release that predates the expert kernel: only the dense layer class exists.
+    old = types.SimpleNamespace(MultiLoraLinear = multi_lora.MultiLoraLinear)
+    monkeypatch.setattr(unsloth.kernels, "multi_lora", old)
+    monkeypatch.setitem(sys.modules, "unsloth.kernels.multi_lora", old)
+    assert [name for name, _ in multi_lora_trainer._routed_modules(model)] == ["0"]
