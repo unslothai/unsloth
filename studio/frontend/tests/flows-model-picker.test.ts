@@ -39,3 +39,8 @@ test("the model field renders Studio's ModelSelector, keeps the loaded-model che
   assert.match(picker, /import \{ type ModelOption, ModelSelector \} from "@\/features\/model-picker";/);
   assert.match(picker, /loaded=\{false\}/, "a pick never loads a model");
 });
+
+test("Fine-tune's base model keeps its plain string and uses the same picker", () => {
+  const fields = readSrc("features/flows/editor/param-fields.tsx");
+  assert.match(fields, /spec\.id === "base_model"[\s\S]{0,200}<FlowModelPicker[\s\S]{0,200}onChange=\{\(choice\) => onChange\(choice\.repo\)\}/);
+});

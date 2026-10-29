@@ -345,6 +345,15 @@ function ParamFieldImpl({ spec, value, onChange }: FieldProps) {
     return <RemoteOptionsField spec={spec} value={value} onChange={onChange} />;
   switch (spec.kind) {
     case "text":
+      // Fine-tune's base model is a plain repo string; it gets the same picker.
+      if (spec.id === "base_model")
+        return (
+          <FlowModelPicker
+            kind="chat"
+            choice={{ repo: String(value ?? ""), variant: null }}
+            onChange={(choice) => onChange(choice.repo)}
+          />
+        );
       return <TextField spec={spec} value={value} onChange={onChange} />;
     case "lora_list":
       return <LoraListField spec={spec} value={value} onChange={onChange} />;
