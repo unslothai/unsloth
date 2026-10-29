@@ -971,7 +971,7 @@ def _general_path(row):
 def _encode_or_error(fn, row):
     try:
         return fn(row)
-    except Exception as exc:  # the same failure, not just a failure
+    except Exception as exc:
         return f"{type(exc).__name__}: {exc}"
 
 
@@ -1031,14 +1031,12 @@ def test_json_dumps_row_writes_what_the_general_path_writes(seed):
     import random
     rng = random.Random(seed)
     for _ in range(1500):
-        # Mostly plain rows (the fast path) with some special columns mixed in.
         plain_only = rng.random() < 0.4
         row = {}
         for index in range(rng.randint(0, 8)):
             value = _random_value(rng)
             if plain_only and not _is_plain_for_test(value):
                 value = rng.choice(["text", 3, 2.5, None, [1, "a"], {"n": {"m": [True]}}])
-            # Mostly str column names; a few rows carry keys str() makes collide.
             key = (
                 rng.choice([1, "1", True, None])
                 if rng.random() < 0.03
