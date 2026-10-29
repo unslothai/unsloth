@@ -714,7 +714,6 @@ def arm_graphs_after_placement(
         from .diffusion_cfg_batch import cfg_pair_decline  # noqa: PLC0415 - import cycle
 
         if cfg_pair_decline(pipe, graphs = False) is None:
-            # a recorded step replays one branch's uploads; pairing shares them between both branches
             cuda_graph.uninstall_all(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
             pipe._unsloth_cuda_graphs = ()
             pipe._unsloth_cuda_graph_after_placement = False

@@ -469,7 +469,6 @@ class CfgBatchRouter:
             "misses": 0,
             "plain_calls": 0,
         }
-        # set for a streamed denoiser: both branches share each block's upload instead of one doubled call
         self.paired: Any = None
         self._logged_paired = 0
         self._reset_step()
@@ -594,7 +593,7 @@ class CfgBatchRouter:
             self._new_step(args, kwargs, latent)
         shape = self.shape
         if self.branch == 0 and self.paired is not None:
-            # one plain pair records the second call's template; from the next step on both branches pair
+            # the first plain pair records the second call's template
             if self.template is not None and shape.off is None and shape.render_steps > 1:
                 out = self._pair(args, kwargs, latent, shape)
                 if out is not None:
