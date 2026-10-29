@@ -7,7 +7,9 @@ applies, and through bitsandbytes.matmul_4bit otherwise or with an unsloth_zoo t
 import inspect
 from types import SimpleNamespace
 
+import pytest
 import torch
+from real_accelerator import has_real_cuda
 
 from unsloth.kernels import utils
 
@@ -63,10 +65,6 @@ def test_fast_linear_forward_routes_its_bnb_branch_through_it():
     assert "_bnb_matmul_4bit(X, W, W_quant, out)" in src and "bnb.matmul_4bit(" not in src
 
 
-import pytest  # noqa: E402
-from real_accelerator import has_real_cuda  # noqa: E402
-
-
 @pytest.mark.skipif(not has_real_cuda() or torch.version.hip is not None, reason = "NVIDIA CUDA")
 @pytest.mark.parametrize("bsz", [5, 8, 16])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
@@ -85,6 +83,11 @@ def test_cuda_bnb_branch_bitwise_and_direct(bsz, dtype, monkeypatch):
     monkeypatch.setattr(utils, "_BNB_GEMM_4BIT", True)
     monkeypatch.setattr(utils, "_BNB_GEMM_4BIT_DTYPES", (torch.float16, torch.bfloat16))
     monkeypatch.setattr(utils, "_bnb_gemm_4bit_device_ok", lambda device: True)
+    from bitsandbytes.backends.cuda import ops
+
+    # bitsandbytes' fused-vs-dequantize choice, forced for both the reference and the branch, so the
+    # direct call has to engage on every GPU.
+    monkeypatch.setattr(ops, "_gemm_4bit_use_custom_fn", lambda *a: True)
     with torch.no_grad():
         ref = bnb.matmul_4bit(X, proj.weight.t(), quant_state = proj.weight.quant_state)
         before = Z.BNB_4BIT_DIRECT_CALLS["direct"]
@@ -92,7 +95,4 @@ def test_cuda_bnb_branch_bitwise_and_direct(bsz, dtype, monkeypatch):
         for _ in range(3):
             assert torch.equal(utils.fast_linear_forward(proj, X), ref)
             assert utils.fast_linear_forward(proj, X, out = out) is out and torch.equal(out, ref)
-    from bitsandbytes.backends.cuda import ops
-
-    if ops._gemm_4bit_use_custom_fn(0, dtype, bsz, 1024, 4096):
-        assert Z.BNB_4BIT_DIRECT_CALLS["direct"] > before
+    assert Z.BNB_4BIT_DIRECT_CALLS["direct"] - before == 6
