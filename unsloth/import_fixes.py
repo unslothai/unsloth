@@ -11628,13 +11628,10 @@ def _hide_torchao_from_dependents():
 
 
 def disable_torchao_if_torch_too_old():
-    """Treat a torchao built for a newer torch as not installed, instead of failing `import unsloth`.
+    """Treat a torchao built for a newer torch as not installed instead of failing `import unsloth`.
 
-    unsloth_zoo requires `torchao>=0.13.0` with no ceiling (a requirement cannot see the
-    installed torch), so torch 2.6 resolves torchao 0.18, and transformers' quantizer
-    import dies on `torch.float4_e2m1fn_x2` (torch 2.7+). Probes only past the newest
-    torchao documented for this torch, after the symbol shims, and disables only on a
-    missing torch name. Code needing torchao then raises its usual "requires torchao".
+    unsloth_zoo's uncapped `torchao>=0.13.0` resolves 0.18 on torch 2.6, whose import reads
+    `torch.float4_e2m1fn_x2` (torch 2.7+). Disables only on a real missing torch name.
     """
     global TORCHAO_DISABLED_FOR_OLD_TORCH
     if TORCHAO_DISABLED_FOR_OLD_TORCH:
