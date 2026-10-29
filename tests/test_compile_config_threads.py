@@ -14,11 +14,8 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""torch >= 2.12 keeps config assignments per thread. A reentrant checkpoint (Unsloth's gradient
-checkpointing) recomputes on autograd's device thread, and the grad graph it compiles there, plus
-that graph's lazily compiled backward, saw torch's defaults: no kernel-file cache_key_tag, so a warm
-FX cache could serve the previous Unsloth's triton_op kernels, and no readback-barrier cache key.
-CPU only: CheckpointFunction.backward is run on a fresh thread, the context the device thread has."""
+"""torch >= 2.12 keeps config per thread; a reentrant checkpoint recompiles on autograd's device
+thread, which must see Unsloth's cache_key_tag and readback-barrier pass. CPU only."""
 
 import importlib.util
 import os
@@ -144,7 +141,6 @@ def test_checkpoint_recompute_compiles_with_the_kernel_cache_tag(tmp_path, monke
         def uuid(self):
             return key
 
-    # Test plumbing: the recorder itself must reach the device thread.
     torch_config.set_torch_config(inductor_config, "post_grad_custom_post_pass", Recorder())
     compiled = torch.compile(lambda x, w: torch.nn.functional.gelu(x @ w).sum(-1))
     x = torch.randn(4, 8, requires_grad = True)

@@ -117,7 +117,7 @@ def launch(kernel, grid, args, n_tensors, constexprs, device_index, **options):
 
 try:
     from unsloth_zoo.torch_config import set_torch_config
-except Exception:  # unsloth_zoo without it: the current thread only, as before
+except Exception:  # older unsloth_zoo: current thread only
 
     def set_torch_config(
         config_module,

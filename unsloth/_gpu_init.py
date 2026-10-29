@@ -274,7 +274,6 @@ except Exception:
 # TORCHINDUCTOR_COMPILE_THREADS.
 if os.environ.get("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER", "0") == "1":
     try:
-        # Every thread: checkpoint recomputes compile on autograd's device thread (torch >= 2.12).
         from unsloth_zoo.torch_config import set_torch_config
         set_torch_config(torch._inductor.config, "compile_threads", 1)
     except Exception:

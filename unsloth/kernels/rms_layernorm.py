@@ -1033,7 +1033,6 @@ def _bf16_traceable():
 _BF16_TRACEABLE = _TRACEABLE and _bf16_traceable()
 
 
-# Inductor's FX cache keys a triton_op without its source; key on the file so upgrades miss.
 _tag_compile_cache = triton_launch.tag_compile_cache
 
 
