@@ -785,6 +785,14 @@ function main(): number {
     return 1;
   }
 
+  // The KB figures below round to 0.1 KB, which is ~102 bytes: a change small enough
+  // to need justifying is a change this report cannot show. --bytes prints the two
+  // totals exactly, so "measure main, measure the branch, subtract" is one flag rather
+  // than a patched copy of this file.
+  if (process.argv.includes("--bytes")) {
+    console.log(`startup transfer=${transfer} raw=${raw}`);
+  }
+
   const over: string[] = [];
   if (transfer > BUDGET.transferBytes) {
     over.push(`transfer ${kb(transfer)} > ${kb(BUDGET.transferBytes)}`);
