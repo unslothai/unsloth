@@ -315,6 +315,23 @@ _AUDIO_SNIFF_ROWS = 16
 _AUDIO_COLUMN_KEYWORDS = ("audio", "speech", "wav", "waveform", "sound")
 
 
+_IMAGE_PATH_PATTERN = r"(?i)\.(png|jpe?g|webp|gif|bmp|tiff|svg)(\?[^\s]*)?\s*$"
+
+
+def _string_column_has_image_paths(dataset, name: str) -> Optional[bool]:
+    """Every row of an Arrow string column, vectorised; None when the column is not one."""
+    try:
+        import pyarrow as pa
+        import pyarrow.compute as pc
+
+        column = dataset.data.column(name)
+        if not (pa.types.is_string(column.type) or pa.types.is_large_string(column.type)):
+            return None
+        return bool(pc.any(pc.match_substring_regex(column, _IMAGE_PATH_PATTERN)).as_py())
+    except Exception:  # noqa: BLE001 - not an Arrow-backed dataset
+        return None
+
+
 def _image_columns(dataset) -> list:
     """Columns holding images, by feature type or by value; a column name alone does not count."""
 
@@ -334,18 +351,25 @@ def _image_columns(dataset) -> list:
         found = [name for name, feature in features.items() if is_image_feature(feature)]
     except Exception:  # noqa: BLE001 - datasets missing or a mapping that is not a features dict
         pass
+    names = [n for n in getattr(dataset, "column_names", None) or [] if n not in found]
+    # Image paths can start anywhere in a text column, so those are scanned whole.
+    sampled = []
+    for name in names:
+        whole = _string_column_has_image_paths(dataset, name)
+        if whole:
+            found.append(name)
+        elif whole is None:
+            sampled.append(name)
     try:
         import itertools
 
         from utils.datasets.format_detection import _holds_images, _is_image_value
 
-        rows = [r for r in itertools.islice(iter(dataset), 5) if isinstance(r, dict)]
-        for name in getattr(dataset, "column_names", None) or []:
-            if name not in found and any(
-                _is_image_value(r.get(name)) or _holds_images(r.get(name)) for r in rows
-            ):
+        rows = [r for r in itertools.islice(iter(dataset), 100) if isinstance(r, dict)]
+        for name in sampled:
+            if any(_is_image_value(r.get(name)) or _holds_images(r.get(name)) for r in rows):
                 found.append(name)
-    except Exception:  # noqa: BLE001 - the feature check above still stands
+    except Exception:  # noqa: BLE001 - the checks above still stand
         pass
     return found
 
