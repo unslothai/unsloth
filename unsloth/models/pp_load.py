@@ -3,27 +3,14 @@
 
 """Per-stage loading for pipeline parallelism: each rank reads only the decoder layers its stages keep.
 
-Without it every rank loads the whole model and apply_pipeline_parallel drops the other stages' layers, so the
-load peak is the full model on every GPU and a model larger than one GPU cannot be split at all. Inside
-`pipeline_sharded_loading(pp_mesh, schedule, config)` every transformers `from_pretrained` (FastLanguageModel,
-FastModel and plain transformers loaders all end there) builds the model on meta, derives the same split
-apply_pipeline_parallel will use (weights only, so LoRA added later does not move it), then reads from the
-safetensors checkpoint:
-
-* the decoder layers of this rank's stages, the final norm and the other non-layer modules whole;
-* the input embedding only on the rank holding the first stage and the output head only on the rank
-  holding the last one (a tied pair is read where either end lives);
-* every other weight as a storage-free placeholder of the right shape, dtype and device (zero stride).
-
-get_peft_model then attaches full-size LoRA everywhere with the 1-GPU initialization, and
-apply_pipeline_parallel (which must use the same mesh, schedule and stage split, checked) replaces the
-placeholder layers, embedding and head by its pass-throughs and stubs. A forward before that is refused.
-Trainable tensors built from a weight (modules_to_save, DoRA, trainable tokens) are synced only from a rank
-that read that weight. LoRA initializations that read or rewrite the base weight (PiSSA, OLoRA, MiCA, LoftQ,
-CorDA, LoRA-GA) skip placeholder layers: their placeholders stay storage-free, the owning rank computes the
-same init from its real weights, and the split drops the others' adapters. Inits that need a calibration
-forward (CorDA, EVA, LoRA-GA) need the whole model: the forward is refused before the split.
-16-bit checkpoints only.
+Inside `pipeline_sharded_loading(pp_mesh, schedule, config)` every transformers `from_pretrained` builds the
+model on meta, derives the split apply_pipeline_parallel will use (weights only, so later LoRA does not move
+it) and reads this rank's decoder layers plus the non-layer modules; the embedding only on the first stage's
+rank, the head only on the last's (a tied pair where either end lives). Every other weight is a storage-free
+zero-stride placeholder, so a model larger than one GPU can be split. apply_pipeline_parallel must use the
+same split (checked); a forward before it is refused. Weight-derived trainable tensors sync only from ranks
+that read the weight; weight-reading LoRA inits (PiSSA, OLoRA, MiCA, LoftQ, CorDA, LoRA-GA) skip placeholders
+and calibration-forward inits are refused. 16-bit checkpoints only.
 
     mesh = init_device_mesh("cuda", (pp,), mesh_dim_names = ("pp",))
     with pipeline_sharded_loading(mesh["pp"], schedule = "1f1b"):
@@ -235,9 +222,8 @@ def _preload_info(model):
 
 
 def check_preloaded_split(model, pp_mesh, schedule, stages_per_rank, bounds, local_stages, parts):
-    """Called by apply_pipeline_parallel before it cuts the model: a model loaded by pipeline_sharded_loading
-    must be split exactly as it was loaded (its other layers are placeholders). Returns the loaded module or
-    None."""
+    """A pipeline_sharded_loading model must be split as loaded (other layers are placeholders). Returns the
+    loaded module or None."""
     holder, info = _preload_info(model)
     if info is None:
         return None
@@ -260,11 +246,9 @@ def check_preloaded_split(model, pp_mesh, schedule, stages_per_rank, bounds, loc
 
 
 def loaded_by(parts, spec, pp, stages_per_rank, bounds):
-    """{id(parameter): pp ranks that read it} for every parameter under a decoder layer, the embedding or the
-    head (PEFT's LoRA / modules_to_save / trainable-token tensors there included); the rest was read
-    everywhere. On a rank that did not read it, a trainable tensor derived from a weight (a modules_to_save copy, a DoRA magnitude, a
-    trainable token row) was built from a zero placeholder: apply_pipeline_parallel syncs each such tensor only
-    among the ranks that read it, never from pp rank 0's placeholder copy."""
+    """{id(parameter): pp ranks that read it} for parameters under a layer, the embedding or the head (the rest
+    was read everywhere). Weight-derived trainable tensors are synced only among these ranks, never from a
+    placeholder copy."""
     from .pp_schedules import stage_indices
 
     per_rank = [stage_indices(spec, r, pp, stages_per_rank) for r in range(pp)]
