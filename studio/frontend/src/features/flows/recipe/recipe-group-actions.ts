@@ -70,14 +70,7 @@ export async function checkRecipeGroup(groupId: string): Promise<string[]> {
     const hub = bareHubSeed(recipe);
     if (hub) {
       // As Recipe Studio's seed Load does (and the run): the reader needs the resolved path.
-      const inspected = await inspectSeedDataset({
-        // biome-ignore lint/style/useNamingConvention: api schema
-        dataset_name: String(hub.path).trim(),
-        split: typeof hub.split === "string" ? hub.split : "train",
-        subset: typeof hub.subset === "string" ? hub.subset : undefined,
-        // biome-ignore lint/style/useNamingConvention: api schema
-        preview_size: 1,
-      });
+      const inspected = await inspectSeedDataset(hubSeedInspect(hub));
       hub.path = inspected.resolved_path;
     }
     const result = await validateRecipe({ recipe });
@@ -85,6 +78,20 @@ export async function checkRecipeGroup(groupId: string): Promise<string[]> {
   } catch (error) {
     return [error instanceof Error ? error.message : String(error)];
   }
+}
+
+/** The `/seed/inspect` request for a bare Hub seed, with what the run sends too (split, subset, token). */
+export function hubSeedInspect(hub: Record<string, unknown>) {
+  return {
+    // biome-ignore lint/style/useNamingConvention: api schema
+    dataset_name: String(hub.path).trim(),
+    split: typeof hub.split === "string" ? hub.split : "train",
+    subset: typeof hub.subset === "string" ? hub.subset : undefined,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    hf_token: typeof hub.token === "string" && hub.token ? hub.token : undefined,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    preview_size: 1,
+  };
 }
 
 /** Runs the group's Recipe Dataset step with `run` (`runToNode`), unless its seed file still has to be loaded. */

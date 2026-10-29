@@ -442,7 +442,7 @@ test("Check leaves disabled columns and a disabled Recipe Dataset out, like the 
 });
 
 test("a Hub seed still named by its repo id is picked out for resolving, a reader path is not", async () => {
-  const { bareHubSeed } = await import(
+  const { bareHubSeed, hubSeedInspect } = await import(
     "../src/features/flows/recipe/recipe-group-actions.ts"
   );
   const seed = (path: string, type = "hf") => ({
@@ -454,4 +454,19 @@ test("a Hub seed still named by its repo id is picked out for resolving, a reade
   assert.equal(bareHubSeed(seed("unsloth/alpaca-cleaned", "local")), null);
   assert.equal(bareHubSeed(seed("")), null);
   assert.equal(bareHubSeed({}), null);
+  // Check asks with what the run sends, token included, so a gated seed checks like it runs.
+  const gated = bareHubSeed({
+    // biome-ignore lint/style/useNamingConvention: api schema
+    seed_config: { source: { seed_type: "hf", path: "org/gated", token: "hf_x", subset: "a" } },
+  });
+  assert.deepEqual(hubSeedInspect(gated ?? {}), {
+    // biome-ignore lint/style/useNamingConvention: api schema
+    dataset_name: "org/gated",
+    split: "train",
+    subset: "a",
+    // biome-ignore lint/style/useNamingConvention: api schema
+    hf_token: "hf_x",
+    // biome-ignore lint/style/useNamingConvention: api schema
+    preview_size: 1,
+  });
 });
