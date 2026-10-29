@@ -268,6 +268,14 @@ def test_reward_history_reads_the_status_rl_log():
     assert training.reward_history({}) == [] and training.reward_metrics([], 2.5) == {}
 
 
+def test_a_long_reward_log_is_a_trailing_mean_so_start_and_end_are_not_one_noisy_step():
+    # 0, 2.5, 0, 2.5 ... for 100 steps then a steady 2.5: one step alone says 0 or 2.5.
+    raw = [2.5 * (i % 2) for i in range(100)] + [2.5] * 100
+    payload = {"metric_history": {"rl": [{"step": i + 1, "reward": r} for i, r in enumerate(raw)]}}
+    history = training.reward_history(payload)
+    assert history[0] == 1.25 and history[-1] == 2.5
+    assert len(history) == training.HISTORY_POINTS and max(history) <= 2.5
+
 def test_one_column_for_both_roles_is_refused():
     ctx = _Ctx(_recipe_routes([]), prompt_column = "q", response_column = "q")
     with pytest.raises(FlowNodeError, match = "different columns"):

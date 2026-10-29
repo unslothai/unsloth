@@ -508,13 +508,15 @@ def reward_history(payload: Any) -> list:
     )
     if not isinstance(rl, list):
         return []
-    return downsample(
-        [
-            round(float(e["reward"]), 4)
-            for e in rl
-            if isinstance(e, dict) and isinstance(e.get("reward"), (int, float))
-        ]
-    )
+    raw = [float(e["reward"]) for e in rl if isinstance(e, dict) and isinstance(e.get("reward"), (int, float))]
+    if not raw:
+        return []
+    # One step is one prompt's group, so the per-step reward swings between 0 and the max; a trailing
+    # mean over about a twentieth of the run is what shows whether it is learning.
+    window = max(1, min(25, len(raw) // 20))
+    head = sum(raw[:window]) / window
+    smooth = [head if i < window else sum(raw[i - window + 1 : i + 1]) / window for i in range(len(raw))]
+    return downsample([round(v, 4) for v in smooth])
 
 
 def reward_metrics(history: list, ceiling: Optional[float]) -> dict:
