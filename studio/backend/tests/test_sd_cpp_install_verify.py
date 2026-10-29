@@ -323,9 +323,6 @@ def test_the_refusal_record_survives_a_fallback_from_another_release(
     assert backend.preferred_accelerator("rocm") == "vulkan"
 
 
-# --- the HIP SDK the Windows ROCm bundle imports hipblas.dll from ------------------------------
-
-
 def _dll_dir(path: Path, *dlls: str) -> Path:
     path.mkdir(parents = True, exist_ok = True)
     for dll in dlls:
@@ -400,7 +397,6 @@ def test_other_bundles_and_a_bundled_hipblas_get_no_hip_sdk(tmp_path, hip_sdk):
 
 @pytest.fixture
 def windows_path_only(tmp_path, monkeypatch, backend):
-    """A Windows host with the real loader search: empty System32, PATH without the HIP SDK."""
     system_root = tmp_path / "Windows"
     (system_root / "System32").mkdir(parents = True)
     monkeypatch.setenv("SystemRoot", str(system_root))

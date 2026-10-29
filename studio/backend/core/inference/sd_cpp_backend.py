@@ -2135,7 +2135,6 @@ def _windows_dll_search_dirs() -> list[str]:
     dirs.append(system_root)
     dirs.extend(d.strip().strip('"') for d in os.environ.get("PATH", "").split(os.pathsep))
     try:
-        # The same dirs runtime_env appends for the spawned ROCm build.
         dirs.extend(_installer_module().windows_hip_sdk_bin_dirs())
     except Exception as exc:  # noqa: BLE001 -- PATH alone still decides
         logger.debug("HIP SDK lookup failed: %s", exc)

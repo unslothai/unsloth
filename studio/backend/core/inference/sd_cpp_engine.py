@@ -308,7 +308,6 @@ def runtime_env(binary: str, base_env: Optional[dict[str, str]] = None) -> dict[
 
 
 def host_hip_sdk_dirs(bindir: str) -> list[str]:
-    """The HIP SDK bin dirs a Windows ROCm bundle in ``bindir`` needs (see install_sd_cpp_prebuilt)."""
     try:
         from core.inference import sd_cpp_backend  # noqa: PLC0415 - the backend imports this module
         return sd_cpp_backend._installer_module().hip_sdk_dirs_for_bundle(bindir)

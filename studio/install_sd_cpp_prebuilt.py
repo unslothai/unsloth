@@ -733,8 +733,7 @@ def _rocm_version_key(name: str) -> tuple:
 
 
 def windows_hip_sdk_bin_dirs() -> list[str]:
-    """HIP SDK 7.x bin dirs holding hipblas.dll, HIP_PATH / ROCM_PATH first, then C:\\Program Files\\AMD\\ROCm\\<ver>
-    newest first. The SDK installer sets HIP_PATH but never puts this dir on PATH."""
+    """HIP SDK 7.x bin dirs with hipblas.dll: HIP_PATH / ROCM_PATH, then Program Files newest first (installer never adds bin to PATH)."""
     roots = [os.environ.get("HIP_PATH"), os.environ.get("ROCM_PATH")]
     base = Path(os.environ.get("ProgramFiles") or r"C:\Program Files") / "AMD" / "ROCm"
     try:
@@ -759,8 +758,7 @@ def windows_hip_sdk_bin_dirs() -> list[str]:
 
 
 def hip_sdk_dirs_for_bundle(bindir: Path | str) -> list[str]:
-    """SDK dirs to append to PATH for a Windows ROCm bundle, which ships amdhip64_7.dll but imports the SDK's
-    hipblas.dll; [] for any other bundle."""
+    """SDK dirs for a ROCm bundle shipping amdhip64_7.dll but importing the SDK's hipblas.dll; else []."""
     bindir = Path(bindir)
     if not (bindir / "amdhip64_7.dll").is_file() or (bindir / "hipblas.dll").is_file():
         return []
