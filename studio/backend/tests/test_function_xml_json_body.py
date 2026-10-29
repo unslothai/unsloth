@@ -47,3 +47,22 @@ def test_zero_argument_and_parameter_calls_are_unchanged():
     ]
     text = "<tool_call>\n<function=web_search>\n<parameter=query>\nmars\n</parameter>\n</function>\n</tool_call>"
     assert _calls(text) == [("web_search", {"query": "mars"})]
+
+
+@pytest.mark.parametrize("wrap", [True, False])
+def test_json_body_is_left_alone_with_auto_heal_off(wrap):
+    # Auto-Heal off (allow_incomplete=False) accepts only well-formed calls, so the mixed form keeps
+    # its strict reading in both copies of the reader.
+    from core.tool_healing import parse_tool_calls_from_text as heal_parse
+
+    call = '<function=python>\n{"code": "print(1)"}\n</function>'
+    text = f"<tool_call>\n{call}\n</tool_call>" if wrap else call
+    for parse in (parse_tool_calls_from_text, heal_parse):
+        strict = parse(text, allow_incomplete = False, enabled_tool_names = ENABLED)
+        assert [
+            (c["function"]["name"], json.loads(c["function"]["arguments"])) for c in strict
+        ] == [("python", {})]
+        healed = parse(text, allow_incomplete = True, enabled_tool_names = ENABLED)
+        assert [
+            (c["function"]["name"], json.loads(c["function"]["arguments"])) for c in healed
+        ] == [("python", {"code": "print(1)"})]

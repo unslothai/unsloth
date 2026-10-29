@@ -915,9 +915,10 @@ def parse_tool_calls_from_text(
                 arguments[param_name] = _trim_param_value(val)
             if not valid_params:
                 continue
-        if not param_starts and body.lstrip().startswith("{"):
+        if allow_incomplete and not param_starts and body.lstrip().startswith("{"):
             # No <parameter> blocks but a JSON object body: models mix the Hermes and XML forms, and
             # reading it as zero arguments ran the tool with {} (web_search: "No query provided").
+            # A heal, so only with Auto-Heal on; strict mode keeps the well-formed reading.
             try:
                 _json_body = json.loads(body.strip())
             except (json.JSONDecodeError, ValueError, RecursionError):
