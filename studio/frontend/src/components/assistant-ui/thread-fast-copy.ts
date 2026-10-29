@@ -2,48 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Copying a selection out of the thread, without paying for the styled clipboard flavour.
- *
- * Almost all of the cost of a copy on a long thread is the browser building the annotated
- * `text/html` flavour, not extracting text: on smoke-heavy-thread.html at the 100K rung a
- * 40,626-character selection costs 347.0ms to copy and 11.9ms to produce ourselves. So take the
- * event, write the plain text ourselves, and the styled flavour is never built.
- *
- * `Selection.toString()` IS NOT THE SAME STRING AS THE CLIPBOARD'S `text/plain`, and this file
- * exists because of that: Blink builds them with different `TextIteratorBehavior` flags, and
- * `WebViewImpl::ApplyWebPreferences` turns `SetSelectionIncludesAltImageText(true)` on for every
- * web view. Copying the thirty-one constructs in tests/studio/_thread_fast_copy_constructs.py one
- * at a time on Chromium and WebKit found exactly four divergences: img[alt] emits alt text (both,
- * REPRODUCED), U+00A0 becomes a space (both, REPRODUCED), text-transform is ignored on chromium
- * and applied on webkit (REPRODUCED for chromium), and a form control's value is emitted as its
- * own block on chromium and omitted on webkit (REFUSED). Everything else is identical because it
- * is the same iterator, so this does NOT reimplement the iterator: it patches the enumerated
- * deltas into the live DOM inside one synchronous turn of the copy event, asks the engine for its
- * own `toString()`, and puts everything back. Every semantic not on that list stays right by
- * construction, which a hand-written walker could not promise.
- *
- * ONE ENGINE FAMILY ONLY. WebKit's `toString()` appends trailing block breaks its clipboard does
- * not carry, and the count depends on what the selection ends with (+2 after a paragraph or
- * heading, +1 after a div, list, `<pre>` or blockquote, +0 after a table or an inline). Chromium's
- * delta is +0 in all eleven endings measured. A silently wrong clipboard is worse than a slow one,
- * so an unproven engine gets the browser's own copy. The check is a BEHAVIOURAL probe of
- * `toString()`, not a version test; the user agent narrows it further and never decides bytes.
- *
- * A FORM CONTROL IS REFUSED rather than reproduced, because chromium's emission carries a
- * control-dependent block break ("value" then a break for a text input, breaks on both sides for a
- * select). The 100K-rung viewport contains ZERO form controls, so the refusal costs nothing that
- * exists, and a password field would copy as its mask, where guessing the glyph wrong would put a
- * real password on the clipboard.
- *
- * NOT COVERED: a document-wide Ctrl+A, which targets the first sidebar row rather than the
- * viewport (measured in both engines) and would be refused anyway for spanning the composer's
- * textarea. Moving the listener to the document changes neither.
- *
- * NOT SERIALISED FROM THE MESSAGE STORE, which would be faster still but puts role headings,
- * thinking markers and tool lines on the clipboard that the DOM selection never contained. That
- * trade is worth making on a virtualized list, where the DOM cannot select an unmounted message;
- * on the shipped fully mounted list it only hands the user a different document than they
- * highlighted.
+ * Copy handler that writes text/plain itself, skipping the costly styled text/html flavour.
+ * `Selection.toString()` differs from the clipboard's text/plain, so the known deltas (img alt,
+ * U+00A0, text-transform) are patched into the live DOM for one synchronous turn, the engine's own
+ * `toString()` is read, and everything is restored. Only engines whose `toString()` is proven to
+ * match (Chromium) take this path; form controls are refused, since a password could leak.
  */
 
 /** Why a copy was left to the browser. Named so a test can assert the reason, not just the miss. */
@@ -60,12 +23,7 @@ export type ThreadCopyDecision =
   | { readonly kind: "fast" }
   | { readonly kind: "native"; readonly reason: NativeCopyReason };
 
-/**
- * A copy event, structurally. The GATE needs no DOM, so its branches can be unit tested against
- * plain objects. The SERIALISER below must be proven in a browser against a real clipboard, and is,
- * by tests/studio/playwright_thread_fast_copy.py: per construct, Chromium must match byte for byte
- * and WebKit must refuse with a divergence the same run measures.
- */
+/** Structural copy event so the gate can be unit tested without a DOM. */
 export type CopyEventLike = {
   readonly defaultPrevented: boolean;
   readonly target: unknown;
@@ -86,13 +44,9 @@ export type ThreadViewportLike = {
   querySelector(selectors: string): unknown;
 };
 
-/**
- * A form control anywhere in the selected subtree. Chromium's clipboard reads its value and
- * wraps it in block breaks whose shape depends on the control, so the copy is handed back.
- */
+/** Chromium wraps a control's value in control-dependent block breaks, so the copy is refused. */
 const FORM_CONTROL = "input, textarea, select";
 
-/** Where a copy must be left alone because the selection is not the document's. */
 const EDITABLE_ORIGIN =
   'input, textarea, select, [contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"]';
 
@@ -107,12 +61,8 @@ function matchesAncestor(target: unknown, selectors: string): boolean {
 }
 
 /**
- * The smallest subtree the checks have to be right about: the range's common ancestor, not the
- * viewport. That difference is what makes this worth shipping, since one open `<textarea>`
- * anywhere would otherwise cost the fast path for the whole thread. The common ancestor is a
- * superset of the selected content, so scanning it can only refuse a copy the fast path could have
- * taken, never accept one it could not. A range ending in a text node has no `querySelector`, hence
- * the parent; anything unrecognisable falls back to the viewport, the conservative direction.
+ * The range's common ancestor, not the viewport, so one open textarea elsewhere does not refuse
+ * every copy. A superset of the selection, so it can only over-refuse.
  */
 function scopeOf(
   selection: SelectionLike,
@@ -137,14 +87,8 @@ function scopeOf(
 }
 
 /**
- * Does this engine's clipboard agree with its own `toString()` about trailing block breaks?
- * A hidden paragraph is selected and `toString()` asked whether it appends one: Chromium says "a",
- * WebKit says "a" plus two breaks. Cached, since the answer cannot change within a document.
- *
- * The restore goes through the serialiser's `restoreSelection` for the same reason it does there:
- * rebuilding from ranges alone flips a selection the user dragged upwards, so the text would be
- * right while their highlight silently reversed and the next Shift+Arrow moved the far end.
- * Reached on a plain right-to-left drag, and on the FIRST copy of a document.
+ * Behavioural probe: does `toString()` append trailing block breaks the clipboard lacks (WebKit)?
+ * Cached per document. Restores via `restoreSelection` to keep an upward drag's direction.
  */
 export function engineClipboardIsMapped(
   view: Window & typeof globalThis,
@@ -188,23 +132,7 @@ export function engineClipboardIsMapped(
   return mapped;
 }
 
-/**
- * The two deltas that are reproduced, patched into the live DOM and taken straight back out.
- * Returns the undo list rather than cleaning up itself, so the caller can guarantee the restore
- * runs even if `toString()` throws. Nothing here paints: the whole sequence is one synchronous
- * turn of the copy event.
- */
-/**
- * Put an element's `style` attribute back exactly as it was found, including not being there.
- * `style.removeProperty` is not the inverse of `style.setProperty` at the serialisation level,
- * which is the level a DOM comparison works at.
- */
-/**
- * Would the clipboard's own iterator emit this image's alt text? `SkipsUnselectableContent` and
- * ordinary rendering rules mean an image that is not displayed, not visible or not selectable
- * contributes nothing. `visibility` and `user-select` inherit, so the computed style already
- * answers for an ancestor that set them.
- */
+/** Hidden, invisible or unselectable images contribute no alt text natively. */
 function nativeWouldEmitAlt(image: HTMLImageElement): boolean {
   const computed = getComputedStyle(image);
   if (computed.display === "none") return false;
@@ -214,16 +142,14 @@ function nativeWouldEmitAlt(image: HTMLImageElement): boolean {
   return true;
 }
 
+/** `style.removeProperty` does not restore the serialised attribute. */
 function restoreStyleAttribute(element: Element, had: string | null): void {
   if (had !== null) {
     element.setAttribute("style", had);
     return;
   }
-  // `removeAttribute("style")` DOES NOT REMOVE IT once the inline declaration has been touched.
-  // Measured in Chromium: setProperty then removeAttribute leaves `style=""` on the element and in
-  // its serialisation, twice does not help, nor does clearing `cssText` first. Removing the
-  // attribute NODE does work. The residue is invisible to a user, visible to every DOM comparison,
-  // and permanent, so a thread accumulates one per element the fast path ever touched.
+  // `removeAttribute("style")` leaves `style=""` once the declaration was touched (Chromium);
+  // removing the attribute NODE works.
   try {
     element.attributes.removeNamedItem("style");
   } catch {
@@ -231,46 +157,32 @@ function restoreStyleAttribute(element: Element, had: string | null): void {
   }
 }
 
+/** Returns the undo list so the caller can guarantee the restore runs even if `toString()` throws. */
 function patchClipboardDeltas(root: Element): Array<() => void> {
   const undo: Array<() => void> = [];
 
-  // IgnoresCssTextTransforms: the clipboard carries the SOURCE text. ROOT ITSELF, not only its
-  // descendants. A selection lying entirely inside `<span class="uppercase">text</span>` has that
-  // span as its common ancestor and `querySelectorAll("*")` excludes the element it is called on,
-  // so the TRANSFORMED text was written where the clipboard carries the source (the INSIDE_SCOPE
-  // cases in tests/studio/_thread_fast_copy_constructs.py all failed). `text-transform` inherits,
-  // so `getComputedStyle(root)` already reports a transform set on any ancestor above the scope.
+  // The clipboard carries SOURCE text. Include the root itself: querySelectorAll("*") excludes it,
+  // and text-transform inherits, so getComputedStyle(root) covers ancestors.
   const scoped: HTMLElement[] = [];
   if (root instanceof HTMLElement) scoped.push(root);
   scoped.push(...Array.from(root.querySelectorAll<HTMLElement>("*")));
   for (const element of scoped) {
     const transform = getComputedStyle(element).textTransform;
     if (!TRANSFORMED.has(transform)) continue;
-    // THE RAW ATTRIBUTE, not the property. `style.removeProperty` restores the computed value and NOT
-    // the serialisation: an element that had no `style` attribute is left carrying `style=""`, and one
-    // that had `style="text-transform:uppercase"` gets it rewritten with a space and a semicolon.
-    // Invisible to a user, visible to any DOM comparison, so every copy silently rewrote the document.
+    // Restore the raw attribute: removeProperty leaves `style=""` or rewrites the serialisation.
     const had = element.getAttribute("style");
     element.style.setProperty("text-transform", "none", "important");
     undo.push(() => restoreStyleAttribute(element, had));
   }
 
-  // EmitsImageAltText: the clipboard carries the alt text, which is not in the DOM as text. THE
-  // HOLDER MUST NOT HAVE A BOX. Unsloth's message images are display:block, so an inline holder
-  // beside one sits between two blocks, the engine wraps it in an anonymous block, and the alt text
-  // arrives with a leading newline the real clipboard does not have (measured on the real thread as
-  // 40,650 characters against 40,648, two images each contributing one extra break). Taking the
-  // image out of the flow removes the box the break came from, and an image contributes no text of
-  // its own, so hiding it changes nothing else.
+  // The alt holder must not have a box: next to a block image it gets an anonymous block and a
+  // stray newline. Hiding the image removes it, and the image has no text of its own.
   for (const image of Array.from(
     root.querySelectorAll<HTMLImageElement>("img[alt]"),
   )) {
     const alt = image.getAttribute("alt");
     if (!alt) continue;
-    // ONLY AN IMAGE THE NATIVE ITERATOR WOULD EMIT. Chromium skips an image that is not rendered or
-    // not selectable, so inserting alt text unconditionally ADDS text the clipboard never carried:
-    // `display: none`, `visibility: hidden`, `user-select: none` and Unsloth's own `ImagePreview`,
-    // which carries an `invisible` class until the image loads, all diverge.
+    // Only images the native iterator would emit, e.g. not ImagePreview's `invisible` loading state.
     if (!nativeWouldEmitAlt(image)) continue;
     const had = image.getAttribute("style");
     image.style.setProperty("display", "none", "important");
@@ -287,21 +199,8 @@ function patchClipboardDeltas(root: Element): Array<() => void> {
 }
 
 /**
- * The string the browser would have put on the clipboard, produced without building the styled
- * flavour. Proven byte-for-byte against Chromium's real clipboard over 31 selections (the 23
- * constructs it answers, two element-offset endpoints, three scoped to a transformed element and
- * three partials) and on the real thread at 40,648 characters. The selection is restored whatever
- * happens, because a copy that quietly moved the user's highlight would be the worse bug.
- */
-/**
- * A selection's DIRECTION, and only its direction.
- *
- * Deliberately not the endpoints: the alt holders are inserted BEFORE their images, so an endpoint
- * expressed as an element/child offset in the same parent points at a different child afterwards.
- * Measured with two images and a trailing text node selected by parent offsets 0..3, the tail was
- * silently dropped, and because the result is non-empty the listener took the copy anyway. A
- * cloned `Range` is live and its boundaries move with the DOM, so the ranges already hold the
- * correct positions; only which end the user dragged from is missing from them.
+ * Only the direction: holders are inserted before images, so element-offset endpoints would
+ * shift, while cloned live Ranges already track the DOM.
  */
 type SelectionDirection = { readonly backward: boolean };
 
@@ -322,14 +221,8 @@ function captureDirection(selection: Selection): SelectionDirection {
 }
 
 /**
- * Put the selection back the way it was, INCLUDING ITS DIRECTION.
- *
- * A `Range` carries ordered boundaries and nothing else, so `addRange` always produces a forward
- * selection: a selection dragged upwards came back with anchor and focus swapped, so the user's
- * next Shift+Arrow moved the opposite edge. Only the patched path rebuilds the selection, which is
- * why this never showed on ordinary prose. `setBaseAndExtent` preserves direction but takes one
- * anchor/focus pair, so a multi-range selection still falls back to `addRange`; only Firefox
- * produces those, and this fast path does not run there.
+ * Restore the selection including its direction: `addRange` always yields a forward selection.
+ * Multi-range selections (Firefox only) still use `addRange`; this path does not run there.
  */
 function restoreSelection(
   selection: Selection,
@@ -338,8 +231,7 @@ function restoreSelection(
 ): void {
   selection.removeAllRanges();
   if (saved.length === 1) {
-    // The LIVE range's boundaries, which the holder insertions have already adjusted, ordered
-    // by the direction the user dragged in.
+    // The live range, already adjusted by holder insertions, ordered by drag direction.
     const range = saved[0];
     try {
       if (direction.backward) {
@@ -365,6 +257,7 @@ function restoreSelection(
   for (const range of saved) selection.addRange(range);
 }
 
+/** The string the browser would have copied. The selection is restored whatever happens. */
 export function faithfulSelectionText(
   selection: Selection,
   root: Element,
@@ -387,11 +280,7 @@ export function faithfulSelectionText(
   return raw.replace(/\u00a0/g, " ");
 }
 
-/**
- * Should this copy be answered by us instead of the browser, and if not, why not? Pure, and every
- * rejection carries its reason, because each branch is a distinct way of getting somebody's copy
- * wrong and "the fast path did not run" cannot tell them apart.
- */
+/** Pure; every rejection carries its reason so tests can tell the failure modes apart. */
 export function decideThreadCopy(
   event: CopyEventLike,
   selection: SelectionLike | null,
@@ -408,10 +297,7 @@ export function decideThreadCopy(
     return { kind: "native", reason: "no-clipboard-data" };
   }
 
-  // A copy out of a text control is that control's own selection, and `window.getSelection()` is not
-  // it: the document selection is usually collapsed or stale while a textarea has focus, so
-  // substituting it replaces the copied field with unrelated text. The thread viewport contains these
-  // (a message being edited mounts a textarea), so this cannot be left to the listener's placement.
+  // A copy out of a text control is the control's own selection; window.getSelection() is stale.
   if (matchesAncestor(event.target, EDITABLE_ORIGIN)) {
     return { kind: "native", reason: "editable-origin" };
   }
@@ -421,8 +307,7 @@ export function decideThreadCopy(
     return { kind: "native", reason: "empty-selection" };
   }
 
-  // A selection that starts inside the thread and runs out of it has a common ancestor above the
-  // viewport. Its text is no longer something this file has proven.
+  // A selection leaving the thread has an ancestor above the viewport; its text is unproven.
   for (let index = 0; index < selection.rangeCount; index += 1) {
     if (
       !viewport.contains(selection.getRangeAt(index).commonAncestorContainer)
@@ -435,8 +320,7 @@ export function decideThreadCopy(
     return { kind: "native", reason: "form-control" };
   }
 
-  // Last, because it is the only branch that touches the document, and every cheaper refusal
-  // above should have run first.
+  // Last: the only branch that touches the document.
   if (!engineIsMapped) {
     return { kind: "native", reason: "unmapped-engine" };
   }
@@ -444,11 +328,7 @@ export function decideThreadCopy(
   return { kind: "fast" };
 }
 
-/**
- * Wire the decision to a live viewport. Returns the detach function. Only `copy` is listened for:
- * a `cut` must also mutate the document it cut from, the thread is not editable, and one inside a
- * message being edited belongs to that textarea.
- */
+/** Only `copy`: a cut must mutate the document, and the thread is not editable. */
 export function attachThreadFastCopy(viewport: HTMLElement): () => void {
   const onCopy = (event: ClipboardEvent) => {
     const view = viewport.ownerDocument.defaultView;
@@ -469,12 +349,10 @@ export function attachThreadFastCopy(viewport: HTMLElement): () => void {
         scopeElement(selection as Selection, viewport),
       );
     } catch {
-      // The patch could not be applied or undone cleanly. Let the browser copy: slow and right
-      // beats fast and silently different.
+      // The patch failed; let the browser copy (slow and right beats fast and wrong).
       return;
     }
-    // A selection can be non-collapsed and still serialise to nothing (an image with an empty
-    // alt on its own). Writing "" would clear a clipboard the browser would have left alone.
+    // A non-collapsed selection can serialise to ""; writing it would clear the clipboard.
     if (text === "") return;
 
     event.preventDefault();
@@ -485,7 +363,6 @@ export function attachThreadFastCopy(viewport: HTMLElement): () => void {
   return () => viewport.removeEventListener("copy", onCopy);
 }
 
-/** The element form of `scopeOf`, for the patching path, which needs a real `Element`. */
 function scopeElement(selection: Selection, viewport: HTMLElement): Element {
   if (selection.rangeCount !== 1) return viewport;
   const container = selection.getRangeAt(0).commonAncestorContainer;

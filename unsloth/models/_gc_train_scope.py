@@ -1,26 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Freeze the setup-time heap for the duration of `Trainer.train()`.
-
-Libraries call `gc.collect()` several times inside `train()`. Each full collection walks every
-tracked object, and after loading a model, tokenizer, dataset and compiled code that heap is
-large: about 0.5 s per pass, 2 to 3 s per `train()` on a 0.6B / 1B LoRA run. `gc.freeze()` moves
-everything alive at train start into the permanent generation, so those passes only see objects
-created during training.
-
-The freeze must be undone when `train()` exits (normally, by exception or by KeyboardInterrupt):
-frozen objects are never collected, so a cyclic object dropped after training (the usual
-`del model; gc.collect()` in a notebook) would otherwise keep its memory forever.
-
-Rules:
-- Only the outermost `train()` freezes; nested calls (resume guards, per-instance wrappers) are
-  counted and do nothing.
-- If something is already frozen at entry, the caller owns the freeze: Python cannot unfreeze
-  only our objects, so we leave the heap alone and do not unfreeze on exit.
-- `gc.isenabled()` is never touched.
-- `UNSLOTH_GC_FREEZE=0` turns it off (read on each outermost entry).
-"""
+"""gc.freeze setup heap in outermost train() (nested calls no-op); unfreeze on exit unless caller
+already froze; UNSLOTH_GC_FREEZE=0 disables."""
 
 import functools
 import gc

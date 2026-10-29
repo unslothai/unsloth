@@ -689,7 +689,7 @@ def test_compiled_only_ignores_a_poisoned_graph_handle():
 
 
 def test_compiled_only_honours_the_background_compile_eager_gate():
-    """A render recording for a pending background compile bypasses compiled calls and graphs: it runs batched."""
+    """Eager-forced with nothing recording (compile already running): the guided call runs batched."""
     from core.inference import diffusion_bg_compile as bg
 
     model = _model()
@@ -700,9 +700,63 @@ def test_compiled_only_honours_the_background_compile_eager_gate():
     with bg.force_eager(), zs.render(pipe, 1):
         _run(model, *args)
     assert zs.zimage_cfg_split_status(pipe)["split"] == 0
+    rec = bg.BackgroundCompile(model)
+    assert rec.install()
+    rec.state = "compiling"
+    with bg.force_eager():
+        assert zs.guided_runs_at_guidance_off_batch(pipe) is False
+        with zs.render(pipe, 1):
+            _run(model, *args)
+    assert zs.zimage_cfg_split_status(pipe)["split"] == 0 and rec.samples == []
     with zs.render(pipe, 1):
         _run(model, *args)
     assert zs.zimage_cfg_split_status(pipe)["split"] == 1
+
+
+def test_background_compile_recording_render_splits_and_records_the_compiled_shape():
+    """The recording render splits, so the compiled render after the background replay compiles nothing new."""
+    from core.inference import diffusion_bg_compile as bg
+    from core.inference.diffusion_cuda_graph import _rebuild
+
+    torch._dynamo.reset()
+    model = _model()
+    pipe = types.SimpleNamespace(transformer = model)
+    assert zs.install_zimage_cfg_split(pipe, offload_policy = "none", compiled_only = True) is None
+    rec = bg.BackgroundCompile(model)
+    assert rec.install()
+    args = _guided_args(_latent(17), torch.tensor([0.4]), 9, 12, 17)
+    with torch.no_grad():
+        batched = model(*args, return_dict = False)[0]
+        alone = (
+            model(*[a[:1] for a in args], return_dict = False)[0]
+            + model(*[a[1:] for a in args], return_dict = False)[0]
+        )
+    with bg.force_eager():
+        priced_off = zs.guided_runs_at_guidance_off_batch(pipe)
+        with zs.render(pipe, 1):
+            recorded = [_run(model, *args) for _ in range(3)]
+    shapes = sorted(tuple(c[0].shape) for _, c, *_ in rec.samples)
+    stats = dict(zs.zimage_cfg_split_status(pipe))
+    # What kick() runs: regional compile, then the recorded inputs.
+    _compile_blocks(model)
+    with torch.no_grad():
+        for spec, clones, *_ in rec.samples:
+            a, k = _rebuild(spec, clones)
+            model(*a, **k)
+    warm = _graphs()
+    assert warm > 0
+    with zs.render(pipe, 1):
+        _run(model, *args)
+    assert _graphs() - warm == 0
+    assert zs.zimage_cfg_split_status(pipe)["split"] == 4
+    assert stats == {"armed": True, "split": 3, "batched": 0}
+    assert shapes == [(16, 1, 8, 8)] * 2
+    assert priced_off is True
+    for out in recorded:
+        for s, a, b in zip(out, alone, batched):
+            assert torch.equal(s, a)
+            torch.testing.assert_close(s, b, atol = 1e-5, rtol = 1e-4)
+    assert bg.recording(model) is False
 
 
 def test_eager_render_behind_an_active_router_is_priced_and_run_split():

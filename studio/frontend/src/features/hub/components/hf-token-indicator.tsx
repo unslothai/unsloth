@@ -14,18 +14,15 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { hfApiToken, useHfTokenStore } from "../stores/hf-token-store";
 
 interface HfTokenIndicatorProps {
-  /** true: status chip (Train wizard); false: icon-only pill (Hub header). */
   showLabel?: boolean;
   onOpenSettings: () => void;
 }
 
-/** Masked preview so the saved token is identifiable without exposing it. */
 function maskHfToken(token: string): string {
   const trimmed = token.trim();
   return trimmed.length < 8 ? "••••" : `••••${trimmed.slice(-4)}`;
 }
 
-// Compact "set / not set" indicator for the app-wide HF token; click opens Settings -> General.
 export function HfTokenIndicator({
   showLabel = false,
   onOpenSettings,
@@ -80,7 +77,6 @@ export function HfTokenIndicator({
               >
                 {hasToken ? (
                   <>
-                    {/* Announced, not shown: the mask identifies the token. */}
                     <span className="sr-only">{t("picker.hfToken.saved")}</span>
                     {maskHfToken(hfToken)}
                   </>

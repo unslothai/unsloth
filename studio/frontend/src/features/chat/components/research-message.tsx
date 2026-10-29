@@ -11,9 +11,8 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { useAuiState } from "@assistant-ui/react";
-import { Telescope02Icon } from "@hugeicons/core-free-icons";
+import { Telescope02Icon, Alert02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Check, TriangleAlert } from "lucide-react";
 import { type ReactElement, useEffect } from "react";
 import {
   ensureResearchRunFollowed,
@@ -26,6 +25,7 @@ import type { ResearchMessageMetadata } from "../types/research";
 import { researchReplyOwnsRun } from "../utils/research-run-binding";
 import { researchCitation } from "../utils/research-citations";
 import { researchStatusLabel } from "./research-activity-panel";
+import { Tick02Icon } from "@/lib/tick-icon";
 
 export function ResearchMessage(): ReactElement | null {
   const metadata = useAuiState(
@@ -111,9 +111,9 @@ export function ResearchMessage(): ReactElement | null {
         >
           <span className="flex size-5 items-center justify-center rounded-full bg-primary/10 text-primary">
             {failed ? (
-              <TriangleAlert className="size-3" />
+              <HugeiconsIcon icon={Alert02Icon} className="size-3" />
             ) : (
-              <Check className="size-3" />
+              <HugeiconsIcon icon={Tick02Icon} className="size-3" />
             )}
           </span>
           <span>
@@ -159,7 +159,7 @@ export function ResearchMessage(): ReactElement | null {
           )}
         >
           {failed ? (
-            <TriangleAlert className="size-4" />
+            <HugeiconsIcon icon={Alert02Icon} className="size-4" />
           ) : cancelled ? (
             <HugeiconsIcon icon={Telescope02Icon} className="size-4" />
           ) : (

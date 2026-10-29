@@ -30,8 +30,7 @@ class UnstructuredSeedReader(SeedReader[UnstructuredSeedSource]):
                     meta = json_mod.loads(meta_path.read_text(encoding = "utf-8"))
                     orig_name = meta.get("original_filename", path_obj.name)
                 except (json_mod.JSONDecodeError, OSError, UnicodeDecodeError):
-                    # Undecodable metadata is as malformed as invalid JSON, so fall back to the file's own name rather
-                    # than abort the seed.
+                    # Undecodable metadata counts as malformed JSON: fall back to the file's own name rather than abort.
                     pass
             file_entries.append((path_obj, orig_name))
 
@@ -39,5 +38,6 @@ class UnstructuredSeedReader(SeedReader[UnstructuredSeedSource]):
             file_entries = file_entries,
             chunk_size = self.source.chunk_size,
             chunk_overlap = self.source.chunk_overlap,
+            include_rows = False,
         )
         return str(path)

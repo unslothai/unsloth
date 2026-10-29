@@ -175,6 +175,8 @@ def test_supported_names():
         "wan2.1-t2v-14b",
         "hunyuanvideo-1.5",
         "hunyuanvideo-1.5-720p",
+        "cosmos3-nano",
+        "cosmos3-edge",
     )
 
 

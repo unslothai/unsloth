@@ -1964,7 +1964,12 @@ class _CompiledDit(__import__("torch").nn.Module):
         return self._guarded(q, q, q, None)
 
 
-def _compiled_env(monkeypatch, auto, flash_ms):
+def _compiled_env(
+    monkeypatch,
+    auto,
+    flash_ms,
+    dit_cls = None,
+):
     torch = pytest.importorskip("torch")
     _rocm(monkeypatch)
     ad = pytest.importorskip("diffusers.models.attention_dispatch")
@@ -1997,7 +2002,7 @@ def _compiled_env(monkeypatch, auto, flash_ms):
         return {**_GOOD, "flash_ms": flash_ms.get(tokens, 90.0), "tokens": tokens}
 
     monkeypatch.setattr(att, "_time_rocm_flash_block", fake_time)
-    dit = _CompiledDit(guarded)
+    dit = (dit_cls or _CompiledDit)(guarded)
     backend = att.ROCM_FLASH_CANDIDATE if auto else "flash"
     assert (
         att.apply_attention_backend(
@@ -2051,6 +2056,63 @@ def test_compiled_dynamic_lengths_recompile_per_bucket_not_per_length(monkeypatc
     assert out == [1.0, 1.0, 1.0] and len(frames) == 1
     assert float(compiled(torch.zeros(1, 9000, 2, 16, dtype = bf16)).flatten()[0]) == -1.0
     assert len(frames) == 2 and timed == [4096, 8192]
+    torch._dynamo.reset()
+
+
+class _CompiledCrossDit(_CompiledDit):
+    def forward(self, q, k):
+        return self._guarded(q, k, k, None)
+
+
+def _traces_statically_known_true():
+    try:
+        from torch._dynamo import trace_rules
+    except Exception:  # noqa: BLE001
+        return False
+    name = "torch.fx.experimental.symbolic_shapes.statically_known_true"
+    return name in trace_rules.manual_torch_name_rule_map
+
+
+# Cross attention: the key length is its own symbol. Telling self from cross attention must not compare the two
+# lengths with a guard, or a query length equal to the key length recompiles and a marked dynamic range is rejected.
+_needs_skt = pytest.mark.skipif(
+    not _traces_statically_known_true(),
+    reason = "this torch's Dynamo cannot trace statically_known_true",
+)
+
+
+@_needs_skt
+def test_compiled_cross_attention_does_not_guard_query_length_on_key_length(monkeypatch):
+    torch, dit, timed = _compiled_env(monkeypatch, True, {4096: 70.0}, _CompiledCrossDit)
+    torch._dynamo.reset()
+    frames = []
+    compiled = torch.compile(
+        dit,
+        backend = lambda gm, inputs: frames.append(gm) or gm.forward,
+        dynamic = True,
+        fullgraph = True,
+    )
+    bf16 = torch.bfloat16
+    k = torch.zeros(1, 6000, 2, 16, dtype = bf16)
+    counts = []
+    for n in (5000, 6000, 7000, 5500):
+        assert float(compiled(torch.zeros(1, n, 2, 16, dtype = bf16), k).flatten()[0]) == 1.0
+        counts.append(len(frames))
+    assert counts == [1, 1, 1, 1]
+    torch._dynamo.reset()
+
+
+@_needs_skt
+def test_compiled_cross_attention_accepts_a_marked_query_range_spanning_the_key_length(monkeypatch):
+    torch, dit, timed = _compiled_env(monkeypatch, True, {4096: 70.0}, _CompiledCrossDit)
+    torch._dynamo.reset()
+    bf16 = torch.bfloat16
+    q = torch.zeros(1, 5000, 2, 16, dtype = bf16)
+    k = torch.zeros(1, 6000, 2, 16, dtype = bf16)
+    torch._dynamo.mark_dynamic(q, 1, min = 4500, max = 7500)
+    torch._dynamo.mark_static(k, 1)
+    compiled = torch.compile(dit, backend = "eager", dynamic = True, fullgraph = True)
+    assert float(compiled(q, k).flatten()[0]) == 1.0
     torch._dynamo.reset()
 
 

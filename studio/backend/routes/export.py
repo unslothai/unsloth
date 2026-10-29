@@ -64,11 +64,7 @@ logger = get_logger(__name__)
 
 
 async def _ensure_export_supported() -> None:
-    """Reject a mutating export request up front (HTTP 400) when the host can't export. Keeps the
-    backend authoritative even if a client bypasses the UI gate. Read-only endpoints
-    (scan/status/logs) are intentionally NOT gated so the Export page can still render the reason.
-    Also refuses (409) while a latest-transformers install is swapping .venv_t5_latest: an export
-    worker spawned mid-swap could activate a half-replaced sidecar."""
+    """Reject mutating exports server-side (400 if unsupported; 409 during a .venv_t5_latest install, else half-swapped sidecar). Read-only endpoints stay ungated."""
     from utils.transformers_latest import is_install_in_progress
 
     if is_install_in_progress():
@@ -147,8 +143,7 @@ async def load_checkpoint(
         # Unset lets the backend pick 16-bit for a full fine-tune.
         load_in_4bit = request.load_in_4bit if "load_in_4bit" in request.model_fields_set else None
         backend = get_export_backend()
-        # Run in a worker thread (spawns and waits on a subprocess, can take
-        # minutes) so the event loop stays free to serve the live log SSE stream.
+        # Worker thread: it waits on a subprocess that can take minutes, so the loop stays free for SSE.
         success, message = await asyncio.to_thread(
             backend.load_checkpoint,
             checkpoint_path = request.checkpoint_path,
@@ -255,8 +250,7 @@ async def get_export_status(current_subject: str = Depends(get_current_subject))
     try:
         backend = get_export_backend()
         last_op = backend.get_last_op()
-        # Relativise the recovered output path the same way the per-op POST response
-        # does, so the success banner shows an identical path on either route.
+        # Relativise the recovered path like the per-op POST response, so both routes show the same path.
         last_op_output_path = None
         if last_op and last_op.get("output_path"):
             if getattr(backend, "decision", None):
@@ -307,8 +301,7 @@ async def get_export_logs(
     """
     try:
         backend = get_export_backend()
-        # No cursor on the first poll of a run: start from the run-start snapshot so the client gets every line since
-        # the run began (matches the SSE default), not the entire historical ring buffer.
+        # First poll starts at the run-start snapshot, not the whole ring buffer.
         if since is None:
             cursor = backend.get_run_start_seq()
         else:
@@ -873,9 +866,7 @@ async def export_lora_adapter(
         )
 
 
-# Live export log SSE. Same shape as stream_training_progress: id/event/data, a leading `retry:`, and
-# Last-Event-ID honoured on reconnect. Worker stdout/stderr reaches the orchestrator as log entries
-# (core/export/worker.py, orchestrator.py); shape follows routes/training.py.
+# SSE shape mirrors routes/training.py: id/event/data, leading retry:, Last-Event-ID.
 def _format_sse(
     data: str,
     event: str,
@@ -919,8 +910,7 @@ async def stream_export_logs(
     """
     backend = get_export_backend()
 
-    # Starting cursor: explicit `since` wins, then Last-Event-ID on reconnect, else the run-start snapshot so the
-    # client sees every line since the run began even if the SSE connection opened after the export-kickoff POST.
+    # Cursor: since, then Last-Event-ID, else the run-start snapshot, so a late SSE misses nothing.
     last_event_id = request.headers.get("last-event-id")
     if since is None and last_event_id is not None:
         try:

@@ -1,6 +1,4 @@
-//! The macOS File, View, Go and Help menus. Their actions run in the renderer, which enables only
-//! the ones it can handle right now, so they stay disabled through install, login and startup.
-//! macOS searches every item from Help > Search, so Go lists each workspace and Settings page.
+//! The macOS File, View, Go and Help menus. The renderer enables only actions it can handle now.
 
 #[cfg(target_os = "macos")]
 use tauri::{menu::MenuItem, Manager};
@@ -9,10 +7,9 @@ use tauri::{menu::MenuItem, Manager};
 #[cfg(target_os = "macos")]
 pub const APP_MENU_ACTION_EVENT: &str = "app-menu-action";
 
-/// A menu row: an action, a separator or a submenu of rows.
 #[cfg(target_os = "macos")]
 enum Row {
-    /// (action sent to the renderer, label, accelerator; "" for none)
+    /// (action, label, accelerator; "" for none)
     Action(&'static str, &'static str, &'static str),
     Separator,
     Submenu(&'static str, &'static [Row]),
@@ -64,7 +61,7 @@ const GO_ROWS: &[Row] = &[
     Row::Submenu("Settings", SETTINGS_ROWS),
 ];
 
-/// The Settings pages, in the order and with the names of the dialog's tabs.
+/// In the order and with the names of the Settings dialog's tabs.
 #[cfg(target_os = "macos")]
 const SETTINGS_ROWS: &[Row] = &[
     Row::Action("settings-general", "General", ""),
@@ -102,7 +99,7 @@ const HELP_ROWS: &[Row] = &[
     Row::Action("help-send-feedback", "Send Feedback", ""),
 ];
 
-/// Menu ids are the action names, prefixed so they cannot collide with other menu ids.
+/// Prefixed so they cannot collide with other menu ids.
 #[cfg(target_os = "macos")]
 const ID_PREFIX: &str = "app-menu:";
 
@@ -111,17 +108,14 @@ struct ActionItem {
     action: &'static str,
     item: MenuItem<tauri::Wry>,
     submenu: tauri::menu::Submenu<tauri::Wry>,
-    /// The chord it shows, which muda cannot report back.
+    /// muda cannot report the accelerator back.
     accelerator: Option<String>,
 }
 
-/// The action items, replaced in place when a chord is cleared.
 #[cfg(target_os = "macos")]
 pub struct AppMenuActions(std::sync::Mutex<Vec<ActionItem>>);
 
-/// Put the Unsloth rows at the top of the File, View and Help menus, keeping each menu's native
-/// items (Close, Enter Full Screen) below them, and add Go after View. Help keeps its role, so
-/// macOS still adds Search.
+/// Unsloth rows go above each menu's native items. Help keeps its role so macOS still adds Search.
 #[cfg(target_os = "macos")]
 pub fn setup_app_menus(
     app: &tauri::App,
@@ -208,7 +202,6 @@ fn append_rows(
     Ok(())
 }
 
-/// Forward a menu click to the renderer. Ignores ids this module does not own.
 #[cfg(target_os = "macos")]
 pub fn handle_menu_event(app: &tauri::AppHandle, id: &str) {
     use tauri::Emitter;
@@ -216,15 +209,13 @@ pub fn handle_menu_event(app: &tauri::AppHandle, id: &str) {
     let Some(action) = id.strip_prefix(ID_PREFIX) else {
         return;
     };
-    // The window may be hidden after Close; bring it back for the action to show.
     crate::show_main_window(app);
     if let Err(error) = app.emit_to("main", APP_MENU_ACTION_EVENT, action) {
         log::warn!("Could not send menu action {action}: {error}");
     }
 }
 
-/// Enable exactly the listed actions, and show the chord each is bound to now (None for none).
-/// A no-op where there are no app menus.
+/// Enable exactly the listed actions and show each one's current chord. No-op without app menus.
 #[tauri::command]
 pub fn set_app_menu_actions(
     app: tauri::AppHandle,
@@ -253,8 +244,7 @@ pub fn set_app_menu_actions(
     let _ = (app, enabled, accelerators);
 }
 
-/// muda's `set_accelerator(None)` leaves the native key equivalent in place, so clearing one
-/// swaps in a fresh item without it. A chord muda cannot parse is cleared too.
+/// muda's `set_accelerator(None)` leaves the native key equivalent, so clearing swaps in a new item.
 #[cfg(target_os = "macos")]
 fn set_item_accelerator(
     app: &tauri::AppHandle,
