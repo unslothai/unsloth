@@ -45,7 +45,6 @@ function libc() {
   }
 }
 
-// What `npm ci` reads besides the lockfile: Node, platform, and tree-affecting npm settings.
 function inputs() {
   const config = Object.keys(process.env)
     .map((k) => [k.toLowerCase(), process.env[k]])
@@ -95,7 +94,6 @@ function treeHash() {
   return digest.digest("hex");
 }
 
-// Installed packages are on disk at the locked versions.
 function packagesPresent() {
   const lock = JSON.parse(readFileSync(join(ROOT, "package-lock.json"), "utf8")).packages || {};
   const hidden = JSON.parse(readFileSync(join(MODULES, ".package-lock.json"), "utf8")).packages || {};
