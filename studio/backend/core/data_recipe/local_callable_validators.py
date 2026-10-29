@@ -9,6 +9,7 @@ import queue
 import structlog
 import subprocess
 import threading
+import time
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
@@ -267,14 +268,35 @@ class _OxcWorker:
             pass
         self._replies.put(None)
 
+    def _write_request(self, line: bytes, errors: list[BaseException]) -> None:
+        try:
+            self.proc.stdin.write(line)
+            self.proc.stdin.flush()
+        except (OSError, ValueError) as exc:
+            errors.append(exc)
+
     def request(self, request_text: str) -> Any:
         self._next_id += 1
         request_id = self._next_id
         line = f'{{"id": {request_id}, "payload": {request_text}}}\n'.encode("utf-8")
-        self.proc.stdin.write(line)
-        self.proc.stdin.flush()
+        # The write shares the deadline: a Node that never reads would otherwise block it, and
+        # with it the session lock, forever. A timed-out worker is killed, which ends the write.
+        deadline = time.monotonic() + _OXC_TIMEOUT_S
+        write_errors: list[BaseException] = []
+        writer = threading.Thread(
+            target = self._write_request,
+            args = (line, write_errors),
+            name = "oxc-validator-writer",
+            daemon = True,
+        )
+        writer.start()
+        writer.join(_OXC_TIMEOUT_S)
+        if writer.is_alive():
+            return _WORKER_TIMED_OUT
+        if write_errors:
+            raise write_errors[0]
         try:
-            reply = self._replies.get(timeout = _OXC_TIMEOUT_S)
+            reply = self._replies.get(timeout = max(0.0, deadline - time.monotonic()))
         except queue.Empty:
             return _WORKER_TIMED_OUT
         if reply is None:

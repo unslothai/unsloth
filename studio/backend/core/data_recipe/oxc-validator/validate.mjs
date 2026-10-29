@@ -604,8 +604,12 @@ async function main() {
 // {"id", "error"}. Nothing outlives a request: every one is the same work a one-shot run does.
 const SERVE_MAX_LINE_CHARS = 64 * 1024 * 1024;
 
+let servedRequests = 0;
+
 function serveLine(line) {
-  const startedAtMs = performance.now();
+  // The first request is charged for Node's own start, as a one-shot run is: the caller's
+  // deadline started before this process could read anything.
+  const startedAtMs = servedRequests++ === 0 ? 0 : performance.now();
   let id = null;
   let reply;
   try {
