@@ -351,6 +351,7 @@ def save_from_media(
         rate = info["sample_rate"]
         with wave.open(str(full), "rb") as reader:
             total = reader.getnframes()
+            channels = reader.getnchannels()
             first = int(start_s * rate)
             if first >= total:
                 raise AudioInputError(
@@ -359,14 +360,31 @@ def save_from_media(
                     "Unsloth Studio can only cut inside the track.",
                 )
             last = total if end_s is None else min(total, max(first + 1, int(end_s * rate)))
-            reader.setpos(first)
-            data = reader.readframes(last - first)
-            with wave.open(str(cut), "wb") as writer:
-                writer.setparams(reader.getparams())
-                writer.writeframes(data)
-        payload = cut.read_bytes()
+            whole = not first and last == total
+            if not whole:
+                reader.setpos(first)
+                with wave.open(str(cut), "wb") as writer:
+                    writer.setparams(reader.getparams())
+                    writer.writeframes(reader.readframes(last - first))
+        if whole:
+            os.replace(full, cut)
+        digest = hashlib.sha256()
+        with open(cut, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                digest.update(chunk)
+        # transcode() wrote this WAV, so transcoding it again would only rewrite the same bytes.
+        prepared = {
+            "duration_s": round((last - first) / rate, 3),
+            "sample_rate": rate,
+            "channels": channels,
+        }
         return _finish_upload(
-            directory, cut, hashlib.sha256(payload).hexdigest(), _clean_name(name), len(payload)
+            directory,
+            cut,
+            digest.hexdigest(),
+            _clean_name(name),
+            os.stat(cut).st_size,
+            prepared = prepared,
         )
     finally:
         full.unlink(missing_ok = True)
@@ -385,8 +403,15 @@ def _find_by_sha(directory: Path, sha: str) -> Optional[tuple[str, dict[str, Any
 
 
 def _finish_upload(
-    directory: Path, tmp: Path, sha: str, name: str, size: int
+    directory: Path,
+    tmp: Path,
+    sha: str,
+    name: str,
+    size: int,
+    *,
+    prepared: Optional[dict[str, Any]] = None,
 ) -> tuple[dict[str, Any], bool]:
+    """``prepared``: ``tmp`` is already a ``transcode`` output with this info, so it is moved in as is."""
     existing = _find_by_sha(directory, sha)
     if existing is not None:
         input_id, meta = existing
@@ -396,7 +421,11 @@ def _finish_upload(
     input_id = uuid.uuid4().hex
     wav = directory / f"{input_id}.wav"
     try:
-        info = transcode(tmp, wav)
+        if prepared is None:
+            info = transcode(tmp, wav)
+        else:
+            os.replace(tmp, wav)
+            info = prepared
         now = _now()
         meta = {
             "name": name,
