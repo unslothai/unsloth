@@ -7294,29 +7294,17 @@ def test_appended_notice_keeps_an_image_part_an_image():
 
 
 def test_no_post_tool_nudge_when_only_the_user_can_unblock(monkeypatch):
-    """The Colab chat: the tool said to ask the user, the model asked; that reply is the answer."""
-
+    """The tool said to ask the user and the model asked; that reply is the answer."""
     streams = [
         [_tool_call_sse("web_search", {"query": "music"}, "call_first"), _done()],
-        [_sse({"content": "Let me know once it is loaded and I will make the song."}), _done()],
+        [_sse({"content": "Load the music model and I will make the song."}), _done()],
         [_sse({"content": "unreachable"}), _done()],
     ]
     backend, payloads = _backend_and_payloads(monkeypatch, streams)
-    monkeypatch.setattr(
-        "core.inference.tools.execute_tool",
-        lambda *_a,
-        **_k: "Error: [needs_user_load kind=audio page=Audio] The music model is not loaded.",
+    _record_tool_calls(monkeypatch, "Error: [needs_user_load kind=audio page=Audio] Not loaded.")
+    messages = [{"role": "user", "content": "Make a song."}]
+    events = _run_tool_loop(
+        backend, messages, [_WEB_SEARCH_TOOL], max_tool_iterations = 3, nudge_tool_calls = True
     )
-
-    events = list(
-        backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "Make a song."}],
-            tools = [_web_search_tool()],
-            max_tool_iterations = 3,
-            nudge_tool_calls = True,
-        )
-    )
-
-    assert len(payloads) == 2
-    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
-    assert "Let me know once it is loaded" in "".join(content_texts)
+    content = "".join(e.get("text", "") for e in events if e.get("type") == "content")
+    assert len(payloads) == 2 and "I will make the song" in content

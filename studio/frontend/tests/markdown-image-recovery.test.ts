@@ -8,12 +8,7 @@ import ts from "@typescript/typescript6";
 
 import { readSrc } from "./helpers/kit.ts";
 
-function renderer(
-  backendPathUrl = (url: string) => url,
-  desktopSignedMediaPath = (_url: string): string | null => null,
-  sandboxState: Record<string, unknown> = { status: "idle" },
-  protectedBackendPath = (_url: string): string | null => null,
-) {
+function renderer(stubs: Record<string, unknown> = {}) {
   const source = readSrc("components/assistant-ui/markdown-text.tsx");
   const parsed = ts.createSourceFile(
     "markdown-text.tsx",
@@ -65,12 +60,13 @@ function renderer(
     useChatRuntimeStore: () => "thread",
     useChatProjectScope: () => null,
     markdownSandboxImageSrc: () => null,
-    backendPathUrl,
-    desktopSignedMediaPath,
-    protectedBackendPath,
-    useSandboxImage: () => ({ state: sandboxState }),
+    useSandboxImage: () => ({ state: { status: "idle" } }),
     HugeiconsIcon: "icon",
     Download01Icon: "download",
+    backendPathUrl: (url: string) => url,
+    desktopSignedMediaPath: () => null,
+    protectedBackendPath: () => null,
+    ...stubs,
   };
   runInNewContext(code, context);
   return (props: Record<string, unknown>) => {
@@ -113,29 +109,16 @@ test("successful image load clears decode failure and forwards image events", ()
   assert.equal(loads, 1);
 });
 
-test("a backend image keeps its own src, never the loopback URL Desktop's img-src blocks", () => {
-  const render = renderer((url) => `http://127.0.0.1:8888${url}`);
-  const src = "/api/inference/images/gallery/img-1/file-signed?token=t";
-  assert.equal(render({ src }).src, src);
-});
-
-test("on Desktop a signed media image renders from its fetched blob", () => {
-  const src = "/api/inference/images/gallery/img-1/file-signed?token=t";
-  const render = renderer(
-    (url) => url,
-    (url) => url,
-    { status: "loaded", url: "blob:media", blob: {} },
-  );
-  assert.equal(render({ src }).src, "blob:media");
-});
-
-test("an unsigned backend image renders from the session fetch, not a bare src that 401s", () => {
-  const src = "/api/inference/images/gallery/img-1/file";
-  const render = renderer(
-    (url) => url,
-    () => null,
-    { status: "loaded", url: "blob:gallery", blob: {} },
-    (url) => url,
-  );
-  assert.equal(render({ src }).src, "blob:gallery");
+test("a backend image never takes the loopback src Desktop blocks; a fetched one is a blob", () => {
+  const signed = "/api/inference/images/gallery/img-1/file-signed?token=t";
+  const loopback = (url: string) => `http://127.0.0.1:8888${url}`;
+  const render = renderer({ backendPathUrl: loopback });
+  assert.equal(render({ src: signed }).src, signed);
+  const state = { status: "loaded", url: "blob:media", blob: {} };
+  const useSandboxImage = () => ({ state });
+  // Signed media on Desktop, and an unsigned backend file that needs the session.
+  for (const fetch of ["desktopSignedMediaPath", "protectedBackendPath"]) {
+    const fetched = renderer({ useSandboxImage, [fetch]: (u: string) => u });
+    assert.equal(fetched({ src: signed }).src, "blob:media", fetch);
+  }
 });

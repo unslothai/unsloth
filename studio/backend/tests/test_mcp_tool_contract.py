@@ -161,18 +161,16 @@ def _not_loaded(kind):
     return {"X-Unsloth-Problem": f"not_loaded kind={kind}"}
 
 
+def _no_model(message, status, kind):
+    return openai_error(message, status, headers = _not_loaded(kind))
+
+
 # (tool, args, the studio's routes, then the whole message or (check, text) pairs).
 ROUTE_ERRORS = [
     (
         "chat",
         {"prompt": "hi"},
-        {
-            CHAT: openai_error(
-                "No model loaded. Call POST /inference/load first.",
-                400,
-                headers = _not_loaded("llm"),
-            )
-        },
+        {CHAT: _no_model("No model loaded. Call POST /inference/load first.", 400, "llm")},
         ("starts", "[not_loaded kind=llm] No model loaded. (HTTP 400) "),
         ("ends", "Load a chat model with load_model first; list_models shows the downloaded ones."),
     ),
@@ -220,11 +218,7 @@ ROUTE_ERRORS = [
     (
         "generate_audio",
         {"workflow": "speak", "text": "Hi"},
-        {
-            ("POST", "/v1/audio/run"): openai_error(
-                "No model loaded.", 400, headers = _not_loaded("audio")
-            )
-        },
+        {("POST", "/v1/audio/run"): _no_model("No model loaded.", 400, "audio")},
         ("starts", "[not_loaded kind=audio] "),
         (
             "ends",
@@ -264,11 +258,7 @@ ROUTE_ERRORS = [
     (
         "generate_video",
         {"prompt": "waves"},
-        {
-            ("POST", "/v1/videos"): openai_error(
-                "No video model is loaded.", 503, headers = _not_loaded("video")
-            )
-        },
+        {("POST", "/v1/videos"): _no_model("No video model is loaded.", 503, "video")},
         ("starts", "[not_loaded kind=video] "),
         (
             "ends",

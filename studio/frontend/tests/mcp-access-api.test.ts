@@ -82,9 +82,7 @@ test("each tool keeps its chat flag, and an older backend without one leaves it 
     { name: "voices", area: "library", enabled: true },
   ];
   const c = client(() => Response.json({ ...BODY, tools }));
-  const loaded = (await c.api.loadMcpAccess()).tools;
-  assert.deepEqual(loaded, tools);
-  assert.equal(loaded?.[2] && "chat" in loaded[2], false);
+  assert.deepEqual((await c.api.loadMcpAccess()).tools, tools);
 });
 
 test("saving tools sends only the full turned-off list", async () => {

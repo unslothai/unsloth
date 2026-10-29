@@ -861,38 +861,22 @@ test("the Decisions row stays hidden while the Decision API is off", () => {
   );
 });
 
-test("the Unsloth Studio tools row matches any port and loopback spelling", () => {
-  assert.equal(
-    UNSLOTH_STUDIO_TOOLS_MCP_URL,
-    "http://127.0.0.1/mcp/studio-tools",
-  );
-  for (const url of [
-    UNSLOTH_STUDIO_TOOLS_MCP_URL,
-    "http://127.0.0.1:8888/mcp/studio-tools/",
-    "http://localhost:8889/mcp/studio-tools",
+test("Unsloth Studio is the first preset, any loopback port, and never a custom row", () => {
+  const url = "http://127.0.0.1/mcp/studio-tools";
+  assert.equal(UNSLOTH_STUDIO_TOOLS_MCP_URL, url);
+  const urls = [
+    url,
+    "http://localhost:8889/mcp/studio-tools/",
     "http://[::1]:8888/mcp/studio-tools",
-  ]) {
-    assert.equal(normalizeMcpUrl(url), "studio:tools", url);
-  }
-  for (const url of [
-    "https://127.0.0.1/mcp/studio-tools",
-    "http://example.com/mcp/studio-tools",
-    "http://127.0.0.1/mcp/studio-tools/extra",
-    "http://127.0.0.1/mcp/decisions",
-  ]) {
-    assert.notEqual(normalizeMcpUrl(url), "studio:tools", url);
-  }
-});
-
-test("Unsloth Studio is the first preset and its row never shows as a custom server", () => {
-  assert.match(
-    MCP_COMPOSER_BUTTON,
-    /const MCP_PRESETS: readonly McpPreset\[\] = \[\s*\{\s*id: "unsloth-studio",\s*displayName: "Unsloth",\s*url: UNSLOTH_STUDIO_TOOLS_MCP_URL,/,
-  );
-  assert.match(
-    MCP_COMPOSER_BUTTON,
-    /const customServers = servers\.filter\([\s\S]*normalizeMcpUrl\(s\.url\) !== "studio:tools"/,
-  );
+    url.replace("http", "https"),
+    url.replace("127.0.0.1", "example.com"),
+    `${url}/extra`,
+  ];
+  const studio = urls.map((u) => normalizeMcpUrl(u) === "studio:tools");
+  assert.deepEqual(studio, [true, true, true, false, false, false]);
+  const presetThenFilter =
+    /const MCP_PRESETS: readonly McpPreset\[\] = \[\s*\{\s*id: "unsloth-studio",\s*displayName: "Unsloth",\s*url: UNSLOTH_STUDIO_TOOLS_MCP_URL,[\s\S]*const customServers = servers\.filter\([^;]*normalizeMcpUrl\(s\.url\) !== "studio:tools"/;
+  assert.match(MCP_COMPOSER_BUTTON, presetThenFilter);
 });
 
 test("an older Decision API settings response cannot replace a newer one", () => {

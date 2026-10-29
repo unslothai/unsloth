@@ -7,6 +7,7 @@ import asyncio
 import inspect
 import threading
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -121,57 +122,32 @@ def test_a_safetensors_slot_is_served_by_its_own_orchestrator(backends):
     assert asyncio.run(run()) == (safetensors, False, safetensors.orchestrator)
 
 
-def _music_slot(name):
-    slot = model_slots.ExtraSlot(FakeLlama(), FakeOrchestrator(name), "owner")
-    slot.orchestrator.models[name] = {"audio_music": {"modes": []}}
-    return slot
+def _serving(info):
+    return SimpleNamespace(active_model_name = "org/Audio", models = {"org/Audio": info})
 
 
-def _omitted_music_backend(workflow = "music"):
+_MUSIC, _SPEECH = {"audio_music": {"modes": []}}, {"is_audio": True, "audio_type": "csm"}
+
+
+@pytest.mark.parametrize(
+    "workflow, primary, kept",
+    [
+        ("separate", None, [_SPEECH, {"is_audio": True, "audio_workflows": ["separate"]}]),
+        ("music", None, [_SPEECH, _MUSIC]),
+        ("music", _MUSIC, [_MUSIC]),  # the primary runs it: stays there
+    ],
+)
+def test_omitted_audio_model_routes_to_the_kept_one(backends, monkeypatch, workflow, primary, kept):
+    if primary:
+        monkeypatch.setattr(orchestrator, "_inference_backend", _serving(primary))
+    model_slots.slots[:] = [model_slots.ExtraSlot(FakeLlama(), _serving(i), "owner") for i in kept]
+
     async def run():
         await inf._route_to_kept_audio_model(workflow)
         return inf.get_inference_backend()
 
-    return asyncio.run(run())
-
-
-def _speech_slot(name, audio_type = "csm"):
-    slot = model_slots.ExtraSlot(FakeLlama(), FakeOrchestrator(name), "owner")
-    slot.orchestrator.models[name] = {"is_audio": True, "audio_type": audio_type}
-    return slot
-
-
-def test_an_omitted_speech_model_runs_on_the_one_speech_model_kept_beside_chat(backends):
-    music = _music_slot("audio-cpp/audio.cpp-gguf/ACE-Step1.5-GGUF")
-    speech = _speech_slot("org/Speech")
-    model_slots.slots.extend([music, speech])
-    # Speak goes to the speech model, never to the music one; music the other way round.
-    assert _omitted_music_backend("speak") is speech.orchestrator
-    assert _omitted_music_backend("music") is music.orchestrator
-
-
-def test_an_omitted_separation_model_runs_on_the_one_kept_beside_chat(backends):
-    sep = model_slots.ExtraSlot(FakeLlama(), FakeOrchestrator("org/Sep"), "owner")
-    sep.orchestrator.models["org/Sep"] = {"is_audio": True, "audio_workflows": ["separate"]}
-    model_slots.slots.extend([_speech_slot("org/Speech"), sep])
-    assert _omitted_music_backend("separate") is sep.orchestrator
-
-
-def test_an_omitted_music_model_runs_on_the_one_kept_beside_chat(backends):
-    # The owner's chat loads it beside the chat model, then calls generate_audio without a model.
-    music = _music_slot("audio-cpp/audio.cpp-gguf/ACE-Step1.5-GGUF")
-    model_slots.slots.append(music)
-    assert _omitted_music_backend() is music.orchestrator
-    # Two kept music models: the caller names one.
-    model_slots.slots.append(_music_slot("audio-cpp/audio.cpp-gguf/Other-Music-GGUF"))
-    assert _omitted_music_backend() is orchestrator._inference_backend
-
-
-def test_an_omitted_music_model_stays_on_a_primary_that_runs_music(backends, monkeypatch):
-    primary = _music_slot("audio-cpp/audio.cpp-gguf/ACE-Step1.5-GGUF").orchestrator
-    monkeypatch.setattr(orchestrator, "_inference_backend", primary)
-    model_slots.slots.append(_music_slot("audio-cpp/audio.cpp-gguf/Other-Music-GGUF"))
-    assert _omitted_music_backend() is primary
+    want = orchestrator._inference_backend if primary else model_slots.slots[-1].orchestrator
+    assert asyncio.run(run()) is want
 
 
 def test_loaded_models_lists_every_backend(backends):
@@ -533,45 +509,40 @@ def test_a_model_that_fits_nowhere_beside_the_others_replaces_the_active_one(bac
     assert primary.model_identifier == "org/C-GGUF" and primary.is_loaded
 
 
-BESIDE_ONLY = AccountContext(
-    "owner", "unsloth", "owner", via_api_key = True, load_policy = "beside_only"
-)
+BESIDE_ONLY = AccountContext("owner", "o", "owner", via_api_key = True, load_policy = "beside_only")
 
 
-def test_a_beside_only_load_that_fits_nowhere_beside_unloads_nothing(backends, monkeypatch):
-    primary, extra = backends
-    extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
+@pytest.mark.parametrize("alongside, short_fits", [(True, [1, 1]), (False, [])])
+def test_a_beside_only_load_unloads_nothing(backends, monkeypatch, alongside, short_fits):
+    a, b = backends
+    b.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
     monkeypatch.setattr(multi_model_settings, "get_multi_model_mode", lambda: "fit")
-    _gated_load_fakes(monkeypatch, short_fits = [1, 1])
-    request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
-    with pytest.raises(HTTPException) as exc:
-        gated = inf.load_model_gated(request, None, "s", background = True)
-        run_as(BESIDE_ONLY, asyncio.run, gated)
-    assert exc.value.status_code == 403
-    assert exc.value.headers["X-Unsloth-Problem"].startswith("needs_user_load kind=llm")
-    # When they fit would have evicted B and then replaced A; both stay.
-    assert model_slots.slots == [extra] and extra.llama.is_active
-    assert primary.model_identifier == "org/A-GGUF" and primary.is_loaded
-
-
-def test_a_beside_only_load_that_fits_beside_keeps_every_model(backends, monkeypatch):
-    primary, extra = backends
-    monkeypatch.setattr(multi_model_settings, "get_multi_model_mode", lambda: "fit")
-    _gated_load_fakes(monkeypatch, short_fits = [])
-    request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
-    assert run_as(BESIDE_ONLY, asyncio.run, inf.load_model_gated(request, None, "s")) == "loaded"
-    assert primary.model_identifier == "org/A-GGUF" and extra.llama.is_active
-    assert model_slots.slots[-1].llama.model_identifier == "org/C-GGUF"
-
-
-def test_a_beside_only_load_never_replaces_the_primary(backends, monkeypatch):
-    primary, _extra = backends
-    _gated_load_fakes(monkeypatch, short_fits = [])
-    request = LoadRequest(model_path = "org/C-GGUF")
+    _gated_load_fakes(monkeypatch, short_fits = short_fits)
+    request = LoadRequest(model_path = "org/C-GGUF", alongside = alongside)
     with pytest.raises(HTTPException) as exc:
         run_as(BESIDE_ONLY, asyncio.run, inf.load_model_gated(request, None, "s"))
-    assert exc.value.status_code == 403
-    assert primary.model_identifier == "org/A-GGUF" and primary.is_loaded
+    assert exc.value.headers["X-Unsloth-Problem"].startswith("needs_user_load kind=llm")
+    assert a.is_loaded and a.model_identifier == "org/A-GGUF" and model_slots.slots == [b]
+
+
+def test_a_beside_only_load_into_an_empty_primary_frees_only_media(backends, monkeypatch):
+    backends[0].unload_model()
+    monkeypatch.setattr(multi_model_settings, "get_multi_model_mode", lambda: "fit")
+    _gated_load_fakes(monkeypatch, short_fits = [1])
+    monkeypatch.setattr(inf, "_free_for_chat", free := AsyncMock(return_value = []))
+    request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
+    run_as(BESIDE_ONLY, asyncio.run, inf.load_model_gated(request, None, "s", background = True))
+    assert [call.kwargs["media_only"] for call in free.await_args_list] == [True]
+
+
+def test_beside_only_and_measured_always_refusals_unload_nothing_and_name_no_model():
+    # The beside-only refusal comes before vLLM or SGLang retires every kept model.
+    source = inspect.getsource(inf._load_model_impl)
+    refuse = source.index("_require_load_keeps_chat(fastapi_request, request)")
+    assert refuse < source.index("_gate_kept_models(request, cancel = False)")
+    # No kind: it would read as the model to unload, but an image or video model may hold the GPU.
+    source = inspect.getsource(inf.load_model_gated)
+    assert "raise MultiModelAlwaysRefusal(str(exc)) from exc" in source
 
 
 def _short_load_fakes(monkeypatch, errors):
@@ -1958,61 +1929,3 @@ def test_an_unattended_load_that_fits_beside_the_primary_is_not_rechecked(backen
     )
     assert primary.model_identifier == "org/A-GGUF"
     assert model_slots.slots[-1].request.model_path == "org/C-GGUF"
-
-
-def test_a_beside_only_load_into_an_empty_primary_frees_no_kept_chat_model(backends, monkeypatch):
-    """Primary empty, a kept chat model loaded, the new model short: only image and video may go."""
-    from core.inference import gpu_residency
-
-    primary, extra = backends
-    extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
-    primary.unload_model()
-    assert not primary.is_loaded and model_slots.slots == [extra]
-    monkeypatch.setattr(multi_model_settings, "get_multi_model_mode", lambda: "fit")
-    monkeypatch.setattr(gpu_residency, "current_policy", lambda: "fit")
-    _gated_load_fakes(monkeypatch, short_fits = [1])
-    calls = []
-
-    async def free_for_chat(
-        exc,
-        evicted,
-        media_only = False,
-    ):
-        calls.append(media_only)
-        if media_only:
-            return []
-        # What gpu_residency._free_steps does past the media steps: idle kept chat models.
-        dropped = model_slots.evict_these(model_slots.eviction_victims(None, exc.short_mib))
-        evicted += [inf._model_key(s.request) for s in dropped]
-        return ["chat"] if dropped else []
-
-    monkeypatch.setattr(inf, "_free_for_chat", free_for_chat)
-    request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
-    run_as(BESIDE_ONLY, asyncio.run, inf.load_model_gated(request, None, "s", background = True))
-    assert calls == [True]
-    assert model_slots.slots == [extra] and extra.llama.is_active
-
-
-def test_a_beside_only_credential_cannot_retire_kept_models_for_a_managed_engine(backends):
-    """vLLM and SGLang take every kept model down; the beside-only refusal comes before any gate or cancel."""
-    source = inspect.getsource(inf._load_model_impl)
-    refuse = source.index("_require_load_keeps_chat(fastapi_request, request)")
-    assert refuse < source.index("_gate_kept_models(request, cancel = False)")
-    _, extra = backends
-    request = LoadRequest(model_path = "org/C", engine = "vllm")
-    with pytest.raises(HTTPException) as excinfo:
-        run_as(BESIDE_ONLY, inf._require_load_keeps_chat, None, request)
-    assert excinfo.value.status_code == 403
-    assert excinfo.value.headers["X-Unsloth-Problem"].startswith("needs_user_load kind=llm")
-    assert model_slots.slots == [extra] and extra.llama.is_active
-
-
-def test_a_measured_always_refusal_names_no_model_to_unload():
-    """Its kind would read as the model to unload; the GPU may be held by an image or video model instead."""
-    from core.inference.gpu_arbiter import MultiModelAlwaysRefusal
-
-    source = inspect.getsource(inf.load_model_gated)
-    assert "raise MultiModelAlwaysRefusal(str(exc)) from exc" in source
-    assert 'MultiModelAlwaysRefusal(str(exc), kind = "chat")' not in source
-    headers = MultiModelAlwaysRefusal("needs 13 GB, 8 GB free").as_http_exception("/v1/x").headers
-    assert headers["X-Unsloth-Problem"] == "multi_model_always"

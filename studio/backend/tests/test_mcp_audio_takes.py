@@ -200,30 +200,18 @@ def test_an_unsaved_oversized_later_take_keeps_the_saved_takes(monkeypatch):
     assert len(bodies(studio, "/v1/audio/run")) == 2
 
 
-def _beside_chat(how):
-    """Qwen serves chat; the music model is kept beside it, so the bare status describes Qwen."""
-    chat = {
-        "active_model": "unsloth/Qwen-GGUF",
-        "model_identifier": "unsloth/Qwen-GGUF",
-        "serving": ["unsloth/Qwen-GGUF", "ace-step"],
-        "serving_checkpoints": ["unsloth/Qwen-GGUF", "ace-step"],
-    }
-    music = {**_status(how), "active_model": "ace-step"}
-    return lambda request, body: music if request.query_params.get("model") == "ace-step" else chat
-
-
 @pytest.mark.parametrize("named", [False, True])
 def test_takes_follow_the_music_model_kept_beside_the_chat_model(monkeypatch, named):
     takes = iter(range(1, 10))
-    studio = fake_studio(
-        {
-            RUN: lambda request, body: _take(f"var-{next(takes)}"),
-            STATUS: _beside_chat("sequential"),
-            **GALLERY,
-        }
-    )
+    chat = {"active_model": "unsloth/Qwen-GGUF", "serving": ["unsloth/Qwen-GGUF", "ace-step"]}
+    music = {**_status("sequential"), "active_model": "ace-step"}
+
+    def status(request, body):  # the bare status describes the chat model
+        return music if request.query_params.get("model") == "ace-step" else chat
+
+    run = {RUN: lambda request, body: _take(f"var-{next(takes)}"), STATUS: status, **GALLERY}
     args = {**SONG, "model": "ace-step"} if named else SONG
-    result, studio = _music(monkeypatch, None, args = args, studio = studio)
+    result, studio = _music(monkeypatch, None, args = args, studio = fake_studio(run))
     assert result["isError"] is False, result
     # One request per take, as the kept model makes them, not one batch it would refuse.
     assert [b.get("take") for b in bodies(studio, "/v1/audio/run")] == [1, 2, 3]

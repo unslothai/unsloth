@@ -581,10 +581,8 @@ def test_a_padded_refusal_keeps_its_header(route):
     deferred = json.loads(b"".join(asyncio.run(run())))["_deferred_error"]
     assert deferred["status_code"] == 409 and "is set to Always" in deferred["detail"]
     # The problem code rides along, so an MCP agent still gets the tag after a padded answer.
-    assert deferred["headers"] == {
-        "x-unsloth-refusal": REFUSAL,
-        "x-unsloth-problem": "multi_model_always kind=chat",
-    }
+    assert deferred["headers"].pop("x-unsloth-problem") == "multi_model_always kind=chat"
+    assert deferred["headers"] == {"x-unsloth-refusal": REFUSAL}
 
 
 def test_a_deferred_error_keeps_only_the_headers_a_client_reads():

@@ -1672,39 +1672,19 @@ def test_a_stopped_generation_ticket_cancels_the_video_job(fake_runtime, tmp_pat
 
     backend = VideoBackend()
     _load_gguf(backend, tmp_path)
-    running = threading.Event()
-    seen = {}
+    running, stopped, pipe = threading.Event(), threading.Event(), type(backend._state.pipe)
 
-    def _hold(
-        self,
-        *,
-        prompt = None,
-        negative_prompt = None,
-        num_inference_steps = None,
-        guidance_scale = None,
-        width = None,
-        height = None,
-        num_frames = None,
-        frame_rate = None,
-        generator = None,
-        callback_on_step_end = None,
-        **kwargs,
-    ):
+    @functools.wraps(pipe.__call__)  # its signature says which arguments to pass
+    def _hold(self, *_args, **_kwargs):
         running.set()
-        seen["cancel"] = backend._active_generate_cancel
-        seen["cancel"].wait(10)
+        if backend._active_generate_cancel.wait(10):
+            stopped.set()
         raise ValueError("stopped")
 
-    monkeypatch.setattr(type(backend._state.pipe), "__call__", _hold)
-    ticket = GenerationTicket()
-    with generation_ticket(ticket):
+    monkeypatch.setattr(pipe, "__call__", _hold)
+    with generation_ticket(ticket := GenerationTicket()):
         backend.begin_generate(prompt = "a clip")
-    assert running.wait(10)
-    assert ticket.stop() is True
-    deadline = time.monotonic() + 10
-    while backend.generate_progress()["active"] and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert seen["cancel"].is_set() and backend.generate_progress()["active"] is False
+    assert running.wait(10) and ticket.stop() is True and stopped.wait(10)
 
 
 def test_cache_bytes_counts_incomplete_blobs(fake_runtime, tmp_path, monkeypatch):

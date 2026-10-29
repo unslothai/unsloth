@@ -36,6 +36,7 @@ from core.inference.tool_loop_controller import (
     tool_call_limit_nudge,
     tool_event_provenance,
 )
+from core.inference import tool_facts
 from core.inference.tool_call_parser import TOOL_ERROR_NUDGE, parse_tool_calls_from_text
 from core.inference.tools import (
     ALL_TOOLS,
@@ -1007,63 +1008,28 @@ def test_a_hard_cap_below_the_window_cap_leaves_truncated_terminal_output_alone(
     assert completion.tool_message()["content"] == already
 
 
-def test_a_read_only_mcp_tool_is_not_new_work_that_licenses_a_rerun():
-    """status, models, status: the second status would read the same state, so it stays a duplicate."""
-    from core.inference import tool_facts
-
-    status, models, generate = (
-        "mcp__unsloth__studio_status",
-        "mcp__unsloth__list_models",
-        "mcp__unsloth__generate_audio",
-    )
-    for name in (status, models):
-        tool_facts.note_mcp_tool(name, {"annotations": {"readOnlyHint": True}})
-    tool_facts.note_mcp_tool(generate, {"annotations": {"readOnlyHint": False}})
+def test_a_read_only_mcp_result_is_not_new_work_until_its_hint_is_dropped():
+    status, models, generate = (f"mcp__unsloth__{n}" for n in ("status", "models", "generate"))
+    for name in (status, models, generate):
+        tool_facts.note_mcp_tool(name, {"annotations": {"readOnlyHint": name != generate}})
     controller = ToolLoopController(tools = [_tool(status), _tool(models), _tool(generate)])
-
     controller.record_result(controller.prepare_call(_call(status, {})), '{"chat":{}}')
     controller.record_result(controller.prepare_call(_call(models, {})), '{"models":[]}')
     duplicate = controller.prepare_call(_call(status, {}))
-    assert duplicate.action == "duplicate"
-    assert "Answer from the results you have" in duplicate.noop_result
-    assert "Continue with a different enabled tool" not in duplicate.noop_result
-
+    assert duplicate.action == "duplicate" and "Answer from the results" in duplicate.noop_result
     controller.record_result(controller.prepare_call(_call(generate, {"text": "x"})), "Error: x")
     assert controller.prepare_call(_call(status, {})).action == "execute"
+    tool_facts.note_mcp_tool(models, {"name": "models"})
+    assert not tool_facts.reads_only(models)
 
 
-def test_a_tool_that_drops_its_read_only_hint_counts_as_work_again():
-    from core.inference import tool_facts
-
-    name = "mcp__docs__lister"
-    tool_facts.note_mcp_tool(name, {"annotations": {"readOnlyHint": True}})
-    assert tool_facts.reads_only(name)
-    tool_facts.note_mcp_tool(name, {"name": "lister"})
-    assert not tool_facts.reads_only(name)
-
-
-def test_a_result_only_the_user_can_unblock_marks_the_turn_as_awaiting_them():
+def test_only_a_result_the_user_must_unblock_marks_the_turn_as_awaiting_them():
     name = "mcp__unsloth__generate_audio"
     controller = ToolLoopController(tools = [_tool(name)])
-    controller.record_result(
-        controller.prepare_call(_call(name, {"model": "m"})),
-        "Error: [needs_user_load kind=audio page=Audio] The music model 'm' is not loaded.",
-    )
-    assert controller.awaiting_user
-    # A later result that the model can act on clears it.
-    controller.record_result(
-        controller.prepare_call(_call(name, {"model": "n"})), "Error: [not_loaded kind=audio] x"
-    )
-    assert not controller.awaiting_user
-
-
-def test_a_not_loaded_result_that_asks_the_user_awaits_them_and_one_that_does_not_does_not():
-    from core.inference import tool_facts
-
-    asks = (
-        "Error: [not_loaded kind=audio] Load a music model first. (HTTP 400) "
-        "Ask the user to load a text-to-speech or music model on the Audio page in Unsloth Studio, then try again."
-    )
-    acts = "Error: [not_loaded kind=audio] Load a music model first. (HTTP 400) Load a music model with load_model(kind='tts') first."
-    assert tool_facts.awaits_user(asks)
-    assert not tool_facts.awaits_user(acts)
+    for model, result, awaiting in (
+        ("m", "Error: [needs_user_load kind=audio page=Audio] The music model is off.", True),
+        ("n", "Error: [not_loaded kind=audio] Load one with load_model(kind='tts') first.", False),
+        ("o", "Error: [not_loaded kind=audio] Ask the user to load one on the Audio page.", True),
+    ):
+        controller.record_result(controller.prepare_call(_call(name, {"model": model})), result)
+        assert controller.awaiting_user is awaiting, result

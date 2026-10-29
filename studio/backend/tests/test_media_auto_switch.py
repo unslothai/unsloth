@@ -425,40 +425,24 @@ def test_a_video_refusal_carries_a_plain_detail(catalog, enabled, loads):
     assert isinstance(excinfo.value.detail, str)
 
 
-def _switch_as_chat_tools_key(name):
-    from utils.account_context import OWNER, AccountContext, run_as
-    key = AccountContext(
-        OWNER.account_id,
-        OWNER.username,
-        OWNER.role,
-        via_api_key = True,
-        load_policy = "beside_only",
-    )
-    return run_as(key, _switch, name)
-
-
-@pytest.mark.parametrize(
-    "takes_the_gpu, evicts, refused",
-    [(True, True, True), (True, False, False), (False, True, False)],
-)
+@pytest.mark.parametrize("takes_the_gpu, evicts", [(True, True), (True, False), (False, True)])
 def test_a_chat_tools_key_switches_media_only_when_the_chat_model_stays(
-    flux, enabled, loads, monkeypatch, takes_the_gpu, evicts, refused
+    flux, enabled, loads, monkeypatch, takes_the_gpu, evicts
 ):
+    from dataclasses import replace
+
+    from utils.account_context import OWNER, run_as
+
+    key = replace(OWNER, via_api_key = True, load_policy = "beside_only")
     monkeypatch.setattr(backends, "load_takes_the_gpu", lambda: takes_the_gpu)
     monkeypatch.setattr(mas, "load_takes_the_gpu", lambda: takes_the_gpu)
     monkeypatch.setattr(arb, "would_evict", lambda owner, **_kw: evicts)
-    if not refused:
-        _switch_as_chat_tools_key("black-forest-labs/FLUX.1-dev")
-        assert len(loads) == 1
-        return
-    with pytest.raises(HTTPException) as excinfo:
-        _switch_as_chat_tools_key("black-forest-labs/FLUX.1-dev")
-    assert excinfo.value.status_code == 403
-    assert excinfo.value.detail["error"]["code"] == "needs_user_load"
-    assert excinfo.value.headers["X-Unsloth-Problem"] == (
-        "needs_user_load kind=image model=black-forest-labs/FLUX.1-dev page=Image"
-    )
-    assert loads == []
+    problem, refused = "", takes_the_gpu and evicts
+    try:
+        run_as(key, _switch, "black-forest-labs/FLUX.1-dev")
+    except HTTPException as exc:
+        problem = exc.headers["X-Unsloth-Problem"]
+    assert problem.startswith("needs_user_load kind=image") == refused and len(loads) == 1 - refused
 
 
 @pytest.mark.parametrize("resident", ["repo id", "path"])
