@@ -137,8 +137,8 @@ def transcribe_window(
     consumed = len(segment)
     if return_timestamps:
         row = generated[0]
-        # One host copy: iterating an accelerator tensor reads each token back separately.
-        raw_tokens = [int(token) for token in (row.tolist() if hasattr(row, "tolist") else row)]
+        # One host copy: iterating an accelerator tensor syncs once per token.
+        raw_tokens = row.tolist() if hasattr(row, "tolist") else [int(token) for token in row]
         indices, end = _complete_segment_indices(raw_tokens, model.generation_config)
         if end:
             consumed = end * _TARGET_SAMPLE_RATE // _TIMESTAMPS_PER_SECOND
