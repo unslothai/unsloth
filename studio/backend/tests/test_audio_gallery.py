@@ -1043,8 +1043,7 @@ def test_an_archive_racing_a_group_delete_is_never_lost(monkeypatch):
 
 
 def _relocate_after_first_call(monkeypatch, tmp_path, records):
-    """A Settings relocation changes gallery_dir() after the call under test resolved and locked
-    the old folder; the new folder holds a same-id pair that must be left alone."""
+    """Settings relocation mid-call: later gallery_dir() calls see a folder with same-id pairs to leave alone."""
     old = gallery.gallery_dir()
     new = tmp_path / "relocated"
     new.mkdir()
