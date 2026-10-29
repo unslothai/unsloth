@@ -278,7 +278,6 @@ def test_a_slice_the_template_refuses_falls_back_to_the_whole_count():
 
 def test_a_slice_opens_on_a_user_turn_and_only_removes_text():
     from core.inference.context_window import _newest_slice, estimate_message_tokens
-
     for messages in UNEVEN.values():
         sizes = [estimate_message_tokens(message) for message in messages]
         newest = _newest_slice(messages, sizes, 2 * CONTEXT)
@@ -306,9 +305,7 @@ def _template_counter(name: str):
     compiled = env.from_string(template)
 
     def count(messages):
-        rendered = compiled.render(
-            messages = messages, add_generation_prompt = True, bos_token = ""
-        )
+        rendered = compiled.render(messages = messages, add_generation_prompt = True, bos_token = "")
         return len(rendered) // 4
 
     return count
