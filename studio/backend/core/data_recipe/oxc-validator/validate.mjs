@@ -386,7 +386,7 @@ function fallbackLintResults(entries, message) {
   );
 }
 
-function runLintBatch(entries, budgetMs) {
+function runLintBatch(entries, budgetMs, startedAtMs) {
   if (entries.length === 0) {
     return new Map();
   }
@@ -410,7 +410,10 @@ function runLintBatch(entries, budgetMs) {
       "json",
       tempDir,
     ];
-    const timeoutMs = Math.floor(budgetMs - OXLINT_BUDGET_MARGIN_MS - performance.now());
+    // The budget runs from when this request arrived: process start for a one-shot run.
+    const timeoutMs = Math.floor(
+      budgetMs - OXLINT_BUDGET_MARGIN_MS - (performance.now() - startedAtMs),
+    );
     if (timeoutMs < OXLINT_MIN_TIMEOUT_MS) {
       return fallbackLintResults(entries, "oxlint skipped: validation budget exhausted");
     }
@@ -518,7 +521,7 @@ function readStdin() {
   });
 }
 
-function runValidation({ codes, lang, mode, codeShape, oxlintBudgetMs }) {
+function runValidation({ codes, lang, mode, codeShape, oxlintBudgetMs, startedAtMs }) {
   if (mode === "syntax") {
     return codes.map((code, index) =>
       validateSyntaxOne({ code, lang, index, codeShape }).result,
@@ -529,7 +532,7 @@ function runValidation({ codes, lang, mode, codeShape, oxlintBudgetMs }) {
     const entries = codes.map((code, index) =>
       resolveLintEntry({ code, lang, index, codeShape }),
     );
-    const lintMap = runLintBatch(entries, oxlintBudgetMs);
+    const lintMap = runLintBatch(entries, oxlintBudgetMs, startedAtMs);
     return entries.map(
       (entry) =>
         lintMap.get(entry.index) ??
@@ -547,7 +550,7 @@ function runValidation({ codes, lang, mode, codeShape, oxlintBudgetMs }) {
   const lintTargets = syntaxRuns
     .filter((run) => run.result.is_valid === true)
     .map((run) => run.lintEntry);
-  const lintMap = runLintBatch(lintTargets, oxlintBudgetMs);
+  const lintMap = runLintBatch(lintTargets, oxlintBudgetMs, startedAtMs);
 
   return syntaxRuns.map((run) => {
     if (run.result.is_valid !== true) {
@@ -562,6 +565,17 @@ function runValidation({ codes, lang, mode, codeShape, oxlintBudgetMs }) {
       })
     );
   });
+}
+
+function validatePayload(payload, startedAtMs) {
+  const lang = mapLang(payload?.lang);
+  const mode = mapMode(payload?.mode);
+  const codeShape = mapCodeShape(payload?.code_shape);
+  const codes = Array.isArray(payload?.codes) ? payload.codes : [];
+  const oxlintBudgetMs = mapBudgetMs(payload?.timeout_ms);
+  return JSON.stringify(
+    runValidation({ codes, lang, mode, codeShape, oxlintBudgetMs, startedAtMs }),
+  );
 }
 
 async function main() {
@@ -583,17 +597,60 @@ async function main() {
     );
     return;
   }
-
-  const lang = mapLang(payload?.lang);
-  const mode = mapMode(payload?.mode);
-  const codeShape = mapCodeShape(payload?.code_shape);
-  const codes = Array.isArray(payload?.codes) ? payload.codes : [];
-  const oxlintBudgetMs = mapBudgetMs(payload?.timeout_ms);
-  const out = runValidation({ codes, lang, mode, codeShape, oxlintBudgetMs });
-  process.stdout.write(JSON.stringify(out));
+  process.stdout.write(validatePayload(payload, 0));
 }
 
-main().catch((error) => {
-  process.stderr.write(String(error?.stack || error));
-  process.exit(1);
-});
+// --serve: one request per line, {"id", "payload"}, answered in order with {"id", "result"} or
+// {"id", "error"}. Nothing outlives a request: every one is the same work a one-shot run does.
+const SERVE_MAX_LINE_CHARS = 64 * 1024 * 1024;
+
+function serveLine(line) {
+  const startedAtMs = performance.now();
+  let id = null;
+  let reply;
+  try {
+    const request = JSON.parse(line);
+    id = Number.isSafeInteger(request?.id) ? request.id : null;
+    reply = `{"id":${JSON.stringify(id)},"result":${validatePayload(request?.payload, startedAtMs)}}`;
+  } catch (error) {
+    reply = JSON.stringify({ id, error: String(error?.stack || error) });
+  }
+  process.stdout.write(`${reply}\n`);
+}
+
+function serve() {
+  // A closed stdin ends the loop, which is how a dead or finished caller stops this process.
+  const parentPid = process.ppid;
+  if (process.platform !== "win32") {
+    setInterval(() => {
+      if (process.ppid !== parentPid) {
+        process.exit(0);
+      }
+    }, 1000).unref();
+  }
+  let buffered = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => {
+    buffered += chunk;
+    let newline = buffered.indexOf("\n");
+    while (newline !== -1) {
+      const line = buffered.slice(0, newline);
+      buffered = buffered.slice(newline + 1);
+      serveLine(line);
+      newline = buffered.indexOf("\n");
+    }
+    if (buffered.length > SERVE_MAX_LINE_CHARS) {
+      process.exit(2);
+    }
+  });
+  process.stdin.on("error", () => process.exit(0));
+}
+
+if (process.argv.includes("--serve")) {
+  serve();
+} else {
+  main().catch((error) => {
+    process.stderr.write(String(error?.stack || error));
+    process.exit(1);
+  });
+}
