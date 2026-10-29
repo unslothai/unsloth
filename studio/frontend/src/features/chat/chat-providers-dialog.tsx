@@ -72,6 +72,10 @@ import {
 
 import {
   type CustomReasoningConfig,
+  customReasoningConfigForSave,
+  customReasoningEffortLevels,
+  customReasoningEffortScale,
+  customReasoningStyleTakesEffort,
   normalizeCustomReasoningConfig,
 } from "./custom-reasoning";
 import { normalizeProviderBaseUrl } from "./provider-base-url";
@@ -943,7 +947,7 @@ export function ChatProvidersSettings({
           : pruneProviderModelIds(providerType, availableModels),
         maxOutputTokens,
         reasoningConfig: isCustomReasoningConnection
-          ? (showCustomReasoning ? reasoningConfig : null)
+          ? (showCustomReasoning ? customReasoningConfigForSave(reasoningConfig) : null)
           : undefined,
         ...(showShareToggle && sharedDraft ? { shared: true } : {}),
         apiKey: apiKey.trim(),
@@ -1122,7 +1126,7 @@ export function ChatProvidersSettings({
         availableModels: keepSavedModels ? undefined : availableModelsToSave,
         maxOutputTokens,
         reasoningConfig: isCustomReasoningConnection
-          ? (showCustomReasoning ? reasoningConfig : null)
+          ? (showCustomReasoning ? customReasoningConfigForSave(reasoningConfig) : null)
           : undefined,
         ...(showShareToggle && sharedDraft !== (existing.shared === true)
           ? { shared: sharedDraft }
@@ -1852,6 +1856,7 @@ export function ChatProvidersSettings({
                         checked={reasoningConfig?.enabled === true}
                         aria-describedby="provider-reasoning-support-help"
                         onCheckedChange={(checked) => setReasoningConfig({
+                          ...reasoningConfig,
                           enabled: checked === true,
                           style: reasoningConfig?.style ?? "reasoning_effort",
                         })}
@@ -1873,6 +1878,7 @@ export function ChatProvidersSettings({
                         <Select
                           value={reasoningConfig.style}
                           onValueChange={(style) => setReasoningConfig({
+                            ...reasoningConfig,
                             enabled: true,
                             style: style as CustomReasoningConfig["style"],
                           })}
@@ -1896,6 +1902,51 @@ export function ChatProvidersSettings({
                                 ? 'Thinking off sends thinking: { type: "disabled" }.'
                                 : "Thinking off sends chat_template_kwargs: { enable_thinking: false }."}
                         </p>
+                      </div>
+                    </div>
+                  ) : null}
+                  {reasoningConfig?.enabled &&
+                  customReasoningStyleTakesEffort(reasoningConfig.style) ? (
+                    <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                      <div className="flex min-w-0 flex-col gap-0.5">
+                        <Label className="text-sm font-medium">Effort levels</Label>
+                        <p id="provider-reasoning-levels-help" className="text-xs leading-snug text-muted-foreground">
+                          Levels this endpoint accepts. The Thinking menu offers these plus Off.
+                        </p>
+                      </div>
+                      <div
+                        role="group"
+                        aria-label="Effort levels"
+                        aria-describedby="provider-reasoning-levels-help"
+                        className="grid grid-cols-3 gap-x-4 gap-y-2"
+                      >
+                        {customReasoningEffortScale().map((level) => {
+                          const selected = customReasoningEffortLevels(reasoningConfig);
+                          const checked = selected.includes(level);
+                          return (
+                            <label
+                              key={level}
+                              htmlFor={`provider-reasoning-level-${level}`}
+                              className="flex cursor-pointer items-center gap-2 text-sm"
+                            >
+                              <Checkbox
+                                id={`provider-reasoning-level-${level}`}
+                                checked={checked}
+                                // The ladder needs at least one rung.
+                                disabled={checked && selected.length === 1}
+                                onCheckedChange={(next) => setReasoningConfig({
+                                  ...reasoningConfig,
+                                  effort_levels: customReasoningEffortScale().filter(
+                                    (candidate) => candidate === level
+                                      ? next === true
+                                      : selected.includes(candidate),
+                                  ),
+                                })}
+                              />
+                              {level}
+                            </label>
+                          );
+                        })}
                       </div>
                     </div>
                   ) : null}
