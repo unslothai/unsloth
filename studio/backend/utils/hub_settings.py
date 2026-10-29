@@ -1,16 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The install's model source and Hugging Face endpoint, saved in settings.
-
-The saved values are applied as ``HF_ENDPOINT`` / ``HF_DATASETS_SERVER``, which
-everything in Unsloth -- huggingface_hub, datasets, the browser via /api/health,
-and every worker process spawned afterwards -- already follows. Until the owner
-saves, whatever the operator exported stays in effect; where Hugging Face is
-restricted, with nothing saved or exported, the source defaults to ModelScope.
-ModelScope as the source points ``HF_ENDPOINT`` at the loopback adapter in
-``hub.modelscope``.
-"""
+"""Saved source (HF or ModelScope) sets HF_ENDPOINT and HF_DATASETS_SERVER; operator-exported env
+holds until saved; restricted HF with nothing set defaults to ModelScope"""
 
 from __future__ import annotations
 

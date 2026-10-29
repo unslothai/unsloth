@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-VLM (Vision-Language Model) processing utilities.
-
-Generates smart instructions for VLM datasets via content analysis and
-heuristics.
-"""
+"""VLM dataset utilities that generate instructions from content analysis and heuristics."""
 
 import re
 from itertools import islice

@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Run torch's flash kernels as FA4 / FA3 while a packed / padding-free trainer trains.
-
-torch (2.11+) swaps the flash impl process-wide, and FA4 raises (not falls back) on dropout and missing
-head dims and costs ~0.2 ms per launch, so it is on only inside ``trainer.train()``, with no dropout,
-supported head dims, and a probe matching torch's bundled flash.
-UNSLOTH_FLASH_ATTENTION_IMPL = auto (default: FA4 on sm100; on sm90 FA3 then FA4, only for models with
-hidden_size >= _HOPPER_AUTO_MIN_HIDDEN) | fa4 | fa3 | off.
-"""
+"""FA4/FA3 flash only inside trainer.train(), with no dropout, supported head dims and a probe
+matching torch flash (FA4 raises, not falls back); UNSLOTH_FLASH_ATTENTION_IMPL selects."""
 
 import contextlib
 import functools
@@ -559,7 +553,9 @@ def scope_flash_attention_impl_to_train(
     """Active only during trainer.train: FA4's launch cost makes decode attention ~6x slower."""
     if trainer is None or getattr(trainer, "_unsloth_flash_impl_wrapped", False):
         return
-    if _requested() is None or _registry() is None:
+    requested = _requested()
+    # Explicit fa3 / fa4 still wraps without a registry so train() reports the fallback.
+    if requested is None or (requested == "auto" and _registry() is None):
         return
     original = getattr(trainer, "train", None)
     if not callable(original):

@@ -1,21 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Which durable runs currently have a browser watching them.
-
-"Durable" means cancel_on_disconnect is off, not that the tab is gone, so nothing downstream could
-tell a watching user from an abandoned run. ``state.tool_approvals.wait_tool_decision`` needs that:
-its park ceiling is only defensible for a run nobody is watching.
-
-Keyed by (account, run) then by follower. Account, because studio.db is per-account
-(``utils.paths.storage_roots.studio_db_path``) and the run id is the client's
-(``CreateChatGenerationRun.runId``), so two accounts can hold the same id and one tenant's follower
-would answer for another's run. Follower, because two tabs (or a reconnect overlapping the stream it
-replaces) share a run, and a single stamp let either one's cleanup delete the other's heartbeat.
-
-A heartbeat rather than a reference count: a count must be decremented by a ``finally`` an abandoned
-generator may never reach, and a leaked increment would park an abandoned approval forever.
-"""
+"""Runs watched by a browser, keyed by (account, run) then follower; durable means
+cancel_on_disconnect off, not tab gone; wait_tool_decision park ceiling relies on it; heartbeats,
+not refcount"""
 
 from __future__ import annotations
 

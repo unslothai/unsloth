@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Per-step precision for the NVFP4 backend: which denoising steps run W4A16 instead of W4A4.
-
-A protected step dequantises to a transient bf16 weight; the counter wraps ``pipe.scheduler.step``.
-The set must be MEASURED per model (a copied set did worse than none), so it is off unless named.
-"""
+"""Denoise steps that run W4A16 instead of W4A4; set must be measured per model, so off unless named."""
 
 from __future__ import annotations
 

@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""MLX inference backend for Apple Silicon. Drop-in replacement for InferenceBackend, same
-interface, using mlx-lm/mlx-vlm instead of torch/transformers for model loading and generation."""
+"""MLX inference backend for Apple Silicon; drop-in InferenceBackend replacement using mlx-lm/mlx-vlm."""
 
 import copy
 import difflib
@@ -3558,6 +3557,21 @@ def _raw_prompt_constraint(grammar, tokenizer):
     return GrammarConstraint(grammar, tokenizer, strips_special_tokens = True)
 
 
+class _PrefillStopped(Exception):
+    pass
+
+
+def _stream_until_cancelled(stream_generate, cancel_event, *args, **kwargs):
+    def check(*_):
+        if cancel_event is not None and cancel_event.is_set():
+            raise _PrefillStopped
+
+    try:
+        yield from stream_generate(*args, prompt_progress_callback = check, **kwargs)
+    except _PrefillStopped:
+        return
+
+
 class LogprobsUnsupported(ValueError):
     """``n_probs`` asked of a model that does not sample one token per step."""
 
@@ -5350,6 +5364,7 @@ class MLXInferenceBackend:
             "token": hf_token,
             "trust_remote_code": trust_remote_code,
             "text_only": not use_vlm,
+            "quantize_embeddings": not is_lora,
         }
         if is_distributed:
             if parallel_mode == "pipeline":
@@ -6387,7 +6402,9 @@ class MLXInferenceBackend:
                     gen_kwargs["input_embeddings"] = input_embeddings
                 if logits_processors is not None:
                     gen_kwargs["logits_processors"] = logits_processors
-                for response in stream_generate(
+                for response in _stream_until_cancelled(
+                    stream_generate,
+                    cancel_event,
                     self._model,
                     self._tokenizer,
                     **gen_kwargs,

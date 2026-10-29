@@ -1787,20 +1787,6 @@ def _write_private_text(path: Path, text: str) -> None:
         handle.write(text)
 
 
-def _read_yaml_object(path: Path) -> Optional[dict]:
-    import yaml
-
-    if not path.exists():
-        return {}
-    try:
-        data = yaml.safe_load(path.read_text(encoding = "utf-8"))
-    except (yaml.YAMLError, OSError):
-        return None
-    if data is None:
-        return {}
-    return data if isinstance(data, dict) else None
-
-
 def _read_json_object(path: Path) -> Optional[dict]:
     # {} when missing, None when it cannot be parsed as an object, so the caller leaves a user-managed file untouched rather than clobbering it.
     if not path.exists():

@@ -2303,11 +2303,15 @@ def test_the_reachability_probe_closes_the_connection_it_opens():
                 pass
         return found
 
+    # The first open also starts rag_db's WAL keeper, which holds rag.db and its -wal / -shm
+    # sidecars for the life of the process (#15719); count from after it, so only a leaked
+    # probe connection can grow the number.
+    conversation_archive.reachable()
     before = _open_archive_handles()
     for _ in range(50):
         conversation_archive.reachable()
 
-    assert _open_archive_handles() <= before + 1
+    assert _open_archive_handles() <= before
 
 
 def test_the_block_says_the_newest_message_outranks_it():

@@ -902,14 +902,7 @@ def test_native_host_ram_does_not_add_back_what_studio_holds(monkeypatch):
 
 
 def test_the_fallback_reason_names_the_missing_rocm_libraries(monkeypatch):
-    import ctypes
-
-    def fake_cdll(name, *a, **k):
-        if name == "libhipblas.so.3":
-            raise OSError(name)
-        return object()
-
-    monkeypatch.setattr(ctypes, "CDLL", fake_cdll)
+    monkeypatch.setattr(sd_cpp_backend, "_rocm_missing_memo", (["libhipblas.so.3"],))
     monkeypatch.setattr(sd_cpp_backend.sys, "platform", "linux")
     monkeypatch.setattr(sd_cpp_backend.os, "name", "posix")
     assert sd_cpp_backend.rocm_runtime_missing_sonames() == ["libhipblas.so.3"]

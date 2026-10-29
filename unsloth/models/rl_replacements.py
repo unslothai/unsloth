@@ -738,6 +738,81 @@ def dpo_trainer_prepare_dataset(function_name, function):
     return function
 
 
+def _unsloth_dpo_reference_loadable(policy_sd, ref_sd):
+    # Plain materialised tensors only (not DTensor / quantized / meta), equal shapes, equal tying:
+    # an untied policy loaded into a tied reference writes twice into one tensor.
+    if policy_sd.keys() != ref_sd.keys():
+        return False
+    policy_first, ref_first = {}, {}
+    for key, value in policy_sd.items():
+        ref = ref_sd[key]
+        if (
+            type(value) is not torch.Tensor
+            or type(ref) is not torch.Tensor
+            or value.shape != ref.shape
+            or value.is_meta
+            or ref.is_meta
+        ):
+            return False
+        if policy_first.setdefault(value.data_ptr(), key) != ref_first.setdefault(
+            ref.data_ptr(), key
+        ):
+            return False
+    return True
+
+
+def _unsloth_dpo_copy_policy_into_reference(ref_model, policy_sd):
+    # Recast first: load_state_dict would round FP32 norm updates into a BF16 reference; .data keeps ties.
+    tensors = dict(ref_model.named_parameters(remove_duplicate = False))
+    tensors.update(ref_model.named_buffers(remove_duplicate = False))
+    for key, value in policy_sd.items():
+        tensor = tensors.get(key)
+        if tensor is not None and tensor.dtype != value.dtype:
+            tensor.data = tensor.data.to(value.dtype)
+    ref_model.load_state_dict(policy_sd)
+
+
+def dpo_trainer_reference_snapshot(function_name, function):
+    if function_name != "__init__" or "_unsloth_dpo_model_is_instance" in function:
+        return function
+    # TRL reloads the checkpoint, dropping in-memory training: copy the policy's weights into it.
+    # Not deepcopy: instance forward patches (block-compiled experts, packing) close over the policy's modules.
+    function, count = re.subn(
+        r"(?m)^(?P<indent>[ \t]*)ref_model_init_kwargs = [^\n]+\n"
+        r"(?:(?P=indent)[^\n]*\n)*?"
+        r"(?P=indent)self\.ref_model = create_model_from_path\(ref_model_path, \*\*ref_model_init_kwargs\)\n",
+        lambda m: m[0]
+        + textwrap.indent(
+            "from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled\n"
+            "if _unsloth_dpo_model_is_instance and not is_deepspeed_zero3_enabled():\n"
+            # Unbound calls: rl.py strips every literal `.state_dict()` (legacy vLLM weight loads).
+            "    _unsloth_policy_sd = torch.nn.Module.state_dict(self.model)\n"
+            # Checked first: load_state_dict writes matching tensors before raising on the rest.
+            "    if _unsloth_dpo_reference_loadable(_unsloth_policy_sd, torch.nn.Module.state_dict(self.ref_model)):\n"
+            "        _unsloth_dpo_copy_policy_into_reference(self.ref_model, _unsloth_policy_sd)\n"
+            "    else:\n"
+            # Aliased: a bare `import warnings` here would shadow TRL's module-level one in all of __init__.
+            "        import warnings as _unsloth_warnings\n"
+            "        _unsloth_warnings.warn(\n"
+            '            "Unsloth: the in-memory policy\'s parameters do not match its checkpoint (resized, untied or "\n'
+            '            "sharded), so the DPO reference uses the checkpoint weights. Pass ref_model= to choose it."\n'
+            "        )\n"
+            "    del _unsloth_policy_sd\n",
+            m["indent"],
+        ),
+        function,
+        count = 1,
+    )
+    if count:
+        function = _insert_after_docstring(
+            function, ["_unsloth_dpo_model_is_instance = not isinstance(model, str)"]
+        )
+    return function
+
+
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_reference_snapshot)
+RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(_unsloth_dpo_reference_loadable))
+RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(_unsloth_dpo_copy_policy_into_reference))
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_prepare_dataset)
 RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(dpo_trainer_vision_process_row))
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_vision_signature_columns)
@@ -2239,6 +2314,11 @@ def grpo_trainer__generate(function_name, function):
     if function_name != "_generate":
         return function
 
+    # A stop string can terminate a completion before the limit without an EOS token.
+    function = function.replace(
+        "ids[-1] not in eos_and_pad",
+        "(self.max_completion_length is None or len(ids) >= self.max_completion_length) and ids[-1] not in eos_and_pad",
+    )
     return _guard_vllm_sync_reload_for_shared_weights(function)
 
 
@@ -2250,6 +2330,10 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     if function_name != "_generate_and_score_completions":
         return function
 
+    function = function.replace(
+        "ids[-1] not in eos_and_pad",
+        "(self.max_completion_length is None or len(ids) >= self.max_completion_length) and ids[-1] not in eos_and_pad",
+    )
     function = function.replace(
         "prompt_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False",
         "prompt_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False",
@@ -2928,7 +3012,11 @@ def _unsloth_vllm_active_adapters(model):
     configs = getattr(model, "peft_config", None) or {}
     active = getattr(model, "active_adapters", None)
     if callable(active):
-        active = active()
+        try:
+            active = active()
+        except ValueError:
+            # transformers' PeftAdapterMixin raises on a model with no adapter (full finetuning).
+            active = None
     if isinstance(active, str):
         active = [active]
     return set(active) if active else set(configs)
@@ -3371,6 +3459,85 @@ def grpo_trainer__move_model_to_vllm(function_name, function):
 
 
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__move_model_to_vllm)
+
+
+def online_dpo_trainer__move_model_to_vllm(function_name, function):
+    if function_name != "_move_model_to_vllm":
+        return function
+    function = grpo_trainer__move_model_to_vllm(function_name, function)
+    return re.sub(
+        r"^([ \t]+)return _unsloth_vllm_sync_peft_merged\(self\)\n",
+        r"\1if self.vllm_mode == 'server' and self.accelerator.is_main_process and hasattr(self.vllm_client, 'weight_update'):\n"
+        r"\1    with self.vllm_client.weight_update():\n"
+        r"\1        return _unsloth_vllm_sync_peft_merged(self)\n"
+        r"\1return _unsloth_vllm_sync_peft_merged(self)\n",
+        function,
+        count = 1,
+        flags = re.MULTILINE,
+    )
+
+
+RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer__move_model_to_vllm)
+
+
+def _unsloth_vllm_load_state_dict(trainer, model):
+    deepspeed_plugin = getattr(trainer.accelerator.state, "deepspeed_plugin", None)
+    if getattr(trainer, "is_fsdp_enabled", False) or (
+        deepspeed_plugin is not None and getattr(deepspeed_plugin, "zero_stage", 0) == 3
+    ):
+        raise RuntimeError(
+            "Unsloth: Online DPO with use_vllm = True on TRL < 0.23 cannot sync sharded "
+            "(FSDP / DeepSpeed ZeRO-3) weights into vLLM. Upgrade TRL to 0.23 or later."
+        )
+    model = trainer.accelerator.unwrap_model(model)
+    model = getattr(model, "_orig_mod", model)
+    trainer.llm.llm_engine.model_executor.driver_worker.model_runner.model.load_weights(
+        model.state_dict().items()
+    )
+    trainer.llm.reset_prefix_cache()
+
+
+def online_dpo_trainer__generate_vllm(function_name, function):
+    # TRL < 0.23 syncs inline here, which _strip_vllm_weight_loads would turn into pass.
+    if function_name != "_generate_vllm":
+        return function
+    match = re.search(
+        r"^(?P<indent>[ \t]+)llm_model = self\.llm\.llm_engine\.model_executor\.driver_worker\.model_runner\.model\n"
+        r"(?P=indent)llm_model\.load_weights\(model\.state_dict\(\)\.items\(\)\)\n",
+        function,
+        re.MULTILINE,
+    )
+    if match is None:
+        return function
+    i = match.group("indent")
+    sync = (
+        f"{i}if not getattr(self.llm, 'shared_weights', False):\n"
+        f"{i}    from unsloth.models.rl_replacements import _unsloth_vllm_sync_kind_cached, _unsloth_vllm_sync_peft_merged, _unsloth_vllm_load_state_dict\n"
+        f"{i}    _unsloth_sync_kind = _unsloth_vllm_sync_kind_cached(self)\n"
+        f"{i}    if _unsloth_sync_kind == 'peft_merged':\n"
+        f"{i}        _unsloth_vllm_sync_peft_merged(self)\n"
+        f"{i}    elif _unsloth_sync_kind == 'trl':\n"
+        f"{i}        _unsloth_vllm_load_state_dict(self, model)\n"
+    )
+    return function[: match.start()] + sync + function[match.end() :]
+
+
+RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer__generate_vllm)
+
+
+def online_dpo_trainer__generate_vllm_colocate(function_name, function):
+    # Level-2 sleep discards the weights, but the next microbatch of the same step skips the sync.
+    if function_name != "_generate_vllm_colocate":
+        return function
+    return re.sub(
+        r"^([ \t]+)self\.llm\.sleep\(level=2\)\n",
+        r"\1self.llm.sleep(level=2)\n\1self._last_loaded_step = -1\n",
+        function,
+        flags = re.MULTILINE,
+    )
+
+
+RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer__generate_vllm_colocate)
 
 
 def grpo_trainer__get_per_token_logps(function_name, function):
@@ -4657,6 +4824,71 @@ def _unsloth_grpo_is_metric_values(delta, flat_is_ratio, mask, sequence_level):
     return delta[keep], per_row
 
 
+def _unsloth_grpo_nanmin(tensor):
+    # Sync-free trl nanmin: same value, all-NaN still returns NaN.
+    is_nan = torch.isnan(tensor)
+    smallest = torch.where(is_nan, float("inf"), tensor).min()
+    return torch.where(is_nan.all(), float("nan"), smallest)
+
+
+def _unsloth_grpo_nanmax(tensor):
+    is_nan = torch.isnan(tensor)
+    largest = torch.where(is_nan, float("-inf"), tensor).max()
+    return torch.where(is_nan.all(), float("nan"), largest)
+
+
+def _unsloth_grpo_flush_metrics(trainer):
+    # float32 holds fp16 / bf16 / fp32 exactly (same as .item()) and avoids float64 on FP64-less XPUs.
+    pending = trainer.__dict__.get("_unsloth_pending_metrics")
+    if not pending:
+        return
+    trainer._unsloth_pending_metrics = []
+    by_key = {}
+    for i, (_, value) in enumerate(pending):
+        if value.dtype == torch.float64 or not value.is_floating_point():
+            dtype = value.dtype if value.dtype == torch.float64 else torch.int64
+        else:
+            dtype = torch.float32
+        by_key.setdefault((value.device, dtype), []).append(i)
+    values = [None] * len(pending)
+    for (_, dtype), idx in by_key.items():
+        host = torch.stack([pending[i][1].reshape(()).to(dtype) for i in idx]).tolist()
+        for i, v in zip(idx, host):
+            values[i] = v
+    for (target, _), v in zip(pending, values):
+        target.append(v)
+
+
+def _unsloth_grpo_defer_metric(trainer, target, value):
+    # target.append(value.item()), but read once per log instead of one sync per metric.
+    if not torch.is_tensor(value):
+        target.append(value)
+        return
+    pending = trainer.__dict__.get("_unsloth_pending_metrics")
+    if pending is None:
+        pending = trainer._unsloth_pending_metrics = []
+        _instance_log = trainer.__dict__.get("log")
+        # weakref: a strong ref from trainer.__dict__ would be a reference cycle keeping the trainer alive.
+        import weakref
+
+        try:
+            _trainer_ref = weakref.ref(trainer)
+        except TypeError:
+            _trainer_ref = lambda: trainer  # noqa: E731  objects without weakref support
+
+        def log(*args, **kwargs):
+            owner = _trainer_ref()
+            _unsloth_grpo_flush_metrics(owner)
+            if _instance_log is not None:
+                return _instance_log(*args, **kwargs)
+            return type(owner).log(owner, *args, **kwargs)
+
+        trainer.log = log
+    pending.append((target, value.detach()))
+    if len(pending) >= 4096:
+        _unsloth_grpo_flush_metrics(trainer)
+
+
 def _unsloth_grpo_is_sequence_level(args_mode):
     # One IS ratio per sequence: TRL's sequence_* and unsloth_zoo's geometric_* (verl seq_mean_k1),
     # with the UNSLOTH_GRPO_VLLM_IS_MODE override unsloth_zoo's grpo_accumulated_loss applies.
@@ -4686,6 +4918,10 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_accumulation_steps))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_metric_values))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_sequence_level))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_nanmin))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_nanmax))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_flush_metrics))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_defer_metric))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weight_mode))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_rollout_logps_as_old))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_trl_masks_unscorable))
@@ -5064,11 +5300,13 @@ def grpo_trainer_compute_loss(function_name, function):
         if "train" in self._metrics:
             # model.training like TRL; should_evaluate is False under eval_on_start and evaluate().
             mode = "train" if self.model.training else "eval"
-            self._metrics[mode]["completion_length"].append(completion_length.item())
-            self._metrics[mode]["kl"].append(mean_kl.item())
+            _unsloth_grpo_defer_metric(
+                self, self._metrics[mode]["completion_length"], completion_length
+            )
+            _unsloth_grpo_defer_metric(self, self._metrics[mode]["kl"], mean_kl)
         else:
-            self._metrics["completion_length"].append(completion_length.item())
-            self._metrics["kl"].append(mean_kl.item())
+            _unsloth_grpo_defer_metric(self, self._metrics["completion_length"], completion_length)
+            _unsloth_grpo_defer_metric(self, self._metrics["kl"], mean_kl)
 
         if delta is not None and (
             (self.use_vllm and getattr(self, "vllm_importance_sampling_correction", False))
@@ -5093,11 +5331,15 @@ def grpo_trainer_compute_loss(function_name, function):
                 if delta.numel() > 0
                 else torch.tensor(0.0, device = self.model.device)
             )
-            self._metrics[mode]["sampling/sampling_logp_difference/mean"].append(
-                self.accelerator.gather(mean_delta).mean().item()
+            _unsloth_grpo_defer_metric(
+                self,
+                self._metrics[mode]["sampling/sampling_logp_difference/mean"],
+                self.accelerator.gather(mean_delta).mean(),
             )
-            self._metrics[mode]["sampling/sampling_logp_difference/max"].append(
-                self.accelerator.gather(max_delta).max().item()
+            _unsloth_grpo_defer_metric(
+                self,
+                self._metrics[mode]["sampling/sampling_logp_difference/max"],
+                self.accelerator.gather(max_delta).max(),
             )
 
             min_importance_sampling_ratio = (
@@ -5115,20 +5357,24 @@ def grpo_trainer_compute_loss(function_name, function):
                 if flat_is_ratio.numel() > 0
                 else torch.tensor(0.0, device = self.model.device)
             )
-            self._metrics[mode]["sampling/importance_sampling_ratio/min"].append(
+            _unsloth_grpo_defer_metric(
+                self,
+                self._metrics[mode]["sampling/importance_sampling_ratio/min"],
                 self.accelerator.gather(min_importance_sampling_ratio)
                 .nan_to_num(nan = float("inf"))
-                .min()
-                .item()
+                .min(),
             )
-            self._metrics[mode]["sampling/importance_sampling_ratio/mean"].append(
-                self.accelerator.gather(mean_importance_sampling_ratio).nanmean().item()
+            _unsloth_grpo_defer_metric(
+                self,
+                self._metrics[mode]["sampling/importance_sampling_ratio/mean"],
+                self.accelerator.gather(mean_importance_sampling_ratio).nanmean(),
             )
-            self._metrics[mode]["sampling/importance_sampling_ratio/max"].append(
+            _unsloth_grpo_defer_metric(
+                self,
+                self._metrics[mode]["sampling/importance_sampling_ratio/max"],
                 self.accelerator.gather(max_importance_sampling_ratio)
                 .nan_to_num(nan = float("-inf"))
-                .max()
-                .item()
+                .max(),
             )
 
         completion_token_count = completion_mask.sum().clamp(min = 1.0)
@@ -5153,21 +5399,33 @@ def grpo_trainer_compute_loss(function_name, function):
             clip_ratio = masked_batch_mean(is_region_clipped.float())
 
             gathered_low_clip = self.accelerator.gather(low_clip)
-            self._metrics[mode]["clip_ratio/low_mean"].append(gathered_low_clip.nanmean().item())
-            self._metrics[mode]["clip_ratio/low_min"].append(nanmin(gathered_low_clip).item())
+            _unsloth_grpo_defer_metric(
+                self, self._metrics[mode]["clip_ratio/low_mean"], gathered_low_clip.nanmean()
+            )
+            _unsloth_grpo_defer_metric(
+                self,
+                self._metrics[mode]["clip_ratio/low_min"],
+                _unsloth_grpo_nanmin(gathered_low_clip),
+            )
             gathered_high_clip = self.accelerator.gather(high_clip)
-            self._metrics[mode]["clip_ratio/high_mean"].append(gathered_high_clip.nanmean().item())
-            self._metrics[mode]["clip_ratio/high_max"].append(nanmax(gathered_high_clip).item())
+            _unsloth_grpo_defer_metric(
+                self, self._metrics[mode]["clip_ratio/high_mean"], gathered_high_clip.nanmean()
+            )
+            _unsloth_grpo_defer_metric(
+                self,
+                self._metrics[mode]["clip_ratio/high_max"],
+                _unsloth_grpo_nanmax(gathered_high_clip),
+            )
             gathered_clip_ratio = self.accelerator.gather(clip_ratio)
-            self._metrics[mode]["clip_ratio/region_mean"].append(
-                gathered_clip_ratio.nanmean().item()
+            _unsloth_grpo_defer_metric(
+                self, self._metrics[mode]["clip_ratio/region_mean"], gathered_clip_ratio.nanmean()
             )
         elif self.loss_type == "cispo":
             is_cispo_clipped = (coef_1 > self.epsilon_high) & (advantages > 0)
             cispo_clip_ratio = masked_batch_mean(is_cispo_clipped.float())
             gathered_cispo_clip_ratio = self.accelerator.gather(cispo_clip_ratio)
-            self._metrics[mode]["cispo_clip_ratio"].append(
-                gathered_cispo_clip_ratio.nanmean().item()
+            _unsloth_grpo_defer_metric(
+                self, self._metrics[mode]["cispo_clip_ratio"], gathered_cispo_clip_ratio.nanmean()
             )
 
         return loss

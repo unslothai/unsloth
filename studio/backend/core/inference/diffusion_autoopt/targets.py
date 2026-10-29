@@ -1,21 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Which modules of a pipeline are denoisers, and which pipeline actually runs a request.
-
-Two resolvers with different contracts:
-
-* :func:`denoiser_dits` / :func:`denoiser_unet` / :func:`guarded_dits` / :func:`hooked_denoisers` are the exact
-  attribute contracts the speed, attention, graph and offload layers have always used (one copy here instead of one
-  per module). Every primitive keeps reaching precisely the modules it reached before.
-* :func:`denoisers` resolves BY TYPE for the optimizer's profile / audit and for a family with no data: diffusers
-  ``ModelMixin`` components that declare or expose repeated transformer blocks, honouring ``family.denoiser_attr``,
-  an MoE ``transformer_2`` and named partitions (``transformer_ref``). It never feeds a primitive of a registered
-  family, so it cannot widen what a known load touches.
-
-:func:`runner_for` names the pipeline that executes a call (from_pipe workflows, the I2V class swap, LTX-2.5's
-condition pipe) so call-time checks (``runtime.py``) judge the runner, not the base pipe.
-"""
+"""Exact attribute resolvers feed primitives; by-type denoisers() serves profile, audit and no-data
+families, and never feeds a primitive of a registered family"""
 
 from __future__ import annotations
 

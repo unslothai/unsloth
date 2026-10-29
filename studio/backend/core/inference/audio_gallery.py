@@ -1,13 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Disk-backed persistence for generated TTS audio clips.
-
-Each clip is a pair under ``workspace_root()/audio``: ``{id}.wav`` holds the bytes and
-``{id}.json`` the recipe (a WAV has no portable text chunk). A lone file is not a
-valid record. A converted upload is kept as ``{id}.source.wav`` and goes with its clip.
-Dumb storage: the route owns the schema, this reads, writes and sorts.
-"""
+"""Disk-backed storage of generated TTS clips as {id}.wav + {id}.json pair under
+workspace_root()/audio (recipe in JSON, since WAV has no portable text chunk); a lone file is not
+a valid record; {id}.source.wav for converted uploads goes with its clip; the route owns the
+schema."""
 
 from __future__ import annotations
 

@@ -629,6 +629,37 @@ export const ru = {
     compactEmpty: "Пока нечего сжимать",
     compactUnsupported: "Для сжатия нужна модель GGUF или MLX с поддержкой инструментов",
   },
+  halloween: {
+    navLabel: "Сладость или гадость…",
+    title: "Сладость или гадость?!",
+    description:
+      "Мы приготовили для Unsloth немного страшилок до конца октября.",
+    chooseTheme: "Выберите жуткую тему",
+    spookyGreetings: "Жуткие приветствия",
+    spookyGreetingsDescription: "Ленивец встречает новые чаты страшилкой.",
+    decorations: "Пауки и летучие мыши",
+    decorationsDescription:
+      "Паутина по углам, а иногда паук или летучая мышь с темой Хэллоуина.",
+    surprise: "Сладость или гадость!",
+    surpriseDescription: "Пусть ленивец выберет тему за вас.",
+    themesTitle: "Жуткие темы",
+    back: "Назад",
+    footer: "Unsloth вернётся к обычному виду в полночь 1 ноября.",
+    removeNow: "Убрать сейчас",
+    hideFromSidebar: "Скрыть с боковой панели",
+    greeting: {
+      pumpkins: "Тыквы вырезаны. Что дальше?",
+      brewing: "Пора варить зелье",
+      trickOrTreat: "Сладость или гадость?",
+      manor: "Добро пожаловать в особняк",
+      manorName: "Добро пожаловать в особняк, {name}",
+      happyHalloween: "С Хэллоуином",
+      happyHalloweenName: "С Хэллоуином, {name}",
+      spirits: "Духи слушают…",
+      mysteries: "Какие тайны мы раскроем этой ночью?",
+      conjure: "Что мне наколдовать для вас?",
+    },
+  },
   welcome: {
     goodToSeeYou: "Рады вас видеть",
     goodToSeeYouName: "Рады вас видеть, {name}",
@@ -792,6 +823,8 @@ export const ru = {
       guidedTour: "Обзор интерфейса",
       help: "Справка",
       logOut: "Выйти",
+      logOutNeedsPassword: "Перед выходом задайте пароль в разделе Настройки > Удалённый доступ, чтобы потом снова войти.",
+      logOutFailed: "Не удалось безопасно выйти. Повторите попытку чуть позже.",
       shutdown: "Выключить",
     },
     commandPalette: {
@@ -936,6 +969,11 @@ export const ru = {
   },
   settings: {
     accounts: {
+      signsInAs: "Входит как {username}",
+      signsInAsOwner: "Входит как {alias} или {username}",
+      signInName: "Ваше имя для входа",
+      signInNameDescription: "Имя, которое вы вводите для входа, когда в этой установке больше одной учётной записи. unsloth тоже всегда работает. Оставьте пустым, чтобы использовать только unsloth.",
+      signInNameSave: "Сохранить имя",
       title: "Учётные записи",
       description: "Создавайте отдельные учётные записи Unsloth. Новые пользователи входят по одноразовому коду настройки и задают пароль.",
       username: "Имя пользователя",
@@ -1415,7 +1453,7 @@ export const ru = {
       installingRuntime: "Установка…",
       installRuntimeFailed: "Не удалось установить среду.",
       installRuntimeError: "Не удалось начать установку среды.",
-      unsupportedArch: "Песочница Windows (MXC) работает только на Windows x64, поэтому на этом ПК она недоступна.",
+      unsupportedArch: "Песочница Windows (MXC) работает только на Windows x64 и ARM64, поэтому на этом ПК она недоступна.",
       builtinNeedsUpdate:
         "Встроенному контейнеру Windows нужна сборка {required} или новее, а на этом ПК установлена {current}. Установите последнее обновление Windows, чтобы использовать его без шага администратора, или включите резервную песочницу ниже.",
       unsupportedBuild: "Песочнице Windows (MXC) нужна Windows 11 24H2 (сборка 26100) или новее, поэтому на этом ПК она недоступна.",
@@ -2189,6 +2227,12 @@ export const ru = {
         classic: "Классическая",
         minimal: "Минималистичная",
         moreThemes: "Другие темы",
+        halloween: "Хеллоуин",
+      },
+      trickOrTreat: {
+        label: "Сладость или гадость",
+        description:
+          "Темы Хэллоуина и жуткие приветствия до 1 ноября.",
       },
       custom: {
         chatWidth: {
@@ -2345,7 +2389,7 @@ export const ru = {
         gpuUnusableDetail: "Обнаружен, но PyTorch не может его использовать",
         detailedView: "Подробный вид",
         detailedViewDescription:
-          "Показывать загрузку CPU, а также загрузку, температуру и мощность каждой GPU в плавающем окне и здесь.",
+          "Показывать загрузку CPU, а также загрузку, температуру и мощность каждой GPU в плавающем окне.",
         cpuLoad: "Загрузка CPU",
         gpuLoad: "Загрузка GPU",
         temperature: "Температура",
@@ -2379,6 +2423,10 @@ export const ru = {
         used: "{value} использовано",
         free: "{value} свободно",
         total: "{value} всего",
+        usedOf: "Занято {used} из {total}",
+        segmentUsed: "Занято GPU",
+        segmentSystem: "Занято системой",
+        segmentAvailable: "Доступно",
       },
       llamaBackend: {
         title: "Движок инференса GGUF",
@@ -2508,6 +2556,10 @@ export const ru = {
           hideDetailsAction: "Скрыть подробности",
           clearAction: "Очистить кеши",
           clearOneAction: "Очистить",
+          showFolders: "Показать папки",
+          hideFolders: "Скрыть папки",
+          previousLocations: "Включает прежние расположения. Основная кнопка «Очистить» затрагивает текущую папку кэша. Кнопки моделей очищают только выбранную копию.",
+          clearModelDescription: "Будет удалена только эта копия в кэше. При необходимости она будет загружена снова.",
           clearingAction: "Очистка...",
           confirmTitle: "Очистить кешированные файлы?",
           confirmDescription: "Это освободит примерно {size}.",
@@ -4224,7 +4276,6 @@ export const ru = {
       terminalStart: "> обучение unsloth начинается...",
       preparingResources: "> Подготовка модели и датасета...",
       gettingReady: "> Мы готовим всё для вашего запуска...",
-      waitingForFirstStep: "> {message} | ожидание первого шага... ({step})",
       resumingTraining: "Продолжение обучения...",
       startingTraining: "начало обучения...",
       dataset: "Датасет",

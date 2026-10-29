@@ -11,11 +11,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Train through compressed-tensors ``mxfp4-pack-quantized`` Linears without unpacking them.
-
-Forward and backward dequantize the frozen weight per use (exact in bf16/fp16), so no 16-bit copy is kept.
-Remote-code MoE experts are stacked into unsloth_zoo ``Mxfp4StackedExperts`` instead (see ``compressed_tensors_bnb``).
-"""
+"""Trains mxfp4-pack-quantized Linears in place; frozen weight dequantized per use, no 16-bit copy."""
 
 import functools
 import os

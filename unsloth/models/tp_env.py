@@ -1,23 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Tensor parallelism from the environment, for unmodified training scripts.
-
-    UNSLOTH_TP_SIZE=2 torchrun --nproc-per-node 2 train.py                    # tp 2
-    UNSLOTH_TP_SIZE=2 torchrun --nproc-per-node 4 train.py                    # dp 2 (DDP-style) x tp 2
-    UNSLOTH_TP_SIZE=2 UNSLOTH_FSDP2=1 torchrun --nproc-per-node 4 train.py    # dp 2 (native FSDP2) x tp 2
-
-The layout is read once. The world splits into dp x tp ranks (tp the inner dimension, as in
-init_device_mesh(..., (dp, tp), ("dp", "tp"))). The script's own calls apply it:
-- FastLanguageModel / FastModel.from_pretrained: 16-bit checkpoints load through sharded_loading (each rank
-  reads its slices of the attention / MLP projections); 4-bit loads in full and is sharded at get_peft_model.
-- get_peft_model: apply_tensor_parallel over mesh["tp"] once LoRA is attached (full-size LoRA, 1-GPU init).
-- Trainer.__init__: tensor parallel if get_peft_model did not apply it; native FSDP2 shards over mesh["dp"]
-  (UNSLOTH_FSDP2=1), otherwise gradients are averaged over mesh["dp"] before clipping and the optimizer step.
-So the order is always split (pipeline parallel, not from the environment yet) -> tp -> FSDP2.
-
-UNSLOTH_TP_SHARDED_LOAD=0 loads 16-bit checkpoints in full on every rank instead (then shards them).
-"""
+"""UNSLOTH_TP_SIZE sets tp from the env (layout read once); order tp then FSDP2 (UNSLOTH_FSDP2=1)
+over dp, else dp grads averaged before clipping and the optimizer step."""
 
 from __future__ import annotations
 
@@ -369,10 +354,16 @@ def _levels(model):
         return [model]
 
 
+def parallel_env_requested():
+    return any(
+        str(os.environ.get(name, "")).strip() not in ("", "1")
+        for name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE")
+    )
+
+
 def install_tensor_parallel_env_trainer_init():
-    """Install the Trainer.__init__ wrapper at import: loads that all run inside model_init would otherwise
-    train in an unwrapped Trainer, without tensor parallel."""
-    if str(os.environ.get("UNSLOTH_TP_SIZE", "")).strip() in ("", "1"):
+    """Wrap Trainer.__init__ at import: model_init loads and non-Fast* models (encoders) would else train as plain DDP."""
+    if not parallel_env_requested():
         return False
     from transformers import Trainer
 

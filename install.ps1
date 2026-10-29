@@ -9894,8 +9894,8 @@ main()
 
     $_desktopMinVer = if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) { $env:UNSLOTH_DESKTOP_BACKEND_VERSION.Trim() } else { "" }
     $_unslothDesktopInstallSpec = if ($_desktopMinVer) { "unsloth>=$_desktopMinVer" } else { $null }
-    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.10.9" }
-    $_unslothZooInstallSpec = "unsloth-zoo>=2026.10.9"
+    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.10.10" }
+    $_unslothZooInstallSpec = "unsloth-zoo>=2026.10.10"
 
     # Twin of install.sh's _relax_unsloth_floors_to_index (#14031).
     function Resolve-UnslothFloorsForIndex {

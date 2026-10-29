@@ -1,24 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Per-architecture eager fusions for the diffusion DiT blocks.
-
-``diffusion_eager_patches.py`` covers the SHARED classes (RMSNorm, AdaLayerNorm*). The remaining
-fusible ops -- the gated residual ``x = x + gate * out`` and the inline modulation
-``norm * (1 + scale) + shift`` -- are written longhand in each family's PER-MODEL block forward,
-so they need per-arch patches. One small patch function per target, applied through the shared,
-reversible backend.
-
-The fused op is ``torch.addcmul(a, b, c) == a + b * c`` (one FMA kernel, 1-ULP, MORE accurate).
-Only the out-of-place form is used: COMPILE-SAFE (lowers to plain ops, neutral under
-torch.compile), it captures the eager win (fewer launches) but not the output allocation. The
-in-place ``addcmul_`` would save the allocation, but that measured NEUTRAL here (CUDA allocator
-recycles) and is compile-unsafe + aliasing-risky.
-
-Each patch is guarded TWICE: ``can_safely_patch`` checks the SIGNATURE, and ``_body_has`` confirms
-the exact rewritten lines are still present, so a changed diffusers block is left UNPATCHED.
-Kill-switch: ``UNSLOTH_DIFFUSION_ARCH_PATCHES=0``. Implemented for all five families (see ``_SPECS``).
-"""
+"""Per-arch eager fusions of DiT gated residuals and modulation via out-of-place torch.addcmul
+(compile-safe; in-place measured neutral and compile-unsafe); patches check signature and exact
+body lines, so a changed diffusers block stays unpatched. UNSLOTH_DIFFUSION_ARCH_PATCHES=0
+disables."""
 
 from __future__ import annotations
 
