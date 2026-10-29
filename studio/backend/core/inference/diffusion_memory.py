@@ -6774,8 +6774,7 @@ class _GroupPinner:
             if all(dep.join(0) for dep in self.after):
                 break
             elapsed = time.perf_counter() - began
-            # Fast pins are bound by the copy and register, not the disk: pinning beside the others wins there,
-            # and overlapping the render only moves the register cost into the encode.
+            # Fast (not disk-bound) pins: pinning beside the others wins; overlapping the render only moves the cost.
             rate = sum(max(dep.copied, dep.pinned) for dep in self.after) / max(elapsed, 1e-3)
             if elapsed >= _LATE_PIN_PROBE_S and rate >= _LATE_PIN_PARALLEL_BPS:
                 self.late = False
@@ -7052,9 +7051,9 @@ def defer_late_expert_pins(
     late_modules: Any,
     logger: Any = None,
 ) -> int:
-    """Pin ``late_modules`` after the other pinners of ``pipe`` when pinning is disk-bound; the render waits only for
-    those, and a late group's onload still waits for its own pin. A returning Wan2.2-A14B load read both experts and
-    the encoder from disk at once, and its first render waited 47.8 s for all three (A100)."""
+    """Pin ``late_modules`` after the other pinners when disk-bound, so the render waits only for those; a late
+    group's onload still waits for its own pin. Wan2.2-A14B (A100): both experts at once made the first render wait
+    47.8 s."""
     if _env_off(LATE_EXPERT_PIN_ENV):
         return 0
     late_ids = {id(m) for m in late_modules or () if m is not None}
