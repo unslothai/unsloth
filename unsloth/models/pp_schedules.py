@@ -5,17 +5,11 @@
 
     pp = apply_pipeline_parallel(model, mesh["pp"], n_microbatches = 8, schedule = "interleaved1f1b")
 
-Multi-stage schedules split the decoder into pp x stages_per_rank stages. Rank r keeps stages
-r, r + pp, r + 2 pp, ... (looped: Interleaved1F1B, LoopedBFS, InterleavedZeroBubble) or r and 2 pp - 1 - r
-(V: ZBVZeroBubble, DualPipeV, two stages per rank, the first and the last stage on rank 0). Each local stage runs
-the same model object with only its own layers active, so parameter names, adapter keys and the 1-GPU
-initialization stay as they are.
-
-Each choice is checked before the model is cut by building the torch schedule on placeholder stages: its
-micro-batch constraints, whether a rank runs a forward after a backward inside one step (smart gradient
-checkpointing offload slots must then be leased per checkpoint, unsloth-zoo PR #2071) and whether it splits
-the backward into input and weight passes (zero bubble: torch.autograd.grad, which reentrant checkpointing
-cannot run).
+Rank r keeps stages r, r + pp, ... (looped) or r and 2 pp - 1 - r (V). Every local stage runs the same model
+with only its own layers active, so parameter names and adapter keys are unchanged. The schedule is first
+built on placeholder stages to learn whether a rank runs a forward after a backward (smart checkpointing
+offload slots must then be leased per checkpoint, unsloth-zoo PR #2071) and whether it splits the backward
+(zero bubble: torch.autograd.grad, which reentrant checkpointing cannot run).
 """
 
 from __future__ import annotations
@@ -121,9 +115,7 @@ class _NoParams(nn.Module):
 
 
 def v_schedules_supported():
-    """torch's PipelineStage handles two adjacent stages on one rank (V placement) from torch 2.12
-    (PipelineStage._is_same_rank); the stage setup of torch 2.10 / 2.11 fails there (ZBVZeroBubble / DualPipeV,
-    run on torch 2.10: gloo pair errors in the schedule's first exchange)."""
+    """V placement needs PipelineStage._is_same_rank (torch >= 2.12); older stage setup fails."""
     try:
         from torch.distributed.pipelining import PipelineStage
     except ImportError:
@@ -132,9 +124,8 @@ def v_schedules_supported():
 
 
 def validate_schedule(spec, group, pp, stages_per_rank, n_microbatches, rank):
-    """Build the torch schedule on parameter-free placeholder stages (no communication) so its own checks run
-    before the model is cut. Returns {"interleaved": bool, "split_backward": bool} for the compute order of
-    every rank."""
+    """Build the schedule on placeholder stages so torch's checks run before the model is cut.
+    Returns {"interleaved": bool, "split_backward": bool} over every rank's compute order."""
     from torch.distributed.pipelining import PipelineStage
 
     cls = torch_schedule_class(spec)
@@ -173,7 +164,7 @@ def validate_schedule(spec, group, pp, stages_per_rank, n_microbatches, rank):
         ) from None
     order = getattr(schedule, "pipeline_order", None)
     if not order:
-        # Single-stage schedules: GPipe runs every forward first, 1F1B interleaves (when there are stages).
+        # GPipe runs every forward first; 1F1B interleaves.
         return {"interleaved": spec.name == "1f1b" and pp > 1, "split_backward": False}
     interleaved = split = False
     for actions in order.values():
@@ -192,13 +183,10 @@ def validate_schedule(spec, group, pp, stages_per_rank, n_microbatches, rank):
 
 
 def non_reentrant_checkpointing_only(model) -> Optional[bool]:
-    """None: no gradient checkpointing; True: every checkpointed module uses torch's non-reentrant
-    checkpoint (torch.autograd.grad works through it); False otherwise (reentrant, Unsloth smart
-    checkpointing or unknown)."""
+    """None: no checkpointing; True: all non-reentrant torch checkpointing; False otherwise."""
     import torch.utils.checkpoint as checkpointing
 
-    # unsloth_zoo smart checkpointing replaces torch.utils.checkpoint.checkpoint (keeping the original as
-    # _old_checkpoint): a model checkpointed through it is not on torch's non-reentrant path.
+    # unsloth_zoo smart checkpointing patches checkpoint (original kept as _old_checkpoint).
     original = getattr(checkpointing, "_old_checkpoint", None) or checkpointing.checkpoint
     patched = checkpointing.checkpoint is not original
     found = False
@@ -217,11 +205,9 @@ def non_reentrant_checkpointing_only(model) -> Optional[bool]:
 
 
 def allow_split_backward():
-    """Zero-bubble schedules run each micro-batch's backward as torch.autograd.grad(..., retain_graph = True)
-    for the inputs, then again for the weights. A compiled backward (Unsloth compiles every decoder block)
-    that AOTAutograd built with donated buffers refuses retain_graph ("compiled with non-empty donated
-    buffers", seen on T4 with torch 2.14), so compile without them for this process. Returns True if the setting
-    was changed. Blocks compiled before this call keep their buffers: apply the split before the first forward."""
+    """Disable AOTAutograd donated buffers: zero bubble backward uses retain_graph, which a compiled backward
+    with donated buffers refuses. Returns True if changed; call before the first forward (already compiled
+    blocks keep their buffers)."""
     try:
         import torch._functorch.config as functorch_config
     except ImportError:
@@ -234,13 +220,9 @@ def allow_split_backward():
 
 @functools.lru_cache(maxsize = None)
 def split_backward_keeps_function_nodes() -> bool:
-    """True if a Python autograd node (an autograd.Function's grad_fn, which is what an AOTAutograd compiled
-    region becomes: CompiledFunctionBackward) still answers `_input_metadata` once its graph root is gone.
-    torch's split backward needs that: stage_backward_input keeps the intermediate nodes, detaches the stage
-    outputs, and stage_backward_weight then builds GradientEdges on them, which autograd.grad checks through
-    node._input_metadata. Up to torch 2.12 THPFunction holds its node through a std::weak_ptr (expired by then:
-    "Attribute '_input_metadata' is invalid for this instance of _C._FunctionBase"); torch 2.13 made it an
-    owning c10::intrusive_ptr. Probed directly (CPU, no compile) rather than read from the version."""
+    """True if an autograd.Function node (e.g. CompiledFunctionBackward) keeps `_input_metadata` after its
+    output dies; split backward's weight pass needs it. torch <= 2.12 holds the node by weak_ptr, so it fails.
+    Probed rather than version-checked."""
 
     class _Probe(torch.autograd.Function):
         @staticmethod
@@ -260,18 +242,15 @@ def split_backward_keeps_function_nodes() -> bool:
     except RuntimeError:
         return False
     except Exception:
-        # Unknown failure shape: do not refuse on a probe we cannot interpret.
+        # Do not refuse on a probe we cannot interpret.
         return True
     return True
 
 
 def compiled_blocks(model):
-    """Names of submodules of `model` that run through torch.compile: Unsloth's block compile (class forward
-    marked _unsloth_block_compiled), nn.Module.compile(), torch.compile(module) wrappers, torch.compile'd
-    forwards and forwards calling a compiled function (unsloth_zoo's compiled modules). Their backward is an
-    AOTAutograd CompiledFunctionBackward node."""
+    """Names of submodules that run through torch.compile (backward is a CompiledFunctionBackward node)."""
     found = []
-    calls = {}  # per class forward: does it call a compiled function
+    calls = {}
     for name, module in model.named_modules():
         cls_forward = getattr(type(module), "forward", None)
         inst_forward = module.__dict__.get("forward")
@@ -302,10 +281,8 @@ def _is_compiled(value):
 
 
 def _calls_compiled(forward):
-    """True if `forward` calls, by global name, a torch.compile'd function: unsloth_zoo's generated
-    unsloth_compiled_module_* files keep each module's class forward eager and have it call a module-level
-    compiled function (`Gemma3MLP.forward` -> `Gemma3MLP_forward`, torch_compile_with_fallback, whose wrapper
-    keeps the compiled markers). Its backward is a CompiledFunctionBackward node like a compiled block's."""
+    """True if `forward` calls a compiled global or closure: unsloth_zoo compiled modules keep the class
+    forward eager and call a compiled `Gemma3MLP_forward`-style function."""
     fn = _unwrap_callable(forward)
     code = getattr(fn, "__code__", None)
     scope = getattr(fn, "__globals__", None)
@@ -313,12 +290,10 @@ def _calls_compiled(forward):
         return False
     if any(_is_compiled(scope.get(name)) for name in code.co_names if name in scope):
         return True
-    for cell in (
-        getattr(fn, "__closure__", None) or ()
-    ):  # a compiled helper captured from an enclosing scope
+    for cell in getattr(fn, "__closure__", None) or ():
         try:
             value = cell.cell_contents
-        except ValueError:  # empty cell
+        except ValueError:
             continue
         if _is_compiled(value):
             return True
@@ -329,8 +304,7 @@ _SINGLE_BACKWARD_MODULES = ("unsloth.kernels.fast_lora",)
 
 
 def _unwrap_callable(value):
-    """The function under bound methods and functools.partial layers, in any nesting: patch_peft_model installs
-    the MLP kernel as MethodType(partial(apply_lora_mlp, inplace=False), mlp) for Cohere (see _fused_lora_modules)."""
+    """Strip bound methods and functools.partial (Cohere MLP is MethodType(partial(apply_lora_mlp, ...)))."""
     for _ in range(16):
         if isinstance(value, functools.partial):
             value = value.func
@@ -342,9 +316,8 @@ def _unwrap_callable(value):
 
 
 def single_backward_kernels(model):
-    """Unsloth fused LoRA kernels attached to `model` (apply_qkv / apply_o / the MLP forward). Their backward
-    reuses saved activations in place, so it can run once per forward only; a zero-bubble schedule runs the
-    graph twice (input pass, then weight pass) and fails on a modified saved tensor (seen on T4, torch 2.14.1)."""
+    """Fused LoRA kernels on `model`: their backward mutates saved tensors, so it cannot run twice as split
+    backward (zero bubble) requires."""
     found = set()
     for module in model.modules():
         candidates = list(module.__dict__.values()) + [getattr(type(module), "forward", None)]
