@@ -30,11 +30,17 @@ SAVED = {
 
 
 def test_saved_settings_win_over_the_card_when_on():
-    card = param_values(GENERATE, {"params": {"temperature": 1.5, "system": "card", "use_model_settings": True}})
+    card = param_values(
+        GENERATE, {"params": {"temperature": 1.5, "system": "card", "use_model_settings": True}}
+    )
     out = model_settings.overlay(card, SAVED, GENERATE)
     assert out["temperature"] == 0.3 and out["system"] == "Be brief."
     assert (out["top_p"], out["top_k"], out["min_p"]) == (0.7, 40, 0.05)
-    assert (out["repetition_penalty"], out["presence_penalty"], out["max_tokens"]) == (1.1, 0.5, 2048)
+    assert (out["repetition_penalty"], out["presence_penalty"], out["max_tokens"]) == (
+        1.1,
+        0.5,
+        2048,
+    )
     # The flow's seed stays the card's: Re-roll and the flow seed own it.
     assert out["seed"] is None
 
@@ -78,7 +84,11 @@ def test_an_old_flow_runs_unchanged():
     assert model_settings.sampling(old) == {}
     assert (old["system"], old["temperature"], old["max_tokens"]) == ("s", 0.2, 300)
     vision = param_values(VISION, {"params": {"max_tokens": 120}})
-    assert vision["temperature"] is None and vision["system"] == "" and not vision["use_model_settings"]
+    assert (
+        vision["temperature"] is None
+        and vision["system"] == ""
+        and not vision["use_model_settings"]
+    )
 
 
 class _Ctx:
@@ -125,7 +135,8 @@ def test_the_engine_reads_the_loaded_model_when_the_card_names_none(monkeypatch)
 
     seen.clear()
     params = param_values(
-        GENERATE, {"params": {"use_model_settings": True, "model": {"repo": "a/b", "variant": None}}}
+        GENERATE,
+        {"params": {"use_model_settings": True, "model": {"repo": "a/b", "variant": None}}},
     )
     asyncio.run(engine_mod._apply_saved_settings(_Ctx(), GENERATE, params, set()))
     assert seen == ["a/b"]

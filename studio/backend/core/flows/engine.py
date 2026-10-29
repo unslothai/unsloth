@@ -2164,7 +2164,6 @@ async def _apply_saved_settings(ctx: Any, spec: dict, params: dict, bound: set[s
     model_id = choice.get("repo") if isinstance(choice, dict) else None
     if not model_id:
         from core.flows.nodes._common import resident_name
-
         model_id = await resident_name(ctx, spec["model_kind"])
     saved = await asyncio.to_thread(model_settings.read_saved, model_id)
     params.update(model_settings.overlay(params, saved, spec, bound))
