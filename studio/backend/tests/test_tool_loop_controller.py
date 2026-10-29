@@ -1055,3 +1055,15 @@ def test_a_result_only_the_user_can_unblock_marks_the_turn_as_awaiting_them():
         controller.prepare_call(_call(name, {"model": "n"})), "Error: [not_loaded kind=audio] x"
     )
     assert not controller.awaiting_user
+
+
+def test_a_not_loaded_result_that_asks_the_user_awaits_them_and_one_that_does_not_does_not():
+    from core.inference import tool_facts
+
+    asks = (
+        "Error: [not_loaded kind=audio] Load a music model first. (HTTP 400) "
+        "Ask the user to load a text-to-speech or music model on the Audio page in Unsloth Studio, then try again."
+    )
+    acts = "Error: [not_loaded kind=audio] Load a music model first. (HTTP 400) Load a music model with load_model(kind='tts') first."
+    assert tool_facts.awaits_user(asks)
+    assert not tool_facts.awaits_user(acts)

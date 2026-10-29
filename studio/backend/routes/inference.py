@@ -10881,10 +10881,19 @@ async def _maybe_auto_switch_model(
     switch_kind = (
         "audio" if require_audio_workflow == "music" else "tts" if require_speech else "llm"
     )
-    # The public preview serves its pinned checkpoint only, never a model kept alongside.
-    routed = await _route_to_extra_slot(
-        None if _auto_switch_opted_out(fastapi_request) else named_model
-    )
+    held = routed_slot.get()
+    if (
+        requested_model == _RELOAD_ONLY_MODEL
+        and held in model_slots.visible()
+        and not _auto_switch_opted_out(fastapi_request)
+    ):
+        # A later step of a run this task already routed (music speaks through the TTS core).
+        routed = held
+    else:
+        # The public preview serves its pinned checkpoint only, never a model kept alongside.
+        routed = await _route_to_extra_slot(
+            None if _auto_switch_opted_out(fastapi_request) else named_model
+        )
     if account_access.managed_account():
         if named_model:
             await _require_named_model_access(named_model, fastapi_request)
@@ -23309,6 +23318,25 @@ def _clamp_note(
         warnings.append(f"duration_s {asked:g} clamped to {used:g}")
 
 
+def _serves_music() -> bool:
+    backend = _peek_inference_backend()
+    active = getattr(backend, "active_model_name", None)
+    return bool(active and (backend.models.get(active) or {}).get("audio_music"))
+
+
+async def _route_to_kept_music_model() -> None:
+    """An omitted model means the loaded music model, which may be kept beside the chat model."""
+    if routed_slot.get() is not None or await asyncio.to_thread(_serves_music):
+        return
+    kept = await asyncio.to_thread(
+        lambda: [s for s in model_slots.visible() if model_slots.in_slot(s, _serves_music)]
+    )
+    # Several: which one is not ours to guess; the caller names it.
+    if len(kept) == 1 and model_slots.reserve(kept[0]):
+        routed_slot.set(kept[0])
+        kept[0].last_used = time.monotonic()
+
+
 async def _run_music_workflow(
     body: AudioRunRequest, request: Request, current_subject: str
 ) -> AudioRunResponse:
@@ -23327,6 +23355,8 @@ async def _run_music_workflow(
         require_speech = True,
         require_audio_workflow = "music",
     )
+    if not body.model:
+        await _route_to_kept_music_model()
     backend = await asyncio.to_thread(get_inference_backend)
     if not backend.active_model_name:
         raise HTTPException(

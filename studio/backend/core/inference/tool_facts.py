@@ -22,10 +22,15 @@ _mcp_reads: set[str] = set()
 # A tool result carrying one of these tags is blocked until the user acts, so a reply that tells
 # the user what to do is the answer, not a stall to push past.
 AWAITS_USER = ("[needs_user_load",)
+# Blocked on the user only when the hint says so: an agent with load_model can act on it itself.
+AWAITS_USER_WHEN_ASKED = ("[not_loaded",)
+ASKS_THE_USER = "Ask the user to "
 
 
 def awaits_user(result: str) -> bool:
-    return any(tag in result for tag in AWAITS_USER)
+    if any(tag in result for tag in AWAITS_USER):
+        return True
+    return ASKS_THE_USER in result and any(tag in result for tag in AWAITS_USER_WHEN_ASKED)
 
 
 def note_mcp_tool(name: str, tool: Mapping[str, Any]) -> None:

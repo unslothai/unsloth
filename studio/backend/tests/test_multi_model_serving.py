@@ -121,6 +121,37 @@ def test_a_safetensors_slot_is_served_by_its_own_orchestrator(backends):
     assert asyncio.run(run()) == (safetensors, False, safetensors.orchestrator)
 
 
+def _music_slot(name):
+    slot = model_slots.ExtraSlot(FakeLlama(), FakeOrchestrator(name), "owner")
+    slot.orchestrator.models[name] = {"audio_music": {"modes": []}}
+    return slot
+
+
+def _omitted_music_backend():
+    async def run():
+        await inf._route_to_kept_music_model()
+        return inf.get_inference_backend()
+
+    return asyncio.run(run())
+
+
+def test_an_omitted_music_model_runs_on_the_one_kept_beside_chat(backends):
+    # The owner's chat loads it beside the chat model, then calls generate_audio without a model.
+    music = _music_slot("audio-cpp/audio.cpp-gguf/ACE-Step1.5-GGUF")
+    model_slots.slots.append(music)
+    assert _omitted_music_backend() is music.orchestrator
+    # Two kept music models: the caller names one.
+    model_slots.slots.append(_music_slot("audio-cpp/audio.cpp-gguf/Other-Music-GGUF"))
+    assert _omitted_music_backend() is orchestrator._inference_backend
+
+
+def test_an_omitted_music_model_stays_on_a_primary_that_runs_music(backends, monkeypatch):
+    primary = _music_slot("audio-cpp/audio.cpp-gguf/ACE-Step1.5-GGUF").orchestrator
+    monkeypatch.setattr(orchestrator, "_inference_backend", primary)
+    model_slots.slots.append(_music_slot("audio-cpp/audio.cpp-gguf/Other-Music-GGUF"))
+    assert _omitted_music_backend() is primary
+
+
 def test_loaded_models_lists_every_backend(backends):
     app = FastAPI()
     app.include_router(inf.studio_router, prefix = "/api/inference")
