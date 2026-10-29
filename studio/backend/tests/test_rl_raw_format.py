@@ -196,6 +196,46 @@ def test_grpo_is_refused_on_an_audio_dataset_without_the_audio_flag(trainer, tmp
     assert "audio datasets" in (trainer.training_progress.error or "")
 
 
+@pytest.mark.parametrize("objective", ["dpo", "orpo"])
+def test_preference_objectives_are_refused_on_image_columns_for_a_text_model(
+    trainer, tmp_path, objective
+):
+    path = tmp_path / "pref.jsonl"
+    row = {"prompt": "q", "chosen": "a", "rejected": "b", "photo": "cat.png"}
+    path.write_text(json.dumps(row) + "\n", encoding = "utf-8")
+    trainer.is_vlm = False
+    trainer.model_has_vision = False
+    assert (
+        trainer.load_and_format_dataset(None, local_datasets = [str(path)], objective = objective)
+        is None
+    )
+    assert "image dataset" in (trainer.training_progress.error or "")
+
+
+@pytest.mark.parametrize(
+    "media, message", [({"clip": "turn.wav"}, "audio datasets"), ({"photo": "cat.png"}, "image")]
+)
+def test_rl_is_refused_when_only_the_eval_split_carries_media(trainer, tmp_path, media, message):
+    train = tmp_path / "train.jsonl"
+    train.write_text(json.dumps({"prompt": "q", "answer": "a"}) + "\n", encoding = "utf-8")
+    held_out = tmp_path / "eval.jsonl"
+    held_out.write_text(
+        json.dumps({"prompt": "q", "answer": "a", **media}) + "\n", encoding = "utf-8"
+    )
+    trainer.is_vlm = False
+    assert (
+        trainer.load_and_format_dataset(
+            None,
+            local_datasets = [str(train)],
+            local_eval_datasets = [str(held_out)],
+            eval_steps = 10,
+            objective = "grpo",
+        )
+        is None
+    )
+    assert message in (trainer.training_progress.error or "")
+
+
 def test_grpo_still_runs_for_a_vision_model_on_text_data(trainer, tmp_path):
     path = tmp_path / "grpo.jsonl"
     path.write_text(json.dumps({"prompt": "q", "answer": "a"}) + "\n", encoding = "utf-8")
