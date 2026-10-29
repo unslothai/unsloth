@@ -532,8 +532,8 @@ def test_truncated_drops_count_only_dropped_rows_at_the_cap():
 def test_truncated_drop_cause_names_the_context_length():
     assert truncated_drop_cause(0, 5, 2048) is None
     only_cut = truncated_drop_cause(5, 5, 2048)
-    assert "5 of them are longer than the context length (2048 tokens)" in only_cut
-    assert "turned off" not in only_cut
+    assert "5 of them reach the context length (2048 tokens)" in only_cut
+    assert "If they are not that long" in only_cut
     mixed = truncated_drop_cause(3, 5, 2048)
     assert (
         "For the other 2, this model's response template was not found" in mixed

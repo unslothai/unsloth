@@ -389,8 +389,8 @@ def test_completion_drops_from_truncation_name_the_context_length():
         mlt._tokenize_member(info, tokenizer, {"train_on_completions": True}, "tiny/qwen3", 16)
     message = str(exc.value)
     assert "3/4 samples (75.0%) were dropped" in message
-    assert "3 of them are longer than the context length (16 tokens)" in message
-    assert "turned off" not in message
+    assert "3 of them reach the context length (16 tokens)" in message
+    assert "response template was not found in the formatted samples" not in message
 
 
 def test_completion_drops_without_a_template_keep_the_template_advice():
