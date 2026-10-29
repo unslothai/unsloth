@@ -456,9 +456,9 @@ def _fetch_row_image(url):
 
 
 def _non_null_rows(dataset, column):
-    """Positions of the rows whose ``column`` is not None, in row order. Read from Arrow validity, so a column is not converted to Python objects (or decoded) just to find its nulls; anything without an Arrow view walks the column as before."""
+    """Row positions whose ``column`` is not None, read from Arrow validity so cells are never built or decoded."""
     try:
-        # A numpy / pandas / torch / custom format turns some nulls into values (NaN, pd.NA), so only plain rows read Arrow.
+        # numpy / pandas / torch / custom formats turn nulls into values (NaN, pd.NA) the walk keeps.
         if dataset.format["type"] not in (None, "python"):
             raise TypeError("formatted dataset")
         values = dataset.with_format("arrow")[column]
