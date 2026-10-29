@@ -1530,6 +1530,24 @@ _BNB_GEMM_4BIT = None
 _BNB_GEMM_4BIT_DEVICE = {}
 
 
+try:
+    # bitsandbytes' fused 4-bit kernel without its Python dispatch (about 50 us per call), checked bit for
+    # bit against matmul_4bit on first use; None on an unsloth_zoo without it.
+    from unsloth_zoo.temporary_patches.bitsandbytes import (
+        bnb_matmul_4bit_direct as _bnb_matmul_4bit_direct,
+    )
+except Exception:
+    _bnb_matmul_4bit_direct = None
+
+
+def _bnb_matmul_4bit(X, W, quant_state, out):
+    if _bnb_matmul_4bit_direct is not None:
+        result = _bnb_matmul_4bit_direct(X, W, quant_state, out = out)
+        if result is not None:
+            return result
+    return bnb.matmul_4bit(X, W.t(), quant_state = quant_state, out = out)
+
+
 def _bnb_gemm_4bit_arch_ok(device):
     return (
         os.environ.get("UNSLOTH_BNB_GEMM_4BIT") == "1"
@@ -1783,7 +1801,7 @@ def fast_linear_forward(
         and bsz <= _BNB_GEMM_4BIT_MAX_ROWS
         and _bnb_gemm_4bit_ok(X, W, W_quant)
     ):
-        out = bnb.matmul_4bit(X, W.t(), quant_state = W_quant, out = out)
+        out = _bnb_matmul_4bit(X, W, W_quant, out)
     else:
         W = fast_dequantize(W.t(), W_quant, use_global_buffer = True, dtype = X.dtype)
         out = torch_matmul(X, W, out = out)
