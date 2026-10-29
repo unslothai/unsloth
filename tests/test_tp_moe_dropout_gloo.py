@@ -123,7 +123,17 @@ def _case_parity(
     }
 
 
-CASES = {"parity": _case_parity}
+def _case_mean_half(rank, world, tmp, dtype):
+    import torch.distributed as dist
+
+    out = {}
+    for value in (40000.0, 3.0):
+        x = torch.full((4,), value, dtype = getattr(torch, dtype))
+        out[value] = tpn._MeanFromTP.apply(x, dist.group.WORLD, world)
+    return out
+
+
+CASES = {"parity": _case_parity, "mean_half": _case_mean_half}
 
 
 def _worker(rank, world, port, case, tmp, kwargs):
@@ -192,6 +202,15 @@ def _check(results):
         # missed or doubled reduction moves weights by ~lr = 1e-2.
         torch.testing.assert_close(saved_tp[key], saved_ref[key], rtol = 1e-3, atol = 2e-4, msg = key)
     return results[0]
+
+
+@pytest.mark.parametrize("dtype", ["float16", "bfloat16"])
+def test_tp2_replicated_mean_does_not_overflow_half(dtype):
+    # 40000 is finite in fp16 but two replicas summed in fp16 are inf: the mean must not overflow.
+    for res in _spawn("mean_half", 2, dtype = dtype):
+        for value, y in res.items():
+            assert y.dtype == getattr(torch, dtype)
+            assert torch.equal(y, torch.full_like(y, value)), (value, y)
 
 
 def test_tp2_moe_runs_replicated_and_matches_one_process():

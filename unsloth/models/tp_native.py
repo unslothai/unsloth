@@ -1198,7 +1198,10 @@ class _MeanFromTP(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, x, group, size):
-        return _all_reduce(x, group) / size
+        if x.element_size() >= 4:
+            return _all_reduce(x, group) / size
+        # fp16 / bf16: sum in float32, or tp copies of a large finite value overflow to inf before the divide
+        return (_all_reduce(x.float(), group) / size).to(x.dtype)
 
     @staticmethod
     def backward(ctx, grad):
