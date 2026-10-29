@@ -199,6 +199,18 @@ def _run(device, negative = False):
     return subprocess.run(argv, env = env, capture_output = True, text = True, timeout = 1200)
 
 
+def _triton_release():
+    try:
+        import triton
+    except Exception:
+        return (0, 0)
+    return tuple(int(x) for x in triton.__version__.split(".")[:2])
+
+
+@pytest.mark.skipif(
+    _triton_release() < (3, 7),
+    reason = "the Triton interpreter before 3.7 cannot run the K loop (int() of a 1-element array)",
+)
 @pytest.mark.parametrize("negative_control", [False, True])
 def test_call_sites_match_fp64_in_the_interpreter(negative_control):
     proc = _run("cpu", negative_control)
@@ -209,6 +221,7 @@ def test_call_sites_match_fp64_in_the_interpreter(negative_control):
 
 
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA GPU")
+@pytest.mark.skipif(torch.version.hip is not None, reason = "the fused path is gated off on ROCm")
 def test_call_sites_match_fp64_on_gpu():
     proc = _run("cuda")
     assert proc.returncode == 0 and "FUSED OK" in proc.stdout, proc.stdout + proc.stderr
