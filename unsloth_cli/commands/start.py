@@ -5981,7 +5981,7 @@ def write_pi_config(
         )
         return
     before = json.dumps(config, sort_keys = True)
-    # Pi reads custom providers from ~/.pi/agent/models.json (PI_CODING_AGENT_DIR moves it into the session). Unsloth is a generic OpenAI-compatible /v1 endpoint, and the key lives in the config rather than the env, matching openclaw/opencode.
+    # Pi reads custom providers from $PI_CODING_AGENT_DIR/models.json; the key lives there, not in the env, matching openclaw/opencode.
     provider_model = {"id": model["id"]}
     window = model.get("context_length") or model.get("max_context_length")
     if window:
