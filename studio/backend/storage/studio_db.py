@@ -1696,8 +1696,7 @@ def insert_metrics_with_progress(
     loss: Optional[float],
     duration_seconds: Optional[float],
 ) -> None:
-    """insert_metrics_batch then update_run_progress on one connection, committed together:
-    a failure leaves neither written, so a re-queued batch never sits beside newer progress."""
+    """insert_metrics_batch + update_run_progress in one commit: a failure writes neither."""
     conn = get_connection()
     try:
         if metrics:

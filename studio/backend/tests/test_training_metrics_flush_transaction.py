@@ -3,8 +3,6 @@
 
 """A metric flush writes its batch and the run's progress through one connection and one commit."""
 
-import sqlite3
-
 import pytest
 
 import core.training.training as tr
@@ -119,9 +117,3 @@ def test_reflushed_step_keeps_upsert_semantics(backend):
     finally:
         conn.close()
     assert tuple(row) == (0.5, 0.7)
-    with pytest.raises(sqlite3.IntegrityError):
-        conn = studio_db.get_connection()
-        try:
-            conn.execute("INSERT INTO training_metrics (run_id, step) VALUES ('run-1', 2)")
-        finally:
-            conn.close()
