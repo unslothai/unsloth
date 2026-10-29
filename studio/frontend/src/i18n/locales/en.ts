@@ -2274,6 +2274,8 @@ export const en = {
         on: "On",
         off: "Off",
         oldWebkitWarning: "WebKitGTK {version} on Wayland: GPU rendering can crash at launch on NVIDIA with fractional scaling (WebKit bug 280210). If it does, Unsloth switches back to CPU rendering on its own. On WebKitGTK 2.50.4 it gave no measured speedup (8 fps either way), so On is not recommended here.",
+        oldDriverWarning:
+          "NVIDIA driver {version} on X11: Unsloth keeps GPU rendering off until the driver is 610 or newer. Older drivers leak a file descriptor per frame, and the window stops drawing within minutes.",
         fallbackNote: "GPU rendering crashed at launch on this system, so Unsloth is using CPU rendering.",
         tryAgain: "Try GPU again",
         envOverride: "Set by the {name} environment variable. This setting has no effect until it is removed.",

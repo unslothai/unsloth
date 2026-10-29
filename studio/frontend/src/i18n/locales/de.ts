@@ -2240,6 +2240,8 @@ export const de = {
         on: "An",
         off: "Aus",
         oldWebkitWarning: "WebKitGTK {version} unter Wayland: GPU-Rendering kann auf NVIDIA mit gebrochener Skalierung beim Start abstürzen (WebKit bug 280210). In diesem Fall wechselt Unsloth von selbst zurück zum CPU-Rendering. Unter WebKitGTK 2.50.4 brachte es keinen messbaren Geschwindigkeitsgewinn (in beiden Fällen 8 fps), daher wird An hier nicht empfohlen.",
+        oldDriverWarning:
+          "NVIDIA-Treiber {version} unter X11: Unsloth lässt das GPU-Rendering aus, bis der Treiber 610 oder neuer ist. Ältere Treiber verlieren pro Frame einen Dateideskriptor, und das Fenster zeichnet nach wenigen Minuten nicht mehr.",
         fallbackNote: "GPU-Rendering ist auf diesem System beim Start abgestürzt, daher verwendet Unsloth CPU-Rendering.",
         tryAgain: "GPU erneut versuchen",
         envOverride: "Durch die Umgebungsvariable {name} festgelegt. Diese Einstellung hat keine Wirkung, solange sie gesetzt ist.",

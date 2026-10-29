@@ -14,8 +14,10 @@ export interface GpuRenderingStatus {
   fallbackActive: boolean;
   /** Name of the environment variable that overrides the setting. */
   envOverride: string | null;
-  /** Runtime WebKitGTK version; set on Linux Wayland below 2.54 only. */
+  /** Runtime WebKitGTK version; set on Linux Wayland below 2.54.2 only. */
   oldWebkitWarning: string | null;
+  /** NVIDIA driver branch; set on Linux X11 below 610, where On keeps compositing off. */
+  oldDriverWarning: string | null;
 }
 
 export async function loadGpuRendering(): Promise<GpuRenderingStatus> {

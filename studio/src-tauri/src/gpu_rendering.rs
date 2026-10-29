@@ -21,9 +21,10 @@ const SETTING_FILE: &str = "gpu-rendering-v1";
 const UNSAFE_FLAG_FILE: &str = "gpu-rendering-unsafe-v1";
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 const UNSAFE_REASON: &str = "error71";
-/// Below this WebKitGTK the GPU path gave no measured speedup and can crash on NVIDIA Wayland.
+/// Below this WebKitGTK the GPU path gave no measured speedup and can crash on NVIDIA Wayland
+/// (Error 71 under explicit sync until 2.54.2).
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-const RECOMMENDED_WEBKIT: (u32, u32) = (2, 54);
+const RECOMMENDED_WEBKIT: (u32, u32, u32) = (2, 54, 2);
 /// wry's default WebView2 arguments, which any explicit value replaces wholesale.
 #[cfg_attr(not(windows), allow(dead_code))]
 const WEBVIEW2_DEFAULT_ARGS: &str =
@@ -200,7 +201,7 @@ pub fn old_webkit_warning(
     wayland_session: bool,
 ) -> Option<String> {
     let (major, minor, micro) = webkit_version;
-    (wayland_session && (major, minor) < RECOMMENDED_WEBKIT)
+    (wayland_session && webkit_version < RECOMMENDED_WEBKIT)
         .then(|| format!("{major}.{minor}.{micro}"))
 }
 
@@ -230,6 +231,7 @@ pub struct LaunchState {
     pub fallback_active: bool,
     pub env_override: Option<&'static str>,
     pub old_webkit_warning: Option<String>,
+    pub old_driver_warning: Option<String>,
     flag_cleared: AtomicBool,
 }
 
@@ -239,12 +241,14 @@ impl LaunchState {
         fallback_active: bool,
         env_override: Option<&'static str>,
         old_webkit_warning: Option<String>,
+        old_driver_warning: Option<String>,
     ) -> Self {
         Self {
             setting,
             fallback_active,
             env_override,
             old_webkit_warning,
+            old_driver_warning,
             flag_cleared: AtomicBool::new(false),
         }
     }
@@ -259,6 +263,7 @@ pub struct GpuRenderingStatus {
     pub fallback_active: bool,
     pub env_override: Option<String>,
     pub old_webkit_warning: Option<String>,
+    pub old_driver_warning: Option<String>,
 }
 
 fn status(launch: &LaunchState, stored: GpuRendering) -> GpuRenderingStatus {
@@ -270,6 +275,7 @@ fn status(launch: &LaunchState, stored: GpuRendering) -> GpuRenderingStatus {
             fallback_active: false,
             env_override: None,
             old_webkit_warning: None,
+            old_driver_warning: None,
         };
     }
     let flag_cleared = launch.flag_cleared.load(Ordering::SeqCst);
@@ -280,6 +286,7 @@ fn status(launch: &LaunchState, stored: GpuRendering) -> GpuRenderingStatus {
         fallback_active: launch.fallback_active && !flag_cleared,
         env_override: launch.env_override.map(str::to_string),
         old_webkit_warning: launch.old_webkit_warning.clone(),
+        old_driver_warning: launch.old_driver_warning.clone(),
     }
 }
 
@@ -423,7 +430,7 @@ mod tests {
     }
 
     #[test]
-    fn the_old_webkit_warning_is_for_wayland_below_2_54() {
+    fn the_old_webkit_warning_is_for_wayland_below_2_54_2() {
         assert_eq!(
             old_webkit_warning((2, 50, 4), true).as_deref(),
             Some("2.50.4")
@@ -432,7 +439,12 @@ mod tests {
             old_webkit_warning((2, 53, 99), true).as_deref(),
             Some("2.53.99")
         );
-        assert_eq!(old_webkit_warning((2, 54, 0), true), None);
+        // 2.54.0 and 2.54.1 still crash with Error 71 under explicit sync.
+        assert_eq!(
+            old_webkit_warning((2, 54, 1), true).as_deref(),
+            Some("2.54.1")
+        );
+        assert_eq!(old_webkit_warning((2, 54, 2), true), None);
         assert_eq!(old_webkit_warning((2, 50, 4), false), None);
     }
 
@@ -448,7 +460,7 @@ mod tests {
     #[cfg(any(target_os = "windows", target_os = "linux"))]
     #[test]
     fn status_reports_a_pending_change_and_a_retried_fallback() {
-        let launch = LaunchState::new(GpuRendering::Auto, true, None, Some("2.50.4".into()));
+        let launch = LaunchState::new(GpuRendering::Auto, true, None, Some("2.50.4".into()), None);
         let before = status(&launch, GpuRendering::Auto);
         assert!(before.fallback_active && !before.restart_required);
         // "Try GPU again" re-selects Auto and clears the flag.
@@ -460,6 +472,7 @@ mod tests {
             false,
             Some("WEBKIT_DISABLE_DMABUF_RENDERER"),
             None,
+            Some("580".into()),
         );
         let changed = status(&quiet, GpuRendering::Off);
         assert!(changed.restart_required && changed.configurable);
@@ -471,6 +484,10 @@ mod tests {
             serde_json::to_value(&changed).unwrap()["oldWebkitWarning"],
             serde_json::Value::Null
         );
+        assert_eq!(
+            serde_json::to_value(&changed).unwrap()["oldDriverWarning"],
+            serde_json::Value::from("580")
+        );
     }
 
     #[cfg(target_os = "macos")]
@@ -479,7 +496,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_setting(dir.path(), GpuRendering::Off).unwrap();
         assert_eq!(launch_setting(Some(dir.path())), GpuRendering::Auto);
-        let launch = LaunchState::new(GpuRendering::Auto, false, None, None);
+        let launch = LaunchState::new(GpuRendering::Auto, false, None, None, None);
         let reported = status(&launch, GpuRendering::Off);
         assert_eq!(reported.setting, GpuRendering::On);
         assert!(!reported.configurable && !reported.restart_required);

@@ -2193,6 +2193,8 @@ export const zhCN = {
         on: "开启",
         off: "关闭",
         oldWebkitWarning: "Wayland 上的 WebKitGTK {version}：在使用分数缩放的 NVIDIA 环境中，GPU 渲染可能会在启动时崩溃（WebKit bug 280210）。如果发生这种情况，Unsloth 会自动切换回 CPU 渲染。在 WebKitGTK 2.50.4 上未测得任何提速（两种方式都是 8 fps），因此不建议在此开启。",
+        oldDriverWarning:
+          "X11 上的 NVIDIA 驱动 {version}：在驱动更新到 610 或更高版本之前，Unsloth 会保持 GPU 渲染关闭。旧驱动每帧泄漏一个文件描述符，几分钟内窗口就会停止绘制。",
         fallbackNote: "GPU 渲染在此系统上启动时崩溃，因此 Unsloth 正在使用 CPU 渲染。",
         tryAgain: "重试 GPU",
         envOverride: "由环境变量 {name} 设置。在移除该变量之前，此设置不会生效。",

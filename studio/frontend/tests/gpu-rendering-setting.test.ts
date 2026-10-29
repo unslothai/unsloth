@@ -37,6 +37,7 @@ const BASE: GpuRenderingStatus = {
   fallbackActive: false,
   envOverride: null,
   oldWebkitWarning: null,
+  oldDriverWarning: null,
 };
 
 const kinds = (notes: GpuRenderingNote[]) => notes.map((note) => note.kind);
@@ -84,6 +85,18 @@ test("GPU rendering notes follow the status", () => {
       status: { oldWebkitWarning: "2.50.4", setting: "on" },
       selected: "on",
       expected: ["oldWebkitWarning"],
+    },
+    {
+      name: "old NVIDIA driver warning needs On",
+      status: { oldDriverWarning: "580" },
+      selected: "auto",
+      expected: [],
+    },
+    {
+      name: "old NVIDIA driver warning with On",
+      status: { oldDriverWarning: "580", setting: "on" },
+      selected: "on",
+      expected: ["oldDriverWarning"],
     },
     {
       name: "On without a warning",
@@ -136,6 +149,7 @@ test("GPU rendering notes follow the status", () => {
 test("the note copy carries the placeholders the row fills", () => {
   const copy = en.settings.appearance.gpuRendering;
   assert.ok(copy.oldWebkitWarning.includes("{version}"));
+  assert.ok(copy.oldDriverWarning.includes("{version}"));
   assert.ok(copy.envOverride.includes("{name}"));
 });
 

@@ -2227,6 +2227,8 @@ export const ptBR = {
         on: "Ativado",
         off: "Desativado",
         oldWebkitWarning: "WebKitGTK {version} no Wayland: a renderização por GPU pode travar ao iniciar em NVIDIA com escala fracionária (WebKit bug 280210). Se isso acontecer, o Unsloth volta sozinho para a renderização por CPU. No WebKitGTK 2.50.4 não houve ganho de velocidade mensurável (8 fps nos dois casos), então Ativado não é recomendado aqui.",
+        oldDriverWarning:
+          "NVIDIA driver {version} on X11: Unsloth keeps GPU rendering off until the driver is 610 or newer. Older drivers leak a file descriptor per frame, and the window stops drawing within minutes.",
         fallbackNote: "A renderização por GPU travou ao iniciar neste sistema, então o Unsloth está usando renderização por CPU.",
         tryAgain: "Tentar a GPU de novo",
         envOverride: "Definido pela variável de ambiente {name}. Esta configuração não tem efeito até que ela seja removida.",
