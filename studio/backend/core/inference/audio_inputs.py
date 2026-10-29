@@ -360,22 +360,19 @@ def save_from_media(
                     "Unsloth Studio can only cut inside the track.",
                 )
             last = total if end_s is None else min(total, max(first + 1, int(end_s * rate)))
-            if first or last != total:
+            whole = not first and last == total
+            if not whole:
                 reader.setpos(first)
-                data = reader.readframes(last - first)
                 with wave.open(str(cut), "wb") as writer:
                     writer.setparams(reader.getparams())
-                    writer.writeframes(data)
-                del data
-        if not first and last == total:
-            # The whole track: the cut would rewrite the same header and samples.
+                    writer.writeframes(reader.readframes(last - first))
+        if whole:
             os.replace(full, cut)
         digest = hashlib.sha256()
         with open(cut, "rb") as f:
             for chunk in iter(lambda: f.read(1 << 20), b""):
                 digest.update(chunk)
-        # transcode() wrote this WAV (16-bit PCM, at most MAX_RATE and two channels), so a second
-        # pass through it would only rewrite the same bytes: _finish_upload adopts it as is.
+        # transcode() wrote this WAV, so transcoding it again would only rewrite the same bytes.
         prepared = {
             "duration_s": round((last - first) / rate, 3),
             "sample_rate": rate,
@@ -414,7 +411,7 @@ def _finish_upload(
     *,
     prepared: Optional[dict[str, Any]] = None,
 ) -> tuple[dict[str, Any], bool]:
-    """``prepared`` is the info of a ``tmp`` that ``transcode`` already wrote; it is moved in as is."""
+    """``prepared``: ``tmp`` is already a ``transcode`` output with this info, so it is moved in as is."""
     existing = _find_by_sha(directory, sha)
     if existing is not None:
         input_id, meta = existing
