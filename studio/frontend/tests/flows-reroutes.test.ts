@@ -371,3 +371,82 @@ test("undo takes a reroute split back in one step", () => {
   assert.deepEqual(graph().wireOrder, []);
   assert.deepEqual(plain(), ["e1:src.text->llm.prompt"]);
 });
+
+test("an empty reroute fans out to any inputs one output type could feed together", () => {
+  useDocStore.getState().load(
+    doc(
+      [
+        node("src", "input.text", [0, 0]),
+        node("num", "input.number", [0, 200]),
+        node("jg", "json.get", [600, 0]),
+        node("llm", "llm.generate", [600, 200]),
+        node("img", "image.generate", [600, 400]),
+      ],
+      [],
+    ),
+  );
+  useDocStore.getState().addReroute({ id: "r1", pos: [300, 10] });
+  const to = (target: string, port: string) =>
+    tryConnect({
+      source: "r1",
+      sourceHandle: REROUTE_OUT_HANDLE,
+      target,
+      targetHandle: inHandle(port),
+    });
+  assert.equal(to("jg", "json"), null);
+  // A text output feeds json and text alike, so the reroute may feed both.
+  assert.equal(to("llm", "prompt"), null);
+  // Nothing feeds json, text and an image at once.
+  assert.match(to("img", "init_image") ?? "", /cannot connect/);
+  assert.equal(
+    tryConnect({
+      source: "src",
+      sourceHandle: outHandle("text"),
+      target: "r1",
+      targetHandle: REROUTE_IN_HANDLE,
+    }),
+    null,
+  );
+  assert.match(
+    tryConnect({
+      source: "num",
+      sourceHandle: outHandle("value"),
+      target: "r1",
+      targetHandle: REROUTE_IN_HANDLE,
+    }) ?? "",
+    /cannot connect/,
+  );
+});
+
+test("a reroute never adds a second copy of a wire a multi input already has", () => {
+  fresh([edge("a", "src", "text", "out", "value")]);
+  useDocStore.getState().addReroute({ id: "r1", pos: [300, 10] });
+  assert.equal(
+    tryConnect({
+      source: "src",
+      sourceHandle: outHandle("text"),
+      target: "r1",
+      targetHandle: REROUTE_IN_HANDLE,
+    }),
+    null,
+  );
+  assert.match(
+    tryConnect({
+      source: "r1",
+      sourceHandle: REROUTE_OUT_HANDLE,
+      target: "out",
+      targetHandle: inHandle("value"),
+    }) ?? "",
+    /already/,
+  );
+  assert.deepEqual(plain(), ["a:src.text->out.value"]);
+  // Rerouting a single input's own wire is still allowed: it replaces the direct edge.
+  fresh();
+  useDocStore.getState().addReroute({ id: "r2", pos: [300, 10] });
+  tryConnect({ source: "src", sourceHandle: outHandle("text"), target: "r2", targetHandle: REROUTE_IN_HANDLE });
+  assert.equal(
+    tryConnect({ source: "r2", sourceHandle: REROUTE_OUT_HANDLE, target: "llm", targetHandle: inHandle("prompt") }),
+    null,
+  );
+  assert.equal(plain().length, 1);
+});

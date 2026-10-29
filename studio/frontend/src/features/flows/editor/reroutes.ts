@@ -75,11 +75,6 @@ function chainRoot(graph: DocGraph, rerouteId: string): string {
   return cursor;
 }
 
-function typedBy(graph: DocGraph, rerouteId: string): PortSpec | null {
-  const port = reroutePort(graph, rerouteId);
-  return port.type === "any" ? null : port;
-}
-
 export interface RerouteRequest {
   source: string;
   sourceHandle: string;
@@ -147,10 +142,21 @@ export function checkRerouteConnection(
     if (!port) return { ok: false, reason: "Unknown port" };
     multi = !!port.multi;
   }
-  // An empty reroute chain takes its type from the inputs it already feeds.
-  const source =
-    portSpec(graph, upstream, "out") ??
-    (fromReroute ? typedBy(graph, chainRoot(graph, req.source)) : null);
+  const source = portSpec(graph, upstream, "out");
+  if (!source && fromReroute) {
+    // An empty chain needs one output type that could feed every input it would reach.
+    const reach = [...rerouteDownstream(graph, chainRoot(graph, req.source)), ...targets]
+      .map((ref) => portSpec(graph, ref, "in"))
+      .filter((port): port is PortSpec => !!port && port.type !== "any");
+    if (!reach.some((type) => reach.every((port) => typesCompatible(type, port)))) {
+      const [first] = reach;
+      const clash = reach.find((port) => !typesCompatible(first, port)) ?? first;
+      return {
+        ok: false,
+        reason: `${first.type} cannot connect to ${clash.type}`,
+      };
+    }
+  }
   const edges = Object.values(graph.edges);
   for (const ref of targets) {
     const port = portSpec(graph, ref, "in");
@@ -160,6 +166,19 @@ export function checkRerouteConnection(
         ok: false,
         reason: `${source.type} cannot connect to ${port.type}`,
       };
+    // A multi input keeps every wire, so the same output through a reroute would arrive twice.
+    if (
+      upstream &&
+      port.multi &&
+      edges.some(
+        (e) =>
+          e.source === upstream.node &&
+          e.source_port === upstream.port &&
+          e.target === ref.node &&
+          e.target_port === ref.port,
+      )
+    )
+      return { ok: false, reason: "Those are already connected" };
     if (upstream && wouldCreateCycle(edges, upstream.node, ref.node, ref.port))
       return {
         ok: false,
