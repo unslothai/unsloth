@@ -2379,7 +2379,7 @@ export const ptBR = {
         apiDescription: "Veja o que outros apps enviam para a API deste servidor assim que chega.",
         summary: "Solicitações ativas, erros e uso de tokens",
         status: "{active} ativas · {recent} recentes · {model}",
-        noModelLoaded: "nenhum modelo carregado",
+        noModelLoaded: "Nenhum modelo carregado",
         autoOpen: "Mostrar o monitor flutuante automaticamente",
         autoOpenDescription:
           "Abre um pequeno painel quando chega tráfego da API.",

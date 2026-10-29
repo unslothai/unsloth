@@ -2394,7 +2394,7 @@ export const fr = {
         apiDescription: "Voyez ce que les autres applications envoient à l'API de ce serveur dès son arrivée.",
         summary: "Requêtes en cours, erreurs et utilisation des jetons",
         status: "{active} actives · {recent} récentes · {model}",
-        noModelLoaded: "aucun modèle chargé",
+        noModelLoaded: "Aucun modèle chargé",
         autoOpen: "Afficher automatiquement le moniteur flottant",
         autoOpenDescription:
           "Ouvre un petit panneau lorsque l’API reçoit du trafic.",

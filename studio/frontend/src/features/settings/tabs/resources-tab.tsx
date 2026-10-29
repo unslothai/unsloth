@@ -42,7 +42,7 @@ import { openLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
   type HuggingFaceCacheSettings,
   loadHuggingFaceCacheSettings,
@@ -75,9 +75,7 @@ import {
 } from "@/components/monitor-refresh";
 import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
 import {
-  MemoryBar,
-  MemoryLegend,
-  MeterRow,
+  MemoryShareBar,
 } from "@/components/monitor-memory";
 import {
   memorySegments,
@@ -173,14 +171,17 @@ function MetricTile({
   percent,
   showUsage = true,
   extraDetail,
+  children,
 }: {
   label: string;
   value: string;
-  detail: string;
+  detail?: string;
   // null = unknown (e.g. Windows ROCm perf counter); show a dash, not 0%.
   percent: number | null;
   showUsage?: boolean;
   extraDetail?: string;
+  /** Replaces the usage bar, e.g. a bar split by owner. */
+  children?: ReactNode;
 }) {
   const percentKnown = isFiniteNumber(percent);
   const safePercent = clampPercent(percent);
@@ -211,12 +212,14 @@ function MetricTile({
         >
           {value}
         </span>
-        <span
-          title={detail}
-          className="truncate text-ui-11 text-muted-foreground"
-        >
-          {detail}
-        </span>
+        {detail ? (
+          <span
+            title={detail}
+            className="truncate text-ui-11 text-muted-foreground"
+          >
+            {detail}
+          </span>
+        ) : null}
         {extraDetail ? (
           <span className="whitespace-pre-line text-ui-11 text-muted-foreground">
             {extraDetail}
@@ -231,6 +234,7 @@ function MetricTile({
           indicatorClassName={usageIndicatorClass(safePercent)}
         />
       )}
+      {children ? <div className="mt-auto">{children}</div> : null}
     </div>
   );
 }
@@ -679,8 +683,6 @@ export function ResourcesTab() {
       ? memoryShare(vram.usedGb, vram.totalGb, modelsGb)
       : null;
   const vramSegments = vramShare ? memorySegments(vramShare, breakdown, false) : null;
-  const shareCardClass =
-    "flex min-w-0 flex-col gap-3 rounded-xl border border-border/60 bg-card px-5 py-4 dark:border-transparent";
   // The placeholder's cpu backend and empty package list are not facts about the host either.
   const hostReading = (value: string) => (hostUnread ? unknownLabel : value);
   // systemInfo.gpu, not displayedGpu: a Vulkan llama.cpp makes displayedGpu use the inference
@@ -855,40 +857,34 @@ export function ResourcesTab() {
             data-testid="settings-unsloth-share"
           >
             {ramSegments && (
-              <div className={shareCardClass}>
-                <MeterRow
-                  label={t(
-                    unifiedPool
-                      ? "settings.resources.liveMonitor.memory"
-                      : "settings.resources.liveMonitor.ram",
-                  )}
-                  readout={`${formatGiB(metrics.ramUsed)} / ${formatGiB(metrics.ramTotal)}`}
-                  footer={
-                    <MemoryLegend
-                      segments={ramSegments}
-                      noModels={!discreteVram && breakdown?.models.length === 0}
-                    />
-                  }
-                >
-                  <MemoryBar segments={ramSegments} />
-                </MeterRow>
-              </div>
+              <MetricTile
+                label={t(
+                  unifiedPool
+                    ? "settings.resources.liveMonitor.memory"
+                    : "settings.resources.liveMonitor.ram",
+                )}
+                value={`${formatGiB(metrics.ramUsed)} / ${formatGiB(metrics.ramTotal)}`}
+                percent={null}
+                showUsage={false}
+              >
+                <MemoryShareBar
+                  segments={ramSegments}
+                  noModels={!discreteVram && breakdown?.models.length === 0}
+                />
+              </MetricTile>
             )}
             {vramSegments && (
-              <div className={shareCardClass}>
-                <MeterRow
-                  label={t("settings.resources.liveMonitor.vram")}
-                  readout={`${formatGiB(vram.usedGb)} / ${formatGiB(vram.totalGb)}`}
-                  footer={
-                    <MemoryLegend
-                      segments={vramSegments}
-                      noModels={breakdown?.models.length === 0}
-                    />
-                  }
-                >
-                  <MemoryBar segments={vramSegments} />
-                </MeterRow>
-              </div>
+              <MetricTile
+                label={t("settings.resources.liveMonitor.vram")}
+                value={`${formatGiB(vram.usedGb)} / ${formatGiB(vram.totalGb)}`}
+                percent={null}
+                showUsage={false}
+              >
+                <MemoryShareBar
+                  segments={vramSegments}
+                  noModels={breakdown?.models.length === 0}
+                />
+              </MetricTile>
             )}
           </div>
         )}

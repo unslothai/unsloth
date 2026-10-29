@@ -2395,7 +2395,7 @@ export const de = {
         apiDescription: "Sieh, was andere Apps an die API dieses Servers senden, sobald es ankommt.",
         summary: "Aktive Anfragen, Fehler und Token-Nutzung",
         status: "Aktiv: {active} · kürzlich: {recent} · {model}",
-        noModelLoaded: "kein Modell geladen",
+        noModelLoaded: "Kein Modell geladen",
         autoOpen: "Schwebenden Monitor automatisch anzeigen",
         autoOpenDescription:
           "Öffnet ein kleines Fenster, wenn API-Aktivität eingeht.",

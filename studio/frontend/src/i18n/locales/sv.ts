@@ -2540,7 +2540,7 @@ export const sv = {
         apiDescription: "Se vad andra appar skickar till den här serverns API när det kommer in.",
         summary: "Begäranden, fel och tokenanvändning i realtid",
         status: "{active} aktiva · {recent} senaste · {model}",
-        noModelLoaded: "ingen modell inläst",
+        noModelLoaded: "Ingen modell inläst",
         autoOpen: "Den flytande övervakaren öppnas automatiskt",
         autoOpenDescription: "Öppnar en liten panel när API-trafik anländer.",
         cpu: "CPU",

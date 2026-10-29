@@ -2267,7 +2267,7 @@ export const it = {
         apiDescription: "Guarda cosa inviano le altre app all'API di questo server non appena arriva.",
         summary: "Richieste attive, errori e utilizzo dei token",
         status: "{active} attive · {recent} recenti · {model}",
-        noModelLoaded: "nessun modello caricato",
+        noModelLoaded: "Nessun modello caricato",
         autoOpen: "Mostra automaticamente il monitor fluttuante",
         autoOpenDescription:
           "Apre un piccolo pannello quando arriva traffico API.",

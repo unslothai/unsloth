@@ -2428,7 +2428,7 @@ export const en = {
         apiDescription: "See what other apps send to this server's API as it arrives.",
         summary: "Live requests, errors, and token usage",
         status: "{active} active · {recent} recent · {model}",
-        noModelLoaded: "no model loaded",
+        noModelLoaded: "No model loaded",
         autoOpen: "Floating monitor opens automatically",
         autoOpenDescription: "Opens a small panel when API traffic arrives.",
         cpu: "CPU",

@@ -17,8 +17,7 @@ import { vramCards } from "./monitor-cards";
 import {
   formatGiB,
   MeterRow,
-  MemoryBar,
-  MemoryLegend,
+  MemoryShareBar,
   UsageBar,
   usageIndicatorClass,
   usageTextClass,
@@ -104,9 +103,9 @@ function DetailBar({
 }) {
   return (
     <div className="space-y-0.5">
-      <div className="flex justify-between gap-2 text-xs font-mono text-muted-foreground">
+      <div className="flex justify-between gap-2 text-xs text-muted-foreground">
         <span className="truncate">{label}</span>
-        <span className={cn("shrink-0 tabular-nums", textClassName)}>
+        <span className={cn("shrink-0 font-mono tabular-nums", textClassName)}>
           {value}
         </span>
       </div>
@@ -359,7 +358,7 @@ function FloatingMonitorPanel({
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         className={cn(
-          "settings-surface bg-background group/monitor pointer-events-auto absolute flex max-h-full w-64 max-w-full cursor-grab select-none active:cursor-grabbing flex-col overflow-hidden rounded-2xl border border-border/70 px-4 pb-4 pt-2.75 shadow-border ring-0",
+          "settings-surface bg-background pointer-events-auto absolute flex max-h-full w-64 max-w-full cursor-grab select-none active:cursor-grabbing flex-col overflow-hidden rounded-2xl border border-border/70 p-3 shadow-border ring-0",
           layout ? "top-0 left-0" : "right-0 bottom-0",
         )}
         data-testid="floating-monitor"
@@ -408,13 +407,6 @@ function FloatingMonitorPanel({
             className={cn("absolute z-10 touch-none", className)}
           />
         ))}
-        <svg
-          aria-hidden
-          viewBox="0 0 8 8"
-          className="pointer-events-none absolute bottom-1 right-1 size-2 text-muted-foreground opacity-0 transition-opacity group-hover/monitor:opacity-60"
-        >
-          <path d="M7 1 1 7M7 4 4 7" stroke="currentColor" strokeLinecap="round" fill="none" />
-        </svg>
         <div className="mb-2 flex items-center justify-between gap-2 border-b border-border/60 pb-2">
           <div className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-xs font-semibold text-foreground">
             <CpuIcon className="size-3.5 shrink-0 text-primary" />
@@ -489,14 +481,9 @@ function FloatingMonitorPanel({
               }
               readout={ramAmount}
               footer={
-                (ramSegments || unifiedRow) && (
+                unifiedRow &&
+                !ramSegments && (
                   <>
-                    {ramSegments && (
-                      <MemoryLegend
-                        segments={ramSegments}
-                        noModels={!discreteVram && breakdown?.models.length === 0}
-                      />
-                    )}
                     {unifiedRow && !ramSegments && (
                       <div className="flex justify-between gap-2">
                         <span>{t("settings.resources.liveMonitor.gpuInUse")}</span>
@@ -522,7 +509,10 @@ function FloatingMonitorPanel({
               }
             >
               {ramSegments ? (
-                <MemoryBar segments={ramSegments} />
+                <MemoryShareBar
+                  segments={ramSegments}
+                  noModels={!discreteVram && breakdown?.models.length === 0}
+                />
               ) : (
                 <UsageBar percent={ramKnown ? ramPercent : null} />
               )}
@@ -534,25 +524,18 @@ function FloatingMonitorPanel({
                 label={t("settings.resources.liveMonitor.vram")}
                 readout={`${cardsUsedKnown ? formatGiB(cardsUsed) : "--"} / ${formatGiB(vram.totalGb)}`}
                 footer={
-                  (cardLabel || vramSegments) && (
-                    <>
-                      {cardLabel && (
-                        <div className="truncate" title={cardLabel}>
-                          {cardLabel}
-                        </div>
-                      )}
-                      {vramSegments && (
-                        <MemoryLegend
-                          segments={vramSegments}
-                          noModels={breakdown?.models.length === 0}
-                        />
-                      )}
-                    </>
+                  cardLabel && (
+                    <div className="truncate" title={cardLabel}>
+                      {cardLabel}
+                    </div>
                   )
                 }
               >
                 {vramSegments ? (
-                  <MemoryBar segments={vramSegments} />
+                  <MemoryShareBar
+                    segments={vramSegments}
+                    noModels={breakdown?.models.length === 0}
+                  />
                 ) : (
                   <UsageBar percent={cardsUsedKnown ? cardsPercent : null} />
                 )}
@@ -586,7 +569,7 @@ function FloatingMonitorPanel({
                 <div className="font-medium">
                   {t("settings.resources.gpu.sharedWithSystemRam")}
                 </div>
-                <div className="font-mono text-muted-foreground">
+                <div className="font-mono tabular-nums text-muted-foreground">
                   {t("settings.resources.gpu.estimatedAvailable", {
                     value:
                       memoryDisplay.sharedAvailableGb === null
@@ -601,7 +584,7 @@ function FloatingMonitorPanel({
                 <span className="block font-medium text-muted-foreground">
                   {t("settings.resources.gpu.ggufInference")}
                 </span>
-                <span className="block font-mono text-foreground">
+                <span className="block text-foreground">
                   {separateInferenceGpu.backend?.toUpperCase() ?? "GPU"}
                   {separateInferenceGpu.available ? (
                     inferenceVramTotal ? (
@@ -635,7 +618,7 @@ function FloatingMonitorPanel({
                 className="space-y-1.5 border-t border-border/60 pt-2"
                 data-testid="floating-monitor-gpu-details"
               >
-                <div className="truncate text-ui-11 font-medium font-mono">
+                <div className="truncate text-xs font-medium text-foreground">
                   {row.name}
                 </div>
                 {row.loadPct !== null && (
@@ -670,11 +653,11 @@ function FloatingMonitorPanel({
                       textClassName={usageTextClass(row.powerPct)}
                     />
                   ) : (
-                    <div className="flex justify-between gap-2 text-xs font-mono text-muted-foreground">
+                    <div className="flex justify-between gap-2 text-xs text-muted-foreground">
                       <span className="truncate">
                         {t("settings.resources.liveMonitor.power")}
                       </span>
-                      <span className="shrink-0 tabular-nums text-primary">
+                      <span className="shrink-0 font-mono tabular-nums text-primary">
                         {formatPower(row.powerDrawW, null)}
                       </span>
                     </div>

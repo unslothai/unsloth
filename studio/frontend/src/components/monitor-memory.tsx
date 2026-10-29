@@ -7,6 +7,11 @@ import { Progress } from "@/components/ui/progress";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import type { ReactNode } from "react";
+import {
+  STORAGE_COLORS,
+  StorageBar,
+  type StorageSegment,
+} from "@/features/settings/components/storage-overview";
 import type { MemorySegment } from "./monitor-share";
 
 export function usageIndicatorClass(percent: number): string {
@@ -73,56 +78,30 @@ export function UsageBar({ percent }: { percent: number | null }) {
   );
 }
 
-const KIND_COLORS = {
-  unsloth: "bg-control-accent",
-  app: "bg-sky-500",
-  other: "bg-muted-foreground/45",
-  unattributed: "bg-muted-foreground/45",
-  free: "bg-muted ring-1 ring-inset ring-border",
-} as const;
-// Models are Unsloth's, so they stay in its colour, stepping lighter down the list.
-const MODEL_COLORS = [
-  "bg-control-accent",
-  "bg-control-accent/70",
-  "bg-control-accent/50",
-  "bg-control-accent/35",
-];
-
-function segmentColor(segment: MemorySegment, index: number): string {
-  return segment.kind === "model"
-    ? MODEL_COLORS[Math.min(index, MODEL_COLORS.length - 1)]
-    : KIND_COLORS[segment.kind];
+// Settings' storage palette, read inside a function: a module-scope read can hit the chat import cycle.
+function segmentColor(kind: MemorySegment["kind"], modelIndex: number): string {
+  switch (kind) {
+    case "model":
+      return [
+        STORAGE_COLORS.yellow,
+        STORAGE_COLORS.orange,
+        STORAGE_COLORS.green,
+        STORAGE_COLORS.blue,
+      ][Math.min(modelIndex, 3)];
+    // Unsloth reads as "Models" in Settings > Storage, so it keeps that yellow.
+    case "unsloth":
+      return STORAGE_COLORS.yellow;
+    case "app":
+      return STORAGE_COLORS.purple;
+    case "free":
+      return STORAGE_COLORS.free;
+    default:
+      return STORAGE_COLORS.other;
+  }
 }
 
-function colored(segments: MemorySegment[]) {
-  let model = 0;
-  return segments.map((segment) => ({
-    segment,
-    color: segmentColor(segment, segment.kind === "model" ? model++ : 0),
-  }));
-}
-
-export function MemoryBar({ segments }: { segments: MemorySegment[] }) {
-  const total = segments.reduce((sum, segment) => sum + segment.gb, 0);
-  return (
-    <div
-      className="flex h-1.5 overflow-hidden rounded-full bg-muted"
-      data-testid="monitor-share-bar"
-    >
-      {colored(segments)
-        .filter(({ segment }) => segment.kind !== "free")
-        .map(({ segment, color }) => (
-          <div
-            key={segment.id}
-            className={color}
-            style={{ width: `${total > 0 ? (segment.gb / total) * 100 : 0}%` }}
-          />
-        ))}
-    </div>
-  );
-}
-
-export function MemoryLegend({
+/** One pool split by owner, drawn with Settings' storage bar and its inline legend. */
+export function MemoryShareBar({
   segments,
   noModels = false,
 }: {
@@ -147,38 +126,25 @@ export function MemoryLegend({
         return t("settings.resources.liveMonitor.freeLabel");
     }
   };
+  let model = 0;
+  const storageSegments: StorageSegment[] = segments.map((segment) => ({
+    key: segment.id,
+    label: label(segment),
+    bytes: segment.gb,
+    value: formatGiB(segment.gb),
+    color: segmentColor(segment.kind, segment.kind === "model" ? model++ : 0),
+  }));
   return (
-    <div className="space-y-0.5" data-testid="monitor-share-legend">
-      {colored(segments).map(({ segment, color }) => (
-        <div key={segment.id} className="flex items-center gap-2">
-          <span className={cn("size-2 shrink-0 rounded-full", color)} />
-          <span
-            className="min-w-0 flex-1 truncate"
-            title={
-              segment.kind === "unattributed"
-                ? t("settings.resources.liveMonitor.otherInUseHint")
-                : label(segment)
-            }
-          >
-            {label(segment)}
-          </span>
-          <span className="shrink-0 font-mono tabular-nums text-foreground">
-            {formatGiB(segment.gb)}
-          </span>
+    <div className="space-y-1.5" data-testid="monitor-share-bar">
+      <StorageBar
+        segments={storageSegments}
+        legend="inline"
+        barClassName="h-1.5 rounded-full"
+      />
+      {noModels && (
+        <div className="text-ui-11 text-muted-foreground" data-testid="monitor-no-models">
+          {t("settings.resources.liveMonitor.noModelLoaded")}
         </div>
-      )).flatMap((row, index) =>
-        noModels && index === 0
-          ? [
-              row,
-              <div
-                key="no-models"
-                className="ps-4 italic first-letter:uppercase"
-                data-testid="monitor-no-models"
-              >
-                {t("settings.resources.liveMonitor.noModelLoaded")}
-              </div>,
-            ]
-          : [row],
       )}
     </div>
   );

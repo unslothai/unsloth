@@ -2390,7 +2390,7 @@ export const es = {
         apiDescription: "Mira lo que otras apps envían a la API de este servidor en cuanto llega.",
         summary: "Solicitudes en curso, errores y uso de tokens",
         status: "{active} activas · {recent} recientes · {model}",
-        noModelLoaded: "ningún modelo cargado",
+        noModelLoaded: "Ningún modelo cargado",
         autoOpen: "Mostrar automáticamente el monitor flotante",
         autoOpenDescription:
           "Abre un panel pequeño cuando llega tráfico de la API.",
