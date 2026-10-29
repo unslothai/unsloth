@@ -4,7 +4,12 @@
 import type { DocGraph, DocMeta } from "../stores/doc-store";
 import type { NodeSpec, NodeStatus } from "../types";
 import { parseHandle } from "./connection-rules";
-import { GROUP_PREFIX, type RfEdge, type RfNode } from "./derive-rf";
+import {
+  GROUP_PREFIX,
+  NOTE_PREFIX,
+  type RfEdge,
+  type RfNode,
+} from "./derive-rf";
 import type { LayoutRequest, LayoutResult } from "./layout-core";
 import type { PortRowSpec } from "./node-card";
 
@@ -449,9 +454,45 @@ export function foldLayout(
       if (!at) continue;
       const x0 = Math.min(...card.members.map((id) => graph.nodes[id].pos[0]));
       const y0 = Math.min(...card.members.map((id) => graph.nodes[id].pos[1]));
+      const dx = at[0] - x0;
+      const dy = at[1] - y0;
       for (const id of card.members) {
         const [x, y] = graph.nodes[id].pos;
-        next[id] = [x + at[0] - x0, y + at[1] - y0];
+        next[id] = [x + dx, y + dy];
+      }
+      // Frames and notes folded into the card move with it, as they do when it is dragged.
+      const members = new Set(card.members);
+      const areas: [number, number, number, number][] = [];
+      let right = x0;
+      let bottom = y0;
+      for (const id of card.members) {
+        const size = measured(id);
+        const [x, y] = graph.nodes[id].pos;
+        right = Math.max(right, x + (size?.width ?? DEFAULT_SIZE.width));
+        bottom = Math.max(bottom, y + (size?.height ?? DEFAULT_SIZE.height));
+      }
+      areas.push([x0, y0, right - x0, bottom - y0]);
+      for (const groupId of graph.groupOrder) {
+        const inGroup = graph.nodeOrder.filter(
+          (id) => graph.nodes[id].group === groupId,
+        );
+        if (!inGroup.length || !inGroup.every((id) => members.has(id)))
+          continue;
+        const rect = graph.groups[groupId].rect;
+        areas.push(rect);
+        next[GROUP_PREFIX + groupId] = [rect[0] + dx, rect[1] + dy];
+      }
+      for (const noteId of graph.noteOrder) {
+        const [x, y, w, h] = graph.notes[noteId].rect;
+        const cx = x + w / 2;
+        const cy = y + h / 2;
+        if (
+          areas.some(
+            ([ax, ay, aw, ah]) =>
+              cx >= ax && cy >= ay && cx <= ax + aw && cy <= ay + ah,
+          )
+        )
+          next[NOTE_PREFIX + noteId] = [x + dx, y + dy];
       }
     }
     return next;

@@ -303,7 +303,12 @@ test("a recipe group's card is titled as a recipe", () => {
 });
 
 test("auto layout places a closed card as one block and moves its blocks with it", () => {
-  useDocStore.getState().load(comic());
+  const d = comic();
+  d.notes = [
+    { id: "n1", text: "inside", rect: [320, 100, 100, 60] },
+    { id: "n2", text: "outside", rect: [0, 900, 100, 60] },
+  ];
+  useDocStore.getState().load(d);
   select("tpl", "img");
   combineSelection();
   const state = useDocStore.getState();
@@ -333,6 +338,10 @@ test("auto layout places a closed card as one block and moves its blocks with it
   assert.equal(result["super:sc1"], undefined);
   assert.deepEqual(result.tpl, [380, 100]);
   assert.deepEqual(result.img, [680, 60]);
+  // The folded group frame and the note among the blocks move by the same amount.
+  assert.deepEqual(result["group:g"], [360, 20]);
+  assert.deepEqual(result["note:n1"], [400, 160]);
+  assert.equal(result["note:n2"], undefined);
 });
 
 test("notes and reroutes drawn among a card's blocks fold with it", () => {
