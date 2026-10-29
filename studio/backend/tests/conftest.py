@@ -1042,7 +1042,12 @@ def rag_home(tmp_path, monkeypatch, linkable_temp_base):
         root.mkdir(parents = True, exist_ok = True)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(root))
     monkeypatch.setattr(rag_db, "_schema_ready", set())
-    return root
+    yield root
+    from core.rag import vec_cache
+
+    # A background build still holding the db would block its removal on Windows.
+    vec_cache.drain()
+    vec_cache.clear()
 
 
 @pytest.fixture
