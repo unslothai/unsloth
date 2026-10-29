@@ -8393,6 +8393,7 @@ def test_a_fixed_vision_batch_marks_each_row_s_clips_and_shares_their_decode_bud
     for name in ("GenerationRequest", "GenerationDefaults"):
         monkeypatch.setattr(engine, name, SimpleNamespace, raising = False)
     monkeypatch.setattr(engine, "SamplingParams", dict, raising = False)
+    monkeypatch.setattr(engine, "vlm_batch_adds_special_tokens", lambda *a: False, raising = False)
     too_large, refuse = (_ for _ in ()).throw, mlx_inference._ClipsTooLarge
     fps = lambda p, proc, rows = 1: rows / 4 if rows < 3 else too_large(refuse())
     monkeypatch.setattr(mlx_inference, "_video_sampling_fps", fps)
