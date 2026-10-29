@@ -3342,8 +3342,7 @@ def _peak_model_identity(
 def _small_host_fetch(
     pipeline_cls: Any, repo: Any, pipe_kwargs: dict, local_dir: Optional[str], local_files_only: bool
 ) -> Optional[Callable[[], Any]]:
-    """``from_pretrained``'s own download, run first: a first load decided on a config-only snapshot, loaded the
-    dense weights into host RAM and was OOM-killed on a 12.7 GB host. None offline or with a staged snapshot."""
+    """``from_pretrained``'s own download, run before the small-host decision; None offline or with a staged snapshot."""
     if local_files_only or local_dir or not isinstance(repo, str) or _is_local_path(repo):
         return None
     download = getattr(pipeline_cls, "download", None)
