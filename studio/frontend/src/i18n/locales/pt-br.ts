@@ -3489,6 +3489,8 @@ export const ptBR = {
   },
   studio: {
     goToLibrary: "Ir para a Biblioteca",
+    imageTraining: "Treino de imagem",
+    goToImageTraining: "Treinar LoRAs de imagem",
     routeTitle: "Treinar",
     wizard: {
       modelTitle: "Modelo",

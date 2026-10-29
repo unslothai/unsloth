@@ -501,6 +501,7 @@ export function syncModelCapabilities(
     audio_type?: string | null;
     has_audio_input?: boolean;
     has_video_input?: boolean;
+    speaks?: boolean;
   },
 ): void {
   const store = useChatRuntimeStore.getState();
@@ -514,6 +515,8 @@ export function syncModelCapabilities(
     hasAudioInput: Boolean(resp.has_audio_input),
     // /api/models/list omits this for the active GGUF row.
     hasVideoInput: Boolean(resp.has_video_input),
+
+    speaks: Boolean(resp.speaks),
   };
   const idx = models.findIndex((m) => m.id === modelId);
   if (idx === -1) {
@@ -1519,7 +1522,6 @@ export function useChatModelRuntime() {
           (resetsPerModelSettings
             ? {
                 ...DEFAULT_PER_MODEL_CONFIG,
-                kvCacheDtype: live.kvCacheDtype ?? null,
                 tensorParallel: live.tensorParallel ?? false,
                 gpuMemoryMode: live.gpuMemoryMode,
               }
@@ -2054,7 +2056,7 @@ export function useChatModelRuntime() {
             pendingLoadConfig?.chatTemplateOverride?.trim()
               ? pendingLoadConfig.chatTemplateOverride
               : stateBeforeUnload.chatTemplateOverride;
-          const loadKvCacheDtype =
+          let loadKvCacheDtype =
             pendingLoadConfig?.kvCacheDtype ?? stateBeforeUnload.kvCacheDtype;
           let loadMlxKvQuant =
             pendingLoadConfig
@@ -2236,6 +2238,7 @@ export function useChatModelRuntime() {
                 ctxCheckpoints: pendingLoadConfig?.ctxCheckpoints ?? null,
                 cacheRam: pendingLoadConfig?.cacheRam ?? null,
               };
+              loadKvCacheDtype = pendingLoadConfig?.kvCacheDtype ?? null;
               loadMlxKvQuant = pendingLoadConfig?.mlxKvQuant ?? null;
               loadMlxInt8Prefill = pendingLoadConfig?.mlxInt8Prefill ?? false;
               loadMlxAnePrefill = pendingLoadConfig?.mlxAnePrefill ?? false;

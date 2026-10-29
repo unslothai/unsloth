@@ -2821,6 +2821,7 @@ function queuedResolvedModelFromStore(
           audioType: activeModel.audioType,
           hasAudioInput: activeModel.hasAudioInput,
           hasVideoInput: activeModel.hasVideoInput,
+          speaks: activeModel.speaks,
         }
       : null,
   };
@@ -4353,6 +4354,7 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
               audioType: status.audio_type ?? null,
               hasAudioInput: status.has_audio_input ?? false,
               hasVideoInput: status.has_video_input ?? false,
+              speaks: status.speaks ?? false,
             },
           },
         };
@@ -6118,6 +6120,8 @@ export function createOpenAIStreamAdapter(
               ...part,
               afterToolCalls: 0,
             })) ?? []);
+      // A spoken reply's audio, kept apart from the text so the player renders on its own.
+      let spokenReplyPart: { type: "text"; text: string } | null = null;
       const buildAssistantContent = (rawText: string) => {
         const positionedTools = toolCallParts
           .map((part, index) => {
@@ -6159,6 +6163,7 @@ export function createOpenAIStreamAdapter(
           }
         }
         assembled.push(...runs[boundaries.length]);
+        if (spokenReplyPart) assembled.push(spokenReplyPart);
 
         pinGeminiThoughtReplayParts(assembled, geminiThoughtParts);
         pinGeminiAnswerReplayParts(assembled, geminiAnswerParts);
@@ -6818,6 +6823,10 @@ export function createOpenAIStreamAdapter(
             };
           }
 
+          const turnAudioBase64 = findLatestUserAudioBase64(
+            currentTurnMessages,
+            !queuedRunSettings && !continuation,
+          );
           return {
             model: params.checkpoint,
             messages: outboundMessages,
@@ -6849,10 +6858,10 @@ export function createOpenAIStreamAdapter(
               : { seed: params.seed }),
             // Turn-scoped: a stale screenshot here made the backend refuse every later text turn's durable run.
             image_base64: findLatestUserImageBase64(currentTurnMessages),
-            audio_base64: findLatestUserAudioBase64(
-              currentTurnMessages,
-              !queuedRunSettings && !continuation,
-            ),
+            audio_base64: turnAudioBase64,
+            ...(activeModel?.speaks && turnAudioBase64
+              ? { modalities: ["text", "audio"] }
+              : {}),
             extra_audio_base64:
               findLatestUserExtraAudioBase64(currentTurnMessages),
             video_base64: findLatestUserVideoBase64(currentTurnMessages),
@@ -7838,6 +7847,18 @@ export function createOpenAIStreamAdapter(
               )?.extra_content;
               // State reaches the message only via a yield, so pace previews but never state changes.
               let replayStateChanged = false;
+              const spokenAudio = (
+                chunk.choices?.[0]?.delta as
+                  | { audio?: { data?: unknown } }
+                  | undefined
+              )?.audio?.data;
+              if (typeof spokenAudio === "string" && spokenAudio) {
+                spokenReplyPart = {
+                  type: "text",
+                  text: `<audio-player src="data:audio/wav;base64,${spokenAudio}" />`,
+                };
+                replayStateChanged = true;
+              }
               let geminiReplayStateChanged = false;
               let geminiThoughtSignature: string | undefined;
               let capturedGeminiThoughtPart = false;

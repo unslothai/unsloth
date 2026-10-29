@@ -217,6 +217,26 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             ON linked_folder_sync_jobs(folder_id)
             WHERE status IN ('pending','running');
 
+        -- No INSERT trigger: any row trigger on chunks costs ~20 us per insert. Inserts show up as a new
+        -- max(rowid) per scope instead; a reused rowid only follows a delete, which bumps the epoch.
+        CREATE TABLE IF NOT EXISTS rag_vec_epoch (
+            scope TEXT NOT NULL PRIMARY KEY,
+            n INTEGER NOT NULL
+        ) WITHOUT ROWID;
+        CREATE TRIGGER IF NOT EXISTS rag_vec_epoch_chunk_delete AFTER DELETE ON chunks BEGIN
+            INSERT INTO rag_vec_epoch(scope, n) VALUES (OLD.scope, 1)
+                ON CONFLICT(scope) DO UPDATE SET n = n + 1;
+        END;
+        CREATE TRIGGER IF NOT EXISTS rag_vec_epoch_document_model
+            AFTER UPDATE OF embedding_model ON documents BEGIN
+            INSERT INTO rag_vec_epoch(scope, n) VALUES (NEW.scope, 1)
+                ON CONFLICT(scope) DO UPDATE SET n = n + 1;
+        END;
+        CREATE TRIGGER IF NOT EXISTS rag_vec_epoch_document_delete AFTER DELETE ON documents BEGIN
+            INSERT INTO rag_vec_epoch(scope, n) VALUES (OLD.scope, 1)
+                ON CONFLICT(scope) DO UPDATE SET n = n + 1;
+        END;
+
         CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
             text,
             chunk_id UNINDEXED,
@@ -460,6 +480,11 @@ def ensure_vec(
             int(dim),
         )
         conn.execute("DROP TABLE chunks_vec")
+        # The drop moves no chunks row; the global epoch invalidates every cached scope.
+        conn.execute(
+            "INSERT INTO rag_vec_epoch(scope, n) VALUES ('', 1) "
+            "ON CONFLICT(scope) DO UPDATE SET n = n + 1"
+        )
         conn.execute(
             "UPDATE documents SET embedding_model=? || COALESCE(embedding_model, '') "
             "WHERE id IS NOT ? AND COALESCE(embedding_model, '') NOT LIKE ?",

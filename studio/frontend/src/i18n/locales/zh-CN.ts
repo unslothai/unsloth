@@ -3404,6 +3404,8 @@ export const zhCN = {
   },
   studio: {
     goToLibrary: "前往资料库",
+    imageTraining: "图像训练",
+    goToImageTraining: "训练图像 LoRA",
     routeTitle: "训练",
     wizard: {
       modelTitle: "模型",

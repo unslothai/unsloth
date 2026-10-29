@@ -3517,6 +3517,8 @@ export const fr = {
   },
   studio: {
     goToLibrary: "Aller à la Bibliothèque",
+    imageTraining: "Entraînement d'image",
+    goToImageTraining: "Entraîner des LoRA d'image",
     routeTitle: "Entraîner",
     wizard: {
       modelTitle: "Modèle",

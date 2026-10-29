@@ -2085,6 +2085,7 @@ export function SharedComposer({
           audioType: resp.audio_type ?? null,
           hasAudioInput: Boolean(resp.has_audio_input),
           hasVideoInput: Boolean(resp.has_video_input),
+          speaks: Boolean(resp.speaks),
         };
         if (idx === -1) {
           store.setModels([

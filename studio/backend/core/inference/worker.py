@@ -284,13 +284,15 @@ def _apply_worker_hf_token_environment(config: dict) -> None:
 
 def _build_model_config(config: dict):
     from utils.models import ModelConfig
+    from utils.models.model_config import shared_hub_model_info
 
     model_name = config["model_name"]
-    mc = ModelConfig.from_identifier(
-        model_id = model_name,
-        hf_token = _config_hf_token(config),
-        gguf_variant = config.get("gguf_variant"),
-    )
+    with shared_hub_model_info():
+        mc = ModelConfig.from_identifier(
+            model_id = model_name,
+            hf_token = _config_hf_token(config),
+            gguf_variant = config.get("gguf_variant"),
+        )
     if not mc:
         raise ValueError(f"Invalid model identifier: {model_name}")
     return mc
@@ -842,6 +844,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "audio_type",
                         "has_audio_input",
                         "has_video_input",
+                        "speaks",
                         "audio_family",
                         "audio_options",
                         "gguf_variant",
@@ -864,9 +867,9 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                     if k in _entry
                 }
             )
-            # MLX serves a vision config mlx-lm built as text; the parent must stop accepting images.
-            if model_info["is_mlx"] and _entry.get("is_vision") is False:
-                model_info["is_vision"] = False
+            # MLX decides at load: an mlx-lm text build reads no images, an mlx-vlm-only tower does.
+            if model_info["is_mlx"] and isinstance(_entry.get("is_vision"), bool):
+                model_info["is_vision"] = _entry["is_vision"]
             # Resolved MLX runtime knobs; only the backend knows what it honored.
             model_info.update(
                 {
@@ -1155,10 +1158,10 @@ def _generation_kwargs(backend, cmd: dict, cancel_event) -> dict:
     ):
         if gated in cmd and _backend_declares(backend, gated):
             gen_kwargs[gated] = cmd[gated]
-    if cmd.get("video_base64"):
-        if not _backend_declares(backend, "video"):
+    if cmd.get("videos_base64"):
+        if not _backend_declares(backend, "videos"):
             raise RuntimeError("The loaded backend does not read video.")
-        gen_kwargs["video"] = cmd["video_base64"]
+        gen_kwargs["videos"] = cmd["videos_base64"]
     # Only a raw completion carries these; its batch rows are planned from them.
     for raw in ("prompt_ids", "penalty_window", "grammar", "n_probs"):
         if raw in cmd:
@@ -1616,12 +1619,30 @@ class _ResidentBatch:
             return
         try:
             for handle, snapshot in self.session.step(waiting):
-                self._report(handle, snapshot)
+                if not isinstance(snapshot, BaseException):
+                    self._report(handle, snapshot)
+                elif not self._fail_row(handle[0], snapshot):
+                    return
         except Exception as exc:
             logger.error("Batched generation error: %s", exc, exc_info = True)
             self._fail_all(exc)
             return
         self._close_if_empty()
+
+    def _fail_row(self, request_id: str, exc: BaseException) -> bool:
+        """Answer a request whose own decode failed, the batch decoding on. False where it gave up the batch."""
+        if request_id not in self._owed:
+            return True
+        logger.error("A batched reply failed: %s", exc, exc_info = exc)
+        stack = "".join(traceback.format_exception(exc, limit = 20))
+        taken_back = self._forget(request_id, withdraw = True)
+        # _forget already dropped it from _owed, so _fail_all would not answer it.
+        _send_response(
+            self.resp_queue, {**_generation_error_payload(request_id, exc), "stack": stack}
+        )
+        if not taken_back:
+            self._fail_all(exc)
+        return taken_back
 
     def _fail_all(self, exc: BaseException) -> None:
         """Give up on the batch: every request in it is owed an error, not silence."""
@@ -1947,6 +1968,10 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
                 backend, "stop", "generate_audio_input_response"
             ):
                 audio_kwargs["stop"] = cmd["stop"]
+            if cmd.get("speak"):
+                audio_kwargs["speak"] = True
+            if cmd.get("tools") is not None:
+                audio_kwargs["tools"] = cmd["tools"]
             generator = backend.generate_audio_input_response(**audio_kwargs, **extra_audio_kwargs)
 
         logger.info("Starting audio input generation for request_id=%s", request_id)
@@ -1956,6 +1981,11 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
                 logger.info("Audio input generation cancelled for request %s", request_id)
                 break
 
+            if isinstance(text_chunk, dict):
+                _send_response(
+                    resp_queue, {"type": "speech", "request_id": request_id, **text_chunk}
+                )
+                continue
             _send_response(
                 resp_queue,
                 {
