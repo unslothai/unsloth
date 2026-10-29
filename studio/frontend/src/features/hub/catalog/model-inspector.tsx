@@ -24,7 +24,6 @@ import { taskForMediaPick } from "@/features/model-picker/components/model-selec
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn, formatCompact } from "@/lib/utils";
 import {
-  ArrowUpRight01Icon,
   Calendar03Icon,
   CalendarAdd01Icon,
   CpuIcon,
@@ -37,6 +36,7 @@ import {
   LayersLogoIcon,
   LibrariesIcon,
   LicenseIcon,
+  LinkSquare02Icon,
   PackageIcon,
 } from "@hugeicons/core-free-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
@@ -86,7 +86,7 @@ function ViewRepositoryButton({
     "inline-flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors";
   const icon = (
     <HugeiconsIcon
-      icon={ArrowUpRight01Icon}
+      icon={LinkSquare02Icon}
       strokeWidth={1.75}
       className="size-[calc(13px*var(--ui-space-scale,1))]"
     />

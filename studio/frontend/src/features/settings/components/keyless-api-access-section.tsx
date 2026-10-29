@@ -18,7 +18,7 @@ import {
   loadKeylessApiAccess,
   updateKeylessApiAccess,
 } from "@/features/settings/api/keyless-api-access";
-import { ComputerIcon } from "@/lib/hugeicons-derived";
+import { LaptopIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useState } from "react";
 import { SettingsRow } from "./settings-row";
@@ -190,7 +190,7 @@ export function KeylessApiAccessSection({
         <div className="flex min-w-0 items-start gap-3">
           <div className="flex size-8 shrink-0 items-center justify-center icon-disc">
             <HugeiconsIcon
-              icon={ComputerIcon}
+              icon={LaptopIcon}
               className="size-4 text-foreground"
             />
           </div>

@@ -38,6 +38,7 @@ import {
   Image01Icon,
   LibrariesIcon,
   Message01Icon,
+  Moon02Icon,
   PencilEdit02Icon,
   Search01Icon,
   Settings02Icon,
@@ -51,7 +52,6 @@ import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { Command as CommandPrimitive } from "cmdk";
-import { Moon } from "lucide-react";
 import { type ComponentProps, useEffect, useState } from "react";
 
 // Surface, header and rows follow chat search (chat-search-dialog.tsx).
@@ -359,7 +359,11 @@ function PaletteContent() {
             {isDark ? (
               <HugeiconsIcon icon={Sun03Icon} strokeWidth={1.75} />
             ) : (
-              <Moon strokeWidth={1.75} className="size-4" />
+              <HugeiconsIcon
+                icon={Moon02Icon}
+                strokeWidth={1.75}
+                className="size-4"
+              />
             )}
             <span>
               {isDark

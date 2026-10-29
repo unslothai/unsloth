@@ -133,6 +133,7 @@ import {
   InformationCircleIcon,
   LibrariesIcon,
   Logout05Icon,
+  Moon02Icon,
   MoreHorizontalIcon,
   MoreVerticalIcon,
   Search01Icon,
@@ -170,7 +171,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { ArrowRightIcon, GitBranchIcon, Moon } from "lucide-react";
+import { ArrowRightIcon, GitBranchIcon } from "lucide-react";
 import { ForkIcon } from "@/lib/fork-icon";
 import {
   Link,
@@ -6799,7 +6800,7 @@ export function AppSidebar() {
                         ref={anchorRef as React.Ref<HTMLDivElement>}
                         onSelect={(e) => { e.preventDefault(); toggleTheme(); }}
                       >
-                        {isDark ? <HugeiconsIcon icon={Sun03Icon} strokeWidth={1.75} className="size-icon" /> : <Moon strokeWidth={1.75} className="size-icon" />}
+                        {isDark ? <HugeiconsIcon icon={Sun03Icon} strokeWidth={1.75} className="size-icon" /> : <HugeiconsIcon icon={Moon02Icon} strokeWidth={1.75} className="size-icon" />}
                         <span>
                           {isDark
                             ? t("shell.navigation.lightMode")

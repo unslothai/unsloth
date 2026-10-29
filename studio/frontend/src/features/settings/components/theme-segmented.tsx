@@ -4,13 +4,13 @@
 import { cn } from "@/lib/utils";
 import { useT, type TranslationKey } from "@/i18n";
 import {
+  LaptopIcon,
+  Moon02Icon,
   Sun03Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
 import { useTheme, type Theme } from "../stores/theme-store";
-import { MoonIcon } from "@/lib/lucide-derived";
-import { ComputerIcon } from "@/lib/hugeicons-derived";
 
 const OPTIONS: {
   value: Theme;
@@ -18,8 +18,8 @@ const OPTIONS: {
   icon: typeof Sun03Icon;
 }[] = [
   { value: "light", labelKey: "settings.appearance.theme.light", icon: Sun03Icon },
-  { value: "dark", labelKey: "settings.appearance.theme.dark", icon: MoonIcon },
-  { value: "system", labelKey: "settings.appearance.theme.system", icon: ComputerIcon },
+  { value: "dark", labelKey: "settings.appearance.theme.dark", icon: Moon02Icon },
+  { value: "system", labelKey: "settings.appearance.theme.system", icon: LaptopIcon },
 ];
 
 export function ThemeSegmented() {

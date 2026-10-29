@@ -8,6 +8,7 @@ import {
   DragDropVerticalIcon,
   HelpCircleIcon,
   Logout05Icon,
+  Moon02Icon,
   PowerIcon,
   Settings02Icon,
   UserCircleIcon,
@@ -22,14 +23,13 @@ import type { TranslationKey } from "@/i18n";
 import type { IconSvgElement } from "@hugeicons/react";
 import type { SidebarMenuItemPref } from "../stores/appearance-custom-store";
 import { useAppearanceCustomStore } from "../stores/appearance-custom-store";
-import { MoonIcon } from "@/lib/lucide-derived";
 
 const ITEM_META: Record<
   SidebarMenuItemPref["id"],
   { icon: IconSvgElement; labelKey: TranslationKey }
 > = {
   api: { icon: ApiIcon, labelKey: "shell.navigation.api" },
-  darkMode: { icon: MoonIcon, labelKey: "settings.appearance.sidebarMenu.darkModeToggle" },
+  darkMode: { icon: Moon02Icon, labelKey: "settings.appearance.sidebarMenu.darkModeToggle" },
   guidedTour: { icon: CursorInfo02Icon, labelKey: "shell.navigation.guidedTour" },
   profile: { icon: UserCircleIcon, labelKey: "settings.tabs.profile" },
   appearance: { icon: BrushCleaningIcon, labelKey: "settings.tabs.appearance" },
