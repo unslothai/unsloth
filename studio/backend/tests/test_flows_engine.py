@@ -672,7 +672,9 @@ async def test_a_run_that_may_not_use_mcp_gets_no_cached_mcp_recipe_output(monke
     monkeypatch.setattr(engine_mod, "_origin", lambda account, kind: {"kind": "ui", "owner": True})
     owner = await _run(eng, d)
     assert _status(owner, step["id"]) == "done" and jobs == [step["id"]]
-    monkeypatch.setattr(engine_mod, "_origin", lambda account, kind: {"kind": "api_key", "owner": False})
+    monkeypatch.setattr(
+        engine_mod, "_origin", lambda account, kind: {"kind": "api_key", "owner": False}
+    )
     api = await _run(eng, d)
     assert _status(api, step["id"]) == "failed", "the owner's cached MCP rows are not handed out"
     assert "Studio owner" in api.nodes[step["id"]].error and jobs == [step["id"]]
