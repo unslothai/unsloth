@@ -566,3 +566,80 @@ def test_grouped_reads_bnb_4bit_stacks_a_chunk_at_a_time(monkeypatch):
     ref, _ = _oracle(reference, hidden.detach().double(), index, weights.double(), ids, False)
     # bfloat16 compute, as Unsloth Zoo runs 4-bit experts.
     torch.testing.assert_close(out.double(), ref, atol = 2e-2 * ref.abs().max().item(), rtol = 0)
+
+
+def test_grouped_dropped_route_never_poisons_gradients(monkeypatch):
+    # A dropped route (expert id E) with a NaN weight must add exactly nothing, forward and backward.
+    monkeypatch.delenv("UNSLOTH_MULTI_LORA_MOE_GROUPED", raising = False)
+    T, k, E = 8, 2, 5
+    ids = torch.tensor([0, 1, 2, -1, 0, 1, 2, 0])
+    experts = _wrapped(_Experts(E), RANKS, ALPHAS, False, ids)
+    index, weights = _routes(T, k, E)
+    hidden = torch.randn(T, 20, generator = torch.Generator().manual_seed(2))
+    experts(hidden, index, weights)
+    assert experts.mode == "grouped"
+    weights[0, -1] = float("nan")
+    kept, clean = index.clone(), weights.clone()
+    kept[0, -1], clean[0, -1] = 0, 0.0
+
+    def run(index, weights):
+        h, w = hidden.clone().requires_grad_(), weights.clone().requires_grad_()
+        experts.zero_grad(set_to_none = True)
+        out = experts(h, index, w)
+        out.backward(torch.ones_like(out))
+        grads = [p.grad.clone() for p in experts.parameters() if p.grad is not None]
+        return out, h.grad, w.grad, grads
+
+    out, d_hidden, d_weights, grads = run(index, weights)
+    ref, ref_hidden, ref_weights, ref_grads = run(kept, clean)
+    torch.testing.assert_close(out, ref)
+    torch.testing.assert_close(d_hidden, ref_hidden)
+    assert d_weights[0, -1] == 0
+    torch.testing.assert_close(d_weights[:, :1], ref_weights[:, :1])
+    for g, r in zip(grads, ref_grads):
+        torch.testing.assert_close(g, r)
+
+
+def test_grouped_empty_top_k_gives_zeros(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_MULTI_LORA_MOE_GROUPED", raising = False)
+    ids = torch.tensor([0, 1, 2, -1])
+    experts = _wrapped(_Experts(5), RANKS, ALPHAS, False, ids)
+    index, weights = _routes(4, 2, 5)
+    experts(torch.randn(4, 20), index, weights)
+    assert experts.mode == "grouped"
+    out = experts(torch.randn(4, 20), index[:, :0], weights[:, :0])
+    assert out.shape == (4, 20) and not out.any()
+
+
+class _StaticExperts(_Experts):
+    """The same experts with a data-independent forward (every expert, masked), so it traces with fullgraph."""
+
+    def forward(self, hidden_states, top_k_index, top_k_weights):
+        out = torch.zeros_like(hidden_states)
+        for e in range(self.gate_up_proj.shape[0]):
+            w = (top_k_weights * (top_k_index == e)).sum(-1, keepdim = True)
+            gate, up = (hidden_states @ self.gate_up_proj[e].t()).chunk(2, dim = -1)
+            out = out + ((self.act_fn(gate) * up) @ self.down_proj[e].t()) * w
+        return out
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_grouped_under_torch_compile(monkeypatch, dtype):
+    # Grouped GEMM only traces in bfloat16; other dtypes take the per-adapter path inside a compiled graph.
+    monkeypatch.delenv("UNSLOTH_MULTI_LORA_MOE_GROUPED", raising = False)
+    T, k, E = 16, 2, 5
+    ids = torch.tensor([0, 1, 2, -1] * 4)
+    experts = _wrapped(_StaticExperts(E, H = 24, I = 16).to(dtype), RANKS, ALPHAS, False, ids)
+    index, weights = _routes(T, k, E)
+    index[0, -1] = 0
+    hidden = (
+        torch.randn(T, 24, generator = torch.Generator().manual_seed(2)).to(dtype).requires_grad_()
+    )
+    weights = weights.to(dtype)
+    eager = experts(hidden, index, weights)
+    assert experts.mode == "grouped"
+    torch._dynamo.reset()
+    compiled = torch.compile(experts, backend = "eager", fullgraph = True)(hidden, index, weights)
+    torch.testing.assert_close(compiled.float(), eager.float(), atol = 2e-2, rtol = 2e-2)
+    compiled.sum().backward()
+    assert torch.isfinite(hidden.grad).all()

@@ -1259,12 +1259,15 @@ class MultiLoraExperts(nn.Module):
         adapter_ids: torch.Tensor,
     ) -> torch.Tensor:
         T, k = top_k_index.shape
+        if T * k == 0:
+            return hidden_states.new_zeros(hidden_states.shape)
         E = _expert_stack_shape(self.base_layer.gate_up_proj)[0]
         U = self.num_adapters
         Ug = U + 1
         dtype = self._compute_dtype(hidden_states)
         # Route = expert * Ug + adapter, slot U for rows of no adapter (zero factors) and for dropped routes
-        # (expert id outside [0, E), weight zeroed); sorted, each expert's rows stay contiguous.
+        # (expert id outside [0, E): zero input and weight, so they add exactly 0 and nothing can overflow or
+        # turn a gradient NaN); sorted, each expert's rows stay contiguous.
         index = top_k_index.long()
         valid = (index >= 0) & (index < E)
         slot = torch.where(adapter_ids < 0, U, adapter_ids).to(index.device).unsqueeze(1)
@@ -1273,14 +1276,15 @@ class MultiLoraExperts(nn.Module):
         offs_pair = torch.cumsum(torch.bincount(key, minlength = E * Ug), 0).to(torch.int32)
         offs_expert = offs_pair.view(E, Ug)[:, -1].contiguous()
         with torch.autocast(device_type = hidden_states.device.type, enabled = False):
-            x = hidden_states[order // k].to(dtype)
+            x = torch.where(
+                valid.reshape(-1)[order].unsqueeze(1), hidden_states[order // k].to(dtype), 0
+            )
             h = self._project("gate_up_proj", x, offs_expert, offs_pair, dtype)
             gate, up = h.chunk(2, dim = -1)
             y = self._project(
                 "down_proj", self.base_layer.act_fn(gate) * up, offs_expert, offs_pair, dtype
             )
-            y = y * top_k_weights.reshape(-1)[order].unsqueeze(1)
-            y = torch.where(valid.reshape(-1)[order].unsqueeze(1), y, 0)
+            y = y * torch.where(valid, top_k_weights, 0).reshape(-1)[order].unsqueeze(1)
             # Deterministic unpermute: each route back to its own slot, then a sum over the k routes.
             out = y.new_zeros(T * k, y.shape[1]).index_copy(0, order, y)
             return out.view(T, k, -1).sum(1).to(hidden_states.dtype)
@@ -1293,7 +1297,10 @@ class MultiLoraExperts(nn.Module):
             )
         if self.mode is None:
             self._choose_mode(hidden_states, args, _adapter_groups(batch))
-        if self.mode == "grouped":
+        # Under torch.compile, grouped GEMM only traces in bfloat16 (its meta checks the dtype on every device).
+        if self.mode == "grouped" and not (
+            torch.compiler.is_compiling() and self._compute_dtype(hidden_states) != torch.bfloat16
+        ):
             if not torch.compiler.is_compiling():
                 MULTI_LORA_MOE_STATS["grouped_calls"] += 1
             # Every adapter's factors are in the graph, so absent adapters get exact zero grads.
