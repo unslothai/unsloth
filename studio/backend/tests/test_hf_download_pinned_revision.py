@@ -70,6 +70,9 @@ class _FakeHub:
         gated: bool = False,
         fail_get: str | None = None,
     ):
+        # down: every request after the next model_info answers 503 (the network dropping right after it).
+        self.down = False
+        self.info_served = False
         self.commits = _commits()
         self.head = _OLD
         self.move = move
@@ -117,6 +120,9 @@ class _FakeHub:
                 path = self.path.split("?", 1)[0]
                 with hub.lock:
                     hub.requests.append((self.command, self.path))
+                if hub.down and hub.info_served:
+                    self._send(503, b"down", {}, head)
+                    return
                 if hub.gated and self.headers.get("Authorization") != f"Bearer {_TOKEN}":
                     self._send(
                         401,
@@ -168,6 +174,8 @@ class _FakeHub:
                     self._json(
                         {"id": _REPO, "sha": commit, "siblings": siblings, "private": False}, head
                     )
+                    if not rest:
+                        hub.info_served = True
                     if hub.move and not rest:
                         hub.head = _NEW
                         hub.move = False
@@ -366,6 +374,39 @@ def test_resume_after_a_dropped_transfer_and_offline_rerun(tmp_path, hub_factory
     assert hub.requests == []
 
 
+def test_network_drop_after_the_metadata_read_keeps_the_older_snapshot_loadable(
+    tmp_path, hub_factory
+):
+    hub = hub_factory()
+    first = _run(hub, tmp_path)
+    assert first.returncode == 0, first.stderr[-2000:]
+    hub.head = _NEW
+    hub.down = True
+    hub.info_served = False
+    second = _run(hub, tmp_path)
+    assert second.returncode != 0
+    # Nothing of _NEW landed, so refs/main still names the complete older snapshot, as an unpinned download left it.
+    repo = _repo_dir(tmp_path)
+    assert (repo / "refs" / "main").read_text(encoding = "utf-8") == _OLD
+    assert [p.name for p in (repo / "refs").iterdir()] == ["main"]
+    assert "retrying unpinned" in second.stderr
+    env = dict(os.environ, HF_HUB_CACHE = str(tmp_path / "hf" / "hub"), HF_HUB_OFFLINE = "1")
+    loaded = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from huggingface_hub import hf_hub_download as d; print(open(d('fake/repo', 'model.safetensors'), 'rb').read().hex())",
+        ],
+        cwd = str(tmp_path),
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    )
+    assert loaded.returncode == 0, loaded.stderr[-2000:]
+    assert bytes.fromhex(loaded.stdout.strip()) == _commits()[_OLD]["model.safetensors"]
+
+
 def test_no_pin_without_a_full_sha(monkeypatch, tmp_path):
     from hub.workers import hf_download
 
@@ -379,3 +420,65 @@ def test_no_pin_without_a_full_sha(monkeypatch, tmp_path):
     assert not (tmp_path / "models--fake--repo").exists()
     assert hf_download._pinned_revision("model", _REPO, _OLD) == {"revision": _OLD}
     assert (tmp_path / "models--fake--repo" / "refs" / "main").read_text(encoding = "utf-8") == _OLD
+
+
+def test_pinned_call_rolls_the_ref_back_only_when_nothing_landed(monkeypatch, tmp_path):
+    from hub.workers import hf_download
+    from huggingface_hub import constants
+
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path))
+    repo = tmp_path / "models--fake--repo"
+    ref = repo / "refs" / "main"
+    ref.parent.mkdir(parents = True)
+    calls = []
+
+    def fake(behaviour):
+        def snapshot_download(**kw):
+            calls.append(kw.get("revision"))
+            if kw.get("revision") is None:
+                return "unpinned"
+            if behaviour == "land":
+                (repo / "snapshots" / _NEW).mkdir(parents = True, exist_ok = True)
+                (repo / "snapshots" / _NEW / "config.json").write_text("{}")
+            if behaviour == "peer_rollback":
+                ref.write_text(_OLD)
+                return "pinned"
+            if behaviour == "interrupt":
+                raise KeyboardInterrupt
+            raise OSError("network down")
+
+        return snapshot_download
+
+    # Nothing landed: the ref goes back and the unpinned call runs (main's offline fallback).
+    ref.write_text(_OLD)
+    assert hf_download._pinned_snapshot_download(fake("drop"), _NEW, repo_id = _REPO) == "unpinned"
+    assert calls == [_NEW, None] and ref.read_text() == _OLD
+    # A file landed: the ref stays on the new commit and the error stands, as an unpinned download leaves it.
+    calls.clear()
+    with pytest.raises(OSError):
+        hf_download._pinned_snapshot_download(fake("land"), _NEW, repo_id = _REPO)
+    assert calls == [_NEW] and ref.read_text() == _NEW
+    # A cancel before anything landed restores the ref and is not retried.
+    ref.write_text(_OLD)
+    calls.clear()
+    with pytest.raises(KeyboardInterrupt):
+        hf_download._pinned_snapshot_download(fake("interrupt"), "c" * 40, repo_id = _REPO)
+    assert calls == ["c" * 40] and ref.read_text() == _OLD
+    # A peer's rollback during a successful download is undone: the fetched commit is named.
+    assert (
+        hf_download._pinned_snapshot_download(fake("peer_rollback"), "d" * 40, repo_id = _REPO)
+        == "pinned"
+    )
+    assert ref.read_text() == "d" * 40
+    # No ref before and nothing landed: no ref after.
+    ref.unlink()
+    assert (
+        hf_download._pinned_snapshot_download(fake("drop"), "e" * 40, repo_id = _REPO) == "unpinned"
+    )
+    assert not ref.exists()
+    # A failed ref write leaves no temp file under refs/ (every file there reads as a ref).
+    monkeypatch.setattr(
+        hf_download.os, "replace", lambda *a: (_ for _ in ()).throw(PermissionError("locked"))
+    )
+    assert hf_download._pinned_revision("model", _REPO, "f" * 40) == {}
+    assert [p.name for p in ref.parent.iterdir()] == []

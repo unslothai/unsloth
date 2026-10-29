@@ -248,6 +248,29 @@ def _model_info_with_retry(repo_id: str, hf_token: str | None):
     return info
 
 
+def _read_ref(ref: Path):
+    try:
+        return ref.read_text(encoding = "utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _write_ref(ref: Path, commit: str) -> None:
+    """Atomic, as huggingface_hub writes it: readers never see a truncated ref. The temp file never outlives a failure,
+    since every file under refs/ reads as a ref (scan_cache_dir, snapshot_progress)."""
+    ref.parent.mkdir(parents = True, exist_ok = True)
+    tmp = ref.with_name(f"main.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        tmp.write_text(commit, encoding = "utf-8")
+        os.replace(tmp, ref)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
 def _pinned_revision(repo_type: RepoType, repo_id: str, commit) -> dict:
     """``snapshot_download`` kwargs fetching the commit the manifest was planned from, so a branch moving
     between the metadata read and the download cannot hand back other files. A raw sha also lets
@@ -258,16 +281,10 @@ def _pinned_revision(repo_type: RepoType, repo_id: str, commit) -> dict:
     from hub.utils.snapshot_reuse import repo_cache_dir
 
     ref = repo_cache_dir(repo_type, repo_id) / "refs" / "main"
+    if _read_ref(ref) == commit:
+        return {"revision": commit}
     try:
-        if ref.read_text(encoding = "utf-8") == commit:
-            return {"revision": commit}
-    except (OSError, UnicodeDecodeError):
-        pass
-    try:
-        ref.parent.mkdir(parents = True, exist_ok = True)
-        tmp = ref.with_name(f"main.{os.getpid()}.{threading.get_ident()}.tmp")
-        tmp.write_text(commit, encoding = "utf-8")
-        os.replace(tmp, ref)
+        _write_ref(ref, commit)
     except OSError as e:
         # huggingface_hub also only warns when the ref cannot be written; without the ref the pin is dropped
         # so the download records refs/main itself as before.
@@ -277,6 +294,72 @@ def _pinned_revision(repo_type: RepoType, repo_id: str, commit) -> dict:
         )
         return {}
     return {"revision": commit}
+
+
+def _landed_state(repo_dir: Path, commit: str) -> frozenset:
+    """Entries of ``commit``'s snapshot plus every partial blob with its size: what a download that got as far as
+    transferring bytes has changed."""
+    state = set()
+    snapshot = repo_dir / "snapshots" / commit
+    try:
+        state.update(("s", str(p.relative_to(snapshot))) for p in snapshot.rglob("*"))
+    except OSError:
+        pass
+    try:
+        for p in (repo_dir / "blobs").glob("*.incomplete"):
+            try:
+                state.add(("b", p.name, p.stat().st_size))
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return frozenset(state)
+
+
+def _pinned_snapshot_download(snapshot_download, commit, **kwargs):
+    """``snapshot_download(**kwargs)`` at ``commit`` (see ``_pinned_revision``). An unpinned download moved refs/main
+    only once the Hub had answered its own revision lookup, so a network drop right after the metadata read left
+    the older complete snapshot loadable by repo id, offline too. So when the pinned call fails before anything of
+    ``commit`` lands (no snapshot entry, no partial blob grew), refs/main goes back to what it named and the unpinned
+    call runs as before, its offline fallback included. A failure after bytes landed keeps the ref, as an unpinned
+    download does."""
+    from hub.utils.snapshot_reuse import repo_cache_dir
+
+    repo_type, repo_id = kwargs.get("repo_type") or "model", kwargs["repo_id"]
+    repo_dir = repo_cache_dir(repo_type, repo_id)
+    ref = repo_dir / "refs" / "main"
+    previous = _read_ref(ref)
+    pin = _pinned_revision(repo_type, repo_id, commit)
+    if not pin or previous == commit:
+        return snapshot_download(**kwargs, **pin)
+    before = _landed_state(repo_dir, commit)
+    try:
+        path = snapshot_download(**kwargs, **pin)
+    except BaseException as e:
+        if _landed_state(repo_dir, commit) != before:
+            raise
+        try:
+            # Only our own write is undone: a peer may have moved the ref since.
+            if _read_ref(ref) == commit:
+                if previous is None:
+                    ref.unlink()
+                else:
+                    _write_ref(ref, previous)
+        except OSError:
+            raise e
+        if not isinstance(e, Exception):
+            raise
+        print(
+            f"Pinned download of {repo_id} failed before any file landed "
+            f"({type(e).__name__}: {e}); retrying unpinned.",
+            file = sys.stderr,
+        )
+        return snapshot_download(**kwargs)
+    # A concurrent download of this repo (another GGUF variant) that failed early can have put back the ref this
+    # one replaced; the commit just fetched in full is the one to name.
+    if _read_ref(ref) == previous:
+        _pinned_revision(repo_type, repo_id, commit)
+    return path
 
 
 def _rebuild_header_only_ggufs(
@@ -714,13 +797,14 @@ def _download_snapshot(
         "model", repo_id, getattr(info, "sha", None), expected_files, hf_token
     )
     _preflight_disk_space("model", repo_id, to_download)
-    snapshot_path = snapshot_download(
+    snapshot_path = _pinned_snapshot_download(
+        snapshot_download,
+        getattr(info, "sha", None),
         repo_id = repo_id,
         token = _hf_token_arg(hf_token),
         ignore_patterns = ignore_patterns,
         max_workers = _file_workers(mode),
         tqdm_class = tqdm_class,
-        **_pinned_revision("model", repo_id, getattr(info, "sha", None)),
     )
     if info is None:
         _recover_manifest_after_download(
@@ -864,17 +948,14 @@ def _download_gguf_variant(
         )
     )
     _preflight_disk_space("model", repo_id, to_download)
-    snapshot_path = snapshot_download(
+    snapshot_path = _pinned_snapshot_download(
+        snapshot_download,
+        None if metadata_unavailable else _RESOLVED_COMMITS.get(repo_id),
         repo_id = repo_id,
         token = _hf_token_arg(hf_token),
         allow_patterns = targets,
         max_workers = _file_workers(mode),
         tqdm_class = tqdm_class,
-        **(
-            {}
-            if metadata_unavailable
-            else _pinned_revision("model", repo_id, _RESOLVED_COMMITS.get(repo_id))
-        ),
     )
     _verify_completed_download(
         "model",
@@ -970,13 +1051,14 @@ def _download_scoped_snapshot(
         "model", repo_id, getattr(info, "sha", None), expected_files, hf_token
     )
     _preflight_disk_space("model", repo_id, to_download)
-    snapshot_path = snapshot_download(
+    snapshot_path = _pinned_snapshot_download(
+        snapshot_download,
+        getattr(info, "sha", None),
         repo_id = repo_id,
         token = _hf_token_arg(hf_token),
         allow_patterns = files,
         max_workers = _file_workers(mode),
         tqdm_class = tqdm_class,
-        **_pinned_revision("model", repo_id, getattr(info, "sha", None)),
     )
     if info is None:
         # With no metadata there is no manifest, and snapshot_download RETURNS AN EXISTING SNAPSHOT FOLDER when repo_info also fails, flipping the job to complete with no weights.
