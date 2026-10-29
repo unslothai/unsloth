@@ -2,7 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { Cancel01Icon, Copy01Icon, Download04Icon, SparklesIcon } from "@hugeicons/core-free-icons";
+import { Cancel01Icon, SparklesIcon, Download01Icon } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -32,6 +33,7 @@ import {
   type PromptUpsamplerStatus,
   upsamplerDownloadBytes,
   upsamplerNeedsDownload,
+  upsamplerServesEarlierQuant,
   clearPreviewDigests,
   previewSignature,
   upsamplerDownloadFraction,
@@ -152,7 +154,9 @@ function UpsamplerDownloadNotice({
       ) : (
         <>
           <span className="text-muted-foreground">
-            {status.downloaded
+            {upsamplerServesEarlierQuant(status)
+              ? `Prompts are enhanced with an earlier upsampler quant (${status.filename})${status.mmproj_downloaded ? "" : ", edits from the text alone"}. Download the current one${size ? ` (${size})` : ""} for better captions.`
+              : status.downloaded
               ? `The prompt upsampler's vision projector${size ? ` (${size})` : ""} is not downloaded. Until it is, edits are enhanced from the text alone.`
               : `The prompt upsampler${size ? ` (${size})` : ""} is not downloaded. Until it is, prompts run as typed.`}
           </span>
@@ -168,7 +172,7 @@ function UpsamplerDownloadNotice({
               disabled={busy}
               onClick={() => void start()}
             >
-              {busy ? <Spinner className="size-3.5" /> : <HugeiconsIcon icon={Download04Icon} className="size-3.5" />}
+              {busy ? <Spinner className="size-3.5" /> : <HugeiconsIcon icon={Download01Icon} className="size-3.5" />}
               {size ? `Download (${size})` : "Download"}
             </Button>
           ) : (

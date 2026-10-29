@@ -5,7 +5,6 @@
 
 import os
 import re
-import socket
 import sys
 from pathlib import Path
 
@@ -439,9 +438,8 @@ def test_compiled_fullgraph_zero_breaks_and_matches_eager(monkeypatch):
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 def _ddp_worker(rank, world, port, inplace, bucket_view, out_path):
@@ -468,13 +466,26 @@ def _ddp_worker(rank, world, port, inplace, bucket_view, out_path):
     cases = [
         _Case(E, N, K, T, topk, "permute_x", torch.bfloat16, seed = 100 * rank + i) for i in range(4)
     ]
+    allreduces = []
+
+    def counting_allreduce(state, bucket):
+        allreduces.append(1)
+        return (
+            dist.all_reduce(bucket.buffer(), async_op = True)
+            .get_future()
+            .then(lambda fut: fut.value()[0].div_(world))
+        )
+
+    ddp.register_comm_hook(None, counting_allreduce)
     for i, case in enumerate(cases):
-        loss = ddp(case.X, case.m_sizes, case.gather).float().pow(2).mean()
+        # The forward runs inside no_sync too: DDP decides at forward time whether to reduce.
         if i < 3:
             with ddp.no_sync():
-                loss.backward()
+                ddp(case.X, case.m_sizes, case.gather).float().pow(2).mean().backward()
         else:
-            loss.backward()
+            assert not allreduces, "a no_sync step reduced gradients"
+            ddp(case.X, case.m_sizes, case.gather).float().pow(2).mean().backward()
+    assert allreduces
     torch.save(
         {"grad": model.w.grad.float().cpu(), "inplace": gg.DW_ACCUMULATE_STATS["inplace"]},
         f"{out_path}.{rank}",
@@ -553,7 +564,6 @@ def test_fsdp2_no_sync_gradient_accumulation(tmp_path):
 
 
 def test_existing_gradient_survives_in_microbatch_cancellation(monkeypatch):
-    monkeypatch.setenv("UNSLOTH_MOE_DW_ACCUMULATE", "1")
     E, N, K, T = 1, 64, 64, 128
     dtype, big = torch.bfloat16, 1e4
     X = torch.zeros(T, K, device = DEV, dtype = dtype)
@@ -563,11 +573,20 @@ def test_existing_gradient_survives_in_microbatch_cancellation(monkeypatch):
     m_sizes = torch.tensor([T], device = DEV, dtype = torch.int32)
     gather = torch.arange(T, device = DEV, dtype = torch.int32)
     W = _param(E, N, K, dtype)
-    W.grad = torch.ones_like(W)
-    before = gg.DW_ACCUMULATE_STATS["inplace"]
-    _gemm(X, W, m_sizes, gather, 1, "none", _cfgs()).backward(G)
-    assert gg.DW_ACCUMULATE_STATS["inplace"] == before + 1
-    assert torch.equal(W.grad, torch.ones_like(W))
+    grads = {}
+    for inplace in ("1", "0"):
+        monkeypatch.setenv("UNSLOTH_MOE_DW_ACCUMULATE", inplace)
+        W.grad = torch.ones_like(W)
+        before = gg.DW_ACCUMULATE_STATS["inplace"]
+        _gemm(X, W, m_sizes, gather, 1, "none", _cfgs()).backward(G)
+        assert gg.DW_ACCUMULATE_STATS["inplace"] == before + (inplace == "1")
+        grads[inplace] = W.grad.clone()
+    # The existing gradient is added after the reduction, exactly as grad + dW: folded in before it,
+    # the 1 would be lost against the 1e8 partial sum. gfx1151's MFMA leaves the cancelled dW at -4
+    # rather than 0 (4e-8 of the partials) in both arms, so only CUDA checks the absolute value.
+    assert torch.equal(grads["1"], grads["0"])
+    if torch.version.hip is None:
+        assert torch.equal(grads["1"], torch.ones_like(W))
 
 
 def test_side_stream_use_keeps_the_returned_gradient_path(monkeypatch):

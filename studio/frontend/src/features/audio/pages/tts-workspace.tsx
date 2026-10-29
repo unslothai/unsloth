@@ -25,12 +25,12 @@ import { PillTabs } from "@/features/model-picker/components/model-selector/pill
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
-  Copy01Icon,
   DiceFaces03Icon,
   FloppyDiskIcon,
   SparklesIcon,
-  StopIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
+import { StopIcon } from "@/lib/media-control-icons";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { addAudioClipToProject, type AudioGalleryClip } from "../api";
@@ -220,8 +220,7 @@ export function TtsRailFields({
     : allAudioOptionSpecs;
   return (
     <>
-      {/* Field inlined: its label needs a form control to point
-          at, and PillTabs is a tablist with its own name. */}
+      {/* Field inlined: its label needs a form control, and PillTabs is a tablist. */}
       <div className="grid gap-1.5">
         <span className="text-ui-13 font-medium text-foreground">
           Load model into
@@ -250,9 +249,7 @@ export function TtsRailFields({
             { value: "cpu", label: "CPU RAM" },
           ]}
         />
-        {/* Phrased as what the next load will do, not as the resident
-            model's state: a model loaded by another tab or client can
-            be on the other device, and status does not report it. */}
+        {/* Phrased as the next load: another client may have loaded the model on the other device. */}
         <p className="text-ui-11p5 leading-snug text-muted-foreground">
           {audioDevice === "cpu"
             ? "New loads go into system RAM instead of the GPU. Slower to generate, and no GPU memory is used."
@@ -514,6 +511,7 @@ export function TtsOutput({
   handleDeleteClip,
   fallbackClip,
   handleDownloadFallbackClip,
+  emptyTitle,
   emptyText,
   emptyActions,
   handleClearGallery,
@@ -577,6 +575,7 @@ export function TtsOutput({
       canStop: boolean;
       onStop: () => void;
     } | null;
+    emptyTitle?: string;
     emptyText: string;
     emptyActions?: ReactNode;
     freshClipId: string | null;
@@ -587,7 +586,6 @@ export function TtsOutput({
       clip: AudioGalleryClip,
       place: "selected" | "history",
     ) => string | null;
-    /** Replaces the selected clip's waveform, such as Convert's Source/Converted compare. */
     renderPlayer?: (
       clip: AudioGalleryClip,
       src: string,
@@ -595,7 +593,6 @@ export function TtsOutput({
     ) => ReactNode;
     useAgainLabel?: string;
     showCopyText?: boolean;
-    /** Replaces the plain player; `focusRef` goes on its first control. */
     selectedPlayer?: (
       clip: AudioGalleryClip,
       src: string,
@@ -757,7 +754,14 @@ export function TtsOutput({
           />
         ) : (
           <div className="grid justify-items-center gap-3">
-            <p className="text-ui-13 text-muted-foreground">{emptyText}</p>
+            {emptyTitle ? (
+              <div className="grid gap-1 text-center">
+                <h2 className="text-ui-14 font-medium text-foreground">{emptyTitle}</h2>
+                <p className="text-ui-13 text-muted-foreground">{emptyText}</p>
+              </div>
+            ) : (
+              <p className="text-ui-13 text-muted-foreground">{emptyText}</p>
+            )}
             {emptyActions}
           </div>
         )}

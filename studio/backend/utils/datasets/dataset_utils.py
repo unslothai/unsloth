@@ -18,6 +18,7 @@ from .format_conversion import (
     convert_to_vlm_format,
     convert_llava_to_vlm_format,
     convert_sharegpt_with_images_to_vlm_format,
+    normalize_chatml_roles,
 )
 from .chat_templates import (
     _custom_prompt_template_error,
@@ -265,11 +266,11 @@ def _apply_template_mapping(
     meta: dict,
     batch_size: int = 1000,
 ):
-    """Apply advisor-driven mapping for non-conversational datasets: groups columns by assigned role (user/assistant), concatenates values within each role into one message, and injects an optional system prompt. Label mapping converts integer labels to human-readable strings. Returns a dataset with a single 'conversations' column."""
+    """Apply advisor-driven mapping for non-conversational datasets: groups columns by assigned role (system/user/assistant), concatenates values within each role into one message, and injects an optional system prompt ahead of any system column. Label mapping converts integer labels to human-readable strings. Returns a dataset with a single 'conversations' column."""
     system_prompt = meta.get("__system_prompt", "")
     label_mapping = meta.get("__label_mapping", {})  # {col: {int_str: label_str}}
 
-    role_groups: dict[str, list[str]] = {"user": [], "assistant": []}
+    role_groups: dict[str, list[str]] = {"system": [], "user": [], "assistant": []}
     for col, role in column_roles.items():
         canonical = _TO_CHATML.get(role, role)
         if canonical in role_groups:
@@ -289,8 +290,17 @@ def _apply_template_mapping(
         for i in range(num):
             convo = []
 
-            if system_prompt:
-                convo.append({"role": "system", "content": system_prompt})
+            # The system prompt leads, then system columns, so neither is dropped.
+            system_parts = [
+                _extract_column_value(examples[col][i], col, label_mapping)
+                for col in role_groups["system"]
+                if col in examples
+            ]
+            system_text = "\n\n".join(
+                part for part in (system_prompt, "\n".join(p for p in system_parts if p)) if part
+            )
+            if system_text:
+                convo.append({"role": "system", "content": system_text})
 
             user_parts = []
             for col in role_groups["user"]:
@@ -325,11 +335,7 @@ def _apply_user_mapping_alpaca(
     mapping: dict,
     batch_size: int = 1000,
 ):
-    """convert user mappings to Alpaca instruction, input, and output columns.
-
-    role names are normalized through ``_TO_CHATML`` and ``__label_mapping`` names label values.
-    ``__system_prompt`` prepends instruction because mapped system columns already fill input.
-    """
+    """__system_prompt is prepended to instruction, since a mapped system column already fills input."""
     meta = {k: v for k, v in mapping.items() if k.startswith("__")}
     column_roles = {k: v for k, v in mapping.items() if not k.startswith("__")}
     system_prompt = meta.get("__system_prompt", "")
@@ -394,6 +400,10 @@ def format_dataset(dataset, *args, **kwargs):
             "requires_manual_mapping": False,
             "warnings": [],
         }
+    if info["final_format"] in ("chatml_messages", "chatml_conversations") and info["chat_column"]:
+        info["dataset"] = normalize_chatml_roles(
+            info["dataset"], info["chat_column"], bound.arguments["batch_size"]
+        )
     return info
 
 
@@ -877,6 +887,9 @@ def format_and_template_dataset(
     raw_text_column = None,
 ):
     """Combines format_dataset and apply_chat_template_to_dataset, for UI workflows where one call does everything. custom_prompt_template is retained for signature compatibility; non-None values are rejected because Studio cannot persist a matching inference template. Returns {dataset (with a 'text' column), detected_format, final_format, success, requires_manual_mapping, warnings, errors, summary}."""
+    from .tokenizer_fingerprint import install_tokenizer_fingerprint
+
+    install_tokenizer_fingerprint()
 
     custom_prompt_error = _custom_prompt_template_error(custom_prompt_template)
     if custom_prompt_error:

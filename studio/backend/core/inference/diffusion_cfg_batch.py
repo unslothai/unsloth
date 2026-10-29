@@ -1,42 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""CFG batching: both guidance branches of a step through ONE forward of the denoiser.
-
-A guided step calls the denoiser twice (conditional, then unconditional). ComfyUI batches the two branches into one
-call by default whenever memory allows (``comfy/samplers.py`` ``calc_cond_batch``), resident or not; diffusers pipelines
-call the transformer once per branch. A denoiser streamed from host memory pays its weight upload once instead of
-twice; a resident one gains where one doubled call keeps the GPU busier than two (small images). This router batches
-them for the classes whose forward keeps no state between calls:
-
-- the first branch of a step builds the second branch's arguments from the previous step's second call (same latent
-  object, the first branch's per-step tensors, the second branch's constants), runs both as one call of twice the
-  batch, returns the first half and keeps the second;
-- the second call is verified against what was batched (every argument bitwise) and gets the kept half; anything
-  else (a changed argument, no second call, a third call) reruns that branch plain and counts as a miss.
-
-Priced once per request shape, before any batched result is used: steps 1-2 run plain (step 2 is timed); a resident
-pair >= ``_RESIDENT_MAX_PAIR_S`` stays plain untried. Otherwise a discarded trial (plain pairs interleaved with doubled
-calls) batches steps 3+ only if the fastest batched step (predict, merge, snapshot, doubled call, split, verify) beats the
-fastest plain pair by ``_MEASURED_FRACTION``, so every render of a shape takes one path (same seed, same image). The
-verdict is latched for the load (memory pressure never re-times it) and stored per (model, weight tensor classes and
-quant scheme, speed tier, offload policy, card, compiled or eager, request shape, runtimes) next to the learned peaks,
-first writer wins: a borderline shape
-cannot land on a different path in another process (``UNSLOTH_DIFFUSION_CFG_BATCH_VERDICTS=0`` keeps it per load;
-``UNSLOTH_DIFFUSION_CFG_BATCH_VERDICTS_FILE`` names the file). The doubled call needs room for twice a plain call's
-activations; no room, or an OOM, turns the shape plain for the rest of that render.
-
-Not always bit-exact (other GEMM / attention tiles): B200 bf16 resident FLUX.2-klein-base-4B is bitwise equal,
-Wan2.1-T2V-1.3B LPIPS 0.019 mean; offloaded FLUX.2-klein-base LPIPS ~0.01. ``UNSLOTH_DIFFUSION_CFG_BATCH=0`` keeps the exact
-one-branch-per-call path, as does a request with ``speed_mode="off"``; ``force`` batches anyway, an unlisted class too
-(the trial's discarded calls must be side-effect free). Declined for per-call activation scaling (NVFP4 without frozen
-global scales), whose scale would change with the doubled batch, and for denoisers already wrapped by another forward
-layer.
-
-Compiled denoisers: the doubled shape compiles a second graph per block, allowed only in a shape's trial render.
-Offloaded compiled denoisers batch; resident compiled ones and shapes judged before a later compile stay plain. A
-follow-up-render compile ends batching for the load; under Dynamo tracing the router passes straight through.
-"""
+"""Batches CFG branches into one forward for stateless denoisers only; a second call differing from
+the batched inputs reruns that branch plain; not always bit-exact; UNSLOTH_DIFFUSION_CFG_BATCH=0
+keeps one branch per call"""
 
 from __future__ import annotations
 
@@ -246,6 +213,35 @@ def cfg_batch_decline(
         # diffusers rebuilds model-offload hooks between renders, evicting the router: later renders would differ.
         return "model offload re-hooks the denoiser every render"
     return None
+
+
+def cfg_pair_decline(
+    pipe: Any,
+    *,
+    offload_policy: Optional[str] = None,
+    graphs: bool = True,
+) -> Optional[str]:
+    """Why guidance branches cannot pair per streamed block, else None. ``graphs=False`` ignores armed CUDA graphs."""
+    from .diffusion_cfg_pair import pair_decline
+
+    torch = _torch()
+    denoiser = getattr(pipe, "transformer", None)
+    if not isinstance(denoiser, torch.nn.Module):
+        return "no DiT denoiser"
+    if getattr(pipe, "transformer_2", None) is not None:
+        return "two-expert denoiser"
+    if getattr(denoiser, "_compiled_call_impl", None) is not None:
+        return "denoiser is compiled whole"
+    if not _streamed(denoiser) or (
+        offload_policy is not None and not _offloaded(denoiser, offload_policy)
+    ):
+        return "the denoiser stays on the card"
+    if graphs and getattr(pipe, "_unsloth_cuda_graphs", None):
+        return "the denoiser replays CUDA graphs"
+    foreign = _foreign_layer(denoiser)
+    if foreign is not None:
+        return foreign
+    return pair_decline(denoiser, denoiser.forward)
 
 
 def _usable_free_mib(device: Any) -> Optional[int]:
@@ -465,7 +461,15 @@ class CfgBatchRouter:
         self.logger = logger
         self.disabled: Optional[str] = None
         self.shapes: dict = {}
-        self.stats = {"batched_steps": 0, "hits": 0, "misses": 0, "plain_calls": 0}
+        self.stats = {
+            "batched_steps": 0,
+            "paired_steps": 0,
+            "hits": 0,
+            "misses": 0,
+            "plain_calls": 0,
+        }
+        self.paired: Any = None
+        self._logged_paired = 0
         self._reset_step()
         self.template: Optional[tuple] = None
         self.prev_latent: Any = None
@@ -492,6 +496,7 @@ class CfgBatchRouter:
         shape = self.shape or self.last_shape
         return {
             "armed_for": self.reason,
+            "mode": "pair" if self.paired is not None else "batch",
             "disabled_reason": self.disabled,
             "shape_off": None if shape is None else shape.off,
             "verdict": None if shape is None else shape.verdict,
@@ -508,6 +513,15 @@ class CfgBatchRouter:
 
     def end_render(self) -> None:
         """Drop every tensor held between calls (the kept half, the template's constants, the latent)."""
+        paired = self.stats["paired_steps"] - self._logged_paired
+        if paired and self.logger is not None:
+            self._logged_paired = self.stats["paired_steps"]
+            self.logger.info(
+                "diffusion.cfg_pair: %d guided step(s) ran both branches through each streamed block "
+                "(one upload per step); %d paired so far",
+                paired,
+                self._logged_paired,
+            )
         if self.render_checked:
             self.renders += 1
         if self.pending_disable is not None:
@@ -577,6 +591,13 @@ class CfgBatchRouter:
         else:
             self._new_step(args, kwargs, latent)
         shape = self.shape
+        if self.branch == 0 and self.paired is not None:
+            # the first plain pair records the second call's template
+            if self.template is not None and shape.off is None and shape.render_steps > 1:
+                out = self._pair(args, kwargs, latent, shape)
+                if out is not None:
+                    return out
+            return self._plain(args, kwargs)
         if self.branch == 0:
             if (
                 self.template is not None
@@ -602,6 +623,8 @@ class CfgBatchRouter:
                 return self._plain(args, kwargs)
             self._record_template(args, kwargs, latent)
             out = self._plain(args, kwargs)
+            if self.paired is not None:
+                return out
             if not shape.judged and self.disabled is None and shape.render_steps == _PLAIN_STEPS:
                 t0, self.pair_t0 = self.pair_t0, None
                 if shape.verdict is None:
@@ -912,6 +935,45 @@ class CfgBatchRouter:
         self.stats["batched_steps"] += 1
         return mine
 
+    def _pair(self, args: tuple, kwargs: dict, latent: Any, shape: _Shape) -> Any:
+        from .diffusion_cfg_pair import NotPairable, root_forward
+
+        torch = _torch()
+        module = self.module_ref()
+        root_fn = root_forward(module, self.orig_forward) if module is not None else None
+        if root_fn is None:
+            self.disable("the denoiser's own forward is no longer reachable below its hooks")
+            return None
+        try:
+            second = self._predict(latent)
+            snapshots = _snapshot(second)
+        except _NotBatchable as exc:
+            self._shape_off(shape, f"not pairable: {exc}")
+            return None
+        graphs = _graph_count()
+        try:
+            mine, other = self.paired.run(
+                module, self.orig_forward, root_fn, (args, kwargs), second
+            )
+        except NotPairable as exc:
+            self._shape_off(shape, f"not pairable: {exc}")
+            return None
+        except Exception as exc:  # noqa: BLE001 - the branch reruns plain
+            if _is_oom(exc):
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:  # noqa: BLE001
+                    pass
+                self._shape_off(shape, "out of memory on the paired call", _OFF_TRANSIENT)
+                return None
+            self.disable(f"the paired call failed ({type(exc).__name__}: {exc})")
+            return None
+        if _graph_count() != graphs:
+            self.pending_disable = "the paired call compiled a new graph"
+        self.kept = {"out": other, "snapshots": snapshots, "latent": latent}
+        self.stats["paired_steps"] += 1
+        return mine
+
     def _take(self, args: tuple, kwargs: dict, shape: _Shape) -> Any:
         kept, self.kept = self.kept, None
         if not _matches(kept["snapshots"], (args, kwargs)):
@@ -1115,6 +1177,18 @@ def _install(
     transformer_quant: Optional[str] = None,
     logger: Any = None,
 ) -> Optional[str]:
+    if cfg_pair_decline(pipe, offload_policy = offload_policy) is None:
+        from .diffusion_cfg_pair import PairedForward
+
+        denoiser = pipe.transformer
+        router = CfgBatchRouter(
+            denoiser,
+            reason = f"offloaded denoiser ({offload_policy}): both branches run each streamed block",
+            logger = logger,
+        )
+        router.offloaded = True
+        router.paired = PairedForward(denoiser)
+        return _arm(pipe, denoiser, router, logger)
     reason = cfg_batch_decline(pipe, offload_policy = offload_policy, speed_mode = speed_mode)
     if reason is not None:
         if logger is not None:
@@ -1134,6 +1208,10 @@ def _install(
     )
     router.offloaded = _offloaded(denoiser, offload_policy)
     router.identity = _load_identity(denoiser, offload_policy, speed_mode, transformer_quant)
+    return _arm(pipe, denoiser, router, logger)
+
+
+def _arm(pipe: Any, denoiser: Any, router: CfgBatchRouter, logger: Any) -> Optional[str]:
     try:
         _ROUTERS[pipe] = router
     except TypeError:

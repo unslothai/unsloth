@@ -109,7 +109,6 @@ function ComboboxInput({
 }: ComboboxPrimitive.Input.Props & {
   showTrigger?: boolean;
   showClear?: boolean;
-  /** Optional leading content (e.g. a search icon) rendered before the input. */
   startAddon?: React.ReactNode;
 }): React.ReactElement {
   return (
@@ -179,8 +178,7 @@ function ComboboxContent({
           data-chips={!!anchor}
           onWheel={(event) => {
             onWheel?.(event);
-            // Dialog scroll locks cancel native wheel scrolling on this body-portaled popup, so
-            // scroll the list by hand while one is active.
+            // Dialog scroll locks cancel native wheel scrolling on this body-portaled popup.
             if (!document.body.hasAttribute("data-scroll-locked")) return;
             const list = event.currentTarget.querySelector<HTMLElement>(
               '[data-slot="combobox-list"]',

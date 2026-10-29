@@ -3,11 +3,9 @@
 
 import type { DiffusionConditioning } from "./api";
 
-// Z-Image's range, which every family but Qwen-Image-2.1 keeps.
 export const MIN_DIM = 256;
 export const MAX_DIM = 2048;
 
-/** The output grid and bounds of the loaded model. */
 export interface SizeLimits {
   multiple: number;
   maxSide: number;
@@ -20,7 +18,6 @@ export const DEFAULT_SIZE_LIMITS: SizeLimits = {
   maxPixels: MAX_DIM * MAX_DIM,
 };
 
-/** The loaded model's limits, or the historical ones when the backend reports none. */
 export function sizeLimitsFrom(
   conditioning: DiffusionConditioning | null | undefined,
 ): SizeLimits {
@@ -43,7 +40,6 @@ export function snapDim(
   return Math.min(top, Math.max(bottom, Math.round(value / m) * m));
 }
 
-/** A (width, height) pair on the grid and inside both bounds, shrunk together to keep its ratio. */
 export function fitSize(
   width: number,
   height: number,
@@ -59,7 +55,7 @@ export function fitSize(
   return { width: w, height: h };
 }
 
-/** Mirrors the backend's match_source_size, so the size shown is the size generated. */
+/** Mirrors the backend's match_source_size. */
 export function matchSourceSize(
   sourceWidth: number,
   sourceHeight: number,
@@ -91,14 +87,10 @@ export function matchSourceSize(
   return { width: w, height: h };
 }
 
-/** A gallery record's size as the Create form can hold it. Scaled as a pair, so the recipe's
- *  aspect ratio survives; clamping each side alone would not.
- *
- *  Transform is the exception. img2img treats the requested size as a BOX it fits the upload
- *  inside (_fit_within, which never enlarges) rather than as the output size, so a side that was
- *  already in range has to be left alone: growing it moves the box and the re-run produces a
- *  different image than the one being restored. Clamping only the offending side reproduces the
- *  record exactly there, and the shape is the upload's anyway, not the form's. */
+/**
+ * Scaled as a pair to keep the aspect ratio. Transform clamps only the offending side, since
+ * img2img treats the size as a fit-within box and growing it changes the output.
+ */
 export function restorableSize(
   width: number,
   height: number,
@@ -122,7 +114,6 @@ export function restorableSize(
     limits.maxSide / height,
     Math.sqrt(limits.maxPixels / (width * height)),
   );
-  // A ratio too extreme to fit both bounds at any scale falls back to per-side clamping.
   const scale = upTo > downTo ? 1 : Math.min(Math.max(1, upTo), downTo);
   return fitSize(width * scale, height * scale, limits);
 }

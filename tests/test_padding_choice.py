@@ -75,6 +75,50 @@ def test_rule_picks_padded_in_clear_host_bound_cells():
         assert not use_pf, (gpu, t, reason)
 
 
+# Colab G4 = RTX PRO 6000 Blackwell Server Edition (sm120, 500 dense TFLOPs), 16 bit, 3 reps; 4 bit
+# agreed within the A/A band. (model, padded tokens / pairs, gain torch 2.14.1 %, gain torch 2.10.0 %)
+SM120 = (12, 0)
+MEASURED_SM120 = [
+    (Q06, ALP2, +5.4, +23.6), (Q06, ALP8, +5.4, +64.5), (Q06, ALP16, -29.2, +59.6),
+    (Q06, LONG2, -14.5, -4.9), (Q06, LONG8, -37.0, -16.5),
+    (Q4, ALP2, +5.2, +24.1), (Q4, ALP8, -39.6, -19.3), (Q4, ALP16, -53.6, -40.3),
+    (Q4, LONG2, -15.2, -12.5), (Q4, LONG8, -35.2, -25.4),
+]  # fmt: skip
+
+
+@pytest.mark.parametrize("flops, tokens, gain_214, gain_210", MEASURED_SM120)
+@pytest.mark.parametrize("peak", [500.0, 503.8, 438.9])  # Server, Workstation, Max-Q
+def test_sm120_never_picks_padded_where_it_lost(flops, tokens, gain_214, gain_210, peak):
+    use_pf, reason, _ = pc.choose_padding(
+        flops[0], flops[1], tokens[0], tokens[1], peak, 10**9, capability = SM120
+    )
+    if min(gain_214, gain_210) < 0:
+        assert use_pf, (tokens, gain_214, gain_210, reason)
+    if tokens is ALP2:  # the measured wins on both torch versions
+        assert not use_pf, (tokens, reason)
+
+
+def test_sm120_with_the_old_threshold_would_pick_a_losing_cell():
+    # Why sm120 has its own threshold: at 0.10 s the 0.6B Alpaca batch 16 cell (-29% on torch
+    # 2.14.1) is picked.
+    assert pc.choose_padding(*Q06, *ALP16, 500.0, 10**9)[0] is False
+    assert pc.choose_padding(*Q06, *ALP16, 500.0, 10**9, capability = SM120)[0] is True
+
+
+@pytest.mark.parametrize("gpu, cap", [("A100", (8, 0)), ("L4", (8, 9)), ("T4", (7, 5))])
+def test_measured_capabilities_keep_their_decisions(gpu, cap):
+    for _, flops, tokens, _ in [m for m in MEASURED if m[0] == gpu]:
+        args = (flops[0], flops[1], tokens[0], tokens[1], PEAK[gpu], 10**9)
+        assert pc.choose_padding(*args)[0] == pc.choose_padding(*args, capability = cap)[0]
+
+
+@pytest.mark.parametrize("cap", [(9, 0), (10, 0), (10, 3), (8, 6), (12, 1)])
+def test_unmeasured_capability_keeps_padding_free(cap):
+    # H100 / B200 / B300 / consumer Ampere: the datasheet peak alone would pick padded here.
+    use_pf, reason, _ = pc.choose_padding(*Q06, *ALP2, 989.0, 10**9, capability = cap)
+    assert use_pf and "not measured" in reason
+
+
 def test_short_runs_keep_padding_free():
     # 60 steps x grad accum 4 cannot repay the extra block compile.
     use_pf, reason, _ = pc.choose_padding(*Q06, *ALP2, PEAK["A100"], total_microbatches = 240)
@@ -264,7 +308,7 @@ def test_moe_detection():
 
 
 def test_trainer_wires_the_choice():
-    src = (ROOT / "unsloth" / "trainer.py").read_text()
+    src = (ROOT / "unsloth" / "trainer.py").read_text(encoding = "utf-8")
     assert "_auto_padding_choice(" in src
     assert "from unsloth.utils.padding_choice import decide_auto_padding_free" in src
 

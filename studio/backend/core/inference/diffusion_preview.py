@@ -1,17 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Live latent previews for the image and video denoise loops.
-
-Each snapshot projects the latent to a small RGB picture with a fitted per-family linear map
-(``diffusion_preview_factors``), copies it into a pinned slot with ``non_blocking=True`` plus a CUDA
-event, and a worker thread JPEG-encodes it once ``Event.query()`` says it landed. The denoise thread
-never syncs or reads host memory the GPU is writing, every CUDA call sits inside the CUDA-graph capture
-hold-off, and the latent is only read, so the final image is identical with previews on or off.
-
-Snapshots are planned by STEP, not host time: under CUDA graphs the host enqueues every step long
-before the GPU runs it. Kill switch: ``UNSLOTH_DIFFUSION_PREVIEW=0``.
-"""
+"""Live denoise previews: async pinned copies, JPEG off-thread, planned per step; denoise thread
+never syncs; latent only read, so final image unchanged; UNSLOTH_DIFFUSION_PREVIEW=0 disables"""
 
 from __future__ import annotations
 

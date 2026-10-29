@@ -56,7 +56,7 @@ QWEN3 = "trl-internal-testing/tiny-Qwen3ForCausalLM"
 GEMMA2 = "trl-internal-testing/tiny-Gemma2ForCausalLM"
 GEMMA3 = "hf-internal-testing/tiny-random-Gemma3ForCausalLM"
 MISTRAL = "hf-internal-testing/tiny-random-MistralForCausalLM"
-PHI3 = "trl-internal-testing/tiny-Phi3ForCausalLM"
+PHI3 = "trl-internal-testing/tiny-Phi3ForCausalLM-3"
 QWEN2 = "trl-internal-testing/tiny-Qwen2ForCausalLM-2.5-Coder"
 STABLELM = "hf-internal-testing/tiny-random-StableLmForCausalLM"  # no transformers TP plan
 OLMO2 = "hf-internal-testing/tiny-random-Olmo2ForCausalLM"
@@ -694,7 +694,7 @@ def test_generated_trl_trainer_init_skips_for_inference_on_a_tp_model():
     import re
     import textwrap
 
-    source = open(os.path.join(REPO, "unsloth", "models", "rl.py")).read()
+    source = open(os.path.join(REPO, "unsloth", "models", "rl.py"), encoding = "utf-8").read()
     match = re.search(
         r"super\(\)\.__init__\(\{RLTrainer_call_args\}\{RLTrainer_kwargs\}\)\n(.*?)\n\{RLTrainer_post\}",
         source,

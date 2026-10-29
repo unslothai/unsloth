@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""In-memory, host-RAM LRU of text-encoder outputs for diffusion/video pipes.
-
-``UNSLOTH_DIFFUSION_PROMPT_CACHE=0`` disables; ``UNSLOTH_DIFFUSION_PROMPT_CACHE_MB`` (default 256, capped on
-small hosts) bounds it. Hits return fresh copies so in-place edits cannot poison later renders.
-"""
+"""Host-RAM LRU of text-encoder outputs; hits return copies so in-place edits cannot poison renders."""
 
 from __future__ import annotations
 
@@ -24,9 +20,12 @@ _DEFAULT_BUDGET_MB = 256
 _FALSE_TOKENS = ("0", "false", "no", "off")
 
 _KEY_EXCLUDED_ARGS = frozenset({"device", "generator"})
-# Wan encodes prompt and negative separately; caching per text reuses the unchanged negative. "0" = pair key only.
+# Cache the per-text helper so an unchanged CFG negative is reused across prompts. "0" = pair key only.
 _ENV_PER_TEXT = "UNSLOTH_DIFFUSION_PROMPT_CACHE_PER_TEXT"
-_PER_TEXT_METHODS = {"Wan": "_get_t5_prompt_embeds"}
+_PER_TEXT_METHODS = {
+    "Wan": "_get_t5_prompt_embeds",
+    "ZImage": "_encode_prompt",
+}
 _TEXT_ENCODER_ATTRS = ("text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4")
 
 
@@ -187,8 +186,7 @@ class PromptCache:
 def _store_copy(t: Any) -> Any:
     t = t.detach()
     device = t.device
-    # Not pinned: pin_memory() is a fresh cudaHostAlloc per entry (60 ms to 1.6 s for 4 MB on a busy host) to save
-    # ~0.3 ms per hit.
+    # Not pinned: pin_memory() costs a slow cudaHostAlloc per entry, to save only ~0.3 ms per hit.
     stored = t.to("cpu", copy = True)
     stored._unsloth_src_device = device
     return stored

@@ -1,32 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""CUDA-graph replay of the native one-token decode step.
-
-When it runs (decided per call, enabled()): UNSLOTH_DECODE_CUDA_GRAPHS=1 everywhere, =0 nowhere; unset,
-only for the generate() calls an RL trainer makes on the training model (GRPO / RLOO / online DPO /
-GKD ... through rl.py's unwrap_model_for_generation, rl_generation()) on NVIDIA CUDA, not for plain
-model.generate() and not on ROCm / HIP (graph replay there is not verified bitwise; =1 still forces it).
-The decode buffers and graphs of such a call are released when it returns to training: the next
-optimizer step invalidates the graphs anyway, and training gets the memory back.
-
-The eager decode step is host bound (hundreds of small launches per token). It is captured once per
-batch size as n_layers + 1 graph segments split at each layer's attention core, which runs eagerly
-between them over the true KV length (_decode_attention_core, the same code the eager step runs), so
-a replayed step computes bit for bit what the eager step computes, at every length, with no buckets:
-
-* the per-layer decode buffers (KV cache, projection scratch) persist across generate() calls and are
-  sized up front to prompt + max_new_tokens, so the addresses the segments read and write hold;
-* the segments write K / V with index_copy_ at a device-side cache slot and index RoPE with a device
-  position tensor, so they do not depend on the length either;
-* the first decode step after a prefill stays eager (it copies the prefill K / V into the cache), and
-  sampling / logits processing stays in transformers.
-
-A graph bakes in every tensor address it reads and every host-side branch taken at capture, so the
-graphs are dropped when the model's parameters, LoRA adapters (cast caches included), quant states or
-RoPE tables move or change version; this is checked once per generate() call and after every
-optimizer step. Anything unsupported runs the eager step.
-"""
+"""CUDA-graph decode; UNSLOTH_DECODE_CUDA_GRAPHS=1 forces, =0 disables; unset, only RL-trainer
+generate on NVIDIA CUDA; graphs dropped when params, LoRA, quant or RoPE change."""
 
 import math
 import os
@@ -66,6 +42,8 @@ BUFFER_EPOCH = 0
 GENERATION_EPOCH = 0
 # prompt + max_new_tokens of the running generate() call, 0 when unknown.
 MAX_LEN_HINT = 0
+# 1: size the graph KV cache for prompt + max_new_tokens up front (early stops still hold it all).
+PREALLOC = os.environ.get("UNSLOTH_DECODE_GRAPH_PREALLOC", "0") == "1"
 _SUPPORTED_ATTENTION = set()
 # Tested families only (Qwen2 shares the Llama attention but is untested here).
 _SUPPORTED_MODEL_TYPES = {"llama", "qwen3"}
@@ -197,6 +175,9 @@ def alloc_decode_buffers(
         )
     else:
         rows = _round_up(max(increment + seq_len + 1, MAX_LEN_HINT + 1), BUCKET)
+        if not PREALLOC:
+            # Start at the eager size; resize_decode_buffers grows it.
+            rows = min(rows, _round_up(increment + seq_len + 1, BUCKET))
         store = attn.__dict__.get("_unsloth_graph_buffers")
         if store is None:
             store = attn._unsloth_graph_buffers = {}
@@ -249,6 +230,12 @@ def resize_decode_buffers(attn, increment, bsz, n_heads, n_kv_heads, head_dim):
     """The eager growth of the KV cache by `increment` rows (new rows zeroed with graphs on)."""
     global BUFFER_EPOCH
     rows = attn.paged_attention.shape[0]
+    if "_unsloth_graph_buffers" in attn.__dict__:
+        # Each growth re-captures: double, capped at the hint, so O(log n) re-captures.
+        grown = max(rows + increment, 2 * rows)
+        if MAX_LEN_HINT + 1 > rows:
+            grown = min(grown, MAX_LEN_HINT + 1)
+        increment = _round_up(grown, BUCKET) - rows
     attn.paged_attention.resize_((rows + increment, 2, bsz, n_kv_heads, head_dim))
     attn.paged_attention_K = attn.paged_attention[:, 0]
     attn.paged_attention_V = attn.paged_attention[:, 1]
@@ -525,6 +512,14 @@ def decode_step(
         return None
     if torch.cuda.is_current_stream_capturing() or torch.compiler.is_compiling():
         return None
+    index = input_ids.device.index
+    if index is not None and index != torch.cuda.current_device():
+        # Capture on the model's GPU, else the capture fails and decode stays eager.
+        with torch.cuda.device(index):
+            return decode_step(
+                model, fast_forward_inference, logits_fn, mask_fn, input_ids, past_key_values,
+                position_ids, attention_mask,
+            )  # fmt: skip
     state = _state(model)
     if state.disabled is not None:
         return None
@@ -662,6 +657,9 @@ def _capture(
     attention_mask,
     seq_len,
 ):
+    if state.stream is not None and state.stream.device.index != torch.cuda.current_device():
+        state.stream = None
+        state.pool = None
     if state.pool is None:
         state.pool = torch.cuda.graph_pool_handle()
     if state.stream is None:

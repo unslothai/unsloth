@@ -18,8 +18,7 @@ import type { MouseEvent, ReactElement, ReactNode } from "react";
 const LINK_CLASS =
   "font-medium text-foreground underline decoration-foreground/30 underline-offset-2 hover:decoration-foreground/70";
 
-// target="_blank" has nowhere to go in the Tauri webview; openLink() hands the URL
-// to the system browser and falls back to window.open, matching MarkdownPreview.
+// target="_blank" has nowhere to go in the Tauri webview; openLink() uses the system browser.
 function handleExternalClick(event: MouseEvent<HTMLAnchorElement>): void {
   if (openLink(event.currentTarget.href)) {
     event.preventDefault();
@@ -153,9 +152,7 @@ export function LlamaUpdateChangelogPanel({
           <Message>No new carried changes are listed for this build.</Message>
         )}
       </div>
-      {/* Also shown when the comparison failed: the release page is usually
-          readable even when the two bodies could not be diffed, and it is the
-          only way left to see what changed. */}
+      {/* Also shown when the diff failed: the release page is the only way left to see changes. */}
       {state !== "loading" && state !== "idle" && releaseLink ? (
         <div className={UPDATE_NOTES_FOOTER_CLASS}>{releaseLink}</div>
       ) : null}

@@ -69,7 +69,7 @@ test("a load resumed after a page reload records the paths it was started with",
 test("the page stores the pending load at start and clears it on every way a load ends", () => {
   const source = readSrc("features/images/images-page.tsx");
   assert.match(source, /lastLoad\.current = \{[\s\S]*?fieldFiles: \{[^}]*\},\s*\};[\s\S]{0,200}rememberPendingImageLoad\(lastLoad\.current\);/);
-  assert.match(source, /const started = lastLoad\.current;\s*lastLoad\.current = finishedLoadTarget\(started, loaded\);\s*if \(lastLoad\.current\) rememberFinishedLoad\(lastLoad\.current, loaded, lastLoad\.current !== started\);/);
+  assert.match(source, /const started = lastLoad\.current;\s*const finished = finishedLoadTarget\(started, loaded\);[\s\S]{0,200}lastLoad\.current = finished \? retiredSnapshotAsLoaded\(finished, loaded\) : finished;\s*if \(lastLoad\.current\) rememberFinishedLoad\(lastLoad\.current, loaded, finished !== started\);/);
   assert.match(source, /if \(p\.phase === "error"\) \{\s*clearPendingImageLoad\(\);/);
   assert.match(source, /if \(p\.phase === null\) \{\s*clearPendingImageLoad\(\);/);
   assert.match(source, /\} catch \(err\) \{\s*pendingEvicted\.current = \[\];\s*clearPendingImageLoad\(\);/);
@@ -148,4 +148,17 @@ test("a pending load whose files the resident build does not use keeps the saved
   const native = { ...ready, engine: "sd_cpp", component_files: {} };
   rememberPendingImageLoad({ ...zImage, fieldFiles: other });
   assert.deepEqual(finishedLoadTarget(null, native)?.fieldFiles, other);
+});
+
+test("a retired snapshot's load resumed after a page reload is recovered as what it loaded as", () => {
+  store.clear();
+  const snapshot = "/hf/hub/models--unsloth--flux-3-image-klein/snapshots/abc";
+  const asPipeline = { loaded: true, repo_id: snapshot, model_kind: "pipeline" };
+  rememberPendingImageLoad({ repoId: snapshot, kind: "single_file", filename: "model.safetensors", baseRepo: snapshot });
+  const root = finishedLoadTarget(null, asPipeline);
+  assert.deepEqual([root?.repoId, root?.kind, root?.filename], [snapshot, "pipeline", undefined]);
+  const asBase = { loaded: true, repo_id: "black-forest-labs/flux-3-image-klein", model_kind: "pipeline" };
+  rememberPendingImageLoad({ repoId: snapshot, kind: "pipeline", displayRepoId: "unsloth/flux-3-image-klein" });
+  const redirected = finishedLoadTarget(null, asBase);
+  assert.deepEqual([redirected?.repoId, redirected?.kind], ["black-forest-labs/flux-3-image-klein", "pipeline"]);
 });

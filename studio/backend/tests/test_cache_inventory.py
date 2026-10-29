@@ -1705,3 +1705,274 @@ def test_a_registry_created_during_a_purge_is_born_reserved(monkeypatch):
         assert fresh.claim_repository_owner("late/set", object()) == (False, "deleting")
     finally:
         dataset_downloads.end_cache_purge()
+
+
+def test_hf_occupancy_is_measured_even_when_documents_clear_is_forbidden(
+    tmp_path, monkeypatch, isolated_caches
+):
+    hub = isolated_caches / "hub"
+    _write(hub / "models--org--model" / "blobs" / "weights", "x" * 123)
+    monkeypatch.setattr(cache_inventory, "protected_trees", lambda: {isolated_caches})
+    entry = describe_cache(definition_for("hf_hub"))
+    assert entry["size_bytes"] == 123
+    assert entry["purgeable"] is False
+    assert entry["clear_size_bytes"] == 0
+    assert "protected folder" in entry["blocked_reason"]
+    assert (hub / "models--org--model" / "blobs" / "weights").exists()
+
+
+def test_hf_history_counts_storage_without_widening_clear(tmp_path, monkeypatch, isolated_caches):
+    from utils import hf_cache_settings
+
+    active = isolated_caches / "hub"
+    previous = tmp_path / "previous" / "hub"
+    mine = _write(active / "models--org--active" / "blobs" / "weight", "a" * 15)
+    kept = _write(previous / "models--org--old" / "blobs" / "weight", "b" * 27)
+    monkeypatch.setattr(
+        hf_cache_settings, "known_hf_hub_caches", lambda: [active, previous, active]
+    )
+    entry = describe_cache(definition_for("hf_hub"))
+    assert entry["size_bytes"] == 42
+    assert entry["clear_size_bytes"] == 15
+    assert entry["paths"] == [str(active)]
+    assert len(entry["measured_paths"]) == 2
+    purge_caches(["hf_hub"])
+    assert not mine.exists()
+    assert kept.exists()
+
+
+def test_hf_breakdown_is_on_demand_and_includes_incomplete_blobs(
+    tmp_path, monkeypatch, isolated_caches
+):
+    hub = isolated_caches / "hub"
+    _write(hub / "models--org--model" / "blobs" / "weight.incomplete", "a" * 120)
+    _write(hub / "datasets--org--data" / "snapshots" / "revision" / "data.json", "b" * 25)
+    called = []
+    original = cache_inventory.cache_breakdown
+    monkeypatch.setattr(
+        cache_inventory, "cache_breakdown", lambda key: (called.append(key), original(key))[1]
+    )
+    describe_cache(definition_for("hf_hub"))
+    assert called == []
+    entries = cache_inventory.cache_breakdown("hf_hub")["entries"]
+    assert [entry["size_bytes"] for entry in entries] == [120, 25]
+    assert entries[0]["name"] == "models--org--model"
+    with pytest.raises(ValueError):
+        cache_inventory.cache_breakdown("../outside")
+
+
+def test_hf_measurement_does_not_walk_a_protected_root(tmp_path, monkeypatch, isolated_caches):
+    from utils import hf_cache_settings
+
+    monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [tmp_path])
+    monkeypatch.setattr(cache_inventory, "protected_paths", lambda: {tmp_path})
+    walked = []
+    monkeypatch.setattr(
+        cache_inventory, "_measure_root", lambda root, **kwargs: (walked.append(root) or 0, 0)
+    )
+    describe_cache(definition_for("hf_hub"))
+    assert tmp_path not in walked
+
+
+def test_hf_shared_file_occupies_space_even_when_clear_cannot_reclaim_it(tmp_path, isolated_caches):
+    cached = _write(isolated_caches / "hub" / "models--org--shared" / "blobs" / "weight", "w" * 800)
+    os.link(cached, tmp_path / "installed-weight")
+
+    entry = describe_cache(definition_for("hf_hub"))
+    assert entry["size_bytes"] == 800
+    assert entry["clear_size_bytes"] == 0
+    assert cache_inventory.cache_breakdown("hf_hub")["entries"][0]["size_bytes"] == 800
+
+
+def test_hf_history_deduplicates_shared_inodes_and_walks_each_root_once(
+    tmp_path, monkeypatch, isolated_caches
+):
+    from utils import hf_cache_settings
+
+    active = isolated_caches / "hub"
+    previous = tmp_path / "old" / "hub"
+    shared = _write(active / "models--org--shared" / "blobs" / "weight", "w" * 800)
+    previous_blob = previous / "models--org--copy" / "blobs" / "weight"
+    previous_blob.parent.mkdir(parents = True)
+    os.link(shared, previous_blob)
+    _write(active / "models--org--unique" / "blobs" / "weight", "u" * 25)
+    monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [active, previous])
+    walked = []
+    measure = cache_inventory._measure_root
+    monkeypatch.setattr(
+        cache_inventory,
+        "_measure_root",
+        lambda root, **kwargs: (walked.append(root), measure(root, **kwargs))[1],
+    )
+
+    entry = describe_cache(definition_for("hf_hub"))
+    assert entry["size_bytes"] == 825
+    assert entry["clear_size_bytes"] == 25
+    assert walked.count(active) == walked.count(previous) == 1
+    breakdown = cache_inventory.cache_breakdown("hf_hub")["entries"]
+    assert sum(row["size_bytes"] for row in breakdown) == 825
+    purge_caches(["hf_hub"])
+    assert previous_blob.read_text(encoding = "utf-8") == "w" * 800
+
+
+def test_empty_active_hf_cache_has_no_clearable_entries_despite_history(
+    tmp_path, monkeypatch, isolated_caches
+):
+    from utils import hf_cache_settings
+
+    previous = tmp_path / "old" / "hub"
+    _write(previous / "models--org--old" / "blobs" / "weight", "w" * 80)
+    monkeypatch.setattr(
+        hf_cache_settings, "known_hf_hub_caches", lambda: [isolated_caches / "hub", previous]
+    )
+    entry = describe_cache(definition_for("hf_hub"))
+    assert entry["size_bytes"] == 80
+    assert entry["entry_count"] == 1
+    assert entry["clear_entry_count"] == 0
+    assert entry["clear_size_bytes"] == 0
+
+
+def test_system_cache_accounting_matches_system_volume_when_studio_is_elsewhere(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+    from utils.paths import storage_roots
+
+    system = Path(os.path.abspath(os.sep))
+    studio = tmp_path / "studio-on-another-disk"
+    real_stat = Path.stat
+
+    def stat(path, *args, **kwargs):
+        if path == system:
+            return SimpleNamespace(st_dev = 1)
+        if path == studio:
+            return SimpleNamespace(st_dev = 2)
+        return real_stat(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "stat", stat)
+        patch.setattr(storage_roots, "studio_root", lambda: studio)
+        assert cache_inventory._system_disk_device() == 1
+
+    ledger = cache_inventory._OccupancyLedger()
+    ledger.add(SimpleNamespace(st_dev = 1, st_ino = 10, st_size = 100), system / "old-model")
+    ledger.add(SimpleNamespace(st_dev = 2, st_ino = 20, st_size = 200), studio / "new-model")
+    monkeypatch.setattr(cache_inventory, "_system_disk_device", lambda: 1)
+    monkeypatch.setattr(
+        cache_inventory.shutil,
+        "disk_usage",
+        lambda path: SimpleNamespace(total = 1000 if Path(path) == system else 2000, free = 100),
+    )
+    assert cache_inventory._system_disk_occupancy(ledger) == 100
+
+
+def test_distinct_device_ids_in_the_same_pool_still_count_as_system_storage(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    system = Path(os.path.abspath(os.sep))
+    ledger = cache_inventory._OccupancyLedger()
+    ledger.add(SimpleNamespace(st_dev = 1, st_ino = 10, st_size = 100), system / "cached")
+    ledger.add(SimpleNamespace(st_dev = 2, st_ino = 20, st_size = 200), tmp_path / "data" / "cached")
+    ledger.add(SimpleNamespace(st_dev = 3, st_ino = 30, st_size = 300), tmp_path / "unknown" / "cached")
+    monkeypatch.setattr(cache_inventory, "_system_disk_device", lambda: 1)
+
+    def usage(path):
+        if Path(path) == tmp_path / "unknown":
+            raise PermissionError("unreadable device")
+        return SimpleNamespace(total = 10**12, free = 10**11 - (1024 if Path(path) != system else 0))
+
+    monkeypatch.setattr(cache_inventory.shutil, "disk_usage", usage)
+    assert cache_inventory._system_disk_occupancy(ledger) == 300
+
+
+def test_hf_model_breakdown_actions_name_one_exact_known_cache_copy(
+    tmp_path, monkeypatch, isolated_caches
+):
+    from utils import hf_cache_settings
+    from hub.utils.hf_cache_state import scoped_delete_root
+
+    active = isolated_caches / "hub"
+    old = tmp_path / "previous" / "hub"
+    for root in (active, old):
+        _write(root / "models--Org--Model" / "blobs" / "weight", "model")
+    _write(active / "models--gpt2" / "blobs" / "weight", "standalone")
+    monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [active, old])
+
+    rows = cache_inventory.cache_breakdown("hf_hub")["entries"]
+    copies = [row for row in rows if row.get("repo_id") == "Org/Model"]
+    assert len(copies) == 2
+    assert {row["cache_path"] for row in copies} == {
+        str(root / "models--Org--Model") for root in (active, old)
+    }
+    for row in rows:
+        assert row["delete_allowed"] is True
+        assert row["repo_type"] == "model"
+        assert row["cache_path"] == row["path"]
+        assert (
+            scoped_delete_root("model", row["repo_id"], row["cache_path"])
+            == Path(row["cache_path"]).parent
+        )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        ".locks",
+        "datasets--Org--Data",
+        "spaces--Org--Space",
+        "models--",
+        "models----Model",
+        "models--Org--Model--nested",
+        "models--Org--bad..name",
+        "models--Org--Model.git",
+    ],
+)
+def test_hf_breakdown_never_offers_model_actions_for_non_model_or_malformed_rows(
+    tmp_path, isolated_caches, name
+):
+    _write(isolated_caches / "hub" / name / "data", "cache")
+    row = cache_inventory.cache_breakdown("hf_hub")["entries"][0]
+    assert row["delete_allowed"] is False
+    assert "repo_id" not in row and "cache_path" not in row
+
+
+def test_hf_breakdown_does_not_turn_a_model_shaped_file_into_a_delete_action(isolated_caches):
+    _write(isolated_caches / "hub" / "models--Org--File", "not a repository directory")
+    row = cache_inventory.cache_breakdown("hf_hub")["entries"][0]
+    assert row["delete_allowed"] is False
+
+
+def test_hf_breakdown_actions_are_confined_to_hub_approved_roots(
+    tmp_path, monkeypatch, isolated_caches
+):
+    outside = tmp_path / "not-a-known-cache"
+    _write(outside / "models--Org--Model" / "blobs" / "weight", "unrelated")
+    monkeypatch.setattr(cache_inventory, "_measurement_roots", lambda _definition: [outside])
+    row = cache_inventory.cache_breakdown("hf_hub")["entries"][0]
+    assert row["delete_allowed"] is False
+    assert "cache_path" not in row
+
+
+def test_hf_breakdown_does_not_offer_model_actions_inside_xet_cache(isolated_caches):
+    _write(isolated_caches / "xet" / "models--Org--Model" / "data", "xet")
+    row = cache_inventory.cache_breakdown("hf_xet")["entries"][0]
+    assert row["delete_allowed"] is False
+
+
+@pytest.mark.parametrize("link_kind", ["symlink", "junction"])
+def test_model_action_identity_refuses_links_even_to_valid_named_directories(
+    tmp_path, monkeypatch, isolated_caches, link_kind
+):
+    from types import SimpleNamespace
+
+    root = isolated_caches / "hub"
+    directory = root / "models--Org--Model"
+    directory.mkdir()
+    entry = SimpleNamespace(
+        name = directory.name,
+        path = str(directory),
+        is_symlink = lambda: link_kind == "symlink",
+        is_dir = lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(cache_inventory, "_is_junction", lambda _path: link_kind == "junction")
+    assert cache_inventory._model_cache_action(root, entry) == {"delete_allowed": False}

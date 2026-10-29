@@ -48,11 +48,7 @@ jobs:
   source-lint:
     name: Source lint (Python + shell + YAML + JSON + safety nets)
     runs-on: ubuntu-latest
-    # Real work here is well under a minute; the budget is sized for the apt step
-    # below, which is bounded at 13 minutes of worst-case retries. Raised from 5,
-    # where the job timeout was doing the bounding -- and doing it badly, since a
-    # job that runs out of budget is reported as "cancelled" with no reason given
-    # and every remaining step skipped. The step timeout says which step and why.
+    # Sized for the bounded apt step below; a step timeout names the failing step, a job timeout does not.
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -62,59 +58,21 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          # No cache. This job installs three linters and nothing else, so the ~9 MB it
-          # would store is not worth a slot in a budget the model downloads are competing
-          # for. It used to share one key with every other Python 3.12 job in the repo,
-          # and whichever ran first won it: in practice this one, leaving a 9 MB entry
-          # that Core then restored before downloading 3.2 GB anyway.
+          # No cache: ~9 MB of linters is not worth a slot in the shared cache budget.
 
-      # Pin ruff to match .pre-commit-config.yaml so a CI-only ruff
-      # bump cannot disagree with what pre-commit accepted.
-      # codespell is pinned for the same reason: a reviewer should
-      # never see a typo report appear and disappear depending on
-      # which codespell version the runner happened to install.
+      # Pin ruff to match .pre-commit-config.yaml so a CI-only ruff bump cannot disagree with
+      # pre-commit. codespell is pinned so typo reports do not flip with its version.
       - run: pip install 'ruff==0.15.12' 'pyyaml>=6' 'codespell>=2.3,<3'
 
-      # Two short jobs that used to hold a runner slot each, absorbed onto this one.
-      #
-      #   Unsloth load-orchestrator CI :: test   33 s, its own slot
-      #   Lockfile supply-chain audit :: audit     6 s, its own slot
-      #
-      # Both are pure read-only checks: no server, no port, no install of Unsloth, no
-      # state outside the workspace. They are launched here in the BACKGROUND and
-      # collected in the last step of this job, so they overlap the ~65 s of lint below
-      # and cost no wall clock at all rather than being appended to it. ubuntu-latest has
-      # four cores and the lint steps are single-threaded, so the capacity is there.
-      #
-      # Each lane gets its own venv. That is the only isolation this needs, and it is
-      # load-bearing: the lane installs fastapi/httpx/pytest while the foreground steps
-      # are using the interpreter that `pip install` above populated, and two concurrent
-      # pip installs into one site-packages is a genuine race rather than a theoretical
-      # one. Nothing else is shared -- no ports are bound and no files are written outside
-      # each lane's own log.
-      #
-      # This job has no path filter, so it runs on every commit, which means absorbing a
-      # narrower-triggered job here can only ever REDUCE the slots a commit takes: the
-      # absorbed work now runs on commits that would not have triggered it, but on a
-      # runner that was already going to exist.
+      # Absorbed read-only suites run in the background, overlapping lint, and are collected in the
+      # last step. Each lane has its own venv: concurrent pip installs into one site-packages race.
       - name: Start the absorbed suites (background)
         run: |
           set -euo pipefail
           mkdir -p logs .lanes
 
-          # Written on exit with the lane's status, and read by the collect step. A lane
-          # that dies without writing one is reported as a failure there rather than
-          # silently passing, which is the failure mode that makes backgrounding risky.
-          # `</dev/null >/dev/null 2>&1` on the SUBSHELL is not tidiness, it is what makes
-          # this step return immediately. A background child inherits the step's stdout
-          # and stderr pipes, and the runner does not consider a step finished while a
-          # writer still holds them: without this the launch blocks for as long as the
-          # lane runs, which is precisely the overlap the backgrounding exists to buy.
-          # Measured: 4.0 s to launch a 4 s lane before, 0.0 s after.
-          #
-          # The inner redirect to the log applies to the command itself and takes
-          # precedence, so nothing is lost -- the lane's output is replayed by the
-          # collect step.
+          # The .rc file is read by the collect step; a lane that never writes one counts as failed.
+          # Redirecting the subshell's stdio is required: the runner waits on inherited pipes otherwise.
           lane() {
             name="$1"; shift
             (
@@ -129,19 +87,10 @@ jobs:
 
           echo "launched 2 background lanes"
 
-      # Bounded and retried, because this step is why the job's own timeout used to
-      # be the failure mechanism: on 2026-08-19 it sat in apt for 5 minutes, the job
-      # hit `timeout-minutes: 5`, and GitHub scored the result "cancelled" with no
-      # reason and skipped all fifteen checks below it. A lint run that reports
-      # nothing about lint is worse than a red one.
-      #
-      # update and install are one unit: retrying the install alone after a stalled
-      # update just re-reads the same broken package list.
+      # Bounded and retried so a stalled apt fails this step instead of cancelling the whole job.
+      # update and install retry together: retrying install alone re-reads the same broken list.
       - name: Linux deps for shellcheck
-        # Two long attempts, not three short ones. 150s killed apt mid-`update`
-        # against a mirror that was degraded rather than dead, and every attempt
-        # then hit the same wall -- three kills and no result. The bound exists to
-        # stop an infinite hang, not to race a slow mirror.
+        # Two long attempts, not three short ones: a degraded mirror needs time, the bound only stops hangs.
         timeout-minutes: 15
         env:
           RETRY_ATTEMPTS: '2'
@@ -524,36 +473,7 @@ jobs:
               ruff format --check unsloth unsloth_cli studio tests cli.py unsloth-cli.py
 
       - name: Import-hoist / alias-rename safety (changed Python files)
-        # Runs the verifier in compare mode on every in-place-modified
-        # .py in the PR: parses each file BEFORE (base branch) and AFTER
-        # (this diff), resolves every name load, and fails on a BLOCKER
-        # (dangling alias / rename clash / re-pointed import). INFO
-        # findings (a helper relocated to another file) do not fail.
-        #
-        # --diff-filter=M (in-place edits only) is deliberate: that is
-        # exactly where a hoist refactor lives, and it skips brand-new
-        # files whose re-export imports would otherwise look "unused".
-        #
-        # Diff the merge-base against the PR HEAD, and pin BOTH ends
-        # explicitly.
-        #
-        # The base tip is the wrong BEFORE: a two-dot diff against it
-        # re-lints every file the base branch changed after the PR
-        # branched, comparing newer base code (BEFORE) against the PR's
-        # older snapshot (AFTER) - a time-reversed comparison that flags
-        # the base branch's own refactors as blockers.
-        #
-        # `HEAD` is the wrong AFTER for the same reason. On a
-        # pull_request event the checkout is refs/pull/N/merge, i.e.
-        # merge(PR head, base tip), so `$MERGE_BASE..HEAD` still spans
-        # every base commit since the branch point and reintroduces the
-        # exact false positives the merge-base was chosen to avoid.
-        # Naming the PR head SHA makes the range the PR's own commits
-        # and nothing else.
-        #
-        # Both endpoints are fetched by SHA so the shallow
-        # (fetch-depth: 1) clone is preserved; the verifier reads each
-        # revision with `git show REF:path` and never needs a checkout.
+        # Diff merge-base..PR head SHA, fetched by SHA; --diff-filter=M so only in-place edits are checked
         if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -562,8 +482,7 @@ jobs:
           MERGE_BASE=$(gh api \
             "repos/${{ github.repository }}/compare/${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" \
             --jq .merge_base_commit.sha)
-          # A fork PR's head is not on origin as a branch, but it is
-          # always reachable as refs/pull/N/head.
+          # A fork PR's head is only reachable as refs/pull/N/head.
           git fetch --no-tags --depth=1 origin "$MERGE_BASE"
           git fetch --no-tags --depth=1 origin \
             "refs/pull/${{ github.event.pull_request.number }}/head"
@@ -610,13 +529,8 @@ jobs:
             "repos/${{ github.repository }}/compare/${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" \
             --jq .merge_base_commit.sha)
           git fetch --no-tags --depth=1 origin "$MERGE_BASE"
-          # refs/pull/N/head moves. On a rerun of an older run, or if the branch
-          # advanced since the event, that ref is no longer $HEAD_SHA, and a depth-1
-          # clone would not have the pinned commit at all. Fetch the ref first (it is
-          # what makes the SHA reachable on a fork PR), then the SHA itself, then
-          # REFUSE to continue if it is still missing. The old shape hid exactly this:
-          # git diff failed, the pipeline's `|| true` produced an empty file list, and
-          # the step reported success having checked nothing.
+          # refs/pull/N/head moves, so fetch it and then the pinned SHA, and refuse if it is still missing
+          # rather than diffing an empty file list.
           git fetch --no-tags --depth=1 origin \
             "refs/pull/${{ github.event.pull_request.number }}/head"
           git fetch --no-tags --depth=1 origin "$HEAD_SHA" 2>/dev/null || true
@@ -624,9 +538,7 @@ jobs:
             echo "::error::head commit $HEAD_SHA is not available locally; refusing to skip the check"
             exit 1
           fi
-          # -z / -d '', because core.quotePath defaults on: a non-ASCII path comes out of a
-          # line-oriented git diff as "caf\303\251.py", whose suffix is .py" rather than
-          # .py, so the verifier would skip it and report success having checked nothing.
+          # NUL-separated: core.quotePath would quote non-ASCII paths and hide their .py suffix.
           mapfile -d '' -t CHANGED < <(
             git diff -z --name-only --diff-filter=ACMRT \
               "$MERGE_BASE" "$HEAD_SHA" -- '*.py' \
@@ -643,22 +555,14 @@ jobs:
             --before "$MERGE_BASE" --after "$HEAD_SHA" "${CHANGED[@]}"
 
 
-      # Collects the two lanes launched before the lint steps. This step is the whole
-      # reason the backgrounding is safe: without it a lane's failure would be invisible
-      # and the absorbed jobs would be silently deleted rather than moved.
-      #
-      # `always()` so a lane failure is still reported when a lint step above failed
-      # first, and a missing .rc file is a failure rather than a pass, which covers a
-      # lane that was killed or never started.
+      # Collects the background lanes; always(), and a missing .rc file counts as a failure.
       - name: Collect the absorbed suites
         if: always()
         run: |
           set -uo pipefail
           rc=0
           for name in load-orchestrator lockfile-audit; do
-            # The lanes are children of an earlier step's shell, not of this one, so
-            # `wait` cannot see them; poll for the sentinel instead. 240s is well beyond
-            # the 33s and 6s these take, and the job timeout bounds it regardless.
+            # The lanes belong to another step's shell, so `wait` cannot see them; poll the sentinel.
             waited=0
             while [ ! -f ".lanes/$name.rc" ] && [ "$waited" -lt 240 ]; do
               sleep 2

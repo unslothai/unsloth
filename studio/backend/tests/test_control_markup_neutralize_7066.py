@@ -1075,6 +1075,46 @@ def test_deepseek_tool_markup_survives_an_assistant_replay():
         assert marker not in neutralize_control_markup(f"a {marker} b"), marker
 
 
+# The guard and image-block branch of the DeepSeek-V4.1-Flash GGUF template, which only image blocks may satisfy.
+_DEEPSEEK_V41_IMAGE_GUARD = (
+    '{%- set IMG = "<｜deepseek_image｜>" -%}'
+    "{%- for m in messages -%}"
+    "{%- if m.content is string and IMG in m.content -%}"
+    '{{- raise_exception("Message content contains image special token " ~ IMG) -}}'
+    "{%- elif m.content is string -%}{{- m.content -}}"
+    "{%- else -%}{%- for b in m.content -%}"
+    '{%- if b.type == "text" -%}{{- b.text -}}{%- else -%}{{- IMG -}}{%- endif -%}'
+    "{%- endfor -%}{%- endif -%}"
+    "{%- endfor -%}"
+)
+
+
+@pytest.mark.parametrize("profiled", [False, True])
+def test_a_replayed_deepseek_image_placeholder_is_neutralized(profiled):
+    """A replayed reply quoting the marker made the template raise, or render a phantom image (#15285)."""
+    jinja2 = pytest.importorskip("jinja2")
+    pytest.importorskip("jinja2.sandbox")
+    image = f"<{_FW}deepseek_image{_FW}>"
+    markup = model_markup(_DEEPSEEK_V41_IMAGE_GUARD, [image]) if profiled else None
+    quoted = f'Line 2 of the template: {{%- set IMG = "{image}" -%}}'
+    history = [
+        {"role": "user", "content": "What is on line 2?"},
+        {"role": "assistant", "content": quoted},
+        {"role": "assistant", "content": [{"type": "text", "text": quoted}]},
+        {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:,"}}]},
+    ]
+    swept = neutralize_control_markup_in_messages(history, None, markup)
+
+    def _raise(message):
+        raise jinja2.exceptions.TemplateError(message)
+
+    env = jinja2.sandbox.ImmutableSandboxedEnvironment()
+    env.globals["raise_exception"] = _raise
+    prompt = env.from_string(_DEEPSEEK_V41_IMAGE_GUARD).render(messages = swept)
+    assert prompt.count(image) == 1
+    assert prompt.count(f"< {_FW}deepseek_image{_FW}>") == 2
+
+
 def test_fullwidth_branch_leaves_ordinary_cjk_alone():
     """U+FF5C is a normal fullwidth bar in CJK typography, so the branch is anchored to
     ASCII + U+2581 names: real Japanese or Chinese text must round-trip (#7066)."""

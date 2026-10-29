@@ -38,6 +38,30 @@ test("a pick raises its toast at once, before any plan or download", () => {
   );
 });
 
+test("each pick keeps its model name through phase and progress updates", () => {
+  calls.length = 0;
+  const pick = createPickToast({
+    describe: (phase, progress, modelName) => ({ phase, progress, modelName }),
+  });
+  const id = pick.show("unsloth/flux-3-image-klein-FP8");
+  pick.setPhase(id, "downloading", 1);
+  pick.progress({ downloadedBytes: 10, totalBytes: 17, plan: 1 });
+  pick.setPhase(id, "waiting");
+  for (const call of shown()) {
+    assert.equal(
+      (call.options?.description as { modelName: string }).modelName,
+      "unsloth/flux-3-image-klein-FP8",
+    );
+  }
+  const next = pick.show("another/model");
+  calls.length = 0;
+  pick.setPhase(id, "ready");
+  pick.setPhase(next, "downloading", 2);
+  assert.deepEqual(shown().map((c) => c.options?.description), [
+    { phase: "downloading", progress: null, modelName: "another/model" },
+  ]);
+});
+
 test("a newer pick replaces the older toast, and the stale pick cannot touch it", () => {
   const pick = make();
   const older = pick.show();

@@ -50,6 +50,34 @@ test("a row's own vision flag counts as Vision", () => {
   assert.equal(matchesInventoryCapabilities(row, ["vision"]), true);
 });
 
+test("downloaded GGUFs are grouped by the task the backend classified", async () => {
+  const { buildCachedInventoryRow } = await import(
+    "../src/features/hub/inventory/view-models.ts"
+  );
+  const gguf = (repo_id: string, task: string, supports_vision = false) =>
+    buildCachedInventoryRow(
+      { repo_id, size_bytes: 1, task, model_format: "gguf", capabilities: { supports_vision } },
+      "gguf",
+    );
+  const image = gguf("unsloth/Z-Image-Turbo-GGUF", "text-to-image");
+  const speech = gguf("unsloth/orpheus-3b-0.1-ft-GGUF", "text-to-speech");
+  const vision = gguf("unsloth/gemma-3-4b-it-GGUF", "text-generation", true);
+  const text = gguf("unsloth/Qwen3-8B-GGUF", "text-generation");
+  const unbuildable = gguf("unsloth/Z-Image-Turbo-GGUF", "image-diffusion-unsupported");
+  const unbuildableVideo = gguf("unsloth/Wan2.2-T2V-A14B-GGUF", "image-diffusion-unsupported");
+  assert.equal(matchesInventoryCapabilities(image, ["image-gen"]), true);
+  assert.equal(matchesInventoryCapabilities(image, ["text"]), false);
+  assert.equal(matchesInventoryCapabilities(speech, ["audio"]), true);
+  assert.equal(matchesInventoryCapabilities(speech, ["text"]), false);
+  assert.equal(matchesInventoryCapabilities(vision, ["vision"]), true);
+  assert.equal(matchesInventoryCapabilities(vision, ["text"]), false);
+  assert.equal(matchesInventoryCapabilities(text, ["text"]), true);
+  assert.equal(matchesInventoryCapabilities(unbuildable, ["text"]), false);
+  assert.equal(matchesInventoryCapabilities(unbuildable, ["image-gen"]), true);
+  assert.equal(matchesInventoryCapabilities(unbuildableVideo, ["video-gen"]), true);
+  assert.equal(matchesInventoryCapabilities(unbuildableVideo, ["image-gen"]), false);
+});
+
 test("Model folders and Free up space are icon buttons with labels", () => {
   const toolbar = readSrc("features/hub/catalog/models-toolbar.tsx");
   for (const label of ["Model folders", "Free up space"]) {

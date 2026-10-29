@@ -1,17 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Opt-in serving environments. No engine packages are imported into Studio.
-
-When Studio's own PyTorch and CUDA libraries are the ones an engine is locked to,
-its environment runs on Studio's interpreter and holds only the packages Studio
-lacks or pins differently; Studio's site-packages follow its own on sys.path.
-Otherwise it is a complete isolated environment.
-
-Installation is serialized across Studio processes. Environments are built at
-their final paths (venv scripts contain absolute paths); only the active marker
-is replaced. Runtime leases prevent removing an environment another Studio uses.
-"""
+"""Opt-in engine envs share Studio torch/CUDA when locked, else isolated; none imported into Studio;
+installs serialized; runtime leases block removing an env in use"""
 
 from __future__ import annotations
 
@@ -41,8 +32,7 @@ PROFILES = {
         "module": "vllm",
         "cuda": "cu130",
         "driver": 580,
-        # FlashInfer fetches the trtllm kernels it uses on demand rather than the whole cubin wheel.
-        # CUTLASS DSL loads its newest flavour the driver runs, and driver 580 runs CUDA 13.
+        # FlashInfer fetches trtllm kernels on demand; CUTLASS DSL loads the newest flavour driver 580 runs.
         "omit": ("flashinfer-cubin", "nvidia-cutlass-dsl-libs-cu12"),
         # Newest first; each release pins one torch build (vLLM 0.27+ needs torch 2.13, 0.20-0.26 torch 2.11).
         "releases": (
@@ -103,8 +93,7 @@ PROFILES = {
 PYTHON = (3, 13)
 _BASE_PTH = "zz_unsloth_studio_base.pth"
 _BASE_MODULE = "_unsloth_studio_base"
-# Studio installs its own FlashInfer for NVFP4 diffusion; a jit-cache of another version fails the
-# engine's flashinfer import ("flashinfer-jit-cache version ... does not match"), so the engine never sees them.
+# A jit-cache of another FlashInfer version fails the engine's flashinfer import.
 _STUDIO_BASE_SOURCE = """import pkgutil, site, sys
 
 _HIDDEN = ("flashinfer", "flashinfer_jit_cache", "flashinfer_cubin")
@@ -315,9 +304,7 @@ def _torch_runtime() -> set[str]:
     return names
 
 
-# nvcc's cudafe stubs need the crt headers of its own release, so mixing releases breaks
-# FlashInfer's JIT (Colab: crt 13.4.59 with nvcc 13.0.88, "macro __cudaLaunch passed 2 arguments").
-# Shared only when Studio holds every one at the locked version, else the engine brings all of them.
+# nvcc's cudafe stubs need crt headers of the same release, so share only when all match.
 _TOOLCHAIN = frozenset({"nvidia-cuda-nvcc", "nvidia-cuda-crt", "nvidia-nvvm", "nvidia-cuda-cccl"})
 
 
@@ -369,8 +356,7 @@ def download_bytes(engine: str) -> int | None:
     return total
 
 
-# Not engine dependencies, so absent from the compat file: the configs Studio's adapters build
-# (Int8WeightOnlyConfig and friends) use TorchAO 0.17's API, and 0.18 removed their version 1.
+# Studio's adapter configs use TorchAO 0.17's API; 0.18 removed their version 1.
 _ADAPTER_REQUIRES = {"torchao": ["==0.17.0"]}
 
 
@@ -443,8 +429,7 @@ def install_plan(engine: str) -> dict:
     def fits(name: str) -> bool:
         if _same_build(studio.get(name), lock.get(name, (None,))[0], cuda):
             return True
-        # Torch is the exact build; a CUDA library torch takes as a range (nvjitlink) only has to
-        # satisfy every locked package's requirement, since the engine then loads Studio's copy.
+        # Torch is exact; range-pinned CUDA libs only need to satisfy every locked requirement.
         specs = compat.get(name)
         return bool(
             name != "torch"
@@ -492,8 +477,7 @@ def link_cuda_home(env: Path, shared: bool) -> None:
     home = env / "cuda"
     (home / "lib64").mkdir(parents = True, exist_ok = True)
     trees = _cuda_trees(env, shared)
-    # One include tree, the engine's entries first: a Studio header such as curand_kernel.h
-    # quote-includes crt/ from beside itself, which then resolves to the engine's crt.
+    # Engine entries first: Studio headers quote-include crt/ which must resolve to the engine's.
     include = home / "include"
     if include.is_symlink():
         include.unlink()
@@ -1483,8 +1467,7 @@ def _install(
             lease.__exit__(None, None, None)
 
 
-# Runs in the engine's interpreter inside WSL: the non-shared half of link_cuda_home and
-# managed_engine._deep_gemm_unloadable, whose paths Windows cannot inspect.
+# Runs inside WSL: the parts of link_cuda_home Windows cannot inspect.
 _GUEST_FINALIZE = r"""
 import json, sys
 from pathlib import Path

@@ -17,9 +17,7 @@ import {
   DEFAULT_TOOL_VISIBILITY,
   type PlusMenuItemId,
   normaliseDisplayVisibility,
-  refreshModelDisclaimerPreference,
   requestReplyFinishedPermission,
-  saveModelDisclaimerPreference,
   useChatPreferencesStore,
   useChatRuntimeStore,
   usePlusMenuPrefsStore,
@@ -35,13 +33,13 @@ import { cn } from "@/lib/utils";
 import {
   Bookmark02Icon,
   Download01Icon,
-  FileDatabaseIcon,
   Folder01Icon,
   LibrariesIcon,
   McpServerIcon,
   Scroll01Icon,
   Telescope02Icon,
 } from "@hugeicons/core-free-icons";
+import { FileSearchIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { CursorInWindowIcon } from "@/lib/browser-use-icon";
 import { useNavigate } from "@tanstack/react-router";
@@ -108,7 +106,7 @@ const PLUS_MENU_SETTINGS: {
     labelKey: "settings.chat.menu.chatWithFiles",
     icon: (
       <HugeiconsIcon
-        icon={FileDatabaseIcon}
+        icon={FileSearchIcon}
         strokeWidth={2}
         className={PLUS_MENU_ICON_CLASS}
       />
@@ -320,6 +318,12 @@ export function ChatTab() {
     (state) => state.setKeepRunningWhenTabClosed,
   );
   const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
+  const composerAtBottom = useChatPreferencesStore(
+    (s) => s.newChatComposerAtBottom,
+  );
+  const setComposerAtBottom = useChatPreferencesStore(
+    (s) => s.setNewChatComposerAtBottom,
+  );
   const setShowGreetingSloth = useUserProfileStore(
     (s) => s.setShowGreetingSloth,
   );
@@ -347,9 +351,6 @@ export function ChatTab() {
   const fitOnDeviceOnly = useChatRuntimeStore((state) => state.fitOnDeviceOnly);
   const setFitOnDeviceOnly = useChatRuntimeStore(
     (state) => state.setFitOnDeviceOnly,
-  );
-  const showModelDisclaimer = useChatPreferencesStore(
-    (state) => state.showModelDisclaimer,
   );
   const showResponseModel = useChatPreferencesStore(
     (state) => state.showResponseModel,
@@ -380,12 +381,6 @@ export function ChatTab() {
   );
   const setAutoScrollWhileGenerating = useChatPreferencesStore(
     (state) => state.setAutoScrollWhileGenerating,
-  );
-  const showScrollToBottomButton = useChatPreferencesStore(
-    (state) => state.showScrollToBottomButton,
-  );
-  const setShowScrollToBottomButton = useChatPreferencesStore(
-    (state) => state.setShowScrollToBottomButton,
   );
   const notifyWhenReplyFinishes = useChatPreferencesStore(
     (state) => state.notifyWhenReplyFinishes,
@@ -418,7 +413,7 @@ export function ChatTab() {
   const setFoldToolActivityIntoThinking = useChatPreferencesStore(
     (state) => state.setFoldToolActivityIntoThinking,
   );
-  // Cannot coexist with always expanded. The stored preference is left alone so it comes back.
+  // Fold cannot coexist with always expanded; the stored fold preference is kept so it comes back.
   const foldBlockedByAlwaysExpanded = toolVisibility === "expanded";
   const pastedTextMinChars = useChatPreferencesStore(
     (state) => state.pastedTextMinChars,
@@ -426,9 +421,7 @@ export function ChatTab() {
   const setPastedTextMinChars = useChatPreferencesStore(
     (state) => state.setPastedTextMinChars,
   );
-  // The platform's own paste-without-formatting chord, which the composer reads
-  // as "put it in the box" whatever this threshold says. macOS carries it on
-  // Option, that being the chord its Edit menu binds.
+  // The composer always pastes this chord as plain text; macOS binds it on Option.
   const macPlatform = isMacPlatform();
   const plainPasteLabel = formatBindingLabel(
     { code: "KeyV", mod: true, ctrl: false, shift: true, alt: macPlatform },
@@ -437,7 +430,6 @@ export function ChatTab() {
 
   useEffect(() => {
     void hydratePersistedSettings();
-    refreshModelDisclaimerPreference().catch(() => undefined);
   }, [hydratePersistedSettings]);
 
   useEffect(() => {
@@ -603,16 +595,6 @@ export function ChatTab() {
           </div>
         </SettingsRow>
         <SettingsRow
-          label={t("settings.chat.scrollToBottomButton")}
-          description={t("settings.chat.scrollToBottomButtonDescription")}
-        >
-          <Switch
-            aria-label={t("settings.chat.scrollToBottomButton")}
-            checked={showScrollToBottomButton}
-            onCheckedChange={setShowScrollToBottomButton}
-          />
-        </SettingsRow>
-        <SettingsRow
           label={t("settings.chat.replyNotification")}
           description={t("settings.chat.replyNotificationDescription")}
         >
@@ -767,7 +749,6 @@ export function ChatTab() {
         </SettingsRow>
         <SettingsRow
           label={t("settings.chat.tools.foldIntoThinking")}
-          // Says why the row is off rather than letting a checked switch do nothing.
           description={t(
             foldBlockedByAlwaysExpanded
               ? "settings.chat.tools.foldIntoThinkingBlocked"
@@ -822,20 +803,6 @@ export function ChatTab() {
           />
         </SettingsRow>
         <SettingsRow
-          label={t("settings.chat.modelDisclaimer")}
-          description={t("settings.chat.modelDisclaimerDescription")}
-        >
-          <Switch
-            aria-label={t("settings.chat.modelDisclaimer")}
-            checked={showModelDisclaimer}
-            onCheckedChange={(checked) => {
-              return saveModelDisclaimerPreference(checked).catch(() => {
-                toast.error("Could not save the model disclaimer setting.");
-              });
-            }}
-          />
-        </SettingsRow>
-        <SettingsRow
           label={t("settings.profile.greetingSloth")}
           description={t("settings.profile.greetingSlothDescription")}
         >
@@ -844,6 +811,16 @@ export function ChatTab() {
             id="profile-greeting-sloth"
             checked={showGreetingSloth}
             onCheckedChange={setShowGreetingSloth}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.composerAtBottom")}
+          description={t("settings.chat.composerAtBottomDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.composerAtBottom")}
+            checked={composerAtBottom}
+            onCheckedChange={setComposerAtBottom}
           />
         </SettingsRow>
       </SettingsSection>

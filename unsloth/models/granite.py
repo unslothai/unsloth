@@ -11,8 +11,9 @@
 
 from .llama import *
 import os
+from .._gc_passes import collect_garbage
 from ._utils import __version__
-from ._utils import move_to_device, per_layer_device
+from ._utils import move_to_device, per_layer_device, refresh_moved_layer_devices
 from unsloth_zoo.utils import _get_dtype, Version
 from unsloth_zoo.hf_utils import dtype_from_config
 from ..utils.packing import get_packed_info_from_kwargs
@@ -35,8 +36,7 @@ from .llama import (
 )
 from .mistral import *
 
-# Without bnb, peft stops exporting its 4bit LoRA layer too. Both names only feed isinstance checks,
-# so placeholders nothing can match are exact stand-ins.
+# Without bnb, peft lacks its Linear4bit too. Both only feed isinstance checks, so placeholders suffice.
 try:
     from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
     from peft.tuners.lora import Linear4bit as Peft_Linear4bit
@@ -177,8 +177,7 @@ def GraniteAttention_fast_forward(
         },
     )
 
-    # PrefixGrouper seg table rides in **kwargs from the GRPO logprob forward; misuse (KV cache /
-    # padding mask) raises. None means the byte-identical default.
+    # PrefixGrouper seg table rides in kwargs; None is the default path, and KV cache or padding mask misuse raises
     _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
     context = AttentionContext(
         bsz = bsz,
@@ -470,6 +469,7 @@ def GraniteModel_fast_forward_inference(
 
     next_decoder_cache = []
     block_swap = getattr(self.model.layers, "_unsloth_block_swap", None)
+    refresh_moved_layer_devices(self.model.layers, block_swap)
     for idx, decoder_layer in enumerate(self.model.layers):
         if block_swap is not None:
             block_swap.enter(idx)
@@ -518,8 +518,7 @@ class GraniteRotaryEmbedding(LlamaRotaryEmbedding):
 
 def patched_init(original_init):
     def new_init(self, *args, **kwargs):
-        # GraniteModel_fast_forward_inference cannot reach residual_multiplier/config, so stash the whole
-        # config here to pass it around. See transformers models/granite/modeling_granite.py#L243
+        # The inference forward cannot reach config, so stash it here.
         config = kwargs.get("config", args[0] if args else None)
         if config is not None:
             self.config = config
@@ -562,8 +561,7 @@ class FastGraniteModel(FastLlamaModel):
         tokenizer,
         correct_dtype = None,
     ):
-        # Torch.compile fails on the embedding matrix; this workaround randomly fixes it for torch < 2.2,
-        # and the same is done for lm_head.
+        # torch.compile fails on the embedding matrix; this rebuild only randomly fixes it on torch < 2.2.
         model.model.embed_tokens = torch.nn.Embedding.from_pretrained(
             model.model.embed_tokens.weight
         )
@@ -586,8 +584,7 @@ class FastGraniteModel(FastLlamaModel):
             lm_head.out_features = lm_head.weight.shape[0]
             model.lm_head = lm_head
 
-        # BnB does not allocate the correct type: its default dtype is float16, so patch all dtypes. See
-        # TimDettmers/bitsandbytes#763.
+        # BnB does not allocate the correct type (its default is float16), so patch all dtypes; see bitsandbytes 763
         correct_dtype = lm_head.weight.dtype
 
         for name, module in model.named_modules():
@@ -613,9 +610,5 @@ class FastGraniteModel(FastLlamaModel):
                     module.short_cos_cached = module.short_cos_cached.to(correct_dtype)
                     module.short_sin_cached = module.short_sin_cached.to(correct_dtype)
 
-        import gc
-
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        collect_garbage(after = clean_gpu_cache)
         return model, tokenizer

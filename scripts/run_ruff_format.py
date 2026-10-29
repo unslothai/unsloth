@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Run `ruff-unsloth format`, then the string-merge / redundant-pass post-pass.
-
-ruff-unsloth (https://github.com/unslothai/ruff) is ruff 0.6.9 patched to write the
-repo's kwarg spacing, def-signature and short-assert magic-comma rules and the
-nested-import blank-line rule itself, so the only Python left is
-scripts/enforce_kwargs_spacing.py --residual, which skips every file that cannot
-need it."""
+"""Runs ruff-unsloth format, then enforce_kwargs_spacing.py --residual, which skips unneeded files."""
 
 from __future__ import annotations
 
@@ -18,8 +12,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 CONFIG = HERE.parent / ".pre-commit-config.yaml"
-# Set to run against whatever ruff is installed. For a one-off experiment; a commit
-# made under it will be reformatted by the hook and fail pre-commit.
+# One-off experiments only: commits made under it get reformatted by the hook.
 ANY_VERSION_ENV = "UNSLOTH_RUFF_FORMAT_ANY_VERSION"
 USAGE = "usage: run_ruff_format.py FILE [FILE ...]  (formats in place; no options)"
 # Worker count for the Python pass after ruff. The hook is require_serial (#14174), so
