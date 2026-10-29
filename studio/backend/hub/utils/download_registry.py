@@ -98,7 +98,6 @@ def modelscope_xet_unavailable_reason() -> Optional[str]:
     """
     try:
         from utils.hub_settings import MODELSCOPE, active_source
-
         if active_source() != MODELSCOPE:
             return None
     except Exception:  # noqa: BLE001 - settings must not block a download decision

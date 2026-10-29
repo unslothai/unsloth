@@ -64,9 +64,7 @@ def test_huggingface_source_keeps_xet(huggingface_source):
 
 def test_modelscope_oversized_download_refuses_with_actionable_message(modelscope_source):
     """Do not attempt Xet (405) then die on the HTTPS 50GB ceiling (#15989)."""
-    use_xet, reason = dl.resolve_requested_use_xet(
-        "auto", True, largest_file_bytes = _OVERSIZED
-    )
+    use_xet, reason = dl.resolve_requested_use_xet("auto", True, largest_file_bytes = _OVERSIZED)
     assert use_xet is False
     assert "ModelScope" in reason
 
