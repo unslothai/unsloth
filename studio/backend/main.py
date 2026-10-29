@@ -2452,7 +2452,10 @@ def _gguf_pin_support(logger, refresh: bool = False) -> tuple[bool, bool]:
 
 
 def _get_cached_system_gpu_info(
-    logger, *, refresh_memory: bool = False, max_age_s: float = _SYSTEM_GPU_CACHE_TTL_SECONDS
+    logger,
+    *,
+    refresh_memory: bool = False,
+    max_age_s: float = _SYSTEM_GPU_CACHE_TTL_SECONDS,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return training and inference GPU info with bounded live-probe churn."""
     import contextlib

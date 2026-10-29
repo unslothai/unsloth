@@ -72,7 +72,9 @@ def test_llama_pin_support_is_not_rescanned_on_every_fast_read(monkeypatch):
 
     scans = []
     monkeypatch.setattr(main, "_gguf_pin_support_cache", None)
-    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: scans.append(1) or False))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: scans.append(1) or False)
+    )
     monkeypatch.setattr(LlamaCppBackend, "_backend_lacks_gpu_lib", staticmethod(lambda: False))
     log = logging.getLogger("t")
     main._gguf_pin_support(log, refresh = True)
