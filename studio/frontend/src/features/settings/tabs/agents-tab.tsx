@@ -89,6 +89,7 @@ import {
   type ExampleOs,
   useSettingsPanelPrefsStore,
 } from "../stores/settings-panel-prefs-store";
+import { useFreshApiKeyStore } from "../stores/fresh-api-key-store";
 import { LineBox } from "@/components/ui/line-box";
 
 const DOCS_URL = UNSLOTH_START_DOCS_URL;
@@ -473,6 +474,7 @@ export function AgentsTab() {
   // A Tauri origin is unreachable for the CLI, so use the backend URL; on loopback deviceType
   // decides (it can report wsl).
   const studioBase = isTauri ? (serverUrl ?? getApiBase()) : origin;
+  const freshApiKey = useFreshApiKeyStore((s) => s.key);
   const inferredCommandOs: ExampleOs = (
     isLoopbackBase(studioBase)
       ? deviceType === "windows"
@@ -641,12 +643,12 @@ export function AgentsTab() {
   const modelArgs = attachOnly
     ? ""
     : [selectedModelArgs, selectedModelFlags].filter(Boolean).join(" ");
-  // No key: the CLI caches an explicit key per base, overwriting a working saved one.
   const shellCommands = buildAgentShellCommands(
     studioBase,
     commandOs,
     selectedAgent,
     modelArgs,
+    freshApiKey,
   );
   const command = shellCommands.primary;
   const {
