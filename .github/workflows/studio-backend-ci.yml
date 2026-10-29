@@ -394,8 +394,18 @@ jobs:
           # the globs themselves.
           - shard: gloo
             selection: >-
-              tests/test_[!f]*gloo*.py
+              tests/test_[!fpt]*gloo*.py
               tests/test_f[!s]*gloo*.py
+              tests/test_p[!p]*gloo*.py
+              tests/test_tp_[!n]*gloo*.py
+          # The gloo shard then ran 1331 to 2058 s of the same cap on 2026-10-29. Measured per
+          # file, native tensor parallel plus pipeline parallel are about 51% of it, everything
+          # else about 49%. A *gloo* file named test_t[!p]* or test_tp[!_]* would match neither
+          # shard; tests/test_ci_repo_cpu_shards.py reports it as dropped.
+          - shard: gloo-tp-pp
+            selection: >-
+              tests/test_tp_n*gloo*.py
+              tests/test_pp*gloo*.py
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
