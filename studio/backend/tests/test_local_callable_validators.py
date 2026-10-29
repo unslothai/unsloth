@@ -86,8 +86,6 @@ def test_the_wrapper_kills_oxlint_against_the_remaining_caller_budget():
 
 @real_oxlint
 def test_windows_launches_oxlint_through_its_bin_entry():
-    # Windows cannot spawn the extensionless .bin/oxlint shim and refuses the .cmd one without a
-    # shell, so validate.mjs runs the package's own bin entry with Node there.
     source = validators._OXC_RUNNER_PATH.read_text(encoding = "utf-8")
     entry = re.search(r"const OXLINT_ENTRY = join\(TOOL_DIR, ([^)]*)\);", source)
     assert entry, "validate.mjs must name oxlint's bin entry for Windows"
@@ -139,8 +137,6 @@ def test_oxlint_never_loads_a_config_planted_around_the_snippets(
 
 @real_oxlint
 def test_oxlint_lints_snippets_under_a_gitignored_temp_root(monkeypatch, tmp_path):
-    # A folder walk honours a .gitignore above it, so a temp root inside an ignored tree (a home
-    # directory kept in git with "*" ignored) linted nothing; the snippet files are named instead.
     subprocess.run(["git", "init", "-q", str(tmp_path)], check = True)
     (tmp_path / ".gitignore").write_text("*\n", encoding = "utf-8")
     oxc_tmp = tmp_path / "studio" / "oxc-validator"
@@ -159,8 +155,6 @@ def test_oxlint_lints_snippets_under_a_gitignored_temp_root(monkeypatch, tmp_pat
 
 @real_oxlint
 def test_oxlint_lints_a_batch_longer_than_one_command_line(monkeypatch, tmp_path):
-    # batch_size is unbounded and Windows caps a command line at 32,767 chars, so naming every
-    # snippet in one oxlint call failed the whole batch there; the names go in chunks instead.
     monkeypatch.setattr(validators, "oxc_validator_tmp_root", lambda: tmp_path)
     codes = ["debugger;\n", "export const x = 1;\n"] * 1500
 

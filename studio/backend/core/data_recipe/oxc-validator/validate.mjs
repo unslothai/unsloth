@@ -400,8 +400,7 @@ function runLintBatch(entries, budgetMs) {
   const entryByIndex = new Map(entries.map((entry) => [entry.index, entry]));
   const tempDir = mkdtempSync(join(tmpdir(), "oxlint-"));
   try {
-    // Named files, not the folder: a folder walk honours a .gitignore above the temp dir, so a temp
-    // dir inside an ignored tree linted nothing. Relative names (cwd = tempDir) keep the args short.
+    // Named files: a folder walk skips a temp dir under any ignoring .gitignore. Relative = short args.
     const chunks = [[]];
     let chunkChars = 0;
     for (const entry of entries) {
