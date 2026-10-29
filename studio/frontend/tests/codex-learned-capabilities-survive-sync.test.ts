@@ -30,8 +30,6 @@ after(async () => {
 });
 
 test("a plan-listed slug's capability survives a registry rewrite", () => {
-  // The startup credential bootstrap syncs before anything fetches /codex/models, so
-  // dropping the learned entry here lets the composer offer attachments again.
   const merged = mergeLearnedModelCapabilities(
     { "gpt-5.7-nova": { vision: false }, "gpt-5.4": { vision: true, studio_tools: true } },
     REGISTRY,

@@ -2,23 +2,23 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  AudioWave01Icon,
   ChefHatIcon,
   DashboardCircleIcon,
   Download01Icon,
   DragDropVerticalIcon,
   FlimSlateIcon,
   Folder01Icon,
-  Image03Icon,
-  InternetIcon,
+  Image01Icon,
   LibrariesIcon,
   MoreHorizontalIcon,
   PencilEdit02Icon,
+  ApiIcon,
+  Clock01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Reorder, useDragControls } from "motion/react";
 import { Switch } from "@/components/ui/switch";
-import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
 import type { IconSvgElement } from "@hugeicons/react";
@@ -38,18 +38,19 @@ const ITEM_META: Record<
   projects: { icon: Folder01Icon, labelKey: "shell.navigation.projects" },
   library: { icon: LibrariesIcon, labelKey: "shell.navigation.library" },
   hub: { icon: DashboardCircleIcon, labelKey: "shell.navigation.hub" },
-  images: { icon: Image03Icon, labelKey: "shell.navigation.images" },
+  images: { icon: Image01Icon, labelKey: "shell.navigation.images" },
   train: { icon: TestTubeOutlineIcon, labelKey: "shell.navigation.train" },
   video: { icon: FlimSlateIcon, labelKey: "shell.navigation.video" },
-  audio: { icon: AudioWave01Icon, labelKey: "shell.navigation.audio" },
+  audio: { icon: AiSpeechIcon, labelKey: "shell.navigation.audio" },
   recipes: { icon: ChefHatIcon, labelKey: "shell.navigation.recipes" },
   export: { icon: Download01Icon, labelKey: "shell.navigation.export" },
-  api: { icon: InternetIcon, labelKey: "shell.navigation.api" },
+  api: { icon: ApiIcon, labelKey: "shell.navigation.api" },
+  tasks: { icon: Clock01Icon, labelKey: "shell.navigation.tasks" },
 };
 
 function FixedRow({ icon, label }: { icon: IconSvgElement; label: string }) {
   return (
-    <div className="flex h-9 items-center gap-2.5 rounded-lg px-2 text-muted-foreground/70">
+    <div className="flex h-9 items-center gap-2.5 rounded-md px-2 text-muted-foreground/70">
       {/* Spacer where the drag handle sits on movable rows. */}
       <span className="size-4" aria-hidden="true" />
       <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-4" />
@@ -73,8 +74,7 @@ function MovableRow({
     (s) => s.customization.sidebarNavAuto,
   );
   const meta = ITEM_META[item.id];
-  // What the sidebar is doing now, which for a row on its rule is not what `pinned` says.
-  // Flipping the switch is a decision, so the rule is dropped.
+  // For a row on its rule the sidebar state differs from `pinned`; flipping drops the rule.
   const pinned = sidebarNavRowPinned(item, sidebarNavAuto, {
     projectsSectionShowing,
   });
@@ -84,13 +84,12 @@ function MovableRow({
       dragListener={false}
       dragControls={controls}
       layout="position"
-      // The dragged row lifts above its siblings so it stays readable.
       whileDrag={{
         backgroundColor: "var(--popover)",
         boxShadow: "0 4px 16px rgb(0 0 0 / 0.18)",
         zIndex: 10,
       }}
-      className="relative flex h-9 items-center gap-2.5 rounded-lg px-2"
+      className="relative flex h-9 items-center gap-2.5 rounded-md px-2"
     >
       <button
         type="button"
@@ -132,7 +131,7 @@ function MovableRow({
   );
 }
 
-/** Pin and reorder the sidebar nav rows. Unpinned rows collect in the "More" flyout; a single unpinned row is hidden instead of getting a menu of one. New chat is static: an action, not a destination. */
+/** A single unpinned row is hidden rather than given a More menu of one. */
 export function SidebarNavCustomizer() {
   const t = useT();
   const sidebarNav = useAppearanceCustomStore((s) => s.customization.sidebarNav);
@@ -140,7 +139,7 @@ export function SidebarNavCustomizer() {
     (s) => s.customization.sidebarNavAuto,
   );
   const patch = useAppearanceCustomStore((s) => s.patch);
-  // The sidebar's inputs minus the route: this panel describes the sidebar in general.
+  // Without the route: this panel describes the sidebar in general.
   const organizeBy = useSidebarOrganizationStore((s) => s.organizeBy);
   const { projects } = useChatProjects();
   const projectsSectionShowing =
@@ -150,7 +149,7 @@ export function SidebarNavCustomizer() {
       !sidebarNavRowPinned(item, sidebarNavAuto, { projectsSectionShowing }),
   ).length;
   return (
-    <div className="flex flex-col rounded-xl border border-border/70 p-1.5">
+    <div className="flex flex-col rounded-lg border border-border/70 p-1">
       <FixedRow icon={PencilEdit02Icon} label={t("shell.navigation.newChat")} />
       <Reorder.Group
         axis="y"
@@ -172,7 +171,6 @@ export function SidebarNavCustomizer() {
           />
         ))}
       </Reorder.Group>
-      {/* Mirrors the sidebar: More only exists at two or more. */}
       {unpinnedCount > 1 && (
         <>
           <div className="mx-2 my-1 border-t border-border/70" />

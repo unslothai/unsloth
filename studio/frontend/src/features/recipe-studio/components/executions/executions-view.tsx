@@ -7,7 +7,7 @@ import {
   CheckmarkCircle02Icon,
   Download01Icon,
   Flag02Icon,
-  Share08Icon,
+  Share01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { publishRecipeJob } from "../../api";
@@ -55,7 +55,6 @@ type ExecutionsViewProps = {
 function downloadOutcomeMessage(outcome: DownloadOutcome): string {
   if (outcome === "saved") return "Dataset downloaded";
   if (outcome === "started") return "Dataset download started";
-  // The server no longer has this run, so what was written is whatever this client still holds.
   return "Downloaded the rows still loaded for this run";
 }
 
@@ -122,9 +121,6 @@ export function ExecutionsView({
     [datasetColumnNames, hiddenDatasetColumns],
   );
 
-  // Columns with at least one long-text row get a wider min-width so the text
-  // is readable without clicking. The wrapper scrolls horizontally, so wide
-  // columns just add a scrollbar instead of squeezing the viewport.
   const wideColumns = useMemo(() => {
     const result = new Set<string>();
     if (!selectedExecution) {
@@ -167,7 +163,7 @@ export function ExecutionsView({
                 src={imagePreview.src}
                 alt={`${name} preview`}
                 loading="lazy"
-                className="h-24 w-auto max-w-[calc(260px*var(--ui-space-scale,1))] rounded-md border border-border/60 bg-muted/20 object-contain"
+                className="h-24 w-auto max-w-[calc(260px*var(--ui-space-scale,1))] rounded-lg border border-border/60 bg-muted/20 object-contain"
               />
             </div>
           );
@@ -243,7 +239,9 @@ export function ExecutionsView({
       : Math.max(1, Math.ceil(datasetTotal / datasetPageSize));
   const canPageDataset =
     selectedExecution?.kind === "preview" ||
-    (selectedExecution?.kind === "full" && Boolean(selectedExecution.jobId));
+    (selectedExecution?.kind === "full" &&
+      Boolean(selectedExecution.jobId) &&
+      !isExecutionInProgress(selectedExecution.status));
   const datasetRowsForTable = useMemo(() => {
     if (!selectedExecution) {
       return [];
@@ -459,7 +457,7 @@ export function ExecutionsView({
 
             {(selectedExecution.status === "error" ||
               selectedExecution.status === "cancelled") && (
-              <div className="rounded-xl border border-destructive/40 bg-destructive/5 p-3">
+              <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3">
                 <p className="text-sm font-semibold text-destructive">
                   {selectedExecution.status === "cancelled"
                     ? "Execution cancelled"
@@ -520,7 +518,7 @@ export function ExecutionsView({
                       variant="outline"
                       onClick={() => setPublishDialogOpen(true)}
                     >
-                      <HugeiconsIcon icon={Share08Icon} className="mr-2 size-4" />
+                      <HugeiconsIcon icon={Share01Icon} className="mr-2 size-4" />
                       Publish to Hugging Face
                     </Button>
                   )}

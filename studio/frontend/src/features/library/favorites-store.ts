@@ -25,7 +25,7 @@ interface FavoritesState {
 
 const latestAttempt = new Map<string, number>();
 const pending = new Map<string, number>();
-// Bumped on sign-out, so a load started for the last account never lands for the next one.
+// Bumped on sign-out, so a load for the last account never lands for the next one.
 let session = 0;
 
 export const useLibraryFavoritesStore = create<FavoritesState>((set, get) => {
@@ -112,7 +112,7 @@ export const useLibraryFavoritesStore = create<FavoritesState>((set, get) => {
   };
 });
 
-// Module state, so a sign-out must drop it here: Images and Video load this without the Library.
+// Images and Video load this without the Library, so drop it on sign-out here.
 if (typeof window !== "undefined") {
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
     session += 1;
@@ -132,5 +132,19 @@ export function useLibraryFavorites() {
   return {
     isFavorite: (id: string) => ids.has(id),
     toggleFavorite: (id: string) => void setFavorite(id, !ids.has(id)),
+  };
+}
+
+export function useLibraryFavorite(id: string | null, active: boolean) {
+  const favorite = useLibraryFavoritesStore((s) => (id ? s.ids.has(id) : false));
+  const load = useLibraryFavoritesStore((s) => s.load);
+  useEffect(() => {
+    if (active && id) void load();
+  }, [active, id, load]);
+  return {
+    favorite,
+    toggleFavorite: () => {
+      if (id) void useLibraryFavoritesStore.getState().setFavorite(id, !favorite);
+    },
   };
 }

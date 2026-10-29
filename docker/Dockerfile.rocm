@@ -67,7 +67,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV VENV=/opt/unsloth-venv
 RUN --mount=type=cache,target=/root/.cache/pip \
     python${PYTHON_VERSION} -m venv ${VENV} \
- && ${VENV}/bin/pip install -U pip wheel setuptools uv \
+ && ${VENV}/bin/pip install -U "pip>=26.2.2" wheel setuptools "uv>=0.13.4" "certifi>=2026.10.19" \
  && ${VENV}/bin/python -c "import sys; assert sys.version_info[:2] == tuple(int(x) for x in '${PYTHON_VERSION}'.split('.')), sys.version"
 
 # Where torch comes from, resolved once and read by the later layers:
@@ -93,7 +93,7 @@ RUN set -eu; \
 
 # The whole Python stack in ONE layer, resolved once. The obvious two-step
 # (torch from the ROCm index, then the rest) fails twice: unsloth-zoo bounds
-# torch (<2.13 now), so the second step swaps the 14 GB torch and the old one
+# torch (<2.15 now), so the second step swaps the 14 GB torch and the old one
 # stays as a dead layer (measured: 70 GB image, 16 GB live); and under
 # unsafe-best-match uv takes the highest version across indexes, so a newer
 # pypi torch wins as a CUDA build and drags in nvidia-* wheels.

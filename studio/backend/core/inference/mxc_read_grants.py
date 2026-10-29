@@ -1,13 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""One-time AppContainer read grants on Studio's runtime folders for MXC's AppContainer + DACL tier.
-
-On that tier wxc-exec grants every readonly path per launch with an inheritable ACE, which Windows
-propagates to every file below it and reverts on exit, so a Python environment costs 10+ s per
-command (microsoft/mxc#572). wxc-exec skips a path whose DACL already grants ALL APPLICATION PACKAGES
-read and execute, as Windows ships C:\\Windows and Program Files. Granting that once on the runtime
-folders Studio owns lets every later launch skip the walk. Read and execute only, never write.
-"""
+"""Read/execute-only AppContainer grant on runtime folders lets wxc-exec skip the per-launch ACE walk."""
 
 from __future__ import annotations
 
@@ -39,9 +32,10 @@ _CONTAINER_INHERIT = 0x2
 _INHERIT_ONLY = 0x8
 _INHERITED = 0x10
 _lock = threading.Lock()
-# Root -> folder identity whose whole tree passed the credential scan in this process; a folder
-# replaced at the same path, or a new process, scans again.
+# Root-to-folder identity that passed the credential scan this process; a replaced folder rescans.
 _scanned: dict[str, dict[str, int] | None] = {}
+# Root -> folder identity whose grant Windows refused in this process; skipped until restart.
+_refused: dict[str, dict[str, int] | None] = {}
 
 
 class ReadGrantError(RuntimeError):
@@ -53,7 +47,14 @@ def _on_windows() -> bool:
 
 
 def enabled() -> bool:
-    return os.environ.get(PERSISTENT_GRANTS_ENV, "").strip() != "0"
+    """The environment variable decides whenever it is set; otherwise the Settings > Sandbox choice."""
+    if PERSISTENT_GRANTS_ENV in os.environ:
+        return os.environ[PERSISTENT_GRANTS_ENV].strip() != "0"
+    try:
+        from utils.mxc_isolation_settings import persistent_grants_setting
+        return persistent_grants_setting()
+    except Exception:  # noqa: BLE001 - outside the backend the shipped default applies
+        return True
 
 
 def record_path() -> Path:
@@ -75,7 +76,7 @@ def _transaction():
         except Timeout as exc:
             # Another Studio process is still granting: its tree may be half propagated.
             raise ReadGrantError(
-                f"another Studio process holds the MXC read-grant record: {exc}"
+                f"another Unsloth process holds the MXC read-grant record: {exc}"
             ) from exc
         except OSError as exc:
             # No lock file means no process can be granting through this record either.
@@ -195,12 +196,33 @@ def _identity(root: str) -> dict[str, int] | None:
         return None
 
 
-def _package_aces(path: str) -> tuple[bool, bool]:
-    """(covers, explicit) for ALL APPLICATION PACKAGES on the folder's own DACL.
+def _read_execute_covered(aces: list[tuple[int, int]]) -> bool:
+    """Inherit-only ACEs carry generic rights, which must map to file rights before comparing with RX."""
+    folder = files = directories = 0
+    for mask, flags in aces:
+        if mask & 0x10000000:  # GENERIC_ALL
+            mask |= 0x1F01FF
+        if mask & 0x80000000:  # GENERIC_READ
+            mask |= 0x120089
+        if mask & 0x40000000:  # GENERIC_WRITE
+            mask |= 0x120116
+        if mask & 0x20000000:  # GENERIC_EXECUTE
+            mask |= 0x1200A0
+        if not flags & _INHERIT_ONLY:
+            folder |= mask
+        if flags & 0x4:  # NO_PROPAGATE_INHERIT cannot cover the whole tree.
+            continue
+        if flags & _OBJECT_INHERIT:
+            files |= mask
+        if flags & _CONTAINER_INHERIT:
+            directories |= mask
+    return all(
+        (mask & READ_EXECUTE_MASK) == READ_EXECUTE_MASK for mask in (folder, files, directories)
+    )
 
-    covers: inheritable read and execute is granted. explicit: the folder carries its own ACE for
-    that SID. Raises OSError when the DACL cannot be read, so an unknown ACL is never modified.
-    """
+
+def _package_aces(path: str) -> tuple[bool, bool]:
+    """Raises OSError when the DACL cannot be read, so an unknown ACL is never modified."""
     import ctypes
     from ctypes import wintypes
 
@@ -258,8 +280,8 @@ def _package_aces(path: str) -> tuple[bool, bool]:
         if not dacl:
             # A NULL DACL already grants everyone, AppContainers included: nothing to add.
             return True, False
-        allowed, explicit = 0, False
-        inheritable = _OBJECT_INHERIT | _CONTAINER_INHERIT
+        allowed: list[tuple[int, int]] = []
+        explicit = False
         for index in range(dacl.contents.AceCount):
             raw = ctypes.c_void_p()
             if not get_ace(dacl, index, ctypes.byref(raw)):
@@ -283,10 +305,8 @@ def _package_aces(path: str) -> tuple[bool, bool]:
                 explicit = True
             if ace.Header.AceType == 1:
                 return False, explicit
-            if flags & _INHERIT_ONLY or (flags & inheritable) != inheritable:
-                continue
-            allowed |= ace.Mask
-        return (allowed & READ_EXECUTE_MASK) == READ_EXECUTE_MASK, explicit
+            allowed.append((ace.Mask, flags))
+        return _read_execute_covered(allowed), explicit
     finally:
         local_free(descriptor)
 
@@ -318,12 +338,38 @@ def _revoke(root: str) -> tuple[bool, str]:
     return _icacls(root, "/remove:g", f"*{ALL_APPLICATION_PACKAGES}")
 
 
+def _root_untouched(root: str) -> bool:
+    """icacls writes the root before propagating, so a refusal there changed nothing (#12941)."""
+    try:
+        return not _package_aces(root)[1]
+    except OSError:
+        return False
+
+
 def _save_quietly(record: dict) -> None:
     """Persist a record change after the ACL already matches it; a failed write only costs a retry."""
     try:
         _save_record(record)
     except OSError as exc:
         logger.warning("Could not update the MXC read-grant record: %s", exc)
+
+
+def _pending_grant_has_no_explicit_aces(root: str, identity: dict) -> bool:
+    """Checks the whole tree, since an interrupted propagation can leave ACEs in children; unknown ACLs or reparse points keep the record intact"""
+    pending = [root]
+    try:
+        while pending:
+            directory = pending.pop()
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if _is_reparse(entry) or _package_aces(entry.path)[1]:
+                        return False
+                    if entry.is_dir(follow_symlinks = False):
+                        pending.append(entry.path)
+        covers, explicit = _package_aces(root)
+        return covers and not explicit and _identity(root) == identity
+    except OSError:
+        return False
 
 
 def _revoke_recorded_root(record: dict, key: str) -> str:
@@ -340,24 +386,30 @@ def _revoke_recorded_root(record: dict, key: str) -> str:
     if current != record[key].get("identity"):
         # Moved, replaced, or reached through a new junction: revoking would edit a folder Studio never touched.
         logger.warning(
-            "Not revoking the MXC read grant on %s: it is no longer the folder Studio granted", key
+            "Not revoking the MXC read grant on %s: it is no longer the folder Unsloth granted", key
         )
         record.pop(key)
         return "dropped"
+    if record[key].get("state") == "pending" and _pending_grant_has_no_explicit_aces(key, current):
+        # Only inherited Windows permissions remain; none belong to Studio.
+        record.pop(key)
+        return "dropped"
+    # Read before revoking: a failed /remove:g may clear the root and still leave descendants.
+    never_landed = record[key].get("state") == "pending" and _root_untouched(key)
     ok, output = _revoke(key)
     if ok:
         record.pop(key)
         _scanned.pop(key, None)
         return "revoked"
+    if never_landed:
+        record.pop(key)
+        return "dropped"
     logger.warning("Could not remove the persistent MXC read grant from %s: %s", key, output)
     return "failed"
 
 
 def _ensure_root(record: dict, root: str) -> bool:
-    """Grant one root if it is eligible; True when wxc-exec will skip it. Saves the record as it goes.
-
-    Raises ReadGrantError when a grant Studio started may be half propagated and cannot be settled.
-    """
+    """Raises ReadGrantError when a grant may be half propagated and cannot be settled."""
     key = os.path.normcase(root)
     entry = record.get(key)
     pending = entry is not None and entry.get("state") == "pending"
@@ -397,8 +449,14 @@ def _ensure_root(record: dict, root: str) -> bool:
             ) from exc
         logger.info("Keeping the per-launch MXC grant for %s: %s", root, exc)
         return False
+    if pending and covers and not explicit and _pending_grant_has_no_explicit_aces(root, current):
+        record.pop(key)
+        _save_quietly(record)
+        return True
     if covers and not pending:
         return True
+    if entry is None and _refused.get(key) == current:
+        return False
     if explicit and entry is None:
         # Someone else set an entry for that group here; /remove:g on opt-out would take theirs too.
         logger.info(
@@ -434,12 +492,20 @@ def _ensure_root(record: dict, root: str) -> bool:
         _save_quietly(record)
         logger.info("Granted ALL APPLICATION PACKAGES read access to %s once", root)
         return True
-    # A partly propagated grant would let wxc-exec skip files the container cannot read. The pending
-    # entry stays on disk until the rollback is known to have hit the folder Studio granted.
+    # A partial grant lets wxc-exec skip unreadable files; pending entry stays until rollback lands
     if _identity(root) != identity:
         raise ReadGrantError(
             f"the MXC read grant on {root} failed ({output}) and the folder changed"
         )
+    if _root_untouched(root):
+        # e.g. Store Python under WindowsApps (TrustedInstaller): the rollback is refused too.
+        record.pop(key, None)
+        _save_quietly(record)
+        _refused[key] = identity
+        logger.info(
+            "Keeping the per-launch MXC grant for %s: Windows refused it (%s)", root, output
+        )
+        return False
     restored, restore_output = _revoke(root)
     if not restored:
         raise ReadGrantError(
@@ -452,11 +518,7 @@ def _ensure_root(record: dict, root: str) -> bool:
 
 
 def ensure(roots: list[str]) -> tuple[str, ...]:
-    """Give ``roots`` a persistent read grant where eligible; returns the roots wxc-exec will skip.
-
-    A root that cannot be granted keeps MXC's per-launch grant, which is only slower. Raises
-    ReadGrantError only when a grant is left in an unknown state.
-    """
+    """Roots that cannot be granted keep the slower per-launch grant; raises only on unknown state."""
     if not _on_windows():
         return ()
     if not enabled():
@@ -472,8 +534,98 @@ def ensure(roots: list[str]) -> tuple[str, ...]:
     return tuple(covered)
 
 
+def _leases_dir() -> Path:
+    return record_path().parent / "read-grant-users"
+
+
+def _lease_is_live(path: Path) -> bool:
+    """Windows refuses to delete a file a process still holds open, so a crashed holder's lease goes."""
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return False
+
+
+def _live_leases() -> int:
+    try:
+        entries = list(_leases_dir().iterdir())
+    except OSError:
+        return 0
+    return sum(_lease_is_live(entry) for entry in entries)
+
+
+class WorkloadLease:
+    """Held open for one MXC workload's lifetime: the ACEs it may have skipped stay until release."""
+
+    def __init__(self, path: Path, handle):
+        self._path, self._handle = path, handle
+
+    def release(self) -> None:
+        if self._handle is None:
+            return
+        self._handle.close()
+        self._handle = None
+        with contextlib.suppress(OSError):
+            self._path.unlink()
+        _revoke_if_turned_off()
+
+
+def hold() -> WorkloadLease | None:
+    """Leases grants from spawn to exit across processes; raises if unrecorded, since a launch that may skip the wxc-exec grant must not run unguarded"""
+    if not _on_windows():
+        return None
+    path = _leases_dir() / f"{os.getpid()}-{uuid.uuid4().hex}"
+    try:
+        # Under the record lock: a revocation either finished before this or sees the lease.
+        with _transaction():
+            path.parent.mkdir(parents = True, exist_ok = True)
+            handle = open(path, "w", encoding = "utf-8")
+    except OSError as exc:
+        raise ReadGrantError(
+            f"could not record this MXC workload for the read grants: {exc}"
+        ) from exc
+    return WorkloadLease(path, handle)
+
+
+def hold_if_needed() -> WorkloadLease | None:
+    """Leases every MXC launch or probe, even with the switch off, so no revocation runs under it; only a launch needing grants refuses if unrecorded"""
+    from . import mxc_policy
+
+    refresh_saved_switches()
+    needed = mxc_policy.dacl_fallback_enabled() and enabled()
+    try:
+        return hold()
+    except ReadGrantError:
+        if needed:
+            raise
+        return None
+
+
+def refresh_saved_switches() -> None:
+    """Drop this process's 1 s settings cache: another Studio process may have just turned a switch off."""
+    try:
+        from utils.mxc_isolation_settings import forget_cached_setting
+        forget_cached_setting()
+    except Exception:  # noqa: BLE001 - outside the backend there is no saved setting to cache
+        pass
+
+
+def _revoke_if_turned_off() -> None:
+    """Finish a revocation the settings switch or an earlier launch deferred for running workloads."""
+    try:
+        from . import mxc_policy
+        refresh_saved_switches()
+        if not (mxc_policy.dacl_fallback_enabled() and enabled()):
+            revoke_recorded()
+    except Exception as exc:  # noqa: BLE001 - cleanup, the next launch or check retries
+        logger.warning("Deferred MXC read-grant cleanup failed: %s", exc)
+
+
 def revoke_recorded() -> tuple[str, ...]:
-    """Remove every grant Studio recorded; returns the roots that were restored."""
+    """Waits on any MXC lease, since its container may still read through these ACEs."""
     if not _on_windows() or not record_path().exists():
         return ()
     restored: list[str] = []
@@ -487,6 +639,12 @@ def revoke_recorded() -> tuple[str, ...]:
     with contextlib.ExitStack() as stack:
         stack.push(transaction)
         if not record:
+            return ()
+        running = _live_leases()
+        if running:
+            logger.info(
+                "Deferring the MXC read-grant cleanup until %d running call(s) exit", running
+            )
             return ()
         for key in list(record):
             if _revoke_recorded_root(record, key) == "revoked":

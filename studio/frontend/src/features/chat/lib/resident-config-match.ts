@@ -2,25 +2,45 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { PerModelConfig } from "@/features/model-picker";
-import { normalizeMlxKvQuant } from "@/features/model-picker/model-config/per-model-config";
+import {
+  normalizeMlxKvQuant,
+  normalizeMlxOffload,
+} from "@/features/model-picker/model-config/per-model-config";
 
 import {
   parseGpuLayersOverride,
   resolveTensorParallel,
   stripManagedOffloadFlags,
 } from "./llama-extra-args-normalize";
+import { reconcileTensorSplit } from "@/hooks/gpu-tensor-split";
 import type { GpuIndexKind } from "@/hooks/gpu-selection";
+import {
+  mlxSpeculativeMode,
+  resolveSpeculativeType,
+} from "@/lib/speculative-modes";
 
 import type { InferenceStatusResponse } from "../types/api";
+import { isCpuFallbackReason } from "./gpu-placement";
 
-/** The resident load's own invocation, as `/api/inference/status` echoes it. */
 type ResidentRuntime = Pick<
   InferenceStatusResponse,
+  | "engine"
+  | "engine_parallelism"
+  | "engine_precision"
+  | "engine_kv_cache_dtype"
+  | "engine_seed"
+  | "engine_gpu_memory_utilization"
+  | "load_in_4bit"
+  | "context_length"
   | "requested_context_length"
   | "cache_type_kv"
   | "mlx_kv_quant_requested"
+  | "mlx_int8_prefill_requested"
+  | "mlx_ane_prefill_requested"
+  | "mlx_offload"
   | "speculative_type"
   | "spec_draft_n_max"
+  | "spec_draft_model"
   | "requested_parallel_slots"
   | "requested_n_batch"
   | "requested_n_ubatch"
@@ -42,6 +62,7 @@ type ResidentRuntime = Pick<
   | "requested_gpu_ids"
   | "gpu_ids"
   | "is_gguf"
+  | "is_mlx"
   | "is_diffusion"
   | "diffusion_requested_ngl"
   | "diffusion_split_supported"
@@ -61,8 +82,7 @@ function sameList(
   return a.length === b.length && a.every((item, index) => item === b[index]);
 }
 
-/** Placement is an ordered list: position decides which card the model is given first,
- *  so the same set in a different order is a different placement and must reload. */
+/** Order matters: position decides which card is used first. */
 function sameGpuPlacement(
   left: readonly number[] | null | undefined,
   right: readonly number[] | null | undefined,
@@ -70,58 +90,34 @@ function sameGpuPlacement(
   return sameList(left ?? [], right ?? []);
 }
 
-/** What a config field resolves to when left unset. These four are not per-model, so omitting them
- *  is not silence: `applyPerModelConfigToRuntime` fills them from a standing preference or a
- *  constant and the load sends that. Required, not optional: a resolver a caller can forget
- *  silently keeps a runtime the user did not ask for. */
+/** Unset values the applier fills in; required so callers cannot forget them. */
 export type StandingConfigDefaults = {
-  /** `readPersistedSpeculativeType()`, already normalized. */
   speculativeType: string | null;
-  /** `readPersistedGpuMemoryMode()`. */
   gpuMemoryMode: "auto" | "manual";
-  /** `GPU_LAYERS_AUTO`. */
   gpuLayers: number;
-  /** The applier's own constant, 0. */
   nCpuMoe: number;
-  /** `reconcilePersistedGpuIds`, with the device cache warm and the resident model's diffusion flag
-   *  bound. `performLoad` sends the reconciled pick, not the saved one: comparing raw ids would
-   *  let a saved physical `[1]` adopt a server pinned to Vulkan device 1. */
+  /** Compare the reconciled pick, not raw saved ids (physical vs Vulkan numbering). */
   reconcileGpuIds: (
     ids: number[] | null,
     savedIndexKind: GpuIndexKind | null | undefined,
   ) => number[] | null;
-  /** `resolveLoadMaxSeqLength` bound to the inputs `performLoad` gives it, so the comparison is
-   *  against the n_ctx the load would send. An unset length is not simply 0: for a GGUF re-pick
-   *  it resolves to the resident context. */
+  defaultEngineGpuIds?: number[];
+  /** Unset length is not 0: a GGUF re-pick resolves to the resident context. */
   resolveContextLength: (customContextLength: number | null) => number;
-  /** The slot count the server resolves an unset `--parallel` to, or null when unreadable.
-   *  `_resolve_parallel_slots` stores the server-wide default as `requested_parallel_slots`, so
-   *  an unset ask is never null on the status side and comparing directly reloaded every pick. */
+  /** Server default for an unset `--parallel`; null when unreadable. */
   parallelSlots: number | null;
-  /** `splitRatio` as the store holds it now, which is what the load sends. Never a config field:
-   *  `applyPerModelConfigToRuntime` clears it, so any remembered config asks for the default. */
+  /** Current store ratio, used only when a staged config does not state its own. */
   splitRatio: number[] | null;
-  /** `normalizeSpeculativeType`, passed rather than imported: it lives on the chat runtime store,
-   *  which reaches React, and this module is a leaf so the node suite can drive it. A copy here
-   *  would be free to drift from the one the load uses. */
+  /** Passed in rather than imported to keep this module a React-free leaf. */
   normalizeSpeculative: (value: string | null | undefined) => string | null;
 };
 
-/** One setting the resident load can disagree about. `pinned` is whether the config has an opinion
- *  at all, `agrees` whether the running server satisfies it. The pair survives for
- *  `llamaExtraArgs`, the only field the applier leaves unresolved. */
 type SettingCheck = {
-  /** Placement, which the backend rewrites wholesale on a preserved CPU fallback. */
   placement?: true;
   mlxComparable?: true;
-  /** Placement the diffusion branch of `_runtime_matches_intent` replaces wholesale with one
-   *  `_diffusion_manual_ngl` comparison. */
   ggufPlacement?: true;
-  /** The diffusion branch's own comparison, which has no meaning off it. */
   diffusionOnly?: true;
-  /** Chat-only invocation settings. `_runtime_matches_intent` guards these on `not
-   *  self._is_diffusion` and the status nulls them, so comparing them against a diffusion
-   *  runtime rejects a load that would deduplicate. */
+  /** Chat-only settings; status nulls them for diffusion runtimes. */
   chatOnly?: true;
   pinned: (config: PerModelConfig) => boolean;
   agrees: (
@@ -131,17 +127,7 @@ type SettingCheck = {
   ) => boolean;
 };
 
-/** Fallback reasons the backend retries on an IDENTICAL next load, from the arms of
- *  `LlamaCppBackend._runtime_matches_intent` that return False to force a repair. The rest are
- *  excluded on purpose: "drafter_no_vram" and "mla_mtp_disabled" are Auto-mode policy, and
- *  "runtime_error" only reopens when the draft count changes, which the comparison sees.
- *
- *  "drafter_unloadable" is here because the sheet's remedy is to replace the sidecar in place,
- *  and `adoptable` in use-chat-model-runtime would otherwise skip `/load`, so the backend's
- *  content re-check never runs. An unchanged file still dedupes through already_loaded. It
- *  needs no `sendsGgufPath` exclusion, unlike "drafter_not_found", because the re-check lives
- *  in `_runtime_matches_intent`'s drafter comparison rather than the refetch arm that requires
- *  `intent.gguf_path is None`. */
+/** Fallbacks the backend retries on an identical load (see `_runtime_matches_intent`). */
 const RETRYABLE_SPEC_FALLBACKS = new Set([
   "drafter_not_found",
   "drafter_unloadable",
@@ -149,10 +135,8 @@ const RETRYABLE_SPEC_FALLBACKS = new Set([
   "binary_outdated",
 ]);
 
-/** The two of those the user is told to fix by updating llama.cpp. */
 const BINARY_SPEC_FALLBACKS = new Set(["binary_no_mtp", "binary_outdated"]);
 
-/** The modes the backend's retry arms are guarded on; anything else asked for no drafter. */
 const SPECULATIVE_MODES = new Set([
   "auto",
   "mtp",
@@ -161,11 +145,7 @@ const SPECULATIVE_MODES = new Set([
   "dflash",
 ]);
 
-/** Whether the resident load's speculative decoding is degraded in a way the next identical `/load`
- *  would repair. This is the one place where sending a request the runtime already satisfies
- *  is not a no-op. The decision stays coarser than the backend's: the status echoes the
- *  fallback reason but not `_dflash_retry_needed`, so a load that would dedupe can still be
- *  sent, costing one round trip through `already_loaded`. */
+/** Whether an identical `/load` would repair degraded speculative decoding. Coarser than backend. */
 export function residentSpeculativeNeedsRepair(
   status: Pick<
     InferenceStatusResponse,
@@ -175,15 +155,17 @@ export function residentSpeculativeNeedsRepair(
     | "spec_dflash_retry_pending"
     | "spec_dspark_sidecar_absent"
     | "spec_drafter_kind"
+    | "is_mlx"
   >,
   resolvedSpeculativeType: string | null,
-  /** Whether the load carries a `gguf_path`, which the route sets from the identifier alone:
-   *  `source.gguf_path if model_identifier.lower().endswith(".gguf") else None`. */
   sendsGgufPath = false,
 ): boolean {
+  // Every arm below is llama.cpp's; an identical MLX load dedupes.
+  if (status.is_mlx === true) {
+    return false;
+  }
   const mode = resolvedSpeculativeType ?? "auto";
-  // Two arms that record no fallback reason, so the reason check below cannot see them. The probe
-  // arm is not gated on a mode; the DFlash one is, as the backend gates it.
+  // These arms record no fallback reason, so the reason check below cannot see them.
   if (status.spec_probe_retry_pending === true) {
     return true;
   }
@@ -193,9 +175,7 @@ export function residentSpeculativeNeedsRepair(
   ) {
     return true;
   }
-  // ngram-mod is not in SPECULATIVE_MODES because it runs no drafter, so none of the
-  // drafter arms can repair it. It does still stand down on a build that does not
-  // advertise the mode, and that one records "binary_outdated", which an update repairs.
+  // ngram-mod runs no drafter, but a binary_outdated stand-down is repaired by an update.
   const modeCanRepair =
     SPECULATIVE_MODES.has(mode) ||
     (mode === "ngram" && status.spec_fallback_reason === "binary_outdated");
@@ -205,12 +185,9 @@ export function residentSpeculativeNeedsRepair(
   ) {
     return false;
   }
-  // The drafter_not_found arm reloads so the next Apply retries the fetch, but excludes the two
-  // kinds whose absence is not transient: DFlash asks through its retry flag, and an absent
-  // DSpark sidecar is the permanent state of every repo but one.
+  // DFlash and absent DSpark sidecars are not transient, so they are excluded.
   if (status.spec_fallback_reason === "drafter_not_found") {
-    // The arm is guarded on `intent.gguf_path is None`, so a standalone file never reaches it and an
-    // identical load dedupes rather than retrying the fetch.
+    // Backend arm requires `intent.gguf_path is None`, so a standalone file dedupes.
     if (sendsGgufPath) {
       return false;
     }
@@ -224,16 +201,13 @@ export function residentSpeculativeNeedsRepair(
       return false;
     }
   }
-  // A binary stand-down repairs only once a different llama-server is installed, the condition in
-  // spec_binary_fallback_can_retry. Only an explicit false settles it: a backend too old to
-  // report it keeps the coarser answer rather than suppressing a real repair.
+  // Only an explicit false settles it; older backends keep the coarser answer.
   return !(
     BINARY_SPEC_FALLBACKS.has(status.spec_fallback_reason ?? "") &&
     status.spec_fallback_binary_changed === false
   );
 }
 
-/** The mode the load sends, which is what the backend gates its placement arms on. */
 const requestedGpuMemoryMode = (
   config: PerModelConfig,
   standing: StandingConfigDefaults,
@@ -244,11 +218,8 @@ const cleanTemplate = (value: string | null | undefined): string | null =>
 
 const SETTING_CHECKS: SettingCheck[] = [
   {
-    // Resolved, not compared raw: an unset length is Auto, which the load sends as 0 for a cross-model
-    // GGUF pick and as the resident context when re-picking the same one.
+    // Resolved, not raw: unset is Auto, sent as 0 cross-model or resident ctx on a re-pick.
     pinned: () => true,
-    // A safetensors or MLX status reports this too, so the general non-GGUF rule below
-    // is what keeps this check off those models.
     agrees: (c, s, standing) =>
       standing.resolveContextLength(c.customContextLength ?? null) ===
       (s.requested_context_length ?? 0),
@@ -264,24 +235,61 @@ const SETTING_CHECKS: SettingCheck[] = [
       (c.mlxKvQuant ?? null) === normalizeMlxKvQuant(s.mlx_kv_quant_requested),
   },
   {
-    // Always pinned: an unset mode resolves to the standing preference and the load sends it. Reading
-    // it as silence let a pick asking for "off" adopt a resident MTP runtime.
+    mlxComparable: true,
     pinned: () => true,
-    agrees: (c, s, standing) =>
-      (standing.normalizeSpeculative(c.speculativeType) ??
-        standing.speculativeType) ===
-      (standing.normalizeSpeculative(s.speculative_type) ??
-        standing.speculativeType),
+    agrees: (c, s) =>
+      Boolean(c.mlxInt8Prefill) === (s.mlx_int8_prefill_requested === true),
   },
   {
+    mlxComparable: true,
+    pinned: () => true,
+    agrees: (c, s) =>
+      Boolean(c.mlxAnePrefill) === (s.mlx_ane_prefill_requested === true),
+  },
+  {
+    // The request, not the applied fraction: Auto stays Auto whatever it picked.
+    mlxComparable: true,
+    pinned: () => true,
+    agrees: (c, s) =>
+      (c.mlxPleOffload ?? null) === normalizeMlxOffload(s.mlx_offload?.ple?.requested),
+  },
+  {
+    mlxComparable: true,
+    pinned: () => true,
+    agrees: (c, s) =>
+      (c.mlxExpertOffload ?? null) === normalizeMlxOffload(s.mlx_offload?.experts?.requested),
+  },
+  {
+    // Always pinned: an unset mode resolves to the standing preference and the load sends it. Reading
+    // it as silence let a pick asking for "off" adopt a resident MTP runtime.
+    mlxComparable: true,
+    pinned: () => true,
+    agrees: (c, s, standing) => {
+      const unset = resolveSpeculativeType(
+        null,
+        standing.speculativeType ?? "auto",
+        s.is_mlx === true,
+      );
+      const mode = (value: string | null | undefined) => {
+        const resolved = standing.normalizeSpeculative(value) ?? unset;
+        return s.is_mlx === true ? mlxSpeculativeMode(resolved) : resolved;
+      };
+      return mode(c.speculativeType) === mode(s.speculative_type);
+    },
+  },
+  {
+    mlxComparable: true,
+    pinned: () => true,
+    agrees: (c, s) => (c.specDraftModel ?? null) === (s.spec_draft_model ?? null),
+  },
+  {
+    mlxComparable: true,
     // Pinned like the rest: _runtime_matches_intent reloads for the null-against-explicit
     // flip, so an unset limit asks for the default. No `draft_depth_matters` gate here,
     // as the status carries a count only when a depth-consuming load recorded an override.
     pinned: () => true,
     agrees: (c, s) =>
-      // The MTP-free recovery clears the runtime value while _runtime_matches_intent
-      // still compares against _last_load_intent's count, so null here is "unknown",
-      // not "the default". Let /load answer, as RETRYABLE_SPEC_FALLBACKS assumes.
+      // After MTP-free recovery null means unknown, not default; let /load decide.
       s.spec_fallback_reason !== "runtime_error" &&
       (c.specDraftNMax ?? null) === (s.spec_draft_n_max ?? null),
   },
@@ -305,17 +313,12 @@ const SETTING_CHECKS: SettingCheck[] = [
   },
   {
     chatOnly: true,
-    // Same shape as the batch pair above: a blank control means the llama.cpp default and the status
-    // echoes what the load asked for, so null on both sides is agreement.
     pinned: () => true,
     agrees: (c, s) => (c.loadMode ?? null) === (s.requested_load_mode ?? null),
   },
   {
     chatOnly: true,
-    // Always pinned: the status echoes what the load requested, so a resident server that asked for
-    // nothing reports null and a blank control agrees with it. Reading blank as "no opinion"
-    // instead would mean clearing the dtype back to the f16 default never relaunched, leaving the
-    // server on the quantized draft cache the panel no longer shows.
+    // Always pinned so clearing back to the f16 default still relaunches.
     pinned: () => true,
     agrees: (c, s) =>
       (c.specDraftCacheDtype ?? null) ===
@@ -333,8 +336,7 @@ const SETTING_CHECKS: SettingCheck[] = [
     agrees: (c, s) => (c.cacheRam ?? null) === (s.requested_cache_ram ?? null),
   },
   {
-    // The status echoes the EFFECTIVE budget, so a default control against a server the
-    // environment shaped reads as a reload: the safe direction, like the rest.
+    // Status echoes the effective budget, so env-shaped servers read as a reload (safe side).
     chatOnly: true,
     pinned: () => true,
     agrees: (c, s) =>
@@ -346,33 +348,28 @@ const SETTING_CHECKS: SettingCheck[] = [
     pinned: () => true,
     agrees: (c, s) =>
       (c.reasoningBudgetMessage ?? "") ===
-      (s.requested_reasoning_budget_message ?? s.reasoning_budget_message ?? ""),
+      (s.requested_reasoning_budget_message ??
+        s.reasoning_budget_message ??
+        ""),
   },
   {
-    // Not nullable, so it always has an opinion; a status omitting it ran without.
     pinned: () => true,
     agrees: (c, s) =>
-      // The toggle after a pass-through --split-mode has last-won over it, which is what
-      // resolve_tensor_parallel hands the comparator.
       resolveTensorParallel(c.llamaExtraArgs, c.tensorParallel) ===
         (s.tensor_parallel ?? false) ||
-      // Rewritten away with the rest of the placement on a virtualised Metal device.
       s.gpu_placement_paravirtual === true ||
-      // A split the architecture gate normalized away: that layer-mode runtime IS this request as the
-      // gate rewrote it, and the backend accepts it back unchanged.
+      // A split the architecture gate normalized away still matches.
       (resolveTensorParallel(c.llamaExtraArgs, c.tensorParallel) &&
         s.tensor_parallel !== true &&
         s.tensor_parallel_dropped_by_arch_gate === true),
   },
   {
-    // Not nullable, so it always has an opinion; a status omitting it ran with the projector. The
-    // backend reloads when this disagrees, so adopting would keep the VRAM spent.
+    // Backend reloads on mismatch, so adopting would keep projector VRAM spent.
     chatOnly: true,
     pinned: () => true,
     agrees: (c, s) => c.disableVision === (s.disable_vision ?? false),
   },
   {
-    // Blank-trimmed on both ends: the applier and the load both send "" as null.
     mlxComparable: true,
     pinned: () => true,
     agrees: (c, s) =>
@@ -380,8 +377,7 @@ const SETTING_CHECKS: SettingCheck[] = [
       cleanTemplate(s.chat_template_override),
   },
   {
-    // undefined: never read the stored value. null: the user cleared the box, which agrees only with a
-    // load invoked with no pass-through args.
+    // undefined: never read. null: cleared, agrees only with no pass-through args.
     chatOnly: true,
     pinned: (c) => c.llamaExtraArgs !== undefined,
     agrees: (c, s, standing) =>
@@ -393,7 +389,6 @@ const SETTING_CHECKS: SettingCheck[] = [
       ),
   },
   {
-    // Standing preference, like the speculative mode above.
     placement: true,
     ggufPlacement: true,
     pinned: () => true,
@@ -402,8 +397,7 @@ const SETTING_CHECKS: SettingCheck[] = [
       (s.gpu_memory_mode ?? standing.gpuMemoryMode),
   },
   {
-    // Resolves to GPU_LAYERS_AUTO rather than to a preference, but the load still sends it. Only under
-    // Manual: under Auto the fitter chooses the offload, so the layer count decides nothing.
+    // Only under Manual: under Auto the fitter chooses offload.
     placement: true,
     ggufPlacement: true,
     pinned: () => true,
@@ -412,9 +406,7 @@ const SETTING_CHECKS: SettingCheck[] = [
       requestedGpuLayers(c, standing) === (s.gpu_layers ?? standing.gpuLayers),
   },
   {
-    // Manual with a non-negative pin, the same guard the backend uses. A config keeps a hidden
-    // nCpuMoe after the layer slider goes back to Auto, and llama.cpp records 0, so comparing it
-    // there rejected an identical runtime.
+    // Same guard as the backend: hidden nCpuMoe under Auto layers must be ignored.
     placement: true,
     ggufPlacement: true,
     pinned: () => true,
@@ -424,8 +416,7 @@ const SETTING_CHECKS: SettingCheck[] = [
       (c.nCpuMoe ?? standing.nCpuMoe) === (s.n_cpu_moe ?? standing.nCpuMoe),
   },
   {
-    // Absent resolves to a null selection, which is sent as Automatic, so this is pinned like the
-    // rest: an unset pick does not adopt a server placed on a chosen GPU. Reconciled first.
+    // Unset sends Automatic, so it does not adopt a server pinned to a chosen GPU.
     placement: true,
     pinned: () => true,
     agrees: (c, s, standing) => {
@@ -433,59 +424,49 @@ const SETTING_CHECKS: SettingCheck[] = [
         c.selectedGpuIds ?? null,
         c.selectedGpuIndexKind,
       );
-      // The diffusion runner drives one device, so matches_gpu_ids reduces the request to its lowest id
-      // and the status reports only that.
-      const pick =
+      // The diffusion runner reports the lowest id of a pick that fits it, else the whole sorted pick
+      // it split over; matches_gpu_ids accepts either.
+      const picks: (number[] | null)[] =
         s.is_diffusion === true && reconciled?.length
-          ? [Math.min(...reconciled)]
-          : reconciled;
-      if (sameGpuPlacement(pick, s.requested_gpu_ids)) {
+          ? [[Math.min(...reconciled)], [...reconciled].sort((a, b) => a - b)]
+          : [reconciled];
+      if (picks.some((pick) => sameGpuPlacement(pick, s.requested_gpu_ids))) {
         return true;
       }
       // Either pool, as matches_gpu_ids accepts either: fitting may narrow the request to the smallest
       // subset that holds the model. Guarded on a non-empty echo, since an absent one is no
       // placement rather than Automatic.
-      return Boolean(s.gpu_ids?.length) && sameGpuPlacement(pick, s.gpu_ids);
+      return (
+        Boolean(s.gpu_ids?.length) &&
+        picks.some((pick) => sameGpuPlacement(pick, s.gpu_ids))
+      );
     },
   },
   {
-    // The split is placement the config cannot carry: the applier clears splitRatio, so a remembered
-    // config asks for the default distribution while a resident manual load may run a custom one.
-    //
-    // Judged on the mode the RESIDENT server ran, not the one this pick would send. Since
-    // unslothai/unsloth#10884 an auto tensor-parallel load reports a split of its own, chosen by
-    // the planner, and the store never holds one in auto -- applyInferenceStatusToStore nulls it
-    // unless the mode is manual. Comparing the two sides there compares a field the applier
-    // cleared against a server legitimately running the planner's ratio, and declines to adopt a
-    // resident model that is exactly what was asked for. A manual load's custom ratio is still a
-    // real disagreement, and a server too old to report its mode is still compared, so nothing
-    // that used to reload stops reloading.
-    //
-    // Only when the store is holding NO ratio, though. applyInferenceStatusToStore keeps
-    // prevState.splitRatio whenever a gpu-memory edit is pending, so a ratio set under Manual
-    // survives the switch to Auto, and the load path sends store.splitRatio in either mode. Since
-    // this PR the backend honours that ratio in auto too, so adopting on the mode alone would drop
-    // a placement change the user had made and the server would have applied.
+    // A remembered split is dropped with its GPU pick; auto loads may report a planner split unasked.
     placement: true,
     ggufPlacement: true,
     pinned: () => true,
-    agrees: (_c, s, standing) =>
-      (s.gpu_memory_mode === "auto" && standing.splitRatio == null) ||
-      sameList(standing.splitRatio, s.tensor_split),
+    agrees: (c, s, standing) => {
+      const split = c.tensorSplit !== undefined
+        ? reconcileTensorSplit(
+            c.tensorSplit,
+            c.selectedGpuIds,
+            standing.reconcileGpuIds(c.selectedGpuIds ?? null, c.selectedGpuIndexKind),
+          )
+        : standing.splitRatio;
+      return (s.gpu_memory_mode === "auto" && split == null) || sameList(split, s.tensor_split);
+    },
   },
   {
-    // A managed override the backend would reject outright. Folding it into "no override" here would
-    // strip the token, find the rest agreeable and adopt, losing the saved setting in silence.
+    // A managed override the backend would reject must not be folded into no override.
     pinned: (c) => c.llamaExtraArgs !== undefined,
     agrees: (c, _s, standing) =>
       requestedGpuMemoryMode(c, standing) !== "manual" ||
       parseGpuLayersOverride(c.llamaExtraArgs).kind !== "invalid",
   },
   {
-    // What the diffusion branch compares in place of the placement fields: _diffusion_manual_ngl, the
-    // layer count only under Manual with a non-negative pin. An older shim that dropped a manual
-    // NGL leaves the status reporting Auto while keeping the request here, so comparing the mode
-    // raw rejected a load that deduplicates.
+    // Diffusion compares _diffusion_manual_ngl in place of the placement fields.
     diffusionOnly: true,
     pinned: () => true,
     agrees: (c, s, standing) => {
@@ -493,8 +474,6 @@ const SETTING_CHECKS: SettingCheck[] = [
       if (ngl !== (s.diffusion_requested_ngl ?? null)) {
         return false;
       }
-      // The request is retained even when an older shim dropped the split, so once the installed shim
-      // gains --ngl support the same request finally applies it.
       return !(
         ngl !== null &&
         s.gpu_layers !== ngl &&
@@ -504,8 +483,7 @@ const SETTING_CHECKS: SettingCheck[] = [
   },
 ];
 
-/** The layer count `/load` ends up with. Under manual a pass-through `-ngl` is copied into the
- *  first-class field before the comparator runs, so the raw toggle is not what was requested. */
+/** Under manual a pass-through `-ngl` is copied into the field before comparison. */
 function requestedGpuLayers(
   config: PerModelConfig,
   standing: StandingConfigDefaults,
@@ -519,7 +497,6 @@ function requestedGpuLayers(
     : (config.gpuLayers ?? standing.gpuLayers);
 }
 
-/** `_diffusion_manual_ngl`: only an explicit manual count reaches the child. */
 function diffusionManualNgl(
   config: PerModelConfig,
   standing: StandingConfigDefaults,
@@ -531,15 +508,15 @@ function diffusionManualNgl(
 }
 
 /** Whether the backend would rewrite this request into the resident CPU fallback.
- *  `adopt_load_intent_if_matched` runs `_preserve_cpu_fallback_intent` first, so after a
- *  Vulkan startup crash an Auto request becomes the resident manual/zero-layer intent and
+ *  `adopt_load_intent_if_matched` runs `_preserve_cpu_fallback_intent` first, so after any
+ *  Vulkan CPU fallback an Auto request becomes the resident manual/zero-layer intent and
  *  dedupes. Mirrors `_cpu_fallback_request_eligible` minus its environment terms. */
 function cpuFallbackPlacementPreserved(
   config: PerModelConfig,
   status: ResidentRuntime,
   standing: StandingConfigDefaults,
 ): boolean {
-  if (status.cpu_fallback_reason !== "vulkan_startup_crash") {
+  if (!isCpuFallbackReason(status.cpu_fallback_reason)) {
     return false;
   }
   const mode = config.gpuMemoryMode ?? standing.gpuMemoryMode;
@@ -557,30 +534,61 @@ function cpuFallbackPlacementPreserved(
   );
 }
 
-/** Whether the resident load already runs the settings this pick would ask for. `LlamaCppBackend`
- *  reuses a running server only when the request also agrees on context, KV dtype, slots,
- *  batch sizes, placement, speculative mode, chat template and pass-through args. An unset
- *  field is still an opinion: the applier resolves it before the load reads it. The bias is
- *  one-sided on purpose: "differs" costs one reload, while a wrong "matches" leaves the user
- *  on settings they did not ask for. `maxSeqLength` is not compared: it is a client-side cap
- *  that never reaches llama-server's invocation. */
+/** Whether the resident load already runs this pick's settings. Biased to report differences.
+ *  maxSeqLength is client-side and not compared. */
 export function residentRuntimeMatchesConfig(
   status: ResidentRuntime,
   config: PerModelConfig | null | undefined,
   standing: StandingConfigDefaults,
 ): boolean {
-  // No config at all is not the same as a config that pins nothing: with none, the load path reads
-  // the live runtime, which was hydrated from the resident model.
+  // No config means the load reads the live runtime, which was hydrated from the resident.
   if (!config) {
     return true;
   }
+  if ((status.engine ?? "auto") !== (config.engine ?? "auto")) return false;
+  if (
+    (status.engine ?? "auto") === "auto" &&
+    typeof status.load_in_4bit === "boolean" &&
+    status.load_in_4bit !== (config.loadIn4bit !== false)
+  )
+    return false;
+  if (status.engine === "vllm" || status.engine === "sglang") {
+    if (
+      (status.engine_precision ?? "auto") !== (config.enginePrecision ?? "auto") ||
+      (status.engine_parallelism ?? "tensor") !== (config.engineParallelism ?? "tensor") ||
+      (status.engine_kv_cache_dtype ?? "auto") !==
+        (config.engineKvCacheDtype ?? "auto") ||
+      (status.engine_seed ?? null) !== (config.engineSeed ?? null) ||
+      (status.engine_gpu_memory_utilization ?? null) !==
+        (config.engineGpuMemoryUtilization ?? null)
+    )
+      return false;
+    if (
+      config.maxSeqLength != null &&
+      config.maxSeqLength > 0 &&
+      config.maxSeqLength !==
+        (status.requested_context_length ?? status.context_length)
+    ) {
+      return false;
+    }
+    const requested = standing.reconcileGpuIds(
+      config.selectedGpuIds ?? null,
+      config.selectedGpuIndexKind,
+    ) ?? standing.defaultEngineGpuIds ?? [0];
+    if (
+      !sameGpuPlacement(
+        requested,
+        status.requested_gpu_ids ?? status.gpu_ids ?? [0],
+      )
+    ) {
+      return false;
+    }
+  }
   const placementPreserved =
-    // A virtualised Metal device pins every GGUF request to the CPU before either comparator runs, so
-    // placement cannot tell two requests apart there.
+    // Paravirtual Metal pins every GGUF to CPU, so placement cannot differ.
     status.gpu_placement_paravirtual === true ||
     cpuFallbackPlacementPreserved(config, status, standing);
-  // The diffusion runner takes no --parallel, no batch sizes and no pass-through args, so the
-  // backend does not compare them and the status nulls them.
+  // Diffusion takes no --parallel, batch sizes or pass-through args.
   const diffusion = status.is_diffusion === true;
   return SETTING_CHECKS.every(
     (check) =>

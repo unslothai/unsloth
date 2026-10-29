@@ -4,12 +4,12 @@
 import { useEffect, useRef } from "react";
 import { Switch } from "@/components/ui/switch";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
+import { TrickOrTreatSettingsRow } from "@/features/halloween/trick-or-treat-settings-row";
 import { useT } from "@/i18n";
 import {
   ActiveColorControl,
   ChatFontRow,
   ChatWidthSelect,
-  ComposerAttachmentsSelect,
   SentAttachmentsSelect,
   CodeFontRow,
   CodeFontSizeRow,
@@ -37,7 +37,6 @@ const FONT_SELECT_CLASS = "w-auto min-w-0 flex-1";
 export function AppearanceTab() {
   const t = useT();
   const { pinned, setPinned } = useSidebarPin();
-  // The sidebar's "Customize sidebar" entry lands mid-page, so scroll its section into view.
   const sidebarNavSectionRef = useRef<HTMLDivElement | null>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const consumeScrollTarget = useSettingsDialogStore(
@@ -72,6 +71,7 @@ export function AppearanceTab() {
         <SettingsRow label={t("settings.appearance.palette.label")}>
           <ColorThemeSelect />
         </SettingsRow>
+        <TrickOrTreatSettingsRow />
         <SettingsRow label={t("settings.appearance.custom.colors.accent")}>
           <ActiveColorControl
             colorKey="accent"
@@ -96,7 +96,6 @@ export function AppearanceTab() {
       </SettingsSection>
 
       <SettingsSection title={t("settings.appearance.custom.preferencesTitle")}>
-        {/* Shared width so the font pickers line up. */}
         <SettingsRow label={t("settings.appearance.custom.uiFont.label")}>
           <div className={FONT_CONTROL_CLASS}>
             <UiFontRow className={FONT_SELECT_CLASS} />
@@ -134,14 +133,6 @@ export function AppearanceTab() {
           <ChatWidthSelect />
         </SettingsRow>
         <SettingsRow
-          label={t("settings.appearance.custom.composerAttachments.label")}
-          description={t(
-            "settings.appearance.custom.composerAttachments.description",
-          )}
-        >
-          <ComposerAttachmentsSelect />
-        </SettingsRow>
-        <SettingsRow
           label={t("settings.appearance.custom.sentAttachments.label")}
           description={t(
             "settings.appearance.custom.sentAttachments.description",
@@ -171,22 +162,21 @@ export function AppearanceTab() {
         >
           <FontSmoothingSwitch />
         </SettingsRow>
-        <SettingsRow
-          label={t("settings.appearance.layout.compactSidebar")}
-          description={t(
-            "settings.appearance.layout.compactSidebarDescription",
-          )}
-        >
-          <Switch checked={pinned} onCheckedChange={setPinned} />
-        </SettingsRow>
       </SettingsSection>
 
-      {/* Nav shape first, then the profile menu inside it. */}
       <div ref={sidebarNavSectionRef} className="scroll-mt-4">
         <SettingsSection
           title={t("settings.appearance.sidebarNav.title")}
           description={t("settings.appearance.sidebarNav.description")}
         >
+          <SettingsRow
+            label={t("settings.appearance.layout.compactSidebar")}
+            description={t(
+              "settings.appearance.layout.compactSidebarDescription",
+            )}
+          >
+            <Switch checked={pinned} onCheckedChange={setPinned} />
+          </SettingsRow>
           <div className="pt-3">
             <SidebarNavCustomizer />
           </div>

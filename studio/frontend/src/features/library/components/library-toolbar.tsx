@@ -11,32 +11,32 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   AiEditingIcon,
-  AudioWave01Icon,
   FileEmpty02Icon,
   FilterMailIcon,
   FlimSlateIcon,
   Folder01Icon,
   GridViewIcon,
-  Image02Icon,
+  ImageIcon,
   LeftToRightListBulletIcon,
   Note01Icon,
   Pdf01Icon,
   Presentation01Icon,
   Search01Icon,
   Settings02Icon,
-  Tick02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { type TranslationKey, useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { SheetIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, SheetIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { ArrowDownUpIcon } from "lucide-react";
 import type { LibrarySource } from "../api";
+import type { LibraryAudioWorkflow } from "../audio-items";
 import type { LibraryTypeFilter } from "../file-kind";
 import { EMPTY_FILTERS, type LibraryFilters, filtersActive } from "../filters";
 import type { LibrarySortKey, LibraryView } from "../settings-store";
+import { Tick02Icon } from "@/lib/tick-icon";
 
 const ICON = "size-icon";
 export const ROUND_BUTTON =
@@ -54,9 +54,9 @@ const SOURCE_OPTIONS: MenuOption<LibrarySource>[] = [
 ];
 
 const TYPE_OPTIONS: MenuOption<LibraryTypeFilter>[] = [
-  { value: "images", label: "library.tabs.images", icon: Image02Icon },
+  { value: "images", label: "library.tabs.images", icon: ImageIcon },
   { value: "videos", label: "library.tabs.videos", icon: FlimSlateIcon },
-  { value: "audio", label: "library.tabs.audio", icon: AudioWave01Icon },
+  { value: "audio", label: "library.tabs.audio", icon: AiSpeechIcon },
   { value: "documents", label: "library.toolbar.documents", icon: FileEmpty02Icon },
   { value: "spreadsheets", label: "library.toolbar.spreadsheets", icon: SheetIcon },
   { value: "presentations", label: "library.toolbar.presentations", icon: Presentation01Icon },
@@ -73,9 +73,7 @@ export type LibrarySortChoice = "default" | LibrarySortKey;
 export interface LibrarySortMenuProps {
   value: LibrarySortChoice;
   onChange: (next: LibrarySortChoice) => void;
-  /** The view orders by last activity rather than modified time. */
   activity?: boolean;
-  /** False where only folders show, which have no size. */
   showSize?: boolean;
   desc?: boolean;
   onDirectionChange?: (desc: boolean) => void;
@@ -99,14 +97,17 @@ function FilterMenu({
   filters,
   onChange,
   showTypes,
+  workflows,
 }: {
   filters: LibraryFilters;
   onChange: (next: LibraryFilters) => void;
   showTypes: boolean;
+  workflows: readonly LibraryAudioWorkflow[];
 }) {
   const t = useT();
   const option = (
-    { value, label, icon }: MenuOption<string>,
+    { value, icon }: { value: string; icon: IconSvgElement },
+    label: string,
     checked: boolean,
     toggle: () => void,
   ) => (
@@ -118,7 +119,7 @@ function FilterMenu({
       }}
     >
       <HugeiconsIcon icon={icon} strokeWidth={1.75} className={ICON} />
-      <span className="flex-1">{t(label)}</span>
+      <span className="flex-1">{label}</span>
       {/* Always rendered so the menu width does not change when ticked. */}
       <HugeiconsIcon
         icon={Tick02Icon}
@@ -147,8 +148,24 @@ function FilterMenu({
               {t("library.toolbar.fileType")}
             </DropdownMenuLabel>
             {TYPE_OPTIONS.map((entry) =>
-              option(entry, filters.types.has(entry.value), () =>
+              option(entry, t(entry.label), filters.types.has(entry.value), () =>
                 onChange({ ...filters, types: toggled(filters.types, entry.value) }),
+              ),
+            )}
+            <DropdownMenuSeparator className="mx-3" />
+          </>
+        )}
+        {workflows.length > 0 && (
+          <>
+            <DropdownMenuLabel className="px-3 pb-1 pt-2 text-muted-foreground font-normal">
+              {t("library.toolbar.workflow")}
+            </DropdownMenuLabel>
+            {workflows.map((workflow) =>
+              option(
+                { value: workflow.id, icon: workflow.icon },
+                workflow.label,
+                filters.workflows.has(workflow.id),
+                () => onChange({ ...filters, workflows: toggled(filters.workflows, workflow.id) }),
               ),
             )}
             <DropdownMenuSeparator className="mx-3" />
@@ -158,7 +175,7 @@ function FilterMenu({
           {t("library.toolbar.source")}
         </DropdownMenuLabel>
         {SOURCE_OPTIONS.map((entry) =>
-          option(entry, filters.sources.has(entry.value), () =>
+          option(entry, t(entry.label), filters.sources.has(entry.value), () =>
             onChange({ ...filters, sources: toggled(filters.sources, entry.value) }),
           ),
         )}
@@ -211,7 +228,6 @@ function SortMenu({
   onDirectionChange,
 }: LibrarySortMenuProps) {
   const t = useT();
-  // Suggested orders "Modified" by last activity, as its list view header says.
   const options = SORT_OPTIONS.filter((option) => showSize || option.value !== "size").map(
     (option) =>
       activity && option.value === "modified"
@@ -270,9 +286,9 @@ export type NewAction =
 
 const NEW_OPTIONS: MenuOption<NewAction>[] = [
   { value: "note", label: "library.create.note", icon: Note01Icon },
-  { value: "image", label: "library.create.image", icon: Image02Icon },
+  { value: "image", label: "library.create.image", icon: ImageIcon },
   { value: "video", label: "library.create.video", icon: FlimSlateIcon },
-  { value: "audio", label: "library.create.audio", icon: AudioWave01Icon },
+  { value: "audio", label: "library.create.audio", icon: AiSpeechIcon },
   { value: "model", label: "library.create.model", icon: TestTubeOutlineIcon },
   { value: "folder", label: "library.create.folder", icon: Folder01Icon },
 ];
@@ -284,7 +300,7 @@ function NewMenu({ onSelect }: { onSelect: (action: NewAction) => void }) {
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          className="flex h-9 shrink-0 items-center gap-1.5 rounded-full bg-foreground pl-4 pr-3 font-medium text-ui-14 text-background outline-none transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring"
+          className="flex shrink-0 items-center gap-1.5 rounded-full bg-action pl-[calc(15px*var(--ui-space-scale,1))] pr-[calc(14px*var(--ui-space-scale,1))] py-2 font-medium text-ui-14 text-background [&_svg]:-my-2 outline-none transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring"
         >
           {t("common.new")}
           <HugeiconsIcon icon={ChevronDownStandardIcon} strokeWidth={2} className="size-4" />
@@ -311,6 +327,7 @@ export function LibraryToolbar({
   filters,
   onFiltersChange,
   filterMode,
+  workflows = [],
   view,
   onViewChange,
   sort,
@@ -323,9 +340,9 @@ export function LibraryToolbar({
   filters: LibraryFilters;
   onFiltersChange: (next: LibraryFilters) => void;
   filterMode: "none" | "source" | "all";
+  workflows?: readonly LibraryAudioWorkflow[];
   view: LibraryView;
   onViewChange: (view: LibraryView) => void;
-  /** Grid view only: list view sorts by column headers. */
   sort?: LibrarySortMenuProps;
   search: string;
   onSearchChange: (value: string) => void;
@@ -341,6 +358,7 @@ export function LibraryToolbar({
             filters={filters}
             onChange={onFiltersChange}
             showTypes={filterMode === "all"}
+            workflows={workflows}
           />
         )}
         {sort && <SortMenu {...sort} />}
@@ -357,8 +375,6 @@ export function LibraryToolbar({
             <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-5" />
           </button>
         ))}
-        {/* Outlined on light; a lighter fill than the page on dark, where an outline reads as a hole.
-            Sized by the header row (cqw), not the window, so it never reaches the title. */}
         <label className="relative ml-2 flex h-9 w-[clamp(10rem,calc(100cqw-30rem),min(15rem,24vw))] min-w-40 items-center rounded-full border border-border px-4 focus-within:border-ring dark:border-transparent dark:bg-card dark:focus-within:border-ring">
           <HugeiconsIcon
             icon={Search01Icon}

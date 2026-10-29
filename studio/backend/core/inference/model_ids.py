@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Public model identifiers for the OpenAI-compatible API.
-
-The exposed API must report a stable, clean model id rather than the absolute
-on-disk path of a local GGUF. The internal identifier for a direct local load is
-the absolute ``.gguf`` path, which leaks the host filesystem layout and is
-awkward for clients to round-trip. ``public_model_id`` maps such an internal
-identifier to a clean name while leaving Hugging Face repo ids (``org/model``)
-and already-clean names untouched.
-"""
+"""Keeps host paths out of API model ids: public_model_id maps absolute .gguf paths, leaves repo ids."""
 
 from __future__ import annotations
 
@@ -20,16 +12,14 @@ _GGUF_SUFFIX = ".gguf"
 
 
 def _looks_like_path(identifier: str) -> bool:
-    """True when *identifier* is a local filesystem path, not a HF repo id.
-
-    A repo id is ``org/model`` (a single forward slash, no leading separator, no
-    drive, no ``.gguf``). Anything ending in ``.gguf``, starting with a path
-    separator or a relative/home prefix (``./``, ``../``, ``~``), carrying a
-    Windows drive, or with three or more ``/`` segments is treated as a local
-    path.
-    """
+    """A repo id has one slash: .gguf names, ./ or drive prefixes, and 3+ segments count as paths."""
     if identifier.lower().endswith(_GGUF_SUFFIX):
         return True
+    # An audio.cpp umbrella id names a model folder of one Hub repo; three segments, not a path.
+    if identifier.lower().startswith("audio-cpp/audio.cpp-gguf/"):
+        from core.inference.audio_cpp_models import parse_identifier
+        if parse_identifier(identifier) is not None:
+            return False
     if identifier.startswith(("/", "\\", "./", "../", ".\\", "..\\", "~")):
         return True
     if len(identifier) >= 2 and identifier[1] == ":":
@@ -40,11 +30,7 @@ def _looks_like_path(identifier: str) -> bool:
 
 
 def hf_cache_repo_id(path: Optional[str]) -> Optional[str]:
-    """``.../models--org--name/snapshots/<sha>`` -> ``org/name``, else None.
-
-    A model loaded from the HF cache is identified by its snapshot dir, whose
-    basename is a commit hash; recover the repo id so callers don't show that.
-    """
+    """Recovers org/name from a snapshot path, since the snapshot basename is only a commit hash."""
     if not path:
         return None
     parts = str(path).replace("\\", "/").split("/")
@@ -56,16 +42,7 @@ def hf_cache_repo_id(path: Optional[str]) -> Optional[str]:
 
 
 def public_model_id(identifier: Optional[str]) -> Optional[str]:
-    """Return a clean, path-free public id for *identifier*.
-
-    - HF cache path -> the repo id it came from, e.g.
-      ``~/.cache/huggingface/hub/models--unsloth--X-GGUF/snapshots/<sha>`` ->
-      ``unsloth/X-GGUF``.
-    - Other local GGUF path -> the file stem with ``.gguf`` stripped, e.g.
-      ``/srv/models/Qwen3-30B-A3B-Q4_K_M.gguf`` -> ``Qwen3-30B-A3B-Q4_K_M``.
-    - HF repo id (``org/model``) and already-clean names -> returned unchanged.
-    - ``None`` / empty -> returned unchanged.
-    """
+    """Returns a path-free public id: the repo id for HF cache paths, the stem for local GGUF files."""
     if not identifier:
         return identifier
     if not _looks_like_path(identifier):
@@ -93,12 +70,7 @@ def _is_hub_repo_id(identifier: str) -> bool:
 
 
 def display_model_name(identifier: Optional[str]) -> Optional[str]:
-    """The short label a UI should show for *identifier*.
-
-    Trailing segment of the public id, so a HF cache snapshot reads as ``X-GGUF`` and
-    not its commit sha. Splitting the raw identifier instead leaks the host layout on
-    Windows, where ``C:\\Users\\...`` has no ``/`` to split on.
-    """
+    """Last segment of the public id; splitting the raw path would leak host layout on Windows."""
     if not identifier:
         return identifier
     if _is_hub_repo_id(identifier):
@@ -108,12 +80,7 @@ def display_model_name(identifier: Optional[str]) -> Optional[str]:
 
 
 def model_id_matches(requested: Optional[str], internal: Optional[str]) -> bool:
-    """Whether a client-supplied *requested* id refers to *internal*.
-
-    Accepts the clean public id (preferred) and, for backward compatibility, the
-    raw internal identifier (e.g. a legacy absolute path a client cached from an
-    older ``/v1/models`` response).
-    """
+    """Accepts the public id, and the raw internal id too for clients that cached a legacy path."""
     if requested is None or internal is None:
         return False
     if requested == internal:
@@ -156,3 +123,14 @@ def mlx_bnb_substitutions(repos: Iterable[str]) -> list[tuple[str, str]]:
         if base:
             swaps.append((repo, base))
     return swaps
+
+
+_DEEPSEEK_OCR_ARCHITECTURES = frozenset({"DeepseekOCRForCausalLM", "DeepseekOCR2ForCausalLM"})
+# infer() tiles pages itself, so the 800 px chat cap blurs text; still bounded (many images per request).
+DEEPSEEK_OCR_MAX_IMAGE_SIDE = 2048
+
+
+def is_deepseek_ocr(model) -> bool:
+    """A loaded DeepSeek-OCR model, which generates through its own infer()."""
+    architectures = getattr(getattr(model, "config", None), "architectures", None) or ()
+    return hasattr(model, "infer") and not _DEEPSEEK_OCR_ARCHITECTURES.isdisjoint(architectures)

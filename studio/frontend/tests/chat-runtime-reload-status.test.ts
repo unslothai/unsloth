@@ -24,6 +24,8 @@ const {
   subscribeGenerationRecoveryTriggers,
 } = await import("../src/features/chat/utils/chat-generation-recovery.ts");
 
+const MARKERS = { messageCount: 2, revision: 0, estimatedTokens: 5 };
+
 test("first-token recovery ignores role and control chunks", () => {
   assert.equal(
     generationChunkHasSubstantiveDelta({
@@ -89,8 +91,6 @@ test("stored assistant status remains truthful after reload", () => {
   });
   assert.deepEqual(readIncompleteInfo(interrupted), { reason: "interrupted" });
 
-  // Every reason keeps its own identity, so the Continue bar and the error box
-  // cannot disagree about what happened.
   const length = { custom: { incomplete: { reason: "length" } } };
   assert.deepEqual(restoredAssistantStatus(length), {
     type: "incomplete",
@@ -159,6 +159,7 @@ test("terminal recovery reads cache writes from either provider's usage shape", 
         },
         usage: { prompt_tokens: 8, completion_tokens: 2, total_tokens: 10, ...usage },
         totalChunks: 1,
+        markers: MARKERS,
       }).contextUsage as { cacheWriteTokens: number }
     ).cacheWriteTokens;
   assert.equal(writesFor({ prompt_tokens_details: { cache_write_tokens: 5 } }), 5);
@@ -166,6 +167,80 @@ test("terminal recovery reads cache writes from either provider's usage shape", 
     writesFor({ cache_creation_input_tokens: 7, prompt_tokens_details: { cache_write_tokens: 5 } }),
     7,
   );
+});
+
+test("terminal recovery prices a tool loop's context, not its summed completions", () => {
+  const metadata = recoveredGenerationFinalMetadata({
+    current: { generationSettled: true },
+    run: {
+      id: "run-tools",
+      requestPayload: { model: "local/model" },
+      createdAt: 100,
+      startedAt: 120,
+      completedAt: 1120,
+    },
+    usage: {
+      prompt_tokens: 140,
+      completion_tokens: 40,
+      total_tokens: 180,
+      context_tokens: 150,
+    },
+    timings: {},
+    firstChunkAt: 220,
+    totalChunks: 4,
+    markers: MARKERS,
+  });
+  const usage = metadata.contextUsage as {
+    totalTokens: number;
+    contextTokens: number;
+  };
+  assert.equal(usage.contextTokens, 150);
+  assert.equal(usage.totalTokens, 180);
+});
+
+test("recovered usage keeps the reasoning mode from its persisted request", () => {
+  const metadata = recoveredGenerationFinalMetadata({
+    current: { generationSettled: true },
+    run: {
+      id: "run-reasoning",
+      requestPayload: {
+        model: "local/model",
+        thinking: { type: "enabled" },
+        reasoning_effort: "high",
+        preserve_thinking: false,
+      },
+      createdAt: 100,
+      startedAt: 120,
+      completedAt: 1120,
+    },
+    usage: { prompt_tokens: 140, completion_tokens: 40, total_tokens: 180 },
+    totalChunks: 4,
+    markers: MARKERS,
+  });
+  assert.equal(
+    (metadata.contextUsage as { reasoningKey: string }).reasoningKey,
+    '[true,"high",false]',
+  );
+});
+
+test("recovery certifies usage only for a branch no edit could have revised", () => {
+  const usageFor = (revision: number) =>
+    recoveredGenerationFinalMetadata({
+      current: { generationSettled: true },
+      run: {
+        id: "run-revised",
+        requestPayload: { model: "local/model" },
+        createdAt: 100,
+        startedAt: 120,
+        completedAt: 1120,
+      },
+      usage: { prompt_tokens: 140, completion_tokens: 40, total_tokens: 180 },
+      totalChunks: 4,
+      markers: { ...MARKERS, revision },
+    }).contextUsage as { revision?: number; estimatedTokens?: number };
+  assert.equal(usageFor(0).revision, 0);
+  assert.equal(usageFor(1).revision, undefined);
+  assert.equal(usageFor(1).estimatedTokens, MARKERS.estimatedTokens);
 });
 
 test("terminal recovery restores final local usage and timing metadata", () => {
@@ -187,6 +262,7 @@ test("terminal recovery restores final local usage and timing metadata", () => {
     timings: { predicted_per_second: 12, prompt_ms: 25 },
     firstChunkAt: 220,
     totalChunks: 4,
+    markers: MARKERS,
   });
   assert.deepEqual(metadata.contextUsage, {
     promptTokens: 8,
@@ -195,6 +271,8 @@ test("terminal recovery restores final local usage and timing metadata", () => {
     cachedTokens: 3,
     cacheWriteTokens: 0,
     modelId: "local/model",
+    reasoningKey: "[null,null,null]",
+    ...MARKERS,
   });
   assert.deepEqual(metadata.serverTimings, {
     predicted_per_second: 12,
@@ -263,7 +341,6 @@ test("reload, wake, and stale-tab recovery stays monotonic and truthful", () => 
     ],
   );
 
-  // Recovery must match the producer's reason, with length taking precedence.
   const recovered = (lengthLimited: boolean, quoteCut: boolean) =>
     generationRecoveryMetadata({
       current: { generationRunId: "run-1" },
@@ -320,8 +397,6 @@ test("reload, wake, and stale-tab recovery stays monotonic and truthful", () => 
 });
 
 test("recovery persists recovered usage alongside the cursor it advanced", () => {
-  // The usage chunk arrives before the terminal event. A cursor published past it and then
-  // reloaded would resume after it, so the counts have to travel with the cursor.
   const usage = { prompt_tokens: 8, completion_tokens: 12, total_tokens: 20 };
   const timings = { predicted_per_second: 12 };
   const midStream = generationRecoveryMetadata({
@@ -338,7 +413,6 @@ test("recovery persists recovered usage alongside the cursor it advanced", () =>
   assert.deepEqual(midStream.generationRecoveryUsage, usage);
   assert.deepEqual(midStream.generationRecoveryTimings, timings);
 
-  // A recovery that never saw one must not invent or erase it.
   const withoutUsage = generationRecoveryMetadata({
     current: { generationRunId: "run-1" },
     runId: "run-1",
@@ -349,7 +423,6 @@ test("recovery persists recovered usage alongside the cursor it advanced", () =>
   });
   assert.equal("generationRecoveryUsage" in withoutUsage, false);
 
-  // Reloading picks the stored counts back up, so settlement still reports them.
   const settled = recoveredGenerationFinalMetadata({
     current: { generationSettled: true },
     run: {
@@ -363,6 +436,7 @@ test("recovery persists recovered usage alongside the cursor it advanced", () =>
     timings: midStream.generationRecoveryTimings as typeof timings,
     firstChunkAt: 220,
     totalChunks: 4,
+    markers: MARKERS,
   });
   assert.deepEqual(settled.contextUsage, {
     promptTokens: 8,
@@ -371,6 +445,8 @@ test("recovery persists recovered usage alongside the cursor it advanced", () =>
     cachedTokens: 0,
     cacheWriteTokens: 0,
     modelId: "local/model",
+    reasoningKey: "[null,null,null]",
+    ...MARKERS,
   });
   assert.deepEqual(settled.serverTimings, timings);
 });

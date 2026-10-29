@@ -198,7 +198,6 @@ def test_a_mixed_precision_or_quantised_file_keeps_its_stored_size(tmp_path, mon
                 "w": ("BF16", 900 * MIB // 2),
                 "norm": ("F32", 100 * MIB // 4),
             },
-            # A 4-bit checkpoint: packed bytes plus fp32 quant state.
             "text_encoder/model.safetensors": {
                 "w": ("U8", 200 * MIB),
                 "absmax": ("F32", 20 * MIB // 4),
@@ -240,13 +239,13 @@ def test_pinned_modules_of_a_half_checkpoint_are_widened(tmp_path, monkeypatch):
     _card(monkeypatch)
     pinned = types.SimpleNamespace(T5EncoderModel = type("T5", (), {"_keep_in_fp32_modules": ["wo"]}))
     monkeypatch.setitem(sys.modules, "transformers", pinned)
-    # bf16 on disk, loaded in fp16: wo is upcast to fp32 (200), the rest stays two bytes (300).
+    # bf16 on disk, fp16 load: wo upcast to fp32 (200), rest two bytes (300)
     assert _plan(torch.float16).estimates["model_dense_mib"] == 500
     assert _plan(torch.bfloat16).estimates["model_dense_mib"] == 400
 
 
 def test_gguf_companions_are_priced_at_the_load_dtype(tmp_path, monkeypatch):
-    # Lumina-2 publishes its Gemma encoder in fp32: a GGUF pick loads it in bf16 beside the GGUF.
+    # Lumina-2 ships its Gemma encoder in fp32; a GGUF pick loads it in bf16
     _snapshot(
         tmp_path,
         monkeypatch,
@@ -332,7 +331,7 @@ def test_a_tied_bin_weight_is_counted_once(tmp_path):
         {"shared.weight": shared, "encoder.embed_tokens.weight": shared, "head": shared[:10]},
         path,
     )
-    # The alias costs nothing; a distinct view of the same storage is still its own parameter.
+    # an alias costs nothing; a distinct view of the same storage counts separately
     assert DiffusionBackend._bin_cast_bytes(path, 4) == (800 + 80) * 4
 
 
@@ -393,10 +392,9 @@ def test_a_bin_is_kept_beside_safetensors_shards_the_loader_cannot_select(tmp_pa
         tmp_path,
         monkeypatch,
         {
-            # Numbered shards with no index: the loader falls back to the .bin.
+            # unindexed numbered shards: the loader falls back to the .bin
             "text_encoder/model-00001-of-00002.safetensors": _bf16(100),
             "text_encoder/pytorch_model.bin": _bf16(300),
-            # Indexed shards: selectable, so the .bin twin is never opened.
             "text_encoder_2/model-00001-of-00002.safetensors": _bf16(100),
             "text_encoder_2/model-00002-of-00002.safetensors": _bf16(100),
             "text_encoder_2/model.safetensors.index.json": "{}",
@@ -411,7 +409,7 @@ def test_a_bin_is_kept_beside_safetensors_shards_the_loader_cannot_select(tmp_pa
 @pytest.mark.parametrize(
     "attrs, dtype, expected",
     [
-        # Transformers upcasts the non-strict set only for fp16; the strict set for both halves.
+        # transformers upcasts the non-strict set only for fp16; the strict set for both
         ({"_keep_in_fp32_modules": ["wo"]}, "float16", 250),
         ({"_keep_in_fp32_modules": ["wo"]}, "bfloat16", 200),
         ({"_keep_in_fp32_modules_strict": ["wo"]}, "bfloat16", 250),

@@ -43,6 +43,7 @@ from .storage_roots import (
     lmstudio_model_dirs,
     ollama_model_dirs,
     hermes_model_dirs,
+    omlx_model_dirs,
     well_known_model_dirs,
     ensure_account_dir,
     ensure_dir,
@@ -56,8 +57,7 @@ from .storage_roots import (
     resolve_dataset_path,
 )
 
-# Re-export shim: mark project-path helpers as used so the import-hoist
-# safety net does not flag them as unused.
+# Re-export shim: mark helpers used for the import-hoist safety net.
 _REEXPORTED = (documents_root, project_workspaces_root, resolve_export_write_dir)
 
 __all__ = [
@@ -98,6 +98,7 @@ __all__ = [
     "lmstudio_model_dirs",
     "ollama_model_dirs",
     "hermes_model_dirs",
+    "omlx_model_dirs",
     "well_known_model_dirs",
     "ensure_account_dir",
     "ensure_dir",

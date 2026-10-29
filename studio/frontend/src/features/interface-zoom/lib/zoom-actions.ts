@@ -9,7 +9,6 @@ import { create } from "zustand";
 import type { ZoomDirection } from "./zoom-chords.ts";
 
 interface ZoomPopupState {
-  /** Bumped on every zoom to restart the hide timer. */
   token: number;
   open: boolean;
   show: () => void;
@@ -23,7 +22,6 @@ export const useZoomPopupStore = create<ZoomPopupState>()((set) => ({
   hide: () => set({ open: false }),
 }));
 
-/** Step the interface scale and show the popup. */
 export function zoomInterface(direction: ZoomDirection): void {
   const scale = useInterfaceScaleStore.getState();
   if (direction === 0) scale.reset();
@@ -31,16 +29,52 @@ export function zoomInterface(direction: ZoomDirection): void {
   useZoomPopupStore.getState().show();
 }
 
-// Guards against the macOS View menu repeating a chord the page already handled.
+export type ZoomScope = {
+  contains: (element: Element) => boolean;
+  zoom: (direction: ZoomDirection) => void;
+  /** Holds the keys outside this document (a native page view), where activeElement can't show it. */
+  holdsKeys?: () => boolean;
+};
+
+const scopes = new Set<ZoomScope>();
+
+export function registerZoomScope(scope: ZoomScope): () => void {
+  scopes.add(scope);
+  return () => {
+    scopes.delete(scope);
+  };
+}
+
+export function zoomScopeFor(target: EventTarget | null): ZoomScope | null {
+  if (!(target instanceof Element)) return null;
+  for (const scope of scopes) if (scope.contains(target)) return scope;
+  return null;
+}
+
+// Dedupes a macOS View menu echo of a chord the page already handled.
 const MENU_ECHO_MS = 150;
-let lastChordZoomAt = Number.NEGATIVE_INFINITY;
+let lastZoom: { source: "chord" | "menu"; at: number } | null = null;
+
+function echoed(source: "chord" | "menu"): boolean {
+  const now = performance.now();
+  if (lastZoom && lastZoom.source !== source && now - lastZoom.at < MENU_ECHO_MS) return true;
+  lastZoom = { source, at: now };
+  return false;
+}
 
 export function zoomInterfaceFromChord(direction: ZoomDirection): void {
-  lastChordZoomAt = performance.now();
-  zoomInterface(direction);
+  if (!echoed("chord")) zoomInterface(direction);
+}
+
+export function zoomScopeFromChord(scope: ZoomScope, direction: ZoomDirection): void {
+  if (!echoed("chord")) scope.zoom(direction);
 }
 
 export function zoomInterfaceFromMenu(direction: ZoomDirection): void {
-  if (performance.now() - lastChordZoomAt < MENU_ECHO_MS) return;
-  zoomInterface(direction);
+  if (echoed("menu")) return;
+  // A click into a native page moves the keys there but leaves activeElement wherever it was, e.g.
+  // the composer, so that alone would zoom the app.
+  const scope = [...scopes].find((candidate) => candidate.holdsKeys?.()) ?? zoomScopeFor(document.activeElement);
+  if (scope) scope.zoom(direction);
+  else zoomInterface(direction);
 }

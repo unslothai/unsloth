@@ -2,15 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Whether a tooltip trigger sits below the active modal rather than inside it.
- *
- * Radix's DismissableLayer writes `pointer-events` inline: `none` on the body while a modal is up,
- * `auto` on the active layer, `none` on the layers under it. The nearest ancestor with one of
- * those owns the trigger.
- *
- * The trigger's own style is skipped on purpose: it can be authored `pointer-events: none` and
- * still belong to the modal, as the hint anchors in the MCP dropdown rows do. Read the trigger,
- * never the content: layers rank by mount order, so content opened after the modal reads `auto`.
+ * Whether a tooltip trigger sits below the active modal. Radix writes inline pointer-events on
+ * layers; the nearest ancestor with one owns the trigger. The trigger's own style is skipped.
  */
 export function isBlockedByActiveModal(element: HTMLElement): boolean {
   for (let node = element.parentElement; node; node = node.parentElement) {
@@ -21,11 +14,8 @@ export function isBlockedByActiveModal(element: HTMLElement): boolean {
   return false;
 }
 
-// Whether a modal layer is up at all, shared by every tooltip. Radix sets body pointer-events to
-// none while one is, which is also when a hovered trigger stops receiving pointerleave, so an open
-// tooltip hangs over the dialog with nothing able to close it. Two observers, because the questions
-// cost differently: "is a modal up" is one attribute on one node; "which layer owns a trigger"
-// needs the whole subtree, and only matters while one is up.
+// While a modal is up a hovered trigger never gets pointerleave, so tooltips must close. Two
+// observers: one cheap body attribute check, and a subtree one only while a modal is up.
 let modalLayerUp = false;
 const modalLayerListeners = new Set<() => void>();
 let bodyLayerObserver: MutationObserver | null = null;
@@ -45,11 +35,9 @@ function readPointerEvents(style: string | null): string {
 function readStackedLayerMutations(records: MutationRecord[]): void {
   for (const record of records) {
     const previous = record.oldValue;
-    // The live property, not getAttribute: that serialises the whole declaration, and most
-    // records landing here while a modal is up are inline styles being animated.
+    // Live property, not getAttribute, which serialises the whole (often animated) style.
     const current = (record.target as HTMLElement).style?.pointerEvents ?? "";
-    // A style that never named pointer-events cannot have changed it. That is every animation
-    // frame, popper reposition and resize drag, and this test is why none reach the regex.
+    // Styles that never named pointer-events are skipped (every animation frame and resize drag).
     if (
       current === "" &&
       (previous === null || !previous.includes("pointer-events"))
@@ -89,12 +77,10 @@ function readModalLayer(): void {
 }
 
 export function subscribeModalLayer(listener: () => void): () => void {
-  // A fresh identity per subscription: the Set would otherwise collapse two subscribers sharing a
-  // callback, and the first cleanup would tear the observers down under the second.
+  // Fresh identity per subscription so shared callbacks do not collapse in the Set.
   const subscription = () => listener();
   modalLayerListeners.add(subscription);
-  // Both conditions: without the size check a duplicate listener builds a second body observer
-  // and orphans the first, which is the leak the teardown below exists for.
+  // Both checks: a duplicate listener would otherwise orphan a body observer and leak.
   if (
     modalLayerListeners.size === 1 &&
     !bodyLayerObserver &&
@@ -111,9 +97,7 @@ export function subscribeModalLayer(listener: () => void): () => void {
   return () => {
     modalLayerListeners.delete(subscription);
     if (modalLayerListeners.size > 0) return;
-    // No reader left. A modal still up when the last tooltip unmounts would otherwise leave the
-    // subtree observer running with nobody to notify. Clearing the flag before the sync drops
-    // that observer and keeps `readModalLayer`'s early return honest for the next subscriber.
+    // No reader left: disconnect, or the subtree observer runs with nobody to notify.
     bodyLayerObserver?.disconnect();
     bodyLayerObserver = null;
     modalLayerUp = false;

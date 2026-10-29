@@ -30,7 +30,25 @@ test("the compare composer exposes its skill suggestions as a linked combobox", 
 
 test("the popover caps the adapter search, so navigation never leaves the rendered rows", () => {
   assert.ok(
-    mentionsSource.includes("(mention.adapter.search?.(query) ?? []).slice(0, MAX_MENTION_RESULTS)"),
+    mentionsSource.includes("rankMentionSkills(available, query, MAX_MENTION_RESULTS)"),
   );
   assert.ok(!mentionsSource.includes("results.slice(0, MAX_MENTION_RESULTS)"));
+});
+
+test("Tab accepts the highlighted row in the main composer, as Enter does", () => {
+  assert.match(
+    mentionsSource,
+    /if \(event\.key !== "Tab" \|\| event\.shiftKey \|\| event\.isComposing\) return;/,
+  );
+  // reuse the library's Enter path so the token replacer still owns insertion.
+  assert.match(mentionsSource, /key: "Enter",\s*shiftKey: false,/);
+  assert.match(mentionsSource, /const active = open && items\.length > 0;/);
+  // focus may leave while the popover is open; Tab elsewhere must stay with that field.
+  assert.match(mentionsSource, /!scopeRef\.current\?\.contains\(event\.target\)/);
+  assert.match(mentionsSource, /<MentionTabAccept scopeRef=\{composerRef\} \/>/);
+  const thread = readFileSync(
+    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(thread, /<SkillMentionPopover[\s\S]*?composerRef=\{editorRef\}/);
 });

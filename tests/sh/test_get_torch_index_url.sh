@@ -1,23 +1,16 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Unit tests for get_torch_index_url() from install.sh
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
-# Extract get_torch_index_url and its helper functions from install.sh.
-# Also replace the hardcoded /usr/bin/nvidia-smi fallback with a
-# controllable path so we can test the "no GPU" scenario on GPU machines.
+# The hardcoded /usr/bin/nvidia-smi fallback is rewritten so the no-GPU case works on GPU hosts.
 _FUNC_FILE=$(mktemp)
 _FAKE_SMI_DIR=$(mktemp -d)
-# The ROCm probe helpers read the real /opt/rocm prefix by ABSOLUTE path
-# (_ensure_rocm_probe_env appends /opt/rocm/bin to PATH and runs the host
-# rocminfo; version detection reads /opt/rocm/.info/version). On a real ROCm
-# host that leaks the host GPU into the minimal-PATH harness and makes the
-# no-GPU / CPU assertions host-dependent. Redirect the whole prefix to an empty
-# temp dir so the probes stay hermetic (same idea as the nvidia-smi rewrite).
+# Redirect /opt/rocm to an empty dir: the ROCm probes read it by absolute path and would
+# leak a real host GPU into the harness.
 _FAKE_ROCM_DIR=$(mktemp -d)
 {
     sed -n '/^_run_bounded()/,/^}/p' "$INSTALL_SH"
@@ -28,11 +21,8 @@ _FAKE_ROCM_DIR=$(mktemp -d)
     echo ""
     sed -n '/^_has_usable_nvidia_gpu()/,/^}/p' "$INSTALL_SH"
     echo ""
-    # ROCm gfx-arch probe helpers that get_torch_index_url / _has_amd_rocm_gpu
-    # now call. These MUST stay in sync with install.sh: if get_torch_index_url
-    # references a helper that is not extracted here, the ROCm branch hits an
-    # undefined function, silently falls through to the CPU wheel index, and the
-    # ROCm assertions below fail.
+    # MUST stay in sync with install.sh: a missing helper makes the ROCm branch silently fall
+    # through to the CPU index.
     sed -n '/^_rocm_torch_explicitly_requested()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_ensure_rocm_probe_env()/,/^}/p' "$INSTALL_SH"
@@ -53,6 +43,8 @@ _FAKE_ROCM_DIR=$(mktemp -d)
     echo
     sed -n '/^_amd_sole_index_arch()/,/^}/p' "$INSTALL_SH"
     echo ""
+    sed -n '/^_hsa_override_gfx_arch()/,/^}/p' "$INSTALL_SH"
+    echo ""
     sed -n '/^_trim_index_path_slashes()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_nvidia_library_inventory()/,/^}/p' "$INSTALL_SH"
@@ -63,8 +55,7 @@ _FAKE_ROCM_DIR=$(mktemp -d)
     echo ""
     sed -n '/^_cap_cuda_family_for_pre_turing()/,/^}/p' "$INSTALL_SH"
     echo ""
-    # Same sync rule as the gfx helpers above: miss one of the version sources or
-    # the resolver they feed and the ROCm branch silently returns the CPU index.
+    # Same sync rule for the version sources and their resolver.
     sed -n '/^_rocm_tag_from_amd_smi()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_rocm_tag_from_version_file()/,/^}/p' "$INSTALL_SH"
@@ -79,6 +70,9 @@ _FAKE_ROCM_DIR=$(mktemp -d)
     echo ""
     sed -n '/^_detect_rocm_version_tag()/,/^}/p' "$INSTALL_SH"
     echo ""
+    sed -n '/^_ROCM_BNB_GENERIC_FLOOR_TAG=/p' "$INSTALL_SH"
+    sed -n '/^_rocm_bnb_compatible_generic_tag()/,/^}/p' "$INSTALL_SH"
+    echo ""
     sed -n '/^get_torch_index_url()/,/^}/p' "$INSTALL_SH"
 } | sed -e "s|/usr/bin/nvidia-smi|$_FAKE_SMI_DIR/nvidia-smi-absent|g" \
       -e "s|/opt/rocm|$_FAKE_ROCM_DIR|g" \
@@ -87,20 +81,16 @@ _FAKE_ROCM_DIR=$(mktemp -d)
 
 for _fn in _rocm_tag_from_amd_smi _rocm_tag_from_version_file _rocm_tag_from_hipconfig \
            _rocm_tag_from_dpkg _rocm_tag_from_rpm _highest_rocm_tag \
-           _detect_rocm_version_tag get_torch_index_url; do
+           _detect_rocm_version_tag _rocm_bnb_compatible_generic_tag get_torch_index_url; do
     if ! grep -q "^$_fn()" "$_FUNC_FILE"; then
         echo "FAIL: install.sh no longer defines $_fn() at column 0"
         exit 1
     fi
 done
 
-# Save system PATH so we always have basic tools (uname, grep, head, etc.)
 _SYS_PATH="/usr/local/bin:/usr/bin:/bin"
 
-# Helper: create a mock nvidia-smi answering the version header, -L (so
-# _has_usable_nvidia_gpu sees a GPU) and --query-gpu=compute_cap. $1 is the CUDA version,
-# $2 a space-separated capability list (default one Ampere card), $3 the compute_cap
-# query's exit code.
+# Mock nvidia-smi: $1 CUDA version, $2 compute caps (default one Ampere), $3 compute_cap exit code.
 make_mock_smi() {
     _dir=$(mktemp -d)
     _caps="${2-8.6}"
@@ -128,8 +118,7 @@ MOCK
     echo "$_dir"
 }
 
-# Helper: create a mock nvidia-smi that prints the new "CUDA UMD Version" header
-# layout used by newer NVIDIA drivers (e.g. 610.x on Windows).  See issue #5812.
+# Newer drivers print a "CUDA UMD Version" header instead.
 make_mock_smi_umd() {
     _dir=$(mktemp -d)
     cat > "$_dir/nvidia-smi" <<MOCK
@@ -151,16 +140,15 @@ MOCK
     echo "$_dir"
 }
 
-# Helper: create a mock amd-smi that prints a given ROCm version string
-# Supports both "amd-smi version" and "amd-smi list" subcommands so that
-# the GPU presence check (amd-smi list) also succeeds in tests.
+# Also answers `amd-smi list` so the GPU presence check succeeds.
 make_mock_amd_smi() {
     _dir=$(mktemp -d)
+    _gfx_arch="${2:-gfx1100}"
     cat > "$_dir/amd-smi" <<MOCK
 #!/bin/sh
 case "\$1" in
     list)
-        printf 'GPU: 0\\n  BDF: 0000:03:00.0\\n  NAME: gfx1100\\n'
+        printf 'GPU: 0\\n  BDF: 0000:03:00.0\\n  NAME: $_gfx_arch\\n'
         ;;
     *)
         cat <<AMD_OUT
@@ -173,6 +161,62 @@ MOCK
     echo "$_dir"
 }
 
+# amd-smi above emits ONE gfx token, which is not the shape a real host produces:
+# _probe_amd_gfx_arch greps every match out of rocminfo, and rocminfo names each
+# agent twice (Name: and the ISA Name:), so one card reads as two identical lines.
+# Any gfx comparison that matters has to be exercised against this shape.
+# $1 ROCm version, $2 gfx arch, $3 GPU agent count (default 1).
+make_mock_rocminfo() {
+    _dir=$(make_mock_amd_smi "$1" "$2")
+    _rocm_gfx="$2"
+    _rocm_agents="${3:-1}"
+    {
+        echo '#!/bin/sh'
+        echo "cat <<'ROCMINFO_OUT'"
+        echo 'ROCk module is loaded'
+        echo 'Agent 1'
+        echo '  Name:                    AMD Ryzen 9 5950X'
+        echo '  Device Type:             CPU'
+        _i=0
+        while [ "$_i" -lt "$_rocm_agents" ]; do
+            echo "Agent $((_i + 2))"
+            echo "  Name:                    $_rocm_gfx"
+            echo '  Device Type:             GPU'
+            echo '  ISA Info:'
+            echo "    Name:                  amdgcn-amd-amdhsa--$_rocm_gfx:sramecc-:xnack-"
+            _i=$((_i + 1))
+        done
+        echo 'ROCMINFO_OUT'
+    } > "$_dir/rocminfo"
+    chmod +x "$_dir/rocminfo"
+    echo "$_dir"
+}
+
+# Same, for a mixed host: $2 is a space-separated arch list, one GPU agent each.
+make_mock_rocminfo_multi() {
+    _dir=$(make_mock_amd_smi "$1" "${2%% *}")
+    _rocm_n=1
+    {
+        echo '#!/bin/sh'
+        echo "cat <<'ROCMINFO_OUT'"
+        echo 'ROCk module is loaded'
+        echo 'Agent 1'
+        echo '  Name:                    AMD Ryzen 9 5950X'
+        echo '  Device Type:             CPU'
+        for _a in $2; do
+            _rocm_n=$((_rocm_n + 1))
+            echo "Agent $_rocm_n"
+            echo "  Name:                    $_a"
+            echo '  Device Type:             GPU'
+            echo '  ISA Info:'
+            echo "    Name:                  amdgcn-amd-amdhsa--$_a:sramecc-:xnack-"
+        done
+        echo 'ROCMINFO_OUT'
+    } > "$_dir/rocminfo"
+    chmod +x "$_dir/rocminfo"
+    echo "$_dir"
+}
+
 # Build a minimal tools directory with symlinks to essential commands
 # (uname, grep, head, etc.) but WITHOUT nvidia-smi or amd-smi.
 _TOOLS_DIR=$(mktemp -d)
@@ -181,25 +225,19 @@ for _cmd in uname grep sed head sh bash cat awk printf tr; do
     [ -n "$_real" ] && ln -sf "$_real" "$_TOOLS_DIR/$_cmd"
 done
 
-# Helper: run get_torch_index_url with a custom PATH
-# $1 = directory with mock nvidia-smi (prepended to PATH), or "none" for no-GPU test
+# $1 = dir with mock nvidia-smi, or "none"; optional $2 sets CUDA_VISIBLE_DEVICES.
 run_func() {
     _mock_dir="$1"
-    # Default: strip CUDA_VISIBLE_DEVICES so the host environment cannot leak
-    # in; a second argument sets it explicitly (hidden-GPU scenarios).
     if [ "$#" -ge 2 ]; then
         _cvd_setup="export CUDA_VISIBLE_DEVICES='$2'"
     else
         _cvd_setup="unset CUDA_VISIBLE_DEVICES"
     fi
-    # Pin the arch: the cap is x86_64-only, so an aarch64 runner would silently
-    # expect the wrong family in every cap assertion below.
+    # Pin the arch: the cap is x86_64-only.
     _cvd_setup="$_cvd_setup; _ARCH=x86_64"
     if [ "$_mock_dir" = "none" ]; then
-        # Minimal PATH with only basic tools, no nvidia-smi anywhere
         PATH="$_TOOLS_DIR" bash -c "$_cvd_setup; . '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null
     else
-        # Put mock nvidia-smi dir first, then basic tools
         PATH="$_mock_dir:$_TOOLS_DIR" bash -c "$_cvd_setup; . '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null
     fi
 }
@@ -215,47 +253,39 @@ run_func_stderr() {
 
 echo "=== test_get_torch_index_url ==="
 
-# 1) No nvidia-smi available -> cpu
 _result=$(run_func "none")
 assert_eq "no nvidia-smi -> cpu" "https://download.pytorch.org/whl/cpu" "$_result"
 
-# 2) CUDA 12.6 -> cu126
 _dir=$(make_mock_smi "12.6")
 _result=$(run_func "$_dir")
 assert_eq "CUDA 12.6 -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
 rm -rf "$_dir"
 
-# 3) CUDA 12.8 -> cu128
 _dir=$(make_mock_smi "12.8")
 _result=$(run_func "$_dir")
 assert_eq "CUDA 12.8 -> cu128" "https://download.pytorch.org/whl/cu128" "$_result"
 rm -rf "$_dir"
 
-# 4) CUDA 13.0 -> cu130
 _dir=$(make_mock_smi "13.0")
 _result=$(run_func "$_dir")
 assert_eq "CUDA 13.0 -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
 rm -rf "$_dir"
 
-# 5) CUDA 12.4 -> cu124
 _dir=$(make_mock_smi "12.4")
 _result=$(run_func "$_dir")
 assert_eq "CUDA 12.4 -> cu124" "https://download.pytorch.org/whl/cu124" "$_result"
 rm -rf "$_dir"
 
-# 6) CUDA 11.8 -> cu118
 _dir=$(make_mock_smi "11.8")
 _result=$(run_func "$_dir")
 assert_eq "CUDA 11.8 -> cu118" "https://download.pytorch.org/whl/cu118" "$_result"
 rm -rf "$_dir"
 
-# 7) CUDA 10.2 (too old) -> cpu
 _dir=$(make_mock_smi "10.2")
 _result=$(run_func "$_dir")
 assert_eq "CUDA 10.2 -> cpu" "https://download.pytorch.org/whl/cpu" "$_result"
 rm -rf "$_dir"
 
-# 8) Unparseable nvidia-smi version but valid GPU listing -> cu126 default
 _dir=$(mktemp -d)
 cat > "$_dir/nvidia-smi" <<'MOCK'
 #!/bin/sh
@@ -269,13 +299,12 @@ _result=$(run_func "$_dir")
 assert_eq "unparseable -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
 rm -rf "$_dir"
 
-# Helper: a python3 stand-in for the driver-library probe, printing "<cuda> <caps>".
+# python3 stand-in for the driver-library probe, printing "<cuda> <caps>".
 make_mock_probe() {
     printf '#!/bin/sh\ncat >/dev/null\necho "%s"\n' "$2" > "$1/python3"
     chmod +x "$1/python3"
 }
 
-# 8b) Unparseable banner, but the driver library names the version -> its family
 _dir=$(mktemp -d)
 cat > "$_dir/nvidia-smi" <<'MOCK'
 #!/bin/sh
@@ -288,24 +317,20 @@ chmod +x "$_dir/nvidia-smi"
 make_mock_probe "$_dir" "13.0 12.0"
 _result=$(run_func "$_dir")
 assert_eq "unparseable banner, library says 13.0 -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
-# 8c) The library's capabilities feed the pre-Turing cap
 make_mock_probe "$_dir" "12.8 6.1"
 _result=$(run_func "$_dir")
 assert_eq "library says 12.8 with sm_61 -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
-# 8d) The probe switched off -> the cu126 default again
 _result=$(PATH="$_dir:$_TOOLS_DIR" bash -c "unset CUDA_VISIBLE_DEVICES; _ARCH=x86_64; UNSLOTH_NVIDIA_LIBRARY_PROBE=0; . '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null)
 assert_eq "probe off -> cu126 default" "https://download.pytorch.org/whl/cu126" "$_result"
 rm -rf "$_dir"
 
-# 8e) No nvidia-smi anywhere, the library lists a GPU -> its family, not cpu
 _dir=$(mktemp -d)
 make_mock_probe "$_dir" "12.9 8.9"
 _result=$(run_func "$_dir")
 assert_eq "no nvidia-smi, library says 12.9 -> cu128" "https://download.pytorch.org/whl/cu128" "$_result"
 rm -rf "$_dir"
 
-# 8f) The inventory is read once per run: the presence check's answer feeds the torch
-# index even when a second probe would fail, and the probe is not launched again.
+# The inventory is read once per run; the probe is not launched again.
 _dir=$(mktemp -d)
 printf '#!/bin/sh\ncat >/dev/null\nn=$(cat "%s/calls" 2>/dev/null || echo 0)\necho $((n + 1)) > "%s/calls"\n[ "$n" = 0 ] && echo "12.9 8.9"\n' "$_dir" "$_dir" > "$_dir/python3"
 chmod +x "$_dir/python3"
@@ -314,8 +339,7 @@ assert_eq "memoised inventory -> cu128 from the first answer" "https://download.
 assert_eq "memoised inventory -> one probe launch" "1" "$(cat "$_dir/calls")"
 rm -rf "$_dir"
 
-# 8g) No system python3: the managed venv's interpreter reads the library, and a run that
-# has no interpreter yet does not remember "no inventory" once the venv exists.
+# No system python3: the venv's interpreter reads the library once it exists.
 _dir=$(mktemp -d)
 mkdir -p "$_dir/venv/bin"
 make_mock_probe "$_dir/venv/bin" "12.9 8.9"
@@ -326,8 +350,7 @@ _result=$(PATH="$_TOOLS_DIR" bash -c "unset CUDA_VISIBLE_DEVICES; _ARCH=x86_64; 
 assert_eq "no interpreter yet is not memoised -> cu128 once the venv exists" "https://download.pytorch.org/whl/cu128" "$_result"
 rm -rf "$_dir"
 
-# 8h) The memo lives in the parent shell: the presence check runs there before the
-# torch index is read in a command substitution, so the later checks do not probe again.
+# The memo lives in the parent shell, primed before the command substitution.
 _prime=$(grep -n '^    _has_usable_nvidia_gpu >/dev/null 2>&1 || true$' "$INSTALL_SH" | head -1 | cut -d: -f1)
 _guard=$(sed -n "$((_prime - 1))p" "$INSTALL_SH")
 _assign=$(grep -n -F 'TORCH_INDEX_URL=$(get_torch_index_url)' "$INSTALL_SH" | head -1 | cut -d: -f1)
@@ -335,7 +358,6 @@ if [ -n "$_prime" ] && [ -n "$_assign" ] && [ "$_prime" -lt "$_assign" ]; then _
 assert_eq "presence check primes the inventory before the index substitution" "ordered" "$_result"
 assert_eq "the prime is skipped for a pinned index or no torch" 'if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ]; then' "$_guard"
 
-# 8i) Only cuDriverGetVersion answers (mock answers -c, not the inventory): Blackwell avoids cu126.
 _dir=$(mktemp -d)
 cat > "$_dir/nvidia-smi" <<'MOCK'
 #!/bin/sh
@@ -352,24 +374,22 @@ assert_eq "no inventory, cuDriverGetVersion says 13.1 -> cu130" "https://downloa
 _err=$(PATH="$_dir:$_TOOLS_DIR" bash -c "unset CUDA_VISIBLE_DEVICES; _ARCH=x86_64; . '$_FUNC_FILE'; get_torch_index_url" 2>&1 >/dev/null)
 case "$_err" in *"Selecting the cu130 PyTorch wheels"*UNSLOTH_TORCH_INDEX_URL=*) _result=warned ;; *) _result="$_err" ;; esac
 assert_eq "driver-only selection names the index and the override" "warned" "$_result"
-# 8j) No interpreter answers either: the kernel module version in /proc bounds the CUDA version.
+# No interpreter answers: the /proc kernel module version bounds the CUDA version.
 printf '#!/bin/sh\ncat >/dev/null\nexit 1\n' > "$_dir/python3"
 for _case in "590.48.01 cu130" "575.51.03 cu128" "565.57.01 cu126" "535.183.01 cu124"; do
     printf 'NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  %s  Release Build  (dvs-builder@U22)  Mon Dec  8 13:05:00 UTC 2025\n' "${_case% *}" > "$_FAKE_SMI_DIR/proc-nvidia-version"
     _result=$(run_func "$_dir")
     assert_eq "/proc driver ${_case% *} -> ${_case#* }" "https://download.pytorch.org/whl/${_case#* }" "$_result"
 done
-# The probe switched off turns the /proc bound off too, like studio/nvidia_probe.py.
 _result=$(PATH="$_dir:$_TOOLS_DIR" bash -c "unset CUDA_VISIBLE_DEVICES; _ARCH=x86_64; UNSLOTH_NVIDIA_LIBRARY_PROBE=0; . '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null)
 assert_eq "probe off ignores /proc -> cu126 default" "https://download.pytorch.org/whl/cu126" "$_result"
 rm -f "$_FAKE_SMI_DIR/proc-nvidia-version"
-# 8k) Nothing answers and there is no /proc version: still cu126, now with the override named.
 _err=$(PATH="$_dir:$_TOOLS_DIR" bash -c "unset CUDA_VISIBLE_DEVICES; _ARCH=x86_64; . '$_FUNC_FILE'; get_torch_index_url" 2>&1 >/dev/null)
 case "$_err" in *"defaulting to cu126"*"UNSLOTH_TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128"*) _result=warned ;; *) _result="$_err" ;; esac
 assert_eq "cu126 default names the override" "warned" "$_result"
 rm -rf "$_dir"
 
-# 8l) nvidia-smi timing out once is retried with a longer bound. Fake `timeout`: 124 on the first 10s call.
+# Fake `timeout` returns 124 on the first 10s call: nvidia-smi is retried with a longer bound.
 _dir=$(make_mock_smi "13.0" "10.0")
 cat > "$_dir/timeout" <<MOCK
 #!/bin/sh
@@ -385,25 +405,22 @@ case "$(tr '\n' ' ' < "$_dir/bounds")" in *45*) _result=retried ;; *) _result="b
 assert_eq "the retry uses the 45s bound" "retried" "$_result"
 rm -rf "$_dir"
 
-# 9) ROCm 6.3 (no nvidia-smi) -> rocm6.3
+# 9) ROCm 6.3 (no nvidia-smi) -> rocm6.4 for the generic BNB ABI floor
 _dir=$(make_mock_amd_smi "6.3")
 _result=$(run_func "$_dir")
-assert_eq "ROCm 6.3 -> rocm6.3" "https://download.pytorch.org/whl/rocm6.3" "$_result"
+assert_eq "ROCm 6.3 automatic generic floor -> rocm6.4" "https://download.pytorch.org/whl/rocm6.4" "$_result"
 rm -rf "$_dir"
 
-# 10) ROCm 7.1 (no nvidia-smi) -> rocm7.1
 _dir=$(make_mock_amd_smi "7.1")
 _result=$(run_func "$_dir")
 assert_eq "ROCm 7.1 -> rocm7.1" "https://download.pytorch.org/whl/rocm7.1" "$_result"
 rm -rf "$_dir"
 
-# 11) ROCm 7.2 (no nvidia-smi) -> rocm7.2
 _dir=$(make_mock_amd_smi "7.2")
 _result=$(run_func "$_dir")
 assert_eq "ROCm 7.2 -> rocm7.2" "https://download.pytorch.org/whl/rocm7.2" "$_result"
 rm -rf "$_dir"
 
-# 12) Both nvidia-smi and amd-smi present -> CUDA takes precedence
 _cuda_dir=$(make_mock_smi "12.6")
 _amd_dir=$(make_mock_amd_smi "6.3")
 _combined_dir=$(mktemp -d)
@@ -413,35 +430,104 @@ _result=$(run_func "$_combined_dir")
 assert_eq "CUDA+ROCm -> CUDA precedence" "https://download.pytorch.org/whl/cu126" "$_result"
 rm -rf "$_cuda_dir" "$_amd_dir" "$_combined_dir"
 
-# 13) No nvidia-smi, no amd-smi -> cpu (duplicate of test 1, confirms ROCm didn't break it)
 _result=$(run_func "none")
 assert_eq "no GPU -> cpu" "https://download.pytorch.org/whl/cpu" "$_result"
 
-# 14) ROCm 6.1 (no nvidia-smi) -> rocm6.1
+# 14) ROCm 6.1 (no nvidia-smi) -> rocm6.4 for the generic BNB ABI floor
 _dir=$(make_mock_amd_smi "6.1")
 _result=$(run_func "$_dir")
-assert_eq "ROCm 6.1 -> rocm6.1" "https://download.pytorch.org/whl/rocm6.1" "$_result"
+assert_eq "ROCm 6.1 automatic generic floor -> rocm6.4" "https://download.pytorch.org/whl/rocm6.4" "$_result"
 rm -rf "$_dir"
 
-# 15) ROCm 6.4 (no nvidia-smi) -> rocm6.4
+# 14a) The other old supported tags share the same automatic generic floor.
+_dir=$(make_mock_amd_smi "6.0")
+_result=$(run_func "$_dir")
+assert_eq "ROCm 6.0 automatic generic floor -> rocm6.4" "https://download.pytorch.org/whl/rocm6.4" "$_result"
+rm -rf "$_dir"
+
+_dir=$(make_mock_amd_smi "6.2")
+_result=$(run_func "$_dir")
+assert_eq "ROCm 6.2 automatic generic floor -> rocm6.4" "https://download.pytorch.org/whl/rocm6.4" "$_result"
+rm -rf "$_dir"
+
+# gfx906 is intentionally exempt from the generic floor; its later installer block
+# keeps the legacy rocm6.3 route for hosts whose detected tag is newer than 6.3.
+_dir=$(make_mock_amd_smi "6.1" "gfx906")
+_result=$(run_func "$_dir")
+assert_eq "gfx906 ROCm 6.1 keeps its legacy generic tag" "https://download.pytorch.org/whl/rocm6.1" "$_result"
+rm -rf "$_dir"
+
+# The exemption must survive the shape REAL discovery produces, not just the single
+# token amd-smi emits. rocminfo names each agent twice, so one MI50 probes as
+# "gfx906\ngfx906"; comparing the raw probe floored it to rocm6.4 and handed it to
+# the legacy reroute, which then rewrote it to rocm6.3 instead of the literal tag.
+_dir=$(make_mock_rocminfo "6.1" "gfx906" 1)
+_result=$(run_func "$_dir")
+assert_eq "gfx906 via rocminfo (agent named twice) keeps rocm6.1" "https://download.pytorch.org/whl/rocm6.1" "$_result"
+rm -rf "$_dir"
+
+_dir=$(make_mock_rocminfo "6.1" "gfx906" 2)
+_result=$(run_func "$_dir")
+assert_eq "two gfx906 agents still keep rocm6.1" "https://download.pytorch.org/whl/rocm6.1" "$_result"
+rm -rf "$_dir"
+
+# A copied HIP gcnArchName in the override keeps its ISA suffix; every other gfx906
+# comparison in install.sh strips it, so this one must too.
+_dir=$(make_mock_amd_smi "6.1" "gfx906")
+_result=$(UNSLOTH_ROCM_GFX_ARCH=gfx906:sramecc-:xnack- run_func "$_dir")
+assert_eq "suffixed gfx906 override keeps rocm6.1" "https://download.pytorch.org/whl/rocm6.1" "$_result"
+rm -rf "$_dir"
+
+# The floor itself must still reach a non-gfx906 host through the same real shape.
+_dir=$(make_mock_rocminfo "6.1" "gfx1100" 1)
+_result=$(run_func "$_dir")
+assert_eq "gfx1100 via rocminfo still floors to rocm6.4" "https://download.pytorch.org/whl/rocm6.4" "$_result"
+rm -rf "$_dir"
+
+# RDNA 1 / Polaris read fine through a real ROCm install and still have no wheels (#8529):
+# every generic tag lacks their kernels, so the readable arch must not pick one.
+_dir=$(make_mock_rocminfo "6.4" "gfx1010" 1)
+_result=$(run_func "$_dir")
+assert_eq "gfx1010 via rocminfo with ROCm 6.4 takes the CPU index" "https://download.pytorch.org/whl/cpu" "$_result"
+rm -rf "$_dir"
+
+_dir=$(make_mock_rocminfo "7.1" "gfx1012" 2)
+_result=$(run_func "$_dir")
+assert_eq "two gfx1012 agents with ROCm 7.1 take the CPU index" "https://download.pytorch.org/whl/cpu" "$_result"
+rm -rf "$_dir"
+
+_dir=$(make_mock_rocminfo "6.4" "gfx803" 1)
+_result=$(run_func "$_dir")
+assert_eq "gfx803 via rocminfo with ROCm 6.4 takes the CPU index" "https://download.pytorch.org/whl/cpu" "$_result"
+rm -rf "$_dir"
+
+# A covered card beside it still gets the generic wheels it can run.
+_dir=$(make_mock_rocminfo_multi "6.4" "gfx1010 gfx1100")
+_result=$(run_func "$_dir")
+assert_eq "gfx1010 beside gfx1100 keeps rocm6.4" "https://download.pytorch.org/whl/rocm6.4" "$_result"
+rm -rf "$_dir"
+
+# A mixed host is not a sole gfx906 target, so it keeps the generic floor.
+_dir=$(make_mock_rocminfo_multi "6.1" "gfx906 gfx1100")
+_result=$(run_func "$_dir")
+assert_eq "mixed gfx906 + gfx1100 host floors to rocm6.4" "https://download.pytorch.org/whl/rocm6.4" "$_result"
+rm -rf "$_dir"
+
 _dir=$(make_mock_amd_smi "6.4")
 _result=$(run_func "$_dir")
 assert_eq "ROCm 6.4 -> rocm6.4" "https://download.pytorch.org/whl/rocm6.4" "$_result"
 rm -rf "$_dir"
 
-# 16) ROCm 7.0 (no nvidia-smi) -> rocm7.0
 _dir=$(make_mock_amd_smi "7.0")
 _result=$(run_func "$_dir")
 assert_eq "ROCm 7.0 -> rocm7.0" "https://download.pytorch.org/whl/rocm7.0" "$_result"
 rm -rf "$_dir"
 
-# 17) ROCm 8.0 (future, no nvidia-smi) -> rocm7.2 (capped to latest known)
 _dir=$(make_mock_amd_smi "8.0")
 _result=$(run_func "$_dir")
 assert_eq "ROCm 8.0 -> rocm7.2 (capped)" "https://download.pytorch.org/whl/rocm7.2" "$_result"
 rm -rf "$_dir"
 
-# 18) Malformed amd-smi output (empty version field) -> cpu
 _dir=$(mktemp -d)
 cat > "$_dir/amd-smi" <<'MOCK'
 #!/bin/sh
@@ -452,7 +538,6 @@ _result=$(run_func "$_dir")
 assert_eq "empty amd-smi version -> cpu" "https://download.pytorch.org/whl/cpu" "$_result"
 rm -rf "$_dir"
 
-# 19) amd-smi with "N/A" version -> cpu
 _dir=$(mktemp -d)
 cat > "$_dir/amd-smi" <<'MOCK'
 #!/bin/sh
@@ -463,86 +548,70 @@ _result=$(run_func "$_dir")
 assert_eq "N/A amd-smi version -> cpu" "https://download.pytorch.org/whl/cpu" "$_result"
 rm -rf "$_dir"
 
-# 20) ROCm version with trailing text (e.g. "6.3.1-beta") -> rocm6.3
+# 20) ROCm version with trailing text (e.g. "6.3.1-beta") -> rocm6.4 floor
 _dir=$(make_mock_amd_smi "6.3.1-beta")
 _result=$(run_func "$_dir")
-assert_eq "ROCm 6.3.1-beta -> rocm6.3" "https://download.pytorch.org/whl/rocm6.3" "$_result"
+assert_eq "ROCm 6.3.1-beta automatic generic floor -> rocm6.4" "https://download.pytorch.org/whl/rocm6.4" "$_result"
 rm -rf "$_dir"
 
-# 22) CUDA 12.6 still works after ROCm changes (regression check)
 _dir=$(make_mock_smi "12.6")
 _result=$(run_func "$_dir")
 assert_eq "CUDA 12.6 regression -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
 rm -rf "$_dir"
 
-# 23) CUDA 13.0 still works after ROCm changes (regression check)
 _dir=$(make_mock_smi "13.0")
 _result=$(run_func "$_dir")
 assert_eq "CUDA 13.0 regression -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
 rm -rf "$_dir"
 
-# 24) CUDA 12.8 still works after ROCm changes (regression check)
 _dir=$(make_mock_smi "12.8")
 _result=$(run_func "$_dir")
 assert_eq "CUDA 12.8 regression -> cu128" "https://download.pytorch.org/whl/cu128" "$_result"
 rm -rf "$_dir"
 
-# 25) UNSLOTH_PYTORCH_MIRROR overrides base URL (CUDA case)
 _dir=$(make_mock_smi "12.6")
 _result=$(UNSLOTH_PYTORCH_MIRROR="https://mirror.example.com/whl" run_func "$_dir")
 assert_eq "mirror env + CUDA 12.6 -> mirror/cu126" "https://mirror.example.com/whl/cu126" "$_result"
 rm -rf "$_dir"
 
-# 26) UNSLOTH_PYTORCH_MIRROR overrides base URL (CPU case)
 _result=$(UNSLOTH_PYTORCH_MIRROR="https://mirror.example.com/whl" run_func "none")
 assert_eq "mirror env + no GPU -> mirror/cpu" "https://mirror.example.com/whl/cpu" "$_result"
 
-# 27) Empty UNSLOTH_PYTORCH_MIRROR falls back to official URL
 _result=$(UNSLOTH_PYTORCH_MIRROR="" run_func "none")
 assert_eq "empty mirror env -> official/cpu" "https://download.pytorch.org/whl/cpu" "$_result"
 
-# 28) Trailing slash in UNSLOTH_PYTORCH_MIRROR is stripped
 _result=$(UNSLOTH_PYTORCH_MIRROR="https://mirror.example.com/whl/" run_func "none")
 assert_eq "trailing slash stripped -> mirror/cpu" "https://mirror.example.com/whl/cpu" "$_result"
 
-# 29) "CUDA UMD Version: 13.3" header (newer NVIDIA driver layout, issue #5812)
-#     -> cu130, not the cu126 fallback.
 _dir=$(make_mock_smi_umd "13.3")
 _result=$(run_func "$_dir")
 assert_eq "CUDA UMD Version 13.3 -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
 rm -rf "$_dir"
 
-# 30) "CUDA UMD Version: 12.8" header (newer layout on a 12.x driver) -> cu128
 _dir=$(make_mock_smi_umd "12.8")
 _result=$(run_func "$_dir")
 assert_eq "CUDA UMD Version 12.8 -> cu128" "https://download.pytorch.org/whl/cu128" "$_result"
 rm -rf "$_dir"
 
-# 31) "CUDA UMD Version: 11.8" header (newer layout on an older driver) -> cu118
 _dir=$(make_mock_smi_umd "11.8")
 _result=$(run_func "$_dir")
 assert_eq "CUDA UMD Version 11.8 -> cu118" "https://download.pytorch.org/whl/cu118" "$_result"
 rm -rf "$_dir"
 
-# 32) Driver-reported "CUDA Version: 13.3" (legacy header) -> cu130.
 _dir=$(make_mock_smi "13.3")
 _result=$(run_func "$_dir")
 assert_eq "CUDA Version 13.3 -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
 rm -rf "$_dir"
 
-# 33) "CUDA Version: 13.7" -> cu130 (until a cu137 wheel index exists).
 _dir=$(make_mock_smi "13.7")
 _result=$(run_func "$_dir")
 assert_eq "CUDA Version 13.7 -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
 rm -rf "$_dir"
 
-# ── Pre-Turing hosts cap at cu126 (issue #7765) ──
-# PyTorch 2.11's cu128/cu130 start at sm_75, and their CUDA 13 runtime also costs
-# these GPUs their llama.cpp GGUF bundle.
+# Pre-Turing hosts cap at cu126: torch 2.11 cu128/cu130 start at sm_75.
 _dir=$(make_mock_smi "13.0" "7.0")
 _result=$(run_func "$_dir")
 assert_eq "CUDA 13.0 + Volta -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
-# The mask is irrelevant: an all-pre-Turing host stays pre-Turing under any mask.
 _result=$(run_func "$_dir" "0")
 assert_eq "CUDA 13.0 + Volta + CVD=0 -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
 rm -rf "$_dir"
@@ -557,7 +626,6 @@ _result=$(run_func "$_dir")
 assert_eq "CUDA 13.0 + two Voltas -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
 rm -rf "$_dir"
 
-# Turing is the floor of cu128/cu130, so it keeps the driver family.
 _dir=$(make_mock_smi "13.0" "7.5")
 _result=$(run_func "$_dir")
 assert_eq "CUDA 13.0 + Turing -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
@@ -574,8 +642,7 @@ _result=$(run_func "$_dir")
 assert_eq "CUDA 13.0 + Pascal and Hopper -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
 rm -rf "$_dir"
 
-# Blackwell is past cu126's ceiling and Kepler is under its floor, so no family covers
-# either mix whole. The newer card keeps its wheels.
+# No family covers a pre-Turing+Blackwell mix whole; the newer card keeps its wheels.
 _dir=$(make_mock_smi "13.0" "7.0 12.0")
 _result=$(run_func "$_dir")
 assert_eq "CUDA 13.0 + Volta and Blackwell -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
@@ -586,13 +653,11 @@ _result=$(run_func "$_dir")
 assert_eq "CUDA 13.0 + Kepler and Ampere -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
 rm -rf "$_dir"
 
-# cu126 and older already ship the legacy kernels; nothing to cap.
 _dir=$(make_mock_smi "12.6" "7.0")
 _result=$(run_func "$_dir")
 assert_eq "CUDA 12.6 + Volta -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
 rm -rf "$_dir"
 
-# An unreadable or partial inventory keeps the driver-only choice.
 _dir=$(make_mock_smi "13.0" "7.0 N/A")
 _result=$(run_func "$_dir")
 assert_eq "unreadable capability row -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
@@ -618,19 +683,16 @@ _result=$(PATH="$_dir:$_TOOLS_DIR" bash -c \
 assert_eq "x86_64 caps the driver family" "cu126" "$_result"
 rm -rf "$_dir"
 
-# 34) CUDA_VISIBLE_DEVICES="" hides the NVIDIA GPU -> cpu (no AMD present)
 _dir=$(make_mock_smi "12.8")
 _result=$(run_func "$_dir" "")
 assert_eq "CVD='' hides NVIDIA -> cpu" "https://download.pytorch.org/whl/cpu" "$_result"
 rm -rf "$_dir"
 
-# 35) CUDA_VISIBLE_DEVICES=-1 hides the NVIDIA GPU -> cpu (no AMD present)
 _dir=$(make_mock_smi "12.8")
 _result=$(run_func "$_dir" "-1")
 assert_eq "CVD=-1 hides NVIDIA -> cpu" "https://download.pytorch.org/whl/cpu" "$_result"
 rm -rf "$_dir"
 
-# 36) Mixed AMD+NVIDIA host with NVIDIA hidden -> ROCm route is restored
 _cuda_dir=$(make_mock_smi "12.6")
 _amd_dir=$(make_mock_amd_smi "6.4")
 _combined_dir=$(mktemp -d)
@@ -640,74 +702,65 @@ _result=$(run_func "$_combined_dir" "-1")
 assert_eq "CUDA+ROCm with CVD=-1 -> rocm6.4" "https://download.pytorch.org/whl/rocm6.4" "$_result"
 rm -rf "$_cuda_dir" "$_amd_dir" "$_combined_dir"
 
-# 37) CUDA_VISIBLE_DEVICES=0 (a visible device) must NOT hide the GPU
 _dir=$(make_mock_smi "12.8")
 _result=$(run_func "$_dir" "0")
 assert_eq "CVD=0 keeps NVIDIA -> cu128" "https://download.pytorch.org/whl/cu128" "$_result"
 rm -rf "$_dir"
 
-# 38) Whitespace-padded "-1" still hides the GPU
 _dir=$(make_mock_smi "12.8")
 _result=$(run_func "$_dir" " -1 ")
 assert_eq "CVD=' -1 ' hides NVIDIA -> cpu" "https://download.pytorch.org/whl/cpu" "$_result"
 rm -rf "$_dir"
 
-# --- explicit overrides (headless / container / CI; no GPU probing) ----------
-# 39) UNSLOTH_TORCH_INDEX_FAMILY pins the family with no GPU present (not the cpu fallback).
 _result=$(UNSLOTH_TORCH_INDEX_FAMILY="cu128" run_func "none")
 assert_eq "family override (no GPU) -> cu128" "https://download.pytorch.org/whl/cu128" "$_result"
 
-# 40) Family override beats real detection: an nvidia-smi 12.6 host still gets cu128
-#     (the Docker-build case -- builder sees the host driver but publishes a cu128 image).
+# Docker-build case: the builder sees the host driver but publishes a cu128 image.
 _dir=$(make_mock_smi "12.6")
 _result=$(UNSLOTH_TORCH_INDEX_FAMILY="cu128" run_func "$_dir")
 assert_eq "family override beats detected 12.6 -> cu128" "https://download.pytorch.org/whl/cu128" "$_result"
 rm -rf "$_dir"
 
-# 41) UNSLOTH_TORCH_INDEX_URL is used verbatim and wins over detection.
 _dir=$(make_mock_smi "12.6")
 _result=$(UNSLOTH_TORCH_INDEX_URL="https://mirror.example.com/whl/cu999" run_func "$_dir")
 assert_eq "url override beats detection -> verbatim" "https://mirror.example.com/whl/cu999" "$_result"
 rm -rf "$_dir"
 
-# 42) Family override is appended to UNSLOTH_PYTORCH_MIRROR (mirror still honoured).
 _result=$(UNSLOTH_PYTORCH_MIRROR="https://mirror.example.com/whl" UNSLOTH_TORCH_INDEX_FAMILY="cu128" run_func "none")
 assert_eq "mirror + family override -> mirror/cu128" "https://mirror.example.com/whl/cu128" "$_result"
 
-# 43) Trailing slash in UNSLOTH_TORCH_INDEX_URL is stripped.
 _result=$(UNSLOTH_TORCH_INDEX_URL="https://mirror.example.com/whl/cu128/" run_func "none")
 assert_eq "url override trailing slash stripped" "https://mirror.example.com/whl/cu128" "$_result"
 
-# 44) URL override takes precedence over family override.
 _result=$(UNSLOTH_TORCH_INDEX_URL="https://mirror.example.com/whl/cu130" UNSLOTH_TORCH_INDEX_FAMILY="cu128" run_func "none")
 assert_eq "url override beats family override -> url" "https://mirror.example.com/whl/cu130" "$_result"
+
+# 44a) Explicit ROCm pins remain authoritative and are not floored.
+_result=$(UNSLOTH_TORCH_INDEX_FAMILY="rocm6.1" run_func "none")
+assert_eq "explicit ROCm family pin remains rocm6.1" "https://download.pytorch.org/whl/rocm6.1" "$_result"
+_result=$(UNSLOTH_TORCH_INDEX_URL="https://download.pytorch.org/whl/rocm6.1" run_func "none")
+assert_eq "explicit ROCm URL pin remains rocm6.1" "https://download.pytorch.org/whl/rocm6.1" "$_result"
 
 # 45) An empty override is ignored (falls through to normal detection).
 _result=$(UNSLOTH_TORCH_INDEX_FAMILY="" UNSLOTH_TORCH_INDEX_URL="" run_func "none")
 assert_eq "empty overrides ignored -> detected cpu" "https://download.pytorch.org/whl/cpu" "$_result"
 
-# 46) ALL trailing slashes are stripped from a URL override (not just one).
 _result=$(UNSLOTH_TORCH_INDEX_URL="https://mirror.example.com/whl/cu128///" run_func "none")
 assert_eq "url override double slash stripped" "https://mirror.example.com/whl/cu128" "$_result"
 
-# 47) Leading and trailing slashes stripped from a family override.
 _result=$(UNSLOTH_TORCH_INDEX_FAMILY="//cu128//" run_func "none")
 assert_eq "family override slashes stripped" "https://download.pytorch.org/whl/cu128" "$_result"
 
-# 48) A ?query token that ends in "/" is PRESERVED: only PATH slashes are trimmed, so a
-# base64 token ending in "/" is not corrupted (path-only trim, not whole-URL rstrip).
+# Only path slashes are trimmed, so a base64 query token ending in "/" survives.
 _result=$(UNSLOTH_TORCH_INDEX_URL="https://mirror.example.com/whl/cu128?token=ab12cd/" run_func "none")
 assert_eq "url override preserves query token slash" "https://mirror.example.com/whl/cu128?token=ab12cd/" "$_result"
 
-# 49) Double PATH slash before a query is collapsed while the query survives intact.
 _result=$(UNSLOTH_TORCH_INDEX_URL="https://mirror.example.com/whl/cu128//?token=ab12cd/" run_func "none")
 assert_eq "url override path slash trimmed, query kept" "https://mirror.example.com/whl/cu128?token=ab12cd/" "$_result"
 
-# 50) A #fragment ending in "/" is likewise preserved.
 _result=$(UNSLOTH_TORCH_INDEX_URL="https://mirror.example.com/whl/cu128#anchor/" run_func "none")
 assert_eq "url override preserves fragment slash" "https://mirror.example.com/whl/cu128#anchor/" "$_result"
 
-# 51) A host newer than the newest leaf is told it was capped (#7264, #10657).
 _dir=$(make_mock_amd_smi "8.0")
 _result=$(run_func_stderr "$_dir")
 assert_contains "ROCm 8.0 cap is explained on stderr" "$_result" "No validated PyTorch for ROCm 8.0;"
@@ -715,7 +768,6 @@ assert_contains "ROCm 8.0 cap names the leaf installed instead" "$_result" "capp
 assert_contains "ROCm 8.0 cap says the wheels carry their own runtime" "$_result" "bundle their own runtime"
 rm -rf "$_dir"
 
-# 52) Two-digit minor: 7.14 is capped, not read as 7.1.
 _dir=$(make_mock_amd_smi "7.14")
 _result=$(run_func "$_dir")
 assert_eq "ROCm 7.14 -> rocm7.2 (capped)" "https://download.pytorch.org/whl/rocm7.2" "$_result"

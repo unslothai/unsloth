@@ -1,47 +1,64 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Chat, images, video and dictation each own a runtime and their own /status, and
-// nothing publishes "everything resident" in one call. These map each payload to a
-// common row shape. Pure and React-free so node --test can import them; the types
-// come from each feature's own module because the indexes re-export their pages.
+// Pure and React-free so node --test can import them.
 
+import {
+  AUDIO_CPP_AUDIO_TYPES,
+  audioCppDictationModelFor,
+  audioCppDisplayName,
+  isAudioCppFolderId,
+} from "../audio/audio-cpp-catalog.ts";
+import {
+  type AudioWorkflowId,
+  audioWorkflowForAudioType,
+  isAudioWorkflowId,
+} from "../audio/workflows.ts";
 import type { InferenceStatusResponse } from "@/features/chat/types/api";
 import type { DiffusionStatus } from "@/features/images/api";
 import type { VideoStatus } from "@/features/video/api";
 
 /** What the row is, for the icon and label. */
-export type LoadedModelKind = "text" | "tts" | "image" | "video" | "stt";
+export type LoadedModelKind =
+  | "text"
+  | "tts"
+  | "image"
+  | "video"
+  | "stt"
+  | "embedding";
 
 /** Which runtime holds the weights, so which endpoint releases them. */
-export type LoadedModelSource = "chat" | "image" | "video" | "stt";
+export type LoadedModelSource =
+  | "chat"
+  | "image"
+  | "video"
+  | "stt"
+  | "embedding";
 
-/** The dictation sidecars, as /audio/stt/status names them. */
-export type SttEngine = "transformers" | "mtmd" | "gguf";
+export type SttEngine = "transformers" | "mtmd" | "gguf" | "audiocpp";
 
 export type LoadedModelEntry = {
   /** Stable across polls, so a row does not remount mid-eject. */
   id: string;
   kind: LoadedModelKind;
   source: LoadedModelSource;
-  /** The id the backend reports; also what the eject call names. */
   name: string;
+  label?: string;
+  servingCheckpoint?: string;
+  residentMib?: number;
   /** One short line: quantisation, family, device. */
   detail: string;
+  /** Only on a `tts` row: the Audio page workflows that run the model, first one first. */
+  workflows?: AudioWorkflowId[];
   /** Only on `source: "stt"`: its unload takes an engine, not a model id. */
   sttEngine?: SttEngine;
-  /** Cached by the chat runtime but not active, so no status flags describe it. */
   inactive?: boolean;
-  /** Still loading: shown with a spinner and no eject, since there is nothing
-   *  resident to release yet. Matches the load toast rather than trailing it. */
   loading?: boolean;
 };
 
-/** The per-engine half of /api/inference/audio/stt/status. */
 export type SttEngineStatus = {
   loaded_model?: string | null;
   device?: string | null;
-  /** The sidecar is starting: reported per engine by /audio/stt/status. */
   loading?: boolean;
 };
 
@@ -49,12 +66,14 @@ export type SttStatusResponse = SttEngineStatus & {
   transformers?: SttEngineStatus | null;
   mtmd?: SttEngineStatus | null;
   gguf?: SttEngineStatus | null;
+  audiocpp?: SttEngineStatus | null;
 };
 
 const STT_ENGINE_LABELS: Record<SttEngine, string> = {
   transformers: "Transformers",
   mtmd: "llama.cpp",
   gguf: "whisper.cpp",
+  audiocpp: "GGUF",
 };
 
 /**
@@ -62,14 +81,37 @@ const STT_ENGINE_LABELS: Record<SttEngine, string> = {
  * runtime holding the weights rather than the kind: a Whisper checkpoint in the
  * chat slot belongs to Chat, while the dictation sidecars belong to Voice.
  *
- * Dictation has no page of its own yet, so it opens the settings tab that
- * drives it. Point it at the Audio page once that lands.
+ * An audio model in the chat slot opens the Audio page on its workflow, since
+ * Chat refuses it. The dictation sidecars are shared with chat dictation, so
+ * they open the settings tab that drives them.
  */
 export type LoadedModelTarget =
-  | { open: "route"; to: "/chat" | "/images" | "/video"; label: string }
-  | { open: "settings"; tab: "voice"; label: string };
+  | {
+      open: "route";
+      to: "/chat" | "/images" | "/video" | "/audio";
+      search?: { workflow: AudioWorkflowId };
+      label: string;
+    }
+  | { open: "settings"; tab: "voice" | "data"; label: string };
 
-export function loadedModelTarget(source: LoadedModelSource): LoadedModelTarget {
+export function loadedModelTarget(
+  source: LoadedModelSource,
+  workflows?: readonly AudioWorkflowId[],
+  currentAudioWorkflow?: AudioWorkflowId,
+): LoadedModelTarget {
+  if (source === "chat" && workflows?.length) {
+    // An Audio page already on a workflow this model runs stays there: switching it would
+    // also stop a generation running on that workflow.
+    if (currentAudioWorkflow && workflows.includes(currentAudioWorkflow)) {
+      return { open: "route", to: "/audio", label: "Audio" };
+    }
+    return {
+      open: "route",
+      to: "/audio",
+      search: { workflow: workflows[0] },
+      label: "Audio",
+    };
+  }
   switch (source) {
     case "image":
       return { open: "route", to: "/images", label: "Images" };
@@ -77,6 +119,8 @@ export function loadedModelTarget(source: LoadedModelSource): LoadedModelTarget 
       return { open: "route", to: "/video", label: "Video" };
     case "stt":
       return { open: "settings", tab: "voice", label: "Voice settings" };
+    case "embedding":
+      return { open: "settings", tab: "data", label: "Data settings" };
     default:
       return { open: "route", to: "/chat", label: "Chat" };
   }
@@ -88,7 +132,24 @@ export const LOADED_MODEL_KIND_LABELS: Record<LoadedModelKind, string> = {
   image: "Image",
   video: "Video",
   stt: "Dictation",
+  embedding: "Embeddings",
 };
+
+const AUDIO_WORKFLOW_KIND_LABELS: Partial<Record<AudioWorkflowId, string>> = {
+  music: "Music",
+  separate: "Separation",
+  convert: "Voice conversion",
+};
+
+export function loadedModelKindLabel(
+  entry: Pick<LoadedModelEntry, "kind" | "workflows">,
+): string {
+  const workflow = entry.workflows?.[0];
+  return (
+    (workflow && AUDIO_WORKFLOW_KIND_LABELS[workflow]) ??
+    LOADED_MODEL_KIND_LABELS[entry.kind]
+  );
+}
 
 /**
  * Join the known parts, so no row shows a stray separator, and drop repeats:
@@ -108,12 +169,32 @@ function joinDetail(...parts: (string | null | undefined)[]): string {
   return kept.join(" · ");
 }
 
-/** Keep a path's last two segments; a repo id is already short. */
 export function shortModelLabel(name: string): string {
+  const dictation = audioCppDictationModelFor(name);
+  if (dictation) return audioCppDisplayName(dictation.id);
+  if (isAudioCppFolderId(name)) return audioCppDisplayName(name);
   const normalized = name.replace(/[\\/]+$/, "");
   const segments = normalized.split(/[\\/]+/).filter(Boolean);
   if (segments.length <= 2) return normalized;
   return segments.slice(-2).join("/");
+}
+
+export function loadedModelLabel(
+  entry: Pick<LoadedModelEntry, "name" | "label">,
+): string {
+  return shortModelLabel(entry.label || entry.name);
+}
+
+export function formatResidentMib(mib: number | null | undefined): string | null {
+  if (typeof mib !== "number" || !Number.isFinite(mib) || mib <= 0) return null;
+  const gib = mib / 1024;
+  return `${gib >= 10 ? gib.toFixed(0) : gib.toFixed(1)} GiB`;
+}
+
+function residentMib(value: unknown): { residentMib?: number } {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? { residentMib: value }
+    : {};
 }
 
 /** Rows for whatever the chat runtime holds. `audio_type` splits TTS and whisper
@@ -126,34 +207,46 @@ export function describeInferenceStatus(
   const active = status.active_model;
   if (active) {
     const audioType = status.audio_type ?? null;
-    // is_audio means TTS here, as mlx_inference documents ("audio_vlm (omni audio input; is_audio
-    // stays False -- it means TTS and redirects in the chat route)"). So the audio types split
-    // three ways, not two: whisper is the ASR sidecar, audio_vlm is a chat model that happens to
-    // listen, and the rest speak. Only the third kind belongs under Speech.
+    // is_audio means TTS here (see mlx_inference); whisper is ASR and audio_vlm is a chat model,
+    // so only the remaining audio types belong under Speech.
     const isTts =
       Boolean(status.is_audio) &&
       audioType !== "whisper" &&
       audioType !== "audio_vlm";
     const isStt = Boolean(status.is_audio) && audioType === "whisper";
-    const runtime = status.is_gguf
-      ? "GGUF"
-      : status.is_mlx
-        ? "MLX"
-        : "Transformers";
+    const audioWorkflows = (status.audio_workflows ?? []).filter(
+      isAudioWorkflowId,
+    );
+    // The GGUF audio runtime reports is_gguf false, but it serves GGUFs too.
+    const runtime =
+      status.is_gguf || AUDIO_CPP_AUDIO_TYPES.has(audioType ?? "")
+        ? "GGUF"
+        : status.is_mlx
+          ? "MLX"
+          : "Transformers";
     entries.push({
       id: `chat:${active}`,
       kind: isTts ? "tts" : isStt ? "stt" : "text",
       source: "chat",
+      // An older backend sends no workflows: the audio type still tells Music from Speak.
+      ...(isTts
+        ? {
+            workflows:
+              audioWorkflows.length > 0
+                ? audioWorkflows
+                : [audioWorkflowForAudioType(audioType)],
+          }
+        : {}),
       name: active,
       detail: joinDetail(
         runtime,
         status.gguf_variant,
         status.is_vision ? "Vision" : null,
       ),
+      ...residentMib(status.resident_mib),
     });
   }
-  // Reported by /status for the whole load, so a load started in another tab or
-  // before this page opened still shows, not only one driven from here.
+  // /status reports the whole load, so loads started in another tab still show.
   for (const name of status.loading ?? []) {
     if (entries.some((entry) => entry.name === name)) continue;
     entries.push({
@@ -163,6 +256,29 @@ export function describeInferenceStatus(
       name,
       detail: "Loading",
       loading: true,
+    });
+  }
+  // Matched by checkpoint, which /unload routes on: two local files can share a label.
+  const serving = status.serving ?? [];
+  const checkpoints = status.serving_checkpoints ?? [];
+  const activeCheckpoint = status.model_identifier || active;
+  for (let i = 0; i < serving.length; i++) {
+    const name = serving[i];
+    const checkpoint = checkpoints[i] || name;
+    // By checkpoint when both are known: a kept model may share the active one's label.
+    const isActive =
+      checkpoints[i] && status.model_identifier
+        ? checkpoint === status.model_identifier
+        : checkpoint === activeCheckpoint || name === active;
+    if (!name || (active && isActive)) continue;
+    if (entries.some((entry) => entry.id === `chat:${checkpoint}`)) continue;
+    entries.push({
+      id: `chat:${checkpoint}`,
+      kind: "text",
+      source: "chat",
+      name,
+      detail: "Also serving",
+      servingCheckpoint: checkpoint,
     });
   }
   // Only the Transformers backend caches past the active model, but it is memory
@@ -182,12 +298,7 @@ export function describeInferenceStatus(
   return entries;
 }
 
-/**
- * The precision a pipeline actually loaded at, short enough for the row. Fed a
- * torch dtype, a resolved quantisation ("none" being plain bf16) or a GGUF quant
- * token. Anything unrecognised is shown as the backend spelled it, upper-cased,
- * which is what keeps "Q8_0" and "IQ4_XS" readable without a table per quant.
- */
+/** Unrecognised values are shown upper-cased, which keeps quants like "Q8_0" readable. */
 export function precisionLabel(value: string | null | undefined): string | null {
   if (!value || value === "none") return null;
   const known: Record<string, string> = {
@@ -198,7 +309,6 @@ export function precisionLabel(value: string | null | undefined): string | null 
   return known[value] ?? value.toUpperCase();
 }
 
-/** NVFP4 kernel path label; unrecognised values pass through as sent. */
 export function quantBackendLabel(
   value: string | null | undefined,
 ): string | null {
@@ -224,16 +334,13 @@ export function describeDiffusionStatus(
       kind: "image",
       source: "image",
       name: status.repo_id,
+      ...(status.display_repo_id ? { label: status.display_repo_id } : {}),
+      ...residentMib(status.resident_mib),
       detail: joinDetail(
         status.family,
-        // Only while the GGUF is what ran. A GGUF pick the dense fast path replaced is a
-        // torchao build of the base transformer, and calling that row "GGUF" names a file
-        // the pipeline never opened.
+        // Only when the GGUF ran: a dense fast path replaces it with a torchao build.
         isGguf && !status.transformer_quant ? "GGUF" : null,
-        // What the transformer IS, in the order the build decides it: the dense scheme when
-        // one engaged, else the quant of the GGUF that ran, else the pipeline dtype. `dtype`
-        // is a COMPUTE dtype and reads bf16 for every CUDA load, so on its own it reported
-        // "BF16" for a Q8_0 pick. Via precisionLabel so a lowercase q8_0 still reads Q8_0.
+        // `dtype` is the compute dtype (bf16 on every CUDA load), so prefer the actual quant.
         precisionLabel(status.transformer_quant) ??
           precisionLabel(status.gguf_variant) ??
           precisionLabel(status.dtype),
@@ -254,11 +361,12 @@ export function describeVideoStatus(
       kind: "video",
       source: "video",
       name: status.repo_id,
+      ...(status.display_repo_id ? { label: status.display_repo_id } : {}),
+      ...residentMib(status.resident_mib),
       detail: joinDetail(
         status.family,
         status.model_kind === "gguf" || status.gguf_variant ? "GGUF" : null,
-        // Checkpoint quant, else the dense transformer's own precision when one
-        // engaged, else the pipeline dtype (compute precision, so it called Q4_K_M BF16).
+        // `dtype` is compute precision, so it would label a Q4_K_M as BF16.
         precisionLabel(status.gguf_variant) ??
           precisionLabel(status.transformer_quant) ??
           precisionLabel(status.dtype),
@@ -269,8 +377,6 @@ export function describeVideoStatus(
   ];
 }
 
-/** A server predating the engine split reports the resident Transformers model
- *  only at the top level, so fall back to it rather than showing no row. */
 export function sttEngineStatus(
   status: SttStatusResponse,
   engine: SttEngine,
@@ -286,7 +392,7 @@ export function describeSttStatus(
   status: SttStatusResponse | null,
 ): LoadedModelEntry[] {
   if (!status) return [];
-  const engines: SttEngine[] = ["transformers", "mtmd", "gguf"];
+  const engines: SttEngine[] = ["transformers", "mtmd", "gguf", "audiocpp"];
   const entries: LoadedModelEntry[] = [];
   for (const engine of engines) {
     const block = sttEngineStatus(status, engine);
@@ -308,19 +414,20 @@ export function describeSttStatus(
       kind: "stt",
       source: "stt",
       name: block.loaded_model,
-      detail: joinDetail(STT_ENGINE_LABELS[engine], block.device),
+      // The audio runtime reports its own name as the device, which is not one.
+      detail: joinDetail(
+        STT_ENGINE_LABELS[engine],
+        engine === "audiocpp" && block.device?.startsWith("audio.cpp")
+          ? null
+          : block.device,
+      ),
       sttEngine: engine,
     });
   }
   return entries;
 }
 
-/**
- * What a row's model turned out to be when the eject re-read its runtime.
- * "replaced" is the one that matters: /images/unload, /video/unload and the STT
- * unload carry no model id and release whatever the runtime holds, so a row up
- * to one poll old must not be trusted to name it.
- */
+/** "replaced" matters: image/video/STT unloads carry no model id and free whatever is held. */
 export type ResidentVerdict = "match" | "gone" | "replaced";
 
 export function verifyResident(
@@ -332,8 +439,6 @@ export function verifyResident(
   return matches(entryName, resident) ? "match" : "replaced";
 }
 
-/** One list in a fixed group order, so rows never jump between polls. Ids are
- *  deduped defensively; two runtimes holding one repo id are two copies. */
 export function mergeLoadedModels(
   groups: LoadedModelEntry[][],
 ): LoadedModelEntry[] {
@@ -349,14 +454,7 @@ export function mergeLoadedModels(
   return merged;
 }
 
-/**
- * Fold the loads announced by `withModelLoadNotice` into the polled rows.
- *
- * The poll is 5s, so a load that has only just started shows nothing while its
- * toast already says "loading". These rows come from the load call itself, and
- * a status row for the same runtime replaces them the moment one arrives: the
- * backend's answer always wins over the optimistic one.
- */
+/** Optimistic rows for loads announced before the 5s poll; a status row always wins. */
 export function withPendingLoads(
   rows: LoadedModelEntry[],
   pending: Map<LoadedModelSource, string | null>,
@@ -364,12 +462,8 @@ export function withPendingLoads(
   if (pending.size === 0) return rows;
   const extra: LoadedModelEntry[] = [];
   for (const [source, model] of pending) {
-    // A status row wins only when it describes the same load. Images and video keep the OLD
-    // pipeline resident while the replacement downloads, freeing it only at the commit, so a
-    // source-only test hid the incoming model for the whole pull: the card showed the model being
-    // replaced and no sign of the one arriving. A row that is itself loading always wins, which is
-    // what keeps chat and dictation from announcing the same load twice when the backend spells its
-    // name differently.
+    // A status row wins only for the same load: images and video keep the old pipeline resident
+    // while the new one downloads. A loading row always wins, to avoid double announcements.
     if (
       rows.some(
         (row) =>
@@ -396,4 +490,78 @@ const PENDING_KINDS: Record<LoadedModelSource, LoadedModelKind> = {
   image: "image",
   video: "video",
   stt: "stt",
+  embedding: "embedding",
 };
+
+export type EmbeddingStatusResponse = {
+  // biome-ignore lint/style/useNamingConvention: API schema
+  embedding_model?: string;
+  loaded?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  backend_loaded?: boolean;
+};
+
+export function describeEmbeddingStatus(
+  status: EmbeddingStatusResponse | null,
+): LoadedModelEntry[] {
+  const resident = status?.backend_loaded ?? status?.loaded ?? false;
+  if (!resident) return [];
+  return [
+    {
+      id: "embedding:rag",
+      kind: "embedding",
+      source: "embedding",
+      name: embeddingRowName(status),
+      detail: "Documents",
+    },
+  ];
+}
+
+export function embeddingRowName(
+  status: EmbeddingStatusResponse | null,
+): string {
+  return (status?.loaded ? status.embedding_model : undefined) || "Embedding model";
+}
+
+export function heldByAnotherAccount(
+  statuses: readonly ({ yours?: boolean } | null | undefined)[],
+): boolean {
+  return statuses.some((status) => status?.yours === false);
+}
+
+export function sameLoadedModels(
+  left: readonly LoadedModelEntry[],
+  right: readonly LoadedModelEntry[],
+): boolean {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  return left.every((entry, i) => {
+    const other = right[i];
+    return (
+      entry.id === other.id &&
+      entry.kind === other.kind &&
+      entry.source === other.source &&
+      entry.name === other.name &&
+      entry.label === other.label &&
+      entry.detail === other.detail &&
+      entry.inactive === other.inactive &&
+      entry.loading === other.loading &&
+      entry.sttEngine === other.sttEngine &&
+      entry.servingCheckpoint === other.servingCheckpoint &&
+      entry.residentMib === other.residentMib &&
+      (entry.workflows ?? []).join() === (other.workflows ?? []).join()
+    );
+  });
+}
+
+export type LoadedModelsCardState = "rows" | "otherAccount" | "empty" | null;
+
+export function loadedModelsCardState(
+  rowCount: number,
+  heldByOther: boolean,
+  justEnabled: boolean,
+): LoadedModelsCardState {
+  if (rowCount > 0) return "rows";
+  if (heldByOther) return "otherAccount";
+  return justEnabled ? "empty" : null;
+}

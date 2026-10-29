@@ -1,9 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-#
-# Guards the Linux tool-sandbox step in install.sh: bubblewrap is optional, so it is installed
-# only when that needs no elevation, and otherwise the one command that enables it is printed.
+# bubblewrap is optional: installed only when no elevation is needed, else the command is printed.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -110,6 +108,13 @@ _mk bwrap 'exit 0'
 _out="$(_run 0)"
 assert_not_contains "no apt call"                   "$_out" "APT_CALLED"
 assert_contains "reports it works"                  "$_out" "bubblewrap works"
+
+echo "=== kernel without the AppArmor userns sysctl: no error for the missing file ==="
+rm -f "$_SYSCTL"
+_out="$(_run 0)"
+assert_not_contains "prints no shell error"         "$_out" "No such file"
+assert_contains "reports it works"                  "$_out" "bubblewrap works"
+: > "$_SYSCTL"
 
 echo "=== bubblewrap present, AppArmor restricts user namespaces ==="
 rm -f "$_BIN"/*

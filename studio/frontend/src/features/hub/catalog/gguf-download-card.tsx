@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useHubDownloadPlan } from "../download-manager/use-hub-download-queue";
+import { HubPlanProgress } from "../download-manager/hub-plan-progress";
+import { useRequiredAssetsDownload } from "./use-required-assets-download";
 import { ModelMemoryBarFor } from "@/components/model-memory-bar";
 import {
   DropdownMenu,
@@ -21,25 +24,35 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
+import { useT } from "@/i18n";
 import { getCachedModelPath, revealCachedModel } from "@/features/chat";
-import { pinKey, usePinnedModelsStore } from "@/features/model-picker";
+import {
+  formatFootprintBytes,
+  pinKey,
+  usePinnedModelsStore,
+} from "@/features/model-picker";
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { type GgufFitClass, classifyGgufVariantFit } from "@/lib/gguf-fit";
+import {
+  type GgufFitClass,
+  classifyGgufVariantFit,
+  ggufVariantLookupTableBytes,
+} from "@/lib/gguf-fit";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Refresh01Icon,
-  Copy01Icon,
   Delete02Icon,
   Download01Icon,
   Folder01Icon,
+  HelpCircleIcon,
   InformationCircleIcon,
   MoreVerticalIcon,
   PinIcon,
   PinOffIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type KeyboardEventHandler,
@@ -56,6 +69,13 @@ import {
   useHttpPartialsResumable,
   useRepoDownload,
 } from "../download-manager";
+import {
+  type GgufVariantFootprint,
+  type MediaStudioPage,
+  awaitsCompanions,
+  ggufVariantFootprint,
+  useMediaCompanionBytes,
+} from "../hooks/use-media-companion-bytes";
 import { useOnlineStatus } from "../hooks/use-online-status";
 import { type GgufVariantDetail, deleteCachedModel } from "../inventory";
 import { formatBytes } from "../lib/format";
@@ -113,9 +133,7 @@ const FIT_BADGE: Record<GgufFitClass, FitBadgeMeta> = {
   },
   marginal: {
     label: "Over budget",
-    // Not conditional on other apps: _vram_usable_mib gives free - reserve, which on an idle card
-    // is exactly the budget this tier has already passed, so the load takes --fit every time.
-    // Same words the chat picker uses.
+    // Unconditional: on an idle card this tier always loads with --fit. Matches the chat picker.
     tooltip:
       "Larger than your VRAM Budget allows, so part of it offloads even on an idle GPU. It is still smaller than the card, so raising the budget can keep it resident.",
     iconClassName: "text-amber-600 dark:text-amber-400",
@@ -132,17 +150,21 @@ const FIT_BADGE: Record<GgufFitClass, FitBadgeMeta> = {
       "No GPU VRAM detected. This GGUF may run with system RAM and CPU offload. Inference will be slower.",
     iconClassName: "text-sky-600 dark:text-sky-400",
   },
+  streamed: {
+    label: "Fits (lookup tables streamed from disk)",
+    tooltip:
+      "Fits with its lookup tables streamed from disk, llama.cpp's default for them. Prefill and decode can be slower and vary with disk speed.",
+    iconClassName: "text-sky-600 dark:text-sky-400",
+  },
   oom: {
     label: "Does not fit",
-    // Not "won't fit": llama-server never refuses a GGUF on size, it hands it to --fit. Same words
-    // the chat picker uses, where this class and `partial` share one mark.
+    // Not "won't fit": llama-server never refuses on size, it uses --fit. Matches the chat picker.
     tooltip:
       "Model may not fit but still works with offloading. Expect slower inference.",
     iconClassName: "text-rose-600 dark:text-rose-400",
   },
 };
 
-/** Chip styling matching the on-device list's StatChip, no icon. */
 const CHIP_BASE =
   "inline-flex h-5 shrink-0 items-center justify-center whitespace-nowrap rounded-full border px-2 text-ui-11p5 font-medium tabular-nums leading-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]";
 const CHIP_DEFAULT =
@@ -151,16 +173,21 @@ const CHIP_DEFAULT =
 function QuantBadge({
   quant,
   fit,
+  lookupTableBytes = 0,
   showFit = true,
+  unifiedBudget = false,
   variant = "trigger",
   tooltipMode = "eager",
 }: {
   quant: string;
   fit: GgufFitClass;
+  lookupTableBytes?: number;
   showFit?: boolean;
+  unifiedBudget?: boolean;
   variant?: "trigger" | "menu";
   tooltipMode?: "eager" | "lazy" | "none";
 }) {
+  const t = useT();
   const meta = FIT_BADGE[fit];
   const [tooltipArmed, setTooltipArmed] = useState(false);
   const [tooltipOpen, setTooltipOpen] = useState(false);
@@ -174,8 +201,6 @@ function QuantBadge({
       <span
         className={cn(
           CHIP_BASE,
-          // `shrink` overrides CHIP_BASE's shrink-0 so a long file-path quant
-          // label can shrink and truncate instead of overflowing the row.
           "min-w-0 max-w-full shrink gap-1.5 cursor-help",
           CHIP_DEFAULT,
         )}
@@ -190,10 +215,7 @@ function QuantBadge({
         <span className="min-w-0 truncate">{quant}</span>
       </span>
     ) : (
-      // Trigger quant label is the row's primary identity and is short
-      // (e.g. "Q4_K_M"); keep it `shrink-0` + `whitespace-nowrap` so it never
-      // collapses to "q…" when trailing actions crowd the row. The info
-      // group's `overflow-hidden` sacrifices the trailing status tags instead.
+      // Keep the quant label from collapsing; trailing status tags are clipped instead.
       <span className="inline-flex shrink-0 cursor-help items-center gap-1.5 whitespace-nowrap text-ui-12p5 font-medium tracking-tight tabular-nums text-foreground">
         {showFit && (
           <HugeiconsIcon
@@ -230,7 +252,16 @@ function QuantBadge({
         {inner}
       </TooltipTrigger>
       <TooltipContent side="top" sideOffset={4}>
-        {meta.tooltip}
+        {fit === "marginal" && unifiedBudget
+          ? t("picker.unifiedTightFitHint")
+          : meta.tooltip}
+        {lookupTableBytes > 0 && (
+          <span className="mt-1 block text-muted-foreground">
+            Lookup tables: {formatFootprintBytes(lookupTableBytes)}
+            {/* Streamed only when RAM cannot hold them; otherwise the load keeps them resident. */}
+            {fit === "streamed" ? ", read from disk" : ", kept in RAM when it fits"}
+          </span>
+        )}
       </TooltipContent>
     </Tooltip>
   );
@@ -242,9 +273,87 @@ interface GgufVariantMenuItem {
   quant: string;
   label: string;
   fit: GgufFitClass;
+  lookupTableBytes: number;
   downloaded: boolean;
   partial: boolean;
   downloadSizeLabel: string;
+  footprint: GgufVariantFootprint | null;
+}
+
+/** Model plus uncached companion size, with the breakdown on hover; on disk, only what Run still fetches. */
+function GgufVariantSizeLabel({
+  label,
+  footprint,
+  downloaded = false,
+}: {
+  label: string;
+  footprint: GgufVariantFootprint | null;
+  downloaded?: boolean;
+}) {
+  if (!footprint) return <>{label}</>;
+  const companion = formatFootprintBytes(footprint.companionBytes);
+  return (
+    <Tooltip delayDuration={0}>
+      <TooltipTrigger asChild={true}>
+        <span
+          data-model-download-footprint={true}
+          data-model-needs-required-assets={downloaded || undefined}
+          className="inline-flex items-center gap-1"
+        >
+          {downloaded
+            ? `${companion} more to run`
+            : formatFootprintBytes(
+                footprint.checkpointBytes + footprint.companionBytes,
+              )}
+          {/* Align the icon with the digits. */}
+          <HugeiconsIcon
+            icon={HelpCircleIcon}
+            aria-hidden={true}
+            className="size-3 shrink-0 -translate-y-[0.08em] text-muted-foreground/80"
+            strokeWidth={1.8}
+          />
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="tooltip-compact">
+        <span className="font-medium">
+          {formatFootprintBytes(footprint.checkpointBytes)} model
+          {downloaded ? " on device" : ""} + {companion} required assets
+        </span>
+        <span className="ml-1 text-muted-foreground">
+          {downloaded
+            ? "· assets download on Run, once, shared across compatible variants"
+            : "· assets download on Run"}
+        </span>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function CompanionsPendingTag({
+  companionBytes,
+  compact = false,
+}: {
+  companionBytes: number;
+  compact?: boolean;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>
+        <span className="inline-flex">
+          <DotTag
+            tone="warning"
+            label="Partial"
+            className={compact ? "max-sm:border-0 max-sm:px-0" : undefined}
+            labelClassName={compact ? "max-sm:sr-only" : undefined}
+          />
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" sideOffset={4}>
+        Model on device. {formatFootprintBytes(companionBytes)} of required
+        assets download on Run.
+      </TooltipContent>
+    </Tooltip>
+  );
 }
 
 function createGgufVariantMenuItems(
@@ -254,7 +363,9 @@ function createGgufVariantMenuItems(
     gpuCount?: number;
     systemRamGb?: number;
     budgetFraction?: number;
+    unifiedLoadBudgetGb?: number | null;
   },
+  companionBytesByKey: ReadonlyMap<string, number>,
 ): GgufVariantMenuItem[] {
   if (!variants) return [];
   return variants.map((variant) => ({
@@ -263,15 +374,15 @@ function createGgufVariantMenuItems(
     quant: variant.quant,
     label: ggufVariantDisplayLabel(variant),
     fit: classifyGgufVariantFit(variant, resources),
+    lookupTableBytes: ggufVariantLookupTableBytes(variant),
     downloaded: Boolean(variant.downloaded),
     partial: Boolean(variant.partial),
     downloadSizeLabel: ggufVariantTransferLabel(variant),
+    footprint: ggufVariantFootprint(variant, companionBytesByKey),
   }));
 }
 
-// Shared options menu for downloaded variant rows and the selected-variant
-// action strip. Omit `quant` for a repo-level model. The identifier uses
-// llama.cpp's repo:quant syntax so it pastes into `-hf`.
+// The identifier uses llama.cpp's repo:quant syntax so it pastes into `-hf`.
 export function QuantOptionsMenu({
   repoId,
   quant,
@@ -289,7 +400,6 @@ export function QuantOptionsMenu({
   downloaded: boolean;
   canDelete: boolean;
   onDelete: (quant?: string) => void;
-  // Hidden in the selected-variant action strip; pinning belongs to On Device.
   showPin?: boolean;
   buttonClassName?: string;
   iconClassName?: string;
@@ -362,7 +472,7 @@ export function QuantOptionsMenu({
               strokeWidth={1.75}
               className="size-icon"
             />
-            <span>{pinned ? "Unpin" : "Pin to top"}</span>
+            <span>{pinned ? "Unpin" : "Pin"}</span>
           </DropdownMenuItem>
         )}
         {downloaded && (
@@ -445,6 +555,7 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
   mutationBlocked,
   liveActive,
   showFitInfo,
+  unifiedBudget,
   onSelect,
   onDelete,
 }: {
@@ -454,6 +565,7 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
   mutationBlocked: boolean;
   liveActive: boolean;
   showFitInfo: boolean;
+  unifiedBudget: boolean;
   onSelect: (quant: string) => void;
   onDelete: (quant: string) => void;
 }) {
@@ -481,15 +593,11 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
       onClick={selectVariant}
       onKeyDown={handleKeyDown}
       className={cn(
-        "group relative mx-2 flex cursor-pointer items-center gap-2 rounded-[12px] px-2.5 py-2 text-left transition-colors",
+        "group relative mx-2 flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-left transition-colors",
         selected
-          ? // Dark: --accent, the app's one selection colour. The 12% wash it
-            // carried matched --accent at the default but was scaled by the
-            // wash gain, so it fell away from the token across the slider.
+          ? // Dark: --accent, the app's one selection colour.
             "bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] dark:bg-accent"
-          : // Dark hover is --accent held back, so it stays under the selected
-            // row at every contrast. As its own wash it closed to within a few
-            // levels of the selection at the top of the slider.
+          : // Dark hover is --accent held back so it stays under the selected row.
             "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[color-mix(in_srgb,var(--accent)_55%,transparent)]",
       )}
     >
@@ -502,11 +610,19 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
         <QuantBadge
           quant={item.label}
           fit={item.fit}
+          lookupTableBytes={item.lookupTableBytes}
           showFit={showFitInfo}
+          unifiedBudget={unifiedBudget}
           variant="menu"
           tooltipMode="lazy"
         />
-        {item.downloaded && <DotTag tone="success" label="On device" />}
+        {awaitsCompanions(item.downloaded, item.footprint) ? (
+          <CompanionsPendingTag
+            companionBytes={item.footprint?.companionBytes ?? 0}
+          />
+        ) : (
+          item.downloaded && <DotTag tone="success" label="On device" />
+        )}
         {!item.downloaded && item.partial && (
           <Tooltip>
             <TooltipTrigger asChild={true}>
@@ -518,8 +634,6 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
               </span>
             </TooltipTrigger>
             <TooltipContent side="top" sideOffset={4}>
-              {/* Selecting a row only selects it; the card's button starts the
-                  transfer, so do not promise otherwise. */}
               {liveActive
                 ? "Download is running. Select it to view progress."
                 : "Partial download. Select it, then use the button on the card to finish it."}
@@ -529,10 +643,12 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
       </span>
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
         <span className={cn(CHIP_BASE, CHIP_DEFAULT)}>
-          {item.downloadSizeLabel}
+          <GgufVariantSizeLabel
+            label={item.downloadSizeLabel}
+            footprint={item.footprint}
+            downloaded={item.downloaded}
+          />
         </span>
-        {/* Options only apply to files on disk; placeholder keeps the size
-            chips column-aligned across rows. */}
         {item.downloaded || item.partial ? (
           <QuantOptionsMenu
             repoId={repoId}
@@ -561,6 +677,7 @@ export function GgufDownloadCard({
   gpuGb,
   gpuCount,
   systemRamGb,
+  unifiedLoadBudgetGb,
   cachePath,
   preferLocalCache = false,
   isPartial = false,
@@ -568,7 +685,7 @@ export function GgufDownloadCard({
   runPending = false,
   onChange,
   showMemoryBar = true,
-  mediaRuntime = false,
+  mediaPage,
 }: {
   repoId: string;
   isActive: boolean;
@@ -578,28 +695,21 @@ export function GgufDownloadCard({
   preferredFileIntent?: number;
   isLoadingThisModel: boolean;
   gpuGb?: number;
-  /** GPUs gpuGb sums, for the loader's per-card VRAM reserve. */
   gpuCount?: number;
   systemRamGb?: number;
+  unifiedLoadBudgetGb?: number | null;
   cachePath?: string | null;
   preferLocalCache?: boolean;
   isPartial?: boolean;
   onRun?: (selection: HubModelRunSelection) => void;
   runPending?: boolean;
   onChange?: () => void;
-  /** False for diffusion / audio / video GGUFs. They load through a different
-   *  planner onto a single torch device rather than the aggregate inference
-   *  pool, so the llama.cpp estimator has nothing to say about them -- and when
-   *  it returns unsized the bar falls back to the file size and draws a
-   *  weights-only verdict anyway, which is a confident number about the wrong
-   *  runtime. The picker suppresses these rows for the same reason. */
+  /** False for diffusion/audio/video GGUFs, which use a different planner; the llama.cpp
+   *  estimator would give a confident wrong verdict. */
   showMemoryBar?: boolean;
-  /** This repo is placed by the diffusion planner, not llama-server. Suppresses the fit badges
-   *  for the same reason it suppresses the memory bar: the budget and the offload rules here are
-   *  llama.cpp's, and an oversized diffusion model gets told it "still works with offloading"
-   *  when on a host pool the planner refuses the load outright. */
-  mediaRuntime?: boolean;
+  mediaPage?: MediaStudioPage;
 }) {
+  const mediaRuntime = mediaPage !== undefined;
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
   const partialsResumable = useHttpPartialsResumable();
@@ -642,9 +752,7 @@ export function GgufDownloadCard({
     ReadonlySet<string>
   >(() => new Set<string>());
 
-  // The live VRAM Budget, so the badge and the sort score against the line the
-  // loader will actually admit at. The memory bar on this same row already reads
-  // it; without this the two disagreed for every saved fraction below the default.
+  // Use the live VRAM budget so the badge agrees with the memory bar and the loader.
   const budgetFraction = useVramBudgetFraction() ?? undefined;
 
   const rawSortedVariants = useMemo(() => {
@@ -654,8 +762,16 @@ export function GgufDownloadCard({
       gpuCount,
       systemRamGb,
       budgetFraction,
+      unifiedLoadBudgetGb,
     });
-  }, [variants, gpuGb, gpuCount, systemRamGb, budgetFraction]);
+  }, [
+    variants,
+    gpuGb,
+    gpuCount,
+    systemRamGb,
+    budgetFraction,
+    unifiedLoadBudgetGb,
+  ]);
   const selectLiveGgufVariantStates = useMemo(
     () => createLiveGgufVariantStatesSelector(repoId),
     [repoId],
@@ -681,17 +797,6 @@ export function GgufDownloadCard({
         : v,
     );
   }, [completedVariantKeys, liveVariantStates, rawSortedVariants]);
-  const variantMenuItems = useMemo(
-    () =>
-      createGgufVariantMenuItems(sortedVariants, {
-        gpuGb,
-        gpuCount,
-        systemRamGb,
-        budgetFraction,
-      }),
-    [gpuGb, gpuCount, sortedVariants, systemRamGb, budgetFraction],
-  );
-
   const selectedQuant =
     (selectedQuantOverride
       ? sortedVariants?.find((v) =>
@@ -700,6 +805,39 @@ export function GgufDownloadCard({
       : null) ??
     sortedVariants?.[0]?.quant ??
     null;
+  const selected =
+    sortedVariants?.find((v) => ggufVariantsMatch(v.quant, selectedQuant)) ??
+    null;
+  const companionBytesByKey = useMediaCompanionBytes(
+    mediaPage,
+    repoId,
+    variants,
+    selected?.filename,
+    hfToken,
+  );
+  const variantMenuItems = useMemo(
+    () =>
+      createGgufVariantMenuItems(
+        sortedVariants,
+        {
+          gpuGb,
+          gpuCount,
+          systemRamGb,
+          budgetFraction,
+          unifiedLoadBudgetGb,
+        },
+        companionBytesByKey,
+      ),
+    [
+      gpuGb,
+      gpuCount,
+      sortedVariants,
+      systemRamGb,
+      budgetFraction,
+      unifiedLoadBudgetGb,
+      companionBytesByKey,
+    ],
+  );
 
   const job = useRepoDownload({
     kind: "model",
@@ -763,16 +901,18 @@ export function GgufDownloadCard({
     );
   }, [loading, error, refreshError, variants]);
 
-  const selected =
-    sortedVariants?.find((v) => ggufVariantsMatch(v.quant, selectedQuant)) ??
-    null;
+  const assets = useRequiredAssetsDownload({
+    repoId,
+    filename: selected?.filename,
+    runtime: selected ? mediaPage : undefined,
+    modelLabel: `${repoId} · ${selectedQuant ?? ""}`,
+  });
   const selectedLiveState = selectedQuant
     ? liveVariantStates.get(normalizeGgufVariantIdentity(selectedQuant))
     : undefined;
   const selectedPresentation = pendingDrafterPresentation(selected);
   const downloadingThisVariant =
     progress !== null && ggufVariantsMatch(progress.variant, selectedQuant);
-  // Images/Video stage quants as scoped jobs with no quant-keyed job.
   const selectedScopedLive =
     !downloadingThisVariant && isScopedLiveVariant(selected, scopedLiveFiles);
   const selectedLiveActive =
@@ -780,8 +920,7 @@ export function GgufDownloadCard({
   const ctaDisabled = isLoadingThisModel || !selected;
   const selectedIsActive =
     isActive && activeQuant && ggufVariantsMatch(selected?.quant, activeQuant);
-  // No verdict beats a wrong one: a media repo's fit is the diffusion planner's question, and
-  // this card only knows how to answer llama.cpp's. The picker still badges those rows.
+  // Media fit is the diffusion planner's question; no verdict beats a wrong one.
   const showFitInfo = !mediaRuntime && (Boolean(gpuGb) || Boolean(systemRamGb));
   const selectedFit = selected
     ? classifyGgufVariantFit(selected, {
@@ -789,11 +928,19 @@ export function GgufDownloadCard({
         gpuCount,
         systemRamGb,
         budgetFraction,
+        unifiedLoadBudgetGb,
       })
     : null;
   const selectedDownloadSizeLabel = selected
     ? ggufVariantTransferLabel(selected)
     : null;
+  const selectedFootprint = selected
+    ? ggufVariantFootprint(selected, companionBytesByKey)
+    : null;
+  const selectedAwaitsCompanions = awaitsCompanions(
+    selected?.downloaded,
+    selectedFootprint,
+  );
   const updateAvailable =
     selected?.downloaded === true && selected.update_available === true;
   const selectedVariantKey = selectedQuant
@@ -844,7 +991,6 @@ export function GgufDownloadCard({
   const deleteTargetLabel = deleteTargetVariant
     ? ggufVariantDisplayLabel(deleteTargetVariant)
     : deleteTarget;
-  // The same identity the delete below sends, so the preview measures the copy that goes.
   const deleteImpact = useDeleteImpact(
     deleteTarget !== null,
     repoId,
@@ -858,8 +1004,7 @@ export function GgufDownloadCard({
         repoId,
         deleteTarget,
         hfToken || undefined,
-        // Redaction clears the path and leaves the reference: forwarding it keeps the
-        // delete on this row instead of whichever duplicate the server ranks first.
+        // Redaction clears the path but keeps the ref, which pins the delete to this row.
         deleteTargetVariant?.cache_ref ??
           deleteTargetVariant?.cache_path ??
           cachePath ??
@@ -885,12 +1030,8 @@ export function GgufDownloadCard({
   const updateTargetLabel = updateTargetVariant
     ? ggufVariantDisplayLabel(updateTargetVariant)
     : updateTarget;
-  // Confirm → close the dialog and run the re-download as a MANAGED download, so it surfaces in the
-  // "Downloading N items" panel with correct manifest-based progress and a working Cancel — the
-  // same UX as any other download — instead of a bespoke modal/toast. The worker re-resolves `main`
-  // and pulls only the changed blobs, so the cached version stays intact (and runnable) until the
-  // new revision lands. Completion refreshes the variant list, whose metadata carries the "Update
-  // available" cue.
+  // Run as a managed download so it gets normal progress and cancel. Only changed blobs are
+  // pulled, so the cached version stays runnable until the new one lands.
   const handleConfirmUpdate = useCallback(() => {
     if (!updateTarget) return;
     const variant = updateTarget;
@@ -908,9 +1049,10 @@ export function GgufDownloadCard({
       ...(presentation ? { presentation } : {}),
     });
   }, [updateTarget, updateTargetVariant, repoId]);
+  const hubPlan = useHubDownloadPlan(repoId, selected?.filename);
   const variantListUnavailable = !sortedVariants || sortedVariants.length === 0;
   const showVariantLoadingState = loading && variantListUnavailable;
-  const showUpdateAction =
+  const showUpdateAction = !hubPlan &&
     selected?.downloaded === true &&
     online &&
     updateAvailable &&
@@ -920,12 +1062,12 @@ export function GgufDownloadCard({
     !cancelling &&
     !downloadAction.starting &&
     !downloadingThisVariant;
-  const showDownloadAction =
+  const showDownloadAction = !hubPlan && (
     !selected?.downloaded ||
     downloadingThisVariant ||
     cancelling ||
-    downloadAction.starting;
-  const showRunAction =
+    downloadAction.starting);
+  const showRunAction = !hubPlan &&
     Boolean(onRun) &&
     selected?.downloaded === true &&
     selected.partial !== true &&
@@ -934,8 +1076,7 @@ export function GgufDownloadCard({
     !downloadAction.starting &&
     !isLoadingThisModel;
 
-  // Keep showing download progress while the variant list is unavailable, so a
-  // remount never hides an in-flight download behind the variant status card.
+  // Keep progress visible when the variant list is unavailable, so remounts do not hide it.
   if (progress && variantListUnavailable) {
     return (
       <GgufDownloadingFallbackCard
@@ -981,6 +1122,7 @@ export function GgufDownloadCard({
   return (
     <div className="flex w-full flex-col gap-2">
       <DownloadCard
+        footer={hubPlan ? <HubPlanProgress plan={hubPlan} /> : undefined}
         job={job}
         progress={downloadingThisVariant ? progress : null}
         dialogs={
@@ -1042,31 +1184,35 @@ export function GgufDownloadCard({
               }}
               className="hub-menu-trigger flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-full px-3 text-left transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] disabled:cursor-wait disabled:opacity-60 disabled:hover:bg-transparent dark:hover:bg-[color-mix(in_srgb,var(--accent)_55%,transparent)] dark:data-[state=open]:bg-accent dark:disabled:hover:bg-transparent"
             >
-              {/* Quant label + status tags travel together as one left-aligned
-                  group so the fit-info icon never floats orphaned from its tags.
-                  The group sizes to its content (it still shrinks when the row
-                  is tight) so the chevron follows the tags instead of stranding
-                  itself at the far edge of a full-width trigger. */}
               <span className="flex min-w-0 items-center gap-2 overflow-hidden text-ui-12 text-muted-foreground max-[360px]:gap-1">
                 {selected ? (
                   <QuantBadge
                     quant={selectedLabel ?? selected.quant}
                     fit={selectedFit ?? "oom"}
+                    lookupTableBytes={ggufVariantLookupTableBytes(selected)}
                     showFit={showFitInfo}
+                    unifiedBudget={unifiedLoadBudgetGb != null}
                   />
                 ) : (
                   <span className="text-ui-12p5 text-muted-foreground">
                     Select quantization
                   </span>
                 )}
-                {selected?.downloaded && (
-                  // Dot only on phones.
-                  <DotTag
-                    tone="success"
-                    label="On device"
-                    className="max-sm:border-0 max-sm:px-0"
-                    labelClassName="max-sm:sr-only"
+                {selectedAwaitsCompanions ? (
+                  <CompanionsPendingTag
+                    companionBytes={selectedFootprint?.companionBytes ?? 0}
+                    compact={true}
                   />
+                ) : (
+                  selected?.downloaded && (
+                    // Dot only on phones.
+                    <DotTag
+                      tone="success"
+                      label="On device"
+                      className="max-sm:border-0 max-sm:px-0"
+                      labelClassName="max-sm:sr-only"
+                    />
+                  )
                 )}
                 {selected && !selected.downloaded && selected.partial && (
                   <Tooltip>
@@ -1079,8 +1225,6 @@ export function GgufDownloadCard({
                       </span>
                     </TooltipTrigger>
                     <TooltipContent side="top" sideOffset={4}>
-                      {/* The badge rides inside the quant trigger, so clicking
-                          it opens the menu. Name the button that acts. */}
                       {selectedScopedLive
                         ? "Download is running. Progress is in the downloads panel."
                         : selectedLiveActive
@@ -1089,13 +1233,16 @@ export function GgufDownloadCard({
                     </TooltipContent>
                   </Tooltip>
                 )}
-                {/* Size beats format tag on phones. */}
                 <DotTag tone="gguf" label="GGUF" className="max-sm:hidden" />
                 {selected &&
                   selectedDownloadSizeLabel &&
-                  !selected.downloaded && (
+                  (!selected.downloaded || selectedFootprint) && (
                     <span className="shrink-0 tabular-nums">
-                      {selectedDownloadSizeLabel}
+                      <GgufVariantSizeLabel
+                        label={selectedDownloadSizeLabel}
+                        footprint={selectedFootprint}
+                        downloaded={Boolean(selected.downloaded)}
+                      />
                     </span>
                   )}
               </span>
@@ -1131,6 +1278,7 @@ export function GgufDownloadCard({
                     }
                     liveActive={liveActive}
                     showFitInfo={showFitInfo}
+                    unifiedBudget={unifiedLoadBudgetGb != null}
                     onSelect={handleSelectVariant}
                     onDelete={handleDeleteVariant}
                   />
@@ -1164,7 +1312,8 @@ export function GgufDownloadCard({
             />
           )}
 
-        {(showUpdateAction || showDownloadAction || showRunAction) && (
+        {/* Run sets itself apart; the line only separates the download and update actions. */}
+        {(showUpdateAction || showDownloadAction) && !(showRunAction && onRun && selected) && (
           <CardDivider />
         )}
 
@@ -1186,8 +1335,16 @@ export function GgufDownloadCard({
         {showDownloadAction && (
           <button
             type="button"
-            disabled={downloadAction.disabled}
-            onClick={downloadAction.onClick}
+            disabled={downloadAction.disabled || assets.checking}
+            onClick={() => {
+              if (downloadingThisVariant) {
+                downloadAction.onClick();
+                return;
+              }
+              // The default follows live free memory; pin it so the card keeps this transfer.
+              if (selectedQuant) handleSelectVariant(selectedQuant);
+              void assets.request(downloadAction.onClick);
+            }}
             aria-label={
               selectedScopedLive ? "Downloading" : downloadAction.ariaLabel
             }
@@ -1227,12 +1384,13 @@ export function GgufDownloadCard({
             ) : (
               <>
                 <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} />
-                {downloadAction.downloadLabel}
+                {assets.checking ? "Checking…" : downloadAction.downloadLabel}
               </>
             )}
           </button>
         )}
 
+        {hubPlan && <span className="px-3 text-ui-12 text-muted-foreground">Downloading…</span>}
         {showRunAction && onRun && selected && (
           <ModelRunActionButton
             label={`Configure and run ${repoId} ${selectedLabel ?? selected.quant}`}
@@ -1251,13 +1409,13 @@ export function GgufDownloadCard({
           />
         )}
       </DownloadCard>
-      {/* Only a quant actually on disk gets charted: an undownloaded one has no
-          weights to measure, and the fit badge already tiers those. */}
+      {assets.dialog}
       {selected?.downloaded && showMemoryBar ? (
         <ModelMemoryBarFor
           repoId={repoId}
           quant={selected.quant}
           sizeBytes={selected.size_bytes}
+          lookupTableBytes={ggufVariantLookupTableBytes(selected)}
           gpuGb={gpuGb}
           showReadout={true}
           className="px-1"

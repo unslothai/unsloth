@@ -111,14 +111,12 @@ def test_visible_text_strips_closed_think_block():
 
 
 def test_visible_text_holds_unclosed_think():
-    # An open <think> is held back so partial reasoning never leaks mid-stream.
     assert visible_text("<think>still thinking", show_thinking = False) == ""
     assert visible_text("done.<think>more thinking", show_thinking = False) == "done."
 
 
 def test_visible_text_holds_partial_think_prefix():
-    # Streams are cumulative, so the opening tag can arrive as "<", "<thi", then "<think>". Hold
-    # possible tag prefixes until they are disambiguated.
+    # Streams are cumulative, so the opening tag can arrive as "<", "<thi", then "<think>".
     assert visible_text("<", show_thinking = False) == ""
     assert visible_text("<thi", show_thinking = False) == ""
     assert visible_text("done.<thi", show_thinking = False) == "done."
@@ -141,7 +139,6 @@ def test_finished_stream_keeps_a_trailing_think_prefix(capsys):
     assert raw == "Use the less-than operator <"
     assert capsys.readouterr().out == "Use the less-than operator <\n"
 
-    # "<th" is printed once "<th<" rules it out, then "<think>" shrinks the render: no reprint.
     shrinking = iter(["x <th", "x <th<", "x <th<think>r", {"done": True}])
     stream_to_stdout(shrinking, show_thinking = False)
     assert capsys.readouterr().out == "x <th\n"
@@ -156,7 +153,6 @@ def test_inference_think_defaults_off():
 
     opt = _option(inference, "think")
     assert getattr(opt, "default", None) is False
-    # typer stores a flag/--no-flag pair as one combined decl.
     assert "--think/--no-think" in (getattr(opt, "param_decls", None) or [])
 
 
@@ -302,7 +298,6 @@ def test_chat_max_new_tokens_is_unset_by_default():
 
 
 def test_chatbackend_forwards_an_unset_max_new_tokens_unset():
-    # Only the backend, once it has counted the prompt, can size an unset limit.
     fake = _FakeBackend()
     backend = ChatBackend("unsloth", fake)
 
@@ -383,6 +378,189 @@ def test_chatbackend_gguf_resolves_unset_sampling_but_keeps_explicit_values(monk
     }
 
 
+_QWEN_THINKING_ON = {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "min_p": 0.0}
+_QWEN_THINKING_OFF = {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0}
+_QWEN3_TEMPLATE = (
+    "{%- if enable_thinking is defined and enable_thinking is false %}"
+    "<think>\n\n</think>\n\n{%- endif %}"
+)
+_ALWAYS_THINKING_TEMPLATE = "{{- '<|im_start|>assistant\n<think>\n' }}{# </think> #}"
+
+
+def _qwen_backend(
+    kind,
+    model_id,
+    template = None,
+    **flags,
+):
+    if kind == "gguf":
+        fake = _FakeGgufBackend()
+        fake.model_identifier = model_id
+        for name, value in flags.items():
+            setattr(fake, name, value)
+        return fake
+    fake = _FakeBackend()
+    fake.active_model_name = model_id
+    fake.models = {model_id: {"chat_template_info": {"template": template}}}
+    return fake
+
+
+def _qwen_sampling(monkeypatch, kind, fake, enable_thinking, **explicit):
+    _clear_sampling_pins(monkeypatch)
+    list(
+        ChatBackend(kind, fake).stream(
+            [{"role": "user", "content": "x"}],
+            **{**_STREAM_KWARGS, **_UNSET_SAMPLING, **explicit, "enable_thinking": enable_thinking},
+        )
+    )
+    call = fake.calls[0] if kind == "gguf" else fake.calls[0][2]
+    return {field: call[field] for field in _QWEN_THINKING_ON}
+
+
+_QWEN_REASONING_BACKENDS = [
+    ("gguf", "unsloth/Qwen3-4B-GGUF", "unsloth/Qwen3.5-4B-GGUF", {"supports_reasoning": True}),
+    ("unsloth", "unsloth/Qwen3-4B", "unsloth/Qwen3.5-4B", {"template": _QWEN3_TEMPLATE}),
+]
+
+
+@pytest.mark.parametrize("kind, qwen3, qwen35, flags", _QWEN_REASONING_BACKENDS)
+@pytest.mark.parametrize(
+    "family, enable_thinking, expected",
+    [
+        ("qwen3", False, _QWEN_THINKING_OFF),
+        ("qwen3", True, _QWEN_THINKING_ON),
+        ("qwen35", True, _QWEN_THINKING_ON),
+        ("qwen35", False, _QWEN_THINKING_OFF),
+    ],
+)
+def test_chatbackend_samples_qwen3_for_the_thinking_mode_of_the_turn(
+    monkeypatch, kind, qwen3, qwen35, flags, family, enable_thinking, expected
+):
+    fake = _qwen_backend(kind, {"qwen3": qwen3, "qwen35": qwen35}[family], **flags)
+    assert _qwen_sampling(monkeypatch, kind, fake, enable_thinking) == expected
+
+
+@pytest.mark.parametrize("kind, qwen3, _qwen35, flags", _QWEN_REASONING_BACKENDS)
+def test_chatbackend_explicit_temperature_keeps_the_rest_of_the_thinking_table(
+    monkeypatch, kind, qwen3, _qwen35, flags
+):
+    fake = _qwen_backend(kind, qwen3, **flags)
+    sampling = _qwen_sampling(monkeypatch, kind, fake, False, temperature = 0.3)
+    assert sampling == {**_QWEN_THINKING_OFF, "temperature": 0.3}
+
+
+@pytest.mark.parametrize(
+    "kind, model_id, flags",
+    [
+        (
+            "gguf",
+            "unsloth/Qwen3.5-4B-GGUF",
+            {"supports_reasoning": True, "reasoning_always_on": True},
+        ),
+        ("unsloth", "unsloth/Qwen3.5-4B", {"template": _ALWAYS_THINKING_TEMPLATE}),
+    ],
+)
+def test_chatbackend_always_on_reasoning_samples_as_thinking(monkeypatch, kind, model_id, flags):
+    fake = _qwen_backend(kind, model_id, **flags)
+    assert _qwen_sampling(monkeypatch, kind, fake, False) == _QWEN_THINKING_ON
+
+
+@pytest.mark.parametrize(
+    "kind, model_id, flags",
+    [
+        (
+            "gguf",
+            "unsloth/Qwen3.5-4B-GGUF",
+            {"supports_reasoning": True, "reasoning_style": "reasoning_effort"},
+        ),
+        (
+            "unsloth",
+            "unsloth/Qwen3.5-4B",
+            {
+                "template": "{%- if reasoning_effort == 'low' %}low{%- elif reasoning_effort == 'high' %}high{%- endif %}"
+            },
+        ),
+    ],
+)
+def test_chatbackend_effort_only_reasoning_samples_as_thinking(monkeypatch, kind, model_id, flags):
+    fake = _qwen_backend(kind, model_id, **flags)
+    assert _qwen_sampling(monkeypatch, kind, fake, False) == _QWEN_THINKING_ON
+
+
+@pytest.mark.parametrize("enable_thinking", [False, True])
+@pytest.mark.parametrize(
+    "kind, model_id, flags",
+    [
+        (
+            "gguf",
+            "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+            {"supports_reasoning": True, "reasoning_always_on": True},
+        ),
+        ("unsloth", "unsloth/Qwen3-4B-Instruct-2507", {"template": _ALWAYS_THINKING_TEMPLATE}),
+    ],
+)
+def test_chatbackend_instruct_2507_samples_as_non_thinking(
+    monkeypatch, kind, model_id, flags, enable_thinking
+):
+    fake = _qwen_backend(kind, model_id, **flags)
+    assert _qwen_sampling(monkeypatch, kind, fake, enable_thinking) == _QWEN_THINKING_OFF
+
+
+@pytest.mark.parametrize(
+    "kind, model_id", [("gguf", "unsloth/Qwen3.5-4B-GGUF"), ("unsloth", "unsloth/Qwen3.5-4B")]
+)
+def test_chatbackend_without_reasoning_keeps_the_model_recommendation(monkeypatch, kind, model_id):
+    fake = _qwen_backend(kind, model_id, template = "{{ messages }}")
+    assert _qwen_sampling(monkeypatch, kind, fake, True) == _QWEN_THINKING_OFF
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        {"default": _QWEN3_TEMPLATE, "tool_use": "{{ messages }}"},
+        [{"name": "default", "template": _QWEN3_TEMPLATE}],
+    ],
+)
+def test_chatbackend_reads_reasoning_from_the_selected_named_template(monkeypatch, template):
+    fake = _qwen_backend("unsloth", "unsloth/Qwen3.5-4B", template = template)
+    assert _qwen_sampling(monkeypatch, "unsloth", fake, True) == _QWEN_THINKING_ON
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        ["--chat-template", "chatml"],
+        ["--chat-template-file=/tmp/custom.jinja"],
+        ["--chat_template", "chatml"],
+        ["--chat_template_file", "/tmp/custom.jinja"],
+        ["--no-jinja"],
+    ],
+)
+def test_chatbackend_gguf_template_override_keeps_the_model_recommendation(monkeypatch, extra_args):
+    fake = _qwen_backend(
+        "gguf", "unsloth/Qwen3.5-4B-GGUF", supports_reasoning = True, extra_args = extra_args
+    )
+    assert _qwen_sampling(monkeypatch, "gguf", fake, True) == _QWEN_THINKING_OFF
+
+
+def test_chat_think_toggle_switches_the_sampling_table(monkeypatch):
+    _clear_sampling_pins(monkeypatch)
+    fake = _qwen_backend("gguf", "unsloth/Qwen3-4B-GGUF", supports_reasoning = True)
+    monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
+    monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
+    monkeypatch.setattr(chatmod, "load_chat_backend", lambda *a, **k: ChatBackend("gguf", fake))
+
+    result = CliRunner().invoke(
+        _chat_app(), ["fake-model", "--no-server"], input = "q1\n/think\nq2\n/exit\n"
+    )
+
+    assert result.exit_code == 0, result.output
+    assert [{field: call[field] for field in _QWEN_THINKING_ON} for call in fake.calls] == [
+        _QWEN_THINKING_OFF,
+        _QWEN_THINKING_ON,
+    ]
+
+
 class _FakeStatsBackend:
     def __init__(self, stats):
         self._stats = stats
@@ -421,7 +599,6 @@ def test_chatbackend_gguf_reports_a_length_finish_from_the_metadata_event():
     chunks = list(backend.stream([{"role": "user", "content": "x"}], **_STREAM_KWARGS))
 
     assert backend.reply_hit_token_limit is True
-    # The metadata event still reaches the stream helpers, which skip non-strings.
     assert chunks[0] == "hi"
 
 
@@ -451,7 +628,7 @@ def test_you_prompt_matches_readline_backend(monkeypatch):
     assert chatmod._you_prompt(colors = True) == "\n\x1b[1;36mYou: \x1b[0m"
     assert chatmod._you_prompt(colors = False) == "\nYou: "
 
-    # Windows: no readline module at all; the console's own line editing handles backspace, so plain ANSI color is safe.
+    # Windows has no readline module.
     monkeypatch.setitem(sys.modules, "readline", None)
     assert chatmod._you_prompt(colors = True) == "\n\x1b[1;36mYou: \x1b[0m"
     assert chatmod._you_prompt(colors = False) == "\nYou: "
@@ -459,10 +636,12 @@ def test_you_prompt_matches_readline_backend(monkeypatch):
 
 def test_chat_registered_on_app():
     from unsloth_cli import app
+    from unsloth_cli.commands.chat import chat
 
-    # cmd.name is None until typer resolves it from the callback name.
-    names = {(cmd.name or cmd.callback.__name__) for cmd in app.registered_commands}
-    assert "chat" in names
+    # Registered lazily on the click group, not in app.registered_commands.
+    command = typer.main.get_command(app).commands["chat"]
+    assert command.name == "chat"
+    assert command.callback.__wrapped__ is chat
 
 
 def test_chat_exits_cleanly_on_slash_exit(monkeypatch):
@@ -487,7 +666,6 @@ def test_chat_exits_cleanly_on_slash_exit(monkeypatch):
         assert result.exit_code == 0, result.output
         assert closed == [True]
         assert "Bye." in result.output
-        # The prompt must go through input() (readline-safe), not a print.
         assert "You: " in result.output
         assert "You: You:" not in result.output
 
@@ -603,15 +781,10 @@ def test_catalog_cached_entries_filter_non_chat_rows(monkeypatch, tmp_path):
             "model_format": "adapter",
             "capabilities": {"can_chat": False},
         },
-        # An embedding/CLIP repo carries task None like any chat repo; can_chat separates them.
         {"repo_id": "org/Embedder", "task": None, "capabilities": {"can_chat": False}},
-        # An untrusted diffusion repo carries no task either, and its pipeline root has no config for
-        # can_chat to read, so only its own flag keeps it out of chat.
         {"repo_id": "org/Sdxl", "task": None, "diffusers": True},
     ]
-    # The real variant lister, not a stub: it decides these labels and picks the load target, so a stub
-    # tests the plumbing and none of the answer. Pulls neither torch nor fastapi, and syspath_prepend
-    # is undone after the test.
+    # The real variant lister, not a stub: it decides these labels.
     monkeypatch.syspath_prepend(str(_REPO_ROOT / "studio" / "backend"))
     monkeypatch.setattr(cat, "_cached_catalog_rows", lambda: (gguf_rows, model_rows))
 
@@ -795,12 +968,10 @@ def test_catalog_local_folder_entries_keep_safetensors_and_use_id(monkeypatch):
             self.load_id = load_id
 
     rows = [
-        # _dir_model_format reports None for a safetensors folder, never "safetensors".
         _LocalModelInfo("/models/Qwen3-0.6B", "Qwen3-0.6B", "/models/Qwen3-0.6B", "models_dir"),
         _LocalModelInfo("/m/Tiny.gguf", "Tiny", "/m/Tiny.gguf", "lmstudio", model_format = "gguf"),
         _LocalModelInfo("/models/Half", "Half", "/models/Half", "models_dir", partial = True),
         _LocalModelInfo("/models/MiniLM", "MiniLM", "/models/MiniLM", "models_dir"),
-        # the cli has no studio load-route materializer for this opaque identifier.
         _LocalModelInfo(
             "ollama-manifest:%2Fmodels%2Fmanifests%2Fqwen",
             "Ollama Qwen",
@@ -833,7 +1004,6 @@ def test_catalog_dedupes_and_survives_failing_sources(monkeypatch):
         raise RuntimeError("no studio db")
 
     monkeypatch.setattr(cat, "trained_entries", boom)
-    # The SAME load target reached by two sources is one model, and the first source wins.
     monkeypatch.setattr(cat, "exported_entries", lambda: [cat.ModelEntry("Exports", "a", "", "/A")])
     monkeypatch.setattr(cat, "cached_entries", lambda: [cat.ModelEntry("GGUF", "b", "", "/A")])
     monkeypatch.setattr(cat, "local_folder_entries", lambda: [])
@@ -1029,7 +1199,7 @@ def test_find_studio_server_none_when_not_running(monkeypatch):
     def refuse(*a, **k):
         raise OSError("connection refused")
 
-    monkeypatch.setattr(urllib.request, "urlopen", refuse)
+    monkeypatch.setattr(_inference, "urlopen_local", refuse)
     assert _inference.find_studio_server() is None
 
 
@@ -1044,7 +1214,6 @@ def test_find_studio_server_falls_back_to_a_recorded_studio_port(monkeypatch, tm
     monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
     monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
     monkeypatch.setattr(studio, "_pid_alive", lambda pid: pid == os.getpid())
-    # Legacy records: a bare PID, no start time and no bind-address line.
     (tmp_path / "studio-8887-424242.pid").write_text("424242", encoding = "utf-8")
     (tmp_path / f"studio-8889-{os.getpid()}.pid").write_text(str(os.getpid()), encoding = "utf-8")
     probed = []
@@ -1055,7 +1224,7 @@ def test_find_studio_server_falls_back_to_a_recorded_studio_port(monkeypatch, tm
             raise OSError("HTTP Error 404: File not found")
         return _HealthResponse()
 
-    monkeypatch.setattr(urllib.request, "urlopen", default_port_taken)
+    monkeypatch.setattr(_inference, "urlopen_local", default_port_taken)
     assert _inference.find_studio_server() == "http://127.0.0.1:8889"
     assert probed == ["http://127.0.0.1:8888/api/health", "http://127.0.0.1:8889/api/health"]
 
@@ -1079,7 +1248,6 @@ def test_find_studio_server_skips_a_recorded_pid_reused_by_another_process(monke
     monkeypatch.setattr(studio, "_pid_alive", lambda pid: True)
     process = types.SimpleNamespace(create_time = lambda: 1000.0)
     monkeypatch.setitem(sys.modules, "psutil", types.SimpleNamespace(Process = lambda pid: process))
-    # A crashed Studio's record whose PID now belongs to another process, next to a live one.
     (tmp_path / "studio-8887-4242.pid").write_text("4242\n500.0\n127.0.0.1", encoding = "utf-8")
     (tmp_path / "studio-8889-4343.pid").write_text("4343\n1000.0\n127.0.0.1", encoding = "utf-8")
     probed = []
@@ -1090,13 +1258,12 @@ def test_find_studio_server_skips_a_recorded_pid_reused_by_another_process(monke
             raise OSError("connection refused")
         return _HealthResponse()
 
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(_inference, "urlopen_local", urlopen)
     assert _inference.find_studio_server() == "http://127.0.0.1:8889"
     assert probed == ["http://127.0.0.1:8888/api/health", "http://127.0.0.1:8889/api/health"]
 
 
 def test_find_studio_server_probes_a_recorded_port_on_the_family_it_bound(monkeypatch, tmp_path):
-    # An IPv6-only Studio shares its port number with whoever holds 127.0.0.1.
     import importlib
     import urllib.request
 
@@ -1107,7 +1274,6 @@ def test_find_studio_server_probes_a_recorded_port_on_the_family_it_bound(monkey
     monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
     monkeypatch.setattr(studio, "_pid_alive", lambda pid: True)
     (tmp_path / "studio-8889-4343.pid").write_text("4343\n\n::1", encoding = "utf-8")
-    # `::` is v6only on macOS; a LAN-only bind is not reachable from this flow at all.
     (tmp_path / "studio-8890-4344.pid").write_text("4344\n\n0.0.0.0,::", encoding = "utf-8")
     (tmp_path / "studio-8891-4345.pid").write_text("4345\n\n::", encoding = "utf-8")
     (tmp_path / "studio-8892-4346.pid").write_text("4346\n\n192.168.1.5", encoding = "utf-8")
@@ -1117,7 +1283,7 @@ def test_find_studio_server_probes_a_recorded_port_on_the_family_it_bound(monkey
         probed.append(request.full_url)
         raise OSError("connection refused")
 
-    monkeypatch.setattr(urllib.request, "urlopen", nothing_answers)
+    monkeypatch.setattr(_inference, "urlopen_local", nothing_answers)
     assert _inference.find_studio_server() is None
     assert probed == [
         "http://127.0.0.1:8888/api/health",
@@ -1131,7 +1297,6 @@ def test_find_studio_server_probes_a_recorded_port_on_the_family_it_bound(monkey
 def test_find_studio_server_keeps_looking_past_a_stranger_on_the_default_port(
     monkeypatch, tmp_path
 ):
-    # Whatever took 8888 answers a health payload of its own for every path.
     import importlib
     import urllib.request
 
@@ -1148,13 +1313,84 @@ def test_find_studio_server_keeps_looking_past_a_stranger_on_the_default_port(
             return _HealthResponse(b'{"status": "healthy", "service": "some-other-app"}')
         return _HealthResponse()
 
-    monkeypatch.setattr(urllib.request, "urlopen", stranger_on_8888)
+    monkeypatch.setattr(_inference, "urlopen_local", stranger_on_8888)
     assert _inference.find_studio_server() == "http://127.0.0.1:8889"
 
 
+def test_loopback_requests_bypass_an_exported_proxy(monkeypatch):
+    import http.server
+    import threading
+    import urllib.request
+
+    from unsloth_cli import _inference
+
+    seen = []
+
+    class Studio(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append(self.headers.get("Authorization"))
+            body = b'{"status": "healthy", "service": "Unsloth UI Backend"}'
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Studio)
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        for name in ("http_proxy", "HTTP_PROXY"):
+            monkeypatch.setenv(name, "http://127.0.0.1:9")
+        for name in ("no_proxy", "NO_PROXY"):
+            monkeypatch.delenv(name, raising = False)
+        monkeypatch.setenv("UNSLOTH_STUDIO_URL", base)
+        assert _inference.find_studio_server(timeout = 2) == base
+        request = urllib.request.Request(
+            f"{base}/api/health", headers = {"Authorization": "Bearer sk-unsloth-test"}
+        )
+        with _inference.urlopen_no_redirect(request, timeout = 2) as response:
+            assert response.status == 200
+        assert seen[-1] == "Bearer sk-unsloth-test"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_find_studio_server_prefers_its_own_recorded_studio_over_a_foreign_default(
+    monkeypatch, tmp_path
+):
+    import importlib
+    import urllib.request
+
+    from unsloth_cli import _inference
+
+    studio = importlib.import_module("unsloth_cli.commands.studio")
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
+    monkeypatch.setattr(studio, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(_inference, "urlopen_local", lambda *a, **k: _HealthResponse())
+    verified = []
+
+    def identity(base, timeout = 3.0):
+        verified.append(base)
+        return base.endswith(":8889")
+
+    monkeypatch.setattr(_inference, "verify_studio_identity", identity)
+    assert _inference.find_studio_server() == "http://127.0.0.1:8888"
+    assert verified == []
+
+    (tmp_path / "studio-8889-4343.pid").write_text("4343\n\n127.0.0.1", encoding = "utf-8")
+    assert _inference.find_studio_server() == "http://127.0.0.1:8889"
+    assert verified == ["http://127.0.0.1:8888"]
+
+    monkeypatch.setattr(_inference, "verify_studio_identity", lambda base, timeout = 3.0: True)
+    assert _inference.find_studio_server() == "http://127.0.0.1:8888"
+
+
 def test_find_studio_server_prefers_ipv4_loopback_for_localhost(monkeypatch):
-    # localhost resolving ::1-first must not hide an Unsloth bound to 127.0.0.1: discovery tries each
-    # loopback address and returns the one that answers.
     import socket
     import urllib.request
 
@@ -1175,7 +1411,7 @@ def test_find_studio_server_prefers_ipv4_loopback_for_localhost(monkeypatch):
             raise OSError("connection refused")
         return _HealthResponse()
 
-    monkeypatch.setattr(urllib.request, "urlopen", only_ipv4)
+    monkeypatch.setattr(_inference, "urlopen_local", only_ipv4)
     assert _inference.find_studio_server() == "http://127.0.0.1:8888"
 
 
@@ -1233,8 +1469,7 @@ def _http_stream_body(monkeypatch, max_new_tokens):
 
 
 def test_http_backend_omits_max_tokens_when_unset(monkeypatch):
-    # The server documents max_tokens=None as "generate until EOS"; sending a cap
-    # the user never asked for truncates every reply.
+    # The server reads max_tokens=None as "generate until EOS".
     assert "max_tokens" not in _http_stream_body(monkeypatch, None)
 
 
@@ -1295,9 +1530,36 @@ def _http_finish(monkeypatch, finish_reason):
 def test_http_backend_reports_whether_a_reply_ran_out_of_budget(monkeypatch):
     hit, out = _http_finish(monkeypatch, "length")
     assert hit is True
-    # The finish-reason chunk carries a delta too; it must not be dropped.
     assert out == ["hi"]
     assert _http_finish(monkeypatch, "stop")[0] is False
+
+
+def _http_reasoning_reply(monkeypatch):
+    deltas = [
+        {"role": "assistant", "content": ""},
+        {"content": "", "reasoning_content": "Two plus "},
+        {"content": "", "reasoning_content": "two."},
+        {"content": "It is "},
+        {"content": "4."},
+    ]
+    lines = [f"data: {json.dumps({'choices': [{'delta': delta}]})}\n".encode() for delta in deltas]
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    monkeypatch.setattr(
+        backend, "_request", lambda *a, **k: _FakeSSEResponse([*lines, b"data: [DONE]\n"])
+    )
+    return backend.stream(
+        [{"role": "user", "content": "2+2?"}], **{**_STREAM_KWARGS, "enable_thinking": True}
+    )
+
+
+def test_http_backend_shows_server_reasoning_with_think(monkeypatch):
+    stream = _http_reasoning_reply(monkeypatch)
+    assert collect_stream(stream, show_thinking = True) == "<think>Two plus two.</think>It is 4."
+
+
+def test_http_backend_hides_server_reasoning_without_think(monkeypatch):
+    stream = _http_reasoning_reply(monkeypatch)
+    assert collect_stream(stream, show_thinking = False) == "It is 4."
 
 
 class _FakeLoadResponse:
@@ -1498,13 +1760,9 @@ def test_http_backend_load_keeps_the_resident_quant_across_windows_path_spelling
     assert loads[0].get("gguf_variant") == "Q8_0"
 
 
-# ── A load slower than the proxy timer (see routes/inference.py _tunnel_safe_json) ──
-
-
 def test_http_backend_load_drains_the_padded_body(monkeypatch):
     """Closing at the headers would start generating while the model is still loading."""
     backend = HttpChatBackend("http://localhost:8888", "token")
-    # What a padded slow load looks like on the wire: spaces, then the payload.
     response = _FakeLoadResponse(b'   {"status": "loaded"}')
     monkeypatch.setattr(backend, "_request", lambda *a, **k: response)
 
@@ -1537,7 +1795,6 @@ def test_http_backend_load_fails_on_a_deferred_error(monkeypatch, capsys):
             load_in_4bit = True,
         )
 
-    # Same exit code as an early HTTP failure: ensure_loaded's except block is reused.
     assert excinfo.value.exit_code == 1
     err = capsys.readouterr().err
     assert "Model load failed" in err
@@ -1576,7 +1833,6 @@ def test_http_backend_load_rejects_a_truncated_padded_body(monkeypatch, capsys, 
     err = capsys.readouterr().err
     assert "Model load failed" in err
     assert "did not report completion" in err
-    # Still drained, so the load is not abandoned at the headers.
     assert response.reads == 1 and response.closed
 
 
@@ -1606,7 +1862,6 @@ def test_deferred_error_helper_passes_a_normal_body_through():
 
     body = {"status": "loaded", "model": "org/model-GGUF"}
     assert raise_for_deferred_error("http://x/api/inference/load", body) is body
-    # Not a dict, and a look-alike that is not the documented shape, both pass.
     assert raise_for_deferred_error("http://x", [1, 2]) == [1, 2]
     assert raise_for_deferred_error("http://x", {"_deferred_error": None}) == {
         "_deferred_error": None
@@ -1885,7 +2140,6 @@ def test_http_backend_merges_emoji_split_across_deltas(monkeypatch):
     monkeypatch.setattr(backend, "_request", lambda *a, **k: response)
 
     out = list(backend.stream([{"role": "user", "content": "hi"}], **_STREAM_KWARGS))
-    # The lone high surrogate is held back, then merged with its other half.
     assert out == ["hi ", "hi ", "hi 😊"]
 
 
@@ -1939,7 +2193,6 @@ def test_chat_tells_the_user_when_a_reply_stopped_at_the_token_limit(monkeypatch
     unset = _chat_run_with_limit_flag(monkeypatch, True)
     capped = _chat_run_with_limit_flag(monkeypatch, True, "--max-new-tokens", "8")
 
-    # Only an unset limit grows with the context; a chosen one has to be raised itself.
     assert "--max-seq-length" in unset and "--max-new-tokens" not in unset
     assert "--max-new-tokens" in capped and "--max-seq-length" not in capped
 
@@ -1981,8 +2234,7 @@ def test_chat_forwards_gguf_runtime_options_to_loader(monkeypatch):
     )
 
     assert result.exit_code == 0, result.output
-    # 0 is the "no context requested" sentinel: a server that also asked for nothing
-    # reuses the resident model instead of relaunching it at the CLI's own number.
+    # 0 is the "no context requested" sentinel.
     assert loads == [
         (
             "fake-model",
@@ -2417,7 +2669,6 @@ def test_inference_under_mlx_launch_handles_stream(monkeypatch, chunk_kind, expe
     if chunk_kind == "answer":
         chunks = ["answer"]
     elif chunk_kind == "model_text_error":
-        # Model output whose visible text starts with "Error:" must not abort.
         chunks = ["Error: printed by the model, not a backend failure"]
     else:
         chunks = [GenStreamError("Error: generation failed")]
@@ -2573,7 +2824,6 @@ def test_chat_under_mlx_launch_exits_on_generation_error(monkeypatch, stream_err
             if stream_error == "exception":
                 raise RuntimeError("generation failed")
             if stream_error == "model_text":
-                # Plain model text starting with "Error:" must not abort the run.
                 return iter(["Error: printed by the model"])
             return iter([GenStreamError("Error: generation failed")])
 
@@ -2671,7 +2921,6 @@ def test_catalog_local_folder_entries_require_loadable_payloads(monkeypatch, tmp
         d = tmp_path / name
         d.mkdir()
         for file in files:
-            # A config has to parse: an unreadable one is its own reason not to load.
             if file.endswith("config.json"):
                 (d / file).write_text(json.dumps({"model_type": "qwen3"}))
             else:
@@ -2715,8 +2964,6 @@ def test_catalog_local_folder_entries_require_loadable_payloads(monkeypatch, tmp
         ),
     )
 
-    # The pipeline still HOLDS a payload; it is excluded from the chat picker for the
-    # separate reason that a diffusers pipeline cannot answer a text turn.
     assert cat._local_dir_holds_a_payload(pipeline) is True
     assert cat._local_dir_holds_a_payload(modular) is True
     assert cat._local_dir_holds_a_payload(companions) is False
@@ -2912,7 +3159,6 @@ def test_catalog_rejects_incomplete_local_and_exported_payloads(monkeypatch, tmp
         },
     )
 
-    # Directories: torn payloads out, every loadable shape kept.
     assert cat._local_dir_holds_a_payload(zero_gguf) is False
     assert cat._local_dir_holds_a_payload(lone_shard) is False
     assert cat._local_dir_holds_a_payload(zero_export) is False
@@ -2920,7 +3166,6 @@ def test_catalog_rejects_incomplete_local_and_exported_payloads(monkeypatch, tmp
     assert cat._local_dir_holds_a_payload(good_export) is True
     assert cat._local_dir_holds_a_payload(whole_shards) is True
 
-    # A scan row can name the .gguf file itself, which is judged on its own shard family.
     assert cat._local_dir_holds_a_payload(zero_gguf / "m-Q4_K_M.gguf") is False
     assert cat._local_dir_holds_a_payload(lone_shard / "s-Q4_K_M-00001-of-00003.gguf") is False
     assert cat._local_dir_holds_a_payload(good_gguf / "m-Q4_K_M.gguf") is True
@@ -3021,8 +3266,7 @@ def test_catalog_drops_an_export_with_no_loadable_payload(monkeypatch, tmp_path)
     (whole / "adapter_model.safetensors").write_bytes(b"\0" * 2048)
 
     monkeypatch.setattr(cat, "_path_can_chat", lambda *a, **k: None)
-    # Warm the real hub.* chain BEFORE shadowing utils.models: _local_dir_holds_a_payload imports
-    # through it, and a stub package would break that import rather than the test.
+    # Warm the real hub.* chain BEFORE shadowing utils.models, or the import itself breaks.
     assert cat._local_dir_holds_a_payload(whole) is True
     assert cat._local_dir_holds_a_payload(broken) is False
 
@@ -3162,11 +3406,9 @@ def test_catalog_loose_gguf_shard_rows_load_the_first_split(monkeypatch, tmp_pat
     shards = [folder / f"BigModel-Q4_K_M-0000{n}-of-00003.gguf" for n in (1, 2, 3)]
     for shard in shards:
         shard.write_bytes(b"GGUF" + b"\0" * 4096)
-    # An unrelated single-file GGUF beside them: no shard may resolve to it, and it stays itself.
     loose = folder / "Unrelated-F16.gguf"
     loose.write_bytes(b"GGUF" + b"\0" * 4096 * 10)
-    # Three digits is not the loader's -NNNNN-of-NNNNN, so detect_gguf_model opens each of these
-    # as its own model and collapsing them would be the wrong-file pick this fix removes.
+    # Three digits is not the loader's -NNNNN-of-NNNNN split pattern.
     unsplit = [folder / f"Other-00{n}-of-003.gguf" for n in (1, 2, 3)]
     for file in unsplit:
         file.write_bytes(b"GGUF" + b"\0" * 4096)
@@ -3218,7 +3460,6 @@ def test_catalog_drops_loose_gguf_companions(monkeypatch, tmp_path):
     model.write_bytes(b"GGUF" + b"\0" * 4096)
     companions = [folder / n for n in ("mmproj-F16.gguf", "mtp-gemma-3-4b-it.gguf")]
     for companion in companions:
-        # Bigger, so a folder-wide resolve would have preferred one of them.
         companion.write_bytes(b"GGUF" + b"\0" * 4096 * 10)
 
     def row(path):
@@ -3274,12 +3515,9 @@ def test_catalog_pins_an_active_cache_adapter_to_its_snapshot(tmp_path):
 QUANT_LAYOUTS = [
     ([("Tiny-Q4_K_M.gguf", 16)], "Q4_K_M"),
     ([("Tiny-Q4_K_M.gguf", 16), ("Tiny-Q8_0.gguf", 16)], "Q4_K_M, Q8_0"),
-    # One directory per quant. snapshots/*/*.gguf is one level deep, so this rendered blank.
     ([("Q4_K_M/Tiny-Q4_K_M.gguf", 16), ("Q8_0/Tiny-Q8_0.gguf", 16)], "Q4_K_M, Q8_0"),
-    # A split quant is ONE thing to pick. The glob listed every shard as its own label.
     ([(f"Tiny-Q4_K_M-0000{n}-of-00003.gguf", 16) for n in (1, 2, 3)], "Q4_K_M"),
-    # The case the host decides: fnmatch normcases on Windows and not on Linux or macOS, so "*.gguf"
-    # found this file on one platform only and the cache read differently per machine.
+    # fnmatch normcases on Windows only.
     ([("Tiny-Q8_0.GGUF", 16)], "Q8_0"),
     ([("Tiny-Q4_K_M.gguf", 16), ("mmproj-F16.gguf", 16)], "Q4_K_M"),
 ]

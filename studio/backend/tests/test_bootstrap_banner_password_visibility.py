@@ -23,7 +23,6 @@ def test_a_launch_without_autofill_prints_the_password():
     body = "\n".join(_lines(autofill_available = False))
 
     assert f"password: {PASSWORD}" in body
-    # Still say where it lives: the operator may come back after the log has scrolled.
     assert f"also saved to: {PATH}" in body
 
 
@@ -82,7 +81,6 @@ def test_the_creation_flag_survives_a_later_call_that_creates_nothing(monkeypatc
     assert storage.ensure_default_admin() is True
     assert storage.admin_created_this_process() is True
 
-    # The gate's call is first; the lifespan's is this one, and it creates nothing.
     monkeypatch.setattr(storage, "get_user_and_secret", lambda *a, **k: object())
     monkeypatch.setattr(storage, "_load_bootstrap_password", lambda: PASSWORD)
 
@@ -113,6 +111,16 @@ def test_an_api_only_launch_has_no_autofill():
     state.api_only = True
 
     assert banner_autofill_available(state, {}) is False
+
+
+def test_a_desktop_owned_api_only_launch_autofills_on_loopback(monkeypatch):
+    import main
+
+    state = _State()
+    state.api_only = True
+    monkeypatch.setattr(main, "_DESKTOP_OWNER", {"kind": "tauri", "token_sha256": "x"})
+
+    assert main.banner_autofill_available(state, {}) is True
 
 
 def test_a_suppressed_injection_has_no_autofill():

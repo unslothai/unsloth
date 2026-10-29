@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import io
+import math
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -50,6 +51,14 @@ def _to_pil_from_hf_image_dict(value: Any) -> Any | None:
 
     path_value = value.get("path")
     if isinstance(path_value, str) and path_value.strip():
+        # Row cells are user data: a managed account may only preview files it could read itself.
+        from fastapi import HTTPException
+        from core.training.account_jobs import account_path
+
+        try:
+            account_path(path_value)
+        except (HTTPException, OSError, RuntimeError, ValueError, TypeError):
+            return None
         try:
             from PIL import Image  # type: ignore
             with Image.open(Path(path_value)) as image:
@@ -60,8 +69,7 @@ def _to_pil_from_hf_image_dict(value: Any) -> Any | None:
     return None
 
 
-# Resolved once: to_jsonable runs per value, and importing pandas per value cost 30% of it. The
-# placeholder is a private object rather than None, which a real value can be.
+# Resolved once: importing pandas per value cost 30%. Sentinel, since None is a real value.
 _NO_SENTINEL = object()
 _PANDAS_NA: Any = _NO_SENTINEL
 _PANDAS_NAT: Any = _NO_SENTINEL
@@ -101,7 +109,13 @@ def to_jsonable(value: Any) -> Any:
         if isinstance(value, np.ndarray):
             return value.tolist()
         if isinstance(value, np.generic):
-            return value.item()
+            value = value.item()
+            if not isinstance(value, float):
+                return value
+
+    # pandas' missing number is NaN; Starlette refuses NaN/inf, so one blank cell 500'd the page.
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
 
     if isinstance(value, dict):
         return {str(k): to_jsonable(v) for k, v in value.items()}
@@ -151,11 +165,7 @@ def to_preview_jsonable(value: Any) -> Any:
 
 
 def to_preview_jsonable_row(row: Any) -> Any:
-    """A dataset row, converted a column at a time.
-
-    ``to_preview_jsonable`` answers about a VALUE, and its Hugging Face image detection matches any
-    mapping carrying ``bytes`` or ``path`` -- which a row can be. Handing it a whole row replaced
-    every column, labels included, with one JPEG preview payload."""
+    """Per column: a row with bytes or path keys looks like one image and replaces every column."""
     if isinstance(row, list):
         return [to_preview_jsonable_row(item) for item in row]
     if not isinstance(row, dict):

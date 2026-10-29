@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for local GGUF ``model_format`` classification (PR #6364 follow-up).
-
-Suffixless GGUF folders (custom folders / LM Studio) carry no ``-GGUF`` name
-hint, so the scanners must surface ``model_format = "gguf"`` for the UI to route
-them through the GGUF load path. The rule, shared by ``_dir_model_format`` and
-``_scan_models_dir``: a directory is GGUF-format when it holds ``.gguf`` files
-and no non-GGUF weights (``.safetensors`` / ``.bin``); a stray ``config.json``
-must not disqualify it.
-
-No GPU/network: only file names and sizes are inspected.
-"""
+"""A folder counts as GGUF when it has .gguf files and no .safetensors or .bin weights."""
 
 from __future__ import annotations
 
@@ -23,7 +13,6 @@ from pathlib import Path
 
 import pytest
 
-# Keep runnable without optional logging deps (mirrors the sibling tests).
 if "structlog" not in sys.modules:
 
     class _DummyLogger:
@@ -42,6 +31,46 @@ def _touch(path: Path) -> Path:
     path.parent.mkdir(parents = True, exist_ok = True)
     path.write_bytes(b"\0")
     return path
+
+
+_TRANSFORMER = {"transformer": ["diffusers", "Transformer2DModel"]}
+
+
+def _write(path: Path, text: str = "{}") -> None:
+    path.parent.mkdir(parents = True, exist_ok = True)
+    path.write_text(text)
+
+
+def _index(
+    root: Path,
+    name: str = "model_index.json",
+    **payload,
+) -> Path:
+    payload.setdefault("_class_name", "DiffusionPipeline")
+    _write(root / name, json.dumps(payload))
+    return root / name
+
+
+def _pipeline_manifest(
+    root: Path,
+    name: str = "model_index.json",
+    **payload,
+) -> Path:
+    if name.startswith("modular_"):
+        payload.setdefault("_blocks_class_name", "TestPipelineBlocks")
+    path = _index(root, name, **{**_TRANSFORMER, **payload})
+    _write(root / "transformer" / "config.json")
+    _touch(root / "transformer" / "diffusion_pytorch_model.safetensors")
+    return path
+
+
+def _weight_map(path: Path, shard: str) -> None:
+    _write(path, json.dumps({"weight_map": {"layer": shard}}))
+
+
+def _complete(root: Path, *name: str, **kwargs) -> bool:
+    from core.inference.diffusion_families import local_pipeline_components_are_complete
+    return local_pipeline_components_are_complete(root, *(name or ("model_index.json",)), **kwargs)
 
 
 def _empty_compat_sources(tmp_path: Path):
@@ -179,8 +208,6 @@ def test_compat_inventory_does_not_cross_dedupe_default_sources(tmp_path):
 
 
 def test_compat_inventory_lists_hermes_downloads(tmp_path):
-    # /api/models/local and /v1/models are served by this scan, not the hub inventory, so
-    # the recipe picker, the chat auto-load and the OpenAI catalog see only what it returns.
     models_root = tmp_path / "models"
     models_root.mkdir()
     hermes = tmp_path / ".hermes" / "models"
@@ -204,7 +231,6 @@ def test_compat_inventory_lists_a_hermes_dir_registered_as_a_scan_folder_once(tm
     models_root.mkdir()
     hermes = tmp_path / ".hermes" / "models"
     weight = _touch(hermes / "Qwen3.8-27B-UD-Q4_K_M.gguf")
-    # Something else the user keeps in that folder stays a custom row.
     extra = _touch(hermes / "extra" / "Other-Q4_K_M.gguf")
     sources = _empty_compat_sources(tmp_path)._replace(hermes_dirs = (hermes,))
 
@@ -221,8 +247,6 @@ def test_compat_inventory_lists_a_hermes_dir_registered_as_a_scan_folder_once(tm
 
 
 def test_local_route_returns_hermes_downloads(monkeypatch, tmp_path):
-    # The scanner builds the Hub inventory's row class; this route answers with its own, so a
-    # Hermes row must cross that boundary or the route is a 500 for anyone with a download.
     models_dir = tmp_path / "models"
     models_dir.mkdir()
     hermes = tmp_path / ".hermes" / "models"
@@ -368,7 +392,6 @@ def test_dir_model_format_gguf_only(tmp_path):
 
 
 def test_dir_model_format_mmproj_only_is_not_gguf(tmp_path):
-    # A lone vision adapter has nothing servable: the variant selector drops mmproj.
     d = tmp_path / "model"
     _touch(d / "mmproj-F16.gguf")
     assert models_route._dir_model_format(d) is None
@@ -382,8 +405,7 @@ def test_dir_model_format_mmproj_beside_weights_is_still_gguf(tmp_path):
 
 
 def test_dir_model_format_recursive_sees_split_quant_subdirs(tmp_path):
-    # HF cache snapshots keep split quants in per-quant subdirs. A flat glob reports
-    # no GGUF there, which would hide every sharded repo from the GGUF pickers.
+    # HF cache snapshots keep split quants in per-quant subdirs.
     d = tmp_path / "snapshot"
     _touch(d / "UD-Q4_K_XL" / "model-00001-of-00002.gguf")
     assert models_route._dir_model_format(d) is None
@@ -397,7 +419,6 @@ def test_dir_model_format_recursive_ignores_mmproj_only_subdirs(tmp_path):
 
 
 def test_scan_models_dir_mmproj_only_folder_is_not_gguf(tmp_path):
-    # Same rule as _dir_model_format, applied by the parallel ./models scanner.
     _touch(tmp_path / "vision" / "mmproj-F16.gguf")
     _touch(tmp_path / "real" / "model-Q4_K_M.gguf")
     formats = {m.display_name: m.model_format for m in models_route._scan_models_dir(tmp_path)}
@@ -406,8 +427,6 @@ def test_scan_models_dir_mmproj_only_folder_is_not_gguf(tmp_path):
 
 
 def test_scan_models_dir_skips_standalone_mmproj_file(tmp_path):
-    # A loose mmproj-*.gguf is a vision adapter with no weights to serve, so it must
-    # not be offered as a model the way a loose primary GGUF is.
     _touch(tmp_path / "mmproj-F16.gguf")
     _touch(tmp_path / "model-Q4_K_M.gguf")
     names = {m.display_name for m in models_route._scan_models_dir(tmp_path)}
@@ -422,7 +441,6 @@ def test_scan_lmstudio_dir_skips_standalone_mmproj_file(tmp_path):
 
 
 def test_scan_lmstudio_dir_skips_mmproj_under_publisher(tmp_path):
-    # LM Studio's publisher/model.gguf layout classifies on a separate branch.
     _touch(tmp_path / "Publisher" / "mmproj-F16.gguf")
     _touch(tmp_path / "Publisher" / "model-Q4_K_M.gguf")
     names = {m.display_name for m in models_route._scan_lmstudio_dir(tmp_path)}
@@ -430,7 +448,6 @@ def test_scan_lmstudio_dir_skips_mmproj_under_publisher(tmp_path):
 
 
 def test_dir_model_format_gguf_with_config_is_still_gguf(tmp_path):
-    # A config.json alongside the .gguf must not flip it to non-GGUF.
     d = tmp_path / "model"
     _touch(d / "config.json")
     _touch(d / "model-Q4_K_M.gguf")
@@ -438,7 +455,6 @@ def test_dir_model_format_gguf_with_config_is_still_gguf(tmp_path):
 
 
 def test_dir_model_format_mixed_weights_is_not_gguf(tmp_path):
-    # Real safetensors weights present -> not a GGUF folder.
     d = tmp_path / "model"
     _touch(d / "model.safetensors")
     _touch(d / "model-Q4_K_M.gguf")
@@ -453,8 +469,7 @@ def test_dir_model_format_no_gguf(tmp_path):
 
 
 def test_dir_model_format_ignores_tokenizer_bin(tmp_path):
-    # A companion tokenizer.bin is not a weight file, so a GGUF folder shipping
-    # one is still GGUF (not misread as a plain .bin checkpoint).
+    # A companion tokenizer.bin is not a weight file.
     d = tmp_path / "model"
     _touch(d / "tokenizer.bin")
     _touch(d / "model-Q4_K_M.gguf")
@@ -462,7 +477,6 @@ def test_dir_model_format_ignores_tokenizer_bin(tmp_path):
 
 
 def test_dir_model_format_weight_bin_is_not_gguf(tmp_path):
-    # A real PyTorch weight .bin alongside a .gguf means mixed weights -> None.
     d = tmp_path / "model"
     _touch(d / "pytorch_model.bin")
     _touch(d / "model-Q4_K_M.gguf")
@@ -471,13 +485,10 @@ def test_dir_model_format_weight_bin_is_not_gguf(tmp_path):
 
 def test_scan_models_dir_classifies_gguf_with_config(tmp_path):
     root = tmp_path / "models"
-    # GGUF repo that also ships a config.json (the regression case).
     _touch(root / "gguf_repo" / "config.json")
     _touch(root / "gguf_repo" / "model-Q4_K_M.gguf")
-    # A plain safetensors checkpoint stays non-GGUF.
     _touch(root / "st_repo" / "config.json")
     _touch(root / "st_repo" / "model.safetensors")
-    # A standalone .gguf file is GGUF.
     _touch(root / "loose.gguf")
 
     fmt = {Path(m.path).name: m.model_format for m in models_route._scan_models_dir(root)}
@@ -488,8 +499,6 @@ def test_scan_models_dir_classifies_gguf_with_config(tmp_path):
 
 
 def test_scan_models_dir_classifies_root_gguf_with_config(tmp_path):
-    # Custom scan folders can point directly at a GGUF repo, not only at a
-    # parent directory that contains model repos.
     root = tmp_path / "SuffixlessRepo"
     _touch(root / "config.json")
     _touch(root / "model-Q4_K_M.gguf")
@@ -501,13 +510,9 @@ def test_scan_models_dir_classifies_root_gguf_with_config(tmp_path):
 
 
 def test_scan_models_dir_surfaces_diffusers_pipeline_folder(tmp_path):
-    # A diffusers PIPELINE folder (weights in component subdirs, only model_index.json at the root) is loadable, so the scan
-    # must surface it or it never reaches the On Device picker. Not a GGUF, so model_format stays None.
     root = tmp_path / "models"
     pipe = root / "my-pipeline"
-    _touch(pipe / "model_index.json")
-    _touch(pipe / "transformer" / "config.json")
-    _touch(pipe / "transformer" / "diffusion_pytorch_model.safetensors")
+    _pipeline_manifest(pipe)
     _touch(pipe / "vae" / "diffusion_pytorch_model.safetensors")
 
     rows = {Path(m.path).name: m for m in models_route._scan_models_dir(root)}
@@ -517,11 +522,8 @@ def test_scan_models_dir_surfaces_diffusers_pipeline_folder(tmp_path):
 
 
 def test_scan_models_dir_surfaces_root_diffusers_pipeline(tmp_path):
-    # A scan folder can point DIRECTLY at a diffusers pipeline, which _is_model_directory rejects; without admitting it the scan surfaces component subdirs and hides the pipeline.
     root = tmp_path / "my-local-pipeline"
-    _touch(root / "model_index.json")
-    _touch(root / "transformer" / "config.json")
-    _touch(root / "transformer" / "diffusion_pytorch_model.safetensors")
+    _pipeline_manifest(root)
     _touch(root / "vae" / "diffusion_pytorch_model.safetensors")
 
     rows = models_route._scan_models_dir(root)
@@ -530,9 +532,233 @@ def test_scan_models_dir_surfaces_root_diffusers_pipeline(tmp_path):
     assert rows[0].model_format is None
 
 
+def _bom(pipeline):
+    manifest = pipeline / "model_index.json"
+    manifest.write_bytes(b"\xef\xbb\xbf" + manifest.read_bytes())
+
+
+def _write_manifest(text):
+    return lambda p: (p / "model_index.json").write_text(text)
+
+
+@pytest.mark.parametrize(
+    "manifests, mutate, expected",
+    [
+        (("model_index.json",), None, "diffusers_pipeline"),
+        (("model_index.json",), _bom, "diffusers_pipeline"),
+        (("modular_model_index.json",), None, "diffusers_modular_pipeline"),
+        (("model_index.json", "modular_model_index.json"), None, "diffusers_dual_pipeline"),
+        (
+            ("model_index.json",),
+            lambda p: (p / "transformer" / "diffusion_pytorch_model.safetensors").unlink(),
+            "unknown",
+        ),
+    ]
+    + [
+        (("model_index.json",), _write_manifest(text), "unknown")
+        for text in ["", "{", "[]", "{}", '{"_class_name":" "}', '{"_class_name":"P"}']
+    ],
+)
+def test_hub_inventory_types_pipeline_roots_structurally(tmp_path, manifests, mutate, expected):
+    from hub.services.models.common import _classify_local_path
+
+    pipeline = tmp_path / "opaque-model"
+    for name in manifests:
+        _pipeline_manifest(pipeline, name)
+    if mutate:
+        mutate(pipeline)
+    [row] = _classify_local_path(pipeline, "custom")
+    assert (row.model_format, row.artifact_kind) == ("unknown", expected)
+
+
+def test_hub_inventory_does_not_confuse_transformers_or_adapter_with_pipeline(tmp_path):
+    from hub.services.models.common import _classify_local_path
+    from hub.services.models.local_inventory import _scan_models_dir as scan_hub_models_dir
+
+    transformer, adapter, loose = tmp_path / "transformer", tmp_path / "adapter", tmp_path / "loose"
+    _pipeline_manifest(transformer)
+    _touch(transformer / "model.safetensors")
+    (transformer / "config.json").write_text('{"architectures":["Qwen3ForCausalLM"]}')
+    _pipeline_manifest(adapter)
+    _touch(adapter / "adapter_model.safetensors")
+    (adapter / "adapter_config.json").write_text("{}")
+    _touch(loose / "qwen_3_4b.safetensors")
+    _touch(loose / "diffusion_pytorch_model-00001-of-00002.bf16.safetensors")
+
+    assert _classify_local_path(transformer, "custom")[0].artifact_kind == "transformers_model"
+    assert _classify_local_path(adapter, "custom")[0].artifact_kind == "adapter"
+    assert scan_hub_models_dir(loose) == []
+
+
+def test_local_pipeline_completeness_checks_configs_and_every_indexed_shard(tmp_path):
+    _pipeline_manifest(tmp_path)
+    component = tmp_path / "transformer"
+    (component / "diffusion_pytorch_model.safetensors").unlink()
+    (component / "config.json").write_text("{")
+    index = component / "diffusion_pytorch_model.safetensors.index.json"
+    _weight_map(index, "weights-00001-of-00001.safetensors")
+    assert _complete(tmp_path) is False
+    (component / "config.json").write_text("{}")
+    assert _complete(tmp_path) is False
+    _touch(component / "weights-00001-of-00001.safetensors")
+    assert _complete(tmp_path) is True
+    _weight_map(index, "..\\outside.safetensors")
+    assert _complete(tmp_path) is False
+    index.unlink()
+    (component / "weights-00001-of-00001.safetensors").unlink()
+    _touch(component / "diffusion_pytorch_model.safetensors")
+    _weight_map(component / "diffusion_pytorch_model.bin.index.json", "model-00001-of-00001.bin")
+    assert _complete(tmp_path) is True
+    (component / "diffusion_pytorch_model.safetensors").unlink()
+    assert _complete(tmp_path) is False
+
+
+def test_local_pipeline_completeness_rejects_variant_only_weights(tmp_path):
+    _pipeline_manifest(tmp_path)
+    component = tmp_path / "transformer"
+    (component / "diffusion_pytorch_model.safetensors").unlink()
+    shard = "diffusion_pytorch_model.fp16-00001-of-00001.safetensors"
+    _touch(component / shard)
+    _weight_map(component / "diffusion_pytorch_model.safetensors.index.fp16.json", shard)
+    assert _complete(tmp_path) is False
+    _touch(component / "diffusion_pytorch_model.safetensors")
+    assert _complete(tmp_path) is True
+
+
+def test_local_pipeline_completeness_accepts_a_tokenizer_config_over_the_manifest_cap(tmp_path):
+    _pipeline_manifest(tmp_path, tokenizer = ["transformers", "GemmaTokenizerFast"])
+    _write(
+        tmp_path / "tokenizer" / "tokenizer_config.json",
+        json.dumps({"added_tokens_decoder": "x" * (2 << 20)}),
+    )
+    _touch(tmp_path / "tokenizer" / "tokenizer.json")
+    assert _complete(tmp_path) is True
+
+
+def test_local_pipeline_completeness_ignores_a_diffusers_index_on_a_transformers_encoder(tmp_path):
+    _pipeline_manifest(tmp_path, text_encoder = ["transformers", "Gemma3ForConditionalGeneration"])
+    encoder = tmp_path / "text_encoder"
+    _write(encoder / "config.json")
+    _touch(encoder / "model-00001-of-00001.safetensors")
+    for prefix in ("model", "diffusion_pytorch_model"):
+        _weight_map(
+            encoder / f"{prefix}.safetensors.index.json", f"{prefix}-00001-of-00001.safetensors"
+        )
+    assert _complete(tmp_path) is True
+    (encoder / "model-00001-of-00001.safetensors").unlink()
+    assert _complete(tmp_path) is False
+    _touch(encoder / "model.safetensors")
+    assert _complete(tmp_path) is True
+
+
+@pytest.mark.parametrize(
+    "extra, expected",
+    [
+        ({}, True),
+        ({"text_encoder": [None, None]}, True),
+        ({"text_encoder_select_layers": [2, 5, 8, 11]}, True),
+        ({"text_encoder": ["transformers", "CLIPTextModel"]}, False),
+    ],
+)
+def test_local_pipeline_optional_component_presence(tmp_path, extra, expected):
+    _pipeline_manifest(tmp_path, **extra)
+    assert _complete(tmp_path) is expected
+
+
+def test_local_pipeline_completeness_allows_hidream_caller_supplied_encoder(tmp_path):
+    encoders = {
+        "text_encoder_4": ["transformers", "LlamaForCausalLM"],
+        "tokenizer_4": ["transformers", "PreTrainedTokenizerFast"],
+    }
+    _pipeline_manifest(tmp_path, _class_name = "HiDreamImagePipeline", **encoders)
+    assert _complete(tmp_path) is True
+    (tmp_path / "text_encoder_4").mkdir()
+    assert _complete(tmp_path) is False
+    (tmp_path / "text_encoder_4").rmdir()
+    _pipeline_manifest(tmp_path, **encoders)
+    assert _complete(tmp_path) is False
+
+
+def test_local_pipeline_completeness_honors_exclusions_and_config_only_models(tmp_path):
+    _index(tmp_path, scheduler = ["diffusers", "FlowMatchEulerDiscreteScheduler"], **_TRANSFORMER)
+    _write(tmp_path / "scheduler" / "scheduler_config.json")
+    assert _complete(tmp_path) is False
+    assert _complete(tmp_path, excluded_components = ("transformer",)) is True
+    _index(tmp_path, **_TRANSFORMER)
+    assert _complete(tmp_path, excluded_components = ("transformer",)) is False
+
+    _index(tmp_path, unet = ["diffusers", "UNet2DConditionModel"])
+    _write(tmp_path / "unet" / "config.json")
+    assert _complete(tmp_path) is False
+    assert _complete(tmp_path, config_only_model_components = True) is True
+
+
+@pytest.mark.parametrize(
+    "name, class_name, files, expected",
+    [
+        ("scheduler", "FlowMatchEulerDiscreteScheduler", "README.md", False),
+        ("scheduler", "FlowMatchEulerDiscreteScheduler", "scheduler_config.json", True),
+        ("tokenizer", "Qwen2Tokenizer", "tokenizer_config.json", False),
+        ("tokenizer", "Qwen2Tokenizer", "tokenizer_config.json tokenizer.json", True),
+        ("tokenizer_2", "ByT5Tokenizer", "tokenizer_config.json", True),
+        ("guider", "ClassifierFreeGuidance", "guider_config.json", True),
+        ("processor", "Qwen3VLProcessor", "preprocessor_config.json", False),
+        ("processor", "Qwen3VLProcessor", "preprocessor_config.json tokenizer.json", True),
+    ],
+)
+def test_local_pipeline_completeness_validates_metadata_component_contracts(
+    tmp_path, name, class_name, files, expected
+):
+    library = "diffusers" if name in ("scheduler", "guider") else "transformers"
+    _index(tmp_path, **{name: [library, class_name]})
+    for file in files.split():
+        _write(tmp_path / name / file)
+    assert _complete(tmp_path) is expected
+
+
+@pytest.mark.parametrize("filename", ["model_index.json", "modular_model_index.json"])
+@pytest.mark.parametrize(
+    "class_name, asset",
+    [("CustomModel", "custom_weights.safetensors"), ("CustomScheduler", "custom_schedule.json")],
+)
+def test_local_pipeline_preserves_custom_component_contracts(tmp_path, filename, class_name, asset):
+    from hub.services.models.common import _diffusers_pipeline_artifact_kind
+
+    spec = {"component": ["local_extensions", class_name], "optional_component": [None, None]}
+    _index(tmp_path, filename, **spec)
+    component = tmp_path / "component"
+    assert not _complete(tmp_path, filename)
+    component.mkdir()
+    assert not _complete(tmp_path, filename)
+    (component / asset).write_bytes(b"")
+    assert not _complete(tmp_path, filename)
+    (component / asset).write_text("{}")
+    assert _complete(tmp_path, filename)
+    assert _diffusers_pipeline_artifact_kind(tmp_path) == (
+        "diffusers_pipeline" if filename == "model_index.json" else "diffusers_modular_pipeline"
+    )
+
+
+def test_local_pipeline_completeness_honors_modular_external_component_sources(tmp_path):
+    pipeline, modular = tmp_path / "external-modular", "modular_model_index.json"
+
+    def manifest(source, component = ("transformers", "Qwen2Tokenizer", "tokenizer")):
+        spec = {"pretrained_model_name_or_path": source, "subfolder": component[2]}
+        _index(pipeline, modular, tokenizer = [*component[:2], spec])
+        return _complete(pipeline, modular)
+
+    assert manifest("Org/components") is True
+    assert manifest("./missing") is False
+    source = tmp_path / "component-source"
+    _write(source / "tokenizer" / "tokenizer_config.json")
+    _write(source / "tokenizer" / "tokenizer.json")
+    assert manifest(str(source)) is True
+    assert manifest(str(source), ("transformers", "Qwen2Tokenizer", "../outside")) is False
+    (source / "custom_weights.safetensors").write_bytes(b"weights")
+    assert manifest(str(source), ("local_extensions", "CustomModel", None)) is True
+
+
 def test_scan_models_dir_surfaces_root_single_file_checkpoint(tmp_path):
-    # A scan folder can also point DIRECTLY at a bare single-file checkpoint dir (one loose .safetensors). The child loop
-    # admits that shape and the images route reinterprets it via resolve_local_single_file, so the root must be surfaced too.
     root = tmp_path / "qwen-image-2509"
     _touch(root / "qwen-image-2509.safetensors")
 
@@ -543,7 +769,6 @@ def test_scan_models_dir_surfaces_root_single_file_checkpoint(tmp_path):
 
 
 def test_scan_models_dir_root_weights_do_not_hide_child_models(tmp_path):
-    # A stray loose .safetensors at a models ROOT must not collapse the scan to one row: the root fallback applies only when nothing else matched.
     root = tmp_path / "models"
     _touch(root / "stray.safetensors")
     _touch(root / "llama" / "config.json")
@@ -552,7 +777,6 @@ def test_scan_models_dir_root_weights_do_not_hide_child_models(tmp_path):
     assert [Path(r.path).name for r in models_route._scan_models_dir(root)] == ["llama"]
 
 
-# ── Images picker task tag for local (non-GGUF) diffusers models ──────────────
 from models.models import LocalModelInfo  # noqa: E402
 from hub.services.models import catalog_classification as classification
 
@@ -578,9 +802,7 @@ def _local(
 def test_windows_cloud_recall_attributes_are_not_local():
     from utils.paths.path_utils import file_contents_available_locally
 
-    # Synology Drive exposes an online-only GGUF as 0x400020 through Python's
-    # os.stat(), and as 0x401620 through directory enumeration. Keep the individual
-    # Windows recall flags too so another cloud provider cannot regress unnoticed.
+    # Synology online-only files: 0x400020 via os.stat, 0x401620 via enumeration.
     for attributes in (
         0x00400020,
         0x00401620,
@@ -592,9 +814,7 @@ def test_windows_cloud_recall_attributes_are_not_local():
             "unused", types.SimpleNamespace(st_file_attributes = attributes)
         )
 
-    # A hydrated Synology file remains a reparse point (0x420), and UNPINNED is
-    # user intent rather than proof that bytes are absent. Both must retain real
-    # architecture, context, and projector reads.
+    # Hydrated Synology files stay reparse points (0x420); UNPINNED is not absence.
     for attributes in (0x00000420, 0x00100000):
         assert file_contents_available_locally(
             "unused", types.SimpleNamespace(st_file_attributes = attributes)
@@ -644,12 +864,7 @@ def test_local_gguf_task_skips_online_only_contents(tmp_path, monkeypatch):
 
 
 def test_local_classification_never_opens_an_online_only_gguf(tmp_path, monkeypatch):
-    """The whole probe, not just the task half.
-
-    ``_local_model_classification`` falls through to the audio-type probe whenever the task
-    comes back None, which for a placeholder is every time, and that probe reads an
-    architecture of its own. Asserting on ``_local_model_task`` alone leaves the listing
-    hydrating exactly the files it stopped classifying, a folder row once per sibling."""
+    """Online-only GGUF placeholders must never be opened, including by the audio-type fallback probe."""
     from utils.models import gguf_metadata
 
     single = _touch(tmp_path / "single" / "generic-Q4_K_M.gguf")
@@ -735,8 +950,6 @@ def test_an_unhydrated_denoiser_keeps_the_picker_that_would_hydrate_it(tmp_path,
         ("flux1-dev-Q4_K_M.gguf", "text-to-image"),
         ("z-image-turbo-Q4_K_M.gguf", "text-to-image"),
         ("ltx-video-2b-Q4_K_M.gguf", "text-to-video"),
-        # No family in the name: unknown, which keeps the row in Chat where a GGUF with
-        # nothing but a name belongs, rather than guessing it into a media page.
         ("qwen3-4b-instruct-Q4_K_M.gguf", None),
     ):
         gguf = _touch(tmp_path / name)
@@ -745,10 +958,7 @@ def test_an_unhydrated_denoiser_keeps_the_picker_that_would_hydrate_it(tmp_path,
 
 
 def test_an_ancestor_directory_does_not_name_an_unhydrated_gguf(tmp_path, monkeypatch):
-    """A filesystem row's id is its whole path, and family detection matches a keyword in any
-    segment of it. With an architecture that mismatch only picks the wrong family; for a
-    placeholder the name is the entire case, so a shelf named after a family would file every
-    chat GGUF stored under it as an image or video model."""
+    """An ancestor folder named after a model family must not classify an unhydrated GGUF placeholder."""
 
     def forbidden(*_args, **_kwargs):
         raise AssertionError("placeholder contents were read to classify it")
@@ -766,8 +976,6 @@ def test_an_ancestor_directory_does_not_name_an_unhydrated_gguf(tmp_path, monkey
         model = _local(gguf, model_format = "gguf", display_name = gguf.name, id = str(gguf))
         assert models_route._local_model_task(model) is None, relative
 
-    # The control, and the shape a scanned GGUF folder actually takes: the row IS the
-    # directory, so its own leaf names it and the family survives.
     folder = tmp_path / "FLUX.1-dev-GGUF"
     _touch(folder / "diffusion_model-Q4_K_M.gguf")
     row = _local(folder, model_format = "gguf", display_name = folder.name, id = str(folder))
@@ -775,9 +983,8 @@ def test_an_ancestor_directory_does_not_name_an_unhydrated_gguf(tmp_path, monkey
 
 
 def test_local_task_tags_family_named_pipeline_dir(tmp_path):
-    # A local diffusers pipeline whose id resolves to a supported image family loads fine, so tag it and the Images picker keeps it.
     d = tmp_path / "flux-pipeline"
-    _touch(d / "model_index.json")
+    _pipeline_manifest(d)
     _touch(d / "unet" / "diffusion_pytorch_model.safetensors")
     assert (
         models_route._local_model_task(_local(d, model_id = "black-forest-labs/FLUX.1-dev"))
@@ -786,16 +993,14 @@ def test_local_task_tags_family_named_pipeline_dir(tmp_path):
 
 
 def test_local_task_none_for_familyless_pipeline_dir(tmp_path):
-    # A generically named on-device pipeline (model_index.json, no family token) is UNLOADABLE: the Images load resolves no family and 400s after eviction, so it stays untagged.
     d = tmp_path / "my-local-pipeline"
-    _touch(d / "model_index.json")
+    _pipeline_manifest(d)
     _touch(d / "unet" / "diffusion_pytorch_model.safetensors")
     assert models_route._local_is_diffusers(_local(d)) is True
     assert models_route._local_model_task(_local(d)) is None
 
 
 def test_local_task_tags_diffusers_by_family_id(tmp_path):
-    # A single-file / safetensors image checkpoint ships no model_index.json, so fall back to the id resolving to a known family.
     d = tmp_path / "flux-checkpoint"
     _touch(d / "flux1-dev.safetensors")
     assert (
@@ -805,7 +1010,6 @@ def test_local_task_tags_diffusers_by_family_id(tmp_path):
 
 
 def test_local_task_none_for_plain_llm(tmp_path):
-    # A plain non-GGUF LLM checkpoint (no pipeline, no image family) stays untagged.
     d = tmp_path / "llama"
     _touch(d / "config.json")
     _touch(d / "model.safetensors")
@@ -815,14 +1019,11 @@ def test_local_task_none_for_plain_llm(tmp_path):
 def test_local_task_tags_minimax_music3_modular_pipeline(tmp_path):
     d = tmp_path / "music3"
     d.mkdir()
-    (d / "modular_model_index.json").write_text(
-        json.dumps(
-            {
-                "_class_name": "MiniMaxMusic3ModularPipeline",
-                "_blocks_class_name": "MiniMaxMusic3Blocks",
-            }
-        ),
-        encoding = "utf-8",
+    _pipeline_manifest(
+        d,
+        "modular_model_index.json",
+        _class_name = "MiniMaxMusic3ModularPipeline",
+        _blocks_class_name = "MiniMaxMusic3Blocks",
     )
 
     assert models_route._local_model_task(_local(d, model_format = "safetensors")) == (
@@ -834,14 +1035,11 @@ def test_compat_local_inventory_preserves_minimax_music3_audio_type(monkeypatch,
     models_dir = tmp_path / "models"
     d = models_dir / "music3"
     d.mkdir(parents = True)
-    (d / "modular_model_index.json").write_text(
-        json.dumps(
-            {
-                "_class_name": "MiniMaxMusic3ModularPipeline",
-                "_blocks_class_name": "MiniMaxMusic3Blocks",
-            }
-        ),
-        encoding = "utf-8",
+    _pipeline_manifest(
+        d,
+        "modular_model_index.json",
+        _class_name = "MiniMaxMusic3ModularPipeline",
+        _blocks_class_name = "MiniMaxMusic3Blocks",
     )
     sources = models_route._CompatLocalInventorySources(
         hf_cache_dir = models_dir,
@@ -867,7 +1065,6 @@ def test_compat_local_inventory_preserves_minimax_music3_audio_type(monkeypatch,
 
 
 def test_local_task_tags_video_pipeline_dir(tmp_path):
-    # A local diffusers pipeline whose id resolves to a VIDEO family must be tagged text-to-video so it surfaces in the Video On-Device picker.
     d = tmp_path / "wan-local"
     _touch(d / "model_index.json")
     _touch(d / "transformer" / "diffusion_pytorch_model.safetensors")
@@ -878,9 +1075,8 @@ def test_local_task_tags_video_pipeline_dir(tmp_path):
 
 
 def test_local_task_tags_video_single_file_checkpoint(tmp_path):
-    # A video-family dir holding a bare single-file .safetensors is loadable (as a single_file), so it must be tagged text-to-video, not hidden.
     d = tmp_path / "ltx-loose"
-    _touch(d / "ltx-2.safetensors")  # loose weights, no model_index.json
+    _touch(d / "ltx-2.safetensors")
     assert (
         models_route._local_model_task(_local(d, model_id = "Lightricks/LTX-2"))
         == models_route._VIDEO_GEN_TASK
@@ -888,31 +1084,27 @@ def test_local_task_tags_video_single_file_checkpoint(tmp_path):
 
 
 def test_local_task_tags_single_file_by_checkpoint_filename(tmp_path):
-    # A folder holding one checkpoint whose FILENAME identifies the family is loadable via resolve_local_single_file, so tag it from the filename or the picker hides it.
     d = tmp_path / "downloads"
-    _touch(d / "qwen-image-2509.safetensors")  # family only in the filename, no model_index.json
+    _touch(d / "qwen-image-2509.safetensors")
     m = _local(d, id = str(d), display_name = "downloads")
     assert models_route._local_is_diffusers(m) is True
     assert models_route._local_model_task(m) == "text-to-image"
 
 
 def test_local_task_tags_video_single_file_by_checkpoint_filename(tmp_path):
-    # Same, for a video family whose token lives only in the sole checkpoint's filename.
     d = tmp_path / "clips"
-    _touch(d / "ltx-2.3-distilled.safetensors")  # ltx family only in the filename
+    _touch(d / "ltx-2.3-distilled.safetensors")
     m = _local(d, id = str(d), display_name = "clips")
     assert models_route._local_model_task(m) == models_route._VIDEO_GEN_TASK
 
 
 def test_local_task_ignores_family_token_in_parent_path(tmp_path):
-    # model.id is the full on-disk path for a scanned On-Device model and the family-token matcher treats any path segment as a hint, so a token in
-    # a PARENT dir must NOT tag an unrelated single-file as text-to-image and evict the GPU owner. Detection is scoped to the leaf name.
+    # Family detection is scoped to the leaf name, not parent dirs in model.id.
     d = tmp_path / "misc"
-    _touch(d / "unrelated.safetensors")  # one non-family single file, no model_index.json
+    _touch(d / "unrelated.safetensors")
     m = _local(d, id = "/models/qwen-image/misc", display_name = "misc")
     assert models_route._local_is_diffusers(m) is False
     assert models_route._local_model_task(m) is None
-    # Regression guard: a leaf name that itself carries a family hint is still tagged.
     d2 = tmp_path / "z-image-turbo"
     _touch(d2 / "model.safetensors")
     m2 = _local(d2, id = str(d2), display_name = "z-image-turbo")
@@ -920,16 +1112,12 @@ def test_local_task_ignores_family_token_in_parent_path(tmp_path):
 
 
 def test_a_modular_pipeline_root_counts_as_a_pipeline_index(tmp_path):
-    """A Modular Diffusers pipeline carries ``modular_model_index.json`` and NO
-    ``model_index.json``, which is the pair the video loader accepts. Recognising only the
-    conventional index hid such a root from the picker and let the publisher walk descend into it
-    and offer its components as separate, unusable models. The hub scanner
-    (``local_inventory._is_diffusers_pipeline_dir``) makes the same test and has its own case."""
+    """A modular_model_index.json alone marks a pipeline root, else its components are offered as models."""
     from routes.models import _local_pipeline_index
 
     modular = tmp_path / "modular"
     (modular / "transformer").mkdir(parents = True)
-    (modular / "modular_model_index.json").write_text("{}")
+    _pipeline_manifest(modular, "modular_model_index.json")
     assert _local_pipeline_index(modular) is True
     assert (
         models_route._local_is_diffusers(_local(modular, display_name = "opaque", id = str(modular)))
@@ -938,7 +1126,7 @@ def test_a_modular_pipeline_root_counts_as_a_pipeline_index(tmp_path):
 
     conventional = tmp_path / "conventional"
     conventional.mkdir()
-    (conventional / "model_index.json").write_text("{}")
+    _pipeline_manifest(conventional)
     assert _local_pipeline_index(conventional) is True
 
     neither = tmp_path / "neither"
@@ -947,14 +1135,7 @@ def test_a_modular_pipeline_root_counts_as_a_pipeline_index(tmp_path):
 
 
 def test_a_single_file_video_repo_is_flagged_diffusers(monkeypatch):
-    """_local_is_diffusers asks detect_video_family; _repo_is_diffusers must ask it too.
-
-    A cached single-file video checkpoint with no pipeline index gets no task from
-    _cached_repo_task (it returns None for an untrusted or unbuildable video family), so if
-    the diffusers flag is also missing, an inconclusive transformer config leaves can_chat
-    set -- and that is every gate the chat picker has. The video weights would be offered to
-    the text loader.
-    """
+    """Single-file video repos need detect_video_family too, or their weights reach the text chat picker."""
     from types import SimpleNamespace
 
     from core.inference.video_families import detect_video_family
@@ -964,16 +1145,12 @@ def test_a_single_file_video_repo_is_flagged_diffusers(monkeypatch):
 
     info = SimpleNamespace(repo_id = repo_id, repo_path = "/nonexistent")
     assert classification._repo_is_diffusers(info) is True
-    # A plain chat repo must not be swept up by the same rule.
     chat = SimpleNamespace(repo_id = "unsloth/Qwen3-0.6B", repo_path = "/nonexistent")
     assert classification._repo_is_diffusers(chat) is False
 
 
 def test_adapter_base_is_found_in_the_cache_root_holding_the_adapter(tmp_path):
-    """An adapter listed from a legacy or previously configured root has its base cached in
-    that SAME root. Probing only the active root answered None, and None is inconclusive,
-    which leaves the adapter chat-capable -- so a Whisper LoRA reached the chat picker.
-    """
+    """Adapter bases are probed in the adapter's own cache root, else the adapter stays chat-capable."""
     import json
 
     from hub.services.models.common import _base_transformers_can_chat, _hub_cache_root_of

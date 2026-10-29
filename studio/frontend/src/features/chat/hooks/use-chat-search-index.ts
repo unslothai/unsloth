@@ -14,6 +14,7 @@ import {
   batchListChatMessages,
 } from "../api/chat-api";
 import { splitMcpImages } from "../api/mcp-images";
+import { isMcpUiToolResult } from "../mcp-apps/mcp-ui";
 import type { MessageRecord } from "../types";
 import { isCoalescedHistoryEvent } from "../utils/chat-history-revision";
 import {
@@ -36,27 +37,24 @@ export interface ChatSearchItem {
   type: "single" | "compare";
   id: string;
   title: string;
-  // Lowercased title + user messages only (short); searched first.
   userSearchText: string;
-  // Lowercased title plus every message; the fallback when user text matches nothing.
   // Prebuilt so filtering never re-lowercases per keystroke.
   searchText: string;
   createdAt: number;
+  updatedAt?: number;
   projectId?: string | null;
+  isFork?: boolean;
 }
 
-// Messages are indexed for this many most recently updated threads; older chats match by title.
+// Messages are indexed for the newest threads only; older chats match by title.
 const THREAD_LIMIT = 200;
 const SEARCH_REBUILD_DEBOUNCE_MS = 300;
-// Past the dialog's 180ms exit, so releasing uncached rows never lands mid-animation.
+// Past the dialog's 180ms exit, so releasing rows never lands mid-animation.
 const ROW_RELEASE_DELAY_MS = 300;
 
-// Keys whose values are base64 image/audio payloads, not searchable text.
 const BINARY_KEY = /b64|base64|^(images?|audio|video)$/i;
 
-// Readable text from tool args/results, dropping base64 image/audio blobs so they never
-// bloat the index.
-function searchableText(value: unknown, depth = 0): string {
+function searchableText(value: unknown, depth = 0, toolName?: string): string {
   if (typeof value === "string") {
     let text = splitMcpImages(value).text;
     const cut = text.indexOf("\n__IMAGES__:");
@@ -70,6 +68,10 @@ function searchableText(value: unknown, depth = 0): string {
     return value.map((v) => searchableText(v, depth + 1)).join(" ");
   }
   if (typeof value === "object") {
+    // Index a widget result by what was shown, not its up-to-1MB UI seed.
+    if (depth === 0 && isMcpUiToolResult(value, toolName ?? "")) {
+      return searchableText(value.text, 1);
+    }
     const out: string[] = [];
     for (const [k, v] of Object.entries(value)) {
       if (!BINARY_KEY.test(k)) out.push(searchableText(v, depth + 1));
@@ -79,8 +81,6 @@ function searchableText(value: unknown, depth = 0): string {
   return "";
 }
 
-// Pull searchable text from a message: text, reasoning, tool calls, cited sources and
-// pasted bodies.
 function extractText(message: MessageRecord): string {
   const content = message.content;
   const pasted = attachmentsPastedText(message.attachments);
@@ -103,7 +103,6 @@ function extractText(message: MessageRecord): string {
       const mcpServer = mcpServerFromProvenance(p.provenance);
       if (mcpServer) {
         parts.push(mcpServer);
-        // Index the rendered "Server · tool" label too, so pasting it matches.
         const label =
           typeof p.toolName === "string"
             ? formatMcpToolName(
@@ -118,7 +117,11 @@ function extractText(message: MessageRecord): string {
         typeof p.argsText === "string" ? p.argsText : p.args,
       );
       if (args) parts.push(args);
-      const result = searchableText(p.result);
+      const result = searchableText(
+        p.result,
+        0,
+        typeof p.toolName === "string" ? p.toolName : undefined,
+      );
       if (result) parts.push(result);
     } else if (p.type === "source") {
       for (const v of [p.title, p.url])
@@ -133,8 +136,7 @@ interface ChatSearchIndexBuild {
   complete: boolean;
 }
 
-// Exported for the bare-node cache harness: it must prove a failed read is not
-// indistinguishable from a completed empty history.
+// Exported so the harness can tell a failed read from a completed empty history.
 export async function buildChatSearchIndex(): Promise<ChatSearchIndexBuild> {
   const active = await listStoredChatThreads({ includeArchived: false });
 
@@ -151,7 +153,13 @@ export async function buildChatSearchIndex(): Promise<ChatSearchIndexBuild> {
     if (t.pairId) {
       if (seenPairs.has(t.pairId)) {
         const existing = itemThreadIds.get(t.pairId);
-        if (existing) existing.threadIds.push(t.id);
+        if (existing) {
+          existing.threadIds.push(t.id);
+          existing.item.updatedAt = Math.max(
+            existing.item.updatedAt ?? 0,
+            t.updatedAt ?? t.createdAt,
+          );
+        }
         continue;
       }
       seenPairs.add(t.pairId);
@@ -161,6 +169,7 @@ export async function buildChatSearchIndex(): Promise<ChatSearchIndexBuild> {
           id: t.pairId,
           title: t.title,
           createdAt: t.createdAt,
+          updatedAt: t.updatedAt ?? t.createdAt,
           projectId: t.projectId ?? null,
         },
         threadIds: [t.id],
@@ -172,7 +181,9 @@ export async function buildChatSearchIndex(): Promise<ChatSearchIndexBuild> {
           id: t.id,
           title: t.title,
           createdAt: t.createdAt,
+          updatedAt: t.updatedAt ?? t.createdAt,
           projectId: t.projectId ?? null,
+          isFork: Boolean(t.forkedFromThreadId),
         },
         threadIds: [t.id],
       });
@@ -185,8 +196,7 @@ export async function buildChatSearchIndex(): Promise<ChatSearchIndexBuild> {
   );
   let complete = true;
 
-  // Legacy-only chats can exist before server-side history import finishes. Fill only the
-  // missing ids via the legacy path instead of one request per thread up front.
+  // Legacy-only chats may predate server import; fill only missing ids via the legacy path.
   const missingThreadIds = loadedThreadIds.filter(
     (threadId) => !messagesByThread.has(threadId),
   );
@@ -216,7 +226,6 @@ export async function buildChatSearchIndex(): Promise<ChatSearchIndexBuild> {
       const arr = messagesByThread.get(tid);
       if (arr) merged.push(...arr);
     }
-    // A chat read as empty is skipped; one whose messages were never loaded keeps its title row.
     if (
       merged.length === 0 &&
       threadIds.every((tid) => messagesByThread.has(tid))
@@ -225,8 +234,6 @@ export async function buildChatSearchIndex(): Promise<ChatSearchIndexBuild> {
     }
     merged.sort((a, b) => b.createdAt - a.createdAt);
 
-    // Two tiers: user messages (short, searched first) and the full conversation incl. tool
-    // calls, used when user text matches nothing.
     const userParts: string[] = [item.title];
     const allParts: string[] = [item.title];
     for (const m of merged) {
@@ -244,22 +251,16 @@ export async function buildChatSearchIndex(): Promise<ChatSearchIndexBuild> {
   return { items: results, complete };
 }
 
-// THREAD_LIMIT bounds threads with indexed messages, not bytes: a tool-heavy history would
-// otherwise hold tens of megabytes behind a closed dialog. Past this the index is rebuilt on
-// each open.
+// Size cap in chars: tool-heavy histories would otherwise hold tens of MB behind a closed dialog.
 const MAX_CACHED_SEARCH_TEXT_CHARS = 4_000_000;
 
-// Last built index, kept across opens so reopening paints the previous rows at once and
-// revalidates in place instead of collapsing to the empty state.
 let cachedIndex: ChatSearchItem[] | null = null;
 let cachedIndexEpoch = -1;
 
-// Scoped to the auth session: a web logout only navigates, and a second account must never
-// open onto the previous user's chats.
+// Scoped to the auth session: a second account must never see the previous user's chats.
 function readCachedIndex(): ChatSearchItem[] | null {
   if (cachedIndexEpoch !== getAuthSessionEpoch()) {
-    // The next account's history is unknown, so the previous one's hint cannot size it. -1 is
-    // "nothing cached yet" and leaves this account's alone.
+    // -1 means nothing cached yet.
     if (cachedIndexEpoch !== -1) forgetChatSearchHasRows();
     cachedIndex = null;
     cachedIndexEpoch = getAuthSessionEpoch();
@@ -273,22 +274,18 @@ function cachedSearchTextChars(items: ChatSearchItem[]): number {
   return total;
 }
 
-// Exported for tests, which drive the real bookkeeping rather than a stand-in.
 export function writeCachedIndex(next: ChatSearchItem[] | null): void {
   cachedIndexEpoch = getAuthSessionEpoch();
   cachedIndex =
     next !== null && cachedSearchTextChars(next) > MAX_CACHED_SEARCH_TEXT_CHARS
       ? null
       : next;
-  // A build answers outright. An invalidation only says the history changed: a remembered ROWS
-  // answer still holds, an EMPTY one may be about to gain its first chat.
+  // An invalidation keeps a ROWS answer, but an EMPTY one may be about to gain a chat.
   if (next !== null) rememberChatSearchHasRows(next.length > 0);
   else if (chatSearchHadRows() === false) forgetChatSearchHasRows();
 }
 
-// A partial build is useful for this open but is not an answer about whether the history has
-// rows. Recording [] after every message read failed would open the next page load
-// compact and then grow mid-animation once connectivity recovered.
+// A partial build is not an answer about whether history has rows.
 export function publishChatSearchBuild(
   build: ChatSearchIndexBuild,
 ): ChatSearchItem[] {
@@ -297,17 +294,13 @@ export function publishChatSearchBuild(
   } else {
     cachedIndexEpoch = getAuthSessionEpoch();
     cachedIndex = null;
-    // An incomplete build cannot preserve a previous empty answer: partial rows already disprove
-    // it, while no rows only mean the history could not be read. A positive partial answer is
-    // safe and keeps the next open from starting compact.
     if (build.items.length > 0) rememberChatSearchHasRows(true);
     else forgetChatSearchHasRows();
   }
   return build.items;
 }
 
-// Once a structural refresh has a deadline, stream chunks may join it but must not keep
-// moving it. If the deadline already fired, a later chunk schedules the usual follow-up.
+// Stream chunks may join a structural refresh deadline but must not keep moving it.
 export function shouldPostponeSearchRebuild(
   structuralRebuildPending: boolean,
   event: Event,
@@ -315,46 +308,33 @@ export function shouldPostponeSearchRebuild(
   return !(structuralRebuildPending && isCoalescedHistoryEvent(event));
 }
 
-// An account change made elsewhere. Private: it reaches an open dialog's request sequence,
-// which nothing outside can see.
 const SEARCH_SESSION_CHANGED_EVENT = "unsloth-chat-search-session-changed";
 
-// A history change in another tab or from an API client never reaches this document, so the
-// cache would otherwise open onto rows that no longer exist.
+// Other tabs and API clients change history without notifying this document.
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (event) => {
-    // An account switch elsewhere arrives as a storage write alone: the epoch and its events are
-    // both this document's. The mark moves on a session boundary, not on an hourly refresh,
-    // which must not cost a warm cache.
+    // An account switch elsewhere arrives only as a storage write.
     if (
       event.key === AUTH_SESSION_MARK_KEY ||
       (event.key === AUTH_TOKEN_KEY && event.newValue === null)
     ) {
       writeCachedIndex(null);
-      // Shared by every account on the origin, so it cannot answer for the new one.
       forgetChatSearchHasRows();
-      // History first, for the sidebar. Then the account change, which the epoch check cannot see:
-      // an open dialog restarts at once, superseding the rebuild just queued.
       window.dispatchEvent(new Event(CHAT_HISTORY_UPDATED_EVENT));
       window.dispatchEvent(new Event(SEARCH_SESSION_CHANGED_EVENT));
       return;
     }
     if (event.key !== CHAT_HISTORY_REVISION_KEY) return;
     writeCachedIndex(null);
-    // Dropping the cache alone leaves an open dialog on pre-change rows with nothing scheduled.
-    // Re-raised locally so every in-tab listener treats it as a local change.
     window.dispatchEvent(new Event(CHAT_HISTORY_UPDATED_EVENT));
   });
-  // The hint outlives the page, so a logout takes it: otherwise the next account to sign in
-  // after a reload is sized by the previous one's history.
+  // The hint outlives the page, so logout clears it for the next account.
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
     forgetChatSearchHasRows();
   });
 }
 
-// Whether to size for rows, readable during render so the dialog picks a height before its
-// opening paint. A built cache answers exactly; otherwise the last build's hint does.
-// null means genuinely unknown.
+// Readable during render so the dialog sizes before its opening paint. null = unknown.
 export function chatSearchIndexHasRows(): boolean | null {
   const cached = readCachedIndex();
   if (cached !== null) return cached.length > 0;
@@ -371,8 +351,7 @@ export function useChatSearchIndex(enabled: boolean): {
   const [loading, setLoading] = useState(false);
   const requestSeqRef = useRef(0);
 
-  // Discarded in the opening render, not in the effect that rebuilds: that runs after the
-  // commit, so the invalidated rows would paint first.
+  // Discard in the opening render: an effect runs after commit, painting stale rows first.
   const [wasEnabled, setWasEnabled] = useState(enabled);
   if (enabled !== wasEnabled) {
     setWasEnabled(enabled);
@@ -385,27 +364,21 @@ export function useChatSearchIndex(enabled: boolean): {
   useEffect(() => {
     if (!enabled) {
       setLoading(false);
-      // With nothing cached these rows are the last thing holding the conversation text. Released
-      // after the exit, not during the closing render: the portal stays mounted for the
-      // animation, and emptying it there is the teardown this dialog exists to avoid.
+      // Release after the exit animation, not in the closing render.
       let release: ReturnType<typeof setTimeout> | null = null;
       const scheduleRelease = () => {
-        // Never postponed: a stream invalidates per chunk, and restarting would hold the index for
-        // the whole generation.
+        // Never postponed: a stream invalidates per chunk.
         if (release !== null) return;
         release = setTimeout(() => {
           release = null;
           if (readCachedIndex() !== null) return;
-          // Same reference when there is nothing to release, so no needless re-render.
           setItems((prev) => (prev.length > 0 ? [] : prev));
         }, ROW_RELEASE_DELAY_MS);
       };
       scheduleRelease();
-      // History can change while closed, so drop the cache rather than reopening onto chats that
-      // no longer exist. Only the cache: clearing state re-renders per streaming chunk.
+      // Drop only the cache: clearing state re-renders per streaming chunk.
       const invalidate = () => {
         writeCachedIndex(null);
-        // The release above may already have run while the cache was still there.
         scheduleRelease();
       };
       window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, invalidate);
@@ -416,23 +389,19 @@ export function useChatSearchIndex(enabled: boolean): {
     }
     let cancelled = false;
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-    // Set by a history event, cleared once its rebuild lands, so a close in between knows the cached snapshot is stale.
     let rebuildPending = false;
     let structuralRebuildPending = false;
 
     const run = () => {
       const seq = ++requestSeqRef.current;
-      // A build straddling a logout describes the account it started under.
       const epoch = getAuthSessionEpoch();
-      // Only the first build has nothing to show; later ones refresh silently.
       if (readCachedIndex() === null) setLoading(true);
       buildChatSearchIndex()
         .then((build) => {
-          // Drop out-of-order responses, and never repopulate a cache already dropped.
           if (cancelled || seq !== requestSeqRef.current) return;
           if (epoch !== getAuthSessionEpoch()) return;
           const result = publishChatSearchBuild(build);
-          // A build older than the history event does not satisfy it, so the flag only clears once nothing is queued.
+          // A build older than the history event does not satisfy it.
           if (debounceTimer === null) {
             rebuildPending = false;
             structuralRebuildPending = false;
@@ -441,8 +410,7 @@ export function useChatSearchIndex(enabled: boolean): {
         })
         .catch(() => {
           if (cancelled || seq !== requestSeqRef.current) return;
-          // A rebuild that failed leaves nothing fresher, and what is cached is the snapshot it was
-          // called to replace: keeping it would offer a deleted chat as a live result.
+          // A failed rebuild must not keep the stale snapshot, which may list deleted chats.
           if (rebuildPending) writeCachedIndex(null);
           setItems(readCachedIndex() ?? []);
         })
@@ -455,7 +423,6 @@ export function useChatSearchIndex(enabled: boolean): {
     const scheduleRebuild = (event: Event) => {
       rebuildPending = true;
       const structural = !isCoalescedHistoryEvent(event);
-      // retires a build that read the history before this change, which would else republish it
       if (structural) {
         structuralRebuildPending = true;
         requestSeqRef.current += 1;
@@ -469,16 +436,12 @@ export function useChatSearchIndex(enabled: boolean): {
       if (debounceTimer !== null) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         debounceTimer = null;
-        // The structural deadline has been honored. Stream events arriving while this rebuild runs
-        // return to quiet-window coalescing instead of forcing a rebuild every debounce interval.
         structuralRebuildPending = false;
         if (!cancelled) run();
       }, SEARCH_REBUILD_DEBOUNCE_MS);
     };
 
-    // Not a history change: the rows on screen belong to whoever was signed in a moment ago, so
-    // they go now. Rebuilding at once also advances the request sequence, retiring a build
-    // still in flight for that account.
+    // Rows belong to the previous account: drop them and retire any in-flight build.
     const onSessionChanged = () => {
       if (cancelled) return;
       if (debounceTimer !== null) {
@@ -495,8 +458,7 @@ export function useChatSearchIndex(enabled: boolean): {
     return () => {
       cancelled = true;
       if (debounceTimer !== null) clearTimeout(debounceTimer);
-      // Closing cancels a queued rebuild, so the snapshot left behind is stale and must not survive
-      // the next open. The rendered rows stay: clearing them tears the list down inside the exit.
+      // Closing cancels a queued rebuild, so drop the stale snapshot; rows stay for the exit.
       if (rebuildPending) writeCachedIndex(null);
       window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, scheduleRebuild);
       window.removeEventListener(

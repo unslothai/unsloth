@@ -241,7 +241,6 @@ test("an Ollama load identity mirrors its settings only when the API can reach i
     }) as const;
   const target = modelConfigTarget(id, local(id), "Llama 3.2");
 
-  // The reference is what /v1/models advertises; the link it materializes the resolver skips.
   assert.equal(target.apiLoadable, true);
   assert.equal(modelConfigTarget(link, local(link), "").apiLoadable, false);
   assert.equal(target.configId, undefined);
@@ -305,11 +304,9 @@ test("the resident settings key a cached non-GGUF repo by its repo id", () => {
   assert.equal(mlx.id, snapshot);
   assert.equal(mlx.configId, "mlx-community/Qwen3.5-9B-MLX-8bit");
   assert.equal(mlx.apiLoadable, true);
-  // The backend folds a quant's two spellings itself, so a GGUF keeps its load path.
   const gguf = resident({ isGguf: true, ggufVariant: "Q4_K_M" });
   assert.equal(gguf.configId, undefined);
   assert.equal(gguf.apiLoadable, true);
-  // A loose file drops its label, and every other entry point keys it by its path.
   const file = resident({
     modelId: `${snapshot}/model-Q4_K_M.gguf`,
     isGguf: true,
@@ -353,4 +350,11 @@ test("submitting a cached handoff adopts legacy path-keyed settings", () => {
   assert.equal(adopted.remembered, true);
   assert.equal(adopted.config.maxSeqLength, 32768);
   assert.equal(resolveInitialConfig(loadId, ggufVariant).remembered, false);
+});
+
+
+test("full checkpoints mirror remembered engine settings to API loads", () => {
+  const meta = { source: "hub", isLora: false, isGguf: false, isDownloaded: true } as const;
+  assert.equal(modelConfigTarget("unsloth/Qwen3.5-0.8B", meta).apiLoadable, true);
+  assert.equal(modelConfigTarget("local-adapter", { ...meta, isLora: true }).apiLoadable, false);
 });

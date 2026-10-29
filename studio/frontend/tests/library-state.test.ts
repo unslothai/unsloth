@@ -187,6 +187,7 @@ function loadStore(
   emitted: unknown[] = [],
   session: { epoch: number } = { epoch: 0 },
   starsUndone: string[] = [],
+  prepareChatAttachmentDeletion: (attachmentId: string) => Promise<void> = async () => {},
 ) {
   return loadWithStubs<{
     useLibraryStore: zustand.UseBoundStore<
@@ -207,6 +208,7 @@ function loadStore(
     "@/features/chat": {
       deleteFineTunedModel: async () => {},
       emitChatAttachmentDeleted: (event: unknown) => emitted.push(event),
+      prepareChatAttachmentDeletion,
     },
     "@/features/model-picker": {
       usePinnedModelsStore: {
@@ -349,7 +351,6 @@ test("a sandbox file is deleted as the file it was listed as", async () => {
   });
   await store.getState().refresh();
   const shown = store.getState().items[0] as Item & { fingerprint: string };
-  // Replaced while the confirmation was open: the refresh must not lend the delete its fingerprint.
   fingerprint = "9:2.5";
   await store.getState().refresh();
   await store.getState().removeItem(shown.id, shown.fingerprint);
@@ -385,6 +386,42 @@ test("deleting a chat attachment tells an open chat to drop it", async () => {
   assert.deepEqual(emitted, [{ messageId: "m:1", attachmentId: "content-part-x" }]);
 });
 
+test("a chat attachment is not deleted when an open chat could not drop it afterwards", async () => {
+  const emitted: unknown[] = [];
+  const deleted: string[] = [];
+  const prepared: string[] = [];
+  let chunkLoads = false;
+  const store = loadStore(
+    {
+      getLibrary: async () => ({
+        items: [item("attachment:m%3A1:content-part-sha256-ab")],
+        folders: [],
+      }),
+      deleteLibraryItem: async (id: string) => {
+        deleted.push(id);
+      },
+    },
+    emitted,
+    { epoch: 0 },
+    [],
+    async (attachmentId) => {
+      prepared.push(attachmentId);
+      if (!chunkLoads) throw new Error("Failed to fetch dynamically imported module");
+    },
+  );
+  await store.getState().refresh();
+  await assert.rejects(store.getState().removeItem("attachment:m%3A1:content-part-sha256-ab"));
+  assert.deepEqual(deleted, []);
+  assert.deepEqual(emitted, []);
+
+  chunkLoads = true;
+  await store.getState().removeItem("attachment:m%3A1:content-part-sha256-ab");
+  await store.getState().removeItem("upload:a");
+  assert.deepEqual(prepared, ["content-part-sha256-ab", "content-part-sha256-ab"]);
+  assert.deepEqual(deleted, ["attachment:m%3A1:content-part-sha256-ab", "upload:a"]);
+  assert.deepEqual(emitted, [{ messageId: "m:1", attachmentId: "content-part-sha256-ab" }]);
+});
+
 function loadDownloads(
   fflate: object,
   saved: (File | Blob)[],
@@ -397,12 +434,17 @@ function loadDownloads(
     downloadLibraryItems: (items: { name: string; sizeBytes: number | null }[]) => Promise<void>;
   }>(new URL("../src/features/library/actions.ts", import.meta.url), {
     fflate,
+    "@/config/env": { usePlatformStore: { getState: () => ({ deviceType: "linux" }) } },
+    "@/features/audio/audio-page-policy": {},
+    "@/features/audio/workflows": {},
     "@/features/auth": { getAuthSessionEpoch: () => session.epoch },
     "@/features/chat": {},
     "@/features/model-picker": {},
     "@/i18n": { translate: (key: string) => key },
     "@/lib/audio-utils": {},
     "@/lib/api-base": { isTauri: false },
+    "@/lib/image-fit": {},
+    "@/stores/image-edit-handoff": {},
     "@/lib/native-files": {
       downloadFile: async (f: File | Blob) => saved.push(f),
       isDownloadCancelled: () => false,

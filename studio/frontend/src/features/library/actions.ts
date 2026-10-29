@@ -3,6 +3,13 @@
 
 import type { useNavigate } from "@tanstack/react-router";
 import { zipSync } from "fflate";
+import { usePlatformStore } from "@/config/env";
+import {
+  isTtsAudioType,
+  trainedTtsCheckpointIsLoadable,
+  trainedTtsCheckpointIsRunnableOnMac,
+} from "@/features/audio/audio-page-policy";
+import { audioWorkflowForAudioType } from "@/features/audio/workflows";
 import { getAuthSessionEpoch } from "@/features/auth";
 import { listLoras } from "@/features/chat";
 import {
@@ -11,8 +18,10 @@ import {
   requestModelConfigHandoff,
 } from "@/features/model-picker";
 import { translate } from "@/i18n";
+import { useImageEditHandoffStore } from "@/stores/image-edit-handoff";
 import { MAX_AUDIO_SIZE } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
+import { MAX_UPLOAD_IMAGE_SIDE, blobToDataUrl, fitImageDataUrl } from "@/lib/image-fit";
 import { downloadFile, downloadUrlStreaming, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { MAX_VIDEO_SIZE } from "@/lib/video-utils";
@@ -78,7 +87,7 @@ export async function downloadLibraryItems(items: LibraryItem[]): Promise<void> 
     for (const item of items) await downloadLibraryItem(item, epoch);
     return;
   }
-  // A file of unknown size could be any size, so it never goes into a zip held in memory.
+  // Unknown size counts as Infinity so it never goes into an in-memory zip.
   const bytes = items.reduce((sum, item) => sum + (item.sizeBytes ?? Infinity), 0);
   if (bytes > MAX_ZIP_BYTES) {
     toast(translate("library.toast.downloadingMany", { count: items.length }), {
@@ -97,7 +106,6 @@ export async function downloadLibraryItems(items: LibraryItem[]): Promise<void> 
         file = await libraryItemFile(item, budget);
       } catch (error) {
         if (!(error instanceof LibraryFileTooLarge)) throw error;
-        // Grown past what the listing said: one download at a time instead of one zip in memory.
         toast.dismiss(progress);
         for (const each of items) await downloadLibraryItem(each, epoch);
         return;
@@ -147,9 +155,8 @@ export async function chatAboutItems(
   const chosen = fitting.slice(0, MAX_CHAT_FILES);
   const epoch = getAuthSessionEpoch();
   try {
-    // One at a time, so a folder never holds ten downloads in flight at once.
     const files: File[] = [];
-    // Bounded as it reads: a size the listing did not know, or a file grown since, is only found here.
+    // Size is bounded while reading: unknown or grown files are only caught here.
     for (const item of chosen) {
       try {
         files.push(await libraryItemFile(item, chatSizeLimit(item)));
@@ -187,6 +194,26 @@ export async function chatAboutItems(
   }
 }
 
+// Read whole before it is fitted to the 4096 px upload limit, so a large original still opens.
+const MAX_EDIT_SOURCE_BYTES = 64 * 1024 * 1024;
+
+let editRequest = 0;
+
+export async function editLibraryImage(navigate: Navigate, item: LibraryItem): Promise<void> {
+  const epoch = getAuthSessionEpoch();
+  const claimed = ++editRequest;
+  try {
+    const file = await libraryItemFile(item, MAX_EDIT_SOURCE_BYTES);
+    const dataUrl = await fitImageDataUrl(await blobToDataUrl(file), MAX_UPLOAD_IMAGE_SIDE);
+    if (getAuthSessionEpoch() !== epoch || claimed !== editRequest) return;
+    useImageEditHandoffStore.getState().offer(dataUrl);
+    void navigate({ to: "/images" });
+  } catch (error) {
+    if (claimed !== editRequest) return;
+    toast.error(translate("library.toast.editImageFailed"), { description: errorMessage(error) });
+  }
+}
+
 export async function chatWithModel(
   navigate: Navigate,
   item: LibraryItem,
@@ -199,6 +226,26 @@ export async function chatWithModel(
     .catch(() => undefined);
   if (getAuthSessionEpoch() !== epoch) return;
   if (scanned?.audio_type) {
+    const { audio_type: audioType, export_type: exportType } = scanned;
+    if (
+      isTtsAudioType(audioType, exportType === "gguf") &&
+      trainedTtsCheckpointIsLoadable(audioType, exportType) &&
+      // The Audio page's picker hides what the Mac runtime cannot run; never load it from here.
+      (usePlatformStore.getState().deviceType !== "mac" ||
+        trainedTtsCheckpointIsRunnableOnMac(audioType, exportType))
+    ) {
+      void navigate({
+        to: "/audio",
+        search: {
+          model: model.path,
+          loadId: model.path,
+          // Native checkpoints need it for their custom-code approval and runtime checks.
+          audioType,
+          workflow: audioWorkflowForAudioType(audioType),
+        },
+      });
+      return;
+    }
     toast(translate("library.toast.speechModel", { name: item.name }), {
       description: translate("library.toast.speechModelDescription"),
     });

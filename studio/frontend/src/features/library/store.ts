@@ -3,7 +3,11 @@
 
 import { create } from "zustand";
 import { AUTH_SESSION_CLEARED_EVENT, getAuthSessionEpoch } from "@/features/auth";
-import { deleteFineTunedModel, emitChatAttachmentDeleted } from "@/features/chat";
+import {
+  deleteFineTunedModel,
+  emitChatAttachmentDeleted,
+  prepareChatAttachmentDeletion,
+} from "@/features/chat";
 import { usePinnedModelsStore } from "@/features/model-picker";
 import { translate } from "@/i18n";
 import { type GalleryKind, notifyGalleryChanged } from "@/lib/gallery-flags";
@@ -74,10 +78,8 @@ function undoEdit<T extends { id: string }>(now: T[], before: T[], after: T[] | 
   return restored;
 }
 
-// Edits apply here before the server has them, so a snapshot fetched while one is in flight, or
-// started before one, can predate it and would undo it on screen. Such a snapshot is dropped and
-// fetched again once every edit has settled; a failed edit rolls back the same way. A sign-out
-// starts the count again: an edit of the account that left must not hold back the next one's.
+// Optimistic edits: a snapshot fetched during or before an in-flight edit is dropped and
+// refetched once edits settle; a sign-out resets the count.
 let session = 0;
 let inFlight = 0;
 let edits = 0;
@@ -181,7 +183,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
         star?.undo,
       );
     },
-    // The fingerprint the confirmation was opened on: a refresh since may list a replacement file.
+    // A refresh since the confirmation opened may list a replacement file.
     removeItem: (id, fingerprint) => {
       const model = get().items.find((item) => item.id === id)?.model;
       const star = useLibraryFavoritesStore.getState().mark(id, false);
@@ -196,15 +198,17 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
                 source: model.origin,
                 exportType: model.exportType,
               });
-              // The model picker may have it pinned.
               usePinnedModelsStore.getState().unpinRepo(model.path);
               return;
+            }
+            if (id.startsWith("attachment:")) {
+              await prepareChatAttachmentDeletion(id.split(":").slice(2).join(":"));
             }
             await deleteLibraryItem(id, fingerprint);
           } finally {
             star.settle();
           }
-          // Signed in as another account meanwhile: its chats can hold an attachment of this id.
+          // Another account's chats can hold an attachment of this id.
           if (getAuthSessionEpoch() !== epoch) return;
           const [kind, messageId, ...rest] = id.split(":");
           const gallery = GALLERIES[kind];
@@ -277,7 +281,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
   };
 });
 
-// The store is module state, so a sign-out must drop it or the next account sees these files.
+// Module state: a sign-out must drop it or the next account sees these files.
 if (typeof window !== "undefined") {
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
     refreshGeneration += 1;
@@ -290,3 +294,7 @@ if (typeof window !== "undefined") {
   });
 }
 
+
+export function removeLibraryItem(id: string): Promise<void> {
+  return useLibraryStore.getState().removeItem(id, undefined);
+}

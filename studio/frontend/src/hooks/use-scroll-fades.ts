@@ -5,13 +5,9 @@ import { type UIEvent, useCallback, useEffect, useState } from "react";
 
 import { cn } from "@/lib/utils";
 
-/**
- * Edge fades for a scroll container: the top fades once scrolled, the bottom while more
- * content sits below. Pass `attach` as the element's ref and pair with a mask class such
- * as `.panel-scroll-fade`.
- */
+/** Pass `attach` as the ref and pair with a mask class such as `.panel-scroll-fade`. */
 export function useScrollFades() {
-  // The node is state, not a ref, so the observer re-attaches when it changes.
+  // State, not a ref, so the observer re-attaches when the node changes.
   const [node, setNode] = useState<HTMLElement | null>(null);
   const [scrolled, setScrolled] = useState(false);
   const [moreBelow, setMoreBelow] = useState(false);
@@ -23,7 +19,7 @@ export function useScrollFades() {
     setMoreBelow((prev) => (prev === below ? prev : below));
   }, []);
 
-  // ResizeObserver fires once on observe, so mounting seeds the state too.
+  // ResizeObserver fires once on observe, which seeds the state.
   useEffect(() => {
     if (!node) {
       return;

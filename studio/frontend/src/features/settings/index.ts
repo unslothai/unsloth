@@ -2,6 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export { SettingsDialogMount } from "./settings-dialog-mount";
+export { FullInstallDialog } from "./components/full-install-dialog";
+export {
+  type JobResult,
+  jobOutputLines,
+  jobResult,
+} from "./tabs/sandbox-tab-state";
 export {
   type DownloadTransportMode,
   type DownloadTransportSettings,
@@ -11,11 +17,17 @@ export {
 } from "./api/download-transport";
 export { loadEmbeddingModelSettings } from "./api/embedding-model";
 export { updateHubSource } from "./api/hub-settings";
+export { loadLanAccess, publishLanUrls } from "./api/lan-access";
+export { lanApiUrls } from "./api/lan-access-state";
+export { loadMultiModelEnabled } from "./api/multi-model";
 export { loadOpenAIAutoSwitchSettings } from "./api/openai-auto-switch";
+export { listOpenAIModels } from "./api/openai-models";
 export {
   loadSystemOneSettings,
   subscribeSystemOneSettings,
+  updateSystemOneSettings,
 } from "./api/systemone";
+export { DECISION_MODEL_LABELS } from "./lib/decision-model-labels";
 export {
   loadHuggingFaceCacheSettings,
   updateHuggingFaceCacheSettings,
@@ -58,13 +70,21 @@ export type {
   SidebarNavItemPref,
 } from "./stores/appearance-custom-store";
 export { useMonitorOverlayStore } from "./stores/monitor-overlay-store";
+export { useEmbeddingModelStore } from "./stores/embedding-model-store";
+export { useEmbeddingPinsStore } from "./stores/embedding-pins-store";
+export {
+  type EmbeddingSwitchResult,
+  ejectEmbeddingModel,
+  embeddingModelName,
+  embeddingModelOwner,
+  switchEmbeddingModel,
+} from "./lib/switch-embedding-model";
 export {
   applyInterfaceScale,
   stepInterfaceScale,
   useInterfaceScaleStore,
 } from "./stores/interface-scale-store";
-// The runtime module, not the store, so consumers outside this feature do not have to pull
-// zustand in with them. native-drop-position.ts imports it directly for that reason.
+// The runtime module, not the store, so outside consumers do not pull in zustand.
 export {
   NATIVE_MAC_TITLEBAR_HEIGHT_VAR,
   NATIVE_MAC_TRAFFIC_LIGHT_INSET_VAR,
@@ -97,9 +117,11 @@ export {
   currentBinding,
   shortcutMatchingEvent,
   useKeyboardShortcutsStore,
+  resolveBindings,
 } from "./stores/keyboard-shortcuts-store";
 export type { ShortcutId } from "./lib/keyboard-shortcuts";
 export { SETTINGS_TABS, useSettingsDialogStore } from "./stores/settings-dialog-store";
+export { trainingApiRequestFromPayload } from "./components/training-api-snippets";
 export { settingsTabVisible } from "./settings-tab-visibility";
 export { DIALOG_SETTINGS_SEARCH_INDEX } from "./dialog-search-index";
 export type { SettingsTab } from "./stores/settings-dialog-store";
@@ -108,8 +130,14 @@ export {
   applyDictationDictionary,
   recordRecentDictation,
   sttModelName,
+  sttModelVariant,
   useVoiceSettingsStore,
+  withSttVariant,
 } from "./stores/voice-settings-store";
 export type { Palette, ResolvedTheme, Theme } from "./stores/theme-store";
 
-export { isMacPlatform } from "./lib/keyboard-shortcuts";
+export {
+  isMacPlatform,
+  isModEnter,
+  modEnterLabel,
+} from "./lib/keyboard-shortcuts";

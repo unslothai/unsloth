@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for core/inference/passthrough_healing.py: promoting text-form
-tool calls back into structured calls on the client-tool passthrough. The
-route-level wiring (OpenAI / Anthropic / Responses endpoints) is covered in
-their own endpoint test files; this file exercises the shared state machine
-and helpers directly.
-"""
+"""Tests the shared healer that promotes text-form tool calls to structured calls on passthrough."""
 
 from __future__ import annotations
 
@@ -137,8 +132,6 @@ class TestHealOpenaiMessage:
         assert "tool_calls" not in msg
 
     def test_mixed_declared_and_undeclared_promotes_declared_keeps_undeclared_text(self):
-        # Span-exact removal: only the promoted Bash markup is dropped; the
-        # undeclared Nuke call's text stays in the content byte-intact.
         content = f"pre {XML_BASH} mid {XML_UNDECLARED} post"
         msg = {"role": "assistant", "content": content}
         assert heal_openai_message(msg, {"Bash"}) is True
@@ -163,8 +156,6 @@ class TestHealOpenaiMessage:
         assert msg["content"] == "then"
 
     def test_unparseable_closed_block_not_deleted(self):
-        # A closed <tool_call> block whose body never parses is model output,
-        # not a promotable call; it must survive promotion of its neighbor.
         garbage = "<tool_call>not json at all</tool_call>"
         content = f"{XML_BASH} {garbage}"
         msg = {"role": "assistant", "content": content}
@@ -218,14 +209,11 @@ class TestStreamHealer:
     def test_partial_signal_tail_held_then_flushed_at_end(self):
         healer = StreamToolCallHealer({"Bash"})
         events = healer.feed("trailing <tool")
-        assert _events_text(events) == "trailing "  # tail held back
+        assert _events_text(events) == "trailing "
         events += healer.finalize()
         assert _events_text(events) == "trailing <tool"
 
     def test_mixed_calls_promote_declared_flush_undeclared_in_order(self):
-        # Declared + undeclared in the same buffer: the declared call is
-        # promoted, the undeclared markup flushes as text, and event order
-        # follows document order (call first here, since it came first).
         healer = StreamToolCallHealer({"Bash"})
         text = f"{XML_BASH} then {XML_UNDECLARED} post"
         events = healer.feed(text) + healer.finalize()
@@ -236,8 +224,6 @@ class TestStreamHealer:
         assert "then" in joined and "post" in joined
 
     def test_text_between_two_healed_calls_keeps_document_order(self):
-        # call A, " middle ", call B in ONE buffer must stream as
-        # call A -> text -> call B, never both calls then the text.
         healer = StreamToolCallHealer({"Bash"})
         events = healer.feed(f"{XML_BASH} middle {XML_BASH}") + healer.finalize()
         kinds = [k for k, _ in events]
@@ -245,8 +231,6 @@ class TestStreamHealer:
         assert events[1][1] == " middle "
 
     def test_undeclared_then_declared_keeps_document_order(self):
-        # The undeclared block precedes the declared call; its raw text must
-        # be emitted BEFORE the promoted call event, never after.
         healer = StreamToolCallHealer({"Bash"})
         events = healer.feed(f"{XML_UNDECLARED} then {XML_BASH}") + healer.finalize()
         kinds = [k for k, _ in events]
@@ -256,9 +240,6 @@ class TestStreamHealer:
         assert XML_UNDECLARED in _events_text(events)
 
     def test_declared_promoted_then_late_undeclared_flushes_raw(self):
-        # Streaming causality: the declared call completed and was already
-        # emitted before the undeclared one arrived. The undeclared markup
-        # must still reach the client as raw text (no data loss).
         healer = StreamToolCallHealer({"Bash"})
         events = healer.feed(f"{XML_BASH} then ")
         assert len(_events_calls(events)) == 1
@@ -282,10 +263,7 @@ class TestStreamHealer:
         assert _events_text(events).strip() == "then"
 
     def test_mistral_array_multiple_calls_all_promoted_in_stream(self):
-        # A canonical Mistral [TOOL_CALLS] array carries several calls under a
-        # SINGLE signal. Draining only the first call would leave the residue
-        # starting at ",{...}]" (no signal), so later calls in the same array
-        # must be promoted in the same pass, not flushed as raw text.
+        # A [TOOL_CALLS] array carries several calls under one signal; promote all in one pass.
         healer = StreamToolCallHealer({"get_weather", "get_time"})
         array = (
             '[TOOL_CALLS][{"name":"get_weather","arguments":{"city":"Paris"}},'
@@ -312,9 +290,6 @@ class TestStreamHealer:
         assert _events_text(events) == ""
 
     def test_mistral_array_undeclared_middle_kept_as_text_others_promoted(self):
-        # A mid-array element for a tool that is not declared must survive as
-        # text while the declared neighbours on either side still promote in
-        # document order.
         healer = StreamToolCallHealer({"a", "c"})
         array = (
             '[TOOL_CALLS][{"name":"a","arguments":{}},'
@@ -334,7 +309,7 @@ class TestStreamHealer:
     def test_incomplete_call_healed_at_finalize(self):
         healer = StreamToolCallHealer({"Bash"})
         events = healer.feed('<tool_call>{"name":"Bash","arguments":{"cmd":"ls"}}')
-        assert events == []  # held
+        assert events == []
         events = healer.finalize()
         (call,) = _events_calls(events)
         assert call["function"]["name"] == "Bash"
@@ -373,7 +348,6 @@ class TestNudgeHelpers:
         return {"choices": [{"message": msg, "finish_reason": "stop"}]}
 
     def test_retry_on_unparseable_signal(self):
-        # Signal present but the JSON never parses and no declared name matches.
         data = self._resp("<tool_call>call Bash somehow???")
         assert nudge_should_retry(data, {"Read"}) is True
 
@@ -398,8 +372,6 @@ class TestNudgeHelpers:
         assert "`Bash` or `Read`" in suffix[1]["content"]
 
     def test_retry_with_undeclared_structured_call_is_not_an_improvement(self):
-        # The retry replaces the original only when it carries a USABLE call:
-        # a structured call naming an undeclared tool must not count.
         undeclared = [
             {"id": "x", "type": "function", "function": {"name": "Nuke", "arguments": "{}"}}
         ]
@@ -410,9 +382,7 @@ class TestNudgeHelpers:
         assert response_has_promotable_calls(self._resp("", declared), {"Bash"}) is True
 
     def test_retry_with_mixed_structured_calls_is_not_an_improvement(self):
-        # ALL structured calls must be declared: the caller forwards the whole
-        # list (and a parallel cap could keep only the FIRST), so a mixed retry
-        # could still hand the client an undeclared tool.
+        # The caller forwards the whole list (a parallel cap keeps the first): all must be declared.
         mixed = [
             {"id": "x", "type": "function", "function": {"name": "Nuke", "arguments": "{}"}},
             {"id": "y", "type": "function", "function": {"name": "Bash", "arguments": "{}"}},
@@ -430,23 +400,18 @@ class TestNudgeHelpers:
             {},
             {"choices": []},
             {"choices": [{}]},
-            {"choices": [{"message": None}]},  # llama-server error bodies do this
+            {"choices": [{"message": None}]},
             {"choices": [{"message": "not a dict"}]},
             {"choices": [{"message": {"content": None}}]},
             {"error": {"message": "boom"}},
         ],
     )
     def test_malformed_response_shapes_never_raise(self, data):
-        # A malformed upstream body must degrade to "nothing to heal/nudge",
-        # never crash the request with an AttributeError.
         assert nudge_should_retry(data, {"Bash"}) is False
         assert response_has_promotable_calls(data, {"Bash"}) is False
         suffix = nudge_messages(data, {"Bash"})
         assert suffix[0] == {"role": "assistant", "content": ""}
 
-
-# ── Route-level wiring (OpenAI passthrough) ─────────────────────────────
-# Mirrors the fake-llama-server patterns in test_openai_tool_passthrough.py.
 
 import asyncio  # noqa: E402
 import threading  # noqa: E402
@@ -529,7 +494,6 @@ class ScriptedClient:
         return httpx.Response(200, json = self.bodies[min(len(self.posts) - 1, len(self.bodies) - 1)])
 
     async def aclose(self):
-        # The Anthropic pass-through owns its client and closes it in a finally.
         self.closed = True
 
 
@@ -537,7 +501,7 @@ async def _drive_non_streaming(monkeypatch, payload, bodies):
     import routes.inference as inf_mod
 
     client = ScriptedClient(bodies)
-    monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: client)
+    monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
     response = await _openai_passthrough_non_streaming(
         _llama_backend(), payload, "gguf", monitor_id = None
     )
@@ -594,8 +558,8 @@ class TestOpenaiNonStreamingRoute:
             assert call["function"]["name"] == "lookup"
             assert json.loads(call["function"]["arguments"]) == {"q": "x"}
             assert choice["message"]["content"] is None
-            assert data["usage"]["total_tokens"] == 3  # usage preserved
-            assert len(client.posts) == 1  # healing never re-requests
+            assert data["usage"]["total_tokens"] == 3
+            assert len(client.posts) == 1
 
         asyncio.run(_run())
 
@@ -664,9 +628,7 @@ class TestOpenaiNonStreamingRoute:
 
     def test_length_finish_reason_preserved(self, monkeypatch):
         async def _run():
-            # Truncated generation: the healed call stays attached but the
-            # client must still see the truncation, so length is never
-            # upgraded to tool_calls.
+            # length is never upgraded to tool_calls: the client must see the truncation.
             _, data = await _drive_non_streaming(
                 monkeypatch,
                 _payload(),
@@ -741,9 +703,7 @@ class TestOpenaiNonStreamingRoute:
 
     def test_healed_then_native_stream_indexes_disjoint(self, monkeypatch):
         async def _run():
-            # A healed text-form call goes out first (index 0); a native
-            # structured delta follows. Clients merge deltas by index, so the
-            # native call must be shifted off index 0 or the two would merge.
+            # Clients merge deltas by index, so the native call must shift off index 0.
             native_line = (
                 'data: {"id":"c1","choices":[{"index":0,"delta":{"tool_calls":'
                 '[{"index":0,"id":"call_native","type":"function","function":'
@@ -816,14 +776,13 @@ class TestNudgeRetryOpenai:
                 _payload(nudge_tool_calls = True),
                 [_upstream_message(GARBAGE_SIGNAL), _upstream_message(LOOKUP_XML)],
             )
-            assert len(client.posts) == 2  # exactly one retry
-            # Prefix byte-identical, nudge suffix appended (KV-cache reuse guard).
+            assert len(client.posts) == 2
+            # Prefix byte-identical (KV-cache reuse), nudge suffix appended.
             original, retry = client.posts
             assert retry["messages"][: len(original["messages"])] == original["messages"]
             suffix = retry["messages"][len(original["messages"]) :]
             assert [m["role"] for m in suffix] == ["assistant", "user"]
             assert suffix[0]["content"] == GARBAGE_SIGNAL
-            # The healed retry response is returned.
             (call,) = data["choices"][0]["message"]["tool_calls"]
             assert call["function"]["name"] == "lookup"
             assert data["choices"][0]["finish_reason"] == "tool_calls"
@@ -851,7 +810,7 @@ class TestNudgeRetryOpenai:
                 usage = {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25},
             )
             client = ScriptedClient([first, retry])
-            monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: client)
+            monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
 
             response = await _openai_passthrough_non_streaming(
                 _llama_backend(),
@@ -883,6 +842,65 @@ class TestNudgeRetryOpenai:
             assert len(client.posts) == 2
             assert data["choices"][0]["message"]["content"] == GARBAGE_SIGNAL
             assert "tool_calls" not in data["choices"][0]["message"]
+
+        asyncio.run(_run())
+
+    def test_expected_cancel_during_nudge_retry_is_not_absorbed(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class ImmediateClient:
+                async def post(self, *_args, **_kwargs):
+                    return httpx.Response(200, json = _upstream_message(GARBAGE_SIGNAL))
+
+                async def aclose(self):
+                    return None
+
+            class HangingClient:
+                def __init__(self):
+                    self.started = asyncio.Event()
+                    self.closed = asyncio.Event()
+
+                async def post(self, *_args, **_kwargs):
+                    self.started.set()
+                    await self.closed.wait()
+                    raise httpx.ReadError("client closed")
+
+                async def aclose(self):
+                    self.closed.set()
+
+            class Request:
+                async def is_disconnected(self):
+                    return False
+
+            hanging = HangingClient()
+            clients = iter((ImmediateClient(), hanging))
+            monkeypatch.setattr(
+                inf_mod,
+                "_cancelable_nonstreaming_client",
+                lambda: next(clients),
+            )
+            cancel_event = threading.Event()
+            task = asyncio.create_task(
+                inf_mod._openai_passthrough_non_streaming_upstream(
+                    _llama_backend(),
+                    _payload(nudge_tool_calls = True),
+                    "gguf",
+                    request = Request(),
+                    cancel_event = cancel_event,
+                )
+            )
+            # Both waits only bound a hang, so they are generous: reaching the retry is a whole
+            # upstream round trip plus the nudge decision, 30-60 ms idle but past 1 s on a
+            # saturated CI runner, which a 0.2 s cap turned into a TimeoutError. An absorbed
+            # cancel still fails: the task then waits on the hanging client and never raises.
+            await asyncio.wait_for(hanging.started.wait(), 10)
+            cancel_event.set()
+
+            with pytest.raises(inf_mod._NonStreamingRequestCancelled):
+                await asyncio.wait_for(task, 10)
+
+            assert hanging.closed.is_set()
 
         asyncio.run(_run())
 
@@ -1041,12 +1059,7 @@ class TestAnthropicForcedToolChoice:
 
 
 class TestAnthropicPassthroughHealingText:
-    """Non-streaming Anthropic passthrough must relay unpromoted (undeclared)
-    text-form calls as text, matching the OpenAI passthrough contract. Once
-    heal_openai_message promotes the declared call it span-trims only that
-    markup and deliberately leaves the undeclared bytes in the content; the
-    legacy blanket _TOOL_XML_RE strip must not delete them.
-    """
+    """Non-streaming Anthropic passthrough relays undeclared text-form calls as text, not stripped."""
 
     async def _drive(self, monkeypatch, upstream):
         import routes.inference as inf_mod
@@ -1071,7 +1084,6 @@ class TestAnthropicPassthroughHealingText:
         async def _run():
             content = f"Running now. {LOOKUP_XML} then {XML_UNDECLARED} done."
             data = await self._drive(monkeypatch, _upstream_message(content))
-            # Declared lookup call is promoted into a structured tool_use block.
             (tool_use,) = [b for b in data["content"] if b["type"] == "tool_use"]
             assert tool_use["name"] == "lookup"
             text = " ".join(b["text"] for b in data["content"] if b["type"] == "text")
@@ -1154,7 +1166,6 @@ class TestAnthropicEmitterHealing:
             for e in events
             if e["type"].startswith("content_block")
         ]
-        # text opens, streams the safe prefix, closes; then the tool_use block.
         assert kinds[0] == ("content_block_start", "text")
         assert kinds[1] == ("content_block_delta", "text_delta")
         assert kinds[2] == ("content_block_stop", None)
@@ -1227,7 +1238,7 @@ class TestAnthropicEmitterHealing:
             for e in events
             if e.get("type") == "content_block_delta" and e["delta"]["type"] == "text_delta"
         ]
-        assert "".join(texts) == "held <tool"  # nothing swallowed
+        assert "".join(texts) == "held <tool"
         starts = [e for e in events if e.get("type") == "content_block_start"]
         assert [e["content_block"]["type"] for e in starts] == ["text", "tool_use"]
 
@@ -1245,9 +1256,6 @@ class TestAnthropicEmitterHealing:
         assert len(starts) == 1
 
     def test_disable_parallel_drops_native_after_healed(self):
-        # A healed call consumed the single allowed slot; a later native
-        # structured call (index 0, so it survives the caller's chunk-level
-        # cap) must not open a second tool_use block.
         structured = [
             {
                 "index": 0,
@@ -1273,7 +1281,7 @@ class TestAnthropicEmitterHealing:
     def test_no_healing_means_verbatim_text(self):
         from core.inference.anthropic_compat import AnthropicPassthroughEmitter
 
-        emitter = AnthropicPassthroughEmitter()  # enable_healing never called
+        emitter = AnthropicPassthroughEmitter()
         events = self._events(
             emitter,
             [self._chunk(content = LOOKUP_XML), self._chunk(finish_reason = "stop")],
@@ -1334,7 +1342,7 @@ class TestAnthropicNonStreamingRoute:
             assert data["stop_reason"] == "end_turn"
             (block,) = data["content"]
             assert block["type"] == "text"
-            assert block["text"] == "plan"  # XML stripped, nothing promoted
+            assert block["text"] == "plan"
 
         asyncio.run(_run())
 
@@ -1344,8 +1352,6 @@ class TestAnthropicNonStreamingRoute:
             _, data = await self._drive(monkeypatch, [_upstream_message(xml)])
             assert data["stop_reason"] == "end_turn"
             assert not any(b["type"] == "tool_use" for b in data["content"])
-            # Healing preserves what it does not promote: the undeclared call
-            # reaches the client as text instead of being silently stripped.
             (text_block,) = [b for b in data["content"] if b["type"] == "text"]
             assert text_block["text"] == xml
 
@@ -1353,9 +1359,6 @@ class TestAnthropicNonStreamingRoute:
 
     def test_mixed_undeclared_text_preserved_after_heal(self, monkeypatch):
         async def _run():
-            # Declared call promoted to tool_use; the undeclared call's markup
-            # stays in the text block (the legacy strip must not run after a
-            # span-exact heal), matching the OpenAI passthrough.
             rogue = '<tool_call>{"name":"rogue","arguments":{}}</tool_call>'
             _, data = await self._drive(monkeypatch, [_upstream_message(f"{LOOKUP_XML} {rogue}")])
             (tool_block,) = [b for b in data["content"] if b["type"] == "tool_use"]
@@ -1378,9 +1381,6 @@ class TestAnthropicNonStreamingRoute:
 
     def test_tool_choice_none_keeps_legacy_strip(self, monkeypatch):
         async def _run():
-            # Anthropic {"type": "none"} arrives here converted to "none":
-            # the request forbade tool calls, so nothing is promoted and the
-            # legacy XML strip applies as before healing existed.
             _, data = await self._drive(
                 monkeypatch,
                 [_upstream_message(f"plan {LOOKUP_XML}")],
@@ -1425,7 +1425,6 @@ class TestOpenaiStreamingRoute:
                 if c.get("finish_reason")
             ]
             assert finishes == ["tool_calls"]
-            # None of the XML leaked as visible content.
             text = "".join(
                 (c.get("delta") or {}).get("content") or ""
                 for p in payloads
@@ -1438,9 +1437,7 @@ class TestOpenaiStreamingRoute:
 
     def test_parallel_cap_drops_native_after_healed(self, monkeypatch):
         async def _run():
-            # parallel_tool_calls=false: a healed call consumed the single
-            # allowed slot, and the upstream SSE cap keeps native index 0, so
-            # the route must drop the later native call itself.
+            # The upstream SSE cap keeps native index 0, so the route must drop it itself.
             xml = '<tool_call>{"name":"lookup","arguments":{"q":"x"}}</tool_call>'
             native = (
                 'data: {"id":"c1","choices":[{"index":0,"delta":{"tool_calls":'
@@ -1463,7 +1460,7 @@ class TestOpenaiStreamingRoute:
                 for tc in (c.get("delta") or {}).get("tool_calls") or []
             ]
             (call,) = tool_deltas
-            assert call["id"] == "call_0"  # the healed call; native was dropped
+            assert call["id"] == "call_0"
 
         asyncio.run(_run())
 
@@ -1494,8 +1491,6 @@ class TestOpenaiStreamingRoute:
 
     def test_incomplete_xml_healed_at_done(self, monkeypatch):
         async def _run():
-            # No close tag and no finish chunk: healed at the [DONE] boundary,
-            # synthetic finish must say tool_calls.
             lines = [
                 'data: {"id":"c1","choices":[{"index":0,"delta":{"content":"<tool_call>{\\"name\\":\\"lookup\\",\\"arguments\\":{}}"}}]}',
                 "data: [DONE]",
@@ -1532,26 +1527,13 @@ class TestOpenaiStreamingRoute:
                 "data: [DONE]",
             ]
             chunks = await _drive_stream(monkeypatch, _payload(), lines)
-            assert chunks[0] == line + "\n\n"  # byte-for-byte relay
+            assert chunks[0] == line + "\n\n"
 
         asyncio.run(_run())
 
 
 class TestHealerSignalAlignment:
-    """The passthrough healer buffers only formats its parser can promote.
-    The loops' bare [ARGS] rehearsal signal is gated on active tool names
-    there; ungated in the healer it would stall legitimate prose until
-    finalization without ever producing a promotable call."""
-
-    def test_heal_signals_are_promotable_formats_only(self):
-        from core.inference.passthrough_healing import _HEAL_SIGNALS
-        assert set(_HEAL_SIGNALS) == {
-            "<tool_call>",
-            "<|tool_call>",
-            "<function=",
-            "[TOOL_CALLS]",
-            "<|content_invoke_tool_json|>",
-        }
+    """The healer buffers only promotable formats; a bare [ARGS] signal would stall prose uselessly."""
 
     def test_prose_with_bare_args_marker_streams_through(self):
         healer = StreamToolCallHealer({"Bash"})
@@ -1563,7 +1545,6 @@ class TestHealerSignalAlignment:
         streamed = ""
         for chunk in chunks:
             streamed += _events_text(healer.feed(chunk))
-        # Incremental relay: nothing withheld for finalize.
         assert streamed == "".join(chunks)
         final = healer.finalize()
         assert not _events_calls(final)
@@ -1575,10 +1556,6 @@ class TestHealerSignalAlignment:
         (call,) = _events_calls(events)
         assert call["function"]["name"] == "web_search"
         assert healer.healed
-
-
-# --- client-supplied tool schemas -------------------------------------------------------
-# A coding agent on `unsloth start` declares its own tools, so schemas live in the request.
 
 
 def _client_tool(name, properties):
@@ -1597,7 +1574,6 @@ GREP_TOOL = _client_tool(
         "timeout": {"type": "integer"},
     },
 )
-# Spells `timeout` the other way, so neither call reads through the other tool's schema.
 FETCH_TOOL = _client_tool("WebFetch", {"url": {"type": "string"}, "timeout": {"type": "string"}})
 CLIENT_TOOLS = [FETCH_TOOL, GREP_TOOL]
 CLIENT_NAMES = {"WebFetch", "Grep"}
@@ -1652,12 +1628,25 @@ def test_every_post_decode_reinterpreter_is_handed_the_request_s_own_contract():
     from pathlib import Path
 
     names = ("heal_gate", "nudge_enabled")
-    forwards = ('body.get("response_format")', "_extract_response_format(payload)")
+    forwards = (
+        'body.get("response_format")',
+        "_extract_response_format(payload)",
+        "_sf_response_format",
+    )
     source = (Path(__file__).resolve().parents[1] / "routes/inference.py").read_text(
         encoding = "utf-8"
     )
+    tree = ast.parse(source)
+    # The MLX name may hold None only where _response_format_beside_tools sets the contract aside.
+    sources = [
+        ast.get_source_segment(source, getattr(node.value, "func", node.value))
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(getattr(t, "id", None) == "_sf_response_format" for t in node.targets)
+    ]
+    assert sources == ["_response_format_beside_tools"], sources
     calls, missing = [], []
-    for node in ast.walk(ast.parse(source)):
+    for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         if (getattr(node.func, "attr", None) or getattr(node.func, "id", None)) not in names:

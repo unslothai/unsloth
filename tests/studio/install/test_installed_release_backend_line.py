@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The "installed release: ..." line, in both setup twins, against real markers.
-
-Two things this holds. `backend` is absent from every marker written before #8520
-(2026-08-13), and reading a missing property is a terminating error under a caller's
-Set-StrictMode 2.0+, so an unguarded read aborts setup on those installs. And the twins
-must render identical bytes: PowerShell prints @(1, 2) as "1 2", Python as "[1, 2]".
-
-Both functions are sliced out rather than sourced whole, because both scripts run install
-steps at load (as tests/studio_setup_ps1/Get-FunctionSource.ps1 and tests/sh/ do).
-"""
+"""Setup twins' installed-release line: old markers lack backend; output must be byte-identical."""
 
 from __future__ import annotations
 
@@ -37,14 +28,7 @@ requires_pwsh = pytest.mark.skipif(
 
 
 def _usable_bash():
-    """A bash that actually runs a command, or None.
-
-    shutil.which("bash") alone is wrong on Windows: C:\\Windows\\System32\\bash.exe is the
-    WSL launcher, so it is the first PATH hit even with no distro installed, and running it
-    writes "Windows Subsystem for Linux has no installed distributions." to stdout as UTF-16
-    -- which this file then compared against a printer line. setup.sh is never executed on
-    Windows anyway (_find_setup_script picks setup.ps1 there), so probe before trusting.
-    """
+    """shutil.which('bash') finds the WSL launcher on Windows, so bash must be run as a probe first."""
     exe = shutil.which("bash")
     if exe is None:
         return None
@@ -96,14 +80,12 @@ def _drop_backend_key():
 
 # (id, raw file text or None for "no file", expected printed line)
 _CASES = [
-    # the legacy shape, which is the whole point of the guard
     ("legacy_no_backend_key", _drop_backend_key(), _BASE_LINE),
     ("cuda", _with_backend("cuda"), _BASE_LINE + " -- cuda backend"),
     ("rocm", _with_backend("rocm"), _BASE_LINE + " -- rocm backend"),
     ("vulkan", _with_backend("vulkan"), _BASE_LINE + " -- vulkan backend"),
     ("cpu", _with_backend("cpu"), _BASE_LINE + " -- cpu backend"),
     ("metal", _with_backend("metal"), _BASE_LINE + " -- metal backend"),
-    # an unknown name still prints: no allowlist
     ("unknown_future_backend", _with_backend("sycl2"), _BASE_LINE + " -- sycl2 backend"),
     (
         "backend_with_punctuation",
@@ -189,7 +171,7 @@ _CASES = [
 
 _IDS = [case[0] for case in _CASES]
 
-# setup.sh has a "+ <source>@<binary_tag>" branch setup.ps1 never has. Pre-existing.
+# setup.sh has a '+ <source>@<binary_tag>' branch setup.ps1 lacks.
 _PS1_EXPECTED_OVERRIDES = {
     "upstream_binary_source": "installed release: unslothai/unsloth@b10715-mix (tag b10715) -- cpu backend",
 }
@@ -237,15 +219,10 @@ def _run_ps1_printer(install_dir, strict_mode):
         get_function_source = f"'{GET_FUNCTION_SOURCE}'",
         setup_ps1 = f"'{SETUP_PS1}'",
     )
-    # -File, not -Command: param() only binds named args from a file, and strict mode has
-    # to sit in the CALLER's scope.
+    # -File, not -Command: param() binds named args only from a file; strict mode must be caller scope.
     script_path = Path(install_dir).parent / f"drive_{strict_mode.replace('.', '_')}.ps1"
     script_path.write_text(script, encoding = "utf-8")
-    # run_pwsh, not subprocess.run: this file spawns one pwsh per parametrisation, and under
-    # `-n 4` the workers shared one PowerShell startup cache. A torn cache kills the interpreter
-    # before it reaches the script, and surfaces here as a FileLoadException instead of a
-    # backend line: a runner crash wearing this file's name. The shared runner gives each worker
-    # its own cache and retries an interpreter that died without answering.
+    # run_pwsh gives each xdist worker its own PowerShell startup cache and retries startup crashes.
     proc = run_pwsh(
         [
             "pwsh",
@@ -400,11 +377,9 @@ def test_the_two_printers_agree(marker_dir, tmp_path, case_id, raw, expected):
     ), f"{case_id}: setup.ps1 printed {ps1.stdout!r}, setup.sh printed {sh.stdout!r}"
 
 
-# Every key set write_prebuilt_metadata has emitted; the 2026-04-01 to 2026-08-13 era is
-# on disk today with no backend key.
+# Every key set write_prebuilt_metadata has emitted; older ones lack the backend key.
 
 _HISTORICAL_MARKERS = {
-    # no published_repo / release_tag yet, so both printers print nothing.
     "2026_03_25_f4d8a246b": (
         {
             "requested_tag": "b4000",
@@ -558,7 +533,6 @@ _HISTORICAL_MARKERS = {
         },
         "installed release: unslothai/llama.cpp@b8300-mix (tag b8300) -- cuda backend",
     ),
-    # the current shape.
     "2026_08_31_1400031e2_current": (
         {
             "requested_tag": "b10715",

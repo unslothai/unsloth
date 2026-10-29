@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The isolated Windows Terminal: cmd.exe inside MXC when Git Bash cannot start there.
-
-Faked platform throughout, since studio-backend-ci is Linux-only; the native tests cover a real host.
-"""
+"""cmd.exe inside MXC when Git Bash cannot start; platform is faked since CI is Linux-only."""
 
 import ntpath
 import os
@@ -70,7 +67,18 @@ MSYS = mxc_probe.MSYS_NAMESPACE_REASON
         (BASH, _cap(True), _cap(True), "bash"),
         (BASH, _cap(False, MSYS), _cap(True), "cmd_isolated"),
         (BASH, _cap(False, MSYS), _cap(False, "no"), "bash"),
-        (BASH, _cap(False, "the live MXC probe did not complete cleanly"), _cap(True), "bash"),
+        (
+            BASH,
+            _cap(False, "the live MXC probe did not complete cleanly"),
+            _cap(True),
+            "cmd_isolated",
+        ),
+        (
+            BASH,
+            _cap(False, "the live MXC probe did not complete cleanly"),
+            _cap(False, "no"),
+            "bash",
+        ),
         (None, None, _cap(True), "cmd_isolated"),
         (None, None, _cap(False, "no"), "cmd_fallback"),
     ],
@@ -80,10 +88,8 @@ def test_profile_matrix(windows, bash, bash_cap, cmd_cap, expected):
     assert tools._terminal_profile() == expected
 
 
-def test_cmd_is_only_probed_after_the_msys_verdict(windows):
-    calls = windows(
-        bash_cap = _cap(False, "the live MXC probe did not complete cleanly"), cmd_cap = _cap(True)
-    )
+def test_cmd_is_only_probed_after_bash_fails(windows):
+    calls = windows(bash_cap = _cap(True), cmd_cap = _cap(True))
     tools._terminal_profile()
     assert calls == [BASH]
 
@@ -184,7 +190,7 @@ def test_a_sandboxed_windows_child_finds_its_home_and_an_absolute_pip_cache(tmp_
 
 
 def test_blocklist_still_catches_blocked_commands_under_cmd(windows):
-    windows()  # bash on the host: the lexer must follow the explicit dialect, not the host shell
+    windows()
     for command in (
         "rm -rf x",
         "echo hi && rm -rf x",
@@ -364,7 +370,20 @@ def test_approval_reads_a_cmd_command_the_way_cmd_splits_it(windows, monkeypatch
     command = "echo 'hi & del victim.txt & echo bye'"
     assert tools._terminal_is_high_risk(command) is True
     monkeypatch.setattr(tools, "_terminal_profile", lambda *_a, **_k: "bash")
-    assert tools._terminal_is_high_risk(command) is False  # bash keeps the whole thing one argument
+    assert tools._terminal_is_high_risk(command) is False
+
+
+def test_the_host_cmd_fallback_is_read_as_cmd_too(windows, monkeypatch, tmp_path):
+    """No Git Bash (or Sandbox Low on such a host): `cmd /c` runs the command, so ' does not quote."""
+    windows(bash_cap = _cap(False, MSYS), cmd_cap = _cap(True))
+    monkeypatch.setattr(tools, "_terminal_profile", lambda *_a, **_k: "cmd_fallback")
+    assert tools._terminal_is_high_risk("echo 'hi & del victim.txt & echo bye'") is True
+    monkeypatch.setattr(
+        tools, "_BLOCKED_COMMANDS", tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN
+    )
+    plan, result = _exec(monkeypatch, tmp_path, "echo 'x & rmdir /s /q y'")
+    assert plan is None
+    assert result.startswith("Blocked command(s) for safety: rmdir"), result
 
 
 def test_cmd_echo_off_prefix_does_not_hide_the_command(windows, monkeypatch, tmp_path):
@@ -409,3 +428,10 @@ def test_host_launches_keep_cmd_quoting(monkeypatch):
     assert mxc_policy.host_spawn_args(["bash", "-c", "ls"]) == ["bash", "-c", "ls"]
     multiline = ["cmd", "/c", "echo a\necho b"]
     assert mxc_policy.host_spawn_args(multiline) is multiline
+
+
+def test_cmd_profile_keeps_an_approved_rm_blocked(windows, monkeypatch, tmp_path):
+    windows(bash_cap = _cap(False, MSYS), cmd_cap = _cap(True))
+    plan, result = _exec(monkeypatch, tmp_path, "rm notes.txt", host_access_approved = True)
+    assert plan is None
+    assert result == tools._APPROVED_RM_REFUSED

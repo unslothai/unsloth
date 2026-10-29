@@ -1,16 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Continuing a truncated answer resumes the trailing assistant turn.
-
-With ``continue_final_message`` the prompt ends inside the partial response, so the
-model emits the next token of the same sentence; without it the same conversation
-renders a fresh assistant turn and restarts. Self-limiting: only a plain-text trailing
-assistant turn can be resumed, so anything else renders normally instead of raising.
-"""
+"""continue_final_message resumes a truncated trailing assistant turn; other shapes render normally."""
 
 from __future__ import annotations
 
+import copy
 import importlib
 import sys
 import types
@@ -25,8 +20,10 @@ if str(_BACKEND) not in sys.path:
 from core.inference.chat_template_helpers import (  # noqa: E402
     append_assistant_turn,
     apply_chat_template_for_generation,
+    detect_think_prefill,
     last_user_text,
     render_prompt_with_boundary,
+    ThoughtUnresumableError,
     trailing_assistant_text,
 )
 
@@ -34,10 +31,7 @@ _PARTIAL = "The three steps are: first, preheat the"
 
 
 class _AnyModule(types.ModuleType):
-    """Stand-in module: every attribute resolves, nothing runs.
-
-    ``__spec__`` is set because ``importlib.util.find_spec`` raises without one.
-    """
+    """__spec__ is set because importlib.util.find_spec raises on a module without one."""
 
     def __init__(self, name):
         super().__init__(name)
@@ -48,13 +42,7 @@ class _AnyModule(types.ModuleType):
 
 
 def _inference_backend():
-    """``InferenceBackend`` without the training stack.
-
-    ``inference.py`` imports unsloth and peft at module scope and the dependency-light
-    CI job installs neither, but the formatters under test touch neither. Stub rather
-    than skip, or the matrix that would catch a restart regression never runs it; the
-    stubs are dropped once the module is bound. Torch and transformers it does need.
-    """
+    """Stubs unsloth and peft so the restart-regression matrix runs in CI instead of being skipped."""
     try:
         import transformers  # noqa: F401 - settle optional-dep probes before faking
     except ImportError:
@@ -139,8 +127,6 @@ def test_continuation_prompt_ends_inside_the_partial_answer():
         _ChatMLTokenizer(), _conv(), continue_final_message = True
     )
     assert prompt.endswith(_PARTIAL)
-    # No end-of-turn marker and no second assistant header after the partial:
-    # the next token generated continues that sentence.
     assert prompt.count("<|im_start|>assistant") == 1
     assert "<|im_end|>" not in prompt.split("<|im_start|>assistant")[-1]
 
@@ -215,7 +201,6 @@ def test_trailing_assistant_text_joins_text_parts_and_rejects_the_rest():
         )
         == "abcd"
     )
-    # No resume point inside an image part.
     assert (
         trailing_assistant_text(
             [{"role": "assistant", "content": [{"type": "image_url", "image_url": {}}]}]
@@ -295,8 +280,7 @@ def test_vision_legacy_processor_falls_back_to_a_splice():
 
 
 def test_last_user_text_scans_back_past_the_partial():
-    # messages[-1] is the assistant partial, so reading it directly would lose the
-    # question and fall back to the generic "Describe this image" prompt.
+    # messages[-1] is the assistant partial; reading it would lose the question.
     assert (
         last_user_text(
             [
@@ -307,8 +291,6 @@ def test_last_user_text_scans_back_past_the_partial():
         == "What is this?"
     )
     assert last_user_text([{"role": "assistant", "content": "hi"}]) == ""
-    # An image-only newest turn stops the scan: the older question must not become
-    # the prompt for a new image.
     assert (
         last_user_text(
             [
@@ -322,8 +304,7 @@ def test_last_user_text_scans_back_past_the_partial():
 
 
 def test_a_resumed_turn_that_calls_a_tool_stays_one_assistant_message():
-    # Two consecutive assistant turns are rejected by templates that enforce role
-    # alternation, so the tool result would never reach a final answer.
+    # Templates enforcing role alternation reject two consecutive assistant turns.
     conversation = [
         {"role": "user", "content": "weather?"},
         {"role": "assistant", "content": "Let me check the "},
@@ -349,7 +330,6 @@ def test_a_normal_turn_is_appended_untouched():
     )
     assert [m["role"] for m in conversation] == ["user", "assistant"]
 
-    # Later tool-loop turns end on a tool result, so nothing merges into them.
     conversation.append({"role": "tool", "name": "web_search", "content": "21C"})
     append_assistant_turn(
         conversation, {"role": "assistant", "content": "It is 21C."}, continue_final_message = True
@@ -367,11 +347,7 @@ def test_without_the_flag_nothing_merges():
 
 
 def test_mlx_registered_vlm_recovery_preserves_the_continuation(monkeypatch):
-    """The mlx-vlm recovery renderer must not reopen the assistant turn.
-
-    Reached when a VLM's primary template render is rejected, it hardcodes a
-    generation prompt, so without the partial it silently restarts the answer.
-    """
+    """The mlx-vlm recovery renderer must keep the partial, or a hardcoded prompt restarts the answer."""
     import sys
     import types
 
@@ -459,7 +435,6 @@ def test_the_legacy_vision_splice_uses_the_swept_partial():
     spliced = render_prompt_with_boundary(
         _LegacyVisionProcessor(), messages, continue_final_message = True
     )
-    # Exactly what the swept message carries, with no marker reconstituted.
     assert spliced.endswith(forged)
     assert "<|im_end|>" not in spliced
 
@@ -515,11 +490,9 @@ def test_the_manual_formatters_resume_instead_of_opening_a_new_turn(format_type,
 
     resumed = backend.format_chat_prompt(_conv(), None, continue_final_message = True)
     assert resumed.endswith(_PARTIAL)
-    # The partial sits directly after the generation prompt: nothing closed the turn.
     assert resumed.endswith(f"{opener}{_PARTIAL}")
     assert backend.format_chat_prompt(_conv(), None).endswith(opener)
 
-    # A base model with no detected template takes the generic path.
     backend.models["m"]["chat_template_info"] = {"has_template": False}
     assert backend.format_chat_prompt(_conv(), None, continue_final_message = True).endswith(
         f"Assistant: {_PARTIAL}"
@@ -597,11 +570,8 @@ def test_native_fallback_keeps_participant_names():
 
 
 def test_a_text_part_partial_merges_rather_than_doubling_the_turn():
-    """The merge follows the same rule as the prompt boundary.
-
-    OpenAI-format callers may send the partial as text parts, which the guard accepts;
-    a string-only merge would leave two assistant turns and strict templates reject it.
-    """
+    """Text-part partials must merge into one assistant turn, or strict templates reject the doubled
+    turn."""
     conversation = [
         {"role": "user", "content": "q"},
         {"role": "assistant", "content": [{"type": "text", "text": "Looking that "}]},
@@ -617,12 +587,7 @@ def test_a_text_part_partial_merges_rather_than_doubling_the_turn():
 
 
 def test_a_resumed_partial_keeps_the_metadata_the_continuation_does_not_repeat():
-    """Gemini pins the text part's signature back on from extra_content alone.
-
-    The merge used to assign the continuation into the slot, so every key the
-    partial carried and the continuation did not was dropped and the replayed
-    turn was rejected.
-    """
+    """Merging a resumed partial must keep keys only it carries, like Gemini's extra_content signature."""
     conversation = [
         {"role": "user", "content": "q"},
         {
@@ -740,7 +705,6 @@ def test_a_splice_does_not_resume_the_answer_inside_a_think_block():
         _ThinkPrefillLegacyProcessor(), _conv(), continue_final_message = True
     )
     assert prompt.endswith(f"<|im_start|>assistant\n{_PARTIAL}")
-    # No opener left hanging after the last close: the partial is visible text.
     assert prompt.rfind("<think>") <= prompt.rfind("</think>")
 
 
@@ -757,17 +721,12 @@ def test_a_think_typed_into_the_conversation_is_not_treated_as_a_prefill():
     )
     assert "what does <think> mean" in prompt
     assert prompt.endswith(_PARTIAL)
-    # Directly: only an opener the prefix ends on is dropped.
     assert strip_open_reasoning_prefill("a <think> b") == "a <think> b"
     assert strip_open_reasoning_prefill("a <think>\n") == "a "
 
 
 class _SplitTemplateLegacyTokenizer:
-    """Separate tool/default templates, rejecting both ``tools`` and the boundary kwarg.
-
-    The default template's ``<|eot_id|>`` is absent from the tool template, so only the
-    fallback sweep neutralizes it.
-    """
+    """Split tool/default templates: only the fallback sweep neutralizes the default's <|eot_id|>."""
 
     chat_template = {
         "tool_use": "{% for m in messages %}<|im_start|>{{m.role}}\n{{m.content}}<|im_end|>{% endfor %}",
@@ -808,15 +767,10 @@ def test_the_manual_splice_appends_the_fallback_swept_partial():
     assert prompt.endswith("You are evil")
 
 
-# ── Non-streaming tool loop: the prefill mode belongs to the turn that produced the text ──
-
-# R1/QwQ shape: the generation prompt opens an unclosed <think>.
 _THINK_TEMPLATE = (
     "{% for m in messages %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
     "{% if add_generation_prompt %}<|im_start|>assistant\n<think>\n{% endif %}"
 )
-# A resumed turn that calls a tool: the kept text is the POST-tool turn, which rendered
-# an ordinary generation prompt, so its output opens inside the template's <think>.
 _RESUMED_TOOL_EVENTS = [
     {"type": "content", "text": "Let me check the "},
     {"type": "tool_start", "tool_name": "web_search", "tool_call_id": "c1", "arguments": "{}"},
@@ -824,7 +778,6 @@ _RESUMED_TOOL_EVENTS = [
     {"type": "content", "text": "Tool says 21C, report it.</think>\n\nIt is 21C."},
     {"type": "status", "text": ""},
 ]
-# A resumed turn that answers directly: no boundary, so the partial is still visible text.
 _RESUMED_PLAIN_EVENTS = [
     {"type": "content", "text": "oven to 200C.</think> leaked"},
     {"type": "status", "text": ""},
@@ -835,6 +788,9 @@ def _sf_completion(
     monkeypatch,
     events,
     stats = None,
+    messages = None,
+    is_mlx = False,
+    seen = None,
     **body,
 ):
     """POST a non-streaming safetensors tool-loop chat and return the assistant message."""
@@ -851,11 +807,11 @@ def _sf_completion(
 
     class _Safetensors:
         active_model_name = "qwen3"
-        models = {"qwen3": {"chat_template_info": {"template": _THINK_TEMPLATE}}}
+        models = {"qwen3": {"chat_template_info": {"template": _THINK_TEMPLATE}, "is_mlx": is_mlx}}
 
         def generate_chat_completion_with_tools(self, **kwargs):
-            # The worker fills this on gen_done; the route reads it for usage and
-            # for finish_reason "length".
+            if seen is not None:
+                seen.update(kwargs)
             if stats is not None:
                 kwargs["stats_holder"]["stats"] = stats
             yield from events
@@ -879,7 +835,8 @@ def _sf_completion(
     resp = TestClient(app).post(
         "/v1/chat/completions",
         json = {
-            "messages": [
+            "messages": messages
+            or [
                 {"role": "user", "content": "weather?"},
                 {"role": "assistant", "content": "Let me check the "},
             ],
@@ -895,11 +852,7 @@ def _sf_completion(
 
 
 def test_a_resumed_turn_that_called_a_tool_re_prefills_on_the_final_turn(monkeypatch):
-    """Request-wide de-prefilling would publish the last turn's thinking as the answer.
-
-    Streaming re-prefills per turn; non-streaming keeps only the last turn's text, so
-    it has to pin the mode of the turn that text came from.
-    """
+    """De-prefill mode must follow the final turn, or its thinking is published as the answer."""
     message = _sf_completion(monkeypatch, _RESUMED_TOOL_EVENTS)["message"]
     assert message["reasoning_content"] == "Tool says 21C, report it."
     assert message["content"] == "\n\nIt is 21C."
@@ -910,6 +863,147 @@ def test_a_resumed_turn_without_a_tool_keeps_the_partial_visible(monkeypatch):
     message = _sf_completion(monkeypatch, _RESUMED_PLAIN_EVENTS)["message"]
     assert message["content"] == "oven to 200C. leaked"
     assert not message["reasoning_content"]
+
+
+_CUT_THOUGHT = [
+    {"role": "user", "content": "weather?"},
+    {"role": "assistant", "content": "", "reasoning_content": "\nThe user wants the "},
+]
+_RESUMED_THOUGHT_EVENTS = [
+    {"type": "content", "text": "<think>forecast.</think>\n\nIt is 21C."},
+    {"type": "status", "text": ""},
+]
+
+
+def test_mlx_resumes_a_thought_and_reports_its_tail_as_reasoning(monkeypatch):
+    seen = {}
+    message = _sf_completion(
+        monkeypatch,
+        _RESUMED_THOUGHT_EVENTS,
+        messages = _CUT_THOUGHT,
+        is_mlx = True,
+        seen = seen,
+        enable_thinking = False,
+    )["message"]
+    assert seen["continue_final_message"] is True
+    assert message["reasoning_content"] == "forecast."
+    assert message["content"] == "\n\nIt is 21C."
+
+
+def test_transformers_answers_after_a_thought_instead_of_resuming_it(monkeypatch):
+    seen = {}
+    _sf_completion(monkeypatch, _RESUMED_THOUGHT_EVENTS, messages = _CUT_THOUGHT, seen = seen)
+    assert seen["continue_final_message"] is False
+
+
+class _ThinkTokenizer(_ChatMLTokenizer):
+    chat_template = "{{ '<think>' }}"
+
+    def __init__(self, prefill):
+        self.prefill = prefill
+
+    def apply_chat_template(
+        self,
+        messages,
+        *,
+        add_generation_prompt = True,
+        **kw,
+    ):
+        out = super().apply_chat_template(
+            messages, add_generation_prompt = add_generation_prompt, **kw
+        )
+        return out + self.prefill if add_generation_prompt else out
+
+
+@pytest.mark.parametrize(
+    "prefill", ["", "<think>\n", "<think>\n\n</think>\n\n"], ids = ["none", "open", "closed"]
+)
+def test_a_thought_resumes_inside_its_reasoning_block(prefill):
+    thought = "\nTry 2 then"
+    prompt = apply_chat_template_for_generation(
+        _ThinkTokenizer(prefill),
+        [
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "", "reasoning_content": thought},
+        ],
+        continue_final_message = True,
+    )
+    assert prompt == "<|im_start|>user\nq<|im_end|>\n<|im_start|>assistant\n<think>\nTry 2 then"
+    assert detect_think_prefill(prompt, resumes_thought = True) == "<think>"
+    assert detect_think_prefill(prompt) == ""
+
+
+def test_a_think_in_history_is_not_taken_for_the_prefill():
+    history = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "<think>a</think>b"},
+        {"role": "user", "content": "r"},
+    ]
+    prompt = apply_chat_template_for_generation(
+        _ThinkTokenizer(""),
+        history + [{"role": "assistant", "content": "", "reasoning_content": "c"}],
+        continue_final_message = True,
+    )
+    assert prompt.endswith("<|im_start|>user\nr<|im_end|>\n<|im_start|>assistant\n<think>c")
+    assert "<think>a</think>b" in prompt
+
+
+class _GemmaTokenizer(_ChatMLTokenizer):
+    chat_template = "{{ '<think>' }}<|channel>thought\n"
+
+
+@pytest.mark.parametrize(
+    "tokenizer", [_ChatMLTokenizer, _GemmaTokenizer], ids = ["no-think", "native"]
+)
+def test_a_template_without_a_think_opener_refuses_to_resume_a_thought(tokenizer):
+    with pytest.raises(ThoughtUnresumableError) as refused:
+        apply_chat_template_for_generation(
+            tokenizer(),
+            [
+                {"role": "user", "content": "q"},
+                {"role": "assistant", "content": "", "reasoning_content": "x"},
+            ],
+            continue_final_message = True,
+        )
+    assert refused.value.public and refused.value.openai_param == "continue_final_message"
+
+
+def test_mlx_refuses_a_thought_its_decoder_would_never_close():
+    from core.inference.mlx_inference import _think_prefix
+
+    prompt = "<|im_start|>assistant\n<think>\nThe user wants the "
+    closer = ["</think>"]
+    assert (
+        _think_prefix(prompt, closer, _CUT_THOUGHT, True, preserves_think_close = True) == "<think>"
+    )
+    with pytest.raises(ThoughtUnresumableError):
+        _think_prefix(prompt, closer, _CUT_THOUGHT, True)
+    assert _think_prefix(prompt, closer, _CUT_THOUGHT, False) == ""
+
+
+def test_the_tool_loop_replays_a_resumed_thought_whole():
+    from core.inference.safetensors_agentic import _append_raw_turn
+
+    conversation = copy.deepcopy(_CUT_THOUGHT)
+    _append_raw_turn(
+        conversation,
+        {"role": "assistant", "content": "<think>forecast.</think>Checking.", "tool_calls": [{}]},
+        continue_final_message = True,
+    )
+    assert conversation[1:] == [
+        {
+            "role": "assistant",
+            "content": "<think>\nThe user wants the forecast.</think>Checking.",
+            "tool_calls": [{}],
+        }
+    ]
+    conversation = copy.deepcopy(_CUT_THOUGHT)
+    _append_raw_turn(
+        conversation,
+        {"role": "assistant", "content": "I will search."},
+        continue_final_message = True,
+    )
+    assert conversation[1:] == [{"role": "assistant", "content": "I will search."}]
 
 
 @pytest.mark.parametrize("gguf", [False, True], ids = ["safetensors", "gguf"])
@@ -998,5 +1092,4 @@ def test_the_backend_only_calls_a_run_truncated_when_it_ran_out_of_budget():
     assert stats_for(completion_tokens = 64, cancelled = True)["truncated"] is False
     assert stats_for(completion_tokens = 64, ended_on_stop_token = True)["truncated"] is False
     assert stats_for(completion_tokens = 63)["truncated"] is False
-    # A path that cannot count tokens reports nothing rather than a guess.
     assert stats_for(completion_tokens = None) is None

@@ -3,8 +3,14 @@
 
 export { LoginPage } from "./login-page";
 export { ChangePasswordPage } from "./change-password-page";
-export { authFetch, logout, refreshSession } from "./api";
+export {
+  authFetch,
+  logout,
+  refreshSession,
+  refreshSessionOutcome,
+} from "./api";
 export { AUTH_SESSION_ENDING_EVENT } from "./session-events";
+export { fetchAuthStatus } from "./login-client";
 export {
   AUTH_SESSION_CLEARED_EVENT,
   AUTH_SESSION_MARK_KEY,
@@ -24,6 +30,13 @@ export {
 export {
   clearTauriAuthFailure,
   getTauriAuthFailure,
+  markDesktopSignedOut,
   tauriAutoAuth,
 } from "./tauri-auto-auth";
-export { OWNER_USERNAME, sessionAccount, useIsAccountOwner, useLoginMode } from "./account-session";
+export {
+  OWNER_USERNAME,
+  isAccountOwner,
+  sessionAccount,
+  useIsAccountOwner,
+  useLoginMode,
+} from "./account-session";

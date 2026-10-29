@@ -18,31 +18,32 @@ import {
   useNativeFileDrop,
 } from "@/features/native-intents";
 import { getAuthSessionEpoch } from "@/features/auth";
-import { useSettingsDialogStore } from "@/features/settings";
+import { rangeBetween } from "@/features/chat";
+import { isMacPlatform, useSettingsDialogStore } from "@/features/settings";
 import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
 import {
-  AudioWave01Icon,
   Cancel01Icon,
   FlimSlateIcon,
   Delete02Icon,
   Download01Icon,
   Folder01Icon,
   FolderExportIcon,
-  Image02Icon,
+  ImageIcon,
   MoreHorizontalIcon,
   PencilEdit02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
-import { MessageCircleIcon, StarPointedIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, MessageCircleIcon, StarPointedIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouter, useSearch } from "@tanstack/react-router";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   chatAboutItems,
   chatWithModel,
+  editLibraryImage,
   downloadLibraryItem,
   downloadLibraryItems,
 } from "./actions";
@@ -73,6 +74,8 @@ import {
   LibraryToolbar,
   type NewAction,
 } from "./components/library-toolbar";
+import { audioWorkflowOptions, runSiblings } from "./audio-items";
+import { stopLibraryAudio, stopLibraryAudioUnlessShown } from "./audio-playback";
 import { EMPTY_FILTERS, type LibraryFilters, filtersActive, matchesFilters } from "./filters";
 import { LIBRARY_TABS, type LibrarySearch, type LibraryTab } from "./search";
 import { useLibraryStore } from "./store";
@@ -105,15 +108,16 @@ const EMPTY_COPY: Record<LibraryTab, EmptyCopy> = {
   suggested: [Upload01Icon, "library.empty.suggestedTitle", "library.empty.suggestedDescription"],
   favorites: [StarPointedIcon, "library.empty.favoritesTitle", "library.empty.favoritesDescription"],
   folders: [Folder01Icon, "library.empty.foldersTitle", "library.empty.foldersDescription"],
-  images: [Image02Icon, "library.empty.imagesTitle", "library.empty.imagesDescription"],
+  images: [ImageIcon, "library.empty.imagesTitle", "library.empty.imagesDescription"],
   videos: [FlimSlateIcon, "library.empty.videosTitle", "library.empty.videosDescription"],
-  audio: [AudioWave01Icon, "library.empty.audioTitle", "library.empty.audioDescription"],
+  audio: [AiSpeechIcon, "library.empty.audioTitle", "library.empty.audioDescription"],
   models: [TestTubeOutlineIcon, "library.empty.modelsTitle", "library.empty.modelsDescription"],
   all: [Upload01Icon, "library.empty.suggestedTitle", "library.empty.suggestedDescription"],
   chats: [MessageCircleIcon, "library.chats.empty.chatsTitle", "library.chats.empty.chatsDescription"],
 };
 
 const EMPTY_LINKS = {
+  images: ["/images", "library.empty.generateImage"],
   videos: ["/video", "library.empty.generateVideo"],
   audio: ["/audio", "library.empty.generateAudio"],
   models: ["/studio", "library.empty.trainModel"],
@@ -145,7 +149,7 @@ function nameMatches(name: string, needle: string): boolean {
 }
 
 const BAR_PILL =
-  "flex h-9 items-center gap-2 rounded-full px-4 text-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50";
+  "flex items-center gap-2 rounded-full px-3 py-2 text-sm font-medium [&_svg]:-my-2 outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50";
 const BAR_ROUND =
   "flex size-9 items-center justify-center rounded-full outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring";
 
@@ -178,7 +182,7 @@ function LoadingGrid() {
   return (
     <div className="mt-6 grid grid-cols-2 gap-5 sm:grid-cols-3 lg:grid-cols-5">
       {Array.from({ length: 10 }, (_, index) => (
-        <Skeleton key={index} className="aspect-square rounded-xl" />
+        <Skeleton key={index} className="aspect-square rounded-2xl" />
       ))}
     </div>
   );
@@ -219,29 +223,36 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const view = useLibraryViewStore((s) => s.view);
   const setView = useLibraryViewStore((s) => s.setView);
   const openSettings = useSettingsDialogStore((s) => s.openDialog);
+  useEffect(() => stopLibraryAudio, []);
 
   const [query, setQuery] = useState("");
   const [chosenFilters, setFilters] = useState<LibraryFilters>(() =>
-    search.filter === "files" ? { sources: new Set(), types: new Set(FILE_TYPES) } : EMPTY_FILTERS,
+    search.filter === "files" ? { ...EMPTY_FILTERS, types: new Set(FILE_TYPES) } : EMPTY_FILTERS,
   );
-  const [selection, setSelection] = useState<Set<string>>(new Set());
+  const [selection, setSelectionState] = useState<Set<string>>(new Set());
+  // The entry last clicked, which a shift click ranges from. A key rather than an index: the
+  // listing can re-sort between clicks.
+  const selectionAnchor = useRef<string | null>(null);
+  // Select all and clearing drop the anchor, so a shift click never reaches back past them.
+  const setSelection = useCallback((next: Set<string>) => {
+    selectionAnchor.current = null;
+    setSelectionState(next);
+  }, []);
   const [nameDialog, setNameDialog] = useState<NameDialogState | null>(null);
   const [pendingDelete, setPendingDelete] = useState<LibraryTarget[] | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const loaded = status === "ready";
-  // "auto" tabs count as shown until the listing lands, so a start tab is not swapped mid-load.
+  // "auto" tabs count as shown until the listing lands, so the start tab is not swapped mid-load.
   const tabVisible = (entry: LibraryTab) => {
     const visibility = settings.tabs[entry] ?? "always";
     if (visibility === "hidden" || (entry === "models" && !settings.showFineTunes)) return false;
     return visibility === "always" || !loaded || items.some(KIND_TABS[entry] ?? (() => true));
   };
-  // Read once: changing Open on in settings must not move a Library that is already open.
   const [preferred] = useState(() =>
     settings.startTab === "last" ? settings.lastTab : settings.startTab,
   );
-  // No files or folders: open on Chats, since every file tab is empty. Decided once on load so
-  // the tab does not jump when a file lands later. Starred chats keep a Favorites start.
+  // Decided once on load so the tab does not jump when a file lands later.
   const [emptyOnLoad, setEmptyOnLoad] = useState<boolean | null>(null);
   if (emptyOnLoad === null && loaded) setEmptyOnLoad(items.length === 0 && folders.length === 0);
   const hasStarredChats = useChatFavoritesStore(
@@ -269,7 +280,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     [navigate],
   );
 
-  // "Default order" falls back to the sort in Library settings.
   const gridSortValue = (search.sort ? SORT_STATES[search.sort].key : "default") as LibrarySortChoice;
   const gridSort = {
     value: gridSortValue,
@@ -278,7 +288,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     desc: sort.desc,
     onDirectionChange: (desc: boolean) =>
       desc !== sort.desc && go({ ...search, sort: sortParam({ key: sort.key, desc }) }, true),
-    // Reselecting the checked key keeps its direction, which list view may have flipped.
     onChange: (choice: LibrarySortChoice) =>
       choice !== gridSortValue &&
       go(
@@ -317,9 +326,12 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const favoriteChats = useFavoriteChatMatches(query, tab === "favorites" && !folderId);
 
   const kindFilter = folderId ? undefined : KIND_TABS[tab];
-  // Folders have no filter menu, so tab filters do not apply inside them.
   const filterMode = folderId || tab === "folders" ? "none" : kindFilter ? "source" : "all";
   const filters = filterMode === "none" ? EMPTY_FILTERS : chosenFilters;
+  const workflowOptions = useMemo(
+    () => (tab === "audio" && !folderId ? audioWorkflowOptions(items) : []),
+    [tab, folderId, items],
+  );
 
   const shownTabs = LIBRARY_TABS.filter((entry) => entry === tab || tabVisible(entry));
 
@@ -344,6 +356,12 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     return [...pool].sort(compareBySort(sort));
   }, [items, folderId, tab, needle, filters, kindFilter, settings.suggestedLimit, sort]);
 
+  // Only grid cards can pause a clip: stop it once its card is gone or the list view replaces them.
+  useEffect(() => {
+    if (view !== "grid") stopLibraryAudio();
+    else stopLibraryAudioUnlessShown(new Set(visibleItems.map((item) => item.id)));
+  }, [view, visibleItems]);
+
   const visibleFolders = useMemo(() => {
     const showsFolders = folderId || tab === "folders" || tab === "all";
     if (!showsFolders || (filtersActive(filters) && tab !== "folders")) return [];
@@ -353,19 +371,28 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       .sort(compareBySort(sort.key === "size" ? { key: "name", desc: false } : sort));
   }, [folders, folderId, tab, needle, filters, sort]);
 
-  // A search, filter or Content setting that hides a selected entry deselects it, so bulk actions
-  // only ever act on what is on screen and clearing the filter never brings a selection back.
-  const visibleKeys = useMemo(
-    () =>
-      new Set([
-        ...visibleFolders.map((folder) => `folder:${folder.id}`),
-        ...visibleItems.map((item) => `item:${item.id}`),
-      ]),
+  // Folders then items, the order both views show them in: grid's masonry deals cards across
+  // columns row by row, so this is also left to right, top to bottom there.
+  const orderedKeys = useMemo(
+    () => [
+      ...visibleFolders.map((folder) => `folder:${folder.id}`),
+      ...visibleItems.map((item) => `item:${item.id}`),
+    ],
     [visibleFolders, visibleItems],
   );
+  // A search, filter or Content setting that hides a selected entry deselects it, so bulk actions
+  // only ever act on what is on screen and clearing the filter never brings a selection back.
+  const visibleKeys = useMemo(() => new Set(orderedKeys), [orderedKeys]);
   if ([...selection].some((key) => !visibleKeys.has(key))) {
-    setSelection(new Set([...selection].filter((key) => visibleKeys.has(key))));
+    setSelectionState(new Set([...selection].filter((key) => visibleKeys.has(key))));
   }
+  // A hidden anchor goes too: else clearing the search brings it back, and the next shift click
+  // reaches from an entry the selection already lost.
+  useEffect(() => {
+    if (selectionAnchor.current && !visibleKeys.has(selectionAnchor.current)) {
+      selectionAnchor.current = null;
+    }
+  }, [visibleKeys]);
 
   const previewItem = search.item ? (items.find((item) => item.id === search.item) ?? null) : null;
   const previewId = previewItem?.id ?? null;
@@ -384,6 +411,15 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     pushedPreview.current = id;
     go({ ...search, item: id });
   };
+  // Another clip of the same run, in place of this one: Back still closes the preview.
+  const switchPreview = (id: string) => {
+    if (pushedPreview.current === search.item) pushedPreview.current = id;
+    go({ ...search, item: id }, true);
+  };
+  const previewRun = useMemo(
+    () => (previewItem ? runSiblings(items, previewItem) : []),
+    [items, previewItem],
+  );
   const closePreview = () => {
     if (!search.item) return;
     setClosingPreview(search.item);
@@ -465,6 +501,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       target.kind === "item"
         ? chatAbout(target.item)
         : void chatAboutItems(navigate, filesInFolder(target.folder.id)),
+    editImage: (item) => void editLibraryImage(navigate, item),
     toggleFavorite: (item) =>
       void patchItem(item.id, { favorite: !item.favorite }).catch(fail(t("library.toast.favoritesFailed"))),
     download: (item) => void downloadLibraryItem(item),
@@ -497,7 +534,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     uploadBatch({ files }, files.length, files[0]?.name ?? "");
 
   async function uploadNativeDrops(intents: NativeIntent[]) {
-    // The grants are the signed-in account's: one who signs in meanwhile must not upload them.
+    // The grants belong to the signed-in account; another who signs in must not upload them.
     const sessionEpoch = getAuthSessionEpoch();
     try {
       const leases = await Promise.all(
@@ -619,15 +656,54 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     };
   };
 
-  const cardSelection = {
-    selection,
-    toggle: (key: string) =>
-      setSelection((current) => {
-        const next = new Set(current);
-        if (!next.delete(key)) next.add(key);
-        return next;
-      }),
+  // A shift click sets the whole range to the clicked entry's new state, as in Chats.
+  const toggleSelected = (key: string, range = false) => {
+    const anchor = selectionAnchor.current;
+    const keys = range && anchor ? rangeBetween(orderedKeys, anchor, key) : [key];
+    const on = !selection.has(key);
+    const next = new Set(selection);
+    for (const each of keys) {
+      if (on) next.add(each);
+      else next.delete(each);
+    }
+    setSelectionState(next);
+    selectionAnchor.current = next.size > 0 ? key : null;
   };
+  const selectAll = () => setSelection(new Set(orderedKeys));
+  const selectionBar = useRef<HTMLDivElement>(null);
+
+  const cardSelection = { selection, toggle: toggleSelected };
+
+  // Chats return their own view below, which has its own select all and Escape.
+  const showsChats = tab === "chats" && !folderId;
+  const selecting = selection.size > 0;
+  // Cmd/Ctrl+A selects everything shown and Escape clears it, outside text fields. Both stand down
+  // while a menu or dialog (the preview among them) is open, since the selection is behind it.
+  // Passive on Escape, as Chats is: a menu closing on it has already prevented the default.
+  useEffect(() => {
+    if (showsChats || (!selecting && orderedKeys.length === 0)) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      const target = event.target;
+      if (target instanceof HTMLElement && target.closest("input, textarea, select, [contenteditable]")) {
+        return;
+      }
+      if (document.querySelector('[role="menu"], [role="dialog"], [role="alertdialog"]')) return;
+      const mod = isMacPlatform() ? event.metaKey : event.ctrlKey;
+      // By the letter typed, or by the key's position on a layout that types no Latin letter.
+      const isA = /^[a-z]$/i.test(event.key) ? event.key.toLowerCase() === "a" : event.code === "KeyA";
+      if (mod && !event.altKey && !event.shiftKey && isA) {
+        if (orderedKeys.length === 0) return;
+        event.preventDefault();
+        setSelection(new Set(orderedKeys));
+      } else if (event.key === "Escape" && selecting) {
+        if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+        setSelection(new Set());
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showsChats, selecting, orderedKeys, setSelection]);
 
   const selectedTargets = (): LibraryTarget[] => {
     const out: LibraryTarget[] = [];
@@ -679,7 +755,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       ))}
     </nav>
   ) : (
-    // truncate clips at the padding box, which the y overhangs; the margins give the padding back.
+    // truncate clips at the padding box, which the y overhangs; the margins give it back.
     <h1 className="-my-[0.15em] min-w-0 truncate py-[0.15em] pr-[0.08em] text-[calc(1.6875rem*var(--ui-font-scale,1))] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground">
       {t("shell.navigation.library")}
     </h1>
@@ -687,7 +763,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
 
 
   const uploadButton = (
-    <Button variant="muted" className="rounded-full px-5" onClick={() => fileInput.current?.click()}>
+    <Button variant="muted" className="rounded-full" onClick={() => fileInput.current?.click()}>
       {t("library.empty.uploadFiles")}
     </Button>
   );
@@ -740,8 +816,8 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     if (tab === "folders") {
       return (
         <Button
-          variant="dark"
-          className="rounded-full px-5"
+          variant="muted"
+          className="rounded-full"
           onClick={() => setNameDialog({ mode: "create", parentId: null })}
         >
           {t("library.empty.createFolder")}
@@ -750,11 +826,20 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     }
     if (!(tab in EMPTY_LINKS)) return uploadButton;
     const [to, label] = EMPTY_LINKS[tab as keyof typeof EMPTY_LINKS];
-    return (
-      <Button variant="muted" className="rounded-full px-5" onClick={() => void navigate({ to })}>
+    const generate = (
+      <Button variant="muted" className="rounded-full" onClick={() => void navigate({ to })}>
         {t(label)}
       </Button>
     );
+    if (tab === "images" || tab === "videos") {
+      return (
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          {uploadButton}
+          {generate}
+        </div>
+      );
+    }
+    return generate;
   }
 
   function renderFavorites() {
@@ -773,6 +858,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
                   counts={counts}
                   selection={selection}
                   onSelectionChange={setSelection}
+                  onToggle={toggleSelected}
                   sort={sort}
                   onSortChange={(key) => go({ ...search, sort: sortParam(nextSort(sort, key)) }, true)}
                   activity={false}
@@ -829,7 +915,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     }
     if (empty && folderId) {
       return (
-        <div className="mt-6 flex min-h-[calc(420px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-5 rounded-xl border border-dashed border-border bg-muted/50">
+        <div className="mt-6 flex min-h-[calc(420px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-5 rounded-2xl border border-dashed border-border bg-muted/50">
           <HugeiconsIcon icon={Upload01Icon} strokeWidth={1.5} className="size-8" />
           {uploadButton}
           <p className="text-sm text-muted-foreground">{t("library.empty.dropHere")}</p>
@@ -856,6 +942,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
             counts={counts}
             selection={selection}
             onSelectionChange={setSelection}
+            onToggle={toggleSelected}
             sort={sort}
             onSortChange={(key) => go({ ...search, sort: sortParam(nextSort(sort, key)) }, true)}
             activity={tab === "suggested" && !folderId}
@@ -929,7 +1016,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     onChange: (next: string) => go({ show: next as LibraryTab }),
   };
 
-  // Chats use their own view and data; the file listing, filters and selection never apply.
   if (tab === "chats" && !folderId) {
     return <ChatsLibrary search={search} title={title} tabs={headerTabs} />;
   }
@@ -958,6 +1044,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
               filters={filters}
               onFiltersChange={setFilters}
               filterMode={filterMode}
+              workflows={workflowOptions}
               view={view}
               onViewChange={setView}
               sort={view === "grid" && (folderId || tab !== "favorites") ? gridSort : undefined}
@@ -974,7 +1061,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
 
         {dragging && (
           <div className="pointer-events-none fixed inset-0 z-40 flex items-center justify-center bg-background/70 backdrop-blur-sm">
-            <div className="flex flex-col items-center gap-3 rounded-xl border-2 border-dashed border-muted-foreground px-16 py-12">
+            <div className="flex flex-col items-center gap-3 rounded-2xl border-2 border-dashed border-muted-foreground px-16 py-12">
               <HugeiconsIcon icon={Upload01Icon} strokeWidth={1.5} className="size-8" />
               <p className="font-medium text-lg">
                 {currentFolder
@@ -986,15 +1073,42 @@ function LibraryView({ search }: { search: LibrarySearch }) {
         )}
 
         {selectedCount > 0 && (
-          <div className="fixed bottom-8 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full bg-sidebar py-2 pl-6 pr-2 text-sidebar-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-[0_8px_28px_-6px_var(--background)]">
-            <span className="mr-4 whitespace-nowrap text-sm font-medium">
-              {t("shell.selection.countSelected", { count: selectedCount })}
+          // Sized to its pills, and scrolls sideways rather than squashing them in a narrow window.
+          <div
+            ref={selectionBar}
+            role="toolbar"
+            aria-label={t("library.selection.countOfTotal", { count: selectedCount, total: orderedKeys.length })}
+            tabIndex={-1}
+            className="fixed bottom-8 left-1/2 z-30 flex w-max max-w-[calc(100vw-2rem)] -translate-x-1/2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [&>*]:shrink-0 items-center gap-2 rounded-full bg-sidebar py-2 pl-6 pr-2 text-sidebar-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] outline-none focus-visible:ring-2 focus-visible:ring-ring dark:shadow-[0_8px_28px_-6px_var(--background)]"
+          >
+            <span className="mr-4 flex items-center whitespace-nowrap text-sm font-medium">
+              <span aria-live="polite">
+                {t("library.selection.countOfTotal", { count: selectedCount, total: orderedKeys.length })}
+              </span>
+              {selectedCount < orderedKeys.length && (
+                <>
+                  <span aria-hidden className="mx-2 text-muted-foreground">
+                    ·
+                  </span>
+                  <button
+                    type="button"
+                    // The link goes once everything is selected, so focus moves to the bar first.
+                    onClick={() => {
+                      selectAll();
+                      selectionBar.current?.focus();
+                    }}
+                    className="rounded-full underline decoration-muted-foreground underline-offset-[3px] outline-none transition-colors hover:decoration-current focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    {t("library.selection.selectAll")}
+                  </button>
+                </>
+              )}
             </span>
             <button
               type="button"
               disabled={selectedModel() === null && selectedFiles().length === 0}
               onClick={bulkChat}
-              className={cn(BAR_PILL, "bg-foreground text-background transition-opacity hover:opacity-85")}
+              className={cn(BAR_PILL, "bg-action text-background transition-opacity hover:opacity-85")}
             >
               <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-4" />
               {t("library.selection.startChat")}
@@ -1005,7 +1119,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
               onClick={bulkDownload}
               className={cn(
                 BAR_PILL,
-                "border border-border transition-colors hover:bg-sidebar-accent dark:border-transparent dark:bg-accent/60 dark:hover:bg-accent",
+                "btn-fill transition-colors ",
               )}
             >
               <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4" />
@@ -1017,7 +1131,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
               onClick={() => requestDelete(deletableSelection())}
               className={cn(
                 BAR_PILL,
-                "border border-red-500/70 text-red-600 transition-colors hover:bg-red-500/15 dark:text-red-400",
+                "bg-destructive/10 text-destructive transition-colors hover:bg-destructive/15",
               )}
             >
               <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
@@ -1088,6 +1202,9 @@ function LibraryView({ search }: { search: LibrarySearch }) {
         onToggleFavorite={actions.toggleFavorite}
         onDelete={(item) => actions.remove({ kind: "item", item })}
         onSaved={() => void refresh()}
+        run={previewRun}
+        onOpenItem={switchPreview}
+        onDownloadRun={(run) => void downloadLibraryItems(run)}
       />
     </LibraryActionsProvider>
   );

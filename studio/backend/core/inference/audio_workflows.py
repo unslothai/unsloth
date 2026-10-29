@@ -1,0 +1,76 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Which Audio page workflows (Speak, Clone, Edit, Convert, Music, Separate, Transcribe) a model or
+clip belongs to; mirrors studio/frontend/src/features/audio/workflows.ts. Reads audio.cpp
+constants; audio_cpp_models never imports it."""
+
+from __future__ import annotations
+
+from typing import Optional
+
+from core.inference.audio_cpp_models import (
+    AUDIO_CPP_MUSIC_AUDIO_TYPE,
+    AUDIO_CPP_SEP_AUDIO_TYPE,
+    HUB_TASKS,
+)
+
+AUDIO_WORKFLOW_IDS = ("speak", "clone", "edit", "convert", "music", "separate", "transcribe")
+
+# The page names people see in the sidebar.
+AUDIO_WORKFLOW_LABELS = {
+    "speak": "Text to Speech",
+    "clone": "Clone",
+    "edit": "Edit",
+    "convert": "Convert",
+    "music": "Music",
+    "separate": "Separate",
+    "transcribe": "Transcribe",
+}
+
+# Generation audio types that make music; every other generation audio type speaks.
+MUSIC_AUDIO_TYPES = frozenset(("minimax_music3", AUDIO_CPP_MUSIC_AUDIO_TYPE))
+
+# Audio types of a loaded model that transcribes rather than generates.
+_TRANSCRIBE_AUDIO_TYPES = frozenset(("whisper",))
+
+
+def workflow_for_audio_type(audio_type: Optional[str]) -> str:
+    """The generation workflow (``speak`` or ``music``) that a model or clip of this type serves."""
+    return "music" if audio_type in MUSIC_AUDIO_TYPES else "speak"
+
+
+def status_audio_workflows(is_audio: bool, audio_type: Optional[str]) -> list[str]:
+    """Workflows the loaded model serves; empty for a model that is not an audio model."""
+    if not is_audio:
+        return []
+    if audio_type in _TRANSCRIBE_AUDIO_TYPES:
+        return ["transcribe"]
+    if audio_type == AUDIO_CPP_SEP_AUDIO_TYPE:
+        return ["separate"]
+    return [workflow_for_audio_type(audio_type)]
+
+
+def inventory_audio_workflows(
+    task: Optional[str], audio_type: Optional[str]
+) -> Optional[list[str]]:
+    """The pipeline task decides first, as music rows lack audio_type; separation is the exception."""
+    if audio_type == AUDIO_CPP_SEP_AUDIO_TYPE:
+        return ["separate"]
+    if task == HUB_TASKS["music"]:
+        return ["music"]
+    if task == HUB_TASKS["asr"]:
+        return ["transcribe"]
+    if task == HUB_TASKS["tts"]:
+        return [workflow_for_audio_type(audio_type)]
+    return None
+
+
+def pages_sentence(workflows) -> str:
+    """``It runs on Text to Speech (speak) and Clone (clone).``, for an error naming a model's pages."""
+    runs = set(workflows or ())
+    names = [f"{AUDIO_WORKFLOW_LABELS[wf]} ({wf})" for wf in AUDIO_WORKFLOW_IDS if wf in runs]
+    if not names:
+        return "Unsloth Studio has no Audio page for it yet."
+    pages = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+    return f"It runs on {pages}."

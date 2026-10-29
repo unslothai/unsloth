@@ -33,7 +33,7 @@ def _roomy_host(monkeypatch):
     monkeypatch.setattr(mem, "_pin_budget_mib", lambda: 10**7)
     monkeypatch.setattr(mem, "_pinned_memory_capped", lambda: False)
     monkeypatch.delenv(mem.GROUP_OFFLOAD_PIN_ENV, raising = False)
-    # Studio's diffusers pin; a runner without diffusers would otherwise refuse every streamed tier.
+    # Studio's diffusers pin; without diffusers every streamed tier would be refused.
     monkeypatch.setattr(mem, "_installed_diffusers_version", lambda: (0, 40))
 
 
@@ -82,7 +82,8 @@ SURVIVAL = {
         s: {v: (True, OFFLOAD_GROUP) for v in (T016, T017, T018)} for s in ("int8", "fp8", "nvfp4")
     },
     "group_dit_streamed": {
-        "int8": {T016: (False, None), T017: (False, None), T018: (True, OFFLOAD_GROUP)},
+        # 0.17 streams int8 through its pinnable Int8Tensor (UNSLOTH_DIFFUSION_INT8_STREAM_TORCHAO17)
+        "int8": {T016: (False, None), T017: (True, OFFLOAD_GROUP), T018: (True, OFFLOAD_GROUP)},
         "fp8": {T016: (False, None), T017: (True, OFFLOAD_GROUP), T018: (True, OFFLOAD_GROUP)},
         "nvfp4": {T016: (False, None), T017: (False, None), T018: (False, None)},
     },
@@ -90,7 +91,11 @@ SURVIVAL = {
         s: {v: (True, OFFLOAD_MODEL) for v in (T016, T017, T018)} for s in ("int8", "fp8", "nvfp4")
     },
     "model_too_big": {
-        "int8": {T016: (False, None), T017: (False, None), T018: (True, OFFLOAD_STREAMING)},
+        "int8": {
+            T016: (False, None),
+            T017: (True, OFFLOAD_STREAMING),
+            T018: (True, OFFLOAD_STREAMING),
+        },
         "fp8": {
             T016: (False, None),
             T017: (True, OFFLOAD_STREAMING),
@@ -99,7 +104,11 @@ SURVIVAL = {
         "nvfp4": {T016: (False, None), T017: (False, None), T018: (False, None)},
     },
     "streaming": {
-        "int8": {T016: (False, None), T017: (False, None), T018: (True, OFFLOAD_STREAMING)},
+        "int8": {
+            T016: (False, None),
+            T017: (True, OFFLOAD_STREAMING),
+            T018: (True, OFFLOAD_STREAMING),
+        },
         "fp8": {
             T016: (False, None),
             T017: (True, OFFLOAD_STREAMING),
@@ -120,7 +129,10 @@ CASES = [
 
 
 @pytest.mark.parametrize("placement, scheme, version, survives, policy", CASES)
-def test_survival_table(placement, scheme, version, survives, policy):
+def test_survival_table(monkeypatch, placement, scheme, version, survives, policy):
+    # Hermetic: the table is about versions, not this host's torchao.
+    monkeypatch.setattr(mem, "_int8_tensor_pinnable", lambda: True, raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_INT8_STREAM_TORCHAO17", raising = False)
     plan = PLACEMENTS[placement]
     assert torchao_survives_plan(plan, scheme, torchao_version = version) is survives
     placed = torchao_offload_plan(plan, scheme, torchao_version = version)
@@ -246,14 +258,18 @@ NO_STREAM = {"onload_device": "cuda", "use_stream": False}
         (("Int8Tensor",), True, 10**7, "pinned"),
         (("Float8Tensor",), True, 10**7, "pinned"),
         (("Int8Tensor",), True, None, "no stream"),
-        # torchao 0.17 default int8: no aten.is_pinned, so no copy stream
-        (("LinearActivationQuantizedTensor",), False, 10**7, "no stream"),
+        # torchao 0.17 default int8 has no aten.is_pinned; streams once Studio registers the pin ops.
+        (("LinearActivationQuantizedTensor",), False, 10**7, "as is"),
+        (("LinearActivationQuantizedTensor",), False, 10**7, "no stream, no pin ops"),
     ],
 )
 def test_group_offload_kwargs_per_weight_class(
     monkeypatch, classes, low_cpu_mem_usage, pin_budget, expected
 ):
     monkeypatch.setattr(mem, "_pin_budget_mib", lambda: pin_budget)
+    # Whether this host's torchao ships the v1 classes must not decide the table.
+    pin_ops = expected != "no stream, no pin ops"
+    monkeypatch.setattr(mem, "install_torchao_v1_int8_pin_ops", lambda: pin_ops, raising = False)
     kwargs = {**STREAM_KW, "low_cpu_mem_usage": low_cpu_mem_usage}
     out = mem._torchao_group_offload_kwargs(_Module(*classes, plain = True), kwargs)
     if expected == "as is":
@@ -293,6 +309,26 @@ def test_render_grad_mode(policy, transformer_quant, text_encoder_quant, no_grad
     assert dmod._torchao_render_needs_no_grad(state) is no_grad
 
 
+@pytest.mark.parametrize(
+    "policy, no_grad",
+    [(OFFLOAD_NONE, False), (OFFLOAD_MODEL, True), (OFFLOAD_GROUP, True)],
+)
+def test_offloaded_stored_fp8_renders_under_no_grad(policy, no_grad):
+    """Stored fp8 codes are plain buffers: moved under inference_mode they are inference tensors the keep-host
+    offload cannot version, so each offload would copy 12 GB back to fresh host memory (Krea 2)."""
+    transformer = types.SimpleNamespace(_unsloth_fp8_stored = 256)
+    state = types.SimpleNamespace(
+        offload_policy = policy,
+        transformer_quant = None,
+        text_encoder_quant = None,
+        pipe = types.SimpleNamespace(transformer = transformer),
+    )
+    assert dmod._torchao_render_needs_no_grad(state) is no_grad
+    from core.inference import video as vid
+
+    assert vid._render_under_no_grad(state) is no_grad
+
+
 def test_render_uses_the_widened_switch():
     import inspect
 
@@ -312,7 +348,6 @@ def _estimate(steady):
         ("group_dit_streamed", 6_000, 4_000, T018, OFFLOAD_GROUP, False),
         ("group_dit_streamed", 6_000, 4_000, T016, OFFLOAD_GROUP, True),
         ("model_fits", 6_000, 4_000, T018, OFFLOAD_MODEL, False),
-        # quantised denoiser or encoder too big to onload whole: stream instead of falling back to bf16
         ("model_fits", 60_000, 4_000, T018, OFFLOAD_STREAMING, False),
         ("model_fits", 6_000, 60_000, T018, OFFLOAD_STREAMING, False),
         ("model_fits", 60_000, 4_000, T016, OFFLOAD_MODEL, True),
@@ -459,18 +494,17 @@ def planner(monkeypatch):
 
 FAMILY_TABLE = {
     ("krea-2", "krea/Krea-2-Turbo"): {
-        8: ("on-the-fly int8", OFFLOAD_STREAMING),
-        12: ("on-the-fly int8", OFFLOAD_GROUP),
-        16: ("on-the-fly int8", OFFLOAD_GROUP),
-        24: ("on-the-fly int8", OFFLOAD_GROUP),
-        32: ("on-the-fly int8", OFFLOAD_GROUP),
+        8: ("hosted int8", OFFLOAD_STREAMING),
+        12: ("hosted int8", OFFLOAD_GROUP),
+        16: ("hosted int8", OFFLOAD_GROUP),
+        24: ("hosted int8", OFFLOAD_GROUP),
+        32: ("hosted int8", OFFLOAD_GROUP),
     },
     ("lumina-2", "Alpha-VLLM/Lumina-Image-2.0"): {
         8: ("hosted int8", OFFLOAD_STREAMING),
         12: ("hosted int8", OFFLOAD_STREAMING),
         16: ("hosted int8", OFFLOAD_GROUP),
         24: ("hosted int8", OFFLOAD_NONE),
-        # measured: bf16 while it fits resident
         32: ("bf16", OFFLOAD_NONE),
     },
     ("hunyuanimage-2.1", "hunyuanvideo-community/HunyuanImage-2.1-Diffusers"): {
@@ -509,9 +543,11 @@ def test_auto_keeps_int8_on_the_offload_tier(planner, family, base, gib, expecte
     assert planner(family, base, gib) == expected
 
 
-@pytest.mark.parametrize("version, expected", [(T016, "bf16"), (T017, "hosted fp8")])
+@pytest.mark.parametrize("version, expected", [(T016, "bf16"), (T017, "hosted int8")])
 def test_older_torchao_streamed_seeds(planner, monkeypatch, version, expected):
     monkeypatch.setattr(mem, "_installed_torchao_version", lambda: version)
+    monkeypatch.setattr(mem, "_int8_tensor_pinnable", lambda: True, raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_INT8_STREAM_TORCHAO17", raising = False)
     precision, _policy = planner(
         "hunyuanimage-2.1", "hunyuanvideo-community/HunyuanImage-2.1-Diffusers", 16
     )
@@ -562,7 +598,7 @@ def test_quantised_blocks_survive_group_offload_under_no_grad(
     )
     offloaded = copy.deepcopy(blocks)
     quantize_(offloaded, config())
-    # Same CPU-quantised weights: fp8 quantised on CPU can round an ulp away from CUDA (torch 2.12).
+    # Same CPU-quantised weights: fp8 quantised on CPU can be an ulp off CUDA (torch 2.12).
     resident = copy.deepcopy(offloaded).cuda()
     for param in offloaded.parameters():
         param.requires_grad_(requires_grad)
@@ -587,17 +623,30 @@ def test_quantised_blocks_survive_group_offload_under_no_grad(
         want = resident(x)
         for _ in range(3):
             assert torch.equal(offloaded(x), want)
+    if type(next(offloaded.parameters())).__name__ == "LinearActivationQuantizedTensor":
+        return  # torchao <= 0.17 v1 int8: onload is a plain re-wrap, which inference_mode allows
     with pytest.raises(Exception), torch.inference_mode():
         offloaded(x)
 
 
+@pytest.mark.parametrize("offload_graphs", [True, False])
 @pytest.mark.parametrize(
     "offload_active, denoiser_offloaded, expected",
     [(False, None, False), (True, None, True), (True, False, False), (True, True, True)],
 )
-def test_graph_gate_follows_the_denoiser(monkeypatch, offload_active, denoiser_offloaded, expected):
+def test_graph_gate_follows_the_denoiser(
+    monkeypatch, offload_active, denoiser_offloaded, expected, offload_graphs
+):
+    """With offload graphs on, a moved denoiser is judged on everything else and armed after placement; with the
+    kill switch, a moved denoiser is refused as before."""
     from core.inference import diffusion_cuda_graph as dcg
     from core.inference import diffusion_speed
+
+    if offload_graphs:
+        monkeypatch.delenv(dcg.OFFLOAD_CUDA_GRAPH_ENV, raising = False)
+        expected = False
+    else:
+        monkeypatch.setenv(dcg.OFFLOAD_CUDA_GRAPH_ENV, "0")
 
     seen: list = []
 
@@ -659,7 +708,7 @@ def _int8_linear(rows = 1024, cols = 1024):
 
 def test_host_size_counts_packed_torchao_storage_not_the_logical_bf16_size():
     linear = _int8_linear(2048, 2048)
-    # 2048 x 2048 int8 = 4 MiB of qdata plus per-row scales; the logical bf16 size would be 8 MiB.
+    # 2048 x 2048 int8 = 4 MiB qdata plus per-row scales; logical bf16 would be 8 MiB.
     assert mem._module_host_mib(linear) < 8
     assert mem._module_host_mib(linear) >= 4
 
@@ -781,7 +830,7 @@ def test_failed_group_setup_never_onloads_an_oversized_quantised_transformer(
 
 def test_pipeline_host_mib_counts_only_host_resident_weights():
     torch = pytest.importorskip("torch")
-    cpu = torch.nn.Linear(1024, 1024, bias = False)  # 4 MiB fp32
+    cpu = torch.nn.Linear(1024, 1024, bias = False)
     pipe = types.SimpleNamespace(components = {"transformer": cpu, "scheduler": object()})
     assert mem.pipeline_host_mib(pipe) == 4
     assert mem.pipeline_host_mib(None) == 0

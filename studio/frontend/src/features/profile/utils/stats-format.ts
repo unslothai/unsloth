@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * Formatting helpers for the profile stats panel.
- *
- * Kept free of React so the numbers can be unit-tested directly.
- */
-
 import type { Locale } from "@/i18n";
 
 const COMPACT_FORMATTERS = new Map<string, Intl.NumberFormat>();
@@ -31,16 +25,7 @@ function compactFormatter(
   return formatter;
 }
 
-/** Magnitude of the compact form, so "past 100 of a unit" is asked of Intl
- * rather than derived from a hardcoded 1e3/1e6/1e9 ladder that only matches
- * locales grouping in thousands. ja and zh group in 万, hi in लाख.
- *
- * Probed through a latn formatter, never the display one: the default numbering
- * system is per-locale AND per-ICU-build, and ar-EG / ar-SA resolve to `arab`,
- * where the integer part is "١" and Number() gives NaN. NaN < 100 is false, so
- * every Arabic value silently lost its decimal ("٢ مليون" for 1.9M). The unit
- * grouping is identical across numbering systems, so this only changes the
- * digits we parse, not which unit Intl picked. */
+/** Probed through a latn formatter: ar-EG/ar-SA default to arab digits, which Number() reads as NaN. */
 function compactInteger(locale: Locale, value: number): number {
   for (const part of compactFormatter(locale, 1, "latn").formatToParts(value)) {
     if (part.type === "integer") {
@@ -50,21 +35,13 @@ function compactInteger(locale: Locale, value: number): number {
   return 0;
 }
 
-/** Whether the compact form actually applied a unit (K / 万 / लाख), probed in latn for the
- * same reason as compactInteger. */
 function hasCompactUnit(locale: Locale, value: number): boolean {
   return compactFormatter(locale, 1, "latn")
     .formatToParts(value)
     .some((part) => part.type === "compact");
 }
 
-/**
- * Compact form used on every stat tile: 12.3K, 4.5M, 19.8B in English, and
- * each locale's own units elsewhere (1.2万 in ja, 1,9 Mrd. in de, 1.2 लाख in
- * hi). One decimal below 100 of a unit keeps "1.9B" readable; above it the
- * decimal is noise, and asking for zero digits also avoids "1000K", which is
- * not compact.
- */
+/** One decimal below 100 of a unit; zero digits above it also avoids "1000K". */
 export function formatCompactNumber(value: number, locale: Locale): string {
   if (!Number.isFinite(value)) return "0";
   // Below the locale's first compact unit there is no unit to be a fraction OF, and these
@@ -72,13 +49,13 @@ export function formatCompactNumber(value: number, locale: Locale): string {
   // reads as false precision where the pre-localization code said 13. Asked of Intl (is there
   // a `compact` part?) rather than a hardcoded 1000, because the first unit is per-locale:
   // en and hi compact at 1K, ja and de not until 万 and Mio.
-  if (!hasCompactUnit(locale, value)) return compactFormatter(locale, 0).format(value);
+  if (!hasCompactUnit(locale, value))
+    return compactFormatter(locale, 0).format(value);
   return compactInteger(locale, value) < 100
     ? compactFormatter(locale, 1).format(value)
     : compactFormatter(locale, 0).format(value);
 }
 
-/** The exact count behind a tile, grouped the way the chosen locale groups. */
 export function formatFullNumber(value: number, locale: Locale): string {
   if (!Number.isFinite(value)) return "0";
   const cached = FULL_FORMATTERS.get(locale);
@@ -116,7 +93,6 @@ function cachedPluralRules(locale: Locale): Intl.PluralRules {
   return rules;
 }
 
-/** Locale-aware day unit, including languages with multiple plural forms. */
 export function formatDayCount(value: number, locale: Locale): string {
   return cachedFormatter(DAY_FORMATTERS, locale, {
     style: "unit",
@@ -133,9 +109,7 @@ type CountTemplate = { other: string } & Partial<
   Record<PluralCategory, string>
 >;
 
-// Intl formats calendar units such as weeks, but not app-specific nouns such
-// as tokens, messages, or training steps. Keep those forms together here so
-// every call site selects them with the same CLDR plural category.
+// Intl has no plural forms for app nouns like tokens or messages, so they live here.
 const PROFILE_COUNT_TEMPLATES = {
   en: {
     token: { one: "{value} token", other: "{value} tokens" },
@@ -202,6 +176,11 @@ const PROFILE_COUNT_TEMPLATES = {
       other: "{value} шага",
     },
   },
+  sv: {
+    token: { one: "{value} token", other: "{value} tokens" },
+    message: { one: "{value} meddelande", other: "{value} meddelanden" },
+    step: { one: "{value} steg", other: "{value} steg" },
+  },
   hi: {
     token: { one: "{value} टोकन", other: "{value} टोकन" },
     message: { one: "{value} संदेश", other: "{value} संदेश" },
@@ -233,11 +212,19 @@ const PROFILE_COUNT_TEMPLATES = {
       other: "{value} خطوة",
     },
   },
+  he: {
+    token: { one: "טוקן אחד", two: "{value} טוקנים", other: "{value} טוקנים" },
+    message: {
+      one: "הודעה אחת",
+      two: "{value} הודעות",
+      other: "{value} הודעות",
+    },
+    step: { one: "צעד אחד", two: "{value} צעדים", other: "{value} צעדים" },
+  },
 } satisfies Record<Locale, Record<LexicalProfileCountUnit, CountTemplate>>;
 
 type ProfileCountLocale = Locale;
 
-/** A localized count phrase for the dynamic nouns used by profile stats. */
 export function formatProfileCount(
   value: number,
   unit: ProfileCountUnit,
@@ -264,7 +251,6 @@ export function formatProfileCount(
   return template.replace("{value}", () => formattedValue);
 }
 
-/** Compact duration for chat and training time: 4h 8m, 12m 30s, 45s. */
 export function formatDuration(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return "0m";
   const total = Math.round(seconds);
@@ -285,18 +271,87 @@ export function formatMilliseconds(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-/**
- * Bucket a day's tokens into one of five heatmap intensities (0 = empty).
- * Thresholds are relative to the busiest day so any usage scale looks alive.
- */
-export function heatLevel(tokens: number, peak: number): 0 | 1 | 2 | 3 | 4 {
+export type HeatLevel = 0 | 1 | 2 | 3 | 4;
+
+/** Quartiles of the active days, then the busiest. Not ratios to the peak: one outlier washed out every other day. */
+export function heatThresholds(values: readonly number[]): [number, number, number, number] {
+  const active = values.filter((value) => value > 0).sort((a, b) => a - b);
+  if (active.length === 0) return [0, 0, 0, 0];
+  const at = (fraction: number) =>
+    active[Math.min(active.length - 1, Math.floor(fraction * active.length))] ?? 0;
+  return [at(0.25), at(0.5), at(0.75), active.at(-1) ?? 0];
+}
+
+/** A day's shade, 0 for none. The busiest always takes the strongest: with 2 to 4 active days it is the top quartile itself. */
+export function heatLevel(
+  tokens: number,
+  thresholds: readonly [number, number, number, number],
+): HeatLevel {
   if (tokens <= 0) return 0;
-  if (peak <= 0) return 1;
-  const ratio = tokens / peak;
-  if (ratio > 0.6) return 4;
-  if (ratio > 0.3) return 3;
-  if (ratio > 0.1) return 2;
+  const [q1, q2, q3, peak] = thresholds;
+  if (tokens > q3 || tokens >= peak) return 4;
+  if (tokens > q2) return 3;
+  if (tokens > q1) return 2;
   return 1;
+}
+
+export type ActivityCell<Day> = { key: string; day: Day | null; value: number };
+
+/** The latest `columns` Monday-started weeks; days after today stay `null`. */
+export function buildActivityColumns<Day extends { date: string }>(
+  daily: readonly Day[],
+  values: readonly number[],
+  columns: number,
+  mode: ActivityMode,
+): ActivityCell<Day>[][] {
+  const lastDay = daily.at(-1);
+  if (!lastDay || columns <= 0) return [];
+  const trailing = DAYS_PER_WEEK - 1 - mondayIndex(lastDay.date);
+  const capacity = columns * DAYS_PER_WEEK - trailing;
+  const start = Math.max(0, daily.length - capacity);
+  const visible = daily.slice(start);
+  const firstVisible = visible[0];
+  if (!firstVisible) return [];
+  const baseline = windowBaseline([...values], start, mode);
+
+  const cells: ActivityCell<Day>[] = [];
+  for (let index = 0; index < mondayIndex(firstVisible.date); index += 1) {
+    cells.push({ key: `pad-${index}`, day: null, value: 0 });
+  }
+  for (const [index, day] of visible.entries()) {
+    cells.push({ key: day.date, day, value: (values[start + index] ?? 0) - baseline });
+  }
+  for (let index = 0; index < trailing; index += 1) {
+    cells.push({ key: `after-${index}`, day: null, value: 0 });
+  }
+  const grid: ActivityCell<Day>[][] = [];
+  for (let index = 0; index < cells.length; index += DAYS_PER_WEEK) {
+    grid.push(cells.slice(index, index + DAYS_PER_WEEK));
+  }
+  return grid;
+}
+
+const DAYS_PER_WEEK = 7;
+
+/** 0 for Monday through 6 for Sunday. */
+function mondayIndex(dayKey: string): number {
+  return (parseDayKey(dayKey).getDay() + 6) % DAYS_PER_WEEK;
+}
+
+/** One label per shown 1st; a leading partial month yields to it, never the reverse (lost Jan). */
+export function monthLabelColumns(
+  grid: ReadonlyArray<ReadonlyArray<{ day: { date: string } | null }>>,
+): Array<{ column: number; date: string }> {
+  const labels: Array<{ column: number; date: string }> = [];
+  for (const [column, week] of grid.entries()) {
+    const first = week.find((cell) => cell.day?.date.endsWith("-01"))?.day;
+    if (first) labels.push({ column, date: first.date });
+  }
+  const leading = grid[0]?.find((cell) => cell.day !== null)?.day;
+  if (leading && labels[0]?.column !== 0 && (labels[0]?.column ?? Number.POSITIVE_INFINITY) >= 3) {
+    labels.unshift({ column: 0, date: leading.date });
+  }
+  return labels;
 }
 
 /** Local YYYY-MM-DD, matching the backend's day keys (which use local time). */
@@ -307,7 +362,7 @@ export function toLocalDayKey(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
-/** Parse a backend day key as a local date (not UTC, which would shift a day). */
+/** Parse as a local date; UTC would shift a day. */
 export function parseDayKey(key: string): Date {
   const [year, month, day] = key.split("-").map(Number);
   return new Date(year, (month ?? 1) - 1, day ?? 1);
@@ -316,16 +371,8 @@ export function parseDayKey(key: string): Date {
 export type ActivityMode = "daily" | "weekly" | "cumulative";
 
 /**
- * Recast the dense daily series for the selected mode. Weekly sums each
- * calendar week onto its days so the grid shows week-level intensity;
- * cumulative is the running total across the displayed window, not lifetime,
- * since the backend caps the series and seeding it with everything older would
- * flatten every bar against a baseline the grid cannot show.
- */
-/**
- * What to subtract from a cumulative series once the grid drops older days.
- * Without it the first visible bar opens at the hidden total and the whole
- * window flattens against a baseline the user cannot see.
+ * Subtracted from a cumulative series once older days drop, or the first visible bar opens at the
+ * hidden total.
  */
 export function windowBaseline(
   values: number[],
@@ -342,7 +389,6 @@ export type ActivityGridCell = {
 
 export type ActivityGridColumn = ActivityGridCell[];
 
-/** Subtitle headline: weekly reports the busiest week, other modes sum the window. */
 export function activitySummaryForMode(
   grid: ActivityGridColumn[],
   mode: ActivityMode,
@@ -364,6 +410,34 @@ export function activitySummaryForMode(
   );
 }
 
+export type WeekChartPoint = { week: string; tokens: number };
+
+/**
+ * One chart point per visible week, keyed by its first shown day. Weekly
+ * series carry the week total on every day and cumulative ones only grow, so
+ * the week's largest value is its total or its end-of-week running total.
+ */
+export function weekChartPoints(
+  grid: Array<Array<{ day: { date: string } | null; value: number }>>,
+): WeekChartPoint[] {
+  const points: WeekChartPoint[] = [];
+  for (const column of grid) {
+    let week: string | null = null;
+    let tokens = 0;
+    for (const cell of column) {
+      if (!cell.day) {
+        continue;
+      }
+      week ??= cell.day.date;
+      tokens = Math.max(tokens, cell.value);
+    }
+    if (week !== null) {
+      points.push({ week, tokens });
+    }
+  }
+  return points;
+}
+
 export function seriesForMode(
   daily: Array<{ date: string; tokens: number }>,
   mode: ActivityMode,
@@ -378,7 +452,7 @@ export function seriesForMode(
     });
   }
 
-  // Weekly: every day carries the total of the Monday-started week it sits in.
+  // Weekly: every day carries its Monday-started week's total.
   const weekTotals: number[] = [];
   const weekOfDay: number[] = [];
   let week = -1;

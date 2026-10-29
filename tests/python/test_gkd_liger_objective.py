@@ -12,7 +12,6 @@ import pytest
 os.environ.setdefault("UNSLOTH_COMPILE_DISABLE", "1")
 import unsloth.models.rl_replacements as rl
 
-# TRL 0.22.2 - 1.6.0 generate_on_policy_outputs, trimmed to the label lines.
 LEGACY = textwrap.dedent(
     """
     def generate_on_policy_outputs(model, inputs, generation_config, pad_token_id=None):

@@ -51,22 +51,15 @@ function harness() {
           saved.push(record);
           return record;
         },
-        // delete-thread-message loads for real under the passthrough below, and it
-        // reads the thread back; nothing here drives that path.
         listChatMessages: async () => [],
       },
       "@assistant-ui/core/internal": { MessageRepository: class {} },
-      // The persistence boundary. Cut here so the passthrough stops before db.ts and
-      // its IndexedDB driver, which no node test can load: this suite is about the
-      // record's shape and part order, not about storing it.
+      // Cut here so the passthrough never loads db.ts and its IndexedDB driver.
       "./chat-history-storage": {
         ensureStoredChatThread: async () => undefined,
         syncStoredChatMessages: async () => undefined,
       },
     },
-    // The record this test asserts on is built by the real exportedItemToRecord, and
-    // the metadata it strips comes from the real RESEARCH_METADATA_KEYS, so those
-    // siblings load rather than being faked.
     { relativePassthrough: true },
   );
   return { module, saved };
@@ -229,8 +222,6 @@ test("deleting one marker leaves the other card where its own marker is", async 
     shown.replace(/<TOOL 1:[^>]*>\n\n/, ""),
   );
 
-  // The python card is still the one between "Then I compute." and "Done."; only the
-  // card whose marker went away is moved, and it is moved to the end rather than lost.
   assert.deepEqual(result, [
     { type: "text", text: "First I search.\n\nThen I compute." },
     PYTHON,
@@ -271,11 +262,8 @@ test("a half-deleted marker keeps the prose that follows it", async () => {
     { type: "text", text: tail },
   ];
   const shown = await save(content).then((r) => r.text);
-  // Whatever the marker looks like, it is what sits between the two sentences.
   const marker = shown.slice(head.length + 2, shown.length - tail.length - 2);
 
-  // Backspacing into the marker used to turn every following sentence into a part the
-  // save silently dropped, and the loss was written to the server.
   const broken = [
     marker.slice(0, -1),
     marker.slice(1),
@@ -355,14 +343,10 @@ test("prose that mentions the marker tag is not mistaken for one", async () => {
     { type: "text", text: "Done." },
   ];
   const out = await roundTrip(content);
-  // Not just the count: the sentence has to come back whole, with the card still
-  // between it and "Done." rather than wedged into the middle of it.
   assert.deepEqual(out, content);
 });
 
 test("prose that spells a real marker is not mistaken for that card's marker", async () => {
-  // A reply explaining the marker syntax, that itself used the tool it names: the
-  // literal occurrence sits BEFORE the card's own marker and reads exactly like it.
   const content = [
     { type: "text", text: "Your edit box shows <TOOL 1: web_search> where the card sits." },
     SEARCH,
@@ -383,8 +367,7 @@ test("text that already contains an escaped marker round-trips too", async () =>
 });
 
 test("an indented code block after a card keeps its indentation", async () => {
-  // Four leading spaces are a Markdown code block, not padding: trimming them at the
-  // marker boundary would render the reply differently after a no-op Save.
+  // Four leading spaces are a Markdown code block; trimming them would change rendering.
   const content = [
     { type: "text", text: "Here is the fix:" },
     SEARCH,
@@ -395,8 +378,6 @@ test("an indented code block after a card keeps its indentation", async () => {
 });
 
 test("a raw string part is prose, and does not consume a card's slot", async () => {
-  // Legacy and imported rows can hold a bare string. extractTaggedText emits it as
-  // prose without numbering it, so restoration must not count it as a card either.
   const legacy = ["intro", SEARCH, { type: "text", text: "answer" }] as unknown as Part[];
   const { result } = await save(legacy);
 
@@ -408,8 +389,6 @@ test("a raw string part is prose, and does not consume a card's slot", async () 
 });
 
 test("a reply stored as one plain string round-trips, markers and all", async () => {
-  // Legacy and imported rows can hold the whole reply as a top-level string, which
-  // takes its own path out of extractTaggedText and has to be escaped there too.
   const content = "Use <TOOL 1: web_search> literally" as unknown as Part[];
 
   const { result } = await save(content);

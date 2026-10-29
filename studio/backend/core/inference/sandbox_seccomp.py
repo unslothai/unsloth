@@ -49,7 +49,7 @@ def program(machine: str, *, block_userns: bool = False) -> tuple[tuple[int, int
     key = machine.lower()
     if key not in _ABIS or sys.byteorder != "little":
         raise RuntimeError(
-            "the Studio sandbox seccomp filter requires little-endian x86_64 or aarch64"
+            "the Unsloth sandbox seccomp filter requires little-endian x86_64 or aarch64"
         )
     audit_arch, socket_nr, socketpair_nr = _ABIS[key]
     code: list[tuple[int, int, int, int]] = [

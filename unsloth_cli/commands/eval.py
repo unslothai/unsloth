@@ -2,18 +2,20 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import contextlib
+import functools
 import json
 import os
 import re
 import shutil
 import sys
 import tempfile
+import time
+from importlib.metadata import PackageNotFoundError, version
 from importlib.util import find_spec
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import List, Optional, Tuple
 
 import typer
-import yaml
 
 _HUB_REPO_RE = re.compile(r"[\w.\-]+/[\w.\-]+")
 _TOKENIZER_FILES = ("tokenizer_config.json", "tokenizer.json", "tokenizer.model")
@@ -22,8 +24,8 @@ _YAML_SUFFIXES = {".yaml", ".yml"}
 
 
 @contextlib.contextmanager
-def _silence():
-    """Send fd 1/2 to devnull (lm-eval/transformers progress bars); yield a Console on the real stdout."""
+def _silence(log: Optional[Path] = None):
+    """Send fd 1/2 to devnull or `log` (lm-eval/transformers progress bars); yield a Console on the real stdout."""
     from rich.console import Console
 
     sys.stdout.flush()
@@ -37,7 +39,11 @@ def _silence():
         errors = "replace",
     )
     saved_out, saved_err = os.dup(1), os.dup(2)
-    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    devnull_fd = (
+        os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+        if log
+        else os.open(os.devnull, os.O_WRONLY)
+    )
     try:
         os.dup2(devnull_fd, 1)
         os.dup2(devnull_fd, 2)
@@ -73,6 +79,49 @@ def resolve_base_model(model: str) -> Optional[str]:
     except (ValueError, OSError):
         return None
     return data.get("base_model_name_or_path") if isinstance(data, dict) else None
+
+
+def _is_studio_output(path: Path) -> bool:
+    # same scope as Studio Chat: downloads and merged exports keep the 4-bit default
+    try:
+        from unsloth_cli._inference import ensure_studio_backend_path
+
+        ensure_studio_backend_path(seed_cache_env = False)
+        from utils.paths import outputs_root, studio_root
+
+        accounts = studio_root() / "accounts"
+        roots = [outputs_root()]
+        if accounts.is_dir():
+            roots += [account / "outputs" for account in accounts.iterdir()]
+        resolved = path.resolve()
+        return any(resolved.is_relative_to(root.resolve()) for root in roots)
+    except Exception:
+        return False
+
+
+def _read_config(file: Path) -> Optional[dict]:
+    try:
+        config = json.loads(file.read_text(encoding = "utf-8-sig"))
+    except (ValueError, OSError):
+        return None
+    return config if isinstance(config, dict) else None
+
+
+def _trained_in_4bit(model: str) -> bool:
+    path = Path(model).absolute()
+    is_adapter = (path / "adapter_config.json").is_file()
+    config = _read_config(path / ("adapter_config.json" if is_adapter else "config.json"))
+    if config is None:
+        return True
+    if not is_adapter:
+        return "quantization_config" in config or not _is_studio_output(path)
+    if "unsloth_training_method" not in config and path.name.startswith("checkpoint-"):
+        # Studio records the precision on the finished run, not on its checkpoint-N folders
+        config = _read_config(path.parent / "adapter_config.json") or config
+    recorded = config.get("unsloth_load_in_4bit")
+    if isinstance(recorded, bool):
+        return recorded
+    return config.get("unsloth_training_method") != "lora"
 
 
 def _has_tokenizer_files(model: str) -> bool:
@@ -142,19 +191,81 @@ def _hflm_4bit(HFLM):
     return _HFLM4bit
 
 
+# vLLM's accepted max_lora_rank values (vllm/config/lora.py MaxLoRARanks)
+_VLLM_LORA_RANKS = (16, 32, 64, 128, 256, 320, 512)
+_BNB_SUFFIX_RE = re.compile(r"(-unsloth)?-bnb-4bit$")
+
+
+def _vllm_error() -> Optional[str]:
+    if sys.platform == "darwin":
+        return "--backend vllm needs an NVIDIA or AMD GPU. On a Mac use --backend hf."
+    if find_spec("vllm") is None:
+        return (
+            "--backend vllm needs vllm (`pip install vllm`). "
+            "Use --backend unsloth to evaluate without it."
+        )
+    try:
+        lm_eval_version = version("lm_eval")
+    except PackageNotFoundError:
+        lm_eval_version = None
+    # older lm-eval's vllm wrapper breaks on current vLLM (imports ray, passes the removed swap_space)
+    installed = tuple(int(n) for n in re.findall(r"\d+", lm_eval_version or "")[:3])
+    if installed and installed < (0, 4, 12):
+        return (
+            f"--backend vllm needs lm-eval 0.4.12 or newer, but {lm_eval_version} is installed. "
+            "Upgrade it with `pip install -U lm-eval`."
+        )
+    # as vLLM does on import: the default probe initialises CUDA, which its forked engine cannot reuse
+    os.environ["PYTORCH_NVML_BASED_CUDA_CHECK"] = "1"
+    import torch
+
+    if not torch.cuda.is_available():
+        return (
+            "--backend vllm needs an NVIDIA or AMD GPU, but none is visible. "
+            "Use --backend hf to evaluate on CPU."
+        )
+    return None
+
+
+def _vllm_base(model: str) -> str:
+    # vLLM has no bitsandbytes loader
+    stripped = _BNB_SUFFIX_RE.sub("", model)
+    if stripped != model and model.lower().startswith("unsloth/"):
+        typer.echo(f"Note: vLLM cannot load '{model}', using its 16-bit repo '{stripped}'.")
+        return stripped
+    return model
+
+
+def _local_adapter(model: str) -> str:
+    if Path(model).is_dir():
+        return str(Path(model).resolve())
+    from huggingface_hub import snapshot_download
+    return snapshot_download(model)
+
+
+def _adapter_rank(adapter_dir: str) -> int:
+    config = _read_config(Path(adapter_dir) / "adapter_config.json") or {}
+    ranks = [config.get("r")] + list((config.get("rank_pattern") or {}).values())
+    return max((r for r in ranks if isinstance(r, int)), default = 0)
+
+
 def _base_vocab_size(model: str) -> int:
     from transformers import AutoConfig
     config = AutoConfig.from_pretrained(model)
     return getattr(getattr(config, "text_config", None) or config, "vocab_size", 0) or 0
 
 
-class _TaskYamlLoader(yaml.SafeLoader):
-    """safe_load that tolerates lm-eval's custom tags (!function utils.fn)."""
+@functools.cache
+def _task_yaml_loader():
+    import yaml
 
+    class _TaskYamlLoader(yaml.SafeLoader):
+        """safe_load that tolerates lm-eval's custom tags (!function utils.fn)."""
 
-_TaskYamlLoader.add_multi_constructor(
-    "!", lambda loader, suffix, node: getattr(node, "value", None)
-)
+    _TaskYamlLoader.add_multi_constructor(
+        "!", lambda loader, suffix, node: getattr(node, "value", None)
+    )
+    return _TaskYamlLoader
 
 
 def _doc_column(key: str) -> str:
@@ -192,15 +303,19 @@ def make_dataset_task(
         ],
         "metric_list": [{"metric": "exact_match", "aggregation": "mean", "higher_is_better": True}],
     }
+    import yaml
+
     out_dir.mkdir(parents = True, exist_ok = True)
     (out_dir / f"{name}.yaml").write_text(yaml.safe_dump(spec, sort_keys = False), encoding = "utf-8")
 
 
 def _yaml_task_name(path: Path) -> Tuple[str, bool]:
     """(registered name, needs its directory on the include path)."""
+    import yaml
+
     text = path.read_text(encoding = "utf-8")
     try:
-        spec = yaml.load(text, Loader = _TaskYamlLoader)
+        spec = yaml.load(text, Loader = _task_yaml_loader())
     except yaml.YAMLError as e:
         raise ValueError(f"Invalid YAML in custom task file '{path}': {e}") from e
     if not isinstance(spec, dict):
@@ -256,8 +371,7 @@ def resolve_tasks(
         elif suffix in _DATASET_SUFFIXES:
             if not path.exists():
                 raise FileNotFoundError(f"Dataset file not found: {entry}")
-            # an include-path task overrides a registered one of the same name, so keep clear of
-            # names requested alongside (gsm8k,./gsm8k.jsonl)
+            # An include-path task overrides a registered one of the same name, so avoid names requested alongside (gsm8k,./gsm8k.jsonl).
             name, counter = path.stem, 2
             while name in names or name in plain:
                 name, counter = f"{path.stem}_{counter}", counter + 1
@@ -337,6 +451,16 @@ def _render_results(results: dict) -> None:
     Console().print(table)
 
 
+def _run_dir_name(model: str) -> str:
+    # Mirrors utils.paths.default_run_dir_name, which cannot be imported here: the Studio backend fails on Python 3.9.
+    raw = model.strip()
+    is_path = (
+        "\\" in raw or raw.startswith(("/", "~", ".")) or os.path.isabs(raw) or raw[1:2] == ":"
+    )
+    base = PureWindowsPath(raw).name if is_path else raw.replace("/", "_")
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", base)[:200].strip("._-") or "model"
+
+
 def _fail(message: str, code: int = 2):
     typer.echo(f"Error: {message}", err = True)
     raise typer.Exit(code = code)
@@ -372,14 +496,18 @@ def evaluate(
     max_seq_length: int = typer.Option(
         2048, "--max-seq-length", help = "Max sequence length for the model."
     ),
-    load_in_4bit: bool = typer.Option(
-        True, "--load-in-4bit/--no-load-in-4bit", help = "Load the model in 4-bit."
+    load_in_4bit: Optional[bool] = typer.Option(
+        None,
+        "--load-in-4bit/--no-load-in-4bit",
+        help = "Load the model in 4-bit. Default: the precision a local checkpoint or "
+        "adapter was trained in, 4-bit otherwise.",
     ),
     backend: str = typer.Option(
         "unsloth",
         "--backend",
         help = "Model backend: 'unsloth' (fast kernels; needs an NVIDIA/AMD/Intel "
-        "GPU) or 'hf' (plain transformers; works on CPU/MPS/Mac). "
+        "GPU), 'hf' (plain transformers; works on CPU/MPS/Mac) or 'vllm' (fastest on "
+        "generation tasks; needs vllm and an NVIDIA/AMD GPU, loads 16-bit weights). "
         "Auto-falls back to 'hf' on Apple Silicon.",
     ),
     device: Optional[str] = typer.Option(
@@ -387,14 +515,22 @@ def evaluate(
         "--device",
         help = "Device for the hf backend (e.g. cpu, mps, cuda). Default: auto.",
     ),
+    gpu_memory_utilization: Optional[float] = typer.Option(
+        None,
+        "--gpu-memory-utilization",
+        help = "Fraction of GPU memory vLLM may use (vllm backend). Default: vLLM's own.",
+    ),
     input_key: str = typer.Option(
         "question", "--input-key", help = "Prompt field for a .jsonl/.csv dataset task."
     ),
     target_key: str = typer.Option(
         "answer", "--target-key", help = "Answer field for a .jsonl/.csv dataset task."
     ),
-    output_dir: Path = typer.Option(
-        Path("./eval_results"), "--output-dir", "-o", help = "Directory for results.json."
+    output_dir: Optional[Path] = typer.Option(
+        None,
+        "--output-dir",
+        "-o",
+        help = "Directory for results.json. Default: a new eval_results/<model>_<time> folder per run.",
     ),
     confirm_run_unsafe_code: bool = typer.Option(
         False,
@@ -412,8 +548,10 @@ def evaluate(
         bs = int(batch_size) if batch_size.isdigit() else 0
         if bs <= 0:
             _fail("--batch-size must be a positive integer or 'auto'.")
-    if backend not in ("unsloth", "hf"):
-        _fail(f"--backend must be 'unsloth' or 'hf', got '{backend}'.")
+    if backend not in ("unsloth", "hf", "vllm"):
+        _fail(f"--backend must be 'unsloth', 'hf' or 'vllm', got '{backend}'.")
+    if gpu_memory_utilization is not None and not 0 < gpu_memory_utilization <= 1:
+        _fail("--gpu-memory-utilization must be between 0 and 1.")
     if num_fewshot is not None and num_fewshot < 0:
         _fail("--num-fewshot must be >= 0.")
     if limit is not None:
@@ -423,21 +561,31 @@ def evaluate(
         limit = int(limit) if limit >= 1 else limit
     if max_seq_length <= 0:
         _fail("--max-seq-length must be a positive integer.")
+    if output_dir is None:
+        run_name, stamp = _run_dir_name(model), int(time.time())
     # find_spec, not import: lm_eval imports transformers, which must come after unsloth
     if "lm_eval" not in sys.modules and find_spec("lm_eval") is None:
         _fail("evaluation requires lm-eval. Install it with `pip install unsloth[eval]`.", code = 1)
 
+    if backend == "vllm":
+        if (error := _vllm_error()) is not None:
+            _fail(error)
+        if device is not None:
+            typer.echo("Note: --backend vllm ignores --device; set CUDA_VISIBLE_DEVICES instead.")
     if backend == "unsloth":
         with _silence():
             import unsloth
         if getattr(unsloth, "DEVICE_TYPE", None) == "mlx":
             typer.echo("Note: Apple Silicon (MLX) detected, falling back to --backend hf.")
             backend = "hf"
+    # only the vllm branch forwards it, and a silently dropped memory cap reads as an OOM
+    if backend != "vllm" and gpu_memory_utilization is not None:
+        typer.echo(f"Note: --gpu-memory-utilization applies to --backend vllm, not {backend}.")
     # a pre-loaded model makes lm-eval single-process, so every rank would run every task
-    if backend == "unsloth" and os.environ.get("WORLD_SIZE", "1") not in ("", "1"):
+    if backend in ("unsloth", "vllm") and os.environ.get("WORLD_SIZE", "1") not in ("", "1"):
         _fail(
             "multi-process launches (accelerate/torchrun) are not supported with "
-            "--backend unsloth. Use --backend hf for multi-GPU evaluation."
+            f"--backend {backend}. Use --backend hf for multi-GPU evaluation."
         )
 
     import inspect
@@ -449,6 +597,17 @@ def evaluate(
     if hf_token:
         os.environ["HF_TOKEN"] = hf_token
     effective_base = base_model or resolve_base_model(model)
+    if backend == "vllm":
+        if load_in_4bit:
+            typer.echo("Note: --backend vllm loads 16-bit weights; --load-in-4bit has no effect.")
+        load_in_4bit = False
+    if load_in_4bit is None:
+        load_in_4bit = _trained_in_4bit(model)
+        if not load_in_4bit:
+            typer.echo(
+                "Note: loading in 16-bit, the precision this checkpoint was trained in "
+                "(pass --load-in-4bit to override)."
+            )
 
     tmp_dir = Path(tempfile.mkdtemp(prefix = "unsloth_eval_"))
     try:
@@ -513,6 +672,26 @@ def evaluate(
                     )
             else:
                 eval_kwargs.update(model = "hf", model_args = model_args, batch_size = bs, device = device)
+        elif backend == "vllm":
+            model_args = {"pretrained": model, "max_model_len": max_seq_length}
+            if effective_base:
+                model_args["pretrained"] = _vllm_base(effective_base)
+                model_args["lora_local_path"] = _local_adapter(model)
+                rank = _adapter_rank(model_args["lora_local_path"])
+                if rank > 16:
+                    model_args["max_lora_rank"] = next(
+                        (r for r in _VLLM_LORA_RANKS if r >= rank), _VLLM_LORA_RANKS[-1]
+                    )
+                if _has_tokenizer_files(model):
+                    model_args["tokenizer"] = model_args["lora_local_path"]
+                typer.echo(
+                    f"Evaluating adapter '{model}' on base '{model_args['pretrained']}' with vLLM."
+                )
+            else:
+                model_args["pretrained"] = _vllm_base(model)
+            if gpu_memory_utilization is not None:
+                model_args["gpu_memory_utilization"] = gpu_memory_utilization
+            eval_kwargs.update(model = "vllm", model_args = model_args, batch_size = bs)
         else:
             from unsloth import FastLanguageModel
 
@@ -558,10 +737,18 @@ def evaluate(
                     pretrained = lmodel, tokenizer = tokenizer, batch_size = bs, max_length = max_seq_length
                 )
 
-        with _silence() as ui:
-            from rich.status import Status
-            with Status(f"Evaluating {', '.join(task_names)}…", console = ui, spinner = "dots"):
-                results = lm_eval.simple_evaluate(**eval_kwargs)
+        engine_log = tmp_dir / "vllm.log" if backend == "vllm" else None
+        try:
+            with _silence(engine_log) as ui:
+                from rich.status import Status
+                with Status(f"Evaluating {', '.join(task_names)}…", console = ui, spinner = "dots"):
+                    results = lm_eval.simple_evaluate(**eval_kwargs)
+        except Exception:
+            # vLLM's engine runs in its own process and logs the real cause there, not in the traceback
+            if engine_log is not None and engine_log.exists():
+                lines = engine_log.read_text(encoding = "utf-8", errors = "replace").splitlines()
+                typer.echo("\n".join(line.rsplit("\r", 1)[-1] for line in lines[-40:]), err = True)
+            raise
     finally:
         shutil.rmtree(tmp_dir, ignore_errors = True)
 
@@ -572,7 +759,18 @@ def evaluate(
         _fail("evaluation returned no results.", code = 1)
 
     _render_results(results)
-    output_dir.mkdir(parents = True, exist_ok = True)
+    if output_dir is None:
+        # Parent first: on Windows a leaf mkdir under a stray eval_results file raises FileExistsError too.
+        Path("eval_results").mkdir(exist_ok = True)
+        while True:
+            output_dir = Path("eval_results") / f"{run_name}_{stamp}"
+            try:
+                output_dir.mkdir()
+                break
+            except FileExistsError:
+                stamp += 1
+    else:
+        output_dir.mkdir(parents = True, exist_ok = True)
     results_path = output_dir / "results.json"
     results_path.write_text(json.dumps(results, indent = 2, default = _json_default), encoding = "utf-8")
     typer.echo(f"Saved results to: {results_path}")

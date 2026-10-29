@@ -31,7 +31,6 @@ test("a reload keeps manual IDs and picks, drops removed IDs and enables new one
   const { mergeReloadedModels } = await vite.ssrLoadModule(
     "/src/features/chat/llama-cpp-auto-reload.ts",
   );
-  // beta was deselected, alpha is gone, gamma is new, manual was typed in.
   assert.deepEqual(
     mergeReloadedModels(["manual", "alpha"], ["alpha", "beta"], ["beta", "gamma"]),
     ["manual", "gamma"],
@@ -40,7 +39,6 @@ test("a reload keeps manual IDs and picks, drops removed IDs and enables new one
     mergeReloadedModels(["manual"], [], ["manual", "alpha"]),
     ["manual", "alpha"],
   );
-  // Nothing left selected: enable the whole catalog rather than an empty connection.
   assert.deepEqual(mergeReloadedModels(["alpha"], ["alpha", "beta"], ["beta"]), ["beta"]);
 });
 
@@ -121,12 +119,10 @@ test("the monitor reloads on first contact and each reconnect only", async () =>
     await settle(() => row().models.length === 3);
     await idle();
     assert.equal(puts.length, 1, "no rewrite while the server stays up");
-    // A late settings sync restores older lists in this tab: the next probe repairs them without a write.
     store.setState({ providers: [{ ...row(), models: ["manual", "alpha"], availableModels: ["alpha"] }] });
     await settle(() => row().availableModels?.join() === "alpha,beta");
     assert.equal(puts.length, 1);
 
-    // Another tab deselected beta; this tab's copy still has it. The reload must follow the saved row.
     saved.models = ["manual", "alpha"];
     served = null;
     await idle();
@@ -149,7 +145,6 @@ test("the monitor reloads on first contact and each reconnect only", async () =>
     await settle(() => puts.length === 4);
     assert.deepEqual(puts[3].models, ["manual", "gamma", "delta"]);
 
-    // A manual save in flight holds the reload until it ends, so the save is never overwritten.
     providerSavesInFlight.add("p");
     served = ["gamma", "delta", "zeta"];
     await idle();
@@ -158,7 +153,6 @@ test("the monitor reloads on first contact and each reconnect only", async () =>
     await settle(() => puts.length === 5);
     assert.deepEqual(puts[4].models, ["manual", "gamma", "delta", "zeta"]);
 
-    // Another tab replaced the IDs by hand and left no catalog: the saved IDs win over this tab's copy.
     Object.assign(saved, { models: ["typed"], available_models: [] });
     served = ["gamma", "omega"];
     await settle(() => puts.length === 6);

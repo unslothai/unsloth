@@ -31,8 +31,7 @@ _SESSION = "__LOCALID_sandbox_wiring"
 
 class _PassthroughAccountConfinement:
     preexec = None
-    # Stands in for a real account boundary. tools.py only takes the managed
-    # path when `confines` is true, so an owner placeholder cannot pass as one.
+    # tools.py only takes the managed path when `confines` is true.
     confines = True
 
     @staticmethod
@@ -227,7 +226,7 @@ def test_the_process_unsloth_holds_still_lands_in_its_own_session():
     real = subprocess.Popen
 
     def capture(argv, **kwargs):
-        seen.append((argv, kwargs.get("preexec_fn")))
+        seen.append((argv, kwargs.get("preexec_fn"), kwargs.get("start_new_session", False)))
         return real(argv, **kwargs)
 
     subprocess.Popen = capture
@@ -236,11 +235,21 @@ def test_the_process_unsloth_holds_still_lands_in_its_own_session():
         assert "6" in tools._bash_exec("echo 6", None, 60, _SESSION)
     finally:
         subprocess.Popen = real
-    launches = [preexec for _, preexec in seen if preexec is not None]
-    bookkeeping = [argv for argv, preexec in seen if preexec is None]
-    assert len(launches) == 2, [argv for argv, _ in seen]
+    launches = [
+        (argv, preexec) for argv, preexec, new_session in seen if preexec is not None or new_session
+    ]
+    bookkeeping = [
+        argv for argv, preexec, new_session in seen if preexec is None and not new_session
+    ]
+    assert len(launches) == 2, [entry[0] for entry in seen]
     assert all(tuple(argv)[:1] == ("ps",) for argv in bookkeeping), bookkeeping
-    seen = launches
+    seen = []
+    for argv, preexec in launches:
+        if preexec is None:
+            # No Python pre-exec: Popen runs setsid itself, then setpriv and prlimit exec in place.
+            assert os.path.basename(argv[0]) == "setpriv", argv
+            continue
+        seen.append(preexec)
     for preexec in seen:
         read_fd, write_fd = os.pipe()
         child = os.fork()
@@ -881,3 +890,34 @@ def test_a_stop_during_the_sandbox_probe_reads_as_a_cancel(monkeypatch, executor
 def test_an_approved_ansi_c_quoted_host_path_is_recognised(command):
     """The approval classifier decodes $'...' and prompts; the reach check must agree, or the approved call stays jailed."""
     assert tools._reaches_host_paths("terminal", command)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "the cap only applies on Linux")
+@pytest.mark.parametrize(
+    "env, saved, expected",
+    [
+        (None, None, 8),
+        (None, 24, 24),
+        ("12", 24, 12),
+    ],
+    ids = ["default", "saved", "env-wins"],
+)
+def test_a_sandboxed_run_gets_the_configured_memory_limit(monkeypatch, env, saved, expected):
+    from utils import sandbox_memory_limit
+
+    if env is None:
+        monkeypatch.delenv(sandbox_memory_limit.MEMORY_LIMIT_ENV, raising = False)
+    else:
+        monkeypatch.setenv(sandbox_memory_limit.MEMORY_LIMIT_ENV, env)
+    monkeypatch.setattr(
+        sandbox_memory_limit,
+        "saved_memory_limit_gb",
+        lambda: saved or sandbox_memory_limit.DEFAULT_MEMORY_LIMIT_GB,
+    )
+    code = "import resource\nprint('AS', resource.getrlimit(resource.RLIMIT_AS)[0])"
+    for out in (
+        tools._python_exec(code, None, 60, _SESSION),
+        tools._bash_exec(f"python3 -c \"{code.replace(chr(10), ';')}\"", None, 60, _SESSION),
+    ):
+        lines = dict(line.split(" ", 1) for line in out.splitlines() if line.startswith("AS "))
+        assert int(lines["AS"]) == expected * 1024**3, out

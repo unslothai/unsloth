@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
-"""Regression guard for the Colab-intro strip in the Unsloth Docker image.
-
-cells[0] alone misses two shapes: the badge in cells[0] with the sentence in cells[1],
-and the sentence wrapped in a single-line HTML comment.
-
-The widening has to stay narrow: the scan stops at the first non-markdown cell so it
-never reaches prose between code cells, it stays idempotent, and it must leave
-unsloth_nb_content_sig's middle digest alone or the boot refresh re-strips forever.
-"""
+"""Colab-intro scan stops at the first non-markdown cell and must not change unsloth_nb_content_sig."""
 
 from __future__ import annotations
 
@@ -86,14 +78,12 @@ def test_intro_inside_a_single_line_html_comment_is_stripped(strip):
 
 
 def test_multi_line_html_comment_is_left_alone(strip):
-    # half-removing a multi-line comment leaves a `<!--` that swallows the cell
     doc = nb(md("<!-- " + INTRO, "still inside the comment\n", "-->\n"), code("print(1)"))
     assert strip._strip_intro(doc) is False
     assert has_intro(doc)
 
 
 def test_strip_stops_at_the_first_code_cell(strip):
-    # a markdown cell AFTER code is prose, not the header block
     later = md("Explanation.\n", INTRO)
     doc = nb(md(BADGE), code("print(1)"), later)
     assert strip._strip_intro(doc) is False

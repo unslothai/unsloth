@@ -15,8 +15,6 @@ PLAYWRIGHT_TEST = REPO / "tests/studio/playwright_tauri_python_tool_images.py"
 
 
 def test_python_tool_images_use_authenticated_blob_urls() -> None:
-    # The card now delegates the authed fetch to the shared hook markdown images also use, so the
-    # machinery pins read the hook and the card itself is pinned to exactly one thing: the delegation.
     source = PYTHON_TOOL_UI.read_text(encoding = "utf-8")
     hook = SANDBOX_IMAGE_HOOK.read_text(encoding = "utf-8")
 
@@ -28,7 +26,6 @@ def test_python_tool_images_use_authenticated_blob_urls() -> None:
     assert "URL.createObjectURL(blob)" in hook
     assert "URL.revokeObjectURL(objectUrl)" in hook
     assert "controller.abort()" in hook
-    # One hook, not two copies: the card must not re-inline the fetch it delegates.
     assert "createObjectURL" not in source
     assert "apiUrl(`/api/inference/sandbox/" not in source
 
@@ -45,11 +42,9 @@ def test_desktop_csp_has_no_explicit_http_loopback_image_source() -> None:
     ]
     assert loopback == []
     assert "blob:" in directives["img-src"]
-    # The boundary is the HTTP Unsloth backend regression.
-    # Ordinary remote HTTPS images remain supported, including HTTPS loopback if its certificate is trusted by the host.
+    # Only the HTTP backend is blocked; ordinary remote HTTPS images stay allowed.
     assert "https:" in directives["img-src"]
 
-    # Trusted frontend fetches and artifact frames still use their existing backend channels.
     assert "http://127.0.0.1:*" in directives["connect-src"]
     assert "http://127.0.0.1:*" in directives["frame-src"]
 

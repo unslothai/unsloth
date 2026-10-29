@@ -4,29 +4,28 @@
 import { Checkbox } from "@/components/ui/checkbox";
 import { useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { Folder01Icon, PlayIcon } from "@hugeicons/core-free-icons";
+import { Folder01Icon } from "@hugeicons/core-free-icons";
+import { PauseIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, type RefObject, useContext, useRef, useState } from "react";
 import type { LibraryFolder, LibraryItem } from "../api";
+import { audioSummary } from "../audio-items";
+import { toggleLibraryAudio, useLibraryAudioPlaying } from "../audio-playback";
 import {
   KIND_ICONS,
   KIND_ICON_CLASS,
   fileKind,
   hasThumbnail,
 } from "../file-kind";
+import { streamsPreview } from "../file-name";
 import { formatCardTime, formatItemCount } from "../format";
 import { useColumnCount, useLibraryThumbnail, useSeen } from "../hooks";
 import { useLibraryActions } from "../actions-context";
 import { CARD_COLUMNS, useLibrarySettingsStore } from "../settings-store";
-import {
-  CARD_SHADOW,
-  GLASS_CONTROL,
-  GLASS_SURFACE,
-  OVERLAY_CONTROL,
-  RAISED_SURFACE,
-} from "../surface";
+import { CARD_MIN_HEIGHT, CARD_SHADOW, GLASS_CONTROL, GLASS_SURFACE, OVERLAY_CONTROL, RAISED_SURFACE, SELECTED_TINT } from "../surface";
 import { CardSelectionContext } from "./card-selection";
 import { LibraryActionsMenu } from "./library-actions";
+import { PlayIcon } from "lucide-react";
 
 export const CARD_SURFACE = cn(
   RAISED_SURFACE,
@@ -45,7 +44,6 @@ export function KindIcon({ item, className }: { item: LibraryItem; className?: s
   );
 }
 
-// Audio and code glyphs are thin line art, so they get a larger size.
 export const CARD_ICON_CLASS = "size-7";
 const LARGE_CARD_ICON_CLASS = "size-8.5";
 
@@ -85,7 +83,9 @@ function ImageThumb({
       style={
         loaded && !square
           ? { aspectRatio: 1 / Math.min(Math.max(ratio, MIN_THUMB_RATIO), MAX_THUMB_RATIO) }
-          : undefined
+          : square
+            ? { minHeight: CARD_MIN_HEIGHT }
+            : undefined
       }
     >
       {!loaded && <div className="aspect-square w-full animate-pulse bg-muted" />}
@@ -108,7 +108,7 @@ function ImageThumb({
       )}
       {loaded && fileKind(item) === "video" && (
         <span className="pointer-events-none absolute inset-0 m-auto flex aspect-square w-1/4 max-w-10 items-center justify-center rounded-full bg-white/30 text-white backdrop-blur-md dark:bg-black/40">
-          <HugeiconsIcon icon={PlayIcon} strokeWidth={2} className="size-1/2 [&_path]:fill-current" />
+          <PlayIcon strokeWidth={2} className="size-1/2 [&_path]:fill-current" />
         </span>
       )}
     </div>
@@ -123,6 +123,7 @@ function CardFrame({
   className,
   label,
   glass = false,
+  control,
 }: {
   selectKey: string;
   onOpen: () => void;
@@ -131,6 +132,7 @@ function CardFrame({
   className?: string;
   label: string;
   glass?: boolean;
+  control?: ReactNode;
 }) {
   const t = useT();
   const select = useContext(CardSelectionContext);
@@ -142,11 +144,14 @@ function CardFrame({
         type="button"
         aria-label={label}
         aria-pressed={select && selecting ? selected : undefined}
-        onClick={select && selecting ? () => select.toggle(selectKey) : onOpen}
+        onClick={
+          select && selecting ? (event) => select.toggle(selectKey, event.shiftKey) : onOpen
+        }
         className={cn(
-          "block w-full overflow-hidden rounded-xl text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+          "block w-full overflow-hidden rounded-2xl text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
           selected && "ring-2 ring-foreground",
           className,
+          selected && SELECTED_TINT,
         )}
       >
         {children}
@@ -154,18 +159,52 @@ function CardFrame({
       {select && (
         <Checkbox
           checked={selected}
-          onCheckedChange={() => select.toggle(selectKey)}
+          // onClick to read shift.
+          onClick={(event) => {
+            event.preventDefault();
+            select.toggle(selectKey, event.shiftKey);
+          }}
           aria-label={t("library.selectItem", { name: label })}
           className={cn(
             OVERLAY_CONTROL,
             "absolute bottom-4 right-4 size-5 rounded-full border-0 opacity-0 transition-opacity group-hover/library-card:opacity-100 focus-visible:opacity-100 data-checked:bg-white data-checked:text-foreground dark:data-checked:bg-neutral-200 dark:data-checked:text-neutral-900 [&_svg]:size-3.5",
             glass && GLASS_CONTROL,
+            // The hover outline is lost on a dimmed selected card, so a checked one draws it darker.
+            glass && "data-checked:ring-neutral-300",
             selected && "opacity-100",
           )}
         />
       )}
+      {control}
       <div className="absolute right-2 top-2">{menu}</div>
     </div>
+  );
+}
+
+function PlayButton({ item }: { item: LibraryItem }) {
+  const t = useT();
+  const playing = useLibraryAudioPlaying(item.id);
+  return (
+    <button
+      type="button"
+      aria-label={t(playing ? "library.audio.pause" : "library.audio.play", { name: item.name })}
+      aria-pressed={playing}
+      onClick={() => void toggleLibraryAudio(item)}
+      className={cn(
+        OVERLAY_CONTROL,
+        "absolute bottom-3 left-4 flex size-7 items-center justify-center rounded-full text-foreground outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring dark:hover:bg-neutral-600",
+      )}
+    >
+      {playing ? (
+        <HugeiconsIcon
+          icon={PauseIcon}
+          strokeWidth={2}
+          className="size-3.5 [&_path]:fill-current"
+        />
+      ) : (
+        <PlayIcon strokeWidth={2} className="size-3.5 [&_path]:fill-current" />
+      )}
+    </button>
   );
 }
 
@@ -175,11 +214,15 @@ export function ItemCard({ item }: { item: LibraryItem }) {
   const showTime = useLibrarySettingsStore((s) => s.showCardDates);
   const square = useLibrarySettingsStore((s) => s.imageLayout === "square");
   const thumb = hasThumbnail(item);
+  const playable = fileKind(item) === "audio" && streamsPreview(item.id, "audio");
+  const summary = audioSummary(item).join(" · ");
+  const caption = [summary, showTime ? formatCardTime(item.updatedAt, locale) : ""].filter(Boolean);
   return (
     <CardFrame
       selectKey={`item:${item.id}`}
       label={item.name}
       onOpen={() => actions.openItem(item)}
+      control={playable ? <PlayButton item={item} /> : undefined}
       menu={
         <LibraryActionsMenu
           target={{ kind: "item", item }}
@@ -192,12 +235,12 @@ export function ItemCard({ item }: { item: LibraryItem }) {
     >
       {thumb ? (
         <>
-          <ImageThumb item={item} square={square && fileKind(item) === "image"} />
+          <ImageThumb item={item} square={square || fileKind(item) !== "image"} />
           {showTime && (
             <span
               className={cn(
                 GLASS_SURFACE,
-                "pointer-events-none absolute bottom-2 left-2 rounded-full px-2 py-0.5 text-ui-12 opacity-0 transition-opacity group-hover/library-card:opacity-100 group-has-[:focus-visible]/library-card:opacity-100 pointer-coarse:opacity-100",
+                "pointer-events-none absolute bottom-2 left-2 inline-flex h-6 items-center rounded-full px-2 text-ui-12 leading-none opacity-0 transition-opacity group-hover/library-card:opacity-100 group-has-[:focus-visible]/library-card:opacity-100 pointer-coarse:opacity-100",
               )}
             >
               {formatCardTime(item.updatedAt, locale)}
@@ -205,16 +248,29 @@ export function ItemCard({ item }: { item: LibraryItem }) {
           )}
         </>
       ) : (
-        // Two-line name slot keeps the icon in one place on every card. A 5:7 space split lifts it without growing small cards.
-        <div className="grid aspect-square grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr_auto] px-5 pt-5 pb-3.5">
+        <div
+          className="grid aspect-square grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr_auto] px-5 pt-5 pb-3.5"
+          style={{ minHeight: CARD_MIN_HEIGHT }}
+        >
           <p className="line-clamp-2 min-h-[2.75em] break-all font-medium text-ui-13p5 leading-snug text-foreground">
             {item.name}
           </p>
           <div className="flex flex-col items-center before:flex-5 after:flex-7">
             <KindIcon item={item} className={cardIconClass(item)} />
           </div>
-          <p className="truncate pr-6 text-ui-12 text-muted-foreground">
-            {showTime && formatCardTime(item.updatedAt, locale)}
+          {/* One line: a date that does not fit wraps onto a hidden second line. */}
+          <p
+            className={cn(
+              "flex h-[1lh] flex-wrap overflow-hidden pr-6 text-ui-12 tabular-nums text-muted-foreground",
+              playable && "pl-8",
+            )}
+          >
+            {caption.map((part, index) => (
+              <span key={part} className="truncate">
+                {index > 0 && "\u00a0·\u00a0"}
+                {part}
+              </span>
+            ))}
           </p>
         </div>
       )}
@@ -231,22 +287,31 @@ function FolderCard({
 }) {
   const t = useT();
   const actions = useLibraryActions();
+  const select = useContext(CardSelectionContext);
+  const selectKey = `folder:${folder.id}`;
+  // While selecting, the caption selects like the card above it rather than opening the folder.
+  const selecting = select && select.selection.size > 0;
   return (
     <div>
       <CardFrame
-        selectKey={`folder:${folder.id}`}
+        selectKey={selectKey}
         label={folder.name}
         onOpen={() => actions.openFolder(folder.id)}
         menu={<LibraryActionsMenu target={{ kind: "folder", folder }} variant="overlay" />}
         className={CARD_SURFACE}
       >
-        <div className="flex aspect-square items-center justify-center">
+        <div
+          className="flex aspect-square items-center justify-center"
+          style={{ minHeight: CARD_MIN_HEIGHT }}
+        >
           <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.5} className={CARD_ICON_CLASS} />
         </div>
       </CardFrame>
       <button
         type="button"
-        onClick={() => actions.openFolder(folder.id)}
+        onClick={(event) =>
+          selecting ? select.toggle(selectKey, event.shiftKey) : actions.openFolder(folder.id)
+        }
         className="mt-2 block w-full px-1 text-left"
       >
         <p className="truncate font-medium text-ui-14 text-foreground">{folder.name}</p>
@@ -256,12 +321,13 @@ function FolderCard({
   );
 }
 
-// Extra row spacing only; card width is unchanged.
 const CARD_ROW_GAP = "gap-y-6";
+// gap-5 (Masonry) and gap-x-5 (CardGrid) at 100%.
+const CARD_COLUMN_GAP_PX = 20;
 
 function useCardColumns(container: RefObject<HTMLDivElement | null>): number {
-  const { minWidth, max } = CARD_COLUMNS[useLibrarySettingsStore((s) => s.cardSize)];
-  return useColumnCount(container, minWidth, max);
+  const { minWidth, max, wideMinWidth } = CARD_COLUMNS[useLibrarySettingsStore((s) => s.cardSize)];
+  return useColumnCount(container, minWidth, max, CARD_COLUMN_GAP_PX, wideMinWidth);
 }
 
 export function Masonry<T>({
@@ -292,26 +358,29 @@ export function Masonry<T>({
 
 export function CardGrid({
   children,
-  equalRows = false,
+  minRowHeight,
 }: {
   children: ReactNode;
-  /** Size every row to the tallest card, so all cards match. */
-  equalRows?: boolean;
+  minRowHeight?: string;
 }) {
   const container = useRef<HTMLDivElement>(null);
   const columns = useCardColumns(container);
-  return (
+  const grid = (
     <div
       ref={container}
       className={cn("grid gap-x-5", CARD_ROW_GAP)}
       style={{
         gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
-        gridAutoRows: equalRows ? "1fr" : undefined,
+        gridAutoRows: minRowHeight
+          ? `max(${minRowHeight}, calc((100cqw - ${columns - 1} * var(--spacing) * 5) / ${columns}))`
+          : undefined,
       }}
     >
       {children}
     </div>
   );
+  // cqw resolves against an ancestor container, never the grid itself.
+  return minRowHeight ? <div className="@container">{grid}</div> : grid;
 }
 
 export function FolderGrid({
@@ -333,13 +402,13 @@ export function FolderGrid({
 export function ItemTile({ item }: { item: LibraryItem }) {
   if (hasThumbnail(item)) {
     return (
-      <div className="size-9 shrink-0 overflow-hidden rounded-[10px] border border-border/60 bg-muted [&_img]:size-9 [&_img]:object-cover [&_img]:object-top">
+      <div className="size-9 shrink-0 overflow-hidden rounded-md border border-border/60 bg-muted [&_img]:size-9 [&_img]:object-cover [&_img]:object-top">
         <ImageThumb item={item} />
       </div>
     );
   }
   return (
-    <div className="flex size-9 shrink-0 items-center justify-center rounded-[10px] border border-border/60">
+    <div className="flex size-9 shrink-0 items-center justify-center rounded-md border border-border/60">
       <KindIcon item={item} className="size-5" />
     </div>
   );

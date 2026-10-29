@@ -1,25 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""THE STREAMING PROBE'S POSITIVE CONTROL IN VISIBLE MODE, in a real browser.
-
-`compare_visible` scores windowed pairs from `parityVisible.capture()` alone. It never sees the
-structural capture, so `in_flight_unplaced` -- the control that catches a `data-status` hook that
-has gone quiet -- did not reach it, while the per-row `in_flight` it DOES read walks those exact
-selectors.
-
-That gap is asymmetric-by-construction, which is what makes it reachable rather than theoretical.
-The two arms of an A/B are two different builds: the merge base and the head. A head that renames
-or drops the status hook is precisely the change the control exists to catch, and it is renamed on
-ONE arm only, so nothing cancels out. Both rows then read `in_flight: false`, one arm's reply is
-mid-tail while the other's has finished, and the per-ordinal loop scores those two points in one
-stream as a rendering difference. That is the wall-clock false alarm this change exists to remove,
-arriving through the one door it had left open.
-
-Read GLOBALLY and not over the visible rows, which is the other half of the decision: "a reply is
-being written" and "the message it is being written into is on screen" are different questions, and
-a reply streaming below the fold is an ordinary state that must refuse nothing.
-"""
+"""compare_visible must check in_flight_unplaced globally, since per-row checks miss a renamed hook."""
 
 from __future__ import annotations
 
@@ -61,43 +43,28 @@ def _page(
     drop_tail: bool = False,
     tail_has_parts: bool = True,
 ) -> str:
-    """A four-message thread in a viewport that shows all of it.
-
-    `hook` is the attribute the last assistant message publishes its status through. The shipped
-    name is `data-status`; anything else is a build whose hook this instrument does not know, which
-    is what going blind looks like from the outside.
-    """
+    """The status hook the last assistant message publishes; a renamed hook is what blindness looks like."""
     rows = []
     for i in range(1, 5):
         if drop_tail and i == 4:
-            # The windowed case: the arm still DECLARES four messages through `aria-setsize` and has unmounted
-            # the one it is writing into. That is a thread the instrument can see three quarters of, not an
-            # instrument that has stopped working.
+            # Windowed: the arm declares four messages via `aria-setsize` but unmounted the live one.
             continue
         role = "user" if i % 2 else "assistant"
         last = i == 4
         if last:
-            # `live_role` is what the arm CALLS the row it is writing into. The shipped build says assistant; a
-            # build that says otherwise is the regression ordinal-role parity exists to catch, and it is asked
-            # here rather than assumed.
             role = live_role
         body = tail if last else f"message {i}"
         if i == 3:
             body = user_body
         if last and not tail_has_parts:
-            # The gap between the send being accepted and the reply's first part arriving. The assistant
-            # message is mounted and publishes nothing, because thread.tsx renders "Generating..." in place of
-            # any part.
+            # Before the first part, thread.tsx renders "Generating...", so nothing is published.
             rows.append(
                 f'<div class="row" aria-posinset="{i}" aria-setsize="4">'
                 f'<div data-role="{role}"><span>Generating...</span></div></div>'
             )
             continue
         status = running_value if (last and tail_running) else "complete"
-        # THE HOOK IS RENAMED ON EVERY MESSAGE, not only the streamed one: `data-status` is a single line
-        # in markdown-text.tsx rendered for `complete` parts as well as `running` ones. A fixture that
-        # renamed it on one message would describe a build that does not exist, and would then be the only
-        # evidence that the control fires.
+        # `data-status` is rendered for complete parts too, so a rename applies to every message.
         attr = f'{hook}="{status}"'
         rows.append(
             f'<div class="row" aria-posinset="{i}" aria-setsize="4">'
@@ -143,13 +110,7 @@ def browser():
 
 
 def _capture(browser, **kw) -> dict:
-    """One capture, on a PAGE OF ITS OWN.
-
-    `set_content` rewrites the document through `document.write`, which keeps the JS context, so a
-    second call finds `window.__sb` already there, skips re-initialising it, and leaves the
-    observer bound to the previous document's viewport. The symptom is a capture that reports the
-    PREVIOUS page's visible set -- a fixture bug that would read as a finding.
-    """
+    """Fresh page per capture: set_content keeps window.__sb, which pins the old observer's viewport."""
     page = browser.new_page(viewport = {"width": 900, "height": 700})
     try:
         page.set_content(_page(**kw))
@@ -157,7 +118,6 @@ def _capture(browser, **kw) -> dict:
         page.add_script_tag(content = _PARITY_JS.read_text(encoding = "utf-8"))
         got = page.evaluate("() => window.__sb.parityVisible.watch()")
         assert got.get("visible_attempted") is True, got
-        # IntersectionObserver's first delivery is asynchronous.
         page.wait_for_timeout(150)
         cap = page.evaluate("async () => await window.__sb.parityVisible.capture()")
         assert cap.get("visible_attempted") is True, cap
@@ -166,22 +126,15 @@ def _capture(browser, **kw) -> dict:
         page.close()
 
 
-#:The base arm: an ordinary settled thread on the shipped build.
 _SETTLED = dict(tail = "the whole reply, arrived", tail_running = False, generating = False)
-#: THE TREATMENT THAT WENT BLIND, and the shape matters. A build that renames the ATTRIBUTE renames
-#: it on every message, so every settled row differs too, which is a rendering difference in its
-#: own right. The interesting blindness is a build that changed the status VOCABULARY: `complete`
-#: still reads `complete`, so every settled row is byte-identical and the only thing lost is the
-#: ability to see that a reply is being written.
+#: Blind via a changed status vocabulary: settled rows stay identical, only in-flight is lost.
 _BLIND = dict(
     tail = "the whole reply, arr", running_value = "streaming", tail_running = True, generating = True
 )
-#: The cruder form: the attribute itself is gone. Kept because it is the one blindness a WINDOWED
-#: arm can still be caught at, where a missing row is otherwise an ordinary state.
+#: Attribute removed: the one blindness still detectable on a windowed arm.
 _BLIND_ATTR = dict(
     tail = "the whole reply, arr", hook = "data-state", tail_running = True, generating = True
 )
-#:The same mid-stream moment on a build whose hook IS known. Already handled, as residue.
 _MIDSTREAM = dict(tail = "the whole reply, arr", tail_running = True, generating = True)
 
 
@@ -189,9 +142,7 @@ def test_a_blinded_treatment_is_refused_not_scored_as_a_rendering_difference(bro
     """THE REGRESSION, end to end: two points in one stream, scored as a difference."""
     base = _capture(browser, **_SETTLED)
     treat = _capture(browser, **_BLIND)
-    # Same messages on screen, so nothing above the digest comparison can refuse this pair.
     assert base["ever_visible"] == treat["ever_visible"] == [1, 2, 3, 4]
-    # And every row on both arms claims to be settled, which is the false statement.
     assert not any(r["in_flight"] for r in base["messages"].values())
     assert not any(r["in_flight"] for r in treat["messages"].values())
     assert base["messages"]["4"]["digest"] != treat["messages"]["4"]["digest"]
@@ -224,13 +175,7 @@ def test_a_settled_pair_is_not_refused(browser):
 
 
 def test_a_reply_streaming_below_the_fold_refuses_nothing(browser):
-    """Why the control is read globally rather than over the visible rows.
-
-    Tall messages, so the streamed last one is off screen. It is placed -- the hook is intact and
-    `streamingMessages()` finds it -- so the probe is not blind, and a capture that read only the
-    rows it could see would refuse a pair for being unable to see something it was never claiming
-    to have seen.
-    """
+    """Streaming below the fold must refuse nothing: a capture is not blamed for rows it never claimed."""
     cap = _capture(browser, **dict(_MIDSTREAM, tall = True))
     assert 4 not in cap["ever_visible"], cap["ever_visible"]
     assert cap["streaming"] is True
@@ -238,11 +183,7 @@ def test_a_reply_streaming_below_the_fold_refuses_nothing(browser):
 
 
 def test_a_lost_conversation_is_still_a_finding_while_a_reply_runs(browser):
-    """The ordering, held: the refusal sits AFTER the two lost-conversation findings.
-
-    A treatment that puts different messages on screen is a difference whether or not its stream
-    could be placed, exactly as `compare` keeps `mount_count_mismatch` ahead of the same refusal.
-    """
+    """A lost conversation is still a finding while a reply runs; the blind refusal comes after it."""
     base = _capture(browser, **_SETTLED)
     treat = _capture(browser, **dict(_BLIND, tall = True))
     assert treat["in_flight_unplaced"] is True
@@ -252,21 +193,14 @@ def test_a_lost_conversation_is_still_a_finding_while_a_reply_runs(browser):
     assert "DIFFERENT MESSAGES on screen" in got["reason"]
 
 
-# ── what the refusal may NOT take out with it ────────────────────────
-#
-# The blind-probe refusal is about rows whose meaning depends on where the stream had got to. Two
-# kinds of row provably do not: a row both arms call the user's, because a reply is written into an
-# assistant message; and a row whose ROLE changed, because a role is captured beside the digest and
-# how far a reply has arrived says nothing about whose it is. Both used to leave here as NOT
-# COMPARABLE with an empty `moved`, and `visible_report` buckets a refusal as blind and never
-# consults it for the exit code, so the run went green on them.
+# User rows and rows whose role changed do not depend on stream progress, so they must still
+# be reported instead of being swallowed by the blind-probe refusal.
 
 
 def test_a_changed_user_row_survives_the_blind_refusal(browser):
     base = _capture(browser, **_SETTLED)
     treat = _capture(browser, **dict(_BLIND, user_body = "the user message, rewritten"))
     assert treat["in_flight_unplaced"] is True, treat
-    # Row 3 is the user's on both arms and differs; row 4 is the one that cannot be read.
     assert base["messages"]["3"]["role"] == treat["messages"]["3"]["role"] == "user"
     assert base["messages"]["3"]["digest"] != treat["messages"]["3"]["digest"]
     got = P.compare_visible(base, treat)
@@ -289,12 +223,7 @@ def test_the_blind_refusal_still_covers_the_assistant_rows(browser):
 
 
 def test_a_role_change_on_the_live_row_is_reported_not_elided(browser):
-    """The row is in flight on the treatment arm, so its DIGEST is withheld. Its role is not.
-
-    The digest and the role are two separate readings of the same row, and only one of them names a
-    point in a stream. Eliding both meant a treatment that renders the live assistant row as the
-    user's came back NOT COMPARABLE.
-    """
+    """A live row's digest is withheld but its role is still compared, so a role flip is not hidden."""
     base = _capture(browser, **_SETTLED)
     treat = _capture(browser, **dict(_MIDSTREAM, live_role = "user"))
     assert treat["messages"]["4"]["in_flight"] is True, treat["messages"]["4"]
@@ -314,20 +243,8 @@ def test_the_same_row_with_the_same_role_is_still_residue(browser):
     assert got["not_digested"] == [4], got
 
 
-# ── a row that is not there is not an instrument that stopped working ─
-
-
 def test_a_windowed_arm_that_unmounted_the_live_row_is_not_read_as_blind(browser):
-    """THE FALSE POSITIVE THE CONTROL USED TO HAVE, and the one this mode exists for.
-
-    `streamingMessages()` scans MOUNTED DOM. A windowed arm scrolled away from the tail unmounts the
-    message it is writing into -- that is the whole point of windowing -- so the scan returns
-    nothing on a build whose hooks are perfectly intact. Refusing there discards the settled rows
-    that WERE on screen, which is the coverage visible mode is for.
-
-    The arm still declares four messages through `aria-setsize`, so the capture can tell the
-    difference between a thread it can see part of and a thread that has nothing to say.
-    """
+    """An unmounted live row is not a blind probe; the streaming scan only sees mounted DOM."""
     cap = _capture(browser, **dict(_MIDSTREAM, drop_tail = True))
     assert cap["streaming"] is True
     assert cap["status_hook_present"] is True
@@ -353,26 +270,14 @@ def test_a_full_mount_is_still_caught_when_only_the_STATUS_VALUE_changed(browser
 
 
 def test_what_the_windowed_narrowing_gives_up(browser):
-    """Pinned rather than left implicit: a WINDOWED arm whose status VALUE changed is not caught.
-
-    The row it is writing into may legitimately be absent, and the attribute is still published by
-    the settled rows, so nothing distinguishes it from an ordinary windowed capture. It under-claims
-    rather than over-claims, and the same build compared on any full-mount pair still trips.
-    """
+    """A windowed capture whose status value changed is not caught, since its live row may be unmounted."""
     cap = _capture(browser, **dict(_BLIND, drop_tail = True))
     assert cap["status_hook_present"] is True
     assert cap["in_flight_unplaced"] is False, cap
 
 
 def test_the_gap_before_the_first_part_arrives_is_not_a_blind_probe(browser):
-    """THE THIRD CAUSE, and `send_turn` returns exactly into it.
-
-    `send_turn` breaks the instant `isRunning()` flips (scene/actions.py), the window closes there
-    and the capture follows within milliseconds. At that moment the assistant message is mounted
-    with ZERO content parts -- thread.tsx renders "Generating..." in place of any part -- so it
-    publishes no status because it has none to publish. The older assistant messages still publish
-    theirs, which is what says the hook is intact and this is an ordinary interval.
-    """
+    """A new reply with no parts yet has no status to publish, so the gap is not a blind probe."""
     cap = _capture(browser, **dict(_MIDSTREAM, tail_has_parts = False))
     assert cap["streaming"] is True
     assert cap["status_hook_present"] is True

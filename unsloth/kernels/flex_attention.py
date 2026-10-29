@@ -38,9 +38,10 @@ if not HAS_FLEX_ATTENTION:
     # Logit softcapping
     @torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
     def _compiled_slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, kv_len):
-        n_heads = self.config.num_attention_heads
+        # This rank's heads under tensor parallelism (models/tp_native.py); the config counts otherwise.
+        n_heads = self.__dict__.get("_unsloth_tp_heads", self.config.num_attention_heads)
         head_dim = self.head_dim
-        n_kv_heads = self.config.num_key_value_heads
+        n_kv_heads = self.__dict__.get("_unsloth_tp_kv_heads", self.config.num_key_value_heads)
         n_groups = self.num_key_value_groups
         actual_q_len = Q.shape[-2]
 
@@ -90,7 +91,15 @@ if not HAS_FLEX_ATTENTION:
 
     def slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len):
         # Inductor indexes the scores in int32; past 2**31 elements the last rows come back NaN.
-        rows = max(1, (2**31 - 1) // (self.config.num_attention_heads * q_len * q_len))
+        rows = max(
+            1,
+            (2**31 - 1)
+            // (
+                self.__dict__.get("_unsloth_tp_heads", self.config.num_attention_heads)
+                * q_len
+                * q_len
+            ),
+        )
         if bsz <= rows:
             return _softcapping_attention(Q, K, V, causal_mask, self, bsz, q_len)
         per_row_mask = causal_mask.dim() == 4 and causal_mask.shape[0] == bsz
@@ -129,7 +138,7 @@ else:
     def sliding_window_masker(size = 4096):
         def sliding_window(b, h, q_idx, kv_idx):
             causal_mask = q_idx >= kv_idx
-            window_mask = q_idx - kv_idx <= size
+            window_mask = q_idx - kv_idx < size
             return causal_mask & window_mask
 
         return sliding_window
@@ -167,7 +176,7 @@ else:
         )
 
     def slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len):
-        n_heads = self.config.num_attention_heads
+        n_heads = self.__dict__.get("_unsloth_tp_heads", self.config.num_attention_heads)
         head_dim = self.head_dim
         s = self.config.query_pre_attn_scalar
         t = self.config.attn_logit_softcapping
@@ -184,9 +193,9 @@ torch_nn_functional_softmax = torch.nn.functional.softmax
 
 
 def slow_inference_attention_softcapping(Q, K, V, causal_mask, self, bsz, kv_len):
-    n_heads = self.config.num_attention_heads
+    n_heads = self.__dict__.get("_unsloth_tp_heads", self.config.num_attention_heads)
     head_dim = self.head_dim
-    n_kv_heads = self.config.num_key_value_heads
+    n_kv_heads = self.__dict__.get("_unsloth_tp_kv_heads", self.config.num_key_value_heads)
     n_groups = self.num_key_value_groups
     actual_q_len = Q.shape[-2]
 
@@ -195,8 +204,7 @@ def slow_inference_attention_softcapping(Q, K, V, causal_mask, self, bsz, kv_len
     K = K.reshape(bsz, n_heads, kv_len, head_dim)
     V = V.reshape(bsz, n_heads, kv_len, head_dim)
 
-    # Gemma 9b should use 256, not hidden_size // num_attention_heads (224); 27b uses the derived value,
-    # so default to the config. See google/gemma_pytorch commit 03e6575.
+    # Gemma 9b uses 256, not hidden_size // num_attention_heads, so read the config.
     s = self.config.query_pre_attn_scalar
     t = self.config.attn_logit_softcapping
 

@@ -5,8 +5,6 @@ import type { useNavigate } from "@tanstack/react-router";
 import { getAuthSessionEpoch } from "@/features/auth";
 // eslint-disable-next-line no-restricted-imports -- the chat barrel imports the Library back
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-// eslint-disable-next-line no-restricted-imports -- the chat barrel imports the Library back
-import { clearNewChatDraft } from "@/features/chat/utils/composer-draft";
 import { createModelConfigHandoffRequestId } from "@/features/model-picker";
 import { translate } from "@/i18n";
 import { toast } from "@/lib/toast";
@@ -20,7 +18,6 @@ import { mediaFileName } from "@/lib/prompt-text";
 type Navigate = ReturnType<typeof useNavigate>;
 
 export function resetToNewChat(): void {
-  clearNewChatDraft();
   const runtime = useChatRuntimeStore.getState();
   runtime.setActiveThreadId(null);
   runtime.setActiveProjectId(null);
@@ -33,7 +30,7 @@ export function startLibraryChat(
 ): void {
   const nonce = createModelConfigHandoffRequestId();
   resetToNewChat();
-  // Offered once the new chat is on screen: drained earlier it would attach to the old thread's composer.
+  // Drained earlier it would attach to the old thread's composer.
   void navigate({ to: "/chat", search: { new: nonce } }).then(() => {
     requestAnimationFrame(() =>
       useLibraryChatHandoffStore.getState().offer(`single:${nonce}`, handoff),
@@ -64,7 +61,7 @@ const MEDIA = {
 
 const LOADING_TOAST_DELAY_MS = 400;
 
-// One hand-off at a time: a second click while a large clip downloads would open a second chat.
+// A second click during a large download would open a second chat.
 let handoffInFlight = false;
 
 export async function chatAboutMedia(
@@ -86,9 +83,9 @@ export async function chatAboutMedia(
   const loadingTimer = setTimeout(() => {
     loadingToast = toast.loading(translate(media.attaching));
   }, LOADING_TOAST_DELAY_MS);
-  // A sign-out while the file downloads would hand it to the next account's chat.
+  // A sign-out mid-download would hand the file to the next account's chat.
   const epoch = getAuthSessionEpoch();
-  // The media pages stay mounted off-route: a user who moved on must not be pulled into a new chat.
+  // Media pages stay mounted off-route; a user who moved on must not be pulled into a chat.
   const startedAt = typeof window === "undefined" ? "" : window.location.pathname;
   try {
     const response = await load();

@@ -11,11 +11,15 @@
 
 from .llama import *
 from .llama import (
+    _decode_rotary_seq_len,
     original_apply_qkv,
     original_apply_o,
+    _gqa_decode_scores,
+    _gqa_decode_values,
+    _LazyDeviceScratch,
 )
 from ._utils import __version__
-from ._utils import move_to_device, per_layer_device
+from ._utils import move_to_device, per_layer_device, refresh_moved_layer_devices
 from unsloth_zoo.hf_utils import dtype_from_config
 from unsloth_zoo.utils import _get_dtype, Version
 from ..utils.packing import get_packed_info_from_kwargs
@@ -105,9 +109,9 @@ def CohereAttention_fast_forward(
 
     bsz, q_len, _ = hidden_states.size()
 
-    n_heads = self.config.num_attention_heads
+    n_heads = self.__dict__.get("_unsloth_tp_heads", self.config.num_attention_heads)
     n_groups = self.num_key_value_groups
-    n_kv_heads = self.config.num_key_value_heads
+    n_kv_heads = self.__dict__.get("_unsloth_tp_kv_heads", self.config.num_key_value_heads)
     head_dim = self.head_dim
     assert n_kv_heads * n_groups == n_heads
 
@@ -136,9 +140,11 @@ def CohereAttention_fast_forward(
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
         V = torch.cat([past_key_value[1], V], dim = 2)
+    # Incoming cache; past_key_value is reassigned below (eval keeps use_cache on).
+    had_cache = past_key_value is not None
     past_key_value = (K, V) if use_cache else None
 
-    use_varlen = seq_info is not None and past_key_value is None
+    use_varlen = seq_info is not None and not had_cache
     backend = select_attention_backend(use_varlen)
     attention_config = AttentionConfig(
         backend = backend,
@@ -151,8 +157,7 @@ def CohereAttention_fast_forward(
             "softmax_scale": getattr(self, "softmax_scale", None),
         },
     )
-    # PrefixGrouper seg table rides in **kwargs from the GRPO logprob forward; misuse (KV cache /
-    # padding mask) raises. None means the byte-identical default.
+    # PrefixGrouper seg table rides in kwargs; None is the default path, and KV cache or padding mask misuse raises
     _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
     context = AttentionContext(
         bsz = bsz,
@@ -162,6 +167,7 @@ def CohereAttention_fast_forward(
         head_dim = head_dim,
         requires_grad = hidden_states.requires_grad,
         seq_info = seq_info,
+        training = self.training,
         attention_mask = attention_mask,
         causal_mask = causal_mask,
         prefix_seg_info = _pg_seg,
@@ -303,7 +309,7 @@ def CohereAttention_fast_forward_inference(
             self.temp_O = self.temp_QA[1][:, :, :hidden_size]
 
         self.attention = torch.empty(
-            (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len),
+            (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len + (-seq_len) % 8),
             dtype = dtype,
             device = f"{DEVICE_TYPE_TORCH}:0",
         )
@@ -348,7 +354,13 @@ def CohereAttention_fast_forward_inference(
         Qn = fast_layernorm_inference(self.q_norm, Qn, self.q_norm_out_weight)
         Kn = fast_layernorm_inference(self.k_norm, Kn, self.k_norm_out_weight)
 
-    cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
+    # rotary_seq_len (once per step from the decode loop) covers explicit positions past the KV length.
+    rotary_seq_len = kwargs.get("rotary_seq_len")
+    if rotary_seq_len is not None and rotary_seq_len > kv_seq_len:
+        self.rotary_emb.extend_rope_embedding(Vn, rotary_seq_len + 1)
+        cos, sin = self.rotary_emb.get_cached(rotary_seq_len, Qn.device.index)
+    else:
+        cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
     # Transformers 5.x: position_ids may be [batch, full_seq_len]; slice to last.
     if position_ids.dim() >= 2 and position_ids.shape[-1] > 1:
         position_ids = position_ids[:, -1:]
@@ -386,9 +398,9 @@ def CohereAttention_fast_forward_inference(
     else:
         Knn, Vnn = Kn, Vn
 
-    # Grouped query attention.
+    # Grouped query attention; bsz == 1 reads the KV heads in place below.
     _, _, cached_len, _ = Knn.shape
-    if n_groups != 1:
+    if bsz != 1 and n_groups != 1:
         Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Vnn = Vnn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
@@ -398,9 +410,9 @@ def CohereAttention_fast_forward_inference(
         Qn *= self.scalar
         # (Q * scalar) @ K beats (Q @ K) * scalar for stopping overflows; see ggerganov/llama.cpp#7805
         # (comment 2153349963).
-        A = torch_matmul(Qn, Knn.transpose(2, 3), out = self.attention[:, :, :, :cached_len])
+        A = _gqa_decode_scores(Qn, Knn, self.attention[:, :, :, :cached_len])
         A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)
-        A = torch_matmul(A, Vnn, out = Qn)
+        A = _gqa_decode_values(A, Vnn, Qn)
     else:
         A = scaled_dot_product_attention(Qn, Knn, Vnn, attn_mask = attention_mask, is_causal = False)
     A = A.transpose(1, 2)
@@ -417,13 +429,10 @@ def CohereModel_fast_forward_inference(
     position_ids,
     attention_mask = None,
 ):
-    out_weights = tuple(
-        torch.empty_like(
-            self.model.layers[0].input_layernorm.weight,
-            dtype = torch.float32,
-            device = torch.device(x),
-        )
-        for x in range(DEVICE_COUNT)
+    norm_weight = self.model.layers[0].input_layernorm.weight
+    out_weights = _LazyDeviceScratch(
+        DEVICE_COUNT,
+        lambda device: torch.empty_like(norm_weight, dtype = torch.float32, device = device),
     )
     input_ids = input_ids[:, : self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
@@ -444,8 +453,18 @@ def CohereModel_fast_forward_inference(
     else:
         attention_mask = None
 
+    # Once per step for every layer, never per layer (one host sync at most).
+    rotary_seq_len = _decode_rotary_seq_len(
+        getattr(getattr(self.model.layers[0], "self_attn", None), "rotary_emb", None),
+        seq_len + 1,
+        position_ids,
+    )
     next_decoder_cache = []
+    block_swap = getattr(self.model.layers, "_unsloth_block_swap", None)
+    refresh_moved_layer_devices(self.model.layers, block_swap)
     for idx, decoder_layer in enumerate(self.model.layers):
+        if block_swap is not None:
+            block_swap.enter(idx)
         layer_device, device_index = per_layer_device(decoder_layer)
         hidden_states, position_ids = move_to_device(layer_device, hidden_states, position_ids)
         residual = hidden_states
@@ -459,12 +478,15 @@ def CohereModel_fast_forward_inference(
             position_ids = position_ids,
             attention_mask = attention_mask,
             do_prefill = not hasattr(decoder_layer.self_attn, "paged_attention"),
+            rotary_seq_len = rotary_seq_len,
         )
 
         hidden_states_mlp = fast_swiglu_inference(decoder_layer.mlp, hidden_states)
         residual += hidden_states_attention
         residual += hidden_states_mlp
         hidden_states = residual
+        if block_swap is not None:
+            block_swap.leave(idx)
 
         next_decoder_cache.append(present_key_value)
     hidden_states = fast_layernorm_inference(

@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Library API: one view over uploads, chat attachments, generated images and audio, fine-tuned
-models and sandbox files, plus folders, favorites and renames. See ``core.library`` for the sources."""
+"""Library API over uploads, attachments, media, models and sandbox files; sources in core.library."""
 
 import hashlib
 import hmac
@@ -40,9 +39,8 @@ router = APIRouter()
 
 _MAX_UPLOAD_BYTES = LIBRARY_UPLOAD_MAX_BYTES
 _CHUNK_BYTES = 1024 * 1024
-# Raster images, audio and video render inline; anything else (svg and html included) downloads as
-# opaque bytes, as the sandbox route does, so a crafted upload cannot run script on the app origin.
-# Exact types, never a prefix: a stored "audio/x, text/html" is not audio.
+# Only raster/audio/video inline; svg/html download as bytes so they can't run script.
+# Exact types, never prefix match.
 _INLINE_IMAGE_TYPES = frozenset(
     {"image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"}
 )
@@ -102,6 +100,9 @@ def _items_for_caller(items: list[dict], via_api_key: bool) -> list[dict]:
         # A fine-tune of a local model names that folder; a Hub repo id is kept.
         if isinstance(base, str) and os.path.isabs(base):
             item["model"] = {**item["model"], "baseModel": cache_reference(base)}
+        made_with = (item.get("audio") or {}).get("model")
+        if isinstance(made_with, str) and os.path.isabs(made_with):
+            item["audio"] = {**item["audio"], "model": cache_reference(made_with)}
         shown.append(item)
     return redact_inventory_host_paths(shown, via_api_key = via_api_key)
 
@@ -162,10 +163,12 @@ async def get_library(
 
     items = await run_in_threadpool(library.list_items)
     disk = await run_in_threadpool(library.disk_usage)
+    unlisted = await run_in_threadpool(library.unlisted_bytes, items)
     return {
         "items": _items_for_caller(items, via_api_key),
         "folders": library_db.list_folders(),
         "disk": redact_inventory_host_paths(disk, via_api_key = via_api_key),
+        "unlistedBytes": unlisted,
     }
 
 
@@ -195,27 +198,27 @@ def _still_there(item_id: str, fingerprint: Optional[str]) -> bool:
 
 @router.patch("/items")
 def patch_item(body: ItemPatch, current_subject: str = Depends(get_current_subject)) -> dict:
-    fingerprint = library.fingerprint(body.id)
-    if fingerprint is None and library.path_derived(body.id):
-        raise HTTPException(status_code = 404, detail = "Item not found")
-    try:
-        library_db.update_entry(
-            body.id,
-            name = body.name.strip() if body.name else None,
-            favorite = body.favorite,
-            folder_id = body.folderId,
-            move = "folderId" in body.model_fields_set,
-            fingerprint = fingerprint,
-        )
-    except KeyError:
-        raise HTTPException(status_code = 404, detail = "Folder not found")
+    with library.overlay_write():
+        fingerprint = library.fingerprint(body.id)
+        if fingerprint is None and library.path_derived(body.id):
+            raise HTTPException(status_code = 404, detail = "Item not found")
+        try:
+            library_db.update_entry(
+                body.id,
+                name = body.name.strip() if body.name else None,
+                favorite = body.favorite,
+                folder_id = body.folderId,
+                move = "folderId" in body.model_fields_set,
+                fingerprint = fingerprint,
+            )
+        except KeyError:
+            raise HTTPException(status_code = 404, detail = "Folder not found")
     return {"ok": True}
 
 
 @router.post("/items/opened")
 def mark_item_opened(body: ItemRef, current_subject: str = Depends(get_current_subject)) -> dict:
-    # Only an item that is there, and kept for the file it is now: an open landing after a delete
-    # must not leave a row that a file made at the same path later would take for its own.
+    # Mark only items still present; a late open after delete leaves no row for a later same-path file.
     if not library.mark_opened(body.id):
         raise HTTPException(status_code = 404, detail = "Item not found")
     return {"ok": True}
@@ -266,7 +269,7 @@ async def add_item_to_project(
     from core.inference.gallery_projects import ProjectNotFound, copy_into_project
 
     def _copy() -> dict:
-        with library.open_item(body.id) as item:
+        with library.project_item(body.id) as item:
             copied = copy_into_project(item.handle, body.projectId, item.folder, item.project_name)
         library.invalidate_listing()
         return copied
@@ -277,7 +280,7 @@ async def add_item_to_project(
         raise HTTPException(status_code = 404, detail = "Project not found")
     except LookupError:
         raise HTTPException(status_code = 404, detail = "Item not found")
-    except ValueError as exc:
+    except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code = 400, detail = str(exc))
     except OSError as exc:
         logger.warning("library.add_to_project_failed: %s", exc)
@@ -400,10 +403,7 @@ def _send(
     )
 
 
-# An audio or video preview plays from a link the element fetches itself, with range requests, so
-# a long file is never buffered whole and can seek. The bearer mints the link; the link alone then
-# serves that one item, in that one account, until it expires. A secret and domain of its own, so
-# a gallery's media link never works here, nor one of these there.
+# Media plays via a range-capable signed link scoped to one item; own secret and domain.
 _STREAM_LINK_TTL = 6 * 3600
 _STREAM_LINK_SECRET = secrets.token_bytes(32)
 _STREAM_LINK_DOMAIN = b"unsloth-library-stream\0"
@@ -451,10 +451,7 @@ _RANGE_RE = re.compile(r"\s*bytes\s*=\s*([0-9]*)-([0-9]*)\s*", re.IGNORECASE)
 
 
 def _byte_range(request: Request, size: int) -> Optional[tuple[int, int]]:
-    """The one ``bytes=`` range asked for, as (first, last) inclusive; None for the whole file.
-
-    What RFC 9110 lets a server ignore is ignored (another unit, several ranges, a malformed one,
-    an ``If-Range`` this route has no validator to match); a range past the end is unsatisfiable."""
+    """(first, last) inclusive, or None: other units, multi-range, malformed or If-Range are ignored"""
     match = _RANGE_RE.fullmatch(request.headers.get("range") or "")
     if not match or request.headers.get("if-range") or match.groups() == ("", ""):
         return None
@@ -540,8 +537,7 @@ async def get_locations(
 ) -> dict:
     from hub.utils.host_paths import redact_inventory_host_paths
 
-    # Settings > Library shows these to a signed-in user; an API key gets references, as the Hub
-    # inventory routes give it.
+    # Settings > Library shows these to a signed-in user; an API key only gets redacted references.
     locations = await run_in_threadpool(library.locations)
     return redact_inventory_host_paths({"locations": locations}, via_api_key = via_api_key)
 
@@ -557,8 +553,7 @@ async def reveal_location(
     if body.key not in entries:
         raise HTTPException(status_code = 404, detail = "Unknown location")
     path = Path(entries[body.key]["path"])
-    # A chosen folder that is gone is on a drive that is not there: making it would put the next
-    # saves beneath the mount point. Only a default is made.
+    # A missing chosen folder means an absent drive; creating it would write under the mount point.
     if not entries[body.key]["available"]:
         raise HTTPException(
             status_code = 409,
@@ -666,8 +661,7 @@ async def upload_files(
             for item_id in ids:
                 library_db.update_entry(item_id, folder_id = folderId, move = True)
     except BaseException as exc:
-        # All or nothing, so a retry never duplicates the files that did make it, and the grants
-        # this batch spent are given back, or its retry would be refused as a replay.
+        # All or nothing, so a retry never duplicates files; spent grants return, else retry is refused
         for record in records:
             await run_in_threadpool(library.delete_item, f"upload:{record['id']}")
         _release_leases(consumed)

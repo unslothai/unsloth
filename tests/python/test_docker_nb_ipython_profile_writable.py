@@ -1,25 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The baked IPython profile must stay writable under `docker run --user <uid>`.
-
-`ENV IPYTHONDIR=/opt/unsloth-nb/ipython` is what makes the notebook startup hook
-load for EVERY kernel regardless of uid. But IPython does not fail loudly on a
-profile it cannot write: `IPython.paths.get_ipython_dir()` checks the directory
-with `os.access(..., W_OK)` and, when it is not writable, warns once on stderr and
-substitutes `tempfile.mkdtemp()`. A fresh temp directory has no `profile_default/
-startup/`, so the hook never runs -- no transformers sidecar activation, no
-`%pip` / `%uv` magic, no colab-compat -- and the notebook still executes, wrongly,
-with nothing in the output to say so.
-
-Making only the TOP directory writable is worse: `ProfileDir.check_dirs()` then
-creates `security/`, `log/`, `pid/` inside `profile_default` and raises
-PermissionError, which kills the kernel before it replies to kernel_info.
-
-So this replays the Dockerfile's own profile-setup commands into a temp tree,
-re-maps each path's OTHER bits onto its owner bits (which is exactly what a
-foreign uid sees), and then asks the installed IPython what it would really do.
-"""
+"""The baked IPython profile must be writable by any uid, or IPython silently uses a temp dir."""
 
 from __future__ import annotations
 
@@ -44,7 +26,6 @@ _IPY_DIR = "/opt/unsloth-nb/ipython"
 def _profile_setup_commands() -> list[str]:
     """The `mkdir` / `cp` / `chmod` steps of the RUN layer that builds the profile."""
     text = DOCKERFILE.read_text(encoding = "utf-8")
-    # the layer is a single `RUN set -eux \` ... continuation block
     start = text.index("COPY unsloth_nb_compat.py")
     block = text[start : text.index("\nENV PATH=", start)]
     joined = block.replace("\\\n", "\n")
@@ -61,14 +42,8 @@ def _profile_setup_commands() -> list[str]:
 
 
 def _as_foreign_uid(root: Path) -> None:
-    """Give every path the permissions a DIFFERENT uid would get.
-
-    The image builds this tree as root with a 022 umask, so a container started
-    with `--user <uid>` sees only the `other` bits. The test process owns the tree,
-    and `os.access` answers on the OWNER bits, so copy other->owner to make the
-    question the same one.
-    """
-    # deepest first: dropping a directory's owner bits would hide its children
+    """Copies each path's other bits onto its owner bits, so os.access answers as a foreign uid would."""
+    # Deepest first: dropping a directory's owner bits would hide its children.
     paths = sorted([root, *root.rglob("*")], key = lambda p: len(p.parts), reverse = True)
     for path in paths:
         mode = stat.S_IMODE(path.stat().st_mode)
@@ -106,7 +81,7 @@ def staged_profile(tmp_path_factory):
     subprocess.run(["bash", "-c", script], check = True)
     _as_foreign_uid(root / "ipython")
     yield root / "ipython"
-    # hand the owner bits back, or pytest cannot remove its own tmp tree
+    # Restore owner bits so pytest can remove its tmp tree.
     for path in sorted(root.rglob("*"), key = lambda p: len(p.parts), reverse = True):
         try:
             path.chmod(stat.S_IMODE(path.stat().st_mode) | 0o700)
@@ -157,8 +132,7 @@ def test_the_shared_startup_hook_stays_read_only(staged_profile: Path):
             f"{path} is writable by other uids; the shared hook runs in every kernel "
             "and must not be replaceable from a notebook"
         )
-    # profile_default has to be world-writable for the test above to pass; without
-    # the sticky bit that also lets any uid rename startup/ out of the way
+    # A world-writable profile_default needs the sticky bit to protect startup/.
     parent = stat.S_IMODE((staged_profile / "profile_default").stat().st_mode)
     if parent & 0o002:
         assert parent & stat.S_ISVTX, (

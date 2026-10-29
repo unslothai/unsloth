@@ -7,6 +7,7 @@ from __future__ import annotations
 import errno
 import functools
 import hashlib
+import ntpath
 import os
 import platform
 import re
@@ -23,8 +24,9 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-ToolExecutionMode = Literal["auto", "required", "full"]
-TOOL_EXECUTION_MODES = ("auto", "required", "full")
+# "software" is Sandbox Low: software safeguards without the OS sandbox, never Full access.
+ToolExecutionMode = Literal["auto", "required", "full", "software"]
+TOOL_EXECUTION_MODES = ("auto", "required", "full", "software")
 PUBLIC_TOOL_EXECUTION_MODES = ("auto", "required")
 
 PROFILE_VERSION = "unsloth-sandbox-v1"
@@ -230,6 +232,9 @@ WORKDIR_SCAN_SECONDS = 5.0
 CACHE_SCAN_ENTRIES = 50_000
 CACHE_SCAN_SECONDS = 3.0
 _SCAN_JOIN_GRACE_SECONDS = 0.5
+_overran_workdirs: set[str] = set()
+_overrun_recheck_after: dict[str, float] = {}
+OVERRUN_RECHECK_SECONDS = 60.0
 
 TOOL_TEMP_DIRNAME = "unsloth-tmp"
 TOOL_TEMP_MODE = 0o700
@@ -239,10 +244,29 @@ class _ScanBudgetExceeded(Exception):
     """The walk ran out of budget: not a hazard, so it must not refuse an `auto` launch."""
 
 
+def _extended_path(path: str) -> str:
+    """The \\\\?\\ spelling of a Windows path, which reaches a file named nul, con or com1 instead of the device."""
+    if path.startswith(("\\\\?\\", "\\\\.\\")):
+        return path
+    # Callers pass an absolute workdir. normpath is string-only; abspath would hand back \\.\nul for C:\work\nul.
+    absolute = ntpath.normpath(path)
+    if absolute.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + absolute[2:]
+    return "\\\\?\\" + absolute
+
+
+# The real filesystem API, not sys.platform: tests stand in a Windows platform over a POSIX tmp_path.
+_NT_PATHS = os.name == "nt"
+
+
+def _entry_path(path: str) -> str:
+    return _extended_path(path) if _NT_PATHS else path
+
+
 def directory_signature(path: str) -> tuple:
     """Identity plus mtime for one directory, the unit a cached verdict is re-checked in."""
     try:
-        info = os.stat(path)
+        info = os.stat(_entry_path(path))
     except OSError:
         return (path, None)
     return (path, info.st_dev, info.st_ino, info.st_mtime_ns)
@@ -260,6 +284,15 @@ def _host_channel_hazard(
     witness: "list[tuple] | None" = None,
 ) -> str | None:
     """Return a host-access hazard under *root*, or None."""
+    # One namespace for listing and stat, so a directory named nul is walked as the one stat judged.
+    top = _entry_path(root)
+    hazard = _walk_for_host_channels(top, max_entries, seconds, witness)
+    return hazard if hazard is None or top == root else hazard.replace(top, root)
+
+
+def _walk_for_host_channels(
+    root: str, max_entries: int, seconds: float, witness: "list[tuple] | None"
+) -> str | None:
     deadline = time.monotonic() + seconds
     entries = 0
     # Only an unaccounted hard link leads outside; cp -al, git clone --local and pip make nlink > 1.
@@ -291,8 +324,9 @@ def _host_channel_hazard(
             if stat.S_ISLNK(info.st_mode):
                 continue
             if stat.S_ISDIR(info.st_mode):
-                # Misses a same-filesystem bind mount; Linux also asks the mount table.
-                if os.path.ismount(path):
+                # Misses a same-filesystem bind mount; Linux also asks the mount table. A Windows mounted folder is a
+                # reparse point, refused above, and ntpath.ismount calls a directory named nul the \\.\nul device root.
+                if not _NT_PATHS and os.path.ismount(path):
                     return f"contains a nested host mount: {path}"
                 continue
             if not stat.S_ISREG(info.st_mode):
@@ -304,8 +338,21 @@ def _host_channel_hazard(
         return f"{unreadable[0]} cannot be fully inspected"
     for found, total, path in links.values():
         if found < total:
-            return f"contains a file hard-linked from outside it: {path}"
+            return f"{_HARD_LINKED}{path}"
     return None
+
+
+_HARD_LINKED = "contains a file hard-linked from outside it: "
+
+
+def _broke_staged_links() -> bool:
+    # An older backend on the same home can stage an "Open in default app" link after this one started.
+    try:
+        from utils.paths.path_utils import prune_open_staging
+        prune_open_staging()
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 _scan_lock = threading.Lock()
@@ -428,7 +475,12 @@ def clear_stale_tool_ipc(workdir: str, deadline: "float | None" = None) -> tuple
             return ()
         if not _looks_like_our_scratch_dir(scratch):
             return ()
-        for base, dirs, names in os.walk(scratch, followlinks = False):
+        # By directory fd: the jail can swap a directory for a link mid-sweep. Windows has no fwalk.
+        if hasattr(os, "fwalk"):
+            walk = os.fwalk(scratch, follow_symlinks = False)
+        else:
+            walk = ((*step, None) for step in os.walk(scratch, followlinks = False))
+        for base, dirs, names, dirfd in walk:
             dirs[:] = [name for name in dirs if not os.path.ismount(os.path.join(base, name))]
             for name in names:
                 if deadline is not None and time.monotonic() > deadline:
@@ -436,7 +488,7 @@ def clear_stale_tool_ipc(workdir: str, deadline: "float | None" = None) -> tuple
                     return tuple(removed)
                 path = os.path.join(base, name)
                 try:
-                    entry = os.lstat(path)
+                    entry = os.lstat(path) if dirfd is None else os.lstat(name, dir_fd = dirfd)
                 except OSError:
                     continue
                 mode = entry.st_mode
@@ -451,7 +503,14 @@ def clear_stale_tool_ipc(workdir: str, deadline: "float | None" = None) -> tuple
                     )
                     continue
                 try:
-                    os.unlink(path)
+                    if dirfd is None:
+                        os.unlink(path)
+                    else:
+                        # The probe went by path: unlink only the entry the walk saw.
+                        again = os.lstat(name, dir_fd = dirfd)
+                        if (again.st_dev, again.st_ino) != (entry.st_dev, entry.st_ino):
+                            continue
+                        os.unlink(name, dir_fd = dirfd)
                 except OSError:
                     continue
                 removed.append(path)
@@ -468,6 +527,7 @@ def clear_stale_tool_ipc(workdir: str, deadline: "float | None" = None) -> tuple
 
 def scan_workdir_for_host_channels(workdir: str) -> tuple[str, ...]:
     """Scan the writable workdir: a hazard fails the call, an overrun budget is recorded, not refused."""
+    key = os.path.realpath(workdir)
     try:
         hazard = _hazard_within_wall_clock(
             workdir,
@@ -477,10 +537,44 @@ def scan_workdir_for_host_channels(workdir: str) -> tuple[str, ...]:
         )
     except _ScanBudgetExceeded as exc:
         logger.warning("The session workdir %s: %s", workdir, exc)
+        _overran_workdirs.add(key)
         return (WORKDIR_SCAN_INCOMPLETE,)
+    _overran_workdirs.discard(key)
+    if hazard is not None and hazard.startswith(_HARD_LINKED) and _broke_staged_links():
+        # The hazard stands unless a full rescan proves it gone.
+        try:
+            hazard = _hazard_within_wall_clock(workdir, WORKDIR_SCAN_ENTRIES, WORKDIR_SCAN_SECONDS)
+        except _ScanBudgetExceeded:
+            pass
     if hazard is not None:
         raise WorkdirUnsafeError(f"the session workdir {hazard}")
     return ()
+
+
+def workdir_scan_overran(workdir: str) -> bool:
+    return bool(_overran_workdirs) and os.path.realpath(workdir) in _overran_workdirs
+
+
+def recheck_overran_workdir(workdir: str) -> None:
+    """For a folder launched without a scan: forget the overrun once it scans clean, at most once a minute."""
+    if not workdir_scan_overran(workdir):
+        return
+    key = os.path.realpath(workdir)
+    now = time.monotonic()
+    if now < _overrun_recheck_after.get(key, 0.0):
+        return
+    _overrun_recheck_after[key] = now + OVERRUN_RECHECK_SECONDS
+    try:
+        hazard = _hazard_within_wall_clock(
+            workdir,
+            WORKDIR_SCAN_ENTRIES,
+            WORKDIR_SCAN_SECONDS,
+            prepare = lambda deadline: clear_stale_tool_ipc(workdir, deadline),
+        )
+    except _ScanBudgetExceeded:
+        return
+    if hazard is None:
+        _overran_workdirs.discard(key)
 
 
 def cache_share_hazard(path: str, witness: "list[tuple] | None" = None) -> str | None:
@@ -567,6 +661,7 @@ def model_library_roots() -> tuple[str, ...]:
         return ()
     state = studio_state_roots()
     forbidden = _never_a_model_library()
+    hf_homes = _hf_home_roots()
     kept: list[str] = []
     for path in candidates:
         if not path or not os.path.isabs(path):
@@ -580,11 +675,56 @@ def model_library_roots() -> tuple[str, ...]:
         # The approval gate still asks for a credential inside a model folder; a whole-folder grant would not.
         if tool_path_approval._references_sensitive_path(real + os.sep):
             continue
+        # The root check can't see an HF home's token / stored_tokens at this folder's top.
+        if any(_is_within(home, real) for home in hf_homes) or _holds_a_credential_file(real):
+            continue
         if any(_paths_overlap(real, root) for root in state):
             continue
         if real not in kept:
             kept.append(real)
     return tuple(kept)
+
+
+_CREDENTIAL_BASENAMES = (".env",)  # plus the approval gate's own list, read at call time
+
+
+def _hf_home_roots() -> tuple[str, ...]:
+    homes: list[str] = []
+    try:
+        from utils.hf_cache_settings import known_hf_cache_homes
+
+        # Cache history and download homes often hold only hub bytes; a home counts once it holds a token.
+        for home in known_hf_cache_homes():
+            home = os.path.realpath(str(home))
+            if any(
+                os.path.lexists(os.path.join(home, name)) for name in ("token", "stored_tokens")
+            ):
+                homes.append(home)
+    except Exception:  # noqa: BLE001 - never fail a launch over the cache settings
+        pass
+    # HF_TOKEN_PATH moves token, and stored_tokens beside it, out of the HF home.
+    token_path = os.environ.get("HF_TOKEN_PATH")
+    if token_path and token_path != os.devnull:
+        token_path = os.path.expanduser(os.path.expandvars(token_path))
+        if os.path.isabs(token_path):
+            homes.append(os.path.dirname(os.path.realpath(token_path)))
+    return tuple(homes)
+
+
+def _is_within(path: str, root: str) -> bool:
+    if sys.platform in ("darwin", "win32"):
+        # Case-insensitive volumes; over-matching on a case-sensitive one only skips a grant.
+        path, root = path.casefold(), root.casefold()
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:
+        return False
+
+
+def _holds_a_credential_file(folder: str) -> bool:
+    from .tool_path_approval import _CREDENTIAL_BASENAMES as approval_names
+    names = (*_CREDENTIAL_BASENAMES, *sorted(approval_names))
+    return any(os.path.lexists(os.path.join(folder, name)) for name in names)
 
 
 def _is_filesystem_root(path: str, pathmod: Any = None) -> bool:
@@ -756,7 +896,22 @@ def bwrap_install_command() -> str | None:
 
 
 def linux_unavailable_remediation() -> str:
-    missing = [name for name in _LINUX_REQUIRED_BINARIES if shutil.which(name) is None]
+    from . import sandbox_linux
+
+    try:
+        sandbox_linux._trusted_bwrap_path()
+    except sandbox_linux.BwrapUntrustedError as exc:
+        # Installing another copy would be refused the same way; say what to change instead.
+        if exc.pinned or exc.hidden_root:
+            return f"{exc}. {_FALLBACK_NOTE}"
+    except SandboxUnavailableError:
+        pass
+    # A pinned bwrap need not be on PATH.
+    missing = (
+        []
+        if os.environ.get(sandbox_linux.BWRAP_PATH_ENV)
+        else [name for name in _LINUX_REQUIRED_BINARIES if shutil.which(name) is None]
+    )
     if missing:
         command = bwrap_install_command()
         # Installing bwrap alone leaves it blocked on Ubuntu 23.10+; keep it one copy-paste.
@@ -768,7 +923,7 @@ def linux_unavailable_remediation() -> str:
             else "install bubblewrap with your distribution's package manager"
         )
         return (
-            f"bubblewrap (bwrap) is not installed. To isolate tool calls, {how}; Studio picks "
+            f"bubblewrap (bwrap) is not installed. To isolate tool calls, {how}; Unsloth picks "
             f"it up within a minute, no restart needed. {_FALLBACK_NOTE}"
         )
     if _linux_userns_blocked_by_apparmor():
@@ -833,6 +988,10 @@ def capability_snapshot(
             selected_executable = selected_executable,
             cancel_event = cancel_event,
         )
+    if force and sys.platform == "linux":
+        # A forced re-check (Settings > Refresh) also re-decides the /proc layout, which joins the identity.
+        from .sandbox_linux import forget_proc_layout
+        forget_proc_layout()
     identity = _runtime_identity()
     if sys.platform == "linux":
         from . import sandbox_linux
@@ -842,14 +1001,25 @@ def capability_snapshot(
         backend = sandbox_macos
     else:
         return _unavailable(
-            "OS isolation for Studio tools is available on Linux and macOS only.",
+            "OS isolation for Unsloth tools is available on Linux and macOS only.",
             f"No sandbox backend exists for this platform. {_FALLBACK_NOTE}",
             identity,
         )
 
-    from .sandbox_probe import probe
+    from .sandbox_probe import UndecidedReason, probe
 
     available, reason = probe(backend, force = force)
+    if not available and isinstance(reason, UndecidedReason):
+        # Tool code can exhaust the host; that says nothing about the backend, so auto must not fall back on it.
+        return replace(
+            _unavailable(
+                reason,
+                "The sandbox check ran out of host resources (disk space, memory or open files). "
+                "Free them and try again.",
+                identity,
+            ),
+            protection_state = "undecided",
+        )
     if not available:
         remediation = (
             linux_unavailable_remediation()
@@ -863,15 +1033,183 @@ def capability_snapshot(
         reason = reason,
         environment = sys.platform,
         protection_state = "preview",
-        profile_id = backend.PROFILE_ID,
-        limitations = backend.LIMITATIONS,
+        # The Linux layout can vary per host (an empty /proc in containers); macOS has one profile.
+        profile_id = getattr(backend, "profile_id", lambda: backend.PROFILE_ID)(),
+        limitations = getattr(backend, "limitations", lambda: backend.LIMITATIONS)(),
         probe_generation = hashlib.sha256((identity + "available").encode()).hexdigest(),
         environment_fingerprint = identity,
         remediation = (
             "Python and Terminal run with OS isolation. The network is not confined; a tool "
-            "call can still reach the internet."
+            "call can still reach the internet and services listening on this machine's loopback."
         ),
     )
+
+
+# Last answer per tool, read by the "off" gate; a reset, a real launch or a new _host_key() replaces it.
+ISOLATED_TOOLS = ("python", "terminal")
+_tool_isolation_lock = threading.Lock()
+_tool_isolation: dict[str, tuple[bool, str, str, str]] = {}
+_tool_isolation_refreshing: set[str] = set()
+# A reset raises the generation floor; answers from older checks are dropped.
+_tool_isolation_generation = 0
+_tool_isolation_floor = 0
+_tool_isolation_noted: dict[str, int] = {}
+
+
+# Set to 1: no startup or background probes; only real launches update the answer.
+WARMUP_DISABLE_ENV = "UNSLOTH_DISABLE_SANDBOX_WARMUP"
+
+
+def _background_probes_disabled() -> bool:
+    return os.environ.get(WARMUP_DISABLE_ENV, "").strip() == "1"
+
+
+def tool_isolation_target(tool: str) -> str | None:
+    if tool == "python":
+        return sys.executable
+    if sys.platform != "win32":
+        return shutil.which("bash") or "bash"
+    from . import tools
+
+    if tools._terminal_profile(False) == "cmd_isolated":
+        return tools._windows_system_cmd()
+    return tools._windows_bash() or tools._windows_system_cmd()
+
+
+def note_tool_isolation(
+    tool: str | None,
+    available: bool,
+    *,
+    backend: str = "",
+    reason: str = "",
+    generation: int | None = None,
+) -> None:
+    global _tool_isolation_generation
+    if tool not in ISOLATED_TOOLS:
+        return
+    from .sandbox_probe import UndecidedReason
+
+    # Host resource exhaustion is not a verdict: an empty key makes the next read check again.
+    key = "" if isinstance(reason, UndecidedReason) else _host_key()
+    with _tool_isolation_lock:
+        if generation is None:
+            _tool_isolation_generation += 1
+            generation = _tool_isolation_generation
+        elif generation < _tool_isolation_floor or generation < _tool_isolation_noted.get(tool, 0):
+            return
+        _tool_isolation_noted[tool] = generation
+        _tool_isolation[tool] = (bool(available), backend, reason, key)
+
+
+def tool_isolation_generation() -> int:
+    """Take before a check and pass to note_tool_isolation(generation=...): an older check stays out."""
+    global _tool_isolation_generation
+    with _tool_isolation_lock:
+        _tool_isolation_generation += 1
+        return _tool_isolation_generation
+
+
+def forget_tool_isolation() -> None:
+    global _tool_isolation_floor
+    with _tool_isolation_lock:
+        _tool_isolation.clear()
+        _tool_isolation_noted.clear()
+        _tool_isolation_floor = _tool_isolation_generation + 1
+
+
+def refresh_tool_isolation(tool: str, *, force: bool = False) -> bool:
+    """Blocking: the capability for one tool, remembered for cached_tool_isolation."""
+    generation = tool_isolation_generation()
+    try:
+        capability = capability_snapshot(
+            force = force,
+            execution_kind = tool,
+            selected_executable = tool_isolation_target(tool),
+        )
+        available, backend, reason = (
+            bool(capability.available),
+            capability.backend,
+            capability.reason,
+        )
+    except Exception as exc:  # noqa: BLE001 - an unknown answer reads as not isolated
+        logger.debug("tool isolation refresh for %s failed: %s", tool, exc)
+        available, backend, reason = False, "none", f"the capability check failed: {exc}"
+    note_tool_isolation(tool, available, backend = backend, reason = reason, generation = generation)
+    return available
+
+
+def _refresh_tool_isolation_in_background(tool: str) -> None:
+    try:
+        refresh_tool_isolation(tool)
+    finally:
+        with _tool_isolation_lock:
+            _tool_isolation_refreshing.discard(tool)
+
+
+def has_tool_isolation_answer(tool: str) -> bool:
+    with _tool_isolation_lock:
+        return tool in _tool_isolation
+
+
+def cached_tool_isolation(tool: str) -> bool | None:
+    """Never blocks: whether ``tool`` last qualified for OS isolation (None before the first answer)."""
+    cached = cached_tool_capability(tool)
+    return None if cached is None else cached[0]
+
+
+def _host_key() -> str:
+    """Stat-only (no bwrap preflight): moves when the venv is swapped or bwrap installed."""
+    key = os.path.realpath(sys.executable)
+    if sys.platform == "linux":
+        from . import sandbox_linux
+        try:
+            key += repr(sandbox_linux._bwrap_file_identity(sandbox_linux._trusted_bwrap_path()))
+        except Exception as exc:  # noqa: BLE001 - no trusted bwrap is a key too
+            key += type(exc).__name__
+    return key
+
+
+def cached_tool_capability(tool: str) -> tuple[bool, str, str] | None:
+    """Never blocks: last (available, backend, reason) or None; a missing or other-key answer starts one check."""
+    key = _host_key()
+    with _tool_isolation_lock:
+        entry = _tool_isolation.get(tool)
+        start = (
+            tool in ISOLATED_TOOLS
+            and not _background_probes_disabled()
+            and (entry is None or entry[3] != key)
+            and tool not in _tool_isolation_refreshing
+        )
+        if start:
+            _tool_isolation_refreshing.add(tool)
+    if start:
+        try:
+            threading.Thread(
+                target = _refresh_tool_isolation_in_background,
+                args = (tool,),
+                name = f"unsloth-tool-isolation-{tool}",
+                daemon = True,
+            ).start()
+        except RuntimeError:
+            with _tool_isolation_lock:
+                _tool_isolation_refreshing.discard(tool)
+    return None if entry is None else entry[:3]
+
+
+def warm_tool_isolation() -> None:
+    for tool in ISOLATED_TOOLS:
+        refresh_tool_isolation(tool)
+
+
+def start_tool_isolation_warmup() -> threading.Thread | None:
+    """warm_tool_isolation on a daemon thread. Not on Windows: the MXC check launches a container."""
+    if _background_probes_disabled() or sys.platform == "win32":
+        return None
+    thread = threading.Thread(
+        target = warm_tool_isolation, name = "unsloth-sandbox-warmup", daemon = True
+    )
+    thread.start()
+    return thread
 
 
 def _record(
@@ -905,6 +1243,20 @@ def _software_only_limitations() -> tuple[str, ...]:
     if sys.platform != "win32":
         limitations.append("detached_descendant_cleanup_unverified")
     return tuple(limitations)
+
+
+def _software_launch(plan: ToolLaunchPlan, record: ToolExecutionRecord) -> PreparedSandboxLaunch:
+    return PreparedSandboxLaunch(
+        argv = plan.argv,
+        workdir = plan.workdir,
+        env = plan.env,
+        preexec_fn = plan.preexec_fn,
+        backend = "software-safeguards",
+        timeout_seconds = plan.timeout_seconds,
+        close_fds = plan.close_fds,
+        terminate_descendants = plan.terminate_descendants,
+        execution_record = record,
+    )
 
 
 def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
@@ -941,31 +1293,61 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             ),
         )
 
+    if plan.requested_mode == "software":
+        # Chosen, not a fallback: no probe, so a host with a working OS sandbox is not checked for it.
+        return _software_launch(
+            plan,
+            ToolExecutionRecord(
+                requested_mode = plan.requested_mode,
+                effective_mode = "software_safeguards",
+                environment = sys.platform,
+                backend = "software-safeguards",
+                profile_id = "software-safeguards-v1",
+                probe_generation = "",
+                os_isolation = False,
+                retained_safeguards = tuple(
+                    item
+                    for item in _SOFTWARE_SAFEGUARDS
+                    if item != "timeout" or plan.timeout_seconds is not None
+                ),
+                limitations = _software_only_limitations(),
+            ),
+        )
+
+    # Taken before the check: a reset while it runs must not be undone by this launch's answer.
+    generation = tool_isolation_generation()
     capability = capability_snapshot(
         execution_kind = plan.execution_kind,
         selected_executable = plan.argv[0] if plan.argv else None,
         cancel_event = plan.cancel_event,
     )
 
+    note_tool_isolation(
+        plan.execution_kind,
+        capability.available,
+        backend = capability.backend,
+        reason = capability.reason,
+        generation = generation,
+    )
+
     if plan.cancel_event is not None and plan.cancel_event.is_set():
         raise SandboxBuildError("execution cancelled before sandbox launch")
 
     if not capability.available:
+        if capability.protection_state == "undecided":
+            # Typed as a build failure: tools.py re-raises it rather than falling back to the host.
+            raise SandboxBuildError(
+                f"OS_ISOLATION_UNAVAILABLE: {capability.reason}",
+                remediation = capability.remediation,
+            )
         if plan.requested_mode == "required":
             raise SandboxUnavailableError(
                 f"OS_ISOLATION_UNAVAILABLE: {capability.reason}",
                 remediation = capability.remediation,
             )
-        return PreparedSandboxLaunch(
-            argv = plan.argv,
-            workdir = plan.workdir,
-            env = plan.env,
-            preexec_fn = plan.preexec_fn,
-            backend = "software-safeguards",
-            timeout_seconds = plan.timeout_seconds,
-            close_fds = plan.close_fds,
-            terminate_descendants = plan.terminate_descendants,
-            execution_record = _record(
+        return _software_launch(
+            plan,
+            _record(
                 plan,
                 capability,
                 effective_mode = "software_safeguards",
@@ -994,9 +1376,15 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             prepared.cleanup()
             raise WorkdirUnsafeError(
                 "the session workdir is too large to check for host channels, "
-                "and `required` cannot promise a boundary it did not verify. "
-                "Start a new chat, or use `auto` to run with software safeguards."
+                "so this call needs the user's approval. Call the tool again to ask for it."
             )
+    except (WorkdirUnsafeError, SandboxBuildError):
+        raise  # can be tool-induced; says nothing about the backend itself
+    except SandboxUnavailableError:
+        # Cached pass is stale: reset so "off" asks instead of failing on it until a Refresh.
+        from .sandbox_probe import reset_probe_cache
+        reset_probe_cache()
+        raise
     except OSError as exc:
         # Must be typed: raw, tools.py's general except would fall back to software safeguards.
         raise SandboxBuildError(f"the sandbox could not be built on this host: {exc}") from exc

@@ -23,7 +23,6 @@ import json as _json
 
 @pytest.fixture(autouse = True)
 def _tmp_gallery(monkeypatch, tmp_path):
-    # Point the gallery at a throwaway root instead of ~/.unsloth/studio.
     monkeypatch.setattr(gallery, "studio_root", lambda: tmp_path)
 
 
@@ -51,11 +50,10 @@ def test_save_embeds_recipe_and_round_trips():
     record = gallery.save(_img(), _meta())
     assert record["id"] and record["url"].endswith(f"{record['id']}/file")
 
-    # The recipe is embedded in the PNG itself (portable), not just in a sidecar.
     raw = base64.b64decode(gallery.image_b64(record["id"]))
     with Image.open(io.BytesIO(raw)) as im:
         assert im.text["unsloth"]
-        assert "Negative prompt" not in im.text["parameters"]  # none given
+        assert "Negative prompt" not in im.text["parameters"]
         assert "Steps: 9" in im.text["parameters"]
 
     listed = gallery.list_images()
@@ -93,16 +91,26 @@ def test_list_is_newest_first():
 
 
 def test_list_paginates_with_limit_offset():
-    # 5 images, newest (t=4) first.
     for i in range(5):
         _save_with_mtime(f"p{i}", float(i))
     page1 = gallery.list_images(limit = 2, offset = 0)
     page2 = gallery.list_images(limit = 2, offset = 2)
     assert [r["prompt"] for r in page1] == ["p4", "p3"]
     assert [r["prompt"] for r in page2] == ["p2", "p1"]
-    # limit=None still returns everything from the offset.
     assert len(gallery.list_images()) == 5
     assert len(gallery.list_images(offset = 4)) == 1
+
+
+def test_listing_resolves_the_folder_once(monkeypatch):
+    for i in range(4):
+        _save_with_mtime(f"p{i}", float(i))
+    calls = []
+    real = gallery.gallery_dir
+    monkeypatch.setattr(gallery, "gallery_dir", lambda: calls.append(1) or real())
+    listed = gallery.list_images()
+    assert len(calls) == 1
+    assert [r["prompt"] for r in listed] == ["p3", "p2", "p1", "p0"]
+    assert [r["order_at"] for r in listed] == [3.0, 2.0, 1.0, 0.0]
 
 
 def test_negative_prompt_recorded_in_parameters():
@@ -112,11 +120,25 @@ def test_negative_prompt_recorded_in_parameters():
         assert "Negative prompt: blurry" in im.text["parameters"]
 
 
+def test_parameters_carry_strength_version_and_the_recipe_the_engine():
+    # Upscale's strength is its denoise, like the img2img workflows; plain txt2img has none.
+    for workflow, expected in (("upscale", True), ("edit", True), ("txt2img", False)):
+        record = gallery.save(_img(), _meta(workflow = workflow, strength = 0.35))
+        raw = base64.b64decode(gallery.image_b64(record["id"]))
+        with Image.open(io.BytesIO(raw)) as im:
+            params = im.text["parameters"]
+            recipe = _json.loads(im.text["unsloth"])
+        assert ("Denoising strength: 0.35" in params) is expected, (workflow, params)
+        assert ", Version: Unsloth " in params
+        assert recipe["generator"].startswith("Unsloth")
+        assert "engine" in recipe
+
+
 def test_delete_and_clear():
     a = gallery.save(_img(), _meta(prompt = "a"))
     gallery.save(_img(), _meta(prompt = "b"))
     assert gallery.delete(a["id"]) is True
-    assert gallery.delete(a["id"]) is False  # already gone
+    assert gallery.delete(a["id"]) is False
     assert len(gallery.list_images()) == 1
     assert gallery.clear() == 1
     assert gallery.list_images() == []
@@ -140,7 +162,6 @@ def test_delete_does_not_report_an_io_failure_as_a_missing_image(monkeypatch, st
 
 
 def test_clear_preserves_foreign_png():
-    # A hand-dropped PNG with no recipe chunk is invisible to list_images; clear must not destroy it.
     foreign = gallery.gallery_dir() / "family-photo.png"
     _img().save(foreign, format = "PNG")
     gallery.save(_img(), _meta(prompt = "ours"))
@@ -150,7 +171,6 @@ def test_clear_preserves_foreign_png():
 
 
 def test_delete_ignores_foreign_png():
-    # A per-id delete must refuse a file we do not own (no readable recipe chunk).
     foreign = gallery.gallery_dir() / "family-photo.png"
     _img().save(foreign, format = "PNG")
     assert gallery.delete("family-photo") is False
@@ -158,28 +178,25 @@ def test_delete_ignores_foreign_png():
 
 
 def test_image_path_rejects_unsafe_ids():
-    # Traversal / bad chars never resolve to a path.
     assert gallery.image_path("../../etc/passwd") is None
     assert gallery.image_path("a/b") is None
     assert gallery.image_path("missing") is None
 
 
 def test_owned_image_path_serves_only_owned_pngs():
-    # A hand-dropped foreign PNG resolves via image_path (safe stem, on disk) but must NOT be served: owned_image_path applies the same recipe check as delete/clear.
+    # Resolvable via image_path, but owned_image_path applies the recipe check.
     foreign = gallery.gallery_dir() / "family-photo.png"
     _img().save(foreign, format = "PNG")
-    assert gallery.image_path("family-photo") is not None  # resolvable...
-    assert gallery.owned_image_path("family-photo") is None  # ...but not ours to serve
+    assert gallery.image_path("family-photo") is not None
+    assert gallery.owned_image_path("family-photo") is None
 
     ours = gallery.save(_img(), _meta(prompt = "ours"))
     assert gallery.owned_image_path(ours["id"]) is not None
-    # Unsafe / missing ids resolve to nothing, like image_path.
     assert gallery.owned_image_path("../../etc/passwd") is None
     assert gallery.owned_image_path("missing") is None
 
 
 def test_list_skips_foreign_pngs(tmp_path):
-    # A PNG without our recipe chunk (user dropped a file) is ignored.
     foreign = gallery.gallery_dir() / "foreign.png"
     _img().save(foreign, format = "PNG")
     gallery.save(_img(), _meta(prompt = "ours"))
@@ -188,25 +205,23 @@ def test_list_skips_foreign_pngs(tmp_path):
 
 
 def test_foreign_png_in_window_does_not_drop_valid_images():
-    # A foreign PNG sorting INTO the requested page must not consume a window slot: paging is over readable records, not files.
+    # Paging counts readable records, not files.
     _save_with_mtime("p2", 100.0)
     foreign = gallery.gallery_dir() / "zzz_foreign.png"
-    _img().save(foreign, format = "PNG")  # newest by mtime (set below), sorts first
+    _img().save(foreign, format = "PNG")
     os.utime(foreign, (300.0, 300.0))
     _save_with_mtime("p1", 200.0)
-    # First page of 2 must still return both real images, not [p1].
     page1 = gallery.list_images(limit = 2, offset = 0)
     assert [r["prompt"] for r in page1] == ["p1", "p2"]
 
 
 def test_list_skips_recipe_missing_required_fields(tmp_path):
-    # A PNG carrying our chunk but an incomplete/older-schema recipe must be skipped, not crash the listing when the route builds GalleryImage.
     import json
 
     from PIL.PngImagePlugin import PngInfo
 
     info = PngInfo()
-    info.add_text("unsloth", json.dumps({"prompt": "partial"}))  # missing width/seed/...
+    info.add_text("unsloth", json.dumps({"prompt": "partial"}))
     _img().save(gallery.gallery_dir() / "partial.png", format = "PNG", pnginfo = info)
     gallery.save(_img(), _meta(prompt = "ours"))
     listed = gallery.list_images()
@@ -214,7 +229,7 @@ def test_list_skips_recipe_missing_required_fields(tmp_path):
 
 
 def test_valid_callback_paginates_over_accepted_records():
-    # ``valid`` must filter before pagination, else a leading bad record returns a short page with more remaining and stalls scroll.
+    # `valid` must filter before pagination, else a bad leading record stalls scroll.
     _save_with_mtime("BAD", 300.0)  # newest, sorts first
     _save_with_mtime("g1", 200.0)
     _save_with_mtime("g2", 100.0)
@@ -222,41 +237,32 @@ def test_valid_callback_paginates_over_accepted_records():
     def _valid(rec):
         return rec.get("prompt") != "BAD"
 
-    # First page of 2 returns both good records, not [g1] or [].
     page = gallery.list_images(limit = 2, offset = 0, valid = _valid)
     assert [r["prompt"] for r in page] == ["g1", "g2"]
-    # The has_more probe (limit + 1) sees no extra VALID record beyond the two returned.
     assert len(gallery.list_images(limit = 3, offset = 0, valid = _valid)) == 2
 
 
 def test_valid_callback_leading_bad_record_does_not_stall_at_offset_zero():
-    # Every record in the first window is invalid; without in-pager filtering the route stalled.
     for i in range(3):
-        _save_with_mtime(f"BAD{i}", 300.0 - i)  # newest three are all invalid
+        _save_with_mtime(f"BAD{i}", 300.0 - i)
     _save_with_mtime("good", 10.0)
 
     def _valid(rec):
         return not str(rec.get("prompt", "")).startswith("BAD")
 
-    # The pager must look past the invalid leaders and return the one good record.
     records = gallery.list_images(limit = 2, offset = 0, valid = _valid)
     assert [r["prompt"] for r in records] == ["good"]
 
 
 def test_save_is_atomic_no_partial_png_on_publish_failure(monkeypatch):
-    # A crash before publishing must leave neither a truncated {id}.png nor a leftover temp.
     def _boom(*a, **k):
         raise OSError("simulated rename failure")
 
     monkeypatch.setattr(gallery.os, "replace", _boom)
     with pytest.raises(OSError, match = "simulated rename failure"):
         gallery.save(_img(), _meta())
-    # No final PNG surfaced, and the hidden temp was cleaned up.
     assert list(gallery.gallery_dir().glob("*.png")) == []
     assert list(gallery.gallery_dir().iterdir()) == []
-
-
-# --- pin / archive flags ---------------------------------------------------------------------
 
 
 def test_records_carry_default_flags():
@@ -266,7 +272,6 @@ def test_records_carry_default_flags():
 
 
 def test_records_carry_the_listing_sort_key():
-    # A batch shares one created_at; the listing sorts by mtime, so records must say so.
     a = gallery.save(_img(), _meta(created_at = 100.0))
     b = gallery.save(_img(), _meta(created_at = 100.0))
     os.utime(gallery.gallery_dir() / f"{a['id']}.png", (150.0, 150.0))
@@ -289,7 +294,7 @@ def test_most_recently_pinned_leads_the_pinned_group():
     first = _save_with_mtime("first", 100.0)
     second = _save_with_mtime("second", 200.0)
     gallery.set_flags(second["id"], pinned = True)
-    gallery.set_flags(first["id"], pinned = True)  # pinned later, so it leads
+    gallery.set_flags(first["id"], pinned = True)
     assert [r["prompt"] for r in gallery.list_images()] == ["first", "second"]
 
 
@@ -306,7 +311,6 @@ def test_archived_images_leave_the_default_listing():
     shelved = _save_with_mtime("shelved", 200.0)
     gallery.set_flags(shelved["id"], archived = True)
     assert [r["id"] for r in gallery.list_images()] == [keep["id"]]
-    # The archived shelf is its own listing, not a superset of the active one.
     archived = gallery.list_images(archived = True)
     assert [r["id"] for r in archived] == [shelved["id"]]
     assert archived[0]["archived"] is True
@@ -320,13 +324,11 @@ def test_restoring_puts_an_image_back_on_the_strip():
 
 
 def test_archived_images_do_not_consume_a_page_slot():
-    # Pagination counts over the shelf being listed, so has_more probes stay truthful.
     for i in range(4):
         record = _save_with_mtime(f"a{i}", 100.0 + i)
         if i % 2 == 0:
             gallery.set_flags(record["id"], archived = True)
     assert [r["prompt"] for r in gallery.list_images(limit = 2)] == ["a3", "a1"]
-    # Only two active records exist, so a limit+1 probe must not invent a third.
     assert len(gallery.list_images(limit = 3)) == 2
     assert [r["prompt"] for r in gallery.list_images(archived = True)] == ["a2", "a0"]
 
@@ -336,14 +338,13 @@ def test_pinning_survives_pagination():
     for i in range(1, 4):
         _save_with_mtime(f"a{i}", 100.0 + i)
     gallery.set_flags(oldest["id"], pinned = True)
-    # The pin must reach page 0 rather than waiting for the page its mtime belongs to.
     assert gallery.list_images(limit = 1, offset = 0)[0]["prompt"] == "oldest"
 
 
 def test_set_flags_refuses_a_foreign_or_unknown_id():
     assert gallery.set_flags("does-not-exist", pinned = True) is None
     foreign = gallery.gallery_dir() / "foreign.png"
-    _img().save(foreign, format = "PNG")  # no recipe chunk, so not ours
+    _img().save(foreign, format = "PNG")
     assert gallery.set_flags("foreign", pinned = True) is None
 
 
@@ -384,7 +385,6 @@ def test_clear_spares_archived_images():
     gallery.set_flags(shelved["id"], archived = True)
     assert gallery.clear() == 1
     assert [r["id"] for r in gallery.list_images(archived = True)] == [shelved["id"]]
-    # The cleared image's flags go with it; the archived one keeps its own.
     assert set(gallery_flags.read(gallery.gallery_dir())) == {shelved["id"]}
     assert gallery.image_path(active["id"]) is None
 
@@ -398,25 +398,22 @@ def test_clear_can_include_archived_images():
 
 
 def test_flags_are_not_required_recipe_keys():
-    # Flags live beside the PNG, so an image written before they existed must still list.
     record = _save_with_mtime("older-schema", 100.0)
     assert "pinned" not in gallery._read_meta(gallery.image_path(record["id"]))
     assert [r["id"] for r in gallery.list_images()] == [record["id"]]
 
 
 def test_clear_refuses_when_the_flag_store_cannot_be_read():
-    # Fail CLOSED: an unreadable store reads as "nothing archived", which would delete the archive.
+    # Fail closed: an unreadable store reads as 'nothing archived', which would delete the archive.
     record = _save_with_mtime("shelved", 100.0)
     gallery.set_flags(record["id"], archived = True)
     (gallery.gallery_dir() / ".flags.json").write_text("corrupt", encoding = "utf-8")
     with pytest.raises(gallery_flags.FlagsUnavailable):
         gallery.clear()
-    # Nothing was unlinked before the refusal.
     assert gallery.image_path(record["id"]) is not None
 
 
 def test_clear_all_still_works_with_an_unreadable_store():
-    # include_archived spares nothing, so it needs no flags and must not be blocked by them.
     record = _save_with_mtime("a", 100.0)
     (gallery.gallery_dir() / ".flags.json").write_text("corrupt", encoding = "utf-8")
     assert gallery.clear(include_archived = True) == 1
@@ -424,9 +421,6 @@ def test_clear_all_still_works_with_an_unreadable_store():
 
 
 def test_clear_refuses_when_a_single_flag_entry_is_malformed():
-    # The whole-file corruption case is not the only risk: one bad VALUE reads as "not archived",
-    # which is enough to delete an archived image, so it must block the clear too.
-
     record = _save_with_mtime("shelved", 100.0)
     gallery.set_flags(record["id"], archived = True)
     (gallery.gallery_dir() / ".flags.json").write_text(
@@ -438,8 +432,7 @@ def test_clear_refuses_when_a_single_flag_entry_is_malformed():
 
 
 def test_clear_refuses_when_an_archived_flag_is_not_a_boolean():
-    # `{"archived": null}` is still a dict, so a container-only check trusted it, and every reader
-    # turns it into "not archived" -- enough for the default clear to delete the archived image.
+    # `{"archived": null}` is still a dict but reads as 'not archived'.
 
     record = _save_with_mtime("shelved", 100.0)
     gallery.set_flags(record["id"], archived = True)
@@ -452,9 +445,6 @@ def test_clear_refuses_when_an_archived_flag_is_not_a_boolean():
 
 
 def test_a_repair_never_makes_a_damaged_archive_deletable():
-    # An unrelated pin rewrites the store. If that repair dropped the unreadable archived flag, the
-    # store would come back trusted with the image active, and the next default clear() removes it.
-
     shelved = _save_with_mtime("shelved", 100.0)
     other = _save_with_mtime("other", 200.0)
     gallery.set_flags(shelved["id"], archived = True)
@@ -469,9 +459,6 @@ def test_a_repair_never_makes_a_damaged_archive_deletable():
 
 
 def test_a_repair_of_an_illegible_store_never_makes_the_archive_deletable():
-    # The sibling of the test above: with the CONTAINER unreadable there is nothing to repair from,
-    # so an unrelated pin wrote a clean, trusted store saying nothing was archived, and the next
-    # default clear() deleted the shelved image.
     shelved = _save_with_mtime("shelved", 100.0)
     other = _save_with_mtime("other", 200.0)
     gallery.set_flags(shelved["id"], archived = True)
@@ -483,13 +470,10 @@ def test_a_repair_of_an_illegible_store_never_makes_the_archive_deletable():
         gallery.clear()
     assert gallery.image_path(shelved["id"]) is not None
     assert gallery.image_path(other["id"]) is not None
-    # The escape hatch still works, since it spares nothing and so needs no flags.
     assert gallery.clear(include_archived = True) == 2
 
 
 def test_clear_all_replaces_an_unreadable_store_so_the_gallery_recovers():
-    # The escape hatch has to escape: include_archived spares nothing, so no file is left for the
-    # taint to protect, and leaving the corrupt store behind kept every later clear refusing.
     _save_with_mtime("a", 100.0)
     _save_with_mtime("b", 200.0)
     (gallery.gallery_dir() / ".flags.json").write_text(
@@ -502,8 +486,7 @@ def test_clear_all_replaces_an_unreadable_store_so_the_gallery_recovers():
 
 
 def test_archiving_during_a_clear_never_leaves_a_deleted_image_reported_as_archived():
-    # clear() decides from a flag snapshot and then unlinks. Without a shared lock an archive
-    # landing in that window returned success for a file the same clear went on to delete.
+    # Without a shared lock an archive racing clear() could report success then be deleted.
     import threading
 
     records = [_save_with_mtime(f"i{i}", float(i)) for i in range(30)]
@@ -520,8 +503,6 @@ def test_archiving_during_a_clear_never_leaves_a_deleted_image_reported_as_archi
 
     said_ok = out.get("result") is not None
     survived = gallery.image_path(target) is not None
-    # Either the archive won (reported success, file kept) or the clear won (reported gone, file
-    # deleted). "Reported success but deleted" is the outcome this must never produce.
     assert said_ok == survived
 
 
@@ -540,3 +521,287 @@ def test_thumbnail_is_a_downscaled_webp_of_the_png():
     with Image.open(io.BytesIO(data)) as im:
         assert im.format == "WEBP"
         assert im.size == (16, 8)
+
+
+def _noisy(size = 128):
+    import random
+    rng = random.Random(1234)
+    return Image.frombytes(
+        "RGB", (size, size), bytes(rng.randrange(256) for _ in range(size * size * 3))
+    )
+
+
+def _encode(image, level):
+    from PIL.PngImagePlugin import PngInfo
+
+    info = PngInfo()
+    info.add_text("unsloth", _json.dumps(_meta()))
+    info.add_text("parameters", gallery._params_text(_meta()))
+    buf = io.BytesIO()
+    image.save(buf, format = "PNG", pnginfo = info, compress_level = level)
+    return buf.getvalue()
+
+
+def test_gallery_png_uses_fast_deflate_by_default(monkeypatch):
+    # The encode is on the request path, so the default level must be fast.
+    monkeypatch.delenv(gallery.PNG_COMPRESS_LEVEL_ENV, raising = False)
+    image = _noisy()
+    data = gallery._png_bytes(image, _meta())
+    assert data == _encode(image, 1)
+    assert data != _encode(image, 6)
+
+
+def test_gallery_png_level_kill_switch_restores_pillow_default(monkeypatch):
+    monkeypatch.setenv(gallery.PNG_COMPRESS_LEVEL_ENV, "6")
+    image = _noisy()
+    assert gallery._png_bytes(image, _meta()) == _encode(image, 6)
+
+
+@pytest.mark.parametrize("raw", ["", "fast", "-1", "10"])
+def test_gallery_png_level_rejects_invalid_values(monkeypatch, raw):
+    monkeypatch.setenv(gallery.PNG_COMPRESS_LEVEL_ENV, raw)
+    assert gallery.png_compress_level() == 1
+
+
+@pytest.mark.parametrize("level", ["0", "1", "6", "9"])
+def test_gallery_png_is_lossless_at_any_level(monkeypatch, level):
+    monkeypatch.setenv(gallery.PNG_COMPRESS_LEVEL_ENV, level)
+    image = _noisy(64)
+    record = gallery.save(image, _meta())
+    raw = base64.b64decode(gallery.image_b64(record["id"]))
+    with Image.open(io.BytesIO(raw)) as im:
+        assert im.convert("RGB").tobytes() == image.tobytes()
+        assert _json.loads(im.text["unsloth"])["seed"] == 7
+
+
+def _recipe_keys_written() -> set[str]:
+    """Every key a generation route puts in an image's recipe, read from the routes' source."""
+    import ast
+    from pathlib import Path
+
+    tree = ast.parse(
+        (Path(__file__).resolve().parents[1] / "routes" / "inference.py").read_text(
+            encoding = "utf-8"
+        )
+    )
+    keys: set[str] = set()
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        local_dicts = {
+            t.id: node.value
+            for node in ast.walk(fn)
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict)
+            for t in node.targets
+            if isinstance(t, ast.Name)
+        }
+        calls = [
+            node
+            for node in ast.walk(fn)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in ("save", "save_many")
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "image_gallery"
+        ]
+        recipes = [
+            call.args[1]
+            for call in calls
+            if call.func.attr == "save"
+            and len(call.args) > 1
+            and isinstance(call.args[1], ast.Dict)
+        ]
+        if any(call.func.attr == "save_many" for call in calls):
+            # save_many takes (image, recipe) pairs, built in the same function.
+            recipes += [
+                node.elts[1]
+                for node in ast.walk(fn)
+                if isinstance(node, ast.Tuple)
+                and len(node.elts) == 2
+                and isinstance(node.elts[1], ast.Dict)
+            ]
+        for recipe in recipes:
+            pending = [recipe]
+            while pending:
+                d = pending.pop()
+                for k, v in zip(d.keys, d.values):
+                    if k is None and isinstance(v, ast.Name) and v.id in local_dicts:
+                        pending.append(local_dicts[v.id])
+                    elif isinstance(k, ast.Constant) and isinstance(k.value, str):
+                        keys.add(k.value)
+    return keys
+
+
+def test_every_recipe_key_is_known_to_the_image_import():
+    # Adding a setting to the recipe without teaching "Load settings from an image" about it would
+    # make the import report a current image's own setting as unsupported.
+    import re
+    from pathlib import Path
+
+    written = _recipe_keys_written()
+    assert {"prompt", "seed", "sampler", "strength"} <= written, written
+    meta = gallery.save(
+        _img(),
+        {
+            "prompt": "p",
+            "width": 8,
+            "height": 8,
+            "steps": 1,
+            "guidance": 0,
+            "seed": 1,
+            "created_at": 1.0,
+        },
+    )
+    written |= set(gallery._read_meta(gallery.gallery_dir() / f"{meta['id']}.png"))
+    ts = (
+        Path(__file__).resolve().parents[2]
+        / "frontend"
+        / "src"
+        / "features"
+        / "images"
+        / "lib"
+        / "image-metadata.ts"
+    ).read_text(encoding = "utf-8")
+    known: set[str] = set()
+    for name in ("APPLIED_RECIPE_KEYS", "INFO_RECIPE_KEYS"):
+        body = re.search(rf"export const {name} = \[(.*?)\] as const;", ts, re.S)
+        assert body, name
+        known |= set(re.findall(r'"([a-z_]+)"', body.group(1)))
+    assert sorted(written - known) == []
+    version = re.search(r"export const RECIPE_SCHEMA_VERSION = (\d+);", ts)
+    assert version and int(version.group(1)) == gallery.RECIPE_SCHEMA_VERSION
+
+
+def test_connection_images_record_no_local_engine(monkeypatch):
+    monkeypatch.setattr(gallery, "_engine", lambda: "diffusers")
+    base = {
+        "prompt": "p",
+        "width": 8,
+        "height": 8,
+        "steps": 1,
+        "guidance": 0,
+        "seed": 1,
+        "created_at": 1.0,
+    }
+    local = gallery.save(_img(), dict(base))
+    remote = gallery.save(_img(), {**base, "model_kind": "connection"})
+    assert local["engine"] == "diffusers"
+    assert remote["engine"] is None
+    # Vary compares it with the loaded engine, so the served record must keep it (FastAPI drops undeclared fields).
+    from models.inference import GalleryImage
+
+    assert GalleryImage(**local).model_dump()["engine"] == "diffusers"
+
+
+def test_parameters_chunk_carries_the_encoded_caption():
+    meta = {**_meta(), "prompt": "a cat", "enhanced_prompt": "A tabby cat on a sunlit sill."}
+    text = gallery._params_text(meta)
+    assert text.splitlines()[0] == "A tabby cat on a sunlit sill."
+    assert gallery._params_text({**_meta(), "prompt": "a cat"}).splitlines()[0] == "a cat"
+
+
+def _batch(n = 4):
+    return [
+        Image.frombytes("RGB", (32, 24), bytes((i * 7 + j) % 256 for j in range(32 * 24 * 3)))
+        for i in range(n)
+    ]
+
+
+def _fixed_ids(monkeypatch):
+    import uuid as _uuid
+    ids = iter(_uuid.UUID(int = i) for i in range(1, 100))
+    monkeypatch.setattr(gallery.uuid, "uuid4", lambda: next(ids))
+
+
+def _many_cpus(monkeypatch):
+    monkeypatch.setattr(gallery.os, "cpu_count", lambda: 8)
+    if hasattr(gallery.os, "process_cpu_count"):
+        monkeypatch.setattr(gallery.os, "process_cpu_count", lambda: 8)
+
+
+def test_save_many_writes_what_a_save_loop_writes(monkeypatch, tmp_path):
+    _many_cpus(monkeypatch)
+    images = _batch()
+    metas = [_meta(seed = i, batch_index = i) for i in range(len(images))]
+    out = {}
+    for name, run in (
+        ("loop", lambda: [gallery.save(im, m) for im, m in zip(images, metas)]),
+        ("many", lambda: list(gallery.save_many(zip(images, metas)))),
+    ):
+        folder = tmp_path / name
+        folder.mkdir()
+        monkeypatch.setattr(gallery, "gallery_dir", lambda folder = folder: folder)
+        _fixed_ids(monkeypatch)
+        records = run()
+        out[name] = (
+            [{k: v for k, v in r.items() if k != "order_at"} for r in records],
+            [(folder / f"{r['id']}.png").read_bytes() for r in records],
+            [r["id"] for r in gallery.list_images()],
+        )
+    assert out["many"] == out["loop"]
+    assert len(set(out["many"][1])) == len(images)
+
+
+def test_save_many_encodes_the_batch_concurrently(monkeypatch):
+    import threading
+
+    _many_cpus(monkeypatch)
+    barrier = threading.Barrier(4, timeout = 10)
+    encode = gallery._png_bytes
+
+    def _encode(image, meta):
+        barrier.wait()  # breaks (and fails the save) unless all four encodes run at once
+        return encode(image, meta)
+
+    monkeypatch.setattr(gallery, "_png_bytes", _encode)
+    records = list(gallery.save_many((im, _meta(batch_index = i)) for i, im in enumerate(_batch())))
+    assert [r["batch_index"] for r in records] == [0, 1, 2, 3]
+
+
+def test_save_many_keeps_the_images_before_a_failed_encode(monkeypatch):
+    _many_cpus(monkeypatch)
+    encode = gallery._png_bytes
+
+    def _encode(image, meta):
+        if meta["batch_index"] == 2:
+            raise OSError("disk full")
+        return encode(image, meta)
+
+    monkeypatch.setattr(gallery, "_png_bytes", _encode)
+    saved = []
+    with pytest.raises(OSError, match = "disk full"):
+        for record in gallery.save_many(
+            (im, _meta(batch_index = i)) for i, im in enumerate(_batch())
+        ):
+            saved.append(record["batch_index"])
+    assert saved == [0, 1]
+    assert sorted(r["batch_index"] for r in gallery.list_images()) == [0, 1]
+
+
+def test_save_many_still_saves_through_save(monkeypatch):
+    _many_cpus(monkeypatch)
+    seen = []
+    real_save = gallery.save
+
+    def _save(image, meta):
+        seen.append(meta["batch_index"])
+        return real_save(image, meta)
+
+    monkeypatch.setattr(gallery, "save", _save)
+    list(gallery.save_many((im, _meta(batch_index = i)) for i, im in enumerate(_batch(3))))
+    assert seen == [0, 1, 2]
+
+
+def test_save_many_keeps_batch_order_when_writes_share_an_mtime(monkeypatch):
+    _many_cpus(monkeypatch)
+    real_replace = os.replace
+
+    def _replace(src, dst):
+        real_replace(src, dst)
+        os.utime(dst, ns = (1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+
+    monkeypatch.setattr(gallery.os, "replace", _replace)
+    records = list(gallery.save_many((im, _meta(batch_index = i)) for i, im in enumerate(_batch())))
+    ranks = [r["order_at"] for r in records]
+    assert ranks == sorted(set(ranks)), ranks
+    assert [r["batch_index"] for r in gallery.list_images()] == [3, 2, 1, 0]

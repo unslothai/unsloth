@@ -1,11 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useHubDownloadQueue, useQueuedHubEntries } from "./use-hub-download-queue";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useEngines } from "@/features/model-picker/hooks/use-engines";
+import {
+  audioCppDisplayName,
+  isAudioCppFolderId,
+} from "../../audio/audio-cpp-catalog";
 import { hasAuthToken, mustChangePassword } from "@/features/auth/session";
 import { isTauri } from "@/lib/api-base";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
@@ -27,6 +33,20 @@ import {
 } from "./download-manager-controller";
 import { DownloadProgressBar } from "./download-progress-bar";
 import { presentedProgress } from "./download-presentation";
+import {
+  type PendingStart,
+  usePendingStarts,
+  visiblePendingStarts,
+} from "./pending-starts";
+import { assetLabel } from "./required-assets";
+import { queuedStagedEntries, useStagedDownloadQueues } from "./staged-download-queue";
+import { isTrainingDownloadVariant } from "./training-downloads";
+import { useTrainingDownloads } from "./use-training-downloads";
+
+type RowSubject = Pick<
+  ManagedDownload,
+  "repoId" | "variant" | "presentation" | "checkpoint" | "scopedFiles"
+>;
 
 function createOrderedJobKeysSelector(): (state: {
   jobs: Record<string, ManagedDownload>;
@@ -73,18 +93,81 @@ function canUseDownloadManager(pathname: string): boolean {
   return hasAuthToken() && !mustChangePassword();
 }
 
-function variantSuffix(job: ManagedDownload): string {
+function repoLabel(repoId: string): string {
+  return isAudioCppFolderId(repoId) ? audioCppDisplayName(repoId) : repoId;
+}
+
+function isRequiredAssetJob(job: RowSubject): boolean {
+  if (!job.variant?.startsWith("@")) return false;
+  // The staging page tagged the entry it picked, which is the only reliable answer: a checkpoint
+  // can be a curated single .safetensors and companion repos carry .safetensors too, so the
+  // extension decides nothing. The old guess stays for jobs persisted before the flag existed,
+  // which would otherwise change label mid-download after a restart.
+  const isModelFile =
+    job.checkpoint ??
+    job.scopedFiles?.some((file) => file.toLowerCase().endsWith(".gguf"));
+  return !isModelFile;
+}
+
+// Only staged media picks set checkpoint=false; other scoped jobs (Decision API model) carry no flag.
+const REQUIRED_ASSET_NOTE =
+  "Required to run this model. Downloaded once, shared across compatible variants.";
+
+function variantSuffix(job: RowSubject): string {
+  if (isTrainingDownloadVariant(job.variant)) return " · Training model";
   if (job.variant?.startsWith("@")) {
-    // The staging page tagged the entry it picked, which is the only reliable answer: a checkpoint
-    // can be a curated single .safetensors and companion repos carry .safetensors too, so the
-    // extension decides nothing. The old guess stays for jobs persisted before the flag existed,
-    // which would otherwise change label mid-download after a restart.
-    const isModelFile =
-      job.checkpoint ??
-      job.scopedFiles?.some((file) => file.toLowerCase().endsWith(".gguf"));
-    return ` · ${isModelFile ? "Model file" : "Required assets"}`;
+    return ` · ${
+      isRequiredAssetJob(job)
+        ? assetLabel(
+            { repoId: job.repoId, files: job.scopedFiles, bytes: 0 },
+            "Required assets",
+          )
+        : "Model file"
+    }`;
   }
   return job.variant ? ` · ${job.variant}` : "";
+}
+
+function RowTitle({ job }: { job: RowSubject }) {
+  return (
+    <span className="min-w-0 flex-1 truncate text-ui-12p5 font-medium text-foreground">
+      {job.presentation?.label ?? repoLabel(job.repoId)}
+      <span className="text-muted-foreground">
+        {job.presentation ? ` · ${repoLabel(job.repoId)}` : variantSuffix(job)}
+      </span>
+    </span>
+  );
+}
+
+function RowDetail({ job }: { job: RowSubject }) {
+  if (isTrainingDownloadVariant(job.variant)) {
+    return <div className="text-ui-10p5 text-muted-foreground">Current files; additional model files may follow.</div>;
+  }
+  return job.presentation ? (
+    <div className="truncate text-ui-10p5 text-muted-foreground">
+      {job.presentation.filename}
+    </div>
+  ) : isRequiredAssetJob(job) && job.checkpoint === false ? (
+    <div className="text-ui-10p5 text-muted-foreground">
+      {REQUIRED_ASSET_NOTE}
+    </div>
+  ) : null;
+}
+
+function StartingLine() {
+  return <div className="text-ui-11 text-muted-foreground">Starting…</div>;
+}
+
+function PendingStartRow({ start }: { start: PendingStart }) {
+  return (
+    <li className="flex flex-col gap-1.5 py-2.5 pl-4 pr-3">
+      <div className="flex items-center gap-2">
+        <RowTitle job={start} />
+      </div>
+      <RowDetail job={start} />
+      <StartingLine />
+    </li>
+  );
 }
 
 function StatusLine({ job }: { job: ManagedDownload }) {
@@ -108,9 +191,17 @@ function StatusLine({ job }: { job: ManagedDownload }) {
   return null;
 }
 
-function DownloadRow({ jobKey }: { jobKey: string }) {
+function DownloadRow({
+  jobKey,
+  pendingStart,
+}: {
+  jobKey: string;
+  pendingStart?: PendingStart;
+}) {
   const job = useDownloadManagerStore((state) => state.jobs[jobKey]);
   if (!job) return null;
+  const starting = pendingStart !== undefined;
+  const subject = pendingStart ?? job;
   const active = job.state === "running" || job.state === "cancelling";
   const terminal =
     job.state === "complete" ||
@@ -120,20 +211,15 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
   return (
     <li className="flex flex-col gap-1.5 py-2.5 pl-4 pr-3">
       <div className="flex items-center gap-2">
-        <span className="min-w-0 flex-1 truncate text-ui-12p5 font-medium text-foreground">
-          {job.presentation?.label ?? job.repoId}
-          <span className="text-muted-foreground">
-            {job.presentation ? ` · ${job.repoId}` : variantSuffix(job)}
-          </span>
-        </span>
-        {job.state === "complete" && (
+        <RowTitle job={subject} />
+        {job.state === "complete" && !starting && (
           <HugeiconsIcon
             icon={CheckmarkCircle02Icon}
             strokeWidth={2}
             className="size-4 shrink-0 text-status-success"
           />
         )}
-        {job.state === "error" && (
+        {job.state === "error" && !starting && (
           <HugeiconsIcon
             icon={Alert02Icon}
             strokeWidth={2}
@@ -145,7 +231,7 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
             <button
               type="button"
               aria-label={active ? "Cancel download" : "Dismiss"}
-              disabled={job.state === "cancelling"}
+              disabled={job.state === "cancelling" || starting}
               onClick={() =>
                 active
                   ? void downloadManager.cancel(job.key)
@@ -168,20 +254,27 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
           </TooltipContent>
         </Tooltip>
       </div>
-      {job.presentation ? (
-        <div className="truncate text-ui-10p5 text-muted-foreground">
-          {job.presentation.filename}
-        </div>
-      ) : null}
+      <RowDetail job={subject} />
       {active ? (
         <DownloadProgressBar
           progress={progress}
           bytesPerSec={job.bytesPerSec}
           cancelling={job.state === "cancelling"}
           etaSeconds={job.etaSeconds}
+          activity={job.activity ?? (isTrainingDownloadVariant(job.variant) ? "Preparing training model files…" : undefined)}
         />
       ) : null}
-      {terminal || job.state === "cancelling" || job.error ? (
+      {!starting && job.details?.length ? (
+        <details className="text-ui-11">
+          <summary>Installation details</summary>
+          <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all">
+            {job.details.join("\n")}
+          </pre>
+        </details>
+      ) : null}
+      {starting ? (
+        <StartingLine />
+      ) : terminal || job.state === "cancelling" || job.error ? (
         <div className="px-0 text-ui-11 text-muted-foreground tabular-nums">
           <StatusLine job={job} />
         </div>
@@ -195,6 +288,9 @@ export function DownloadManagerPanel({
 }: { positioned?: boolean } = {}) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const enabled = canUseDownloadManager(pathname);
+  useEngines(enabled, true);
+  useTrainingDownloads(enabled);
+  useHubDownloadQueue();
   const [collapsed, setCollapsed] = useState(false);
 
   useEffect(() => {
@@ -204,9 +300,27 @@ export function DownloadManagerPanel({
 
   const selectOrderedJobKeys = useMemo(createOrderedJobKeysSelector, []);
   const jobKeys = useDownloadManagerStore(selectOrderedJobKeys);
-  const activeCount = useDownloadManagerStore(selectActiveJobCount);
+  const hubQueued = useQueuedHubEntries();
+  const stagedQueues = useStagedDownloadQueues((s) => s.queues);
+  const jobs = useDownloadManagerStore((s) => s.jobs);
+  const queued = [...hubQueued, ...queuedStagedEntries(stagedQueues, jobs)];
+  const pendingStarts = usePendingStarts((s) => s.starts);
+  const pending = visiblePendingStarts(pendingStarts, jobs, queued);
+  const unlistedStarts = pending.filter((start) => !(start.key in jobs));
+  const startingByKey = new Map(
+    pending.map((start) => [start.key, start] as const),
+  );
+  const activeCount =
+    useDownloadManagerStore(selectActiveJobCount) +
+    queued.length +
+    pending.length;
 
-  if (!enabled || jobKeys.length === 0) return null;
+  if (
+    !enabled ||
+    (jobKeys.length === 0 && queued.length === 0 && pending.length === 0)
+  ) {
+    return null;
+  }
 
   const headerLabel =
     activeCount > 0
@@ -216,10 +330,7 @@ export function DownloadManagerPanel({
   return (
     <div
       className={cn(
-        // Standalone: anchor bottom-right. In a shared stack (positioned=false)
-        // flow as a right-aligned row so overlays stack instead of overlapping.
-        // min-h-0 there: a flex item's min-height defaults to auto, so the capped
-        // stack would squeeze the update card instead of this list.
+        // min-h-0: a flex item's min-height defaults to auto, so the capped stack would squeeze the card.
         "pointer-events-none",
         positioned ? "fixed bottom-4 right-4 z-50" : "flex min-h-0 justify-end",
       )}
@@ -268,7 +379,18 @@ export function DownloadManagerPanel({
           </div>
           <ul className="max-h-[60dvh] divide-y divide-foreground/[0.06] overflow-y-auto [scrollbar-width:thin]">
             {jobKeys.map((jobKey) => (
-              <DownloadRow key={jobKey} jobKey={jobKey} />
+              <DownloadRow
+                key={jobKey}
+                jobKey={jobKey}
+                pendingStart={startingByKey.get(jobKey)}
+              />
+            ))}
+            {queued.map((entry, i) => <li key={`${entry.planId}:${i}`} className="flex flex-col gap-1.5 py-2.5 pl-4 pr-3">
+              <span className="truncate text-ui-12p5 font-medium">{entry.repoId}<span className="text-muted-foreground"> · {entry.checkpoint !== false ? "Model file" : assetLabel(entry, "Required assets")}</span></span>
+              <span className="text-ui-11 text-muted-foreground">{entry.checkpoint !== false ? "Queued" : `Queued · ${REQUIRED_ASSET_NOTE}`}</span>
+            </li>)}
+            {unlistedStarts.map((start) => (
+              <PendingStartRow key={start.key} start={start} />
             ))}
           </ul>
         </div>

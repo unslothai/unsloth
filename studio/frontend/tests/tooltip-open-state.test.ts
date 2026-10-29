@@ -36,8 +36,7 @@ test("a controlled tooltip follows its owner", () => {
 });
 
 test("a controlled tooltip stays shut after a modal until its owner resets", () => {
-  // The resize handle keeps `hovered` true because no pointerleave arrived, so
-  // honouring `open` again would put the tooltip back with the pointer gone.
+  // No pointerleave arrived, so `hovered` is still true.
   assert.equal(
     resolveTooltipOpen({
       ...base,
@@ -49,8 +48,6 @@ test("a controlled tooltip stays shut after a modal until its owner resets", () 
 });
 
 test("an uncontrolled tooltip is not held by that latch", () => {
-  // Its own hover state was cleared when the modal opened, so a real hover
-  // afterwards must show it immediately.
   assert.equal(
     resolveTooltipOpen({
       ...base,
@@ -59,4 +56,12 @@ test("an uncontrolled tooltip is not held by that latch", () => {
     }),
     true,
   );
+});
+
+test("the latch is set only for a controlled tooltip its owner held open", async () => {
+  // Already shut when the modal came, its owner never sends another false, so the latch never cleared.
+  const { readFileSync } = await import("node:fs");
+  const tooltip = readFileSync(new URL("../src/components/ui/tooltip.tsx", import.meta.url), "utf8");
+  assert.match(tooltip, /if \(controlledOpenRef\.current\) setDismissedUntilOwnerResets\(true\);/);
+  assert.doesNotMatch(tooltip, /^\s*setDismissedUntilOwnerResets\(true\);/m);
 });

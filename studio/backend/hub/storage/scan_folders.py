@@ -29,8 +29,7 @@ def _denied_path_prefixes() -> list[str]:
     if system == "Linux":
         return ["/proc", "/sys", "/dev", "/etc", "/boot", "/run"]
     if system == "Darwin":
-        # realpath() resolves /etc -> /private/etc and /tmp -> /private/tmp on macOS, so include the
-        # /private variants to avoid bypasses.
+        # macOS realpath maps /etc, /tmp to /private/...; include those to avoid bypasses.
         return [
             "/System",
             "/Library",
@@ -51,14 +50,7 @@ def _denied_path_prefixes() -> list[str]:
 
 
 def is_denied_system_path(path: str) -> bool:
-    """True if *path* is, or descends from, a denied system directory.
-
-    Mirrors the denylist add_scan_folder() enforces at registration so the
-    browser refuses /etc, /proc, C:\\Windows, etc. even when the allowlist holds
-    a broad root (a Windows drive root C:\\ or a legacy-registered / root). The
-    /run carve-out keeps Linux removable-media mounts browseable. Expects an
-    already-resolved (realpath) path so symlinks cannot escape into a denied subtree.
-    """
+    """Expects a realpath-resolved path, so symlinks cannot escape into a denied subtree."""
     return _denied_prefix(path) is not None
 
 
@@ -82,10 +74,7 @@ _EXTENDED_PREFIXES = (
 
 
 def _comparable_path(path: str, fold: bool | None = None) -> str:
-    """``path`` spelled the way the filesystem compares it, for prefix checks. Windows ignores
-    case, and so does macOS unless the volume is case-sensitive (``fold`` says, else it is asked:
-    /LIBRARY is /Library on a default volume only). realpath() keeps a Windows extended-length
-    prefix (``\\\\?\\C:\\Windows``) that would otherwise hide the folder behind it."""
+    """Case-folded on Windows and case-insensitive macOS volumes, with extended-length prefixes removed."""
     system = platform.system()
     if system == "Windows":
         check = os.path.normcase(path)
@@ -129,14 +118,14 @@ def list_scan_folders() -> list[dict]:
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT id, path, created_at FROM scan_folders ORDER BY created_at"
+            "SELECT id, path, created_at, recursive FROM scan_folders ORDER BY created_at"
         ).fetchall()
-        return [dict(row) for row in rows]
+        return [{**dict(row), "recursive": bool(row["recursive"])} for row in rows]
     finally:
         conn.close()
 
 
-def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
+def add_scan_folder_with_status(path: str, recursive: bool | None = None) -> tuple[dict, bool]:
     """Add a readable scan folder and return its row plus whether it was inserted."""
     if not path or not path.strip():
         raise ValueError("Path cannot be empty")
@@ -147,8 +136,7 @@ def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
     if not os.path.isdir(normalized):
         raise ValueError("Path must be a directory, not a file")
     if is_local_filesystem_root(normalized):
-        # A local fs root would expose denied system dirs via browse; a UNC share root has none under it and
-        # stays registerable.
+        # A local fs root would expose denied system dirs; a UNC share root is fine.
         raise ValueError("The filesystem root cannot be registered")
     if _contains_sensitive_path_component(normalized):
         raise ValueError("Credential or configuration directories are not allowed")
@@ -171,30 +159,55 @@ def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
         now = datetime.now(timezone.utc).isoformat()
         if is_win:
             existing = conn.execute(
-                "SELECT id, path, created_at FROM scan_folders WHERE path = ? COLLATE NOCASE",
+                "SELECT id, path, created_at, recursive FROM scan_folders WHERE path = ? COLLATE NOCASE",
                 (normalized,),
             ).fetchone()
         else:
             existing = conn.execute(
-                "SELECT id, path, created_at FROM scan_folders WHERE path = ?",
+                "SELECT id, path, created_at, recursive FROM scan_folders WHERE path = ?",
                 (normalized,),
             ).fetchone()
+            if (
+                existing is None
+                and platform.system() == "Darwin"
+                and macos_volume_ignores_case(normalized)
+            ):
+                # realpath keeps the typed case, so ~/Models and ~/models would be two rows scanning one folder.
+                folded = normalized.casefold()
+                existing = next(
+                    (
+                        row
+                        for row in conn.execute(
+                            "SELECT id, path, created_at, recursive FROM scan_folders"
+                        )
+                        if str(row["path"]).casefold() == folded
+                    ),
+                    None,
+                )
         if existing is not None:
-            return dict(existing), False
+            # None keeps the stored flag, so a re-add from export registration never resets it.
+            if recursive is None or bool(existing["recursive"]) == recursive:
+                return dict(existing), False
+            conn.execute(
+                "UPDATE scan_folders SET recursive = ? WHERE id = ?",
+                (int(recursive), existing["id"]),
+            )
+            conn.commit()
+            return {**dict(existing), "recursive": recursive}, True
         inserted = False
         try:
             conn.execute(
-                "INSERT INTO scan_folders (path, created_at) VALUES (?, ?)",
-                (normalized, now),
+                "INSERT INTO scan_folders (path, created_at, recursive) VALUES (?, ?, ?)",
+                (normalized, now, int(bool(recursive))),
             )
             conn.commit()
             inserted = True
         except sqlite3.IntegrityError:
             pass
         fallback_sql = (
-            "SELECT id, path, created_at FROM scan_folders WHERE path = ? COLLATE NOCASE"
+            "SELECT id, path, created_at, recursive FROM scan_folders WHERE path = ? COLLATE NOCASE"
             if is_win
-            else "SELECT id, path, created_at FROM scan_folders WHERE path = ?"
+            else "SELECT id, path, created_at, recursive FROM scan_folders WHERE path = ?"
         )
         row = conn.execute(fallback_sql, (normalized,)).fetchone()
         if row is None:
@@ -204,9 +217,9 @@ def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
         conn.close()
 
 
-def add_scan_folder(path: str) -> dict:
+def add_scan_folder(path: str, recursive: bool | None = None) -> dict:
     """Add a readable directory for the local OS user; not a multi-user sandbox."""
-    row, _ = add_scan_folder_with_status(path)
+    row, _ = add_scan_folder_with_status(path, recursive)
     return row
 
 

@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Z-Image-Turbo attention inside the regional compile: RoPE as ``addcmul`` in the card's probed fma form
-(bit-identical to the complex multiply Inductor cannot lower) and one fused QKV GEMM (exact for int8:
-per-row scales). ``to_q/to_k/to_v`` weights become views of the fused one; the fused Linear is used only
-while they are still the modules it was built from, so LoRA / later wrappers fall back to stock.
-Kill switch: ``UNSLOTH_DIFFUSION_ZIMAGE_FUSED=0``.
-"""
+"""Z-Image-Turbo fused QKV GEMM (LoRA wrappers fall back to stock); UNSLOTH_DIFFUSION_ZIMAGE_FUSED=0"""
 
 from __future__ import annotations
 
@@ -65,11 +60,18 @@ def _qkv_intact(attn: Any) -> Any:
     lin, q, k, v = rec
     if attn.to_q is not q or attn.to_k is not k or attn.to_v is not v:
         return None
+    if lin.weight.device != q.weight.device:
+        return None  # a layer split moved the parts after the fusion; the stale fused copy is on another card
     return lin
 
 
 def _make_call(stock: Any) -> Any:
     import torch
+
+    # bound here, not inside the traced __call__
+    from .diffusion_int8_fused import ensure_intmm_module, int8_linear
+
+    ensure_intmm_module()  # resolved here, eagerly: an import under the trace is a graph break per Linear
 
     def __call__(
         self,
@@ -87,7 +89,7 @@ def _make_call(stock: Any) -> Any:
 
         fused = _qkv_intact(attn)
         if fused is not None:
-            query, key, value = fused(hidden_states).chunk(3, dim = -1)
+            query, key, value = int8_linear(fused, hidden_states).chunk(3, dim = -1)
         else:
             query = attn.to_q(hidden_states)
             key = attn.to_k(hidden_states)
@@ -126,7 +128,7 @@ def _make_call(stock: Any) -> Any:
             parallel_config = self._parallel_config,
         )
         hidden_states = hidden_states.flatten(2, 3).to(dtype)
-        output = attn.to_out[0](hidden_states)
+        output = int8_linear(attn.to_out[0], hidden_states)
         if len(attn.to_out) > 1:
             output = attn.to_out[1](output)
         return output
@@ -144,13 +146,38 @@ def _stock_rope(x_in: Any, freqs_cis: Any) -> Any:
         return x_out.type_as(x_in)
 
 
+def _rotation_group(linears: list) -> Any:
+    """0 when every part is a plain ``nn.Linear``, the shared ConvRot group when every part rotates its input at the
+    same group, else None (a mix cannot share one input)."""
+    from torch import nn
+
+    if all(type(lin) is nn.Linear for lin in linears):
+        return 0
+    try:
+        from .diffusion_convrot import convrot_linear_class
+        cls = convrot_linear_class()
+    except Exception:  # noqa: BLE001
+        return None
+    if not all(type(lin) is cls for lin in linears):
+        return None
+    groups = {getattr(lin, "convrot_groupsize", None) for lin in linears}
+    if len(groups) != 1:
+        return None
+    group = groups.pop()
+    if not isinstance(group, int) or group <= 0 or linears[0].in_features % group:
+        return None
+    return group
+
+
 def _fuse_linears(linears: list) -> Any:
-    """One ``nn.Linear`` over the concatenated outputs, or None; torchao tensors are rebuilt from their data/attribute lists."""
+    """One Linear over the concatenated outputs, or None; torchao tensors are rebuilt from their data/attribute lists.
+    Parts that all rotate their input at one ConvRot group give a fused ConvRotLinear at that group."""
     import torch
     from torch import nn
 
     ws = [lin.weight for lin in linears]
-    if any(type(lin) is not nn.Linear for lin in linears):
+    group = _rotation_group(linears)
+    if group is None:
         return None
     has_bias = [lin.bias is not None for lin in linears]
     if any(has_bias) and not all(has_bias):
@@ -196,6 +223,9 @@ def _fuse_linears(linears: list) -> Any:
         out.bias = nn.Parameter(
             torch.cat([lin.bias.detach() for lin in linears]), requires_grad = False
         )
+    if group:
+        from .diffusion_convrot import _install_rotation
+        _install_rotation(out, group)
     return out
 
 
@@ -235,9 +265,9 @@ def install(
         return {"real_rope": False, "fused_qkv": 0}
     if not _patch_class(logger):
         return {"real_rope": False, "fused_qkv": 0}
-    from .diffusion_int8_fused import resident_cuda_device, run_on_first_call
+    from .diffusion_int8_fused import resident_cuda_cards, run_on_first_call
 
-    if resident_cuda_device(transformer) is not None:
+    if resident_cuda_cards(transformer):
         return install_modules(transformer, logger, fuse_qkv = not offload_active)
     run_on_first_call(
         transformer,
@@ -281,15 +311,18 @@ def install_modules(
 
     import torch
 
-    from .diffusion_int8_fused import resident_cuda_device
+    from .diffusion_int8_fused import resident_cuda_cards
 
     cls = importlib.import_module(_MODULE).ZSingleStreamAttnProcessor
-    dev = resident_cuda_device(root)
-    if dev is None:
+    cards = resident_cuda_cards(
+        root
+    )  # one card, or each card of a layer split (the processor reads its query's card)
+    if not cards:
         return result
     with _LOCK:
-        index = dev.index if dev.index is not None else torch.cuda.current_device()
-        if index not in _FUSION:
+        for index in cards:
+            if index in _FUSION:
+                continue
             try:
                 from .diffusion_qwenimage21_rope import inductor_addcmul_is_fma, probe_fusion
                 _FUSION[index] = (
@@ -297,7 +330,7 @@ def install_modules(
                 )
             except Exception:  # noqa: BLE001
                 _FUSION[index] = None
-        result["real_rope"] = _FUSION[index] is not None
+        result["real_rope"] = all(_FUSION[index] is not None for index in cards)
         for _name, module in root.named_modules():
             if not fuse_qkv or type(getattr(module, "processor", None)) is not cls:
                 continue
@@ -319,6 +352,28 @@ def install_modules(
             result["fused_qkv"],
         )
     return result
+
+
+def probe_split_cards(cards: Any) -> tuple:
+    """Probe the split's other cards (an unprobed card takes the complex RoPE the regional compile cannot lower).
+    Returns the cards whose probe passed."""
+    if zimage_fused_disabled() or not _FUSION:
+        return ()
+    import torch
+
+    with _LOCK:
+        for index in cards:
+            index = int(index)
+            if index in _FUSION:
+                continue
+            try:
+                from .diffusion_qwenimage21_rope import inductor_addcmul_is_fma, probe_fusion
+                _FUSION[index] = (
+                    probe_fusion(torch.device("cuda", index)) if inductor_addcmul_is_fma() else None
+                )
+            except Exception:  # noqa: BLE001 - that card keeps the complex form
+                _FUSION[index] = None
+    return tuple(index for index in cards if _FUSION.get(int(index)) is not None)
 
 
 def uninstall(transformer: Any = None) -> None:

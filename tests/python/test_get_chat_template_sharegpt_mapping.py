@@ -30,6 +30,12 @@ TEMPLATES = [
 ]
 
 
+@pytest.fixture(autouse = True)
+def _scratch_cwd(tmp_path, monkeypatch):
+    # get_chat_template writes a scratch dir under CWD; isolate it per test and xdist worker.
+    monkeypatch.chdir(tmp_path)
+
+
 def _tokenizer():
     vocab = {"<unk>": 0, "<s>": 1, "</s>": 2, "<pad>": 3}
     return PreTrainedTokenizerFast(

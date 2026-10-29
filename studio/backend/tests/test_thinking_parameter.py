@@ -1,15 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Unit tests for the Anthropic-compatible thinking parameter.
-
-Covers:
-- ThinkingConfig model validation
-- ChatCompletionRequest with thinking parameter
-- Mapping logic: thinking.type -> enable_thinking
-"""
-
 import os
 import sys
 
@@ -102,18 +93,13 @@ def test_thinking_overrides_enable_thinking_when_both_provided():
             "enable_thinking": False,
         }
     )
-    # enable_thinking is explicitly set, so it takes precedence
     assert req.enable_thinking is False
     assert "enable_thinking" in req.model_fields_set
     assert req.thinking.type == "enabled"
 
 
 def test_thinking_mapping_ignores_an_explicitly_null_enable_thinking():
-    """A client that serializes every optional field must not change precedence.
-
-    pydantic records an explicit ``null`` as set, so without the discard the
-    derived value reads as a typed override and outranks the nested controls.
-    """
+    """pydantic counts an explicit null as set, so the derived value would outrank the nested controls."""
     req = ChatCompletionRequest.model_validate(
         {
             "model": "test-model",

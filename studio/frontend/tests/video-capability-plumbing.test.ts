@@ -6,12 +6,8 @@ import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
-// Only llama-server knows whether a GGUF takes video, so the flag travels from
-// /props to the model row and the adapter reads it off that row. Every hop that
-// carries the audio flag has to carry this one too: a hop that drops it leaves
-// the adapter reading false and refusing video on a model that supports it.
-// Two separate hops (syncModelCapabilities, then the direct status adoption)
-// were each missing it, hence a rule rather than two spot checks.
+// Only llama-server knows if a GGUF takes video, so every hop carrying the audio flag must
+// carry this one too; a dropped hop refuses video silently.
 
 const SRC = new URL("../src/", import.meta.url);
 
@@ -37,9 +33,7 @@ test("every mapper that writes hasAudioInput writes hasVideoInput too", async ()
   const dropped: string[] = [];
   for (const file of files) {
     const source = await readFile(file, "utf8");
-    // The write, not the read: `hasAudioInput:` assigns, `.hasAudioInput` reads.
     if (!/\bhasAudioInput\s*:/.test(source)) continue;
-    // The runtime type declares both as optional fields, not a mapping.
     if (rel(file) === "features/chat/types/runtime.ts") continue;
     if (!/\bhasVideoInput\s*:/.test(source)) dropped.push(rel(file));
   }
@@ -51,8 +45,7 @@ test("the direct status adoption carries the video capability", async () => {
     new URL("features/chat/lib/apply-inference-status-to-store.ts", SRC),
     "utf8",
   );
-  // This path never calls syncModelCapabilities, so whatever it omits here is
-  // simply absent from the row a server-adopted GGUF gets.
+  // This path never calls syncModelCapabilities.
   const caps = source.slice(
     source.indexOf("function ensureActiveModelInStoreList"),
     source.indexOf("const existing = store.models.find"),
@@ -66,8 +59,6 @@ test("the video drain names video when a clip cannot be read", async () => {
     new URL("components/assistant-ui/thread.tsx", SRC),
     "utf8",
   );
-  // Cloned from the audio drain, so the toast title came along with it. This is
-  // the one path whose job is to explain why a dropped video did not attach.
   const drain = source.slice(source.indexOf("claimVideoAttachments"));
   const title = drain.match(/toast\.error\("Could not attach dropped (\w+)"/)?.[1];
   assert.equal(title, "video");

@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Pin Unsloth's behavior when a training event reports non-finite (NaN/Inf) loss.
-
-The training event handler used to filter NaN/Inf to None silently while
-leaving the previous finite loss in progress.loss — so the API kept reporting
-the stale value as if everything were fine. We now drop the stale value:
-clients see loss=None at the affected step and a one-shot warning is logged.
-Training continues; the run is not marked failed.
-"""
+"""A non-finite loss reports None for that step, not the stale finite value; the run is not failed."""
 
 from __future__ import annotations
 
@@ -60,7 +53,6 @@ class TestNonfiniteLossSoftHandling:
         b._handle_event(_progress_event(step = 2, loss = float("nan")))
         # Stale finite loss must NOT leak through
         assert b._progress.loss is None
-        # Run is not marked failed
         assert b._progress.error is None
         assert b._should_stop is False
         # Warning flag is set so we don't re-log on every subsequent NaN step
@@ -89,7 +81,6 @@ class TestNonfiniteLossSoftHandling:
         b._handle_event(_progress_event(step = 1, loss = 0.97))
         b._handle_event(_progress_event(step = 2, loss = float("nan")))
         assert b._progress._nonfinite_loss_warned is True
-        # Further NaN steps don't change anything we care about
         b._handle_event(_progress_event(step = 3, loss = float("nan")))
         b._handle_event(_progress_event(step = 4, loss = float("nan")))
         assert b._progress._nonfinite_loss_warned is True
@@ -106,5 +97,4 @@ class TestNonfiniteLossSoftHandling:
         assert b._progress.loss is None
         b._handle_event(_progress_event(step = 3, loss = 0.85))
         assert b._progress.loss == pytest.approx(0.85)
-        # Warning flag stays set (we don't reset it on recovery)
         assert b._progress._nonfinite_loss_warned is True

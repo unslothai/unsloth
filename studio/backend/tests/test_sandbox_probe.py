@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import ast
 import inspect
 import os
 import pathlib
@@ -13,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 import pytest
 
@@ -257,6 +259,104 @@ def test_a_wedged_backend_times_out_instead_of_hanging(monkeypatch):
     assert "timed out" in reason
 
 
+def _zombie(pid: int) -> bool:
+    """Killed but unreaped: a container whose PID 1 never reaps orphans keeps it in the table."""
+    try:
+        with open(f"/proc/{pid}/stat", encoding = "ascii") as handle:
+            return handle.read().rpartition(")")[2].split()[0] == "Z"
+    except (OSError, IndexError):
+        return False
+
+
+def _gone(pid: int, within: float = 10.0) -> bool:
+    deadline = time.monotonic() + within
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        if _zombie(pid):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def test_a_timed_out_probe_also_ends_what_the_payload_spawned(monkeypatch, tmp_path):
+    """The macOS leak: a killed payload left its stuck child spinning, re-probed every minute."""
+    monkeypatch.setattr(sandbox_probe, "PROBE_TIMEOUT_SECONDS", 1.0)
+    pid_file = tmp_path / "grandchild.pid"
+    payload = (
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-I', '-S', '-c', 'import time; time.sleep(120)'])\n"
+        f"open({str(pid_file)!r}, 'w').write(str(child.pid))\n"
+        "time.sleep(120)\n"
+    )
+
+    def wedged_with_a_child(plan):
+        return PreparedSandboxLaunch(
+            argv = (sys.executable, "-I", "-S", "-c", payload),
+            workdir = plan.workdir,
+            env = plan.env,
+            preexec_fn = plan.preexec_fn,
+            backend = "wedged",
+        )
+
+    available, reason = sandbox_probe.probe(_Backend("wedged", wedged_with_a_child))
+    assert available is False and "timed out" in reason
+    grandchild = int(pid_file.read_text())
+    assert _gone(grandchild), f"the payload's child {grandchild} outlived the probe"
+
+
+def test_a_finished_probe_never_signals_a_group_it_no_longer_pins(monkeypatch):
+    """After communicate() reaps the leader, an emptied group's id can be reused by another process."""
+    signalled = []
+    monkeypatch.setattr(sandbox_probe.os, "killpg", lambda pgid, sig: signalled.append(pgid))
+    assert sandbox_probe.probe(_Backend("confining", _confining))[0] is True
+    assert signalled == []
+
+
+def test_a_timed_out_host_control_also_ends_what_it_spawned(monkeypatch, tmp_path):
+    monkeypatch.setattr(sandbox_probe, "PROBE_TIMEOUT_SECONDS", 1.0)
+    pid_file = tmp_path / "grandchild.pid"
+    monkeypatch.setattr(
+        sandbox_probe,
+        "_host_payload",
+        lambda workdir: (
+            "import subprocess, sys, time\n"
+            "child = subprocess.Popen([sys.executable, '-I', '-S', '-c', 'import time; time.sleep(120)'])\n"
+            f"open({str(pid_file)!r}, 'w').write(str(child.pid))\n"
+            "time.sleep(120)\n"
+        ),
+    )
+    available, reason = sandbox_probe.probe(_Backend("confining", _confining))
+    assert available is False and "positive controls" in reason
+    grandchild = int(pid_file.read_text())
+    assert _gone(grandchild), f"the host control's child {grandchild} outlived the probe"
+
+
+def test_the_payload_runs_under_the_tool_launch_fd_and_cpu_caps(tmp_path):
+    limits_file = tmp_path / "limits.txt"
+    payload = (
+        "import resource\n"
+        f"open({str(limits_file)!r}, 'w').write(repr(("
+        "resource.getrlimit(resource.RLIMIT_NOFILE), resource.getrlimit(resource.RLIMIT_CPU))))\n"
+    )
+
+    def report_limits(plan):
+        return PreparedSandboxLaunch(
+            argv = (sys.executable, "-I", "-S", "-c", payload),
+            workdir = plan.workdir,
+            env = plan.env,
+            preexec_fn = plan.preexec_fn,
+            backend = "limits",
+        )
+
+    sandbox_probe.probe(_Backend("limits", report_limits))
+    (nofile_soft, _), (cpu_soft, cpu_hard) = ast.literal_eval(limits_file.read_text())
+    assert nofile_soft <= sandbox_probe._PROBE_NOFILE
+    assert cpu_soft == cpu_hard == sandbox_probe._PROBE_CPU_SECONDS
+
+
 def test_a_backend_that_only_prints_the_token_is_not_believed():
     def liar(plan):
         return PreparedSandboxLaunch(
@@ -372,11 +472,23 @@ def test_linux_runtime_identity_includes_the_verified_bwrap(monkeypatch):
     assert os_sandbox._runtime_identity() != first
 
 
-def test_an_expired_verdict_is_re_probed(monkeypatch):
-    """Set before the first probe: the expiry is stamped when the verdict is stored."""
-    monkeypatch.setattr(sandbox_probe, "_CACHE_TTL_SECONDS", 0.0)
+def test_a_verdict_is_never_re_probed_on_its_own(monkeypatch):
+    import types
+
+    leap = {"now": 1000.0}
+
+    def monotonic():
+        leap["now"] += 86400.0
+        return leap["now"]
+
+    monkeypatch.setattr(
+        sandbox_probe, "time", types.SimpleNamespace(monotonic = monotonic), raising = False
+    )
     backend = _Backend("confining", _confining)
-    sandbox_probe.probe(backend)
+    for _ in range(5):
+        assert sandbox_probe.probe(backend)[0] is True
+    assert backend.calls == 1
+    sandbox_probe.reset_probe_cache()
     sandbox_probe.probe(backend)
     assert backend.calls == 2
 
@@ -406,7 +518,11 @@ def test_this_host_reports_unavailable_with_something_actionable():
         != 0
     )
     if blocked and os.path.exists("/proc/sys/kernel/apparmor_restrict_unprivileged_userns"):
-        assert "apparmor_restrict_unprivileged_userns" in capability.remediation
+        if shutil.which("bwrap") is None:
+            if "apt-get" in (os_sandbox.bwrap_install_command() or ""):
+                assert os_sandbox._BWRAP_APPARMOR_FIX in capability.remediation
+        else:
+            assert "apparmor_restrict_unprivileged_userns" in capability.remediation
 
 
 def test_the_abstract_socket_control_is_paired_like_every_other(monkeypatch):
@@ -482,53 +598,7 @@ def test_the_landlock_helper_imports_where_it_will_never_be_used():
         sandbox_landlock.abstract_scope_supported.cache_clear()
 
 
-def test_a_cached_verdict_outlives_the_old_sixty_second_window(monkeypatch, tmp_path):
-    """The TTL was 60s, so an idle chat paid the cold probe again on its next message: a call 70s after the last one cost 1.24s against 0.040s unsandboxed."""
-    from core.inference import sandbox_probe
-
-    assert sandbox_probe._CACHE_TTL_SECONDS >= 600, (
-        "the probe TTL is back under 10 minutes; an idle chat pays the cold "
-        "probe again on its next message"
-    )
-
-    calls = []
-
-    class Backend:
-        BACKEND_NAME = "ttl-probe"
-
-        @staticmethod
-        def prepare(plan):
-            calls.append(plan)
-            raise AssertionError("the probe should not have re-run inside the TTL")
-
-    sandbox_probe.reset_probe_cache()
-    clock = {"now": 1000.0}
-    monkeypatch.setattr(sandbox_probe.time, "monotonic", lambda: clock["now"])
-
-    from core.inference import os_sandbox as _os_sandbox
-
-    key = (Backend.BACKEND_NAME, _os_sandbox._runtime_identity())
-    sandbox_probe._cache[key] = (
-        clock["now"] + sandbox_probe._CACHE_TTL_SECONDS,
-        True,
-        "seeded",
-    )
-
-    clock["now"] += 70.0
-    available, reason = sandbox_probe.probe(Backend)
-    assert (available, reason) == (True, "seeded")
-    assert calls == [], "the probe re-ran 70s later, which is the cost this fixed"
-
-
-def test_an_unavailable_verdict_is_not_cached_for_the_long_window(monkeypatch, tmp_path):
-    """A user who installs bubblewrap must not wait 15 minutes for it to count."""
-    from core.inference import os_sandbox as _os_sandbox
-    from core.inference import sandbox_probe
-
-    assert (
-        sandbox_probe._CACHE_TTL_UNAVAILABLE_SECONDS <= 120
-    ), "an unavailable verdict is cached long enough to outlive the user's own remediation"
-
+def test_an_unavailable_verdict_waits_for_refresh_or_a_new_runtime(monkeypatch):
     probes = []
 
     class Backend:
@@ -539,21 +609,40 @@ def test_an_unavailable_verdict_is_not_cached_for_the_long_window(monkeypatch, t
             probes.append(plan)
             raise RuntimeError("bubblewrap is not installed")
 
+    identity = ["before"]
+    monkeypatch.setattr(os_sandbox, "_runtime_identity", lambda: identity[0])
     sandbox_probe.reset_probe_cache()
-    clock = {"now": 5000.0}
-    monkeypatch.setattr(sandbox_probe.time, "monotonic", lambda: clock["now"])
-
-    available, _ = sandbox_probe.probe(Backend)
-    assert available is False
+    for _ in range(5):
+        assert sandbox_probe.probe(Backend)[0] is False
     assert len(probes) == 1
-
-    clock["now"] += 30.0
+    assert sandbox_probe.probe(Backend, force = True)[0] is False
+    assert len(probes) == 2
+    identity[0] = "bubblewrap installed"
     sandbox_probe.probe(Backend)
-    assert len(probes) == 1, "an unavailable verdict should still be cached briefly"
+    assert len(probes) == 3
 
-    clock["now"] += 100.0
-    sandbox_probe.probe(Backend)
-    assert len(probes) == 2, (
-        "the host was never re-examined, so installing bubblewrap does not "
-        "take effect until the long TTL expires"
+
+def test_the_capability_names_the_empty_proc_layout_it_was_probed_with(monkeypatch):
+    if sys.platform != "linux" or shutil.which("bwrap") is None:
+        pytest.skip("the /proc layout is a bubblewrap detail")
+    from core.inference import sandbox_linux
+
+    monkeypatch.setattr(sandbox_probe, "probe", lambda backend, force = False: (True, "probe passed"))
+    monkeypatch.setattr(sandbox_linux, "empty_proc_layout", lambda *_a: True)
+    capability = os_sandbox.capability_snapshot(force = True)
+    assert capability.available and capability.profile_id == f"{sandbox_linux.PROFILE_ID}-emptyproc"
+    assert "no_process_filesystem" in capability.limitations
+
+
+def test_the_startup_probe_scans_the_model_caches_before_any_tool_call(monkeypatch):
+    if sys.platform != "linux" or shutil.which("bwrap") is None:
+        pytest.skip("the cache scan is part of the bubblewrap launch")
+    from core.inference import sandbox_linux
+
+    scanned = []
+    monkeypatch.setattr(
+        sandbox_linux, "_model_cache_binds", lambda workdir: scanned.append(workdir) or {}
     )
+    sandbox_probe.reset_probe_cache()
+    sandbox_probe.probe(sandbox_linux, force = True)
+    assert len(scanned) == 1

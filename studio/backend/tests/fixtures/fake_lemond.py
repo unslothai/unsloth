@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Fake lemond 11.9.0 with authenticated requests, model state and download progress.
-
-Accepts LemonadeServer's arguments and logs requests to cache/requests.jsonl.
-"""
+"""Fake lemond 11.9.0 that logs each request to cache/requests.jsonl; accepts LemonadeServer args."""
 
 from __future__ import annotations
 
@@ -40,6 +37,14 @@ CATALOG = [
         "max_context_window": 131072,
     },
     {
+        "id": "qwen3.8-mtp-27b-FLM",
+        "checkpoint": "qwen3.8-mtp:27b",
+        "labels": ["vision", "reasoning", "tool-calling", "chat"],
+        "size": 18.1,
+        # config.json's max_position_embeddings; FastFlowLM's engine stops at 8192.
+        "max_context_window": 262144,
+    },
+    {
         "id": "embed-gemma-300m-FLM",
         "checkpoint": "embed-gemma:300m",
         "labels": ["embeddings"],
@@ -65,7 +70,6 @@ def main() -> None:
     args = parser.parse_args()
 
     if os.environ.get("FAKE_LEMOND_IGNORE_SIGTERM") == "1":
-        # A lemond that never acts on SIGTERM, so only a SIGKILL death signal ends it.
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
     key = os.environ.get("LEMONADE_API_KEY", "")
     cache = Path(args.cache_dir)
@@ -151,7 +155,17 @@ def main() -> None:
                 flm.parent.mkdir(parents = True, exist_ok = True)
                 report = os.environ.get("FAKE_FLM_VALIDATE", '{"ready": true}')
                 pause = os.environ.get("FAKE_FLM_VALIDATE_SECONDS", "0")
-                flm.write_text(f"#!/bin/sh\nsleep {pause}\necho '{report}'\n", encoding = "utf-8")
+                version = os.environ.get("FAKE_FLM_VERSION", "")
+                answer_version = (
+                    f'[ "$1" = version ] && {{ echo \'{{"version": "{version}"}}\'; exit 0; }}\n'
+                    if version
+                    else ""
+                )
+                flm.write_text(
+                    f'#!/bin/sh\n{answer_version}[ "$1" = validate ] && sleep {pause}\n'
+                    f"echo '{report}'\n",
+                    encoding = "utf-8",
+                )
                 flm.chmod(0o755)
                 self._send(200, {"status": "success", "recipe": "flm", "backend": "npu"})
             elif self.path == "/v1/pull":

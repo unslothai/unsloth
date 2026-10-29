@@ -3,6 +3,7 @@
 
 """CPU reproduction: an authorized image unload cancels a later foreign generation."""
 
+import json
 import sys
 import secrets
 import threading
@@ -29,9 +30,7 @@ from utils.account_context import bind_account, current_account_id, reset_accoun
 from ..test_diffusion_backend import _FakePipeline
 from ..test_diffusion_backend import fake_runtime as _fake_runtime
 
-# Re-exported under its own name because pytest resolves a fixture by NAME, not by reference: the
-# tests below take `fake_runtime` as a parameter and never load the import, which reads to
-# scripts/verify_import_hoist.py as a hoisted import nothing uses.
+# Re-exported by name: pytest resolves fixtures by name, and verify_import_hoist.py would flag it.
 fake_runtime = _fake_runtime
 
 
@@ -50,6 +49,14 @@ def client_for(account):
     app.include_router(inference.studio_router, prefix = "/api/inference")
     app.include_router(video.router, prefix = "/api/inference")
     return TestClient(app)
+
+
+def _write_local_pipeline(root: Path) -> None:
+    scheduler = ["diffusers", "FlowMatchEulerDiscreteScheduler"]
+    manifest = {"_class_name": "ZImagePipeline", "scheduler": scheduler}
+    (root / "model_index.json").write_text(json.dumps(manifest))
+    (root / "scheduler").mkdir()
+    (root / "scheduler" / "scheduler_config.json").write_text("{}")
 
 
 @pytest.mark.parametrize("unloader", ["alice", "bob", "unsloth"])
@@ -71,7 +78,7 @@ def test_cpu_load_cancellation_requires_its_owner(
     backend = DiffusionBackend()
     entered, release, response_ready = (threading.Event() for _ in range(3))
     threads, errors, responses = [], [], []
-    (tmp_path / "model_index.json").write_text("{}", encoding = "utf-8")
+    _write_local_pipeline(tmp_path)
     monkeypatch.setattr(gpu_arbiter, "_owner", None)
     monkeypatch.setattr(gpu_arbiter, "_owner_account", None)
     for name in ("_resident_accounts", "_prior_resident_accounts", "_resident_sharers"):
@@ -166,7 +173,7 @@ def test_pending_caller_cannot_block_load_owner_eject(
     backend = DiffusionBackend()
     entered, pending, release, response_ready = (threading.Event() for _ in range(4))
     threads, errors, responses = [], [], {}
-    (tmp_path / "model_index.json").write_text("{}", encoding = "utf-8")
+    _write_local_pipeline(tmp_path)
     monkeypatch.setattr(gpu_arbiter, "_owner", None)
     monkeypatch.setattr(gpu_arbiter, "_owner_account", None)
     for name in ("_resident_accounts", "_prior_resident_accounts", "_resident_sharers"):
@@ -285,7 +292,6 @@ def test_unload_does_not_cancel_foreign_generation_started_after_route_check(
     monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.DIFFUSION)
     monkeypatch.setattr(gpu_arbiter, "_owner_account", accounts[unloader].account_id)
     monkeypatch.setattr(diffusion_engine_router, "get_active_diffusion_engine", lambda: backend)
-    # Replace only the model-dependent surface; reservation, cancellation and teardown are real.
     monkeypatch.setattr(
         backend,
         "status",

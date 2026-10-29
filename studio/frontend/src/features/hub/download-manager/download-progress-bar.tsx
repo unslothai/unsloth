@@ -15,16 +15,14 @@ export function DownloadProgressBar({
   bytesPerSec,
   cancelling = false,
   etaSeconds = 0,
+  activity,
 }: {
   progress: DownloadProgress;
   bytesPerSec: number;
   cancelling?: boolean;
-  /**
-   * Seconds remaining, from the estimator that produced ``bytesPerSec``.
-   * Deriving it here gave every caller its own ETA semantics and left the
-   * shared estimator's ``etaSeconds`` unused on this path.
-   */
+  /** Seconds remaining, from the same estimator that produced `bytesPerSec`. */
   etaSeconds?: number;
+  activity?: string;
 }) {
   const exactPercent = Math.min(Math.max(progress.fraction, 0), 1) * 100;
   const indeterminate = isIndeterminateProgress(progress, cancelling);
@@ -54,7 +52,7 @@ export function DownloadProgressBar({
       <div className="flex items-center justify-between gap-2 text-ui-10p5 text-muted-foreground tabular-nums">
         <span>
           {indeterminate
-            ? "Transferring…"
+            ? (activity ?? "Transferring…")
             : formatBytes(progress.downloadedBytes)}
           {totalLabel && ` / ${totalLabel}`}
         </span>

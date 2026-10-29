@@ -8,9 +8,22 @@ import {
   attachmentViewerMeta,
 } from "@/components/assistant-ui/attachment-viewer-meta";
 import type { AttachmentSource } from "@/components/assistant-ui/use-attachment-source";
-import { DocumentView, documentKind, isMarkdown } from "@/components/file-viewer";
+import { AttachmentBrowserOpenContext } from "@/components/assistant-ui/attachment-browser-open-context";
+import { filesOpenInBrowser } from "@/features/browser";
+import {
+  DocumentView,
+  MAX_DOCUMENT_PREVIEW_BYTES,
+  type PageTarget,
+  documentKind,
+  isMarkdown,
+} from "@/components/file-viewer";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
-import { type MediaViewerActions, MediaViewer, ScaleMenu } from "@/components/media-viewer";
+import {
+  type MediaViewerActions,
+  type MediaViewerGallery,
+  MediaViewer,
+  ScaleMenu,
+} from "@/components/media-viewer";
 import { Spinner } from "@/components/ui/spinner";
 import {
   attachmentBodyText,
@@ -30,7 +43,9 @@ import {
   type FC,
   type PropsWithChildren,
   type ReactNode,
+  useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -49,6 +64,10 @@ export const AttachmentViewer: FC<{
   saveAs?: { name: string; contentType: string };
   flush?: boolean;
   extra?: ReactNode;
+  libraryActions?: Omit<MediaViewerActions, "primary" | "onDownload">;
+  variant?: "card" | "lightbox";
+  gallery?: MediaViewerGallery;
+  itemKey?: string;
   children: ReactNode;
 }> = ({
   trigger,
@@ -63,10 +82,15 @@ export const AttachmentViewer: FC<{
   saveAs,
   flush = true,
   extra,
+  libraryActions,
+  variant,
+  gallery,
+  itemKey,
   children,
 }) => {
   const t = useT();
   const navigate = useNavigate();
+  const openInBrowser = useContext(AttachmentBrowserOpenContext);
   // Mounted on first open: every mounted viewer's project menu refetches the project list.
   const [mounted, setMounted] = useState(open);
   if (open && !mounted) setMounted(true);
@@ -94,11 +118,18 @@ export const AttachmentViewer: FC<{
             .then((blob) => downloadFile(blob, name, contentType || undefined))
             .catch(() => toast.error(t("library.toast.downloadFailed", { name })))
       : undefined,
+    ...libraryActions,
   };
   return (
     <>
       <Slot.Root
-        onClick={() => onOpenChange(true)}
+        onClick={() => {
+          if (openInBrowser && filesOpenInBrowser()) {
+            openInBrowser();
+            return;
+          }
+          onOpenChange(true);
+        }}
         className="aui-attachment-preview-trigger cursor-pointer transition-colors hover:bg-accent/50"
       >
         {trigger}
@@ -115,6 +146,9 @@ export const AttachmentViewer: FC<{
           redactFromReload={redactFromReload}
           extra={extra}
           actions={actions}
+          variant={variant}
+          gallery={gallery}
+          itemKey={itemKey}
         >
           {open && children}
         </MediaViewer>
@@ -125,12 +159,13 @@ export const AttachmentViewer: FC<{
 
 type Loaded = { blob?: Blob; text?: string; plain?: string; truncated?: boolean; error?: boolean };
 
-const DocumentBody: FC<{ name: string; contentType?: string; loaded: Loaded; scale: number }> = ({
-  name,
-  contentType,
-  loaded,
-  scale,
-}) => {
+const DocumentBody: FC<{
+  name: string;
+  contentType?: string;
+  loaded: Loaded;
+  scale: number;
+  pageTarget?: PageTarget;
+}> = ({ name, contentType, loaded, scale, pageTarget }) => {
   const t = useT();
   if (loaded.error) {
     return <p className="m-auto text-sm text-muted-foreground">{t("library.preview.cannotPreview")}</p>;
@@ -157,7 +192,20 @@ const DocumentBody: FC<{ name: string; contentType?: string; loaded: Loaded; sca
   }
   const kind = documentKind(name, contentType);
   if (!loaded.blob || !kind) return <Spinner className="m-auto size-6" />;
-  return <DocumentView file={loaded.blob} kind={kind} name={name} contentType={contentType} scale={scale} />;
+  // The Library's ceiling: a larger file was read on the server, and parsing it here blocks the main thread.
+  if (loaded.blob.size > MAX_DOCUMENT_PREVIEW_BYTES) {
+    return <p className="m-auto text-sm text-muted-foreground">{t("library.preview.cannotPreview")}</p>;
+  }
+  return (
+    <DocumentView
+      file={loaded.blob}
+      kind={kind}
+      name={name}
+      contentType={contentType}
+      scale={scale}
+      pageTarget={pageTarget}
+    />
+  );
 };
 
 const DocumentDialog: FC<
@@ -166,9 +214,11 @@ const DocumentDialog: FC<
     load: () => Promise<Blob>;
     redactFromReload: boolean;
     textFallback?: boolean;
+    page?: number;
   }>
-> = ({ children, source, load, redactFromReload, textFallback = false }) => {
+> = ({ children, source, load, redactFromReload, textFallback = false, page }) => {
   const [open, setOpen] = useState(false);
+  const pageTarget = useMemo(() => (page ? { page } : undefined), [page]);
   const [scale, setScale] = useState(1);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const markdown = isMarkdown(source.name, source.contentType ?? "");
@@ -192,7 +242,13 @@ const DocumentDialog: FC<
               : truncateAttachmentPreviewText(await blob.text());
           next = { blob, text, truncated };
         } else if (textFallback && blob.type.startsWith("text/")) {
-          const { text, truncated } = truncateAttachmentPreviewText(await blob.text());
+          // A File decodes as the composer does (BOM, UTF-16); a code page it refuses still shows raw.
+          const { text, truncated } =
+            blob instanceof File
+              ? await readAttachmentText(blob, source.name, blob.type).catch(async () =>
+                  truncateAttachmentPreviewText(await blob.text()),
+                )
+              : truncateAttachmentPreviewText(await blob.text());
           next = { blob, plain: text, truncated };
         }
         if (!cancelled) setLoaded(next);
@@ -231,7 +287,13 @@ const DocumentDialog: FC<
         />
       }
     >
-      <DocumentBody name={source.name} contentType={source.contentType} loaded={loaded ?? {}} scale={scale} />
+      <DocumentBody
+        name={source.name}
+        contentType={source.contentType}
+        loaded={loaded ?? {}}
+        scale={scale}
+        pageTarget={pageTarget}
+      />
     </AttachmentViewer>
   );
 };
@@ -252,6 +314,32 @@ const SentOriginalDialog: FC<
     </DocumentDialog>
   );
 };
+
+/** A file outside any message, such as a chat with files source, read on open: pages, markdown or
+ *  text (a text/* blob); a PDF opens at `page` (1-based). */
+export const LocalFileDialog: FC<
+  PropsWithChildren<{ name: string; load: () => Promise<Blob>; page?: number }>
+> = ({ children, name, load, page }) => (
+  <DocumentDialog
+    source={{
+      kind: "document",
+      name,
+      contentType: undefined,
+      file: undefined,
+      src: undefined,
+      audio: undefined,
+      video: undefined,
+      text: undefined,
+      hasOriginal: true,
+    }}
+    load={load}
+    redactFromReload={false}
+    textFallback={true}
+    page={page}
+  >
+    {children}
+  </DocumentDialog>
+);
 
 export const AttachmentDocumentDialog: FC<
   PropsWithChildren<{ source: AttachmentSource; redactFromReload: boolean }>

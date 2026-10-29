@@ -102,7 +102,7 @@ class _FakeEnv:
                     if name == "torch":
                         self.torch_version = version
                 self.importable = not self.install_moves
-                # uv reports an upgrade or downgrade as `- name==old` then `+ name==new`, like an addition.
+                # uv reports an upgrade or downgrade as `- name==old` then `+ name==new`.
                 return _Result(
                     0,
                     f"Installed {len(_ADDED_BY_INSTALL)} packages in 1.2s\n"
@@ -389,7 +389,7 @@ def test_another_process_holding_the_env_lock_blocks_the_install(env, monkeypatc
     monkeypatch.setattr(inst, "ENV_LOCK_TIMEOUT_S", 0.05)
     real = inst._env_install_lock
     monkeypatch.setattr(inst, "_env_install_lock", lambda timeout = 0.05: real(timeout))
-    # A second FileLock on its own file handle, held from a thread, stands in for another process.
+    # A second FileLock on its own handle, held from a thread, stands in for another process.
     other = filelock.FileLock(inst._env_lock_path(), thread_local = False)
     import threading
 
@@ -866,7 +866,6 @@ def test_status_preflight_reason_is_the_loaded_device_only(monkeypatch):
 
 
 def test_image_loader_skips_the_install_when_the_plan_declined_the_seed():
-    # A declined seed loads the released denoiser, and the Hub probe alone would still buy the install.
     body = _load_pipeline_body(_INFERENCE_DIR / "diffusion.py")
     gate = body[: body.index("ensure_flashinfer_for_nvfp4(")].rsplit("if (", 1)[-1]
     declined = gate.index("_pipeline_prequant_planned != PIPELINE_SEED_DECLINED")
@@ -924,7 +923,16 @@ def test_install_gates_skip_kinds_the_dense_quant_path_cannot_reach():
 
     img = inspect.getsource(diffusion.DiffusionBackend)
     gate = img[: img.index("ensure_flashinfer_for_nvfp4(")].rsplit("if ", 1)[-1]
-    assert gate.lstrip("( \n").startswith("dense_quant_supported_kind(kind)")
+    # One exception, by kind: a ComfyUI nvfp4 single file (it never reaches the dense quant path, but its own codes
+    # run on the FlashInfer Linear). Every other kind still has to pass the dense-quant clause.
+    comfy, dense = gate.split(") or (", 1)
+    assert comfy.lstrip("( \n").startswith('kind == "single_file"')
+    assert "_comfy_single_file_holds_nvfp4(" in comfy
+    assert comfy.index("comfy_nvfp4_runtime_possible(") < comfy.index(
+        "_comfy_single_file_holds_nvfp4("
+    )
+    assert comfy.index("_has_active_lora(loras)") < comfy.index("_comfy_single_file_holds_nvfp4(")
+    assert dense.lstrip("( \n").startswith("dense_quant_supported_kind(kind)")
     vid = inspect.getsource(video.VideoBackend)
     gate = vid[vid.index("_nvfp4_install_wanted = (") + len("_nvfp4_install_wanted = (") :]
     assert gate.lstrip("( \n").startswith('kind == "pipeline"')
@@ -958,7 +966,7 @@ def test_jit_cache_step_drops_extra_index_sources_from_the_environment(env, monk
         if "install" in cmd and "uninstall" not in cmd
     }
     for name, value in extra.items():
-        assert envs["main"].get(name) == value  # the user's mirrors still serve the main step
+        assert envs["main"].get(name) == value
         assert name not in envs["jit"]
 
 
@@ -996,7 +1004,7 @@ def test_pip_jit_cache_step_reads_no_pip_conf_but_keeps_its_transport(env, monke
     assert jit_env["PIP_PROXY"] == "http://proxy.corp.example:3128"
     assert jit_env["PIP_CERT"] == "/etc/ssl/corp.pem"
     assert jit_env["PIP_TRUSTED_HOST"].split() == ["a.corp.example", "b.corp.example"]
-    assert jit_env["PIP_TIMEOUT"] == "30"  # the caller's own environment still wins
+    assert jit_env["PIP_TIMEOUT"] == "30"
     assert not any(k in jit_env for k in ("PIP_EXTRA_INDEX_URL", "PIP_FIND_LINKS"))
 
 
@@ -1075,7 +1083,6 @@ def test_a_complete_install_still_holding_the_lock_is_waited_for_in_case_it_roll
             env.dists.pop("flashinfer-python")
             env.dists.pop("flashinfer-jit-cache")
             env.importable = False
-            # Imports seen before the rollback: ordering by count, not by clock.
             rolled_back.append(len(stamps))
 
     t = threading.Thread(target = _hold)
@@ -1136,7 +1143,7 @@ def test_a_uv_index_skips_the_pypi_probe_only_when_uv_installs(env, monkeypatch,
     [
         ("13.0", "0.6.6+cu128", False),  # left over from a cu128 torch
         ("13.0", "0.6.6", False),  # no local tag: the CUDA it was built for cannot be told
-        ("14.0", "0.6.6+cu130", True),  # no published build fits, yet a cache is present
+        ("14.0", "0.6.6+cu130", True),
     ],
 )
 def test_a_jit_cache_built_for_another_cuda_refuses(env, monkeypatch, cuda, cache, nvcc):
@@ -1173,7 +1180,7 @@ def test_a_load_that_declined_installs_does_not_wait_on_another_install(env, mon
         t.join()
     assert elapsed < 1.0
     assert not ok and "another process is still installing" in reason
-    assert stamps == []  # never imported mid-transaction
+    assert stamps == []
     assert env.commands == []
 
 
@@ -1246,9 +1253,7 @@ def test_a_pip_conf_mirror_is_not_overridden_by_a_uv_one(env, monkeypatch):
 def test_pip_config_is_only_read_when_pip_installs(env):
     run = _pip_config(env, [":env:.no-index='1'"])
     assert inst.ensure_flashinfer_for_nvfp4(0, run = run)[0]
-    assert (
-        run.calls == []
-    )  # uv ignores pip's settings, and the installed path never pays for the subprocess
+    assert run.calls == []  # uv ignores pip's settings
 
 
 @pytest.mark.parametrize(
@@ -1337,7 +1342,7 @@ def test_pip_section_overrides_the_top_level_in_uv_config(env, monkeypatch, tmp_
         'index-url = "https://corp.example/simple"\n',
         '[[index]]\nurl = "https://corp.example/simple"\n',
         '[pip]\nextra-index-url = ["https://corp.example/simple"]\n',
-        "this is not toml = = \n",  # unreadable here: the installer decides, not pypi.org
+        "this is not toml = = \n",
     ],
 )
 def test_a_uv_config_mirror_skips_the_pypi_probe(env, monkeypatch, tmp_path, text):
@@ -1413,7 +1418,7 @@ def test_reachability_counts_a_tls_failure_as_a_route(monkeypatch):
 
 
 def test_an_install_killed_between_its_steps_completes_on_the_next_load(env):
-    # Killed between steps: the next load must finish the install, not treat jit-cache-less flashinfer as done.
+    # Killed between steps: the next load must finish, not treat jit-cache-less flashinfer as done.
     real_run = env.run
     calls = {"n": 0}
 
@@ -1436,7 +1441,6 @@ def test_an_install_killed_between_its_steps_completes_on_the_next_load(env):
 
 @pytest.mark.parametrize("model", ["DiffusionStatusResponse", "VideoStatusResponse"])
 def test_the_status_reason_hides_host_paths_from_api_key_callers(model):
-    # Host paths must stay redacted for API-key callers.
     from hub.utils.host_paths import redact_host_paths
     from models import inference as models
 
@@ -1496,7 +1500,6 @@ def test_a_failed_install_does_not_quote_index_credentials(env):
 
 
 def test_an_unreported_failure_does_not_revert_a_concurrent_upgrade(env):
-    # No report: constraints held everything, so a concurrent terminal upgrade stays.
     env.concurrent_add = {"packaging": "26.0"}
     real_run = env.run
 
@@ -1515,3 +1518,18 @@ def test_an_unreported_failure_does_not_revert_a_concurrent_upgrade(env):
     assert "flashinfer-python" not in env.dists, reason
     assert env.dists["packaging"] == "26.0", reason
     assert not [c for c in env.commands if "packaging==25.0" in c]
+
+
+def test_cutlass_dsl_is_held_to_the_flash4_range_when_absent(env):
+    # An unconstrained resolve lands cutlass-dsl 4.8.0, which the hub FA4 build cannot load.
+    ok, reason = _ensure(env)
+    assert ok, reason
+    assert "nvidia-cutlass-dsl>=4.4,<4.6" in env.constraints_seen[0].splitlines()
+
+
+def test_an_installed_cutlass_dsl_is_pinned_not_ranged(env):
+    env.dists["nvidia-cutlass-dsl"] = "4.4.2"
+    ok, reason = _ensure(env)
+    assert ok, reason
+    pins = env.constraints_seen[0].splitlines()
+    assert "nvidia-cutlass-dsl==4.4.2" in pins and "nvidia-cutlass-dsl>=4.4,<4.6" not in pins

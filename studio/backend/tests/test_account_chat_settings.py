@@ -192,7 +192,7 @@ def test_foreign_ids_do_not_authorize_reads_or_writes(client, method, path, body
 def test_list_export_and_delete_stay_in_the_account(client):
     seed_chat(BOB)
     seed_run(BOB)
-    assert client.get("/chat/threads").json() == {"threads": []}
+    assert client.get("/chat/threads").json()["threads"] == []
     assert client.get("/runs/active?threadId=private").json() == {"runs": []}
     assert client.get("/chat/attachments").json()["attachments"] == []
     assert client.get("/chat/export").json()["threadCount"] == 0
@@ -360,7 +360,9 @@ OWNER_PATHS = [
         "/hugging-face-cache": ("GET", "PUT"),
         "/llama-cpp-path": ("GET", "PUT"),
         "/upload-limit": ("PUT",),
+        "/tool-result-limit": ("PUT",),
         "/helper-precache": ("PUT",),
+        "/developer-mode": ("PUT",),
         "/download-transport": ("PUT",),
         "/xet-notice/reserve": ("POST",),
         "/model-memory": ("GET", "PUT"),
@@ -368,10 +370,10 @@ OWNER_PATHS = [
         "/diffusion-accelerator-fallback": ("GET", "DELETE"),
         "/coding-agents": ("GET",),
         "/openai-auto-switch": ("GET", "PUT"),
-        "/openai-auto-switch/overrides": ("GET", "PUT"),
         "/embedding-model": ("GET", "PUT", "DELETE"),
         "/embedding-model/resolve": ("GET",),
         "/embedding-model/unload": ("POST",),
+        "/embedding-model/device": ("PUT",),
         "/preview-links/rotate": ("POST",),
         "/remote-access": ("GET",),
         "/remote-access/start": ("POST",),
@@ -382,6 +384,7 @@ OWNER_PATHS = [
         "/lan-access/stop": ("POST",),
         "/lan-access/auto-start": ("PUT",),
         "/lan-access/port": ("PUT",),
+        "/lan-access/addresses": ("PUT",),
         "/preview-sharing": ("GET", "PUT"),
         "/keyless-api-access": ("GET", "PUT"),
         "/debug/logs/sources": ("GET",),
@@ -403,6 +406,7 @@ def test_every_owner_setting_rejects_managed_accounts(client, method, path):
         ("/personalization", {"profile": {"displayName": "Alice"}}),
         ("/chat-preferences", {"show_model_disclaimer": True}),
         ("/current-date-prompt", {"enabled": False}),
+        ("/chat-memory", {"enabled": False}),
     ],
 )
 def test_personal_settings_do_not_change_owner_rows(client, path, body):
@@ -452,10 +456,125 @@ def test_owner_setting_keeps_200_and_single_account_policy_is_inert(client, monk
     response = client.get("/settings/llama-cpp-path", headers = {"x-test-account": "unsloth"})
     assert response.status_code == 200, response.text
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: False)
-    # Deactivating the last managed account must not open an owner-only setting to a request still bound to it.
     owner = client.get("/settings/llama-cpp-path", headers = {"x-test-account": "unsloth"})
     assert owner.status_code == 200
     assert client.get("/settings/llama-cpp-path").status_code == 403
+
+
+@pytest.fixture
+def fresh_override_cache(monkeypatch):
+    from utils import openai_auto_switch_settings
+    monkeypatch.setattr(openai_auto_switch_settings, "_cache", {})
+
+
+def test_managed_account_saves_its_own_model_overrides(client, fresh_override_cache):
+    from utils.openai_auto_switch_settings import MODEL_OVERRIDES_SETTING_KEY
+
+    saved = client.put(
+        "/settings/openai-auto-switch/overrides",
+        json = {"model_id": "org/model:Q4_K_M", "max_seq_length": 8192},
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["overrides"]["org/model:Q4_K_M"]["max_seq_length"] == 8192
+    alice = client.get("/settings/openai-auto-switch/overrides")
+    assert alice.status_code == 200 and "org/model:Q4_K_M" in alice.json()["overrides"]
+    bob = client.get("/settings/openai-auto-switch/overrides", headers = {"x-test-account": "bob"})
+    assert bob.status_code == 200 and bob.json()["overrides"] == {}
+    assert run_as(OWNER, studio_db.get_app_setting, MODEL_OVERRIDES_SETTING_KEY, None) is None
+
+
+def test_managed_load_uses_its_own_override_then_the_owners(fresh_override_cache):
+    from utils.openai_auto_switch_settings import resolve_override_for_load, set_model_override
+
+    run_as(OWNER, set_model_override, "org/model", max_seq_length = 4096)
+    assert run_as(ALICE, resolve_override_for_load, "org/model")[1]["max_seq_length"] == 4096
+    run_as(ALICE, set_model_override, "org/model", max_seq_length = 16384)
+    assert run_as(ALICE, resolve_override_for_load, "org/model")[1]["max_seq_length"] == 16384
+    assert run_as(BOB, resolve_override_for_load, "org/model")[1]["max_seq_length"] == 4096
+    assert run_as(OWNER, resolve_override_for_load, "org/model")[1]["max_seq_length"] == 4096
+    assert run_as(BOB, resolve_override_for_load, "org/other") == (None, {})
+
+
+def test_managed_default_save_shadows_the_owners_override(client, fresh_override_cache):
+    from utils.openai_auto_switch_settings import resolve_override_for_load, set_model_override
+
+    run_as(
+        OWNER,
+        set_model_override,
+        "org/model:Q4_K_M",
+        llama_extra_args = ["--no-warmup"],
+        max_seq_length = 4096,
+        gpu_layers = 10,
+    )
+    url = "/settings/openai-auto-switch/overrides"
+    defaults = {"model_id": "org/model:Q4_K_M", "remove": False, "llama_extra_args": []}
+    saved = client.put(url, json = defaults)
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["overrides"] == {"org/model:Q4_K_M": {"llama_extra_args": []}}
+    for load in (("org/model:Q4_K_M",), ("org/model", None, "Q4_K_M")):
+        key, override = run_as(ALICE, resolve_override_for_load, *load)
+        assert key == "org/model:Q4_K_M" and override == {"llama_extra_args": []}
+    shown = client.get(url, params = {"model_id": "org/model", "gguf_variant": "Q4_K_M"}).json()
+    assert shown["resolved"] == {"llama_extra_args": []}
+    owner = run_as(OWNER, resolve_override_for_load, "org/model:Q4_K_M")[1]
+    assert owner["llama_extra_args"] == ["--no-warmup"] and owner["max_seq_length"] == 4096
+    assert owner["gpu_layers"] == 10
+    assert client.put(url, json = {"model_id": "org/model:Q4_K_M", "remove": False}).json()[
+        "overrides"
+    ] == {"org/model:Q4_K_M": {"llama_extra_args": []}}
+
+    forgot = client.put(url, json = {"model_id": "org/model:Q4_K_M", "remove": True})
+    assert forgot.status_code == 200 and forgot.json()["overrides"] == {}
+    assert run_as(ALICE, resolve_override_for_load, "org/model:Q4_K_M")[1] == owner
+
+
+def test_pinned_models_are_per_account(client):
+    empty = client.get("/settings/pinned-models")
+    assert empty.status_code == 200 and empty.json() == {
+        "pinned": None,
+        "connected": None,
+        "embedding": None,
+    }
+    saved = client.put(
+        "/settings/pinned-models", json = {"pinned": ["org/a::Q4_K_M", "org/b", "org/b"]}
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json() == {
+        "pinned": ["org/a::Q4_K_M", "org/b"],
+        "connected": None,
+        "embedding": None,
+    }
+    both = client.put("/settings/pinned-models", json = {"connected": ["external::c1::gpt"]}).json()
+    assert both == {
+        "pinned": ["org/a::Q4_K_M", "org/b"],
+        "connected": ["external::c1::gpt"],
+        "embedding": None,
+    }
+    embed = client.put(
+        "/settings/pinned-models", json = {"embedding": ["unsloth/bge-m3", "unsloth/bge-m3"]}
+    ).json()
+    assert embed["embedding"] == ["unsloth/bge-m3"] and embed["connected"] == ["external::c1::gpt"]
+    cleared = client.put("/settings/pinned-models", json = {"pinned": []}).json()
+    assert cleared["pinned"] == [] and cleared["connected"] == ["external::c1::gpt"]
+    bob = client.get("/settings/pinned-models", headers = {"x-test-account": "bob"}).json()
+    assert bob == {"pinned": None, "connected": None, "embedding": None}
+    assert (
+        run_as(OWNER, studio_db.get_app_setting, settings.PINNED_MODELS_SETTING_KEY, None) is None
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"pinned": ["x"], "extra": 1},
+        {"pinned": [""]},
+        {"pinned": ["x"] * (settings.MAX_PINNED_MODELS + 1)},
+        {"connected": [1]},
+        {"embedding": [""]},
+    ],
+)
+def test_pinned_models_rejects_bad_payloads(client, body):
+    assert client.put("/settings/pinned-models", json = body).status_code == 422
 
 
 def test_managed_last_model_key_survives_username_rename(client):
@@ -584,6 +703,28 @@ def test_api_usage_statistics_read_only_the_account_database(client):
     assert "bob-model" not in response.text
 
 
+def test_usage_export_reads_only_the_account_database(client):
+    receipt = api_usage_db.ApiUsageReceipt(
+        id = "receipt",
+        subject = "bob",
+        endpoint = "/v1/chat/completions",
+        model = "bob-model",
+        status = "completed",
+        prompt_tokens = 10,
+        completion_tokens = 20,
+        total_tokens = 30,
+        created_at = 1,
+        via_api_key = True,
+    )
+    run_as(BOB, api_usage_db.record_api_usage, receipt)
+    as_bob = client.get("/profile/stats/export", headers = {"x-test-account": "bob"})
+    assert as_bob.status_code == 200, as_bob.text
+    assert "bob-model" in as_bob.text
+    response = client.get("/profile/stats/export")
+    assert response.status_code == 200, response.text
+    assert "bob-model" not in response.text
+
+
 def test_single_account_cancel_still_calls_the_original_supervisor(monkeypatch):
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: False)
     calls = []
@@ -645,3 +786,20 @@ def test_research_cleanup_reaches_the_account_keyed_supervisor():
     bob_event = run_as(BOB, supervisor._cancel_event, "same")
     run_as(ALICE, chat_history._cancel_research_runs, request, ["same"])
     assert alice_event.is_set() and not bob_event.is_set()
+
+
+def test_chat_memory_is_per_account(client):
+    from utils.paths import studio_root
+
+    saved = client.put("/settings/chat-memory", json = {"text": "Alice uses uv.", "enabled": False})
+    assert saved.status_code == 200, saved.text
+    assert (studio_root() / "accounts" / ALICE.account_id / "AGENTS.md").read_text(
+        encoding = "utf-8"
+    ) == "Alice uses uv.\n"
+    assert not (studio_root() / "AGENTS.md").exists()
+    owner = client.get("/settings/chat-memory", headers = {"x-test-account": OWNER.username}).json()
+    assert owner["text"] == "" and owner["enabled"] is True
+    bob = client.get("/settings/chat-memory", headers = {"x-test-account": "bob"}).json()
+    assert bob["text"] == "" and bob["enabled"] is True
+    alice = client.get("/settings/chat-memory").json()
+    assert alice["text"] == "Alice uses uv.\n" and alice["enabled"] is False

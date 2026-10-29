@@ -41,104 +41,116 @@ def _checkpoint_sort_key(checkpoint_path: Path) -> tuple[int, int, str]:
     return (1, 0, str(checkpoint_path))
 
 
-def _infer_base_model_from_history(checkpoint_dir: Path) -> Optional[str]:
-    """Best-effort base-model lookup using persisted Unsloth run metadata."""
-    checkpoint_name = checkpoint_dir.name
-    resolved_checkpoint_dir = str(checkpoint_dir.resolve())
+class _History:
+    def __init__(self) -> None:
+        self._conn = None
+        self._dirs: Optional[list] = None
+        self._pairs: Optional[list] = None
 
-    try:
-        conn = get_connection()
-    except Exception:
-        return None
+    def _fetch(self, sql: str) -> list:
+        # A failed open or query is retried by the next run, as when each run opened its own connection.
+        if self._conn is None:
+            self._conn = get_connection()
+        return self._conn.execute(sql).fetchall()
 
-    try:
-        exact_rows = conn.execute(
-            """
-            SELECT model_name
-            FROM training_runs
-            WHERE output_dir IN (?, ?)
-            ORDER BY started_at DESC
-            """,
-            (
-                resolved_checkpoint_dir,
-                str(checkpoint_dir),
-            ),
-        ).fetchall()
-        for row in exact_rows:
-            model_name = row["model_name"]
-            if model_name:
-                return model_name
+    def dir_rows(self) -> list:
+        if self._dirs is None:
+            self._dirs = [
+                (row["model_name"], row["output_dir"])
+                for row in self._fetch(
+                    "SELECT model_name, output_dir FROM training_runs"
+                    " WHERE output_dir IS NOT NULL ORDER BY started_at DESC"
+                )
+            ]
+        return self._dirs
 
-        suffix_rows = conn.execute(
-            """
-            SELECT model_name, output_dir
-            FROM training_runs
-            WHERE output_dir IS NOT NULL
-            ORDER BY started_at DESC
-            """
-        ).fetchall()
-        for row in suffix_rows:
-            output_dir = str(row["output_dir"] or "").rstrip("/\\")
-            if not (
-                output_dir.endswith(f"/{checkpoint_name}")
-                or output_dir.endswith(f"\\{checkpoint_name}")
+    def model_projects(self) -> list:
+        """Distinct (model_name, project_name), in order of their newest run."""
+        if self._pairs is None:
+            pairs = {}
+            for row in self._fetch(
+                "SELECT model_name, config_json FROM training_runs ORDER BY started_at DESC"
             ):
-                continue
-            model_name = row["model_name"]
-            if model_name:
-                return model_name
+                if not row["model_name"]:
+                    continue
+                project_name = None
+                if row["config_json"]:
+                    try:
+                        project_name = extract_project_name(json.loads(row["config_json"]))
+                    except Exception:
+                        project_name = None
+                pairs.setdefault((row["model_name"], project_name), None)
+            self._pairs = list(pairs)
+        return self._pairs
 
-        parts = checkpoint_name.rsplit("_", 1)
-        if len(parts) != 2 or not parts[1].isdigit():
-            return None
+    def close(self) -> None:
+        conn, self._conn = self._conn, None
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
-        timestamp = int(parts[1])
-        generated_rows = conn.execute(
-            """
-            SELECT model_name, config_json
-            FROM training_runs
-            ORDER BY started_at DESC
-            """
-        ).fetchall()
-        for row in generated_rows:
-            model_name = row["model_name"]
-            if not model_name:
-                continue
 
-            project_name = None
-            config_json = row["config_json"]
-            if config_json:
-                try:
-                    project_name = extract_project_name(json.loads(config_json))
-                except (TypeError, json.JSONDecodeError):
-                    project_name = None
-
-            expected_dir_name = build_default_output_dir_name(
-                model_name,
-                project_name,
-                timestamp = timestamp,
-            )
-            if expected_dir_name == checkpoint_name:
-                return model_name
+def _infer_base_model_from_history(
+    checkpoint_dir: Path, history: Optional[_History] = None
+) -> Optional[str]:
+    """Best-effort base-model lookup using persisted Unsloth run metadata."""
+    own_history = history is None
+    if own_history:
+        history = _History()
+    try:
+        return _lookup_base_model(checkpoint_dir, history)
     except Exception:
         return None
     finally:
-        conn.close()
+        if own_history:
+            history.close()
 
+
+def _lookup_base_model(checkpoint_dir: Path, history: _History) -> Optional[str]:
+    checkpoint_name = checkpoint_dir.name
+    exact_dirs = (str(checkpoint_dir.resolve()), str(checkpoint_dir))
+    dir_rows = history.dir_rows()
+    for model_name, output_dir in dir_rows:
+        if model_name and output_dir in exact_dirs:
+            return model_name
+
+    for model_name, output_dir in dir_rows:
+        output_dir = str(output_dir).rstrip("/\\")
+        if model_name and (
+            output_dir.endswith(f"/{checkpoint_name}")
+            or output_dir.endswith(f"\\{checkpoint_name}")
+        ):
+            return model_name
+
+    parts = checkpoint_name.rsplit("_", 1)
+    if len(parts) != 2 or not parts[1].isdigit():
+        return None
+
+    timestamp = int(parts[1])
+    for model_name, project_name in history.model_projects():
+        if (
+            build_default_output_dir_name(model_name, project_name, timestamp = timestamp)
+            == checkpoint_name
+        ):
+            return model_name
     return None
 
 
 def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:
-    """Read loss from the last log_history entry of trainer_state.json, or None."""
+    """Read the latest training loss from trainer_state.json's log_history, or None."""
     trainer_state = checkpoint_path / "trainer_state.json"
     if not own_entry(trainer_state):
         return None
     try:
         with open(trainer_state, encoding = "utf-8-sig") as f:
             state = json.load(f)
-        log_history = state.get("log_history", [])
-        if log_history:
-            return log_history[-1].get("loss")
+        # Not just the last entry: on a step that also evaluates, the Trainer logs the
+        # eval metrics after the training loss and before it saves the checkpoint.
+        for entry in reversed(state.get("log_history") or []):
+            if isinstance(entry, dict) and "loss" in entry:
+                return entry["loss"]
     except Exception as e:
         logger.debug(f"Could not read loss from {trainer_state}: {e}")
     return None
@@ -147,11 +159,7 @@ def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:
 def parse_adapter_features(
     adapter_path: str, probe_weights: bool = True
 ) -> Optional[Dict[str, Optional[bool]]]:
-    """Adapter feature flags (PEFT or MLX config) for the export UI; None without a config.
-
-    ``full_state`` is tri-state: no config marker proves absence (PEFT saves embedding state only
-    as weight keys), so a negative needs the weight-header probe and stays None without it.
-    """
+    """full_state is tri-state: no config marker proves absence (PEFT stores embedding state only as weight keys), so a weight-header probe is needed; else None."""
     cfg_path = os.path.join(adapter_path, "adapter_config.json")
     try:
         with open(cfg_path, "r", encoding = "utf-8") as f:
@@ -211,7 +219,21 @@ def _has_own_model(path: Path) -> bool:
         return False
 
 
-def _checkpoint_dirs(run_dir: Path) -> List[Path]:
+# unsloth.models.decision.is_decision_checkpoint's Laya rule; Clef folders carry config.json or adapter_config.json.
+_LAYA_FILES = ("rl_agent_config.json", "model.safetensors")
+_LAYA_DIRS = ("encoder", "tokenizer")
+
+
+def _is_own_laya_run(path: Path) -> bool:
+    try:
+        return all(
+            own_entry(path / name) and (path / name).is_file() for name in _LAYA_FILES
+        ) and all((path / name).is_dir() for name in _LAYA_DIRS)
+    except OSError:
+        return False
+
+
+def _checkpoint_dirs(run_dir: Path, include_decision: bool = False) -> List[Path]:
     try:
         return sorted(
             (
@@ -220,7 +242,7 @@ def _checkpoint_dirs(run_dir: Path) -> List[Path]:
                 if sub.is_dir()
                 and sub.name.startswith("checkpoint-")
                 and within_account(sub)
-                and _has_own_model(sub)
+                and (_has_own_model(sub) or (include_decision and _is_own_laya_run(sub)))
             ),
             key = _checkpoint_sort_key,
         )
@@ -229,9 +251,11 @@ def _checkpoint_dirs(run_dir: Path) -> List[Path]:
 
 
 def scan_checkpoints(
-    outputs_dir: str | None = None,
+    outputs_dir: str | None = None, include_decision: bool = False
 ) -> List[Tuple[str, List[Tuple[str, str, Optional[float]]], dict]]:
     """Scan outputs folder for training runs and their checkpoints.
+
+    ``include_decision`` also lists Laya decision runs (GGUF export only; chat cannot load them).
 
     Returns:
         [(model_name, [(display_name, checkpoint_path, loss), ...], metadata), ...]
@@ -243,6 +267,16 @@ def scan_checkpoints(
     """
     if outputs_dir is None:
         outputs_dir = str(outputs_root())
+    history = _History()
+    try:
+        return _scan_checkpoints(outputs_dir, include_decision, history)
+    finally:
+        history.close()
+
+
+def _scan_checkpoints(
+    outputs_dir: str, include_decision: bool, history: _History
+) -> List[Tuple[str, List[Tuple[str, str, Optional[float]]], dict]]:
     models = []
     outputs_path = resolve_output_dir(outputs_dir)
 
@@ -257,8 +291,8 @@ def scan_checkpoints(
             if not within_account(item):
                 continue
 
-            has_root_model = _has_own_model(item)
-            valid_checkpoints = _checkpoint_dirs(item)
+            has_root_model = _has_own_model(item) or (include_decision and _is_own_laya_run(item))
+            valid_checkpoints = _checkpoint_dirs(item, include_decision)
             # A cancelled or crashed run has no final save but can still have checkpoints.
             if not has_root_model and not valid_checkpoints:
                 continue
@@ -266,6 +300,7 @@ def scan_checkpoints(
             meta_dir = item if has_root_model else valid_checkpoints[0]
             config_file = meta_dir / "config.json"
             adapter_config = meta_dir / "adapter_config.json"
+            laya_config = meta_dir / "rl_agent_config.json"
 
             # Training metadata from adapter_config.json / config.json
             metadata: dict = {}
@@ -281,6 +316,12 @@ def scan_checkpoints(
                 elif own_entry(config_file):
                     cfg = json.loads(config_file.read_text(encoding = "utf-8-sig"))
                     metadata["base_model"] = cfg.get("_name_or_path")
+                elif include_decision and own_entry(laya_config):
+                    laya = json.loads(laya_config.read_text(encoding = "utf-8-sig"))
+                    training = (
+                        laya.get("training") if isinstance(laya.get("training"), dict) else {}
+                    )
+                    metadata["base_model"] = training.get("base") or laya.get("encoder")
 
                 # Detect BNB quantization from config.json
                 if own_entry(config_file):
@@ -296,10 +337,9 @@ def scan_checkpoints(
             except Exception:
                 pass
 
-            # Fallback: extract base model name from the folder name, e.g.
-            # "unsloth_Llama-3.2-3B-Instruct_1771227800" → "unsloth/Llama-3.2-3B-Instruct"
+            # Fallback: "unsloth_Llama-3.2-3B-Instruct_1771227800" -> "unsloth/Llama-3.2-3B-Instruct".
             if not metadata.get("base_model"):
-                metadata["base_model"] = _infer_base_model_from_history(item)
+                metadata["base_model"] = _infer_base_model_from_history(item, history)
 
             if not metadata.get("base_model"):
                 name_part = model_segment_from_default_output_dir_name(item.name)
@@ -378,8 +418,7 @@ def is_full_finetune_output(path: Optional[str]) -> bool:
     if not path:
         return False
     try:
-        # Below 3.13 a symlink loop comes back as RuntimeError, not OSError, whatever
-        # `strict` says, and both callers run this outside any handler.
+        # Below 3.13 a symlink loop raises RuntimeError, not OSError.
         Path(path).resolve().relative_to(outputs_root().resolve())
     except (OSError, RuntimeError, ValueError):
         return False
@@ -396,12 +435,7 @@ def has_preview_model(output_dir: Optional[str]) -> bool:
 
 
 def preview_ref(output_dir: Optional[str]) -> Optional[str]:
-    """``/p`` ref (``run`` or ``run/checkpoint``) relative to outputs_root, or None.
-
-    Posix-joined so a nested output dir keeps a working link instead of collapsing
-    to its basename. None when not previewable, outside outputs_root, or deeper than
-    the two path segments the ``/p`` route matches (so the UI omits a dead link).
-    """
+    """Posix-joined ref (run or run/checkpoint) under outputs_root, so nested dirs keep a working link; None if unpreviewable, outside the root, or too deep for /p."""
     if not has_preview_model(output_dir):
         return None
     try:

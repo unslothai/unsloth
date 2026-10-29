@@ -8,7 +8,6 @@ import pytest
 
 from core.inference import mxc_probe, mxc_read_grants, os_sandbox, sandbox_windows_mxc
 
-# What Git for Windows' bash prints under an AppContainer before it reads its command (microsoft/mxc#1061).
 MSYS_STARTUP_FAILURE = (
     "      0 [main] bash (8852) C:\\Program Files\\Git\\bin\\..\\usr\\bin\\bash.exe: *** fatal error - "
     "NtCreateDirectoryObject(\\BaseNamedObjects\\msys-2.0S5-1888ae32e00d56aa): 0xC0000022\n"
@@ -18,7 +17,6 @@ DLL_INIT_FAILED = 3221225794  # 0xC0000142
 
 @pytest.fixture(autouse = True)
 def _fresh_probe_cache(monkeypatch):
-    # Unit tests never touch real ACLs; test_mxc_read_grants.py covers the grant itself.
     monkeypatch.setattr(mxc_read_grants, "ensure", lambda _roots: ())
     monkeypatch.setattr(mxc_read_grants, "revoke_recorded", lambda: ())
     mxc_probe.invalidate_cache()
@@ -73,11 +71,9 @@ def test_git_bash_namespace_failure_is_named(monkeypatch, tmp_path):
 @pytest.mark.parametrize(
     "executable, kind, output, cleanup",
     [
-        # Another bash failure is not this one.
         ("bash.exe", "terminal", "bash: some other startup error\n", "complete"),
         # Uncertain cleanup outranks any diagnosis of the shell.
         ("bash.exe", "terminal", MSYS_STARTUP_FAILURE, "uncertain"),
-        # The signature only means something from the shell it describes.
         ("cmd.exe", "terminal", MSYS_STARTUP_FAILURE, "complete"),
         ("pwsh.exe", "terminal", MSYS_STARTUP_FAILURE, "complete"),
         ("python.exe", "python", MSYS_STARTUP_FAILURE, "complete"),
@@ -93,10 +89,34 @@ def test_other_failures_keep_the_generic_reason(
     assert reason == "the live MXC probe did not complete cleanly"
 
 
+# wxc-exec's last line with the fallback off on Windows Server 2025 (windows-latest), which has no BaseContainer.
+NO_BASECONTAINER = (
+    "error: BaseContainer is unavailable on this system and DACL fallback is disabled "
+    "(fallback.allowDaclMutation=false). Run on a system with the BaseContainer API or bfscfg.exe, "
+    "or set fallback.allowDaclMutation=true in your config.\n"
+)
+
+
+@pytest.mark.parametrize("cleanup", ["complete", "uncertain"])
+@pytest.mark.parametrize("executable, kind", [("python.exe", "python"), ("cmd.exe", "terminal")])
+def test_a_missing_builtin_container_is_named(monkeypatch, tmp_path, executable, kind, cleanup):
+    """It refuses before any container exists, so the cleanup state cannot hide it."""
+    available, reason = _run_probe(
+        monkeypatch, tmp_path, executable, kind, NO_BASECONTAINER, 1, cleanup
+    )
+    assert available is False
+    assert reason == mxc_probe.NO_BUILTIN_CONTAINER_REASON
+
+
 def _count_live_probes(monkeypatch, reason):
     clock = [1000.0]
     calls = []
-    monkeypatch.setattr(mxc_probe.time, "monotonic", lambda: clock[0])
+
+    def leaping_monotonic():
+        clock[0] += 86400.0
+        return clock[0]
+
+    monkeypatch.setattr(mxc_probe.time, "monotonic", leaping_monotonic)
     monkeypatch.setattr(mxc_probe.mxc_runtime, "installation_identity", lambda: "runtime-a")
 
     def live_probe(
@@ -111,28 +131,46 @@ def _count_live_probes(monkeypatch, reason):
     return clock, calls
 
 
-def test_an_incompatible_shell_is_not_probed_again_each_negative_ttl(monkeypatch, tmp_path):
-    clock, calls = _count_live_probes(monkeypatch, mxc_probe.MSYS_NAMESPACE_REASON)
+@pytest.mark.parametrize(
+    "reason", [mxc_probe.MSYS_NAMESPACE_REASON, "the live MXC probe did not complete cleanly"]
+)
+def test_a_failure_is_held_until_invalidated_not_until_a_timer(monkeypatch, tmp_path, reason):
+    _clock, calls = _count_live_probes(monkeypatch, reason)
     bash = str(tmp_path / "bash.exe")
     for _ in range(5):
-        assert mxc_probe.probe(bash, execution_kind = "terminal") == (
-            False,
-            mxc_probe.MSYS_NAMESPACE_REASON,
-        )
-        clock[0] += mxc_probe.NEGATIVE_TTL + 1
+        assert mxc_probe.probe(bash, execution_kind = "terminal") == (False, reason)
     assert len(calls) == 1
-    clock[0] += mxc_probe.INCOMPATIBLE_TTL
+    mxc_probe.invalidate_cache()
     mxc_probe.probe(bash, execution_kind = "terminal")
     assert len(calls) == 2
+    mxc_probe.probe(bash, execution_kind = "terminal", force = True)
+    assert len(calls) == 3
 
 
-def test_a_generic_failure_still_expires_at_the_negative_ttl(monkeypatch, tmp_path):
-    clock, calls = _count_live_probes(monkeypatch, "the live MXC probe did not complete cleanly")
+def test_an_invalidate_during_a_probe_keeps_its_result_out(monkeypatch, tmp_path):
+    import threading
+
+    _clock, calls = _count_live_probes(monkeypatch, "blocked before the fix")
+    started, release = threading.Event(), threading.Event()
+    live = mxc_probe._probe
+
+    def slow(*args, **kwargs):
+        started.set()
+        release.wait(5)
+        return live(*args, **kwargs)
+
+    monkeypatch.setattr(mxc_probe, "_probe", slow)
     bash = str(tmp_path / "bash.exe")
+    worker = threading.Thread(
+        target = mxc_probe.probe, args = (bash,), kwargs = {"execution_kind": "terminal"}
+    )
+    worker.start()
+    assert started.wait(5)
+    mxc_probe.invalidate_cache()
+    release.set()
+    worker.join(5)
     mxc_probe.probe(bash, execution_kind = "terminal")
-    clock[0] += mxc_probe.NEGATIVE_TTL + 1
-    mxc_probe.probe(bash, execution_kind = "terminal")
-    assert len(calls) == 2
+    assert len(calls) == 2, "a verdict from before the invalidate was cached"
 
 
 def test_a_new_runtime_or_opt_in_probes_the_shell_again(monkeypatch, tmp_path):
@@ -213,7 +251,6 @@ def test_an_in_place_git_update_probes_the_shell_again(monkeypatch, tmp_path):
     mxc_probe.probe(str(bash), execution_kind = "terminal")
     mxc_probe.probe(str(bash), execution_kind = "terminal")
     assert len(calls) == 1
-    # Same path, new runtime: an upgrade that may have fixed the namespace call.
     runtime.write_bytes(b"msys-new-and-longer")
     mxc_probe.probe(str(bash), execution_kind = "terminal")
     assert len(calls) == 2

@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The launcher refresh fetches install.sh / install.ps1 from unsloth.ai and runs it.
-
-`unsloth studio update` re-runs the installer with --shortcuts-only. Fetching, rather
-than shipping a copy in the wheel, is deliberate: a launcher fix then reaches users
-without waiting for a release. unsloth.ai and the unslothai/unsloth repo it redirects to
-are trusted, so what is left to get right is everything around the fetch, namely that a
-transport error cannot abort an update that already succeeded, that a response which is
-not an installer is not piped into bash, and that a source checkout still outranks the
-network so `update --local` tests its own installer.
-"""
+"""Refresh fetches install.sh / install.ps1; errors never abort it, non-installers never run."""
 
 from __future__ import annotations
 
@@ -46,9 +37,6 @@ def _posix(monkeypatch, tmp_path):
     monkeypatch.setattr(studio, "_PACKAGE_ROOT", tmp_path / "no-checkout-here")
     monkeypatch.delenv("STUDIO_LOCAL_REPO", raising = False)
     return studio
-
-
-# ── where the installer comes from ─────────────────────────────────────────────────
 
 
 def test_the_installer_is_fetched_from_unsloth_ai():
@@ -113,9 +101,6 @@ def test_a_wheel_install_fetches_and_pipes_to_bash(monkeypatch, tmp_path):
     )
     studio._refresh_desktop_shortcuts()
     assert runs == [(["bash", "-s", "--", "--shortcuts-only"], b"FETCHED")]
-
-
-# ── what a bad response must not do ────────────────────────────────────────────────
 
 
 def test_a_failed_fetch_skips_instead_of_executing(monkeypatch, tmp_path, capsys):
@@ -195,13 +180,7 @@ def test_oversized_and_html_responses_return_none(monkeypatch, tmp_path):
 
 
 def test_a_truncated_body_is_never_executed(monkeypatch, tmp_path):
-    """read(amt) does not check Content-Length, so a cut-off transfer must be caught.
-
-    The markers sit early in install.sh, so a body truncated a third of the way in
-    still satisfies _looks_like_installer. Without the follow-up read() that forces
-    http.client to compare against the declared length, that half-written script
-    would be piped into bash.
-    """
+    """A truncated install.sh must not run: read() skips Content-Length, so a follow-up read() forces it."""
     import http.client
 
     studio = _posix(monkeypatch, tmp_path)
@@ -219,7 +198,6 @@ def test_a_truncated_body_is_never_executed(monkeypatch, tmp_path):
             self.calls += 1
             if self.calls == 1:
                 return short
-            # What http.client raises when the body is shorter than Content-Length.
             raise http.client.IncompleteRead(b"", len(full) - len(short))
 
         def __enter__(self):
@@ -263,15 +241,9 @@ def test_a_complete_body_survives_the_completeness_check(monkeypatch, tmp_path):
 
 
 def test_a_windows_tempfile_failure_skips_instead_of_aborting(monkeypatch, tmp_path):
-    """The refresh runs after the package update has already succeeded.
-
-    A full disk, a read-only %TEMP% or AV holding the handle raises OSError while
-    creating or writing the script. That must not surface as a traceback from a
-    command whose real work is done.
-    """
+    """Refresh runs after a successful update, so a Windows tempfile OSError must skip, not abort."""
     studio = _studio()
-    # Captured BEFORE any patching: studio.tempfile is the tempfile module itself, so patching through
-    # it replaces the global.
+    # Captured before patching: studio.tempfile is the global tempfile module.
     real_mkstemp = tempfile.mkstemp
     calls = []
 
@@ -287,7 +259,6 @@ def test_a_windows_tempfile_failure_skips_instead_of_aborting(monkeypatch, tmp_p
     studio._run_fetched_installer_ps1(b"x", ["--shortcuts-only"], ["powershell.exe"], {})
     assert calls == []
 
-    # And a write that fails after the file exists still cleans up and skips.
     made = {}
 
     def _ok_mkstemp(*a, **k):
@@ -297,12 +268,7 @@ def test_a_windows_tempfile_failure_skips_instead_of_aborting(monkeypatch, tmp_p
         return fd, path
 
     class _BadHandle:
-        """Stands in for the real handle, and owns the descriptor like one.
-
-        Windows refuses to unlink a file that still has an open descriptor, so a
-        handle that leaked the fd would make the cleanup below fail there for a
-        reason that has nothing to do with the code under test.
-        """
+        """Owns its descriptor like the real handle: Windows cannot unlink a file that has an open fd."""
 
         def __init__(self, fd):
             self._fd = fd
@@ -321,8 +287,6 @@ def test_a_windows_tempfile_failure_skips_instead_of_aborting(monkeypatch, tmp_p
     monkeypatch.setattr(studio.os, "fdopen", lambda fd, *a, **k: _BadHandle(fd))
     studio._run_fetched_installer_ps1(b"x", ["--shortcuts-only"], ["powershell.exe"], {})
     assert not Path(made["path"]).exists(), "the temp script must not be left behind"
-    # Asserted directly so the descriptor leak is caught on Linux too, rather than only surfacing as an
-    # unlink failure on Windows.
     with pytest.raises(OSError):
         os.fstat(made["fd"])
 
@@ -367,8 +331,7 @@ def test_a_local_installer_that_cannot_be_launched_falls_back_to_the_network(mon
     checkout.mkdir()
     (checkout / "install.sh").write_text("#!/bin/sh\n")
     monkeypatch.setenv("STUDIO_LOCAL_REPO", str(checkout))
-    # The tests run from a clone, so _PACKAGE_ROOT would otherwise supply a second usable installer and
-    # the network would never be the fallback under test.
+    # The tests run from a clone, so _PACKAGE_ROOT would supply a second installer.
     monkeypatch.setattr(studio, "_PACKAGE_ROOT", tmp_path / "no-checkout-here")
     monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
 
@@ -394,12 +357,7 @@ def test_a_local_installer_that_cannot_be_launched_falls_back_to_the_network(mon
 
 
 def test_building_the_opener_never_mutates_global_urllib(monkeypatch):
-    """A private opener is needed to check redirects, but it must stay private.
-
-    OpenerDirector.add_handler() assigns handler.parent, so an earlier attempt to carry
-    the site-installed handlers over repointed that opener's own handlers at ours and
-    broke every later urlopen() in the process.
-    """
+    """Keep the redirect opener private: add_handler() sets handler.parent, breaking global urlopen."""
     studio = _studio()
     import urllib.request
 

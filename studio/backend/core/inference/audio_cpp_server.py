@@ -1,0 +1,848 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""One audiocpp_server child per model on 127.0.0.1 with a random per-launch id; ready only if
+/health answers and /v1/models lists that id (so a bind-race rival fails). Binary:
+AUDIOCPP_SERVER_PATH, UNSLOTH_AUDIO_CPP_PATH, <UNSLOTH_HOME>/audio.cpp (from
+install_audio_cpp_prebuilt.py), then PATH."""
+
+from __future__ import annotations
+
+import http.client
+import json
+import os
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import uuid
+from pathlib import Path
+from typing import Any, BinaryIO, Optional
+
+from core.inference.audio_cpp_models import AudioCppModel
+from core.inference.audio_cpp_failures import classify_audio_cpp_failure
+from core.inference.audio_errors import sanitize_runtime_tail
+from loggers import get_logger
+from utils.prebuilt.child_env import isolate_home, scrub_env
+from utils.prebuilt.runtime_libs import dedupe_existing_dirs
+from utils.process_lifetime import (
+    adopt_pid,
+    child_popen_kwargs,
+    forget_pid,
+    is_process_shutting_down,
+)
+
+logger = get_logger(__name__)
+
+BINARY_NAME = "audiocpp_server.exe" if sys.platform == "win32" else "audiocpp_server"
+INSTALL_RECORD = "UNSLOTH_AUDIO_CPP_PREBUILT_INFO.json"
+
+# Model load happens before the server answers, and a multi-GB music model can take a while from a cold disk.
+_SERVER_START_TIMEOUT_SECONDS = 600.0
+_PROBE_TIMEOUT_SECONDS = 2.0
+# A streamed answer is copied to its file in blocks this size; an error body is read up to the cap.
+_SINK_CHUNK_BYTES = 1 << 20
+_ERROR_BODY_BYTES = 64 * 1024
+# CUDA graph replay wedges these transducers mid-request (server spins, never answers); graphs off fixes it.
+_NO_CUDA_GRAPH_FAMILIES = frozenset({"nemotron_asr", "parakeet_tdt"})
+_GPU_HOST_THREADS = 8
+
+
+class AudioCppUnavailableError(RuntimeError):
+    """audiocpp_server is missing, failed to start, or stopped answering."""
+
+    def __init__(
+        self,
+        message: str,
+        failure = None,
+    ) -> None:
+        super().__init__(message)
+        if failure is not None:
+            self.audio_cpp_failure = failure
+
+
+class AudioCppRuntimeTooOldError(AudioCppUnavailableError):
+    """The installed runtime is older than the GGUFs a download would fetch."""
+
+
+class AudioCppStartCancelledError(RuntimeError):
+    """A start was cancelled (training pre-empted it, or Unsloth is shutting down)."""
+
+
+class AudioCppRequestCancelledError(RuntimeError):
+    """The caller's cancel event fired while a request was in flight."""
+
+
+class AudioCppRequestError(RuntimeError):
+    """audiocpp_server answered a request with a non-2xx status."""
+
+    def __init__(self, status: int, detail: str) -> None:
+        super().__init__(f"The audio runtime returned HTTP {status}: {detail}")
+        self.status = status
+        self.detail = detail
+
+
+def managed_audio_cpp_dir() -> Path:
+    """``<UNSLOTH_HOME>/audio.cpp``, else ``<STUDIO_HOME>/audio.cpp`` in custom mode, else ``~/.unsloth/audio.cpp``."""
+    legacy = Path.home() / ".unsloth" / "audio.cpp"
+    try:
+        from utils.paths.storage_roots import studio_root, unsloth_home
+
+        master = unsloth_home()
+        if master is not None:
+            return master / "audio.cpp"
+        resolved = studio_root()
+        legacy_studio = Path.home() / ".unsloth" / "studio"
+        try:
+            is_legacy = resolved.resolve() == legacy_studio.resolve()
+        except (OSError, ValueError):
+            is_legacy = resolved == legacy_studio
+        return legacy if is_legacy else (resolved / "audio.cpp")
+    except (ImportError, OSError, ValueError):
+        override = (
+            os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or ""
+        ).strip()
+        if override:
+            return Path(override).expanduser() / "audio.cpp"
+        return legacy
+
+
+def _is_runnable(p: Path) -> bool:
+    try:
+        return p.is_file() and (sys.platform == "win32" or os.access(p, os.X_OK))
+    except OSError:
+        # An unreadable install dir reads as engine-unavailable, never a 500.
+        return False
+
+
+def _layout_candidates(d: Path) -> list[Path]:
+    recorded: list[Path] = []
+    try:
+        with open(d / INSTALL_RECORD, "r", encoding = "utf-8") as f:
+            relpath = json.load(f).get("server_relpath")
+        if isinstance(relpath, str) and relpath and ".." not in Path(relpath).parts:
+            recorded.append(d / relpath)
+    except (OSError, ValueError, AttributeError):
+        pass
+    return [
+        *recorded,
+        d / BINARY_NAME,
+        d / "bin" / BINARY_NAME,
+        d / "build" / "bin" / BINARY_NAME,
+        d / "build" / "bin" / "Release" / BINARY_NAME,
+    ]
+
+
+def find_audio_cpp_server_binary() -> Optional[str]:
+    env_path = os.environ.get("AUDIOCPP_SERVER_PATH")
+    if env_path and _is_runnable(Path(env_path)):
+        return str(Path(env_path))
+    custom_dir = os.environ.get("UNSLOTH_AUDIO_CPP_PATH")
+    if custom_dir:
+        for p in _layout_candidates(Path(custom_dir)):
+            if _is_runnable(p):
+                return str(p)
+    for p in _layout_candidates(managed_audio_cpp_dir()):
+        if _is_runnable(p):
+            return str(p)
+    return shutil.which(BINARY_NAME)
+
+
+def read_install_record(binary: str) -> dict:
+    """The prebuilt install record beside or above ``binary``, or ``{}`` for a custom build."""
+    path = Path(binary).resolve()
+    for parent in list(path.parents)[:4]:
+        record = parent / INSTALL_RECORD
+        try:
+            with open(record, "r", encoding = "utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            continue
+    return {}
+
+
+# First release that checks model_specs/ before a GGUF's embedded spec and reads the renamed options.
+SPEC_FIRST_RUNTIME = (0, 9, 2)
+
+
+def runtime_release_key(binary: Optional[str] = None) -> Optional[tuple[int, int, int]]:
+    """``(major, minor, patch)`` of the installed prebuilt runtime, or None for a custom build or
+    an unreadable tag. Reads only the install record, so it is safe on hot paths."""
+    try:
+        binary = binary if binary is not None else find_audio_cpp_server_binary()
+        if not binary:
+            return None
+        from utils.audio_cpp_freshness import parse_release_version
+
+        key = parse_release_version(read_install_record(binary).get("release_tag"))
+    except Exception:  # noqa: BLE001 - an unknown runtime is not an old one
+        return None
+    return tuple(key[:3]) if key else None
+
+
+def is_available() -> bool:
+    return find_audio_cpp_server_binary() is not None
+
+
+def ensure_binary() -> str:
+    binary = find_audio_cpp_server_binary()
+    if binary is None:
+        raise AudioCppUnavailableError(
+            "The audio runtime is not installed. Run `unsloth studio update` to install it."
+        )
+    return binary
+
+
+_ESPEAK_DATA_NAMES = ("espeak-ng-data.bin", "espeak-ng-data.gguf", "espeak-ng-data")
+
+
+def binary_has_espeak(binary: Optional[str]) -> bool:
+    """True when the build ships eSpeak-ng data beside the server; upstream bundles lack it, so Kokoro, Piper, KittenTTS and Inflect cannot run"""
+    if not binary:
+        return False
+    # Check espeak data files, not the install record: removed data would pass preflight, fail at launch
+    bin_dir = Path(binary).parent
+    return any((bin_dir / name).exists() for name in _ESPEAK_DATA_NAMES)
+
+
+# Set by utils.audio_cpp_update while it replaces the managed tree.
+UPDATE_IN_PROGRESS = threading.Event()
+
+
+def stale_runtime_download_problem(
+    model: AudioCppModel,
+    binary: Optional[str] = None,
+    *,
+    hub_cache: Optional[Path] = None,
+    assume_fetched: bool = False,
+) -> Optional[str]:
+    """Why ``model``'s files must not be downloaded for a runtime older than v0.9.2, or None.
+    ``assume_fetched``: the caller already knows a GGUF would be fetched, so the cache is not read.
+
+    The audio GGUFs on the Hub track the newest runtime, so an older one could load a fresh
+    download wrongly. A complete cache, a local file or an unknown runtime is never refused.
+    """
+    release = runtime_release_key(binary)
+    if release is None or release >= SPEC_FIRST_RUNTIME or model.local_path:
+        return None
+    from core.inference.audio_cpp_files import missing_files
+
+    try:
+        # Only a GGUF carries the spec an old runtime may misread; other files are fetched as before.
+        missing = [] if assume_fetched else missing_files(model, hub_cache = hub_cache)
+        if not assume_fetched and not any(path.lower().endswith(".gguf") for path, _ in missing):
+            return None
+    except Exception:  # noqa: BLE001 - an unreadable cache is the download's to report
+        return None
+    return (
+        f"{model.display_name} needs a newer audio runtime before its files can be downloaded. "
+        "Update the audio runtime from the update banner, or run `unsloth studio update`."
+    )
+
+
+def model_runtime_problem(model: AudioCppModel, binary: Optional[str] = None) -> Optional[str]:
+    """Why ``model`` cannot run on the installed runtime, or None when it can."""
+    if UPDATE_IN_PROGRESS.is_set():
+        return "The audio runtime is being updated. Try again in a moment."
+    if model.unsupported:
+        return model.unsupported
+    binary = binary if binary is not None else find_audio_cpp_server_binary()
+    if binary is None:
+        return "The audio runtime is not installed. Run `unsloth studio update` to install it."
+    if model.needs_espeak and not binary_has_espeak(binary):
+        return (
+            f"{model.display_name} needs an audio runtime built with eSpeak-ng, and the installed one "
+            "has none. Run `unsloth studio update` to install the Unsloth audio runtime."
+        )
+    problem = stale_runtime_download_problem(model, binary)
+    if problem:
+        return problem
+    from core.inference.audio_cpp_files import served_path_problem
+
+    try:
+        return served_path_problem(model)
+    except Exception:  # noqa: BLE001 - an unreadable cache setting is materialize's to report
+        return None
+
+
+def _gpu_vendors() -> Optional[set[str]]:
+    """GPU vendors this process can reach, or None when that cannot be told."""
+    try:
+        from utils.llama_cpp_path_settings import (
+            _amd_mask_hides_all,
+            _mask_hides_all,
+            host_gpu_vendors,
+        )
+
+        vendors = host_gpu_vendors()
+        # Windows detection only sees driver DLLs, so apply the visibility masks here too.
+        if vendors is not None:
+            if _mask_hides_all("CUDA_VISIBLE_DEVICES"):
+                vendors = vendors - {"nvidia"}
+            if _amd_mask_hides_all():
+                vendors = vendors - {"amd"}
+        return vendors
+    except Exception:  # noqa: BLE001 - an unknown host keeps the build's backend
+        return None
+
+
+def _reachable(backend: str) -> str:
+    """CPU when ``backend`` needs a GPU vendor this process cannot see (e.g. CUDA_VISIBLE_DEVICES="")."""
+    vendor = {"cuda": "nvidia", "hip": "amd"}.get(backend)
+    if vendor is None:
+        return backend
+    vendors = _gpu_vendors()
+    return "cpu" if vendors is not None and vendor not in vendors else backend
+
+
+def select_backend(binary: str, force_cpu: bool) -> str:
+    """The ``--backend`` for this launch: CPU when asked, else what the install was built for."""
+    if force_cpu:
+        return "cpu"
+    override = (os.environ.get("UNSLOTH_AUDIO_CPP_BACKEND") or "").strip().lower()
+    if override:
+        return override
+    recorded = str(read_install_record(binary).get("backend") or "").strip().lower()
+    if recorded in ("cpu", "cuda", "vulkan", "metal", "hip"):
+        return _reachable(recorded)
+    # A custom build with no record: what it was compiled with, preferring the host's GPU.
+    built = compiled_backends(binary)
+    if sys.platform == "darwin":
+        return "metal" if built is None or "metal" in built else "cpu"
+    if shutil.which("nvidia-smi") and (built is None or "cuda" in built):
+        return _reachable("cuda")
+    if built and "vulkan" in built:
+        return "vulkan"
+    return "cpu"
+
+
+_compiled_cache: dict[tuple[str, float], Optional[frozenset[str]]] = {}
+
+
+def compiled_backends(binary: str) -> Optional[frozenset[str]]:
+    """Backends the binary reports in ``--version`` (``backends: cpu,cuda``), or None when it cannot say."""
+    try:
+        key = (str(Path(binary).resolve()), os.path.getmtime(binary))
+    except OSError:
+        return None
+    if key in _compiled_cache:
+        return _compiled_cache[key]
+    found: Optional[frozenset[str]] = None
+    try:
+        out = subprocess.run(
+            [binary, "--version"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 15,
+            env = child_env(binary),
+            check = False,
+        ).stdout
+        for line in out.splitlines():
+            name, _, value = line.partition(":")
+            if name.strip().lower() == "backends":
+                found = frozenset(b.strip().lower() for b in value.split(",") if b.strip()) or None
+                break
+    except (OSError, subprocess.SubprocessError):
+        found = None
+    _compiled_cache[key] = found
+    return found
+
+
+def runtime_runs_on_cpu() -> bool:
+    """Whether an Auto-placed audio.cpp model launches on the CPU anyway (a CPU-only bundle or override)."""
+    binary = find_audio_cpp_server_binary()
+    return bool(binary) and select_backend(binary, False) == "cpu"
+
+
+def child_env(binary: str) -> dict[str, str]:
+    """Secrets scrubbed, home repointed at a scratch dir, co-located libs first on the loader path."""
+    binary = str(Path(binary).resolve())
+    env = scrub_env(os.environ)
+    # Per user and outside the install dir: eSpeak extracts data here, so a shared path lets another account plant it.
+    isolate_home(env, str(_child_home_dir()))
+    bin_dir = str(Path(binary).parent)
+    runtime_dirs: list[str] = []
+    if read_install_record(binary).get("backend") == "cuda" or not read_install_record(binary):
+        # No-cudart CUDA bundles use torch's CUDA runtime dirs, after the bundle dir so co-located DLLs win
+        try:
+            from utils.prebuilt.runtime_libs import python_runtime_dirs
+            runtime_dirs = python_runtime_dirs()
+        except Exception:  # noqa: BLE001 - no torch runtime to offer
+            runtime_dirs = []
+    if sys.platform == "win32":
+        var = "PATH"
+    elif sys.platform == "darwin":
+        var, runtime_dirs = "DYLD_LIBRARY_PATH", []
+    else:
+        var = "LD_LIBRARY_PATH"
+    existing = [p for p in env.get(var, "").split(os.pathsep) if p]
+    env[var] = os.pathsep.join(dedupe_existing_dirs([bin_dir, *runtime_dirs, *existing]))
+    return env
+
+
+# eSpeak-ng's data dir buffer is 160 bytes on POSIX, 230 on Windows; audio.cpp adds ~65.
+_MAX_CHILD_HOME_LEN = 150 if sys.platform == "win32" else 85
+
+
+def _child_home_dir() -> Path:
+    """A private scratch home for the child: ``<studio_root>/cache/audiocpp-home``, else (unusable or
+    too long for eSpeak-ng) a per-user temp dir."""
+    try:
+        from utils.paths.storage_roots import studio_root
+        home = studio_root() / "cache" / "audiocpp-home"
+        if len(str(home)) <= _MAX_CHILD_HOME_LEN:
+            home.mkdir(parents = True, exist_ok = True)
+            return home
+    except Exception:  # noqa: BLE001 - an unusable studio root falls back to the temp dir
+        pass
+    user = str(os.getuid()) if hasattr(os, "getuid") else (os.environ.get("USERNAME") or "user")
+    home = Path(tempfile.gettempdir()) / f"unsloth-audiocpp-home-{user}"
+    home.mkdir(mode = 0o700, parents = True, exist_ok = True)
+    if hasattr(os, "getuid"):
+        info = home.stat()
+        if info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise AudioCppUnavailableError(
+                f"{home} is not a private directory of this user; remove it and retry."
+            )
+    return home
+
+
+def _cpu_threads() -> Optional[int]:
+    """``UNSLOTH_CPU_THREADS`` as a positive int, the thread budget the other native engines honour."""
+    try:
+        value = int(os.environ.get("UNSLOTH_CPU_THREADS") or 0)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+# The port is reserved, released, then bound by the server; another process can bind it in between.
+_START_ATTEMPTS = 3
+# The same pattern as lemonade_server._PORT_TAKEN (a test keeps the two equal).
+_PORT_TAKEN = re.compile(
+    r"address already in use|eaddrinuse|only one usage of each socket address|errno 98\b|errno 48\b"
+    r"|(?:winerror|errno|error)\s*:?\s*10048\b",
+    re.IGNORECASE,
+)
+
+
+class _LostPortError(Exception):
+    """The server exited because another process bound its port first."""
+
+    def __init__(self, port: int, failure: AudioCppUnavailableError):
+        super().__init__(f"port {port} was taken")
+        self.port = port
+        self.failure = failure
+
+
+def _reserve_free_port() -> tuple[socket.socket, int]:
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("127.0.0.1", 0))
+    return s, s.getsockname()[1]
+
+
+def _abort_connection(connection: http.client.HTTPConnection) -> None:
+    try:
+        if connection.sock is not None:
+            connection.sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+    try:
+        connection.close()
+    except Exception:  # noqa: BLE001 - best effort
+        pass
+
+
+class AudioCppServer:
+    """One running ``audiocpp_server`` bound to one model. Not thread-safe; owners serialise."""
+
+    def __init__(
+        self,
+        process: subprocess.Popen,
+        port: int,
+        model: AudioCppModel,
+        model_id: str,
+        backend: str,
+        config_dir: Path,
+    ) -> None:
+        self.process = process
+        self.port = port
+        self.model = model
+        self.model_id = model_id
+        self.backend = backend
+        self._config_dir = config_dir
+
+    @classmethod
+    def start(
+        cls,
+        model: AudioCppModel,
+        model_path: str,
+        *,
+        force_cpu: bool = False,
+        cancel_event: Optional[threading.Event] = None,
+        on_process: Optional[Any] = None,
+    ) -> "AudioCppServer":
+        """on_process gets the Popen as soon as it exists, so training can preempt and terminate a
+        start."""
+        binary = ensure_binary()
+        problem = model_runtime_problem(model, binary)
+        if problem:
+            raise AudioCppUnavailableError(problem)
+        backend = select_backend(binary, force_cpu)
+        model_id = f"studio-{uuid.uuid4().hex[:12]}"
+        entry: dict[str, Any] = {
+            "id": model_id,
+            "family": model.family,
+            "path": model_path,
+            "task": model.server_task,
+            "mode": "offline",
+        }
+        entry.update(model.model_options)
+        for attempt in range(1, _START_ATTEMPTS + 1):
+            try:
+                return cls._start_once(
+                    model, model_id, backend, binary, entry, cancel_event, on_process
+                )
+            except _LostPortError as lost:
+                if (
+                    attempt == _START_ATTEMPTS
+                    or is_process_shutting_down()
+                    or (cancel_event is not None and cancel_event.is_set())
+                ):
+                    raise lost.failure from None
+                logger.warning(
+                    "audiocpp_server lost port %s to another process; retrying on a new one.",
+                    lost.port,
+                )
+        raise AssertionError("unreachable: the last attempt returns or raises")
+
+    @classmethod
+    def _start_once(
+        cls,
+        model: AudioCppModel,
+        model_id: str,
+        backend: str,
+        binary: str,
+        entry: dict[str, Any],
+        cancel_event: Optional[threading.Event],
+        on_process: Optional[Any],
+    ) -> "AudioCppServer":
+        """One launch on a fresh port and config dir; ``_LostPortError`` if another process took the port."""
+        config_dir = Path(tempfile.mkdtemp(prefix = "unsloth-audiocpp-"))
+        reservation, port = _reserve_free_port()
+        config = {
+            "host": "127.0.0.1",
+            "port": port,
+            "backend": backend,
+            "lazy_load": False,
+            "max_loaded_models": 1,
+            # Music generation can take minutes; the owner bounds its own wait and cancels.
+            "busy_timeout_ms": 0,
+            "models": [entry],
+        }
+        config_path = config_dir / "server.json"
+        config_path.write_text(json.dumps(config), encoding = "utf-8")
+        log_path = config_dir / "server.log"
+        command = [binary, "--config", str(config_path), "--no-ui"]
+        threads = _cpu_threads()
+        if threads is None and backend != "cpu":
+            # The runtime default (every core) thrashes on many-core hosts.
+            threads = min(os.cpu_count() or 1, _GPU_HOST_THREADS)
+        if threads:
+            command += ["--threads", str(threads)]
+        logger.info(
+            "Starting audiocpp_server (%s, %s) for %s on 127.0.0.1:%s",
+            model.family,
+            backend,
+            model.id,
+            port,
+        )
+        if is_process_shutting_down():
+            reservation.close()
+            shutil.rmtree(config_dir, ignore_errors = True)
+            raise AudioCppStartCancelledError(
+                "Unsloth is shutting down; not starting audiocpp_server."
+            )
+        env = child_env(binary)
+        if model.family in _NO_CUDA_GRAPH_FAMILIES:
+            env.setdefault("GGML_CUDA_DISABLE_GRAPHS", "1")
+        # Released as late as possible: the server binds the port moments after this close.
+        reservation.close()
+        try:
+            with open(log_path, "wb") as log:
+                process = subprocess.Popen(
+                    command,
+                    stdout = log,
+                    stderr = subprocess.STDOUT,
+                    stdin = subprocess.DEVNULL,
+                    env = env,
+                    cwd = str(config_dir),
+                    **child_popen_kwargs(),
+                )
+        except OSError as exc:
+            # A corrupt, quarantined or wrong-architecture binary: report it like any other runtime failure.
+            shutil.rmtree(config_dir, ignore_errors = True)
+            raise AudioCppUnavailableError(
+                f"The audio runtime could not be started: {exc}"
+            ) from exc
+        adopt_pid(process.pid)
+        if on_process is not None:
+            on_process(process)
+        server = cls(process, port, model, model_id, backend, config_dir)
+        try:
+            if is_process_shutting_down():
+                raise AudioCppStartCancelledError(
+                    "Unsloth is shutting down; not starting audiocpp_server."
+                )
+            server._wait_until_ready(cancel_event)
+        except AudioCppUnavailableError as exc:
+            # Only an exit that names the collision; read before stop() removes the log.
+            lost = not server.alive() and bool(_PORT_TAKEN.search(server.log_tail()))
+            server.stop()
+            if lost:
+                raise _LostPortError(port, exc) from exc
+            raise
+        except BaseException:
+            server.stop()
+            raise
+        return server
+
+    def log_tail(self, limit: int = 2000) -> str:
+        try:
+            data = (self._config_dir / "server.log").read_bytes()
+        except OSError:
+            return ""
+        tail = data[-limit:]
+        if len(data) > limit:
+            # The cut can split a path or token; drop that partial first line (or word, or all of it).
+            parts = tail.split(b"\n", 1) if b"\n" in tail else tail.split(None, 1)
+            tail = parts[1] if len(parts) == 2 else b""
+        return tail.decode("utf-8", "replace").strip()
+
+    def alive(self) -> bool:
+        return self.process.poll() is None
+
+    def _wait_until_ready(self, cancel_event: Optional[threading.Event]) -> None:
+        deadline = time.monotonic() + _SERVER_START_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            if cancel_event is not None and cancel_event.is_set():
+                raise AudioCppStartCancelledError("Audio model loading was cancelled.")
+            if not self.alive():
+                tail = self.log_tail()
+                logger.warning("audiocpp_server exited during startup: %s", tail)
+                last = f" Last output: {sanitize_runtime_tail(tail)}" if tail else ""
+                # The raw tail is classified; only the sanitized one is shown.
+                failure = classify_audio_cpp_failure(tail, backend = self.backend, model = self.model)
+                if failure is not None and failure.code == "gpu_unavailable":
+                    raise AudioCppUnavailableError(
+                        f"The audio runtime could not start on the {self.backend.upper()} backend "
+                        "because no usable GPU is visible. Choose CPU for the audio device in "
+                        "Unsloth Studio, or set UNSLOTH_AUDIO_CPP_BACKEND=cpu." + last,
+                        failure,
+                    )
+                raise AudioCppUnavailableError(
+                    "The audio runtime exited before becoming ready; the model file may be "
+                    "incomplete or unsupported by this build." + last,
+                    failure,
+                )
+            if self._probe():
+                return
+            time.sleep(0.25)
+        raise AudioCppUnavailableError("The audio runtime did not start in time.")
+
+    def _get_json(self, path: str) -> Optional[dict]:
+        # http.client, not urllib: urlopen routes loopback through an ambient HTTP_PROXY.
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", self.port, timeout = _PROBE_TIMEOUT_SECONDS
+        )
+        try:
+            connection.request("GET", path)
+            with connection.getresponse() as response:
+                return json.loads(response.read(65536).decode("utf-8"))
+        except Exception:
+            return None
+        finally:
+            connection.close()
+
+    def _probe(self) -> bool:
+        """Ready only when our child is alive, reports ok, and lists this launch's model id."""
+        health = self._get_json("/health")
+        if not isinstance(health, dict) or health.get("status") != "ok":
+            return False
+        models = self._get_json("/v1/models")
+        if not self.alive() or not isinstance(models, dict):
+            return False
+        ids = {str(m.get("id")) for m in models.get("data") or [] if isinstance(m, dict)}
+        return self.model_id in ids
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: bytes = b"",
+        content_type: str = "application/json",
+        timeout: float = 3600.0,
+        cancel_event: Optional[threading.Event] = None,
+        sink: Optional[BinaryIO] = None,
+    ) -> tuple[int, str, bytes]:
+        """A sink streams a 2xx body into it and returns b'', since separation answers run to
+        hundreds of MB."""
+        if cancel_event is not None and cancel_event.is_set():
+            raise AudioCppRequestCancelledError("Request cancelled.")
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout = timeout)
+        done = threading.Event()
+        outcome: dict = {}
+
+        def round_trip() -> None:
+            try:
+                connection.request(method, path, body = body, headers = {"Content-Type": content_type})
+                with connection.getresponse() as response:
+                    if sink is None:
+                        payload = response.read()
+                    elif 200 <= response.status < 300:
+                        while True:
+                            if cancel_event is not None and cancel_event.is_set():
+                                raise AudioCppRequestCancelledError("Request cancelled.")
+                            block = response.read(_SINK_CHUNK_BYTES)
+                            if not block:
+                                break
+                            sink.write(block)
+                        payload = b""
+                    else:
+                        payload = response.read(_ERROR_BODY_BYTES)
+                    outcome["result"] = (
+                        response.status,
+                        response.getheader("Content-Type") or "",
+                        payload,
+                    )
+            except BaseException as exc:  # noqa: BLE001 - re-raised on the caller's thread
+                outcome["error"] = exc
+            finally:
+                done.set()
+
+        try:
+            if cancel_event is None:
+                round_trip()
+            else:
+                # Windows does not wake a blocked recv on shutdown from another thread.
+                threading.Thread(target = round_trip, daemon = True).start()
+                while not done.wait(0.1):
+                    if cancel_event.is_set():
+                        _abort_connection(connection)
+                        raise AudioCppRequestCancelledError("Request cancelled.")
+            if "error" in outcome:
+                raise outcome["error"]
+            return outcome["result"]
+        except AudioCppRequestCancelledError:
+            raise
+        except Exception as exc:
+            if cancel_event is not None and cancel_event.is_set():
+                raise AudioCppRequestCancelledError("Request cancelled.") from exc
+            if not self.alive():
+                tail = self.log_tail()
+                raise AudioCppUnavailableError(
+                    "The audio runtime stopped while serving the request."
+                    + (f" Last output: {sanitize_runtime_tail(tail)}" if tail else ""),
+                    classify_audio_cpp_failure(tail, backend = self.backend, model = self.model),
+                ) from exc
+            raise AudioCppUnavailableError(f"The audio runtime did not answer: {exc}") from exc
+        finally:
+            done.set()
+            connection.close()
+
+    def post_json(self, path: str, payload: dict, **kwargs) -> tuple[str, bytes]:
+        status, ctype, data = self.request(
+            "POST", path, body = json.dumps(payload).encode("utf-8"), **kwargs
+        )
+        if not 200 <= status < 300:
+            raise AudioCppRequestError(status, _error_detail(data))
+        return ctype, data
+
+    def post_json_to_file(self, path: str, payload: dict, dest: Path, **kwargs) -> str:
+        """POST ``payload`` and stream a 2xx body into ``dest``; return the content type."""
+        with open(dest, "wb") as sink:
+            status, ctype, data = self.request(
+                "POST", path, body = json.dumps(payload).encode("utf-8"), sink = sink, **kwargs
+            )
+        if not 200 <= status < 300:
+            raise AudioCppRequestError(status, _error_detail(data))
+        return ctype
+
+    def post_multipart(
+        self,
+        path: str,
+        fields: dict[str, str],
+        file_name: str,
+        file_bytes: bytes,
+        file_type: str,
+        **kwargs,
+    ) -> tuple[str, bytes]:
+        boundary = uuid.uuid4().hex
+        parts: list[bytes] = []
+        for name, value in fields.items():
+            parts.append(
+                f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode(
+                    "utf-8"
+                )
+            )
+        parts.append(
+            f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{file_name}"\r\n'
+            f"Content-Type: {file_type}\r\n\r\n".encode("utf-8")
+            + file_bytes
+            + b"\r\n"
+        )
+        parts.append(f"--{boundary}--\r\n".encode("utf-8"))
+        status, ctype, data = self.request(
+            "POST",
+            path,
+            body = b"".join(parts),
+            content_type = f"multipart/form-data; boundary={boundary}",
+            **kwargs,
+        )
+        if not 200 <= status < 300:
+            raise AudioCppRequestError(status, _error_detail(data))
+        return ctype, data
+
+    def stop(self) -> None:
+        process = self.process
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout = 10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                # A killed server can sit in GPU teardown well past 10 s (Seed-VC took about 54 s); the music reload restarts it mid-session and must not fail on that
+                try:
+                    process.wait(timeout = 120)
+                except subprocess.TimeoutExpired:
+                    logger.warning(
+                        "audio.cpp: server pid %s still exiting after SIGKILL", process.pid
+                    )
+                    shutil.rmtree(self._config_dir, ignore_errors = True)
+                    return
+        forget_pid(process.pid)
+        shutil.rmtree(self._config_dir, ignore_errors = True)
+
+
+def _error_detail(data: bytes) -> str:
+    text = data[:2000].decode("utf-8", "replace").strip()
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return text or "no detail"
+    if isinstance(parsed, dict):
+        err = parsed.get("error")
+        if isinstance(err, dict):
+            return str(err.get("message") or err)
+        if err:
+            return str(err)
+    return text

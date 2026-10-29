@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Library state in studio.db.
-
-The Library lists files that already live elsewhere (chat uploads, generated images, sandbox
-files), so it only stores what those sources cannot: folders, and a per-item overlay of display
-name, favorite flag and folder. Files uploaded straight into the Library are the one source it
-owns; their bytes sit under ``account_path("library")``.
-"""
+"""Library state (studio.db): folders and an overlay for files kept elsewhere, except Library uploads"""
 
 import sqlite3
 import threading
@@ -16,6 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+from storage.studio_db import connect_studio_db
 from utils.paths import ensure_dir, studio_db_path
 
 _schema_lock = threading.Lock()
@@ -46,8 +41,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    # Added after the first release of the table, in place: a studio.db from before keeps its
-    # rows, fingerprinted on first sight.
+    # Added after first release, in place; an older studio.db keeps rows, fingerprinted on first sight.
     entry_columns = {row[1] for row in conn.execute("PRAGMA table_info(library_entries)")}
     for column, kind in (("opened_at", "INTEGER"), ("fingerprint", "TEXT")):
         if column in entry_columns:
@@ -79,10 +73,9 @@ def reset_schema_state_for_tests() -> None:
 def get_connection() -> sqlite3.Connection:
     db_path = studio_db_path()
     ensure_dir(db_path.parent)
-    # One key for the check and the add, or a home reached through a link never finds its entry
-    # and runs the schema again on every connection.
+    # One key for check and add, or a symlinked home reruns the schema on every connection.
     schema_path = db_path.resolve()
-    conn = sqlite3.connect(str(db_path))
+    conn = connect_studio_db(db_path)
     conn.row_factory = sqlite3.Row
     if schema_path not in _schema_ready:
         with _schema_lock:
@@ -351,6 +344,18 @@ def reconcile_entries(adopt: list[tuple[str, str]], stale: list[tuple[str, str]]
         conn.executemany(
             "DELETE FROM library_entries WHERE item_id = ? AND fingerprint = ?",
             stale,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def carry_fingerprint(item_id: str, old: Optional[str], new: str) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE library_entries SET fingerprint = ? WHERE item_id = ? AND fingerprint IS ?",
+            (new, item_id, old),
         )
         conn.commit()
     finally:

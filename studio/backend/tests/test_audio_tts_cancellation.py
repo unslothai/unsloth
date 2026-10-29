@@ -4,6 +4,7 @@
 import asyncio
 import base64
 import importlib
+import json
 import queue
 import sys
 import threading
@@ -17,16 +18,7 @@ _STUBBED: list[str] = []
 
 
 def _stub_if_missing(name, attrs):
-    """Register a stub for a dep the backend pytest job does not install.
-
-    Same helper and reason as test_safetensors_reasoning_stream.py and
-    test_audio_type_inconclusive.py: the peft-gated test below imports
-    ``core.inference.inference``, which imports ``unsloth`` at module scope, and this
-    job installs peft but not unsloth. That import used to be unreachable here because
-    the peft gate skipped; now that peft IS installed the gate opens, and the import
-    only worked because collection of test_safetensors_reasoning_stream.py had already
-    cached the module. Running this file on its own failed. A real install is left alone.
-    """
+    """Stub unsloth, which the backend job lacks; the peft-gated core.inference import needs it"""
     if name in sys.modules:
         return
     try:
@@ -49,10 +41,7 @@ _stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat1
 _stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
 _stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
 
-# Build it while the stubs are live, then drop them, as the sibling files do: a stub
-# left in sys.modules is a cross-file leak that
-# test_audio_type_inconclusive.py::test_the_stubs_do_not_outlive_this_module asserts
-# against. The peft gate below still decides whether the test runs.
+# Drop stubs after building: a leftover stub leaks into other test files.
 try:
     import core.inference.inference  # noqa: E402,F401
 except ImportError:  # pragma: no cover - the real dep set imports fine
@@ -208,8 +197,7 @@ def test_audio_response_cancellation_signals_worker_and_drains_terminal_response
             assert orchestrator._cancel_event.is_set() is False
             return None
         if reads == 2:
-            # The worker acknowledges only after clearing stale shared state. The
-            # parent must not signal while the TTS command is merely queued.
+            # The parent must not signal while the TTS command is merely queued.
             assert orchestrator._cancel_event.is_set() is False
             return {
                 "type": "audio_started",
@@ -368,8 +356,7 @@ def test_audio_response_cancellation_before_worker_start_is_still_bounded(monkey
     monkeypatch.setattr(orchestrator, "_ensure_subprocess_alive", lambda: True)
     monkeypatch.setattr(orchestrator_module, "_AUDIO_GENERATION_TIMEOUT", 100.0)
     monkeypatch.setattr(orchestrator_module, "_AUDIO_CANCEL_DRAIN_TIMEOUT", 0.03)
-    # Before audio_started there is nobody to receive the cancel, so this window is the
-    # teardown budget, not the drain: a prefill pass is slow, not unresponsive. Still bounded.
+    # Before audio_started this is the teardown budget, not the drain; prefill is slow.
     monkeypatch.setattr(orchestrator_module, "_AUDIO_CANCEL_TEARDOWN_TIMEOUT", 0.05)
     caller_cancel = threading.Event()
 
@@ -418,6 +405,25 @@ def test_audio_generation_timeout_scales_with_requested_tokens(monkeypatch):
     assert orchestrator_module._audio_generation_timeout(2048) == 10.0
     assert orchestrator_module._audio_generation_timeout(8192) == 40.0
     assert orchestrator_module._audio_generation_timeout(10**310) == 40.0
+
+
+def test_legacy_yue2_watchdog_outlasts_its_own_ending():
+    # YuE2 runs to its own end whatever the token count; the 900 s token watchdog cut it (#13337).
+    from core.inference import audio_cpp_music as cm
+
+    timeout = orchestrator_module._music_generation_timeout
+    yue2 = {"audio_family": "yue2", "audio_cpp_backend": "cuda"}
+    assert (
+        timeout(900.0, "audiocpp_music", yue2, None)
+        == cm.timeout_seconds("yue2", 0, 1, "cuda") + 60
+    )
+    cpu = dict(yue2, audio_cpp_backend = "cpu")
+    assert timeout(900.0, "audiocpp_music", cpu, None) == 4 * 3600.0 + 60
+    stable = {"audio_family": "stable_audio", "audio_cpp_backend": "cuda"}
+    assert timeout(900.0, "audiocpp_music", stable, None) == 900.0
+    assert timeout(900.0, "audiocpp_tts", yue2, None) == 900.0
+    assert timeout(900.0, "audiocpp_music", yue2, {"timeout_s": 1234.0}) == 1294.0
+    assert timeout(900.0, "audiocpp_music", yue2, {"timeout_s": "x"}) == 900.0
 
 
 def test_tts_route_bounds_public_token_budget():
@@ -558,8 +564,7 @@ def test_worker_audio_prepare_rechecks_unload_drain_after_clear():
 
     class _Cancel:
         def clear(self):
-            # Exact race: unload lands after the first drain check but before the
-            # worker clear would otherwise erase its shared cancel.
+            # Race: unload lands after the first drain check, before the worker clear.
             drain.set()
 
     responses = queue.Queue()
@@ -736,9 +741,7 @@ def test_worker_audio_forwards_shared_cancel_event():
 
 
 def test_backend_tts_generation_uses_cancel_stopping_criteria(monkeypatch):
-    # core.inference.inference pulls the training stack in, which the backend-test job does
-    # not install; without this the whole job fails on ModuleNotFoundError rather than
-    # reporting a skip for a test that cannot run there.
+    # The backend-test job lacks the training stack; skip instead of erroring.
     pytest.importorskip("peft")
     from core.inference.inference import InferenceBackend
 
@@ -765,3 +768,170 @@ def test_backend_tts_generation_uses_cancel_stopping_criteria(monkeypatch):
 
     assert backend.generate_audio_response("hello", cancel_event = cancel) == (b"RIFFfake", 24000)
     assert captured["stopping_criteria"] is criteria
+
+
+@pytest.mark.parametrize(("stop_type", "finish_reason"), (("limit", "length"), ("eos", "stop")))
+def test_gguf_speech_cut_at_max_tokens_is_reported(monkeypatch, stop_type, finish_reason):
+    import core.inference.llama_cpp as llama_cpp
+
+    sent = {}
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return {"content": "<custom_token_10>", "stop_type": stop_type}
+
+    class _Client:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def post(
+            self,
+            url,
+            json = None,
+            **_kwargs,
+        ):
+            sent.update(json)
+            return _Resp()
+
+    class _Llama(llama_cpp.LlamaCppBackend):
+        is_loaded = True
+        _is_audio = True
+        _audio_type = "snac"
+        model_identifier = "unsloth/orpheus-3b-0.1-ft-GGUF"
+        base_url = "http://127.0.0.1:8080"
+        _auth_headers: dict = {}
+
+    async def _noop_switch(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(llama_cpp.httpx, "Client", _Client)
+    monkeypatch.setattr(
+        llama_cpp.LlamaCppBackend,
+        "_codec_mgr",
+        types.SimpleNamespace(decode = lambda *_args, **_kwargs: (b"RIFFfake", 24000)),
+    )
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Llama.__new__(_Llama))
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop_switch)
+    monkeypatch.setattr(inference_route, "_persist_tts_clip", lambda *_args: None)
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "A long paragraph."}],
+        max_tokens = 2048,
+    )
+
+    response = asyncio.run(
+        inference_route.generate_audio(payload, request = None, current_subject = "t")
+    )
+
+    assert sent["n_predict"] == 2048
+    assert json.loads(response.body)["choices"][0]["finish_reason"] == finish_reason
+
+
+@pytest.mark.parametrize(("last_token", "truncated"), ((4242, True), (128258, False)))
+def test_snac_speech_cut_at_max_tokens_is_reported(monkeypatch, last_token, truncated):
+    pytest.importorskip("peft")
+    import torch
+    from core.inference.inference import InferenceBackend
+
+    class _Tokenizer:
+        def __call__(self, text, return_tensors):
+            return types.SimpleNamespace(input_ids = torch.tensor([[1, 2, 3]]))
+
+    class _Model:
+        device = torch.device("cpu")
+
+        def generate(self, input_ids, max_new_tokens, **_kwargs):
+            codes = [4242] * (max_new_tokens - 1) + [last_token]
+            return torch.cat([input_ids, torch.tensor([codes])], dim = 1)
+
+    backend = InferenceBackend.__new__(InferenceBackend)
+    backend.active_model_name = "tts"
+    backend._generation_lock = threading.Lock()
+    backend.models = {"tts": {"audio_type": "snac", "model": _Model(), "tokenizer": _Tokenizer()}}
+    backend._audio_codec_manager = types.SimpleNamespace(
+        decode_snac = lambda *_args: (b"RIFFfake", 24000)
+    )
+
+    worker_responses = queue.Queue()
+    _handle_generate_audio(
+        backend,
+        {"request_id": "audio-1", "text": "A long paragraph.", "max_new_tokens": 14},
+        worker_responses,
+        threading.Event(),
+    )
+    done = worker_responses.get_nowait()
+
+    orchestrator = _bare_orchestrator()
+    monkeypatch.setattr(orchestrator, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(orchestrator, "_send_cmd", lambda cmd: None)
+
+    def direct_reader(request_id, cancel_event = None):
+        return (
+            lambda *, timeout: {**done, "request_id": request_id},
+            lambda **_kwargs: None,
+            lambda: None,
+        )
+
+    monkeypatch.setattr(orchestrator, "_direct_reader", direct_reader)
+    holder = {}
+    orchestrator.generate_audio_response("A long paragraph.", stats_holder = holder)
+
+    assert holder["stats"]["truncated"] is truncated
+
+
+@pytest.mark.parametrize("audio_type", ("bicodec", "dac"))
+@pytest.mark.parametrize(("last_token", "truncated"), ((4242, True), (7, False)))
+def test_token_codec_speech_cut_at_max_tokens_is_reported(audio_type, last_token, truncated):
+    pytest.importorskip("peft")
+    import torch
+    from core.inference.inference import InferenceBackend
+
+    class _Inputs(dict):
+        def __init__(self):
+            super().__init__(input_ids = torch.tensor([[1, 2, 3]]))
+            self.input_ids = self["input_ids"]
+
+        def to(self, _device):
+            return self
+
+    class _Tokenizer:
+        eos_token_id = 7
+        pad_token_id = 0
+
+        def __call__(self, texts, return_tensors):
+            return _Inputs()
+
+        def batch_decode(self, tokens, skip_special_tokens):
+            return [""]
+
+    class _Model:
+        device = torch.device("cpu")
+        dtype = torch.float32
+        generation_config = types.SimpleNamespace(eos_token_id = 7)
+
+        def generate(self, input_ids, max_new_tokens, **_kwargs):
+            codes = [4242] * (max_new_tokens - 1) + [last_token]
+            return torch.cat([input_ids, torch.tensor([codes])], dim = 1)
+
+    backend = InferenceBackend.__new__(InferenceBackend)
+    backend.active_model_name = "tts"
+    backend._generation_lock = threading.Lock()
+    backend.models = {
+        "tts": {"audio_type": audio_type, "model": _Model(), "tokenizer": _Tokenizer()}
+    }
+    backend._audio_codec_manager = types.SimpleNamespace(
+        decode_bicodec = lambda *_args: (b"RIFFfake", 16000),
+        decode_dac = lambda *_args: (b"RIFFfake", 24000),
+    )
+    backend._patch_repetition_penalty_processor = lambda: None
+
+    backend.generate_audio_response("A long paragraph.", max_new_tokens = 14)
+
+    assert backend.last_generation_stats["truncated"] is truncated

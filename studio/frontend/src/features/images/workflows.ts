@@ -2,15 +2,16 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  ArrowExpand01Icon,
+  AiImageIcon,
   Edit03Icon,
-  ImageUpload01Icon,
   MagicWand01Icon,
-  PaintBrush02Icon,
-  SparklesIcon,
   ZoomInAreaIcon,
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
+// Relative with .ts: the node tests import this file and cannot resolve @/.
+import { ExpandArrowsIcon } from "../../lib/expand-icons.ts";
+import { ImagesIcon } from "../../lib/hugeicons-derived.ts";
+import { PaintbrushIcon } from "../../lib/paintbrush-icon.ts";
 
 export type WorkflowId =
   | "create"
@@ -21,12 +22,10 @@ export type WorkflowId =
   | "reference"
   | "edit";
 
-/** The Images workflows, shared by the page and the sidebar submenu. `requires` is the backend
- *  workflow id (status.workflows) the loaded model must support; null = always available. */
+/** `requires` is the backend workflow id the loaded model must support; null = always. */
 export const WORKFLOW_TABS: Array<{
   id: WorkflowId;
   label: string;
-  /** Page heading, when the sidebar's short label would read oddly on its own. Falls back to `label`. */
   heading?: string;
   requires: string | null;
   icon: IconSvgElement;
@@ -35,11 +34,10 @@ export const WORKFLOW_TABS: Array<{
   {
     id: "create",
     label: "Create",
-    // The sidebar nests this under Images, so "Create" alone is clear there.
     heading: "Create images",
     requires: null,
     // Not the pencil: that is the sidebar's New chat icon.
-    icon: SparklesIcon,
+    icon: AiImageIcon,
     hint: "Generate a new image from a prompt",
   },
   {
@@ -59,14 +57,14 @@ export const WORKFLOW_TABS: Array<{
   {
     id: "inpaint",
     label: "Inpaint",
-    icon: PaintBrush02Icon,
+    icon: PaintbrushIcon,
     requires: "inpaint",
     hint: "Regenerate a painted region",
   },
   {
     id: "extend",
     label: "Extend",
-    icon: ArrowExpand01Icon,
+    icon: ExpandArrowsIcon,
     requires: "outpaint",
     hint: "Grow the canvas and fill the edges",
   },
@@ -80,13 +78,28 @@ export const WORKFLOW_TABS: Array<{
   {
     id: "reference",
     label: "Reference",
-    icon: ImageUpload01Icon,
+    icon: ImagesIcon,
     requires: "reference",
     hint: "Generate guided by a reference image",
   },
 ];
 
-/** Placeholder hint per workflow, showing what each one is for. */
+export const BACKEND_WORKFLOW_RECIPE_LABELS: Record<string, string> = {
+  txt2img: "Create",
+  img2img: "Transform",
+  edit: "Edit",
+  inpaint: "Inpaint",
+  outpaint: "Extend",
+  upscale: "Upscale",
+  reference: "Reference",
+  controlnet: "ControlNet",
+};
+
+export function recipeWorkflowLabel(workflow: string | null | undefined): string {
+  if (!workflow || workflow === "txt2img") return "Create";
+  return BACKEND_WORKFLOW_RECIPE_LABELS[workflow] ?? workflow;
+}
+
 export const WORKFLOW_EXAMPLE_PROMPTS: Record<WorkflowId, string> = {
   create:
     "A cozy wooden cabin on a snowy mountain at dusk, warm light glowing from the windows, pine trees and gently falling snow. Cinematic photo, soft golden light.",

@@ -79,6 +79,8 @@ def _client(account):
 
     app.dependency_overrides[get_current_subject] = subject
     app.dependency_overrides[authenticated_via_api_key] = lambda: False
+    # Mounted like main.py: the audio file, input and voice routes are on both.
+    app.include_router(inference.router, prefix = "/api/inference")
     app.include_router(inference.studio_router, prefix = "/api/inference")
     app.include_router(video.router, prefix = "/api/inference")
     app.include_router(video.openai_router, prefix = "/v1")
@@ -95,8 +97,8 @@ def test_gallery_object_routes_do_not_resolve_another_accounts_ids(kind, account
         assert client.patch(f"{root}/{record['id']}", json = {"starred": True}).status_code == 404
         assert client.delete(f"{root}/{record['id']}").status_code == 404
         assert record["id"] not in client.get(root).text
+        assert client.get(f"{root}/{record['id']}/signed-url").status_code == 404
         if kind == "video":
-            assert client.get(f"{root}/{record['id']}/signed-url").status_code == 404
             assert client.get(f"{root}/{record['id']}/export").status_code == 404
     with _client(account) as client:
         assert client.get(f"{root}/{record['id']}/file").status_code == 200
@@ -122,10 +124,17 @@ def test_clear_and_paths_are_account_scoped(kind, module, tmp_path):
     assert run_as(BOB, module.gallery_dir) == tmp_path / "accounts" / BOB.account_id / folder
 
 
-@pytest.mark.parametrize("kind,module", [("images", inference), ("video", video)])
-def test_signed_links_authorize_only_the_original_account_and_media(kind, module):
+@pytest.mark.parametrize(
+    "kind,module,sign,verify",
+    [
+        ("images", inference, "_sign_image_id", "_verify_image_link_token"),
+        ("audio", inference, "_sign_audio_id", "_verify_audio_link_token"),
+        ("video", video, "_sign_video_id", "_verify_video_link_token"),
+    ],
+)
+def test_signed_links_authorize_only_the_original_account_and_media(kind, module, sign, verify):
     record = run_as(ALICE, _save, kind)
-    sign = module._sign_image_id if kind == "images" else module._sign_video_id
+    sign, verify = getattr(module, sign), getattr(module, verify)
     token = run_as(ALICE, sign, record["id"])
     root = f"/api/inference/{kind}/gallery"
     with _client(BOB) as client:
@@ -139,9 +148,6 @@ def test_signed_links_authorize_only_the_original_account_and_media(kind, module
             client.get(f"{root}/{record['id']}/file-signed", params = {"token": tampered}).status_code
             == 401
         )
-    verify = (
-        module._verify_image_link_token if kind == "images" else module._verify_video_link_token
-    )
     owner_token = run_as(OWNER, sign, record["id"])
     assert owner_token.split(".")[0] == record["id"]
     assert verify(owner_token) == record["id"]
@@ -239,3 +245,129 @@ def test_a_failed_replacement_load_leaves_residency_with_the_resident_model(monk
     assert unloaded == []
     with _client(ALICE) as client:
         assert client.get("/api/inference/video/status").json()["repo_id"] == "alice/private-video"
+
+
+def _save_input(account):
+    import asyncio
+    import io
+    import wave
+
+    from core.inference import audio_inputs
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+        w.writeframes(b"\x01\x00" * 16000)
+
+    async def chunks():
+        yield buf.getvalue()
+
+    return run_as(account, lambda: asyncio.run(audio_inputs.save_stream(chunks(), "me.wav"))[0])
+
+
+def _save_voice(account):
+    from core.inference import audio_inputs, audio_voices
+    record = _save_input(account)
+    return run_as(
+        account,
+        lambda: audio_voices.create(audio_inputs.input_path(record["id"]), {"name": "private"}),
+    )
+
+
+@pytest.mark.parametrize("account,other", [(ALICE, BOB), (BOB, ALICE)])
+def test_audio_inputs_voices_and_clips_do_not_resolve_another_accounts_ids(
+    account, other, monkeypatch
+):
+    from core.inference import audio_inputs, audio_voices
+
+    async def fake_transcribe(*_args, **_kwargs):
+        return {"text": "private words", "language": None}
+
+    monkeypatch.setattr(inference, "_transcribe_audio_result", fake_transcribe)
+    record = _save_input(account)
+    path = run_as(account, audio_inputs.input_path, record["id"])
+    voice = run_as(account, audio_voices.create, path, {"name": "p"})
+    clip = run_as(account, _save, "audio")
+    inputs = f"/api/inference/audio/inputs/{record['id']}"
+    voices = "/api/inference/audio/voices"
+    source = "/api/inference/audio/inputs/source/transcribe"
+    model = {"model": "m"}
+    with _client(other) as client:
+        assert client.get(f"{inputs}/file").status_code == 404
+        assert client.post(f"{inputs}/transcribe", json = model).status_code == 404
+        assert client.delete(inputs).status_code == 404
+        assert voice["id"] not in client.get(voices).text
+        assert client.get(f"{voices}/{voice['id']}/file").status_code == 404
+        assert client.patch(f"{voices}/{voice['id']}", json = {"name": "x"}).status_code == 404
+        assert client.delete(f"{voices}/{voice['id']}").status_code == 404
+        for params in ({"voice_id": voice["id"]}, {"clip_id": clip["id"]}):
+            assert client.post(source, params = params, json = model).status_code == 404
+        stolen = {"source": {"clip_id": clip["id"]}, "name": "stolen"}
+        assert client.post(voices, json = stolen).status_code == 404
+    with _client(account) as client:
+        assert [v["id"] for v in client.get(voices).json()["voices"]] == [voice["id"]]
+        assert client.get(f"{voices}/{voice['id']}/file").status_code == 200
+        assert client.get(f"{inputs}/file").status_code == 200
+        assert client.post(f"{inputs}/transcribe", json = model).json()["text"] == "private words"
+        assert client.delete(inputs).json() == {"removed": True}
+
+
+def test_inputs_and_voices_live_in_the_accounts_audio_folder(tmp_path):
+    from core.inference import audio_inputs, audio_voices
+
+    bob = tmp_path / "accounts" / BOB.account_id / "audio"
+    assert run_as(BOB, audio_inputs.inputs_dir) == bob / "inputs"
+    assert run_as(BOB, audio_voices.voices_dir) == bob / "voices"
+    assert run_as(OWNER, audio_inputs.inputs_dir) == tmp_path / "audio" / "inputs"
+
+
+@pytest.mark.parametrize("role", ["source", "target"])
+@pytest.mark.parametrize("kind", ["input", "clip", "voice"])
+def test_a_conversion_does_not_resolve_another_accounts_audio(role, kind, monkeypatch):
+    async def fail(*_args, **_kwargs):
+        raise AssertionError("a foreign id must stop before generation")
+
+    monkeypatch.setattr(inference, "_generate_tts_wav", fail)
+    if kind == "input":
+        foreign = {"input_id": _save_input(ALICE)["id"]}
+    elif kind == "clip":
+        foreign = {"clip_id": run_as(ALICE, _save, "audio")["id"]}
+    else:
+        foreign = {"voice_id": _save_voice(ALICE)["id"]}
+    own = {"input_id": _save_input(BOB)["id"]}
+    inputs = {"source": own, "target": own, role: foreign}
+    app = FastAPI()
+
+    async def subject():
+        token = bind_account(BOB)
+        try:
+            yield BOB.username
+        finally:
+            reset_account(token)
+
+    app.dependency_overrides[get_current_subject] = subject
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
+    app.include_router(inference.router, prefix = "/api/inference")
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/inference/audio/run", json = {"workflow": "convert", "inputs": inputs}
+        )
+    assert response.status_code == 404, response.text
+
+
+@pytest.mark.parametrize("account,other", [(ALICE, BOB), (BOB, ALICE)])
+def test_transcribe_sources_and_transcripts_do_not_resolve_another_accounts_ids(account, other):
+    from core.inference import transcript_gallery
+
+    clip_id = run_as(account, _save, "audio")["id"]
+    transcript = run_as(account, transcript_gallery.save, {"text": "t", "model": "m"}, "t")
+    with _client(other) as client:
+        for source in ({"input_id": _save_input(account)["id"]}, {"clip_id": clip_id}):
+            body = {"source": source, "model": "small"}
+            response = client.post("/api/inference/audio/transcribe/source", json = body)
+            assert response.status_code == 404, response.text
+        url = f"/api/inference/audio/transcripts/{transcript['id']}"
+        assert client.get(url).status_code == 404
+        assert client.patch(url, json = {"speaker_names": {"S01": "Mallory"}}).status_code == 404
+        assert client.patch(url, json = {"archived": True}).status_code == 404
+        assert transcript["id"] not in client.get("/api/inference/audio/transcripts").text

@@ -112,17 +112,19 @@ def capability_snapshot(
     elif dacl:
         remediation = (
             "Install the pinned Microsoft WXC runtime and prepare this host once as an "
-            "administrator; the null device step repeats after every reboot."
+            "administrator (Settings > Sandbox > Prepare this PC); the null device step repeats "
+            "after every reboot."
         )
     else:
         remediation = (
             "Install the pinned Microsoft WXC runtime and enable BaseContainer/PSEC. On Windows "
-            f"builds without it, set {mxc_policy.DACL_FALLBACK_ENV}=1 to use the AppContainer "
+            "builds without it, turn on Settings > Sandbox > Use the fallback sandbox (or "
+            f"set {mxc_policy.DACL_FALLBACK_ENV}=1) to use the AppContainer "
             "tier: it adds temporary permission entries to the granted host folders, removed "
             "on exit, and needs a one-time administrator host preparation plus one per reboot. "
-            "Studio's own Python runtime folders get a permanent read-only entry instead, so "
-            f"launches stay fast; set {mxc_read_grants.PERSISTENT_GRANTS_ENV}=0 to keep every "
-            "entry temporary."
+            "Unsloth's own Python runtime folders get a permanent read-only entry instead, so "
+            "launches stay fast; turn that off in the same place (or set "
+            f"{mxc_read_grants.PERSISTENT_GRANTS_ENV}=0) to keep every entry temporary."
         )
     # Only in DACL mode: a bare --probe allows the fallback, so it warns on hosts Studio never uses it on.
     host_prep = (
@@ -148,7 +150,10 @@ def capability_snapshot(
 
 def prepare(plan, capability):
     lease, alias_limitations = _workdir_alias(plan)
+    grant_lease = None
     try:
+        # Before the request is built, so a revocation racing this launch either finishes first or waits.
+        grant_lease = mxc_read_grants.hold_if_needed()
         request = (
             mxc_policy.build_launch_request(plan, cwd_alias = lease.root)
             if lease
@@ -157,6 +162,8 @@ def prepare(plan, capability):
     except Exception as exc:
         if lease is not None:
             lease.release()
+        if grant_lease is not None:
+            grant_lease.release()
         raise SandboxBuildError(f"Windows MXC policy construction failed: {exc}") from exc
     launch_limitations = tuple(request.get("launchLimitations", ())) + alias_limitations
     record = _record(
@@ -174,7 +181,7 @@ def prepare(plan, capability):
         network_policy = "mxc_compatibility_requested_unverified",
         backend_tier = "unknown",
         runtime_revision = mxc_runtime.MXC_REVISION,
-        runtime_artifact_digest = f"sha256:{mxc_runtime.WXC_EXEC_SHA256}",
+        runtime_artifact_digest = f"sha256:{mxc_runtime.artifact('exec')[2]}",
         schema_version = mxc_runtime.MXC_SCHEMA_VERSION,
         policy_hash = request["policyHash"],
         execution_status = "planned",
@@ -190,6 +197,9 @@ def prepare(plan, capability):
         execution_record = record,
         launch_limitations = launch_limitations,
     )
+    if grant_lease is not None:
+        # Appended first so it runs last (LIFO): the grants outlive the workload that may use them.
+        prepared.cleanup_callbacks.append(grant_lease.release)
     if lease is not None:
         # Runs on every exit path, spawned or not; release_runtime drops it first once the workload is gone.
         prepared.cleanup_callbacks.append(lease.release)
@@ -304,8 +314,7 @@ def verify_success(prepared, proc) -> dict:
             raise SandboxBuildError(
                 "MXC cleanup did not complete cleanly; execution state is uncertain"
             )
-        # Studio killed the tree, so the workload is gone; only ACE restore is unconfirmed, and every
-        # later wxc-exec start replays the journal. Report the timeout or cancel, not an error.
+        # Tree killed, workload gone; only ACE restore unconfirmed. Report timeout or cancel, not an error.
         logger.warning(
             "MXC could not confirm the DACL restore after a forced exit; it retries at the next start"
         )

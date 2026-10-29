@@ -1,19 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Harness for tests/studio/playwright_thread_weight.py: the real Thread at N messages, so the
-// measured cost of a keystroke, a scroll, a menu and a delete is the app's own and grows with the
-// thread the way a user's does (#8977).
-// Same shape as smoke-autoscroll.html and smoke-research.html: a vite entry, no backend, no auth.
-// Two things are real on purpose and cannot be mocked away without deleting the measurement:
-//   - Thread itself, from src/components/assistant-ui/thread.tsx, with its per-message action
-//     bars, tooltips and markdown blocks.
-//   - The message bodies, which carry prose plus one code fence plus one KaTeX block each, so
-//     Streamdown, Shiki and KaTeX all pay their per-message price.
-// The runtime is synthetic: a local runtime whose model adapter never runs, seeded through
-// `thread.import`.
-// useLocalRuntime rather than useExternalStoreRuntime: the delete path under measurement is
-// `thread.export()` -> MessageRepository -> `thread.import()`, which only the local runtime backs.
+// Harness for tests/studio/playwright_thread_weight.py: the real Thread and real markdown bodies,
+// seeded via thread.import on a local runtime (only it backs export/import used by delete).
 
 import { Thread } from "@/components/assistant-ui/thread";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -21,8 +10,11 @@ import {
   AssistantRuntimeProvider,
   type ChatModelAdapter,
   ExportedMessageRepository,
+  SimpleImageAttachmentAdapter,
   type ThreadMessageLike,
   useAui,
+  unstable_useRemoteThreadListRuntime,
+  type unstable_RemoteThreadListAdapter,
   useLocalRuntime,
 } from "@assistant-ui/react";
 import {
@@ -35,11 +27,8 @@ import { type ReactElement, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./src/index.css";
 
-// The local runtime's thread list item reports a synthetic `__LOCALID_...` remoteId, which is
-// truthy, so ForkCountBadge really does fire one GET per assistant message. Measured: seeding 20
-// messages issues 10 requests. Answering them here, before anything mounts, keeps that off the
-// wire entirely. Answering them from the Playwright side instead would put a CDP round trip to
-// another process inside a region this harness is timing, once per assistant message.
+// Answer ForkCountBadge GETs in-page: a Playwright-side answer would add a CDP round trip per
+// assistant message inside the timed region.
 const realFetch = window.fetch.bind(window);
 window.fetch = (input, init) => {
   const url = typeof input === "string" ? input : (input as Request).url ?? String(input);
@@ -90,15 +79,7 @@ function assistantMarkdown(index: number): string {
   ].join("\n\n");
 }
 
-/**
- * A reply that is prose and nothing else: no fence, no math, no link, no image.
- *
- * The default body above carries a code fence, and Streamdown gives every fence its own Copy
- * button, so every assistant message in the default fixture happens to hold a focusable control
- * whether or not its action bar is mounted. Most real replies are not like that. This variant
- * exists so the harness can seed a reply whose focusable count is ZERO and a keyboard walk has
- * nothing to land on (#8992, review item on unreachable plain-text replies).
- */
+/** Plain prose reply with zero focusable controls (fenced bodies always carry a Copy button). */
 function plainAssistantMarkdown(index: number): string {
   return [`Reply ${index}. ${PROSE}`, CLOSING].join("\n\n");
 }
@@ -112,7 +93,42 @@ function userMarkdown(index: number): string {
  * `"all"` makes every reply plain; omitting it keeps the default fenced body everywhere, so
  * the existing weight measurements are untouched.
  */
-type SeedOptions = { plainAssistants?: readonly number[] | "all" };
+type SeedOptions = {
+  plainAssistants?: readonly number[] | "all";
+  /** `rounds` x reasoning, tool call, answer per reply; truncation every `compactionEvery`th. */
+  agent?: { rounds: number; compactionEvery?: number };
+};
+
+const AGENT_TOOLS = ["web_search", "terminal", "python"] as const;
+
+function agentContent(index: number, rounds: number) {
+  const parts: Exclude<ThreadMessageLike["content"], string>[number][] = [];
+  for (let round = 0; round < rounds; round++) {
+    const tag = `${index}_${round}`;
+    const toolName = AGENT_TOOLS[(index + round) % AGENT_TOOLS.length];
+    const args: Record<string, string> =
+      toolName === "web_search"
+        ? { query: `step ${tag} reference for the scheduler buffer` }
+        : { code: `print("step ${tag}")` };
+    parts.push({
+      type: "reasoning" as const,
+      text: `Round ${tag}. ${PROSE} ${CLOSING}`,
+    });
+    parts.push({
+      type: "tool-call" as const,
+      toolCallId: `call_${tag}`,
+      toolName,
+      args,
+      argsText: JSON.stringify(args),
+      result: `Result ${tag}. ${PROSE}\n${PROSE}\n${CLOSING}`,
+    });
+    parts.push({
+      type: "text" as const,
+      text: `Answer ${tag}. ${PROSE}\n\n- first item ${tag}\n- second item ${tag}`,
+    });
+  }
+  return parts;
+}
 
 function isPlain(assistantOrdinal: number, options: SeedOptions | undefined): boolean {
   const plain = options?.plainAssistants;
@@ -121,37 +137,75 @@ function isPlain(assistantOrdinal: number, options: SeedOptions | undefined): bo
   return plain.includes(assistantOrdinal);
 }
 
-/** Alternating prompts and replies, oldest first, as a loaded thread arrives. */
 function buildMessages(
   count: number,
   options?: SeedOptions,
 ): ThreadMessageLike[] {
-  return Array.from({ length: count }, (_, index) =>
-    index % 2 === 0
-      ? {
-          role: "user" as const,
-          content: [{ type: "text" as const, text: userMarkdown(index) }],
-        }
-      : {
-          role: "assistant" as const,
-          content: [
-            {
-              type: "text" as const,
-              text: isPlain((index - 1) / 2, options)
-                ? plainAssistantMarkdown(index)
-                : assistantMarkdown(index),
-            },
-          ],
+  const agent = options?.agent;
+  return Array.from({ length: count }, (_, index): ThreadMessageLike => {
+    if (index % 2 === 0) {
+      return {
+        role: "user" as const,
+        content: [{ type: "text" as const, text: userMarkdown(index) }],
+      };
+    }
+    if (agent) {
+      const ordinal = (index - 1) / 2;
+      const every = agent.compactionEvery ?? 0;
+      const compacted = every > 0 && ordinal > 0 && ordinal % every === 0;
+      return {
+        role: "assistant" as const,
+        content: agentContent(index, agent.rounds),
+        ...(compacted
+          ? {
+              metadata: {
+                custom: {
+                  contextTruncation: {
+                    dropped_messages: Math.max(1, index - 4),
+                    boundary_messages: Math.max(1, index - 4),
+                    fits: true,
+                  },
+                },
+              },
+            }
+          : {}),
+      };
+    }
+    return {
+      role: "assistant" as const,
+      content: [
+        {
+          type: "text" as const,
+          text: isPlain((index - 1) / 2, options)
+            ? plainAssistantMarkdown(index)
+            : assistantMarkdown(index),
         },
-  );
+      ],
+    };
+  });
 }
 
 // A run would need a backend. Seeding goes through `thread.import`, which does not use this.
-const NEVER_RUNS: ChatModelAdapter = {
-  run: () => {
-    throw new Error("smoke-thread-weight does not run the model");
-  },
-};
+const STREAM_CHUNKS = Number(
+  new URLSearchParams(window.location.search).get("stream") ?? "0",
+);
+const NEVER_RUNS: ChatModelAdapter = STREAM_CHUNKS > 0
+  ? {
+      async *run({ abortSignal }) {
+        let text = "";
+        for (let chunk = 0; chunk < STREAM_CHUNKS; chunk++) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          if (abortSignal.aborted) return;
+          text += `word${chunk} `;
+          yield { content: [{ type: "text" as const, text }] };
+        }
+      },
+    }
+  : {
+      run: () => {
+        throw new Error("smoke-thread-weight does not run the model");
+      },
+    };
 
 function ThreadWeightApi({
   setThreadMounted,
@@ -162,6 +216,15 @@ function ThreadWeightApi({
 
   useEffect(() => {
     const api = {
+      send(text: string): void {
+        aui.thread().append({
+          role: "user",
+          content: [{ type: "text", text }],
+        });
+      },
+      isRunning(): boolean {
+        return aui.thread().getState().isRunning;
+      },
       /** Replace the thread with `count` messages, oldest first. */
       seed(count: number, options?: SeedOptions): void {
         aui
@@ -170,19 +233,11 @@ function ThreadWeightApi({
             ExportedMessageRepository.fromArray(buildMessages(count, options)),
           );
       },
-      /**
-       * Unmount or remount the Thread while the RUNTIME stays alive, which is what a sidebar
-       * thread switch does to a message's React subtree. The per-message `isHovering` flag
-       * lives in the runtime's message client, not in React, so it outlives this.
-       */
+      /** Toggle the Thread while the runtime lives, like a sidebar switch; isHovering outlives it. */
       setThreadMounted(mounted: boolean): void {
         setThreadMounted(mounted);
       },
-      /**
-       * The runtime's own `isHovering` per message, oldest first. Reading the flag rather than
-       * counting mounted bars is what makes a leak test able to see a flag that is set while
-       * nothing is rendered.
-       */
+      /** Reads the runtime flag so a leak test sees isHovering even when nothing is rendered. */
       hoverFlags(): { id: string; isHovering: boolean }[] {
         return aui
           .thread()
@@ -192,18 +247,10 @@ function ThreadWeightApi({
             isHovering: Boolean(message.isHovering),
           }));
       },
-      /**
-       * One selector pass. Polling for a deletion has to read this, not counts(): counts() is
-       * eight document-wide queries including a walk of every element, so at 500 messages a
-       * poll loop built on it would spend more time measuring than the delete itself takes.
-       */
+      /** Cheap poll target; counts() is too heavy to poll at 500 messages. */
       messageCount(): number {
         return document.querySelectorAll("[data-role]").length;
       },
-      /**
-       * Everything a caller might use to prove the seed landed. A harness that seeds 500 and
-       * silently renders 0 measures nothing, so the Python side prints every one of these.
-       */
       counts(): {
         messages: number;
         assistantMessages: number;
@@ -252,23 +299,18 @@ function ThreadWeightApi({
           ".aui-composer-input",
         );
       },
-      /**
-       * What the RUNTIME thinks the composer holds. Reading the textarea back instead would
-       * only echo the value the caller just wrote, so a keystroke that never reached React
-       * would still look like it landed.
-       */
+      /** Runtime's composer text; reading the textarea would just echo what the caller wrote. */
       composerText(): string {
         return aui.composer().getState().text;
       },
-      /** One selector pass, for the seed gate; counts() is far too heavy to poll. */
       katexCount(): number {
         return document.querySelectorAll(".katex").length;
       },
-      /** Highlighted tokens. Shiki runs after the <pre> exists, so counting <pre> gates nothing. */
+      /** Shiki runs after the <pre> exists, so counting <pre> gates nothing. */
       highlightedTokenCount(): number {
         return document.querySelectorAll("pre code span").length;
       },
-      /** Items in the open action menu. An empty popover satisfies "the menu opened". */
+      /** An empty popover would satisfy "the menu opened", so count items. */
       openMenuItemCount(): number {
         return document.querySelectorAll(".aui-action-bar-more-item").length;
       },
@@ -278,11 +320,7 @@ function ThreadWeightApi({
         );
         return messages[messages.length - 1] ?? null;
       },
-      /**
-       * The last assistant message's action-bar button with accessible name `label`.
-       * TooltipIconButton puts that name in an `sr-only` span rather than an aria-label, so
-       * this matches on text and stays correct if the styling classes are renamed.
-       */
+      /** TooltipIconButton puts the name in an sr-only span, not aria-label, so match on text. */
       actionButton(label: string): HTMLButtonElement | null {
         const last = api.lastAssistantMessage();
         if (!last) return null;
@@ -300,8 +338,54 @@ function ThreadWeightApi({
   return null;
 }
 
-function Harness(): ReactElement {
+// `?remote=1`: the remote thread list + attachments adapter the app uses, for the same scopes.
+const REMOTE = new URLSearchParams(window.location.search).get("remote") === "1";
+
+const MEMORY_THREAD_LIST: unstable_RemoteThreadListAdapter = {
+  list: async () => ({ threads: [] }),
+  rename: async () => {},
+  archive: async () => {},
+  unarchive: async () => {},
+  delete: async () => {},
+  initialize: async (threadId) => ({ remoteId: threadId, externalId: undefined }),
+  generateTitle: async () =>
+    new ReadableStream({ start: (controller) => controller.close() }) as never,
+  fetch: async (threadId) => ({
+    status: "regular",
+    remoteId: threadId,
+    externalId: undefined,
+    title: undefined,
+  }),
+};
+
+const ATTACHMENTS = new SimpleImageAttachmentAdapter();
+
+function useSmokeLocalRuntime() {
+  return useLocalRuntime(NEVER_RUNS, { adapters: { attachments: ATTACHMENTS } });
+}
+
+function RemoteHarness(): ReactElement {
+  const runtime = unstable_useRemoteThreadListRuntime({
+    runtimeHook: useSmokeLocalRuntime,
+    adapter: MEMORY_THREAD_LIST,
+  });
+  return <HarnessBody runtime={runtime} />;
+}
+
+function LocalHarness(): ReactElement {
   const runtime = useLocalRuntime(NEVER_RUNS);
+  return <HarnessBody runtime={runtime} />;
+}
+
+function Harness(): ReactElement {
+  return REMOTE ? <RemoteHarness /> : <LocalHarness />;
+}
+
+function HarnessBody({
+  runtime,
+}: {
+  runtime: ReturnType<typeof useLocalRuntime>;
+}): ReactElement {
   const [threadMounted, setThreadMounted] = useState(true);
   return (
     <TooltipProvider>
@@ -319,10 +403,7 @@ function Harness(): ReactElement {
   );
 }
 
-// Thread reaches useNavigate (the fork action, the composer tools menu). Without a router in
-// context tanstack's useRouter still works, but console.warns on every render of every action
-// bar: measured at 12 warnings for 10 assistant messages, which scales with N and is serialised
-// over CDP. A memory router with one route removes that without pulling in the app shell.
+// Memory router: without one, every action bar console.warns from useNavigate, scaling with N.
 const rootRoute = createRootRoute({ component: Harness });
 const router = createRouter({
   routeTree: rootRoute,

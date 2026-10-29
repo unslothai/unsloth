@@ -50,7 +50,6 @@ def test_unsloth_save_model_strips_the_declaration(tree):
 
 @pytest.fixture(scope = "module")
 def save_module():
-    # Skip rather than fail on an older zoo; the AST tests above pin this repo's wiring.
     pytest.importorskip(
         "unsloth_zoo.saving_utils",
         reason = "unsloth_zoo.saving_utils is unavailable",
@@ -209,12 +208,7 @@ def test_the_manual_merge_restores_the_config_when_the_write_fails(tree):
 
 @pytest.fixture(scope = "module")
 def save_module_any():
-    """`unsloth.save` itself, without the MTP-aware zoo the stripper tests need.
-
-    What this file's other behavioural fixture skips on is the installed zoo exporting the MTP
-    helpers. The cost question below is about this repo's own control flow, so it is answerable
-    on any zoo and should not be skipped with them.
-    """
+    """Imports unsloth.save without the MTP helpers, so the cost tests run on any installed zoo."""
     pytest.importorskip("unsloth", reason = "unsloth is not importable on this runner")
     try:
         import unsloth.save as module
@@ -226,11 +220,7 @@ def save_module_any():
 def test_a_local_save_does_not_collect_the_resident_state_dict(
     save_module_any, monkeypatch, tmp_path
 ):
-    """A local save reconciles the folder it just wrote, so reading the resident tensors for it
-    bought nothing and cost a second full collection on top of save_pretrained's own. On an
-    offloaded or sharded model that materialises every weight, and on a distributed one it is
-    a collective the other ranks are not making, so it can stall rather than merely be slow.
-    """
+    """A local save must not collect the state dict, which materialises every weight and can stall ranks."""
     import torch
 
     collected = []
@@ -240,7 +230,6 @@ def test_a_local_save_does_not_collect_the_resident_state_dict(
 
         def state_dict(self):
             collected.append("state_dict")
-            # A real tensor, so the 16bit branch below can cast it as it always does.
             return {"model.embed_tokens.weight": torch.zeros(1)}
 
         def save_pretrained(self, directory, **kwargs):
@@ -260,7 +249,7 @@ def test_a_local_save_does_not_collect_the_resident_state_dict(
         )
         assert collected == [], (method, collected)
 
-    # A 16bit save still builds one, because that state dict is what gets WRITTEN.
+    # A 16bit save still builds one, because that state dict is what gets written.
     collected.clear()
     save_module_any.unsloth_generic_save(
         _Model(),
@@ -273,17 +262,7 @@ def test_a_local_save_does_not_collect_the_resident_state_dict(
 
 
 def test_the_written_tensor_names_reach_the_reconciler(save_module_any, monkeypatch, tmp_path):
-    """Reading the names back off disk is not always possible, so hand over the ones already held.
-
-    `_checkpoint_tensor_names` declines to unpickle an unindexed `pytorch_model.bin` just to list
-    names, so a `safe_serialization = False` export reconciles against "unknown" and keeps an
-    `mtp_num_hidden_layers` the weights do not carry. Whenever a state dict was built it IS the
-    thing being written, so passing its keys costs nothing and removes the blind spot.
-
-    The names must be read BEFORE the write: transformers 5 pops each tensor out of the supplied
-    dict as it writes the shard holding it, so reading afterwards reports an export carrying no
-    tensors at all and strips a declaration the weights really do back.
-    """
+    """Read the state dict's names before saving, since transformers 5 pops each tensor out as it writes."""
     import torch
 
     seen = []
@@ -296,8 +275,7 @@ def test_the_written_tensor_names_reach_the_reconciler(save_module_any, monkeypa
 
         def save_pretrained(self, directory, **kwargs):
             os.makedirs(directory, exist_ok = True)
-            # What transformers 5 does: "remove it from state_dict to avoid keeping the ref",
-            # one pop per tensor as its shard is written, leaving the caller's dict empty.
+            # transformers 5 pops each tensor as its shard is written, emptying the caller's dict.
             for name in list(kwargs.get("state_dict") or ()):
                 kwargs["state_dict"].pop(name)
 
@@ -318,8 +296,6 @@ def test_the_written_tensor_names_reach_the_reconciler(save_module_any, monkeypa
     )
     assert seen == [["model.embed_tokens.weight"]], seen
 
-    # No state dict of its own means the names really are unknown here, and unknown must stay
-    # unknown rather than licence a guess.
     seen.clear()
     save_module_any.unsloth_generic_save(
         _Model(),

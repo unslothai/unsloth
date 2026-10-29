@@ -1,30 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Issue #8404: no h11 traceback when a poll lands after we close the connection.
-
-On Windows, every clean shutdown printed an unhandled asyncio traceback ending in
-``h11._util.LocalProtocolError: can't handle event type Response when role=SERVER
-and state=CLOSED``. The frontend keeps polling ``/api/inference/status`` while
-uvicorn is closing connections, so a request is already in the socket when
-``H11Protocol.shutdown()`` sends ``h11.ConnectionClosed()`` and closes the
-transport. The proactor transport hands that read to the protocol anyway (the
-selector transport used on Linux and macOS removes the reader inside
-``close()``, which is why this only shows up on Windows), h11 then rejects the
-bytes and uvicorn's unguarded ``send_400_response()`` blows up.
-
-Two things in these fixtures are shaped by the platform, not by convenience:
-
-* the post-close ``data_received()`` call is made directly, exactly as
-  ``_ProactorReadPipeTransport._loop_reading()``'s ``finally:`` clause does it,
-  because Linux's selector transport will never make that call;
-* ``uvicorn.protocols.http.auto.AutoHTTPProtocol`` is forced to ``H11Protocol``,
-  because a dev box with httptools installed resolves to httptools while the
-  Unsloth requirements pin plain uvicorn, which is the h11 path the report hit.
-
-Everything downstream of the injected read -- the h11 state machine, the
-``RemoteProtocolError``, uvicorn's 400 path -- is the real code.
-"""
+"""Injects the post-close data_received the Windows proactor makes after shutdown's h11 close."""
 
 from __future__ import annotations
 
@@ -136,7 +113,6 @@ async def _serve_then_shutdown_then_poll(protocol_class):
     protocol.shutdown()
     assert protocol.conn.our_state is h11.CLOSED
 
-    # The poll that was already in the socket when we closed.
     protocol.data_received(REQUEST)
     return protocol, transport
 
@@ -184,15 +160,7 @@ def test_live_connection_still_parses_normally(patched_protocol_class):
     ],
 )
 def test_malformed_request_still_gets_400(patched_protocol_class, name, raw):
-    """The guard must never swallow uvicorn's real 400 for a genuinely bad request.
-
-    A remote protocol violation moves ``their_state`` to ERROR and leaves
-    ``our_state`` alone (h11 ``Connection.next_event()`` calls
-    ``_process_error(self.their_role)``), so the guard cannot see a terminal
-    ``our_state`` here and uvicorn's ``send_400_response()`` runs as usual. This
-    pins that split, because a guard that also tripped on ``their_state`` would
-    turn a cosmetic shutdown fix into a functional regression.
-    """
+    """Guard keys on our_state, so genuinely malformed requests still get uvicorn's 400."""
     seen_states = []
 
     class _Recording(patched_protocol_class):
@@ -227,8 +195,7 @@ async def _reject_then_poll(protocol_class):
     protocol.data_received(b"GET\r\n\r\n")
     await asyncio.sleep(0)
     assert b"400 Bad Request" in b"".join(transport.chunks)
-    # send_400_response() closes the transport without sending ConnectionClosed,
-    # so h11 parks the server at MUST_CLOSE rather than CLOSED.
+    # send_400_response() closes without ConnectionClosed, so h11 parks at MUST_CLOSE.
     assert protocol.conn.our_state is h11.MUST_CLOSE
 
     protocol.data_received(REQUEST)

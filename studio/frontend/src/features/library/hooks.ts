@@ -2,7 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { MAX_DOCUMENT_PREVIEW_BYTES } from "@/components/file-viewer";
+import { decodePeaks } from "@/features/audio/components/waveform-decode";
 import { translate } from "@/i18n";
+import { subscribeLayoutScale } from "@/lib/layout-scale";
 import { type RefObject, useEffect, useState } from "react";
 import {
   LibraryFileTooLarge,
@@ -62,7 +64,7 @@ export function useLibraryPreviewUrl(
       cancelled = true;
       void next.then(({ url, streamed }) => !streamed && URL.revokeObjectURL(url), () => {});
     };
-    // `key` carries the item's identity and version; the object itself changes on every refresh.
+    // `key` carries the item's identity and version; the object changes on every refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
   const current = body && state?.key === key ? state : null;
@@ -106,6 +108,31 @@ export function useLibraryDocument(
   return { file: current?.file ?? null, error: current?.error ?? null };
 }
 
+/** decodePeaks' own cap: past it the decode is skipped, so the bytes are not worth fetching. */
+const MAX_PEAKS_BYTES = 60 * 1024 * 1024;
+
+/** Waveform peaks; null while decoding or when the clip cannot decode (flat bars). */
+export function useLibraryAudioPeaks(item: LibraryItem, enabled: boolean): number[] | null {
+  const key = itemVersion(item);
+  const [state, setState] = useState<{ key: string; peaks: number[] | null } | null>(null);
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    fetchLibraryBlob(item, item.contentType, MAX_PEAKS_BYTES)
+      .then(decodePeaks)
+      .then(
+        ({ peaks }) => !cancelled && setState({ key, peaks }),
+        () => !cancelled && setState({ key, peaks: null }),
+      );
+    return () => {
+      cancelled = true;
+    };
+    // `key` carries the item's identity and version; the object itself changes on every refresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, enabled]);
+  return enabled && state?.key === key ? state.peaks : null;
+}
+
 /** A card's picture once `enabled`: a bounded thumbnail of the image, or a video's first frame,
  *  never the original, whose decoded size has no limit. Cached, and held while the card shows it;
  *  `failed` once it cannot load, so the card can fall back to the type icon. */
@@ -127,14 +154,13 @@ export function useLibraryThumbnail(
       cancelled = true;
       release();
     };
-    // `key` carries the item's identity and version; the object itself changes on every refresh.
+    // `key` carries the item's identity and version; the object changes on every refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, enabled]);
   const current = enabled && state?.key === key ? state : null;
   return { url: current?.url ?? null, failed: current !== null && current.url === null };
 }
 
-/** True once the element has come within a screen of the viewport; never flips back. */
 export function useSeen(ref: RefObject<Element | null>): boolean {
   const [seen, setSeen] = useState(() => typeof IntersectionObserver === "undefined");
   useEffect(() => {
@@ -155,10 +181,13 @@ export function useSeen(ref: RefObject<Element | null>): boolean {
   return seen;
 }
 
+/** `baseGap` is the gap at 100%, so `minColumnWidth` scales with interface zoom and text size. */
 export function useColumnCount(
   ref: RefObject<HTMLElement | null>,
   minColumnWidth = 200,
   maxColumns = 5,
+  baseGap?: number,
+  wideColumnWidth?: number,
 ): number {
   const [columns, setColumns] = useState(4);
   useEffect(() => {
@@ -166,13 +195,21 @@ export function useColumnCount(
     if (!element) return;
     const measure = () => {
       const gap = parseFloat(getComputedStyle(element).columnGap) || 0;
-      const fit = Math.floor((element.clientWidth + gap) / (minColumnWidth + gap));
-      setColumns(Math.max(2, Math.min(maxColumns, fit)));
+      const scale = baseGap && gap > 0 ? gap / baseGap : 1;
+      const fits = (width: number) =>
+        Math.floor((element.clientWidth + gap) / (width * scale + gap));
+      const wide = wideColumnWidth ? fits(wideColumnWidth) : 0;
+      setColumns(Math.max(2, Math.min(maxColumns, fits(minColumnWidth)), wide));
     };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(element);
-    return () => observer.disconnect();
-  }, [ref, minColumnWidth, maxColumns]);
+    // A zoom step can change the gap without resizing the container.
+    const unsubscribe = subscribeLayoutScale(measure);
+    return () => {
+      observer.disconnect();
+      unsubscribe();
+    };
+  }, [ref, minColumnWidth, maxColumns, baseGap, wideColumnWidth]);
   return columns;
 }

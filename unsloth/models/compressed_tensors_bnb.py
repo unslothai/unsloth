@@ -10,9 +10,8 @@
 # GNU Affero General Public License for more details.
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-"""Re-quantize a compressed-tensors ``pack-quantized`` W4A16/W8A16 checkpoint into bitsandbytes
-4-bit per tensor during ``from_pretrained`` (no 16-bit copy on disk). Native MoE stacks keep
-transformers' ``DecompressExperts``; needs the transformers 5 weight-conversion loader."""
+"""Re-quantize compressed-tensors W4A16/W8A16 to bnb 4-bit during load, not native MoE (keeps
+DecompressExperts); needs transformers 5 weight-conversion loader."""
 
 import inspect
 import os
@@ -281,6 +280,12 @@ def _packed_tensor_meta(checkpoint_files) -> dict:
 _STACKED_PACKED_EXPERTS = "_unsloth_int4_stacked_experts"
 
 
+def _scale_matches_groups(scale_shape, rows, cols, group_size) -> bool:
+    # The kernels index weight_scale as [rows, ceil(cols / group_size)] unchecked; a channel scheme is one group.
+    groups = -(-cols // group_size) if group_size and group_size > 0 else 1
+    return tuple(scale_shape) == (rows, groups)
+
+
 def adopt_int4_packed_linears(
     model,
     ct_config,
@@ -321,6 +326,12 @@ def adopt_int4_packed_linears(
             int(scheme.weights.num_bits) not in (2, 4, 8)
             or shapes["weight_packed"][0][0] != module.out_features
             or "weight_scale" not in shapes
+            or not _scale_matches_groups(
+                shapes["weight_scale"][0],
+                module.out_features,
+                module.in_features,
+                scheme.weights.group_size,
+            )
         ):
             leftover.append(name)
             continue
@@ -523,7 +534,9 @@ def _decompress_one_triton(scheme, packed, scale, shape, zero_point, g_idx, dtyp
         else packed.shape[1] * (32 // bits)
     )
     group = int(weights.group_size) if strategy == "group" and weights.group_size else cols
-    if scale.shape[0] != rows or cols > packed.shape[1] * (32 // bits):
+    if not _scale_matches_groups(scale.shape, rows, cols, group):
+        return None
+    if cols > packed.shape[1] * (32 // bits):
         return None
     qs = Int4QuantState(
         scale,
@@ -556,7 +569,19 @@ def _decompress_one(compressor, scheme, packed, scale, shape, zero_point, g_idx,
         state["weight_zero_point"] = zero_point
     if g_idx is not None:
         state["weight_g_idx"] = g_idx
-    out = compressor.decompress(state, scheme)
+    try:
+        out = compressor.decompress(state, scheme)
+    except Exception as error:
+        dims = [int(v) for v in state["weight_shape"]]
+        group_size = scheme.weights.group_size
+        checkable = bool(group_size and group_size > 0 and scale is not None and len(dims) == 2)
+        if not checkable or _scale_matches_groups(scale.shape, *dims, group_size):
+            raise
+        raise RuntimeError(
+            f"Unsloth: the checkpoint's quantization config declares group_size = {group_size} "
+            f"for a {dims[0]} x {dims[1]} weight, but its weight_scale has shape "
+            f"{tuple(scale.shape)}; the config and the tensors disagree."
+        ) from error
     weight = out["weight"]
     if dtype is not None and weight.dtype != dtype:
         weight = weight.to(dtype)

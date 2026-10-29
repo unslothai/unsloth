@@ -34,13 +34,11 @@ def rebind_experts_to_shared_buffer(moe_block: Qwen3MoeSparseMoeBlock, config: Q
     buffer_gate = torch.empty(num_experts, interm_size, hidden_size, device = device, dtype = dtype)
     buffer_down = torch.empty(num_experts, hidden_size, interm_size, device = device, dtype = dtype)
 
-    # Rebind expert weights to views in the shared buffer
     for i, expert in enumerate(moe_block.experts):
         buffer_up[i].copy_(expert.up_proj.weight.data)
         buffer_gate[i].copy_(expert.gate_proj.weight.data)
         buffer_down[i].copy_(expert.down_proj.weight.data)
 
-    # Rebind expert weights to views in the shared buffer.
     for i, expert in enumerate(moe_block.experts):
         expert.up_proj.weight = torch.nn.Parameter(buffer_up[i])
         expert.gate_proj.weight = torch.nn.Parameter(buffer_gate[i])
@@ -75,7 +73,6 @@ class ForwardResult:
     output: torch.Tensor
     router_logits: torch.Tensor
     X: torch.Tensor
-    # When using grouped gemm MoE implementation to additional debugging / checking of intermediate results
     grouped_gemm_result: GroupedGEMMResult = None
 
 
@@ -265,8 +262,7 @@ def check_grouped_gemm_results(
         test_value = getattr(fused_result, field.name)
         diff = (ref_value - test_value).abs().max()
 
-        # The torch grouped gemm's second_gemm is not yet unpermuted, so compare hidden_states_unpermute
-        # instead, which matches the fused result's second_gemm.
+        # Torch second_gemm is not yet unpermuted, so compare hidden_states_unpermute instead.
         if field.name == "second_gemm" and permute_y:
             continue
 
@@ -397,13 +393,10 @@ class Qwen3MoeFusedGroupedGEMMBlock(Qwen3MoeGroupedGEMMBlock):
         hidden_states = hidden_states.view(-1, hidden_dim)
 
         router_logits, routing_weights, selected_experts = self.run_router(hidden_states)
-        # Token counts per expert plus token-order to expert-order gather indices: auxiliary, not recorded
-        # in the autograd graph.
         token_counts_by_expert, gather_indices = self.get_token_counts_and_gather_indices(
             selected_experts
         )
 
-        # permute_x fuses the permutation into the first grouped gemm's prologue.
         if not self.permute_x:
             hidden_states = permute(hidden_states, gather_indices, self.top_k)
             assert hidden_states.shape == (total_tokens, hidden_dim)
@@ -441,14 +434,12 @@ class Qwen3MoeFusedGroupedGEMMBlock(Qwen3MoeGroupedGEMMBlock):
         )
         assert second_gemm.shape == (total_tokens, hidden_dim)
 
-        # Post-processing: unpermute expert order -> token order
         if not self.permute_y:
             hidden_states_unpermute = unpermute(second_gemm, gather_indices)
             assert hidden_states_unpermute.shape == (total_tokens, hidden_dim)
         else:
             hidden_states_unpermute = second_gemm
 
-        # Merge topk weights
         hidden_states = (
             hidden_states_unpermute.view(num_tokens, self.top_k, hidden_dim)
             * routing_weights[..., None]

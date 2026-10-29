@@ -56,6 +56,7 @@ def swiglu_fg_kernel(e, g):
             n_elements,
             BLOCK_SIZE = BLOCK_SIZE,
             LONG_INDEXING = 0 if n_elements <= INT32_SAFETY_BUFFER else 1,
+            enable_fp_fusion = True,
         )
     return h
 
@@ -103,7 +104,21 @@ def _DWf_DW_dfg_kernel(DW, e, g, n_elements, BLOCK_SIZE: tl.constexpr, LONG_INDE
     tl.store(g + offsets, de_row, mask = mask)
 
 
+def _DWf_DW_dfg_traced(DW, e, g):
+    # Traced: Inductor fuses this in place; the in-place kernel would make it copy e and g first.
+    e_float = e.float()
+    se = torch.sigmoid(e_float)
+    f = (se * e_float).to(DW.dtype)
+    h = f * g
+    df = DW * f
+    dg = DW * g
+    de = (dg.float() * se * (1.0 + e_float * (1.0 - se))).to(DW.dtype)
+    return h, df, de
+
+
 def swiglu_DWf_DW_dfg_kernel(DW, e, g):
+    if torch.compiler.is_compiling():
+        return _DWf_DW_dfg_traced(DW, e, g)
     batch_seq_len, hd = e.shape  # Flattened to 2D, so 1st dim is bsz * seq_len
     n_elements = e.numel()
     grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
@@ -115,5 +130,6 @@ def swiglu_DWf_DW_dfg_kernel(DW, e, g):
             n_elements,
             BLOCK_SIZE = BLOCK_SIZE,
             LONG_INDEXING = 0 if n_elements <= INT32_SAFETY_BUFFER else 1,
+            enable_fp_fusion = True,
         )
     return DW, e, g

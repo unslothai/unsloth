@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 from typing import Optional, Sequence, TYPE_CHECKING
 
@@ -58,15 +59,19 @@ def _scope_variant(scope_id: Optional[str]) -> Optional[str]:
 
 
 def scoped_file_blob_hashes(
-    repo_id: str, files: Sequence[str], hf_token: Optional[str]
+    repo_id: str,
+    files: Sequence[str],
+    hf_token: Optional[str],
+    *,
+    siblings: Optional[Sequence] = None,
 ) -> frozenset[str]:
     """Blob hashes for exactly ``files``, so a scoped job's progress, purge and peer protection cover its own files and nothing else in the repo."""
-    from huggingface_hub import HfApi
-
     wanted = set(files)
-    info = HfApi().model_info(repo_id, files_metadata = True, token = hf_token)
+    if siblings is None:
+        from huggingface_hub import HfApi
+        siblings = HfApi().model_info(repo_id, files_metadata = True, token = hf_token).siblings
     return blob_hashes_for_siblings(
-        [s for s in info.siblings if getattr(s, "rfilename", None) in wanted]
+        [s for s in siblings if getattr(s, "rfilename", None) in wanted]
     )
 
 
@@ -186,23 +191,132 @@ def _spawn_download_worker(
     )
 
 
+def _download_cache_paths(download_dir: Optional[str]):
+    """The Models folder, or the chosen Download to folder registered as a known cache and a Custom Folder."""
+    from utils.hf_cache_settings import (
+        download_cache_paths,
+        get_hf_cache_paths,
+        remember_cache_home,
+    )
+
+    if not (download_dir or "").strip():
+        return get_hf_cache_paths()
+    if account_access.managed_account():
+        raise HTTPException(status_code = 403, detail = "Only the owner can choose a download folder.")
+    try:
+        paths = download_cache_paths(download_dir)
+    except ValueError as e:
+        raise HTTPException(status_code = 400, detail = str(e)) from e
+    if paths.cache_home == get_hf_cache_paths().cache_home:
+        return paths
+    remember_cache_home(paths.cache_home)
+    from hub.services.models.local_inventory import add_scan_folder_response
+
+    try:
+        add_scan_folder_response(str(paths.cache_home))
+    except HTTPException as e:
+        # Still listed through the known caches; Custom Folders only makes it visible there.
+        logger.warning("Download folder not added to Custom Folders: %s", e.detail)
+    return paths
+
+
+def _gate_hub_cache(download_dir: Optional[str]) -> Optional[Path]:
+    """The Hub cache a job with ``download_dir`` writes into, without registering the folder; None
+    (the Models folder) for no folder or one the job itself will refuse."""
+    if not (download_dir or "").strip():
+        return None
+    try:
+        from utils.hf_cache_settings import download_cache_paths
+        return Path(download_cache_paths(download_dir).hub_cache)
+    except Exception:  # noqa: BLE001 - an invalid folder is the job's to report
+        return None
+
+
+async def _audio_cpp_target(
+    repo_id: str,
+    variant: Optional[str],
+    hf_token: Optional[str] = None,
+    persist: bool = False,
+    stale_gate: bool = True,
+    hub_cache: Optional[Path] = None,
+) -> tuple[str, Optional[str]]:
+    """audio.cpp umbrella folder rows run on the umbrella repo under a path-qualified variant key."""
+    text = (repo_id or "").strip()
+    from core.inference.audio_cpp_server import AudioCppRuntimeTooOldError
+
+    if not text.lower().startswith("audio-cpp/audio.cpp-gguf/"):
+        # A variant-less job is a full snapshot, which never fetches a GGUF (SNAPSHOT_IGNORE_PATTERNS).
+        if persist and stale_gate and variant:
+            from core.inference.audio_cpp_models import refuse_stale_download
+            try:
+                await asyncio.to_thread(
+                    refuse_stale_download, text, variant, hf_token, hub_cache = hub_cache
+                )
+            except AudioCppRuntimeTooOldError as exc:
+                raise HTTPException(status_code = 409, detail = str(exc)) from exc
+        return text, variant
+
+    try:
+        from core.inference.audio_cpp_models import download_target
+        target = await asyncio.to_thread(
+            download_target, text, (variant or "").strip() or None, hf_token, persist, hub_cache
+        )
+    except AudioCppRuntimeTooOldError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - an unresolvable row downloads nothing
+        logger.warning("Could not resolve the audio model %s for download: %s", text, exc)
+        target = None
+    if target is None:
+        raise HTTPException(status_code = 404, detail = f"No downloadable GGUF variant in {text}.")
+    return target
+
+
+async def _refuse_stale_scoped_download(
+    repo_id: str,
+    files: list[str],
+    hf_token: Optional[str],
+    hub_cache: Optional[Path] = None,
+) -> None:
+    """A scoped job skips ``_audio_cpp_target``; its audio GGUFs get the same old-runtime gate."""
+    from core.inference.audio_cpp_models import refuse_stale_download
+    from core.inference.audio_cpp_server import AudioCppRuntimeTooOldError
+
+    try:
+        await asyncio.to_thread(
+            refuse_stale_download, repo_id, None, hf_token, files = files, hub_cache = hub_cache
+        )
+    except AudioCppRuntimeTooOldError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+
+
 async def download_model_response(
     body: DownloadModelRequest,
     hf_token: Optional[str] = None,
     *,
     allow_ambient_token: bool = True,
 ):
-    """Start a background download for a HuggingFace model.
-
-    ``allow_ambient_token=False`` keeps the worker anonymous when the caller sent
-    no token, for repos named over the API rather than chosen here.
-    """
+    """With allow_ambient_token=False, API-named repos stay anonymous unless the caller sent a token."""
     from core.training.account_jobs import account_is_retired
 
     if account_is_retired():
         raise HTTPException(status_code = 403, detail = "Account is retired")
     hf_token = account_access.account_hf_token(hf_token)
     allow_ambient_token = allow_ambient_token and not account_access.managed_account()
+    # The old-runtime preflight resolves with ambient credentials (resolve() has no anonymous mode),
+    # so a caller that must stay anonymous skips it for repos other than the public umbrella.
+    stale_gate = bool(hf_token) or allow_ambient_token
+    gate_cache = _gate_hub_cache(getattr(body, "download_dir", None))
+    if body.gguf_variant or not body.scope_id:
+        target_repo, target_variant = await _audio_cpp_target(
+            body.repo_id,
+            body.gguf_variant,
+            hf_token,
+            persist = True,
+            stale_gate = stale_gate,
+            hub_cache = gate_cache,
+        )
+        if target_repo != body.repo_id.strip():
+            body = body.model_copy(update = {"repo_id": target_repo, "gguf_variant": target_variant})
     repo_id = body.repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(
@@ -237,9 +351,12 @@ async def download_model_response(
         if not _is_valid_gguf_variant(scope_variant):
             raise HTTPException(status_code = 400, detail = f"Invalid scope_id: {body.scope_id!r}")
         variant = scope_variant
+        if stale_gate:
+            await _refuse_stale_scoped_download(repo_id, scoped_files, hf_token, gate_cache)
     key = _download_job_key(repo_id, variant)
     _reject_if_load_owned(key)
     # Size and Auto resolution may perform network probes, so keep both off the event loop.
+    sized_since = time.monotonic()
     largest_file_bytes = await asyncio.to_thread(
         download_lifecycle.largest_download_file_bytes,
         "model",
@@ -258,9 +375,9 @@ async def download_model_response(
     )
     transport = download_lifecycle.resolve_transport(use_xet, largest_file_bytes = largest_file_bytes)
     logger.info("Download transport for %s: %s (%s)", repo_id, transport, transport_reason)
-    from utils.hf_cache_settings import get_hf_cache_paths
-
-    cache_paths = get_hf_cache_paths()
+    cache_paths = await asyncio.to_thread(
+        _download_cache_paths, getattr(body, "download_dir", None)
+    )
     cache_env = cache_paths.child_env({})
     variant_blob_hashes = frozenset()
     variant_progress_blob_hashes = frozenset()
@@ -270,7 +387,17 @@ async def download_model_response(
             if scope_variant is not None:
                 # A scope owns exactly its own files: same set for purge and for progress.
                 variant_blob_hashes = await asyncio.to_thread(
-                    scoped_file_blob_hashes, repo_id, scoped_files, hf_token
+                    scoped_file_blob_hashes,
+                    repo_id,
+                    scoped_files,
+                    hf_token,
+                    siblings = download_lifecycle.repo_siblings_fetched_since(
+                        "model",
+                        repo_id,
+                        hf_token,
+                        allow_ambient_token = allow_ambient_token,
+                        since = sized_since,
+                    ),
                 )
                 variant_progress_blob_hashes = variant_blob_hashes
             else:
@@ -298,8 +425,13 @@ async def download_model_response(
                 download_registry.scrub_secrets(str(e), hf_token = hf_token),
             )
         has_variant_resume_state = (
-            download_manifest.has_cancel_marker("model", repo_id, variant)
-            or download_manifest.read_manifest("model", repo_id, variant) is not None
+            download_manifest.has_cancel_marker(
+                "model", repo_id, variant, hub_cache = cache_paths.hub_cache
+            )
+            or download_manifest.read_manifest(
+                "model", repo_id, variant, hub_cache = cache_paths.hub_cache
+            )
+            is not None
         )
         if variant_progress_blob_hashes and not has_variant_resume_state:
             completed_baseline_bytes = await asyncio.to_thread(
@@ -307,11 +439,11 @@ async def download_model_response(
                 "model",
                 repo_id,
                 variant_progress_blob_hashes,
+                root = cache_paths.hub_cache,
             )
 
     def claim_and_launch():
-        # Claim and launch as one operation, off the loop: a cancel while queued must not
-        # leave a claimed job with no worker, and token resolution can do network I/O.
+        # Claim and launch as one op off the loop: a queued cancel must not orphan a claimed job.
         claimed, claim_state = _registry.claim(
             key,
             transport,
@@ -429,6 +561,9 @@ def retire_account_downloads() -> None:
 
 async def cancel_download_model_response(body: CancelDownloadRequest):
     """Cancel an in-flight model download (SIGKILL; HF cache resumes on next download)."""
+    target_repo, target_variant = await _audio_cpp_target(body.repo_id, body.gguf_variant)
+    if target_repo != body.repo_id.strip():
+        body = body.model_copy(update = {"repo_id": target_repo, "gguf_variant": target_variant})
     repo_id = body.repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(
@@ -443,6 +578,11 @@ async def cancel_download_model_response(body: CancelDownloadRequest):
             detail = f"Invalid gguf_variant: {variant!r}",
         )
     key = _download_job_key(repo_id, variant)
+    from hub.services import training_downloads
+
+    if training_downloads.is_training_variant(variant):
+        state = await asyncio.to_thread(training_downloads.cancel, key, body.generation)
+        return {"job_key": key, "state": state}
     if load_downloads.is_load_owned(_registry, key):
         raise HTTPException(
             status_code = 409,
@@ -461,18 +601,38 @@ async def cancel_download_model_response(body: CancelDownloadRequest):
 
 async def get_download_status_response(repo_id: str, gguf_variant: str = "") -> DownloadJobStatus:
     """Return the latest state of a background download job."""
+    requested = (repo_id or "").strip(), (gguf_variant or "").strip() or None
+    try:
+        repo_id, gguf_variant = await _audio_cpp_target(repo_id, gguf_variant)
+    except HTTPException:
+        return DownloadJobStatus(state = "idle")
     repo_id = repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         return DownloadJobStatus(state = "idle")
     repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")
     variant = (gguf_variant or "").strip() or None
     key = _download_job_key(repo_id, variant)
-    return _job_status(key, repo_id = repo_id, variant = variant)
+    status = _job_status(key, repo_id = repo_id, variant = variant)
+    if requested[0] != repo_id:
+        # An umbrella folder row: echo the names the caller asked about, not the umbrella job's.
+        update = {
+            name: value
+            for name, value in (("repo_id", requested[0]), ("variant", requested[1]))
+            if name in type(status).model_fields
+        }
+        status = status.model_copy(update = update) if update else status
+    return status
 
 
 async def get_active_downloads_response(repo_id: str = "") -> ActiveDownloadsResponse:
-    """Return every in-flight download for a repo in a single call."""
+    """Umbrella jobs report under their row id and variant; a row id filters to that row's jobs."""
+    from core.inference.audio_cpp_models import folder_row_for_download, repo_of
+
     repo_id = repo_id.strip()
+    row_filter = None
+    if repo_id.lower().startswith("audio-cpp/audio.cpp-gguf/"):
+        row_filter = repo_id.lower()
+        repo_id = repo_of(repo_id) or repo_id
     if repo_id and not _is_valid_repo_id(repo_id):
         return ActiveDownloadsResponse(downloads = [])
     canonical_repo_id = (
@@ -480,13 +640,23 @@ async def get_active_downloads_response(repo_id: str = "") -> ActiveDownloadsRes
         if repo_id
         else None
     )
-    return ActiveDownloadsResponse(
-        downloads = download_lifecycle.active_download_refs(
-            _registry,
-            canonical_repo_id,
-            with_variant = True,
-        )
+    refs = download_lifecycle.active_download_refs(
+        _registry,
+        canonical_repo_id,
+        with_variant = True,
     )
+
+    def _as_rows():
+        out = []
+        for ref in refs:
+            row = folder_row_for_download(ref.repo_id, ref.variant)
+            if row is not None:
+                ref = ref.model_copy(update = {"repo_id": row[0], "variant": row[1]})
+            if row_filter is None or ref.repo_id.lower() == row_filter:
+                out.append(ref)
+        return out
+
+    return ActiveDownloadsResponse(downloads = await asyncio.to_thread(_as_rows))
 
 
 def _variant_transport_status(repo_id: str, variant: str, hf_token: Optional[str]) -> dict:
@@ -544,14 +714,11 @@ async def get_model_transport_status_response(
     gguf_variant: str = "",
     hf_token: Optional[str] = None,
 ) -> dict:
-    """Return last transport used for this repo + whether any partial blobs
-    exist + whether that partial supports byte-level resume.
-
-    ``resumable`` is True only when an HTTP partial exists. XET partials
-    are reported via ``has_partial`` but always have ``resumable=False``
-    because ``hf_xet`` rewrites the destination from scratch on every
-    call (network resume happens transparently via its chunk cache).
-    """
+    """Resumable only for HTTP partials; XET partials report has_partial, but hf_xet restarts them."""
+    try:
+        repo_id, gguf_variant = await _audio_cpp_target(repo_id, gguf_variant, hf_token)
+    except HTTPException:
+        pass
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_download_progress_access, _registry, repo_id)
         hf_token = account_access.account_hf_token(hf_token)
@@ -590,13 +757,7 @@ def _variant_manifest_decision(
     force_active: bool = False,
     active_root: Optional[Path] = None,
 ) -> "tuple[str, Optional[download_manifest.Manifest]]":
-    """The variant's manifest from whichever cache dir on disk holds it, and why.
-
-    The verdict is "found", "absent" (no cache on disk has one) or "refused" (one exists but applying it across the scanned caches would be wrong). Callers must tell those last two apart: a refusal decides that NO manifest may speak here, so re-reading one by another route walks back into the answer just rejected.
-
-    snapshot_progress reads manifests per scanned cache entry (entry.parent) while this resolver only ever asked the active cache, so the two could disagree about whether a manifest exists at all. When it lost, the expected file set came back empty and the hash filter dropped every blob in the shared blobs/ dir, a finished variant reporting 0 bytes. Active cache first so the common case is one lookup; every candidate found must agree before one is returned.
-    """
-    # The active cache's manifest is a candidate like any other, NOT an early return: its repo dir can be gone while its scoped state holds an old manifest, and applying those hashes to a remembered cache holding the complete variant filters out every blob of it.
+    """Found, absent or refused; refusals are not re-read by another route. Every candidate must agree."""
     found: list[download_manifest.Manifest] = []
     # active_root is the root the job records, which is the one snapshot_progress scans and not necessarily the configured default.
     active_manifest = download_manifest.read_manifest(
@@ -627,8 +788,8 @@ def _variant_manifest_decision(
         found.append(manifest)
     if not found:
         return ("absent", None)
-    # One answer, or several that agree, is safe to apply to every scanned entry, which is what snapshot_progress does with this hash set.
-    # Several that DISAGREE must be refused: snapshot_progress picks its reading by bytes across all preferred cache dirs while the hashes come from one lookup, so the first cache's older revision filters out every blob of a later complete one. None degrades to the name-based fallback.
+    # Disagreeing manifests are refused: one cache's hashes would filter out another's blobs.
+    # None degrades to the name-based fallback.
     first = _manifest_hashes(found[0])
     if any(_manifest_hashes(m) != first for m in found[1:]):
         return ("refused", None)
@@ -647,6 +808,16 @@ async def get_gguf_download_progress_response(
     hf_token: Optional[str] = None,
 ) -> dict:
     """Return download progress for a specific GGUF variant."""
+    from hub.services import training_downloads
+
+    if training_downloads.is_training_variant(variant):
+        key = _download_job_key(repo_id, variant)
+        return await asyncio.to_thread(training_downloads.progress, key)
+    try:
+        repo_id, variant = await _audio_cpp_target(repo_id, variant, hf_token)
+    except HTTPException:
+        pass
+    variant = variant or ""
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_download_progress_access, _registry, repo_id)
         hf_token = account_access.account_hf_token(hf_token)
@@ -687,9 +858,22 @@ async def get_gguf_download_progress_response(
             force_active = job.state in {"running", "cancelling"},
             active_root = Path(hub_cache) if hub_cache else None,
         )
-        if manifest is not None:
+        if getattr(job_metadata, "scoped_files", ()) and (
+            manifest is None
+            or not snapshot_progress.manifest_matches_download(manifest, job_metadata)
+        ):
+            # Until this job's worker publishes a manifest, an older scope's must not supply bytes or completion.
             return (
-                sum(max(0, int(file.size or 0)) for file in manifest.expected_files),
+                0,
+                frozenset(getattr(job_metadata, "progress_blob_hashes", ()) or ()),
+            )
+        if manifest is not None:
+            total = sum(max(0, int(file.size or 0)) for file in manifest.expected_files)
+            if not progress_variant.startswith(_SCOPE_PREFIX):
+                # Offline fallback: an older local revision's manifest must not shrink the caller's estimate.
+                total = max(total, expected_total)
+            return (
+                total,
                 frozenset(file.sha256 for file in manifest.expected_files if file.sha256),
             )
         if verdict == "refused":
@@ -719,8 +903,8 @@ async def get_gguf_download_progress_response(
         return requirement.expected_files if requirement is not None else ()
 
     def _variant_file_matcher(path: str, *, companions: bool = True) -> bool:
-        # Main shards are matched by quant label; mmproj and the MTP drafter are downloaded with every variant, so they belong to whichever one is being polled.
-        # companions=False asks the narrower question, whether this path proves the quant ITSELF is here: shared companions belong to every quant, so counting them reported bytes for a deleted file.
+        # mmproj and MTP drafter belong to every variant; companions=False asks whether the quant
+        # ITSELF is present.
         if progress_variant is None:
             return False
         if gguf_plan.is_main_gguf_variant_path(path, progress_variant):
@@ -747,15 +931,7 @@ async def get_download_progress_response(
     hf_token: Optional[str] = None,
     mlx_load: bool = False,
 ) -> dict:
-    """Return download progress for any HuggingFace model repo.
-
-    Checks the local HF cache for completed blobs and in-progress
-    (.incomplete) downloads. Uses the caller-supplied expected total
-    when available; otherwise queries HF metadata and caches it.
-    Also returns ``cache_path``: the realpath of the snapshot directory
-    (or the cache repo root if no snapshot exists yet) so the UI can
-    show users where the weights actually live on disk.
-    """
+    """Progress from completed blobs and .incomplete files; uses the caller's expected total when given."""
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_download_progress_access, _registry, repo_id)
         hf_token = account_access.account_hf_token(hf_token)

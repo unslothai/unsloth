@@ -1,34 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Optional extras for the diffusion LoRA trainers: LoRA EMA, the persistent
-conditioning cache, and aspect-ratio bucketing.
-
-Everything here is opt-in and family-agnostic:
-
-- ``LoRAEMA`` keeps an exponential moving average of ONLY the trainable LoRA
-  parameters. Short LoRA runs (a few hundred steps) can't afford the classic
-  0.9999 decay -- the shadow would still be ~frozen at the init when the run
-  ends -- so the default decay is 0.99 with a warmup ramp that keeps early
-  updates responsive. The EMA weights export as a SECOND adapter next to the
-  primary one, so the user can A/B both.
-
-- ``PersistentConditioningCache`` stores the trainer's precomputed conditioning
-  tensors (VAE latent posterior stats + text-encoder embeddings) on disk as one
-  safetensors file per item, keyed by content hash + family + resolution. On a
-  warm start the trainer can skip loading the VAE and the multi-GB text
-  encoders entirely. The cached latent tensors are EXACTLY what the in-memory
-  path produces (the family's ``encode_latent_stats`` output with all
-  normalisation -- including Qwen's per-channel latents_mean/std -- already
-  folded in, held in fp32), so a cache hit is bit-identical to a fresh encode.
-
-- Aspect-ratio bucketing assigns each image a same-area bucket resolution
-  (width/height multiples of a divisor the VAE + patching can consume) and
-  batches only within a bucket, so a mixed-aspect dataset trains without
-  square-cropping away composition.
-
-Pure helpers avoid torch at import time so the CPU unit tests stay light.
-"""
+"""Opt-in extras: LoRA EMA (0.99 default decay, exported as a second adapter), conditioning cache
+(bit-identical to a fresh encode), aspect bucketing; pure helpers avoid torch at import time"""
 
 from __future__ import annotations
 
@@ -41,8 +15,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 
-# Effective decay is min(decay, (1 + updates) / (WARMUP_OFFSET + updates)); at offset 10 step 1 averages aggressively
-# (~0.18) and the ramp reaches 0.99 after ~1000 updates.
+# Effective decay = min(decay, (1 + n) / (WARMUP_OFFSET + n)).
 
 _EMA_WARMUP_OFFSET = 10.0
 
@@ -78,13 +51,7 @@ class LoRAEMA:
             self._shadow[name] = shadow
 
     def reseed_from(self, model: Any) -> None:
-        """Re-point every shadow at the model's CURRENT trainable weights.
-
-        For a resume that turns EMA on for the first time. The trainer builds the EMA before it
-        restores the adapter, so the shadow holds freshly initialised LoRA weights, and a
-        checkpoint written with EMA off carries no shadow to replace them with -- leaving the
-        exported EMA adapter blending the restored weights with initialisation noise. Starting
-        from the restored weights is what enabling EMA at step N means."""
+        """For a resume that first enables EMA: shadows would otherwise hold freshly initialised weights."""
         import torch
 
         with torch.no_grad():
@@ -119,13 +86,7 @@ class LoRAEMA:
         return {name: t.detach().clone() for name, t in self._shadow.items()}
 
     def missing_from(self, state: dict[str, Any]) -> tuple[str, ...]:
-        """Live shadow names a saved EMA state does not cover, by name or by shape.
-
-        ``load_state_dict`` skips those entries by design (a differently-wrapped model should
-        degrade rather than raise), which is exactly why a caller restoring a run has to ask:
-        a partial EMA silently blends restored shadows for some parameters with freshly
-        initialised ones for the rest, and every later update and the exported EMA adapter
-        carry that mixture while the run reports a clean resume."""
+        """load_state_dict skips missing shadows silently, which would blend restored and fresh weights."""
         saved = state or {}
         missing = []
         for name, shadow in self._shadow.items():
@@ -139,12 +100,7 @@ class LoRAEMA:
         state: dict[str, Any],
         updates: int = 0,
     ) -> None:
-        """Restore shadows saved by ``state_dict`` (a resume checkpoint), in place.
-
-        ``updates`` restores the warmup ramp position: without it a resumed run would
-        restart the ramp and pull the shadow hard towards the current weights. Entries the
-        live model does not have are ignored, so a checkpoint from a differently-wrapped
-        model degrades to "keep the freshly initialised shadow" instead of raising."""
+        """Pass updates to keep the warmup ramp position; otherwise the ramp restarts on resume."""
         import torch
 
         with torch.no_grad():
@@ -182,12 +138,7 @@ class LoRAEMA:
 
 
 def save_ema_adapter(ema: "LoRAEMA", transformer: Any, spec_save: Any, out_dir: str) -> str:
-    """Export the EMA weights as a second adapter under ``out_dir``/ema.
-
-    Temporarily swaps the shadow values into the live LoRA params so
-    ``get_peft_model_state_dict`` serialises them through the exact same
-    (diffusers-format) path as the primary adapter, then restores the trained
-    weights. Returns the ema output directory."""
+    """Temporarily swaps EMA shadows into the live LoRA params for the diffusers export path, then restores the trained weights."""
     from peft.utils import get_peft_model_state_dict
 
     ema_dir = Path(out_dir) / "ema"
@@ -202,11 +153,12 @@ def save_ema_adapter(ema: "LoRAEMA", transformer: Any, spec_save: Any, out_dir: 
 
 
 _CACHE_VERSION = "1"
+# v2 composites transparent images onto white before encoding.
+_LATENT_CACHE_VERSION = "2"
 
 
 def _file_content_hash(path: str) -> str:
-    """sha256 of the file bytes (truncated hex): renames/moves keep their cache
-    entries, edits invalidate them."""
+    """return a truncated sha256; renames preserve cache entries while edits invalidate them."""
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
@@ -223,15 +175,7 @@ def _sanitize(token: str) -> str:
 
 
 def _hub_cache_roots() -> list[str]:
-    """Hub cache roots to look a repo up in, ACTIVE one first.
-
-    Unsloth can move its cache during a session (Settings), and loading follows the live setting,
-    but ``huggingface_hub.constants.HF_HUB_CACHE`` is a snapshot of the environment at import
-    time. Reading only that constant left the revision "unresolved" (or pinned to a snapshot in
-    the previous root) once the cache moved, so pulling a new revision of the same checkpoint no
-    longer changed this key and a warm run silently reused the old embeddings and latents. The
-    constant stays as a fallback, since the trainer subprocess may run without Unsloth's settings
-    module importable."""
+    """HF_HUB_CACHE is an import-time snapshot, so the active Unsloth cache root is searched first."""
     import os  # noqa: PLC0415 - keep the module import list light for the subprocess
 
     roots: list[str] = []
@@ -254,22 +198,12 @@ def _hub_cache_roots() -> list[str]:
     return roots
 
 
-# An in-place edit of any of these must change the fingerprint: text_encoder*/tokenizer* produce
-# the embeddings and vae* the latents. "connectors" is LTX-2's, the only family running a module
-# between encode_prompt and the DiT: its connector output, not the raw Gemma3 state, is cached.
+# In-place edits here must change the fingerprint; "connectors" is LTX-2's cached connector.
 _CACHE_SOURCE_SUBDIRS = ("text_encoder", "tokenizer", "vae", "connectors")
 
 
 def source_revision(ref: Any) -> str:
-    """Revision/content marker for a checkpoint reference, resolved without loading it.
-
-    A repo id or directory path is not a version: a Hub repo that advances to a new
-    revision, or a directory edited in place, keeps the same string while its encoders
-    or VAE change, so cached conditioning from the old ones would be reused. Shared by the
-    trainer's cache namespace and the inference-side wrapper; deliberately cheap and
-    never touches the encoders, since the point of the cache is that a warm run does
-    not load them.
-    """
+    """A repo id or path is not a version; the marker tracks content so stale cache is not reused; it must never load the encoders."""
     import os  # noqa: PLC0415 - keep the module import list light for the subprocess
     try:
         name = str(ref or "").strip()
@@ -337,7 +271,8 @@ class PersistentConditioningCache:
         geom = f"{shape[0]}x{shape[1]}" if shape else str(self.resolution)
         var = f"{u_left:.6f}_{u_top:.6f}_{int(bool(flip))}"
         return (
-            f"lat_v{_CACHE_VERSION}_{self.family}_{geom}_" f"{_file_content_hash(image_path)}_{var}"
+            f"lat_v{_LATENT_CACHE_VERSION}_{self.family}_{geom}_"
+            f"{_file_content_hash(image_path)}_{var}"
         )
 
     def text_key(self, caption: str) -> str:
@@ -350,8 +285,7 @@ class PersistentConditioningCache:
         return self.path_for(key).is_file()
 
     def put(self, key: str, tensors: Iterable[Any]) -> None:
-        """Store an ordered tuple of tensors (None entries allowed: their slot
-        indices are recorded in the metadata so ``get`` restores them)."""
+        """store an ordered tensor tuple with None slots recorded for exact reconstruction."""
         from safetensors.torch import save_file
 
         named: dict[str, Any] = {}
@@ -390,14 +324,39 @@ class PersistentConditioningCache:
             return None
 
 
-# Buckets snap to 64 pixels: the DiT families divide by 8 in the VAE and 2 again in latent patching, and regional
-# torch.compile prefers few distinct shapes.
+# 64: a multiple of every family's latent grid (16 DiTs, 32 LTX-2, SDXL U-Net) and few compiled shapes.
 
 BUCKET_DIVISOR = 64
 
-# Widest aspect ratio a bucket may take; anything more extreme clamps to it (matching the common
-# practice of capping panoramas).
+# Widest bucket aspect ratio; more extreme images clamp to it, as is common for panoramas.
 MAX_BUCKET_RATIO = 2.0
+
+
+def bucket_resolutions(
+    resolution: int,
+    divisor: int = BUCKET_DIVISOR,
+    max_ratio: float = MAX_BUCKET_RATIO,
+) -> list[tuple[int, int]]:
+    """The exact legacy square plus kohya BucketManager buckets (tallest grid height within resolution**2)."""
+    base = int(resolution)
+    area = base * base
+    out = {(base, base)}
+    w = divisor
+    while w * w <= area * max_ratio:
+        h = (area // w) // divisor * divisor
+        if h >= divisor and 1.0 / max_ratio <= w / h <= max_ratio:
+            out.add((w, h))
+            out.add((h, w))
+        w += divisor
+    return sorted(out)
+
+
+def nearest_bucket(width: int, height: int, buckets: list[tuple[int, int]]) -> tuple[int, int]:
+    """Closest aspect in log space; ties: larger area, then sorted order (deterministic)."""
+    if width <= 0 or height <= 0:
+        raise ValueError("image dimensions must be positive")
+    r = math.log(width / height)
+    return min(buckets, key = lambda b: (abs(math.log(b[0] / b[1]) - r), -b[0] * b[1], b))
 
 
 def compute_bucket(
@@ -407,18 +366,8 @@ def compute_bucket(
     divisor: int = BUCKET_DIVISOR,
     max_ratio: float = MAX_BUCKET_RATIO,
 ) -> tuple[int, int]:
-    """The (bucket_w, bucket_h) for an image: preserve aspect (clamped to
-    ``max_ratio``), keep area ~= base_resolution**2, snap both dims to
-    ``divisor``. A square input maps exactly to (base, base)."""
-    if width <= 0 or height <= 0:
-        raise ValueError("image dimensions must be positive")
-    ratio = width / height
-    ratio = max(1.0 / max_ratio, min(max_ratio, ratio))
-    area = float(base_resolution) * float(base_resolution)
-    bw = math.sqrt(area * ratio)
-    bh = bw / ratio
-    snap = lambda v: max(divisor, int(round(v / divisor)) * divisor)  # noqa: E731
-    return snap(bw), snap(bh)
+    """The (bucket_w, bucket_h) for an image of ``width`` x ``height``."""
+    return nearest_bucket(width, height, bucket_resolutions(base_resolution, divisor, max_ratio))
 
 
 def assign_buckets(
@@ -427,42 +376,93 @@ def assign_buckets(
     divisor: int = BUCKET_DIVISOR,
     max_ratio: float = MAX_BUCKET_RATIO,
 ) -> dict[tuple[int, int], list[int]]:
+    choices = bucket_resolutions(base_resolution, divisor, max_ratio)
     buckets: dict[tuple[int, int], list[int]] = {}
     for i, (w, h) in enumerate(sizes):
-        buckets.setdefault(compute_bucket(w, h, base_resolution, divisor, max_ratio), []).append(i)
+        buckets.setdefault(nearest_bucket(w, h, choices), []).append(i)
     return buckets
+
+
+def cover_resize_dims(width: int, height: int, canvas_w: int, canvas_h: int) -> tuple[int, int]:
+    """Smallest uniform scale covering the canvas (square canvas = legacy short-side resize)."""
+    scale = max(canvas_w / width, canvas_h / height)
+    return max(canvas_w, round(width * scale)), max(canvas_h, round(height * scale))
+
+
+def oriented_image_size(path: str) -> tuple[int, int]:
+    """(width, height) after EXIF orientation, from the header only (no pixel decode)."""
+    from PIL import Image
+
+    with Image.open(path) as im:
+        w, h = im.size
+        try:
+            orientation = im.getexif().get(0x0112, 1)
+        except Exception:  # noqa: BLE001 -- unreadable EXIF is treated as upright, like exif_transpose
+            orientation = 1
+    return (h, w) if orientation in (5, 6, 7, 8) else (w, h)
 
 
 class BucketBatchSampler:
     """Batch indices so every batch comes from ONE bucket (one latent shape).
 
-    Within each bucket the draw is a reshuffled permutation (each cycle visits
-    every image once, like the trainers' PermutationBatchSampler); the bucket
-    for each batch is drawn weighted by bucket size so coverage stays uniform
-    across the dataset. Seed-deterministic via the caller's ``rng``. A batch
-    never mixes buckets; a bucket smaller than the batch size wraps within
-    itself so the batch shape stays fixed."""
+    Epoch-style like PermutationBatchSampler: every image once per cycle; a bucket's last partial
+    batch wraps within itself so shapes stay fixed."""
 
     def __init__(self, buckets: dict[tuple[int, int], list[int]], rng: random.Random):
         if not buckets or not any(buckets.values()):
             raise ValueError("BucketBatchSampler needs at least one bucketed item")
         self._rng = rng
-        self._shapes = sorted(buckets.keys())
+        self._shapes = sorted(s for s in buckets if buckets[s])
         self._items = {s: list(buckets[s]) for s in self._shapes}
-        self._weights = [len(self._items[s]) for s in self._shapes]
-        self._order: dict[tuple[int, int], list[int]] = {s: [] for s in self._shapes}
-        self._pos = {s: 0 for s in self._shapes}
+        self._batches: list[tuple[tuple[int, int], list[int]]] = []
+        self._pos = 0
+
+    def _refill(self, k: int) -> None:
+        batches: list[tuple[tuple[int, int], list[int]]] = []
+        for shape in self._shapes:
+            order = list(self._items[shape])
+            self._rng.shuffle(order)
+            count = -(-len(order) // k)
+            stream = (order * (-(-count * k // len(order))))[: count * k]
+            batches.extend((shape, stream[b * k : (b + 1) * k]) for b in range(count))
+        self._rng.shuffle(batches)
+        self._batches, self._pos = batches, 0
 
     def next_batch(self, k: int) -> tuple[tuple[int, int], list[int]]:
-        shape = self._rng.choices(self._shapes, weights = self._weights, k = 1)[0]
-        out: list[int] = []
-        while len(out) < k:
-            order, pos = self._order[shape], self._pos[shape]
-            if pos >= len(order):
-                order = list(self._items[shape])
-                self._rng.shuffle(order)
-                self._order[shape], pos = order, 0
-            take = min(k - len(out), len(order) - pos)
-            out.extend(order[pos : pos + take])
-            self._pos[shape] = pos + take
-        return shape, out
+        if self._pos >= len(self._batches) or len(self._batches[self._pos][1]) != k:
+            self._refill(k)
+        shape, idxs = self._batches[self._pos]
+        self._pos += 1
+        return shape, list(idxs)
+
+    def _bucket_key(self) -> list[list[Any]]:
+        return [[s[0], s[1], list(self._items[s])] for s in self._shapes]
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "kind": "bucket",
+            "buckets": self._bucket_key(),
+            "batches": [[s[0], s[1], list(i)] for s, i in self._batches],
+            "pos": int(self._pos),
+        }
+
+    def load_state_dict(self, state: Optional[dict[str, Any]]) -> bool:
+        """False (never a silent fresh cycle) unless the state matches this exact bucket assignment."""
+        if not isinstance(state, dict) or state.get("kind") != "bucket":
+            return False
+        try:
+            if [[int(w), int(h), [int(i) for i in idx]] for w, h, idx in state["buckets"]] != (
+                self._bucket_key()
+            ):
+                return False
+            batches = [((int(w), int(h)), [int(i) for i in idx]) for w, h, idx in state["batches"]]
+            pos = int(state.get("pos") or 0)
+        except (KeyError, TypeError, ValueError):
+            return False
+        for shape, idxs in batches:
+            if shape not in self._items or not set(idxs) <= set(self._items[shape]):
+                return False
+        if not 0 <= pos <= len(batches):
+            return False
+        self._batches, self._pos = batches, pos
+        return True

@@ -292,16 +292,6 @@
       }
     },
     {
-      "file": "studio/backend/core/inference/tools.py",
-      "rule": "AV004",
-      "severity": "error",
-      "reason": "Comments describing the PowerShell flags the terminal tool refuses to run; they document a block, not a use.",
-      "digests": {
-        "1ada29153175670b": 1,
-        "5c66025065883052": 1
-      }
-    },
-    {
       "file": "studio/backend/run.py",
       "rule": "AV015",
       "severity": "warn",
@@ -604,15 +594,6 @@
       "reason": "pre-existing warning",
       "digests": {
         "cdcb2de2d3ec856d": 1
-      }
-    },
-    {
-      "file": "tests/python/test_windows_installer_resolver_fallback.py",
-      "rule": "AV003",
-      "severity": "error",
-      "reason": "Docstring history of the resolver; names the construct that was removed.",
-      "digests": {
-        "dd96a7d7a070c0b7": 1
       }
     },
     {
@@ -1337,7 +1318,8 @@
       "reason": "`unsloth start` runs the agent vendor's own documented installer on request, after telling the user; the text is the vendor's command.",
       "digests": {
         "4b8d7b4895eacb82": 1,
-        "c709a3f82ed292ba": 1
+        "c709a3f82ed292ba": 1,
+        "dad9884ace4523c9": 1
       }
     },
     {

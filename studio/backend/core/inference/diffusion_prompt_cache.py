@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""In-memory, host-RAM LRU of text-encoder outputs for diffusion/video pipes.
-
-``UNSLOTH_DIFFUSION_PROMPT_CACHE=0`` disables; ``UNSLOTH_DIFFUSION_PROMPT_CACHE_MB`` (default 256, capped on
-small hosts) bounds it. Hits return fresh copies so in-place edits cannot poison later renders.
-"""
+"""Host-RAM LRU of text-encoder outputs; hits return copies so in-place edits cannot poison renders."""
 
 from __future__ import annotations
 
@@ -24,6 +20,12 @@ _DEFAULT_BUDGET_MB = 256
 _FALSE_TOKENS = ("0", "false", "no", "off")
 
 _KEY_EXCLUDED_ARGS = frozenset({"device", "generator"})
+# Cache the per-text helper so an unchanged CFG negative is reused across prompts. "0" = pair key only.
+_ENV_PER_TEXT = "UNSLOTH_DIFFUSION_PROMPT_CACHE_PER_TEXT"
+_PER_TEXT_METHODS = {
+    "Wan": "_get_t5_prompt_embeds",
+    "ZImage": "_encode_prompt",
+}
 _TEXT_ENCODER_ATTRS = ("text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4")
 
 
@@ -78,7 +80,21 @@ def _plain(value: Any) -> Any:
     torch = _torch()
     if isinstance(value, (torch.dtype, torch.device)):
         return str(value)
+    image = _image_fingerprint(value)
+    if image is not None:
+        return image
     raise TypeError(type(value).__name__)
+
+
+def _image_fingerprint(value: Any) -> Optional[list]:
+    """Edit / reference images key by pixel content, so a repeat edit reuses the encoder output."""
+    if not (hasattr(value, "tobytes") and hasattr(value, "mode") and hasattr(value, "size")):
+        return None
+    module = type(value).__module__ or ""
+    if not module.startswith("PIL."):
+        return None
+    digest = hashlib.sha256(value.tobytes()).hexdigest()
+    return ["PIL.Image", str(value.mode), list(value.size), digest]
 
 
 def _is_tensor(obj: Any) -> bool:
@@ -170,8 +186,7 @@ class PromptCache:
 def _store_copy(t: Any) -> Any:
     t = t.detach()
     device = t.device
-    # Not pinned: pin_memory() is a fresh cudaHostAlloc per entry (60 ms to 1.6 s for 4 MB on a busy host) to save
-    # ~0.3 ms per hit.
+    # Not pinned: pin_memory() costs a slow cudaHostAlloc per entry, to save only ~0.3 ms per hit.
     stored = t.to("cpu", copy = True)
     stored._unsloth_src_device = device
     return stored
@@ -199,6 +214,13 @@ def _lora_state(pipe: Any) -> Any:
     try:
         return _plain(tuple(getattr(pipe, "_unsloth_loras", ()) or ()))
     except TypeError:
+        return None
+
+
+def _embedding_state(pipe: Any) -> Any:
+    try:
+        return _plain(tuple(pipe.__dict__.get("_unsloth_embeddings", ()) or ()))
+    except (AttributeError, TypeError):
         return None
 
 
@@ -234,6 +256,9 @@ def install(
         return False
     load_fp = _plain(identity or {})
     wrapped = _wrap_encode_prompt(pipe, cache, load_fp, lora_owner or pipe, logger)
+    per_text = _per_text_method(pipe)
+    if wrapped and per_text is not None:
+        _wrap_encode_prompt(pipe, cache, load_fp, lora_owner or pipe, logger, name = per_text)
     registered = _register_h3(pipe, cache, load_fp, logger)
     if not (wrapped or registered):
         return False
@@ -257,10 +282,26 @@ def release(pipe: Any) -> None:
         cache.clear()
 
 
+def _per_text_method(pipe: Any) -> Optional[str]:
+    if (os.environ.get(_ENV_PER_TEXT) or "").strip().lower() in _FALSE_TOKENS:
+        return None
+    cls = type(pipe).__name__
+    for prefix, name in _PER_TEXT_METHODS.items():
+        if cls.startswith(prefix) and callable(getattr(pipe, name, None)):
+            return name
+    return None
+
+
 def _wrap_encode_prompt(
-    pipe: Any, cache: PromptCache, load_fp: Any, lora_owner: Any, logger: Any
+    pipe: Any,
+    cache: PromptCache,
+    load_fp: Any,
+    lora_owner: Any,
+    logger: Any,
+    *,
+    name: str = "encode_prompt",
 ) -> bool:
-    encode = getattr(pipe, "encode_prompt", None)
+    encode = getattr(pipe, name, None)
     if not callable(encode):
         return False
     try:
@@ -269,26 +310,35 @@ def _wrap_encode_prompt(
         return False
 
     def cached_encode_prompt(*args: Any, **kwargs: Any) -> Any:
+        key = None
         try:
             bound = signature.bind(*args, **kwargs)
             bound.apply_defaults()
             keyed = {
                 k: _plain(v) for k, v in bound.arguments.items() if k not in _KEY_EXCLUDED_ARGS
             }
-            key = _hash(
-                {
-                    "load": load_fp,
-                    "encoders": _encoder_identity(pipe),
-                    "loras": _lora_state(lora_owner),
-                    "args": keyed,
-                }
-            )
+            payload = {
+                "load": load_fp,
+                "encoders": _encoder_identity(pipe),
+                "loras": _lora_state(lora_owner),
+                "args": keyed,
+            }
+            if name != "encode_prompt":
+                payload["method"] = name
+            # Textual-inversion embeddings change what the same text encodes to; absent = the unchanged key.
+            embeddings = _embedding_state(pipe)
+            if embeddings:
+                payload["embeddings"] = embeddings
+            key = _hash(payload)
             hit = cache.get(key, bound.arguments.get("device"))
         except TypeError:
             cache.stats["bypassed"] += 1
-            return encode(*args, **kwargs)
+            key = None
         except Exception as exc:  # noqa: BLE001 - never fail a render over the cache
             _warn(logger, "lookup", exc)
+            key = None
+        # Encode outside the handlers so an encoder failure is not chained onto the lookup error.
+        if key is None:
             return encode(*args, **kwargs)
         if hit is not None:
             return hit
@@ -302,7 +352,7 @@ def _wrap_encode_prompt(
 
     cached_encode_prompt.__signature__ = signature
     cached_encode_prompt.__wrapped__ = encode
-    pipe.encode_prompt = cached_encode_prompt
+    setattr(pipe, name, cached_encode_prompt)
     return True
 
 
@@ -367,6 +417,7 @@ def _make_h3_shim(original: Any, logger: Any) -> Any:
         if registered is None:
             return original(*args, **kwargs)
         cache, load_fp = registered
+        key = None
         try:
             if arguments.get("vision_inputs"):
                 raise TypeError("vision inputs")
@@ -382,9 +433,11 @@ def _make_h3_shim(original: Any, logger: Any) -> Any:
             hit = cache.get(key, arguments.get("device"))
         except TypeError:
             cache.stats["bypassed"] += 1
-            return original(*args, **kwargs)
+            key = None
         except Exception as exc:  # noqa: BLE001
             _warn(logger, "h3 lookup", exc)
+            key = None
+        if key is None:
             return original(*args, **kwargs)
         if hit is not None:
             return hit

@@ -76,9 +76,7 @@ test("an account switch drops the previous account's uploaded font bytes", async
   );
   const parsed = JSON.parse(persisted);
   assert.deepEqual(parsed.state.customization.importedFonts, []);
-  // A selection naming a purged font would render as a missing family.
   assert.equal(parsed.state.customization.uiFont, null);
-  // Real chrome still survives the switch.
   assert.equal(parsed.state.customization.contrast, 40);
 });
 

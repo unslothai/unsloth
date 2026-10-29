@@ -3,6 +3,21 @@
 
 import type { NodeConfig } from "../../types";
 
+export function isTextFormatValidator(config: NodeConfig): boolean {
+  return (
+    config.kind === "validator" &&
+    (config.validator_type === "json" || config.validator_type === "markdown")
+  );
+}
+
+export function isTextFormatValidatorTarget(config: NodeConfig): boolean {
+  return (
+    config.kind === "llm" ||
+    config.kind === "expression" ||
+    config.kind === "sampler"
+  );
+}
+
 export function isSemanticRelation(
   source: NodeConfig,
   target: NodeConfig,
@@ -23,8 +38,12 @@ export function isSemanticRelation(
   ) {
     return true;
   }
+  if (isTextFormatValidator(target) && isTextFormatValidatorTarget(source)) {
+    return true;
+  }
   return (
     source.kind === "validator" &&
+    !isTextFormatValidator(source) &&
     target.kind === "llm" &&
     target.llm_type === "code"
   );

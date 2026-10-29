@@ -20,21 +20,7 @@ BOB = AccountContext("bob-id", "bob")
 
 
 def _keep_the_interpreter_walk_out_of_the_fixtures(tmp_path, monkeypatch):
-    """Drop the interpreter roots that contain *tmp_path*.
-
-    ``_landlock_rules`` grants an interpreter root child by child, descending
-    past whatever is protected. A checkout whose virtualenv sits above the
-    pytest tmp directory therefore walks straight into the fake /etc and /run
-    these tests build, and grants them on a path that has nothing to do with
-    the system-root split being measured: the fake root lands in the rule list
-    whole, and the whole-list comparison picks up every other worker's tmp
-    directory as it comes and goes. On CI the venv is never an ancestor of the
-    tmp dir, so it does not show there.
-
-    None of these tests is about interpreter roots, which have their own
-    coverage, so take those roots out rather than read a rule list that cannot
-    answer the question being asked.
-    """
+    """Drop interpreter roots that contain tmp_path, since the walk would grant fake /etc and /run paths."""
     original = tool_confinement._interpreter_roots
     monkeypatch.setattr(
         tool_confinement,
@@ -161,7 +147,7 @@ def test_macos_profile_hides_other_accounts_temporary_roots(tmp_path, monkeypatc
     (run_as(BOB, storage_roots.tmp_root) / "dataset.jsonl").write_text("BOB_PRIVATE")
 
     profile = run_as(ALICE, tools._account_confinement).wrap(["bash"])[2]
-    base = str((shared_tmp / "unsloth-studio").resolve())
+    base = str(storage_roots.shared_tmp_root().resolve())
     alice_tmp = str(run_as(ALICE, storage_roots.tmp_root).resolve())
     bob_tmp = str(run_as(BOB, storage_roots.tmp_root).resolve())
 
@@ -297,28 +283,38 @@ def test_landlock_rules_cover_own_roots_only(tmp_path):
     run_as(ALICE, tools._get_workdir, "chat")
     rules = run_as(ALICE, tool_confinement._landlock_rules, 3, tools._SANDBOX_SITE_DIR)
     handled = tool_confinement._handled_mask(3)
-    writable = [p for p, access in rules if access == handled & ~tool_confinement._FS_MAKE_SYM]
+    writable_access = tool_confinement._writable_access(handled)
+    writable = [p for p, access in rules if access == writable_access]
     alice_root = str((tmp_path / "studio" / "accounts" / "alice-id").resolve())
     assert alice_root not in writable
     assert f"{alice_root}/sandbox" in writable
     assert str((tmp_path / "projects" / "Accounts" / "alice-id" / "Projects").resolve()) in writable
-    assert alice_root in [
-        p for p, access in rules if access != handled & ~tool_confinement._FS_MAKE_SYM
-    ]
+    assert alice_root in [p for p, access in rules if access != writable_access]
     assert str((tmp_path / "studio").resolve()) not in [p for p, _ in rules]
     assert all(
         not p.startswith(str((tmp_path / "studio").resolve()) + os.sep) or p.startswith(alice_root)
         for p, _ in rules
     )
-    read_only = [
-        p
-        for p, access in rules
-        if access not in (handled, handled & ~tool_confinement._FS_MAKE_SYM)
-    ]
+    read_only = [p for p, access in rules if access not in (handled, writable_access)]
     assert any(
         p.startswith(os.path.realpath(sys.prefix)) or os.path.realpath(sys.prefix).startswith(p)
         for p in read_only
     )
+
+
+@pytest.mark.parametrize("abi", [1, 3, 5, 6])
+def test_writable_roots_cannot_make_devices_or_links(abi):
+    handled = tool_confinement._handled_mask(abi)
+    writable = tool_confinement._writable_access(handled)
+    for right in (
+        tool_confinement._FS_MAKE_SYM,
+        tool_confinement._FS_MAKE_CHAR,
+        tool_confinement._FS_MAKE_BLOCK,
+        tool_confinement._FS_IOCTL_DEV,
+    ):
+        assert not writable & right
+    assert writable & tool_confinement._FS_WRITE_FILE and writable & tool_confinement._FS_READ_DIR
+    assert writable & ~handled == 0
 
 
 @pytest.mark.skipif(not LANDLOCK, reason = "Landlock not available on this kernel")
@@ -335,6 +331,26 @@ def test_managed_child_cannot_plant_a_link_in_its_own_tree(tmp_path):
     assert "rc=0" not in out
     assert not (bob_dir / "linked").is_symlink()
     assert "made" in out
+
+
+@pytest.mark.skipif(not LANDLOCK, reason = "Landlock not available on this kernel")
+def test_managed_child_cannot_make_a_device_node_in_its_own_tree(tmp_path):
+    """Landlock refuses the mknod (EACCES) before the capability check (EPERM) is reached, so a
+    root-run Studio cannot hand a tool a raw disk through its own workspace."""
+    _seed(tmp_path)
+    out = run_as(
+        BOB,
+        tools._python_exec,
+        "import errno, os, stat\n"
+        "try:\n"
+        "    os.mknod('dev0', 0o600 | stat.S_IFCHR, os.makedev(1, 3)); print('MADE')\n"
+        "except OSError as e:\n"
+        "    print('mknod', errno.errorcode[e.errno])\n"
+        "open('plain.txt', 'w').write('ok'); print('wrote', open('plain.txt').read())\n",
+        session_id = "chat",
+    )
+    assert "MADE" not in out and "mknod EACCES" in out, out
+    assert "wrote ok" in out, out
 
 
 @pytest.mark.skipif(not LANDLOCK, reason = "Landlock not available on this kernel")
@@ -400,11 +416,7 @@ def test_install_under_a_granted_root_stays_hidden(tmp_path, monkeypatch):
         auth = home / "auth" / "auth.db"
         auth.parent.mkdir(parents = True, exist_ok = True)
         auth.write_text("OWNER_AUTH_DB", encoding = "utf-8")
-        # Three separate claims, run as three separate commands. They used to share one
-        # command line, and once the credential pre-flight in tools.py learned to refuse a
-        # command that NAMES the auth database, that one line was refused whole: the reach
-        # probes passed because nothing ran at all, and the usability probe could not run
-        # either. Split, each claim is answered by the layer that actually owns it.
+        # Three separate commands: tools.py refuses a whole command line naming the auth DB.
         reach = run_as(
             BOB,
             tools._bash_exec,
@@ -416,9 +428,6 @@ def test_install_under_a_granted_root_stays_hidden(tmp_path, monkeypatch):
         listing = run_as(BOB, tools._bash_exec, f"ls {home}; echo ls_rc=$?", session_id = "chat")
         assert "OWNER_AUTH_DB" not in listing and "ls_rc=0" not in listing, listing
 
-        # Names no part of the auth path, so nothing short-circuits it: this is the half
-        # that says the rest of the granted root is still usable, which is the whole point
-        # of hiding one directory inside it rather than revoking the root.
         usable = run_as(
             BOB,
             tools._bash_exec,
@@ -487,8 +496,7 @@ def test_a_rule_path_removed_before_the_child_opens_it_does_not_kill_the_call(tm
     handled = tool_confinement._handled_mask(tool_confinement.landlock_abi())
     gone.rmdir()
 
-    # Forked, because _landlock_preexec restricts the process it runs in and pytest is not a
-    # process to restrict.
+    # Forked: _landlock_preexec restricts its own process, and pytest must not be restricted.
     pid = os.fork()
     if pid == 0:
         try:
@@ -635,7 +643,7 @@ def test_default_layout_denies_exactly_the_previous_macos_roots(tmp_path, monkey
     assert denied == {
         "/private/var/folders",
         str((tmp_path / "studio").resolve()),
-        str((shared_tmp / "unsloth-studio").resolve()),
+        str(storage_roots.shared_tmp_root().resolve()),
         str(home.resolve()),
     }
 
@@ -764,12 +772,7 @@ def _make_private_roots(account):
 
 
 def test_a_tool_launch_after_deletion_refuses_instead_of_recreating_the_roots(matrix):  # noqa: F811
-    """A chat authenticated before the delete must not rematerialize the private roots.
-
-    ``_ensure_dirs`` used to create the workspace, sandbox, temporary and project roots
-    with a raw ``Path.mkdir``, so a tool process launched after ``delete_account`` returned
-    rebuilt an orphaned account tree and ran in it.
-    """
+    """A launch after deletion must refuse: _ensure_dirs used raw mkdir and recreated orphaned roots."""
     _, _, accounts = matrix
     alice = storage.get_account("alice")
     _make_private_roots(alice)
@@ -790,7 +793,6 @@ def test_a_tool_launch_after_deletion_refuses_instead_of_recreating_the_roots(ma
         with pytest.raises(storage_roots.RetiredAccountError):
             run_as(alice, helper)
 
-    # The public entry a tool call uses refuses too, as a returned error rather than a raise.
     with pytest.raises(storage_roots.RetiredAccountError):
         run_as(alice, tools._get_workdir, "chat")
     result = run_as(alice, tools._bash_exec, "echo hi", "chat")
@@ -811,7 +813,6 @@ def test_runtime_secret_mounts_are_excluded_from_the_system_grant(tmp_path, monk
     (run / "credentials" / "svc" / "token").write_text("token")
     _keep_the_interpreter_walk_out_of_the_fixtures(tmp_path, monkeypatch)
     monkeypatch.setattr(tool_confinement, "_SYSTEM_READ_ROOTS", (str(run),))
-    # The shipped list, relocated under the fake /run, so the test reads the real constant.
     monkeypatch.setattr(
         tool_confinement,
         "_PRIVATE_RUNTIME_ROOTS",

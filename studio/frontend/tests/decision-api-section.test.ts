@@ -13,7 +13,6 @@ function read(path: string): string {
   return readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf-8");
 }
 
-// The section reaches the hub and auth barrels, which cannot be imported here, so this asserts on source.
 const SECTION = read(
   "../src/features/settings/components/decision-api-section.tsx",
 );
@@ -21,7 +20,11 @@ const API = read("../src/features/settings/api/systemone.ts");
 const API_TAB = read("../src/features/settings/tabs/api-keys-tab.tsx");
 
 test("the API tab renders the section and search finds it", () => {
-  assert.match(API_TAB, /<DecisionApiSection \/>/);
+  const tabs = read("../src/features/settings/components/api-example-tabs.tsx");
+  assert.match(API_TAB, /<ApiExamplesPanel/);
+  assert.match(tabs, /<DecisionApiSection showHeading=\{false\} \/>/);
+  assert.match(tabs, /searchLabel: "settings\.apiKeys\.decisionApi\.title"/);
+  assert.match(tabs, /data-settings-label=\{\s*entry\.searchLabel \? t\(entry\.searchLabel\) : undefined\s*\}/);
   assert.ok(
     SETTINGS_SEARCH_INDEX["api-keys"].includes(
       "settings.apiKeys.decisionApi.title",
@@ -33,11 +36,13 @@ test("the API tab renders the section and search finds it", () => {
   );
 });
 
-test("only the owner sees it, below the chat usage examples", () => {
+test("only the owner sees it, as a tab after the chat, media and audio examples", () => {
+  const tabs = read("../src/features/settings/components/api-example-tabs.tsx");
   assert.match(
-    API_TAB,
-    /<UsageExamples[\s\S]*?\/>\s*(?:\{\/\*[^*]*\*\/\}\s*)?\{isOwner \? <DecisionApiSection \/> : null\}/,
+    tabs,
+    /id: "audio",[\s\S]*?\.\.\.\(isOwner\s*\? \[\s*\{\s*id: "decision" as const/,
   );
+  assert.match(tabs, /if \(tab === "decision" && !isOwner\) return;/);
   assert.doesNotMatch(SECTION, /useIsAccountOwner/);
 });
 
@@ -57,7 +62,7 @@ test("a download waits for confirmation before changing the setting", () => {
   );
   assert.doesNotMatch(apply, /startDownload\(/);
   assert.ok(
-    apply.indexOf("resolveSystemOneDownload(nextModel)") <
+    apply.indexOf("resolveSystemOneDownload(nextModel, nextBackend)") <
       apply.indexOf("updateSystemOneSettings(settingsPatch)"),
   );
   assert.match(apply, /expectedEnabled: settings\.enabled/);
@@ -99,7 +104,8 @@ test("the download goes through the manager with the exact files and one scope",
     SECTION,
     /acceptedState === "running" \|\| acceptedState === "complete"/,
   );
-  assert.match(SECTION, /resolveSystemOneDownload\(model\)\.then/);
+  assert.match(SECTION, /resolveSystemOneDownload\(model, backend\)\.then/);
+  assert.match(SECTION, /\[enabled, model, backend, mlxAvailable, downloadDone\]/);
   assert.match(SECTION, /await resyncSettingsAfterError/);
 });
 
@@ -123,6 +129,15 @@ test("GPU is offered only where the backend found one", () => {
     SECTION,
     /<SelectItem value="gpu" disabled=\{!settings\.gpuAvailable\}>/,
   );
+});
+
+test("MLX is a runtime only where the backend can serve it", () => {
+  assert.match(
+    SECTION,
+    /\{settings\.mlxAvailable \|\| backend === "mlx" \? \(\s*<SelectItem value="mlx">/,
+  );
+  assert.match(SECTION, /backend: decisionRuntimeLabel\(/);
+  assert.match(API, /return backend === "mlx" \? "MLX" : backend;/);
 });
 
 test("the copy stays plain", () => {
@@ -157,10 +172,21 @@ test("reports a resident model as loaded only when it is the selected one", () =
   assert.match(SECTION, /settings\.loadingModel === settings\.model/);
 });
 
-test("a failed first load still renders the section with its error", () => {
-  assert.match(SECTION, /if \(!settings\) \{\s*return error \?/);
+test("before settings load, the section renders its header with the error or a loading line", () => {
+  assert.match(
+    SECTION,
+    /if \(!settings\) \{[\s\S]*?\{header\}\s*<div>\s*\{errorLine \?\? \([\s\S]*?decisionApi\.loading/,
+  );
   assert.match(
     SECTION,
     /translate\("settings.apiKeys.decisionApi.loadError"\)/,
   );
+});
+
+test("The Connections link works off the dialog too, where the API page shows this card", () => {
+  assert.match(
+    SECTION,
+    /onClick=\{\(\) =>\s*useSettingsDialogStore\.getState\(\)\.openDialog\("connections"\)\s*\}/,
+  );
+  assert.doesNotMatch(SECTION, /setActiveTab\("connections"\)/);
 });

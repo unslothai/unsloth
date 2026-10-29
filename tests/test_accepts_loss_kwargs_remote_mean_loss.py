@@ -32,8 +32,13 @@ from torch.nn import CrossEntropyLoss
 
 _UTILS = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "models" / "_utils.py"
 _NAMES = {
-    "_unsloth_compile_cache_leaves",
-    "_forward_is_unsloth_compiled",
+    "_head_counts_unshifted_labels",
+    "_loss_kwargs_levels",
+    "_NUM_ITEMS_LABELS",
+    "_record_num_items_labels",
+    "_num_items_labels",
+    "_training_wrapper_types",
+    "_is_training_wrapper",
     "_find_concrete_accepts_loss_kwargs",
     "_shadow_accepts_loss_kwargs",
     "_forward_ignores_num_items_in_batch",
@@ -51,6 +56,31 @@ _NAMES = {
     "_is_guess",
     "_TORCH_CE",
     "apply_accepts_loss_kwargs_fix",
+    "_UNSLOTH_WRAPPED_MODULE_ATTRS",
+    "_LOSS_KWARGS_CHILDREN",
+    "_loss_kwargs_child",
+    "_LOSS_HEAD_NAMES",
+    "_loss_head",
+    "_call_forwards_count",
+    "_forward_function_node",
+    "_N_ITEMS_KEYWORDS",
+    "_FUSED_LOSS_CALLEES",
+    "_kwargs_carriers",
+    "_classify_loss_forward",
+    "_resolve_callee",
+    "_ce_reductions",
+    "_known_loss_function",
+    "_zoo_counts_fallback_branches",
+    "_old_zoo_fallbacks_only",
+    "_CARRIER_MUTATORS",
+    "_nested_scope_ids",
+    "_pass_through_child",
+    "_PASS_THROUGH_ATTRS",
+    "_pass_through_attr",
+    "_local_assignments",
+    "_is_count_get",
+    "_forward_consumes_num_items_in_batch",
+    "_head_default_accepts_loss_kwargs",
 }
 
 
@@ -243,6 +273,9 @@ class _PeftLike(nn.Module):
         super().__init__()
         self.base_model = types.SimpleNamespace(model = inner)
         self.base_model.base_model = None
+
+    def get_base_model(self):
+        return self.base_model.model
 
     def forward(self, *args, **kwargs):
         return None
@@ -437,7 +470,6 @@ def test_the_instance_forward_is_the_one_inspected(tmp_path):
     ns["apply_accepts_loss_kwargs_fix"](model)
     assert not hasattr(model, "accepts_loss_kwargs")
 
-    # An accelerate-style hook (partial + update_wrapper) still resolves to the original mean-loss forward.
     hooked = mods.NemotronHForCausalLM()
     old_forward = hooked.forward
 

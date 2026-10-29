@@ -13,7 +13,10 @@ import {
   useShortcut,
   useShortcutAvailable,
 } from "@/features/settings";
+import { useDocumentFlag } from "@/lib/document-flag";
 import { Z_LAYER } from "@/lib/z-layers";
+import { Search01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ReactNode,
   Suspense,
@@ -27,6 +30,7 @@ import {
 import { createPortal } from "react-dom";
 import { FIND_SCOPE_ATTRIBUTE } from "../lib/find-attributes.ts";
 import { isFindScopeBackgrounded } from "../lib/find-backgrounded.ts";
+import { type FindTarget, findTarget, findTargetHolding, onFindRequest, takeFindFocus } from "../lib/find-targets.ts";
 
 const DISMISSIBLE_SURFACE_SELECTOR =
   '[data-slot="popover-content"], [role="menu"], [role="listbox"]';
@@ -106,8 +110,14 @@ function FindBarLoading({
       role="search"
       aria-busy="true"
       aria-label={t("shell.find.label")}
-      className="find-bar-surface fixed top-[calc(var(--studio-content-top-inset,0px)+3.5rem)] right-4 z-50 flex h-13 max-w-[calc(100vw-2rem)] items-center rounded-full px-5"
+      className="find-bar-surface fixed top-[calc(var(--studio-content-top-inset,0px)+3.5rem)] right-4 z-50 flex h-13 max-w-[calc(100vw-2rem)] items-center gap-1 rounded-full pr-5 pl-4.5"
     >
+      <HugeiconsIcon
+        icon={Search01Icon}
+        strokeWidth={1.75}
+        aria-hidden={true}
+        className="mr-1.5 size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground"
+      />
       <input
         ref={inputRef}
         type="text"
@@ -133,15 +143,12 @@ function FindBarLoading({
   );
 }
 
-/**
- * Lightweight controller; the bar and search engine load only when opened.
- */
 export function FindInPage({ enabled = true }: { enabled?: boolean }) {
   const t = useT();
-  // Session state belongs to the mounted shell: closing keeps the query, while signing out and
-  // unmounting the shell drops it without keeping a module-global user value.
+  // Session state lives in the mounted shell, so unmounting on sign-out drops the query.
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [scope, setScope] = useState<string | null>(null);
   const [focusToken, setFocusToken] = useState(0);
   const loadingSelectionRef = useRef<{
     start: number;
@@ -191,10 +198,23 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
     [],
   );
   const originRef = useRef<HTMLElement | null>(null);
-  const requestFocus = useCallback(() => {
+  // A native page lent its keys to the bar: they go back to it, not to the stale origin.
+  const outsideRef = useRef<FindTarget | null>(null);
+  const requestFocus = useCallback((targetId?: string | null) => {
     const active = document.activeElement;
+    // Keys in a native page leave `activeElement` stale: that page is where the reader is.
+    const outside = targetId === undefined ? takeFindFocus() : undefined;
+    // Searches where the reader is: the page while focus is in the browser, else the chat. Pressed
+    // again from the bar's own field, it keeps searching what it was.
+    if (outside) outsideRef.current = outside;
+    else if (!(active instanceof Element && active.closest('[role="search"]'))) outsideRef.current = null;
+    if (targetId !== undefined) setScope(targetId);
+    else if (outside) setScope(outside.id);
+    else if (!(active instanceof Element && active.closest('[role="search"]')))
+      setScope(findTargetHolding(active)?.id ?? null);
     if (
       originRef.current === null &&
+      outsideRef.current === null &&
       active instanceof HTMLElement &&
       active.closest('[role="search"]') === null
     ) {
@@ -234,32 +254,46 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
   }, []);
   const close = useCallback(() => {
     const origin = originRef.current;
+    const outside = outsideRef.current;
     originRef.current = null;
+    outsideRef.current = null;
     setOpen(false);
     requestAnimationFrame(() => {
       const active = document.activeElement;
+      // The bar's own cleanup may already have focused the stale origin; the page had the keys.
+      if (outside) {
+        outside.returnFocus?.();
+        return;
+      }
       if (
         origin?.isConnected &&
         typeof origin.focus === "function" &&
         (active === null || active === document.body)
       ) {
-        origin.focus();
+        origin.focus({ preventScroll: true });
       }
     });
   }, []);
 
-  // The chord works from text fields, including the composer and an already-open find input.
-  useShortcut("findInPage", requestFocus, {
+  useEffect(
+    () =>
+      onFindRequest((targetId) => {
+        if (enabled && (targetId === null || findTarget(targetId)?.available())) requestFocus(targetId);
+      }),
+    [enabled, requestFocus],
+  );
+
+  useShortcut("findInPage", () => requestFocus(), {
     enabled,
-    // A modal backgrounds the shell and owns the chord while its surface is active.
     claims: () => !isFindScopeBackgrounded(),
   });
 
   // False while a modal is open.
-  const foreground = useShortcutAvailable("findInPage", true);
+  const foreground = useShortcutAvailable("findInPage", open);
+  useDocumentFlag("data-find-bar-open", enabled && open && foreground);
 
   if (!enabled || !open) return null;
-  // Top layer, outside any stacking context. Hidden (not unmounted) under a modal so it returns as it was.
+  // Hidden, not unmounted, under a modal so it returns as it was.
   return createPortal(
     <div
       data-find-bar-layer=""
@@ -297,6 +331,8 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
             <FindBar
               query={query}
               setQuery={setQuery}
+              scope={scope}
+              setScope={setScope}
               close={close}
               focusToken={focusToken}
               restoreSelection={restoreLoadingSelection}

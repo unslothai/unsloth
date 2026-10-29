@@ -10,6 +10,11 @@ import {
   AlertTitle,
 } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 // eslint-disable-next-line no-restricted-imports -- the settings barrel imports this feature back
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { useLocale, useT } from "@/i18n";
@@ -18,10 +23,10 @@ import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
   Cancel01Icon,
-  MultiplicationSignCircleIcon,
+  CancelCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Trash2Icon, XIcon } from "lucide-react";
+import { BanIcon } from "lucide-react";
 import {
   type RefObject,
   useCallback,
@@ -48,23 +53,20 @@ const HTML_FRAME_DEFAULT_HEIGHT = 400;
 const HTML_FRAME_MAX_HEIGHT = 900;
 const BLOCKED_HOSTS_SHOWN = 3;
 
-// Canvas notices look like the app's toasts: same surface, shadow, type and pill actions.
 // The wrapper spans the canvas, so only the notice itself takes clicks.
 const NOTICE_WRAP = "pointer-events-none absolute inset-x-0 top-0 flex justify-center p-2";
 const NOTICE =
-  "pointer-events-auto max-w-[calc(460px*var(--ui-space-scale,1))] gap-y-0.5 rounded-[calc(var(--radius)+6px)] border-transparent bg-popover py-3 ps-4.5 text-ui-13 leading-normal text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] has-data-[slot=alert-action]:pe-12 dark:bg-card dark:shadow-[0_2px_8px_-2px_var(--background)]";
+  "pointer-events-auto max-w-[calc(460px*var(--ui-space-scale,1))] gap-y-0.5 rounded-lg border-transparent bg-popover py-3 ps-4.5 text-ui-13 leading-normal text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] has-data-[slot=alert-action]:pe-12 dark:bg-card dark:shadow-[0_2px_8px_-2px_var(--background)]";
 const NOTICE_BODY =
   "text-ui-13 leading-[1.4] text-muted-foreground [&_p:not(:last-child)]:mb-2.5";
 const NOTICE_BUTTON = "h-6 rounded-full px-2 text-ui-12 font-medium";
-const NOTICE_PRIMARY = `${NOTICE_BUTTON} bg-foreground text-background hover:bg-foreground hover:opacity-90`;
+const NOTICE_PRIMARY = `${NOTICE_BUTTON} bg-action text-background hover:bg-action hover:opacity-90`;
 const NOTICE_SECONDARY = `${NOTICE_BUTTON} border-transparent bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] text-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-wash-gain,1)),transparent)]`;
 const NOTICE_CLOSE =
   "size-5 rounded-full bg-popover text-popover-foreground hover:bg-muted hover:text-popover-foreground dark:bg-card dark:hover:bg-muted";
-// Entries are per URL, not per host, so a page pulling a whole CDN directory counts each file.
-// Still far above what a real one trips.
+// Per URL, not per host; still far above what a real page trips.
 const BLOCKED_URIS_TRACKED = 100;
-// A report carries the full URL, so this is generous next to a real one, and it bounds both
-// the stored string and the host derived from it.
+// Bounds both the stored string and the host derived from it.
 const BLOCKED_URI_MAX_CHARS = 2048;
 
 // The only directives the network CSP leaves at 'none'. Kept in step by
@@ -81,9 +83,7 @@ type BlockedState = { code: string; uris: string[]; hosts: string[] };
 const NOTHING_BLOCKED: BlockedState = { code: "", uris: [], hosts: [] };
 const NO_OUTPUT: CanvasConsoleState = emptyCanvasConsole("");
 
-// Reports from before a swap belong to the old canvas, so start over rather than append. The
-// cap is checked BEFORE the duplicate scan, so past it a canvas posting unique URIs cannot
-// make the parent rescan every stored string; returning `current` also lets React bail out.
+// Reports from before a swap belong to the old canvas. The cap is checked before the duplicate scan.
 function appendBlocked(
   current: BlockedState,
   code: string,
@@ -101,8 +101,7 @@ function appendBlocked(
   };
 }
 
-// A non-HTTP(S) violation reports a bare token ("eval", "blob"), which the permissive CSP widens
-// too. Dropping those left the canvas blank with no prompt, so label them with the token itself.
+// Bare-token violations ("eval", "blob") are fixable too; label them with the token.
 const BLOCKED_KEYWORD = /^[a-z-]+$/;
 
 function blockedHost(uri: string): string | null {
@@ -129,11 +128,10 @@ export function buildArtifactSrcDoc(code: string): string {
   return `${code}\n${resizeScript}`;
 }
 
-// Preview iframes intentionally omit allow-downloads: generated canvases can offer their own
-// UI, but downloads must go through Unsloth's explicit controls outside the sandbox.
+// No allow-downloads: downloads go through Unsloth's controls outside the sandbox.
 export function ArtifactHtmlFrame({
   code,
-  title = "HTML canvas preview",
+  title = "HTML preview",
   className,
   fill = false,
   actionFocusTargetRef,
@@ -142,6 +140,8 @@ export function ArtifactHtmlFrame({
   onConsoleOpenChange,
   onOutputCountChange,
   onFixWithModel,
+  onFrameReady,
+  kind = "html",
 }: {
   code: string;
   title?: string;
@@ -154,29 +154,27 @@ export function ArtifactHtmlFrame({
   onOutputCountChange?: (counts: { errors: number; total: number }) => void;
   // Only surfaces that can route the text to a composer pass this; without it there is no Fix button.
   onFixWithModel?: (prompt: string) => void;
+  // A React preview runs compiled code, so its runtime line numbers aren't shown.
+  kind?: "html" | "react";
+  onFrameReady?: (frame: HTMLIFrameElement) => (() => void) | undefined;
 }) {
   const t = useT();
   const locale = useLocale();
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  // Every canvas honors this, fence or tool. Off by default; the standing half of the gate,
-  // alongside the per-canvas grant below.
+  // Global off-by-default switch; the standing half of the gate beside the per-canvas grant.
   const networkAccessEnabled = useChatRuntimeStore(
     (state) => state.allowArtifactNetworkAccess,
   );
   const [height, setHeight] = useState(HTML_FRAME_DEFAULT_HEIGHT);
-  // Carries the code it was reported for, so a canvas swapped in place cannot inherit the
-  // previous one's banner. Clearing it from the [src] effect ran a render too late, and that
-  // stale render is the one carrying the button.
+  // Carries the code it was reported for, so a swapped canvas cannot inherit the old banner.
   const [blocked, setBlocked] = useState<BlockedState>({
     code,
     uris: [],
     hosts: [],
   });
   const blockedForCanvas = blocked.code === code ? blocked : NOTHING_BLOCKED;
-  // Granted by the banner button alone, and only for the code on screen when it was clicked;
-  // nothing the canvas sends may set it, or a blocked page could talk its way onto the
-  // network. Compared during render rather than reset in an effect, which runs after the DOM
-  // is updated and would let the first render carrying new code reuse allow_network=1.
+  // Granted only by the banner button for the code on screen; nothing the canvas sends may set it.
+  // Compared during render so new code never reuses allow_network=1.
   const [grantedCode, setGrantedCode] = useState<string | null>(null);
   const grantedForCanvas = grantedCode === code;
   const networkAllowed = networkAccessEnabled || grantedForCanvas;
@@ -269,6 +267,9 @@ export function ArtifactHtmlFrame({
     }
     return apiUrl(`/api/inference/artifact-preview-frame?${query.toString()}`);
   }, [networkAllowed, loadVersion]);
+  useEffect(() => {
+    if (iframeRef.current) return onFrameReady?.(iframeRef.current);
+  }, [onFrameReady, src]);
   // Feed only parent-initiated loads, so a self-navigated frame can't self-upgrade.
   const pendingPostRef = useRef(false);
   useEffect(() => {
@@ -277,8 +278,7 @@ export function ArtifactHtmlFrame({
   const postArtifactHtml = useCallback(() => {
     if (!pendingPostRef.current) return;
     pendingPostRef.current = false;
-    // Sandboxed frame has an opaque origin ("null"), so a wildcard target is required; the payload
-    // only reaches this iframe's contentWindow.
+    // Sandboxed frame has an opaque origin, so a wildcard target is required.
     iframeRef.current?.contentWindow?.postMessage(
       { type: "unsloth:artifact-html", html: artifactHtml },
       "*",
@@ -290,21 +290,16 @@ export function ArtifactHtmlFrame({
       if (event.source !== iframeRef.current?.contentWindow) return;
       if (event.origin !== "null") return;
       if (event.data?.type === "unsloth:artifact-blocked") {
-        // event.source survives the swap navigation, so without the frame's stamp a report from the
-        // outgoing canvas would be tagged with the incoming code and prompt a needless grant.
+        // event.source survives the swap, so drop reports from the outgoing canvas by version stamp.
         if (event.data.v !== loadVersion) return;
         const uri = event.data.blockedURI;
-        // A report carries the full URL, and the canvas can post these directly rather than going
-        // through the CSP. The entry cap bounds how many are kept but not their size, so a handful
-        // could park megabytes otherwise.
+        // The canvas can post these directly, so cap size too, not just entry count.
         if (typeof uri !== "string" || uri.length > BLOCKED_URI_MAX_CHARS) {
           return;
         }
-        // The grant cannot fix these three, and prompting anyway widens the policy for nothing, then
-        // hides the banner because the grant is on, leaving a broken canvas and no way back.
+        // The grant cannot fix these; prompting would widen policy and hide the banner for nothing.
         if (GRANT_CANNOT_FIX.has(event.data.effectiveDirective)) return;
-        // Same dead end one scheme down: the grant widens worker-src to blob: but not data:, so a
-        // data: Worker reports under both policies.
+        // The grant widens worker-src to blob: but not data:, so a data: Worker stays blocked.
         if (GRANT_CANNOT_FIX_SCHEME[event.data.effectiveDirective] === uri) {
           return;
         }
@@ -333,7 +328,6 @@ export function ArtifactHtmlFrame({
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-    // rather than relying on postArtifactHtml changing.
   }, [postArtifactHtml, code, loadVersion, queueEntry]);
 
   const showBlockedBanner =
@@ -360,6 +354,9 @@ export function ArtifactHtmlFrame({
         });
   const locationLabel = (entry: CanvasConsoleEntry) => {
     if (entry.line <= 0) return "";
+    // A React preview's runtime positions point into compiled code nobody sees, and differ by
+    // browser; compile errors carry their source position in the message instead.
+    if (kind === "react") return "";
     return entry.column > 0
       ? t("settings.chat.artifacts.errorLocation", {
           line: entry.line,
@@ -389,7 +386,7 @@ export function ArtifactHtmlFrame({
         <div className={NOTICE_WRAP}>
           <Alert
             role="group"
-            dir={locale === "ar" ? "rtl" : "ltr"}
+            dir={locale === "ar" || locale === "he" ? "rtl" : "ltr"}
             aria-label={t("settings.chat.artifacts.blockedTitle")}
             className={NOTICE}
           >
@@ -445,8 +442,8 @@ export function ArtifactHtmlFrame({
                   variant="outline"
                   className={NOTICE_SECONDARY}
                   onClick={() => {
-                    useSettingsDialogStore.getState().openDialog("chat", {
-                      scrollTarget: "chat-canvas-network",
+                    useSettingsDialogStore.getState().openDialog("browser", {
+                      scrollTarget: "browser-html-network",
                       focusFallback:
                         actionFocusTargetRef?.current ?? iframeRef.current,
                     });
@@ -463,11 +460,11 @@ export function ArtifactHtmlFrame({
         <div className={NOTICE_WRAP}>
           <Alert
             role="group"
-            dir={locale === "ar" ? "rtl" : "ltr"}
+            dir={locale === "ar" || locale === "he" ? "rtl" : "ltr"}
             aria-label={errorTitle}
             className={NOTICE}
           >
-            <HugeiconsIcon icon={MultiplicationSignCircleIcon} strokeWidth={2} className="size-4" />
+            <HugeiconsIcon icon={CancelCircleIcon} strokeWidth={2} className="size-4" />
             <AlertAction className="top-2 end-2">
               <Button
                 size="icon-xs"
@@ -496,7 +493,7 @@ export function ArtifactHtmlFrame({
                   <Button
                     size="xs"
                     className={NOTICE_PRIMARY}
-                    onClick={() => onFixWithModel(buildCanvasFixPrompt(title, errors))}
+                    onClick={() => onFixWithModel(buildCanvasFixPrompt(title, errors, kind))}
                     title={t("settings.chat.artifacts.errorHint")}
                   >
                     {t("settings.chat.artifacts.errorBannerAction")}
@@ -524,7 +521,7 @@ export function ArtifactHtmlFrame({
       {consoleOpen ? (
         <section
           aria-label={t("settings.chat.artifacts.consoleTitle")}
-          dir={locale === "ar" ? "rtl" : "ltr"}
+          dir={locale === "ar" || locale === "he" ? "rtl" : "ltr"}
           className="absolute inset-x-0 bottom-0 flex h-2/5 min-h-32 flex-col border-t border-border bg-background/95 text-xs backdrop-blur"
         >
           <div
@@ -539,25 +536,39 @@ export function ArtifactHtmlFrame({
               )}
             </span>
             <span className="flex-1" />
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              aria-label={t("settings.chat.artifacts.consoleClear")}
-              onClick={() => {
-                dropPendingEntries();
-                setOutput(emptyCanvasConsole(code));
-              }}
-            >
-              <Trash2Icon />
-            </Button>
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              aria-label={t("settings.chat.artifacts.consoleClose")}
-              onClick={() => onConsoleOpenChange?.(false)}
-            >
-              <XIcon />
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild={true}>
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  aria-label={t("settings.chat.artifacts.consoleClear")}
+                  onClick={() => {
+                    dropPendingEntries();
+                    setOutput(emptyCanvasConsole(code));
+                  }}
+                >
+                  <BanIcon />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="tooltip-compact">
+                {t("settings.chat.artifacts.consoleClear")}
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild={true}>
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  aria-label={t("settings.chat.artifacts.consoleClose")}
+                  onClick={() => onConsoleOpenChange?.(false)}
+                >
+                  <HugeiconsIcon icon={Cancel01Icon} />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="tooltip-compact">
+                {t("settings.chat.artifacts.consoleClose")}
+              </TooltipContent>
+            </Tooltip>
           </div>
           <ol className="min-h-0 flex-1 overflow-auto pb-2 font-mono">
             {outputForCanvas.capped ? (

@@ -1,16 +1,48 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Seed a conventional video pipeline with hosted pre-quantized denoisers, all-or-nothing.
-
-The MoE's second expert uses the ``task`` slot with NO filename fallback: it would load expert 1 as expert 2.
-"""
+"""Hosted denoisers seed a video pipeline all or nothing; MoE expert 2 uses task slot, never filename."""
 
 from __future__ import annotations
 
 from typing import Any, Optional
 
 MOE_SECOND_DENOISER = "transformer_2"
+
+
+def hosted_denoiser_refused(
+    source: Any,
+    scheme: Optional[str],
+    base_repo: Optional[str],
+    *,
+    component: Optional[str] = None,
+    hf_token: Optional[str] = None,
+) -> bool:
+    """Whether the loader would refuse hosted ``source`` from its header, asked BEFORE anything is staged:
+    the same base / min_features / component the loader checks, so a stale artifact is neither fetched nor
+    allowed to drop the dense shards. Offline (``HF_HUB_OFFLINE`` or a ``local_files_only`` load scope)
+    only a cached file is read. Unknown is never a refusal. Never raises."""
+    if getattr(source, "kind", None) != "repo":
+        return False
+    try:
+        from .diffusion import hub_cache_dir
+        from .diffusion_prequant import hosted_prequant_refusal
+        from .diffusion_transformer_quant import DEFAULT_MIN_LINEAR_FEATURES
+
+        return (
+            hosted_prequant_refusal(
+                source,
+                str(scheme or "").strip().lower(),
+                base = base_repo,
+                min_features = DEFAULT_MIN_LINEAR_FEATURES,
+                component = component,
+                hf_token = hf_token,
+                cache_dir = hub_cache_dir(),
+            )
+            is not None
+        )
+    except Exception:  # noqa: BLE001 -- an unanswerable probe keeps today's plan
+        return False
 
 
 def denoiser_components(fam: Any) -> tuple[str, ...]:
@@ -20,9 +52,15 @@ def denoiser_components(fam: Any) -> tuple[str, ...]:
 
 
 def denoiser_prequant_sources(
-    fam: Any, scheme: Optional[str], base_repo: Optional[str]
+    fam: Any,
+    scheme: Optional[str],
+    base_repo: Optional[str],
+    *,
+    hf_token: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
-    """``{component: PrequantSource}`` for EVERY denoiser, or None (never partial). Never raises."""
+    """``{component: PrequantSource}`` for EVERY denoiser, or None (never partial). A hosted source whose
+    header the loader would refuse (``hosted_denoiser_refused``) counts as none, so planning keeps the
+    dense shards and never fetches it. Never raises."""
     wanted = (scheme or "").strip().lower()
     if wanted in ("", "auto", "off", "none"):
         return None
@@ -48,6 +86,11 @@ def denoiser_prequant_sources(
             )
             if sources[component] is None:
                 return None
+        for component, source in sources.items():
+            if hosted_denoiser_refused(
+                source, wanted, base_repo, component = component, hf_token = hf_token
+            ):
+                return None
         return sources or None
     except Exception:  # noqa: BLE001 -- an unanswerable registry keeps the dense denoiser
         return None
@@ -70,7 +113,7 @@ def denoiser_prequant_pipe_kwargs(
     try:
         import gc
 
-        sources = denoiser_prequant_sources(fam, scheme, base_repo)
+        sources = denoiser_prequant_sources(fam, scheme, base_repo, hf_token = hf_token)
         if not sources:
             return {}
         if target is not None:
@@ -123,6 +166,10 @@ def denoiser_prequant_pipe_kwargs(
                     )
                 return {}
             seeded[component] = module
+            from .diffusion_prequant_cache import note_hit, path_in_cache
+
+            if getattr(source, "kind", None) == "path" and path_in_cache(source.location):
+                note_hit(source.location, logger)
             gc.collect()
         if logger is not None:
             logger.info(

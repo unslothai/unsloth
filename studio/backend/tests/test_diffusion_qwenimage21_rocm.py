@@ -13,8 +13,12 @@ from core.inference import diffusion_qwenimage21_rocm as chunks
     [
         ("gfx1151", "auto", True),
         ("gfx1151:sramecc-", "auto", True),
+        ("gfx1201", "auto", True),
+        ("gfx1200", "auto", True),
         ("gfx1100", "auto", False),
+        ("gfx1150", "auto", False),
         ("gfx942", "auto", False),
+        ("gfx1201", "0", False),
         ("gfx1100", "1", True),
         ("gfx1151", "0", False),
     ],
@@ -163,7 +167,6 @@ def test_cached_decode_preserves_prefix_and_projections(monkeypatch):
     target = torch.randn(1, 1050, 16)
     cache = module.QwenImage21KVLayerCache()
     with torch.inference_mode():
-        # Text and condition-image prefix segments retain the stock causal rules.
         joined = torch.cat([prefix, target], dim = 1)
         before = stock(
             attn,

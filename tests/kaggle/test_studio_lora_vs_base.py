@@ -1,27 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The exported model against the base it came from.
-
-`assert_gguf_export` proves a file was produced, carries the GGUF magic, loads
-on the GPU and generates. Every one of those is ALSO true of an export that
-silently merged nothing and shipped the base weights, which is the regression
-worth catching and is invisible to file size, to the magic, and to "it
-generated text".
-
-Greedy decoding at temperature 0 makes it visible: identical weights answer
-identically, so a difference is the adapter.
-
-The determinism control is the part that makes that argument valid, and it runs
-FIRST. If the same weights loaded twice do not reproduce their own answer, a
-difference between two models is noise, and the assertion has to say it could
-not compare rather than pass on it.
-
-What is deliberately NOT asserted is the canary. Studio's training run is a
-handful of steps, and whether that is enough to learn a specific string is a
-property of the run length rather than of the export path: asserting it would
-be a red about training tuning wearing an export label.
-"""
+"""Greedy decoding makes any answer difference the adapter, but only after a determinism control."""
 
 from __future__ import annotations
 
@@ -138,15 +118,8 @@ def test_both_models_are_driven_with_the_same_prompt():
 
 
 def test_the_exported_gguf_picked_is_a_model_and_not_an_mmproj_sidecar():
-    """Driven through the REAL `newest_gguf`, because this is a selection bug
-    and a rule fed a path proves nothing about the selector.
-
-    A vision export writes two files, and the projector is often the newer.
-    Handing `Qwen3.5-2B.F16-mmproj.gguf` to llama.cpp as a model is not an
-    error: the server starts, reports gpu_layers=-1, offloads nothing and still
-    returns text. On kernel unsloth-probe-studio-full2-815a0c that failed both
-    the export assertion and this one, as a GPU fallback that never happened.
-    """
+    """newest_gguf must not pick the mmproj sidecar: llama.cpp accepts it silently and serves text
+    on CPU."""
     import sys as _sys  # noqa: PLC0415
     import tempfile  # noqa: PLC0415
     import time as _time  # noqa: PLC0415
@@ -160,14 +133,12 @@ def test_the_exported_gguf_picked_is_a_model_and_not_an_mmproj_sidecar():
         model = root / "Qwen3.5-2B.Q8_0.gguf"
         model.write_bytes(b"GGUF")
         _time.sleep(0.01)
-        # Written LAST, so "newest" alone would pick it.
+        # Written last, so picking the newest file would choose the sidecar.
         sidecar = root / "Qwen3.5-2B.F16-mmproj.gguf"
         sidecar.write_bytes(b"GGUF")
 
         assert newest_gguf(root) == model
 
-        # And with only a sidecar present, the answer is None rather than the
-        # sidecar: no model was exported, and saying so is the point.
         sidecar_only = root / "sub"
         sidecar_only.mkdir()
         (sidecar_only / "x.F16-mmproj.gguf").write_bytes(b"GGUF")

@@ -92,7 +92,6 @@ def test_auto_and_other_schemes_never_go_native(rocm, scheme):
     "target",
     [
         _target(device = "cpu"),
-        _target(device = "mps"),
         _target(device = "xpu"),
         _target(dtype = torch.float16),
         _target(dtype = torch.float32),
@@ -103,7 +102,7 @@ def test_non_cuda_or_non_bf16_is_never_native_even_on_rocm(rocm, target):
     assert tq.native_quant_scheme(target, "int8") is None
 
 
-@pytest.mark.parametrize("device", ["cuda", "cpu", "mps", "xpu"])
+@pytest.mark.parametrize("device", ["cuda", "cpu", "xpu"])
 def test_nvidia_and_other_hosts_are_never_native_without_offload(nvidia, device):
     assert not tq.native_quant_host(_target(device = device))
     for scheme in ("int8", "fp8", "nvfp4", "mxfp8", "auto"):
@@ -135,7 +134,6 @@ def test_nvidia_takes_native_int8_only_under_offload(nvidia, scheme, offload, ex
     "target",
     [
         _target(device = "cpu"),
-        _target(device = "mps"),
         _target(device = "xpu"),
         _target(dtype = torch.float16),
         _target(dtype = torch.float32),
@@ -191,13 +189,13 @@ def test_family_deny_list_still_applies(rocm, monkeypatch):
     monkeypatch.setitem(tq._FAMILY_SCHEME_DENY, "toy-family", frozenset({tq.TQ_INT8}))
     assert tq.native_quant_scheme(_target(), "int8", family = "toy-family") is None
     assert tq.native_quant_scheme(_target(), "fp8", family = "toy-family") == "fp8"
-    # The shipped deny list only fences nvfp4 / mxfp8 off qwen-image, so int8 / fp8 run there.
+    # The shipped deny list only fences nvfp4 / mxfp8 off qwen-image.
     assert tq.native_quant_scheme(_target(), "int8", family = "qwen-image") == "int8"
     assert tq.native_quant_scheme(_target(), "fp8", family = "qwen-image-2.1") == "fp8"
 
 
 def test_the_shared_selector_is_untouched_on_rocm(rocm):
-    # Hosted prequant planners read this selector; AMD must never be handed a torchao checkpoint.
+    # Hosted prequant planners read this selector; AMD must never get a torchao checkpoint.
     for scheme in ("int8", "fp8", "auto"):
         assert tq.select_transformer_quant_scheme(_target(), scheme, unproven_ok = True) is None
     assert not tq.dense_transformer_supported(_target())
@@ -318,6 +316,28 @@ def test_int_mm_matches_the_dense_layer():
     assert ((got.float() - ref).norm() / ref.norm()).item() < 0.03
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA torch._int_mm")
+@pytest.mark.parametrize("compiled", [False, True])
+def test_int_mm_takes_a_transposed_activation_without_rotation(compiled):
+    # cuBLASLt runs int8 GEMMs only on a row-major activation. A patch-embed style [B, C, S] -> [B, S, C] view is
+    # column-major, and Inductor keeps that layout for the int8 codes even through an explicit .contiguous().
+    torch.manual_seed(0)
+    lin = torch.nn.Linear(256, 128).to("cuda", torch.bfloat16)
+    layer = nq.native_linear_class()(lin, "int8", act_int8 = True)
+
+    def run(x):
+        return layer(x.flatten(2).transpose(1, 2).contiguous())
+
+    x = torch.randn(1, 256, 5, 7, 31, device = "cuda", dtype = torch.bfloat16)  # 1085 tokens, odd
+    ref = lin(x.flatten(2).transpose(1, 2)).float()
+    if compiled:
+        torch._dynamo.reset()
+        run = torch.compile(run)
+    got = run(x) if compiled else layer(x.flatten(2).transpose(1, 2))
+    assert got.shape == ref.shape and got.dtype == torch.bfloat16
+    assert ((got.float() - ref).norm() / ref.norm()).item() < 0.03
+
+
 def test_rotation_only_applies_to_w8a8_and_divisible_inputs():
     cls = nq.native_linear_class()
     lin = torch.nn.Linear(512, 64).to(torch.bfloat16)
@@ -386,7 +406,7 @@ def test_int8_act_kill_switch_reads_only_zero(monkeypatch):
 
 
 def _block_torchao(monkeypatch):
-    # A None entry makes any `import torchao.quantization` raise, proving the branch never reaches it.
+    # A None sys.modules entry makes any torchao import raise, proving the branch never reaches it.
     monkeypatch.setitem(sys.modules, "torchao", None)
     monkeypatch.setitem(sys.modules, "torchao.quantization", None)
 
@@ -410,7 +430,7 @@ def test_quantize_transformer_goes_native_on_rocm(rocm, monkeypatch, scheme):
     assert swapped == {f"blocks.{i}.{n}" for i in range(2) for n in ("to_q", "ff", "out")}
     assert isinstance(model.blocks[0].small, torch.nn.Linear)
     assert tq.transformer_is_quantised(model) and nq.is_native_quantised(model)
-    assert tq.dense_quant_blocker(pipe) is not None  # a second pass would compound the loss
+    assert tq.dense_quant_blocker(pipe) is not None
     assert any("torchao-free" in str(a[0]) for a in logs)
     with torch.no_grad():
         out = model(x).float()
@@ -967,7 +987,7 @@ def test_stream_group_offload_puts_native_weight_buffers_back_on_the_host():
     group.stream, group.record_stream = object(), True
     group.cpu_param_dict = dict(host)
     for tensor in list(layer.buffers()) + list(layer.parameters()):
-        tensor.data = tensor.data.clone()  # stands in for the onloaded device copy
+        tensor.data = tensor.data.clone()
     group._offload_to_memory()
     assert all(b.data_ptr() == host[b].data_ptr() for b in layer.buffers())
     assert all(p.data_ptr() == host[p].data_ptr() for p in layer.parameters())
@@ -1021,6 +1041,76 @@ def test_native_int8_under_real_stream_group_offload_leaves_nothing_resident():
     torch.cuda.synchronize()
     assert out.device.type == "cuda"
     assert {b.device.type for b in model.buffers()} == {"cpu"}
+
+
+def _torchao_int8_blocks(n = 3, features = 256):
+    quant = pytest.importorskip("torchao.quantization")
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.blocks = torch.nn.ModuleList(
+                [torch.nn.Linear(features, features, dtype = torch.bfloat16) for _ in range(n)]
+            )
+
+        def forward(self, x):
+            for block in self.blocks:
+                x = block(x)
+            return x
+
+    model = Model()
+    quant.quantize_(model, quant.Int8WeightOnlyConfig())
+    return model.requires_grad_(False)
+
+
+def test_unpinned_torchao_host_copy_is_a_distinct_wrapper_over_the_same_data():
+    go = pytest.importorskip("diffusers.hooks.group_offloading")
+    from core.inference.diffusion_memory import install_group_offload_buffer_restore
+
+    install_group_offload_buffer_restore()
+    weight = _torchao_int8_blocks(n = 1).blocks[0].weight
+    copy = go.ModuleGroup._to_cpu(weight, True)
+    assert copy is not weight
+    assert type(copy) is type(weight)
+    assert copy.qdata.data_ptr() == weight.qdata.data_ptr()
+    assert copy.scale.data_ptr() == weight.scale.data_ptr()
+    plain = torch.zeros(4)
+    assert go.ModuleGroup._to_cpu(plain, True).data_ptr() == plain.data_ptr()
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason = "stream group offload needs a CUDA device"
+)
+def test_unpinned_torchao_stream_group_offload_leaves_nothing_resident():
+    pytest.importorskip("diffusers.hooks.group_offloading")
+    from diffusers.hooks import apply_group_offloading
+
+    from core.inference.diffusion_memory import install_group_offload_buffer_restore
+
+    install_group_offload_buffer_restore()
+    model = _torchao_int8_blocks()
+    resident = _torchao_int8_blocks()
+    resident.load_state_dict(model.state_dict(), assign = True)
+    resident.cuda()
+    apply_group_offloading(
+        model,
+        onload_device = torch.device("cuda"),
+        offload_device = torch.device("cpu"),
+        offload_type = "block_level",
+        num_blocks_per_group = 1,
+        use_stream = True,
+        low_cpu_mem_usage = True,
+        non_blocking = True,
+        record_stream = True,
+    )
+    x = torch.randn(8, 256, device = "cuda", dtype = torch.bfloat16)
+    with torch.no_grad():
+        expected = resident(x)
+        for _ in range(2):  # the second pass reuses the host copies after offloading
+            out = model(x)
+            torch.cuda.synchronize()
+            assert {b.weight.qdata.device.type for b in model.blocks} == {"cpu"}
+            assert torch.equal(out, expected)
 
 
 class _GateSeen(Exception):
@@ -1121,3 +1211,43 @@ def test_a_rotated_layer_passes_an_empty_input_through():
     )
     out = layer(torch.zeros(2, 0, 256, dtype = torch.bfloat16))
     assert out.shape == (2, 0, 64)
+
+
+@pytest.mark.parametrize("fmt", ["float8_e4m3fn", "float8_e5m2"])
+def test_fp8_integer_decode_equals_the_cast_bit_for_bit(fmt):
+    """Integer decode equals the eager cast on all 256 codes."""
+    from core.inference.diffusion_native_quant import fp8_bits_to_float32
+
+    bits = torch.arange(256, dtype = torch.int32).to(torch.uint8)
+    want = bits.view(getattr(torch, fmt)).to(torch.float32)
+    got = fp8_bits_to_float32(bits, fmt)
+    nan = want.isnan()
+    assert torch.equal(got.isnan(), nan)
+    assert torch.equal(got[~nan].view(torch.int32), want[~nan].view(torch.int32))
+
+
+@pytest.mark.parametrize("fmt", ["float8_e4m3fn", "float8_e5m2"])
+def test_fp8_codes_layer_matches_the_dequant_formula_eager_and_compiled(fmt):
+    """A native fp8 layer built from checkpoint codes + per-row scale: its forward equals F.linear on
+    ``(codes.float() * scale).to(dtype)`` (the load-time dequant) in eager, and the compiled forward (integer
+    decode) matches eager exactly with no graph break."""
+    from core.inference.diffusion_native_quant import NATIVE_FP8, native_linear_class
+
+    torch.manual_seed(0)
+    fp8 = getattr(torch, fmt)
+    base = torch.nn.Linear(64, 48).to(torch.bfloat16)
+    w = torch.randn(48, 64)
+    scale = w.abs().amax(dim = 1, keepdim = True) / torch.finfo(fp8).max
+    codes = (w / scale).to(fp8)
+    layer = native_linear_class()(base, NATIVE_FP8, codes = codes, scale = scale)
+    assert layer.weight_q.dtype is torch.uint8 and layer.fp8_format == fmt
+    dense = (codes.to(torch.float32) * scale).to(torch.bfloat16)
+    x = torch.randn(3, 64, dtype = torch.bfloat16)
+    want = torch.nn.functional.linear(x, dense, base.bias)
+    assert torch.equal(layer.weight, dense)
+    assert torch.equal(layer(x), want)
+    torch._dynamo.reset()
+    explained = torch._dynamo.explain(layer)(x)
+    assert explained.graph_break_count == 0
+    compiled = torch.compile(layer, fullgraph = True)
+    assert torch.equal(compiled(x), layer(x))

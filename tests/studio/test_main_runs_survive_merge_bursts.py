@@ -1,22 +1,34 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""``cancel-in-progress: false`` does not keep a main run alive, and the repo believed it did.
+"""A merge burst on main runs the tip, never kills a running run, and nothing more.
 
-GitHub cancels any PENDING run in a concurrency group the moment a newer one is queued.
-``cancel-in-progress`` governs only runs that are already EXECUTING: "any existing pending
-job or workflow in the same concurrency group will be canceled and the new queued job or
-workflow will take its place" (workflow-syntax reference).
+How GitHub treats one concurrency group: at most one run EXECUTES and at most one is
+PENDING. A newer run replaces the pending one ("any existing pending job or workflow in the
+same concurrency group will be canceled and the new queued job or workflow will take its
+place", workflow-syntax reference), and ``cancel-in-progress`` decides only whether the
+EXECUTING run is killed as well.
 
-So on a branch where pushes land in bursts, ``cancel-in-progress: false`` buys nothing for
-the runs in the middle of the burst. Twenty-seven workflows carried a comment saying it did.
-Both incidents the repo wrote down are this: studio-ui-smoke.yml records a break sitting on
-main "for 14 hours behind four cancelled runs", and on 2026-08-17 five merges cancelled four
-consecutive main runs of Backend CI, which completed none. Each was cancelled with ZERO jobs
-recorded, so nothing ever showed up as a failure; the workflow simply never reported.
+This repo used to give every main commit its own group (``github.sha`` in the group on
+main), so no main run ever replaced another. That bought a verdict per commit and cost
+every workflow on every commit: about 550 runner-minutes per main commit at 100-160
+commits a day, more than the org's runner pool supplies, so every queue (PRs, zoo, the
+cache janitor) waited hours behind main.
 
-The only thing that protects a main run is a concurrency group it does not share with the
-next commit.
+The contract now, for every workflow that runs on pushes to main:
+
+  1. One group per workflow, ref and event. A merge burst on main leaves the run already
+     executing plus ONE pending run, which a newer push keeps replacing, so the tip always
+     runs. The commits in between were tested as pull requests and the tip's tree contains
+     them; a red tip is bisected with workflow_dispatch. That lost per-commit attribution on
+     main is the trade, and it is deliberate.
+  2. ``cancel-in-progress`` is false on main, so a run that has started always finishes
+     (it is the one saving the main-branch caches, among other things).
+  3. The event is in the group, so a nightly or a dispatch on main is never replaced by a
+     push, and the reverse.
+  4. On a pull request two pushes share a group, so the newer push supersedes the older.
+
+Per-commit groups remain only where named below, with the reason.
 """
 
 import re
@@ -30,9 +42,16 @@ WORKFLOWS = REPO / ".github" / "workflows"
 # Kaggle spends an external GPU quota rather than runner minutes.
 QUOTA_BOUND = frozenset({"kaggle-t4-notebook-ci.yml", "kaggle-t4-studio-gpu-ci.yml"})
 
-# Phrasings that assert main runs are not cancelled.
+# Allowed to keep a group per commit on main, each with its reason. None today: codeql.yml was
+# the one entry, and it no longer runs on pushes to main.
+PER_COMMIT_ALLOWED = frozenset()
+
+# Phrasings that assert a main run is never cancelled or that main is grouped per commit.
+# Either is false for a workflow sharing one group across main commits: its PENDING run is
+# replaced by the next push.
 CLAIMS_PROTECTION = re.compile(
-    r"never on main|never cancelled on main|not cancelled on main|never cancels on main",
+    r"never on main|never cancelled on main|not cancelled on main|never cancels on main"
+    r"|unique per commit on main|grouped per commit on main|one group per commit on main",
     re.IGNORECASE,
 )
 
@@ -67,11 +86,7 @@ _TERNARY = re.compile(r"(.+?)&&(.+?)\|\|(.+)")
 
 
 class Unparsed(Exception):
-    """A group expression this evaluator does not model.
-
-    Raised rather than guessed. A guess here would silently answer the one question this
-    file exists to ask, which is how a group behaves on main.
-    """
+    """Raised rather than guessed: a guessed answer would silently misreport how a group behaves on main."""
 
 
 def _term(text: str, context: dict[str, str]) -> str:
@@ -96,6 +111,8 @@ def _evaluate(expression: str, context: dict[str, str]) -> str:
     if ternary:
         taken = ternary.group(2) if _condition(ternary.group(1), context) else ternary.group(3)
         return _term(taken, context)
+    if _COMPARISON.fullmatch(expression.strip()):
+        return "true" if _condition(expression, context) else "false"
     return _term(expression, context)
 
 
@@ -119,15 +136,7 @@ def _render(
 
 
 def _is_per_commit_on_main(group: str) -> bool:
-    """Whether two commits on main land in DIFFERENT groups.
-
-    Evaluated rather than grepped. ``"github.sha" in group`` was the first form of this and
-    it is not the invariant: reverse the conditional to
-    ``github.ref != 'refs/heads/main' && github.sha || ''`` and the substring is still
-    present, every workflow still names ``refs/heads/main``, and main commits share one
-    group again. Rendering both sides asks the question directly, so which branch supplies
-    the SHA is what decides the answer.
-    """
+    """Rendered, not grepped: a substring check still passes when the SHA is on the wrong branch."""
     return _render(group, ref = MAIN, sha = "a" * 40) != _render(group, ref = MAIN, sha = "b" * 40)
 
 
@@ -145,24 +154,75 @@ def _protected() -> dict[str, dict]:
     }
 
 
-def test_every_workflow_that_runs_on_main_is_grouped_per_commit():
-    """Otherwise a merge burst discards it before it starts.
+def _cancel_setting(document: dict) -> str:
+    concurrency = document.get("concurrency")
+    if isinstance(concurrency, dict):
+        return str(concurrency.get("cancel-in-progress", False)).lower()
+    return "false"
 
-    Checked across all of them rather than a named few, because the failure is invisible:
-    the run is cancelled with zero jobs recorded, so nothing surfaces as a test failure and
-    the workflow simply never reported on that commit.
+
+def _cancels_on_main_push(document: dict) -> bool:
+    rendered = _render(_cancel_setting(document), ref = MAIN, sha = "a" * 40, event_name = "push")
+    return rendered.strip().lower() == "true"
+
+
+def _coalescing() -> dict[str, dict]:
+    return {name: doc for name, doc in _protected().items() if name not in PER_COMMIT_ALLOWED}
+
+
+def test_every_workflow_that_runs_on_main_coalesces_a_merge_burst():
+    """Two main commits share one group, so a burst runs the executing commit plus the tip.
+
+    A group per commit runs every workflow on every main commit, which is the load that
+    queued the whole org for hours. Checked across all of them rather than a named few.
     """
     offenders = sorted(
-        name
-        for name, document in _protected().items()
-        if not _is_per_commit_on_main(_group(document))
+        name for name, document in _coalescing().items() if _is_per_commit_on_main(_group(document))
     )
     assert not offenders, (
-        f"{offenders} share one concurrency group across main commits, so a merge burst "
-        f"cancels their pending runs before they start. cancel-in-progress does not prevent "
-        f"that: it only spares runs already executing. Append "
-        f"-${{{{ github.ref == 'refs/heads/main' && github.sha || '' }}}} to the group."
+        f"{offenders} give every main commit its own concurrency group, so each main commit "
+        f"runs the whole workflow and nothing is ever superseded. Use "
+        f"${{{{ github.workflow }}}}-${{{{ github.ref }}}}-${{{{ github.event_name }}}} with "
+        f"cancel-in-progress false on main, or add the file to PER_COMMIT_ALLOWED with a reason."
     )
+
+
+def test_a_running_main_run_is_never_cancelled():
+    """Coalescing replaces the PENDING run only; the one executing must finish."""
+    offenders = {
+        name: _cancel_setting(document)
+        for name, document in _protected().items()
+        if _cancels_on_main_push(document)
+    }
+    assert not offenders, (
+        f"{offenders} cancel a running main run when the next commit lands, so a merge burst "
+        f"can leave main with no finished run at all. Gate it on github.event_name == 'pull_request'."
+    )
+
+
+def test_a_push_never_replaces_a_nightly_or_a_dispatch_on_main():
+    """The event is in the group, so runs of different kinds on main keep their own slot."""
+    offenders = {}
+    for name, document in _coalescing().items():
+        triggers = document.get(True) or document.get("on") or {}
+        group = _group(document)
+        push = _render(group, ref = MAIN, sha = "a" * 40, event_name = "push")
+        for event in ("schedule", "workflow_dispatch", "repository_dispatch"):
+            if (
+                event in triggers
+                and _render(group, ref = MAIN, sha = "a" * 40, event_name = event) == push
+            ):
+                offenders.setdefault(name, []).append(event)
+    assert not offenders, (
+        f"{offenders} share the push group on main with another trigger, so a merge burst "
+        f"replaces a pending nightly or dispatch. Put ${{{{ github.event_name }}}} in the group."
+    )
+
+
+def test_the_per_commit_allowance_still_names_workflows_that_exist():
+    documents = _documents()
+    missing = sorted(name for name in PER_COMMIT_ALLOWED if name not in documents)
+    assert not missing, f"PER_COMMIT_ALLOWED names workflows that no longer exist: {missing}"
 
 
 def test_the_scan_actually_found_the_workflows():
@@ -170,16 +230,11 @@ def test_the_scan_actually_found_the_workflows():
     protected = _protected()
     assert len(protected) > 20, f"only found {len(protected)} main workflows; the scan is wrong"
     assert "studio-backend-ci.yml" in protected
+    assert len(_coalescing()) > 20, "the coalescing scan found almost nothing; the scan is wrong"
 
 
 def test_this_guard_runs_on_a_workflow_only_pull_request():
-    """Where it is invoked from is part of what it checks.
-
-    The regression this file catches is an edit to some OTHER workflow's concurrency block.
-    No workflow filters on .github/workflows/**, so a PR touching only wheel-smoke.yml
-    collects no test that reads it. workflow-trigger-lint.yml carries no paths filter at
-    all, by design, so it is the one job that sees such a PR.
-    """
+    """Only workflow-trigger-lint.yml, with no paths filter, sees workflow-only PRs, so it must run this."""
     lint = WORKFLOWS / "workflow-trigger-lint.yml"
     text = lint.read_text(encoding = "utf-8")
     assert Path(__file__).name in text, (
@@ -204,12 +259,7 @@ def test_the_quota_bound_exemptions_still_exist():
 
 
 def test_a_pull_request_still_gets_latest_only():
-    """The protection is for main; superseding a PR push is still what we want.
-
-    A group keyed on github.sha unconditionally would leave every abandoned PR run
-    executing, which is the opposite of the intent and the expensive direction. Asked by
-    rendering two commits on a pull request ref and requiring the SAME group.
-    """
+    """PR runs share a group so superseded pushes cancel; per-SHA groups would leave them running."""
     offenders = {}
     for name, document in _protected().items():
         group = _group(document)
@@ -241,11 +291,11 @@ def test_every_group_expression_is_understood():
 
 
 def test_the_evaluator_reads_which_branch_supplies_the_sha():
-    """The predicate above is only worth its assertions if this holds.
+    """The per-commit predicate is only worth its assertions if this holds.
 
-    Each of these renders to a string containing ``github.sha`` in its source text, and the
-    substring test that this file first shipped with called all four per-commit. Only the
-    first one is.
+    Each of these contains ``github.sha`` in its source text, and a substring test would
+    call all four per-commit. Only the first and the last are, so a grep cannot tell a
+    coalescing group from a per-commit one; rendering can.
     """
     gated = "${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}"
     reversed_ = "${{ github.ref }}-${{ github.ref != 'refs/heads/main' && github.sha || '' }}"
@@ -257,7 +307,6 @@ def test_the_evaluator_reads_which_branch_supplies_the_sha():
     assert not _is_per_commit_on_main(wrong_branch), "the SHA is on the pull request branch"
     assert _is_per_commit_on_main(unconditional)
 
-    # ... and the pull request half, which is what disqualifies the unconditional form.
     def _same_on_a_pull_request(group: str) -> bool:
         return _render(group, ref = A_PULL_REQUEST, sha = "a" * 40) == _render(
             group, ref = A_PULL_REQUEST, sha = "b" * 40
@@ -268,7 +317,7 @@ def test_the_evaluator_reads_which_branch_supplies_the_sha():
 
 
 def test_no_workflow_claims_a_main_protection_it_does_not_have():
-    """The comment that made this repo believe it was covered, in 27 files.
+    """A comment promising per-commit or never-cancelled main runs must match the group.
 
     Read from the raw text rather than the parsed document, because a comment is exactly what
     YAML throws away, and the comment is what people act on.
@@ -285,7 +334,7 @@ def test_no_workflow_claims_a_main_protection_it_does_not_have():
         if isinstance(document, dict) and not _is_per_commit_on_main(_group(document)):
             offenders.append(path.name)
     assert not offenders, (
-        f"{offenders} say main runs are never cancelled while sharing one concurrency group "
-        f"across main commits, which is the belief that let a regression sit on main for 14 "
-        f"hours behind four cancelled runs. Either group per commit, or do not claim it."
+        f"{offenders} claim main runs are per commit or never cancelled while sharing one "
+        f"concurrency group across main commits, where a newer push replaces the pending run. "
+        f"Describe what the group does (see studio-backend-ci.yml)."
     )

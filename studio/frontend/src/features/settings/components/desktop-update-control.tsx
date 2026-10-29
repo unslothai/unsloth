@@ -22,7 +22,6 @@ export function DesktopUpdateNote(): ReactElement | null {
   );
 }
 
-// Lives in General, under the version rows it acts on. Desktop-only: outside Tauri there is no controller.
 export function DesktopUpdateControl(): ReactElement | null {
   const t = useT();
   const update = useTauriUpdateController();
@@ -81,7 +80,7 @@ export function DesktopUpdateControl(): ReactElement | null {
       {available && update.isExternalServer ? null : (
         <Button
           size="sm"
-          variant={available ? "default" : "outline"}
+          variant={available ? "dark" : "outline"}
           disabled={busy}
           aria-busy={busy}
           onClick={() => {

@@ -60,6 +60,66 @@ def test_sdpa_packed_attention_mask_sliding_window():
     assert mask[0, 0, 0, 6].item() == float("-inf")
 
 
+def test_sdpa_packed_attention_mask_covers_a_padded_flattened_row():
+    seq_info = _make_seq_info([3, 4])
+    mask = packing_utils.build_sdpa_packed_attention_mask(
+        seq_info,
+        dtype = torch.float32,
+        device = torch.device("cpu"),
+        total_tokens = 8,
+    )
+
+    assert mask.shape == (1, 1, 8, 8)
+
+    assert torch.all(mask[0, 0, :7, 7] == float("-inf"))
+    assert torch.all((mask[0, 0] > -math.inf).any(dim = -1))
+
+    query = torch.randn(1, 1, 8, 4)
+    out = torch.nn.functional.scaled_dot_product_attention(
+        query,
+        torch.randn(1, 1, 8, 4),
+        torch.randn(1, 1, 8, 4),
+        attn_mask = mask,
+    )
+    assert out.shape == (1, 1, 8, 4)
+    assert not torch.isnan(out).any()
+
+
+def test_sdpa_packed_attention_mask_unpadded_is_unchanged():
+    seq_info = _make_seq_info([3, 4])
+    without = packing_utils.build_sdpa_packed_attention_mask(
+        seq_info,
+        dtype = torch.float32,
+        device = torch.device("cpu"),
+    )
+    packing_utils._SDPA_MASK_CACHE.clear()
+    exact = packing_utils.build_sdpa_packed_attention_mask(
+        seq_info,
+        dtype = torch.float32,
+        device = torch.device("cpu"),
+        total_tokens = 7,
+    )
+
+    assert without.shape == (1, 1, 7, 7)
+    assert torch.equal(without, exact)
+
+
+def test_sdpa_packed_attention_mask_keeps_the_window_when_padded():
+    seq_info = _make_seq_info([5, 3])
+    mask = packing_utils.build_sdpa_packed_attention_mask(
+        seq_info,
+        dtype = torch.float32,
+        device = torch.device("cpu"),
+        sliding_window = 3,
+        total_tokens = 10,
+    )
+
+    assert mask.shape == (1, 1, 10, 10)
+    assert mask[0, 0, 3, 0].item() == float("-inf")
+    assert mask[0, 0, 4, 2].item() > -math.inf
+    assert torch.all((mask[0, 0] > -math.inf).any(dim = -1))
+
+
 def test_xformers_block_mask_sliding_window(monkeypatch):
     class _FakeMask:
         def __init__(
@@ -239,8 +299,7 @@ def test_xformers_bias_move_skips_matching_metadata_device():
 
 
 @pytest.mark.skipif(
-    # The spoof answers device_count() with 1, so this skips today only because 1 < 2.
-    # Raise that stub to exercise a multi-GPU path and it un-skips on a box with no card.
+    # The spoof reports 1 device; raising it would un-skip this on a cardless box.
     not has_real_cuda()
     or torch.cuda.device_count() < 2
     or packing_utils._XFormersBlockMask is None,
@@ -305,8 +364,7 @@ def test_real_xformers_packed_mask_validates_on_each_device():
             assert output.device == torch.device(f"cuda:{index}")
             assert bool(torch.isfinite(output).all())
 
-        # Start backward only after the second shard has consumed the shared source mask, matching model-parallel layer
-        # execution.
+        # Backward after the second shard consumed the shared mask, as in model parallel.
         for query, output in zip(queries, outputs):
             output.sum().backward()
             assert query.grad is not None
@@ -318,6 +376,7 @@ def test_real_xformers_packed_mask_validates_on_each_device():
 def test_run_attention_sdpa_passes_sliding_window(monkeypatch):
     seq_info = _make_seq_info([3, 2])
     sliding_window = 2
+    monkeypatch.setattr(attention_dispatch, "_SDPA_PACKED_SEGMENTS", False)
 
     original_builder = attention_dispatch.build_sdpa_packed_attention_mask
     captured = {}
@@ -328,6 +387,7 @@ def test_run_attention_sdpa_passes_sliding_window(monkeypatch):
         dtype,
         device,
         sliding_window = None,
+        total_tokens = None,
     ):
         captured["window"] = sliding_window
         return original_builder(
@@ -335,6 +395,7 @@ def test_run_attention_sdpa_passes_sliding_window(monkeypatch):
             dtype = dtype,
             device = device,
             sliding_window = sliding_window,
+            total_tokens = total_tokens,
         )
 
     monkeypatch.setattr(
@@ -404,6 +465,7 @@ def test_run_attention_xformers_passes_sliding_window(monkeypatch):
         *,
         sliding_window = None,
         base_mask = None,
+        total_tokens = None,
     ):
         captured["window"] = sliding_window
         captured["base"] = base_mask
@@ -520,18 +582,66 @@ def test_run_attention_flash_varlen_receives_window_and_softcap(monkeypatch):
     assert captured["kwargs"]["window_size"] == window_tuple
 
 
+def test_run_attention_flash_varlen_covers_a_padded_flattened_row(monkeypatch):
+    packing_utils.clear_packed_caches()
+    seq_info = _make_seq_info([3, 4])
+    total = 8
+
+    def _fake_flash_varlen(Q, K, V, cu_q, cu_k, max_q, max_k, **kwargs):
+        # Like flash-attn: rows outside cu_seqlens are never written.
+        out = torch.full_like(Q, float("nan"))
+        bounds = cu_q.tolist()
+        for start, end in zip(bounds[:-1], bounds[1:]):
+            assert end - start <= max_q
+            q = Q[start:end].transpose(0, 1)
+            k = K[start:end].transpose(0, 1)
+            v = V[start:end].transpose(0, 1)
+            out[start:end] = torch.nn.functional.scaled_dot_product_attention(
+                q, k, v, is_causal = True
+            ).transpose(0, 1)
+        return out
+
+    monkeypatch.setattr(attention_dispatch, "flash_attn_varlen_func", _fake_flash_varlen)
+    monkeypatch.setattr(attention_dispatch, "HAS_FLASH_ATTENTION", True)
+
+    config = attention_dispatch.AttentionConfig(
+        backend = attention_dispatch.FLASH_VARLEN,
+        n_kv_heads = 1,
+        n_groups = 1,
+        flash_varlen_kwargs = {"causal": True},
+    )
+    context = attention_dispatch.AttentionContext(
+        bsz = 1,
+        q_len = total,
+        kv_seq_len = total,
+        n_heads = 1,
+        head_dim = 4,
+        requires_grad = False,
+        seq_info = seq_info,
+        attention_mask = None,
+        causal_mask = None,
+    )
+    Q = torch.randn(1, 1, total, 4)
+    K = torch.randn(1, 1, total, 4)
+    V = torch.randn(1, 1, total, 4)
+
+    out = attention_dispatch.run_attention(config = config, context = context, Q = Q, K = K, V = V)
+
+    assert not torch.isnan(out).any()
+    first = torch.nn.functional.scaled_dot_product_attention(
+        Q[..., :3, :], K[..., :3, :], V[..., :3, :], is_causal = True
+    )
+    assert torch.allclose(out[0, :3, 0].float(), first[0, 0], atol = 2e-2)
+
+    cu_seqlens, max_seqlen = packing_utils.cover_padded_cu_seqlens(seq_info, 7)
+    assert cu_seqlens is seq_info[1] and max_seqlen == 4
+
+
 """Unit tests for packed-attention mask helpers with sliding-window logic."""
 
 
 def test_run_attention_sdpa_windows_an_unpacked_unmasked_batch(monkeypatch):
-    """No packing, no padding mask: the case that had nothing to hang the window off.
-
-    SDPA's ``is_causal`` is FULL causal -- it has no window -- so with neither the xformers
-    bias nor flash's ``window_size`` in play, a model whose config declares a sliding window
-    attended its entire causal history. That is reachable from a Mistral training step the
-    moment xFormers is disabled and FlashAttention is absent, which is precisely what the
-    kernel probe can now decide.
-    """
+    """SDPA is_causal has no window; a sliding-window model unpacked and unmasked needs an explicit mask."""
     captured = {}
 
     def _fake_sdpa(Q, K, V, **kwargs):
@@ -566,12 +676,10 @@ def test_run_attention_sdpa_windows_an_unpacked_unmasked_batch(monkeypatch):
     assert mask is not None, "a declared window must not fall through to plain is_causal"
     assert captured["is_causal"] is False
     assert mask.shape == (1, 1, 6, 6)
-    # Row 5 sees 3, 4, 5 and nothing older; the future stays masked either way.
     assert [bool(v) for v in mask[0, 0, 5]] == [False, False, False, True, True, True]
 
 
 def test_run_attention_sdpa_leaves_a_short_sequence_alone(monkeypatch):
-    # Shorter than the window: nothing to clamp, and the cheap is_causal path must survive.
     captured = {}
     monkeypatch.setattr(
         attention_dispatch,
@@ -619,10 +727,7 @@ def test_mistral_hands_the_dispatcher_its_configured_window():
 
 
 def test_a_zero_configured_window_is_full_causal_not_a_blank_mask():
-    """`sliding_window = 0` means "no local attention", the same as absent -- which is how
-    Mistral's own mask builders read it. Passing the 0 through makes the SDPA lower bound
-    `q_pos - (0 - 1)` sit above the causal upper bound, so every position is masked and the
-    layer returns nothing at all."""
+    """sliding_window = 0 must mean full causal like absent; passing it through masks every position."""
     import ast
     from pathlib import Path
 
@@ -636,7 +741,6 @@ def test_a_zero_configured_window_is_full_causal_not_a_blank_mask():
 
 
 def test_run_attention_sdpa_ignores_a_zero_window(monkeypatch):
-    # Belt and braces at the dispatcher: even handed a zero, it must not build a mask that hides everything.
     captured = {}
     monkeypatch.setattr(
         attention_dispatch,
@@ -686,12 +790,27 @@ def test_the_window_mask_is_built_once_per_shape(monkeypatch):
     assert len(built) == calls_after_first, "a cache hit must allocate nothing"
     assert [bool(v) for v in first[0, 0, 5]] == [False, False, False, True, True, True]
 
-    # A different window is a different mask, not a stale hit.
     third = attention_dispatch._windowed_causal_mask(6, 6, 2, torch.device("cpu"))
     assert third is not first
     assert [bool(v) for v in third[0, 0, 5]] == [False, False, False, False, True, True]
-    # ...and so is a different shape.
     assert attention_dispatch._windowed_causal_mask(4, 4, 3, torch.device("cpu")) is not third
+    attention_dispatch._WINDOW_MASK_CACHE.clear()
+
+
+def test_an_inference_mode_window_mask_is_not_served_to_training():
+    """Eval under inference_mode then a training step of the same shape: the cached mask must not
+    be an inference tensor, which SDPA backends that save the mask cannot keep for backward."""
+    attention_dispatch._WINDOW_MASK_CACHE.clear()
+    cpu = torch.device("cpu")
+    with torch.inference_mode():
+        evaluated = attention_dispatch._windowed_causal_mask(6, 6, 3, cpu)
+        assert attention_dispatch._windowed_causal_mask(6, 6, 3, cpu) is evaluated
+    trained = attention_dispatch._windowed_causal_mask(6, 6, 3, cpu)
+    assert not torch.is_inference(trained)
+    assert torch.equal(trained, evaluated)
+    assert attention_dispatch._windowed_causal_mask(6, 6, 3, cpu) is trained
+    with torch.inference_mode():
+        assert attention_dispatch._windowed_causal_mask(6, 6, 3, cpu) is trained
     attention_dispatch._WINDOW_MASK_CACHE.clear()
 
 

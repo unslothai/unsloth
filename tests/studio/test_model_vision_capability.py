@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Run the TypeScript vision-capability contract from the collected pytest suite.
-
-The warning decision lives in ``studio/frontend`` which carries no JS test runner, so the
-real module is executed under node's type stripping instead. On a tree whose chat warning
-still reads only the catalog row (the pre-fix behaviour) the module is absent and this
-fails, which is what keeps the fix attached to a red baseline.
-"""
+"""Runs the TypeScript vision check under node type stripping; studio/frontend has no JS test runner."""
 
 import shutil
 import subprocess

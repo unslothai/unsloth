@@ -13,11 +13,11 @@ def _widen(
     pin_ids,
     cmd,
     inherited = None,
-    may_widen = True,
+    allowed_ids = None,
 ):
     cmd = list(cmd)
     widened, note = llama_cpp._widen_pin_ids_for_companion_devices(
-        cmd, pin_ids, inherited, may_widen = may_widen
+        cmd, pin_ids, inherited, allowed_ids = allowed_ids
     )
     return cmd, widened, note
 
@@ -38,7 +38,6 @@ def test_a_hidden_companion_device_widens_the_mask():
 
 
 def test_a_companion_on_a_lower_card_is_renumbered_not_left_on_the_main_card():
-    # child mask "1,0": an untouched CUDA0 would stack the projector on the main card
     cmd, pin, _ = _widen([1], ["--mmproj-device", "CUDA0"])
     assert pin == [1, 0]
     assert _value(cmd, "--mmproj-device") == "CUDA1"
@@ -46,7 +45,6 @@ def test_a_companion_on_a_lower_card_is_renumbered_not_left_on_the_main_card():
 
 
 def test_a_companion_on_the_pinned_card_is_renumbered_to_the_childs_first_device():
-    # Pinned to GPU 1 alone, the child sees one device, CUDA0; the user's CUDA1 is invalid.
     cmd, pin, note = _widen([1], ["--mmproj-device", "CUDA1"])
     assert pin == [1]
     assert _value(cmd, "--mmproj-device") == "CUDA0"
@@ -64,7 +62,6 @@ def test_the_remap_matches_the_visible_order():
 
 
 def test_tokens_are_read_through_the_inherited_mask():
-    # A scheduler exposed physical 2 and 3; the user's CUDA0 is physical 2.
     cmd, pin, _ = _widen([3], ["--mmproj-device", "CUDA0"], inherited = [2, 3])
     assert pin == [3, 2]
     assert _value(cmd, "--mmproj-device") == "CUDA1"
@@ -141,28 +138,57 @@ def test_load_model_uses_the_argv_and_skips_an_unmappable_mask():
     window = src[at - 400 : at + 200]
     assert "_visibility_mask_is_unmappable()" in window
     assert 'env.get("LLAMA_ARG_DEVICE", "")' in window
-    assert "may_widen = not gpu_ids" in src[at : at + 300]
+    assert "allowed_ids = gpu_ids or None" in src[at : at + 300]
 
 
-def test_an_explicit_gpu_ids_pin_is_never_widened_onto_another_card():
-    cmd, pin, note = _widen([0], ["--mmproj-device", "CUDA1"], may_widen = False)
+def test_a_widened_explicit_pin_is_what_status_and_dedupe_see():
+    import inspect
+
+    src = inspect.getsource(llama_cpp.LlamaCppBackend.load_model)
+    at = src.index("_widen_pin_ids_for_companion_devices(")
+    window = src[at : at + 900]
+    assert "if gpu_ids:" in window
+    assert "self._adopt_widened_pin(_pin_ids)" in window
+
+    backend = llama_cpp.LlamaCppBackend.__new__(llama_cpp.LlamaCppBackend)
+    backend._is_diffusion = False
+    backend._requested_gpu_ids, backend._gpu_ids = [0, 1], [0]
+    backend._adopt_widened_pin([0, 1])
+    assert backend._gpu_ids == [0, 1]
+    assert backend.matches_gpu_ids([0, 1]) is True
+    assert backend.matches_gpu_ids([0]) is False
+
+    backend._gpu_ids = None
+    backend._adopt_widened_pin([0, 1])
+    assert backend._gpu_ids is None
+
+
+def test_explicit_gpu_ids_never_widen_onto_an_unselected_card():
+    cmd, pin, note = _widen([0], ["--mmproj-device", "CUDA1"], allowed_ids = [0])
     assert pin == [0]
     assert cmd == ["--mmproj-device", "CUDA1"]
     assert note == ""
 
 
+def test_explicit_gpu_ids_widen_onto_a_selected_card_the_fit_left_out():
+    cmd, pin, note = _widen([0], ["--mmproj-device", "CUDA1"], allowed_ids = [0, 1])
+    assert pin == [0, 1]
+    assert _value(cmd, "--mmproj-device") == "CUDA1"
+    assert cmd[-2:] == ["--device", "CUDA0"]
+    assert note
+
+
 def test_an_explicit_pin_still_renumbers_a_companion_on_one_of_its_cards():
-    cmd, pin, _ = _widen([2, 3], ["--mmproj-device", "CUDA3"], may_widen = False)
+    cmd, pin, _ = _widen([2, 3], ["--mmproj-device", "CUDA3"], allowed_ids = [2, 3])
     assert pin == [2, 3]
     assert _value(cmd, "--mmproj-device") == "CUDA1"
     assert "--device" not in cmd
 
 
 def test_an_arch_crash_retry_refits_the_companion_to_the_new_mask():
-    # [0] widened to [0, 1]; GPU 0 crashes, respawn on 2: projector stays on physical 1
     cmd, first, _ = _widen([0], ["--mmproj-device", "CUDA1"])
     assert first == [0, 1] and cmd[-2:] == ["--device", "CUDA0"]
-    del cmd[-2:]  # the generated main --device, as the retry drops it
+    del cmd[-2:]
     retry, note = llama_cpp._widen_pin_ids_for_companion_devices(cmd, [2], first)
     assert retry == [2, 1]
     assert _value(cmd, "--mmproj-device") == "CUDA1"

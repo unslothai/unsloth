@@ -17,6 +17,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Awaitable, Callable, Hashable, NamedTuple, Optional, TypeVar
 
 from loggers import get_logger
+from utils.scan_memo import in_scan_memo, invalidate_scan_memos
 
 logger = get_logger(__name__)
 
@@ -92,12 +93,27 @@ async def shared_scan(
     return await asyncio.shield(flight)
 
 
-def invalidate_hf_cache_scans() -> None:
+def invalidate_hf_cache_scans(*, sizes: bool = True) -> None:
+    """``sizes=False`` is for a Settings purge, which has already forgotten the caches it cleared."""
     global _hf_cache_scans_result, _hf_cache_scans_cached_at, _hf_cache_scans_epoch
     with _hf_cache_scans_lock:
         _hf_cache_scans_result = None
         _hf_cache_scans_cached_at = 0.0
         _hf_cache_scans_epoch += 1
+        invalidate_scan_memos()
+    # Settings may answer a slow cache from its last walk; a download or delete must not show the old size.
+    if sizes:
+        try:
+            from utils.cache_inventory import invalidate_cache_size
+            for key in ("hf_hub", "hf_xet", "hf_datasets", "hf_assets"):
+                invalidate_cache_size(key)
+        except Exception:  # noqa: BLE001 - the Settings sizes are best effort
+            pass
+    try:
+        from core.inference.audio_cpp_models import forget
+    except Exception:  # noqa: BLE001 - no audio.cpp support, nothing memoized
+        return
+    forget()
 
 
 def hf_cache_scans_epoch() -> int:
@@ -393,6 +409,7 @@ def _with_repos_dropped_by_scan(
         return scan
 
 
+@in_scan_memo
 def _compute_all_hf_cache_scans() -> list:
     from huggingface_hub import HFCacheInfo, scan_cache_dir
 
@@ -405,9 +422,7 @@ def _compute_all_hf_cache_scans() -> list:
                 scan = _with_repos_dropped_by_scan(scan, cache_root)
             scans.append(scan)
         except OSError as exc:
-            # HF catches CorruptedCacheException per repo, but filesystem errors can abort
-            # the entire root (e.g. Windows cannot stat a Linux-created reparse point).
-            # Reuse our read-only recovery walk, including intact repos that HF never reached.
+            # Filesystem errors can abort a whole root (e.g. Windows reparse points); recover read-only.
             logger.warning("Could not scan HF cache %s: %s", cache_root, exc)
             empty_fields = dict(size_on_disk = 0, repos = frozenset(), warnings = [])
             # huggingface_hub 1.x added this required field; older versions lack it.
@@ -461,8 +476,7 @@ def token_fingerprint(hf_token: HfTokenArg) -> str:
         return ANONYMOUS_CACHE_IDENTITY
     if not hf_token:
         return ""
-    # Same token value, different cache authorization: on the bare digest either caller
-    # reads back the other's verdict.
+    # Qualified: the same token value under a different cache authorization must not share verdicts.
     return qualify_cache_identity(hf_token, hashlib.sha256(hf_token.encode()).hexdigest()[:16])
 
 
@@ -1025,6 +1039,13 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
     # Selected by its own name, so it counts even when the walk grouped no shard of it, and every weight_map entry resolves against the index.
     root_indexes: set[str] = set()
     unusable_root_indexes: set[str] = set()
+    parsed: dict[Path, object] = {}
+
+    def index_shards(index_path: Path):
+        if index_path not in parsed:
+            parsed[index_path] = _read_index_shards(index_path)
+        return parsed[index_path]
+
     for suffix, canonical in _LOADER_WEIGHT_NAMES["base"].items():
         index_path = snapshot_dir / f"{canonical}.index.json"
         try:
@@ -1033,7 +1054,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
         except OSError:
             continue
         root_indexes.add(suffix)
-        if _index_cannot_serve_its_shards(index_path, set()):
+        if _index_cannot_serve_its_shards(index_path, set(), index_shards(index_path)):
             unusable_root_indexes.add(suffix)
     for family in groups["base"]:
         # Only the canonical index is probed, so a set behind any other name is one it never opens.
@@ -1046,7 +1067,9 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
             present = False
         if not present:
             invisible.add(family)
-        elif _index_cannot_serve_its_shards(index_path, shard_names.get(family, set())):
+        elif _index_cannot_serve_its_shards(
+            index_path, shard_names.get(family, set()), index_shards(index_path)
+        ):
             unloadable.add(family)
     # peft resolves only the singular adapter_model.*, so it never looks at a numbered adapter set.
     invisible |= set(groups["adapter"])
@@ -1067,42 +1090,57 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
     )
 
 
-def _index_cannot_serve_its_shards(index_path: Path, family_files: set[str]) -> bool:
+def _index_cannot_serve_its_shards(
+    index_path: Path,
+    family_files: set[str],
+    shards: object = None,
+) -> bool:
     """Whether *index_path* would fail to hand ``from_pretrained`` the family in *family_files*. Existing is not enough: the loader parses it and opens every ``weight_map`` name, so a truncated index or one naming a shard never written is as unloadable as no index at all, and the map is also the only list of files read, so one covering part of the numbered family silently drops the rest."""
+    if shards is None:
+        shards = _read_index_shards(index_path)
+    if shards is False:
+        return True
+    named = {shard.name for shard in shards}
+    # Coverage matters only for the family this index describes: the loader opens weight_map and nothing else.
+    return not family_files <= named and not named.isdisjoint(family_files)
+
+
+def _read_index_shards(index_path: Path):
+    """The shards *index_path* names if each is a non-empty file and every numbered set is whole, else False."""
     try:
         if not index_path.is_file() or index_path.stat().st_size <= 0:
-            return True
+            return False
         with index_path.open(encoding = "utf-8") as handle:
             index = json.load(handle)
     except (OSError, UnicodeDecodeError, ValueError, RecursionError):
         # RecursionError escapes every caller's fail-open guard, and the loader parses this index with the same json module, so one too deep to parse there cannot serve its shards here either.
-        return True
+        return False
     weight_map = index.get("weight_map") if isinstance(index, dict) else None
     if not isinstance(weight_map, dict) or not weight_map:
-        return True
+        return False
+    # Per unique shard, not per tensor: a MoE index maps tens of thousands of tensors onto a few dozen files.
+    try:
+        names = set(weight_map.values())
+    except TypeError:
+        return False
     shards: set[PurePosixPath] = set()
-    for shard in weight_map.values():
-        # Names are relative to the index: anything reaching outside is not a shard of this family.
+    for shard in names:
         if not isinstance(shard, str) or not shard:
-            return True
+            return False
+        # Names are relative to the index: anything reaching outside is not a shard of this family.
         parts = PurePosixPath(shard.replace("\\", "/"))
         # is_absolute() is per flavour: PurePosixPath reads "C:/weights/x.safetensors" as a relative "C:" subdirectory, but the join below is a platform Path, so on Windows that name replaces the index directory outright.
         windows = PureWindowsPath(shard)
         if parts.is_absolute() or ".." in parts.parts or windows.is_absolute() or windows.drive:
-            return True
+            return False
         shards.add(parts)
-    named = {shard.name for shard in shards}
-    # Coverage matters only for the family this index describes: the loader opens weight_map and nothing else.
-    if not family_files <= named and not named.isdisjoint(family_files):
-        return True
     for shard in shards:
         try:
-            named = index_path.parent / shard
-            shard_stat = named.stat()
+            shard_stat = (index_path.parent / shard).stat()
             if not stat.S_ISREG(shard_stat.st_mode) or shard_stat.st_size <= 0:
-                return True
+                return False
         except (OSError, ValueError):
-            return True
+            return False
     # A shard names its own total, so an index listing one of a set has to list the whole set: the loader silently drops whatever the map leaves out.
     declared: dict[tuple[str, str, int], set[int]] = {}
     for shard in shards:
@@ -1111,7 +1149,9 @@ def _index_cannot_serve_its_shards(index_path: Path, family_files: set[str]) -> 
             continue
         key = (str(shard.parent), shard.name[: match.start()], int(match.group(2)))
         declared.setdefault(key, set()).add(int(match.group(1)))
-    return any(total <= 0 or len(seen) < total for (_d, _p, total), seen in declared.items())
+    if any(total <= 0 or len(seen) < total for (_d, _p, total), seen in declared.items()):
+        return False
+    return shards
 
 
 def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
@@ -1366,12 +1406,7 @@ def is_snapshot_partial(
     snapshot_dir: Optional[Path] = None,
     variant_state = None,
 ) -> bool:
-    """Repo-row partial flag for snapshot-style downloads (full-snapshot models, i.e. safetensors/adapter/checkpoint, and all datasets).
-
-    Composes four signals, cheapest first: the cancel marker (single stat, charged to the newest snapshot); the snapshot-attributed legacy .incomplete blob / broken-symlink check; the manifest walk (stat per expected file under the latest snapshot); and a recovered snapshot short a shard, for the dangling-ref rows the first three cannot judge.
-
-    A manifest without a resolvable snapshot is partial: the worker recorded expectations but left no usable snapshot. *snapshot_dir* pins the legacy and manifest walks to the row's load identity; without it a metadata-only revision beside a complete download flags the row partial. Repo-wide signals are attributed by ``_repo_signal_applies_to_snapshot``.
-    """
+    """Without snapshot_dir, a metadata-only revision beside a complete download flags the row partial."""
     from hub.utils import download_manifest
 
     # A snapshot-style row loads weights, so a quant beside them is another row's payload.
@@ -1496,17 +1531,8 @@ def _denoiser_index_shards(index: Path) -> Optional[set[str]]:
 
 
 def _component_weights_complete(component: Path) -> bool:
-    """Whether *component* holds a denoiser the loader could actually read.
-
-    Presence of ONE weight file is not enough: a sharded denoiser is described by an ``*.index.json`` naming every shard, and a fetch that landed shard 1 of 2 alone satisfies a first-match test while failing at load.
-
-    ``_SELECTED_DENOISER_INDEX`` settles the question whenever it EXISTS: it is the only sharded name diffusers resolves here, its presence alone makes the component sharded, and what follows is unconditional, since ``_get_checkpoint_shard_files`` opens exactly what it maps while the ``except IOError`` branch and the pickle fallback are both gated on ``not is_sharded``. So a short set fails, and so does an index too corrupt to parse.
-
-    Every OTHER index vouches for nothing, because a default load never opens it: ``_fetch_index_file`` builds the safetensors name only, and the non-sharded fallback asks for the UNSHARDED ``diffusion_pytorch_model.bin``, never a ``.bin.index.json`` set beside it. Repos ship exactly that leftover (``stablediffusionapi/sdrealdream``), and our own download plan manufactures it. Nor does a dtype variant, whole or not: ``_add_variant`` inserts the variant before the last part, and a load passing no ``variant`` asks for the plain name with no fallback the other way.
-
-    So with no selected index there are exactly two names left, the pair ``_get_model_file`` is handed.
-    """
-    # iterdir() raises on an unreadable dir, reaching the caller's fail-open guard; glob() would swallow that OSError and read as "no weights".
+    """Only the selected index's shard set counts; any other index is never opened by a default load."""
+    # iterdir(), not glob(): glob would swallow the OSError and read as 'no weights'.
     next(component.iterdir(), None)
     # Existence alone makes the component sharded (is_sharded comes from is_file()), so an index we cannot read IS the failure; is_file() is the loader's own test too.
     selected = component / _SELECTED_DENOISER_INDEX
@@ -1540,6 +1566,33 @@ def snapshot_pipeline_missing_denoiser(snapshot: Optional[Path]) -> bool:
             (root / name).is_dir() and _component_weights_complete(root / name)
             for name in _DENOISER_DIRS
         )
+    except OSError:
+        return False
+
+
+# Denoiser dirs where a lone shard index proves a user-started download: the GGUF companion prefetch fetches only
+# transformer/config.json there. Not unet/: a whole-pipeline single file's config prefetch (diffusion.py
+# ``_base_config_file_downloaded``) stages unet/*.index.json beside the configs, so only a weight file counts there.
+_INDEX_IS_EVIDENCE_DIRS = ("transformer",)
+
+
+def snapshot_denoiser_has_weights(snapshot: Optional[Path]) -> bool:
+    """Whether a weight file (whole or torn) sits under transformer/ or unet/, or a shard index under transformer/. A GGUF's companion prefetch lands only the config there (diffusion.py ``_base_file_downloaded``); a denoiser download that stopped part way leaves an index or a shard, and stays a partial the Hub can download again. Not the manifest's other denoiser dirs: the prefetch does fetch a ``transformer_2/``. Names only, so a dangling shard symlink still counts. Best-effort: a read error reports none."""
+    if snapshot is None:
+        return False
+    try:
+        root = Path(snapshot)
+        for name in _DENOISER_DIRS:
+            if not (root / name).is_dir():
+                continue
+            evidence = (
+                (*_DENOISER_WEIGHT_SUFFIXES, ".index.json")
+                if name in _INDEX_IS_EVIDENCE_DIRS
+                else _DENOISER_WEIGHT_SUFFIXES
+            )
+            if any(entry.name.lower().endswith(evidence) for entry in (root / name).iterdir()):
+                return True
+        return False
     except OSError:
         return False
 
@@ -1648,6 +1701,20 @@ def is_variant_partial(
     )
 
 
+def _sibling_snapshot_has_complete_gguf(snapshot_dir: Optional[Path]) -> bool:
+    if snapshot_dir is None or snapshot_dir.parent.name != "snapshots":
+        return False
+    try:
+        siblings = [
+            entry
+            for entry in snapshot_dir.parent.iterdir()
+            if entry.name != snapshot_dir.name and entry.is_dir()
+        ]
+    except OSError:
+        return False
+    return any(snapshot_has_complete_variants(str(entry)) for entry in siblings)
+
+
 def is_gguf_repo_partial(
     repo_id: str,
     repo_cache_dir: Optional[Path] = None,
@@ -1655,14 +1722,7 @@ def is_gguf_repo_partial(
     snapshot_dir: Optional[Path] = None,
     variant_state = None,
 ) -> bool:
-    """Repo-row partial flag for a GGUF repo. The inventory shows ONE row per GGUF repo (requires_variant=True); per-variant detail lives in GET /api/models/gguf-variants and uses is_variant_partial.
-
-    *** DO NOT simplify this to "any variant partial -> repo partial" ***
-
-    Tripwire: a user downloads Q8_0 fully, then starts Q4_K_M and cancels. Both variants share ONE inventory row, so flipping row.partial True flips can_chat=False and the perfectly-good Q8_0 becomes unchattable over an unrelated cancelled Q4_K_M.
-
-    Correct semantics: partial=True only when at least one variant is broken AND no other variant is clean. Composes a cheap legacy fast-path (.incomplete blobs / broken symlinks) with a per-variant manifest + marker enumeration gated on "all broken". *snapshot_dir* pins both to the row's load id; without it an interrupted re-download flips can_chat off for the older complete quant.
-    """
+    """Partial only when every variant is broken, since one clean quant keeps the row chattable."""
     from hub.utils import download_manifest
 
     if snapshot_dir is None:
@@ -1717,9 +1777,11 @@ def is_gguf_repo_partial(
             ):
                 variants.add(variant)
     if not variants:
-        # Nothing named a quant: an interrupted attempt leaves only torn shards.
-        return has_legacy_partial or _recovered_snapshot_cannot_serve(
-            repo_cache_dir, snapshot_dir, quants = True
+        # No marker names a quant (an `hf download` stopped between shards), so the files decide;
+        # a sibling revision with a whole quant still serves the row, as the loader picks it.
+        return has_legacy_partial or (
+            _snapshot_cannot_serve_its_payload(snapshot_dir, quants = True)
+            and not _sibling_snapshot_has_complete_gguf(snapshot_dir)
         )
     has_clean = False
     has_broken = has_legacy_partial

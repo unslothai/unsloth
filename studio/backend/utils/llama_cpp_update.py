@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""In-app llama.cpp prebuilt update: the *apply* half over utils.llama_cpp_freshness, running install_llama_prebuilt.py to download the newest bundle for this host and atomically swap it in. ``update_available`` (installed_tag != latest_tag) is laxer than freshness' ``stale`` (which also requires the install to be >= 3 days old); the UI shows the update affordance on update_available. The install is slow, so it runs on a daemon thread and callers poll get_update_status(). Everything fails open: a missing marker, offline GitHub or a source build reports update_available=False and never blocks the app. Mechanics (managed-root resolution, local-link detection, the resolve probe, the streamed installer run) live in utils.prebuilt.update_flow; this module keeps the llama policy and the job dict. whisper.cpp piggybacks on this single update item: status folds in a whisper sub-status (update_available becomes the union) and apply chains a whisper phase when whisper is behind (update_flow.run_chained_update, whisper_cpp_update.chained_phase_plan)."""
+"""In-app llama.cpp prebuilt update: the *apply* half over utils.llama_cpp_freshness, running install_llama_prebuilt.py to download the newest bundle for this host and atomically swap it in. ``update_available`` (installed_tag != latest_tag) is laxer than freshness' ``stale`` (which also requires the install to be >= 3 days old); the UI shows the update affordance on update_available. The install is slow, so it runs on a daemon thread and callers poll get_update_status(). Everything fails open: a missing marker, offline GitHub or a source build reports update_available=False and never blocks the app. Mechanics (managed-root resolution, local-link detection, the resolve probe, the streamed installer run) live in utils.prebuilt.update_flow; this module keeps the llama policy and the job dict. whisper.cpp piggybacks on this single update item: status folds in a whisper sub-status (update_available becomes the union) and apply chains a whisper phase when whisper is behind (update_flow.run_chained_update, whisper_cpp_update.chained_phase_plan). audio.cpp rides along the same way as a third phase (audio_cpp_update.chained_phase_plan)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import re
 import subprocess
 import sys
 import threading
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from pathlib import Path
 from typing import Optional
 
@@ -100,8 +100,7 @@ def _installer_script() -> Optional[Path]:
     )
 
 
-# Markerless (source-build) installs have no UNSLOTH_PREBUILT_INFO.json, so we
-# ask the installer whether an official prebuilt now exists for this host.
+# Source-build installs lack UNSLOTH_PREBUILT_INFO.json, so ask the installer if a prebuilt exists.
 _resolve_memo: dict = {}
 
 
@@ -116,7 +115,7 @@ def _resolve_prebuilt_for_host(*, force_refresh: bool = False) -> Optional[dict]
 
 
 def _installed_build_number(binary: Optional[str]) -> Optional[int]:
-    """Best-effort build number from ``llama-server --version``. Current llama.cpp reports a semantic version then ``build NNNN``; older binaries put the build directly after ``version:``. None when unparseable or <= 1: a source build with no git tags reports build 1, treated as unknown (offer update)."""
+    """Best-effort build number from ``llama-server --version``. Current llama.cpp reports a semantic version then ``build NNNN``; older binaries put the build directly after ``version:``. A build <= 1 (setup's ``--depth 1`` source build, #12798) is recovered from the checkout's bNNNN tag; None when that fails, treated as unknown (offer update)."""
     if not binary:
         return None
     try:
@@ -134,10 +133,74 @@ def _installed_build_number(binary: Optional[str]) -> Optional[int]:
     m = re.search(r"version:[^\r\n]*\bbuild\s+(\d+)\b", output)
     if not m:
         m = re.search(r"version:\s*(\d+)\b(?!\.)", output)
-    if not m:
+    if m and int(m.group(1)) > 1:
+        return int(m.group(1))
+    commit = re.search(r"version:[^\r\n]*\bcommit\s+([0-9a-fA-F]{7,64})\b", output) or re.search(
+        r"version:\s*\d+\s*\(([0-9a-fA-F]{7,64})\)", output
+    )
+    return _checkout_tag_build(binary, commit.group(1)) if commit else None
+
+
+def _checkout_tag_build(binary: str, reported_commit: str) -> Optional[int]:
+    """Build number from the ``bNNNN`` tag naming the checkout's HEAD, from git files only. FETCH_HEAD is the only record setup.ps1's ``fetch --depth 1 origin bNNNN`` + ``checkout -B`` leaves. The binary's commit must prefix HEAD, so a checkout moved after the build is not misread. None on any mismatch."""
+    # A loose ref replaces its packed entry, as in git.
+    tags: dict[str, set[str]] = {}
+    packed: dict[str, str] = {}
+    try:
+        git_dir = next(
+            (p / ".git" for p in list(Path(binary).parents)[:5] if (p / ".git").exists()), None
+        )
+        if git_dir is None or not git_dir.is_dir():
+            return None
+        head = (git_dir / "HEAD").read_text(encoding = "utf-8").strip()
+        packed_refs = git_dir / "packed-refs"
+        if packed_refs.is_file():
+            last_tag = None
+            for line in packed_refs.read_text(encoding = "utf-8").splitlines():
+                if line.startswith("^"):
+                    if last_tag:
+                        tags[last_tag].add(line[1:].strip())
+                    continue
+                parts = line.split()
+                last_tag = None
+                if len(parts) == 2 and not line.startswith("#"):
+                    packed[parts[1]] = parts[0]
+                    if parts[1].startswith("refs/tags/"):
+                        last_tag = parts[1][len("refs/tags/") :]
+                        tags[last_tag] = {parts[0]}
+        if head.startswith("ref:"):
+            ref = head[4:].strip()
+            loose = git_dir / ref
+            head = (
+                loose.read_text(encoding = "utf-8").strip()
+                if loose.is_file()
+                else packed.get(ref, "")
+            )
+        tags_dir = git_dir / "refs" / "tags"
+        if tags_dir.is_dir():
+            for f in tags_dir.iterdir():
+                if f.is_file():
+                    tags[f.name] = {f.read_text(encoding = "utf-8").strip()}
+        fetch_head = git_dir / "FETCH_HEAD"
+        if fetch_head.is_file():
+            for line in fetch_head.read_text(encoding = "utf-8").splitlines():
+                fm = re.match(r"([0-9a-fA-F]{40,64})\t[^\t]*\ttag '([^']+)'", line)
+                if fm:
+                    tags.setdefault(fm.group(2), set()).add(fm.group(1))
+    except (OSError, UnicodeDecodeError, ValueError):
         return None
-    n = int(m.group(1))
-    return n if n > 1 else None
+    head = head.lower()
+    if not re.fullmatch(r"[0-9a-f]{40,64}", head):
+        return None
+    if not head.startswith(reported_commit.lower()):
+        return None
+    builds = [
+        int(tm.group(1))
+        for name, shas in tags.items()
+        if head in {sha.lower() for sha in shas} and (tm := re.fullmatch(r"b([0-9]{1,9})", name))
+    ]
+    builds = [n for n in builds if n > 1]
+    return max(builds) if builds else None
 
 
 def get_installed_llama_version() -> Optional[str]:
@@ -266,7 +329,7 @@ def _whisper_chain_status(
 
 
 def _merge_whisper_status(status: dict, *, force_refresh: bool = False) -> dict:
-    """Fold the whisper sub-status into the llama payload: the llama update item is the single UI surface, so update_available becomes the union (llama behind OR whisper behind) while llama_update_available keeps the llama-only flag. All pre-existing top-level fields are preserved."""
+    """Fold the whisper sub-status into the llama payload: the llama update item is the single UI surface. whisper.cpp does not join the update_available union (it rides along, _settle_whisper_rider) while llama_update_available keeps the llama-only flag. All pre-existing top-level fields are preserved."""
     status["llama_update_available"] = bool(status.get("update_available"))
     plan = _whisper_chain_status(
         force_refresh = force_refresh,
@@ -284,23 +347,71 @@ def _merge_whisper_status(status: dict, *, force_refresh: bool = False) -> dict:
         "update_size_bytes": sub.get("update_size_bytes"),
         "skip_reason": plan.get("skip_reason"),
     }
-    whisper_update_available = bool(plan.get("update_available"))
-    if whisper_update_available:
+    status["update_component"] = "llama" if status["llama_update_available"] else None
+    return status
+
+
+def _whisper_retry_owed() -> bool:
+    """The last job's whisper phase failed, so its Retry may run whisper by itself."""
+    with _job_lock:
+        phases = _job.get("phases") or {}
+    return (phases.get("whisper") or {}).get("state") == _flow.PHASE_ERROR
+
+
+def _settle_whisper_rider(status: dict) -> dict:
+    """List a pending whisper.cpp release only beside a llama.cpp update, backend migration or audio.cpp update it can ride with, or for the Retry of a whisper phase that failed."""
+    whisper = status.get("whisper")
+    if not whisper or not whisper.get("update_available"):
+        return status
+    if status.get("update_available") or status.get("backend_migration_available"):
+        return status
+    if _whisper_retry_owed():
         status["update_available"] = True
-    status["update_component"] = (
-        "llama"
-        if status["llama_update_available"]
-        else "whisper"
-        if whisper_update_available
-        else None
-    )
+        status["update_component"] = "whisper"
+        return status
+    whisper["update_available"] = False
+    whisper["skip_reason"] = "waits_for_llama"
+    return status
+
+
+def _audio_chain_status(*, force_refresh: bool = False) -> Optional[dict]:
+    """audio.cpp's plan for the combined update item. None disables it: fail-open like the whisper probe."""
+    try:
+        from utils import audio_cpp_update
+        return audio_cpp_update.chained_phase_plan(force_refresh = force_refresh)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("llama update: audio.cpp probe failed", error = str(exc))
+        return None
+
+
+def _merge_audio_status(status: dict, *, force_refresh: bool = False) -> dict:
+    """Fold the audio.cpp sub-status in after whisper's: it joins the update_available union and names the component only when llama.cpp is not pending."""
+    plan = _audio_chain_status(force_refresh = force_refresh)
+    if plan is None:
+        status["audio"] = None
+        return status
+    sub = plan.get("status") or {}
+    audio_update_available = bool(plan.get("update_available"))
+    status["audio"] = {
+        "update_available": audio_update_available,
+        "installed_tag": sub.get("installed_tag"),
+        "latest_tag": sub.get("latest_tag"),
+        "update_size_bytes": sub.get("update_size_bytes"),
+        "skip_reason": plan.get("skip_reason"),
+    }
+    if audio_update_available:
+        status["update_available"] = True
+        if status.get("update_component") is None:
+            status["update_component"] = "audio"
     return status
 
 
 def get_update_status(*, force_refresh: bool = False) -> dict:
-    """Report whether an update is available plus the job state. This is the single main update item: llama.cpp drives it and the whisper piggyback is folded in (_merge_whisper_status). force_refresh bypasses the 24h release cache for an explicit "check now"."""
+    """Report whether an update is available plus the job state. This is the single main update item: llama.cpp drives it and the whisper and audio.cpp phases are folded in (_merge_whisper_status, _merge_audio_status). force_refresh bypasses the 24h release cache for an explicit "check now"."""
     status = _llama_only_status(force_refresh = force_refresh)
-    return _merge_whisper_status(status, force_refresh = force_refresh)
+    status = _merge_whisper_status(status, force_refresh = force_refresh)
+    status = _merge_audio_status(status, force_refresh = force_refresh)
+    return _settle_whisper_rider(status)
 
 
 def get_update_changelog(
@@ -638,6 +749,7 @@ def _run_llama_phase(
 ) -> dict:
     """The llama phase of a chained update: put the backend into a maintenance state, run the installer for the latest prebuilt, then refresh caches so the next load uses the new build. Returns {to_tag, reload_required, message}; raises on failure. pin_release_tag pins the installer to that exact published release instead of letting it re-resolve "latest" (see start_update)."""
     backend = None
+    marked = []
     model_was_active = False
     mtmd_guard = ExitStack()
     # The installer exits 0 for a transient failure it answered by keeping the tree, so success no longer implies a new release. Read as the post-install check reads it.
@@ -662,9 +774,24 @@ def _run_llama_phase(
                         backend.unload_model()
             except Exception as exc:
                 logger.debug("llama update: load coordination failed", error = str(exc))
+        from core.inference import model_slots
+
+        # Each kept model's in-flight load drains under its own lock, as the primary's did above.
+        for slot in list(model_slots.slots):
+            with slot.llama._serial_load_lock:
+                slot.llama._llama_update_in_progress = True
+            marked.append(slot.llama)
+        try:
+            if model_slots.unload_llama_slots(strict = True):
+                model_was_active = True
+        except RuntimeError:
+            # A kept server that survived would run from, or lock, the tree being replaced.
+            model_was_active = True
+            raise
 
         # The mtmd dictation sidecar serves Qwen3-ASR from this same llama-server out of this same tree, so a live one locks the exe on Windows and a concurrent load would start against a half-swapped install.
         model_was_active = _block_mtmd_sidecar(mtmd_guard) or model_was_active
+        model_was_active = _block_prompt_upsampler(mtmd_guard) or model_was_active
 
         cmd = [
             sys.executable,
@@ -829,11 +956,13 @@ def _run_llama_phase(
         raise
     finally:
         mtmd_guard.close()
-        if backend is not None:
-            try:
-                backend._llama_update_in_progress = False
-            except Exception:  # pragma: no cover - defensive
-                pass
+        # A kept non-GGUF slot stays loaded; its llama backend must not stay refused once the update ends.
+        for llama in (backend, *marked):
+            if llama is not None:
+                try:
+                    llama._llama_update_in_progress = False
+                except Exception:  # pragma: no cover - defensive
+                    pass
 
 
 def _block_mtmd_sidecar(stack: ExitStack) -> bool:
@@ -846,9 +975,23 @@ def _block_mtmd_sidecar(stack: ExitStack) -> bool:
         return False
 
 
-# Combined-job progress split when both phases run (the llama bundle dwarfs the whisper one); normalized to 0..1 when a phase is skipped.
+def _block_prompt_upsampler(stack: ExitStack) -> bool:
+    """The FLUX.3 prompt upsampler runs the same llama-server; hold its maintenance guard for the install, only
+    if Images ever loaded the module. Not fail-closed, like the mtmd guard."""
+    module = sys.modules.get("core.inference.flux3_prompt_upsampler")
+    if module is None:
+        return False
+    try:
+        return stack.enter_context(module.get_sidecar().update_maintenance())
+    except Exception as exc:  # noqa: BLE001 - the update proceeds without it
+        logger.debug("llama update: prompt upsampler coordination failed", error = str(exc))
+        return False
+
+
+# Combined-job progress split when every phase runs (the llama bundle dwarfs the others); normalized to 0..1 over the phases that run.
 _LLAMA_PHASE_WEIGHT = 0.7
 _WHISPER_PHASE_WEIGHT = 0.3
+_AUDIO_PHASE_WEIGHT = 0.3
 
 
 def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
@@ -1012,7 +1155,7 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
 
 
 def start_update() -> dict:
-    """Kick off a background update job chaining the llama phase with a whisper phase that runs only when whisper is behind; either phase no-ops cleanly when its component is current or unmanaged. Idempotent: a second call while one is running returns the in-flight job."""
+    """Kick off a background update job chaining the llama phase with whisper and audio.cpp phases that run only when their component is behind; each phase no-ops cleanly when its component is current or unmanaged. Idempotent: a second call while one is running returns the in-flight job."""
     if update_checks_disabled():
         with _job_lock:
             job = dict(_job)
@@ -1087,7 +1230,7 @@ def _whisper_phase_plan(
     migration: bool = False,
 ) -> dict:
     """Whisper's half of the chained job: catch up on releases for an update, or re-pair with the new backend for a switch. A switch that installs nothing leaves llama's ggml where it was, so there is nothing to re-pair and a refused switch stays refused instead of becoming a whisper-only job. The exception is what a failed re-pair leaves behind: llama runs first and records the new backend, so a retryable whisper failure ends with llama on the requested backend and dictation still hardlinked to the old runtime, making a retry ``already_selected`` and stranding the user unless they switch away and back. So allow a repair-only job for that one refusal, and only while the pairing is genuinely stale."""
-    # A migration is switch-shaped but update-behaved, so whisper needs the chained plan: the repair-only branch has no phase for a self-contained install and drops updates.
+    # A migration needs whisper's chained plan; the repair-only branch drops updates.
     if backend_request is None or migration:
         chained = (
             _whisper_chain_status(force_refresh = True, paired_llama_will_update = llama_will_run) or {}
@@ -1157,10 +1300,16 @@ def _run_claimed_job(phases: list[dict]) -> None:
             )
     finally:
         _operation_lock.release()
+        # The projector precision follows the installed backend.
+        with suppress(Exception):
+            from utils.models.model_config import device_mmproj_precision
+            device_mmproj_precision.cache_clear()
 
 
 def _start_llama_job(backend_request: Optional[str] = None) -> dict:
     """Shared body of start_update() and start_backend_switch()."""
+    # Read before the claim replaces the previous job.
+    whisper_retry = _whisper_retry_owed()
     if not _claim_operation(backend_request):
         with _job_lock:
             return {
@@ -1227,7 +1376,20 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
             migration = migration,
         )
         whisper_spec = (whisper_plan or {}).get("phase")
-        if llama_spec is None and whisper_spec is None:
+        # audio.cpp ships its own ggml, so a backend switch never touches it.
+        audio_plan = (_audio_chain_status() or {}) if backend_request is None or migration else {}
+        audio_spec = audio_plan.get("phase")
+        if (
+            backend_request is None
+            and llama_spec is None
+            and audio_spec is None
+            and whisper_spec is not None
+            and not whisper_spec.get("repair")
+            and not whisper_retry
+        ):
+            # whisper.cpp rides along with a llama.cpp or audio.cpp update and never runs a job by itself.
+            whisper_spec = None
+        if llama_spec is None and whisper_spec is None and audio_spec is None:
             # Nothing to run: answer with the llama refusal so the existing reasons (local_link / up_to_date / already_selected / ...) keep their meaning.
             refusal = llama_plan["refusal"]
             return _finish_planning_refusal(refusal["reason"], refusal["message"])
@@ -1246,6 +1408,11 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
                 if llama_spec is not None
                 else (lambda set_progress: _whisper.run_chained_phase(whisper_spec, set_progress))
             )
+
+        audio_run = None
+        if audio_spec is not None:
+            from utils import audio_cpp_update as _audio
+            audio_run = lambda set_progress: _audio.run_chained_phase(audio_spec, set_progress)
 
         phases = [
             {
@@ -1289,10 +1456,24 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
                 "skip_reason": (whisper_plan or {}).get("skip_reason") or "unavailable",
                 "run": whisper_run,
             },
+            {
+                "name": "audio",
+                "weight": _AUDIO_PHASE_WEIGHT,
+                "failure_message": "audio.cpp update failed.",
+                # Unloading a main-slot audio.cpp model is a server model change the UI must resync on.
+                "affects_job_reload": True,
+                "reports_job_tag": False,
+                "skip_reason": audio_plan.get("skip_reason") or "unavailable",
+                "run": audio_run,
+            },
         ]
         running = " + ".join(
             name
-            for name, spec in (("llama.cpp", llama_spec), ("whisper.cpp", whisper_spec))
+            for name, spec in (
+                ("llama.cpp", llama_spec),
+                ("whisper.cpp", whisper_spec),
+                ("audio.cpp", audio_spec),
+            )
             if spec
         )
         if backend_request is not None and llama_spec is not None:

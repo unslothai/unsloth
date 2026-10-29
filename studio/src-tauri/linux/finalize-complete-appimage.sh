@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-# The ELF sweep below parses readelf output, which is translated.
+# readelf output is translated.
 export LC_ALL=C
 
 if [[ $# -ne 1 || ! -d "$1" ]]; then
@@ -34,7 +34,7 @@ install -D -m 644 \
   "$asset_dir/unsloth-appimage-fonts.conf" \
   "$appdir/usr/etc/fonts/unsloth-appimage.conf"
 
-# Remove host-coupled libraries after all input plugins deploy their dependencies.
+# Runs after all input plugins deploy their dependencies.
 host_patterns=(
   'ld-linux*.so*' 'libc.so*' 'libm.so*' 'libdl.so*' 'libpthread.so*'
   'librt.so*' 'libresolv.so*' 'libnss_*.so*' 'libutil.so*' 'libanl.so*'
@@ -55,7 +55,7 @@ for pattern in "${host_patterns[@]}"; do
   done < <(find "$appdir" \( -type f -o -type l \) -name "$pattern" -print0)
 done
 
-# Use $ORIGIN RUNPATHs so host objects do not inherit bundled libraries (#7953).
+# $ORIGIN RUNPATHs so host objects do not inherit bundled libraries.
 patched=0
 while IFS= read -r -d '' object; do
   [[ "$(head -c 4 "$object" 2>/dev/null || true)" == $'\177ELF' ]] || continue

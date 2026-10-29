@@ -60,7 +60,7 @@ def test_generate_progress_reports_the_phase():
     from core.inference.diffusion import _GenState
 
     gen = _GenState(total_steps = 40)
-    assert gen.phase == "denoise"
+    assert gen.phase == "encode"
 
     class _Backend:
         _gen = gen
@@ -68,12 +68,12 @@ def test_generate_progress_reports_the_phase():
     from core.inference.diffusion import DiffusionBackend
 
     progress = DiffusionBackend.generate_progress(_Backend())
-    assert progress["phase"] == "denoise"
+    assert progress["phase"] == "encode"
 
     gen.step, gen.phase = 40, "decode"
     progress = DiffusionBackend.generate_progress(_Backend())
     assert progress["phase"] == "decode"
-    # The route returns this model; a field it lacks is dropped silently and the UI never sees it.
+    # Fields missing from the response model are dropped silently.
     from models.inference import DiffusionGenerateProgressResponse
 
     assert DiffusionGenerateProgressResponse(**progress).phase == "decode"
@@ -81,3 +81,40 @@ def test_generate_progress_reports_the_phase():
 
     _Backend._gen = None
     assert DiffusionBackend.generate_progress(_Backend())["phase"] == "denoise"
+
+
+def test_denoise_phase_fires_when_the_loop_opens_its_progress_bar_and_is_removed():
+    from core.inference.media_decode_phase import denoise_phase
+
+    class _Bar:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class _LoopPipe:
+        def progress_bar(self, total = None):
+            return _Bar()
+
+    pipe, seen = _LoopPipe(), []
+    with denoise_phase(pipe, lambda: seen.append("denoise")):
+        with pipe.progress_bar(total = 4):
+            pass
+        with pipe.progress_bar(total = 4):
+            pass
+    assert seen == ["denoise"]
+    assert "progress_bar" not in pipe.__dict__
+
+
+def test_generate_progress_carries_the_live_preview_through_the_route_model():
+    from core.inference.diffusion import DiffusionBackend, _GenState
+    from models.inference import DiffusionGenerateProgressResponse
+
+    class _Backend:
+        _gen = _GenState(total_steps = 8, step = 2, phase = "encode")
+
+    _Backend._gen.preview, _Backend._gen.preview_seq = "data:image/jpeg;base64,AA==", 3
+    resp = DiffusionGenerateProgressResponse(**DiffusionBackend.generate_progress(_Backend()))
+    assert resp.phase == "encode"
+    assert resp.preview == "data:image/jpeg;base64,AA==" and resp.preview_seq == 3

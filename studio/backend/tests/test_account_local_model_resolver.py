@@ -80,7 +80,6 @@ def test_a_warm_resolver_index_does_not_answer_for_the_next_account(home):
 
     assert run_as(ALICE, resolver.resolve_local_gguf, "shared-model")[0] == str(alice_model)
     assert run_as(BOB, resolver.resolve_local_gguf, "shared-model")[0] == str(bob_model)
-    # And back again: neither account's snapshot is displaced by the other's.
     assert run_as(ALICE, resolver.resolve_local_gguf, "shared-model")[0] == str(alice_model)
 
 
@@ -92,7 +91,6 @@ def test_an_alias_another_account_warmed_still_switches_to_the_callers_own_check
     loaded = []
 
     async def _load(request, *args, **kwargs):
-        # The real impl refuses a path the caller cannot see, which is the 404 under test.
         access.require_model_access(request.model_path)
         loaded.append(request.model_path)
         return {}
@@ -138,7 +136,6 @@ def test_a_fast_account_scan_does_not_expire_another_accounts_slow_scan_miss(hom
     assert run_as(ALICE, resolver.resolve_local_gguf_for_switch, "missing") is None
     assert run_as(BOB, resolver.resolve_local_gguf_for_switch, "missing") is None
 
-    # Bob's cheap scan must not replace the duty window earned by Alice's slow one.
     clock.now += 10.0
     assert run_as(ALICE, resolver.resolve_local_gguf_for_switch, "missing") is None
     assert scans == [ALICE.account_id, BOB.account_id]

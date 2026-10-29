@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Manage FastFlowLM NPU models through a private Lemonade server.
-
-Installs and validates the runtime, manages its catalog, and loads models by
-``lemonade:<id>``. Health checks confirm residency and context length.
-GGUF models are unsupported. This module does not import the GPU stack.
-"""
+"""Runs FastFlowLM NPU models via a private Lemonade server; loads lemonade:<id>; GGUF unsupported;
+does not import the GPU stack."""
 
 from __future__ import annotations
 
@@ -19,6 +15,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
+from core.inference.flm_files import (
+    FlmDownloadError,
+    FlmModelFiles,
+    download_files,
+    read_model_files,
+)
 from core.inference.lemonade_server import LemonadeServer, LemonadeUnavailable
 from utils.hardware.npu import detect_amd_npu
 from utils.native_path_leases import child_env_without_native_path_secret
@@ -40,9 +42,11 @@ DEFAULT_CONTEXT_LENGTH = 8192
 # Names the lemond install whose NPU passed `flm validate`, so a restart needs no new Enable.
 _VALIDATED_MARKER = "npu_validated.json"
 
-# Model modes Unsloth's chat cannot serve: embeddings and transcription have no chat endpoint,
-# and a single-turn ("flash") model answers only the first message of a conversation.
+# Unservable modes: no chat endpoint for embeddings/transcription; single-turn answers once
 _EXCLUDED_LABELS = frozenset({"embeddings", "transcription", "single-turn"})
+# Lemonade reports config.json max_position_embeddings, but FastFlowLM engines can fail above a lower
+# limit (FastFlowLM 1.0.9; recheck on pin bumps). https://fastflowlm.com/docs/models/qwen/#-model-card-qwen38-27b
+_FLM_CONTEXT_LIMITS = {"qwen3.8-mtp:27b": 8192}
 
 _VALIDATE_PROBLEMS = (
     ("amd_device_found", "No AMD XDNA 2 NPU was found."),
@@ -77,6 +81,7 @@ class NpuModel:
     downloaded: bool
     labels: tuple[str, ...]
     max_context_length: Optional[int]
+    resume_percent: Optional[int] = None
 
     @property
     def vision(self) -> bool:
@@ -106,6 +111,7 @@ class NpuModel:
             "supports_reasoning": self.reasoning,
             "supports_tools": self.tools,
             "max_context_length": self.max_context_length,
+            "resume_percent": self.resume_percent,
         }
 
 
@@ -162,6 +168,13 @@ def _installer_module():
     return install_lemonade_prebuilt
 
 
+def _pinned_flm_version() -> Optional[str]:
+    try:
+        return str(_installer_module().load_pins()["fastflowlm"]["version"]).lstrip("v")
+    except Exception:  # noqa: BLE001 -- an unreadable pin skips the check, never blocks Enable
+        return None
+
+
 def _npu_root() -> Path:
     from utils.paths.storage_roots import studio_root
     return studio_root() / "lemonade"
@@ -207,6 +220,14 @@ def _positive_int(value: Any) -> Optional[int]:
     return number if number > 0 else None
 
 
+def _max_context_length(checkpoint: str, reported: Any) -> Optional[int]:
+    reported = _positive_int(reported)
+    limit = _FLM_CONTEXT_LIMITS.get(checkpoint)
+    if limit is None:
+        return reported
+    return min(reported, limit) if reported else limit
+
+
 class LemonadeNpuBackend:
     def __init__(self, root: Optional[Path] = None) -> None:
         self._root = Path(root) if root is not None else None
@@ -223,10 +244,17 @@ class LemonadeNpuBackend:
         self._validation: Optional[dict[str, Any]] = None
         self._state = "idle"
         self._error: Optional[str] = None
+        self._flm_version_cache: Optional[tuple[tuple[str, int, int], Optional[str]]] = None
+        self._last_versions: dict[str, Optional[str]] = {"lemonade": None, "fastflowlm": None}
 
     @property
     def root(self) -> Path:
         return self._root if self._root is not None else _npu_root()
+
+    @property
+    def _flm_model_dir(self) -> Path:
+        """FastFlowLM's FLM_MODEL_PATH, where its models and Studio's downloads of them live."""
+        return self.root / "flm"
 
     def _installed_lemond(self) -> Optional[Path]:
         try:
@@ -287,12 +315,90 @@ class LemonadeNpuBackend:
             return None
         return marker.get("lemond") if isinstance(marker, dict) else None
 
+    def _upgrade_pending(self, binary: Optional[Path]) -> bool:
+        """Whether the NPU was enabled, but a Studio update has since moved the runtime's pins."""
+        validated = self._validated_install()
+        return binary is None and isinstance(validated, str) and bool(validated)
+
+    def _flm_version(self, binary: Optional[Path] = None) -> Optional[str]:
+        binary = binary or self._flm_binary()
+        if binary is None:
+            return None
+        env = child_env_without_native_path_secret()
+        env["FLM_MODEL_PATH"] = str(self._flm_model_dir)
+        env["FLM_DISABLE_UPDATE_CHECK"] = "1"
+        try:
+            completed = subprocess.run(
+                [str(binary), "version", "--json"],
+                capture_output = True,
+                stdin = subprocess.DEVNULL,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 10,
+                env = env,
+                **windows_hidden_subprocess_kwargs(),
+            )
+            version = json.loads(completed.stdout).get("version")
+        except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
+            return None
+        return str(version).lstrip("v") if version else None
+
+    def _installed_flm_version(self) -> Optional[str]:
+        binary = self._flm_binary()
+        if binary is None:
+            return None
+        try:
+            stat = binary.stat()
+        except OSError:
+            return None
+        key = (str(binary), stat.st_mtime_ns, stat.st_size)
+        cached = self._flm_version_cache
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        # Failures are cached too, so a mute binary is not rerun per status read.
+        version = self._flm_version(binary)
+        self._flm_version_cache = (key, version)
+        return version
+
+    def _installed_lemonade_version(self, lemond: Optional[Path]) -> Optional[str]:
+        if lemond is None:
+            return None
+        try:
+            return _installer_module().installed_version(lemond)
+        except Exception as exc:  # noqa: BLE001 -- a missing version never hides the status
+            logger.warning("Could not read the Lemonade version: %s", exc)
+            return None
+
+    def _versions(
+        self, binary: Optional[Path], validated: Optional[str]
+    ) -> dict[str, Optional[str]]:
+        # Non-blocking: Enable replaces flm under this lock (a running flm blocks that on Windows).
+        if not self._lock.acquire(blocking = False):
+            return dict(self._last_versions)
+        try:
+            lemond = binary or (
+                Path(validated) if isinstance(validated, str) and validated else None
+            )
+            self._last_versions = {
+                "lemonade": self._installed_lemonade_version(lemond),
+                "fastflowlm": self._installed_flm_version(),
+            }
+            return dict(self._last_versions)
+        finally:
+            self._lock.release()
+
     def status(self) -> dict[str, Any]:
         hardware = self.hardware()
         binary = self._installed_lemond()
-        installed = binary is not None
-        ready = self._state == "ready" or (
-            self._state == "idle" and installed and self._validated_install() == str(binary)
+        validated = self._validated_install()
+        # An enabled NPU stays enabled across a pin change: its first use upgrades the runtime.
+        upgrade_pending = self._state == "idle" and self._upgrade_pending(binary)
+        installed = binary is not None or upgrade_pending
+        ready = (
+            self._state == "ready"
+            or upgrade_pending
+            or (self._state == "idle" and installed and validated == str(binary))
         )
         running = self._server is not None and self._server.is_alive()
         resident = self.resident()
@@ -310,6 +416,7 @@ class LemonadeNpuBackend:
             "loaded_model": resident.model.model_path if resident else None,
             "context_length": resident.context_length if resident else None,
             "loading_model": self._loading,
+            "versions": self._versions(binary, validated),
         }
 
     def _server_for(self, binary: Path) -> LemonadeServer:
@@ -317,13 +424,18 @@ class LemonadeNpuBackend:
             binary,
             cache_dir = self.root / "cache",
             config_dir = self.root / "config",
-            flm_model_dir = self.root / "flm",
+            flm_model_dir = self._flm_model_dir,
         )
 
     def _require_supported(self) -> None:
         hardware = self.hardware()
         if not hardware.get("present"):
             raise NpuError("No AMD Ryzen AI NPU was found on this machine.")
+        if hardware.get("family") == "XDNA2" and hardware.get("enabled") is False:
+            raise NpuError(
+                "The AMD NPU is turned off by UNSLOTH_STUDIO_ENABLE_NPU. Unset it or set it "
+                "to 1, then restart Unsloth Studio to use the NPU."
+            )
         if not hardware.get("supported"):
             raise NpuError(
                 "FastFlowLM needs an XDNA 2 NPU (Ryzen AI 300/400 or Ryzen AI Max); "
@@ -332,10 +444,18 @@ class LemonadeNpuBackend:
 
     def _ensure_running(self) -> LemonadeServer:
         """Start the installed runtime if needed and return its server."""
+        # A runtime enabled before the flag was turned off must not start again.
+        self._require_supported()
         with self._lock:
             if self._server is not None and self._server.is_alive():
                 return self._server
             binary = self._installed_lemond()
+            if self._upgrade_pending(binary):
+                logger.info("Upgrading the NPU runtime to the Lemonade and FastFlowLM pins")
+                self.enable()
+                if self._server is not None and self._server.is_alive():
+                    return self._server
+                binary = self._installed_lemond()
             if binary is None:
                 raise NpuError("The NPU runtime is not installed. Enable it first.")
             if self._server is not None:
@@ -369,6 +489,13 @@ class LemonadeNpuBackend:
                 )
                 if _failed(response):
                     raise NpuError(f"Installing FastFlowLM failed: {_error_message(response)}")
+                # lemond keeps the old FastFlowLM and answers success when an update download fails.
+                expected, actual = _pinned_flm_version(), self._flm_version()
+                if expected and actual and actual != expected:
+                    raise NpuError(
+                        f"Updating FastFlowLM to v{expected} failed; v{actual} is still installed. "
+                        "Check the internet connection, then try again."
+                    )
                 self._state = "validating"
                 self._validation = self._validate()
                 if not self._validation.get("ready"):
@@ -395,7 +522,7 @@ class LemonadeNpuBackend:
         if binary is None:
             return {"ready": False, "problems": ["FastFlowLM was not found after installing it."]}
         env = child_env_without_native_path_secret()
-        env["FLM_MODEL_PATH"] = str(self.root / "flm")
+        env["FLM_MODEL_PATH"] = str(self._flm_model_dir)
         env["FLM_DISABLE_UPDATE_CHECK"] = "1"
         if self._closing.is_set():
             return {"ready": False, "problems": ["Unsloth is shutting down."]}
@@ -469,6 +596,7 @@ class LemonadeNpuBackend:
         if _failed(response):
             raise NpuError(f"Listing NPU models failed: {_error_message(response)}")
         models: list[NpuModel] = []
+        flm_binary = self._flm_binary()
         for row in response.json().get("data") or []:
             if not isinstance(row, dict) or row.get("recipe") != "flm":
                 continue
@@ -476,17 +604,26 @@ class LemonadeNpuBackend:
             if "chat" not in labels or _EXCLUDED_LABELS.intersection(labels):
                 continue
             size = row.get("size")
+            checkpoint = str(row.get("checkpoint") or "")
+            downloaded = bool(row.get("downloaded"))
+            files = None if downloaded else self._model_files(checkpoint, flm_binary)
             models.append(
                 NpuModel(
                     id = str(row.get("id")),
-                    checkpoint = str(row.get("checkpoint") or ""),
+                    checkpoint = checkpoint,
                     size_gb = float(size) if isinstance(size, (int, float)) else None,
-                    downloaded = bool(row.get("downloaded")),
+                    downloaded = downloaded,
                     labels = labels,
-                    max_context_length = _positive_int(row.get("max_context_window")),
+                    max_context_length = _max_context_length(
+                        checkpoint, row.get("max_context_window")
+                    ),
+                    resume_percent = files.resume_percent() if files else None,
                 )
             )
         return sorted(models, key = lambda model: (not model.downloaded, model.id))
+
+    def _model_files(self, checkpoint: str, flm_binary: Optional[Path]) -> Optional[FlmModelFiles]:
+        return read_model_files(flm_binary, self._flm_model_dir, checkpoint)
 
     def _model(self, model_id: str) -> NpuModel:
         for model in self.catalog():
@@ -505,16 +642,32 @@ class LemonadeNpuBackend:
         return model
 
     def download(self, model_id: str) -> Iterator[dict[str, Any]]:
-        """Pull a model, yielding lemond's progress events, then a final ``complete`` one.
-
-        Raises unless lemond sent its ``complete`` event: a stream cut short leaves a partial model.
-        """
+        """Raises unless lemond sends its complete event, since a cut-short stream leaves a partial
+        model."""
         model = self._model(model_id)
         server = self._ensure_running()
+        files = (
+            None if model.downloaded else self._model_files(model.checkpoint, self._flm_binary())
+        )
+        if files is not None:
+            try:
+                yield from download_files(files)
+            except FlmDownloadError as exc:
+                raise NpuError(str(exc)) from exc
+        elif not model.downloaded:
+            logger.warning(
+                "FastFlowLM's file list is unreadable; lemond downloads %s, without resume",
+                model.id,
+            )
+            # FastFlowLM's next pull trusts a truncated file an interrupted one left; clear it first.
+            server.request("POST", "/v1/delete", json_body = {"model_name": model.id})
         event = "progress"
         completed = False
         with server.stream(
-            "POST", "/v1/pull", json_body = {"model_name": model.id, "stream": True}
+            "POST",
+            "/v1/pull",
+            # Not --force, which would hash every file FastFlowLM already has once more.
+            json_body = {"model_name": model.id, "stream": True, "do_not_upgrade": True},
         ) as response:
             if response.status_code != 200:
                 response.read()
@@ -539,7 +692,8 @@ class LemonadeNpuBackend:
                 if isinstance(data, dict) and data.get("status") == "error":
                     raise NpuError(f"Downloading {model.id} failed: {data.get('message') or data}")
                 completed = completed or event == "complete"
-                if isinstance(data, dict):
+                # lemond's per-file percent would move the bar backwards after Studio's download.
+                if isinstance(data, dict) and (files is None or event == "complete"):
                     yield {"event": event, **data}
                 event = "progress"
         if not completed:

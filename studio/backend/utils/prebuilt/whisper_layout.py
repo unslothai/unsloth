@@ -66,7 +66,7 @@ def lookup_marker(binary_path: Optional[str]) -> MarkerLookup:
         if slim_collision:
             return MarkerLookup(None, root, False, True, True)
 
-    for parent in binary.parents[:5]:
+    for parent in list(binary.parents)[:5]:
         candidate = parent / MARKER_NAME
         if candidate.is_file():
             marker, invalid = _parse_marker(candidate)

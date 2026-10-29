@@ -29,13 +29,19 @@ function clamp(value: number, limit: number): number {
   return Math.max(-limit, Math.min(limit, value));
 }
 
+export type MediaInset = { top: number; right: number; bottom: number; left: number };
+
+const NO_INSET: MediaInset = { top: 0, right: 0, bottom: 0, left: 0 };
+
 export function MediaZoomStage({
   zoom,
   onFitScale,
+  inset = NO_INSET,
   children,
 }: {
   zoom: MediaZoom;
   onFitScale: (scale: number | null) => void;
+  inset?: MediaInset;
   children: ReactNode;
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
@@ -69,9 +75,15 @@ export function MediaZoomStage({
     return () => observer.disconnect();
   }, []);
 
+  const room = stage
+    ? {
+        width: Math.max(1, stage.width - inset.left - inset.right),
+        height: Math.max(1, stage.height - inset.top - inset.bottom),
+      }
+    : null;
   const fit =
-    stage && natural
-      ? Math.min(stage.width / natural.width, stage.height / natural.height)
+    room && natural
+      ? Math.min(room.width / natural.width, room.height / natural.height)
       : null;
   useEffect(() => onFitScale(fit), [fit, onFitScale]);
 
@@ -206,11 +218,25 @@ export function MediaZoomStage({
             ? {
                 width: box.width,
                 height: box.height,
-                left: (stage.width - box.width) / 2,
-                top: (stage.height - box.height) / 2,
+                left:
+                  room && box.width <= room.width
+                    ? inset.left + (room.width - box.width) / 2
+                    : (stage.width - box.width) / 2,
+                top:
+                  room && box.height <= room.height
+                    ? inset.top + (room.height - box.height) / 2
+                    : (stage.height - box.height) / 2,
                 transform: translate(pan),
               }
-            : { inset: 0 }
+            : // Until measured, the clear area: a contained picture there already sits where fit
+              // puts it, so nothing moves once it loads. Longhands, not `inset`: React clears a
+              // removed shorthand after setting `left`, which put the picture at the left edge.
+              {
+                left: inset.left,
+                top: inset.top,
+                width: `calc(100% - ${inset.left + inset.right}px)`,
+                height: `calc(100% - ${inset.top + inset.bottom}px)`,
+              }
         }
       >
         {children}

@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""HuggingFace Hub download worker, spawned as a subprocess so SIGKILL stops all chunk threads.
-
-Resume safety: downloads here MUST be single-stream sequential writers so the parent's SIGKILL then restart loop can rely on ``os.path.getsize(.incomplete)`` for the resume offset. Enforced by setting ``HF_HUB_DISABLE_XET=1`` and ``HF_HUB_ENABLE_HF_TRANSFER=0`` on the spawning side (see :mod:`hub.utils.download_registry`) for transport=http; passing ``max_workers=1`` to ``snapshot_download`` so files download serially and the at-most-one-active-`.incomplete` invariant holds globally; letting ``prepare_cache_for_transport`` purge any pre-existing ``.incomplete`` blobs not provably from the same sequential writer; and restoring huggingface_hub's 1.17 append-mode writer where safe (see :mod:`hub.utils.resumable_partials`), since 1.18+ writes a process-unique partial and unlinks it, leaving this loop nothing to resume from.
-
-If the final byte count does not match what HF declared, huggingface_hub raises ``EnvironmentError`` ("Consistency check failed: ..."), which is surfaced on stderr so the watcher can show the exact message to the user.
-"""
+"""HF download subprocess (SIGKILL stops chunk threads); resume needs single-stream writes per file, enforced
+by HF_HUB_DISABLE_XET=1, HF_HUB_ENABLE_HF_TRANSFER=0 (http), one writer per blob, purge of unprovable
+.incomplete blobs."""
 
 from __future__ import annotations
 
@@ -24,26 +21,42 @@ _BACKEND = _HERE.parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-# Fresh interpreter: main.py's truststore injection does not survive the spawn.
+# Fresh interpreter: main.py's process-wide network injections do not survive the spawn.
 from utils.native_tls import activate_native_tls
+from utils.happy_eyeballs import activate_happy_eyeballs
 
 activate_native_tls()
+activate_happy_eyeballs()
 
 from hub.utils.snapshot_filters import (
     SNAPSHOT_IGNORE_PATTERNS,
 )
 from hub.utils.gguf_plan import (
     GgufVariantPlan,
-    build_gguf_variant_plans,
-    plan_for_variant,
     plan_from_expected_files,
+    resolve_variant_plan,
     sibling_sha256,
 )
 from hub.utils.state_dir import RepoType
-from hub.utils.resumable_partials import restore_resumable_partials
+from hub.utils.resumable_partials import (
+    LAST_STOCK_RESUMABLE_VERSION,
+    _hub_version,
+    restore_resumable_partials,
+)
 
 # Put huggingface_hub's 1.17 HTTP writer back: the SIGKILL then restart loop reads .incomplete for its resume offset, and 1.18+ leaves nothing to read.
 _PARTIALS_RESUMABLE = restore_resumable_partials()
+
+# Each file is still one sequential writer under huggingface_hub's per-blob lock, so overlapping files only hides request latency and per-connection caps.
+_HTTP_FILE_WORKERS = 4
+
+
+def _file_workers(mode: str) -> int:
+    """``snapshot_download(max_workers=...)``. Xet stays serial: hf_xet fans out inside a file and a killed Xet file restarts from zero. HTTP overlaps only where a killed partial resumes: the stock writer up to 1.17, past it only the writer restored at import."""
+    version = _hub_version()
+    resumes = _PARTIALS_RESUMABLE or (bool(version) and version <= LAST_STOCK_RESUMABLE_VERSION)
+    return _HTTP_FILE_WORKERS if mode == "http" and resumes else 1
+
 
 # typing.Union, not `str | bool | None`: an alias is evaluated on import and PEP 604 raises below 3.10.
 HfTokenArg = Union[str, bool, None]
@@ -87,12 +100,7 @@ def _protected_blob_hashes() -> frozenset[str]:
 
 
 def _parent_is_alive(parent_pid: int) -> bool:
-    """Whether the recorded parent (the backend) is still running.
-
-    Liveness ONLY: ``os.kill(pid, 0)`` on POSIX, an ``OpenProcess`` handle on Windows, against the *recorded* PID (never os.getppid(), so POSIX reparenting to init after the backend dies still resolves as dead). Probe ambiguity is treated as alive so a transient error never kills a healthy download.
-
-    Deliberately does NOT compare psutil ``create_time()`` for PID-reuse detection: it is not stable across reads on some platforms, so an exact match can spuriously kill a live download. PID-reuse after parent death is covered by the boot-time orphan reaper.
-    """
+    """Probes the recorded parent PID, never getppid(), so reparenting to init still reads as dead."""
     if sys.platform == "win32":
         import ctypes
         from ctypes import wintypes
@@ -237,6 +245,52 @@ def _model_info_with_retry(repo_id: str, hf_token: str | None):
     return info
 
 
+def _rebuild_header_only_ggufs(
+    repo_type: RepoType, repo_id: str, commit_hash, expected_files: list, hf_token: str | None
+) -> None:
+    """Rebuild each pending image / video GGUF whose new revision changed only its header from the older snapshot's
+    copy. Chat, audio and other GGUFs keep the plain download; the gate is read only when a rebuild is possible."""
+    try:
+        from hub.utils.download_manifest import expected_path_is_safe, normalized_commit_hash
+        from hub.utils.gguf_header_delta import (
+            _is_media_gguf,
+            delta_enabled,
+            hub_range_fetcher,
+            rebuild_from_older_snapshot,
+        )
+        from hub.utils.snapshot_reuse import repo_cache_dir
+
+        commit = normalized_commit_hash(commit_hash)
+        if not commit or not delta_enabled():
+            return
+        repo_dir = repo_cache_dir(repo_type, repo_id)
+        protected = _protected_blob_hashes()
+        for item in expected_files:
+            path = getattr(item, "path", None)
+            digest = getattr(item, "sha256", None)
+            size = int(getattr(item, "size", 0) or 0)
+            if not expected_path_is_safe(path) or not str(path).lower().endswith(".gguf"):
+                continue
+            result = rebuild_from_older_snapshot(
+                repo_dir,
+                commit,
+                path,
+                size,
+                digest or "",
+                hub_range_fetcher(repo_id, path, hf_token, repo_type = repo_type, revision = commit),
+                protected_blob_hashes = protected,
+                media_gate = lambda old, path = path: _is_media_gguf(old, repo_id, path),
+            )
+            if result.placed:
+                print(
+                    f"Rebuilt {path} from the cached older copy (only its header changed): fetched "
+                    f"{result.fetched_bytes / 1e6:.2f} MB instead of {result.size / 1e9:.2f} GB.",
+                    file = sys.stderr,
+                )
+    except Exception as exc:  # noqa: BLE001 - an optimisation only: snapshot_download fetches what is left
+        print(f"GGUF header reuse skipped for {repo_id}: {exc}", file = sys.stderr)
+
+
 def _reuse_unchanged_files(
     repo_type: RepoType, repo_id: str, commit_hash, expected_files: list, hf_token: str | None
 ) -> list:
@@ -259,6 +313,7 @@ def _reuse_unchanged_files(
             f"from an older snapshot of {repo_id} instead of downloading them again.",
             file = sys.stderr,
         )
+    _rebuild_header_only_ggufs(repo_type, repo_id, commit_hash, expected_files, hf_token)
     # Files an earlier attempt placed are skipped by snapshot_download and have no blob for the preflight to discount.
     present = paths_in_snapshot(
         repo_type, repo_id, commit_hash, [getattr(f, "path", None) for f in expected_files]
@@ -629,7 +684,7 @@ def _download_snapshot(
         repo_id = repo_id,
         token = _hf_token_arg(hf_token),
         ignore_patterns = ignore_patterns,
-        max_workers = 1,
+        max_workers = _file_workers(mode),
         tqdm_class = tqdm_class,
     )
     if info is None:
@@ -664,8 +719,8 @@ def _gguf_variant_target_plan(
         raise RuntimeError(
             f"Metadata unavailable while resolving GGUF variant '{variant}' " f"for {repo_id}"
         ) from e
-    # plan_for_variant, not .get: a repo filing every variant under one shared container qualifies every key, so a stored pin or an explicit repo:Q4_K_M missed the map and the worker exited with "No GGUF shards matching variant".
-    return plan_for_variant(build_gguf_variant_plans(list(info.siblings)), variant)
+    # plan_for_variant (inside resolve_variant_plan), not .get: a repo filing every variant under one shared container qualifies every key, so a stored pin or an explicit repo:Q4_K_M missed the map and the worker exited with "No GGUF shards matching variant".
+    return resolve_variant_plan(info.siblings, variant)
 
 
 def _download_gguf_variant(
@@ -778,7 +833,7 @@ def _download_gguf_variant(
         repo_id = repo_id,
         token = _hf_token_arg(hf_token),
         allow_patterns = targets,
-        max_workers = 1,
+        max_workers = _file_workers(mode),
         tqdm_class = tqdm_class,
     )
     _verify_completed_download(
@@ -879,7 +934,7 @@ def _download_scoped_snapshot(
         repo_id = repo_id,
         token = _hf_token_arg(hf_token),
         allow_patterns = files,
-        max_workers = 1,
+        max_workers = _file_workers(mode),
         tqdm_class = tqdm_class,
     )
     if info is None:
@@ -952,7 +1007,7 @@ def _download_dataset(
         "repo_id": repo_id,
         "token": _hf_token_arg(hf_token),
         "repo_type": "dataset",
-        "max_workers": 1,
+        "max_workers": _file_workers(mode),
         "tqdm_class": tqdm_class,
     }
     if isinstance(commit_hash, str) and commit_hash.strip():

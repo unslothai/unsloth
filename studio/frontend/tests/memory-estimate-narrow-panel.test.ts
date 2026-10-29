@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Verify the memory row's disclosure markup and wrapping captions.
-
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ChevronDown } from "lucide-react";
+import { HugeiconsIcon } from "@hugeicons/react";
 import * as React from "react";
 import * as jsxRuntime from "react/jsx-runtime";
 import { renderToStaticMarkup } from "react-dom/server";
 import type * as MemoryEstimateModule from "../src/features/model-picker/components/memory-estimate-row.tsx";
+import * as chevronIcons from "../src/lib/chevron-icons.ts";
 import * as memoryFit from "../src/features/model-picker/model-config/memory-fit.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
@@ -22,7 +21,8 @@ const { MemoryEstimateRow } = loadWithStubs<typeof MemoryEstimateModule>(
   {
     react: React,
     "react/jsx-runtime": jsxRuntime,
-    "lucide-react": { ChevronDown },
+    "@hugeicons/react": { HugeiconsIcon },
+    "@/lib/chevron-icons": chevronIcons,
     "../model-config/memory-fit": memoryFit,
     "@/components/ui/tooltip": {
       Tooltip: ({ children }: { children: React.ReactNode }) => children,
@@ -49,6 +49,9 @@ const props: Props = {
     adaptersUnsized: false,
     totalBytes: 5.5 * GIB,
     contextFitted: null,
+    contextIsPinned: true,
+    gpuFloorBytes: null,
+    floorCanOffload: false,
     gpuBytes: 4.75 * GIB,
     kvEstimable: true,
     kvOnGpu: true,
@@ -58,6 +61,9 @@ const props: Props = {
     layerCount: 27,
     gpuLayers: 12,
     moeOffloadUnmodelled: false,
+    mlxPleOffload: null,
+    mlxExpertOffload: null,
+    mlxOffloadable: [],
   },
   loading: false,
   stale: false,
@@ -125,6 +131,12 @@ test("context checkpoints get their own host RAM row instead of inflating the KV
   assert.doesNotMatch(render({ expanded: true }), /Context checkpoints/);
 });
 
+test("MLX offload is noted on the Weights line", () => {
+  const html = render({ expanded: true, estimate: { ...props.estimate!, mlxExpertOffload: 0.5 } });
+  assert.match(html, /Weights[\s\S]*?experts\u00a050%\u00a0on\u00a0disk/);
+  assert.doesNotMatch(render({ expanded: true }), /on\u00a0disk/);
+});
+
 test("a shared pool shows the total without a duplicate GPU figure", () => {
   const html = render({ singleMemoryPool: true, isUnifiedMemory: true });
   assert.match(html, />Unified<\/span>/);
@@ -181,7 +193,6 @@ test("breakdown captions preserve word groups", () => {
 test("an item's own spaces do not break", () => {
   const glued = glueNoteItems("f16 · 262,144 tokens · 4 slots");
   assert.equal(glued, `f16 ·${NBSP}262,144${NBSP}tokens ·${NBSP}4${NBSP}slots`);
-  // One breakable space remains per bullet.
   assert.equal(glued.split(" ").length - 1, 2);
 });
 
@@ -192,7 +203,6 @@ test("the bullet leads its item, so a break cannot orphan it", () => {
 });
 
 test("a note with no separator keeps every break opportunity it had", () => {
-  // Prose captions must still wrap.
   for (const note of [
     "256 of 257 layers on GPU",
     "2.14 GB on GPU",
@@ -221,6 +231,5 @@ test("gluing round-trips the note the row actually builds", () => {
     nParallel: 4,
     kvOnGpu: false,
   });
-  // Only whitespace changes.
   assert.equal(glueNoteItems(note).replace(new RegExp(NBSP, "g"), " "), note);
 });

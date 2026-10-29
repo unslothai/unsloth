@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { PermissionModeDropdown, useChatRuntimeStore } from "@/features/chat";
+import { useChatRuntimeStore } from "@/features/chat";
 // From the keys module, not the barrel or the store: both are in an import cycle with this file,
 // so the key was still in its temporal dead zone when the module-scope list below read it, killing
 // the module graph. The keys module imports nothing, so it is always evaluated first.
@@ -28,18 +28,21 @@ import {
   emitTrainingRunsChanged,
   TRAINING_UI_PREFERENCE_KEYS,
 } from "@/features/training";
+import { FLOATING_PANEL_POSITION_KEYS } from "@/hooks/floating-panel-position";
 import {
-  setShowLlamaUpdateBanner,
-  setShowWhisperUpdateBanner,
-  useShowLlamaUpdateBanner,
-  useShowWhisperUpdateBanner,
-} from "@/hooks/use-llama-update-pref";
+  NOTIFICATION_PREF_KEYS,
+  type NotificationChannel,
+} from "@/hooks/use-notification-frequency";
 import { useHfTokenValidation } from "@/hooks";
-import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
+import { LOCALE_STORAGE_KEY, type TranslationKey, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
+import {
+  SPELLCHECK_STORAGE_KEY,
+  setSpellCheck,
+  useSpellCheck,
+} from "@/lib/spellcheck";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { Check, Eye, EyeOff } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   type HelperPrecacheSettings,
@@ -59,6 +62,7 @@ import {
   updateUploadLimitSettings,
 } from "../api/upload-limit";
 import { loadCloseToTray, updateCloseToTray } from "../api/close-to-tray";
+import { loadTrayIconVisible, updateTrayIconVisible } from "../api/tray-icon";
 import { loadLaunchAtLogin, updateLaunchAtLogin } from "../api/launch-at-login";
 import { useIsAccountOwner } from "@/features/auth";
 import {
@@ -66,6 +70,7 @@ import {
   LIBRARY_SETTINGS_STORAGE_KEY,
   LIBRARY_VIEW_STORAGE_KEY,
 } from "@/features/library";
+import { DesktopInstallTypeControl } from "../components/full-install-dialog";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
 import { DesktopRepairControl } from "../components/desktop-repair-control";
 import {
@@ -74,9 +79,13 @@ import {
 } from "../components/desktop-update-control";
 import { DocumentsRagSection } from "../components/documents-rag-section";
 import { LanguageSelect } from "../components/language-select";
-import { TRANSPORT_MODE_STORAGE_KEY } from "@/features/hub";
+import {
+  DOWNLOAD_DIR_STORAGE_KEY,
+  TRANSPORT_MODE_STORAGE_KEY,
+} from "@/features/hub";
 import { DownloadTransportRow } from "../components/download-transport-row";
 import { HubSettingsSection } from "../components/hub-settings-section";
+import { NotificationFrequencySelect } from "../components/notification-frequency-select";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
@@ -85,17 +94,39 @@ import { KEYBOARD_SHORTCUTS_STORAGE_KEY } from "../stores/keyboard-shortcuts-sto
 import { INTERFACE_SCALE_STORAGE_KEY } from "../stores/interface-scale-store";
 import { SETTINGS_PANEL_PREFS_STORAGE_KEY } from "../stores/settings-panel-prefs-store";
 import { CHAT_PROJECT_ATTACHMENT_TARGET_KEY } from "@/features/chat/utils/project-attachment-target";
+import { Tick02Icon } from "@/lib/tick-icon";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { ViewIcon, ViewOffSlashIcon } from "@hugeicons/core-free-icons";
+
+// whisper.cpp rides along with llama.cpp's card, so it has no line of its own.
+const UPDATE_REMINDER_CHANNELS: {
+  channel: NotificationChannel;
+  name: string;
+  hintKey?: TranslationKey;
+}[] = [
+  { channel: "unsloth", name: "Unsloth" },
+  {
+    channel: "llama",
+    name: "llama.cpp",
+    hintKey: "settings.general.notifications.llamaHint",
+  },
+  {
+    channel: "audio",
+    name: "audio.cpp",
+    hintKey: "settings.general.notifications.audioHint",
+  },
+];
 
 // Keys cleared by "Reset all local preferences". NEVER include auth/session keys here -- that
 // would log the user out (unsloth_auth_token, unsloth_auth_refresh_token, and
 // unsloth_auth_must_change_password are excluded).
 const PREFS_KEYS: string[] = [
-  // Appearance
   "theme",
   "palette",
   "unsloth_appearance_customization",
   INTERFACE_SCALE_STORAGE_KEY,
   LOCALE_STORAGE_KEY,
+  SPELLCHECK_STORAGE_KEY,
   // UI state
   "sidebar_pinned",
   "sidebar_width",
@@ -104,20 +135,19 @@ const PREFS_KEYS: string[] = [
   LIBRARY_SETTINGS_STORAGE_KEY,
   LIBRARY_VIEW_STORAGE_KEY,
   LIBRARY_CHATS_PREFS_STORAGE_KEY,
-  // Grouping, sort and the manual row order.
   SIDEBAR_ORGANIZATION_STORAGE_KEY,
   "unsloth_settings_active_tab",
   SETTINGS_PANEL_PREFS_STORAGE_KEY,
-  // Rebound chords. Without this a reset leaves the user on shortcuts they asked to throw away, and
-  // a chord bound to something unusable has no escape hatch from this button.
+  // Rebound chords, so a bad binding has an escape hatch.
   KEYBOARD_SHORTCUTS_STORAGE_KEY,
-  // Outranks the install-wide setting, so a reset that left it behind would keep ignoring
-  // transport changes made elsewhere.
+  // Outranks the install-wide setting, so it must be cleared too.
   TRANSPORT_MODE_STORAGE_KEY,
+  DOWNLOAD_DIR_STORAGE_KEY,
   // Chat runtime prefs
   CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
   "unsloth_chat_auto_title",
   "unsloth_chat_permission_mode",
+  "unsloth_chat_sandbox_level",
   // Legacy confirm key: loadPermissionMode falls back to it, so clear both or a reset restores it.
   "unsloth_chat_confirm_tool_calls",
   "unsloth_hf_token",
@@ -133,48 +163,40 @@ const PREFS_KEYS: string[] = [
   "unsloth_load_settings",
   "unsloth_model_advanced_settings",
   "unsloth_chat_load_on_selection",
-  // Model selector settings ("Select model settings" group)
   "unsloth_chat_expand_quantizations",
   "unsloth_chat_show_all_quantizations",
-  // The memory bar's opt-in. Reset All advertises restoring defaults and this feature's default is
-  // off, so leaving the key out left it switched on across a reset that said it had turned
-  // everything back. Spelled out rather than imported as CHAT_SHOW_MEMORY_BAR_KEY, for the same
-  // reason the note above gives: it lives in chat-runtime-store, which is in an import cycle with
-  // this file, so the constant would still be in its temporal dead zone when this module-scope list
-  // is built. A test pins this literal against the store's constant so the two cannot drift apart
-  // silently.
+  // Spelled out, not CHAT_SHOW_MEMORY_BAR_KEY: chat-runtime-store is in an import cycle with this
+  // file. A test pins this literal against the store's constant.
   "unsloth_chat_show_memory_bar",
   "unsloth_models_fit_on_device_only",
-  // Chat presets
   "unsloth_chat_custom_presets",
   "unsloth_chat_active_preset",
   "unsloth_chat_system_prompts",
   "unsloth_chat_system_prompts_migrated",
-  // Training UI prefs
   "unsloth_training_config_v1",
   "unsloth_prev_max_steps",
   "unsloth_prev_save_steps",
   ...TRAINING_UI_PREFERENCE_KEYS,
-  // Profile personalization
   "unsloth_user_profile",
+  "unsloth_profile_activity_chart",
   // Guided tour flags
   "tour:studio:v1",
   // Update notifications
-  "unsloth_show_llama_update_banner",
-  "unsloth_show_whisper_update_banner",
+  ...NOTIFICATION_PREF_KEYS,
+  "unsloth_llama_update_offer_suppression",
   "unsloth_monitor_overlay",
   LOADED_MODELS_PREFERENCE_KEYS.show,
   LOADED_MODELS_PREFERENCE_KEYS.collapsed,
   LOADED_MODELS_PREFERENCE_KEYS.position,
   LOADED_MODELS_PREFERENCE_KEYS.dismissed,
+  ...Object.values(FLOATING_PANEL_POSITION_KEYS),
   // Voice settings
   "unsloth_voice_settings",
-  // Retired keys. The onboarding wizard is gone, but installs that ran it still
-  // carry its flag, so a reset has to clear it or the orphan outlives the app.
+  // Retired keys: installs that ran the old onboarding wizard still carry its flag.
   "unsloth_onboarding_done",
 ];
 
-// Set by resetAllPrefs so the unmount-commit effect skips writing back the in-memory draft.
+// Set by resetAllPrefs so the unmount commit skips writing back the in-memory draft.
 let resetInProgress = false;
 
 function resetAllPrefs() {
@@ -198,9 +220,9 @@ export function GeneralTab() {
   const hfTokenPersistenceError = useHfTokenStore(
     (s) => s.persistenceError,
   );
-  const showLlamaUpdates = useShowLlamaUpdateBanner();
-  const showWhisperUpdates = useShowWhisperUpdateBanner();
+  const hfTokenIsPersisting = useHfTokenStore((s) => s.isPersisting);
   const showLoadedModels = useShowLoadedModels();
+  const spellCheck = useSpellCheck();
 
   const [draftToken, setDraftToken] = useState(hfToken ?? "");
   const [showToken, setShowToken] = useState(false);
@@ -241,16 +263,35 @@ export function GeneralTab() {
     loadError: t("settings.general.startup.loadError"),
     saveError: t("settings.general.startup.closeToTraySaveError"),
   });
+  const trayIconSetting = useDesktopBooleanSetting({
+    enabled: isTauri,
+    load: loadTrayIconVisible,
+    save: updateTrayIconVisible,
+    loadError: t("settings.general.startup.loadError"),
+    saveError: t("settings.general.startup.menuBarIconSaveError"),
+  });
 
   const draftRef = useRef(draftToken);
+  const tokenEditedRef = useRef(false);
+  const tokenEditRevisionRef = useRef(0);
+  const submittedTokenRevisionRef = useRef<number | null>(null);
   useEffect(() => {
     draftRef.current = draftToken;
   }, [draftToken]);
 
-  // Commit on unmount (dialog close / tab switch), skipped during the reset-prefs flow.
+  // Commit on unmount (dialog close / tab switch), skipped during reset.
   useEffect(() => {
     return () => {
-      if (resetInProgress) return;
+      if (resetInProgress || !tokenEditedRef.current) return;
+      const credential = useHfTokenStore.getState();
+      if (
+        submittedTokenRevisionRef.current !== null &&
+        submittedTokenRevisionRef.current === tokenEditRevisionRef.current &&
+        !credential.isPersisting &&
+        !credential.persistenceError
+      ) {
+        return;
+      }
       const trimmed = draftRef.current.trim();
       const current = useChatRuntimeStore.getState().hfToken;
       if (trimmed !== current) {
@@ -259,20 +300,52 @@ export function GeneralTab() {
     };
   }, []);
 
+  useEffect(() => {
+    const current = hfToken ?? "";
+    if (tokenEditedRef.current) {
+      if (hfTokenIsPersisting) return;
+      if (hfTokenPersistenceError) {
+        submittedTokenRevisionRef.current = null;
+        return;
+      }
+      if (
+        submittedTokenRevisionRef.current !== tokenEditRevisionRef.current &&
+        draftRef.current.trim() !== current
+      ) {
+        return;
+      }
+      tokenEditedRef.current = false;
+      submittedTokenRevisionRef.current = null;
+    }
+    draftRef.current = current;
+    setDraftToken(current);
+  }, [hfToken, hfTokenIsPersisting, hfTokenPersistenceError]);
+
   const commitToken = () => {
-    const trimmed = draftToken.trim();
+    if (!tokenEditedRef.current) return;
+    const trimmed = draftRef.current.trim();
+    draftRef.current = trimmed;
     if (trimmed !== draftToken) setDraftToken(trimmed);
-    if (trimmed !== hfToken) setHfToken(trimmed);
+    const current = useChatRuntimeStore.getState().hfToken;
+    if (trimmed === current) {
+      tokenEditedRef.current = false;
+      submittedTokenRevisionRef.current = null;
+      return;
+    }
+    submittedTokenRevisionRef.current = tokenEditRevisionRef.current;
+    setHfToken(trimmed);
   };
 
   const clearHfToken = () => {
+    tokenEditRevisionRef.current += 1;
+    tokenEditedRef.current = true;
+    submittedTokenRevisionRef.current = tokenEditRevisionRef.current;
     draftRef.current = "";
     setDraftToken("");
     setHfToken("");
   };
 
-  // Only show the success tick after the authenticated validation endpoint confirms this token:
-  // a saved token alone may still be malformed, expired, or revoked.
+  // Only after the validation endpoint confirms the token: a saved one may be expired or revoked.
   const tokenIsCurrent =
     draftToken.trim().length > 0 && draftToken.trim() === (hfToken ?? "");
   const tokenValidation = useHfTokenValidation(hfToken ?? "");
@@ -367,7 +440,7 @@ export function GeneralTab() {
     try {
       const settings = await updatePreviewSharing(enabled);
       setPreviewSharing(settings);
-      // Toggling sharing changes whether /api/train/runs returns preview_sig, so refresh the grid.
+      // Sharing toggles whether /api/train/runs returns preview_sig.
       emitTrainingRunsChanged();
     } catch (error) {
       setPreviewSharingError(
@@ -384,7 +457,7 @@ export function GeneralTab() {
     setIsRevokingPreview(true);
     try {
       await rotatePreviewLinks();
-      // The secret rotated, so any preview_sig the history grid holds is stale.
+      // The secret rotated, so held preview_sig values are stale.
       emitTrainingRunsChanged();
       setRevokePreviewOpen(false);
       toast.success(t("settings.general.previewSharing.revoked"));
@@ -436,7 +509,7 @@ export function GeneralTab() {
         </p>
       </header>
 
-      {/* Desktop-only, and self-gating: outside the desktop app both render
+      {/* Desktop-only, and self-gating: outside the desktop app these render
           nothing and the section keeps just the version rows. */}
       <StudioVersionSection>
         {isTauri ? (
@@ -445,6 +518,7 @@ export function GeneralTab() {
             <DesktopUpdateNote />
           </div>
         ) : null}
+        <DesktopInstallTypeControl />
       </StudioVersionSection>
 
       <SettingsSection title={t("settings.general.account")}>
@@ -476,27 +550,33 @@ export function GeneralTab() {
                 spellCheck={false}
                 placeholder="hf_…"
                 value={draftToken}
-                onChange={(e) => setDraftToken(e.target.value)}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  tokenEditRevisionRef.current += 1;
+                  tokenEditedRef.current = value.trim() !== (hfToken ?? "");
+                  submittedTokenRevisionRef.current = null;
+                  draftRef.current = value;
+                  setDraftToken(value);
+                }}
                 onBlur={commitToken}
                 className={cn(
-                  "h-8 w-full font-mono text-xs",
+                  "h-control w-full font-mono text-xs",
                   tokenValidated ? "pr-14" : "pr-8",
                 )}
               />
               {tokenValidated ? (
-                // Decorative: pointer-events-none lets clicks reach the input underneath.
                 <span
                   className="pointer-events-none absolute right-7 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center text-emerald-600 duration-150 animate-in fade-in zoom-in dark:text-emerald-500"
                   role="img"
                   aria-label={t("settings.general.tokenValidated")}
                 >
-                  <Check className="size-4" strokeWidth={2.5} />
+                  <HugeiconsIcon icon={Tick02Icon} className="size-4" strokeWidth={2.5} />
                 </span>
               ) : null}
               <button
                 type="button"
                 onClick={() => setShowToken((s) => !s)}
-                className="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground"
+                className="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground"
                 aria-label={
                   showToken
                     ? t("settings.general.hideToken")
@@ -505,9 +585,9 @@ export function GeneralTab() {
                 tabIndex={-1}
               >
                 {showToken ? (
-                  <EyeOff className="size-3.5" />
+                  <HugeiconsIcon icon={ViewOffSlashIcon} className="size-3.5" />
                 ) : (
-                  <Eye className="size-3.5" />
+                  <HugeiconsIcon icon={ViewIcon} className="size-3.5" />
                 )}
               </button>
             </div>
@@ -515,7 +595,6 @@ export function GeneralTab() {
               type="button"
               variant="outline"
               size="sm"
-              className="h-8"
               disabled={!draftToken && !hfToken}
               onClick={clearHfToken}
             >
@@ -543,62 +622,16 @@ export function GeneralTab() {
         >
           <LanguageSelect />
         </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection title={t("settings.general.permissions.sectionTitle")}>
         <SettingsRow
-          label={t("settings.general.permissions.bypassLabel")}
-          description={t("settings.general.permissions.bypassDescription")}
+          label={t("settings.appearance.language.spellCheck")}
+          description={t("settings.appearance.language.spellCheckDescription")}
         >
-          <PermissionModeDropdown />
+          <Switch checked={spellCheck} onCheckedChange={setSpellCheck} />
         </SettingsRow>
       </SettingsSection>
 
-      {isTauri ? (
-        <SettingsSection title={t("settings.general.startup.sectionTitle")}>
-          <SettingsRow
-            label={t("settings.general.startup.launchAtLogin")}
-            description={t("settings.general.startup.launchAtLoginDescription")}
-            below={
-              launchAtLoginSetting.error ? (
-                <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
-                  {launchAtLoginSetting.error}
-                </span>
-              ) : null
-            }
-          >
-            <Switch
-              checked={launchAtLoginSetting.value ?? false}
-              disabled={
-                launchAtLoginSetting.value === null || launchAtLoginSetting.saving
-              }
-              onCheckedChange={(enabled) => void launchAtLoginSetting.update(enabled)}
-            />
-          </SettingsRow>
-
-          {closeToTraySetting.supported ? (
-            <SettingsRow
-              label={t("settings.general.startup.closeToTray")}
-              description={t("settings.general.startup.closeToTrayDescription")}
-              below={
-                closeToTraySetting.error ? (
-                  <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
-                    {closeToTraySetting.error}
-                  </span>
-                ) : null
-              }
-            >
-              <Switch
-                checked={closeToTraySetting.value ?? false}
-                disabled={
-                  closeToTraySetting.value === null || closeToTraySetting.saving
-                }
-                onCheckedChange={(enabled) => void closeToTraySetting.update(enabled)}
-              />
-            </SettingsRow>
-          ) : null}
-        </SettingsSection>
-      ) : null}
+      {/* Owner-only like the installation-wide block below: its routes are. */}
+      {isOwner ? <DocumentsRagSection /> : null}
 
       <SettingsSection title={t("settings.general.notifications.sectionTitle")}>
         <SettingsRow
@@ -613,30 +646,36 @@ export function GeneralTab() {
           />
         </SettingsRow>
         <SettingsRow
-          label={t("settings.general.notifications.showLlamaUpdates")}
+          label={t("settings.general.notifications.updateReminders")}
           description={t(
-            "settings.general.notifications.showLlamaUpdatesDescription",
+            "settings.general.notifications.updateRemindersDescription",
           )}
-        >
-          <Switch
-            checked={showLlamaUpdates}
-            onCheckedChange={setShowLlamaUpdateBanner}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.general.notifications.showWhisperUpdates")}
-          description={t(
-            "settings.general.notifications.showWhisperUpdatesDescription",
-          )}
-        >
-          <Switch
-            checked={showWhisperUpdates}
-            onCheckedChange={setShowWhisperUpdateBanner}
-          />
-        </SettingsRow>
+          className="pb-1"
+        />
+        <div className="flex flex-col pb-3">
+          {UPDATE_REMINDER_CHANNELS.map(({ channel, name, hintKey }) => (
+            <div
+              key={channel}
+              data-settings-label={name}
+              className="flex items-start justify-between gap-4 py-1.5"
+            >
+              <div className="flex min-w-0 items-baseline gap-2">
+                <span className="text-sm text-foreground">{name}</span>
+                {hintKey ? (
+                  <span className="truncate text-xs text-muted-foreground">
+                    {t(hintKey)}
+                  </span>
+                ) : null}
+              </div>
+              <NotificationFrequencySelect
+                channel={channel}
+                label={`${t("settings.general.notifications.updateReminders")}: ${name}`}
+              />
+            </div>
+          ))}
+        </div>
       </SettingsSection>
 
-      {/* Installation-wide settings: owner-only routes, so a managed account gets no dead controls. */}
       {isOwner ? (
         <>
       <SettingsSection
@@ -660,22 +699,19 @@ export function GeneralTab() {
           />
         </SettingsRow>
         <SettingsRow
-          destructive={true}
           label={t("settings.general.previewSharing.revokeLabel")}
           description={t("settings.general.previewSharing.revokeDescription")}
         >
           <Button
-            variant="outline"
+            variant="destructive"
             size="sm"
             onClick={() => setRevokePreviewOpen(true)}
-            className="text-destructive hover:text-destructive hover:border-destructive/60"
+            className="text-destructive hover:text-destructive"
           >
             {t("settings.general.previewSharing.revokeAction")}
           </Button>
         </SettingsRow>
       </SettingsSection>
-
-      <DocumentsRagSection />
 
       <HubSettingsSection />
 
@@ -709,7 +745,7 @@ export function GeneralTab() {
                 value={draftUploadLimit}
                 aria-label={t("settings.general.uploads.maxUploadSize")}
                 onChange={(event) => setDraftUploadLimit(event.target.value)}
-                className="h-8 w-24"
+                className="h-control w-24"
               />
               <span className="text-xs font-medium text-muted-foreground">
                 MB
@@ -757,14 +793,83 @@ export function GeneralTab() {
           />
         </SettingsRow>
       </SettingsSection>
+
         </>
       ) : null}
 
+      {isTauri ? (
+        <SettingsSection title={t("settings.general.startup.sectionTitle")}>
+          <SettingsRow
+            label={t("settings.general.startup.launchAtLogin")}
+            description={t("settings.general.startup.launchAtLoginDescription")}
+            below={
+              launchAtLoginSetting.error ? (
+                <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
+                  {launchAtLoginSetting.error}
+                </span>
+              ) : null
+            }
+          >
+            <Switch
+              checked={launchAtLoginSetting.value ?? false}
+              disabled={
+                launchAtLoginSetting.value === null || launchAtLoginSetting.saving
+              }
+              onCheckedChange={(enabled) => void launchAtLoginSetting.update(enabled)}
+            />
+          </SettingsRow>
+
+          {closeToTraySetting.supported ? (
+            <SettingsRow
+              label={t("settings.general.startup.closeToTray")}
+              description={t("settings.general.startup.closeToTrayDescription")}
+              below={
+                closeToTraySetting.error ? (
+                  <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
+                    {closeToTraySetting.error}
+                  </span>
+                ) : null
+              }
+            >
+              <Switch
+                checked={closeToTraySetting.value ?? false}
+                disabled={
+                  closeToTraySetting.value === null || closeToTraySetting.saving
+                }
+                onCheckedChange={(enabled) => void closeToTraySetting.update(enabled)}
+              />
+            </SettingsRow>
+          ) : null}
+
+          {trayIconSetting.supported ? (
+            <SettingsRow
+              label={t("settings.general.startup.menuBarIcon")}
+              description={t("settings.general.startup.menuBarIconDescription")}
+            >
+              <div className="flex flex-col items-end gap-1">
+                <Switch
+                  checked={trayIconSetting.value ?? false}
+                  disabled={
+                    trayIconSetting.value === null || trayIconSetting.saving
+                  }
+                  onCheckedChange={(enabled) => void trayIconSetting.update(enabled)}
+                />
+                {trayIconSetting.error ? (
+                  <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
+                    {trayIconSetting.error}
+                  </span>
+                ) : null}
+              </div>
+            </SettingsRow>
+          ) : null}
+        </SettingsSection>
+      ) : null}
+
       <SettingsSection
+        danger={true}
         title={t("settings.general.resetPreferences.sectionTitle")}
       >
         <SettingsRow
-          destructive={true}
           label={t("settings.general.resetPreferences.label")}
           description={t("settings.general.resetPreferences.description")}
         >
@@ -772,7 +877,7 @@ export function GeneralTab() {
             variant="outline"
             size="sm"
             onClick={() => setConfirmOpen(true)}
-            className="text-destructive hover:text-destructive hover:border-destructive/60"
+            className="text-destructive hover:text-destructive"
           >
             {t("settings.general.resetPreferences.action")}
           </Button>
@@ -799,7 +904,7 @@ export function GeneralTab() {
             </Button>
             <Button
               onClick={resetAllPrefs}
-              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
+              variant="destructive"
             >
               {t("settings.general.resetPreferences.confirmAction")}
             </Button>
@@ -825,9 +930,9 @@ export function GeneralTab() {
               {t("common.cancel")}
             </Button>
             <Button
+              variant="destructive"
               onClick={() => void revokePreviewLinks()}
               disabled={isRevokingPreview}
-              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
             >
               {isRevokingPreview
                 ? t("settings.general.previewSharing.revoking")

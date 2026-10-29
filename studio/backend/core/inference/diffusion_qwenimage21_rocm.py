@@ -1,22 +1,20 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Bound large Qwen-Image-2.1 query batches on measured ROCm GPUs.
-
-On gfx1151, native flash attention slows sharply above 8192 image tokens. Query
-rows are independent for unmasked, noncausal attention, so each chunk can retain
-all keys and values. Prefill, masks and explicit alternative backends stay stock.
-"""
+"""Query-chunked Qwen-Image-2.1 ROCm attention; chunks keep all keys and values (unmasked, noncausal)."""
 
 from __future__ import annotations
 
 import functools
 import os
 from typing import Any
+from .rocm_bf16 import is_rocm_torch
 
 QUERY_CHUNK_ENV = "UNSLOTH_QWEN_IMAGE_ROCM_QUERY_CHUNKING"
 QUERY_CHUNK_SIZE = 512
 MIN_QUERY_TOKENS = 8192
+# gfx1151 and gfx1201 are measured; gfx1200 runs gfx1201's AOTriton kernels and tuning.
+CHUNKED_ARCHES = frozenset({"gfx1151", "gfx1200", "gfx1201"})
 
 
 def _device_supported(target: Any) -> bool:
@@ -27,7 +25,7 @@ def _device_supported(target: Any) -> bool:
         return False
     import torch
 
-    if not getattr(torch.version, "hip", None):
+    if not is_rocm_torch(torch):
         return False
     if setting in ("1", "true", "on", "yes"):
         return True
@@ -35,7 +33,9 @@ def _device_supported(target: Any) -> bool:
     props = torch.cuda.get_device_properties(
         torch.cuda.current_device() if ordinal is None else ordinal
     )
-    return str(getattr(props, "gcnArchName", "")).split(":", 1)[0] == "gfx1151"
+    from utils.hardware.hardware import _props_gfx_arch
+
+    return _props_gfx_arch(props) in CHUNKED_ARCHES
 
 
 def _native_backend(processor: Any) -> bool:

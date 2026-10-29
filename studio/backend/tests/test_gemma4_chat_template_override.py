@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Auto-override of the chat template for ``unsloth/gemma-4-*-GGUF``.
-
-Unsloth ships a bundled ``gemma-4.jinja`` (PR #118 based, ``preserve_thinking``
-defaulted off) and applies it to gemma-4 GGUF loads via the existing
-``chat_template_override`` -> ``--chat-template-file`` path, so users do not need
-to re-download quants. Pins the family matcher, the resolver precedence, the
-bundled asset's reasoning/tool capabilities (which drive the "Preserve thinking"
-UI toggle), the Jinja gate behaviour, and the reload-dedup interaction.
-"""
+"""Gemma-4 GGUF loads auto-apply the bundled gemma-4.jinja template, so quants need no re-download."""
 
 from __future__ import annotations
 
@@ -24,8 +16,7 @@ if _BACKEND_DIR not in sys.path:
 
 import pytest
 
-# ── chat_templates is dependency-light: load it directly so the pure-logic
-#    tests run without the studio venv / core.inference package side effects. ──
+# Load chat_templates directly to avoid core.inference import side effects.
 _CT_PATH = Path(_BACKEND_DIR) / "core" / "inference" / "chat_templates.py"
 _ct_spec = importlib.util.spec_from_file_location("_gemma4_ct_test", _CT_PATH)
 chat_templates = importlib.util.module_from_spec(_ct_spec)
@@ -40,12 +31,9 @@ BUNDLED = load_bundled_chat_template("gemma-4.jinja")  # 12b / 26B-A4B / 31B
 EDGE = load_bundled_chat_template("gemma-4-edge.jinja")  # E2B / E4B
 
 
-# ── Stubs so core.inference.llama_cpp imports without the full studio venv ──
+# Stubs let core.inference.llama_cpp import without the full studio venv.
 def _stub_modules_ctx():
-    """patch.dict context that stubs the heavy deps llama_cpp pulls in at import,
-    but only those NOT already importable (real httpx / structlog are kept when
-    present, e.g. in CI), and removes the stubs on exit so other tests are not
-    polluted."""
+    """Stubs only heavy deps that are not importable, and removes the stubs on exit."""
     from unittest.mock import patch
 
     _loggers_stub = _types.ModuleType("loggers")
@@ -90,9 +78,6 @@ def _detect_reasoning_flags():
     return detect_reasoning_flags
 
 
-# ── Family matcher ───────────────────────────────────────────────────
-
-
 @pytest.mark.parametrize(
     "model_id,expected",
     [
@@ -100,14 +85,18 @@ def _detect_reasoning_flags():
         ("unsloth/gemma-4-E4B-it-GGUF", True),
         ("unsloth/gemma-4-31B-it-GGUF", True),
         ("unsloth/gemma-4-26B-A4B-it-GGUF", True),
-        ("UNSLOTH/GEMMA-4-E2B-IT-GGUF", True),  # case-insensitive
+        ("unsloth/gemma-4-E4B-it-qat-GGUF", True),
+        ("unsloth/gemma-4-12B-it-qat-GGUF", True),
+        ("UNSLOTH/GEMMA-4-E2B-IT-GGUF", True),
         ("gemma-4-E2B-it-GGUF", True),  # owner-less shorthand -> unsloth/
-        ("gemma-4-31B-it-GGUF", True),  # owner-less shorthand -> unsloth/
-        ("unsloth/gemma-4-E2B-it", False),  # bf16, not GGUF
-        ("unsloth/gemma-3-4b-it-GGUF", False),  # gemma 3
-        ("google/gemma-4-31B-it-GGUF", False),  # not unsloth
+        ("gemma-4-31B-it-GGUF", True),
+        ("unsloth/gemma-4-E2B-it", False),
+        ("unsloth/gemma-3-4b-it-GGUF", False),
+        ("google/gemma-4-31B-it-GGUF", False),
         ("unsloth/Qwen3.5-9B-MTP-GGUF", False),
         ("/home/user/models/gemma-4-E2B.Q4_K_M.gguf", False),  # local path
+        ("/scan/models--unsloth--gemma-4-E2B-it-GGUF/snapshots/abc", True),  # repo snapshot
+        ("C:\\scan\\models--google--gemma-4-31B-it-GGUF\\snapshots\\abc", False),
         ("", False),
         (None, False),
     ],
@@ -116,16 +105,18 @@ def test_is_unsloth_gemma4_gguf(model_id, expected):
     assert is_unsloth_gemma4_gguf(model_id) is expected
 
 
-# ── Resolver precedence ──────────────────────────────────────────────
-
-
 @pytest.mark.parametrize(
     "model_id,expected_edge",
     [
         ("unsloth/gemma-4-E2B-it-GGUF", True),
         ("unsloth/gemma-4-E4B-it-GGUF", True),
         ("UNSLOTH/GEMMA-4-E4B-IT-GGUF", True),
+        ("unsloth/gemma-4-E2B-it-qat-GGUF", True),
+        ("unsloth/gemma-4-E4B-it-qat-GGUF", True),
+        ("unsloth/gemma-4-E4B-it-qat-mobile-GGUF", True),
+        ("unsloth/gemma-4-E2B-it-qat-mobile-GGUF", True),
         ("unsloth/gemma-4-12b-it-GGUF", False),
+        ("unsloth/gemma-4-12B-it-qat-GGUF", False),
         ("unsloth/gemma-4-26B-A4B-it-GGUF", False),
         ("unsloth/gemma-4-31B-it-GGUF", False),
         ("unsloth/gemma-3-4b-it-GGUF", False),
@@ -142,9 +133,20 @@ def test_resolver_returns_edge_template_for_e2b_e4b():
         assert out != BUNDLED
 
 
+def test_resolver_routes_qat_repos_by_family():
+    # QAT repos add '-qat'; E2B/E4B QAT must still get the edge template, or thinking-off
+    # gets an empty thought block.
+    for mid in ("unsloth/gemma-4-E2B-it-qat-GGUF", "unsloth/gemma-4-E4B-it-qat-GGUF"):
+        out = resolve_effective_chat_template_override(model_identifier = mid, user_override = None)
+        assert out == EDGE
+    out = resolve_effective_chat_template_override(
+        model_identifier = "unsloth/gemma-4-12B-it-qat-GGUF", user_override = None
+    )
+    assert out == BUNDLED
+
+
 def test_resolver_handles_owner_less_shorthand():
-    # ModelConfig.from_identifier prefixes unsloth/ for bare ids; the resolver
-    # runs before that, so it must apply the same normalization.
+    # The resolver runs before ModelConfig.from_identifier adds unsloth/, so it must normalize too.
     assert (
         resolve_effective_chat_template_override(
             model_identifier = "gemma-4-E2B-it-GGUF", user_override = None
@@ -192,9 +194,6 @@ def test_resolver_none_for_non_gemma():
     )
 
 
-# ── Bundled asset content + capability classification ────────────────
-
-
 @pytest.mark.parametrize("tpl", [BUNDLED, EDGE])
 def test_bundled_template_has_preserve_thinking_defaulted_off(tpl):
     assert "preserve_thinking" in tpl
@@ -203,9 +202,7 @@ def test_bundled_template_has_preserve_thinking_defaulted_off(tpl):
 
 @pytest.mark.parametrize("name", ["gemma-4.jinja", "gemma-4-edge.jinja"])
 def test_bundled_templates_are_ascii(name):
-    # The temp file written for --chat-template-file must encode on any locale.
-    # Keeping the bundled templates ASCII avoids UnicodeEncodeError on non-UTF-8
-    # Windows locales (cp932/cp1252) regardless of the writer's encoding.
+    # Bundled templates stay ASCII so the temp file encodes on non-UTF-8 Windows locales.
     text = load_bundled_chat_template(name)
     non_ascii = sorted({c for c in text if ord(c) > 127})
     assert not non_ascii, f"{name} has non-ASCII chars: {non_ascii}"
@@ -218,7 +215,7 @@ def test_detect_reasoning_flags_on_bundled_template(tpl):
     assert flags["supports_reasoning"] is True
     assert flags["reasoning_style"] == "enable_thinking"
     assert flags["reasoning_always_on"] is False
-    # This is what makes the "Preserve thinking" toggle appear in the UI.
+    # This flag drives the UI 'Preserve thinking' toggle.
     assert flags["supports_preserve_thinking"] is True
     assert flags["supports_tools"] is True
 
@@ -233,15 +230,11 @@ def test_edge_template_omits_empty_thought_block_on_thinking_off():
     std_off = _render_with(BUNDLED, msgs, enable_thinking = False)
     assert EMPTY not in edge_off, "edge (E2B/E4B) should not emit empty thought block"
     assert EMPTY in std_off, "standard (12b/26B/31B) should emit empty thought block"
-    # With thinking ON neither appends the empty block at the prompt tail.
     assert EMPTY not in _render_with(EDGE, msgs, enable_thinking = True)
 
 
-# ── Jinja gate behaviour (off = omit prior reasoning, on = keep) ─────
-
-
 def _render_with(tpl, messages, **kw):
-    pytest.importorskip("jinja2")  # transitive via transformers; skip in minimal envs
+    pytest.importorskip("jinja2")  # transitive via transformers
     from jinja2 import Environment, BaseLoader
 
     def raise_exception(msg):
@@ -262,7 +255,6 @@ def _render(messages, **kw):
 
 
 def _convo_with_prior_tool_reasoning():
-    # Assistant tool-call turn with reasoning, BEFORE the last user message.
     return [
         {"role": "user", "content": "q1"},
         {
@@ -276,7 +268,6 @@ def _convo_with_prior_tool_reasoning():
 
 
 def test_preserve_thinking_off_omits_prior_reasoning():
-    # default(false): kwarg unset -> prior reasoning dropped before last user turn.
     assert "SECRET_THOUGHT" not in _render(_convo_with_prior_tool_reasoning())
 
 
@@ -292,21 +283,49 @@ def test_current_tool_reasoning_survives_a_suppressed_call_result(tpl):
     assert rendered.index("SECRET_THOUGHT") < rendered.index("The duplicate call was not executed.")
 
 
+@pytest.mark.parametrize("tpl", [BUNDLED, EDGE])
+def test_model_thinks_again_after_a_tool_result(tpl):
+    messages = _convo_with_prior_tool_reasoning()[:-1]
+    assert _render_with(tpl, messages, enable_thinking = True).endswith(
+        "<tool_response|><|channel>thought\n"
+    )
+    assert _render_with(tpl, messages, enable_thinking = False).endswith("<tool_response|>")
+
+
+@pytest.mark.parametrize("tpl", [BUNDLED, EDGE])
+def test_closed_tool_turn_reopens_the_model_turn(tpl):
+    messages = _convo_with_prior_tool_reasoning()[:-1]
+    messages[1]["content"] = "Let me check."
+    assert _render_with(tpl, messages, enable_thinking = True).endswith(
+        "Let me check.<turn|>\n<|turn>model\n"
+    )
+
+
+@pytest.mark.parametrize("tpl", [BUNDLED, EDGE])
+def test_consecutive_assistant_content_keeps_its_separator(tpl):
+    messages = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "first"},
+        {"role": "assistant", "content": "second"},
+    ]
+    assert "first\nsecond<turn|>" in _render_with(tpl, messages)
+
+
+@pytest.mark.parametrize("tpl", [BUNDLED, EDGE])
+def test_completed_tool_turn_continuation_keeps_its_separator(tpl):
+    messages = _convo_with_prior_tool_reasoning()[:-1]
+    messages[1]["content"] = "Let me check."
+    messages.append({"role": "assistant", "content": "The answer is 42."})
+    assert "Let me check.\nThe answer is 42.<turn|>" in _render_with(tpl, messages)
+
+
 def test_enable_thinking_gates_think_token():
     assert "<|think|>" in _render([{"role": "user", "content": "hi"}], enable_thinking = True)
     assert "<|think|>" not in _render([{"role": "user", "content": "hi"}], enable_thinking = False)
 
 
-# ── Reload dedup interaction (why the route resolves the effective override) ──
-
-
 def test_already_in_target_state_consistent_with_bundled_override():
-    """The backend dedup compares the incoming override against the live one.
-
-    The route resolves the bundled template up front so a re-load that omits
-    ``chat_template_override`` still matches (no spurious reload), while a raw
-    ``None`` would not.
-    """
+    """the bundled template replaces None before dedup to prevent needless reloads"""
     LlamaCppBackend, GgufLoadIntent = _import_backend()
 
     class _FakeProcess:
@@ -327,7 +346,7 @@ def test_already_in_target_state_consistent_with_bundled_override():
     backend._cache_type_kv = None
     backend._speculative_type = None
     backend._requested_spec_mode = "auto"
-    backend._chat_template_override = BUNDLED  # live server launched with the bundle
+    backend._chat_template_override = BUNDLED
     backend._is_vision = False
     backend._extra_args = None
     backend._gguf_path = None
@@ -341,11 +360,10 @@ def test_already_in_target_state_consistent_with_bundled_override():
         extra_args = None,
         is_vision = False,
     )
-    # Effective (resolved bundled) override -> already loaded, no reload.
     assert backend.adopt_load_intent_if_matched(
         GgufLoadIntent(chat_template_override = BUNDLED, **common)
     )
-    # Raw None (unresolved) -> false match, would force a needless reload.
+    # Raw None would mismatch and force a needless reload.
     assert not backend.adopt_load_intent_if_matched(
         GgufLoadIntent(chat_template_override = None, **common)
     )

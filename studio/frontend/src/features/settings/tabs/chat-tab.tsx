@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { LazyImportBoundary } from "@/components/lazy-import-boundary";
+import { SegmentedPill } from "@/components/segmented-control";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -15,16 +17,15 @@ import {
   DEFAULT_TOOL_VISIBILITY,
   type PlusMenuItemId,
   normaliseDisplayVisibility,
-  refreshModelDisclaimerPreference,
-  saveModelDisclaimerPreference,
+  requestReplyFinishedPermission,
   useChatPreferencesStore,
   useChatRuntimeStore,
   usePlusMenuPrefsStore,
-  useSidebarOrganizationStore,
 } from "@/features/chat";
 import { PASTED_TEXT_THRESHOLD_CHOICES } from "@/features/chat/utils/pasted-text";
 import { refreshContextUsage } from "@/features/chat/utils/refresh-context-usage";
 import { formatBindingLabel, isMacPlatform } from "../lib/keyboard-shortcuts";
+import { useIsAccountOwner } from "@/features/auth";
 import { useUserProfileStore } from "@/features/profile";
 import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
@@ -32,29 +33,45 @@ import { cn } from "@/lib/utils";
 import {
   Bookmark02Icon,
   Download01Icon,
-  FileDatabaseIcon,
   Folder01Icon,
   LibrariesIcon,
   McpServerIcon,
-  PencilRulerIcon,
   Scroll01Icon,
+  Telescope02Icon,
 } from "@hugeicons/core-free-icons";
+import { FileSearchIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { CursorInWindowIcon } from "@/lib/browser-use-icon";
 import { useNavigate } from "@tanstack/react-router";
 import { Columns2Icon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { Suspense, lazy, useEffect, useId, useState } from "react";
 import type { ReactNode } from "react";
 import {
   type CurrentDatePromptSettings,
   loadCurrentDatePrompt,
   updateCurrentDatePrompt,
 } from "../api/current-date-prompt";
+import {
+  type ToolResultLimitSettings,
+  loadToolResultLimit,
+  toolResultLimitChoices,
+  updateToolResultLimit,
+} from "../api/tool-result-limit";
+import { ChatMenuOrderList } from "../components/chat-menu-order-list";
+import { FirstTokenTimeoutRow } from "../components/first-token-timeout-row";
 import { SettingsRow } from "../components/settings-row";
 import { ComposerSettings } from "../components/composer-settings";
 import { SettingsSection } from "../components/settings-section";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
-// Adjustable "+" menu items shown in settings, in display order. Icons mirror
+// Off the startup bundle: the settings chunk loads eagerly, this section only when the Chat tab opens.
+const ChatMemorySection = lazy(() =>
+  import("../components/chat-memory-section").then((module) => ({
+    default: module.ChatMemorySection,
+  })),
+);
+
+// Adjustable "+" menu items shown in settings; the list shows them in the user's order. Icons mirror
 // the ones used in the composer + menu itself.
 const PLUS_MENU_ICON_CLASS = "size-[calc(18px*var(--ui-space-scale,1))]";
 const PLUS_MENU_SETTINGS: {
@@ -63,11 +80,33 @@ const PLUS_MENU_SETTINGS: {
   icon: ReactNode;
 }[] = [
   {
+    id: "deepResearch",
+    labelKey: "settings.chat.menu.deepResearch",
+    icon: (
+      <HugeiconsIcon
+        icon={Telescope02Icon}
+        strokeWidth={2}
+        className={PLUS_MENU_ICON_CLASS}
+      />
+    ),
+  },
+  {
+    id: "browserUse",
+    labelKey: "settings.chat.menu.browserUse",
+    icon: (
+      <HugeiconsIcon
+        icon={CursorInWindowIcon}
+        strokeWidth={2}
+        className={PLUS_MENU_ICON_CLASS}
+      />
+    ),
+  },
+  {
     id: "chatWithFiles",
     labelKey: "settings.chat.menu.chatWithFiles",
     icon: (
       <HugeiconsIcon
-        icon={FileDatabaseIcon}
+        icon={FileSearchIcon}
         strokeWidth={2}
         className={PLUS_MENU_ICON_CLASS}
       />
@@ -123,17 +162,6 @@ const PLUS_MENU_SETTINGS: {
     ),
   },
   {
-    id: "canvas",
-    labelKey: "settings.chat.artifacts.title",
-    icon: (
-      <HugeiconsIcon
-        icon={PencilRulerIcon}
-        strokeWidth={2}
-        className={PLUS_MENU_ICON_CLASS}
-      />
-    ),
-  },
-  {
     id: "projects",
     labelKey: "shell.navigation.projects",
     icon: (
@@ -146,11 +174,123 @@ const PLUS_MENU_SETTINGS: {
   },
 ];
 
-export function ChatTab() {
+// Install-wide, so owner-only: how much of one tool result the model reads.
+function ToolResultLimitRow() {
   const t = useT();
+  const [settings, setSettings] = useState<ToolResultLimitSettings | null>(
+    null,
+  );
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadToolResultLimit(t("settings.chat.toolResultLimitLoadError"))
+      .then((loaded) => {
+        if (cancelled) return;
+        setSettings(loaded);
+        setError(null);
+      })
+      .catch((loadError) => {
+        if (cancelled) return;
+        setError(
+          loadError instanceof Error
+            ? loadError.message
+            : t("settings.chat.toolResultLimitLoadError"),
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [t]);
+
+  const save = async (maxChars: number) => {
+    setSaving(true);
+    setError(null);
+    try {
+      setSettings(
+        await updateToolResultLimit(
+          maxChars,
+          t("settings.chat.toolResultLimitSaveError"),
+        ),
+      );
+    } catch (saveError) {
+      setError(
+        saveError instanceof Error
+          ? saveError.message
+          : t("settings.chat.toolResultLimitSaveError"),
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const note = settings?.lockedByEnvironment
+    ? t("settings.chat.toolResultLimitLocked")
+    : error;
+  return (
+    <SettingsRow
+      label={t("settings.chat.toolResultLimit")}
+      description={t("settings.chat.toolResultLimitDescription", {
+        count: (
+          settings?.defaultChars ?? 16000
+        ).toLocaleString(),
+      })}
+      hint={t("settings.chat.toolResultLimitHint")}
+      below={
+        note ? (
+          <span
+            role={settings?.lockedByEnvironment ? undefined : "alert"}
+            className={cn(
+              "max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs",
+              settings?.lockedByEnvironment
+                ? "text-muted-foreground"
+                : "text-destructive",
+            )}
+          >
+            {note}
+          </span>
+        ) : null
+      }
+    >
+      <Select
+        value={settings ? String(settings.maxChars) : undefined}
+        disabled={!settings || saving || settings.lockedByEnvironment}
+        onValueChange={(value) => {
+          const next = Number(value);
+          if (settings && next !== settings.maxChars) void save(next);
+        }}
+      >
+        <SelectTrigger
+          className="w-44"
+          aria-label={t("settings.chat.toolResultLimit")}
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {settings
+            ? toolResultLimitChoices(settings).map((choice) => (
+                <SelectItem key={choice} value={String(choice)}>
+                  {choice === settings.defaultChars
+                    ? t("settings.chat.toolResultLimitDefault", {
+                        count: choice.toLocaleString(),
+                      })
+                    : choice.toLocaleString()}
+                </SelectItem>
+              ))
+            : null}
+        </SelectContent>
+      </Select>
+    </SettingsRow>
+  );
+}
+
+export function ChatTab() {
+  const isOwner = useIsAccountOwner();
+  const t = useT();
+  const pillId = useId();
   const navigate = useNavigate();
-  const plusPins = usePlusMenuPrefsStore((state) => state.pins);
-  const togglePlusPin = usePlusMenuPrefsStore((state) => state.togglePin);
+  const resetPlusMenu = usePlusMenuPrefsStore((state) => state.resetMenu);
   const autoTitle = useChatRuntimeStore((state) => state.autoTitle);
   const setAutoTitle = useChatRuntimeStore((state) => state.setAutoTitle);
   const projectAttachmentTarget = useChatRuntimeStore(
@@ -171,46 +311,24 @@ export function ChatTab() {
   const setAutoCompactEnabled = useChatRuntimeStore(
     (state) => state.setAutoCompactEnabled,
   );
+  const keepRunningWhenTabClosed = useChatRuntimeStore(
+    (state) => state.keepRunningWhenTabClosed,
+  );
+  const setKeepRunningWhenTabClosed = useChatRuntimeStore(
+    (state) => state.setKeepRunningWhenTabClosed,
+  );
   const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
+  const composerAtBottom = useChatPreferencesStore(
+    (s) => s.newChatComposerAtBottom,
+  );
+  const setComposerAtBottom = useChatPreferencesStore(
+    (s) => s.setNewChatComposerAtBottom,
+  );
   const setShowGreetingSloth = useUserProfileStore(
     (s) => s.setShowGreetingSloth,
   );
-  const showCanvasMenuItem = useChatRuntimeStore(
-    (state) => state.showCanvasMenuItem,
-  );
-  const setShowCanvasMenuItem = useChatRuntimeStore(
-    (state) => state.setShowCanvasMenuItem,
-  );
-  const collapseHtmlArtifacts = useChatRuntimeStore(
-    (state) => state.collapseHtmlArtifacts,
-  );
-  const setCollapseHtmlArtifacts = useChatRuntimeStore(
-    (state) => state.setCollapseHtmlArtifacts,
-  );
-  const allowArtifactNetworkAccess = useChatRuntimeStore(
-    (state) => state.allowArtifactNetworkAccess,
-  );
-  const setAllowArtifactNetworkAccess = useChatRuntimeStore(
-    (state) => state.setAllowArtifactNetworkAccess,
-  );
   const searchImages = useChatRuntimeStore((state) => state.searchImages);
   const setSearchImages = useChatRuntimeStore((state) => state.setSearchImages);
-  const networkAccessRowRef = useRef<HTMLDivElement | null>(null);
-  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
-  const consumeScrollTarget = useSettingsDialogStore(
-    (s) => s.consumeScrollTarget,
-  );
-  useEffect(() => {
-    if (scrollTarget !== "chat-canvas-network") return;
-    const frame = window.requestAnimationFrame(() => {
-      networkAccessRowRef.current?.scrollIntoView({
-        block: "center",
-        behavior: "smooth",
-      });
-      consumeScrollTarget("chat-canvas-network");
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [consumeScrollTarget, scrollTarget]);
   const hydratePersistedSettings = useChatRuntimeStore(
     (state) => state.hydratePersistedSettings,
   );
@@ -230,19 +348,12 @@ export function ChatTab() {
   const setShowMemoryBar = useChatRuntimeStore(
     (state) => state.setShowMemoryBar,
   );
-  const organizeBy = useSidebarOrganizationStore((s) => s.organizeBy);
-  const setOrganizeBy = useSidebarOrganizationStore((s) => s.setOrganizeBy);
-  const showModelDisclaimer = useChatPreferencesStore(
-    (state) => state.showModelDisclaimer,
+  const fitOnDeviceOnly = useChatRuntimeStore((state) => state.fitOnDeviceOnly);
+  const setFitOnDeviceOnly = useChatRuntimeStore(
+    (state) => state.setFitOnDeviceOnly,
   );
   const showResponseModel = useChatPreferencesStore(
     (state) => state.showResponseModel,
-  );
-  const showInlineReadAloud = useChatPreferencesStore(
-    (state) => state.showInlineReadAloud,
-  );
-  const setShowInlineReadAloud = useChatPreferencesStore(
-    (state) => state.setShowInlineReadAloud,
   );
   const showInlineEditResponse = useChatPreferencesStore(
     (state) => state.showInlineEditResponse,
@@ -253,11 +364,29 @@ export function ChatTab() {
   const setShowResponseModel = useChatPreferencesStore(
     (state) => state.setShowResponseModel,
   );
+  const showReplyTimes = useChatPreferencesStore(
+    (state) => state.showReplyTimes,
+  );
+  const setShowReplyTimes = useChatPreferencesStore(
+    (state) => state.setShowReplyTimes,
+  );
+  const showGenerationDetails = useChatPreferencesStore(
+    (state) => state.showGenerationDetails,
+  );
+  const setShowGenerationDetails = useChatPreferencesStore(
+    (state) => state.setShowGenerationDetails,
+  );
   const autoScrollWhileGenerating = useChatPreferencesStore(
     (state) => state.autoScrollWhileGenerating,
   );
   const setAutoScrollWhileGenerating = useChatPreferencesStore(
     (state) => state.setAutoScrollWhileGenerating,
+  );
+  const notifyWhenReplyFinishes = useChatPreferencesStore(
+    (state) => state.notifyWhenReplyFinishes,
+  );
+  const setNotifyWhenReplyFinishes = useChatPreferencesStore(
+    (state) => state.setNotifyWhenReplyFinishes,
   );
   const thinkingVisibility = useChatPreferencesStore(
     (state) => state.thinkingVisibility,
@@ -284,7 +413,7 @@ export function ChatTab() {
   const setFoldToolActivityIntoThinking = useChatPreferencesStore(
     (state) => state.setFoldToolActivityIntoThinking,
   );
-  // Cannot coexist with always expanded. The stored preference is left alone so it comes back.
+  // Fold cannot coexist with always expanded; the stored fold preference is kept so it comes back.
   const foldBlockedByAlwaysExpanded = toolVisibility === "expanded";
   const pastedTextMinChars = useChatPreferencesStore(
     (state) => state.pastedTextMinChars,
@@ -292,9 +421,7 @@ export function ChatTab() {
   const setPastedTextMinChars = useChatPreferencesStore(
     (state) => state.setPastedTextMinChars,
   );
-  // The platform's own paste-without-formatting chord, which the composer reads
-  // as "put it in the box" whatever this threshold says. macOS carries it on
-  // Option, that being the chord its Edit menu binds.
+  // The composer always pastes this chord as plain text; macOS binds it on Option.
   const macPlatform = isMacPlatform();
   const plainPasteLabel = formatBindingLabel(
     { code: "KeyV", mod: true, ctrl: false, shift: true, alt: macPlatform },
@@ -303,7 +430,6 @@ export function ChatTab() {
 
   useEffect(() => {
     void hydratePersistedSettings();
-    refreshModelDisclaimerPreference().catch(() => undefined);
   }, [hydratePersistedSettings]);
 
   useEffect(() => {
@@ -363,7 +489,6 @@ export function ChatTab() {
         >
           <Button
             variant="outline"
-            className="px-3.5"
             onClick={() => {
               useSettingsDialogStore.getState().closeDialog();
               void navigate({ to: "/library", search: { show: "chats" } });
@@ -423,6 +548,19 @@ export function ChatTab() {
           />
         </SettingsRow>
         <SettingsRow
+          label={t("settings.chat.keepRunningWhenTabClosed")}
+          description={t("settings.chat.keepRunningWhenTabClosedDescription")}
+          hint={t("settings.chat.keepRunningWhenTabClosedHint")}
+        >
+          <Switch
+            aria-label={t("settings.chat.keepRunningWhenTabClosed")}
+            checked={keepRunningWhenTabClosed}
+            onCheckedChange={setKeepRunningWhenTabClosed}
+          />
+        </SettingsRow>
+        {isOwner ? <ToolResultLimitRow /> : null}
+        {isOwner ? <FirstTokenTimeoutRow /> : null}
+        <SettingsRow
           label={t("settings.chat.autoScroll")}
           description={t("settings.chat.autoScrollDescription")}
         >
@@ -438,12 +576,15 @@ export function ChatTab() {
                 aria-pressed={autoScrollWhileGenerating === follow}
                 onClick={() => setAutoScrollWhileGenerating(follow)}
                 className={cn(
-                  "inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                  "relative inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                   autoScrollWhileGenerating === follow
-                    ? "hub-tab-toggle-pill text-foreground"
+                    ? "text-foreground"
                     : "text-muted-foreground hover:text-foreground",
                 )}
               >
+                {autoScrollWhileGenerating === follow && (
+                  <SegmentedPill group={`${pillId}-auto-scroll`} />
+                )}
                 {t(
                   follow
                     ? "settings.chat.autoScrollAuto"
@@ -452,6 +593,24 @@ export function ChatTab() {
               </button>
             ))}
           </div>
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.replyNotification")}
+          description={t("settings.chat.replyNotificationDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.replyNotification")}
+            checked={notifyWhenReplyFinishes}
+            onCheckedChange={(checked) => {
+              setNotifyWhenReplyFinishes(checked);
+              if (!checked) return;
+              void requestReplyFinishedPermission().then((granted) => {
+                if (granted) return;
+                setNotifyWhenReplyFinishes(false);
+                toast.error(t("settings.chat.replyNotificationBlocked"));
+              });
+            }}
+          />
         </SettingsRow>
       </SettingsSection>
 
@@ -512,6 +671,12 @@ export function ChatTab() {
           />
         </SettingsRow>
       </SettingsSection>
+
+      <LazyImportBoundary fallback={null}>
+        <Suspense fallback={null}>
+          <ChatMemorySection />
+        </Suspense>
+      </LazyImportBoundary>
 
       <SettingsSection title={t("settings.chat.groups.display.title")}>
         <SettingsRow
@@ -584,7 +749,6 @@ export function ChatTab() {
         </SettingsRow>
         <SettingsRow
           label={t("settings.chat.tools.foldIntoThinking")}
-          // Says why the row is off rather than letting a checked switch do nothing.
           description={t(
             foldBlockedByAlwaysExpanded
               ? "settings.chat.tools.foldIntoThinkingBlocked"
@@ -609,13 +773,23 @@ export function ChatTab() {
           />
         </SettingsRow>
         <SettingsRow
-          label={t("settings.chat.inlineReadAloud")}
-          description={t("settings.chat.inlineReadAloudDescription")}
+          label={t("settings.chat.showReplyTimes")}
+          description={t("settings.chat.showReplyTimesDescription")}
         >
           <Switch
-            aria-label={t("settings.chat.inlineReadAloud")}
-            checked={showInlineReadAloud}
-            onCheckedChange={setShowInlineReadAloud}
+            aria-label={t("settings.chat.showReplyTimes")}
+            checked={showReplyTimes}
+            onCheckedChange={setShowReplyTimes}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.showGenerationDetails")}
+          description={t("settings.chat.showGenerationDetailsDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.showGenerationDetails")}
+            checked={showGenerationDetails}
+            onCheckedChange={setShowGenerationDetails}
           />
         </SettingsRow>
         <SettingsRow
@@ -629,32 +803,6 @@ export function ChatTab() {
           />
         </SettingsRow>
         <SettingsRow
-          label={t("settings.chat.projectsSection")}
-          description={t("settings.chat.projectsSectionDescription")}
-        >
-          <Switch
-            aria-label={t("settings.chat.projectsSection")}
-            checked={organizeBy === "project"}
-            onCheckedChange={(checked) =>
-              setOrganizeBy(checked ? "project" : "list")
-            }
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.modelDisclaimer")}
-          description={t("settings.chat.modelDisclaimerDescription")}
-        >
-          <Switch
-            aria-label={t("settings.chat.modelDisclaimer")}
-            checked={showModelDisclaimer}
-            onCheckedChange={(checked) => {
-              return saveModelDisclaimerPreference(checked).catch(() => {
-                toast.error("Could not save the model disclaimer setting.");
-              });
-            }}
-          />
-        </SettingsRow>
-        <SettingsRow
           label={t("settings.profile.greetingSloth")}
           description={t("settings.profile.greetingSlothDescription")}
         >
@@ -663,6 +811,16 @@ export function ChatTab() {
             id="profile-greeting-sloth"
             checked={showGreetingSloth}
             onCheckedChange={setShowGreetingSloth}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.composerAtBottom")}
+          description={t("settings.chat.composerAtBottomDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.composerAtBottom")}
+            checked={composerAtBottom}
+            onCheckedChange={setComposerAtBottom}
           />
         </SettingsRow>
       </SettingsSection>
@@ -698,51 +856,40 @@ export function ChatTab() {
             onCheckedChange={setShowAllQuantizations}
           />
         </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection title={t("settings.chat.artifacts.title")}>
-        <div ref={networkAccessRowRef}>
-          <SettingsRow
-            label={t("settings.chat.artifacts.allowNetworkAccess")}
-            description={t(
-              "settings.chat.artifacts.allowNetworkAccessDescription",
-            )}
-          >
-            <Switch
-              checked={allowArtifactNetworkAccess}
-              onCheckedChange={setAllowArtifactNetworkAccess}
-            />
-          </SettingsRow>
-        </div>
         <SettingsRow
-          label={t("settings.chat.artifacts.collapseHtmlBlocks")}
+          label={t("settings.chat.modelSelection.fitOnDeviceOnly")}
           description={t(
-            "settings.chat.artifacts.collapseHtmlBlocksDescription",
+            "settings.chat.modelSelection.fitOnDeviceOnlyDescription",
           )}
         >
           <Switch
-            checked={collapseHtmlArtifacts}
-            onCheckedChange={setCollapseHtmlArtifacts}
+            aria-label={t("settings.chat.modelSelection.fitOnDeviceOnly")}
+            checked={fitOnDeviceOnly}
+            onCheckedChange={setFitOnDeviceOnly}
           />
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title={t("settings.chat.groups.menu.title")}>
-        {PLUS_MENU_SETTINGS.map((item) => (
-          <SettingsRow key={item.id} label={t(item.labelKey)} icon={item.icon}>
-            {/* Canvas toggles menu visibility; the rest toggle pin placement. */}
-            <Switch
-              checked={
-                item.id === "canvas" ? showCanvasMenuItem : plusPins[item.id]
-              }
-              onCheckedChange={
-                item.id === "canvas"
-                  ? setShowCanvasMenuItem
-                  : () => togglePlusPin(item.id)
-              }
-            />
-          </SettingsRow>
-        ))}
+
+      <SettingsSection
+        title={t("settings.chat.groups.menu.title")}
+        description={t("settings.chat.menu.description")}
+      >
+        <div className="pt-3">
+          <ChatMenuOrderList
+          items={Object.fromEntries(
+            PLUS_MENU_SETTINGS.map((item) => [
+              item.id,
+              { label: t(item.labelKey), icon: item.icon },
+            ]),
+          ) as Record<PlusMenuItemId, { label: string; icon: ReactNode }>}
+          />
+        </div>
+        <div className="flex justify-end pt-1">
+          <Button variant="ghost" size="sm" onClick={resetPlusMenu}>
+            {t("settings.chat.menu.reset")}
+          </Button>
+        </div>
       </SettingsSection>
     </div>
   );

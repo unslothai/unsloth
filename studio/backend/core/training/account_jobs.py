@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import sys
 import threading
 import weakref
 from functools import wraps
@@ -48,6 +49,37 @@ def account_key(value: str):
     return value if account.is_owner else (account.account_id, value)
 
 
+# Packaged ``datasets`` builders resolve before the Hub and read local files from the server's cwd.
+_BUILTIN_DATASET_BUILDERS = frozenset(
+    (
+        "arrow", "audiofolder", "cache", "csv", "eval", "generator", "hdf5", "imagefolder",
+        "json", "lance", "niftifolder", "pandas", "parquet", "pdffolder", "spark", "sql", "text",
+        "videofolder", "webdataset", "xml",
+    )
+)  # fmt: skip
+
+
+def _dataset_builder_name(name: str) -> bool:
+    builders = _BUILTIN_DATASET_BUILDERS
+    # Only when datasets is already loaded: validating a reference must not import it.
+    packaged = sys.modules.get("datasets.packaged_modules")
+    builders |= set(getattr(packaged, "_PACKAGED_DATASETS_MODULES", None) or ())
+    return name in builders or name.lower() in builders
+
+
+def _root_spellings(roots) -> list:
+    """Each root as given, resolved, and through the owner's own studio home link."""
+    spellings = [spelling for root in roots for spelling in (root, root.resolve())]
+    override = (
+        os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or ""
+    ).strip()
+    if override:
+        from utils.paths.storage_roots import studio_root
+        home, link = studio_root(), Path(os.path.abspath(Path(override).expanduser()))
+        spellings += [link / root.relative_to(home) for root in roots if root.is_relative_to(home)]
+    return spellings
+
+
 def account_path(
     value,
     *,
@@ -58,6 +90,16 @@ def account_path(
     if not value or not managed_account():
         return value
     raw = str(value)
+    from utils.paths.path_utils import is_network_or_device_path, normalize_path
+
+    # Before any exists()/resolve(): touching a share path is already an outbound SMB sign-in.
+    if is_network_or_device_path(raw):
+        raise HTTPException(status_code = 403, detail = "Path is outside this account's workspace")
+
+    normalized = normalize_path(raw)
+    if normalized != raw:
+        # Loaders open the forward-slash spelling, so it must pass too.
+        account_path(normalized, reference = reference, shared_cache = shared_cache)
     path = Path(raw).expanduser()
     if reference and not path.is_absolute() and not path.exists():
         parts = raw.split("/")
@@ -68,15 +110,20 @@ def account_path(
                 for part in parts
             )
             and not raw.startswith((".", "~"))
+            and not (len(parts) == 1 and _dataset_builder_name(raw))
         ):
             return value
     resolved = path.resolve()
+    # Callers reopen the name itself, so every link it walks through must sit inside the roots too.
+    lexical = Path(os.path.abspath(path))
 
     roots = (workspace_root(), project_workspaces_root(), tmp_root())
     if shared_cache:
         from utils.hf_cache_settings import active_hf_hub_cache
         roots += (Path(active_hf_hub_cache()),)
-    if not any(resolved.is_relative_to(root.resolve()) for root in roots):
+    if not any(resolved.is_relative_to(root.resolve()) for root in roots) or not any(
+        lexical.is_relative_to(root) for root in _root_spellings(roots)
+    ):
         raise HTTPException(status_code = 403, detail = "Path is outside this account's workspace")
     return value
 
@@ -141,8 +188,12 @@ def require_explicit_credentials(values: dict) -> None:
 def validate_job_paths(values: dict, *, cached_resources: bool = False) -> None:
     if not managed_account():
         return
+    from hub.services.models import account_access
+
     for key in ("model_name", "base_model", "base_model_id", "hf_dataset"):
         account_path(values.get(key), reference = True)
+    for key in ("model_name", "base_model", "base_model_id"):
+        account_access.require_model_allowed(values.get(key))
     for key, repo_type in (
         ("model_local_path", "model"),
         ("dataset_local_path", "dataset"),
@@ -161,7 +212,6 @@ def validate_job_paths(values: dict, *, cached_resources: bool = False) -> None:
         reference = values.get(key)
         # A cached claim pins the shared cache, so the caller's token never authorizes it.
         if values.get(claimed) and reference:
-            from hub.services.models import account_access
             account_access.require_model_access(str(reference), repo_type)
     for key in (
         "checkpoint_path",
@@ -411,8 +461,9 @@ def retire_account_jobs(account: AccountContext) -> None:
     from hub.services.models.downloads import (
         retire_account_downloads as retire_account_model_downloads,
     )
-    from core.rag import folder_sync, ingestion
+    from core.rag import folder_sync, ingestion, reembed
     from core.research_runs import retire_account_research
+    from core.scheduled_tasks.scheduler import retire_account_scheduled_tasks
     from routes.inference import retire_stt_downloads
 
     for cancel in (
@@ -420,8 +471,10 @@ def retire_account_jobs(account: AccountContext) -> None:
         retire_account_model_downloads,
         retire_stt_downloads,
         ingestion.retire_account_ingestions,
+        reembed.retire_account_reembed,
         folder_sync.retire_account_sync,
         lambda: retire_account_research(account),
+        lambda: retire_account_scheduled_tasks(account),
     ):
         try:
             run_as(account, cancel)
@@ -508,6 +561,22 @@ def validate_recipe_access(recipe) -> None:
         seed_type = recipe.get("seed_type")
         if seed_type in {"hf", "github_repo"} and not str(recipe.get("token") or "").strip():
             raise HTTPException(status_code = 403, detail = "Supply your own seed-source token")
+        # A folder seed with no path falls back to host folders (cwd, ~/.codex).
+        if (
+            seed_type in {"agent_rollout", "directory", "file_contents"}
+            and not str(recipe.get("path") or "").strip()
+        ):
+            raise HTTPException(status_code = 403, detail = "Choose a folder inside your workspace")
+        # The engine writes a processor's output under its name, so the name must not be a path.
+        processors = recipe.get("processors")
+        for processor in processors if isinstance(processors, list) else []:
+            name = processor.get("name") if isinstance(processor, dict) else None
+            if (
+                not isinstance(name, str)
+                or not name.strip(" .")
+                or any(char in '<>:"/\\|?*' or not char.isprintable() for char in name)
+            ):
+                raise HTTPException(status_code = 403, detail = "Processor names must be plain names")
         for key, value in recipe.items():
             if key in {"api_key_env", "token_env", "hf_token_env"} and value:
                 raise HTTPException(status_code = 403, detail = "Supply your own provider credential")

@@ -26,7 +26,8 @@ def file_contents_available_locally(path, stat_result = None) -> bool:
     return not bool(attributes & _WINDOWS_CONTENT_RECALL_ATTRIBUTES)
 
 
-# A volume without native xattrs makes macOS keep them in a "._" companion that answers every name-shaped question the way the real file does; only the magic bytes settle it. The volumes are exFAT, FAT, most SMB and NFS, and nothing may be refused for the prefix alone: a user's own "._model.gguf" is a real model.
+# macOS stores xattrs in ._ companions on exFAT/FAT/SMB/NFS; only the magic identifies one,
+# since a user's own ._model.gguf is a real model.
 # ── macOS Finder metadata companions ───────────────────────────
 _MAGIC = b"\x00\x05\x16\x07"
 
@@ -156,12 +157,7 @@ def _looks_windows_shaped(path: str) -> bool:
 
 
 def host_normalize_path(path: str) -> str:
-    """Normalize a path this process is about to open, honouring ``[automount] root``.
-
-    Not :func:`normalize_path`: that hard-codes ``/mnt/`` to predict where the model *loader* will look, while a path read from another tool's config is stat-ed here.
-
-    Separators are rewritten only when the path is Windows-shaped, or on Windows itself where a backslash cannot be anything else. Everywhere else, WSL included, a path that names no drive is a POSIX path and a backslash in it is a legal filename character, so rewriting it would silently lose a directory that has one in its name.
-    """
+    """Separators change only for Windows-shaped paths: a POSIX backslash is a legal filename character, and rewriting it would lose that directory."""
     if not path:
         return path
 
@@ -322,16 +318,21 @@ def is_path_within(
     allow_root: bool = False,
     pathmod = os.path,
 ) -> bool:
-    """Whether resolved *path* sits inside resolved *root*.
-
-    commonpath rather than a prefix test: a drive root already ends in a separator, and ``C:\\a``
-    must not contain ``C:\\ab``. Paths on different drives are simply not inside."""
+    """Whether resolved path is inside resolved root, via commonpath: a sibling sharing a name prefix (ab beside a) is not inside; other drives are not."""
     candidate, base = _comparable_path(path, pathmod), _comparable_path(root, pathmod)
     try:
         common = pathmod.commonpath([candidate, base])
     except ValueError:
         return False
     return common == base and (allow_root or candidate != base)
+
+
+def is_network_or_device_path(value) -> bool:
+    """A UNC share (``\\\\host\\share``, ``//host/share``) or a ``\\\\?\\`` / ``\\\\.\\`` / ``\\??\\`` device path.
+    Any filesystem call on one makes Windows reach out over SMB with the service account's
+    credentials, so managed-account checks refuse it before touching the disk."""
+    text = str(value).strip()
+    return text.startswith(("\\\\", "//", "\\/", "/\\", "\\??\\"))
 
 
 def same_path(
@@ -371,12 +372,7 @@ def _wsl_reveal_in_explorer(path: Path, is_file: bool) -> bool:
 
 
 def reveal_in_file_manager(path: Path, expect_dir: bool = False) -> None:
-    """Open the OS file manager with *path* selected (best effort per platform).
-
-    Raises ``FileNotFoundError`` when the target is gone: the Linux branch falls back to the parent, which for a sandbox is the root holding every other chat's.
-
-    ``expect_dir`` refuses anything that is not a real directory, symlinks included, since both would take the file branch and name that same parent. One ``lstat`` answers type and link-ness together, leaving no window between the checks (``is_dir()`` follows links; ``follow_symlinks = False`` is 3.13+ only, and this runs on 3.10). Off by default: the cached-model reveal points at a file, and a symlinked one, as an HF cache snapshot is a link farm.
-    """
+    """Raises FileNotFoundError when gone, rather than revealing the parent folder; expect_dir refuses symlinks and non-dirs, and is off by default."""
     import stat as stat_module
     import subprocess
 
@@ -411,6 +407,259 @@ def reveal_in_file_manager(path: Path, expect_dir: bool = False) -> None:
     elif not _wsl_reveal_in_explorer(path, is_file):
         # No cross-desktop "select file" standard on Linux; open the directory.
         subprocess.Popen(["xdg-open", str(path.parent) if is_file else target])
+
+
+# Viewer-opened types only: scripts or installers would execute, and these files are model-written.
+DEFAULT_APP_OPEN_EXTENSIONS = frozenset(
+    {
+        ".pdf",
+        ".txt",
+        ".md",
+        ".markdown",
+        ".csv",
+        ".tsv",
+        ".json",
+        ".jsonl",
+        ".xml",
+        ".yaml",
+        ".yml",
+        ".log",
+        ".rtf",
+        ".docx",
+        ".xlsx",
+        ".pptx",
+        ".odt",
+        ".ods",
+        ".odp",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".bmp",
+        ".avif",
+        ".tif",
+        ".tiff",
+        ".mp3",
+        ".wav",
+        ".flac",
+        ".ogg",
+        ".m4a",
+        ".mp4",
+        ".mov",
+        ".webm",
+        ".mkv",
+        ".parquet",
+        ".ipynb",
+    }
+)
+
+
+_OPEN_STAGING_MAX_AGE_S = 24 * 60 * 60
+
+
+# Older builds staged hard links the OS sandbox refuses; only the name goes, so an app holding the dir can still save.
+def _break_hard_links(entry: Path) -> None:
+    import stat as stat_module
+    import tempfile
+    for child in list(entry.iterdir()):
+        info = child.lstat()
+        if not (stat_module.S_ISREG(info.st_mode) and info.st_nlink > 1):
+            continue
+        handle, name = tempfile.mkstemp(dir = entry)
+        os.close(handle)
+        held, legacy = Path(name), False
+        try:
+            os.replace(child, held)
+            moved = held.lstat()
+            legacy = (moved.st_dev, moved.st_ino) == (info.st_dev, info.st_ino)
+            if not legacy:
+                try:
+                    os.link(held, child)
+                except FileExistsError:
+                    pass
+        finally:
+            if legacy or os.path.lexists(child):
+                held.unlink(missing_ok = True)
+
+
+def _prune_open_staging(root: Path, break_links: bool = False) -> None:
+    import shutil
+    import stat as stat_module
+    import time
+
+    def real_dir(info: os.stat_result) -> bool:
+        return stat_module.S_ISDIR(info.st_mode) and not getattr(info, "st_reparse_tag", 0)
+
+    cutoff = time.time() - _OPEN_STAGING_MAX_AGE_S
+    try:
+        # Never through a symlink or junction, which would reach outside the cache.
+        if not real_dir(root.lstat()):
+            return
+        entries = list(root.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        try:
+            info = entry.lstat()
+            if info.st_mtime < cutoff:
+                shutil.rmtree(entry, ignore_errors = True)
+            elif break_links and real_dir(info):
+                _break_hard_links(entry)
+        except OSError:
+            continue
+
+
+# Only under the lock, so sibling backends sharing the home never swap at once; no lock = links wait for a later call.
+def prune_open_staging() -> None:
+    from utils.cache_cleanup import _try_lock, _unlock
+    from utils.paths.storage_roots import cache_root
+
+    try:
+        handle = os.open(cache_root() / "open-staging.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError:
+        return
+    try:
+        _try_lock(handle)
+    except OSError:
+        os.close(handle)
+        return
+    try:
+        _prune_open_staging(cache_root() / "open-staging", break_links = True)
+    finally:
+        _unlock(handle)
+
+
+def _opened_path(handle: int) -> Optional[str]:
+    """Where an open file really is, or None where the OS can't say."""
+    if sys.platform == "darwin":
+        import fcntl
+        return os.fsdecode(fcntl.fcntl(handle, fcntl.F_GETPATH, bytes(1024)).rstrip(b"\0"))
+    proc = f"/proc/self/fd/{handle}"
+    return os.readlink(proc) if os.path.islink(proc) else None
+
+
+def _same_bytes(handle: int, staged: Path, size: int) -> bool:
+    with os.fdopen(os.dup(handle), "rb") as source, open(staged, "rb") as copy:
+        source.seek(0)
+        while size:
+            chunk = source.read(min(size, 1 << 20))
+            if not chunk or copy.read(len(chunk)) != chunk:
+                return False
+            size -= len(chunk)
+    return True
+
+
+def _stage_for_open(path: Path, root: Optional[Path] = None) -> Path:
+    """A name for *path*'s current file in a private directory, for the OS opener.
+
+    Tool code runs in the sandbox and can swap *path* for a symlink (to an app or a script outside
+    it) between any check and the opener resolving the name. So the file is opened once without
+    following links, and what that open returned is copied into a fresh directory only Studio
+    writes to. That name is what the OS opens. Not a hard link: the OS sandbox refuses a workdir
+    file linked from outside it.
+    O_NOFOLLOW only covers the last component, so a swapped parent is caught by checking where the
+    opened file really is against *root*.
+    """
+    import shutil
+    import stat as stat_module
+    import tempfile
+
+    from utils.paths.storage_roots import cache_root
+
+    try:
+        handle = os.open(
+            path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+        )
+    except OSError as exc:
+        raise FileNotFoundError(str(path)) from exc
+    try:
+        info = os.fstat(handle)
+        if not stat_module.S_ISREG(info.st_mode):
+            raise FileNotFoundError(str(path))
+        if root is not None:
+            real = _opened_path(handle)
+            if real is None:
+                # By name, so it must still be the file that was opened (Windows junctions).
+                real = os.path.realpath(path)
+                same = os.stat(real)
+                if (same.st_dev, same.st_ino) != (info.st_dev, info.st_ino):
+                    raise FileNotFoundError(str(path))
+            if not Path(real).is_relative_to(os.path.realpath(root)):
+                raise FileNotFoundError(str(path))
+        staging = cache_root() / "open-staging"
+        staging.mkdir(parents = True, exist_ok = True)
+        _prune_open_staging(staging)
+
+        # Reuse the newest copy only if byte-identical: an app may have edited it, and coarse mtimes miss same-size rewrites.
+        def newest_first(entry: Path) -> int:
+            try:
+                return entry.lstat().st_mtime_ns
+            except OSError:
+                return 0
+
+        key = f"{info.st_dev}-{info.st_ino}-{info.st_size}-"
+        for entry in sorted(staging.glob(key + "*"), key = newest_first, reverse = True)[:1]:
+            try:
+                staged = os.lstat(entry / path.name)
+                if (
+                    stat_module.S_ISREG(staged.st_mode)
+                    and staged.st_nlink == 1
+                    and staged.st_size == info.st_size
+                    and _same_bytes(handle, entry / path.name, info.st_size)
+                ):
+                    os.utime(entry)
+                    return entry / path.name
+            except OSError:
+                continue
+        target = Path(tempfile.mkdtemp(prefix = key, dir = staging)) / path.name
+        try:
+            with os.fdopen(os.dup(handle), "rb") as source, open(target, "xb") as copy:
+                source.seek(0)
+                remaining = info.st_size
+                while remaining and (chunk := source.read(min(remaining, 1 << 20))):
+                    remaining -= copy.write(chunk)
+            if remaining:
+                raise OSError(f"{path.name} got shorter while it was being copied")
+        except OSError:
+            shutil.rmtree(target.parent, ignore_errors = True)
+            raise
+        return target
+    finally:
+        os.close(handle)
+
+
+def open_in_default_app(path: Path, root: Optional[Path] = None) -> None:
+    """Refuses extensions outside DEFAULT_APP_OPEN_EXTENSIONS (PermissionError) and symlinks; the opener gets a staged name, never path itself."""
+    import stat as stat_module
+    import subprocess
+
+    if path.suffix.lower() not in DEFAULT_APP_OPEN_EXTENSIONS:
+        raise PermissionError(str(path))
+    try:
+        entry = os.lstat(path)
+    except OSError as exc:
+        raise FileNotFoundError(str(path)) from exc
+    if not stat_module.S_ISREG(entry.st_mode):
+        raise FileNotFoundError(str(path))
+    target = str(_stage_for_open(path, root))
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", target])
+    elif os.name == "nt":
+        os.startfile(target)  # noqa: S606 - local user's own default app
+    elif _IS_WSL:
+        windows_path = subprocess.run(
+            ["wslpath", "-w", target],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            check = True,
+            timeout = 10,
+        ).stdout.strip()
+        subprocess.Popen(["explorer.exe", windows_path])
+    else:
+        subprocess.Popen(["xdg-open", target])
 
 
 # pathconf's _PC_CASE_SENSITIVE on macOS, which Python has no name for.

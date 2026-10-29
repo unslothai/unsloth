@@ -1,14 +1,59 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""torch 2.12+ keeps dynamo / inductor config writes in a ContextVar, so knobs set on the load thread are invisible on
-the render thread that compiles. Knobs are recorded here and ``apply()`` re-writes them into the current context."""
+"""torch 2.12+ stores dynamo/inductor config in a ContextVar; apply() re-sets knobs per thread."""
 
 from __future__ import annotations
 
+import os
 import threading
 from contextvars import ContextVar
 from typing import Any
+from .rocm_bf16 import is_rocm_torch
+
+# dynamic_scale_rblock benchmarks per process, so renders differed across servers on one seed.
+DYNAMIC_SCALE_RBLOCK_ENV = "UNSLOTH_DIFFUSION_DYNAMIC_SCALE_RBLOCK"
+
+
+def reduction_blocks_pinned() -> bool:
+    """True unless UNSLOTH_DIFFUSION_DYNAMIC_SCALE_RBLOCK asks for inductor's per-process R0_BLOCK benchmark."""
+    raw = (os.environ.get(DYNAMIC_SCALE_RBLOCK_ENV) or "").strip().lower()
+    return raw not in ("1", "on", "true", "yes")
+
+
+def reduction_config_filter_available() -> bool:
+    """torch has the reduction-config filter (2.10+) and the kill switch is unset."""
+    if not reduction_blocks_pinned():
+        return False
+    try:
+        import torch
+        return hasattr(torch._inductor.config.test_configs, "force_filter_reduction_configs")
+    except Exception:  # noqa: BLE001 - no torch / inductor: nothing pinned
+        return False
+
+
+def family_filters_reductions(family: Any) -> bool:
+    """``filter_reduction_configs`` on every arch, or the current CUDA device listed in ``filter_reduction_configs_archs``."""
+    if family is None:
+        return False
+    if bool(getattr(family, "filter_reduction_configs", False)):
+        return True
+    archs = getattr(family, "filter_reduction_configs_archs", None) or ()
+    if not archs:
+        return False
+    cap = _device_capability()
+    return cap is not None and cap in {tuple(int(v) for v in a) for a in archs}
+
+
+def _device_capability() -> Any:
+    try:
+        import torch
+        if not torch.cuda.is_available() or is_rocm_torch(torch):
+            return None
+        return tuple(int(v) for v in torch.cuda.get_device_capability())
+    except Exception:  # noqa: BLE001 - no CUDA: nothing pinned
+        return None
+
 
 _LOCK = threading.Lock()
 _KNOBS: dict[tuple[str, str], Any] = {}
@@ -93,3 +138,16 @@ def _reset_for_tests() -> None:
     with _LOCK:
         _KNOBS.clear()
         _generation += 1
+
+
+_STUDIO_CACHE_TAG_PREFIXES = ("unsloth_fp8_unit_scale=", "unsloth_nvfp4_act_quant=")
+
+
+def canonical_compile_cache_tag(current: str, prefix: str, tag: str | None) -> str:
+    """``prefix``'s token set to ``tag`` (None drops it); Studio's sorted so setter order never changes torch's cache key."""
+    parts = [p for p in current.split(";") if p and not p.startswith(prefix)]
+    if tag:
+        parts.append(prefix + tag)
+    foreign = [p for p in parts if not p.startswith(_STUDIO_CACHE_TAG_PREFIXES)]
+    owned = sorted(p for p in parts if p.startswith(_STUDIO_CACHE_TAG_PREFIXES))
+    return ";".join(foreign + owned)

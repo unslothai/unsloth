@@ -11,6 +11,8 @@ export type TrainingPhase =
   | "training"
   // Steps done, worker still saving. Non-terminal: 100% is not success.
   | "finalizing"
+  // SFT saved; training the speculative-decoding drafter. Non-terminal.
+  | "training_drafter"
   | "completed"
   | "error"
   | "stopped";
@@ -120,8 +122,8 @@ export interface TrainingRuntimeState {
   evalLossHistory: TrainingSeriesPoint[];
   resetGeneration: number;
   stopRequested: boolean;
+  configureRequest: number;
   selectedHistoryRunId: string | null;
-  // True while the studio "Current Run" tab is the active view, so the sidebar can highlight it.
   currentRunViewActive: boolean;
 }
 
@@ -168,7 +170,7 @@ export interface TrainingViewData {
   currentEpoch: number | null;
   currentNumTokens: number | null;
   outputDir: string | null;
-  // True when a newer run reused this run's output_dir (resume), so its on-disk contents differ.
+  // A newer run reused this output_dir (resume), so its on-disk contents differ.
   resumedLater?: boolean;
   progressPercent: number;
   elapsedSeconds: number | null;
@@ -183,6 +185,7 @@ export interface TrainingViewData {
   modelName: string;
   projectName: string | null;
   trainingMethod: string;
+  isDecision?: boolean;
 
   lossHistory: TrainingSeriesPoint[];
   lrHistory: TrainingSeriesPoint[];

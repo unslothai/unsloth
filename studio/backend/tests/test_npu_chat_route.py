@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Test NPU chat through the route and proxy against a local HTTP server.
-
-Replay FastFlowLM 1.0.3 stream shapes and record outgoing request bodies.
-"""
+"""Replays FastFlowLM 1.0.3 stream shapes and records outgoing request bodies through a local server."""
 
 from __future__ import annotations
 
@@ -14,6 +11,7 @@ import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -43,9 +41,61 @@ def _chunk(
 
 
 _USAGE = {"prompt_tokens": 12, "completion_tokens": 5, "total_tokens": 17}
+_FLM_USAGE = {
+    "prompt_tokens": 20,
+    "completion_tokens": 39,
+    "total_tokens": 59,
+    "active_kv_tokens": 59,
+    "max_kv_token_capacity": 8192,
+    "kv_token_occupancy_rate_percentage": 0.72021484375,
+    "load_duration": 5.2e-07,
+    "prefill_duration_ttft": 0.46033728,
+    "decoding_duration": 0.424696,
+    "prefill_speed_tps": 43.44640520967583,
+    "decoding_speed_tps": 91.83039162130089,
+}
+_FLM_TIMINGS = {
+    "prompt_n": 20,
+    "prompt_ms": pytest.approx(460.33728),
+    "prompt_per_second": pytest.approx(43.44640520967583),
+    "predicted_n": 39,
+    "predicted_ms": pytest.approx(424.696),
+    "predicted_per_second": pytest.approx(91.83039162130089),
+}
+
+
+# The end of a reply whose reasoning filled the loaded context, captured on Strix Halo: FastFlowLM
+# says "stop" with the KV cache full.
+_FULL_USAGE = {
+    "prompt_tokens": 45,
+    "completion_tokens": 8147,
+    "total_tokens": 8192,
+    "active_kv_tokens": 8192,
+    "max_kv_token_capacity": 8192,
+    "kv_token_occupancy_rate_percentage": 100.0,
+}
 
 
 def _script(prompt: str) -> str:
+    if "FULL" in prompt:
+        return (
+            _chunk({"reasoning_content": " Wait, no!"})
+            + _chunk({"content": None}, "stop", _FULL_USAGE)
+            + "data: [DONE]\n\n"
+        )
+    if "WSTOOL" in prompt:
+        call = {
+            "index": 0,
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "get_weather", "arguments": '{"city":"Paris"}'},
+        }
+        return (
+            _chunk({"content": "\n\n\n"})
+            + _chunk({"tool_calls": [call]})
+            + _chunk({}, "tool_calls", _USAGE)
+            + "data: [DONE]\n\n"
+        )
     if "FAULT" in prompt:
         return (
             _chunk({"content": "par"})
@@ -69,6 +119,10 @@ def _script(prompt: str) -> str:
             _chunk({"content": "hello E"})
             + _chunk({"content": "ND hidden"}, "stop", _USAGE)
             + "data: [DONE]\n\n"
+        )
+    if "TIMED" in prompt:
+        return (
+            _chunk({"content": "The moon."}) + _chunk({}, "stop", _FLM_USAGE) + "data: [DONE]\n\n"
         )
     if "THINK" in prompt:
         return (
@@ -235,7 +289,6 @@ def test_an_environment_proxy_never_sees_npu_chat(flm, monkeypatch):
     stop = threading.Event()
     thread = threading.Thread(target = serve, daemon = True)
     thread.start()
-    # Studio started under a proxy: its shared client picks the proxy up at construction.
     monkeypatch.delenv("NO_PROXY", raising = False)
     monkeypatch.delenv("no_proxy", raising = False)
     monkeypatch.setenv("HTTP_PROXY", f"http://127.0.0.1:{proxy.getsockname()[1]}")
@@ -314,6 +367,22 @@ def test_thinking_off_and_non_reasoning_models(flm):
     assert recorded[-1]["body"]["think"] is False
 
 
+@pytest.mark.parametrize(
+    "fields, expected",
+    [
+        ({}, (0.6, 0.95)),
+        ({"enable_thinking": False}, (0.7, 0.8)),
+        ({"reasoning_effort": "none"}, (0.7, 0.8)),
+        ({"enable_thinking": False, "temperature": 0.3}, (0.3, 0.8)),
+    ],
+)
+def test_qwen_sampling_follows_the_thinking_mode(flm, fields, expected):
+    recorded = flm(reasoning = True)
+    _call(stream = False, **fields)
+    body = recorded[-1]["body"]
+    assert (body["temperature"], body["top_p"]) == expected
+
+
 def test_non_streaming_reply_is_collected_from_the_stream(flm):
     flm()
     status, body = _call(stream = False)
@@ -322,7 +391,6 @@ def test_non_streaming_reply_is_collected_from_the_stream(flm):
     assert body["model"] == "lemonade:qwen3-0.6b-FLM"
     choice = body["choices"][0]
     assert choice["message"]["content"] == "one two seven eight"
-    # The stream's own reason: FastFlowLM's non-streaming reply says "stop" for a cutoff.
     assert choice["finish_reason"] == "length"
     assert body["usage"] == _USAGE
 
@@ -338,6 +406,48 @@ def test_streaming_rewrites_the_model_name(flm):
         "".join(c["choices"][0]["delta"].get("content") or "" for c in chunks)
         == "one two seven eight"
     )
+
+
+def test_a_streamed_reply_carries_fastflowlm_speeds_as_timings(flm):
+    flm()
+    status, lines = _call(stream = True, messages = [{"role": "user", "content": "TIMED"}])
+    assert status == 200
+    closing = [chunk for chunk in _data(lines) if chunk.get("usage")]
+    assert len(closing) == 1
+    assert closing[0]["usage"] == _FLM_USAGE
+    assert closing[0]["timings"] == _FLM_TIMINGS
+    assert closing[0]["choices"][0]["finish_reason"] == "stop"
+
+
+def test_the_monitor_rates_an_npu_reply_from_fastflowlm_speeds(flm):
+    from core.inference.api_monitor import api_monitor
+
+    if not api_monitor.enabled:
+        pytest.skip("API monitor disabled")
+    flm()
+    _call(stream = True, messages = [{"role": "user", "content": "TIMED"}])
+    entry = api_monitor._entries[0]
+    assert entry.tok_per_sec == pytest.approx(91.83039162130089)
+    assert entry.prompt_tok_per_sec == pytest.approx(43.44640520967583)
+    assert entry.prompt_ms == pytest.approx(460.33728)
+    assert entry.decode_ms == pytest.approx(424.696)
+
+
+def test_a_reply_without_fastflowlm_speeds_gets_no_timings(flm):
+    flm()
+    _, lines = _call(stream = True)
+    assert not any("timings" in chunk for chunk in _data(lines))
+
+
+def test_fastflowlm_timings_leave_a_cached_prefix_out_of_the_prompt():
+    usage = dict(_FLM_USAGE, prompt_tokens = 120, prompt_tokens_details = {"cached_tokens": 100})
+    timings = ep_mod._fastflowlm_timings(usage)
+    assert timings["prompt_n"] == 20
+    assert timings["cache_n"] == 100
+    assert ep_mod._fastflowlm_timings(_USAGE) is None
+    assert ep_mod._fastflowlm_timings({"decoding_duration": True}) is None
+    assert ep_mod._fastflowlm_timings({"decoding_duration": float("nan")}) is None
+    assert ep_mod._fastflowlm_timings({"decoding_duration": 10**400}) is None
 
 
 @pytest.mark.parametrize("stream", [True, False])
@@ -740,6 +850,161 @@ def test_an_npu_load_it_would_refuse_keeps_the_gpu_resident(monkeypatch):
     assert teardowns == []
 
 
+def test_an_npu_load_drains_active_inference_before_unloading(monkeypatch):
+    # An auto-switch passes no on_reload_confirmed, so without the drain it cut a reply short.
+    import routes.inference as routes
+    from core.inference import npu_backend as nb
+    from models.inference import LoadRequest
+
+    order: list[str] = []
+    model = SimpleNamespace(id = "qwen3-0.6b-FLM", model_path = "lemonade:qwen3-0.6b-FLM")
+
+    class _Npu:
+        def resident(self):
+            return None
+
+        def loadable_model(self, model_id):
+            return model
+
+        def load(self, model_id, ctx):
+            order.append("load")
+
+    async def _drain(**kwargs):
+        order.append("drain")
+
+    async def _unload_gpu(_backend):
+        order.append("unload")
+
+    monkeypatch.setattr(nb, "get_npu_backend", lambda: _Npu())
+    monkeypatch.setattr(routes, "get_llama_cpp_backend", lambda: SimpleNamespace(is_active = True))
+    monkeypatch.setattr(routes, "_peek_inference_backend", lambda: None)
+    monkeypatch.setattr(routes, "_wait_for_model_switch_idle", _drain)
+    monkeypatch.setattr(routes, "_unload_llama_before_standard_load", _unload_gpu)
+    monkeypatch.setattr(routes, "release_chat_gpu_claim", lambda: True)
+    with pytest.raises(HTTPException):
+        # The stub never becomes resident, so the load ends in a 409 after the steps above.
+        asyncio.run(
+            routes._load_npu_model(
+                LoadRequest(model_path = model.model_path),
+                current_request_counted = True,
+                on_reload_confirmed = None,
+                load_cancel_event = None,
+            )
+        )
+    assert order == ["drain", "unload", "load"]
+
+
+@pytest.mark.parametrize("blocker", ["sidecar_swap", "shutdown"])
+def test_an_npu_load_refuses_before_unloading_during_a_swap_or_shutdown(monkeypatch, blocker):
+    # The NPU branch skipped the rechecks the other load paths make, so it unloaded the resident
+    # model under a transformers install or after shutdown had torn everything down.
+    import routes.inference as routes
+    from core.inference import npu_backend as nb
+    from models.inference import LoadRequest
+    from utils import transformers_version
+
+    order: list[str] = []
+    model = SimpleNamespace(id = "qwen3-0.6b-FLM", model_path = "lemonade:qwen3-0.6b-FLM")
+
+    class _Npu:
+        def resident(self):
+            return None
+
+        def loadable_model(self, model_id):
+            return model
+
+        def load(self, model_id, ctx):
+            order.append("load")
+
+    async def _drain(**kwargs):
+        order.append("drain")
+
+    async def _unload_gpu(_backend):
+        order.append("unload")
+
+    monkeypatch.setattr(nb, "get_npu_backend", lambda: _Npu())
+    monkeypatch.setattr(routes, "get_llama_cpp_backend", lambda: SimpleNamespace(is_active = True))
+    monkeypatch.setattr(routes, "_peek_inference_backend", lambda: None)
+    monkeypatch.setattr(routes, "_wait_for_model_switch_idle", _drain)
+    monkeypatch.setattr(routes, "_unload_llama_before_standard_load", _unload_gpu)
+    monkeypatch.setattr(routes, "release_chat_gpu_claim", lambda: True)
+    if blocker == "sidecar_swap":
+        monkeypatch.setattr(transformers_version, "sidecar_swap_in_progress", lambda: True)
+    else:
+        monkeypatch.setattr(routes, "_loads_shutting_down", True)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            routes._load_npu_model(
+                LoadRequest(model_path = model.model_path),
+                current_request_counted = True,
+                on_reload_confirmed = None,
+                load_cancel_event = None,
+            )
+        )
+    assert excinfo.value.status_code == 409
+    assert "unload" not in order and "load" not in order
+
+
+def test_a_stop_during_an_npu_load_cancels_it(monkeypatch):
+    # The cancel event was read only before and after the blocking load, so a Stop waited it out.
+    import routes.inference as routes
+    from core.inference import npu_backend as nb
+    from models.inference import LoadRequest
+
+    model = SimpleNamespace(id = "qwen3-0.6b-FLM", model_path = "lemonade:qwen3-0.6b-FLM")
+    loading = threading.Event()
+    stopped = threading.Event()
+    stop = threading.Event()
+
+    class _Npu:
+        def resident(self):
+            return None
+
+        def loadable_model(self, model_id):
+            return model
+
+        def load(self, model_id, ctx):
+            loading.set()
+            if not stopped.wait(10):
+                raise AssertionError("the load was never cancelled")
+            raise nb.NpuLoadCancelled("cancelled")
+
+        def cancel_load(self, model_id):
+            # The first ask lands before the load is registered, as when Stop beats npu.load.
+            asks.append(model_id)
+            if len(asks) == 1:
+                return False
+            stopped.set()
+            return True
+
+    asks: list[str] = []
+
+    def _stop_once_loading():
+        loading.wait(10)
+        stop.set()
+
+    async def _nothing(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(nb, "get_npu_backend", lambda: _Npu())
+    monkeypatch.setattr(routes, "get_llama_cpp_backend", lambda: SimpleNamespace(is_active = False))
+    monkeypatch.setattr(routes, "_peek_inference_backend", lambda: None)
+    monkeypatch.setattr(routes, "_unload_llama_before_standard_load", _nothing)
+    monkeypatch.setattr(routes, "release_chat_gpu_claim", lambda: True)
+    threading.Thread(target = _stop_once_loading, daemon = True).start()
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            routes._load_npu_model(
+                LoadRequest(model_path = model.model_path),
+                current_request_counted = True,
+                on_reload_confirmed = None,
+                load_cancel_event = stop,
+            )
+        )
+    assert excinfo.value.status_code == 409
+    assert stopped.is_set() and len(asks) == 2
+
+
 def test_a_reply_cut_short_is_not_reported_complete(flm):
     flm()
     status, body = _call(stream = False, messages = [{"role": "user", "content": "CUT"}])
@@ -911,6 +1176,109 @@ def test_a_second_download_request_follows_the_running_pull(monkeypatch):
     assert started == ["gemma3-4b-FLM"]
 
 
+def _wait_for(condition) -> None:
+    deadline = time.monotonic() + 10
+    while not condition():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+
+
+def test_running_downloads_are_listed_until_they_end(monkeypatch):
+    from routes import npu as npu_routes
+
+    release = threading.Event()
+
+    class _Npu:
+        def download(self, model_id):
+            yield {"event": "progress", "percent": 12}
+            yield {"event": "progress", "bytes_downloaded": 5}
+            assert release.wait(10)
+            yield {"event": "complete", "model": model_id, "percent": 100}
+
+    job = npu_routes._start_download(_Npu(), "lfm2-1.2b-FLM")
+    _wait_for(lambda: len(job.events) == 2)
+    listed = asyncio.run(npu_routes.list_npu_downloads())["downloads"]
+    assert {"model": "lfm2-1.2b-FLM", "percent": 12} in listed
+    release.set()
+    _wait_for(lambda: job.finished)
+    listed = asyncio.run(npu_routes.list_npu_downloads())["downloads"]
+    assert all(row["model"] != "lfm2-1.2b-FLM" for row in listed)
+
+
+def test_following_a_download_never_starts_one(monkeypatch):
+    from routes import npu as npu_routes
+
+    started: list[str] = []
+    release = threading.Event()
+
+    class _Npu:
+        def download(self, model_id):
+            started.append(model_id)
+            yield {"event": "progress", "percent": 30}
+            assert release.wait(10)
+            yield {"event": "complete", "model": model_id, "percent": 100}
+
+    monkeypatch.setattr(npu_routes, "get_npu_backend", lambda: _Npu())
+    with pytest.raises(HTTPException) as missing:
+        asyncio.run(npu_routes.follow_npu_download("qwen3-1.7b-FLM"))
+    assert missing.value.status_code == 404 and started == []
+
+    job = npu_routes._start_download(_Npu(), "qwen3-1.7b-FLM")
+    _wait_for(lambda: len(job.events) == 1)
+
+    async def follow():
+        response = await npu_routes.follow_npu_download("qwen3-1.7b-FLM")
+        release.set()
+        return [chunk async for chunk in response.body_iterator]
+
+    chunks = asyncio.run(follow())
+    assert '"percent": 30' in chunks[0] and '"complete"' in chunks[-1]
+    assert started == ["qwen3-1.7b-FLM"]
+    _wait_for(lambda: "qwen3-1.7b-FLM" not in npu_routes._downloads)
+    with pytest.raises(HTTPException):
+        asyncio.run(npu_routes.follow_npu_download("qwen3-1.7b-FLM"))
+
+
+def test_a_failed_download_is_logged(monkeypatch):
+    from routes import npu as npu_routes
+
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        npu_routes,
+        "logger",
+        SimpleNamespace(info = lambda message: None, warning = warnings.append),
+    )
+
+    class _Npu:
+        def download(self, model_id):
+            yield {"event": "progress", "percent": 37}
+            raise nb.NpuError(f"Downloading {model_id} failed: connection reset")
+
+    job = npu_routes._start_download(_Npu(), "llama3.2-1b-FLM")
+    assert [event["event"] for event in job.follow()] == ["progress", "error"]
+    assert warnings == [
+        "NPU model download of llama3.2-1b-FLM failed at 37%: "
+        "Downloading llama3.2-1b-FLM failed: connection reset"
+    ]
+
+
+def test_npu_model_config_does_not_reach_hugging_face(monkeypatch):
+    from routes import models as models_route
+
+    def _hub(*args, **kwargs):
+        raise AssertionError("an NPU model id reached Hugging Face handling")
+
+    monkeypatch.setattr(models_route, "_get_model_size_bytes", _hub)
+    monkeypatch.setattr(models_route, "_require_model_access_or_caller_token", _hub)
+    result = asyncio.run(
+        models_route.get_model_config(
+            model_name = "lemonade:qwen3.5-9b-FLM", hf_token = None, current_subject = "tester"
+        )
+    )
+    assert result.id == "lemonade:qwen3.5-9b-FLM"
+    assert result.max_position_embeddings is None and not result.is_vision
+
+
 @pytest.mark.parametrize("stream", [True, False])
 def test_a_reply_cut_short_is_recorded_failed(flm, stream):
     from core.inference.api_monitor import api_monitor
@@ -1035,7 +1403,6 @@ def test_a_cancel_racing_the_npu_load_unloads_what_landed(monkeypatch):
             return model
 
         def load(self, model_id, ctx):
-            # The Stop click lands here, before lemond reports the load in flight.
             cancel.set()
             calls.append("load")
 
@@ -1089,3 +1456,57 @@ def test_a_tool_loop_turn_dropped_after_a_tool_call_is_cut_short():
     plain = _TurnFinish()
     plain.see(_chunk({}, "stop").strip())
     assert plain.finished is True
+
+
+def test_a_reply_that_fills_the_context_says_so(flm):
+    flm(reasoning = True)
+    full = [{"role": "user", "content": "FULL"}]
+    status, lines = _call(stream = True, messages = full)
+    assert status == 200
+    chunks = _data(lines)
+    assert [c["_toolEvent"] for c in chunks if "_toolEvent" in c] == [
+        {"type": "context_window_exceeded"}
+    ]
+    finishes = [
+        c["choices"][0]["finish_reason"] for c in chunks if c["choices"][0]["finish_reason"]
+    ]
+    assert finishes == ["length"]
+    _, body = _call(stream = False, messages = full)
+    assert body["choices"][0]["finish_reason"] == "length"
+
+
+@pytest.mark.parametrize(
+    ("usage", "full"),
+    [
+        (_FULL_USAGE, True),
+        # Thinking off: FastFlowLM decodes an empty think block, four tokens counted as one.
+        ({**_FULL_USAGE, "completion_tokens": 8144, "total_tokens": 8189}, True),
+        ({"total_tokens": 8192, "max_kv_token_capacity": 8192}, True),
+        (_FLM_USAGE, False),
+        ({"total_tokens": 8192}, False),
+        (None, False),
+    ],
+)
+def test_a_full_kv_cache_reads_the_kv_position(usage, full):
+    import routes.inference as ri
+    assert ri._npu_kv_cache_full(usage) is full
+
+
+def test_a_reply_with_room_left_keeps_its_stop(flm):
+    flm()
+    status, lines = _call(stream = True, messages = [{"role": "user", "content": "TIMED"}])
+    assert status == 200
+    chunks = _data(lines)
+    assert not any("_toolEvent" in c for c in chunks)
+    assert chunks[-1]["choices"][0]["finish_reason"] == "stop"
+
+
+def test_whitespace_beside_a_tool_call_is_no_content(flm):
+    flm(tools = True)
+    tools = [
+        {"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object"}}}
+    ]
+    _, body = _call(stream = False, tools = tools, messages = [{"role": "user", "content": "WSTOOL"}])
+    message = body["choices"][0]["message"]
+    assert message["content"] is None
+    assert message["tool_calls"][0]["function"]["name"] == "get_weather"

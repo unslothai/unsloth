@@ -58,7 +58,6 @@ function New-FakeExe($stem, $cmdBody, $shBody) {
     else { "#!/bin/sh`n$shBody`n" | Set-Content -LiteralPath $p; & chmod +x $p }
     return $p
 }
-# Returns the SDDL from $script:AclTable, else $script:AclDefault; throws while $script:AclThrows.
 $aclStub = {
     param($LiteralPath, $Path, $ErrorAction)
     if ($script:AclThrows) { throw "access denied" }
@@ -75,9 +74,7 @@ try {
     Reset-EarlyPython
     $exe = Get-StudioEarlyPython
     if (-not $exe) {
-        # "No interpreter" is a supported state and a skip, but it is also what a BROKEN EXTRACTION
-        # looks like (a forgotten helper makes discovery find nothing and CI records a pass). If this
-        # host has a python that answers the same probe, the extraction is at fault, not the host.
+        # "No interpreter" also looks like a broken extraction; tell the two apart.
         if ("$($env:UNSLOTH_EARLY_PYTHON_PROBE)".Trim() -eq "0") {
             Write-Host "  SKIP  UNSLOTH_EARLY_PYTHON_PROBE=0, so this rung is switched off by request" -ForegroundColor Yellow
             exit 0
@@ -91,11 +88,10 @@ try {
                 if ($usable) { break }
                 if ([string]::IsNullOrWhiteSpace($src)) { continue }
                 if ("$src" -match '(?i)[\\/]Microsoft[\\/]WindowsApps[\\/]') { continue }
-                # The installer's elevated rule: a candidate a standard user can replace is not one to find.
                 if ($elevatedHost -and -not (Test-StudioPathUnderAdminRoot -Path $src)) { continue }
                 $here = Split-Path -Parent $src
                 if ([string]::IsNullOrWhiteSpace($here)) { continue }
-                # A job with a deadline: a shim that never exits must be a skip, not a hang.
+                # A shim that never exits must be a skip, not a hang.
                 $job = Start-Job -ArgumentList $src, $here -ScriptBlock {
                     param($exe, $dir)
                     "$(& $exe -I -S -c "import pathlib,sys`nsys.exit(2) if sys.version_info < (3,8) else None`nsys.stdout.write(str(pathlib.Path(sys.argv[1]).resolve(strict=True)))" $dir 2>$null)"
@@ -154,7 +150,7 @@ try {
     $script:StudioEarlyPython = $null
     Check "the interpreter is back after the no-interpreter case" ($null -ne (Get-StudioEarlyPython))
 
-    # The answer is hashed into a lock name, so non-ASCII must survive 5.1's console codepage.
+    # Hashed into a lock name, so non-ASCII must survive 5.1's console codepage.
     $unicodeName = "studio-ünïcôde-日本語-ß"
     $unicodeDir = Join-Path $tmp $unicodeName
     New-Item -ItemType Directory -Force -Path $unicodeDir | Out-Null
@@ -166,7 +162,7 @@ try {
     $nbspName = "studio-nbsp" + [char]0x00A0
     New-Item -ItemType Directory -Force -Path (Join-Path $tmp "studio-nbsp") | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $tmp $nbspName) | Out-Null
-    # .NET Framework strips it on the way in, so 5.1 cannot create or name such a directory at all.
+    # 5.1 strips it on the way in, so it cannot create or name such a directory.
     if (@(Get-ChildItem -LiteralPath $tmp -Name) -ccontains $nbspName) {
         Check "a trailing non-breaking space is kept" ("$(Get-StudioPythonFinalPath -Path (Join-Path $tmp $nbspName))".EndsWith($nbspName))
     } else {
@@ -215,7 +211,6 @@ try {
             }
         }
         & $checkDangling "a dangling link is not exact"
-        # Where Test-Path follows the link, the stripped entry's reparse bit alone must keep it inexact.
         function Test-Path {
             param([string]$LiteralPath)
             if ($LiteralPath.StartsWith($dangling)) { return $false }
@@ -246,7 +241,7 @@ try {
     Check "a hung interpreter returns null" ($null -eq $hung)
     Check "a hung interpreter is killed at the deadline, not waited out" ($elapsed -lt 15)
 
-    # The interpreter exits at once but leaves a child holding stdout: the read is bounded too.
+    # A child left holding stdout must not block the read.
     $holder = New-FakeExe "holder" "start /b `"`" ping -n 20 127.0.0.1`r`nexit /b 0" "sleep 20 &`nprintf '%s' `"`$5`"`nexit 0"
     $started = [DateTime]::UtcNow
     $held = Invoke-StudioEarlyPython -Exe $holder -Path $real -TimeoutMs 2000
@@ -275,7 +270,6 @@ try {
     Check "the launcher runs every probe with -S as well as -I" ($launcherFn -match '@\("-I",\s*"-S",\s*"-B",\s*"-c"')
     Check "and with -B, so a pre-lock probe writes no bytecode" ($launcherFn -match '"-B"')
 
-    # A miss recorded before $VenvDir existed (the --tauri path) is probed again once it does.
     $venvHome = Join-Path $tmp "venvhome"
     $venvBin = if ($onWindows) { "Scripts" } else { "bin" }
     $venvLeaf = if ($onWindows) { "python.exe" } else { "python3" }
@@ -296,7 +290,6 @@ try {
     Check "a custom home carrying the ownership marker does" (
         "$(Get-StudioEarlyPython)" -like ("*" + $venvBin + "*"))
     Remove-Item -LiteralPath (Join-Path $venvHome ".unsloth-studio-owned") -Force
-    # The shim counts only as the guard reads it, by content, never by name.
     New-Item -ItemType Directory -Force -Path (Join-Path $tmp "bin") | Out-Null
     Set-Content -LiteralPath (Join-Path $tmp "bin\unsloth.cmd") -Value "@echo planted"
     $script:StudioEarlyPythonProbed = $false
@@ -317,8 +310,6 @@ try {
     function Test-Path { param($LiteralPath, $PathType, $ErrorAction) $script:ReprobeCount++; return $false }
     $null = Get-StudioEarlyPython
     Check "a hit is not probed again" ($script:ReprobeCount -eq 0)
-    # An uninspectable candidate (an unreadable directory throws under Stop) is skipped, and nothing
-    # escapes into the lock-name hash. The cache is saved and restored around these throw tests.
     $savedEarly = @($script:StudioEarlyPython, $script:StudioEarlyPythonProbed, $script:StudioEarlyPythonProbedWithoutVenv)
     function Test-Path { param($LiteralPath, $PathType, $ErrorAction)
         throw [System.UnauthorizedAccessException]::new("Access to the path '$LiteralPath' is denied.") }
@@ -382,7 +373,6 @@ try {
     foreach ($leaf in $batchPaths) { $null = Get-StudioPythonFinalPath -Path $leaf }
     Check "and every resolution after it is served without one" ($script:SingleCalls -eq 0)
 
-    # A declined private directory still batches: the list rides the environment instead.
     $realDirFn = ${function:New-StudioChildScriptDirectory}
     function New-StudioChildScriptDirectory { return "" }
     try {
@@ -392,7 +382,6 @@ try {
         foreach ($leaf in $batchPaths) { $null = Get-StudioPythonFinalPath -Path $leaf }
         Check "a declined private directory still batches, through the environment" ($script:SingleCalls -eq 0)
         Check "and leaves no list variable behind" ($null -eq $env:UNSLOTH_FINAL_PATHS)
-        # Past the block limit the list splits across children, each under it and none lost.
         $script:RealScript = ${function:Invoke-StudioEarlyPythonScript}
         $script:ChunkSizes = @(); $script:ChunkPaths = 0
         function Invoke-StudioEarlyPythonScript {
@@ -410,7 +399,6 @@ try {
         Check "and every path is sent exactly once" ($script:ChunkPaths -eq $longPaths.Count)
     } finally { ${function:New-StudioChildScriptDirectory} = $realDirFn }
 
-    # The batch must return exactly what the single-path rung returns, or it is a second identity.
     $script:StudioPythonFinalPathCache = $null
     $one = Get-StudioPythonFinalPath -Path $batchPaths[0]
     $script:StudioPythonFinalPathCache = $null
@@ -428,7 +416,7 @@ try {
     $null = Get-StudioPythonFinalPath -Path $missing
     Check "and is not re-asked" ($script:SingleCalls -eq 0)
 
-    # A child that answers nothing, or only SOME paths, leaves the rest uncached: absence is not a miss.
+    # Absence is not a miss: unanswered paths stay uncached.
     $script:RealScript = ${function:Invoke-StudioEarlyPythonScript}
     function Invoke-StudioEarlyPythonScript {
         param([string]$Exe, [string]$Script, [string[]]$ScriptArgs = @(), [int]$TimeoutMs = 10000)
@@ -460,8 +448,7 @@ try {
     $batchText = Get-Fn "Resolve-StudioFinalPathsInOneChild"
     Check "the reader strips a byte order mark" ($batchText -match "encoding='utf-8-sig'")
     Check "and does not read the list as plain utf-8" ($batchText -notmatch "encoding='utf-8'\)")
-    # Run it: the same expression against a real BOM-prefixed file must resolve every line, and the
-    # plain utf-8 control must LOSE the first one, or the check above is only spelling.
+    # The plain utf-8 control must LOSE the first line, or the check above is only spelling.
     $bomFile = Join-Path $batchDir "with-bom.txt"
     [System.IO.File]::WriteAllBytes($bomFile, [byte[]](0xEF, 0xBB, 0xBF) + [System.Text.Encoding]::UTF8.GetBytes(($batchPaths -join "`n")))
     $bomScript = @(
@@ -485,7 +472,7 @@ try {
         Check $row[0] ("$count".Trim() -eq "$($row[2])")
     }
 
-    # The list goes through a file, not argv: a few hundred paths pass the 32767 character limit.
+    # A file, not argv: a few hundred paths pass the 32767 character limit.
     Check "the batch hands the child a list FILE rather than an argv of paths" (
         $batchText -match 'Set-Content -LiteralPath \$listFile' -and $batchText -match 'Args = @\(\$listFile\)')
     Check "and without one, chunks under the environment block limit" (
@@ -551,7 +538,6 @@ try {
     $script:AclTable.Remove("C:\Program Files\Mine")
     Check "control: the same path passes once its owner is administrators (bites)" (
         (Test-StudioPathUnderAdminRoot -Path "C:\Program Files\Mine\python.exe") -eq $true)
-    # An ACL that cannot be read is not evidence that it is a safe one.
     $script:AclThrows = $true
     Check "an unreadable ACL declines rather than trusting the location" (
         (Test-StudioPathUnderAdminRoot -Path "C:\Program Files\Python312\python.exe") -eq $false)
@@ -579,8 +565,6 @@ try {
     Remove-Item Function:Get-Acl -ErrorAction SilentlyContinue
     Restore-Env $savedWinEnv
 
-    # Driven through the real discovery, elevated, with this host's interpreter, which is not under a
-    # Windows protected root, so the rung has to decline.
     $savedOsElev = Save-Env @("OS")
     try {
         $env:OS = "Windows_NT"
@@ -600,7 +584,6 @@ try {
             function Test-StudioChildScriptDirectoryElevated { return $true }
             $VenvDir = $venvRoot
             $StudioHome = Join-Path $tmp "elevated-home"
-            # It runs before the destination guard, so only where that guard would let it run.
             Remove-Variable -Name StudioRedirectMode -ErrorAction SilentlyContinue
             Reset-EarlyPython
             Check "an elevated run declines the venv interpreter while the layout is unknown" (

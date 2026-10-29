@@ -13,6 +13,7 @@ import os
 import re
 import json
 import csv
+import threading
 import unicodedata
 from typing import List, Dict, Any, Union, Optional
 from datasets import Dataset
@@ -22,6 +23,9 @@ __all__ = [
     "RawTextDataLoader",
     "TextPreprocessor",
 ]
+
+# csv.field_size_limit is process-global: overlapping reads must not restore it under each other.
+_CSV_FIELD_LIMIT_LOCK = threading.Lock()
 
 SUPPORTED_FORMATS = {
     ".txt": "plain_text",
@@ -88,8 +92,7 @@ class RawTextDataLoader:
             )
             all_chunks.extend(chunks)
         if not all_chunks:
-            # All files empty/whitespace: raise like load_from_file instead of create_causal_dataset([])
-            # returning a 0-row text-column dataset.
+            # Raise like load_from_file instead of returning a 0-row dataset.
             raise ValueError("All files are empty or contain only whitespace")
         return self.create_causal_dataset(all_chunks)
 
@@ -146,8 +149,7 @@ class RawTextDataLoader:
                 f"stride ({stride}) must be smaller than chunk_size ({chunk_size}) to progress the chunking loop"
             )
 
-        # Skip empty/whitespace text before tokenizing: BPE/SentencePiece emit real tokens for
-        # spaces/newlines, so a len(tokens)==0 check misses it and would yield a degenerate lone-EOS sample.
+        # BPE/SentencePiece emit tokens for whitespace, so check text, not len(tokens), to avoid lone-EOS rows.
         if not text or not text.strip():
             return []
 
@@ -163,68 +165,72 @@ class RawTextDataLoader:
             # Tokenizer returned a count; build a range
             tokens = list(range(tokens))
 
-        if len(tokens) <= chunk_size:
+        eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
+        eos_token = getattr(self.tokenizer, "eos_token", None) or ""
+        has_eos = eos_token_id is not None if return_tokenized else bool(eos_token)
+        # The final EOS counts toward chunk_size; chunk_size 1 cannot hold a token plus EOS.
+        reserve_eos = has_eos and chunk_size > 1
+        num_tokens = len(tokens) + int(reserve_eos)
+
+        if num_tokens <= chunk_size:
             # Fits in a single chunk
             if return_tokenized:
                 tokens = tokens.tolist() if hasattr(tokens, "tolist") else list(tokens)
-                eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
                 if eos_token_id is not None:
                     tokens.append(eos_token_id)
 
                 attention_mask = [1] * len(tokens)
                 return [{"input_ids": tokens, "attention_mask": attention_mask}]
             else:
-                eos_token = self.tokenizer.eos_token if self.tokenizer.eos_token else ""
                 return [text + eos_token]
 
-        chunks = []
+        bounds = []
         start_idx = 0
+        while True:
+            end_idx = min(start_idx + chunk_size, num_tokens)
+            bounds.append([start_idx, end_idx])
+            if end_idx == num_tokens:
+                break
+            start_idx += chunk_size - stride
 
-        while start_idx < len(tokens):
-            end_idx = min(start_idx + chunk_size, len(tokens))
+        # Stride 0 with an exact multiple leaves a lone-EOS chunk; end a full window at EOS so EOS keeps context and no token loses its label.
+        if reserve_eos and len(bounds) > 1 and bounds[-1][0] == len(tokens):
+            bounds[-1][0] = num_tokens - chunk_size
+
+        chunks = []
+        for i, (start_idx, end_idx) in enumerate(bounds):
             chunk_tokens = tokens[start_idx:end_idx]
+            # EOS only at the true end: a full chunk mid-stride continues in the next chunk.
+            is_last = i == len(bounds) - 1
 
             if return_tokenized:
                 chunk_tokens_list = (
                     chunk_tokens.tolist() if hasattr(chunk_tokens, "tolist") else list(chunk_tokens)
                 )
-
-                # EOS only at the true end: a full chunk mid-stride continues in the next chunk.
-                if end_idx == len(tokens):
-                    eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
-                    if eos_token_id is not None:
-                        chunk_tokens_list.append(eos_token_id)
+                if is_last and eos_token_id is not None:
+                    chunk_tokens_list.append(eos_token_id)
 
                 attention_mask = [1] * len(chunk_tokens_list)
 
                 chunks.append({"input_ids": chunk_tokens_list, "attention_mask": attention_mask})
             else:
                 chunk_text = self.tokenizer.decode(chunk_tokens, skip_special_tokens = True)
-
-                if end_idx == len(tokens):
-                    eos_token = self.tokenizer.eos_token if self.tokenizer.eos_token else ""
+                if is_last:
                     chunk_text += eos_token
 
                 chunks.append(chunk_text)
-
-            # Advance with stride overlap
-            if end_idx == len(tokens):
-                break
-            start_idx += chunk_size - stride
 
         return chunks
 
     def _read_file_by_format(self, file_path, file_format):
         """Read file content based on detected format."""
-        # utf-8-sig: Windows tooling (PowerShell Out-File, Excel "CSV UTF-8") prepends a BOM that plain
-        # utf-8 keeps as a leading character. Without a BOM it decodes exactly like utf-8.
+        # utf-8-sig strips the BOM Windows tools prepend; otherwise identical to utf-8.
         with open(file_path, "r", encoding = "utf-8-sig") as f:
             if file_format == "plain_text" or file_format == "markdown":
                 return f.read()
             elif file_format == "json_lines":
                 if Path(file_path).suffix.lower() == ".json":
-                    # A .json file is a single JSON document (commonly a list of records), so parsing it per line drops
-                    # the whole file.
+                    # A .json file is one JSON document, not JSON lines, so per-line parsing would drop the whole file.
                     try:
                         parsed = json.load(f)
                         records = parsed if isinstance(parsed, list) else [parsed]
@@ -233,8 +239,7 @@ class RawTextDataLoader:
                         f.seek(0)
                         records = self._iter_json_lines(f)
                 else:
-                    # A .jsonl file is one JSON value per line: stay streaming so a large file is never held in memory
-                    # at once.
+                    # Stream .jsonl so large files are never held in memory.
                     records = self._iter_json_lines(f)
                 lines = []
                 for data in records:
@@ -243,12 +248,18 @@ class RawTextDataLoader:
                         lines.append(text)
                 return "\n\n".join(lines)
             elif file_format == "csv_text_column":
-                reader = csv.DictReader(f)
-                texts = []
-                for row in reader:
-                    text = self._extract_text_from_csv_row(row)
-                    if text:
-                        texts.append(text)
+                # Default 128 KB cell limit rejects whole documents; sys.maxsize overflows a C long on Windows.
+                with _CSV_FIELD_LIMIT_LOCK:
+                    previous_limit = csv.field_size_limit(2**31 - 1)
+                    try:
+                        reader = csv.DictReader(f)
+                        texts = []
+                        for row in reader:
+                            text = self._extract_text_from_csv_row(row)
+                            if text:
+                                texts.append(text)
+                    finally:
+                        csv.field_size_limit(previous_limit)
                 return "\n\n".join(texts)
         return ""
 
@@ -268,8 +279,7 @@ class RawTextDataLoader:
 
     def _extract_text_from_json(self, data):
         """Extract text from JSON object using common field names."""
-        # Skip non-object lines (str/list/number): `field in data` would be a substring/membership test, not
-        # a key lookup, and `data[field]` raises.
+        # Skip non-dict lines: `field in data` would be a substring test, and `data[field]` raises.
         if not isinstance(data, dict):
             return ""
         for field in self._TEXT_FIELDS:
@@ -304,9 +314,7 @@ def _iter_column(dataset, column):
 class _TextCharTable(dict):
     """str.translate table for clean_text, filled in the first time each character is seen."""
 
-    # Drop only the invisible: control, private-use and surrogate code points, noncharacters, and the
-    # format characters below. Every other format character (ZWJ, ZWNJ, ayah signs, emoji tags) is text,
-    # and Cn just means newer than this interpreter's Unicode database.
+    # Drop only invisible characters; other format chars (ZWJ, emoji tags) are text, and Cn may be newer Unicode.
     _DROP_CATEGORIES = frozenset(("Cc", "Co", "Cs"))
     _JUNK_CHARS = frozenset(
         chr(codepoint)
@@ -351,7 +359,7 @@ class TextPreprocessor:
     _TEXT_CHARS = _TextCharTable()
     _MULTIPLE_SPACES_PATTERN = re.compile(r"[ ]{2,}")
     _NEWLINE_SPACES_PATTERN = re.compile(r" *\n *")
-    _MULTIPLE_NEWLINES_PATTERN = re.compile(r"\n{3,}")
+    _MULTIPLE_NEWLINES_PATTERN = re.compile(r"\n\n\n+")
     _CHAPTER_PATTERN = re.compile(r"^# (.+)$", re.MULTILINE)
     _SECTION_PATTERN = re.compile(r"^## (.+)$", re.MULTILINE)
     _SUBSECTION_PATTERN = re.compile(r"^### (.+)$", re.MULTILINE)
@@ -371,8 +379,7 @@ class TextPreprocessor:
         """Extract specific sections (e.g., code blocks, quotes)"""
         sections = []
         for pattern in patterns:
-            # Compile pattern on first use and cache? Well, patterns are user-provided, so just use re.findall
-            # with compiled flags
+            # Patterns are user-provided, so just use re.findall with compiled flags rather than a compile cache.
             matches = re.findall(pattern, text, re.MULTILINE | re.DOTALL)
             sections.extend(matches)
         return sections
@@ -408,8 +415,7 @@ class TextPreprocessor:
             "warnings": [],
         }
 
-        # `column_names` is HF Dataset-only; None means a mapping-like (DataFrame, dict, custom
-        # __getitem__), which this method has always accepted.
+        # None means a mapping-like (DataFrame, dict), which this method accepts.
         column_names = getattr(dataset, "column_names", None)
         if column_names is None or "text" in column_names:
             texts = _iter_column(dataset, "text")
@@ -456,8 +462,7 @@ class TextPreprocessor:
         if text_lengths:
             stats["avg_length"] = sum(text_lengths) / len(text_lengths)
 
-        # No sample had content, so min_length is still its float("inf") seed; report 0 like max_length and
-        # avg_length beside it.
+        # min_length keeps its float("inf") seed when no sample had content; report 0 like max_length and avg_length.
         if stats["min_length"] == float("inf"):
             stats["min_length"] = 0
 
@@ -470,8 +475,7 @@ class TextPreprocessor:
         if stats["encoding_issues"] > 0:
             stats["warnings"].append(f"Found {stats['encoding_issues']} encoding issues")
 
-        # Guard on text_lengths, not on min_length: with nothing measured it is now 0, and zero measured
-        # samples is not "some samples are very short".
+        # Guard on text_lengths, not min_length: with nothing measured min_length is 0, which must not warn as very short.
         if text_lengths and stats["min_length"] < 10:
             stats["warnings"].append("Some samples are very short (< 10 characters)")
 

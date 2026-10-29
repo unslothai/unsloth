@@ -18,6 +18,8 @@ const SEARCH_STORE_OPENER = /opener: HTMLElement \| null/;
 const EXPLICIT_SEARCH_OPENER = /options\?\.opener !== undefined/;
 const SEARCH_CLOSE_FOCUS = /onCloseAutoFocus=\{\(event\) => \{/;
 const RESTORE_SEARCH_OPENER = /opener\.focus\(\{ preventScroll: true \}\)/;
+const AUDIO_ALIASES =
+  /labelKey: "shell\.navigation\.audio",\s*aliases: \["speech", "tts", "voice", "music", "transcribe"\],/;
 
 const palette = await readFile(
   new URL("../src/components/command-palette.tsx", import.meta.url),
@@ -70,4 +72,8 @@ test("a chord that navigates behind the palette closes it", () => {
     palette,
     /useEffect\(\(\) => \{\s*useCommandPaletteStore\.getState\(\)\.close\(\);\s*\}, \[href\]\);/,
   );
+});
+
+test("the Audio entry is found by what its pages do", () => {
+  assert.match(palette, AUDIO_ALIASES);
 });

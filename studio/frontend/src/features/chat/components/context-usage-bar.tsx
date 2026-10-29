@@ -6,7 +6,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import type { FC } from "react";
+import { type CSSProperties, type FC, useEffect, useRef, useState } from "react";
 import {
   type ContextUsageBarInput,
   deriveContextUsageBar,
@@ -15,76 +15,241 @@ import {
 
 function getSeverityColor(percent: number): {
   bar: string;
+  stroke: string;
   text: string;
 } {
-  if (percent > 85) return { bar: "bg-red-500", text: "text-red-500" };
-  if (percent > 65) return { bar: "bg-amber-500", text: "text-amber-500" };
-  return { bar: "bg-control-accent", text: "text-control-accent" };
+  if (percent > 85) {
+    return { bar: "bg-red-500", stroke: "stroke-red-500", text: "text-red-500" };
+  }
+  if (percent > 65) {
+    return { bar: "bg-amber-500", stroke: "stroke-amber-500", text: "text-amber-500" };
+  }
+  return {
+    bar: "bg-control-accent",
+    stroke: "stroke-control-accent",
+    text: "text-control-accent",
+  };
+}
+
+const RING_RADIUS = 6.25;
+const RING_LENGTH = 2 * Math.PI * RING_RADIUS;
+
+export const UsageRing: FC<{ percent: number | null; stroke: string }> = ({
+  percent,
+  stroke,
+}) => (
+  <svg viewBox="0 0 16 16" aria-hidden={true} className="size-icon shrink-0 -rotate-90">
+    <circle cx={8} cy={8} r={RING_RADIUS} fill="none" strokeWidth={2} className="stroke-(--track)" />
+    {percent ? (
+      <circle
+        cx={8}
+        cy={8}
+        r={RING_RADIUS}
+        fill="none"
+        strokeWidth={2}
+        strokeLinecap="round"
+        strokeDasharray={RING_LENGTH}
+        strokeDashoffset={RING_LENGTH * (1 - percent / 100)}
+        className={cn("transition-[stroke-dashoffset]", stroke)}
+      />
+    ) : null}
+  </svg>
+);
+
+const DOT_TRIM_CH = 0.15;
+
+// Gap each side of the slash minus glyph side bearing (JetBrains Mono, in ch).
+const SLASH_GAP_CH = 0.55;
+function slashMargins(before: string, after: string): [number, number] {
+  const beforeBearing = before === "k" ? 0.03 : before === "—" ? 0 : 0.11;
+  const afterBearing = after === "1" ? 0.17 : 0.11;
+  return [SLASH_GAP_CH - beforeBearing - 0.08, SLASH_GAP_CH - 0.12 - afterBearing];
+}
+
+function faceWidthCh(face: string): number {
+  const dots = face.split(".").length - 1;
+  const at = face.indexOf(" / ");
+  const [left, right] = at >= 0 ? slashMargins(face[at - 1] ?? "", face[at + 3] ?? "") : [1, 1];
+  return face.length + left + right - 2 - dots * 2 * DOT_TRIM_CH;
+}
+
+const TokenCount: FC<{ text: string }> = ({ text }) => (
+  <>
+    {text.split(".").map((part, i) => (
+      <span key={i}>
+        {i > 0 ? <span className="-mx-[0.088ch] text-[0.85em]">.</span> : null}
+        {part}
+      </span>
+    ))}
+  </>
+);
+
+const Face: FC<{ face: string }> = ({ face }) => {
+  const slash = face.indexOf(" / ");
+  if (slash < 0) return <span><TokenCount text={face} /></span>;
+  const [left, right] = slashMargins(face[slash - 1] ?? "", face[slash + 3] ?? "");
+  return (
+    <span>
+      <TokenCount text={face.slice(0, slash)} />
+      <span style={{ marginLeft: `${left}ch`, marginRight: `${right}ch` }}>/</span>
+      <TokenCount text={face.slice(slash + 3)} />
+    </span>
+  );
+};
+
+// A mouse click pins it open (the shared Tooltip pins only on touch) until an outside press or Escape.
+function useClickPin(enabled: boolean) {
+  const [hovered, setHovered] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!pinned) return;
+    const release = (event: Event) => {
+      const target = event.target as Element | null;
+      if (triggerRef.current?.contains(target) || target?.closest?.('[data-slot="tooltip-content"]')) {
+        return;
+      }
+      setPinned(false);
+    };
+    const releaseOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setPinned(false);
+    };
+    document.addEventListener("pointerdown", release, true);
+    document.addEventListener("keydown", releaseOnEscape, true);
+    return () => {
+      document.removeEventListener("pointerdown", release, true);
+      document.removeEventListener("keydown", releaseOnEscape, true);
+    };
+  }, [pinned]);
+  if (!enabled) return null;
+  return {
+    root: { open: hovered || pinned, onOpenChange: setHovered },
+    trigger: {
+      ref: triggerRef,
+      onClick: () => setPinned((was) => !was),
+      "aria-expanded": pinned,
+    },
+  };
 }
 
 export const ContextUsageBar: FC<
-  ContextUsageBarInput & { className?: string }
-> = ({
-  used,
-  total,
-  cached,
-  cacheWrites,
-  promptTokens,
-  completionTokens,
-  isMlx,
-  contextEnforced,
-  contextBudget,
-  className,
-}) => {
-  const state = deriveContextUsageBar({
-    used,
-    total,
-    cached,
-    cacheWrites,
-    promptTokens,
-    completionTokens,
-    isMlx,
-    contextEnforced,
-    contextBudget,
-  });
+  ContextUsageBarInput & {
+    className?: string;
+    compactUnknownAsIcon?: boolean;
+    pinOnClick?: boolean;
+    /** Replaces the hover surface's shape and colour (the API page's pill). */
+    hoverClassName?: string;
+    /** Side padding of the face, in --spacing units; the widths below count it. */
+    padX?: number;
+    ringFirst?: boolean;
+    /** Text width, never compacting: the ch widths assume the mono face. */
+    fitContent?: boolean;
+  }
+> = ({ className, compactUnknownAsIcon = false, pinOnClick = false, hoverClassName, padX = 2.5, ringFirst = false, fitContent = false, ...input }) => {
+  const pin = useClickPin(pinOnClick);
+  const state = deriveContextUsageBar(input);
   if (!state) return null;
 
-  const { percent, advice } = state;
+  const { cached, cacheWrites, promptTokens, completionTokens } = input.estimated
+    ? {}
+    : input;
+  const { percent, advice, face } = state;
+  // A narrow chat header needs the icon fallback even when a provider has no known window.
+  // The tooltip and accessible label still carry the full token count.
+  const compactFace = compactUnknownAsIcon ? null : state.compactFace;
   const severity = getSeverityColor(percent ?? 0);
+  // The ring shows whenever there is a window to fill, even before anything is counted.
+  const showRing = state.compactFace === null;
+  // Mono text, so widths are exact in ch. Full: padding, face, and the gap and ring. Compact: an icon button.
+  const fullWidth = showRing
+    ? `calc(${faceWidthCh(face)}ch + var(--icon-size) + ${2 * padX + 2} * var(--spacing))`
+    : `calc(${faceWidthCh(face)}ch + ${2 * padX} * var(--spacing))`;
+  const compactWidth =
+    compactFace === null ? "calc(30px * var(--ui-space-scale, 1))" : `calc(${faceWidthCh(compactFace)}ch + ${2 * padX} * var(--spacing))`;
+  const padStyle = { paddingInline: `calc(${padX} * var(--spacing))` };
+  const hover = hoverClassName ?? "rounded-[10px] transition-colors group-hover:bg-chat-icon-bg-hover";
 
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          aria-label={state.label}
-          className={cn(
-            "flex items-center gap-2 rounded-[10px] px-2.5 py-1 font-mono text-chat-icon-fg text-ui-13 tabular-nums transition-colors hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover",
-            className,
-          )}
-        >
-          <span>{state.face}</span>
-          {percent !== null ? (
-            <div className="h-1.5 w-16 rounded-full bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.15*var(--contrast-wash-gain,1)))] overflow-hidden">
-              <div
-                className={cn("h-full rounded-full transition-all", severity.bar)}
-                style={{ width: `${percent}%` }}
-              />
-            </div>
-          ) : null}
-        </button>
-      </TooltipTrigger>
+    <Tooltip {...pin?.root}>
+      {/* The header squeezes this wrapper; the button inside takes only the face it shows. */}
+      <div
+        style={
+          fitContent
+            ? undefined
+            : ({
+                "--full": fullWidth,
+                "--compact": compactWidth,
+                gridTemplateColumns: "minmax(var(--compact), var(--full))",
+              } as CSSProperties)
+        }
+        className={cn(
+          fitContent ? "flex items-center" : "grid shrink! items-center",
+          "font-mono text-ui-13",
+          className,
+        )}
+      >
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            {...pin?.trigger}
+            aria-label={state.label}
+            style={
+              fitContent
+                ? undefined
+                : {
+                    width:
+                      "calc(clamp(0px, (100% - var(--full) + 1px) * 999, var(--full)) + clamp(0px, (var(--full) - 100% - 1px) * 999, var(--compact)))",
+                  }
+            }
+            className={cn(
+              "group grid h-full items-center justify-self-end overflow-hidden rounded-[10px] text-chat-icon-fg tabular-nums whitespace-nowrap hover:text-chat-icon-fg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              "[--track:rgb(0_0_0_/_calc(0.14*var(--contrast-wash-gain,1)))] dark:[--track:rgb(255_255_255_/_calc(0.2*var(--contrast-wash-gain,1)))]",
+            )}
+          >
+            {fitContent ? null : (
+            <span
+              className="col-start-1 row-start-1 flex h-full items-center justify-center overflow-hidden"
+              style={{ width: "clamp(0px, (var(--full) - 100% - 1px) * 999, 100%)" }}
+            >
+              {compactFace === null ? (
+                <span className={cn("flex size-[calc(30px*var(--ui-space-scale,1))] shrink-0 items-center justify-center", hover)}>
+                  <UsageRing percent={percent} stroke={severity.stroke} />
+                </span>
+              ) : (
+                <span className={cn("flex h-full shrink-0 items-center", hover)} style={padStyle}><Face face={compactFace} /></span>
+              )}
+            </span>
+            )}
+            <span
+              className="col-start-1 row-start-1 h-full overflow-hidden"
+              style={fitContent ? undefined : { width: "clamp(0px, (100% - var(--full) + 1px) * 999, var(--full))" }}
+            >
+              <span
+                className={cn("flex h-full items-center", fitContent ? "gap-1.5" : "w-(--full) gap-2", hover)}
+                style={padStyle}
+              >
+                {showRing && ringFirst ? <UsageRing percent={percent} stroke={severity.stroke} /> : null}
+                <Face face={face} />
+                {showRing && !ringFirst ? <UsageRing percent={percent} stroke={severity.stroke} /> : null}
+              </span>
+            </span>
+          </button>
+        </TooltipTrigger>
+      </div>
       <TooltipContent
         side="bottom"
         sideOffset={8}
-        variant="rich"
-        className="[&_span>svg]:hidden!"
+        variant="none"
+        className="dropdown-surface rounded-lg bg-popover px-4 py-3 font-sans text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] [&_span>svg]:hidden!"
       >
-        <div className="grid min-w-44 gap-1.5 text-xs">
+        <div className="grid min-w-48 gap-2 text-sm">
           {percent !== null ? (
             <div className="flex items-center justify-between gap-4">
-              <span className="text-muted-foreground">Context usage</span>
+              <span className="text-muted-foreground">
+                {input.estimated ? "Estimated context usage" : "Context usage"}
+              </span>
               <span className={cn("font-mono tabular-nums font-medium", severity.text)}>
+                {input.estimated ? "~" : ""}
                 {percent.toFixed(1)}%
               </span>
             </div>
@@ -102,6 +267,14 @@ export const ContextUsageBar: FC<
               <span className="text-muted-foreground">Completion</span>
               <span className="font-mono tabular-nums">
                 {formatTokenCountFull(completionTokens)}
+              </span>
+            </div>
+          )}
+          {(input.compactionCount ?? 0) > 0 && (
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-muted-foreground">Compactions</span>
+              <span className="font-mono tabular-nums">
+                {input.compactionCount}
               </span>
             </div>
           )}
@@ -128,6 +301,12 @@ export const ContextUsageBar: FC<
             <span className="text-muted-foreground">{state.totalRowName}</span>
             <span className="font-mono tabular-nums">{state.totalRowValue}</span>
           </div>
+          {input.estimated ? (
+            <div className="mt-1 max-w-64 text-ui-11 leading-snug text-muted-foreground/90">
+              Estimated from the chat&apos;s text, without attachments. A
+              loaded model replaces it with an exact count.
+            </div>
+          ) : null}
           {advice !== "none" ? (
             <div className="mt-1 max-w-64 text-ui-11 leading-snug text-muted-foreground/90">
               {advice === "mlx-past-limit" ? (

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -15,9 +16,6 @@ import { useT } from "@/i18n";
 import {
   DocumentAttachmentIcon,
 } from "@hugeicons/core-free-icons";
-import {
-  ChevronRightIcon,
-} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactElement } from "react";
 
@@ -42,11 +40,11 @@ export function DocumentUploadRedirectDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className="sm:max-w-lg"
-        overlayClassName="bg-background/45 supports-backdrop-filter:backdrop-blur-[1px]"
+        overlayClassName="bg-background/45"
       >
         <DialogHeader className="gap-3">
           <div className="flex items-center gap-2">
-            <div className="flex size-10 items-center justify-center rounded-2xl border border-border/70 bg-muted/30">
+            <div className="flex size-10 items-center justify-center rounded-md border border-border/70 bg-muted/30">
               <HugeiconsIcon
                 icon={DocumentAttachmentIcon}
                 className="size-5 text-foreground/90"
@@ -66,7 +64,7 @@ export function DocumentUploadRedirectDialog({
           </div>
         </DialogHeader>
 
-        <div className="corner-squircle rounded-2xl border border-border/70 bg-muted/20 p-4">
+        <div className="corner-squircle rounded-xl border border-border/70 bg-muted/20 p-4">
           <p className="text-sm font-medium text-foreground">
             {t("studio.dataset.documentRedirect.nextStepTitle")}
           </p>
@@ -85,7 +83,7 @@ export function DocumentUploadRedirectDialog({
           </Button>
           <Button type="button" onClick={onOpenLearningRecipes}>
             {t("studio.dataset.documentRedirect.openAction")}
-            <ChevronRightIcon className="size-4" />
+            <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-4" />
           </Button>
         </DialogFooter>
       </DialogContent>

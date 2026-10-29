@@ -5,9 +5,9 @@ import {
   Delete02Icon,
   Edit03Icon,
   PlusSignIcon,
+  Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { UploadIcon } from "lucide-react";
 import {
   type ChangeEvent,
   useCallback,
@@ -39,8 +39,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import { changedImageMappings } from "./api/mcp-image";
 import { subscribeToMcpServerMutationSettlements } from "./api/mcp-server-mutation-tracker";
 import {
+  type McpImageInputMapping,
   type McpServerConfig,
   createMcpServer,
   decodeMcpStdioCommand,
@@ -57,7 +59,7 @@ import {
   createMcpStdioSnapshot,
   resolveMcpStdioUrl,
 } from "./mcp-server-form";
-import { BlenderMcpSetup } from "./blender-mcp-setup";
+import { McpImageMappings } from "./mcp-image-mappings";
 import { RefreshGlyph } from "@/lib/refresh-icon";
 
 type HeaderRow = { id: string; key: string; value: string };
@@ -73,7 +75,20 @@ type FormState = {
   headers: HeaderRow[];
   credentialTransport: Exclude<FormTransport, "unknown"> | null;
   useOauth: boolean;
+  oauthClientId: string;
+  oauthClientSecret: string;
+  imageInputMappings: McpImageInputMapping[];
 };
+
+// What image-field discovery reads: it probes the SAVED server, so it waits for these to be saved.
+function connectionKey(form: FormState): string {
+  return JSON.stringify([
+    form.url,
+    form.arguments.map((row) => row.value),
+    form.headers.map((row) => [row.key, row.value]),
+    form.useOauth,
+  ]);
+}
 
 const EMPTY_FORM: FormState = {
   displayName: "",
@@ -84,6 +99,9 @@ const EMPTY_FORM: FormState = {
   headers: [],
   credentialTransport: null,
   useOauth: false,
+  oauthClientId: "",
+  oauthClientSecret: "",
+  imageInputMappings: [],
 };
 
 function newRowId(): string {
@@ -118,8 +136,7 @@ function headersToObject(
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-// A non-HTTP address is a local stdio command. Case-insensitive to match the backend's is_stdio(),
-// so all layers split http-vs-command identically.
+// Case-insensitive to match the backend's is_stdio().
 function isHttpAddress(value: string): boolean {
   const trimmed = value.trim().toLowerCase();
   return trimmed.startsWith("http://") || trimmed.startsWith("https://");
@@ -170,6 +187,17 @@ function formWithAddress(
   };
 }
 
+function oauthPayload(form: FormState, stdio: boolean) {
+  if (stdio || !form.useOauth) return { useOauth: false };
+  return {
+    useOauth: true,
+    oauthClientId: form.oauthClientId.trim() || null,
+    ...(form.oauthClientSecret
+      ? { oauthClientSecret: form.oauthClientSecret }
+      : {}),
+  };
+}
+
 function isValidAddress(value: string): boolean {
   const trimmed = value.trim();
   if (!trimmed) return false;
@@ -181,8 +209,7 @@ function isValidAddress(value: string): boolean {
       return false;
     }
   }
-  // The backend owns stdio parsing and validation. In particular, the browser must not split an
-  // executable or duplicate platform-specific quoting rules.
+  // The backend owns stdio parsing; never split executables or quoting in the browser.
   return true;
 }
 
@@ -359,9 +386,9 @@ export function ChatMcpServersDialog({
 }: ChatMcpServersDialogProps) {
   const [servers, setServers] = useState<McpServerConfig[]>([]);
   const [loading, setLoading] = useState(false);
-  const [blenderBusy, setBlenderBusy] = useState(false);
   const [view, setView] = useState<View>({ kind: "list" });
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
+  const [savedConnection, setSavedConnection] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [codecPending, setCodecPending] = useState(false);
@@ -490,8 +517,18 @@ export function ChatMcpServersDialog({
     setForm(EMPTY_FORM);
   }
 
+  function oauthSecretPlaceholder(): string {
+    const saved =
+      view.kind === "edit" ? servers.find((s) => s.id === view.id) : undefined;
+    if (!saved?.has_oauth_client_secret) return "Optional client secret";
+    // The backend drops the stored secret when the client ID or URL changes.
+    return form.url.trim() === saved.url &&
+      form.oauthClientId.trim() === (saved.oauth_client_id ?? "")
+      ? "Leave blank to keep the stored secret"
+      : "Re-enter the secret: a new client ID or URL clears the stored one";
+  }
+
   async function startEdit(server: McpServerConfig) {
-    if (blenderBusy) return;
     const generation = formGenerationRef.current + 1;
     formGenerationRef.current = generation;
     activeEditIdRef.current = server.id;
@@ -508,18 +545,23 @@ export function ChatMcpServersDialog({
       headers: headersFromObject(server.headers ?? {}),
       credentialTransport: isHttpAddress(server.url) ? "http" : "stdio",
       useOauth: server.use_oauth ?? false,
+      oauthClientId: server.oauth_client_id ?? "",
+      oauthClientSecret: "",
+      imageInputMappings: server.image_input_mappings ?? [],
     };
 
     if (isHttpAddress(server.url)) {
       setCodecPending(false);
       setDecodingCommand(false);
       setForm(baseForm);
+      setSavedConnection(connectionKey(baseForm));
       return;
     }
 
     setCodecPending(true);
     setDecodingCommand(true);
     setForm(baseForm);
+    setSavedConnection(null);
     try {
       const decoded = await decodeMcpStdioCommand(server.url);
       if (
@@ -528,7 +570,7 @@ export function ChatMcpServersDialog({
       ) {
         return;
       }
-      setForm({
+      const decodedForm: FormState = {
         ...baseForm,
         url: decoded.command,
         arguments: argumentsFromStrings(decoded.arguments ?? []),
@@ -538,7 +580,9 @@ export function ChatMcpServersDialog({
           decoded.arguments ?? [],
         ),
         useOauth: false,
-      });
+      };
+      setForm(decodedForm);
+      setSavedConnection(connectionKey(decodedForm));
     } catch (err) {
       if (
         formGenerationRef.current !== generation ||
@@ -574,7 +618,7 @@ export function ChatMcpServersDialog({
 
   function handleOpenChange(next: boolean) {
     // once crud starts, dismissal must wait for the authoritative refresh
-    if (!next && (blenderBusy || (saving && !codecPending) || busyIdsRef.current.size > 0))
+    if (!next && ((saving && !codecPending) || busyIdsRef.current.size > 0))
       return;
     if (!next) {
       formGenerationRef.current += 1;
@@ -632,7 +676,8 @@ export function ChatMcpServersDialog({
       const result = await testMcpServer({
         url,
         headers: headersToObject(form.headers),
-        useOauth: stdio ? false : form.useOauth,
+        serverId: view.kind === "edit" ? view.id : undefined,
+        ...oauthPayload(form, stdio),
       });
       if (formGenerationRef.current !== generation) return;
       if (result.ok) {
@@ -700,7 +745,11 @@ export function ChatMcpServersDialog({
           displayName: trimmedName,
           url,
           headers: headers ?? null,
-          useOauth: stdio ? false : form.useOauth,
+          ...oauthPayload(form, stdio),
+          imageInputMappings: changedImageMappings(
+            servers.find((s) => s.id === view.id)?.image_input_mappings ?? [],
+            form.imageInputMappings,
+          ),
         });
         if (formGenerationRef.current !== generation) return;
         toast.success("MCP server updated");
@@ -710,7 +759,7 @@ export function ChatMcpServersDialog({
           displayName: trimmedName,
           url,
           headers: headers,
-          useOauth: stdio ? false : form.useOauth,
+          ...oauthPayload(form, stdio),
         });
         if (formGenerationRef.current !== generation) return;
         toast.success("MCP server added");
@@ -886,7 +935,7 @@ export function ChatMcpServersDialog({
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
         className="max-w-2xl max-h-[85dvh] overflow-y-auto"
-        showCloseButton={!blenderBusy && !(saving && !codecPending) && busyIds.size === 0}
+        showCloseButton={!(saving && !codecPending) && busyIds.size === 0}
         aria-busy={decodingCommand}
       >
         <DialogHeader>
@@ -907,7 +956,7 @@ export function ChatMcpServersDialog({
         {showForm ? (
           <div className="flex flex-col gap-4">
             {view.kind === "create" && (
-              <div className="flex items-center justify-between gap-3 rounded-md border border-dashed px-3 py-2">
+              <div className="flex items-center justify-between gap-3 rounded-lg border border-dashed px-3 py-2">
                 <span className="text-xs text-muted-foreground">
                   Import servers from a config file.
                 </span>
@@ -920,7 +969,7 @@ export function ChatMcpServersDialog({
                   disabled={importing || formPending}
                   title="Import servers from a mcpServers JSON config (Claude Desktop, Cursor, VS Code…)"
                 >
-                  {importing ? <Spinner /> : <UploadIcon className="size-3.5" />}
+                  {importing ? <Spinner /> : <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />}
                   Import config
                 </Button>
               </div>
@@ -1039,6 +1088,7 @@ export function ChatMcpServersDialog({
                   </span>
                 </div>
                 <Switch
+                  className="mt-[var(--ui-title-cap-inset)]"
                   id="mcp-oauth"
                   checked={form.useOauth}
                   disabled={formPending}
@@ -1048,6 +1098,57 @@ export function ChatMcpServersDialog({
                 />
               </div>
             )}
+
+            {form.transport === "http" && form.useOauth && (
+              <div className="grid gap-3 rounded-lg border p-3">
+                <div className="grid gap-2">
+                  <Label htmlFor="mcp-oauth-client-id">OAuth client ID</Label>
+                  <Input
+                    id="mcp-oauth-client-id"
+                    value={form.oauthClientId}
+                    onChange={(e) =>
+                      setForm((prev) => ({
+                        ...prev,
+                        oauthClientId: e.target.value,
+                      }))
+                    }
+                    placeholder="Optional pre-registered client ID"
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="mcp-oauth-client-secret">
+                    OAuth client secret
+                  </Label>
+                  <Input
+                    id="mcp-oauth-client-secret"
+                    type="password"
+                    autoComplete="new-password"
+                    value={form.oauthClientSecret}
+                    onChange={(e) =>
+                      setForm((prev) => ({
+                        ...prev,
+                        oauthClientSecret: e.target.value,
+                      }))
+                    }
+                    placeholder={oauthSecretPlaceholder()}
+                  />
+                </div>
+              </div>
+            )}
+
+            <McpImageMappings
+              key={view.kind === "edit" ? view.id : "new"}
+              serverId={view.kind === "edit" ? view.id : undefined}
+              value={form.imageInputMappings}
+              onChange={(imageInputMappings) =>
+                setForm((prev) => ({ ...prev, imageInputMappings }))
+              }
+              disabled={formPending}
+              connectionUnsaved={
+                savedConnection === null ||
+                connectionKey(form) !== savedConnection
+              }
+            />
 
             {form.transport !== "unknown" && (
               <HeadersEditor
@@ -1100,19 +1201,18 @@ export function ChatMcpServersDialog({
           </div>
         ) : (
           <div className="flex min-w-0 flex-col gap-3">
-            {open && <BlenderMcpSetup servers={servers} disabled={importing} onBusyChange={setBlenderBusy} />}
             <div className="flex justify-end gap-2">
               <Button
                 size="sm"
                 variant="outline"
                 onClick={() => fileInputRef.current?.click()}
-                disabled={importing || blenderBusy}
+                disabled={importing}
                 title="Import servers from a mcpServers JSON config (Claude Desktop, Cursor, VS Code…)"
               >
-                {importing ? <Spinner /> : <UploadIcon className="size-3.5" />}
+                {importing ? <Spinner /> : <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />}
                 Import config
               </Button>
-              <Button size="sm" onClick={startCreate} disabled={importing || blenderBusy}>
+              <Button variant="secondary" size="sm" onClick={startCreate} disabled={importing}>
                 <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
                 Add server
               </Button>
@@ -1122,11 +1222,11 @@ export function ChatMcpServersDialog({
                 <Spinner />
               </div>
             ) : servers.filter((server) => !server.builtin_id).length === 0 ? (
-              <div className="rounded-md border border-dashed py-6 text-center text-sm text-muted-foreground">
+              <div className="rounded-xl border border-dashed py-6 text-center text-sm text-muted-foreground">
                 No custom MCP servers configured yet.
               </div>
             ) : (
-              <ul className="flex flex-col divide-y rounded-md border">
+              <ul className="flex flex-col divide-y rounded-xl border">
                 {servers.filter((server) => !server.builtin_id).map((server) => (
                   <li
                     key={server.id}
@@ -1168,7 +1268,7 @@ export function ChatMcpServersDialog({
                         size="icon"
                         onClick={() => void startEdit(server)}
                         aria-label="Edit server"
-                        disabled={importing || blenderBusy || busyIds.has(server.id)}
+                        disabled={importing || busyIds.has(server.id)}
                       >
                         <HugeiconsIcon icon={Edit03Icon} className="size-3.5" />
                       </Button>

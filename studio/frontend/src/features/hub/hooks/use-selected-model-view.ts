@@ -180,10 +180,9 @@ export function useSelectedModelView({
         capabilities: selectedDiscoverRow.capabilities,
         license: detectLicense(selectedDiscoverRow.result.tags),
         pipelineTag: selectedDiscoverRow.result.pipelineTag,
-        // From the matched on-device row, like every field above: its inventory task is the
-        // only record of the modality when the Hub metadata has no pipeline tag or only the
-        // generic text-generation one.
+        // Inventory task is the only modality record when Hub metadata lacks a specific pipeline tag.
         task: selectedCachedRow?.task ?? selectedLocalRow?.task ?? null,
+        audioType: selectedCachedRow?.audioType ?? selectedLocalRow?.audioType ?? null,
         libraryName: selectedDiscoverRow.result.libraryName,
         gated: selectedDiscoverRow.result.gated,
         private: selectedDiscoverRow.result.private,
@@ -258,6 +257,7 @@ export function useSelectedModelView({
         license: detectLicense(mergedTags),
         pipelineTag: mergedPipelineTag,
         task: selectedCachedRow.task ?? null,
+        audioType: selectedCachedRow.audioType ?? null,
         libraryName: mergedLibraryName,
         gated: selectedHfResult?.gated,
         private: selectedHfResult?.private,
@@ -339,6 +339,7 @@ export function useSelectedModelView({
           license: detectLicense(mergedTags),
           pipelineTag: mergedPipelineTag,
           task: selectedLocalRow.task ?? null,
+          audioType: selectedLocalRow.audioType ?? null,
           libraryName: mergedLibraryName,
           gated: selectedHfResult?.gated,
           private: selectedHfResult?.private,
@@ -392,6 +393,7 @@ export function useSelectedModelView({
         license: detectLicense(mergedTags),
         pipelineTag: mergedPipelineTag,
         task: selectedLocalRow.task ?? null,
+        audioType: selectedLocalRow.audioType ?? null,
         libraryName: mergedLibraryName,
         gated: localHubMetadata?.gated,
         private: localHubMetadata?.private,
