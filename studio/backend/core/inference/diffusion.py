@@ -174,6 +174,7 @@ from .diffusion_small_host import (
     host_commit_mib,
     host_ram_mib,
     resolve_snapshot_dir,
+    spill_capacity_mib,
     stored_components,
     torch_dtype_map as small_host_torch_dtype_map,
 )
@@ -11992,6 +11993,7 @@ class DiffusionBackend:
             lora_active = lora_active,
             host_commit_mib = host_commit_mib(),
             pread_libraries = ("transformers",) if pread_available() else (),
+            spill_free_mib = spill_capacity_mib(),
         )
         if decision.engaged or decision.refuse:
             logger.info(
@@ -12002,6 +12004,13 @@ class DiffusionBackend:
             )
         elif decision.available_mib is not None:
             logger.info("diffusion.small_host: engaged=False (%s)", decision.reason)
+        if decision.int8_spill:
+            logger.info(
+                "diffusion.small_host: int8 denoiser spills to a memory-mapped scratch file (host estimate %d MiB "
+                "instead of %d MiB)",
+                decision.spill_route_host_mib,
+                decision.route_host_mib,
+            )
         if decision.refuse:
             raise RuntimeError(decision.refuse)
         return decision
@@ -12027,6 +12036,7 @@ class DiffusionBackend:
             mark,
             prepare_streamed_encoder_,
             quantize_int8_weight_,
+            spill_dir,
         )
 
         device = target.torch_device
@@ -12048,16 +12058,29 @@ class DiffusionBackend:
             else:
                 # pageable: pinning rounds blocks to powers of two (11.3 GB of FLUX.1 int8 held 18 GB pinned)
                 act_int8 = int8_act_family(fam) and int8_act_device_ok(device)
-                stats = quantize_int8_weight_(
-                    module,
-                    compute_dtype = dtype,
-                    work_device = device,
-                    keep_device = "cpu",
-                    act_int8 = act_int8,
-                )
+                spill_to = spill_dir() if getattr(decision, "int8_spill", False) else None
+                try:
+                    stats = quantize_int8_weight_(
+                        module,
+                        compute_dtype = dtype,
+                        work_device = device,
+                        keep_device = "cpu",
+                        act_int8 = act_int8,
+                        spill_dir = spill_to,
+                    )
+                except OSError as exc:
+                    if spill_to is None:
+                        raise
+                    # in-RAM route does not fit: no fallback
+                    raise RuntimeError(
+                        f"Not enough system RAM to load this model, and the int8 scratch file in {spill_to} "
+                        f"could not be created ({exc}). Point UNSLOTH_DIFFUSION_SMALL_HOST_SPILL_DIR at a disk "
+                        f"with {decision.route_host_mib / 1024 + 2:.0f} GB free."
+                    ) from exc
                 info["components"][name] = (
                     f"int8 weights ({stats['int8_bytes'] >> 20} MiB, {stats['linears']} linears"
                     + (", int8 activations" if act_int8 else "")
+                    + (", memory-mapped scratch file" if stats.get("spilled_bytes") else "")
                     + ")"
                 )
             if load_token is not None:
