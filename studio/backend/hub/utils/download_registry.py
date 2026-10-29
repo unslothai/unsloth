@@ -90,6 +90,27 @@ def http_size_ceiling_reason(largest_file_bytes: Optional[int]) -> Optional[str]
     )
 
 
+def modelscope_xet_unavailable_reason() -> Optional[str]:
+    """Xet needs Hugging Face's token/CAS endpoints; ModelScope's HF_ENDPOINT shim does not (#15989).
+
+    Without this, Auto/Xet still tries, the token probe returns HTTP 405, and an oversized
+    download then dies on the HTTPS 50GB ceiling with a misleading ``hf_xet`` install hint.
+    """
+    try:
+        from utils.hub_settings import MODELSCOPE, active_source
+
+        if active_source() != MODELSCOPE:
+            return None
+    except Exception:  # noqa: BLE001 - settings must not block a download decision
+        return None
+    return (
+        "Xet is unavailable while ModelScope is the model source: its Hub adapter does not "
+        "serve Hugging Face's Xet token endpoint. Switch to Hugging Face in Settings to "
+        "download files larger than "
+        f"{http_max_file_bytes() / 1e9:.0f}GB, or keep ModelScope for smaller files over HTTPS."
+    )
+
+
 def humanize_worker_error(text: str, *, largest_file_bytes: Optional[int] = None) -> str:
     """Name a repo missing on ModelScope, and replace the hub's misleading >50GB dependency
     error with the transport limit."""
@@ -132,10 +153,21 @@ def get_download_transport_capabilities(
     largest_file_bytes: Optional[int] = None,
 ) -> DownloadTransportCapabilities:
     """probe checks live Xet health, ram_gate applies memory pressure, largest_file_bytes HTTP size limit."""
-    xet_available = importlib.util.find_spec("hf_xet") is not None
+    xet_installed = importlib.util.find_spec("hf_xet") is not None
+    modelscope_xet_reason = modelscope_xet_unavailable_reason()
+    xet_available = xet_installed and modelscope_xet_reason is None
+    xet_reason = (
+        None
+        if xet_available
+        else (
+            modelscope_xet_reason
+            if modelscope_xet_reason is not None
+            else "Xet transport is unavailable because hf_xet is not installed."
+        )
+    )
     http_reason = http_size_ceiling_reason(largest_file_bytes)
     auto_transport = TRANSPORT_XET if xet_available else TRANSPORT_HTTP
-    auto_reason: Optional[str] = None
+    auto_reason: Optional[str] = None if xet_available else xet_reason
     auto_forced = False
     if xet_available:
         try:
@@ -175,14 +207,13 @@ def get_download_transport_capabilities(
         # The size limit overrides preferences for HTTP based on health or RAM.
         auto_transport = TRANSPORT_XET
         auto_reason = "Xet (HTTPS cannot fetch a file this large)"
+    elif http_reason is not None and not xet_available:
+        # Oversized + no Xet (missing hf_xet, or ModelScope): Auto cannot invent a working transport.
+        auto_transport = TRANSPORT_HTTP
+        auto_reason = http_reason
     return DownloadTransportCapabilities(
         http = DownloadTransportCapability(available = http_reason is None, reason = http_reason),
-        xet = DownloadTransportCapability(
-            available = xet_available,
-            reason = None
-            if xet_available
-            else "Xet transport is unavailable because hf_xet is not installed.",
-        ),
+        xet = DownloadTransportCapability(available = xet_available, reason = xet_reason),
         auto_resolves_to = auto_transport,
         auto_reason = auto_reason,
         partials_resumable = hf_partials_are_resumable(),
