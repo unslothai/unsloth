@@ -74,6 +74,19 @@ export function rerouteCanFeed(
   return !source || typesCompatible(source, port);
 }
 
+/** Whether output `port` could feed this reroute: it must fit every input the reroute feeds. */
+export function rerouteTakes(
+  graph: DocGraph,
+  rerouteId: string,
+  port: PortSpec,
+): boolean {
+  if (port.type === "flow") return false;
+  return rerouteDownstream(graph, rerouteId).every((ref) => {
+    const input = portSpec(graph, ref, "in");
+    return !input || typesCompatible(port, input);
+  });
+}
+
 export interface RerouteRequest {
   source: string;
   sourceHandle: string;

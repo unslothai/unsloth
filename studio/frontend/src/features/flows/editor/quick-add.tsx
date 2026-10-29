@@ -11,7 +11,7 @@ import type { NodeSpec } from "../types";
 import { compatibleSpecs } from "./connection-rules";
 import { nodeIcon } from "./icons";
 import { addNodeConnected } from "./node-factory";
-import { REROUTE_TYPE, rerouteCanFeed } from "./reroutes";
+import { REROUTE_TYPE, rerouteCanFeed, rerouteTakes } from "./reroutes";
 
 export function QuickAdd() {
   const quickAdd = useUiStore((s) => s.quickAdd);
@@ -25,13 +25,14 @@ export function QuickAdd() {
     if (!quickAdd.from) return catalog.nodes.map((spec) => ({ spec }));
     const { from } = quickAdd;
     const graph = useDocStore.getState().graph;
-    // Out of a reroute: any input the whole chain could feed, not just its first input's type.
+    // Off a reroute, check against the whole chain, not just its first input's type.
     const matches =
-      from.side === "out" && from.kind === "data" && graph.reroutes[from.nodeId]
+      from.kind === "data" && graph.reroutes[from.nodeId]
         ? catalog.nodes.flatMap((spec) => {
-            const port = spec.inputs.find((p) =>
-              rerouteCanFeed(graph, from.nodeId, p),
-            );
+            const port =
+              from.side === "out"
+                ? spec.inputs.find((p) => rerouteCanFeed(graph, from.nodeId, p))
+                : spec.outputs.find((p) => rerouteTakes(graph, from.nodeId, p));
             return port ? [{ spec, port: port.id }] : [];
           })
         : compatibleSpecs(catalog.nodes, from);

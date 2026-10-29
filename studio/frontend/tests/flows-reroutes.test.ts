@@ -442,4 +442,14 @@ test("an empty reroute into an `any` input connects, and Quick Add offers what t
   tryConnect({ source: "src", sourceHandle: outHandle("text"), target: "r2", targetHandle: REROUTE_IN_HANDLE });
   assert.equal(rerouteCanFeed(graph(), "r2", json), true, "text feeds json");
   assert.equal(rerouteCanFeed(graph(), "r2", image), false, "text does not feed an image");
+  // Into a reroute: an output has to fit every input the chain feeds.
+  const { rerouteTakes } = await import("../src/features/flows/editor/reroutes.ts");
+  fresh([]);
+  useDocStore.getState().addReroute({ id: "r3", pos: [300, 10] });
+  for (const [target, port] of [["img", "init_image"], ["llm", "prompt"]] as const)
+    tryConnect({ source: "r3", sourceHandle: REROUTE_OUT_HANDLE, target, targetHandle: inHandle(port) });
+  const anyOut = { id: "v", label: "v", type: "any" } as never;
+  assert.equal(rerouteTakes(graph(), "r3", image), false);
+  assert.equal(rerouteTakes(graph(), "r3", text), false);
+  assert.equal(rerouteTakes(graph(), "r3", anyOut), true);
 });
