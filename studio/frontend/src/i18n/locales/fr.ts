@@ -3237,6 +3237,7 @@ export const fr = {
       readDocs: "Lire la documentation de l'API",
       noAccess: "Aucun accès API pour le moment.",
       accessTokens: "Jetons d’accès",
+      examplesTitle: "Exemples",
       columnName: "Nom",
       columnToken: "Jeton",
       columnCreated: "Créé",

@@ -3209,6 +3209,7 @@ export const ptBR = {
       readDocs: "Leia a documentação da API",
       noAccess: "Nenhum acesso à API ainda.",
       accessTokens: "Tokens de acesso",
+      examplesTitle: "Exemplos",
       columnName: "Nome",
       columnToken: "Token",
       columnCreated: "Criado",

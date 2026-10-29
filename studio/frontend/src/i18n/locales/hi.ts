@@ -3198,6 +3198,7 @@ export const hi = {
       readDocs: "API दस्तावेज़ पढ़ें",
       noAccess: "अभी तक कोई API एक्सेस नहीं।",
       accessTokens: "एक्सेस टोकन",
+      examplesTitle: "उदाहरण",
       columnName: "नाम",
       columnToken: "टोकन",
       columnCreated: "बनाया गया",

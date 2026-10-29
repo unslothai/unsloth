@@ -3178,6 +3178,7 @@ export const ko = {
       readDocs: "API 문서 읽기",
       noAccess: "아직 액세스 토큰이 없습니다.",
       accessTokens: "액세스 토큰",
+      examplesTitle: "예제",
       columnName: "이름",
       columnToken: "토큰",
       columnCreated: "생성",
