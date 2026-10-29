@@ -126,7 +126,8 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
   const selectedEdges = useUiStore((s) => s.selectedEdges);
   const snapToGrid = useUiStore((s) => s.snapToGrid);
   const { screenToFlowPosition } = useReactFlow();
-  const wireReconnect = useWireReconnect(!readOnly);
+  const { props: wireReconnect, reconnecting } =
+    useWireReconnect(!readOnly);
   const updateNodeInternals = useRef(useUpdateNodeInternals());
   useEffect(() => (readOnly ? undefined : watchRewiredOutputs()), [readOnly]);
 
@@ -371,6 +372,8 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
       connectStart.current = null;
       if (
         readOnly ||
+        // Dropping a wire's end to remove it is not a new wire.
+        reconnecting.current ||
         !start?.nodeId ||
         !start.handleId ||
         state.isValid ||
@@ -409,6 +412,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
       nodes: rfNodes,
       edges: rfEdges,
     }: { nodes: RfNode[]; edges: RfEdge[] }) => {
+      if (readOnly) return;
       const ids = {
         nodes: [] as string[],
         edges: rfEdges.map((e) => e.id),
@@ -425,7 +429,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
       useDocStore.getState().removeElements(ids);
       useUiStore.getState().setSelection([], []);
     },
-    [],
+    [readOnly],
   );
 
   const onDoubleClick = useCallback(
