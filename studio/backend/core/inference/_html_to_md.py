@@ -2386,10 +2386,9 @@ def _visible_len(line: str) -> int:
 
 
 def _destination_ends(line: str) -> dict:
-    """End (one past the closing paren) of a destination scan started at each position the
-    scanner can stand on, for those that close. Every scan steps over the same positions,
-    escapes included, so one prefix sum of paren depth answers all of them: a scan from p
-    closes at the first later step where the sum drops below its value at p."""
+    """End of the destination scan from each reachable position, for scans that close. All scans
+    step over the same positions, so a scan from p closes where the paren-depth prefix sum first
+    drops below its value at p."""
     steps: list[int] = []
     sums: list[int] = []
     depth, k, n = 0, 0, len(line)
@@ -2403,13 +2402,12 @@ def _destination_ends(line: str) -> dict:
         depth += (char == "(") - (char == ")")
         k += 1
     ends: dict = {}
-    first_at: dict = {}  # prefix value -> earliest later step index holding it
+    first_at: dict = {}  # prefix sum -> earliest later step index
     sums.append(depth)
     for m in range(len(steps), -1, -1):
         if m < len(steps):
             after = first_at.get(sums[m] - 1)
             if after is not None:
-                # the step before index `after` held the closing paren
                 ends[steps[m]] = steps[after - 1] + 1
         first_at[sums[m]] = m
     return ends

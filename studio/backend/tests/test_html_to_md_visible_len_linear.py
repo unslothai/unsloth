@@ -80,7 +80,6 @@ def test_unclosed_destinations_are_read_a_bounded_number_of_times():
     line = _CountingStr("[a](" * 400)
     _CountingStr.reads = 0
     assert _visible_len(line) == _rescanning_visible_len(str(line))
-    # the rescanning scanner read ~320,000 characters here
     assert _CountingStr.reads < 10 * len(line)
 
 
