@@ -92,18 +92,30 @@ if (isTauri && /Mac/.test(navigator.platform)) {
   watchMacStrayKeyText(window);
 }
 
+const APP_SHELL_READY_EVENT = "unsloth:app-shell-ready";
+const CHAT_PREFETCH_FALLBACK_MS = 3000;
+
 function renderApp(): void {
   root.render(
     <StrictMode>
       <App />
     </StrictMode>,
   );
-  // Any other first screen: fetch Chat once that screen has had its first frame, so opening it
-  // later does not wait.
+  // Any other first screen: fetch Chat as soon as that screen is up, so opening it later does not
+  // wait. Fetching it during the first frame would slow that screen down. Screens that send no
+  // ready signal get it after CHAT_PREFETCH_FALLBACK_MS; hovering or focusing a Chat entry in the
+  // sidebar starts it sooner.
   if (!chatPageAtStart) {
-    window.requestAnimationFrame(() => {
-      window.setTimeout(prefetchChatPage, 0);
-    });
+    const prefetchOnce = () => {
+      window.removeEventListener(APP_SHELL_READY_EVENT, afterReady);
+      window.clearTimeout(fallback);
+      prefetchChatPage();
+    };
+    const afterReady = () => {
+      window.setTimeout(prefetchOnce, 0);
+    };
+    window.addEventListener(APP_SHELL_READY_EVENT, afterReady, { once: true });
+    const fallback = window.setTimeout(prefetchOnce, CHAT_PREFETCH_FALLBACK_MS);
   }
 }
 
