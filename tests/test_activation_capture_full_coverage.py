@@ -155,3 +155,17 @@ def test_mlp_columns_follow_the_pinned_channels(tmp_path):
     assert set(OUTLIERS) <= set(cols)
     for i, ch in enumerate(cols):
         assert mlp[i] == pytest.approx(50.0 if ch in OUTLIERS else 0.0 if ch in DEAD else 1.0)
+
+
+def test_a_non_finite_channel_is_left_out_of_the_counts(tmp_path):
+    model, cap = _capture(tmp_path, pinned_channels = 3, min_captures_for_constant = 2)
+    bad = model.model.layers[0].scale
+    bad[5] = float("nan")
+    _run(model, cap, steps = 3)
+    _, records = _read(tmp_path)
+    layer0 = records[-1]["coverage"]["0"]
+    # Channel 5 never had a finite value: not a channel, not dead, and the median stays usable.
+    assert layer0["channels"] == H - 1
+    assert layer0["dead"] == len(DEAD)
+    assert layer0["outliers"] == len(OUTLIERS)
+    assert {ch for ch, _ in layer0["top_outliers"]} == set(OUTLIERS)

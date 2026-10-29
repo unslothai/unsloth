@@ -615,8 +615,12 @@ class ActivationCapture:
         mean_abs = torch.stack([a / n for n, a, _ in sums])  # [L, H]
         mean = torch.stack([t / n for n, _, t in sums])
         h = mean_abs.shape[1]
-        median = mean_abs.median(dim = 1, keepdim = True).values.clamp_min(1e-12)
-        ratio = mean_abs / median
+        # A NaN or inf channel (unstable step) is missing for this capture, not a measurement.
+        finite = torch.isfinite(mean_abs)
+        clean = torch.where(finite, mean_abs, torch.zeros_like(mean_abs))
+        median = torch.where(finite, mean_abs, torch.full_like(mean_abs, float("nan")))
+        median = median.nanmedian(dim = 1, keepdim = True).values.nan_to_num(0.0).clamp_min(1e-12)
+        ratio = torch.where(finite, mean_abs / median, torch.zeros_like(mean_abs))
 
         if self._captures == 0 and h > cfg.max_channels:
             pins = min(cfg.pinned_channels, cfg.max_channels)
@@ -631,28 +635,35 @@ class ActivationCapture:
 
         if self._run is None:
             zeros = torch.zeros_like(mean_abs)
-            self._run = {"max": zeros.clone(), "sum": zeros.clone(), "sumsq": zeros}
+            self._run = {
+                "max": zeros.clone(),
+                "sum": zeros.clone(),
+                "sumsq": zeros.clone(),
+                "n": zeros,
+            }
         run = self._run
-        torch.maximum(run["max"], mean_abs, out = run["max"])
-        run["sum"] += mean_abs
-        run["sumsq"] += mean_abs * mean_abs
+        torch.maximum(run["max"], clean, out = run["max"])
+        run["sum"] += clean
+        run["sumsq"] += clean * clean
+        run["n"] += finite
         self._captures += 1
 
-        dead = run["max"] < cfg.dead_threshold
-        if self._captures >= cfg.min_captures_for_constant:
-            avg = run["sum"] / self._captures
-            std = (run["sumsq"] / self._captures - avg * avg).clamp_min(0).sqrt()
-            cv = torch.where(avg > 0, std / avg.clamp_min(1e-12), torch.zeros_like(avg))
-            constant = (cv < cfg.constant_cv) & ~dead
-        else:
-            constant = torch.zeros_like(dead)
+        seen = run["n"] > 0
+        dead = seen & (run["max"] < cfg.dead_threshold)
+        n = run["n"].clamp_min(1)
+        avg = run["sum"] / n
+        std = (run["sumsq"] / n - avg * avg).clamp_min(0).sqrt()
+        cv = torch.where(avg > 0, std / avg.clamp_min(1e-12), torch.zeros_like(avg))
+        constant = (run["n"] >= cfg.min_captures_for_constant) & (cv < cfg.constant_cv) & ~dead
         outlier = ratio > cfg.outlier_ratio
         k = min(3, h)
         top_ratio, top_idx = ratio.topk(k, dim = 1)
         idx = torch.tensor(self._sampled_channels, device = mean_abs.device)
 
         # One host transfer for the whole step.
-        counts = torch.stack([dead.sum(1), constant.sum(1), outlier.sum(1)], dim = 1).float()
+        counts = torch.stack(
+            [seen.sum(1), dead.sum(1), constant.sum(1), outlier.sum(1)], dim = 1
+        ).float()
         packed = (
             torch.cat(
                 [
@@ -675,7 +686,7 @@ class ActivationCapture:
             off += count
             return out
 
-        counts_l, ratio_l, idx_l = take(n_layers * 3), take(n_layers * k), take(n_layers * k)
+        counts_l, ratio_l, idx_l = take(n_layers * 4), take(n_layers * k), take(n_layers * k)
         abs_l, mean_l = take(n_layers * n_k), take(n_layers * n_k)
         coverage = {}
         for j, layer in enumerate(ids):
@@ -684,10 +695,10 @@ class ActivationCapture:
                 "mean": mean_l[j * n_k : (j + 1) * n_k],
             }
             coverage[str(layer)] = {
-                "channels": h,
-                "dead": int(counts_l[j * 3]),
-                "constant": int(counts_l[j * 3 + 1]),
-                "outliers": int(counts_l[j * 3 + 2]),
+                "channels": int(counts_l[j * 4]),
+                "dead": int(counts_l[j * 4 + 1]),
+                "constant": int(counts_l[j * 4 + 2]),
+                "outliers": int(counts_l[j * 4 + 3]),
                 "top_outliers": [[int(idx_l[j * k + i]), ratio_l[j * k + i]] for i in range(k)],
             }
         return coverage
@@ -749,8 +760,9 @@ class ActivationCaptureCallback(TrainerCallback):
     ):
         self._pending = False
         self.capture.attach()
-        # Arm capture for step 0 so the pre-finetune baseline is recorded.
-        self.capture.mark_capture(step = 0, loss = None)
+        # Arm capture for step 0 so the pre-finetune baseline is recorded; a resumed run has none.
+        if state.global_step == 0:
+            self.capture.mark_capture(step = 0, loss = None)
 
     def on_step_begin(
         self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs

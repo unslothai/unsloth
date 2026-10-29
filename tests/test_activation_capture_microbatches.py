@@ -196,3 +196,16 @@ def test_non_finite_values_are_written_as_null(tmp_path):
     record = json.loads(line, parse_constant = lambda c: pytest.fail(f"non-JSON token {c}"))
     assert record["loss"] is None
     assert record["layers"]["0"]["mean_abs"][0] is None
+
+
+def test_a_resumed_run_has_no_step_zero_baseline(tmp_path):
+    model, cap = _capture(tmp_path, checkpointed = False)
+    cap.config.capture_interval = 3
+    cb = ac.ActivationCaptureCallback(cap)
+    cb.on_train_begin(None, _state(7), None)
+    cb.on_step_begin(None, _state(7), None)
+    model(torch.ones(1, 1, H, requires_grad = True)).sum().backward()
+    cb.on_step_end(None, _state(8), None)
+    cb.on_log(None, _state(8), None, logs = {"loss": 1.0})
+    cb.on_step_begin(None, _state(8), None)
+    assert _records(tmp_path) == []
