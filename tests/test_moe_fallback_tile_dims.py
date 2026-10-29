@@ -290,3 +290,12 @@ def test_wide_dw_tile_only_on_sm80_plus_nvidia(ac, monkeypatch, available, hip, 
 def test_t4_keeps_the_fitted_dw_tile(ac, no_smem_fit, monkeypatch):
     monkeypatch.setattr(ac, "_wide_dw_device_ok", lambda device = None: False)
     assert _tiles(ac._get_heuristic_configs(n_dim = 5760, k_dim = 2880)[2:]) == ((64, 64, 64, 8, 4),)
+
+
+@pytest.mark.parametrize("dtype, wide", [(torch.bfloat16, True), (torch.float16, True), (torch.float32, False)])
+def test_heuristic_dw_widens_only_16bit_activations(ac, monkeypatch, dtype, wide):
+    # float32 dW is 13-15% slower on the wide tile (B200, gpt-oss gate_up and N 1024 x K 960).
+    monkeypatch.setattr(ac, "_wide_dw_device_ok", lambda device = None: True)
+    for n_dim, k_dim in ((5760, 2880), (1024, 960)):
+        dw = ac._get_heuristic_configs(n_dim = n_dim, k_dim = k_dim, dtype = dtype)[2]
+        assert (dw.BLOCK_SIZE_N == 128) is wide

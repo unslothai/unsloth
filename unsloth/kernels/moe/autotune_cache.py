@@ -742,9 +742,11 @@ def _get_heuristic_configs(
     # output tile starves the kernel; a 128-wide N tile at 3 stages is faster at the same error. Other K, an N
     # that 128 does not divide, or an N x K output too small to fill the card at half the programs (the legacy
     # kernel was 5-23% slower at N 1024 x K <= 576) keep the fitted tile. The SMEM fit below still shrinks it.
+    # float32 activations keep it too: the wide tile is 13-15% slower there (B200).
     config_bwd_dw = configs[2]
     if (
         config_bwd_dw.BLOCK_SIZE_K == 64
+        and dtype != torch.float32
         and k_dim is not None
         and n_dim is not None
         and n_dim % 128 == 0
