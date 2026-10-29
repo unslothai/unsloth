@@ -230,8 +230,9 @@ pub fn note_window_shown() {
     }
 }
 
-/// Child only: calls `on_terminate` once on the parent's `T` or EOF. A dead supervisor must not
-/// strand the app in its separate process group, even if the parent died before this reader began.
+/// Child only: calls `on_terminate` once on the parent's `T` or a closed/broken control stream.
+/// A dead supervisor must not strand the app in its separate process group, even if the parent
+/// died before this reader began. Unread window-status messages can turn close into ECONNRESET.
 pub fn start_control_reader(on_terminate: impl Fn() + Send + 'static) {
     let Some(stream) = CHANNEL.get() else {
         return;
@@ -246,20 +247,19 @@ pub fn start_control_reader(on_terminate: impl Fn() + Send + 'static) {
             let mut buf = [0u8; 16];
             loop {
                 match reader.read(&mut buf) {
-                    Ok(0) => {
-                        if !fired {
-                            on_terminate();
-                        }
-                        return;
-                    }
-                    Ok(n) => {
+                    Ok(n) if n > 0 => {
                         if !fired && buf[..n].contains(&MSG_TERMINATE) {
                             fired = true;
                             on_terminate();
                         }
                     }
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                    Err(_) => return,
+                    _ => {
+                        if !fired {
+                            on_terminate();
+                        }
+                        return;
+                    }
                 }
             }
         });
@@ -1134,6 +1134,9 @@ mod tests {
             .unwrap();
             let on_control = on_signal.clone();
             start_control_reader(move || on_control(libc::SIGTERM));
+            // A real GUI reports its window before the parent drains the channel. If the
+            // supervisor is killed with this unread data, Linux resets the peer, not just EOF.
+            note_window_will_show();
             // SAFETY: getpgrp only reads the calling process's group ID.
             let pgid = unsafe { libc::getpgrp() };
             std::fs::write(
