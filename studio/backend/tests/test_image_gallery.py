@@ -792,3 +792,19 @@ def test_save_many_still_saves_through_save(monkeypatch):
     monkeypatch.setattr(gallery, "save", _save)
     list(gallery.save_many((im, _meta(batch_index = i)) for i, im in enumerate(_batch(3))))
     assert seen == [0, 1, 2]
+
+
+def test_save_many_keeps_batch_order_when_writes_share_an_mtime(monkeypatch):
+    # A coarse filesystem clock (Windows) stamps back-to-back writes alike; the listing sorts by mtime.
+    _many_cpus(monkeypatch)
+    real_replace = os.replace
+
+    def _replace(src, dst):
+        real_replace(src, dst)
+        os.utime(dst, ns = (1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+
+    monkeypatch.setattr(gallery.os, "replace", _replace)
+    records = list(gallery.save_many((im, _meta(batch_index = i)) for i, im in enumerate(_batch())))
+    ranks = [r["order_at"] for r in records]
+    assert ranks == sorted(set(ranks)), ranks
+    assert [r["batch_index"] for r in gallery.list_images()] == [3, 2, 1, 0]

@@ -213,12 +213,16 @@ def save_many(items: Iterable[tuple[Any, dict[str, Any]]]) -> Iterator[dict[str,
             pending[id(image)] = (image, recipe, pool.submit(_png_bytes, image, recipe))
         futures = [entry[2] for entry in pending.values()]
         _ahead.pending = pending
+        # Back-to-back writes can share an mtime (Windows stamps from a ~15.6 ms clock tick), and the gallery sorts
+        # by mtime: each file is kept strictly newer than the one before, as the encode between writes did.
+        _ahead.floor_ns = None
         try:
             for image, meta in items:
                 yield save(image, meta)
         finally:
             if getattr(_ahead, "pending", None) is pending:
                 _ahead.pending = None
+                _ahead.floor_ns = None
             for future in futures:
                 future.cancel()
 
@@ -237,7 +241,23 @@ def _publish(image_id: str, meta: dict[str, Any], data: bytes) -> dict[str, Any]
         except OSError:
             pass
         raise
+    if getattr(_ahead, "pending", None) is not None:
+        _keep_after_previous(final_path)
     return _record(image_id, meta, directory = directory)
+
+
+def _keep_after_previous(path: Path) -> None:
+    """In a ``save_many`` batch, move ``path``'s mtime 1 us past the previous image's when it is not already later."""
+    try:
+        stat = path.stat()
+        mtime_ns = stat.st_mtime_ns
+        floor = getattr(_ahead, "floor_ns", None)
+        if floor is not None and mtime_ns <= floor:
+            mtime_ns = floor + 1000
+            os.utime(path, ns = (stat.st_atime_ns, mtime_ns))
+        _ahead.floor_ns = mtime_ns
+    except OSError:
+        pass
 
 
 def _record(
