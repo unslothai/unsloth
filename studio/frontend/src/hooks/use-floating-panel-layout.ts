@@ -124,7 +124,6 @@ export function useFloatingPanelLayout(
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const dragSessionRef = useRef<DragSession | null>(null);
-  const dragFrameRef = useRef(0);
   // User's spot, never rewritten by a clamp.
   const [storedIntent] = useState(() => readPanelIntent(storageKey));
   const intentRef = useRef<PanelIntent>(storedIntent ?? { left: null, top: null });
@@ -306,10 +305,6 @@ export function useFloatingPanelLayout(
         cancelAnimationFrame(remeasureRef.current);
         remeasureRef.current = 0;
       }
-      if (dragFrameRef.current) {
-        cancelAnimationFrame(dragFrameRef.current);
-        dragFrameRef.current = 0;
-      }
     };
   }, [constraintsElement, publisher, storedIntent]);
 
@@ -398,9 +393,8 @@ export function useFloatingPanelLayout(
     event.currentTarget.setPointerCapture(event.pointerId);
   }
 
-  // One transform per frame: left/top moves re-sample the backdrop blur.
+  // A transform, never left/top: those re-layout and re-sample the backdrop blur.
   function paintDrag() {
-    dragFrameRef.current = 0;
     const session = dragSessionRef.current;
     const monitor = monitorRef.current;
     if (!(session && monitor)) {
@@ -431,19 +425,15 @@ export function useFloatingPanelLayout(
     session.startY = event.clientY;
     session.left = left;
     session.top = top;
-    if (!dragFrameRef.current) {
-      dragFrameRef.current = requestAnimationFrame(paintDrag);
-    }
+    // Paint now: deferring to the next frame left the card a frame or more behind a fast pointer.
+    // Pointer events already arrive once per frame, so this is still one transform per frame.
+    paintDrag();
   }
 
   function finishDrag(event: PointerEvent<HTMLDivElement>) {
     const session = dragSessionRef.current;
     if (session?.pointerId !== event.pointerId) {
       return;
-    }
-    if (dragFrameRef.current) {
-      cancelAnimationFrame(dragFrameRef.current);
-      dragFrameRef.current = 0;
     }
     const {
       left,

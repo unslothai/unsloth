@@ -359,7 +359,7 @@ function FloatingMonitorPanel({
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         className={cn(
-          "settings-surface bg-background group/monitor pointer-events-auto absolute flex max-h-full w-64 max-w-full cursor-grab select-none active:cursor-grabbing flex-col overflow-hidden rounded-2xl border border-border/70 p-3 shadow-border ring-0",
+          "settings-surface bg-background group/monitor pointer-events-auto absolute flex max-h-full w-64 max-w-full cursor-grab select-none active:cursor-grabbing flex-col overflow-hidden rounded-2xl border border-border/70 px-4 pb-4 pt-[11px] shadow-border ring-0",
           layout ? "top-0 left-0" : "right-0 bottom-0",
         )}
         data-testid="floating-monitor"
