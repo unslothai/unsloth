@@ -4472,7 +4472,10 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
         unrouted = mm._compute_bytes(self.GQA[:3], 2, 2048, plan, 32768, None)
         assert mm._compute_bytes(self.GQA, 2, 2048, plan, 32768, None) == unrouted
         wide = mm._compute_bytes(self.WIDE, 2, 2048, plan, 32768, None)
-        assert wide - unrouted == mm._widest_quantized_scores(32768, 0, 2048) * 16 * 2 * 2
+        assert (
+            wide - unrouted
+            == mm._widest_quantized_scores(32768, 0, 2048) * 16 * 2 * mm._UNFUSED_SCORE_LIVE
+        )
 
     def test_a_zoo_that_cannot_route_it_keeps_the_scores_whole(self, monkeypatch):
         import builtins
@@ -5112,7 +5115,7 @@ class TestShardsTheLoaderReads:
 
 # mlx 0.32.4 leaves head_dim 256 prefill unfused below NAX, and tails under 1024 queries on NAX.
 _UNFUSED_HEAD_DIM_256_SCORES = {
-    "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit": {True: 2_078_277_696, False: 4_292_739_136}
+    "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit": {True: 1_298_923_560, False: 2_682_961_960}
 }
 
 
@@ -5207,7 +5210,7 @@ _UNFUSED_HEAD_DIM_256_SCORES = {
             None,
             5_298_715_127,
             249_561_088,
-            1_283_579_535,
+            1_282_888_719,
             28,
             "bf16",
         ),
@@ -5217,7 +5220,7 @@ _UNFUSED_HEAD_DIM_256_SCORES = {
             None,
             2_061_600,
             98_304,
-            692_519_583,
+            690_952_857,
             2,
             "bf16",
         ),

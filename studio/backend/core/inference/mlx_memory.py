@@ -55,8 +55,8 @@ _QUANT_SCORE_DTYPE_SIZE = 4
 
 _QUANT_SCORE_LIVE = 1.0
 
-# mlx's unfused attention holds the scores and their softmax at the model's width.
-_UNFUSED_SCORE_LIVE = 2
+# Copies of the scores mlx's unfused attention holds; measured 1.08 to 1.15 on Metal (mlx 0.32.4).
+_UNFUSED_SCORE_LIVE = 1.25
 
 _WIDTH_NAMES = {"float64": "f64", "float32": "f32", "bfloat16": "bf16", "float16": "f16"}
 
