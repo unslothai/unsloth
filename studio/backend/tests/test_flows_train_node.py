@@ -176,7 +176,12 @@ def test_holdout_splits_only_the_sliced_rows(monkeypatch):
 def test_holdout_reads_hub_datasets_with_the_requests_token(monkeypatch):
     seen = {}
 
-    def load_rows(dataset, token, end, start = 0):
+    def load_rows(
+        dataset,
+        token,
+        end,
+        start = 0,
+    ):
         seen["token"] = token
         return ROWS
 
@@ -389,7 +394,9 @@ def _hub_body(**params):
         raise AssertionError(path)
 
     ctx = _Ctx(routes, **params)
-    ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/data", "split": "train"}}
+    ctx.inputs = {
+        "dataset": {"kind": "dataset", "source": "hf", "ref": "org/data", "split": "train"}
+    }
     with pytest.raises(RuntimeError, match = "started"):
         asyncio.run(training.finetune(ctx))
     return started[0]
@@ -403,14 +410,19 @@ def test_model_group_sends_method_precision_and_project():
     assert _hub_body(training_type = "cpt", base_model = "unsloth/x-bnb-4bit")["load_in_4bit"] is True
     full = _hub_body(training_type = "full", load_in_4bit = True, embedding_learning_rate = 1e-5)
     assert full["training_type"] == "Full Finetuning" and full["load_in_4bit"] is False
-    assert full["use_lora"] is False and full["target_modules"] == [] and full["offload_layers"] == 0
+    assert (
+        full["use_lora"] is False and full["target_modules"] == [] and full["offload_layers"] == 0
+    )
     assert "embedding_learning_rate" not in full
     assert _hub_body(load_in_4bit = False)["load_in_4bit"] is False
 
 
 def test_dataset_group_sends_slices_eval_split_and_format():
     body = _hub_body(
-        dataset_slice_start = 10, dataset_slice_end = 99, eval_split = "test", format_type = "raw",
+        dataset_slice_start = 10,
+        dataset_slice_end = 99,
+        eval_split = "test",
+        format_type = "raw",
         train_on_completions = True,
     )
     assert (body["dataset_slice_start"], body["dataset_slice_end"]) == (10, 99)
@@ -433,8 +445,12 @@ def test_holdout_starts_at_the_train_split_start(monkeypatch):
 
 def test_lora_group_sends_dropout_variant_modules_and_vision_layers():
     body = _hub_body(
-        lora_r = 32, lora_alpha = 64, lora_dropout = 0.1, lora_variant = "dora",
-        target_modules = ["q_proj", " ", "v_proj"], finetune_vision_layers = False,
+        lora_r = 32,
+        lora_alpha = 64,
+        lora_dropout = 0.1,
+        lora_variant = "dora",
+        target_modules = ["q_proj", " ", "v_proj"],
+        finetune_vision_layers = False,
     )
     assert (body["lora_r"], body["lora_alpha"], body["lora_dropout"]) == (32, 64, 0.1)
     assert (body["use_rslora"], body["use_loftq"], body["use_dora"]) == (False, False, True)
@@ -443,17 +459,27 @@ def test_lora_group_sends_dropout_variant_modules_and_vision_layers():
 
 
 def test_optimization_group_sends_optimizer_scheduler_and_batch():
-    body = _hub_body(optim = "adamw_torch_fused", lr_scheduler_type = "cosine", batch_size = 2,
-                     gradient_accumulation_steps = 16, weight_decay = 0.01)
+    body = _hub_body(
+        optim = "adamw_torch_fused",
+        lr_scheduler_type = "cosine",
+        batch_size = 2,
+        gradient_accumulation_steps = 16,
+        weight_decay = 0.01,
+    )
     assert (body["optim"], body["lr_scheduler_type"]) == ("adamw_torch_fused", "cosine")
-    assert (body["batch_size"], body["gradient_accumulation_steps"], body["weight_decay"]) == (2, 16, 0.01)
+    assert (body["batch_size"], body["gradient_accumulation_steps"], body["weight_decay"]) == (
+        2,
+        16,
+        0.01,
+    )
     grpo = _hub_body(objective = "grpo", num_generations = 8)
     assert (grpo["batch_size"], grpo["gradient_accumulation_steps"]) == (8, 1)
 
 
 def test_schedule_group_sends_warmup_checkpoints_eval_and_seed():
-    body = _hub_body(warmup_steps = 10, save_steps = 50, eval_steps = 0.1, early_stopping_patience = 3,
-                     random_seed = 42)
+    body = _hub_body(
+        warmup_steps = 10, save_steps = 50, eval_steps = 0.1, early_stopping_patience = 3, random_seed = 42
+    )
     assert (body["warmup_steps"], body["save_steps"], body["eval_steps"]) == (10, 50, 0.1)
     assert body["early_stopping_patience"] == 3 and body["random_seed"] == 42
     assert _hub_body(early_stopping_patience = 3)["early_stopping_patience"] == 0
@@ -461,20 +487,39 @@ def test_schedule_group_sends_warmup_checkpoints_eval_and_seed():
 
 
 def test_memory_group_sends_packing_checkpointing_and_offload():
-    body = _hub_body(packing = True, gradient_checkpointing = "true", offload_layers = "auto",
-                     offload_vram_gb = 12.5, prefetch_depth = "auto")
+    body = _hub_body(
+        packing = True,
+        gradient_checkpointing = "true",
+        offload_layers = "auto",
+        offload_vram_gb = 12.5,
+        prefetch_depth = "auto",
+    )
     assert body["packing"] is True and body["gradient_checkpointing"] == "true"
-    assert (body["offload_layers"], body["offload_vram_gb"], body["prefetch_depth"]) == ("auto", 12.5, "auto")
-    counted = _hub_body(offload_layers = "count", offload_count = 12, offload_vram_gb = 8, prefetch_depth = "3")
-    assert (counted["offload_layers"], counted["prefetch_depth"]) == (12, 3) and "offload_vram_gb" not in counted
+    assert (body["offload_layers"], body["offload_vram_gb"], body["prefetch_depth"]) == (
+        "auto",
+        12.5,
+        "auto",
+    )
+    counted = _hub_body(
+        offload_layers = "count", offload_count = 12, offload_vram_gb = 8, prefetch_depth = "3"
+    )
+    assert (counted["offload_layers"], counted["prefetch_depth"]) == (
+        12,
+        3,
+    ) and "offload_vram_gb" not in counted
     assert _hub_body(offload_layers = "auto", gradient_checkpointing = "none")["offload_layers"] == 0
     assert _hub_body(packing = True, objective = "dpo")["packing"] is False
     assert _hub_body(task = "vision", vision_image_size = 512)["vision_image_size"] == 512
 
 
 def test_rl_group_sends_clip_thinking_masking_and_prompt_length():
-    grpo = _hub_body(objective = "grpo", epsilon_high = 0.28, enable_thinking = True,
-                     mask_truncated_completions = True, max_prompt_length = 256)
+    grpo = _hub_body(
+        objective = "grpo",
+        epsilon_high = 0.28,
+        enable_thinking = True,
+        mask_truncated_completions = True,
+        max_prompt_length = 256,
+    )
     assert grpo["grpo_epsilon_high"] == 0.28 and grpo["grpo_enable_thinking"] is True
     assert grpo["grpo_mask_truncated_completions"] is True and grpo["rl_max_prompt_length"] == 256
     dpo = _hub_body(objective = "dpo", max_prompt_length = 128, epsilon_high = 0.28)
@@ -482,11 +527,20 @@ def test_rl_group_sends_clip_thinking_masking_and_prompt_length():
 
 
 def test_drafter_group_sends_the_drafter_only_for_sft():
-    body = _hub_body(drafter_enabled = True, drafter_data_source = "regenerate", drafter_max_examples = 500,
-                     drafter_epochs = 2.5, drafter_draft_steps = 4)
+    body = _hub_body(
+        drafter_enabled = True,
+        drafter_data_source = "regenerate",
+        drafter_max_examples = 500,
+        drafter_epochs = 2.5,
+        drafter_draft_steps = 4,
+    )
     assert body["drafter"] == {
-        "enabled": True, "data_source": "regenerate", "max_examples": 500, "epochs": 2.5,
-        "learning_rate": None, "draft_steps": 4,
+        "enabled": True,
+        "data_source": "regenerate",
+        "max_examples": 500,
+        "epochs": 2.5,
+        "learning_rate": None,
+        "draft_steps": 4,
     }
     assert "drafter" not in _hub_body(drafter_enabled = True, objective = "grpo")
     assert "drafter" not in _hub_body(drafter_enabled = True, training_type = "cpt")
@@ -496,10 +550,19 @@ def test_drafter_group_sends_the_drafter_only_for_sft():
 def test_every_setting_reaches_a_valid_training_request():
     from models.training import TrainingStartRequest
 
-    body = _hub_body(training_type = "cpt", offload_layers = "auto", offload_vram_gb = 10, drafter_enabled = True,
-                     eval_steps = 0.05, early_stopping_patience = 2, random_seed = 7)
+    body = _hub_body(
+        training_type = "cpt",
+        offload_layers = "auto",
+        offload_vram_gb = 10,
+        drafter_enabled = True,
+        eval_steps = 0.05,
+        early_stopping_patience = 2,
+        random_seed = 7,
+    )
     TrainingStartRequest.model_validate(body)
-    TrainingStartRequest.model_validate(_hub_body(objective = "grpo", epsilon_high = 0.28, max_prompt_length = 64))
+    TrainingStartRequest.model_validate(
+        _hub_body(objective = "grpo", epsilon_high = 0.28, max_prompt_length = 64)
+    )
 
 
 def test_hub_eval_split_survives_the_hold_out(monkeypatch):
@@ -507,14 +570,21 @@ def test_hub_eval_split_survives_the_hold_out(monkeypatch):
     monkeypatch.setattr("core.training.account_jobs.managed_account", lambda: False)
     splits = []
 
-    def load_rows(dataset, token, end, start = 0):
+    def load_rows(
+        dataset,
+        token,
+        end,
+        start = 0,
+    ):
         splits.append(dataset.get("split"))
         return ROWS if dataset.get("split") == "train" else ROWS[:5]
 
     monkeypatch.setattr(training, "_load_rows", load_rows)
     started = []
     ctx = _Ctx(_recipe_routes(started), holdout_percent = 10, eval_split = "test", eval_steps = 0.1)
-    ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/data", "split": "train"}}
+    ctx.inputs = {
+        "dataset": {"kind": "dataset", "source": "hf", "ref": "org/data", "split": "train"}
+    }
     with pytest.raises(RuntimeError, match = "started"):
         asyncio.run(training.finetune(ctx))
     assert splits == ["train", "test"]
@@ -523,7 +593,9 @@ def test_hub_eval_split_survives_the_hold_out(monkeypatch):
     splits.clear()
     started.clear()
     ctx = _Ctx(_recipe_routes(started), holdout_percent = 10, eval_split = "train", eval_steps = 0.1)
-    ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/data", "split": "train"}}
+    ctx.inputs = {
+        "dataset": {"kind": "dataset", "source": "hf", "ref": "org/data", "split": "train"}
+    }
     with pytest.raises(RuntimeError, match = "started"):
         asyncio.run(training.finetune(ctx))
     assert splits == ["train"] and "local_eval_datasets" not in started[0]
@@ -533,8 +605,13 @@ def test_one_column_for_two_rl_roles_is_refused():
     with pytest.raises(FlowNodeError, match = "own column"):
         training.rl_roles({"prompt_column": "q", "answer_column": "q"}, "grpo")
     with pytest.raises(FlowNodeError, match = "own column"):
-        training.rl_roles({"prompt_column": "p", "chosen_column": "c", "rejected_column": "c"}, "dpo")
-    assert training.rl_roles({"prompt_column": "p", "chosen_column": "c"}, "dpo") == {"p": "prompt", "c": "chosen"}
+        training.rl_roles(
+            {"prompt_column": "p", "chosen_column": "c", "rejected_column": "c"}, "dpo"
+        )
+    assert training.rl_roles({"prompt_column": "p", "chosen_column": "c"}, "dpo") == {
+        "p": "prompt",
+        "c": "chosen",
+    }
 
 
 def test_hub_hold_out_streams_a_late_slice_and_caps_unknown_sizes(monkeypatch):
@@ -543,7 +620,11 @@ def test_hub_hold_out_streams_a_late_slice_and_caps_unknown_sizes(monkeypatch):
     import datasets
 
     class Stream:
-        def __init__(self, n, skipped = 0):
+        def __init__(
+            self,
+            n,
+            skipped = 0,
+        ):
             self.n, self.skipped = n, skipped
 
         def skip(self, k):
@@ -553,8 +634,18 @@ def test_hub_hold_out_streams_a_late_slice_and_caps_unknown_sizes(monkeypatch):
             return [{"q": i} for i in range(self.skipped, min(self.n, self.skipped + k))]
 
     size = {"n": 300_000}
-    monkeypatch.setattr(datasets, "load_dataset", lambda *a, streaming = False, **k: Stream(size["n"]) if streaming else pytest.fail("full download"))
-    monkeypatch.setattr(datasets, "load_dataset_builder", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no metadata")))
+    monkeypatch.setattr(
+        datasets,
+        "load_dataset",
+        lambda *a, streaming = False, **k: Stream(size["n"])
+        if streaming
+        else pytest.fail("full download"),
+    )
+    monkeypatch.setattr(
+        datasets,
+        "load_dataset_builder",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no metadata")),
+    )
     hub = {"source": "hf", "ref": "org/big", "split": "train"}
     rows = training._load_rows(hub, None, 250_099, 250_000)
     assert [r["q"] for r in rows][:2] == [250_000, 250_001] and len(rows) == 100
