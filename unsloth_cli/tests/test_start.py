@@ -5036,7 +5036,11 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
     assert cmd[cmd.index("-p") + 1] == "8888"
     assert returned_base == "http://127.0.0.1:8888"
     assert start.LoadOptions().load_in_4bit is True and "--no-load-in-4bit" not in cmd
-    assert captured["kwargs"].get("start_new_session") is True
+    # Detached from this console either way: a new session on POSIX, a new process group on Windows.
+    if os.name == "nt":
+        assert captured["kwargs"]["creationflags"] & start.subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        assert captured["kwargs"].get("start_new_session") is True
     assert server.pid == 4321
     output = capsys.readouterr().out
     assert "Starting Unsloth server\n" in output
