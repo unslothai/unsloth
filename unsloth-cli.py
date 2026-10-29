@@ -357,8 +357,8 @@ def run(args):
 
     if args.capture_activations:
         print(
-            f"\n🦥 Activation data saved to '{args.capture_output_dir}'.\n"
-            f"   Run: python visualize_activations.py {args.capture_output_dir}"
+            f"\n🦥 Activation data saved to '{args.capture_output_dir}' "
+            f"(metadata.json + activation_log.jsonl, one JSON record per captured step)."
         )
 
     _save_or_push_model_with_mlx_ddp(model, tokenizer, args, is_mlx, trainer)
