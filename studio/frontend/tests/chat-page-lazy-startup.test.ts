@@ -150,3 +150,15 @@ test("a crash inside the chat page is not caught as a load failure", () => {
   );
   assert.doesNotMatch(page, /Boundary/);
 });
+
+test("the chat load failure panel releases the startup screen", () => {
+  const root = readSrc("app/routes/__root.tsx");
+  const failure = root.slice(
+    root.indexOf("function ChatPageLoadFailure("),
+    root.indexOf("function chatPageAttempt("),
+  );
+  assert.match(
+    failure,
+    /const signalReady = useAppShellReadySignal\(\);[^]*?useLayoutEffect\(\(\) => \{\s*signalReady\(\);/,
+  );
+});

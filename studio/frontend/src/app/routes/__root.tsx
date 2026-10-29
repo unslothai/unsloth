@@ -176,6 +176,11 @@ function ChatPageLoadFailure({
   onRetry: () => void;
 }) {
   const t = useT();
+  const signalReady = useAppShellReadySignal();
+  // The page it stands in for would have signalled; without this Desktop keeps its startup screen.
+  useLayoutEffect(() => {
+    signalReady();
+  }, [signalReady]);
   const wasActive = useRef(active);
   useEffect(() => {
     if (active && !wasActive.current) {
