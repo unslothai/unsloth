@@ -3,18 +3,11 @@
 
 import { Button } from "@/components/ui/button";
 import { Panel, useReactFlow } from "@xyflow/react";
-import {
-  Focus,
-  Lock,
-  LockOpen,
-  Maximize2,
-  Minimize2,
-  Minus,
-} from "lucide-react";
+import { Focus, Lock, LockOpen, Maximize2, Minimize2 } from "lucide-react";
 import { type ReactElement, useCallback } from "react";
 import { buildFitViewOptions } from "../../utils/graph/fit-view";
 import { RECIPE_FLOATING_ICON_BUTTON_CLASS } from "../recipe-floating-icon-button-class";
-import { PlusSignIcon } from "@hugeicons/core-free-icons";
+import { MinusSignIcon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 type ViewportControlsProps = {
@@ -69,7 +62,7 @@ export function ViewportControls({
         onClick={handleZoomOut}
         aria-label="Zoom out"
       >
-        <Minus className="size-4" />
+        <HugeiconsIcon icon={MinusSignIcon} className="size-4" />
       </Button>
       <Button
         type="button"

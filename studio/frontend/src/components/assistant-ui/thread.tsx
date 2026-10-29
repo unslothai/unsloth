@@ -438,6 +438,7 @@ import {
   FolderAddIcon,
   Image03Icon,
   McpServerIcon,
+  Refresh01Icon,
   Scroll01Icon,
   Telescope02Icon,
   UndoIcon,
@@ -7596,7 +7597,7 @@ const MessageError: FC = () => {
               type="button"
               className="btn-fill aui-message-error-retry inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors "
             >
-              <RefreshGlyph strokeWidth={1.75} className="size-3.5" />
+              <HugeiconsIcon icon={Refresh01Icon} strokeWidth={1.75} className="size-3.5" />
               Retry
             </button>
           </ActionBarPrimitive.Reload>

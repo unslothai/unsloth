@@ -24,9 +24,9 @@ import {
   ApiIcon,
   BotIcon,
   Cancel01Icon,
+  ChipIcon,
   CloudIcon,
   ComputerTerminal01Icon,
-  CpuIcon,
   DatabaseSettingIcon,
   EnergyRectangleIcon,
   InternetIcon,
@@ -201,7 +201,7 @@ const TABS: TabDef[] = [
   {
     id: "resources",
     labelKey: "settings.tabs.resources",
-    icon: CpuIcon,
+    icon: ChipIcon,
   },
   {
     id: "chat",

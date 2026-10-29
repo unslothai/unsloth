@@ -1187,7 +1187,7 @@ function GpuMemorySettings({
                   </div>
                 )}
                 <Switch
-                  className="panel-switch shrink-0"
+                  className="shrink-0"
                   checked={isGpuChecked(d.index)}
                   onCheckedChange={() => toggleGpu(d.index)}
                   disabled={isGpuChecked(d.index) && singleGpuInUse}
@@ -1331,7 +1331,7 @@ function AdvancedSettingsToggle({
         </InfoHint>
       </div>
       <Switch
-        className="panel-switch shrink-0"
+        className="shrink-0"
         checked={checked}
         onCheckedChange={onCheckedChange}
         aria-label="Show advanced settings"
@@ -1685,7 +1685,7 @@ function MlxAdvancedSettings({
             </InfoHint>
           </div>
           <Switch
-            className="panel-switch shrink-0"
+            className="shrink-0"
             checked={config.mlxInt8Prefill ?? false}
             onCheckedChange={onInt8PrefillChange}
           />
@@ -1905,7 +1905,7 @@ function GgufAdvancedSettings({
             </InfoHint>
           </div>
           <Switch
-            className="panel-switch shrink-0"
+            className="shrink-0"
             aria-label="Vision"
             checked={!config.disableVision}
             onCheckedChange={(checked) => update({ disableVision: !checked })}
@@ -2143,7 +2143,7 @@ function GgufAdvancedSettings({
             </InfoHint>
           </div>
           <Switch
-            className="panel-switch shrink-0"
+            className="shrink-0"
             aria-label="Tensor Parallelism"
             checked={config.tensorParallel}
             onCheckedChange={(checked) => update({ tensorParallel: checked })}
@@ -4113,7 +4113,7 @@ export function ModelConfigPage({
               </InfoHint>
             </div>
             <Switch
-              className="panel-switch shrink-0"
+              className="shrink-0"
               aria-label="Load in 4-bit"
               checked={config.loadIn4bit !== false}
               onCheckedChange={(checked) => update({ loadIn4bit: checked })}

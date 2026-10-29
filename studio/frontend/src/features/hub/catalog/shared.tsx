@@ -8,6 +8,7 @@ import {
 } from "@/components/ui/tooltip";
 import { BulbIcon } from "@/lib/bulb-icon";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
+import { WrenchIcon } from "@/lib/lucide-derived";
 import { cn } from "@/lib/utils";
 import {
   Chat01Icon,
@@ -19,7 +20,6 @@ import {
   LockIcon,
   LockKeyIcon,
   ViewIcon,
-  Wrench01Icon,
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -32,7 +32,7 @@ const CAPABILITY_ICON: Record<
 > = {
   vision: ViewIcon,
   audio: AiSpeechIcon,
-  tools: Wrench01Icon,
+  tools: WrenchIcon,
   code: CodeIcon,
   embedding: LayoutTable02Icon,
   diffusion: ImageIcon,

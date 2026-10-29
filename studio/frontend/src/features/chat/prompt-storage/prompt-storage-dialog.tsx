@@ -24,21 +24,21 @@ import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 
 import { cn } from "@/lib/utils";
 import {
+  Bookmark02Icon,
   Delete02Icon,
   Download01Icon,
   Search01Icon,
   Cancel01Icon,
   Edit03Icon,
   PlusSignIcon,
+  UndoIcon,
   Upload01Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
-  BookmarkIcon,
   LayoutListIcon,
   PlayIcon,
-  RotateCcwIcon,
 } from "lucide-react";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { SortablePromptItems } from "./sortable-prompt-items";
@@ -1724,7 +1724,7 @@ function PromptDetail({
           )}
           title={isPinned ? "Unpin from + menu" : "Pin to + menu"}
         >
-          <BookmarkIcon className={cn("size-4", isPinned && "fill-primary")} />
+          <HugeiconsIcon icon={Bookmark02Icon} className={cn("size-4", isPinned && "fill-primary")} />
         </button>
         <button
           type="button"
@@ -1746,7 +1746,7 @@ function PromptDetail({
         <div className="flex-1" />
         {dirty && (
           <Button size="sm" variant="ghost" onClick={() => onDraftChange(undefined)}>
-            <RotateCcwIcon className="size-3.5 mr-1" />Revert
+            <HugeiconsIcon icon={UndoIcon} className="size-3.5 mr-1" />Revert
           </Button>
         )}
         <Button size="sm" variant="outline" onClick={() => setPreview((v) => !v)}>
@@ -2062,7 +2062,7 @@ function PromptListDetail({
           )}
           title={isPinned ? "Unpin from + menu" : "Pin to + menu"}
         >
-          <BookmarkIcon className={cn("size-4", isPinned && "fill-primary")} />
+          <HugeiconsIcon icon={Bookmark02Icon} className={cn("size-4", isPinned && "fill-primary")} />
         </button>
         <button
           type="button"
@@ -2084,7 +2084,7 @@ function PromptListDetail({
         <div className="flex-1" />
         {dirty && (
           <Button size="sm" variant="ghost" onClick={() => onDraftChange(undefined)}>
-            <RotateCcwIcon className="size-3.5 mr-1" />Revert
+            <HugeiconsIcon icon={UndoIcon} className="size-3.5 mr-1" />Revert
           </Button>
         )}
         {editorMounted && (
@@ -2671,7 +2671,7 @@ export function PromptStorageDialog({
                       dirty={promptDrafts.has(entry.id)}
                       leading={
                         pinnedPromptIds.includes(entry.id) ? (
-                          <BookmarkIcon className="size-3 shrink-0 fill-primary text-primary" />
+                          <HugeiconsIcon icon={Bookmark02Icon} className="size-3 shrink-0 fill-primary text-primary" />
                         ) : null
                       }
                       onSelect={() => {
@@ -2693,7 +2693,7 @@ export function PromptStorageDialog({
                       dirty={listDrafts.has(entry.id)}
                       leading={
                         pinnedListIds.includes(entry.id) ? (
-                          <BookmarkIcon className="size-3 shrink-0 fill-primary text-primary" />
+                          <HugeiconsIcon icon={Bookmark02Icon} className="size-3 shrink-0 fill-primary text-primary" />
                         ) : null
                       }
                       onSelect={() => {
@@ -2757,7 +2757,7 @@ export function PromptStorageDialog({
                   />
                 ) : (
                   <EmptyDetail
-                    icon={<BookmarkIcon className="size-5 text-muted-foreground/40" />}
+                    icon={<HugeiconsIcon icon={Bookmark02Icon} className="size-5 text-muted-foreground/40" />}
                     title={searchQuery.trim() ? `No prompts match “${searchQuery}”` : "No saved prompts yet"}
                     hint={searchQuery.trim() ? undefined : "Save prompts you use often for quick reuse"}
                     onClearSearch={searchQuery.trim() ? () => setSearchQuery("") : undefined}

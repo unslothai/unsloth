@@ -117,8 +117,8 @@ import {
   CandyIcon,
   BadgeInfoIcon,
   ChefHatIcon,
+  ChipIcon,
   CloudIcon,
-  CpuIcon,
   CursorInfo02Icon,
   DashboardCircleIcon,
   DashboardSquareEditIcon,
@@ -365,7 +365,7 @@ const SETTINGS_TAB_MENU_ITEMS: Record<
 > = {
   profile: { icon: UserCircleIcon, labelKey: "settings.tabs.profile" },
   appearance: { icon: BrushCleaningIcon, labelKey: "settings.tabs.appearance" },
-  resources: { icon: CpuIcon, labelKey: "settings.tabs.resources" },
+  resources: { icon: ChipIcon, labelKey: "settings.tabs.resources" },
   chat: { icon: MessageCircleIcon, labelKey: "settings.tabs.chat" },
   connections: { icon: CloudIcon, labelKey: "settings.tabs.connections" },
 };
