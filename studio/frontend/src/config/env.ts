@@ -108,18 +108,16 @@ let hardwareWaitSpent = false;
 /** A repair or restart replaced the backend: its predecessor's verdict is no longer measured. Platform fields stay. */
 export function forgetMeasuredVerdict(): void {
   hardwareWaitSpent = false;
-  // A read already in flight went to the replaced backend: later callers must not join it.
   backendGeneration += 1;
   // The old deferred flag would mask staleness, so a failed first read would look settled.
   usePlatformStore.setState({ verdictStale: true, detectionDeferred: false });
 }
 
-// Bumped when the backend is replaced, so a read started against the old one is not shared.
+// Bumped on a backend replacement so a read sent to the old backend is never joined.
 let backendGeneration = 0;
 
-// main.tsx fires an unforced read at startup while __root.tsx's beforeLoad awaits its own; both
-// would fetch (and poll a detecting backend) side by side. An unforced call joins an unforced read
-// already in flight for the same token, URL and backend. Forced refreshes never share.
+// main.tsx and __root.tsx's beforeLoad both read at startup: an unforced call joins an unforced
+// read in flight for the same token, URL and backend generation. Forced refreshes never share.
 let sharedHealthRead: {
   token: string | null;
   url: string;
