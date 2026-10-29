@@ -1193,7 +1193,14 @@ class MultiLoraExperts(nn.Module):
     ) -> torch.Tensor:
         T, k = top_k_index.shape
         if T * k == 0:
-            return hidden_states.new_zeros(hidden_states.shape)
+            # Nothing routed: zeros still tied to the hidden states and every adapter (empty slices, so exact 0 even
+            # for an inf / NaN adapter), as backward and default DDP need.
+            zero = hidden_states.reshape(-1)[:0].sum() + sum(
+                p.reshape(-1)[:0].sum()
+                for adapter in self.adapters.values()
+                for p in (*adapter.lora_A, *adapter.lora_B)
+            )
+            return hidden_states.new_zeros(hidden_states.shape) + zero.to(hidden_states.dtype)
         E = _expert_stack_shape(self.base_layer.gate_up_proj)[0]
         U = self.num_adapters
         Ug = U + 1

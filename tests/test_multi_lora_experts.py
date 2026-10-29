@@ -630,8 +630,14 @@ def test_grouped_empty_top_k_gives_zeros(monkeypatch):
     index, weights = _routes(4, 2, 5)
     experts(torch.randn(4, 20), index, weights)
     assert experts.mode == "grouped"
-    out = experts(torch.randn(4, 20), index[:, :0], weights[:, :0])
+    hidden = torch.randn(4, 20, requires_grad = True)
+    out = experts(hidden, index[:, :0], weights[:, :0])
     assert out.shape == (4, 20) and not out.any()
+    out.sum().backward()
+    assert not hidden.grad.any()
+    for adapter in experts.adapters.values():
+        for p in (*adapter.lora_A, *adapter.lora_B):
+            assert p.grad is not None and not p.grad.any()
 
 
 class _StaticExperts(_Experts):
