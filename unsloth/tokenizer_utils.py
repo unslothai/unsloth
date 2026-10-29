@@ -1015,9 +1015,7 @@ def _load_correct_tokenizer(
     if (
         not fix_tokenizer
         or _name_lower in IGNORED_TOKENIZER_NAMES
-        # Ignore Mistral ones - they're a bit weird to handle!
         or "mistral" in _name_lower
-        # Ignore Phi-4 ones as well
         or "phi-4" in _name_lower
     ):
         fast_tokenizer = AutoTokenizer.from_pretrained(
