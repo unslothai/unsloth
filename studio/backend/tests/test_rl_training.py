@@ -2072,3 +2072,33 @@ def test_an_unscored_step_warns_once_from_the_log_callback():
     source = inspect.getsource(trainer)
     assert "if rl_unscored_step(logs):" in source
     assert "trainer_ref._record_warning(UNSCORED_STEP_WARNING)" in source
+
+
+@pytest.mark.parametrize("continues_adapter", [False, True])
+def test_dpo_warns_about_its_reference_only_when_continuing_an_adapter(
+    monkeypatch, continues_adapter
+):
+    # A fresh LoRA run has peft_config too; its base model is the right reference.
+    @dataclasses.dataclass
+    class _DPOConfig:
+        output_dir: str = None
+        beta: float = 0.1
+        max_length: int = None
+
+    fake = types.SimpleNamespace(DPOConfig = _DPOConfig, DPOTrainer = lambda **kw: kw)
+    monkeypatch.setitem(sys.modules, "trl", fake)
+    monkeypatch.setitem(sys.modules, "unsloth", types.SimpleNamespace(PatchDPOTrainer = lambda: None))
+    warnings = []
+    build_rl_trainer(
+        "dpo",
+        model = types.SimpleNamespace(peft_config = {"default": object()}),
+        tokenizer = None,
+        train_dataset = None,
+        eval_dataset = None,
+        config_args = {"output_dir": "o", "max_seq_length": 1024},
+        settings = {},
+        reward_specs = [],
+        on_warning = warnings.append,
+        continues_adapter = continues_adapter,
+    )
+    assert bool(warnings) is continues_adapter

@@ -882,9 +882,11 @@ def build_rl_trainer(
     settings: dict,
     reward_specs: Optional[list[dict]] = None,
     on_warning: Optional[Callable[[str], None]] = None,
+    continues_adapter: bool = False,
 ):
     """Construct the TRL trainer for a non-SFT objective. Unsloth's PatchFastRL has already
-    swapped these classes for its own on import."""
+    swapped these classes for its own on import. ``continues_adapter``: the model was loaded from
+    a saved LoRA adapter rather than given a fresh one."""
     import trl
 
     max_seq_length = int(config_args.get("max_seq_length") or 2048)
@@ -948,7 +950,8 @@ def build_rl_trainer(
         }
         if objective == "dpo":
             kwargs["ref_model"] = None
-            if getattr(model, "peft_config", None) and on_warning is not None:
+            # Every LoRA model has peft_config; only a loaded adapter makes the base a different reference.
+            if continues_adapter and on_warning is not None:
                 on_warning(
                     "DPO's reference here is the base model, not the LoRA adapter this run "
                     "continues from."

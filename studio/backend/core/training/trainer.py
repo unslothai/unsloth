@@ -332,6 +332,10 @@ def _string_column_has_image_paths(dataset, name: str) -> Optional[bool]:
         column = dataset.data.column(name)
         if not (pa.types.is_string(column.type) or pa.types.is_large_string(column.type)):
             return None
+        indices = getattr(dataset, "_indices", None)
+        if indices is not None:
+            # A select() or shuffle() view: only its rows, not the whole backing table.
+            column = column.take(indices.column(0))
         return bool(pc.any(pc.match_substring_regex(column, _IMAGE_PATH_PATTERN)).as_py())
     except Exception:  # noqa: BLE001 - not an Arrow-backed dataset
         return None
@@ -1919,6 +1923,8 @@ class UnslothTrainer:
                     use_gradient_checkpointing
                 )
 
+            # Before get_peft_model: afterwards every LoRA model has a peft_config.
+            self._continues_adapter = bool(use_lora and getattr(self.model, "peft_config", None))
             if not use_lora:
                 if use_gradient_checkpointing != self._use_gradient_checkpointing:
                     logger.warning(
@@ -5120,6 +5126,7 @@ class UnslothTrainer:
                     settings = training_args.get("rl_settings") or {},
                     reward_specs = training_args.get("reward_specs") or [],
                     on_warning = self._record_warning,
+                    continues_adapter = getattr(self, "_continues_adapter", False),
                 )
                 if rl_tokenizer is not self.tokenizer:
                     self.trainer.processing_class = self.tokenizer
