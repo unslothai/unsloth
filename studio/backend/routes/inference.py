@@ -25675,6 +25675,22 @@ async def _external_source_transcript(
     return _source_transcript(result, source, False)
 
 
+def _refuse_long_source(source, cap: float, *, connection: bool = False) -> None:
+    """413 before any model load or upload when the source runs past ``cap`` seconds."""
+    from core.inference import audio_edit, audio_inputs
+
+    seconds = audio_edit.wav_seconds(source.path)
+    if seconds is None or seconds <= cap + 1.0:
+        return
+    who = "A connection takes" if connection else "This model transcribes"
+    longest = audio_inputs.length_words(audio_inputs.transcribe_max_seconds())
+    raise audio_inputs.AudioInputError(
+        413,
+        f"{who} up to {audio_inputs.length_words(cap)} of audio. Trim it, or pick an audio.cpp "
+        f"model, which takes up to {longest}.",
+    )
+
+
 @studio_router.post("/audio/transcribe/source")
 async def transcribe_audio_source(
     body: TranscribeSourceRequest,
@@ -25686,10 +25702,14 @@ async def transcribe_audio_source(
     from core.inference.transcript_stream import stream_transcript
 
     if body.provider_id is not None:
+
+        def _resolve():
+            source = audio_inputs.resolve_source(body.source.model_dump(exclude_none = True))
+            _refuse_long_source(source, stt_capabilities.max_seconds_for(None), connection = True)
+            return source
+
         try:
-            source = await asyncio.to_thread(
-                audio_inputs.resolve_source, body.source.model_dump(exclude_none = True)
-            )
+            source = await asyncio.to_thread(_resolve)
         except audio_inputs.AudioInputError as exc:
             raise _audio_source_error(exc) from None
         return StreamingResponse(
@@ -25706,10 +25726,12 @@ async def transcribe_audio_source(
     caps = await asyncio.to_thread(stt_capabilities.capabilities_for, body.model, serving_engine)
     _refuse_stt_caps(caps, timestamps = body.timestamps, speakers = body.speakers)
     rate = stt_details.FIXED_SPAN_RATES.get(caps["family"], 16000)
+    cap = stt_capabilities.max_seconds_for(serving_engine)
 
     def _prepare():
         source = audio_inputs.resolve_source(body.source.model_dump(exclude_none = True))
-        return source, audio_inputs.prepared_path(source, rate)
+        _refuse_long_source(source, cap)
+        return source, audio_inputs.prepared_path(source, rate, cap)
 
     try:
         source, path = await asyncio.to_thread(_prepare)
@@ -49161,11 +49183,12 @@ async def upload_audio_input(
     """Store a raw audio body (any container), decoded once to WAV; a re-upload of the same audio
     returns the existing record with 200."""
     from core.inference import audio_inputs
-    from utils.upload_limits import AUDIO_INPUT_MAX_BYTES
+    from utils.upload_limits import audio_input_max_bytes
 
+    cap = audio_input_max_bytes()
     declared = request.headers.get("content-length")
     try:
-        if declared is not None and int(declared) > AUDIO_INPUT_MAX_BYTES:
+        if cap is not None and declared is not None and int(declared) > cap:
             raise HTTPException(status_code = 413, detail = "Audio is too large.")
     except ValueError:
         pass
