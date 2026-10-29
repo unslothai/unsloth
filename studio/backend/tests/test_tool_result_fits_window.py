@@ -620,6 +620,10 @@ class TestTheSpillStaysInsideTheSandbox:
         assert "saved to" not in out
         assert (target / f"{digest}.txt").is_symlink()
 
+    @pytest.mark.skipif(
+        os.utime not in os.supports_follow_symlinks,
+        reason = "os.utime cannot set a symlink's own mtime on this platform",
+    )
     def test_pruning_does_not_follow_symlinks_either(self, tmp_path):
         target = _own(tmp_path)
         victim = tmp_path / "victim.txt"
@@ -1150,7 +1154,10 @@ class TestConcurrentSpillsKeepTheirRecords:
 
         root = tmp_path / tools._SPILL_DIR
         recorded = set(tools._spill_manifest(str(root)))
-        on_disk = {str(p.relative_to(root)) for p in root.rglob("*.txt") if p.name != "victim.txt"}
+        # The manifest keys with "/" on every platform; str() would give "\\" on Windows.
+        on_disk = {
+            p.relative_to(root).as_posix() for p in root.rglob("*.txt") if p.name != "victim.txt"
+        }
         assert on_disk, results[:1]
         assert on_disk <= recorded, "a spill on disk that the manifest does not record"
 
@@ -1442,6 +1449,10 @@ class TestReadingASpillCannotBeRedirected:
     sandbox's own directory. A plain open by name would follow a symlink installed in
     between and block forever on a FIFO or a device, with no timeout above it."""
 
+    @pytest.mark.skipif(
+        not hasattr(os, "O_NOFOLLOW"),
+        reason = "no O_NOFOLLOW; callers reject links first through the lstat stamp",
+    )
     def test_a_symlink_at_the_name_is_not_followed(self, tmp_path):
         elsewhere = tmp_path / "elsewhere.txt"
         elsewhere.write_text("someone else's file")
@@ -1450,6 +1461,7 @@ class TestReadingASpillCannotBeRedirected:
 
         assert tools._file_digest(str(link)) is None
 
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason = "no FIFOs on this platform")
     def test_a_fifo_is_refused_rather_than_read(self, tmp_path):
         fifo = tmp_path / "abcdef123456.txt"
         os.mkfifo(fifo)
@@ -1515,6 +1527,7 @@ class TestPruningNeverMovesSomethingItCannotPutBack:
         assert open(os.path.join(spill, "receipts.csv")).read() == "the user's own data"
         assert not self._private_names(root)
 
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason = "no FIFOs on this platform")
     def test_a_fifo_left_at_the_name_is_not_moved(self, tmp_path, monkeypatch):
         root, spill, owned = self._a_recorded_spill(tmp_path)
         os.unlink(spill)
