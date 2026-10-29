@@ -1391,7 +1391,7 @@ class InferenceOrchestrator:
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
         rows: Optional[list] = None,
-        video_b64: Optional[str] = None,
+        videos_b64: Optional[list[str]] = None,
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
         diffusion_frames: bool = False,
@@ -1427,8 +1427,8 @@ class InferenceOrchestrator:
         if response_format is not None:
             cmd["response_format"] = response_format
             cmd["reasoning_is_extracted"] = bool(reasoning_is_extracted)
-        if video_b64:
-            cmd["video_base64"] = video_b64
+        if videos_b64:
+            cmd["videos_base64"] = videos_b64
         if use_adapter is not None:
             cmd["use_adapter"] = use_adapter
         if tools is not None:
@@ -1699,7 +1699,7 @@ class InferenceOrchestrator:
         stop: Optional[list] = None,
         rows: Optional[list] = None,
         expected_model: Optional[str] = None,
-        video: Optional[str] = None,
+        videos: Optional[list[str]] = None,
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
         diffusion_frames: bool = False,
@@ -1757,7 +1757,7 @@ class InferenceOrchestrator:
             tool_protocol_active = tool_protocol_active,
             seed = seed,
             rows = rows,
-            video_b64 = video,
+            videos_b64 = videos,
             diffusion_frames = diffusion_frames,
             prompt_ids = prompt_ids,
             penalty_window = penalty_window,
@@ -3197,7 +3197,7 @@ class InferenceOrchestrator:
         frequency_penalty: float = 0.0,
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
-        video: Optional[str] = None,
+        videos: Optional[list[str]] = None,
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
         diffusion_frames: bool = False,
@@ -3231,7 +3231,7 @@ class InferenceOrchestrator:
             stop = stop,
             response_format = response_format,
             reasoning_is_extracted = reasoning_is_extracted,
-            video = video,
+            videos = videos,
             diffusion_frames = diffusion_frames,
         )
 
@@ -3262,7 +3262,7 @@ class InferenceOrchestrator:
         frequency_penalty: float = 0.0,
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
-        video: Optional[str] = None,
+        videos: Optional[list[str]] = None,
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
     ) -> Generator[Any, None, None]:
@@ -3294,7 +3294,7 @@ class InferenceOrchestrator:
             logit_bias = logit_bias,
             stop = stop,
             rows = rows,
-            video = video,
+            videos = videos,
             response_format = response_format,
             reasoning_is_extracted = reasoning_is_extracted,
         )
@@ -3598,7 +3598,7 @@ class InferenceOrchestrator:
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
         rows: Optional[list] = None,
-        video: Optional[str] = None,
+        videos: Optional[list[str]] = None,
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
         diffusion_frames: bool = False,
@@ -3667,7 +3667,7 @@ class InferenceOrchestrator:
                 stop = stop,
                 rows = rows,
                 expected_model = expected_model,
-                video = video,
+                videos = videos,
                 response_format = response_format,
                 reasoning_is_extracted = reasoning_is_extracted,
                 diffusion_frames = diffusion_frames,
@@ -3715,7 +3715,7 @@ class InferenceOrchestrator:
                 tool_protocol_active = tool_protocol_active,
                 seed = seed,
                 rows = rows,
-                video_b64 = video,
+                videos_b64 = videos,
                 diffusion_frames = diffusion_frames,
                 prompt_ids = prompt_ids,
                 penalty_window = penalty_window,

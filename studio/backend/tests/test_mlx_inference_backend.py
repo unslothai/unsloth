@@ -2696,6 +2696,166 @@ def test_mlx_reasoning_tool_turn_keeps_provenance_across_buffered_segments(monke
     assert [call["function"]["name"] for call in calls] == ["terminal"]
 
 
+def _decode_alone_and_batched(
+    monkeypatch,
+    turn,
+    markers,
+    cancel_after = None,
+    prompt = "prompt",
+    **request,
+):
+    """*turn* answered by the single path and by a text batch row: every snapshot each emits."""
+    import threading
+
+    _install_fake_mlx(monkeypatch)
+    from core.inference import mlx_inference
+
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda *_args, **_kwargs: prompt,
+    )
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.render_with_native_template_fallback",
+        lambda formatted_prompt, **_kwargs: SimpleNamespace(
+            prompt = formatted_prompt, reasoning_channel_markers = markers
+        ),
+    )
+    rows, last = {}, "stop" if turn._ends == "stop" else "length"
+
+    def step():
+        events = [(uid, ids.pop(0)) for uid, ids in rows.items() if ids]
+        return [], [
+            SimpleNamespace(uid = uid, token = token, finish_reason = None if rows[uid] else last)
+            for uid, token in events
+        ]
+
+    generator = SimpleNamespace(
+        insert = lambda *_a, **_k: [rows.setdefault(len(rows), list(turn.ids)) and len(rows) - 1],
+        next = step,
+        remove = lambda uids, **_k: [rows[uid].clear() for uid in uids] and {},
+        close = lambda: None,
+    )
+    for name, attrs in (
+        ("mlx_lm", {"stream_generate": lambda *_a, **_k: turn.stream()}),
+        (
+            "mlx_lm.sample_utils",
+            {"make_sampler": lambda **_k: None, "make_logits_processors": None},
+        ),
+        ("mlx_lm.generate", {"BatchGenerator": lambda *_a, **_k: generator}),
+    ):
+        module = types.ModuleType(name)
+        module.__dict__.update(attrs)
+        monkeypatch.setitem(sys.modules, name, module)
+
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model, backend._tokenizer, backend._is_vlm = object(), turn, False
+    request = {"messages": [{"role": "user", "content": "run it"}], "max_new_tokens": 99, **request}
+    cancel, alone = threading.Event(), []
+    for snapshot in backend.generate_chat_response(**request, cancel_event = cancel):
+        alone.append(snapshot)
+        if len(alone) == cancel_after:
+            cancel.set()
+
+    backend._batch_prompt_row = lambda _prompt, _state: ([], [0], None, None, [0])
+    session = mlx_inference._TextBatchSession(backend, width = 2)
+    # Two rows decoding together, so no state a row keeps can be shared or misrouted.
+    batched = {row: [prefix] if (prefix := session.admit(request, row)) else [] for row in (0, 1)}
+    while session.rows_in_flight:
+        cut = cancel_after is not None and len(batched[0]) >= cancel_after
+        events = session.withdraw([0, 1]) if cut else session.step()
+        for row, snapshot in events:
+            if snapshot is not None:
+                batched[row].append(snapshot)
+    session.close()
+    return alone, batched
+
+
+_TOOL = [{"type": "function", "function": {"name": "terminal"}}]
+_CHANNELS = ("<|channel>thought", "<channel|>")
+_GEMMA_SPECIALS = ("<|channel>", "<channel|>", "<|tool_call>", "<tool_call|>", "<pad>", "<eos>")
+_GEMMA_TOOL_TURN = (
+    *("<|channel>", "thought", "\n", "weighing", "<pad>", "▁it", "<channel|>"),
+    *("<|tool_call>", "call:terminal{command:id}", "<tool_call|>", "<eos>"),
+)
+
+
+@pytest.mark.parametrize(
+    "markers, request_, last, ends, cancel_after",
+    [
+        (_CHANNELS, {"tools": _TOOL}, "<eos>", "stop", None),
+        (None, {"tools": _TOOL}, "<eos>", "stop", None),
+        (None, {"tools": [], "tool_protocol_active": True}, "<eos>", "stop", None),
+        # Stopping on the call's closer keeps it; stopping on an opener closes nothing.
+        (None, {"tools": _TOOL}, "<tool_call|>", "stop", None),
+        (None, {"tools": _TOOL}, "<|tool_call>", "stop", None),
+        (_CHANNELS, {"tools": _TOOL}, "call:terminal{command:id}", "length", None),
+        (_CHANNELS, {"tools": _TOOL, "stop": ["{command"]}, "<eos>", "stop", None),
+        # Text held to the end, its tail a stop sequence's first characters.
+        (_CHANNELS, {"tools": _TOOL, "stop": ["<tool_call|>!"]}, "<eos>", "stop", None),
+        (_CHANNELS, {"tools": _TOOL}, "<eos>", "stop", 3),
+        (_CHANNELS, {}, "<eos>", "stop", None),
+    ],
+)
+def test_a_batched_tool_row_decodes_what_the_reply_alone_does(
+    monkeypatch, markers, request_, last, ends, cancel_after
+):
+    pieces = _GEMMA_TOOL_TURN[: _GEMMA_TOOL_TURN.index(last) + 1]
+    specials = tuple(special for special in _GEMMA_SPECIALS if special in pieces)
+    eos = last if ends == "stop" else None
+    # Built before the fake mlx modules land, so the real detokenizer still imports.
+    turn = _SpmTurn(pieces, specials = specials, eos = eos, chat_template = "x", ends = ends)
+    alone, batched = _decode_alone_and_batched(monkeypatch, turn, markers, cancel_after, **request_)
+    assert alone and batched == {0: alone, 1: alone}
+
+
+@pytest.mark.parametrize(
+    "markers, request_, allows_reasoning",
+    [
+        (_CHANNELS, {"tools": _TOOL}, False),
+        (_CHANNELS, {"tools": _TOOL, "reasoning_is_extracted": True}, True),
+        (None, {"tools": _TOOL}, True),
+        (None, {}, False),
+    ],
+)
+def test_a_batched_constrained_row_is_planned_as_the_reply_alone_is(
+    monkeypatch, markers, request_, allows_reasoning
+):
+    from core.inference import mlx_inference
+
+    turn = _SpmTurn(
+        _GEMMA_TOOL_TURN, specials = _GEMMA_SPECIALS, eos = "<eos>", chat_template = "x", ends = "stop"
+    )
+    seen, decodes, sampling = [], [], mlx_inference._mlx_sampling_processors
+    decode = turn.decode
+    monkeypatch.setattr(turn, "decode", lambda ids, **kw: decodes.append(kw) or decode(ids, **kw))
+    # A kept </think> is what tells the grammar a closer survives the decode.
+    monkeypatch.setattr(mlx_inference, "decoder_preserves_token", lambda *_a: True)
+    monkeypatch.setattr(
+        mlx_inference,
+        "_build_grammar_constraint",
+        lambda response_format, *_a, **kw: response_format
+        and SimpleNamespace(
+            allows_reasoning = allows_reasoning,
+            decoded_dropping = lambda ids: seen.append((_a, sorted(kw.items()), ids)),
+        ),
+    )
+    monkeypatch.setattr(
+        mlx_inference,
+        "_mlx_sampling_processors",
+        lambda **kw: seen.append(kw["grammar_constraint"] is not None) or sampling(**kw),
+    )
+    request_ = {**request_, "response_format": {"type": "json_object"}}
+    # The template opens <think>, which a document-only reply must not re-emit.
+    alone, batched = _decode_alone_and_batched(
+        monkeypatch, turn, markers, prompt = "P<think>", **request_
+    )
+    assert alone and batched == {0: alone, 1: alone}
+    third = len(seen) // 3
+    assert seen and seen == seen[:third] * 3 and True in seen
+    plain = [kw for kw in decodes if kw.get("skip_special_tokens")]
+    assert all(kw["clean_up_tokenization_spaces"] is False for kw in plain)
+
+
 def test_mlx_text_normalizes_native_reasoning_and_close_releases_lock(monkeypatch):
     from core.inference.mlx_inference import MLXInferenceBackend
 
@@ -3293,7 +3453,7 @@ def test_an_image_row_through_mlx_lm_joins_the_batch_at_its_last_token(monkeypat
     backend._make_row_cache = lambda: ["cache"]
     backend._batch_prompt_row = lambda prompt, _state: ([], [9], ["text cache"], "key", [9])
     plan = SimpleNamespace(
-        prompt = "P", max_tokens = 4, sampler = None, processors = (), detokenizes = False, think_prefix = ""
+        prompt = "P", max_tokens = 4, sampler = None, processors = (), streamed = None, think_prefix = ""
     )
     backend._plan_text_row = lambda messages, **_kw: rendered.append(messages) or plan
     with monkeypatch.context() as patch:
@@ -3311,6 +3471,80 @@ def test_an_image_row_through_mlx_lm_joins_the_batch_at_its_last_token(monkeypat
     ]
     assert session._rows[1].cache_key is None and session._rows[1].prompt_len == 4
     session.close()
+
+
+@pytest.mark.parametrize("ends", [None, "length", "stop"])
+def test_a_row_whose_own_processor_fails_leaves_and_its_neighbour_decodes_on(monkeypatch, ends):
+    import numpy
+
+    from core.inference import mlx_inference
+
+    rows, removed, steps = {}, [], []
+
+    def insert(_prompts, logits_processors, **_kwargs):
+        rows[len(rows)] = logits_processors[0]
+        return [len(rows) - 1]
+
+    def step():
+        steps.append(None)
+        for processors in rows.values():
+            for processor in processors:
+                processor(numpy.array([1]), "logits")
+        # The healthy row runs out of budget every third step, so a swallowed failure ends too.
+        healthy = "length" if len(steps) % 3 == 0 else None
+        return [], [
+            SimpleNamespace(uid = uid, token = 5, finish_reason = healthy if uid else ends)
+            for uid in rows
+        ]
+
+    generator = SimpleNamespace(
+        insert = insert,
+        next = step,
+        remove = lambda uids, **_k: [removed.append(uid) or rows.pop(uid) for uid in uids] and {},
+        close = lambda: None,
+    )
+    generate = types.ModuleType("mlx_lm.generate")
+    generate.BatchGenerator = lambda *_a, **_k: generator
+    monkeypatch.setitem(sys.modules, "mlx_lm.generate", generate)
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model, backend._tokenizer = SimpleNamespace(), SimpleNamespace(eos_token_ids = [2])
+    backend._is_vlm = False
+    backend._batch_prompt_row = lambda _prompt, _state: ([], [9], None, None, [9])
+
+    def failing(_tokens, _logits):
+        raise ValueError("schema")
+
+    plans = iter([failing, None])
+    backend._plan_text_row = lambda _messages, **_kw: SimpleNamespace(
+        prompt = "P",
+        think_prefix = "",
+        stream = mlx_inference._RowStream(decode = lambda ids: "x" * len(ids)),
+        streamed = None,
+        sampler = None,
+        processors = [processor] if (processor := next(plans)) else [],
+        max_tokens = 8,
+    )
+    session = mlx_inference._TextBatchSession(backend, width = 2)
+    session.admit({"messages": []}, "bad")
+    session.admit({"messages": []}, "good")
+    (handle, failure), *events = session.step()
+    assert handle == "bad" and isinstance(failure, ValueError) and str(failure) == "schema"
+    # Its token was sampled unconstrained, and the single path raises before yielding it.
+    assert removed == [0] and session.handles == ["good"]
+    assert events == [("good", "x")]
+    assert list(session.step()) == [("good", "xx")]
+    session.close()
+    # A drafted batch drafts only for rows whose processors all read just the history.
+    penalty = mlx_inference._mlx_sampling_processors(presence_penalty = 1.5)
+    guarded = mlx_inference._failing_alone(None, [*penalty, lambda _tokens, logits: logits])
+    assert [p.history_only for p in guarded] == [True, False]
+    # The fixed multi-reply command fails as a single reply would.
+    plans = iter([failing, None])
+    backend.last_batch_generation_stats = [None, None]
+    with pytest.raises(ValueError, match = "schema"):
+        list(
+            backend._generate_session_batch([{"messages": []}] * 2, mlx_inference._TextBatchSession)
+        )
 
 
 def test_mlx_text_without_lru_prompt_cache_prefills_the_full_prompt(monkeypatch):
@@ -3620,14 +3854,16 @@ def test_mlx_batch_rows_plan_a_raw_completion_prompt_untemplated(monkeypatch):
     monkeypatch.setattr(backend, "_render_text_prompt", lambda *_a, **_k: pytest.fail("templated"))
     seen = {}
     monkeypatch.setattr(mlx_inference, "_mlx_sampling_processors", lambda **kw: seen.update(kw))
+    monkeypatch.setattr(mlx_inference, "_raw_prompt_constraint", _RawConstraint)
     row = mlx_inference._row_kwargs({"prompt_ids": [1, 2, 3], "penalty_window": 2})
-    plan = backend._plan_text_row([], **row)
+    plan = backend._plan_text_row([], grammar = "G", **row)
     assert (plan.prompt, plan.think_prefix, seen["penalty_prompt"], seen["penalty_window"]) == (
         [1, 2, 3],
         "",
         [1, 2, 3],
         2,
     )
+    assert seen["grammar_constraint"].built == ("G", backend._tokenizer)
     backend._make_row_cache = lambda: None
     assert backend._batch_prompt_row(plan.prompt, None)[1] == [1, 2, 3]
     kwargs = []
@@ -3641,7 +3877,6 @@ def test_mlx_batch_rows_plan_a_raw_completion_prompt_untemplated(monkeypatch):
     vision = backend._plan_vlm_request({"prompt_ids": [4, 5], "messages": []})
     assert (vision.prompt, vision.max_tokens) == ([4, 5], ([4, 5], [4, 5]))
     assert backend._vlm_batch_prompt([4, 5]) == {"prompt_token_ids": [4, 5]}
-    assert mlx_inference._request_batch_gap({"grammar": "G"})
 
 
 _COMPLETION_TOK = SimpleNamespace(
@@ -3856,13 +4091,14 @@ def test_mlx_batch_releases_an_over_budget_cache_while_another_row_decodes(monke
                 uid = handle,
                 cache_key = handle,
                 all_tokens = [],
-                plan = SimpleNamespace(stream = stream),
+                plan = SimpleNamespace(stream = stream, streamed = None),
                 ready_at = None,
                 processing_at = None,
                 prompt_len = 1,
                 generated = 1,
                 cached = 0,
                 reason = "stop",
+                failure = None,
             )
             for handle in banked
         }
@@ -7010,7 +7246,7 @@ def _drive_vlm_generation(
     image = None,
     max_new_tokens = 1,
     session = None,
-    video = None,
+    videos = None,
     on_stream = None,
     **request,
 ):
@@ -7048,7 +7284,7 @@ def _drive_vlm_generation(
         backend.generate_chat_response(
             messages = [{"role": "user", "content": "hi"}],
             image = image,
-            video = video,
+            videos = videos,
             max_new_tokens = max_new_tokens,
             **request,
         )
@@ -7119,7 +7355,7 @@ def test_a_speculative_load_drafts_eligible_single_replies(monkeypatch):
         assert "draft_n" not in backend.last_generation_stats["timings"]
     # Only the drafted reply entered the verify scope: open from preparing the draft through decoding.
     assert len(prepared) == 1 and scopes == [["open"]] * 2 and verify_scope == ["open", "closed"]
-    opened, backend._is_vlm, backend._vlm_batch_unavailable_reason = [], True, lambda r: None
+    opened, backend._is_vlm, backend._vlm_batch_unavailable_reason = [], True, lambda r, **_k: None
     backend._vlm_resident_unavailable_reason = lambda r, gaps = iter(["no stream"]): next(gaps, None)
     assert backend.batch_unavailable_reason([{}, {}]) == "no stream"
     monkeypatch.setattr(
@@ -7221,7 +7457,7 @@ def test_the_context_budget_counts_the_request_in_tokens_the_processor_would_pro
 
 
 def test_the_vlm_entry_point_hands_the_limit_a_clip_the_processor_can_read(monkeypatch):
-    """A video is counted from a readable file, not the route's base64."""
+    """Every clip is counted from a readable file, not the route's base64."""
     import base64
     import os
 
@@ -7235,15 +7471,17 @@ def test_the_vlm_entry_point_hands_the_limit_a_clip_the_processor_can_read(monke
     def _limit(*_a, **kwargs):
         seen.update(kwargs)
         seen["on_disk"] = [os.path.exists(clip) for clip in kwargs.get("videos") or ()]
+        seen["contents"] = [Path(clip).read_bytes() for clip in kwargs.get("videos") or ()]
         return 1
 
     monkeypatch.setattr(backend, "_generation_limit", _limit)
-    clip = base64.b64encode(b"not a readable clip").decode()
+    clips = [base64.b64encode(b"not a readable clip").decode(), "BBBB"]
     with contextlib.suppress(Exception):
-        _drive_vlm_generation(backend, monkeypatch, video = clip)
-    assert seen["videos"] != [clip]
-    assert seen["on_disk"] == [True]
-    assert not os.path.exists(seen["videos"][0])
+        _drive_vlm_generation(backend, monkeypatch, videos = clips)
+    assert seen["videos"] != clips
+    assert seen["on_disk"] == [True, True]
+    assert seen["contents"] == [base64.b64decode(clip) for clip in clips]
+    assert not any(os.path.exists(path) for path in seen["videos"])
 
 
 def test_media_is_prepared_only_under_a_budget_and_only_once(monkeypatch):
@@ -8099,7 +8337,7 @@ def _open_vision_session(rows):
     session = mlx_inference._VisionBatchSession.__new__(mlx_inference._VisionBatchSession)
     session._rows = {row.handle: row for row in rows}
     session._by_row, session._settled = {row.row: row for row in rows}, {}
-    session._speculative = None
+    session._speculative, session._decodes_ids = None, False
     return session
 
 
@@ -8115,7 +8353,7 @@ def test_a_vision_row_cut_by_its_stop_sequence_leaves_the_batch(monkeypatch, sto
         [
             mlx_inference._VisionBatchRow(
                 handle = handle,
-                plan = SimpleNamespace(stream = _vlm_row(backend, stop = ["HALT"])),
+                plan = SimpleNamespace(stream = _vlm_row(backend, stop = ["HALT"]), streamed = None),
                 row = number,
             )
             for number, handle in enumerate(handles)
@@ -8148,6 +8386,32 @@ def test_a_vision_row_cut_by_its_stop_sequence_leaves_the_batch(monkeypatch, sto
     ), "a row the engine has already retired is not handed back again"
 
 
+def test_a_resident_vision_tool_row_decodes_its_ids_and_keeps_the_stop_that_closes_its_call(
+    monkeypatch,
+):
+    from core.inference import mlx_inference
+
+    pieces = ("<|tool_call>", "call:terminal{command:id}", "<tool_call|>")
+    turn = _SpmTurn(
+        pieces, specials = pieces[::2], eos = "<tool_call|>", chat_template = "x", ends = "stop"
+    )
+    backend = _vlm_backend(monkeypatch, markers = None)
+    backend._tokenizer = backend._processor.tokenizer = turn
+    plan = backend._plan_vlm_row(
+        [{"role": "user", "content": "hi"}],
+        None,
+        **dict(temperature = 0, top_p = 1, top_k = 0, min_p = 0, max_new_tokens = 9),
+        repetition_penalty = 1.0,
+        tools = _TOOL,
+        decodes_ids = True,
+    )
+    session = _open_vision_session([mlx_inference._VisionBatchRow(handle = "r", plan = plan, row = 0)])
+    ended = SimpleNamespace(finish_reason = "stop", prompt_token_count = 3, token_ids = turn.ids[:2])
+    event = SimpleNamespace(index = 0, delta = "", token_ids = tuple(turn.ids), result = ended)
+    session.stream = SimpleNamespace(step = lambda: [event])
+    assert list(session.step())[-2:] == [("r", "".join(pieces)), ("r", None)]
+
+
 def test_a_text_load_batch_row_carries_one_bos_as_the_single_path_does(monkeypatch):
     engine = _batch_engine(monkeypatch)
     monkeypatch.setattr(engine, "GenerationRequest", SimpleNamespace, raising = False)
@@ -8156,14 +8420,16 @@ def test_a_text_load_batch_row_carries_one_bos_as_the_single_path_does(monkeypat
     monkeypatch.setattr(engine, "vlm_batch_adds_special_tokens", lambda *a: True, raising = False)
     backend = _vlm_backend(monkeypatch, markers = None)
     backend._tokenizer.bos_token = "<s>"
-    backend._plan_vlm_request = lambda request: SimpleNamespace(
+    backend._plan_vlm_request = lambda request, **_k: SimpleNamespace(
         prompt = "<s>hi",
         images = None,
+        videos = None,
         max_tokens = 4,
         sampling = {},
         processors = None,
         think_prefix = "",
         stream = None,
+        streamed = None,
     )
     session = _open_vision_session([])
     session.backend, session._adapter_state, session._resumes_rows = backend, None, False
@@ -8226,8 +8492,10 @@ def test_a_vision_row_times_its_prefill_wherever_the_batch_runs_it(monkeypatch, 
         processors = None,
         think_prefix = "",
         stream = _vlm_row(backend),
+        streamed = None,
+        speculates = True,
     )
-    backend._plan_vlm_request = lambda request: plan
+    backend._plan_vlm_request = lambda request, **_k: plan
     backend._reads_vision = False
     session = _open_vision_session([])
     session.backend, session._adapter_state, session._resumes_rows = backend, None, False
@@ -8276,6 +8544,48 @@ def test_a_vision_row_times_its_prefill_wherever_the_batch_runs_it(monkeypatch, 
     assert timings["predicted_per_second"] == pytest.approx(10.0)
 
 
+def test_a_fixed_vision_batch_marks_each_row_s_clips_and_shares_their_decode_budget(monkeypatch):
+    import base64
+
+    from core.inference import mlx_inference
+
+    engine, backend = _batch_engine(monkeypatch), _vlm_backend(monkeypatch, markers = None)
+    for name in ("GenerationRequest", "GenerationDefaults"):
+        monkeypatch.setattr(engine, name, SimpleNamespace, raising = False)
+    monkeypatch.setattr(engine, "SamplingParams", dict, raising = False)
+    monkeypatch.setattr(engine, "vlm_batch_adds_special_tokens", lambda *a: False, raising = False)
+    too_large, refuse = (_ for _ in ()).throw, mlx_inference._ClipsTooLarge
+    fps = lambda p, proc, rows = 1: rows / 4 if rows < 3 else too_large(refuse())
+    monkeypatch.setattr(mlx_inference, "_video_sampling_fps", fps)
+    seen, paths = [], []
+    clips, other = ([base64.b64encode(data).decode()] for data in (b"one", b"two"))
+    backend._render_vlm_prompt = lambda messages, images, videos, **k: (
+        seen.append(([p["type"] for p in messages[-1]["content"]], videos)) or ("p", None, None)
+    )
+    backend._media_generation_limit = lambda p, n, ids, images, videos: seen.append(videos) or n
+    backend._kv_window_generate_kwargs, backend._generation_lock = dict, threading.Lock()
+    backend._release_vlm_snapshots = lambda: seen.append("freed")
+
+    def stream_batch(model, processor, batch, defaults):
+        seen.extend((row.fps, [Path(path).read_bytes() for path in row.videos]) for row in batch)
+        paths.extend(path for row in batch for path in row.videos)
+        return iter(())
+
+    monkeypatch.setattr(engine, "stream_batch", stream_batch, raising = False)
+    request = {"messages": [{"role": "user", "content": "hi"}], "videos": clips}
+    with pytest.raises(RuntimeError, match = "unfinished"):
+        list(backend._generate_vlm_batch([request, request, {**request, "videos": other}]))
+    planned = [(["video", "text"], clips), clips] * 2 + [(["video", "text"], other), other]
+    assert seen[:7] == planned + ["freed"]
+    rates = [(0.5, [b"one"])] * 2 + [(0.25, [b"two"])]
+    assert seen[7:] == rates and paths[0] == paths[1] != paths[2], "a group shares files and budget"
+    seen.clear()
+    with pytest.raises(RuntimeError, match = "unfinished"):
+        list(backend._generate_vlm_batch([request] * 3))
+    assert seen[-3:] == [(0.25, [b"one"])] * 3 and len(set(paths[3:])) == 3, "too large to share"
+    assert not any(map(os.path.exists, paths)), "removed when the batch ends"
+
+
 def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(monkeypatch):
     from core.inference import mlx_inference
 
@@ -8294,7 +8604,7 @@ def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(mo
     backend._vlm_is_diffusion_model = lambda model: False
     backend._vlm_snapshot_scope = lambda state, images: (None, "m|img" if images else "m", list)
 
-    backend._plan_vlm_request = lambda request: SimpleNamespace(
+    backend._plan_vlm_request = lambda request, **_k: SimpleNamespace(
         prompt = "p",
         images = request.get("images"),
         max_tokens = 4,
@@ -8302,6 +8612,7 @@ def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(mo
         processors = None,
         think_prefix = "",
         stream = _vlm_row(backend),
+        streamed = None,
     )
     session = _open_vision_session([])
     session.backend, session._adapter_state = backend, None
@@ -8380,15 +8691,12 @@ def test_a_text_load_whose_engine_cannot_batch_says_so_before_it_commits(monkeyp
     (
         {"images": [object()]},
         {"images_base64": ["AAAA"]},
-        {"video": "AAAAGGZ0eXBtcDQy"},
-        {"video_base64": "AAAAGGZ0eXBtcDQy"},
-        {"tools": [{"type": "function", "function": {"name": "lookup"}}]},
-        {"tool_protocol_active": True},
-        {"response_format": {"type": "json_object"}},
+        {"videos": ["AAAAGGZ0eXBtcDQy"]},
+        {"videos_base64": ["AAAAGGZ0eXBtcDQy"]},
     ),
 )
 def test_a_reply_the_batch_cannot_serve_decodes_alone(monkeypatch, extra):
-    """Replayed tool images, a clip and the native tool protocol live only on the"""
+    """Replayed tool images and a clip live only on the single path."""
     from core.inference.mlx_inference import MLXInferenceBackend
 
     engine = _batch_engine(monkeypatch)
@@ -8402,6 +8710,55 @@ def test_a_reply_the_batch_cannot_serve_decodes_alone(monkeypatch, extra):
     assert backend.batch_unavailable_reason([plain, plain]) is None
     assert backend.resident_unavailable_reason({**plain, **extra}) is not None
     assert backend.batch_unavailable_reason([plain, {**plain, **extra}]) is not None
+
+
+@pytest.mark.parametrize(
+    "extra, refusal",
+    (
+        ({"tools": [{"type": "function"}]}, "a reply runs the tool protocol"),
+        ({"tool_protocol_active": True}, "a reply runs the tool protocol"),
+        (
+            {"response_format": {"type": "json_object"}},
+            "a reply is constrained to a response format",
+        ),
+        ({"grammar": 'root ::= "a"'}, "a reply is constrained to a response format"),
+    ),
+)
+def test_a_tool_or_constrained_reply_joins_a_batch_that_decodes_it_from_its_ids(
+    monkeypatch, extra, refusal
+):
+    from dataclasses import make_dataclass
+
+    from core.inference import mlx_inference
+
+    engine = _batch_engine(monkeypatch)
+    monkeypatch.setattr(engine, "stream_unavailable_reason", lambda *a, **k: None)
+    monkeypatch.setattr(mlx_inference, "_batched_vision_engine_gap", lambda _engine: None)
+    backend = mlx_inference.MLXInferenceBackend.__new__(mlx_inference.MLXInferenceBackend)
+    backend._model, backend._tokenizer, backend._is_vlm = object(), object(), False
+    assert backend.batch_unavailable_reason([{}, extra]) is None
+    backend._model, backend._is_vlm = SimpleNamespace(_is_vlm_model = True), True
+    backend._processor, backend._speculative_draft = object(), None
+    backend._kv_quant, backend._kv_context_budget = {"kv_bits": None}, None
+    backend._turboquant = False
+    assert backend.resident_unavailable_reason({}) is None
+    monkeypatch.setattr(engine, "GenerationDefaults", SimpleNamespace, raising = False)
+    monkeypatch.setattr(engine, "BatchStream", lambda *_a, **_k: None, raising = False)
+    for fields, draft, joins in (
+        (("token_ids",), None, True),
+        ((), None, False),
+        (("token_ids",), 1, False),
+        (("drafts",), 1, False),
+        (("token_ids", "drafts"), 1, True),
+    ):
+        for name in ("GenerationEvent", "GenerationRequest"):
+            monkeypatch.setattr(engine, name, make_dataclass(name, fields), raising = False)
+        backend._speculative_draft = draft
+        assert backend.resident_unavailable_reason(extra) == (None if joins else refusal)
+        assert mlx_inference._VisionBatchSession(backend, width = 2)._decodes_ids == joins
+    backend._speculative_draft = None  # The fixed multi-reply command decodes the batch's text.
+    assert backend.batch_unavailable_reason([{}, extra]) == refusal
+    assert backend.resident_unavailable_reason({"response_format": {"type": "text"}}) is None
 
 
 def test_a_quantized_or_budgeted_kv_cache_does_not_batch(monkeypatch):
@@ -8429,7 +8786,7 @@ def test_a_quantized_vision_load_batches_only_as_resident_rows(monkeypatch):
     backend._model, backend._processor, backend._is_vlm = object(), object(), True
     backend._kv_quant, backend._kv_context_budget = {"kv_bits": 4}, 4096
     backend._turboquant = False
-    backend._vlm_batch_unavailable_reason = lambda requests: None
+    backend._vlm_batch_unavailable_reason = lambda requests, **_k: None
     monkeypatch.setattr(engine, "stream_unavailable_reason", lambda *a, **k: None)
     capable = lambda: None
     monkeypatch.setattr(
@@ -8444,6 +8801,24 @@ def test_a_quantized_vision_load_batches_only_as_resident_rows(monkeypatch):
         engine, "row_quantized_prompt_cache_unavailable_reason", lambda: "old mlx-vlm"
     )
     assert backend.resident_unavailable_reason({}) == "old mlx-vlm"
+
+
+@pytest.mark.parametrize("gap", (None, "speculative", "old zoo", "no decoder", "no vision"))
+def test_a_video_reply_batches_only_as_a_fixed_command_of_a_load_that_reads_it(monkeypatch, gap):
+    from core.inference import mlx_inference
+
+    engine, backend = _batch_engine(monkeypatch), _vlm_backend(monkeypatch, markers = None)
+    backend._speculative_draft = gap == "speculative" or None
+    backend._reads_vision, available = gap != "no vision", lambda request: None
+    backend._vlm_batch_unavailable_reason = backend._vlm_resident_unavailable_reason = available
+    monkeypatch.setattr(mlx_inference, "_mlx_vlm_decodes_video", lambda: gap != "no decoder")
+    fields = SimpleNamespace(__dataclass_fields__ = ("image", "videos")[: 1 + (gap != "old zoo")])
+    monkeypatch.setattr(engine, "GenerationRequest", fields, raising = False)
+    clip, sent = {"videos": [_CLIP_B64]}, {"videos_base64": [_CLIP_B64]}
+    for row in (clip, sent):
+        assert (backend.batch_unavailable_reason([{}, row]) is None) == (gap is None)
+    assert backend.resident_unavailable_reason(sent) == "a reply carries a video clip"
+    assert backend.resident_unavailable_reason({}) is None
 
 
 def test_a_turboquant_vision_batch_quantizes_rows_as_the_single_path_does(monkeypatch):
@@ -10147,7 +10522,7 @@ def test_mlx_vlm_a_video_turn_never_resumes_a_prompt_cache_snapshot(monkeypatch)
         {"role": "user", "content": [{"type": "video"}, {"type": "text", "text": "what moves"}]}
     ]
     args = (turn, None, 0, 1, 0, 0, 1, 1, None)
-    assert list(backend._generate_vlm(*args, _adapter_state = False, video = _CLIP_B64)) == ["ok"]
+    assert list(backend._generate_vlm(*args, _adapter_state = False, videos = [_CLIP_B64])) == ["ok"]
     ((_, stream_kwargs, _),) = streams
     assert "prompt_cache" not in stream_kwargs
     assert "prompt_cache_state" not in stream_kwargs
@@ -10176,7 +10551,7 @@ def test_mlx_vlm_a_video_turn_releases_retained_snapshots(monkeypatch):
     ]
     args = (turn, None, 0, 1, 0, 0, 1, 1, None)
 
-    assert list(backend._generate_vlm(*args, _adapter_state = False, video = _CLIP_B64)) == ["ok"]
+    assert list(backend._generate_vlm(*args, _adapter_state = False, videos = [_CLIP_B64])) == ["ok"]
     assert released == [True]
 
 
@@ -10197,7 +10572,7 @@ def test_mlx_vlm_an_unset_budget_is_capped_for_a_video_turn(monkeypatch):
     ]
     args = (turn, None, 0, 1, 0, 0, None, 1, None)
 
-    assert list(backend._generate_vlm(*args, _adapter_state = False, video = _CLIP_B64)) == ["ok"]
+    assert list(backend._generate_vlm(*args, _adapter_state = False, videos = [_CLIP_B64])) == ["ok"]
     assert streams[-1][1]["max_tokens"] == UNSET_GENERATION_BUDGET
 
 
@@ -10212,18 +10587,57 @@ def test_mlx_vlm_video_clip_lives_on_disk_only_for_the_stream(monkeypatch):
     ]
     args = (turn, None, 0, 1, 0, 0, 1, 1, None)
 
-    assert list(backend._generate_vlm(*args, _adapter_state = False, video = _CLIP_B64)) == ["ok"]
+    assert list(backend._generate_vlm(*args, _adapter_state = False, videos = [_CLIP_B64])) == ["ok"]
     ((stream_args, stream_kwargs, contents),) = streams
     assert stream_args[3] is None, "no image was attached"
     assert contents == [base64.b64decode(_CLIP_B64)]
     assert not any(Path(p).exists() for p in stream_kwargs["video"])
 
-    gen = backend._generate_vlm(*args, _adapter_state = False, video = _CLIP_B64)
+    gen = backend._generate_vlm(*args, _adapter_state = False, videos = [_CLIP_B64])
     assert next(gen) == "ok"
     (path,) = streams[-1][1]["video"]
     assert Path(path).exists()
     gen.close()
     assert not Path(path).exists()
+
+
+def test_mlx_vlm_every_clip_reaches_mlx_vlm_in_order_at_one_rate(monkeypatch):
+    """Releases before 0.7.3 apply one ``fps`` to every clip, so the slowest affordable rate
+    is the one that keeps every clip inside its share of the decode budget."""
+    import base64
+
+    from core.inference import mlx_inference
+
+    streams = []
+    backend = _video_vlm_backend(monkeypatch, streams)
+    # The slowest clip sits between faster ones, so neither the first nor the last rate passes.
+    rates = {b"fast clip": 2.0, b"slow clip": 0.5, b"medium clip": 1.0}
+    shares = []
+
+    def _rate(
+        path,
+        _processor,
+        clips = 1,
+    ):
+        shares.append(clips)
+        return rates[Path(path).read_bytes()]
+
+    monkeypatch.setattr(mlx_inference, "_video_frame_rate", _rate)
+    clips = [base64.b64encode(content).decode() for content in rates]
+    turn = [
+        {
+            "role": "user",
+            "content": [{"type": "video"}] * 3 + [{"type": "text", "text": "which"}],
+        }
+    ]
+    args = (turn, None, 0, 1, 0, 0, 1, 1, None)
+
+    assert list(backend._generate_vlm(*args, _adapter_state = False, videos = clips)) == ["ok"]
+    ((_, stream_kwargs, contents),) = streams
+    assert contents == list(rates)
+    assert stream_kwargs["fps"] == 0.5
+    assert shares == [3, 3, 3]
+    assert not any(Path(p).exists() for p in stream_kwargs["video"])
 
 
 def _tiny_clip(
@@ -10263,6 +10677,11 @@ def test_mlx_vlm_the_decoded_frame_stack_is_bounded(monkeypatch, tmp_path):
 
     monkeypatch.setattr(mlx_inference, "_VIDEO_DECODE_BUDGET_BYTES", per_frame * 4)
     assert mlx_inference._video_frame_rate(clip, plain) == pytest.approx(4 / 3)
+
+    # mlx-vlm holds every decoded clip at once, so two clips split the budget.
+    monkeypatch.setattr(mlx_inference, "_VIDEO_DECODE_BUDGET_BYTES", per_frame * 8)
+    assert mlx_inference._video_frame_rate(clip, plain) == 2.0
+    assert mlx_inference._video_sampling_fps([clip, clip], plain) == pytest.approx(4 / 3)
 
     monkeypatch.setattr(mlx_inference, "_VIDEO_DECODE_BUDGET_BYTES", per_frame * 3)
     with pytest.raises(RuntimeError, match = "32x24 frames are too large"):
@@ -10350,14 +10769,14 @@ def test_mlx_vlm_the_frame_rate_rides_the_stream(monkeypatch, tmp_path):
 
     assert list(
         backend._generate_vlm(
-            turn, None, 0, 1, 0, 0, 1, 1, None, _adapter_state = False, video = clip_b64
+            turn, None, 0, 1, 0, 0, 1, 1, None, _adapter_state = False, videos = [clip_b64]
         )
     ) == ["ok"]
     assert streams[0][1]["fps"] == pytest.approx(4 / 3)
 
     monkeypatch.setattr(mlx_inference, "_VIDEO_DECODE_BUDGET_BYTES", 2 * 3 * 32 * 24 * 3)
     gen = backend._generate_vlm(
-        turn, None, 0, 1, 0, 0, 1, 1, None, _adapter_state = False, video = clip_b64
+        turn, None, 0, 1, 0, 0, 1, 1, None, _adapter_state = False, videos = [clip_b64]
     )
     with pytest.raises(RuntimeError, match = "too large to decode"):
         next(gen)
@@ -10376,7 +10795,7 @@ def test_mlx_vlm_a_video_turn_whose_render_is_unusable_is_refused_not_recovered(
     with pytest.raises(RuntimeError, match = "for a video turn"):
         list(
             backend._generate_vlm(
-                turn, [object()], 0, 1, 0, 0, 1, 1, None, _adapter_state = False, video = _CLIP_B64
+                turn, [object()], 0, 1, 0, 0, 1, 1, None, _adapter_state = False, videos = [_CLIP_B64]
             )
         )
 
@@ -10387,11 +10806,11 @@ def test_mlx_vlm_an_undecodable_clip_leaves_no_file_behind(monkeypatch, tmp_path
 
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     backend = _video_vlm_backend(monkeypatch, [])
-    turn = [{"role": "user", "content": [{"type": "video"}]}]
+    turn = [{"role": "user", "content": [{"type": "video"}, {"type": "video"}]}]
     with pytest.raises(binascii.Error):
         list(
             backend._generate_vlm(
-                turn, None, 0, 1, 0, 0, 1, 1, None, _adapter_state = False, video = "A"
+                turn, None, 0, 1, 0, 0, 1, 1, None, _adapter_state = False, videos = [_CLIP_B64, "A"]
             )
         )
     assert list(tmp_path.iterdir()) == []
@@ -10402,7 +10821,7 @@ def test_mlx_vlm_structured_video_items_must_match_attached_clips(monkeypatch):
     args = (None, 0, 1, 0, 0, 1, 1, None)
     without_part = [{"role": "user", "content": [{"type": "text", "text": "what moves"}]}]
     with pytest.raises(RuntimeError, match = "0 structured video item.*1 attached video"):
-        list(backend._generate_vlm(without_part, *args, _adapter_state = False, video = _CLIP_B64))
+        list(backend._generate_vlm(without_part, *args, _adapter_state = False, videos = [_CLIP_B64]))
     with_part = [{"role": "user", "content": [{"type": "video"}]}]
     with pytest.raises(RuntimeError, match = "1 structured video item.*0 attached video"):
         list(backend._generate_vlm(with_part, *args, _adapter_state = False))
@@ -10422,21 +10841,35 @@ def test_mlx_generate_chat_response_attaches_the_video_part_and_forwards_the_cli
         captured.append((messages, kwargs)) or iter(())
     )
     list(
-        backend.generate_chat_response([{"role": "user", "content": "what moves"}], video = _CLIP_B64)
+        backend.generate_chat_response(
+            [{"role": "user", "content": "what moves"}], videos = [_CLIP_B64]
+        )
     )
     messages, kwargs = captured[0]
     assert messages[-1]["content"] == [{"type": "video"}, {"type": "text", "text": "what moves"}]
-    assert kwargs["video"] == _CLIP_B64
+    assert kwargs["videos"] == [_CLIP_B64]
+    list(
+        backend.generate_chat_response(
+            [{"role": "user", "content": "what moves"}], videos = [_CLIP_B64, "BBBB"]
+        )
+    )
+    messages, kwargs = captured[1]
+    assert messages[-1]["content"][:2] == [{"type": "video"}, {"type": "video"}]
+    assert kwargs["videos"] == [_CLIP_B64, "BBBB"]
 
     backend._reads_vision = False
     with pytest.raises(RuntimeError, match = "loaded model does not read video"):
-        list(backend.generate_chat_response([{"role": "user", "content": "hi"}], video = _CLIP_B64))
+        list(
+            backend.generate_chat_response([{"role": "user", "content": "hi"}], videos = [_CLIP_B64])
+        )
 
     backend._is_vlm = True
     backend._reads_vision = True
     monkeypatch.setattr(mlx_inference, "_mlx_vlm_decodes_video", lambda: False)
     with pytest.raises(RuntimeError, match = "installed mlx-vlm does not read video"):
-        list(backend.generate_chat_response([{"role": "user", "content": "hi"}], video = _CLIP_B64))
+        list(
+            backend.generate_chat_response([{"role": "user", "content": "hi"}], videos = [_CLIP_B64])
+        )
 
 
 def test_mlx_vlm_decodes_video_only_with_its_clip_decoder(monkeypatch):
@@ -10515,6 +10948,61 @@ def test_mlx_reads_video_rejects_a_clip_rendered_as_prose(monkeypatch):
     unnamed = SimpleNamespace(video_processor = object(), tokenizer = SimpleNamespace())
     renders["video"] = "video hi"
     assert _mlx_reads_video(unnamed) is True
+
+
+def _same_template_processor(template = "T", drops_video = True):
+    """A processor that would render, with its tokenizer holding ``template``. ``drops_video`` is
+    mlx-vlm's Gemma 4 processor, which loses a bare video part its tokenizer renders as written."""
+    return SimpleNamespace(
+        apply_chat_template = lambda *_a, **_k: "unused",
+        chat_template = "T",
+        video_processor = object(),
+        video_token = "<|video|>",
+        drops_video = drops_video,
+        tokenizer = SimpleNamespace(chat_template = template),
+    )
+
+
+def _render_by_target(monkeypatch):
+    def _render(target, messages, **_kwargs):
+        has_video = any(
+            isinstance(part, dict) and part.get("type") == "video"
+            for message in messages
+            for part in (message.get("content") or [])
+        )
+        marked = has_video and not getattr(target, "drops_video", False)
+        return "<|video|> hi" if marked else "hi"
+
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation", _render
+    )
+
+
+def test_a_video_turn_renders_through_the_tokenizer_only_when_the_processor_drops_it(monkeypatch):
+    from core.inference.mlx_inference import MLXInferenceBackend, _mlx_reads_video
+
+    _require_video_stack()
+    _render_by_target(monkeypatch)
+    drops = _same_template_processor()
+    assert _mlx_reads_video(drops) is True
+    # A template of the processor's own is what it must render, as before.
+    assert _mlx_reads_video(_same_template_processor(template = "other")) is False
+
+    backend = MLXInferenceBackend()
+    video_turn = [{"role": "user", "content": [{"type": "video"}, {"type": "text", "text": "hi"}]}]
+    image_turn = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "hi"}]}]
+    backend._processor = drops
+    prompt, target, _ = backend._render_vlm_prompt(video_turn, None, videos = ["clip.mp4"])
+    assert (prompt, target) == ("<|video|> hi", drops.tokenizer)
+    _, target, _ = backend._render_vlm_prompt(image_turn, [object()])
+    assert target is drops
+
+    # Some processors deliberately differ from their tokenizer, so one that keeps the marker renders.
+    keeps = _same_template_processor(drops_video = False)
+    backend._processor = keeps
+    prompt, target, _ = backend._render_vlm_prompt(video_turn, None, videos = ["clip.mp4"])
+    assert (prompt, target) == ("<|video|> hi", keeps)
+    assert _mlx_reads_video(keeps) is True
 
 
 def _sampling_release(monkeypatch, **utils_fields):
@@ -11279,3 +11767,30 @@ def test_mlx_precision_folder_loads_from_its_own_download(monkeypatch, tmp_path)
     assert calls[-1][0] == (repo,)
     assert backend.models[repo]["gguf_variant"] is None
     assert len(fetched) == 1
+
+
+def test_a_batch_row_without_an_independent_detokenizer_is_refused_not_crashed():
+    from core.inference import mlx_inference
+    from core.inference.worker import RowRefused
+
+    decoder = SimpleNamespace(suppresses = lambda _id: False)
+    mlx_inference._require_row_detokenizer(None)
+    mlx_inference._require_row_detokenizer(
+        mlx_inference._MlxStreamedText(SimpleNamespace(), decoder, None, ())
+    )
+    with pytest.raises(RowRefused, match = "detokenizer"):
+        mlx_inference._require_row_detokenizer(
+            mlx_inference._MlxStreamedText(None, decoder, None, ())
+        )
+
+
+def test_a_flushed_tail_releases_its_text_before_a_stop_it_completes():
+    from core.inference.mlx_inference import _RowStream
+
+    stream = _RowStream(sequences = ("HALT",))
+    assert stream.feed(text = "already ") == ["already "]
+    assert stream.flush("remaining HALT") == ["already remaining "]
+    assert stream.stopped and stream.settle() == []
+    plain = _RowStream(sequences = ("HALT",))
+    plain.feed(text = "all ")
+    assert plain.flush("of it") == ["all of it"] and plain.settle() == []
