@@ -26512,9 +26512,10 @@ class LlamaCppBackend:
                                 and _vram_fit_ctx
                                 and min(_FIT_MIN_CTX, effective_ctx)
                                 <= _vram_fit_ctx
-                                < effective_ctx
+                                < max_available_ctx
                             ):
-                                effective_ctx = max_available_ctx = _vram_fit_ctx
+                                max_available_ctx = _vram_fit_ctx
+                                effective_ctx = min(effective_ctx, _vram_fit_ctx)
                         # Unmeasured floors still rely on llama.cpp's fitter.
                         _metal_full_offload_pinned = bool(
                             _apple_measured_ceiling is not None

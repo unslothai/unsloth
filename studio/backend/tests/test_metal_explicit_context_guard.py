@@ -1757,6 +1757,14 @@ class TestAutoGivesUpContextBeforeLayers:
         assert _FIT_MIN_CTX <= ctx <= 24576 < budget_ctx
         assert backend._max_context_length == ctx
 
+    def test_the_ceiling_above_the_auto_default_still_trims_to_the_wired_limit(
+        self, tmp_path, monkeypatch
+    ):
+        roomy = dict(self.FITS, budget_bytes = 32 * self.GiB)
+        cap = _launch(tmp_path, monkeypatch, n_ctx = 0, wired_bytes = 12 * self.GiB, **roomy)
+        assert _ctx_values(cap["cmd"])[-1] == "65536"
+        assert 65536 < cap["backend"]._max_context_length < 131072
+
     def test_ample_headroom_keeps_the_budget_context(self, tmp_path, monkeypatch):
         assert self._ctx(tmp_path, monkeypatch, 20)[0] == self._ctx(tmp_path, monkeypatch, 0)[0]
 
