@@ -3338,6 +3338,16 @@ export const en = {
         placeholderModel: "The model shown is an example. Load a model on the Images or Video page and open this from its API button to fill it in.",
         autoSwitchOff: "Media auto-switch is off, so requests run on the model the page has loaded, whatever they name.",
       },
+      trainingApi: {
+        title: "Training API",
+        description: "Fine-tune models from your own code with the OpenAI-compatible fine-tuning endpoints: upload a JSONL file, create a job, follow its events, then chat with the trained model.",
+        placeholder: "The model and settings shown are an example. Open this from the API button on the Train page to fill in your current setup.",
+        hubDataset: "Your Train page uses a Hugging Face or S3 dataset. The API trains on uploaded files, so save the dataset as JSONL and upload that.",
+        batching: "Compatible jobs waiting in the queue train together automatically.",
+        chatNote: "Chatting with the trained model by name needs Model auto-switch on, or load it on the Chat page first.",
+        cancelTitle: "Cancel a job",
+        cancelDescription: "Stops a queued or running job. Not part of the example above.",
+      },
       decisionApi: {
         title: "Decision API",
         docs: "Docs",

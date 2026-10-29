@@ -34,6 +34,7 @@ import { useTrainingCacheReconciliation } from "./hooks/use-training-cache-recon
 import { LiveTrainingView } from "./live-training-view";
 import { DatasetPreviewDialog } from "./sections/dataset-preview-dialog";
 import { TrainSubNav } from "./studio-navigation";
+import { TrainingApiButton } from "./training-api-button";
 import {
   studioHistoryTourSteps,
   studioTourSteps,
@@ -205,6 +206,7 @@ export function StudioPage(): ReactElement {
                   showTrainingView={showTrainingView}
                 />
                 <div className="ml-auto flex items-center gap-2">
+                  <TrainingApiButton />
                   <MediaPageLink
                     to="/library"
                     libraryTab="models"
