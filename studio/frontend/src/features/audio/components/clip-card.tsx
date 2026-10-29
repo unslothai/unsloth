@@ -17,6 +17,11 @@ import {
 import { formatRelativeShort } from "@/features/hub/lib/format";
 import { audioModelLabel, formatClipDuration } from "../audio-workspace-utils";
 import { AUDIO_WORKFLOWS, type AudioWorkflowId } from "../workflows";
+import {
+  CLIP_ICON_COLUMN,
+  CLIPS_TITLE_INSET,
+  CLIPS_TOP_ROW,
+} from "./clips-card";
 import { Waveform, type WaveformControl } from "./waveform";
 import { ArrowUpIcon, PlayIcon } from "lucide-react";
 
@@ -48,13 +53,6 @@ export function ClipSendToMenu({ handlers }: { handlers: ClipSendHandlers }) {
     </DropdownMenuSub>
   );
 }
-
-/** The expanded top row of the Clips card: it shares the rows' 40px icon column and their title edge. */
-const PLAYER_CLASS =
-  "grid w-full gap-2 rounded-xl bg-wash-6 px-3 py-3";
-
-/** The 40px column every Clips row starts with, so play buttons and icons line up down the card. */
-export const CLIP_ICON_COLUMN = "size-[calc(40px*var(--ui-space-scale,1))]";
 
 /** never autoplays; a new clip focuses its play button once. */
 export function ClipCard({
@@ -96,7 +94,7 @@ export function ClipCard({
     onFocused?.();
   };
   return (
-    <div ref={focusPlay} className={PLAYER_CLASS}>
+    <div ref={focusPlay} className={CLIPS_TOP_ROW}>
       <div className="flex items-center gap-3">
         {player ? null : (
           <Button
@@ -104,6 +102,7 @@ export function ClipCard({
             variant="dark"
             size="icon"
             className={cn("shrink-0 rounded-full", CLIP_ICON_COLUMN)}
+            title={playing ? "Pause" : "Play"}
             aria-label={playing ? `Pause ${title}` : `Play ${title}`}
             disabled={!src}
             onClick={() => control.current?.toggle()}
@@ -115,8 +114,11 @@ export function ClipCard({
             )}
           </Button>
         )}
-        <div className="grid min-w-0 flex-1 gap-0.5">
-          <p className="line-clamp-2 text-ui-15 font-medium leading-snug text-foreground">
+        <div className="grid min-h-[calc(40px*var(--ui-space-scale,1))] min-w-0 flex-1 content-between">
+          <p
+            className="line-clamp-2 text-ui-15 font-medium leading-snug text-foreground"
+            title={title}
+          >
             {title}
           </p>
           <p className="truncate text-ui-12 text-muted-foreground">
@@ -128,6 +130,7 @@ export function ClipCard({
         <Button
           variant="ghost"
           size="icon-sm"
+          title="Download"
           aria-label="Download audio clip"
           disabled={!onDownload}
           onClick={onDownload ?? undefined}
@@ -138,8 +141,7 @@ export function ClipCard({
         {menu}
       </div>
       {player ?? (
-        // Starts at the title's edge: 40px icon column + 12px gap.
-        <div className="ps-[calc(52px*var(--ui-space-scale,1))]">
+        <div className={CLIPS_TITLE_INSET}>
           <Waveform
             peaks={peaks}
             durationS={durationS}
@@ -170,7 +172,7 @@ export function PendingClipCard({
   onStop: () => void;
 }) {
   return (
-    <div className={PLAYER_CLASS} aria-busy="true">
+    <div className={CLIPS_TOP_ROW} aria-busy="true">
       <div className="flex items-center gap-3">
         <span
           className={cn(
@@ -180,7 +182,7 @@ export function PendingClipCard({
         >
           <Spinner className="size-4" />
         </span>
-        <div className="grid min-w-0 flex-1 gap-0.5">
+        <div className="grid min-h-[calc(40px*var(--ui-space-scale,1))] min-w-0 flex-1 content-between">
           <p className="line-clamp-2 text-ui-14 font-medium leading-snug text-muted-foreground">
             {title}
           </p>
@@ -206,7 +208,7 @@ export function PendingClipCard({
           </Button>
         ) : null}
       </div>
-      <div className="ps-[calc(52px*var(--ui-space-scale,1))]">
+      <div className={CLIPS_TITLE_INSET}>
         <Waveform
           peaks={null}
           durationS={null}

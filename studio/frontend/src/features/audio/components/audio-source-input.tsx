@@ -276,14 +276,15 @@ export function AudioSourceInput({
           </span>
           {hint ? <InfoHint>{hint}</InfoHint> : null}
         </span>
-        <span className="flex items-center gap-1">
+        {/* Text-only actions: tight icon-to-label, clear space between actions. */}
+        <span className="flex items-center gap-4">
           {headerAction}
           {showSelected ? (
             <Button
               type="button"
               variant="ghost"
               size="sm"
-              className="h-auto px-2 py-1 text-ui-11p5"
+              className="h-auto gap-1 px-0 py-0 text-ui-12 text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
               disabled={disabled}
               onClick={source.clear}
             >
@@ -329,12 +330,15 @@ export function AudioSourceInput({
           {/* The picked clip sits in the same filled box as the text fields, so it reads as this field's value. */}
           <div className="grid gap-2.5 rounded-xl border border-border bg-background px-3.5 py-3 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
           <div className="flex min-w-0 items-center gap-2 text-ui-12">
-            <HugeiconsIcon
-              icon={AiSpeechIcon}
-              className="size-3.5 shrink-0 text-muted-foreground"
-            />
+            {/* A 32px slot like the play button below, so the name starts where the waveform does. */}
+            <span className="grid w-[calc(32px*var(--ui-space-scale,1))] shrink-0 place-items-center">
+              <HugeiconsIcon
+                icon={AiSpeechIcon}
+                className="size-3.5 text-muted-foreground"
+              />
+            </span>
             <span
-              className="min-w-0 flex-1 truncate text-foreground"
+              className="min-w-0 flex-1 truncate leading-normal text-foreground"
               title={name}
             >
               {name}

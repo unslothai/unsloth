@@ -6699,8 +6699,9 @@ html.force-reduced-motion .spooky-still :is(.spooky-spider, .spooky-bat) {
 	to { opacity: 0.85; }
 }
 
-/* Audio's settings rail shares the sidebar surface: a faint seam marks the boundary and fades out at both ends. */
-html:has([data-audio-attached-rail]) [data-sidebar="sidebar"] {
+/* Audio's settings rail shares the sidebar surface: a faint seam marks the boundary and fades out at both ends.
+   The Audio page sets the root attribute while it is shown (no :has() on the root). */
+html[data-audio-attached-rail] [data-sidebar="sidebar"] {
 	--audio-seam: color-mix(in srgb, var(--foreground) calc(7% * var(--contrast-seam-gain, 1)), var(--sidebar));
 	border-right: 1px solid transparent;
 	border-image: linear-gradient(to bottom, transparent, var(--audio-seam) 18%, var(--audio-seam) 82%, transparent) 1;

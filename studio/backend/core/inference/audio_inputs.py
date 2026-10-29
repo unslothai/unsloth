@@ -658,7 +658,9 @@ def resolve_source(ref: dict[str, Any]) -> Source:
             raise AudioInputError(404, "That clip is no longer in your history.")
         meta = audio_gallery._read_meta(audio_gallery._sidecar_path(source_id, path.parent)) or {}
         prompt = " ".join(str(meta.get("prompt") or "").split())
-        return Source("clip", source_id, path, (prompt[:60] or "Clip"))
+        # A cut name ends in an ellipsis, so the title it becomes doesn't stop mid-word.
+        name = prompt if len(prompt) <= 60 else prompt[:59].rstrip() + "…"
+        return Source("clip", source_id, path, (name or "Clip"))
     from core.inference import audio_voices
 
     path = audio_voices.voice_path(source_id)

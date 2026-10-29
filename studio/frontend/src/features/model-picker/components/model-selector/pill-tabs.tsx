@@ -10,6 +10,8 @@ export interface PillTab {
   label: string;
   icon?: ReactNode;
   disabled?: boolean;
+  /** Hover tooltip for this tab. */
+  title?: string;
 }
 
 export function PillTabs({
@@ -58,6 +60,7 @@ export function PillTabs({
           // Roving tabindex (WAI-ARIA tablist); ArrowDown bubbles to the picker's enter-the-list handler.
           tabIndex={value === tab.value ? 0 : -1}
           disabled={disabled || tab.disabled}
+          title={tab.title}
           onKeyDown={(e) => {
             if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
             e.preventDefault();

@@ -221,7 +221,7 @@ function SourceTextField({
           type="button"
           variant="ghost"
           size="sm"
-          className="h-auto px-2 py-1 text-ui-11p5"
+          className="h-auto gap-1 px-0 py-0 text-ui-12 text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
           disabled={!sourceUsable || transcriber.transcribing || disabled}
           onClick={() => void transcriber.transcribe(source)}
         >

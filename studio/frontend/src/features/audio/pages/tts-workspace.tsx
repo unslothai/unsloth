@@ -15,7 +15,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { InfoHint } from "@/components/ui/info-hint";
 import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
@@ -46,13 +45,18 @@ import {
 import { TTS_MAX_TOKENS } from "../audio-workspace-constants";
 import { audioModelLabel, formatClipDuration } from "../audio-workspace-utils";
 import {
-  CLIP_ICON_COLUMN,
   ClipCard,
   type ClipSendHandlers,
   ClipSendToMenu,
   PendingClipCard,
 } from "../components/clip-card";
 import { Field } from "../components/field";
+import {
+  CLIPS_HEADER_LINK,
+  CLIPS_LIST,
+  ClipsCard,
+  ClipsCardEmpty,
+} from "../components/clips-card";
 import { MusicSendToMenuItems } from "../components/music-send-to";
 import {
   VariationChips,
@@ -97,7 +101,7 @@ export function GenerateActions({ actions }: { actions?: GenerateAction[] }) {
   );
 }
 
-/** Under Generate: first fix as a link, the reason on a hint (and sr-only), the rest in a menu. */
+/** Under Generate: why it is off, then the fixes. One alternative sits inline; several share a menu. */
 export function BlockerNote({
   id,
   blocker,
@@ -113,44 +117,51 @@ export function BlockerNote({
       </p>
     );
   }
+  const link = "h-auto p-0 text-ui-12 font-medium text-foreground";
   return (
-    <p
+    <div
       id={id}
-      className="flex flex-wrap items-center justify-center gap-x-1.5 text-ui-12 leading-normal text-muted-foreground"
+      className="grid justify-items-center gap-0.5 text-center text-ui-12 leading-normal text-muted-foreground"
     >
-      <span className="sr-only">{blocker.reason}</span>
-      <Button
-        type="button"
-        variant="link"
-        className="h-auto p-0 text-ui-11p5 font-medium text-foreground"
-        onClick={first.onClick}
-      >
-        {first.label}
-      </Button>
-      {rest.length > 0 ? (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild={true}>
+      <span>{blocker.reason}</span>
+      <span className="flex flex-wrap items-center justify-center gap-x-1.5">
+        <Button type="button" variant="link" className={link} onClick={first.onClick}>
+          {first.label}
+        </Button>
+        {rest.length === 1 ? (
+          <>
+            <span>or</span>
             <Button
               type="button"
               variant="link"
-              className="h-auto p-0 text-ui-11p5 text-muted-foreground hover:text-foreground"
+              className={link}
+              onClick={rest[0].onClick}
             >
-              or a suggestion
+              {rest[0].label}
             </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="center">
-            {rest.map((action) => (
-              <DropdownMenuItem key={action.label} onSelect={action.onClick}>
-                {action.label.charAt(0).toUpperCase() + action.label.slice(1)}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      ) : null}
-      <InfoHint side="right" hoverOnly={true}>
-        {blocker.reason}
-      </InfoHint>
-    </p>
+          </>
+        ) : rest.length > 1 ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild={true}>
+              <Button
+                type="button"
+                variant="link"
+                className="h-auto p-0 text-ui-12 text-muted-foreground hover:text-foreground"
+              >
+                or another option
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="center">
+              {rest.map((action) => (
+                <DropdownMenuItem key={action.label} onSelect={action.onClick}>
+                  {action.label.charAt(0).toUpperCase() + action.label.slice(1)}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : null}
+      </span>
+    </div>
   );
 }
 
@@ -250,6 +261,7 @@ export function TtsRailFields({
       {toolPanels}
       {/* Always shown: where the model loads is an advanced choice on every audio page. */}
       <AdvancedDisclosure
+        flush={true}
         open={advancedOpen}
         onOpenChange={setAdvancedOpen}
         description={
@@ -436,11 +448,11 @@ export function TtsFooter({
           {loadNote}
         </p>
       ) : null}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center justify-center gap-2">
         {secondaryAction}
         <Button
           className={cn(
-            "relative z-10 flex-1 text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100",
+            "relative z-10 min-w-[calc(168px*var(--ui-space-scale,1))] px-6 text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100",
             // Same Stop as Images: outline, neutral hover. Destructive is for deleting, not for stopping.
             generationPresentation && "hover:bg-muted dark:hover:bg-muted",
           )}
@@ -476,10 +488,7 @@ export function TtsFooter({
               {generationPresentation.actionLabel}
             </>
           ) : (
-            <>
-              Generate
-              <ShortcutHint label={shortcutLabel} />
-            </>
+            "Generate"
           )}
         </Button>
       </div>
@@ -494,51 +503,6 @@ export function TtsFooter({
           <GenerateActions actions={error.actions} />
         </p>
       ) : null}
-    </div>
-  );
-}
-
-/** The key combo, quiet inside the action button so it reads as a hint, not a second label. */
-export function ShortcutHint({ label }: { label: string }) {
-  return (
-    <kbd
-      aria-hidden="true"
-      className="ml-2 font-sans text-ui-11p5 font-normal opacity-55"
-    >
-      {label}
-    </kbd>
-  );
-}
-
-/** The preview before the first clip: what lands here, and a way to start. */
-export function EmptyPreview({
-  workflow,
-  title,
-  text,
-  actions,
-}: {
-  workflow: AudioWorkflowId;
-  title?: string;
-  text: string;
-  actions?: ReactNode;
-}) {
-  const tab = audioWorkflowTab(workflow);
-  return (
-    <div className="grid w-full max-w-md justify-items-center gap-5 text-center">
-      <span className="flex size-[calc(52px*var(--ui-space-scale,1))] items-center justify-center rounded-2xl bg-wash-5 text-muted-foreground">
-        <HugeiconsIcon
-          icon={tab.icon}
-          strokeWidth={1.5}
-          className="size-[calc(24px*var(--ui-space-scale,1))]"
-        />
-      </span>
-      <div className="grid gap-1.5">
-        <h2 className="text-ui-17 text-foreground">{title ?? tab.heading}</h2>
-        <p className="text-balance text-ui-13 leading-normal text-muted-foreground">
-          {text}
-        </p>
-      </div>
-      {actions}
     </div>
   );
 }
@@ -757,44 +721,25 @@ export function TtsOutput({
       <output aria-live="polite" aria-atomic="true" className="sr-only">
         {announcement}
       </output>
-      {/* One "Clips" card, top-anchored: header, the player as its expanded top row, then the list.
-          Chip, play button and every row's icon share one 40px column, and all titles share one edge. */}
-      <section
-        aria-label={clips.length > 0 ? "Clips" : tab.heading}
-        className="elevated-card flex min-h-0 w-full flex-col bg-card p-2 pb-3"
-      >
-        <header className="flex items-center gap-3 px-3 pt-2 pb-3">
-          <span
-            className={cn(
-              "grid shrink-0 place-items-center rounded-full bg-wash-6 text-muted-foreground",
-              CLIP_ICON_COLUMN,
-            )}
-          >
-            <HugeiconsIcon
-              icon={tab.icon}
-              strokeWidth={1.5}
-              className="size-[calc(18px*var(--ui-space-scale,1))]"
-            />
-          </span>
-          <h2 className="min-w-0 flex-1 truncate text-ui-14 font-medium text-foreground">
-            {clips.length > 0 ? "Clips" : (emptyTitle ?? tab.heading)}
-            {clips.length > 0 ? (
-              <span className="ms-2 rounded-full bg-wash-8 px-2 py-0.5 align-middle font-sans text-ui-11 font-normal tabular-nums text-muted-foreground">
-                {clips.length}
-                {hasMore ? "+" : ""}
-              </span>
-            ) : null}
-          </h2>
-          {clips.length > 0 ? (
+      {/* One results card: the player is the selected clip's expanded top row, the rest list below. */}
+      <ClipsCard
+        label={clips.length > 0 ? "Clips" : tab.heading}
+        icon={tab.icon}
+        title={clips.length > 0 ? "Clips" : (emptyTitle ?? tab.heading)}
+        count={clips.length}
+        countMore={hasMore}
+        action={
+          clips.length > 0 ? (
             <button
               type="button"
               onClick={() => void handleClearGallery()}
-              className="me-8 shrink-0 rounded-full text-ui-12 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className={CLIPS_HEADER_LINK}
             >
               Clear all
             </button>
-          ) : null}
-        </header>
+          ) : null
+        }
+      >
         {pending ? (
           <PendingClipCard {...pending} />
         ) : selectedClip ? (
@@ -831,7 +776,7 @@ export function TtsOutput({
                   ? () => handleDownloadClip(selectedClip)
                   : null
               }
-              menu={clipMenu(selectedClip, "row")}
+              menu={clipMenu(selectedClip, "toolbar")}
               player={
                 customPlayer ??
                 (renderPlayer && selectedClipSrc
@@ -862,20 +807,12 @@ export function TtsOutput({
             }
           />
         ) : (
-          // Empty: the hint and suggestions sit under the title, on the same text edge.
-          <div className="grid gap-3 ps-[calc(64px*var(--ui-space-scale,1))] pe-3 pb-3">
-            <p className="text-ui-13 leading-normal text-muted-foreground">
-              {emptyText}
-            </p>
-            {emptyActions ? (
-              <div className="[&>div]:justify-start">{emptyActions}</div>
-            ) : null}
-          </div>
+          <ClipsCardEmpty text={emptyText} actions={emptyActions} />
         )}
       {listRows.length > 0 ? (
           <div
             {...historyReorder.stripProps}
-            className="hover-scrollbar mt-2 flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto border-t border-wash-6 pt-2"
+            className={CLIPS_LIST}
             onScroll={(event) => {
               const el = event.currentTarget;
               if (
@@ -913,6 +850,7 @@ export function TtsOutput({
                   {/* Plays the row in place; the clip in the preview stays where it is. */}
                   <button
                     type="button"
+                    title={rowPreview.playingId === clip.id ? "Pause" : "Play here"}
                     aria-label={
                       rowPreview.playingId === clip.id
                         ? `Pause ${clip.prompt}`
@@ -948,6 +886,7 @@ export function TtsOutput({
                     {/* Two lines: the title gets the full width; model, time and any reference sit below it. */}
                     <span className="grid min-w-0 flex-1 gap-0.5">
                       <span
+                        title={clip.prompt}
                         className={cn(
                           "truncate text-ui-13",
                           clip.id === selectedId && "font-medium",
@@ -978,7 +917,7 @@ export function TtsOutput({
             )}
           </div>
       ) : null}
-      </section>
+      </ClipsCard>
     </>
   );
 }

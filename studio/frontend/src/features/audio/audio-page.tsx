@@ -1831,16 +1831,25 @@ export function AudioPage({
             ? `${transcribeModelName} is not loaded. It loads when you transcribe.`
             : "No transcription model selected.";
 
+  // Options belong to the loaded model; when it can't run this page (a music model on Text to speech), they're not shown.
+  const pageAudioOptionSpecs = pageModelLoaded ? audioOptionSpecs : [];
   // A ready model's line only repeats the title and the picker ("Text-to-speech · GGUF"), so it shows only when it has news.
   const capabilityReady =
     mode === "speak"
       ? !connection && !showLastPageModel && ttsLoaded && pageModelLoaded
       : !transcribeConnection && sttSelected && sttReady;
 
+  // The sidebar seam rule keys off the root, so it can skip a :has() on the whole document.
+  useEffect(() => {
+    if (!active) return;
+    const root = document.documentElement;
+    root.setAttribute("data-audio-attached-rail", "");
+    return () => root.removeAttribute("data-audio-attached-rail");
+  }, [active]);
+
   return (
     <div
       {...{ [MEDIA_RAIL_ROOT_ATTR]: "" }}
-      data-audio-attached-rail={active ? "" : undefined}
       style={railRootStyle}
       ref={pageRootRef}
       className="@container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-sidebar pt-[var(--studio-content-top-inset,0px)]"
@@ -1960,48 +1969,54 @@ export function AudioPage({
         </div>
         <div className="grid h-full min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(max-content,1fr)]">
           <div data-media-header-centre className="pointer-events-auto col-start-2 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)] @[50rem]:pt-[calc(22px*var(--ui-space-scale,1))]">
-            {workflowTab.createTrain ? (
-              <PillTabs
-                ariaLabel="Page mode"
-                // Always "create": Train navigates away, so the pill never latches.
-                value="create"
-                onValueChange={(v) => {
-                  if (v !== "train") return;
+            <PillTabs
+              ariaLabel="Page mode"
+              // Always "create": Train navigates away, so the pill never latches.
+              value="create"
+              onValueChange={(v) => {
+                if (v !== "train") return;
+                // Every audio page shows the pill; only speech and transcription models train today.
+                if (!workflowTab.createTrain) {
                   toast.info(
-                    "Audio fine-tuning lives on the Train page. Unsloth trains TTS and STT models there. Pick an audio model and appropriate dataset.",
-                    { duration: 8000 },
+                    `Training isn't available for ${workflowTab.label} yet. Unsloth trains text-to-speech and speech-to-text models on the Train page.`,
                   );
-                  void navigateSelf({ to: "/studio" });
-                }}
-                fit={true}
-                className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11 [[data-media-header-tight]_&]:[&>button]:px-3 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
-                tabs={[
-                  {
-                    value: "create",
-                    label: "Create",
-                    icon: (
-                      <HugeiconsIcon icon={SparklesIcon} className="size-3.5" />
-                    ),
-                  },
-                  {
-                    value: "train",
-                    label: "Train",
-                    icon: (
-                      <HugeiconsIcon
-                        icon={TestTubeOutlineIcon}
-                        className="size-3.5"
-                      />
-                    ),
-                  },
-                ]}
-              />
-            ) : null}
+                  return;
+                }
+                toast.info(
+                  "Audio fine-tuning lives on the Train page. Unsloth trains TTS and STT models there. Pick an audio model and appropriate dataset.",
+                  { duration: 8000 },
+                );
+                void navigateSelf({ to: "/studio" });
+              }}
+              fit={true}
+              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11 [[data-media-header-tight]_&]:[&>button]:px-3 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
+              tabs={[
+                {
+                  value: "create",
+                  label: "Create",
+                  icon: (
+                    <HugeiconsIcon icon={SparklesIcon} className="size-3.5" />
+                  ),
+                },
+                {
+                  value: "train",
+                  label: "Train",
+                  title: workflowTab.createTrain
+                    ? "Fine-tune an audio model on the Train page"
+                    : `Training isn't available for ${workflowTab.label} yet`,
+                  icon: (
+                    <HugeiconsIcon
+                      icon={TestTubeOutlineIcon}
+                      className="size-3.5"
+                    />
+                  ),
+                },
+              ]}
+            />
           </div>
-          {/* Inside the preview panel at wide widths: the same 22px drop and right inset as its other controls. */}
-          <MediaHeaderActions
-            className="pr-2 @[50rem]:pt-[calc(22px*var(--ui-space-scale,1))] @[50rem]:pr-6"
-            groupClassName="gap-2"
-          >
+          {/* Inside the preview panel at wide widths: the same 22px drop and right inset as its other controls.
+              No group gap: the buttons' own padding spaces them evenly around the divider. */}
+          <MediaHeaderActions className="pr-2 @[50rem]:pt-[calc(22px*var(--ui-space-scale,1))] @[50rem]:pr-6" groupClassName="gap-0">
             {connection || (mode === "transcribe" && transcribeConnection) ? null : (
               <UseViaApiButton
                 workflow={pageWorkflow}
@@ -2062,7 +2077,7 @@ export function AudioPage({
                         ctx={toolContext}
                         values={toolValues}
                         onChange={handleToolValueChange}
-                        specs={audioOptionSpecs}
+                        specs={pageAudioOptionSpecs}
                         disabled={busy === "generating"}
                         core={{ text: prompt }}
                       />
@@ -2073,8 +2088,8 @@ export function AudioPage({
                     setAudioDeviceState,
                     ttsLoaded,
                     handleEject,
-                    samplingControls,
-                    audioOptionSpecs,
+                    samplingControls: pageModelLoaded && samplingControls,
+                    audioOptionSpecs: pageAudioOptionSpecs,
                     claimedOptions,
                     advancedOpen,
                     setAdvancedOpen,
@@ -2118,7 +2133,7 @@ export function AudioPage({
                     <AudioActiveProvider value={active}>
                       <CloneRail
                         {...railProps}
-                        audioOptionSpecs={clone.audioOptionSpecs}
+                        audioOptionSpecs={pageModelLoaded ? clone.audioOptionSpecs : []}
                         clone={clone}
                         historyClips={clips}
                       />
@@ -2127,7 +2142,7 @@ export function AudioPage({
                     <AudioActiveProvider value={active}>
                       <EditRail
                         {...railProps}
-                        audioOptionSpecs={edit.audioOptionSpecs}
+                        audioOptionSpecs={pageModelLoaded ? edit.audioOptionSpecs : []}
                         edit={edit}
                         historyClips={clips}
                       />
@@ -2281,7 +2296,9 @@ export function AudioPage({
               data-reload-snapshot-sensitive={
                 transcript || transcribedName ? "" : undefined
               }
-              className="flex min-h-0 flex-1 flex-col gap-3 mx-auto w-full max-w-[calc(56rem*var(--ui-space-scale,1))] p-6 @[50rem]:mt-[calc(52px*var(--ui-space-scale,1))] @[50rem]:pt-4"
+              className="hover-scrollbar flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto"
+            >
+              <div className="mx-auto flex w-full max-w-[calc(880px*var(--ui-space-scale,1))] flex-col gap-3 p-6 @[50rem]:mt-[calc(52px*var(--ui-space-scale,1))] @[50rem]:pt-4"
             >
               <TranscribeOutput
                 transcriptionStartedAt={transcriptionStartedAt}
@@ -2312,6 +2329,7 @@ export function AudioPage({
               <output aria-live="polite" aria-atomic="true" className="sr-only">
                 {transcribeAnnouncement}
               </output>
+              </div>
             </div>
           ) : (
             <div className="flex min-h-0 flex-1 flex-col gap-4 mx-auto w-full max-w-[calc(880px*var(--ui-space-scale,1))] p-6 @[50rem]:mt-[calc(52px*var(--ui-space-scale,1))] @[50rem]:pt-4">

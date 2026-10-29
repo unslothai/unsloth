@@ -184,6 +184,7 @@ export function ABCompare({
           variant="muted"
           size="icon"
           className="size-[calc(32px*var(--ui-space-scale,1))] shrink-0"
+          title={ab.playing ? "Pause" : "Play"}
           aria-label={
             ab.playing ? `Pause ${current.label}` : `Play ${current.label}`
           }

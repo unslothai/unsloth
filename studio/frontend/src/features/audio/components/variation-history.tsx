@@ -77,6 +77,7 @@ export function VariationChips({
             key={clip.id}
             type="button"
             aria-pressed={current}
+            title={`Variation ${index + 1}`}
             aria-label={`Variation ${index + 1} of ${siblings.length}`}
             onClick={() => onSelect(clip.id)}
             className={cn(

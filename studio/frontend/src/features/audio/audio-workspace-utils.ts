@@ -12,7 +12,10 @@ import {
 
 export function audioModelLabel(id: string): string {
   if (isAudioCppFolderId(id)) return audioCppDisplayName(id);
-  if (!/^(?:[a-zA-Z]:[\\/]|[\\/]|~)/.test(id)) return audioCppNameForFileStem(id) ?? id;
+  if (!/^(?:[a-zA-Z]:[\\/]|[\\/]|~)/.test(id)) {
+    // A Hub repo id reads as its name, like the catalog folders: "audio-cpp/Yue2-3B-GGUF" -> "Yue2-3B-GGUF".
+    return audioCppNameForFileStem(id) ?? (id.split("/").pop() || id);
+  }
   const leaf = id.split(/[\\/]/).filter(Boolean).pop() ?? id;
   return leaf.replace(/_\d{10,}$/, "");
 }

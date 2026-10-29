@@ -22,9 +22,26 @@ import { PlayIcon } from "lucide-react";
 
 const SEEK_STEP_SECONDS = 5;
 const BAR_GAP_PX = 2;
-const BAR_PITCH_PX = 2 + BAR_GAP_PX;
 // Fraction of the track height above the baseline.
 const BASELINE = 0.7;
+
+/** Bar levels for drawing: lightly smoothed, then spread between the clip's quiet floor and its peak,
+ *  so loud, compressed audio (music) still shows its shape instead of a flat comb. */
+function shapeLevels(levels: readonly number[]): number[] {
+  if (levels.length === 0) return [];
+  const smoothed = levels.map((value, index) => {
+    const before = levels[index - 1] ?? value;
+    const after = levels[index + 1] ?? value;
+    return 0.25 * before + 0.5 * value + 0.25 * after;
+  });
+  const sorted = [...smoothed].sort((a, b) => a - b);
+  const floor = sorted[Math.floor(sorted.length * 0.05)] ?? 0;
+  const top = sorted[sorted.length - 1] ?? 1;
+  const span = top - floor;
+  // A near-flat clip keeps its absolute levels rather than amplifying noise.
+  if (span < 0.08) return smoothed;
+  return smoothed.map((value) => Math.min(1, Math.max(0, (value - floor) / span)));
+}
 
 export interface WaveformControl {
   seek: (seconds: number, play?: boolean) => void;
@@ -126,6 +143,7 @@ export function Waveform({
       fraction={fraction}
       label={label}
       className={large ? "h-[calc(56px*var(--ui-space-scale,1))]" : undefined}
+      barWidth={large ? 3 : 2}
       valueNow={position}
       valueMax={duration}
       disabled={!src}
@@ -162,6 +180,7 @@ export function Waveform({
               ? "size-[calc(44px*var(--ui-space-scale,1))]"
               : "size-[calc(32px*var(--ui-space-scale,1))]",
           )}
+          title={playing ? "Pause" : "Play"}
           aria-label={playing ? `Pause ${label}` : `Play ${label}`}
           disabled={!src}
           onClick={toggle}
@@ -232,7 +251,10 @@ export function WaveformBars({
   onKeyDown,
   className,
   style,
+  barWidth = 2,
 }: {
+  /** 3px on the larger players. */
+  barWidth?: number;
   peaks: readonly number[] | null;
   fraction: number;
   label: string;
@@ -245,6 +267,8 @@ export function WaveformBars({
   style?: CSSProperties;
 }) {
   const bars = peaks && peaks.length > 0 ? peaks : null;
+  // Where the pointer is, as a 0..1 fraction: bars up to it light softly to preview the seek.
+  const [hover, setHover] = useState<number | null>(null);
   return (
     <div
       role="slider"
@@ -261,6 +285,13 @@ export function WaveformBars({
         className,
       )}
       onKeyDown={onKeyDown}
+      onPointerMove={(event) => {
+        if (disabled || !onSeek || event.pointerType === "touch") return;
+        const box = event.currentTarget.getBoundingClientRect();
+        if (box.width > 0)
+          setHover(Math.min(1, Math.max(0, (event.clientX - box.left) / box.width)));
+      }}
+      onPointerLeave={() => setHover(null)}
       onClick={(event) => {
         if (disabled || !onSeek) return;
         const box = event.currentTarget.getBoundingClientRect();
@@ -272,7 +303,9 @@ export function WaveformBars({
     >
       <WaveformBarGlyphs
         peaks={bars}
+        barWidth={barWidth}
         isPlayed={(at) => fraction > 0 && at <= fraction}
+        isHovered={(at) => hover !== null && at <= hover}
       />
     </div>
   );
@@ -310,10 +343,15 @@ export function PlaybackTime({
 export function WaveformBarGlyphs({
   peaks,
   isPlayed,
+  isHovered,
+  barWidth = 2,
 }: {
   peaks: readonly number[] | null;
   /** `at` is the bar's centre as a 0..1 fraction of the track. */
   isPlayed: (at: number) => boolean;
+  /** Bars a click would play up to; drawn between played and unplayed. */
+  isHovered?: (at: number) => boolean;
+  barWidth?: number;
 }) {
   const boxRef = useRef<HTMLDivElement | null>(null);
   const [width, setWidth] = useState(0);
@@ -327,9 +365,9 @@ export function WaveformBarGlyphs({
   }, []);
   const count =
     width > 0
-      ? Math.max(1, Math.floor((width + BAR_GAP_PX) / BAR_PITCH_PX))
+      ? Math.max(1, Math.floor((width + BAR_GAP_PX) / (barWidth + BAR_GAP_PX)))
       : 0;
-  const levels = peaks ? resamplePeaks(peaks, count) : null;
+  const levels = peaks ? shapeLevels(resamplePeaks(peaks, count)) : null;
   return (
     <div
       ref={boxRef}
@@ -338,19 +376,24 @@ export function WaveformBarGlyphs({
     >
       {Array.from({ length: count }, (_, index) => {
         const peak = levels ? (levels[index] ?? 0) : 0;
-        const height = 10 + peak ** 0.8 * 90;
+        // Quiet passages keep a visible stub; loud ones reach the top.
+        const height = 12 + peak ** 0.9 * 88;
+        const at = (index + 0.5) / count;
         return (
           <span
             // biome-ignore lint/suspicious/noArrayIndexKey: bars are positional and never reorder.
             key={index}
+            style={{ width: barWidth }}
             className={cn(
-              "relative h-full w-[2px] shrink-0",
-              isPlayed((index + 0.5) / count)
+              "relative h-full shrink-0",
+              isPlayed(at)
                 ? "text-foreground"
-                : cn(
-                    "text-muted-foreground",
-                    peaks ? "opacity-50" : "opacity-25",
-                  ),
+                : isHovered?.(at)
+                  ? "text-foreground opacity-70"
+                  : cn(
+                      "text-muted-foreground",
+                      peaks ? "opacity-50" : "opacity-25",
+                    ),
             )}
           >
             <span
