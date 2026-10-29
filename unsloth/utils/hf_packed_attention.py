@@ -6,6 +6,7 @@ anything else goes to the wrapped sdpa."""
 import contextlib
 import inspect
 import logging
+import operator
 import os
 import weakref
 
@@ -519,7 +520,6 @@ def _sdpa_packed_varlen(
             query.device.type,
             query.device.index,
             query.dtype,
-            # int(): a symbolic head dim (dynamic=True) cannot be folded and would trace the probe.
             int(query.shape[-1]),
             _window_key(module, kwargs),
         )
@@ -764,8 +764,28 @@ def _leaves_block_probe(device_type, device_index, dtype, head_dim, window):
         return False
 
 
+def _constant_probe(fn):
+    """assume_constant_result only takes Python constants, but dynamic=True makes head_dim and the
+    head counts SymInts (int() keeps them symbolic). operator.index specialises them with a guard:
+    they are fixed per model, so the probe runs once per shape and dynamic=None is unchanged."""
+    constant = torch._dynamo.assume_constant_result(fn)
+
+    def probe(*args):
+        return constant(
+            *(
+                operator.index(arg)
+                if isinstance(arg, (int, torch.SymInt)) and not isinstance(arg, bool)
+                else arg
+                for arg in args
+            )
+        )
+
+    probe.__name__, probe.__qualname__, probe.__doc__ = fn.__name__, fn.__qualname__, fn.__doc__
+    return probe
+
+
 # Baked into the graph at trace time. Not an lru_cache: Dynamo traces those via __wrapped__ (fake tensors).
-_leaves_block = torch._dynamo.assume_constant_result(_leaves_block_eager)
+_leaves_block = _constant_probe(_leaves_block_eager)
 
 _VARLEN_IN_GRAPH = {}
 
@@ -814,7 +834,7 @@ def _varlen_in_graph_probe(device_index, dtype, head_dim, n_heads, n_kv_heads, w
             return False
 
 
-_varlen_in_graph = torch._dynamo.assume_constant_result(_varlen_in_graph_eager)
+_varlen_in_graph = _constant_probe(_varlen_in_graph_eager)
 
 
 def block_varlen_kwargs(layer, hidden_states, kwargs):

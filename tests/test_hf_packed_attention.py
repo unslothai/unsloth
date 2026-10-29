@@ -1621,6 +1621,75 @@ def test_traced_block_varlen_call_stays_in_the_graph(monkeypatch, in_graph):
         assert hpa.BLOCK_VARLEN_KWARG not in seen["orig_kwargs"]
 
 
+@pytest.mark.parametrize("in_graph", [True, False])
+def test_traced_packed_probes_take_symbolic_head_dims(monkeypatch, in_graph):
+    """compile(fullgraph = True, dynamic = True) makes head_dim and the head counts SymInts, which
+    assume_constant_result cannot take: both probes get them specialised to plain ints, run once
+    per key, and the sequence dim stays dynamic (one graph for every length)."""
+    from torch._dynamo.testing import CompileCounter
+
+    keys = []
+
+    def probe(name):
+        def run(*key):
+            keys.append((name, key))
+            return in_graph if name == "varlen" else False
+
+        return run
+
+    def gqa_sdpa(module, q, k, v, mask, scaling = None, **kwargs):
+        out = torch.nn.functional.scaled_dot_product_attention(
+            q, k, v, attn_mask = mask, scale = scaling, enable_gqa = True
+        )
+        return out.transpose(1, 2), None
+
+    hpa._ORIG_SDPA[0] = gqa_sdpa
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    _block_flag(monkeypatch, True)
+    monkeypatch.setattr(hpa, "_static_window", lambda *args: None)
+    monkeypatch.setattr(hpa, "_VARLEN_IN_GRAPH", {})
+    monkeypatch.setattr(hpa, "_LEAVES_BLOCK", {})
+    monkeypatch.setattr(hpa, "_varlen_in_graph_probe", probe("varlen"))
+    monkeypatch.setattr(hpa, "_leaves_block_probe", probe("leaves"))
+    monkeypatch.setattr(
+        hpa,
+        "_flash_varlen",
+        lambda q, k, v, cu, m, scale, window: q.transpose(1, 2) * scale,
+    )
+    module = types.SimpleNamespace(is_causal = True, num_key_value_groups = 2, training = True)
+    torch._dynamo.reset()
+    torch._dynamo.utils.counters.clear()
+    counter = CompileCounter()
+    fn = torch.compile(
+        lambda q, k, mask, psl, cu: hpa._sdpa_packed_varlen(
+            module, q, k, k, mask, packed_seq_lengths = psl, **{hpa.BLOCK_VARLEN_KWARG: (cu, 3)}
+        )[0],
+        backend = counter,
+        fullgraph = True,
+        dynamic = True,
+    )
+    # Segment counts and lengths avoid the head sizes (4, 2, 16): duck sizing would tie them.
+    for lengths in ([2, 2, 2], [2, 5, 4, 1, 1], [7, 1, 1, 6, 2, 3]):
+        T = sum(lengths)
+        q = torch.randn(1, 4, T, 16)
+        k = torch.randn(1, 2, T, 16)
+        mask, psl = _block_causal(lengths), torch.tensor(lengths, dtype = torch.int32)
+        cu = torch.tensor([0, *torch.tensor(lengths).cumsum(0).tolist()], dtype = torch.int32)
+        out = fn(q, k, mask, psl, cu)
+        if in_graph:
+            torch.testing.assert_close(out, q.transpose(1, 2) * 16**-0.5)
+        else:
+            ref = gqa_sdpa(module, q, k, k, mask)[0]
+            torch.testing.assert_close(out, ref)
+    assert sum(torch._dynamo.utils.counters["graph_break"].values()) == 0
+    assert counter.frame_count == 1
+    expected = [("varlen", (None, torch.float32, 16, 4, 2, None))]
+    if not in_graph:
+        expected.append(("leaves", ("cpu", None, torch.float32, 16, None)))
+    assert keys == expected
+    assert all(type(x) is int for _, key in keys for x in key if isinstance(x, int))
+
+
 @_CUDA
 @_TORCH_VARLEN_HOST
 @pytest.mark.parametrize("window", [None, 4])
