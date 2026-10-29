@@ -772,7 +772,9 @@ NODE_SPECS: list[dict] = [
         "Repeat the steps in this node's group for a few rounds: generate, train, score. A dashed "
         "feeds-the-next-round wire carries the score step's failures into the next round's recipe "
         "seed. Round 1's held-out rows split once into probe rows (their failures feed back) and test "
-        "rows (never fed back; their score decides when to stop).",
+        "rows (never fed back; their score decides when to stop). Up to a quarter of each round's seed "
+        "rows rewrite failures, at most two per distinct failure (near-copies count once), so a round "
+        "with few failures stays mostly fresh rows.",
         outputs = [
             out("score", "number", "Best test score"),
             out("history", "json", "Rounds"),
@@ -786,12 +788,13 @@ NODE_SPECS: list[dict] = [
             P(
                 "failure_percent",
                 "int",
-                50,
+                25,
                 "Seed rows from failures %",
                 min = 0,
                 max = 100,
                 advanced = True,
             ),
+            P("per_failure", "int", 2, "Rewrites per failure", min = 1, max = 10, advanced = True),
             P(
                 "probe_percent",
                 "int",

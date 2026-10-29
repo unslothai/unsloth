@@ -2152,8 +2152,11 @@ class FlowEngine:
         target = float(params.get("target") if params.get("target") is not None else 90)
         feed = params.get("feedback") is not False
         failure_percent = int(
-            params.get("failure_percent") if params.get("failure_percent") is not None else 50
+            params.get("failure_percent")
+            if params.get("failure_percent") is not None
+            else loop_rounds.FAILURE_PERCENT
         )
+        per_failure = int(params.get("per_failure") or loop_rounds.PER_FAILURE)
         seed_rows = int((plan.nodes[seed_node].get("params") or {}).get("rows") or 50)
         scorer_params = plan.nodes[scorer].get("params") or {}
         rs.set_status(nid, "running")
@@ -2209,6 +2212,7 @@ class FlowEngine:
                     failure_percent,
                     str(scorer_params.get("prompt_column") or ""),
                     str(scorer_params.get("reference_column") or ""),
+                    per_failure,
                 )
                 fed = sum(1 for row in rows if row["origin"] == "failure")
                 seed = await self._seed_upload(ctx, rows, f"loop-{nid}-round-{r + 1}")

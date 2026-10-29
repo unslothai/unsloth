@@ -14,7 +14,17 @@ from core.flows.specs import SPECS_BY_TYPE, inp, out, spec
 from ._flows_helpers import doc, edge, node, run_async
 
 COLUMN = {"name": "ticket", "column_type": "sampler", "sampler_type": "uuid", "params": {}}
-HELD = [f"held-out support ticket number {i}: my invoice is wrong" for i in range(8)]
+# Distinct tickets: near-copies seed as one failure, so templated rows would collapse.
+HELD = [
+    "my invoice shows a charge I never made",
+    "the parcel has been stuck in customs for weeks",
+    "I want my money back for the broken blender",
+    "cannot sign in after the password reset email",
+    "someone changed my account email without asking",
+    "where do I print a return label for these shoes",
+    "billed twice for the annual plan this morning",
+    "the courier says delivered but nothing arrived",
+]
 
 
 @pytest.fixture(autouse = True)
@@ -126,7 +136,7 @@ def test_split_is_disjoint_covering_and_stable():
 
 
 def test_seed_rows_rewrite_failures_then_fresh():
-    rows = loop_rounds.seed_rows([{"prompt": "a", "reference": "b", "output": "c"}], 4, 50)
+    rows = loop_rounds.seed_rows([{"prompt": "a", "reference": "b", "output": "c"}], 4, 50, per_failure = 2)
     assert [r["origin"] for r in rows] == ["failure", "failure", "fresh", "fresh"]
     assert rows[0] == {
         "origin": "failure",
@@ -138,6 +148,30 @@ def test_seed_rows_rewrite_failures_then_fresh():
     assert all(r["origin"] == "fresh" for r in loop_rounds.seed_rows([], 3, 50))
     assert loop_rounds.as_percent(0.875) == 87.5 and loop_rounds.as_percent(88) == 88.0
     assert loop_rounds.as_percent({"accuracy": 1}) == 100.0 and loop_rounds.as_percent("x") is None
+
+
+def test_few_failures_never_flood_the_seed_with_near_copies():
+    failures = [
+        {"prompt": "My card was charged twice for one order!", "reference": "billing", "output": "refunds"},
+        {"prompt": "my card was charged twice for one order", "reference": "billing", "output": "refunds"},
+        {"prompt": "My card was charged twice for 1 order.", "reference": "billing", "output": "shipping"},
+        {"prompt": "the package never arrived at my door", "reference": "shipping", "output": "returns"},
+    ]
+    rows = loop_rounds.seed_rows(failures, 60, 50)
+    fed = [r for r in rows if r["origin"] == "failure"]
+    # Three near-copies count once: two distinct failures, two rewrites each, the other 56 rows fresh.
+    assert len(fed) == 4 and len(rows) == 60
+    assert sorted({r["failed_prompt"] for r in fed}) == [
+        "My card was charged twice for one order!",
+        "the package never arrived at my door",
+    ]
+    # The same prompt filed under a different queue is a different failure.
+    moved = failures + [{"prompt": "the package never arrived at my door", "reference": "returns", "output": "x"}]
+    assert len([r for r in loop_rounds.seed_rows(moved, 60, 50) if r["origin"] == "failure"]) == 6
+    # Many distinct failures still fill the share, never more.
+    many = [{"prompt": t, "reference": "billing", "output": "x"} for t in HELD]
+    assert len([r for r in loop_rounds.seed_rows(many, 8, 25) if r["origin"] == "failure"]) == 2
+    assert next(p for p in SPECS_BY_TYPE["logic.loop"]["params"] if p["id"] == "failure_percent")["default"] == 25
 
 
 class LoopEngine(FlowEngine):
@@ -217,7 +251,7 @@ async def _run(eng, d):
 @run_async
 async def test_probe_failures_feed_the_next_round_and_test_rows_never_do():
     eng, seen, scored = _engine()
-    rs = await _run(eng, loop_doc(rounds = 3, target = 100))
+    rs = await _run(eng, loop_doc(rounds = 3, target = 100, failure_percent = 50))
     assert rs.status == "completed", rs.error
     assert all(r["origin"] == "fresh" for r in seen[0])
     probe = scored[0][1]
