@@ -2457,12 +2457,11 @@ export const en = {
         unsloth: "Unsloth",
         otherApps: "Other apps",
         freeLabel: "Free",
-        byModel: "By model",
         unslothApp: "Unsloth Studio app",
         unslothShare: "Show Unsloth's share",
         unslothShareDescription: "Split memory into what Unsloth uses, what other apps use, and what is free.",
         modelBreakdown: "Break down by model",
-        modelBreakdownDescription: "List the memory each loaded model holds, plus the rest of Unsloth Studio.",
+        modelBreakdownDescription: "Split Unsloth's part of the memory bar into each loaded model and the rest of the app.",
       },
       gpu: {
         title: "GPU devices",

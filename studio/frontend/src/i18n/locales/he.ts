@@ -2495,12 +2495,11 @@ export const he = {
         unsloth: "Unsloth",
         otherApps: "אפליקציות אחרות",
         freeLabel: "פנוי",
-        byModel: "לפי מודל",
         unslothApp: "אפליקציית Unsloth Studio",
         unslothShare: "הצגת החלק של Unsloth",
         unslothShareDescription: "חלוקת הזיכרון בין Unsloth, אפליקציות אחרות וזיכרון פנוי.",
         modelBreakdown: "פירוט לפי מודל",
-        modelBreakdownDescription: "הצגת הזיכרון של כל מודל טעון ושל שאר Unsloth Studio.",
+        modelBreakdownDescription: "חלוקת החלק של Unsloth בסרגל הזיכרון לכל מודל טעון ולשאר האפליקציה.",
       },
       gpu: {
         title: "התקני GPU",

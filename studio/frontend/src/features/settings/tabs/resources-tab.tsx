@@ -75,12 +75,12 @@ import {
 } from "@/components/monitor-refresh";
 import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
 import {
+  MemoryBar,
+  MemoryLegend,
   MeterRow,
-  ModelBreakdownList,
-  ShareBar,
-  ShareLegend,
 } from "@/components/monitor-memory";
 import {
+  memorySegments,
   memoryShare,
   modelBreakdown,
   modelShares,
@@ -668,20 +668,23 @@ export function ResourcesTab() {
     models.reduce((sum, model) => sum + model.gb, 0),
     !discreteVram,
   );
-  const ramShare = showUnslothShare
-    ? memoryShare(metrics.ramUsed, metrics.ramTotal, unslothRamGb)
-    : null;
-  const vramShare =
-    showUnslothShare && discreteVram && metrics.vramUsageKnown
-      ? memoryShare(
-          metrics.vramUsed ?? 0,
-          metrics.vramTotal,
-          models.reduce((sum, model) => sum + model.gb, 0),
-        )
-      : null;
+  const modelsGb = models.reduce((sum, model) => sum + model.gb, 0);
+  // The model split lives in the pool that holds the models: Memory/RAM, or VRAM on a discrete GPU.
   const breakdown = showModelBreakdown
     ? modelBreakdown(discreteVram ? null : unslothRamGb, models, !discreteVram)
     : null;
+  const ramShare =
+    showUnslothShare || (breakdown && !discreteVram)
+      ? memoryShare(metrics.ramUsed, metrics.ramTotal, unslothRamGb)
+      : null;
+  const ramSegments = ramShare
+    ? memorySegments(ramShare, discreteVram ? null : breakdown)
+    : null;
+  const vramShare =
+    wantsModels && discreteVram && metrics.vramUsageKnown
+      ? memoryShare(metrics.vramUsed ?? 0, metrics.vramTotal, modelsGb)
+      : null;
+  const vramSegments = vramShare ? memorySegments(vramShare, breakdown) : null;
   const shareCardClass =
     "flex min-w-0 flex-col gap-3 rounded-xl border border-border/60 bg-card px-5 py-4 dark:border-transparent";
   // The placeholder's cpu backend and empty package list are not facts about the host either.
@@ -862,12 +865,12 @@ export function ResourcesTab() {
             percent={metrics.vramUsageKnown ? metrics.vramPercent : null}
           />
         </div>
-        {(ramShare || vramShare || breakdown) && (
+        {(ramSegments || vramSegments) && (
           <div
             className="grid gap-3 pb-3 sm:grid-cols-2 sm:[&>:last-child:nth-child(odd)]:col-span-2"
             data-testid="settings-unsloth-share"
           >
-            {ramShare && (
+            {ramSegments && (
               <div className={shareCardClass}>
                 <MeterRow
                   label={t(
@@ -876,36 +879,21 @@ export function ResourcesTab() {
                       : "settings.resources.liveMonitor.ram",
                   )}
                   readout={`${formatGiB(metrics.ramUsed)} / ${formatGiB(metrics.ramTotal)}`}
-                  footer={
-                    <ShareLegend
-                      share={ramShare}
-                      unslothLabel={t("settings.resources.liveMonitor.unsloth")}
-                    />
-                  }
+                  footer={<MemoryLegend segments={ramSegments} />}
                 >
-                  <ShareBar share={ramShare} />
+                  <MemoryBar segments={ramSegments} />
                 </MeterRow>
               </div>
             )}
-            {vramShare && (
+            {vramSegments && (
               <div className={shareCardClass}>
                 <MeterRow
                   label={t("settings.resources.liveMonitor.vram")}
                   readout={`${formatGiB(metrics.vramUsed)} / ${formatGiB(metrics.vramTotal)}`}
-                  footer={
-                    <ShareLegend
-                      share={vramShare}
-                      unslothLabel={t("settings.resources.liveMonitor.unsloth")}
-                    />
-                  }
+                  footer={<MemoryLegend segments={vramSegments} />}
                 >
-                  <ShareBar share={vramShare} />
+                  <MemoryBar segments={vramSegments} />
                 </MeterRow>
-              </div>
-            )}
-            {breakdown && (
-              <div className={shareCardClass}>
-                <ModelBreakdownList breakdown={breakdown} />
               </div>
             )}
           </div>

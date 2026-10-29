@@ -2569,12 +2569,11 @@ export const sv = {
         unsloth: "Unsloth",
         otherApps: "Andra appar",
         freeLabel: "Ledigt",
-        byModel: "Per modell",
         unslothApp: "Unsloth Studio-appen",
         unslothShare: "Visa Unsloths andel",
         unslothShareDescription: "Delar upp minnet i det Unsloth använder, det andra appar använder och det lediga.",
         modelBreakdown: "Dela upp per modell",
-        modelBreakdownDescription: "Visar minnet för varje inläst modell och resten av Unsloth Studio.",
+        modelBreakdownDescription: "Delar upp Unsloths del av minnesstapeln i varje inläst modell och resten av appen.",
       },
       gpu: {
         title: "GPU-enheter",

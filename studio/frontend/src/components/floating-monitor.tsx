@@ -16,14 +16,14 @@ import { monitorRefreshMs } from "./monitor-refresh";
 import {
   formatGiB,
   MeterRow,
-  ModelBreakdownList,
-  ShareBar,
-  ShareLegend,
+  MemoryBar,
+  MemoryLegend,
   UsageBar,
   usageIndicatorClass,
   usageTextClass,
 } from "./monitor-memory";
 import {
+  memorySegments,
   memoryShare,
   modelBreakdown,
   modelShares,
@@ -284,21 +284,26 @@ function FloatingMonitorPanel({
     modelsGb,
     !discreteVram,
   );
-  const ramShare = showShare
-    ? memoryShare(ramUsed, ramTotal, unslothRamGb)
-    : null;
-  // On a discrete GPU the models are what Unsloth holds in VRAM.
-  const vramShare =
-    showShare && discreteVram && vramUsageKnown && !hasSharedPool
-      ? memoryShare(vramUsed, vramTotal, modelsGb)
-      : null;
+  // The model split lives in the pool that holds the models: Memory/RAM, or VRAM on a discrete GPU.
   const breakdown = showBreakdown
     ? modelBreakdown(discreteVram ? null : unslothRamGb, models, !discreteVram)
     : null;
+  const ramShare =
+    showShare || (breakdown && !discreteVram)
+      ? memoryShare(ramUsed, ramTotal, unslothRamGb)
+      : null;
+  const ramSegments = ramShare
+    ? memorySegments(ramShare, discreteVram ? null : breakdown)
+    : null;
+  // On a discrete GPU the models are what Unsloth holds in VRAM.
+  const vramShare =
+    wantsModels && discreteVram && vramUsageKnown && !hasSharedPool
+      ? memoryShare(vramUsed, vramTotal, modelsGb)
+      : null;
+  const vramSegments = vramShare ? memorySegments(vramShare, breakdown) : null;
   const ramAmount = ramKnown
     ? `${formatGiB(ramUsed)} / ${formatGiB(ramTotal)}`
     : "-- / --";
-  const unslothLabel = t("settings.resources.liveMonitor.unsloth");
 
   // The container sits on the floating panel layer, above the bottom-right overlay stack. The stack
   // is anchored to that same corner and does not move for this monitor; at its default corner the
@@ -461,15 +466,10 @@ function FloatingMonitorPanel({
               }
               readout={ramAmount}
               footer={
-                (ramShare || (breakdown && !discreteVram) || unifiedRow) && (
+                (ramSegments || unifiedRow) && (
                   <>
-                    {ramShare && (
-                      <ShareLegend share={ramShare} unslothLabel={unslothLabel} />
-                    )}
-                    {breakdown && !discreteVram && (
-                      <ModelBreakdownList breakdown={breakdown} className="pt-1" />
-                    )}
-                    {unifiedRow && !ramShare && (
+                    {ramSegments && <MemoryLegend segments={ramSegments} />}
+                    {unifiedRow && !ramSegments && (
                       <div className="flex justify-between gap-2">
                         <span>{t("settings.resources.liveMonitor.gpuInUse")}</span>
                         <span className="shrink-0 font-mono tabular-nums">
@@ -478,7 +478,7 @@ function FloatingMonitorPanel({
                       </div>
                     )}
                     {unifiedRow &&
-                      !ramShare &&
+                      !ramSegments &&
                       memoryDisplay.unifiedAvailableGb !== null && (
                         <div className="flex justify-between gap-2">
                           <span>
@@ -493,8 +493,8 @@ function FloatingMonitorPanel({
                 )
               }
             >
-              {ramShare ? (
-                <ShareBar share={ramShare} />
+              {ramSegments ? (
+                <MemoryBar segments={ramSegments} />
               ) : (
                 <UsageBar percent={ramKnown ? ramPercent : null} />
               )}
@@ -512,25 +512,20 @@ function FloatingMonitorPanel({
                     : formatGiB(vramTotal)
                 }`}
                 footer={
-                  (deviceLabel || vramShare || breakdown) && (
+                  (deviceLabel || vramSegments) && (
                     <>
                       {deviceLabel && (
                         <div className="truncate" title={deviceLabel}>
                           {deviceLabel}
                         </div>
                       )}
-                      {vramShare && (
-                        <ShareLegend share={vramShare} unslothLabel={unslothLabel} />
-                      )}
-                      {breakdown && (
-                        <ModelBreakdownList breakdown={breakdown} className="pt-1" />
-                      )}
+                      {vramSegments && <MemoryLegend segments={vramSegments} />}
                     </>
                   )
                 }
               >
-                {vramShare ? (
-                  <ShareBar share={vramShare} />
+                {vramSegments ? (
+                  <MemoryBar segments={vramSegments} />
                 ) : (
                   <UsageBar percent={vramUsageKnown ? vramPercent : null} />
                 )}

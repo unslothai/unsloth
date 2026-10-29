@@ -2424,12 +2424,11 @@ export const fr = {
         unsloth: "Unsloth",
         otherApps: "Autres apps",
         freeLabel: "Libre",
-        byModel: "Par modèle",
         unslothApp: "App Unsloth Studio",
         unslothShare: "Afficher la part d'Unsloth",
         unslothShareDescription: "Répartit la mémoire entre Unsloth, les autres apps et la mémoire libre.",
         modelBreakdown: "Détail par modèle",
-        modelBreakdownDescription: "Affiche la mémoire de chaque modèle chargé et le reste d'Unsloth Studio.",
+        modelBreakdownDescription: "Répartit la part d'Unsloth dans la barre de mémoire entre chaque modèle chargé et le reste de l'app.",
       },
       gpu: {
         title: "Périphériques GPU",

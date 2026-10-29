@@ -2404,12 +2404,11 @@ export const ru = {
         unsloth: "Unsloth",
         otherApps: "Другие приложения",
         freeLabel: "Свободно",
-        byModel: "По моделям",
         unslothApp: "Приложение Unsloth Studio",
         unslothShare: "Показывать долю Unsloth",
         unslothShareDescription: "Делит память на занятую Unsloth, другими приложениями и свободную.",
         modelBreakdown: "Разбивка по моделям",
-        modelBreakdownDescription: "Показывает память каждой загруженной модели и остальной части Unsloth Studio.",
+        modelBreakdownDescription: "Делит долю Unsloth на полосе памяти между загруженными моделями и остальной частью приложения.",
       },
       gpu: {
         title: "Устройства GPU",

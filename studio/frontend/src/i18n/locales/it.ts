@@ -2297,12 +2297,11 @@ export const it = {
         unsloth: "Unsloth",
         otherApps: "Altre app",
         freeLabel: "Libera",
-        byModel: "Per modello",
         unslothApp: "App Unsloth Studio",
         unslothShare: "Mostra la quota di Unsloth",
         unslothShareDescription: "Divide la memoria tra Unsloth, le altre app e quella libera.",
         modelBreakdown: "Dettaglio per modello",
-        modelBreakdownDescription: "Mostra la memoria di ogni modello caricato e il resto di Unsloth Studio.",
+        modelBreakdownDescription: "Divide la quota di Unsloth nella barra della memoria tra ogni modello caricato e il resto dell'app.",
       },
       gpu: {
         title: "Dispositivi GPU",

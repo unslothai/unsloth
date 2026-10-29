@@ -2399,12 +2399,11 @@ export const hi = {
         unsloth: "Unsloth",
         otherApps: "अन्य ऐप्स",
         freeLabel: "खाली",
-        byModel: "मॉडल के अनुसार",
         unslothApp: "Unsloth Studio ऐप",
         unslothShare: "Unsloth का हिस्सा दिखाएं",
         unslothShareDescription: "मेमोरी को Unsloth, अन्य ऐप्स और खाली हिस्से में बांटें।",
         modelBreakdown: "मॉडल के अनुसार विवरण",
-        modelBreakdownDescription: "हर लोड किए गए मॉडल की मेमोरी और बाकी Unsloth Studio दिखाएं।",
+        modelBreakdownDescription: "मेमोरी बार में Unsloth के हिस्से को हर लोड किए गए मॉडल और बाकी ऐप में बांटें।",
       },
       gpu: {
         title: "GPU डिवाइस",

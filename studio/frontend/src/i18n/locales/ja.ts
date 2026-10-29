@@ -2373,12 +2373,11 @@ export const ja = {
         unsloth: "Unsloth",
         otherApps: "他のアプリ",
         freeLabel: "空き",
-        byModel: "モデル別",
         unslothApp: "Unsloth Studio アプリ",
         unslothShare: "Unsloth の使用分を表示",
         unslothShareDescription: "メモリを Unsloth、他のアプリ、空きに分けて表示します。",
         modelBreakdown: "モデル別に表示",
-        modelBreakdownDescription: "読み込んだ各モデルのメモリと Unsloth Studio のその他の分を表示します。",
+        modelBreakdownDescription: "メモリバーの Unsloth 分を、読み込んだ各モデルとアプリのその他の分に分けて表示します。",
       },
       gpu: {
         title: "GPU デバイス",

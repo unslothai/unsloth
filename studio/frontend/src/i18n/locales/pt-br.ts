@@ -2409,12 +2409,11 @@ export const ptBR = {
         unsloth: "Unsloth",
         otherApps: "Outros apps",
         freeLabel: "Livre",
-        byModel: "Por modelo",
         unslothApp: "App do Unsloth Studio",
         unslothShare: "Mostrar a parte do Unsloth",
         unslothShareDescription: "Divide a memória entre o que o Unsloth usa, o que outros apps usam e o que está livre.",
         modelBreakdown: "Detalhar por modelo",
-        modelBreakdownDescription: "Mostra a memória de cada modelo carregado e o restante do Unsloth Studio.",
+        modelBreakdownDescription: "Divide a parte do Unsloth na barra de memória entre cada modelo carregado e o restante do app.",
       },
       gpu: {
         title: "Dispositivos de GPU",

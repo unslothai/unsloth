@@ -2386,12 +2386,11 @@ export const ko = {
         unsloth: "Unsloth",
         otherApps: "다른 앱",
         freeLabel: "여유",
-        byModel: "모델별",
         unslothApp: "Unsloth Studio 앱",
         unslothShare: "Unsloth 사용량 표시",
         unslothShareDescription: "메모리를 Unsloth, 다른 앱, 여유 공간으로 나눠 보여줍니다.",
         modelBreakdown: "모델별로 나누기",
-        modelBreakdownDescription: "로드된 각 모델의 메모리와 나머지 Unsloth Studio 사용량을 보여줍니다.",
+        modelBreakdownDescription: "메모리 막대의 Unsloth 부분을 로드된 각 모델과 나머지 앱으로 나눠 보여줍니다.",
       },
       gpu: {
         title: "GPU 장치",

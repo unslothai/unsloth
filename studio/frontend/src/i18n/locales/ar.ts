@@ -2393,12 +2393,11 @@ export const ar = {
         unsloth: "Unsloth",
         otherApps: "تطبيقات أخرى",
         freeLabel: "متاح",
-        byModel: "حسب النموذج",
         unslothApp: "تطبيق Unsloth Studio",
         unslothShare: "إظهار حصة Unsloth",
         unslothShareDescription: "تقسيم الذاكرة بين ما يستخدمه Unsloth وما تستخدمه التطبيقات الأخرى والمتاح.",
         modelBreakdown: "التفصيل حسب النموذج",
-        modelBreakdownDescription: "عرض ذاكرة كل نموذج محمّل وبقية Unsloth Studio.",
+        modelBreakdownDescription: "تقسيم حصة Unsloth في شريط الذاكرة إلى كل نموذج محمّل وبقية التطبيق.",
       },
       gpu: {
         title: "أجهزة GPU",

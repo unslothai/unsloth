@@ -7,7 +7,7 @@ import { Progress } from "@/components/ui/progress";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import type { ReactNode } from "react";
-import type { MemoryShare, ModelBreakdown } from "./monitor-share";
+import type { MemorySegment } from "./monitor-share";
 
 export function usageIndicatorClass(percent: number): string {
   if (percent >= 90) return "bg-destructive";
@@ -73,102 +73,83 @@ export function UsageBar({ percent }: { percent: number | null }) {
   );
 }
 
-const SHARE_COLORS = {
+const KIND_COLORS = {
   unsloth: "bg-control-accent",
+  app: "bg-sky-500",
   other: "bg-muted-foreground/45",
   free: "bg-muted ring-1 ring-inset ring-border",
 } as const;
+// Models are Unsloth's, so they stay in its colour, stepping lighter down the list.
+const MODEL_COLORS = [
+  "bg-control-accent",
+  "bg-control-accent/70",
+  "bg-control-accent/50",
+  "bg-control-accent/35",
+];
 
-export function ShareBar({ share }: { share: MemoryShare }) {
-  const total = share.unsloth + share.other + share.free;
-  const width = (value: number) => `${total > 0 ? (value / total) * 100 : 0}%`;
+function segmentColor(segment: MemorySegment, index: number): string {
+  return segment.kind === "model"
+    ? MODEL_COLORS[Math.min(index, MODEL_COLORS.length - 1)]
+    : KIND_COLORS[segment.kind];
+}
+
+function colored(segments: MemorySegment[]) {
+  let model = 0;
+  return segments.map((segment) => ({
+    segment,
+    color: segmentColor(segment, segment.kind === "model" ? model++ : 0),
+  }));
+}
+
+export function MemoryBar({ segments }: { segments: MemorySegment[] }) {
+  const total = segments.reduce((sum, segment) => sum + segment.gb, 0);
   return (
     <div
       className="flex h-1.5 overflow-hidden rounded-full bg-muted"
       data-testid="monitor-share-bar"
     >
-      <div className={SHARE_COLORS.unsloth} style={{ width: width(share.unsloth) }} />
-      <div className={SHARE_COLORS.other} style={{ width: width(share.other) }} />
+      {colored(segments)
+        .filter(({ segment }) => segment.kind !== "free")
+        .map(({ segment, color }) => (
+          <div
+            key={segment.id}
+            className={color}
+            style={{ width: `${total > 0 ? (segment.gb / total) * 100 : 0}%` }}
+          />
+        ))}
     </div>
   );
 }
 
-function LegendRow({
-  swatch,
-  label,
-  value,
-  title,
-}: {
-  swatch?: string;
-  label: string;
-  value: string;
-  title?: string;
-}) {
-  return (
-    <div className="flex items-center gap-2">
-      {swatch && <span className={cn("size-2 shrink-0 rounded-full", swatch)} />}
-      <span className="min-w-0 flex-1 truncate" title={title ?? label}>
-        {label}
-      </span>
-      <span className="shrink-0 font-mono tabular-nums text-foreground">{value}</span>
-    </div>
-  );
-}
-
-export function ShareLegend({
-  share,
-  unslothLabel,
-}: {
-  share: MemoryShare;
-  unslothLabel: string;
-}) {
+export function MemoryLegend({ segments }: { segments: MemorySegment[] }) {
   const t = useT();
+  const label = (segment: MemorySegment) => {
+    switch (segment.kind) {
+      case "model":
+        return segment.name ?? "";
+      case "app":
+        return t("settings.resources.liveMonitor.unslothApp");
+      case "unsloth":
+        return t("settings.resources.liveMonitor.unsloth");
+      case "other":
+        return t("settings.resources.liveMonitor.otherApps");
+      case "free":
+        return t("settings.resources.liveMonitor.freeLabel");
+    }
+  };
   return (
     <div className="space-y-0.5" data-testid="monitor-share-legend">
-      <LegendRow swatch={SHARE_COLORS.unsloth} label={unslothLabel} value={formatGiB(share.unsloth)} />
-      <LegendRow
-        swatch={SHARE_COLORS.other}
-        label={t("settings.resources.liveMonitor.otherApps")}
-        value={formatGiB(share.other)}
-      />
-      <LegendRow
-        swatch={SHARE_COLORS.free}
-        label={t("settings.resources.liveMonitor.freeLabel")}
-        value={formatGiB(share.free)}
-      />
-    </div>
-  );
-}
-
-export function ModelBreakdownList({
-  breakdown,
-  className,
-}: {
-  breakdown: ModelBreakdown;
-  className?: string;
-}) {
-  const t = useT();
-  return (
-    <div
-      className={cn("space-y-0.5 text-ui-11 text-muted-foreground", className)}
-      data-testid="monitor-model-breakdown"
-    >
-      <div className="text-xs font-medium text-foreground">
-        {t("settings.resources.liveMonitor.byModel")}
-      </div>
-      {breakdown.models.length === 0 ? (
-        <div>{t("settings.resources.liveMonitor.noModelLoaded")}</div>
-      ) : (
-        breakdown.models.map((model) => (
-          <LegendRow key={model.id} label={model.name} value={formatGiB(model.gb)} />
-        ))
-      )}
-      {breakdown.app !== null && (
-        <LegendRow
-          label={t("settings.resources.liveMonitor.unslothApp")}
-          value={formatGiB(breakdown.app)}
-        />
-      )}
+      {colored(segments).map(({ segment, color }) => (
+        <div key={segment.id} className="flex items-center gap-2">
+          <span className={cn("size-2 shrink-0 rounded-full", color)} />
+          <span className="min-w-0 flex-1 truncate" title={label(segment)}>
+            {label(segment)}
+          </span>
+          <span className="shrink-0 font-mono tabular-nums text-foreground">
+            {formatGiB(segment.gb)}
+          </span>
+        </div>
+      ))}
     </div>
   );
 }

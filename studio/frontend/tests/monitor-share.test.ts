@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  memorySegments,
   unslothPoolGb,
   memoryShare,
   modelBreakdown,
@@ -62,4 +63,28 @@ test("Unsloth's share never reads below the models it holds in that pool", () =>
   // Discrete GPU: the models are in VRAM, RAM is the process tree alone.
   assert.equal(unslothPoolGb(2.26, 2.57, false), 2.26);
   assert.equal(unslothPoolGb(null, 2.57, true), null);
+});
+
+test("the model split replaces Unsloth's segment in the same bar, other apps and free unchanged", () => {
+  const share = { unsloth: 6, other: 14, free: 12 };
+  assert.deepEqual(
+    memorySegments(share, null).map((segment) => [segment.kind, segment.gb]),
+    [["unsloth", 6], ["other", 14], ["free", 12]],
+  );
+  const models = [{ id: "m", name: "Qwen", gb: 4 }];
+  assert.deepEqual(
+    memorySegments(share, modelBreakdown(6, models, true)).map((segment) => [segment.kind, segment.gb]),
+    [["model", 4], ["app", 2], ["other", 14], ["free", 12]],
+  );
+  // No model loaded: still one "Unsloth" segment, not a lone "Unsloth Studio app".
+  assert.deepEqual(
+    memorySegments(share, modelBreakdown(6, [], true)).map((segment) => segment.kind),
+    ["unsloth", "other", "free"],
+  );
+});
+
+test("no separate By model list: the split lives in the memory legend", () => {
+  for (const file of ["components/floating-monitor.tsx", "features/settings/tabs/resources-tab.tsx"]) {
+    assert.doesNotMatch(readSrc(file), /ModelBreakdownList|liveMonitor\.byModel/);
+  }
 });

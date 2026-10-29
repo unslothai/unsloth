@@ -2364,12 +2364,11 @@ export const zhCN = {
         unsloth: "Unsloth",
         otherApps: "其他应用",
         freeLabel: "空闲",
-        byModel: "按模型",
         unslothApp: "Unsloth Studio 应用",
         unslothShare: "显示 Unsloth 占用",
         unslothShareDescription: "将内存分为 Unsloth 占用、其他应用占用和空闲。",
         modelBreakdown: "按模型细分",
-        modelBreakdownDescription: "列出每个已加载模型的内存以及 Unsloth Studio 其余部分。",
+        modelBreakdownDescription: "在内存条中将 Unsloth 的占用拆分为每个已加载模型和应用其余部分。",
       },
       gpu: {
         title: "GPU 设备",

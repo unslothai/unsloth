@@ -81,3 +81,37 @@ export function modelBreakdown(
   // Under 10 MiB left means RSS could not tell the app apart from the models: no row beats "0.00 GiB".
   return { models, app: app >= 0.01 ? app : null };
 }
+
+export interface MemorySegment {
+  id: string;
+  kind: "model" | "app" | "unsloth" | "other" | "free";
+  /** Set for models; the rest are labelled by kind. */
+  name?: string;
+  gb: number;
+}
+
+/** One bar for one pool: Unsloth (or its models and the app, when broken down), other apps, free. */
+export function memorySegments(
+  share: MemoryShare,
+  breakdown: ModelBreakdown | null,
+): MemorySegment[] {
+  // Nothing loaded: splitting would only rename Unsloth's segment to "app".
+  const unsloth: MemorySegment[] = breakdown && breakdown.models.length > 0
+    ? [
+        ...breakdown.models.map((model) => ({
+          id: `model:${model.id}`,
+          kind: "model" as const,
+          name: model.name,
+          gb: model.gb,
+        })),
+        ...(breakdown.app !== null
+          ? [{ id: "app", kind: "app" as const, gb: breakdown.app }]
+          : []),
+      ]
+    : [{ id: "unsloth", kind: "unsloth", gb: share.unsloth }];
+  return [
+    ...unsloth,
+    { id: "other", kind: "other", gb: share.other },
+    { id: "free", kind: "free", gb: share.free },
+  ];
+}

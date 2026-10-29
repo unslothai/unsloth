@@ -2425,12 +2425,11 @@ export const de = {
         unsloth: "Unsloth",
         otherApps: "Andere Apps",
         freeLabel: "Frei",
-        byModel: "Nach Modell",
         unslothApp: "Unsloth Studio-App",
         unslothShare: "Anteil von Unsloth anzeigen",
         unslothShareDescription: "Teilt den Speicher in Unsloth, andere Apps und freien Speicher auf.",
         modelBreakdown: "Nach Modell aufschlüsseln",
-        modelBreakdownDescription: "Zeigt den Speicher jedes geladenen Modells und den Rest von Unsloth Studio.",
+        modelBreakdownDescription: "Teilt den Anteil von Unsloth im Speicherbalken in jedes geladene Modell und den Rest der App auf.",
       },
       gpu: {
         title: "GPU-Geräte",
