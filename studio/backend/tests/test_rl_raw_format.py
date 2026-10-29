@@ -167,6 +167,15 @@ def test_image_columns_are_found_by_feature_type_not_name():
     assert sorted(tmod._image_columns(dataset)) == ["frames", "scan"]
 
 
+def test_image_paths_are_found_anywhere_in_a_text_column():
+    from datasets import Dataset
+
+    texts = ["plain answer"] * 500 + ["https://example.com/cat.JPG?size=2"] + ["more"] * 10
+    dataset = Dataset.from_dict({"prompt": ["q"] * len(texts), "asset": texts})
+    assert tmod._image_columns(dataset) == ["asset"]
+    assert tmod._image_columns(Dataset.from_dict({"prompt": ["see figure.pdf"]})) == []
+
+
 @pytest.mark.parametrize("objective", ["grpo", "dpo"])
 def test_rl_is_refused_for_an_audio_model_without_the_audio_flag(trainer, tmp_path, objective):
     path = tmp_path / "rows.jsonl"
