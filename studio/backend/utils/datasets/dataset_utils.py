@@ -437,9 +437,7 @@ def _format_dataset(
     multimodal_info = detect_multimodal_dataset(dataset)
 
     if format_type == "auto" and not custom_format_mapping and is_plain_text_dataset(dataset):
-        # A lone ``text`` column is the training text already. Detection has no
-        # role-shaped format for it, so resolve auto to raw here rather than
-        # failing later with "unknown".
+        # Matches the preview's "raw" verdict; auto would otherwise fail as "unknown".
         format_type = "raw"
 
     if format_type == "raw":

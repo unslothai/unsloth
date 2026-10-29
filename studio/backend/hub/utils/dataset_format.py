@@ -739,10 +739,7 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
     }
 
     if is_plain_text_dataset(dataset):
-        # A lone ``text`` column is the training text itself, so there are no
-        # roles to assign and raw text is the only shape the trainer can build.
-        # Checked before the VLM branch: text-only data trains fine on a vision
-        # model (the trainer skips its chat formatting in raw text mode).
+        # Before the VLM branch: text-only data trains as raw text on a vision model too.
         return {
             "requires_manual_mapping": False,
             "detected_format": "raw",
