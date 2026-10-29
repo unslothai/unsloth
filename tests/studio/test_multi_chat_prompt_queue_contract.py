@@ -1067,7 +1067,7 @@ def test_a_backgrounded_pane_autosaves_without_naming_itself_active():
     # The save itself is ungated so a run outliving its view still lands on disk.
     for call in (
         "await ensureStoredChatThread(remoteId)",
-        "await syncExportedRepositoryToBackend(remoteId, exported)",
+        "await syncExportedRepositoryToBackend(remoteId, exported, {",
     ):
         assert call in autosave, f"{call} must still run while backgrounded"
         assert autosave.index(call) < guard_at, f"{call} must not sit behind the visibility guard"

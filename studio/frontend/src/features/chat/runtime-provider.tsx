@@ -4109,6 +4109,8 @@ function ThreadBackendAutosave({
   const aui = useAui();
   const saveChainRef = useRef(Promise.resolve());
   const pendingFirstSavesRef = useRef(new Map<string, Promise<void>>());
+  // Threads whose last whole-chat save failed: a reply-only checkpoint would leave its parent unsaved.
+  const fullSaveDueRef = useRef(new Set<string>());
   // A ref: the save may resolve after the pane is hidden, so read at publish time.
   const backgroundedRef = useRef(backgrounded);
   backgroundedRef.current = backgrounded;
@@ -4138,7 +4140,12 @@ function ThreadBackendAutosave({
         return;
       }
       await ensureStoredChatThread(remoteId);
-      await syncExportedRepositoryToBackend(remoteId, exported, { replyOnly });
+      const partial = replyOnly && !fullSaveDueRef.current.has(threadId);
+      if (!partial) fullSaveDueRef.current.add(threadId);
+      await syncExportedRepositoryToBackend(remoteId, exported, {
+        replyOnly: partial,
+      });
+      if (!partial) fullSaveDueRef.current.delete(threadId);
       if (isChatThreadDeleted(remoteId)) {
         await deleteStoredChatThreads([remoteId]);
         return;
