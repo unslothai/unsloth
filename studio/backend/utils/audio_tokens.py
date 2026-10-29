@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tokenizer-based audio_type classification.
-
-Directly under ``utils`` so the cache scanner can classify a snapshot without
-dragging in ``utils/models/__init__.py`` and the model-config stack.
-"""
+"""Tokenizer-based audio_type; lives in utils so the cache scanner avoids importing utils/models"""
 
 from __future__ import annotations
 

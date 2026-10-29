@@ -846,9 +846,10 @@ fn select_export_session(
         Ok(crate::desktop_auth::DesktopAuthResponse::Tokens { access_token, .. }) => {
             Ok(access_token)
         }
-        Ok(crate::desktop_auth::DesktopAuthResponse::LoginRequired { .. }) => {
-            fallback.ok_or_else(|| LOGIN_REQUIRED.to_string())
-        }
+        Ok(
+            crate::desktop_auth::DesktopAuthResponse::LoginRequired { .. }
+            | crate::desktop_auth::DesktopAuthResponse::SignedOut { .. },
+        ) => fallback.ok_or_else(|| LOGIN_REQUIRED.to_string()),
         Err(error) => fallback.ok_or(error),
     }
 }

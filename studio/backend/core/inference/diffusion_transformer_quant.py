@@ -1,23 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in low-precision quantisation of the diffusion DiT transformer.
-
-The default GGUF path stores weights 4-bit but DEQUANTISES to bf16 on every matmul, so it runs at
-bf16 tensor-core rate: a memory win that costs speed. The opt-in alternative here loads the DENSE
-bf16 transformer and torchao-quantises it with a DYNAMIC-ACTIVATION scheme, so the matmul runs on
-low-precision tensor cores. Measured on B200 (Z-Image-Turbo, 1024px/8 steps) against GGUF+compile
-(0.802s, LPIPS 0.083): fp8 0.585s (1.37x), int8 0.603s (1.33x), both at LOWER LPIPS, at a
-higher-memory dense load. GGUF stays the low-memory default and fallback.
-
-Scheme by architecture (``auto`` takes the best supported): int8 leads every tier, then fp8 on
-Ada / Hopper / Blackwell (sm_89+) and mxfp8 on Blackwell (sm_100+); Ampere (sm_80+) has int8 alone.
-nvfp4 is explicit opt-in, outside the auto ladder. ``_AUTO_LADDER`` is what ships.
-
-Every scheme needs ``torch.compile`` for the speedup (dynamic quant is ~30x slower eager); the
-loader compiles the repeated block after this. torch / torchao imported lazily; every probe is
-best-effort, yielding None so the caller loads GGUF.
-"""
+"""Opt-in dynamic-activation torchao DiT quant; needs torch.compile (eager ~30x slower); torch and
+torchao imported lazily; probes best-effort, GGUF fallback"""
 
 from __future__ import annotations
 
@@ -480,12 +465,6 @@ def _nvfp4_gate_failure(family) -> Optional[str]:
         return nvfp4_gate_failure(family)
     except Exception:  # noqa: BLE001 -- no reason on file falls back to the generic deny text
         return None
-
-
-_TRAIN_DENY_NVFP4_REASON = (
-    "nvfp4 is inference-only: the accuracy gate behind it measures a frozen forward at a "
-    "per-layer policy, and no training run has been measured on 4-bit frozen linears"
-)
 
 
 def _family_train_denied(

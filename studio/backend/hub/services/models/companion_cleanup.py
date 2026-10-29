@@ -12,6 +12,7 @@ from typing import Optional
 
 from fastapi import HTTPException
 from loggers import get_logger
+from utils.scan_memo import in_scan_memo
 
 from hub.utils import companion_assets, download_registry
 from hub.utils.gguf import gguf_variant_key
@@ -416,6 +417,7 @@ def _orphan_companions_blocking() -> dict:
     }
 
 
+@in_scan_memo
 async def orphan_companions_response() -> dict:
     """Cached companion bases that no installed model needs. Listing only; nothing is deleted."""
     return await asyncio.to_thread(_orphan_companions_blocking)

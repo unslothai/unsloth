@@ -35,7 +35,7 @@ import { cn } from "@/lib/utils";
 import {
   Bookmark02Icon,
   Download01Icon,
-  FileDatabaseIcon,
+  FileSearchIcon,
   Folder01Icon,
   LibrariesIcon,
   McpServerIcon,
@@ -108,7 +108,7 @@ const PLUS_MENU_SETTINGS: {
     labelKey: "settings.chat.menu.chatWithFiles",
     icon: (
       <HugeiconsIcon
-        icon={FileDatabaseIcon}
+        icon={FileSearchIcon}
         strokeWidth={2}
         className={PLUS_MENU_ICON_CLASS}
       />

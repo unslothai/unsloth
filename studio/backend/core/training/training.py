@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Training backend — subprocess orchestrator.
-
-Each job runs in a fresh spawn subprocess (solving transformers version-switching);
-the in-process UnslothTrainer singleton is only used inside the worker. This file
-orchestrates the subprocess lifecycle, pumps events from the worker's mp.Queue, and
-exposes the same API to routes/training.py. Pattern follows data_recipe/jobs/manager.py.
-"""
+"""Each job runs in a fresh spawn subprocess so transformers versions can switch between jobs."""
 
 from core.inference.inference_gate import pauses_background_embedding
 from core.training.account_jobs import (

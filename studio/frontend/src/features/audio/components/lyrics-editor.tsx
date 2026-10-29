@@ -14,10 +14,12 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useRef } from "react";
 import { insertSectionTag, sectionTags } from "../music/music-policy";
 import type { MusicModeRule } from "../music/music-types";
+import { FieldLabel, FieldTag } from "./field";
 
 export function LyricsEditor({
   id,
   label,
+  optional = false,
   value,
   onChange,
   sectionCase,
@@ -27,6 +29,7 @@ export function LyricsEditor({
 }: {
   id: string;
   label: string;
+  optional?: boolean;
   value: string;
   onChange: (next: string) => void;
   sectionCase: MusicModeRule["section_case"];
@@ -54,9 +57,13 @@ export function LyricsEditor({
   return (
     <div className="grid gap-1.5">
       <div className="flex min-w-0 items-center justify-between gap-2">
-        <label htmlFor={id} className="text-ui-13 font-medium text-foreground">
+        <FieldLabel
+          htmlFor={id}
+          className="text-ui-13 font-medium text-foreground"
+        >
           {label}
-        </label>
+          {optional ? <FieldTag>Optional</FieldTag> : null}
+        </FieldLabel>
         <DropdownMenu>
           <DropdownMenuTrigger asChild={true}>
             <Button

@@ -52,7 +52,7 @@ import {
   rlObjectiveSupported,
 } from "../lib/rl-roles";
 import { runConfigDraftSelections } from "../lib/run-config-draft";
-import { parseRunConfigRlSettings } from "../lib/yaml-config";
+import { parseRunConfigRlSettings } from "../lib/rl-settings-config";
 import { isRawTextDatasetFormat } from "../lib/training-methods";
 import type {
   DatasetCacheReferenceOptions,

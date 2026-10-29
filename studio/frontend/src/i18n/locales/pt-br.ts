@@ -629,6 +629,38 @@ export const ptBR = {
     compactEmpty: "Ainda não há nada para compactar",
     compactUnsupported: "A compactação requer um modelo GGUF ou MLX com suporte a ferramentas",
   },
+  halloween: {
+    navLabel: "Doces ou travessuras…",
+    title: "Doces ou travessuras?!",
+    description:
+      "Preparamos alguns sustos para o Unsloth, disponíveis até o fim de outubro.",
+    chooseTheme: "Escolha um tema assustador",
+    spookyGreetings: "Saudações assustadoras",
+    spookyGreetingsDescription:
+      "A preguiça recebe os novos chats com um susto.",
+    decorations: "Aranhas e morcegos",
+    decorationsDescription:
+      "Teias nos cantos e, de vez em quando, uma aranha ou um morcego com um tema de Halloween.",
+    surprise: "Doces ou travessuras!",
+    surpriseDescription: "Deixe a preguiça escolher um tema para você.",
+    themesTitle: "Temas assustadores",
+    back: "Voltar",
+    footer: "O Unsloth volta ao normal à meia-noite de 1º de novembro.",
+    removeNow: "Remover agora",
+    hideFromSidebar: "Ocultar da barra lateral",
+    greeting: {
+      pumpkins: "As abóboras estão esculpidas. E agora?",
+      brewing: "Vamos preparar a poção",
+      trickOrTreat: "Doces ou travessuras?",
+      manor: "Boas-vindas à mansão",
+      manorName: "Boas-vindas à mansão, {name}",
+      happyHalloween: "Feliz Halloween",
+      happyHalloweenName: "Feliz Halloween, {name}",
+      spirits: "Os espíritos estão ouvindo…",
+      mysteries: "Que mistérios vamos desvendar esta noite?",
+      conjure: "O que posso conjurar para você?",
+    },
+  },
   welcome: {
     goodToSeeYou: "Que bom ver você",
     goodToSeeYouName: "Que bom ver você, {name}",
@@ -792,6 +824,8 @@ export const ptBR = {
       guidedTour: "Tour guiado",
       help: "Ajuda",
       logOut: "Sair",
+      logOutNeedsPassword: "Defina uma senha em Configurações > Acesso remoto antes de sair, para conseguir entrar de novo.",
+      logOutFailed: "Não foi possível sair com segurança. Tente de novo em instantes.",
       shutdown: "Desligar",
     },
     commandPalette: {
@@ -936,6 +970,11 @@ export const ptBR = {
   },
   settings: {
     accounts: {
+      signsInAs: "Entra como {username}",
+      signsInAsOwner: "Entra como {alias} ou {username}",
+      signInName: "Seu nome de login",
+      signInNameDescription: "O nome que você digita para entrar quando esta instalação tem mais de uma conta. unsloth também funciona sempre. Deixe vazio para usar só unsloth.",
+      signInNameSave: "Salvar nome",
       title: "Contas",
       description: "Crie contas privadas do Unsloth. Novos usuários entram com um código de configuração de uso único e escolhem uma senha.",
       username: "Nome de usuário",
@@ -1415,7 +1454,7 @@ export const ptBR = {
       installingRuntime: "Instalando…",
       installRuntimeFailed: "A instalação do runtime falhou.",
       installRuntimeError: "Não foi possível iniciar a instalação do runtime.",
-      unsupportedArch: "O sandbox do Windows (MXC) só funciona no Windows x64, então não está disponível neste PC.",
+      unsupportedArch: "O sandbox do Windows (MXC) só funciona no Windows x64 e ARM64, então não está disponível neste PC.",
       builtinNeedsUpdate: "O contêiner integrado do Windows precisa da build {required} ou mais recente, e este PC usa {current}. Instale a atualização mais recente do Windows para usá-lo sem uma etapa de administrador, ou ative o sandbox alternativo abaixo.",
       unsupportedBuild: "O sandbox do Windows (MXC) precisa do Windows 11 24H2 (build 26100) ou mais recente, então não está disponível neste PC.",
       permissionLabel: "Permissões de ferramentas",
@@ -2195,6 +2234,12 @@ export const ptBR = {
         classic: "Clássico",
         minimal: "Minimalista",
         moreThemes: "Mais temas",
+        halloween: "Halloween",
+      },
+      trickOrTreat: {
+        label: "Doces ou travessuras",
+        description:
+          "Temas de Halloween e saudações assustadoras, até 1º de novembro.",
       },
       custom: {
         chatWidth: {
@@ -2349,7 +2394,7 @@ export const ptBR = {
         gpuUnusableDetail: "Detectada, mas o PyTorch não consegue usá-la",
         detailedView: "Visualização detalhada",
         detailedViewDescription:
-          "Mostra a carga da CPU e a carga, temperatura e consumo de cada GPU na janela flutuante e aqui.",
+          "Mostra a carga da CPU e a carga, temperatura e consumo de cada GPU na janela flutuante.",
         cpuLoad: "Carga da CPU",
         gpuLoad: "Carga da GPU",
         temperature: "Temperatura",
@@ -2382,6 +2427,10 @@ export const ptBR = {
         used: "{value} usados",
         free: "{value} livres",
         total: "{value} total",
+        usedOf: "{used} em uso de {total}",
+        segmentUsed: "Em uso pela GPU",
+        segmentSystem: "Em uso pelo sistema",
+        segmentAvailable: "Disponível",
       },
       llamaBackend: {
         title: "GGUF inference engine",
@@ -2511,6 +2560,10 @@ export const ptBR = {
           hideDetailsAction: "Ocultar detalhes",
           clearAction: "Limpar caches",
           clearOneAction: "Limpar",
+          showFolders: "Mostrar pastas",
+          hideFolders: "Ocultar pastas",
+          previousLocations: "Inclui locais anteriores. O botão Limpar principal afeta a pasta de cache atual. Os botões de modelo limpam apenas a cópia selecionada.",
+          clearModelDescription: "Isso remove apenas esta cópia em cache. Ela será baixada novamente quando necessário.",
           clearingAction: "Limpando...",
           confirmTitle: "Limpar os arquivos em cache?",
           confirmDescription: "Isso libera cerca de {size}.",
@@ -3156,6 +3209,7 @@ export const ptBR = {
       readDocs: "Leia a documentação da API",
       noAccess: "Nenhum acesso à API ainda.",
       accessTokens: "Tokens de acesso",
+      quickstartTitle: "Início rápido",
       columnName: "Nome",
       columnToken: "Token",
       columnCreated: "Criado",
@@ -4228,7 +4282,6 @@ export const ptBR = {
       terminalStart: "> treinamento do unsloth iniciado...",
       preparingResources: "> Preparando modelo e dataset...",
       gettingReady: "> Estamos deixando tudo pronto para a sua execução...",
-      waitingForFirstStep: "> {message} | aguardando o primeiro passo... ({step})",
       resumingTraining: "Retomando treinamento...",
       startingTraining: "iniciando treinamento...",
       dataset: "Dataset",

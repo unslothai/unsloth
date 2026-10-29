@@ -45,6 +45,9 @@ function translate(key: string, values: Record<string, string> = {}) {
 type TabOptions = {
   stallRefresh?: boolean;
   accounts?: Record<string, unknown>[];
+  // What the sidebar footer shows: the local profile store.
+  localProfile?: { displayName: string; avatarDataUrl: string | null };
+  ownerPasswordPending?: boolean;
 };
 function tab(
   owner = true,
@@ -97,7 +100,15 @@ function tab(
       },
     },
     "@/features/auth": { useIsAccountOwner: () => owner },
-    "@/features/profile": { UserAvatar: "UserAvatar" },
+    "@/features/profile": {
+      UserAvatar: "UserAvatar",
+      useUserProfileStore: (select: (state: unknown) => unknown) =>
+        select(options.localProfile ?? { displayName: "", avatarDataUrl: null }),
+    },
+    "../components/change-password-dialog": {
+      ChangePasswordDialog: "ChangePasswordDialog",
+      useOwnPasswordPending: () => [options.ownerPasswordPending ?? false, () => {}],
+    },
     "@hugeicons/core-free-icons": {},
     "@hugeicons/react": { HugeiconsIcon: "Icon" },
     "@/lib/tick-icon": {},
@@ -179,6 +190,12 @@ function tab(
         calls.push(`delete:${accountId}`);
         accounts.splice(1);
       },
+      setOwnerLoginAlias: async (alias: string | null) => {
+        calls.push(`alias:${alias}`);
+        const stored = alias?.trim().toLowerCase() || null;
+        accounts[0].login_alias = stored;
+        return stored;
+      },
       setAccountModelAllowlist: async (
         accountId: string,
         allowlist: string[] | null,
@@ -235,11 +252,29 @@ test("owner lists accounts without administrative actions on the owner row", asy
     (node) => node.props["data-testid"] === "account-unsloth",
   );
   assert.ok(ownerRow);
-  assert.equal(
-    nodes(ownerRow).filter((node) => node.type === "Button").length,
-    0,
+  // Only its own password, in an icon menu like the managed rows so no label can overflow the row.
+  const trigger = nodes(ownerRow).filter((node) => node.type === "Button");
+  assert.equal(trigger.length, 1);
+  assert.equal(content(trigger[0]).trim(), "");
+  assert.deepEqual(
+    nodes(ownerRow)
+      .filter((node) => node.type === "DropdownMenuItem")
+      .map((node) => content(node).trim()),
+    ["Change password"],
   );
   assert.match(content(tree), /Installation owner/);
+});
+
+test("the owner row's password item opens the dialog, as Set password while the seeded one stands", async () => {
+  for (const pending of [false, true]) {
+    const ui = tab(true, null, { ownerPasswordPending: pending });
+    const tree = await ui.initialize();
+    const dialog = () => nodes(ui.render()).find((node) => node.type === "ChangePasswordDialog");
+    assert.equal(dialog()?.props.open, false);
+    assert.equal(dialog()?.props.initial, pending);
+    await click(tree, pending ? "Set password" : "Change password");
+    assert.equal(dialog()?.props.open, true);
+  }
 });
 
 test("create shows a copyable expiring setup code once and regeneration replaces it", async () => {
@@ -527,4 +562,80 @@ test("model access edits one account's allowlist and an empty list restores ever
     ],
   );
   assert.ok(!content(view.render()).includes(en.settings.accounts.modelAccessLimited));
+});
+
+test("rows show each profile name and avatar with the name to sign in with", async () => {
+  const ui = tab(true, null, {
+    accounts: [
+      {
+        account_id: "owner",
+        username: "unsloth",
+        role: "owner",
+        is_active: true,
+        created_at: "2026-09-01T12:00:00Z",
+        login_alias: "riley",
+        display_name: "Riley",
+        avatar_url: "data:image/png;base64,AAAA",
+      },
+      {
+        account_id: "alice-id",
+        username: "alice",
+        role: "user",
+        is_active: true,
+        created_at: "2026-09-01T12:00:00Z",
+      },
+    ],
+  });
+  const tree = await ui.initialize();
+  const ownerRow = nodes(tree).find((node) => node.props["data-testid"] === "account-unsloth");
+  const avatar = nodes(ownerRow).find((node) => node.type === "UserAvatar");
+  assert.deepEqual([avatar?.props.name, avatar?.props.imageUrl], ["Riley", "data:image/png;base64,AAAA"]);
+  assert.match(content(ownerRow), /Riley/);
+  assert.match(content(ownerRow), /Signs in as riley or unsloth/);
+  const aliceRow = nodes(tree).find((node) => node.props["data-testid"] === "account-alice");
+  const aliceAvatar = nodes(aliceRow).find((node) => node.type === "UserAvatar");
+  assert.deepEqual([aliceAvatar?.props.name, aliceAvatar?.props.imageUrl], ["alice", null]);
+  assert.match(content(aliceRow), /Signs in as alice/);
+  const input = nodes(tree).find((node) => node.props.id === "owner-sign-in-name");
+  assert.equal(input?.props.value, "riley");
+});
+
+test("the owner sets a sign-in name and an empty one falls back to unsloth", async () => {
+  const ui = tab();
+  let tree = await ui.initialize();
+  assert.match(content(tree), /Signs in as unsloth/);
+  const type = (value: string) => {
+    const input = nodes(tree).find((node) => node.props.id === "owner-sign-in-name");
+    (input?.props.onChange as (event: unknown) => void)({ target: { value } });
+    tree = ui.render();
+  };
+  const submit = async () => {
+    await click(tree, "Save name");
+    tree = ui.render();
+  };
+  type("Riley");
+  await submit();
+  assert.ok(ui.calls.includes("alias:Riley"));
+  assert.match(content(tree), /Signs in as riley or unsloth/);
+  type("");
+  await submit();
+  assert.ok(ui.calls.includes("alias:"));
+  assert.match(content(tree), /Signs in as unsloth/);
+  assert.doesNotMatch(content(tree), /riley or unsloth/);
+});
+
+test("the owner row matches the sidebar's local profile before the server copy and offers a password change", async () => {
+  const ui = tab(true, null, {
+    localProfile: { displayName: " Riley ", avatarDataUrl: "data:image/png;base64,LOCAL" },
+  });
+  const tree = await ui.initialize();
+  const ownerRow = nodes(tree).find((node) => node.props["data-testid"] === "account-unsloth");
+  const avatar = nodes(ownerRow).find((node) => node.type === "UserAvatar");
+  assert.deepEqual([avatar?.props.name, avatar?.props.imageUrl], ["Riley", "data:image/png;base64,LOCAL"]);
+  assert.match(content(ownerRow), /Riley/);
+  assert.match(content(ownerRow), /Installation owner/);
+  const aliceRow = nodes(tree).find((node) => node.props["data-testid"] === "account-alice");
+  assert.ok(!content(aliceRow).includes("Change password"));
+  // A managed account's row never borrows the owner's local profile.
+  assert.equal(nodes(aliceRow).find((node) => node.type === "UserAvatar")?.props.imageUrl, null);
 });

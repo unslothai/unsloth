@@ -2,23 +2,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Cross-platform Node.js prebuilt installer for Unsloth Studio.
-
-Downloads an official Node.js archive from nodejs.org (or the dist mirror in
-``UNSLOTH_NODE_MIRROR``) into an isolated
-``<UNSLOTH_HOME>/node`` and never touches the system Node/npm. Pinning Node 24+
-LTS clears the Unsloth frontend build floor (Vite 8: Node ^20.19 || >=22.12,
-npm >= 11) with the npm it bundles.
-
-Archives are verified against sha256 digests pinned in ``node_prebuilt_pins.json``
-(committed in-tree), not a checksum re-fetched from the same origin as the archive.
-
-Mirrors ``install_llama_prebuilt.py`` so the setup scripts drive it the same way.
-Exit codes: 0 success, 1 error, 2 fallback, 3 busy, 4 access denied. A re-run that already matches
-logs "already matches" and returns 0 without downloading (the scripts grep it).
-A failed update that keeps a usable install logs "keeping existing isolated Node" and
-also returns 0 (the scripts grep that too).
-"""
+"""Installs isolated Node.js 24+ LTS into <UNSLOTH_HOME>/node, never touching system Node/npm;
+archives sha256-checked against in-tree node_prebuilt_pins.json, not from the archive origin;
+exit 0 success, 1 error, 2 fallback, 3 busy, 4 access denied; setup scripts grep the already
+matches line."""
 
 from __future__ import annotations
 
@@ -51,7 +38,7 @@ _STUDIO_DIR = str(Path(__file__).resolve().parent)
 if _STUDIO_DIR not in sys.path:
     sys.path.insert(0, _STUDIO_DIR)
 
-from prebuilt_core import DownloadProgress, make_staging_dir  # noqa: E402
+from prebuilt_core import DownloadProgress, copy_response_body, make_staging_dir  # noqa: E402
 
 try:
     from filelock import FileLock, Timeout as FileLockTimeout
@@ -314,15 +301,9 @@ def download_file(url: str, destination: Path) -> None:
                     if _LOG_TO_STDOUT:
                         progress.stream = sys.stdout
                         progress.is_tty = progress.is_tty and sys.stdout.isatty()
-                    downloaded_bytes = 0
-                    while True:
-                        chunk = response.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        handle.write(chunk)
-                        downloaded_bytes += len(chunk)
-                        progress.update(downloaded_bytes)
-                    progress.finish(downloaded_bytes)
+                    copy_response_body(
+                        response, handle.write, total_bytes = total_bytes, progress = progress
+                    )
                 handle.flush()
                 os.fsync(handle.fileno())
             if not tmp_path.exists() or tmp_path.stat().st_size == 0:

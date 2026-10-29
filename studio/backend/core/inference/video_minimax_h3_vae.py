@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Faster MiniMax-H3 video VAE encode and decode: Triton-fused GroupNorm/SiLU/pad, RMSNorm/rope/SwiGLU and
-tile batching around Diffusers' own matmuls and convolutions.
-
-Levers: fused_encoder, fp16_encoder, fused_decoder, tile_batch, fp16_accum, int8_decoder (opt-in,
-``UNSLOTH_H3_VAE_INT8=1``). ``UNSLOTH_H3_VAE_FAST=0`` disables all. NVIDIA CUDA with Triton only; else stock.
-"""
+"""Faster MiniMax-H3 video VAE encode/decode: Triton GroupNorm/SiLU/pad, RMSNorm/rope/SwiGLU fusions
+and tile batching around Diffusers' own matmuls/convs; UNSLOTH_H3_VAE_FAST=0 disables all;
+int8_decoder is opt-in via UNSLOTH_H3_VAE_INT8=1; CUDA+Triton only, else stock."""
 
 from __future__ import annotations
 
