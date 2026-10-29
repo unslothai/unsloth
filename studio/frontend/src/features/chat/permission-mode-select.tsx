@@ -64,7 +64,7 @@ function ApprovalHandIcon({ className, strokeWidth }: GlyphProps) {
   return (
     <HugeiconsIcon
       icon={HandIcon}
-      className={cn("scale-[0.94]", className)}
+      className={className}
       strokeWidth={strokeWidth}
     />
   );
@@ -376,7 +376,14 @@ export function PermissionModeMenuItems({
             option.value === "full" && "menu-item-full-access",
           )}
         >
-          <option.icon className="permission-mode-icon mt-[calc(0.14rem*var(--ui-font-scale,1))] size-[calc(var(--ui-icon-size)*1.15)] shrink-0" strokeWidth={2} />
+          <option.icon
+            className={cn(
+              "permission-mode-icon mt-[calc(0.14rem*var(--ui-font-scale,1))] size-[calc(var(--ui-icon-size)*1.15)] shrink-0",
+              // Beside the shields the hand reads larger; on its own in the trigger it keeps full size.
+              option.value === "ask" && "scale-[0.94]",
+            )}
+            strokeWidth={2}
+          />
           <span className="flex min-w-0 flex-1 flex-col gap-0.5">
             <span className="text-ui-13 leading-tight">{option.label}</span>
             <span className="text-xs font-normal leading-snug text-muted-foreground">

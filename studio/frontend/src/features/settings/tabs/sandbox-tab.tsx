@@ -258,7 +258,7 @@ function PermissionsSection() {
       {choice.options.map((option) => (
         <SettingsRow
           key={option.value}
-          icon={<option.icon className={ROW_ICON_CLASS} strokeWidth={1.75} />}
+          icon={<option.icon className={cn(ROW_ICON_CLASS, option.value === "ask" && "scale-[0.94]")} strokeWidth={1.75} />}
           iconAlign="top"
           label={t(`settings.general.permissions.names.${option.value}`)}
           description={t(`settings.general.permissions.details.${option.value}`)}
