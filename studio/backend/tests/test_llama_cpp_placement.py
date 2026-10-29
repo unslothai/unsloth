@@ -6910,3 +6910,99 @@ def test_the_checkpoint_discount_removes_only_the_checkpoints():
         without = backend._slots_that_fit_on_gpu(*args, ctx_checkpoints = 0, **kw)
         assert with_ckpts == without
     assert without[1] is False and without[2] < 8
+
+
+# Auto context under the MoE cache: a model no card holds (Flash-Next UD-Q4_K_XL, 111 GB, on a 32 GB card)
+# took the 8192 offload fallback. With --moe-cache-mib auto only the dense part and the KV are on the card.
+_NOFIT_CARD = [(0, 30_000, 32_000)]
+
+
+def _nofit_cache_launch(
+    tmp_path,
+    monkeypatch,
+    *,
+    env = None,
+    ram_gib = 256,
+    native = 262144,
+    **load_kwargs,
+):
+    for k, v in (env or {}).items():
+        monkeypatch.setenv(k, v)
+    backend, gguf = _moe_backend(tmp_path, size_gib = 100, memory = _NOFIT_CARD)
+    backend._context_length = native
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(ctx) * 64 * 1024
+    backend._available_system_memory_mib = lambda: int(ram_gib * 1024)
+    backend._gguf_tensor_scan = lambda _path: ("qwen3moe", {}, int(95 * _GIB))
+    full_caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    full_caps.update(_CACHE_CAPS_ON)
+    backend.probe_server_capabilities = lambda _binary = None: full_caps
+    load_kwargs.setdefault("n_ctx", 0)
+    return backend, _launch(backend, gguf, **load_kwargs)["cmd"]
+
+
+def test_auto_context_under_the_moe_cache_is_not_the_offload_fallback(
+    tmp_path, monkeypatch, _moe_cache_host
+):
+    monkeypatch.delenv("UNSLOTH_MOE_CACHE_AUTO_CTX", raising = False)
+    # The share is under the admission band here, so the cache is asked for by name.
+    _backend_, cmd = _nofit_cache_launch(tmp_path, monkeypatch, env = {"UNSLOTH_MOE_CACHE": "on"})
+    assert _has_moe_cache(cmd), cmd
+    assert int(cmd[cmd.index("-c") + 1]) > 8192, cmd
+    assert int(cmd[cmd.index("-c") + 1]) <= 32768, cmd
+
+
+def test_the_moe_cache_auto_context_kill_switch_keeps_the_fallback(
+    tmp_path, monkeypatch, _moe_cache_host
+):
+    _backend_, cmd = _nofit_cache_launch(
+        tmp_path, monkeypatch, env = {"UNSLOTH_MOE_CACHE_AUTO_CTX": "0", "UNSLOTH_MOE_CACHE": "on"}
+    )
+    assert _has_moe_cache(cmd), cmd
+    assert cmd[cmd.index("-c") + 1] == "8192", cmd
+
+
+def test_an_explicit_context_under_the_moe_cache_is_kept(tmp_path, monkeypatch, _moe_cache_host):
+    monkeypatch.delenv("UNSLOTH_MOE_CACHE_AUTO_CTX", raising = False)
+    _backend_, cmd = _nofit_cache_launch(tmp_path, monkeypatch, n_ctx = 8192)
+    assert cmd[cmd.index("-c") + 1] == "8192", cmd
+
+
+def test_the_fit_split_also_gets_the_context_back(tmp_path, monkeypatch, _moe_cache_host):
+    monkeypatch.delenv("UNSLOTH_MOE_CACHE_AUTO_CTX", raising = False)
+    # 64 GiB of RAM cannot hold 95 GiB of experts pinned: no cache, the --fit split. It still
+    # offloads experts first, so the KV stays on the card.
+    _backend_, cmd = _nofit_cache_launch(tmp_path, monkeypatch, ram_gib = 64)
+    assert not _has_moe_cache(cmd), cmd
+    assert int(cmd[cmd.index("-c") + 1]) > 8192, cmd
+
+
+def test_a_dense_model_keeps_the_offload_fallback(tmp_path, monkeypatch, _moe_cache_host):
+    monkeypatch.delenv("UNSLOTH_MOE_CACHE_AUTO_CTX", raising = False)
+    backend, gguf = _moe_backend(tmp_path, size_gib = 100, memory = _NOFIT_CARD, moe = False)
+    backend._context_length = 262144
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(ctx) * 64 * 1024
+    backend._available_system_memory_mib = lambda: 256 * 1024
+    backend._gguf_tensor_scan = lambda _path: ("llama", {}, 0)
+    cmd = _launch(backend, gguf, n_ctx = 0)["cmd"]
+    assert cmd[cmd.index("-c") + 1] == "8192", cmd
+
+
+def test_the_moe_cache_auto_context_stops_where_the_kv_no_longer_fits(
+    tmp_path, monkeypatch, _moe_cache_host
+):
+    monkeypatch.delenv("UNSLOTH_MOE_CACHE_AUTO_CTX", raising = False)
+    # 1 MiB of KV per token: 5 GiB dense + 2 GiB cache floor leave room for well under 32768.
+    backend, gguf = _moe_backend(tmp_path, size_gib = 100, memory = _NOFIT_CARD)
+    backend._context_length = 262144
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(ctx) * 1024 * 1024
+    backend._available_system_memory_mib = lambda: 256 * 1024
+    backend._gguf_tensor_scan = lambda _path: ("qwen3moe", {}, int(95 * _GIB))
+    full_caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    full_caps.update(_CACHE_CAPS_ON)
+    backend.probe_server_capabilities = lambda _binary = None: full_caps
+    cmd = _launch(backend, gguf, n_ctx = 0)["cmd"]
+    c = int(cmd[cmd.index("-c") + 1])
+    assert 8192 <= c < 32768, cmd

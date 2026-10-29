@@ -4020,6 +4020,26 @@ _TP_UNMEASURED_CTX = 4096
 # Auto offload context when no GPU subset holds the model; prefers a chat-useful size, kept separate from _FIT_MIN_CTX (search and Apple floor).
 _AUTO_OFFLOAD_CTX = 8192
 
+# Auto context under --moe-cache-mib auto: every routed expert stays in host RAM and only the dense part and the
+# KV sit on the GPU, so the 8192 offload fallback above costs context for nothing. Raise it up to llama.cpp's own
+# fit keep (LLAMA_FIT_CTX_KEEP, 32768) where the dense part, KV, MTP and compute still fit beside a cache floor.
+# Measured on a 32 GB cap (G4), Flash-Next UD-Q4_K_XL: -c 32768 decodes 73.2-73.6 tok/s chat against 74.6-74.9 at
+# -c 8192 (-1.8%); KV on the host instead (--no-kv-offload) decodes 38.9-43.8 (-41%) and prefills 3x slower.
+# UNSLOTH_MOE_CACHE_AUTO_CTX: 0 = the 8192 fallback as before, N = a different ceiling.
+_MOE_CACHE_AUTO_CTX = 32768
+_MOE_CACHE_AUTO_CTX_FLOOR_MIB = 2048.0
+
+
+def _moe_cache_auto_ctx_ceiling(env: Optional[Mapping[str, str]] = None) -> int:
+    raw = str((os.environ if env is None else env).get("UNSLOTH_MOE_CACHE_AUTO_CTX") or "").strip()
+    if not raw:
+        return _MOE_CACHE_AUTO_CTX
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return _MOE_CACHE_AUTO_CTX
+
+
 # Must stay >= fit search floor or the Auto re-check flips --fit off (test pins it). amd-smi vs HIP VRAM totals differing over 10% are different scopes.
 _AMD_SMI_TOTAL_TOLERANCE = 0.10
 
@@ -23937,6 +23957,8 @@ class LlamaCppBackend:
                 self._moe_spill_batch_restore: Optional[tuple[Optional[int], Optional[int]]] = None
                 _moe_cache_candidate = False
                 _moe_cache_ram_ok = False
+                # Auto context before the 8192 offload clamp (None: the clamp did not run).
+                _auto_offload_ctx_from: Optional[int] = None
                 _shared_gpus = frozenset()
                 _integrated_gpus = frozenset()
                 # The discrete-first tier; accounting keeps _integrated_gpus.
@@ -26051,6 +26073,8 @@ class LlamaCppBackend:
                                 # No GPU subset (discrete or full pool) holds the model at a
                                 # fitted context. Prefer a useful chat context before
                                 # handing placement to --fit on and host offload.
+                                if not explicit_ctx and effective_ctx > _AUTO_OFFLOAD_CTX:
+                                    _auto_offload_ctx_from = effective_ctx
                                 effective_ctx = min(_AUTO_OFFLOAD_CTX, effective_ctx)
                                 if effective_ctx > 0:
                                     for n_gpus, subset in _subsets:
@@ -27759,6 +27783,68 @@ class LlamaCppBackend:
                                 "experts pinned; launching without --moe-cache-mib.",
                                 _moe_expert_bytes / (1024**3),
                             )
+                    if (
+                        _auto_offload_ctx_from
+                        and not explicit_ctx
+                        and gpu_indices is None
+                        and locals().get("_moe_experts_on_host")
+                        and _moe_cache_auto_ctx_ceiling() > effective_ctx
+                    ):
+                        # The 8192 clamp priced layer offload, where the KV of offloaded layers sits
+                        # on the host. A spilled MoE (the cache, or the --fit split, which offloads
+                        # experts first) keeps every attention layer and the KV on the card: give
+                        # the context back up to the ceiling where the dense part and the KV still
+                        # fit beside an expert floor.
+                        _cache_dev = [g for g in (_detected_gpus or ()) if g is not None]
+                        _expert_bytes = int(
+                            (self._gguf_tensor_scan(model_path) or (None, {}, 0))[2] or 0
+                        )
+                        if len(_cache_dev) == 1 and _expert_bytes > 0:
+                            _dense = max(1, int(model_size_fit) - _expert_bytes)
+                            _budget = (
+                                (
+                                    _pool_budget_mib(_cache_dev, _pin_fraction)
+                                    - _MOE_CACHE_AUTO_CTX_FLOOR_MIB
+                                )
+                                * 1024
+                                * 1024
+                            )
+
+                            def _spill_ctx_fits(c: int) -> bool:
+                                need = (
+                                    _dense
+                                    + _kv_bytes(c)
+                                    + _mtp_bytes(c, n_parallel, _effective_ubatch)
+                                    + _cc_bytes(c, 1)
+                                )
+                                return need <= _budget
+
+                            _lo = effective_ctx
+                            _hi = min(int(_auto_offload_ctx_from), _moe_cache_auto_ctx_ceiling())
+                            _best = _lo
+                            while _hi - _lo >= 256:
+                                _mid = (_lo + _hi) // 2 // 256 * 256
+                                if _mid <= _lo:
+                                    break
+                                if _spill_ctx_fits(_mid):
+                                    _best = _lo = _mid
+                                else:
+                                    _hi = _mid
+                            if _spill_ctx_fits(_hi) and _hi > _best:
+                                _best = _hi
+                            if _best > effective_ctx:
+                                logger.info(
+                                    "MoE experts on the host: Auto context %d -> %d (the dense part "
+                                    "and the KV fit the GPU; %s).",
+                                    effective_ctx,
+                                    _best,
+                                    "--moe-cache-mib auto"
+                                    if _moe_cache_candidate and _moe_cache_ram_ok
+                                    else "--fit split",
+                                )
+                                effective_ctx = _best
+                                # The published ceiling was anchored at the 8192 fallback.
+                                max_available_ctx = max(max_available_ctx or 0, _best)
                 except Exception as e:
                     logger.warning(f"GPU selection failed ({e}), using --fit on")
                     gpu_indices, use_fit = None, True
