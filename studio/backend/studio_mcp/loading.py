@@ -30,6 +30,9 @@ from studio_mcp.tools import as_dict, number, opt_text, route_json, strings, try
 POLL_INTERVAL_S = 2.0
 # The longest a load_model or get_job call waits before returning (user decision); clients must allow more.
 MAX_WAIT_S = 240
+# The schema bound for wait_s. Tests shorten MAX_WAIT_S to fractions of a second, and get_job's schema can be
+# built while they do (its annotations are lazy), so the bound must not read the patchable value.
+WAIT_S_LIMIT = 240
 # What a caller still waiting on a job is told to wait before its next get_job without wait_s.
 POLL_AFTER_S = 10
 # Forwarded reads have no HTTP timeout; a status or progress read taking longer counts as failed.
