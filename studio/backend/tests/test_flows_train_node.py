@@ -176,7 +176,7 @@ def test_holdout_splits_only_the_sliced_rows(monkeypatch):
 def test_holdout_reads_hub_datasets_with_the_requests_token(monkeypatch):
     seen = {}
 
-    def load_rows(dataset, token, end):
+    def load_rows(dataset, token, end, start = 0):
         seen["token"] = token
         return ROWS
 
@@ -284,7 +284,13 @@ def test_hub_rows_with_timestamps_still_upload(monkeypatch):
         {"q": f"q{i}", "a": f"a{i}", "at": datetime.datetime(2026, 1, 1, i), "x": float("nan")}
         for i in range(10)
     ]
-    monkeypatch.setattr(datasets, "load_dataset", lambda *a, **k: datasets.Dataset.from_list(rows))
+    monkeypatch.setattr(
+        datasets,
+        "load_dataset",
+        lambda *a, streaming = False, **k: datasets.Dataset.from_list(rows).to_iterable_dataset()
+        if streaming
+        else datasets.Dataset.from_list(rows),
+    )
     monkeypatch.setattr(datasets, "load_dataset_builder", lambda *a, **k: 1 / 0)
     loaded = training._load_rows({"source": "hf", "ref": "org/ds"}, None, None)
     assert loaded[0]["at"] == "2026-01-01 00:00:00" and loaded[0]["x"] is None
@@ -501,7 +507,7 @@ def test_hub_eval_split_survives_the_hold_out(monkeypatch):
     monkeypatch.setattr("core.training.account_jobs.managed_account", lambda: False)
     splits = []
 
-    def load_rows(dataset, token, end):
+    def load_rows(dataset, token, end, start = 0):
         splits.append(dataset.get("split"))
         return ROWS if dataset.get("split") == "train" else ROWS[:5]
 
@@ -529,3 +535,34 @@ def test_one_column_for_two_rl_roles_is_refused():
     with pytest.raises(FlowNodeError, match = "own column"):
         training.rl_roles({"prompt_column": "p", "chosen_column": "c", "rejected_column": "c"}, "dpo")
     assert training.rl_roles({"prompt_column": "p", "chosen_column": "c"}, "dpo") == {"p": "prompt", "c": "chosen"}
+
+
+def test_hub_hold_out_streams_a_late_slice_and_caps_unknown_sizes(monkeypatch):
+    from types import SimpleNamespace
+
+    import datasets
+
+    class Stream:
+        def __init__(self, n, skipped = 0):
+            self.n, self.skipped = n, skipped
+
+        def skip(self, k):
+            return Stream(self.n, self.skipped + k)
+
+        def take(self, k):
+            return [{"q": i} for i in range(self.skipped, min(self.n, self.skipped + k))]
+
+    size = {"n": 300_000}
+    monkeypatch.setattr(datasets, "load_dataset", lambda *a, streaming = False, **k: Stream(size["n"]) if streaming else pytest.fail("full download"))
+    monkeypatch.setattr(datasets, "load_dataset_builder", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no metadata")))
+    hub = {"source": "hf", "ref": "org/big", "split": "train"}
+    rows = training._load_rows(hub, None, 250_099, 250_000)
+    assert [r["q"] for r in rows][:2] == [250_000, 250_001] and len(rows) == 100
+    with pytest.raises(FlowNodeError, match = "More than 200000"):
+        training._load_rows(hub, None, None)
+    size["n"] = 50
+    assert len(training._load_rows(hub, None, None)) == 50
+
+
+def test_a_zero_learning_rate_reaches_the_training_api():
+    assert _hub_body(learning_rate = 0)["learning_rate"] == "0"

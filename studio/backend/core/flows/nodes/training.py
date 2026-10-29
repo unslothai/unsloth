@@ -261,7 +261,8 @@ def method_fields(params: dict, config: dict) -> None:
         # Full trains in 16-bit; CPT loads 4-bit only for a pre-quantized checkpoint, like the Train page.
         config["load_in_4bit"] = method == "cpt" and "4bit" in config["model_name"].lower()
     config["max_seq_length"] = int(params.get("max_seq_length") or 2048)
-    config["learning_rate"] = str(params.get("learning_rate") or "2e-4")
+    lr = params.get("learning_rate")
+    config["learning_rate"] = "2e-4" if lr in (None, "") else str(lr)
     if method == "cpt" and params.get("embedding_learning_rate") not in (None, ""):
         config["embedding_learning_rate"] = float(params["embedding_learning_rate"])
 
@@ -483,40 +484,54 @@ def holdout_row_ids(total: int, percent: int, seed: int) -> list[int]:
     return sorted(order[:count])
 
 
-def _too_many(rows: int) -> FlowNodeError:
+def _too_many(rows: Any) -> FlowNodeError:
     return FlowNodeError(
         f"{rows} rows is too many to hold out from here; set Hold out % to 0 or use a smaller slice"
     )
 
 
-def _hub_rows(dataset: dict, token: Any, end: Optional[int]) -> Any:
+def _hub_rows(dataset: dict, token: Any, start: int, end: Optional[int]) -> Any:
     """A Hub split, without downloading more than the hold-out can use: a slice streams just its
-    rows, and a split the Hub says is over the cap is refused before anything is fetched."""
+    rows, a split the Hub says is over the cap is refused before anything is fetched, and one of
+    unknown size streams at most the cap plus one row."""
     from datasets import Dataset, load_dataset, load_dataset_builder
 
     ref, subset = str(dataset["ref"]), dataset.get("subset") or None
     split = dataset.get("split") or "train"
-    if end is not None:
-        if end + 1 > HOLDOUT_MAX_ROWS:
-            raise _too_many(end + 1)
+
+    def stream(count: int) -> Any:
         streamed = load_dataset(ref, subset, split = split, token = token, streaming = True)
-        return Dataset.from_list(list(streamed.take(end + 1)))
+        rows = list((streamed.skip(start) if start else streamed).take(count))
+        if len(rows) > HOLDOUT_MAX_ROWS:
+            raise _too_many(f"More than {HOLDOUT_MAX_ROWS}")
+        return Dataset.from_list(rows)
+
+    if end is not None:
+        count = end + 1 - start
+        if count > HOLDOUT_MAX_ROWS:
+            raise _too_many(count)
+        return stream(max(count, 0))
     try:
         known = load_dataset_builder(ref, subset, token = token).info.splits[split].num_examples
     except Exception:
         known = None
-    if known and known > HOLDOUT_MAX_ROWS:
+    if not known or start:
+        if known and known - start > HOLDOUT_MAX_ROWS:
+            raise _too_many(known - start)
+        return stream(HOLDOUT_MAX_ROWS + 1)
+    if known > HOLDOUT_MAX_ROWS:
         raise _too_many(known)
     return load_dataset(ref, subset, split = split, token = token)
 
 
-def _load_rows(dataset: dict, token: Any, end: Optional[int]) -> list[dict]:
+def _load_rows(dataset: dict, token: Any, end: Optional[int], start: int = 0) -> list[dict]:
+    """Rows start..end (inclusive) of the dataset, already sliced."""
     from datasets import load_dataset
 
     from core.flows.nodes.data import local_seed_path
 
     if dataset.get("source") == "hf":
-        loaded = _hub_rows(dataset, token, end)
+        loaded = _hub_rows(dataset, token, start, end)
     else:
         path = local_seed_path(dataset.get("ref"))
         builder = next((b for ext, b in LOADERS.items() if path.endswith(ext)), None)
@@ -525,8 +540,9 @@ def _load_rows(dataset: dict, token: Any, end: Optional[int]) -> list[dict]:
                 "Hold-out works on Parquet, CSV or JSON datasets; set Hold out % to 0 for this one"
             )
         loaded = load_dataset(builder, data_files = path, split = "train")
-    if end is not None:
-        loaded = loaded.select(range(min(len(loaded), end + 1)))
+        stop = len(loaded) if end is None else min(len(loaded), end + 1)
+        if start or end is not None:
+            loaded = loaded.select(range(min(start, stop), stop))
     if len(loaded) > HOLDOUT_MAX_ROWS:
         raise _too_many(len(loaded))
     # Timestamps and decimals in unused columns would stop the JSONL upload; NaN and inf become null.
@@ -551,22 +567,20 @@ async def holdout_split(
     # Same train split start/end slice the trainer would apply, so the split is of the configured range.
     end = ctx.params.get("dataset_slice_end")
     end = None if end in (None, "") else int(end)
+    start = ctx.params.get("dataset_slice_start")
+    start = 0 if start in (None, "") else int(start)
     if dataset.get("source") == "recipe" and not recipe_artifact(dataset.get("ref")):
         rows = await recipe_rows(ctx, str(dataset["ref"]))
-        if end is not None:
-            rows = rows[: end + 1]
+        rows = rows[start : None if end is None else end + 1]
     else:
         # The request's own Hub token, as /api/train/start gets it; managed accounts never borrow the server's.
         token = account_hf_token(getattr(ctx.caller, "hf_token", None))
         try:
-            rows = await asyncio.to_thread(_load_rows, dataset, token, end)
+            rows = await asyncio.to_thread(_load_rows, dataset, token, end, start)
         except FlowNodeError:
             raise
         except Exception as exc:
             raise FlowNodeError(f"Could not read the dataset to hold rows out: {exc}") from None
-    start = ctx.params.get("dataset_slice_start")
-    if start not in (None, ""):
-        rows = rows[int(start) :]
     held_ids = holdout_row_ids(len(rows), percent, seed)
     if not held_ids:
         raise FlowNodeError(f"{len(rows)} row(s) is too few to hold any out; set Hold out % to 0")
