@@ -11622,3 +11622,15 @@ def test_a_batch_row_without_an_independent_detokenizer_is_refused_not_crashed()
         mlx_inference._require_row_detokenizer(
             mlx_inference._MlxStreamedText(None, decoder, None, ())
         )
+
+
+def test_a_flushed_tail_releases_its_text_before_a_stop_it_completes():
+    from core.inference.mlx_inference import _RowStream
+
+    stream = _RowStream(sequences = ("HALT",))
+    assert stream.feed(text = "already ") == ["already "]
+    assert stream.flush("remaining HALT") == ["already remaining "]
+    assert stream.stopped and stream.settle() == []
+    plain = _RowStream(sequences = ("HALT",))
+    plain.feed(text = "all ")
+    assert plain.flush("of it") == ["all of it"] and plain.settle() == []

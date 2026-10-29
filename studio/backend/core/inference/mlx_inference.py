@@ -3927,8 +3927,9 @@ class _RowStream:
         return []
 
     def flush(self, text):
-        """Text a decoder held until the reply ended; under stop sequences ``settle`` delivers it."""
-        if not self._sequences:
+        """Text a decoder held until the reply ended; ``settle`` delivers it for normalized or re-decoded rows."""
+        if not self._sequences or (self._normalizer is None and self._decode is None):
+            # feed releases up to a stop it finds here, which settle no longer would once stopped.
             return self.feed(text = text)
         self.sampled += text
         self._cut, self.stopped = _mlx_stop_cut(self.sampled, self._sequences)
