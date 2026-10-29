@@ -66,6 +66,8 @@ function trainingExtras(payload: TrainingStartRequest): Record<string, unknown> 
       if (payload[flag]) extras[flag] = true;
     }
   }
+  // Decision checkpoints share one repo and differ only by subfolder.
+  if (payload.model_subfolder) extras.model_subfolder = payload.model_subfolder;
   for (const [flag, fallback] of Object.entries(FLAG_DEFAULTS)) {
     const value = payload[flag as keyof typeof FLAG_DEFAULTS];
     if (value != null && value !== fallback) extras[flag] = value;

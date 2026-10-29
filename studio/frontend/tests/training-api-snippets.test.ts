@@ -80,6 +80,7 @@ function payload(overrides: Partial<TrainingStartRequest> = {}): TrainingStartRe
     is_dataset_audio: false,
     is_embedding: false,
     is_decision: false,
+    model_subfolder: null,
     enable_wandb: true,
     wandb_token: "wandb_SECRET",
     enable_tensorboard: true,
@@ -109,6 +110,7 @@ const ALLOWED = new Set([
   "use_dora",
   "use_loftq",
   "train_on_completions",
+  "model_subfolder",
   "is_dataset_image",
   "is_dataset_audio",
   "is_embedding",
@@ -174,6 +176,12 @@ test("a vision, audio, embedding or decision run keeps its run type and layer ch
   assert.equal(vision.extras.finetune_vision_layers, true);
   assert.equal(vision.extras.finetune_mlp_modules, false);
   assert.ok(!("finetune_language_layers" in vision.extras));
+  const decision = trainingApiRequestFromPayload(
+    payload({ is_decision: true, model_subfolder: "multilingual" }),
+    null,
+  );
+  assert.equal(decision.extras.model_subfolder, "multilingual");
+  assert.ok(!("model_subfolder" in plain.extras));
   for (const flag of ["is_dataset_audio", "is_embedding", "is_decision"] as const) {
     const request = trainingApiRequestFromPayload(payload({ [flag]: true }), null);
     assert.equal(request.extras[flag], true, flag);
@@ -371,6 +379,12 @@ test("the backend contract fixture is what the examples send", () => {
     continuedPretraining: trainingApiJobBody(
       trainingApiRequestFromPayload(
         payload({ training_type: "Continued Pretraining", use_dora: false, use_loftq: true }),
+        null,
+      ),
+    ),
+    decision: trainingApiJobBody(
+      trainingApiRequestFromPayload(
+        payload({ is_decision: true, model_subfolder: "multilingual", use_dora: false }),
         null,
       ),
     ),

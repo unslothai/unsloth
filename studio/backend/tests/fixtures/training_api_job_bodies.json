@@ -113,6 +113,34 @@
     "use_loftq": true,
     "train_on_completions": true
   },
+  "decision": {
+    "model": "unsloth/Qwen3-0.6B",
+    "hyperparameters": {
+      "n_epochs": 3,
+      "batch_size": 4
+    },
+    "seed": 3407,
+    "suffix": "my run",
+    "learning_rate": "0.0002",
+    "load_in_4bit": false,
+    "max_seq_length": 4096,
+    "gradient_accumulation_steps": 2,
+    "warmup_steps": 5,
+    "weight_decay": 0.001,
+    "optim": "adamw_8bit",
+    "lr_scheduler_type": "linear",
+    "packing": false,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0,
+    "target_modules": [
+      "q_proj",
+      "v_proj"
+    ],
+    "model_subfolder": "multilingual",
+    "is_decision": true,
+    "train_on_completions": true
+  },
   "vision": {
     "model": "unsloth/Qwen3-0.6B",
     "hyperparameters": {
