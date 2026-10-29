@@ -502,7 +502,6 @@ def _build_decisions_mcp():
     return mcp
 
 
-# Built on first read: importing fastmcp and building the server is most of a second of startup.
 _decisions_mcp_lock = threading.Lock()
 
 

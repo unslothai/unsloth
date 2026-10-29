@@ -1140,8 +1140,7 @@ from utils.lazy_asgi_app import LazyLifespanApp, combine_lifespans  # noqa: E402
 
 
 def _build_decisions_mcp_app():
-    import importlib
-    decisions_mcp = importlib.import_module("routes.systemone").decisions_mcp
+    from routes.systemone import decisions_mcp
     return decisions_mcp.http_app(path = "/", stateless_http = True, json_response = True)
 
 
@@ -1150,8 +1149,7 @@ def _decisions_on_at_startup() -> bool:
     return systemone_settings.get_enabled()
 
 
-# Both MCP apps are built on their first request (or at startup when switched on): fastmcp and the
-# tool modules are most of a second of import that a Studio with MCP off never uses.
+# Built on first request, or at startup when switched on: fastmcp is most of a second of import.
 # Mounted ahead of /mcp, which would otherwise swallow this path.
 _decisions_mcp_app = LazyLifespanApp(
     _build_decisions_mcp_app, wanted_at_startup = _decisions_on_at_startup
