@@ -35,7 +35,7 @@ const optionalHash = (path) => {
   }
 };
 
-function libc() {
+const LIBC = (() => {
   if (process.platform !== "linux") return "";
   try {
     process.report.excludeNetwork = true;
@@ -43,6 +43,16 @@ function libc() {
   } catch {
     return "unknown";
   }
+})();
+
+// npm-install-checks checkList: none of the negated values, and one of the plain ones if any.
+function allows(value, list) {
+  if (!list) return true;
+  list = [].concat(list);
+  if (list.length === 1 && list[0] === "any") return true;
+  if (list.includes(`!${value}`)) return false;
+  const wanted = list.filter((v) => !v.startsWith("!"));
+  return !wanted.length || wanted.includes(value);
 }
 
 function inputs() {
@@ -62,10 +72,10 @@ function inputs() {
     node: process.version,
     platform: process.platform,
     arch: process.arch,
-    libc: libc(),
+    libc: LIBC,
     package: fileHash(join(ROOT, "package.json")),
     lock: fileHash(join(ROOT, "package-lock.json")),
-    config,
+    config: sha256(JSON.stringify(config)),
     npmrc: optionalHash(join(ROOT, ".npmrc")),
     userNpmrc: optionalHash(userrc),
     globalNpmrc: optionalHash(globalrc),
@@ -99,8 +109,10 @@ function packagesPresent() {
   const hidden = JSON.parse(readFileSync(join(MODULES, ".package-lock.json"), "utf8")).packages || {};
   const declared = Object.keys(JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).dependencies || {});
   if (!declared.length || !declared.includes("oxlint") || !declared.includes("oxc-parser")) return false;
-  for (const name of declared) {
-    if (!hidden[`node_modules/${name}`]) return false;
+  // npm ci exits 0 when an optional native binding fails to download; never trust that tree.
+  for (const [key, entry] of Object.entries(lock)) {
+    if (!key.startsWith("node_modules/") || hidden[key]) continue;
+    if (allows(process.platform, entry.os) && allows(process.arch, entry.cpu) && (!entry.libc || allows(LIBC, entry.libc))) return false;
   }
   for (const [key, entry] of Object.entries(hidden)) {
     if (!key.startsWith("node_modules/") || !lock[key] || lock[key].version !== entry.version) return false;

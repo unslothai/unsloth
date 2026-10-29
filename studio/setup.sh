@@ -2007,7 +2007,7 @@ if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev
 elif [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null; then
     cd "$_OXC_DIR"
     # Gone before npm touches the tree, so an interrupted install is never trusted.
-    rm -f "$_OXC_DIR/node_modules/.unsloth-install-stamp.json"
+    rm -f "$_OXC_DIR/node_modules/.unsloth-install-stamp.json" 2>/dev/null || :
     _OXC_INSTALL_LOG=$(mktemp)
     _CAPTURE_LOG="$_OXC_INSTALL_LOG"
     # `|| _oxc_install_rc=$?` keeps this off `set -e`'s exit path so the hint branch

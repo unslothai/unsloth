@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import sys
+import functools
 import json
 import os
 import re
@@ -30,13 +31,48 @@ STAMP = Path("node_modules") / ".unsloth-install-stamp.json"
 needs_node = pytest.mark.skipif(NODE is None, reason = "needs node")
 
 
+@functools.cache
+def _host() -> tuple[str, str, str]:
+    out = subprocess.run(
+        [
+            NODE,
+            "-e",
+            "process.report.excludeNetwork = true; const r = process.report.getReport().header;"
+            "console.log(process.platform, process.arch,"
+            " process.platform !== 'linux' ? '' : r.glibcVersionRuntime ? 'glibc' : 'musl')",
+        ],
+        capture_output = True,
+        text = True,
+        check = True,
+    ).stdout.split()
+    return out[0], out[1], out[2] if len(out) > 2 else ""
+
+
+def _installs_here(entry: dict) -> bool:
+    plat, arch, libc = _host()
+
+    def allows(value, wanted):
+        if not wanted:
+            return True
+        if f"!{value}" in wanted:
+            return False
+        plain = [w for w in wanted if not w.startswith("!")]
+        return not plain or value in plain
+
+    return (
+        allows(plat, entry.get("os"))
+        and allows(arch, entry.get("cpu"))
+        and (not entry.get("libc") or allows(libc, entry.get("libc")))
+    )
+
+
 def _template(root: Path) -> Path:
     """What `npm ci` leaves for the committed lockfile, minus the real binaries."""
     lock = json.loads((OXC_DIR / "package-lock.json").read_text(encoding = "utf-8"))
     wanted = {
         key: entry
         for key, entry in lock["packages"].items()
-        if key.startswith("node_modules/") and not entry.get("optional")
+        if key.startswith("node_modules/") and _installs_here(entry)
     }
     modules = root / "node_modules"
     for key, entry in wanted.items():
@@ -171,6 +207,29 @@ def test_helper_fails_open_when_an_exec_bit_is_lost(tmp_path):
     assert _helper(oxc, "check") == 0
     binary.chmod(0o644)
     assert _helper(oxc, "check") == 1
+
+
+@needs_node
+def test_helper_refuses_a_tree_missing_this_platforms_native_binding(tmp_path):
+    oxc = _oxc(tmp_path)
+    modules = _template(oxc)
+    hidden = json.loads((modules / ".package-lock.json").read_text(encoding = "utf-8"))
+    bindings = [k for k, e in hidden["packages"].items() if e.get("optional")]
+    assert bindings, "host has no native binding in the lockfile"
+    del hidden["packages"][bindings[0]]
+    shutil.rmtree(oxc / bindings[0])
+    (modules / ".package-lock.json").write_text(json.dumps(hidden), encoding = "utf-8")
+    assert _helper(oxc, "write") == 1
+    assert not (oxc / STAMP).exists()
+
+
+@needs_node
+def test_stamp_never_stores_npm_config_values(tmp_path):
+    oxc = _oxc(tmp_path)
+    _template(oxc)
+    secret = "http://user:hunter2@proxy.invalid:8080"
+    assert _helper(oxc, "write", {**os.environ, "npm_config_https_proxy": secret}) == 0
+    assert "hunter2" not in (oxc / STAMP).read_text(encoding = "utf-8")
 
 
 @needs_node
