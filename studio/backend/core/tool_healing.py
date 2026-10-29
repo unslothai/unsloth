@@ -915,6 +915,15 @@ def parse_tool_calls_from_text(
                 arguments[param_name] = _trim_param_value(val)
             if not valid_params:
                 continue
+        if not param_starts and body.lstrip().startswith("{"):
+            # No <parameter> blocks but a JSON object body: models mix the Hermes and XML forms, and
+            # reading it as zero arguments ran the tool with {} (web_search: "No query provided").
+            try:
+                _json_body = json.loads(body.strip())
+            except (json.JSONDecodeError, ValueError, RecursionError):
+                _json_body = None
+            if isinstance(_json_body, dict):
+                arguments = _json_body
 
         span_start = fm.start()
         wrap_open = re.search(r"<tool_call>\s*$", content[:span_start])
