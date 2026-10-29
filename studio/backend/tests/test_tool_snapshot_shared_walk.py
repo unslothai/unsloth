@@ -109,7 +109,6 @@ def test_shared_walk_gives_each_view_its_own_walk(tmp_path, monkeypatch, seed):
     workdir = tmp_path / "w"
     workdir.mkdir()
     _random_tree(workdir, rng)
-    # Caps from roomy to tight, so either view, or both, stops early on its own budget.
     monkeypatch.setattr(tools, "_MAX_SNAPSHOT_FILES", rng.choice([2000, 1, 5, 20]))
     monkeypatch.setattr(tools, "_MAX_SNAPSHOT_DIRS", rng.choice([2000, 1, 3, 10]))
     monkeypatch.setattr(tools, "_MAX_HISTORY_FILES", rng.choice([20000, 1, 7, 30]))
@@ -151,9 +150,7 @@ def test_a_call_with_history_lists_each_folder_once_per_boundary(chat, monkeypat
     real_walk, listed = os.walk, []
 
     def counting_walk(top, *args, **kwargs):
-        # Patching tools.os.walk patches os.walk everywhere; only the snapshot walks in tools are
-        # counted, not the OS sandbox's own pre-launch safety scan of the folder (macOS seatbelt,
-        # Linux bwrap), which runs once per launch on main and head alike.
+        # tools.os is os: skip the sandbox's own pre-launch scan (seatbelt / bwrap), same on main.
         counted = sys._getframe(1).f_globals.get("__name__") == tools.__name__
         return _counted(real_walk(top, *args, **kwargs), counted)
 
@@ -173,7 +170,6 @@ def test_a_call_with_history_lists_each_folder_once_per_boundary(chat, monkeypat
     monkeypatch.setattr(tools.os, "walk", real_walk)
 
     assert "out.txt" in result
-    # Two boundaries (before and after the run), each listing a folder once for both views.
     for folder in [workdir] + [workdir / f"d{i}" for i in range(5)]:
         assert listed.count(str(folder)) == 2, (folder, listed)
     assert len(listed) == len(set(listed)) + 6, listed

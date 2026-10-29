@@ -21268,9 +21268,7 @@ def _snapshot_workdir_files(workdir: str | None, history: bool = False) -> "dict
 
 
 def _snapshot_workdir_views(workdir: "str | None", views: "tuple") -> "list":
-    """One walk giving each view (False: the files card, True: file history) what its own
-    `_snapshot_workdir_files` walk gives: own caps, depth limit, exclusions and hash budget. A
-    directory is listed, and a file stat'ed and hashed, once however many views keep it."""
+    """One walk giving each view (False: files card, True: file history) exactly its own walk."""
     snapshots: "list[dict[str, tuple]]" = [{} for _ in views]
     if not workdir or not os.path.isdir(workdir):
         return snapshots
@@ -21286,8 +21284,7 @@ def _snapshot_workdir_views(workdir: "str | None", views: "tuple") -> "list":
         views
     )
     live = set(range(len(views)))
-    # The views that walk each directory still to come. Siblings keep os.walk's order, so a view
-    # meets its directories in the order its own walk would.
+    # Pre-order restricted to a view's directories is that view's own walk order.
     owners: "dict[str, list[int]]" = {workdir: sorted(live)}
     digests: "dict[str, str | None]" = {}
     # walked to include nested outputs such as outputs/report.csv that a top-level listing drops.
@@ -21418,8 +21415,7 @@ def _call_finished(token: "dict | None") -> None:
 
 def _history_walk(workdir: str, snap: "dict | None" = None) -> "tuple[dict, bool]":
     """The walk as file history keeps it: without scratch scripts and Studio's own trees. The flag
-    says whether the walk was whole, since a capped one cannot prove a file is gone. *snap* is a
-    history view this boundary already walked."""
+    says whether the walk was whole, since a capped one cannot prove a file is gone."""
     if snap is None:
         snap = _snapshot_workdir_files(workdir, history = True)
     with _scratch_lock:
@@ -21547,7 +21543,6 @@ def _created_file_sentinels(
         # card beats one that names, and downloads, another chat's file.
         return ""
     if token is not None and token.get("history") is not None and token.get("workdir") == workdir:
-        # One walk for the card and the history: the same views two walks gave.
         after, walked = _snapshot_workdir_views(workdir, (False, True))
         _history_end(token, walked)
     else:
