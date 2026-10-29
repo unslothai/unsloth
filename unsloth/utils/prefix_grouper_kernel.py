@@ -45,11 +45,15 @@ _BF16_BLOCK_M = int(os.environ.get("PG_FLEX_BF16_BLOCK_M", "128"))
 _BF16_BLOCK_N = int(os.environ.get("PG_FLEX_BF16_BLOCK_N", "64"))
 
 
-def _kernel_options_for_dtype(dtype):
+def _kernel_options_for_dtype(dtype, one_stage = False):
     """Pick the numerically-safe flash block sizes for the Q dtype."""
     if dtype == torch.bfloat16 or dtype == torch.float16:
-        return {"BLOCK_M": _BF16_BLOCK_M, "BLOCK_N": _BF16_BLOCK_N}
-    return {"BLOCK_M": _FP32_BLOCK_M, "BLOCK_N": _FP32_BLOCK_N}
+        options = {"BLOCK_M": _BF16_BLOCK_M, "BLOCK_N": _BF16_BLOCK_N}
+    else:
+        options = {"BLOCK_M": _FP32_BLOCK_M, "BLOCK_N": _FP32_BLOCK_N}
+    if one_stage:
+        options["num_stages"] = 1
+    return options
 
 
 # Backward-compat constant (fp32 default).
@@ -264,6 +268,8 @@ def get_block_mask(
 
     # Move labels to the Q device (sharded models), outside inference mode: an inference tensor
     # captured by mask_mod could not be saved for backward.
+    # torch 2.7 Inductor emits a ZeroDivisionError when the first compiled mask is one 128 block.
+    compile_mask = compile_mask and seg.T_pad > _PAD_MULTIPLE
     builder = _create_block_mask_compiled if compile_mask else create_block_mask
     with torch.inference_mode(False):
         mask_mod = _make_mask_mod(
@@ -297,7 +303,18 @@ def _pad_qkv_seq(x: torch.Tensor, T_pad: int) -> torch.Tensor:
     return torch.cat([x, pad], dim = 2)
 
 
-def _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad):
+def _run_flex(
+    q,
+    k,
+    v,
+    block_mask,
+    enable_gqa,
+    scale,
+    compiled,
+    T,
+    T_pad,
+    one_stage = False,
+):
     """Pad q/k/v to T_pad, run flex, slice the output back to T. q/k/v: [B,H,T,D]."""
     qp = _pad_qkv_seq(q, T_pad)
     kp = _pad_qkv_seq(k, T_pad)
@@ -310,7 +327,7 @@ def _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad):
             block_mask = block_mask,
             enable_gqa = enable_gqa,
             scale = scale,
-            kernel_options = _kernel_options_for_dtype(qp.dtype),
+            kernel_options = _kernel_options_for_dtype(qp.dtype, one_stage),
         )
     else:
         # Eager path (fp64 parity): dense scores, no kernel_options.
@@ -330,8 +347,10 @@ class PrefixGrouperCompileError(RuntimeError):
 
 
 # unsloth_zoo's suppress_errors turns a failed compile into a silent eager flex fallback that
-# materialises T x T scores (torch 2.6 codegen bugs, torch 2.7.1 L4 shared-memory limit).
+# materialises T x T scores (torch 2.6 codegen bugs, torch <= 2.8 tiles on 101376 B smem cards).
 _COMPILE_CHECKED: Dict[Tuple, bool] = {}
+# Setups whose 3-stage tiles overflow shared memory (sm86 / sm89 / sm120 on torch 2.7 / 2.8).
+_ONE_STAGE_KEYS: set = set()
 _COMPILE_FAILURE: Optional[str] = None
 _CHECK_ENV = os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_COMPILE_CHECK", "1")
 _COMPILE_CHECK_ON = _CHECK_ENV.lower() not in ("0", "false", "no", "off")
@@ -365,16 +384,29 @@ def _compile_failure_reason(root: BaseException) -> str:
 def _checked_first_call(q, k, v, seg, block_mask, enable_gqa, scale, T, T_pad, key):
     """Real call plus fwd + bwd on detached copies, strict, so later calls reuse those graphs."""
     global _COMPILE_FAILURE
-    try:
+
+    def strict_calls(one_stage):
+        nonlocal block_mask
         with torch._dynamo.config.patch(suppress_errors = False):
             if block_mask is None:
                 block_mask = get_block_mask(seg, q.device, compile_mask = True)
-            out = _run_flex(q, k, v, block_mask, enable_gqa, scale, True, T, T_pad)
+            out = _run_flex(q, k, v, block_mask, enable_gqa, scale, True, T, T_pad, one_stage)
             with torch.inference_mode(False), torch.enable_grad():
                 qc, kc, vc = (x.detach().clone().requires_grad_(True) for x in (q, k, v))
-                oc = _run_flex(qc, kc, vc, block_mask, enable_gqa, scale, True, T, T_pad)
+                oc = _run_flex(qc, kc, vc, block_mask, enable_gqa, scale, True, T, T_pad, one_stage)
                 torch.autograd.grad(oc.float().sum(), (qc, kc, vc))
-                del qc, kc, vc, oc
+        return out
+
+    try:
+        try:
+            out = strict_calls(False)
+        except torch.cuda.OutOfMemoryError:
+            raise
+        except Exception as exc:
+            if "out of resource" not in str(_root_exception(exc)):
+                raise
+            out = strict_calls(True)
+            _ONE_STAGE_KEYS.add(key)
     except torch.cuda.OutOfMemoryError:
         raise  # transient: not cached, callers fall back
     except Exception as exc:
@@ -443,7 +475,8 @@ def flex_shared_prefix_attention(
     if out is None:
         if block_mask is None:
             block_mask = get_block_mask(prefix_seg_info, device, compile_mask = compiled)
-        out = _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad)
+        one_stage = compiled and key in _ONE_STAGE_KEYS
+        out = _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad, one_stage)
     # Back to [1, T, n_heads, D].
     return out.transpose(1, 2).contiguous()
 

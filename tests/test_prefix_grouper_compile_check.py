@@ -179,11 +179,49 @@ def test_compile_failure_turns_prefix_grouper_off_once(mods, monkeypatch, capsys
     assert out.count("\n") == 1 and "PrefixGrouper is off" in out and "104448" in out
     assert pg.prefix_grouper_enabled() is False
     assert torch._dynamo.config.suppress_errors is True  # patch restored after the failure
-    # Later calls fail fast without re-running the check or logging again.
+    # One retry with one-stage tiles, then later calls fail fast without a re-check or new log.
     with pytest.raises(kernel.PrefixGrouperCompileError):
         kernel.flex_shared_prefix_attention(Q, K, V, seg)
-    assert calls["flex"] == 1
+    assert calls["flex"] == 2
     assert capsys.readouterr().out == ""
+
+
+def test_shared_memory_overflow_retries_with_one_stage(mods, monkeypatch, capsys):
+    """torch 2.7 / 2.8 on 101376 B smem cards: 3-stage tiles overflow, num_stages=1 fits."""
+    pg, kernel, calls = mods
+    stages = []
+
+    def three_stage_overflows(
+        *args,
+        kernel_options = None,
+        **kwargs,
+    ):
+        stages.append(kernel_options.get("num_stages"))
+        if kernel_options.get("num_stages") != 1:
+            raise RuntimeError(
+                "No valid triton configs. OutOfResources: out of resource: shared memory"
+            )
+        return _cpu_flex(*args, **kwargs)
+
+    monkeypatch.setattr(kernel, "_flex_attention_compiled", three_stage_overflows)
+    seg = _seg(kernel)
+    Q, K, V = _qkv(seg.T)
+    out = kernel.flex_shared_prefix_attention(Q, K, V, seg)
+    assert stages == [None, 1, 1]
+    assert pg.prefix_grouper_enabled() is True and capsys.readouterr().out == ""
+    assert torch.equal(kernel.flex_shared_prefix_attention(Q, K, V, seg), out)
+    assert stages[-1] == 1 and len(stages) == 4
+
+
+def test_single_block_mask_is_built_eagerly(mods):
+    """torch 2.7 Inductor fails when the first compiled mask is a single 128 block."""
+    pg, kernel, calls = mods
+    seg = _seg(kernel)
+    assert seg.T_pad == 128
+    kernel.get_block_mask(seg, torch.device("cpu"))
+    assert calls["mask"] == 0
+    kernel.get_block_mask(_seg(kernel, ((100, [30, 40]),)), torch.device("cpu"))
+    assert calls["mask"] == 1
 
 
 def test_backward_compile_failure_is_caught(mods, monkeypatch):
