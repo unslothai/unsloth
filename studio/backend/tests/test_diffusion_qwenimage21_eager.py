@@ -139,3 +139,15 @@ def test_cpu_tensors_never_reach_the_kernel():
     freqs = torch.polar(torch.ones(4, 8), torch.rand(4, 8))
     assert e.install()
     assert e._norm_rope(x, norm, freqs) is None
+
+
+def test_the_eager_tier_rmsnorm_patch_still_takes_the_kernel(monkeypatch):
+    from core.inference import diffusion_eager_patches as ep
+
+    assert e.install()
+    norm = qmod.RMSNorm(16, eps = 1e-6)
+    assert e._stock_norm(norm)
+    monkeypatch.setattr(qmod.RMSNorm, "forward", ep._rmsnorm_forward)
+    assert e._stock_norm(norm)
+    monkeypatch.setattr(qmod.RMSNorm, "forward", lambda self, x: x)
+    assert not e._stock_norm(norm)

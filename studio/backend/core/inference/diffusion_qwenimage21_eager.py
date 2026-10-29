@@ -197,9 +197,19 @@ def _eligible(x: Any, norm: Any, freqs: Any) -> bool:
 
 
 def _stock_norm(norm: Any) -> bool:
+    """The stock forward, or the eager tier's fused RMSNorm (the deferred profile installs it on render 3): the
+    kernel stands in for either, which differ only in rounding x * rsqrt before the weight."""
+    import inspect
+
     forward = getattr(type(norm), "forward", None)
     want = _STOCK.get("rmsnorm_forward")
-    return want is not None and forward is want
+    if want is None or forward is None:
+        return False
+    if forward is want:
+        return True
+    from .diffusion_eager_patches import _rmsnorm_forward
+
+    return getattr(inspect.unwrap(forward), "__code__", None) is _rmsnorm_forward.__code__
 
 
 def _norm_rope(x: Any, norm: Any, freqs: Any) -> Optional[Any]:
