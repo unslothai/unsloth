@@ -3,6 +3,7 @@
 
 import { type DocGraph, newId, useDocStore } from "../stores/doc-store";
 import type { FlowGroup, FlowNode } from "../types";
+import { setupBoxes } from "./recipe-setup";
 import {
   COLUMN_TYPE,
   GENERATE_TYPE,
@@ -237,10 +238,16 @@ export function nextColumnSlot(
   const step = members.find((n) => n.type === GENERATE_TYPE);
   const [x, y, w, h] = group.rect;
   const [cw, ch] = COLUMN_SIZE;
+  const cards = setupBoxes(graph);
   const taken = (cx: number, cy: number) =>
     (step && Math.abs(cx - step.pos[0]) < cw && cy >= step.pos[1] - ch / 2) ||
     members.some(
       (n) => Math.abs(n.pos[0] - cx) < cw - 20 && Math.abs(n.pos[1] - cy) < ch - 20,
+    ) ||
+    // Clear of the seed, model and tool cards too, wherever they were dragged.
+    cards.some(
+      (b) =>
+        cx < b.x + b.width && b.x < cx + cw - 40 && cy < b.y + b.height && b.y < cy + ch - 40,
     );
   for (let cy = y + 60; cy + ch - 40 <= y + h; cy += ch)
     for (let cx = x + 40; cx + cw - 40 <= x + w; cx += cw)

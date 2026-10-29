@@ -511,3 +511,96 @@ test("a note is at least its stored height and grows with its text instead of cl
     .find((n) => n.type === "flowNote");
   assert.deepEqual(note?.style, { width: 320, minHeight: 200 });
 });
+
+async function recipeOverlaps(sizes: Map<string, { width: number; height: number }>) {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { setupLayout, NODE_SIZE, CARD_SIZE } = await import(
+    "../src/features/flows/recipe/recipe-setup.ts"
+  );
+  const graph = useDocStore.getState().graph;
+  const boxes = [
+    ...graph.nodeOrder.map((id) => ({
+      id,
+      x: graph.nodes[id].pos[0],
+      y: graph.nodes[id].pos[1],
+      ...(sizes.get(id) ?? NODE_SIZE),
+    })),
+    ...setupLayout(graph, null, sizes).elements.map(({ card, x, y }) => ({
+      id: card.id,
+      x,
+      y,
+      ...(sizes.get(card.id) ?? CARD_SIZE),
+    })),
+  ];
+  const hits: string[] = [];
+  for (const [i, a] of boxes.entries())
+    for (const b of boxes.slice(i + 1))
+      if (a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height)
+        hits.push(`${a.id} x ${b.id}`);
+  return hits;
+}
+
+test("no two nodes of a recipe group overlap after import, after adding setup blocks, or after Tidy up", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { addRecipeBlock } = await import("../src/features/flows/recipe/recipe-blocks.ts");
+  const { setupLayoutNodes, withLaidOutSetup, isSetupId, withSetupPosition, setupLayout } =
+    await import("../src/features/flows/recipe/recipe-setup.ts");
+  const { computeLayout } = await import("../src/features/flows/editor/layout-core.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group, nodes } = sqlGroup();
+  // As the importer lays it out: a 320 x 180 grid, the Recipe Dataset step at the end of row 0,
+  // plus a column left in the step's lane from an older layout (the ticket-router report).
+  const placed = nodes.map((n, i) => ({ ...n, pos: [(i % 4) * 320, Math.floor(i / 4) * 180] as [number, number] }));
+  const step: FlowNode = {
+    id: "step",
+    type: GENERATE_TYPE,
+    v: 1,
+    params: { rows: 5, mode: "preview" },
+    pos: [1280, 0],
+    group: "recipe",
+  };
+  const stray = { ...placed[0], id: "stray", pos: [1280, 460] as [number, number] };
+  stray.params = { column: { ...(placed[0].params.column as object), name: "stray" } };
+  useDocStore.getState().load({
+    ...doc([...placed, step, stray]),
+    groups: [{ ...group, rect: [-40, -60, 1600, 700] }],
+  });
+  // A finished run makes the step tall (Done, a dataset table).
+  const sizes = new Map([["step", { width: 260, height: 420 }]]);
+  assert.deepEqual(await recipeOverlaps(sizes), [], "after import");
+
+  const before = setupLayout(useDocStore.getState().graph, null, sizes).elements.length;
+  for (const type of ["model_provider", "model_config", "tool_config"])
+    addRecipeBlock("recipe", "llm", type);
+  assert.equal(setupLayout(useDocStore.getState().graph, null, sizes).elements.length, before + 3);
+  assert.deepEqual(await recipeOverlaps(sizes), [], "after adding setup blocks");
+
+  // A card dragged into the column grid: the next column goes around it.
+  const first = setupLayout(useDocStore.getState().graph, null, sizes).elements[0];
+  const g = useDocStore.getState().graph.groups.recipe;
+  useDocStore.getState().upsertGroup(withSetupPosition(g, first.card.id, [320, 360]));
+  const columns = useDocStore.getState().graph.nodeOrder.length;
+  addRecipeBlock("recipe", "sampler", "uuid");
+  assert.equal(useDocStore.getState().graph.nodeOrder.length, columns + 1);
+  assert.deepEqual(await recipeOverlaps(sizes), [], "a new column keeps clear of a moved card");
+
+  const graph = useDocStore.getState().graph;
+  const setup = setupLayoutNodes(graph, (id) => sizes.get(id));
+  const result = computeLayout({
+    direction: "LR",
+    nodes: [
+      ...graph.nodeOrder.map((id) => ({ id, ...(sizes.get(id) ?? { width: 260, height: 140 }) })),
+      ...setup.nodes,
+    ],
+    edges: [
+      ...graph.edgeOrder.map((id) => ({ source: graph.edges[id].source, target: graph.edges[id].target })),
+      ...setup.edges,
+    ],
+  });
+  assert.ok(Object.keys(result).some(isSetupId), "Tidy up lays out the setup cards too");
+  useDocStore.getState().moveNodes(
+    Object.fromEntries(Object.entries(result).filter(([k]) => !isSetupId(k))),
+  );
+  useDocStore.getState().patchGraph({ groups: withLaidOutSetup(useDocStore.getState().graph, result) });
+  assert.deepEqual(await recipeOverlaps(sizes), [], "after Tidy up");
+});
