@@ -1097,6 +1097,8 @@ class TestNativeAudioPlacementContracts(unittest.TestCase):
                 return_value = [index for index, _total, _used in devices],
             ),
             patch("utils.hardware.hardware._with_mig_instance_memory", side_effect = lambda d: d),
+            # Skip the host torch probe: it would be the first torch import, made from a worker thread.
+            patch("utils.hardware.hardware.rocm_gpu_ids_without_torch_kernels", return_value = set()),
             patch(
                 "utils.hardware.hardware.estimate_required_model_memory_gb",
                 return_value = (required_gb, {"required_gb": required_gb}),
