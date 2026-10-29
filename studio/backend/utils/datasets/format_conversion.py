@@ -3,6 +3,7 @@
 
 """Dataset format conversion between Alpaca, ShareGPT, and ChatML."""
 
+import contextvars
 import os
 
 from .cells import cell_text
@@ -444,6 +445,10 @@ def _format_eta(seconds):
         h, remainder = divmod(int(seconds), 3600)
         m, _ = divmod(remainder, 60)
         return f"{h}h {m}m"
+
+
+# huggingface_hub snapshot_download's default; caps parallel requests to one image host or the Hub.
+_MAX_ROW_FETCH_WORKERS = 8
 
 
 def _fetch_row_image(url):
@@ -946,6 +951,28 @@ def convert_sharegpt_with_images_to_vlm_format(
     converted_list = []
     failed_count = 0
 
+    def _record(future_or_sample):
+        nonlocal failed_count
+        try:
+            if isinstance(future_or_sample, Future):
+                converted_list.append(future_or_sample.result())
+            else:
+                converted_list.append(_convert_single_sample(future_or_sample))
+        except Exception as e:
+            failed_count += 1
+            if failed_count == 1:
+                logger.info(f"⚠️ First conversion failure: {type(e).__name__}: {e}")
+        pbar.set_postfix(ok = len(converted_list), failed = failed_count, refresh = False)
+
+    from concurrent.futures import Future
+
+    num_workers = 1
+    if _image_lookup is not None or (
+        isinstance(first_image, str) and first_image.startswith(("http://", "https://"))
+    ):
+        from utils.hardware import safe_thread_num_proc
+        num_workers = min(safe_thread_num_proc(), _MAX_ROW_FETCH_WORKERS)
+
     pbar = tqdm(
         dataset,
         total = total,
@@ -953,15 +980,34 @@ def convert_sharegpt_with_images_to_vlm_format(
         unit = "sample",
         **_quiet_bar_kwargs(),
     )
-    for sample in pbar:
-        try:
-            converted_list.append(_convert_single_sample(sample))
-        except Exception as e:
-            failed_count += 1
-            if failed_count == 1:
-                logger.info(f"⚠️ First conversion failure: {type(e).__name__}: {e}")
-        pbar.set_postfix(ok = len(converted_list), failed = failed_count, refresh = False)
-    pbar.close()
+    try:
+        if num_workers <= 1:
+            for sample in pbar:
+                _record(sample)
+        else:
+            from collections import deque
+            from concurrent.futures import ThreadPoolExecutor
+
+            # Settled in row order (same output and first-failure log as serial); 2x workers bounds images held in memory.
+            pending = deque()
+            with ThreadPoolExecutor(max_workers = num_workers) as executor:
+                try:
+                    for sample in pbar:
+                        # A fresh context copy per task: the fetch sees the caller's account / HF cache settings.
+                        pending.append(
+                            executor.submit(
+                                contextvars.copy_context().run, _convert_single_sample, sample
+                            )
+                        )
+                        if len(pending) > 2 * num_workers:
+                            _record(pending.popleft())
+                    while pending:
+                        _record(pending.popleft())
+                except BaseException:
+                    executor.shutdown(wait = False, cancel_futures = True)
+                    raise
+    finally:
+        pbar.close()
 
     if failed_count > 0:
         logger.info(f"⚠️ Skipped {failed_count}/{total} ({failed_count*100//total}%) samples")
