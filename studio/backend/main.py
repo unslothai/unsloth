@@ -406,6 +406,7 @@ from routes import (
     chat_generation_runs_router,
     training_history_router,
     training_router,
+    training_schedules_router,
     video_router,
     video_openai_router,
     youtube_router,
@@ -970,6 +971,11 @@ async def lifespan(app: FastAPI):
     app.state.scheduled_task_scheduler = ScheduledTaskScheduler(app)
     app.state.scheduled_task_scheduler.start()
 
+    from core.training.schedule_scheduler import TrainingScheduleScheduler
+
+    app.state.training_schedule_scheduler = TrainingScheduleScheduler(app)
+    app.state.training_schedule_scheduler.start()
+
     from core.inference.chat_generation_runs import ChatGenerationSupervisor
 
     app.state.chat_generation_supervisor = ChatGenerationSupervisor(app)
@@ -1089,6 +1095,10 @@ async def lifespan(app: FastAPI):
     _scheduled_task_scheduler = getattr(app.state, "scheduled_task_scheduler", None)
     if _scheduled_task_scheduler is not None:
         await _scheduled_task_scheduler.stop()
+
+    _training_schedule_scheduler = getattr(app.state, "training_schedule_scheduler", None)
+    if _training_schedule_scheduler is not None:
+        await _training_schedule_scheduler.stop()
 
     _chat_generation_supervisor = getattr(app.state, "chat_generation_supervisor", None)
     if _chat_generation_supervisor is not None:
@@ -1952,6 +1962,9 @@ app.include_router(export_router, prefix = "/api/export", tags = ["export"])
 app.include_router(external_import_router, prefix = "/api/import", tags = ["import"])
 app.include_router(rag_router, prefix = "/api/rag", tags = ["rag"])
 app.include_router(training_history_router, prefix = "/api/train", tags = ["training-history"])
+app.include_router(
+    training_schedules_router, prefix = "/api/train/schedules", tags = ["training-schedules"]
+)
 app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
 app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["hub"])
 app.include_router(picker_templates_router, prefix = "/api/picker", tags = ["picker"])

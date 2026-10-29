@@ -4,17 +4,27 @@
 import { Button } from "@/components/ui/button";
 import {
   type StartValidationResult,
+  activeTrainingSchedule,
+  latestTrainingScheduleProblem,
+  trainingScheduleDraftValid,
+  useScheduledTrainingStore,
   useTrainingActions,
   useTrainingConfigStore,
   useTrainingReadiness,
 } from "@/features/training";
 import { useT } from "@/i18n";
+import { browserTimeZone } from "@/lib/schedule-time";
 import { cn } from "@/lib/utils";
 import type { DatasetSource } from "@/types/training";
 import { Refresh01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { PlayIcon } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
+import { ScheduleStartControl } from "./schedule-start-control";
+import {
+  PendingScheduleCard,
+  ScheduledTrainingProblemCard,
+} from "./scheduled-training-card";
 import { resolveStartTrainingButtonLabelKey } from "./start-training-cta-state";
 
 function resolveStartTrainingError(input: {
@@ -95,18 +105,49 @@ export function StartTrainingCta() {
     hasDataset,
     configValidation,
   } = useTrainingReadiness();
-  const { startError, startBlocked, stopRequested, startTrainingRun } =
-    useTrainingActions();
+  const {
+    startError,
+    startBlocked,
+    stopRequested,
+    startTrainingRun,
+    scheduleTrainingRun,
+  } = useTrainingActions();
+  const {
+    activeSchedule,
+    problemSchedule,
+    creating,
+    scheduleMode,
+    draftDate,
+    draftTime,
+  } = useScheduledTrainingStore(
+    useShallow((state) => ({
+      activeSchedule: activeTrainingSchedule(state.schedules),
+      problemSchedule: latestTrainingScheduleProblem(
+        state.schedules,
+        state.dismissedId,
+      ),
+      creating: state.creating,
+      scheduleMode: state.draftEnabled,
+      draftDate: state.draftDate,
+      draftTime: state.draftTime,
+    })),
+  );
 
-  const disabled = startBlocked || !isReady;
+  const scheduled = activeSchedule !== null;
+  const draftValid = trainingScheduleDraftValid(draftDate, draftTime);
+  const disabled =
+    startBlocked || !isReady || scheduled || (scheduleMode && !draftValid);
   const buttonLabel = t(
     resolveStartTrainingButtonLabelKey({
       stopRequested,
+      scheduled,
+      scheduling: scheduleMode && (startBlocked || creating),
       startBlocked,
       isLoadingModel,
       isCheckingDataset,
       hasModel,
       hasDataset,
+      scheduleMode,
     }),
   );
   const errorMessage = resolveStartTrainingError({
@@ -135,6 +176,14 @@ export function StartTrainingCta() {
 
   return (
     <div className="flex flex-col gap-2">
+      {problemSchedule && (
+        <ScheduledTrainingProblemCard schedule={problemSchedule} />
+      )}
+      {activeSchedule ? (
+        <PendingScheduleCard schedule={activeSchedule} />
+      ) : (
+        <ScheduleStartControl disabled={startBlocked || !isReady} />
+      )}
       <Button
         size="lg"
         className={cn(
@@ -145,7 +194,14 @@ export function StartTrainingCta() {
           "transition-colors duration-200",
         )}
         onClick={() => {
-          startTrainingRun().catch(() => undefined);
+          if (scheduleMode) {
+            scheduleTrainingRun(
+              `${draftDate}T${draftTime}`,
+              browserTimeZone(),
+            ).catch(() => undefined);
+          } else {
+            startTrainingRun().catch(() => undefined);
+          }
         }}
         disabled={disabled}
       >

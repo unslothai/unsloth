@@ -47,11 +47,11 @@ import {
 } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { formatClock } from "@/lib/schedule-time.ts";
 import type { ScheduledTask } from "./api";
 import { runErrorText } from "./results";
 import {
   type TaskSchedule,
-  formatClock,
   formatRunDay,
   relativeTimeParts,
   summarizeRepeats,

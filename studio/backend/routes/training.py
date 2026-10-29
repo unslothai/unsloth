@@ -1899,7 +1899,9 @@ def _background_video_generation_active() -> bool:
         return False
 
 
-async def _prepare_training_request(request: TrainingStartRequest, via_api_key: bool) -> None:
+async def _prepare_training_request(
+    request: TrainingStartRequest, via_api_key: bool, *, stop_token_preview: bool = True
+) -> None:
     await asyncio.to_thread(_validate_decision_request, request, via_api_key)
     if request.drafter is not None and request.drafter.enabled:
         from core.training.training import should_use_mlx_training_backend
@@ -1908,10 +1910,11 @@ async def _prepare_training_request(request: TrainingStartRequest, via_api_key: 
                 status_code = 400,
                 detail = "Drafter training is not available on Apple Silicon (MLX) yet.",
             )
-    from core.training.token_preview import stop_token_preview_worker
+    if stop_token_preview:
+        from core.training.token_preview import stop_token_preview_worker
 
-    # The run needs the host RAM more than the preview needs to stay warm; reaped off the request path.
-    threading.Thread(target = stop_token_preview_worker, daemon = True).start()
+        # The run needs the host RAM more than the preview needs to stay warm; reaped off the request path.
+        threading.Thread(target = stop_token_preview_worker, daemon = True).start()
     if managed_account():
         from utils.paths import tensorboard_root
 
@@ -2294,6 +2297,18 @@ async def start_training(
     Initiates training in the background and returns immediately. Use /status
     to check progress.
     """
+    from storage import training_schedules_db
+
+    # The scheduler claims its row to 'starting' before it calls this, so only a still-waiting
+    # schedule refuses a manual start.
+    if training_schedules_db.pending_schedule() is not None:
+        raise HTTPException(
+            status_code = 409,
+            detail = (
+                "A training run is scheduled to start later. Cancel the schedule "
+                "before starting training now."
+            ),
+        )
     await _prepare_training_request(request, via_api_key)
     backend = None
     reserved_start_request_id = None
