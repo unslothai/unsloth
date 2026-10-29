@@ -290,12 +290,8 @@ def _stream_file_preview_slice(path: Path, preview_size: int, **load_kwargs):
 
 
 def _parquet_preview_slice(files: list[Path], preview_size: int):
-    """The first ``preview_size`` rows and exact row count of Parquet ``files`` without loading them whole.
-
-    Reads as the datasets Parquet builder does (features from the first file's schema, each batch cast
-    to them), but only the leading row groups, and counts rows from the footers. ``None`` when that may
-    not match the full load: the files' schemas differ, the files hold no rows, or anything fails.
-    """
+    """Leading ``preview_size`` rows + footer row count, typed as the datasets Parquet builder types them,
+    without the full load's cache write. ``None`` (full load decides) on differing schemas, no rows, or any error."""
     try:
         import pyarrow as pa
         import pyarrow.parquet as pq
@@ -319,8 +315,7 @@ def _parquet_preview_slice(files: list[Path], preview_size: int):
         arrow_schema = features.arrow_schema
         wanted = min(preview_size, total_rows)
         tables, decoded_rows = [], 0
-        # Decode every page, as the full load does, so damage past the preview rows still fails here.
-        # Batches stay inside one row group: spanning ones held far more than the full load on images.
+        # Decode every page (damage past the preview rows must still fail), one row group per batch at most.
         for path in files:
             # A file object, so the handle is closed here (Windows would keep the file locked otherwise).
             with open(path, "rb") as handle:
