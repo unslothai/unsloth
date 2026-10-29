@@ -37,6 +37,11 @@ class RagExtensionUnavailable(RuntimeError):
 
 _schema_lock = threading.Lock()
 _schema_ready: set[Path] = set()
+# Held idle so per-operation closes do not delete and recreate WAL/SHM (#15552).
+_wal_keepers: dict[Path, sqlite3.Connection] = {}
+_wal_keeper_paths: dict[Path, Path] = {}
+_wal_keeper_lock = threading.Lock()
+_wal_keepers_enabled = True
 # Warn once per process: the UI polls the KB list on a timer.
 _unavailable_lock = threading.Lock()
 _unavailable_warned = False
@@ -323,6 +328,11 @@ def get_connection() -> sqlite3.Connection:
                 except Exception:
                     conn.close()
                     raise
+    try:
+        _ensure_wal_keeper(db_path)
+    except Exception:
+        conn.close()
+        raise
     return conn
 
 
@@ -335,7 +345,85 @@ def get_metadata_connection() -> sqlite3.Connection:
     conn = sqlite_gate.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 5000")
+    try:
+        _ensure_wal_keeper(db_path)
+    except Exception:
+        conn.close()
+        raise
     return conn
+
+
+def _ensure_wal_keeper(db_path: Path) -> None:
+    if not _wal_keepers_enabled or db_path in _wal_keeper_paths:
+        return
+    with _wal_keeper_lock:
+        if not _wal_keepers_enabled or _account_retired():
+            return
+        resolved = db_path.resolve()
+        if resolved not in _wal_keepers:
+            # No vec0 load: metadata-only callers must work without sqlite-vec.
+            keeper = sqlite_gate.connect(db_path, check_same_thread = False)
+            try:
+                mode = keeper.execute("PRAGMA journal_mode").fetchone()[0]
+                if not isinstance(mode, str) or mode.lower() != "wal":
+                    keeper.close()
+                    # Not cached: a metadata open can precede RAG switching the file to WAL.
+                    return
+                keeper.execute("SELECT 1 FROM sqlite_schema LIMIT 1").fetchall()
+            except Exception:
+                keeper.close()
+                raise
+            _wal_keepers[resolved] = keeper
+        _wal_keeper_paths[db_path] = resolved
+        _wal_keeper_paths[resolved] = resolved
+
+
+def _account_retired() -> bool:
+    # Under _wal_keeper_lock: a late open must not recreate a keeper retirement closed (blocks the Windows rename).
+    from utils.account_context import is_owner_context
+
+    if is_owner_context():
+        return False
+    from core.training.account_jobs import account_is_retired
+
+    return account_is_retired()
+
+
+def start_wal_keepers() -> None:
+    """Enable lazy keepers for a new backend lifespan without initializing RAG."""
+    global _wal_keepers_enabled
+    with _wal_keeper_lock:
+        _wal_keepers_enabled = True
+
+
+def _close_keeper(conn: sqlite3.Connection) -> None:
+    try:
+        conn.close()
+    except Exception as exc:
+        logger.warning("Could not close the rag.db WAL keeper: %s", exc)
+
+
+def close_wal_keeper_for(path: str | Path) -> None:
+    """Release one account's RAG database before its directories are retired."""
+    resolved = Path(path).resolve()
+    with _wal_keeper_lock:
+        keeper = _wal_keepers.pop(resolved, None)
+        if keeper is not None:
+            _close_keeper(keeper)
+        for spelling, target in tuple(_wal_keeper_paths.items()):
+            if target == resolved:
+                del _wal_keeper_paths[spelling]
+
+
+def close_wal_keeper() -> None:
+    """Release all keepers; late workers cannot reopen them after shutdown."""
+    global _wal_keepers_enabled
+    with _wal_keeper_lock:
+        _wal_keepers_enabled = False
+        for keeper in _wal_keepers.values():
+            _close_keeper(keeper)
+        _wal_keepers.clear()
+        _wal_keeper_paths.clear()
 
 
 def vec_table_dim(conn: sqlite3.Connection) -> int | None:
@@ -406,19 +494,16 @@ def _delete_document_chunks(conn, document_id: str) -> None:
     """Delete a document's chunk rows (chunks/chunks_fts/chunks_vec), keeping the documents row. Used when
     reconciling a half-ingested doc to failed: retrieval filters by scope not status, so leftover chunks would
     stay citable."""
-    chunk_ids = [
-        r["id"]
-        for r in conn.execute(
-            "SELECT id FROM chunks WHERE document_id=?", (document_id,)
-        ).fetchall()
-    ]
-    if not chunk_ids:
+    if (
+        conn.execute("SELECT 1 FROM chunks WHERE document_id=? LIMIT 1", (document_id,)).fetchone()
+        is None
+    ):
         return
-    has_vec = vec_table_exists(conn)
-    for chunk_id in chunk_ids:
-        conn.execute("DELETE FROM chunks_fts WHERE chunk_id=?", (chunk_id,))
-        if has_vec:
-            conn.execute("DELETE FROM chunks_vec WHERE chunk_id=?", (chunk_id,))
+    # chunk_id is unindexed in fts5 and vec0: one IN scan per table, not one scan per chunk.
+    owned = "SELECT id FROM chunks WHERE document_id=?"
+    conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({owned})", (document_id,))
+    if vec_table_exists(conn):
+        conn.execute(f"DELETE FROM chunks_vec WHERE chunk_id IN ({owned})", (document_id,))
     conn.execute("DELETE FROM chunks WHERE document_id=?", (document_id,))
 
 

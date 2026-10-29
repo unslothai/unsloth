@@ -3,7 +3,6 @@
 
 """Model loading and streaming shared by `inference` and `chat`."""
 
-import asyncio
 import json
 import os
 import re
@@ -610,6 +609,8 @@ def _load_gguf_backend(
                 extra_args = attempt_extra_args,
             )
         )
+
+    import asyncio
 
     loaded = asyncio.run(
         load_with_tensor_fallback(

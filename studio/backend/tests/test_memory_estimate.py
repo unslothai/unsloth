@@ -4109,6 +4109,53 @@ def test_a_linear_attention_cache_reports_its_convolution_width(module):
     assert mm._conv_width(cache) == 8192
 
 
+@_NEEDS_MLX
+def test_a_runtime_4bit_load_is_priced_with_its_quantized_embeddings(tmp_path):
+    import mlx.core as mx
+    from mlx.utils import tree_flatten, tree_map
+    from mlx_lm.models import llama
+    from mlx_lm.utils import save_model
+    from tokenizers import Tokenizer, models, pre_tokenizers
+    from unsloth_zoo.mlx.loader import FastMLXModel, _resolve_mlx_quantization_spec
+
+    if "quantize_embeddings" not in inspect.signature(_resolve_mlx_quantization_spec).parameters:
+        pytest.skip("this unsloth_zoo keeps embeddings full width")
+    _on_bfloat16_chip()
+    config = dict(
+        model_type = "llama",
+        hidden_size = 128,
+        num_hidden_layers = 2,
+        intermediate_size = 256,
+        num_attention_heads = 4,
+        num_key_value_heads = 4,
+        rms_norm_eps = 1e-5,
+        vocab_size = 512,
+        tie_word_embeddings = False,
+    )
+    model = llama.Model(llama.ModelArgs(**config))
+    model.update(tree_map(lambda p: p.astype(mx.bfloat16), model.parameters()))
+    mx.eval(model.parameters())
+    save_model(str(tmp_path), model)
+    config = {**config, "architectures": ["LlamaForCausalLM"], "torch_dtype": "bfloat16"}
+    (tmp_path / "config.json").write_text(json.dumps(config))
+    vocab = {f"t{i}": i for i in range(511)}
+    vocab["[UNK]"] = 511
+    tokenizer = Tokenizer(models.WordLevel(vocab, unk_token = "[UNK]"))
+    tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
+    tokenizer.save(str(tmp_path / "tokenizer.json"))
+    (tmp_path / "tokenizer_config.json").write_text(
+        json.dumps(
+            {"tokenizer_class": "PreTrainedTokenizerFast", "unk_token": "[UNK]", "eos_token": "t0"}
+        )
+    )
+
+    loaded, _ = FastMLXModel.from_pretrained(
+        str(tmp_path), load_in_4bit = True, quantize_embeddings = True, text_only = True
+    )
+    held = sum(value.nbytes for _, value in tree_flatten(loaded.parameters()))
+    assert mm.mlx_weight_bytes(str(tmp_path), config, load_in_4bit = True) == held
+
+
 def _on_bfloat16_chip():
     import mlx.core as mx
     if mm._runtime_dtype() is not mx.bfloat16:
@@ -4753,7 +4800,12 @@ class TestPricingALoad:
         config = self._checkpoint(tmp_path)
         wide = mm.mlx_weight_bytes(str(tmp_path), config, load_in_4bit = False)
         quantized = mm.mlx_weight_bytes(str(tmp_path), config, load_in_4bit = True)
-        assert (wide, quantized) == (2_886_144, 1_001_984)
+        from unsloth_zoo.mlx.loader import _resolve_mlx_quantization_spec
+
+        embeddings_quantized = (
+            "quantize_embeddings" in inspect.signature(_resolve_mlx_quantization_spec).parameters
+        )
+        assert (wide, quantized) == (2_886_144, 813_568 if embeddings_quantized else 1_001_984)
         assert quantized < wide < mm._shard_bytes(str(tmp_path), config) == 2_888_265
 
     def test_engram_mlx_vlm_reads_from_disk_is_not_priced(self, tmp_path, monkeypatch):
@@ -4983,7 +5035,7 @@ class TestShardsTheLoaderReads:
             "unsloth/Qwen3-4B-Thinking-2507",
             32768,
             None,
-            2_822_044_672,
+            2_262_920_192,
             4_869_586_944,
             863_355_535,
             36,
@@ -4993,7 +5045,7 @@ class TestShardsTheLoaderReads:
             "unsloth/Qwen3-4B-Thinking-2507",
             32768,
             4,
-            2_822_044_672,
+            2_262_920_192,
             1_369_571_328,
             1_035_321_999,
             36,
@@ -5009,7 +5061,7 @@ class TestShardsTheLoaderReads:
             40,
             "bf16",
         ),
-        ("unsloth/gemma-3-270m-it", 8192, None, 392_058_112, 65_258_496, 725_729_935, 18, "bf16"),
+        ("unsloth/gemma-3-270m-it", 8192, None, 150_885_632, 65_258_496, 725_729_935, 18, "bf16"),
         (
             "mlx-community/deepseek-vl2-tiny-4bit",
             4096,
@@ -5024,7 +5076,7 @@ class TestShardsTheLoaderReads:
             "Qwen/Qwen2.5-VL-3B-Instruct",
             32768,
             4,
-            3_520_856_064,
+            3_073_556_480,
             342_392_832,
             753_582_735,
             36,
@@ -5034,7 +5086,7 @@ class TestShardsTheLoaderReads:
             "Qwen/Qwen2.5-VL-3B-Instruct",
             5001,
             4,
-            3_520_856_064,
+            3_073_556_480,
             56_852_480,
             717_152_431,
             36,
@@ -5044,7 +5096,7 @@ class TestShardsTheLoaderReads:
             "Qwen/Qwen2.5-VL-3B-Instruct",
             5000,
             4,
-            3_520_856_064,
+            3_073_556_480,
             56_852_480,
             717_151_119,
             36,

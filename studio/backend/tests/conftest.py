@@ -182,6 +182,21 @@ def _forget_mcp_discovery_state():
 
 
 @pytest.fixture(autouse = True)
+def _forget_queued_media_requests():
+    def _forget():
+        video_routes = sys.modules.get("routes.video")
+        if video_routes is not None:
+            video_routes._VIDEO_QUEUE.clear()
+        batching = sys.modules.get("core.inference.image_request_batching")
+        if batching is not None:
+            batching._OPEN.clear()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
 def _forget_load_budget_snapshots():
     def _forget():
         for name, module in list(sys.modules.items()):
@@ -358,6 +373,26 @@ def _isolate_studio_home(_studio_home_root, monkeypatch):
             monkeypatch.setattr(module, "_schema_ready", set())
 
 
+def _drain_sandbox_movers(timeout: float = 30.0) -> None:
+    import threading
+
+    from .thread_drain import join_when_started
+    for thread in threading.enumerate():
+        if thread.name == "sandbox-migrate" and not join_when_started(thread, timeout = timeout):
+            raise RuntimeError("a background sandbox migration did not finish within 30s")
+
+
+@pytest.fixture(autouse = True)
+def _no_sandbox_mover_outlives_its_test(monkeypatch):
+    # get_sandbox_workdir starts a background mover that reads the legacy root from HOME when it gets
+    # scheduled, not when it starts: one left running moved the next test's legacy folder into the
+    # previous test's root. Requesting monkeypatch drains it before HOME is put back, so a late mover
+    # never reads the real home either.
+    _drain_sandbox_movers()
+    yield
+    _drain_sandbox_movers()
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",
@@ -483,14 +518,23 @@ def _forget_the_cached_owner_identity():
 def _isolate_wal_keepers():
     """Close the WAL keepers a test opened, so a later test's assertion on _wal_keepers sees only
     its own."""
-    from storage import studio_db
+    from storage import rag_db, studio_db
 
     before = set(studio_db._wal_keepers)
     unsupported = set(studio_db._wal_unsupported)
+    rag_before = set(rag_db._wal_keepers)
+    rag_enabled = rag_db._wal_keepers_enabled
+    rag_db.start_wal_keepers()
     yield
     for path in set(studio_db._wal_keepers) - before:
         studio_db.close_wal_keeper_for(path)
     studio_db._wal_unsupported.intersection_update(unsupported)
+    for path in set(rag_db._wal_keepers) - rag_before:
+        rag_db.close_wal_keeper_for(path)
+    if rag_enabled:
+        rag_db.start_wal_keepers()
+    else:
+        rag_db.close_wal_keeper()
 
 
 @pytest.fixture(autouse = True)
@@ -557,6 +601,13 @@ def _no_live_metal_wired_ceiling(monkeypatch):
     monkeypatch.setattr(
         LlamaCppBackend, "_apple_metal_wired_headroom_bytes", staticmethod(lambda: None)
     )
+
+
+@pytest.fixture(autouse = True)
+def _not_on_metal(monkeypatch):
+    """Keep co-residency verdicts off the host's device: on a Mac they take the Metal paths."""
+    from core.inference import gpu_residency
+    monkeypatch.setattr(gpu_residency, "_on_metal", lambda: False)
 
 
 @pytest.fixture(autouse = True)
@@ -928,8 +979,15 @@ def rag_home(tmp_path, monkeypatch, linkable_temp_base):
 @pytest.fixture
 def rag_conn(rag_home):
     """A fresh RAG connection bound to the isolated ``rag_home`` database."""
+    import sqlite3
+
     from storage import rag_db
 
+    # Same gate as the RAG tests that skip on their own: an interpreter whose sqlite3 cannot load
+    # extensions (the macos-15 runner's) never has RAG, and the product reports that rather than
+    # failing. Anything else that stops sqlite-vec loading still errors here.
+    if not rag_db.RAG_AVAILABLE or not hasattr(sqlite3.Connection, "enable_load_extension"):
+        pytest.skip("sqlite-vec cannot be loaded by this Python's sqlite3")
     conn = rag_db.get_connection()
     try:
         yield conn

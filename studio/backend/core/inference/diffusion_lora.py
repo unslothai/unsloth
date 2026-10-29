@@ -21,9 +21,6 @@ from utils.paths.storage_roots import account_path
 from .diffusion_families import DIFFUSION_CANCELLED_MSG
 from utils.paths.path_utils import is_appledouble_metadata
 
-# Accepted LoRA formats. safetensors + gguf only (.pt is pickled -> excluded for safety).
-_NATIVE_EXTS = (".safetensors", ".gguf")
-_DIFFUSERS_EXTS = (".safetensors",)
 _ALL_EXTS = (".safetensors", ".gguf")
 # ``kind`` in a ``<stem>.json`` sidecar marking the weight beside it as an image LoRA, not model weights.
 LORA_SIDECAR_KIND = "diffusion-lora"

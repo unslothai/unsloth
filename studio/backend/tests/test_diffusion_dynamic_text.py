@@ -702,6 +702,96 @@ def test_flux1_new_prompt_length_and_resolution_reuse_the_first_graphs():
     assert graphs_per_render(True) == [2, 0, 0, 0, 0]
 
 
+def test_qwen_image_21_hook_paths_match_and_first_segment_start_stays_static():
+    from torch._dynamo.variables.builder import is_dynamic_source as is_dynamic
+
+    cfg = _cfg()
+    before = cfg.dynamic_sources
+    try:
+        cfg.dynamic_sources = ",".join(dt.sources_for(QwenImage21Transformer2DModel()))
+        for root in ("L['kwargs']", "___stack0[1]"):
+            for leaf in (
+                "['hidden_states']",
+                "['rotary_emb']",
+                "['target_token_mask']",
+                "['key_valid']",
+                "['attention_mask']",
+                "['layer_cache'].k",
+                "['layer_cache'].v",
+                "['cache_write_slice'].stop",
+                "['segments'][0][1]",
+                "['segments'][2][0]",
+            ):
+                assert is_dynamic(root + leaf), root + leaf
+            for leaf in (
+                "['segments'][0][0]",
+                "['modulation']",
+                "['cache_write_slice'].start",
+                "['hidden_states_2']",
+            ):
+                assert not is_dynamic(root + leaf), root + leaf
+    finally:
+        cfg.dynamic_sources = before
+
+
+class _Q21HookedBlock(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.proj = torch.nn.Linear(8, 8)
+
+    def forward(
+        self,
+        hidden_states,
+        rotary_emb = None,
+        attention_mask = None,
+        kv_cache_mode = None,
+    ):
+        return self.proj(hidden_states) * rotary_emb[..., :1] + attention_mask.float().mean()
+
+
+class _Q21HookedTransformer(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.transformer_blocks = torch.nn.ModuleList([_Q21HookedBlock() for _ in range(2)])
+
+    def forward(self, x, rope, mask):
+        for block in self.transformer_blocks:
+            x = block(hidden_states = x, rotary_emb = rope, attention_mask = mask, kv_cache_mode = "cached")
+        return x
+
+
+def test_qwen_image_21_under_group_offload_hooks_keeps_one_graph_per_block():
+    """An edit request at 16 GB hooks the resident transformer; a new prompt length then recompiled every block."""
+    hooks = pytest.importorskip("diffusers.hooks")
+    from torch._dynamo.utils import counters
+
+    from core.inference.diffusion_memory import install_group_offload_hooks_eager
+
+    Transformer = type("QwenImage21Transformer2DModel", (_Q21HookedTransformer,), {})
+    torch._dynamo.reset()
+    counters.clear()
+    m = Transformer()
+    for block in m.transformer_blocks:
+        block.compile(backend = "eager", dynamic = None)
+    assert dt.install(m) is True
+    install_group_offload_hooks_eager()
+    cpu = torch.device("cpu")
+    hooks.apply_group_offloading(
+        m, onload_device = cpu, offload_device = cpu, offload_type = "block_level", num_blocks_per_group = 1
+    )
+    try:
+        with torch.no_grad():
+            m(torch.randn(1, 90, 8), torch.randn(90, 2), torch.ones(1, 1, 1, 90, dtype = torch.bool))
+            first = counters["stats"]["unique_graphs"]
+            for n in (95, 93, 89):
+                m(torch.randn(1, n, 8), torch.randn(n, 2), torch.ones(1, 1, 1, n, dtype = torch.bool))
+        assert first > 0
+        assert counters["stats"]["unique_graphs"] == first
+    finally:
+        dt.uninstall(m)
+        torch._dynamo.reset()
+
+
 class _Lin(torch.nn.Module):
     def __init__(self):
         super().__init__()

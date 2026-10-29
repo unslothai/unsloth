@@ -7581,8 +7581,8 @@ _unsloth_desktop_install_spec=""
 if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
     _unsloth_desktop_install_spec="unsloth>=${UNSLOTH_DESKTOP_BACKEND_VERSION}"
 fi
-_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.10.9}"
-_unsloth_zoo_install_spec="unsloth-zoo>=2026.10.9"
+_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.10.10}"
+_unsloth_zoo_install_spec="unsloth-zoo>=2026.10.10"
 
 # An index lagging PyPI (mirror, delayed feed, cutoff) may lack these floors (#14031): lower them to its newest release.
 # The marker tells Desktop preflight this older backend is the newest available, so it is not repaired forever.

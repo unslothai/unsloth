@@ -30,6 +30,7 @@ import typer
 from typer.core import TyperCommand
 
 from unsloth_cli import _studio_deps, _studio_runtime_gate, _studio_stage
+from unsloth_cli._argv import _expand_attached_np_short as _expand_attached_np_short
 from unsloth_cli._inference import SpeculativeType
 from unsloth_cli.commands import _password_prompt
 from studio.backend.utils.pid_records import (
@@ -2257,6 +2258,8 @@ def studio_default(
         typer.echo("\nShutting down...")
     finally:
         getattr(run_mod, "_wait_for_server_shutdown", lambda: None)()
+    # The desktop app and an in-venv `unsloth studio` serve from here, not run.py's __main__.
+    getattr(run_mod, "_exit_without_finalizing", lambda: None)()
 
 
 def _split_repo_variant(model_arg: str) -> tuple[str, Optional[str]]:
@@ -2279,25 +2282,6 @@ def _split_repo_variant(model_arg: str) -> tuple[str, Optional[str]]:
     if "/" in variant:
         return s, None
     return repo, variant
-
-
-def _expand_attached_np_short() -> None:
-    # Click clusters `-np8` as `-n -p 8`, dropping the value. Lockstep with the backend `_flag_name`.
-    i = 0
-    while i < len(sys.argv):
-        tok = sys.argv[i]
-        if tok == "--":
-            break
-        if len(tok) > 3 and tok.startswith("-np") and tok[3] != "=":
-            suffix = tok[3:]
-            first_numeric = suffix[0].isdigit() or (
-                len(suffix) > 1 and suffix[0] in {"-", "+"} and suffix[1].isdigit()
-            )
-            if first_numeric:
-                sys.argv[i : i + 1] = ["-np", suffix]
-                i += 2
-                continue
-        i += 1
 
 
 def _consume_legacy_short_aliases(
@@ -5164,6 +5148,15 @@ def provision_desktop_auth():
     typer.echo("Desktop auth ready.")
 
 
+def _owner_login_alias(conn: sqlite3.Connection) -> Optional[str]:
+    if "login_alias" not in {row[1] for row in conn.execute("PRAGMA table_info(auth_user)")}:
+        return None
+    row = conn.execute(
+        "SELECT login_alias FROM auth_user WHERE username = ?", (DEFAULT_ADMIN_USERNAME,)
+    ).fetchone()
+    return row[0] if row else None
+
+
 def _reset_password_username(conn: sqlite3.Connection, username: Optional[str]) -> str:
     columns = {row[1] for row in conn.execute("PRAGMA table_info(auth_user)")}
     active_filter = " WHERE is_active = 1" if "is_active" in columns else ""
@@ -5175,8 +5168,10 @@ def _reset_password_username(conn: sqlite3.Connection, username: Optional[str]) 
     if target == DEFAULT_ADMIN_USERNAME:
         _ensure_cli_default_admin(conn)
     elif conn.execute("SELECT 1 FROM auth_user WHERE username = ?", (target,)).fetchone() is None:
-        typer.echo("Error: account not found.", err = True)
-        raise typer.Exit(1)
+        if _owner_login_alias(conn) != target:
+            typer.echo("Error: account not found.", err = True)
+            raise typer.Exit(1)
+        target = DEFAULT_ADMIN_USERNAME
     return target
 
 
@@ -5203,6 +5198,7 @@ def reset_password(
     try:
         conn.execute("BEGIN IMMEDIATE")
         target = _reset_password_username(conn, username)
+        alias = _owner_login_alias(conn) if target == DEFAULT_ADMIN_USERNAME else None
         _cli_update_password(conn, target, new_password, revoke_api_keys = True)
     except (OSError, sqlite3.Error) as exc:
         typer.echo(f"Error: could not reset the password ({exc}).", err = True)
@@ -5210,7 +5206,8 @@ def reset_password(
     finally:
         conn.close()
 
-    typer.echo(f"New password for '{target}': {new_password}")
+    signs_in_as = f" (also signs in as '{alias}')" if alias else ""
+    typer.echo(f"New password for '{target}'{signs_in_as}: {new_password}")
     typer.echo(
         "Sessions and API keys revoked. A running Unsloth takes it on the next request, "
         "though repeated failed logins can hold the rate limit shut for up to a minute."

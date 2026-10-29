@@ -23,4 +23,3 @@ tiktoken<1,>=0.8.0
 requests>=2.31
 pymupdf>=1.24.0
 pymupdf4llm>=0.0.17
-mammoth>=1.8.0
