@@ -706,8 +706,7 @@ SAFETENSORS_TWINS_ENV = "UNSLOTH_PREQUANT_SAFETENSORS_TWINS"
 
 
 def with_declared_safetensors_twins(names: Sequence[str], declared: Sequence[str]) -> list:
-    """Each declared root ``<stem>.pt`` / ``.pth`` gets ``<stem>.safetensors`` right before it, as the image
-    tables name it; a twin later in the chain moves up. The .pt stays behind it as 404 fallback."""
+    """Put ``<stem>.safetensors`` right before each declared root ``<stem>.pt`` / ``.pth``; the .pt stays as 404 fallback."""
     import os
 
     out = [n for n in names if n]

@@ -185,8 +185,7 @@ def test_a_task_specific_row_beats_the_task_agnostic_one():
 
 
 def test_a_task_specific_artifact_gets_no_filename_fallback():
-    # A fallback here would install another partition's denoiser, so no artifact is correct; only the
-    # same artifact's two containers are tried.
+    # Another partition's denoiser would be wrong; only this artifact's two containers are tried.
     fam = _fam(
         prequant_repos = (("int8", "unsloth/Test-FP8"),),
         prequant_filenames = (
