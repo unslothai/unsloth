@@ -4386,7 +4386,7 @@ html[data-chat-font] .aui-root {
 			[data-slot="context-menu-item"],
 			[data-slot="context-menu-sub-trigger"]
 		)
-		svg:not(.unsloth-tick) {
+		svg:not(.unsloth-tick):not(.permission-mode-icon) {
 		width: var(--ui-icon-size) !important;
 		height: var(--ui-icon-size) !important;
 	}
