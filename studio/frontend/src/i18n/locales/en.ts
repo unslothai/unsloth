@@ -3829,6 +3829,8 @@ export const en = {
       history: "History",
     },
     goToLibrary: "Go to Library",
+    imageTraining: "Image training",
+    goToImageTraining: "Train image LoRAs",
     loadingRuntime: "Loading training runtime...",
     checkingSupport: "Checking this machine for training support...",
     backToHistory: "Back to history",

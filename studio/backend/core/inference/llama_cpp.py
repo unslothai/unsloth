@@ -2189,6 +2189,7 @@ def _archive_and_recall(
     try:
         from core.inference.tools import build_conversation_recall
         from core.rag import conversation_archive
+        from core.rag.retrieval import query_vector_memo
 
         if not conversation_archive.enabled():
             return result
@@ -2236,48 +2237,50 @@ def _archive_and_recall(
                 break
             attempt_k = max(1, attempt_k // 2)
 
-        for index, k in enumerate(attempts):
-            recall = build_conversation_recall(
-                conversation,
-                thread_id,
-                style = style,
-                top_k = k,
-                branch_messages = branch_messages,
-            )
-            if not recall:
-                result["counts"] = counts
-                return result
-
-            candidate = _inject_recall(conversation, recall, style)
-            if candidate is None:
-                result["counts"] = counts
-                return result
-
-            grew = None
-            if count_tokens is not None and recall_budget_tokens > 0:
-                try:
-                    grew = count_tokens(candidate["conversation"]) - count_tokens(conversation)
-                except Exception:
-                    grew = None
-            if grew is not None and grew > recall_budget_tokens:
-                logger.info(
-                    "conversation_recall.over_budget grew=%s budget=%s top_k=%s",
-                    grew,
-                    recall_budget_tokens,
-                    k,
+        # One encode per query across the retries and the widenings inside each recall.
+        with query_vector_memo():
+            for index, k in enumerate(attempts):
+                recall = build_conversation_recall(
+                    conversation,
+                    thread_id,
+                    style = style,
+                    top_k = k,
+                    branch_messages = branch_messages,
                 )
-                if index + 1 < len(attempts):
-                    continue
-                logger.info(
-                    "conversation_recall.dropped_over_budget budget=%s", recall_budget_tokens
-                )
-                result["counts"] = counts
-                return result
+                if not recall:
+                    result["counts"] = counts
+                    return result
 
-            result["conversation"] = candidate["conversation"]
-            result["events"] = candidate["events"]
-            result["anchored"] = candidate["anchored"]
-            break
+                candidate = _inject_recall(conversation, recall, style)
+                if candidate is None:
+                    result["counts"] = counts
+                    return result
+
+                grew = None
+                if count_tokens is not None and recall_budget_tokens > 0:
+                    try:
+                        grew = count_tokens(candidate["conversation"]) - count_tokens(conversation)
+                    except Exception:
+                        grew = None
+                if grew is not None and grew > recall_budget_tokens:
+                    logger.info(
+                        "conversation_recall.over_budget grew=%s budget=%s top_k=%s",
+                        grew,
+                        recall_budget_tokens,
+                        k,
+                    )
+                    if index + 1 < len(attempts):
+                        continue
+                    logger.info(
+                        "conversation_recall.dropped_over_budget budget=%s", recall_budget_tokens
+                    )
+                    result["counts"] = counts
+                    return result
+
+                result["conversation"] = candidate["conversation"]
+                result["events"] = candidate["events"]
+                result["anchored"] = candidate["anchored"]
+                break
 
         counts["recalled_chunks"] = int(recall.get("sources") or 0)
         result["counts"] = counts
@@ -4019,6 +4022,9 @@ _TP_UNMEASURED_CTX = 4096
 
 # Auto offload context when no GPU subset holds the model; prefers a chat-useful size, kept separate from _FIT_MIN_CTX (search and Apple floor).
 _AUTO_OFFLOAD_CTX = 8192
+
+# Auto context on unified memory; 65536 is the floor unsloth start agents need.
+_APPLE_AUTO_CTX = 65536
 
 # Must stay >= fit search floor or the Auto re-check flips --fit off (test pins it). amd-smi vs HIP VRAM totals differing over 10% are different scopes.
 _AMD_SMI_TOTAL_TOLERANCE = 0.10
@@ -26411,7 +26417,7 @@ class LlamaCppBackend:
                             max_available_ctx = min(_metal_floor_ctx, native_ctx_for_cap)
                             _apple_ctx_unmeasured = True
                         if not explicit_ctx:
-                            effective_ctx = max_available_ctx
+                            effective_ctx = min(max_available_ctx, _APPLE_AUTO_CTX)
                         elif _apple_ctx_unmeasured:
                             # Never publish a ceiling below the launched context.
                             max_available_ctx = max(max_available_ctx, effective_ctx)
@@ -26527,9 +26533,10 @@ class LlamaCppBackend:
                                 and _vram_fit_ctx
                                 and min(_FIT_MIN_CTX, effective_ctx)
                                 <= _vram_fit_ctx
-                                < effective_ctx
+                                < max_available_ctx
                             ):
-                                effective_ctx = max_available_ctx = _vram_fit_ctx
+                                max_available_ctx = _vram_fit_ctx
+                                effective_ctx = min(effective_ctx, _vram_fit_ctx)
                         # Unmeasured floors still rely on llama.cpp's fitter.
                         _metal_full_offload_pinned = bool(
                             _apple_measured_ceiling is not None

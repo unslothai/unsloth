@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 from storage import rag_db
 
-from . import config
+from . import config, vec_cache
 
 
 def kb_scope(kb_id: str) -> str:
@@ -405,6 +405,7 @@ def add_chunks(
     per-chunk PDF highlight rects, stored as JSON."""
     if len(vectors):
         rag_db.ensure_vec(conn, len(vectors[0]), document_id)
+    epoch_before = vec_cache.read_epoch(conn, scope) if vec_cache.enabled() else None
     vec_rowids: list[int] = []
     for i, (chunk, vector) in enumerate(zip(chunks, vectors)):
         chunk_id = f"{document_id}:{chunk.chunk_index}"
@@ -442,10 +443,27 @@ def add_chunks(
                 (scope, chunk_id, _f32(vector)),
             ).lastrowid
         )
+    epoch_after = appended = None
+    if epoch_before is not None:
+        epoch_after = vec_cache.read_epoch(conn, scope)
+        appended = conn.execute(
+            "SELECT count(*) FROM chunks WHERE scope=? AND rowid > ?", (scope, epoch_before[2])
+        ).fetchone()[0]
     # Another writer's width change may have marked this document while it was encoding.
     rag_db.restore_dropped_identity(conn, document_id)
     conn.commit()
     _remember_vec_rowids(conn, document_id, vec_rowids)
+    if epoch_after is not None:
+        vec_cache.note_append(
+            _db_file(conn),
+            scope,
+            epoch_before,
+            epoch_after,
+            appended,
+            vec_rowids,
+            [f"{document_id}:{chunk.chunk_index}" for chunk in chunks[: len(vec_rowids)]],
+            vectors[: len(vec_rowids)],
+        )
 
 
 def replace_document_vectors(
@@ -828,30 +846,22 @@ def _search_dense(conn: sqlite3.Connection, scope, vector, k: int, embedding_mod
     fetches = dict.fromkeys(scopes, max(k * 3, k + 10))
     pending = list(scopes)
     query = _f32(vector) if pending else b""
+    db_file = _db_file(conn) if pending and vec_cache.enabled() else None
     while pending:
         widen: list[str] = []
         for s in pending:
             fetch = fetches[s]
-            # SQLite < 3.41 does not pass LIMIT to vec0's KNN planner; bind k explicitly.
-            rows = conn.execute(
-                "SELECT chunk_id, distance FROM chunks_vec "
-                "WHERE scope=? AND embedding MATCH ? AND k=? ORDER BY distance",
-                (s, query, fetch),
-            ).fetchall()
+            rows, cap = _knn(conn, db_file, s, vector, query, fetch)
             kept[s] = _drop_incompatible(
                 conn,
                 # A NaN vector written by an fp16 embedder reads back as a NULL distance: skip it, or the
                 # subtraction raises and the whole retrieval fails.
-                [
-                    (r["chunk_id"], 1.0 - r["distance"])
-                    for r in rows
-                    if r["distance"] is not None and math.isfinite(r["distance"])
-                ],
+                [(cid, 1.0 - d) for cid, d in rows if d is not None and math.isfinite(d)],
                 embedding_model,
                 untagged,
             )
-            if len(kept[s]) < k and len(rows) >= fetch and fetch < _MAX_DENSE_FETCH:
-                fetches[s] = min(fetch * 4, _MAX_DENSE_FETCH)
+            if len(kept[s]) < k and len(rows) >= fetch and fetch < cap:
+                fetches[s] = min(fetch * 4, cap)
                 widen.append(s)
         pending = widen
     out = [hit for s in scopes for hit in kept[s]]
@@ -861,6 +871,23 @@ def _search_dense(conn: sqlite3.Connection, scope, vector, k: int, embedding_mod
 
 # 4096 is vec0's own ceiling; raising this errors the query.
 _MAX_DENSE_FETCH = 4096
+
+
+def _knn(conn, db_file, scope: str, vector, query: bytes, fetch: int):
+    """(chunk_id, distance) rows plus the largest fetch worth asking for: the cache's row count, or vec0's cap."""
+    if db_file is not None:
+        hit = vec_cache.search(conn, db_file, scope, vector, fetch)
+        if hit is not None:
+            return hit
+    # SQLite < 3.41 does not pass LIMIT to vec0's KNN planner; bind k explicitly.
+    rows = conn.execute(
+        "SELECT chunk_id, distance FROM chunks_vec "
+        "WHERE scope=? AND embedding MATCH ? AND k=? ORDER BY distance",
+        (scope, query, min(fetch, _MAX_DENSE_FETCH)),
+    ).fetchall()
+    return [(r["chunk_id"], r["distance"]) for r in rows], _MAX_DENSE_FETCH
+
+
 # One id per bound parameter, kept under the oldest SQLITE_MAX_VARIABLE_NUMBER.
 _ID_BATCH = 900
 

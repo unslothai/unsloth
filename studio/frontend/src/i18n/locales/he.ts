@@ -3897,6 +3897,8 @@ export const he = {
       history: "היסטוריה",
     },
     goToLibrary: "מעבר לספרייה",
+    imageTraining: "אימון תמונות",
+    goToImageTraining: "אימון LoRA לתמונות",
     loadingRuntime: "טוען סביבת הרצה לאימון...",
     checkingSupport: "בודק תמיכה באימון במכשיר זה...",
     backToHistory: "חזרה להיסטוריה",

@@ -3542,6 +3542,8 @@ export const ja = {
       },
     },
     goToLibrary: "ライブラリへ移動",
+    imageTraining: "画像トレーニング",
+    goToImageTraining: "画像 LoRA をトレーニング",
     routeTitle: "トレーニング",
     wizard: {
       modelTitle: "モデル",
