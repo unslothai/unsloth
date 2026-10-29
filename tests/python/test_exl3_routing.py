@@ -353,3 +353,101 @@ class TestResolvedCheckpointSafety(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFastLanguageModelExl3Intent(unittest.TestCase):
+    """Explicit vs. default EXL3 intent must survive FastLanguageModel -> FastModel."""
+
+    class _Stop(Exception):
+        pass
+
+    def _is_explicit(self, **kw):
+        import unsloth.exllama as X
+        from unsloth.models import loader as ML
+
+        seen = {}
+
+        def fake_prepare(model_name, **prep_kw):
+            seen.update(prep_kw)
+            raise self._Stop
+
+        with (
+            patch.object(X, "should_use_exl3", lambda *a, **k: True),
+            patch.object(X, "require_exllama", lambda: None),
+            patch.object(X, "prepare_exl3_checkpoint", fake_prepare),
+            patch.object(ML, "hf_login", lambda token = None: token),
+        ):
+            with self.assertRaises(self._Stop):
+                ML.FastLanguageModel.from_pretrained("org/some-model", **kw)
+        return seen["is_explicit"]
+
+    def test_default_backend_is_not_explicit(self):
+        self.assertFalse(self._is_explicit(load_in_4bit = True))
+
+    def test_load_in_exl3_is_explicit(self):
+        self.assertTrue(self._is_explicit(load_in_exl3 = True))
+
+    def test_bpw_request_is_explicit(self):
+        self.assertTrue(self._is_explicit(load_in_exl3 = 4.0))
+
+    def test_dict_config_is_explicit(self):
+        self.assertTrue(self._is_explicit(quantization_config = {"quant_method": "exl3"}))
+
+
+class TestExl3AdapterStamp(unittest.TestCase):
+    """Adapters trained on EXL3 record their base so a reload rebuilds it."""
+
+    def _base(self, source = "org/base", config = None):
+        base = SimpleNamespace(config = SimpleNamespace(), name_or_path = "/cache/exl3/x")
+        EL.set_exl3_source_model_reference(base, source, config or Exl3Config(bits = 3.5, head_bits = 8))
+        return base
+
+    def test_stamp_round_trip(self):
+        d = tempfile.mkdtemp(prefix = "exl3_adapter_")
+        self.assertIsNotNone(EL.write_exl3_adapter_stamp(self._base(), d))
+        with patch.object(EL, "is_exllama_available", lambda: True):
+            source, cfg = EL.read_exl3_adapter_stamp(d)
+        self.assertEqual(source, "org/base")
+        self.assertEqual((cfg.bits, cfg.head_bits), (3.5, 8))
+
+    def test_peft_save_writes_stamp(self):
+        from peft import PeftModel
+
+        d = tempfile.mkdtemp(prefix = "exl3_adapter_")
+        base = self._base()
+        fake = SimpleNamespace(get_base_model = lambda: base)
+        # Wrap a stub save so only the stamp is written.
+        with patch.object(PeftModel, "save_pretrained", lambda self, path, **kw: None):
+            EL._patch_peft_save_for_exl3_stamp()
+            PeftModel.save_pretrained(fake, d)
+        self.assertTrue(os.path.isfile(os.path.join(d, EL.EXL3_ADAPTER_STAMP)))
+
+    def _route(self, d, **kw):
+        with (
+            patch.object(EL, "is_exllama_available", lambda: True),
+            patch.object(EL, "_cuda_available", lambda: True),
+            patch.dict(os.environ, {}, clear = False),
+        ):
+            os.environ.pop("UNSLOTH_QUANT_BACKEND", None)
+            return EL.resolve_exl3_adapter(d, **kw)
+
+    def test_default_4bit_reload_uses_stamped_config(self):
+        d = tempfile.mkdtemp(prefix = "exl3_adapter_")
+        EL.write_exl3_adapter_stamp(self._base(), d)
+        source, cfg = self._route(d, load_in_4bit = True)
+        self.assertEqual(source, "org/base")
+        self.assertEqual(cfg.bits, 3.5)
+
+    def test_explicit_bpw_overrides_stamp(self):
+        d = tempfile.mkdtemp(prefix = "exl3_adapter_")
+        EL.write_exl3_adapter_stamp(self._base(), d)
+        self.assertEqual(self._route(d, load_in_exl3 = 5.0), ("org/base", 5.0))
+
+    def test_16bit_reload_skips_exl3(self):
+        d = tempfile.mkdtemp(prefix = "exl3_adapter_")
+        EL.write_exl3_adapter_stamp(self._base(), d)
+        self.assertIsNone(self._route(d, load_in_4bit = True, load_in_16bit = True))
+
+    def test_unstamped_adapter_is_not_rerouted(self):
+        d = tempfile.mkdtemp(prefix = "exl3_adapter_")
+        self.assertIsNone(self._route(d, load_in_4bit = True))

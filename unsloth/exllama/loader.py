@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+import functools
+import json
 import os
 from dataclasses import dataclass
 from typing import Optional, Tuple
@@ -43,7 +45,12 @@ class Exl3LoadPlan:
     is_exl3: bool = True  # False when the native checkpoint loader should be used
 
 
-def set_exl3_source_model_reference(model, source_model):
+# Written next to adapter_config.json when an adapter trained on an EXL3 base is
+# saved, so a reload rebuilds the same EXL3 base instead of falling back to bnb.
+EXL3_ADAPTER_STAMP = "unsloth_exl3.json"
+
+
+def set_exl3_source_model_reference(model, source_model, config = None):
     """Keep PEFT's saved base-model reference pointed at the requested source.
 
     The EXL3 loader temporarily replaces ``model_name`` with a local cache
@@ -54,12 +61,120 @@ def set_exl3_source_model_reference(model, source_model):
     if not source_model:
         return model
     source = os.fspath(source_model)
-    model.name_or_path = source
-    config = getattr(model, "config", None)
+    base = model.get_base_model() if hasattr(model, "get_base_model") else model
+    base.name_or_path = source
+    model_config = getattr(base, "config", None)
+    if model_config is not None:
+        model_config._name_or_path = source
+    base._unsloth_exl3_source_model = source
     if config is not None:
-        config._name_or_path = source
-    model._unsloth_exl3_source_model = source
+        base._unsloth_exl3_config = config
+        _patch_peft_save_for_exl3_stamp()
     return model
+
+
+def write_exl3_adapter_stamp(model, save_directory):
+    """Record the EXL3 source model and settings beside a saved adapter."""
+    base = model.get_base_model() if hasattr(model, "get_base_model") else model
+    source = getattr(base, "_unsloth_exl3_source_model", None)
+    config = getattr(base, "_unsloth_exl3_config", None)
+    if not source or config is None or not os.path.isdir(save_directory):
+        return None
+    # compute_dtype is a runtime choice, not part of the quantized base.
+    exl3_config = {k: v for k, v in config.to_dict().items() if k != "compute_dtype"}
+    path = os.path.join(save_directory, EXL3_ADAPTER_STAMP)
+    with open(path, "w", encoding = "utf-8") as f:
+        json.dump({"source_model": source, "exl3_config": exl3_config}, f, indent = 2)
+    return path
+
+
+def _patch_peft_save_for_exl3_stamp():
+    try:
+        from peft import PeftModel
+    except Exception:
+        return
+    original_save = PeftModel.save_pretrained
+    if getattr(original_save, "_unsloth_exl3_stamp", False):
+        return
+
+    @functools.wraps(original_save)
+    def save_pretrained(self, save_directory, *args, **kwargs):
+        out = original_save(self, save_directory, *args, **kwargs)
+        if kwargs.get("is_main_process", True):
+            write_exl3_adapter_stamp(self, save_directory)
+        return out
+
+    save_pretrained._unsloth_exl3_stamp = True
+    PeftModel.save_pretrained = save_pretrained
+
+
+def read_exl3_adapter_stamp(model_name, *, token = None, revision = None, local_files_only = False):
+    """``(source_model, Exl3Config)`` for an adapter saved from an EXL3 base, else None."""
+    if not isinstance(model_name, str) or not is_exllama_available():
+        return None
+    path = os.path.expanduser(model_name)
+    if os.path.isdir(path):
+        stamp = os.path.join(path, EXL3_ADAPTER_STAMP)
+        if not os.path.isfile(stamp):
+            return None
+    elif os.path.exists(path) or model_name.count("/") != 1:
+        return None
+    else:
+        try:
+            from huggingface_hub import hf_hub_download
+
+            stamp = hf_hub_download(
+                model_name,
+                EXL3_ADAPTER_STAMP,
+                token = token,
+                revision = revision,
+                local_files_only = local_files_only,
+            )
+        except Exception:
+            return None
+    try:
+        with open(stamp, encoding = "utf-8") as f:
+            data = json.load(f)
+        return data["source_model"], Exl3Config.from_dict(data.get("exl3_config"))
+    except Exception:
+        return None
+
+
+def resolve_exl3_adapter(
+    model_name,
+    *,
+    load_in_exl3 = False,
+    quantization_config = None,
+    load_in_4bit = False,
+    load_in_8bit = False,
+    load_in_16bit = False,
+    token = None,
+    revision = None,
+    local_files_only = False,
+):
+    """Route an EXL3-trained adapter back onto its EXL3 base.
+
+    Returns ``(source_model, load_in_exl3)`` when the adapter carries an EXL3
+    stamp and the request still wants a quantized base, else None.
+    """
+    if load_in_16bit and not _looks_like_exl3_request(load_in_exl3, quantization_config):
+        return None
+    stamp = read_exl3_adapter_stamp(
+        model_name, token = token, revision = revision, local_files_only = local_files_only
+    )
+    if stamp is None:
+        return None
+    source_model, config = stamp
+    if _looks_like_exl3_request(load_in_exl3, quantization_config):
+        # A bare True means "EXL3, as trained"; a bpw or config overrides it.
+        return source_model, (config if load_in_exl3 is True and quantization_config is None else load_in_exl3)
+    if not exl3_is_default_backend(
+        load_in_4bit = load_in_4bit,
+        load_in_8bit = load_in_8bit,
+        quantization_config = quantization_config,
+    ):
+        return None
+    return source_model, config
 
 
 def _looks_like_exl3_request(load_in_exl3, quantization_config) -> bool:
@@ -279,6 +394,9 @@ def prepare_exl3_checkpoint(
     requested bitrate if it is not already an EXL3 checkpoint, patches
     transformers, and returns an :class:`Exl3LoadPlan`.
     """
+    # Before any model loads: Unsloth binds save_pretrained per instance, so a
+    # patch installed after PeftModel.from_pretrained would be missed.
+    _patch_peft_save_for_exl3_stamp()
     require_exllama()
     cfg = resolve_exl3_config(
         load_in_exl3, quantization_config, compute_dtype = compute_dtype, calibrate = calibrate

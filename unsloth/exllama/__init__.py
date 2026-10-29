@@ -53,6 +53,7 @@ from .loader import (
     resolve_exl3_config,
     prepare_exl3_checkpoint,
     set_exl3_source_model_reference,
+    resolve_exl3_adapter,
     finalize_exl3_model,
     finalize_exl3_experts,
 )
@@ -87,6 +88,7 @@ __all__ = [
     "resolve_exl3_config",
     "prepare_exl3_checkpoint",
     "set_exl3_source_model_reference",
+    "resolve_exl3_adapter",
     "finalize_exl3_model",
     "finalize_exl3_experts",
     "reload_exl3_experts",

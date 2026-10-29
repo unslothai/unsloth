@@ -1321,14 +1321,29 @@ class FastLanguageModel(FastLlamaModel):
         # Route EXL3 requests (load_in_exl3, an Exl3Config, or an on-disk EXL3
         # checkpoint) through FastModel. Full finetuning is never EXL3 (its base
         # weights train in full precision).
-        from ..exllama import should_use_exl3
+        from ..exllama import should_use_exl3, resolve_exl3_adapter
 
-        if (not full_finetuning) and should_use_exl3(
-            model_name,
-            load_in_exl3 = load_in_exl3,
-            quantization_config = quantization_config,
-            load_in_4bit = load_in_4bit,
-            load_in_8bit = load_in_8bit,
+        if (not full_finetuning) and (
+            should_use_exl3(
+                model_name,
+                load_in_exl3 = load_in_exl3,
+                quantization_config = quantization_config,
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = load_in_8bit,
+            )
+            # An adapter trained on an EXL3 base reloads onto that base.
+            or resolve_exl3_adapter(
+                model_name,
+                load_in_exl3 = load_in_exl3,
+                quantization_config = quantization_config,
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = load_in_8bit,
+                load_in_16bit = load_in_16bit,
+                token = token,
+                revision = revision,
+                local_files_only = kwargs.get("local_files_only", False),
+            )
+            is not None
         ):
             token = hf_login(token)
             return FastModel.from_pretrained(
@@ -2361,7 +2376,31 @@ class FastModel(FastBaseModel):
         # Resolve/quantize to a local EXL3 checkpoint, then load it via the
         # transformers auto path (bnb disabled). See unsloth/exllama/.
         # ------------------------------------------------------------------
-        from ..exllama import should_use_exl3 as _should_use_exl3
+        from ..exllama import (
+            should_use_exl3 as _should_use_exl3,
+            resolve_exl3_adapter as _resolve_exl3_adapter,
+        )
+
+        # An adapter trained on an EXL3 base: prepare that base from the adapter's
+        # stamp, then attach the adapter once the base is loaded.
+        _exl3_adapter = None
+        _exl3_base_revision = revision
+        if not full_finetuning:
+            _exl3_adapter_route = _resolve_exl3_adapter(
+                model_name,
+                load_in_exl3 = load_in_exl3,
+                quantization_config = quantization_config,
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = load_in_8bit,
+                load_in_16bit = load_in_16bit,
+                token = token,
+                revision = revision,
+                local_files_only = kwargs.get("local_files_only", False),
+            )
+            if _exl3_adapter_route is not None:
+                _exl3_adapter = model_name
+                model_name, load_in_exl3 = _exl3_adapter_route
+                _exl3_base_revision = None
 
         _exl3_plan = None
         _exl3_active = False
@@ -2388,7 +2427,7 @@ class FastModel(FastBaseModel):
                 quantization_config = quantization_config,
                 compute_dtype = _exl3_compute_dtype,
                 token = token,
-                revision = revision,
+                revision = _exl3_base_revision,
                 trust_remote_code = trust_remote_code,
                 local_files_only = kwargs.get("local_files_only", False),
                 devices = (os.environ.get("CUDA_VISIBLE_DEVICES", "").strip() or "0"),
@@ -3076,7 +3115,18 @@ class FastModel(FastBaseModel):
                 # Both AutoConfig and PeftConfig loaded from this remote repo, so config.json and adapter_config.json both exist and no extra HfFileSystem call is needed.
                 both_exist = True
 
-        if is_peft:
+        if _exl3_adapter is not None:
+            # model_name is already the prepared EXL3 base; load the adapter onto it.
+            peft_config = PeftConfig.from_pretrained(
+                _exl3_adapter,
+                token = token,
+                revision = revision,
+                trust_remote_code = trust_remote_code,
+                local_files_only = local_files_only,
+            )
+            is_peft = True
+            old_model_name = _exl3_adapter
+        elif is_peft:
             model_name = peft_config.base_model_name_or_path
             if not use_exact_model_name:
                 model_name = get_model_name(
@@ -3823,7 +3873,7 @@ class FastModel(FastBaseModel):
         model = _mark_full_finetuning(model, full_finetuning)
         if _exl3_active:
             from ..exllama import set_exl3_source_model_reference
-            set_exl3_source_model_reference(model, _exl3_plan.source_model)
+            set_exl3_source_model_reference(model, _exl3_plan.source_model, _exl3_plan.config)
         return _mark_requested_float32(model, user_float32), tokenizer
 
 

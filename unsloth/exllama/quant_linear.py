@@ -121,7 +121,13 @@ class Exl3QuantState:
         fused = not (n_in % 128 or n_out % 128) and hasattr(inner, "K")
         if fused:  # only a real LinearEXL3 gets here, so exllamav3 is importable
             from exllamav3.modules.quant import exl3 as _exl3
-            fused = not _exl3.no_fused_reconstruct
+
+            # Older exllamav3 (< 1.x) has no fused reconstruct kernel.
+            fused = (
+                hasattr(_exl3.ext, "reconstruct_had_slice")
+                and hasattr(_exl3, "MAX_RECONSTRUCT_SLICE_N")
+                and not getattr(_exl3, "no_fused_reconstruct", False)
+            )
         if not fused:
             # shortcut: full-width fp32 Hadamard (~3x the weight in scratch), only for
             # shapes the fused kernel can't take; chunk it if a big head ever lands here.
