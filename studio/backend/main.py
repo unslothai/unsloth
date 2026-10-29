@@ -54,6 +54,7 @@ if sys.platform == "win32":
 _SYSTEM_GPU_CACHE_TTL_SECONDS = 10.0
 _system_gpu_cache_lock = threading.Lock()
 _system_gpu_cache: Optional[tuple[float, tuple[dict[str, Any], dict[str, Any]]]] = None
+_system_gpu_probe_s = 0.0
 
 _CPU_PERCENT_MIN_WINDOW_S = 1.0
 _cpu_percent_lock = threading.Lock()
@@ -2408,6 +2409,8 @@ def _schedule_shutdown(request: Request) -> dict:
 # The Live monitor polls every 1-10 s; at 1 s a 10 s GPU cache left VRAM nine reads stale. A caller may
 # ask for fresher GPU readings, never more than once a second (one probe per second, under the lock).
 _SYSTEM_GPU_MIN_AGE_SECONDS = 1.0
+# Some probes are slow (about 1.5 s on Windows ROCm), so a fast poll waits at least this many probe lengths.
+_SYSTEM_GPU_PROBE_SPACING = 4.0
 
 
 def _system_gpu_max_age_s(requested: Optional[float]) -> float:
@@ -2465,9 +2468,13 @@ def _get_cached_system_gpu_info(
         gpu_query,
     )
 
-    global _system_gpu_cache
-    now = time.monotonic()
+    global _system_gpu_cache, _system_gpu_probe_s
     with _system_gpu_cache_lock:
+        now = time.monotonic()
+        max_age_s = min(
+            _SYSTEM_GPU_CACHE_TTL_SECONDS,
+            max(max_age_s, _SYSTEM_GPU_PROBE_SPACING * _system_gpu_probe_s),
+        )
         # A read inside the 10 s window only refreshes live readings; past it, everything is re-resolved.
         within_window = (
             not refresh_memory
@@ -2591,6 +2598,7 @@ def _get_cached_system_gpu_info(
 
         combined_info = (gpu_info, inference_gpu_info)
         _system_gpu_cache = (time.monotonic(), combined_info)
+        _system_gpu_probe_s = _system_gpu_cache[0] - now
         return combined_info
 
 

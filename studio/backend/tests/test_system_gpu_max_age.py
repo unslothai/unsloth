@@ -82,3 +82,21 @@ def test_llama_pin_support_is_not_rescanned_on_every_fast_read(monkeypatch):
     # A full (past-the-window) read re-resolves, so a reinstall shows within 10 s.
     main._gguf_pin_support(log, refresh = True)
     assert len(scans) == 2
+
+
+def test_a_slow_gpu_probe_spaces_out_fast_polls(monkeypatch):
+    import logging
+
+    import main
+
+    cached = ({"available": True, "devices": []}, {"available": True, "devices": []})
+    now = main.time.monotonic()
+    monkeypatch.setattr(main, "_system_gpu_cache", (now - 2.0, cached))
+    log = logging.getLogger("t")
+    # A 1.5 s probe (Windows ROCm) keeps a 2 s old reading for a 1 s poll.
+    monkeypatch.setattr(main, "_system_gpu_probe_s", 1.5)
+    assert main._get_cached_system_gpu_info(log, max_age_s = 1.0) is cached
+    # A fast probe lets the same poll through to a fresh read.
+    monkeypatch.setattr(main, "_system_gpu_probe_s", 0.05)
+    monkeypatch.setattr(main, "_system_gpu_cache", (now - 2.0, cached))
+    assert main._get_cached_system_gpu_info(log, max_age_s = 1.0) is not cached
