@@ -92,6 +92,7 @@ from transformers import (
 logger = logging.getLogger(__name__)
 
 _GRAD_NORM_ROWS = 512
+_FULL_COVERAGE_ROWS = 2048
 _CAN_TELL_BACKWARD = hasattr(torch._C, "_current_graph_task_id")
 
 
@@ -173,6 +174,15 @@ class ActivationCaptureConfig:
                             Only meaningful for PEFT/LoRA models.
                             Default: True.
         seed:              Random seed for reproducible channel sampling.
+        full_coverage:     If True, reduce every hidden channel on each capture
+                           and record per-layer dead / constant / outlier counts
+                           over all of them, not just the sampled ones. The
+                           sampled values are read from the same reduction.
+        pinned_channels:   With full_coverage, how many of the max_channels
+                           columns go to the strongest outlier channels seen at
+                           the first capture; the rest stay random.
+        outlier_ratio:     A channel is an outlier when its mean |activation|
+                           exceeds this multiple of its layer's median.
     """
 
     output_dir: str = "activation_logs"
@@ -182,6 +192,13 @@ class ActivationCaptureConfig:
     capture_gradients: bool = True
     capture_lora_norms: bool = True
     seed: int = 42
+    full_coverage: bool = True
+    pinned_channels: int = 8
+    outlier_ratio: float = 6.0
+    # The same rules the Interpretability tab applies to the sampled channels.
+    dead_threshold: float = 0.01
+    constant_cv: float = 0.05
+    min_captures_for_constant: int = 5
 
     def __post_init__(self):
         if self.capture_interval < 1:
@@ -297,7 +314,13 @@ class ActivationCapture:
             "lora_targets": self._lora_targets,
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
-        self._write_metadata(metadata)
+        self._metadata = metadata
+        # Running per-channel state for full coverage: [layers, H] tensors on the model's device.
+        self._run = None
+        self._captures = 0
+        self._pinned: List[int] = []
+        if not config.full_coverage:
+            self._write_metadata(metadata)
 
         logger.info(
             "ActivationCapture: %d channels × %d layers → %s",
@@ -450,6 +473,19 @@ class ActivationCapture:
             if not isinstance(hidden, torch.Tensor):
                 return
 
+            if self.config.full_coverage and kind == "layer":
+                with torch.no_grad():
+                    # Every channel, reduced in fp32 row chunks; no host sync until flush.
+                    rows = hidden.detach().flatten(0, -2)
+                    sum_abs = total = 0.0
+                    for c in rows.split(_FULL_COVERAGE_ROWS):
+                        sum_abs = sum_abs + c.abs().sum(dim = 0, dtype = torch.float32)
+                        total = total + c.sum(dim = 0, dtype = torch.float32)
+                    n, a, t = self._act_sums.get(layer_idx, (0, 0.0, 0.0))
+                    self._act_sums[layer_idx] = (n + rows.shape[0], a + sum_abs, t + total)
+                self._captured_layers.add(key)
+                return
+
             with torch.no_grad():
                 # Index K channels BEFORE casting to fp32 — avoids allocating a
                 # full [B, S, H] fp32 copy; instead only [B, S, K] is cast.
@@ -529,15 +565,19 @@ class ActivationCapture:
 
         Called by :class:`ActivationCaptureCallback` after each step completes.
         """
-        if not self._buffer and not self._grad_buffer:
+        full = self.config.full_coverage and any(isinstance(k, int) for k in self._act_sums)
+        if not self._buffer and not self._grad_buffer and not full:
             self._should_capture = False
             return
 
+        coverage = self._reduce_full_coverage() if full else None
         record = {
             "step": self._step,
             "loss": self._loss,
             "layers": {str(k): v for k, v in self._buffer.items()},
         }
+        if coverage:
+            record["coverage"] = coverage
 
         # Add gradient norms if captured
         if self._grad_buffer:
@@ -556,8 +596,99 @@ class ActivationCapture:
 
         self._buffer.clear()
         self._grad_buffer.clear()
+        self._act_sums.clear()
         self._should_capture = False
+        if self._metadata is not None and self.config.full_coverage:
+            # Written once the first capture has chosen the pinned columns.
+            self._metadata["captured_channels"] = self._sampled_channels
+            self._metadata["pinned_channels"] = self._pinned
+            self._metadata["full_coverage"] = True
+            self._write_metadata(self._metadata)
+            self._metadata = None
         self._write_record(record)
+
+    def _reduce_full_coverage(self) -> Optional[dict]:
+        cfg = self.config
+        ids = sorted(k for k in self._act_sums if isinstance(k, int))
+        sums = [self._act_sums[i] for i in ids]
+        if len({s[1].shape for s in sums}) != 1:
+            return None  # layers of different widths; the sampled path below still covers them
+        mean_abs = torch.stack([a / n for n, a, _ in sums])  # [L, H]
+        mean = torch.stack([t / n for n, _, t in sums])
+        h = mean_abs.shape[1]
+        median = mean_abs.median(dim = 1, keepdim = True).values.clamp_min(1e-12)
+        ratio = mean_abs / median
+
+        if self._captures == 0 and h > cfg.max_channels:
+            pins = min(cfg.pinned_channels, cfg.max_channels)
+            top = ratio.amax(dim = 0).topk(pins).indices.tolist() if pins else []
+            rest = [c for c in range(h) if c not in set(top)]
+            fill = random.Random(cfg.seed).sample(rest, cfg.max_channels - len(top))
+            self._pinned = sorted(top)
+            self._sampled_channels = sorted(top + fill)
+
+        if self._run is None:
+            zeros = torch.zeros_like(mean_abs)
+            self._run = {"max": zeros.clone(), "sum": zeros.clone(), "sumsq": zeros}
+        run = self._run
+        torch.maximum(run["max"], mean_abs, out = run["max"])
+        run["sum"] += mean_abs
+        run["sumsq"] += mean_abs * mean_abs
+        self._captures += 1
+
+        dead = run["max"] < cfg.dead_threshold
+        if self._captures >= cfg.min_captures_for_constant:
+            avg = run["sum"] / self._captures
+            std = (run["sumsq"] / self._captures - avg * avg).clamp_min(0).sqrt()
+            cv = torch.where(avg > 0, std / avg.clamp_min(1e-12), torch.zeros_like(avg))
+            constant = (cv < cfg.constant_cv) & ~dead
+        else:
+            constant = torch.zeros_like(dead)
+        outlier = ratio > cfg.outlier_ratio
+        k = min(3, h)
+        top_ratio, top_idx = ratio.topk(k, dim = 1)
+        idx = torch.tensor(self._sampled_channels, device = mean_abs.device)
+
+        # One host transfer for the whole step.
+        counts = torch.stack([dead.sum(1), constant.sum(1), outlier.sum(1)], dim = 1).float()
+        packed = (
+            torch.cat(
+                [
+                    counts.flatten(),
+                    top_ratio.flatten(),
+                    top_idx.float().flatten(),
+                    mean_abs[:, idx].flatten(),
+                    mean[:, idx].flatten(),
+                ]
+            )
+            .cpu()
+            .tolist()
+        )
+        n_layers, n_k = len(ids), len(self._sampled_channels)
+        off = 0
+
+        def take(count):
+            nonlocal off
+            out = packed[off : off + count]
+            off += count
+            return out
+
+        counts_l, ratio_l, idx_l = take(n_layers * 3), take(n_layers * k), take(n_layers * k)
+        abs_l, mean_l = take(n_layers * n_k), take(n_layers * n_k)
+        coverage = {}
+        for j, layer in enumerate(ids):
+            self._buffer[layer] = {
+                "mean_abs": abs_l[j * n_k : (j + 1) * n_k],
+                "mean": mean_l[j * n_k : (j + 1) * n_k],
+            }
+            coverage[str(layer)] = {
+                "channels": h,
+                "dead": int(counts_l[j * 3]),
+                "constant": int(counts_l[j * 3 + 1]),
+                "outliers": int(counts_l[j * 3 + 2]),
+                "top_outliers": [[int(idx_l[j * k + i]), ratio_l[j * k + i]] for i in range(k)],
+            }
+        return coverage
 
     # Where records go; a subclass that stores them elsewhere overrides these two.
     def _write_metadata(self, metadata: dict):

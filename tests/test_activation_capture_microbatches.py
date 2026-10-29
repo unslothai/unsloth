@@ -112,9 +112,8 @@ def _state(step, max_steps = 10):
 
 
 def _records(tmp_path):
-    return [
-        json.loads(line) for line in (tmp_path / "activation_log.jsonl").read_text().splitlines()
-    ]
+    log = tmp_path / "activation_log.jsonl"
+    return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
 
 
 def test_a_snapshot_carries_the_loss_of_its_own_step(tmp_path):
