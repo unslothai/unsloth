@@ -3222,8 +3222,7 @@ function Invoke-NpmMirrorRetry {
     return $true
 }
 
-# check: $true only when the OXC node_modules is exactly what its last successful `npm ci` left
-# (install-stamp.mjs). write: record that tree. Any doubt is $false and setup runs `npm ci`.
+# install-stamp.mjs check/write; any doubt returns $false so setup runs `npm ci`.
 function Invoke-OxcInstallStamp {
     param([Parameter(Mandatory = $true)][ValidateSet("check", "write")][string]$Mode)
     $helper = Join-Path $OxcValidatorDir "install-stamp.mjs"
@@ -5640,7 +5639,6 @@ if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip" -and (Get-Command n
     $ErrorActionPreference = "Continue"
     Push-Location $OxcValidatorDir
     $NpmInstallVerb = if (Test-Path "package-lock.json") { "ci" } else { "install" }
-    # The re-run of an update and every no-op update would reinstall the same locked tree.
     if ($NpmInstallVerb -eq "ci" -and (Invoke-OxcInstallStamp -Mode check)) {
         Pop-Location
         $ErrorActionPreference = $prevEAP_oxc

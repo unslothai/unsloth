@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Setup skips the OXC validator `npm ci` only when node_modules is exactly what the last
-successful one left.
-
-Every setup ran `npm ci` in studio/backend/core/data_recipe/oxc-validator, so an update ran it twice
-(the old setup, then the new one it hands over to) and a no-op update reinstalled the same tree.
-install-stamp.mjs records the inputs (package files, Node, platform, npm settings) and a hash of
-every file after a successful install; a later setup skips only on an exact match, and anything
-else (no stamp, a changed byte, a different Node) falls back to `npm ci`.
-"""
+"""Setup skips the OXC validator `npm ci` only when node_modules exactly matches the last stamped install."""
 
 from __future__ import annotations
 
@@ -91,21 +83,18 @@ def _helper(
     ).returncode
 
 
-# ── The helper on its own ──
-
-
 @needs_node
 def test_helper_writes_and_confirms_an_unchanged_tree(tmp_path):
     oxc = _oxc(tmp_path)
-    assert _helper(oxc, "check") == 1  # nothing installed yet
+    assert _helper(oxc, "check") == 1
     _template(oxc)
-    assert _helper(oxc, "check") == 1  # installed, never stamped
+    assert _helper(oxc, "check") == 1
     assert _helper(oxc, "write") == 0
     before = _snapshot(oxc)
     assert _helper(oxc, "check") == 0
     assert _helper(oxc, "check") == 0
-    assert _snapshot(oxc) == before  # check is read-only
-    # Setup prunes agent instruction files after every install; that is still the same tree.
+    assert _snapshot(oxc) == before
+    # Setup prunes agent files after install; still the same tree.
     (oxc / "node_modules" / "oxlint" / "AGENTS.md").unlink()
     assert _helper(oxc, "check") == 0
 
@@ -176,12 +165,10 @@ def test_helper_fails_open_when_npm_settings_could_change_the_tree(tmp_path):
     env = {k: v for k, v in os.environ.items() if not k.lower().startswith("npm_config_")}
     _template(oxc)
     assert _helper(oxc, "write", env) == 0
-    # Where packages come from never changes what is installed.
     assert _helper(oxc, "check", {**env, "npm_config_registry": "https://mirror.invalid/"}) == 0
     assert _helper(oxc, "check", {**env, "NPM_CONFIG_PREFIX": str(tmp_path)}) == 0
     assert _helper(oxc, "check", {**env, "npm_config_omit": "optional"}) == 1
     assert _helper(oxc, "check", {**env, "NPM_CONFIG_CPU": "arm64"}) == 1
-    # A global npmrc appearing after the install is a changed input too.
     globalrc = tmp_path / "globalrc"
     genv = {**env, "npm_config_globalconfig": str(globalrc)}
     assert _helper(oxc, "write", genv) == 0
@@ -207,9 +194,6 @@ def test_the_tree_check_covers_the_real_lockfile_dependencies():
     lock = json.loads((OXC_DIR / "package-lock.json").read_text(encoding = "utf-8"))
     # No install scripts: the tree npm ci builds is fixed by the lockfile and the platform alone.
     assert not [k for k, v in lock["packages"].items() if v.get("hasInstallScript")]
-
-
-# ── The setup blocks ──
 
 
 def _bash_block() -> str:
@@ -331,7 +315,6 @@ def test_setup_runs_npm_ci_once_then_skips_until_the_tree_changes(tmp_path, shel
         n = len(calls.read_text().splitlines()) if calls.exists() else 0
         return result, n
 
-    # A fresh install runs npm ci and stamps the tree.
     result, n = run()
     assert result.returncode == 0, result.stdout + result.stderr
     assert n == 1

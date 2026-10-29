@@ -2002,7 +2002,6 @@ _install_oxc_runtime() {
 if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null \
     && [ -f "$_OXC_DIR/package-lock.json" ] && [ -f "$_OXC_DIR/install-stamp.mjs" ] \
     && node "$_OXC_DIR/install-stamp.mjs" check >/dev/null 2>&1; then
-    # The re-run of an update and every no-op update would reinstall the same locked tree.
     verbose_substep "oxc validator runtime up to date"
     cd "$SCRIPT_DIR"
 elif [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null; then

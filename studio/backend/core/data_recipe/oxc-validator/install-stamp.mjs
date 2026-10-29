@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Lets setup skip `npm ci` here when node_modules is still exactly what the last successful one left.
-//   node install-stamp.mjs write   after a successful `npm ci`: record the inputs and the tree.
-//   node install-stamp.mjs check   exit 0 only when the inputs and every file match that record.
-// Any doubt (no stamp, unreadable file, changed byte) exits 1, and setup runs `npm ci` as before.
+// `write` stamps node_modules after a successful `npm ci`; `check` exits 0 only on an exact match, so setup can skip `npm ci`.
 import { createHash } from "node:crypto";
 import {
   lstatSync,
@@ -48,8 +45,7 @@ function libc() {
   }
 }
 
-// What `npm ci` reads besides the lockfile: Node, the platform its optional binaries are picked
-// for, and any npm setting that could add or drop packages.
+// What `npm ci` reads besides the lockfile: Node, platform, and tree-affecting npm settings.
 function inputs() {
   const config = Object.keys(process.env)
     .map((k) => [k.toLowerCase(), process.env[k]])
@@ -77,7 +73,6 @@ function inputs() {
   };
 }
 
-// Every path under node_modules with its type and content, in a fixed order.
 function treeHash() {
   const digest = createHash("sha256");
   const walk = (dir, rel) => {
@@ -100,8 +95,7 @@ function treeHash() {
   return digest.digest("hex");
 }
 
-// The packages npm recorded as installed are on disk at the locked versions: oxlint, oxc-parser,
-// oxc-transform and the platform binaries they load.
+// Installed packages are on disk at the locked versions.
 function packagesPresent() {
   const lock = JSON.parse(readFileSync(join(ROOT, "package-lock.json"), "utf8")).packages || {};
   const hidden = JSON.parse(readFileSync(join(MODULES, ".package-lock.json"), "utf8")).packages || {};
