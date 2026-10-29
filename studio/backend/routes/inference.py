@@ -11365,7 +11365,7 @@ async def _maybe_auto_switch_model(
             None
             if target_is_gguf
             else await asyncio.to_thread(
-                approved_local_fingerprint, current_subject, override_id, target_id
+                approved_local_fingerprint, current_subject, (override_id, target_id), target_id
             )
         )
         key = _switch_key(override_id, variant)

@@ -10426,6 +10426,27 @@ def test_a_custom_code_checkpoint_is_switchable_only_with_its_approval(tmp_path)
     assert resolver.local_servable_model(info) == (False, ())
 
 
+def test_a_path_approved_folder_checkpoint_lists_and_switches_alike(tmp_path):
+    """A ./models or LM Studio folder is approved by its path; the index keys it by alias."""
+    from utils.security import remote_code_approvals as approvals
+    from utils.security.consent import _fingerprint_target_key
+    from utils.security.remote_code_scan import remote_code_fingerprint, repo_remote_code_files
+
+    path = str(_custom_code_checkpoint(tmp_path))
+    key = _fingerprint_target_key(path)
+    files = repo_remote_code_files(path)
+    approvals.record(
+        "unsloth",
+        approvals.approval_target_key([path]),
+        commit_sha = None,
+        fingerprint = remote_code_fingerprint({f"{key}\0{n}": b for n, b in files.items()}),
+        max_severity = None,
+    )
+    info = SimpleNamespace(id = path, path = path, model_id = None, display_name = "CustomCode")
+    assert resolver.local_servable_model(info) == (False, ())
+    assert resolver._local_servable_entry("CustomCode", info) is not None
+
+
 @pytest.mark.parametrize("via_stash", [False, True])
 @pytest.mark.parametrize("approved", [True, False])
 def test_an_approved_custom_code_target_loads_with_its_approval(

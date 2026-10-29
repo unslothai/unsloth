@@ -620,7 +620,7 @@ def _weights_are_servable(load_dir) -> bool:
     return not (load_dir / "modules.json").is_file()
 
 
-def _config_is_servable_here(loader_id: str, load_dir, config: dict) -> bool:
+def _config_is_servable_here(approval_ids, load_dir, config: dict) -> bool:
     """Only the approval boundary and category are decided here; remote code is read as data only."""
     from utils.security.remote_code_approvals import approved_local_fingerprint
     from utils.security.remote_code_scan import REMOTE_CODE_CONFIG_FILES
@@ -636,7 +636,7 @@ def _config_is_servable_here(loader_id: str, load_dir, config: dict) -> bool:
         auto_map = auto_map or bool(candidate.get("auto_map"))
     # A switch can only pass on an approval the account already gave for exactly this code.
     if auto_map and not approved_local_fingerprint(
-        current_account().username, loader_id, str(load_dir)
+        current_account().username, approval_ids, str(load_dir)
     ):
         return False
     return _is_generative_chat_config(load_dir, config)
@@ -708,8 +708,10 @@ def _local_weights_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
         if not _weights_are_servable(load_dir):
             return None
         config = _read_json(load_dir / "config.json")
+        # Listing passes the raw id, the index the alias: both must see a path-keyed approval.
+        approval_ids = (loader_id, getattr(info, "id", None), path, str(load_dir))
         if not isinstance(config, dict) or not _config_is_servable_here(
-            loader_id, load_dir, config
+            approval_ids, load_dir, config
         ):
             return None
         # No quants: quantization is baked in, so there is no ":<quant>" to pin.
