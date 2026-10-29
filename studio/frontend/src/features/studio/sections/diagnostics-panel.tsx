@@ -239,6 +239,36 @@ function computeFindings(
     });
   }
 
+  // ── Outlier channels (full coverage only) ─────────────────────────────────
+  const outlierLayers = stats.filter((l) => l.outliers > 0);
+  if (outlierLayers.length > 0) {
+    const count = outlierLayers.reduce((s, l) => s + l.outliers, 0);
+    const strongest = outlierLayers
+      .filter((l) => l.topOutlier)
+      .sort((a, b) => b.topOutlier!.ratio - a.topOutlier!.ratio)[0];
+    findings.push({
+      id: "outliers",
+      severity: "grey",
+      title: t(
+        count === 1
+          ? "studio.interpretability.diagnostics.outliersTitleOne"
+          : "studio.interpretability.diagnostics.outliersTitle",
+        { count },
+      ),
+      detail: strongest
+        ? t("studio.interpretability.diagnostics.outliersDetail", {
+            channel: strongest.topOutlier!.channel,
+            layer: strongest.layer,
+            ratio: strongest.topOutlier!.ratio.toFixed(1),
+          })
+        : t("studio.interpretability.diagnostics.outliersDetailPlain"),
+      layers: outlierLayers
+        .sort((a, b) => b.outliers - a.outliers)
+        .slice(0, 4)
+        .map((l) => l.layer),
+    });
+  }
+
   // ── Born-dead neurons (informational) ─────────────────────────────────────
   const bornDead = [...overlays.dead].filter((id) => !overlays.onsetDead.has(id));
   if (bornDead.length > 0 && !findings.some((f) => f.id === "onset_dead")) {

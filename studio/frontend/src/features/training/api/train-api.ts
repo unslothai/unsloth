@@ -418,12 +418,22 @@ export { isAbortError };
 
 // ── Activation data ──────────────────────────────────────────────────────────
 
+// Counts over every hidden channel of one layer, cumulative from the run's first capture.
+export type ActivationLayerCoverage = {
+  channels: number;
+  dead: number;
+  constant: number;
+  outliers: number;
+  top_outliers: [number, number | null][];
+};
+
 export type ActivationRecord = {
   step: number;
   loss?: number;
   layers: Record<string, { mean_abs: number[]; mean: number[] }>;
   grad_norms?: Record<string, number>;
   lora_norms?: Record<string, number>;
+  coverage?: Record<string, ActivationLayerCoverage>;
 };
 
 export type ActivationMetadata = {
@@ -435,6 +445,8 @@ export type ActivationMetadata = {
   capture_gradients: boolean;
   capture_lora_norms: boolean;
   lora_targets?: string[];
+  pinned_channels?: number[];
+  full_coverage?: boolean;
 };
 
 export type ActivationData = {

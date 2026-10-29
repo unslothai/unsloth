@@ -3469,6 +3469,7 @@ def get_activations(
                         "layers": r["layers"],
                         **({"grad_norms": r["grad_norms"]} if r.get("grad_norms") else {}),
                         **({"lora_norms": r["lora_norms"]} if r.get("lora_norms") else {}),
+                        **({"coverage": r["coverage"]} if r.get("coverage") else {}),
                     }
                     for r in db_records
                 ]

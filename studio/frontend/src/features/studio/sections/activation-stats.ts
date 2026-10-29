@@ -23,6 +23,10 @@ export interface LayerStats {
   deadPct: number;
   constantPct: number;
   totalChannels: number;
+  // True when the counts cover every channel of the layer, not just the sampled columns.
+  fullCoverage: boolean;
+  outliers: number;
+  topOutlier: { channel: number; ratio: number } | null;
 }
 
 export interface OverlaySets {
@@ -39,10 +43,12 @@ export interface TrendPoint {
 }
 
 // ── computeLayerStats ─────────────────────────────────────────────────────────
-// Returns per-layer dead/constant percentages across the given record slice.
+// Returns per-layer dead/constant percentages across the given record slice, which must
+// start at the run's first record. Full-coverage counts are used when the run stored them.
 
 export function computeLayerStats(records: ActivationRecord[]): LayerStats[] {
   if (records.length === 0) return [];
+  const coverage = records[records.length - 1].coverage;
 
   const layerKeys = new Set<string>();
   for (const rec of records) {
@@ -52,6 +58,19 @@ export function computeLayerStats(records: ActivationRecord[]): LayerStats[] {
   const sorted = [...layerKeys].sort((a, b) => Number(a) - Number(b));
 
   return sorted.map((layerKey) => {
+    const cov = coverage?.[layerKey];
+    if (cov && cov.channels > 0) {
+      const top = cov.top_outliers.find(([, r]) => isSample(r));
+      return {
+        layer: `L${layerKey}`,
+        deadPct: (cov.dead / cov.channels) * 100,
+        constantPct: (cov.constant / cov.channels) * 100,
+        totalChannels: cov.channels,
+        fullCoverage: true,
+        outliers: cov.outliers,
+        topOutlier: top ? { channel: top[0], ratio: top[1] as number } : null,
+      };
+    }
     const channelSeries = new Map<number, number[]>();
     for (const rec of records) {
       const layer = rec.layers[layerKey];
@@ -87,6 +106,9 @@ export function computeLayerStats(records: ActivationRecord[]): LayerStats[] {
       deadPct: totalChannels > 0 ? (deadCount / totalChannels) * 100 : 0,
       constantPct: totalChannels > 0 ? (constantCount / totalChannels) * 100 : 0,
       totalChannels,
+      fullCoverage: false,
+      outliers: 0,
+      topOutlier: null,
     };
   });
 }

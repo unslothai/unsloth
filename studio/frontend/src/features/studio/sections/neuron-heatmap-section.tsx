@@ -179,6 +179,7 @@ function drawHeatmap(
   axisLabels: AxisLabels,
   transposed = false,
   scale = 1,
+  pinnedChannels: ReadonlySet<number> = new Set(),
 ): HeatmapLayout | null {
   const ctx = canvas.getContext("2d");
   if (!ctx) return null;
@@ -265,6 +266,21 @@ function drawHeatmap(
     }
   }
 
+  // ── Pinned-outlier markers above their columns ──
+  if (transposed && pinnedChannels.size > 0) {
+    ctx.fillStyle = outlierColor;
+    capturedChannels.forEach((ch, ci) => {
+      if (!pinnedChannels.has(ch)) return;
+      const mx = lMargin + ci * cSlot + cSize / 2;
+      ctx.beginPath();
+      ctx.moveTo(mx - 3 * s, 1 * s);
+      ctx.lineTo(mx + 3 * s, 1 * s);
+      ctx.lineTo(mx, 6 * s);
+      ctx.closePath();
+      ctx.fill();
+    });
+  }
+
   const LABEL_COLOR = "rgba(160,160,160,0.9)";
   const TITLE_COLOR = "rgba(120,120,120,0.75)";
 
@@ -342,6 +358,7 @@ type TooltipState = {
   channelIdx: number;
   value: number | null;
   normalized: number;
+  pinned: boolean;
 };
 
 // ── KaTeX helpers ─────────────────────────────────────────────────────────────
@@ -482,6 +499,7 @@ function ModePill({
 function HeatmapCanvas({
   values,
   capturedChannels,
+  pinnedChannels,
   activeOverlays,
   overlaySets,
   expanded = false,
@@ -489,6 +507,7 @@ function HeatmapCanvas({
 }: {
   values: Record<string, number[]> | null;
   capturedChannels: number[];
+  pinnedChannels: ReadonlySet<number>;
   activeOverlays: Set<OverlayKey>;
   overlaySets: OverlaySets;
   expanded?: boolean;
@@ -539,12 +558,12 @@ function HeatmapCanvas({
 
       layoutRef.current = drawHeatmap(
         canvas, values, capturedChannels, outlierColor, palette,
-        activeOverlays, overlaySets, axisLabels, true, physicalScale,
+        activeOverlays, overlaySets, axisLabels, true, physicalScale, pinnedChannels,
       );
     }
     imperativeDrawRef.current = draw;
     draw();
-  }, [values, capturedChannels, outlierColor, palette, activeOverlays, overlaySets, expanded, axisLabels]);
+  }, [values, capturedChannels, pinnedChannels, outlierColor, palette, activeOverlays, overlaySets, expanded, axisLabels]);
 
   useEffect(() => {
     const el = wrapperRef.current;
@@ -589,9 +608,12 @@ function HeatmapCanvas({
       const normalized = value === null ? 0 : isOutlier ? -1 : value / layout.clampMax;
       const channelIdx = layout.capturedChannels[ci] ?? ci;
 
-      setTooltip({ clientX: e.clientX, clientY: e.clientY, layerKey, channelIdx, value, normalized });
+      setTooltip({
+        clientX: e.clientX, clientY: e.clientY, layerKey, channelIdx, value, normalized,
+        pinned: pinnedChannels.has(channelIdx),
+      });
     },
-    [values],
+    [values, pinnedChannels],
   );
 
   const handleMouseLeave = useCallback(() => setTooltip(null), []);
@@ -645,6 +667,11 @@ function HeatmapCanvas({
                 {tooltip.value === null ? t("studio.interpretability.heatmap.missingValue") : tooltip.value.toFixed(4)}{tooltip.normalized < 0 ? " ↑" : ""}
               </span>
             </div>
+            {tooltip.pinned && (
+              <div className="text-ui-10" style={{ color: outlierColor }}>
+                ▼ {t("studio.interpretability.heatmap.pinned")}
+              </div>
+            )}
           </div>
         </div>,
         document.body,
@@ -658,9 +685,11 @@ function HeatmapCanvas({
 function ColorLegend({
   outlierBlend = false,
   onToggleBlend,
+  showPinned = false,
 }: {
   outlierBlend?: boolean;
   onToggleBlend?: () => void;
+  showPinned?: boolean;
 }): ReactElement {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const t = useT();
@@ -728,6 +757,21 @@ function ColorLegend({
           </p>
         </TooltipContent>
       </Tooltip>
+      {showPinned && (
+        <>
+          <span className="mx-1 text-ui-10 text-muted-foreground/50">·</span>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="cursor-default text-ui-10 text-muted-foreground select-none">
+                <span style={{ color: swatchColor }}>▼</span> {t("studio.interpretability.heatmap.pinned")}
+              </span>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-[calc(260px*var(--ui-space-scale,1))]">
+              <p className="text-xs/relaxed font-normal">{t("studio.interpretability.heatmap.pinnedBody")}</p>
+            </TooltipContent>
+          </Tooltip>
+        </>
+      )}
     </div>
   );
 }
@@ -869,6 +913,13 @@ export function NeuronHeatmapSection({
   const numLayers   = metadata?.num_layers ?? (record ? Object.keys(record.layers).length : 0);
   const numChannels = metadata?.captured_channels?.length ?? 0;
   const capturedChannels = metadata?.captured_channels ?? [];
+  const pinnedChannels = useMemo(
+    () => new Set(metadata?.pinned_channels ?? []),
+    [metadata?.pinned_channels],
+  );
+  const coverageNote = metadata?.full_coverage
+    ? t("studio.interpretability.heatmap.coverageBadge", { channels: metadata.hidden_size })
+    : null;
 
   const [expanded,     setExpanded]     = useState(false);
   const [outlierBlend, setOutlierBlend] = useState(false);
@@ -907,6 +958,11 @@ export function NeuronHeatmapSection({
             {records.length > 0 && (
               <span className="rounded border border-border/60 px-2 py-0.5 text-ui-10 leading-none text-muted-foreground whitespace-nowrap">
                 {t("studio.interpretability.heatmap.sizeShort", { layers: numLayers, channels: numChannels })}
+              </span>
+            )}
+            {records.length > 0 && coverageNote && (
+              <span className="rounded border border-border/60 px-2 py-0.5 text-ui-10 leading-none text-muted-foreground whitespace-nowrap">
+                {coverageNote}
               </span>
             )}
           </div>
@@ -978,12 +1034,13 @@ export function NeuronHeatmapSection({
         <HeatmapCanvas
           values={expanded ? null : computedValues}
           capturedChannels={capturedChannels}
+          pinnedChannels={pinnedChannels}
           activeOverlays={activeOverlays}
           overlaySets={overlaySets}
           outlierBlend={outlierBlend}
         />
 
-        {record && <ColorLegend outlierBlend={outlierBlend} onToggleBlend={toggleOutlierBlend} />}
+        {record && <ColorLegend outlierBlend={outlierBlend} onToggleBlend={toggleOutlierBlend} showPinned={pinnedChannels.size > 0} />}
 
         {!loading && records.length === 0 && (
           <p className="text-center text-ui-11 text-muted-foreground">
@@ -1001,6 +1058,7 @@ export function NeuronHeatmapSection({
               {records.length > 0 && (
                 <span className="ml-2 text-sm font-normal text-muted-foreground">
                   {t("studio.interpretability.heatmap.size", { layers: numLayers, channels: numChannels })}
+                  {coverageNote && ` · ${coverageNote}`}
                 </span>
               )}
             </DialogTitle>
@@ -1035,12 +1093,13 @@ export function NeuronHeatmapSection({
             <HeatmapCanvas
               values={computedValues}
               capturedChannels={capturedChannels}
+              pinnedChannels={pinnedChannels}
               activeOverlays={activeOverlays}
               overlaySets={overlaySets}
               expanded={true}
               outlierBlend={outlierBlend}
             />
-            {record && <ColorLegend outlierBlend={outlierBlend} onToggleBlend={toggleOutlierBlend} />}
+            {record && <ColorLegend outlierBlend={outlierBlend} onToggleBlend={toggleOutlierBlend} showPinned={pinnedChannels.size > 0} />}
             {!isTraining && records.length > 1 && (
               <ReplayControls
                 stepIndex={stepIndex}

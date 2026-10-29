@@ -5275,6 +5275,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                                 record["layers"],
                                 record.get("grad_norms"),
                                 record.get("lora_norms"),
+                                record.get("coverage"),
                             )
                         except Exception as _e:
                             logger.warning("DB activation record write failed: %s", _e)

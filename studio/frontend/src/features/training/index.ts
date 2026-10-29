@@ -13,7 +13,7 @@ export {
 } from "./stores/training-runtime-store";
 export { useTrainingActions } from "./hooks/use-training-actions";
 export { useActivationData } from "./hooks/use-activation-data";
-export type { ActivationMetadata, ActivationRecord } from "./api/train-api";
+export type { ActivationLayerCoverage, ActivationMetadata, ActivationRecord } from "./api/train-api";
 
 export {
   getTrainingRunDisplayTitle,
