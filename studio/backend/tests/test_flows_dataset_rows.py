@@ -171,7 +171,13 @@ def test_an_upload_says_which_block_wrote_it_and_leads_with_the_recipe_columns(c
         params = {"name": "picked"}
         inputs = {"rows": [{"seed": "s", "sql": "SELECT 1", "sql_prompt": "q"}]}
 
-        async def call(self, method, path, files = None, **_):
+        async def call(
+            self,
+            method,
+            path,
+            files = None,
+            **_,
+        ):
             name, body, _type = files["file"]
             stored = dataset_uploads_root() / f"0123abcd_{name}"
             stored.parent.mkdir(parents = True, exist_ok = True)
@@ -179,8 +185,14 @@ def test_an_upload_says_which_block_wrote_it_and_leads_with_the_recipe_columns(c
             return {"filename": name, "stored_path": str(stored)}
 
     rows = Ctx.inputs["rows"]
-    preview = asyncio.run(data.upload_rows(Ctx(), rows, "p", made_by = "preview", first = ["sql_prompt", "sql"]))
+    preview = asyncio.run(
+        data.upload_rows(Ctx(), rows, "p", made_by = "preview", first = ["sql_prompt", "sql"])
+    )
     assert preview["made_by"] == "preview"
-    assert preview["columns"] == ["sql_prompt", "sql", "seed"], "generated columns ahead of the seed's"
+    assert preview["columns"] == [
+        "sql_prompt",
+        "sql",
+        "seed",
+    ], "generated columns ahead of the seed's"
     assert asyncio.run(data.rows_to_dataset(Ctx()))["dataset"]["made_by"] == "rows"
     assert "made_by" not in asyncio.run(data.upload_rows(Ctx(), rows, "plain"))

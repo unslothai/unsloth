@@ -157,7 +157,9 @@ async def recipe(ctx: NodeContext) -> dict:
 def group_label(ctx: NodeContext) -> str:
     doc = getattr(ctx, "doc", None) or {}
     node = next((n for n in doc.get("nodes") or [] if n.get("id") == ctx.node_id), None)
-    group = next((g for g in doc.get("groups") or [] if node and g.get("id") == node.get("group")), None)
+    group = next(
+        (g for g in doc.get("groups") or [] if node and g.get("id") == node.get("group")), None
+    )
     return str((group or {}).get("label") or "").strip()
 
 
@@ -192,7 +194,9 @@ async def recipe_group(ctx: NodeContext) -> dict:
     mode = "preview" if ctx.params.get("mode") == "preview" else "full"
     run = run_settings(compiled.get("run"), int(ctx.params.get("rows") or 0), mode, body)
     if mode == "full" and not run.get("run_name") and (label := group_label(ctx)):
-        run["run_name"] = label  # what the Run settings dialog fills in, so the Run button names it too
+        run["run_name"] = (
+            label  # what the Run settings dialog fills in, so the Run button names it too
+        )
     return await run_recipe(ctx, body, run, history = RunHistory(ctx))
 
 
@@ -413,7 +417,9 @@ async def run_recipe(
             "rows": rows,
         }
         if preview:
-            dataset["columns"] = lead_columns({k for r in preview for k in r}, generated_columns(body))
+            dataset["columns"] = lead_columns(
+                {k for r in preview for k in r}, generated_columns(body)
+            )
     else:
         if not kept:
             raise FlowNodeError("The Data Recipe produced no rows")
@@ -429,7 +435,9 @@ async def run_recipe(
 
 def generated_columns(recipe: Any) -> list[str]:
     columns = recipe.get("columns") if isinstance(recipe, dict) else None
-    return [c["name"] for c in columns or [] if isinstance(c, dict) and isinstance(c.get("name"), str)]
+    return [
+        c["name"] for c in columns or [] if isinstance(c, dict) and isinstance(c.get("name"), str)
+    ]
 
 
 def recipe_artifact(ref: Any) -> bool:
