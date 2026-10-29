@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import inspect
+import logging
 import math
 import os
 import re
@@ -52,6 +53,7 @@ __all__ = [
     "drop_absent_adapter_grads_",
     "adapter_state_dict",
     "set_multi_lora_triton",
+    "MULTI_LORA_MOE_STATS",
 ]
 
 
@@ -740,6 +742,20 @@ class MultiLoraExpertParam(nn.Module):
             self.num_experts,
         )
 
+    def grouped_stacks(self, reversed_io: bool, dtype: torch.dtype) -> tuple:
+        """Every adapter's factors as (E*(U+1), in, R) and (E*(U+1), R, out), group e*(U+1) + u, R the largest rank
+        rounded up to 8 (zero padding is exact), scale folded into the second; group e*(U+1) + U is zero."""
+        R = -(-max(self.ranks) // 8) * 8
+        firsts, seconds = [], []
+        for u in range(self.num_adapters):
+            first, second, scale, _ = self.grouped_mm_factors(u, reversed_io)
+            r = first.shape[-1]
+            firsts.append(F.pad(first.to(dtype), (0, R - r)))
+            seconds.append(F.pad(second.to(dtype) * scale, (0, 0, 0, R - r)))
+        firsts.append(torch.zeros_like(firsts[0]))
+        seconds.append(torch.zeros_like(seconds[0]))
+        return torch.stack(firsts, 1).flatten(0, 1), torch.stack(seconds, 1).flatten(0, 1)
+
     def folded(self, W: torch.Tensor, adapter: int, transposed: bool) -> torch.Tensor:
         """W + delta in W's dtype, as PEFT's ParamWrapper folds it (one baddbmm, autocast off)."""
         A, B = self.lora_A[adapter].to(W.dtype), self.lora_B[adapter].to(W.dtype)
@@ -819,9 +835,192 @@ def _adapter_groups(batch: MultiLoraBatch) -> list:
     return groups
 
 
+def _token_adapters(batch: MultiLoraBatch) -> torch.Tensor:
+    """Each token's adapter id (-1 = none)."""
+    ids = batch.token_ids
+    if ids is None:
+        ids = batch.__dict__.get("_token_adapters")
+    if ids is None:
+        n, U = batch.num_tokens, batch.num_adapters
+        seg = batch.seg_start.long()
+        pos = torch.arange(n, device = seg.device)
+        ids = torch.full((n,), -1, dtype = torch.int64, device = seg.device)
+        ids = ids.scatter(0, batch.sorted_idx.long(), torch.searchsorted(seg[1:], pos, right = True))
+        ids = torch.where(ids >= U, torch.full_like(ids, -1), ids)
+        batch.__dict__["_token_adapters"] = ids
+    return ids
+
+
+MULTI_LORA_MOE_STATS = {"grouped_calls": 0, "per_adapter_calls": 0, "grouped_fallbacks": 0}
+_GROUPED_MM = getattr(F, "grouped_mm", None) or getattr(torch, "_grouped_mm", None)
+_GROUPED_MM_OK: dict = {}
+_HALF = (torch.float16, torch.bfloat16)
+_FLOAT = (torch.float16, torch.bfloat16, torch.float32, torch.float64)
+# A quantized stack is dequantized this many experts at a time, so the transient is a fraction of the stack.
+_DEQUANT_CHUNKS = 8
+
+
+def _gmm(a: torch.Tensor, b: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:
+    with torch.autocast(device_type = a.device.type, enabled = False):
+        return _GROUPED_MM(a, b, offs = offs)
+
+
+def _grouped_mm_ok(device: torch.device, dtype: torch.dtype) -> bool:
+    """Native grouped GEMM on ``device`` in ``dtype``: forward, dgrad through a transposed stack, 2D x 2D wgrad."""
+    key = (device.type, device.index, dtype)
+    ok = _GROUPED_MM_OK.get(key)
+    if ok is not None:
+        return ok
+    ok = _GROUPED_MM is not None
+    if ok and device.type == "cuda":
+        try:
+            from unsloth_zoo.temporary_patches.moe_utils import _check_torch_grouped_mm_supported
+        except Exception:  # noqa: BLE001 - no Zoo: the probe below decides
+            _check_torch_grouped_mm_supported = None
+        if _check_torch_grouped_mm_supported is not None:
+            try:
+                ok = bool(_check_torch_grouped_mm_supported(device))
+            except Exception:  # noqa: BLE001
+                ok = False
+    if ok:
+        try:
+            with torch.autocast(device_type = device.type, enabled = False):
+                g = torch.Generator().manual_seed(0)
+                x = torch.randn(24, 16, generator = g).to(device, dtype)
+                w = torch.randn(2, 16, 32, generator = g).to(device, dtype)
+                offs = torch.tensor([8, 24], dtype = torch.int32, device = device)
+                y = _gmm(x, w, offs)
+                dx = _gmm(y, w.transpose(-2, -1), offs)
+                dw = _gmm(x.t(), y, offs)
+                x, w = x.float(), w.float()
+                ref = torch.cat([x[:8] @ w[0], x[8:] @ w[1]])
+                ref_dx = torch.cat([ref[:8] @ w[0].t(), ref[8:] @ w[1].t()])
+                ref_dw = torch.stack([x[:8].t() @ ref[:8], x[8:].t() @ ref[8:]])
+                tol = 3e-2 if dtype in _HALF else 1e-4
+                ok = all(
+                    torch.allclose(a.float(), b, rtol = tol, atol = tol * b.abs().max().item())
+                    for a, b in ((y, ref), (dx, ref_dx), (dw, ref_dw))
+                )
+        except Exception:  # noqa: BLE001
+            ok = False
+    _GROUPED_MM_OK[key] = ok
+    return ok
+
+
+class _GroupedMM(torch.autograd.Function):
+    """``grouped_mm(X, W, offs)`` with its own backward (torch's fails for float32)."""
+
+    @staticmethod
+    def forward(ctx, X, W, offs):
+        ctx.save_for_backward(X, W, offs)
+        return _gmm(X, W, offs)
+
+    @staticmethod
+    def backward(ctx, dY):
+        X, W, offs = ctx.saved_tensors
+        dY = dY.contiguous()
+        dX = _gmm(dY, W.transpose(-2, -1), offs) if ctx.needs_input_grad[0] else None
+        dW = _gmm(X.t(), dY, offs) if ctx.needs_input_grad[1] else None
+        return dX, dW, None
+
+
+class _ExpertWeights:
+    """A frozen (E, d1, d2) expert stack seen as (E, in, out) in ``dtype``: float stacks are read in place, quantized
+    ones are dequantized by Unsloth Zoo on every use (bnb 4-bit stacks a chunk of experts at a time)."""
+
+    def __init__(self, param, input_major: bool, dtype: torch.dtype):
+        self.param, self.input_major, self.dtype = param, input_major, dtype
+        E, d1, d2 = _expert_stack_shape(param)
+        self.num_experts = E
+        self.in_features, self.out_features = (d1, d2) if input_major else (d2, d1)
+        self.chunk = None
+        self.get_base = None
+        if _is_quantized(param):
+            from unsloth_zoo.temporary_patches.moe_utils import (
+                _bnb4bit_expert_split,
+                _get_base_weight,
+            )
+            self.get_base = _get_base_weight
+            if _bnb4bit_expert_split(param) is not None:
+                self.chunk = -(-E // _DEQUANT_CHUNKS)
+
+    def get(self, experts: slice = slice(None)) -> torch.Tensor:
+        if self.get_base is None:
+            W = self.param[experts].to(self.dtype)
+        elif self.chunk is None:
+            W = self.get_base(self.param, self.dtype)[experts]
+        else:
+            W = self.get_base(self.param, self.dtype, experts = experts)
+        return W if self.input_major else W.transpose(-2, -1)
+
+    def matmul(
+        self,
+        X: torch.Tensor,
+        offs: torch.Tensor,
+        transpose: bool = False,
+    ) -> torch.Tensor:
+        """Rows of expert e times W[e] (or W[e]^T), ``offs`` the E cumulative row counts."""
+        if self.chunk is None:
+            W = self.get()
+            return _gmm(X, W.transpose(-2, -1) if transpose else W, offs)
+        Y = X.new_empty(X.shape[0], self.in_features if transpose else self.out_features)
+        ends = offs.tolist()
+        for e0 in range(0, self.num_experts, self.chunk):
+            e1 = min(e0 + self.chunk, self.num_experts)
+            lo, hi = ends[e0 - 1] if e0 else 0, ends[e1 - 1]
+            if hi == lo:
+                continue
+            W = self.get(slice(e0, e1))
+            Y[lo:hi] = _gmm(X[lo:hi], W.transpose(-2, -1) if transpose else W, offs[e0:e1] - lo)
+            del W
+        return Y
+
+
+class _FrozenGroupedMM(torch.autograd.Function):
+    """``X @ W[e]`` per expert group on a frozen stack: no weight grad, nothing large saved; quantized stacks are
+    dequantized again in backward."""
+
+    @staticmethod
+    def forward(ctx, X, weights: _ExpertWeights, offs):
+        ctx.weights = weights
+        ctx.save_for_backward(offs)
+        return weights.matmul(X, offs)
+
+    @staticmethod
+    def backward(ctx, dY):
+        if not ctx.needs_input_grad[0]:
+            return None, None, None
+        (offs,) = ctx.saved_tensors
+        return ctx.weights.matmul(dY.contiguous(), offs, transpose = True), None, None
+
+
+def _is_quantized(param) -> bool:
+    return getattr(param, "quant_state", None) is not None or param.dtype not in _FLOAT
+
+
+def _grouped_disabled() -> bool:
+    return os.environ.get("UNSLOTH_MULTI_LORA_MOE_GROUPED", "1") == "0"
+
+
+_WARNED: set = set()
+
+
+def _warn_once(message: str) -> None:
+    if message in _WARNED:
+        return
+    _WARNED.add(message)
+    try:
+        from unsloth_zoo.log import logger
+    except Exception:  # noqa: BLE001
+        logger = logging.getLogger(__name__)
+    logger.warning(message)
+
+
 class MultiLoraExperts(nn.Module):
-    """Frozen fused experts; each adapter's tokens run the experts' own forward with only its factors, as a lone
-    PEFT job does: through Zoo's stash when its MoE forward reads one, else with the delta folded in."""
+    """Frozen fused experts. Mode "grouped": one pass for every adapter, rows sorted by (expert, adapter), the frozen
+    stacks in E-group GEMMs and each adapter's LoRA in E*(U+1)-group GEMMs over the same rows. Otherwise each
+    adapter's tokens run the experts' own forward with only its factors, as a lone PEFT job does: through Zoo's
+    stash when its MoE forward reads one ("stash"), else with the delta folded in ("fold")."""
 
     def __init__(
         self,
@@ -854,7 +1053,10 @@ class MultiLoraExperts(nn.Module):
             self.adapters[name] = MultiLoraExpertParam(
                 E, in_features, out_features, num_adapters, r, lora_alpha, use_rslora, device = device
             )
-        self.mode: Optional[str] = None  # "stash" or "fold", decided on the first adapter call
+        # How a lone PEFT run of these experts applies LoRA ("stash" or "fold"), and how this module runs
+        # ("grouped", or the same as peft_mode); both decided on the first call with an adapter.
+        self.peft_mode: Optional[str] = None
+        self.mode: Optional[str] = None
 
     def __getattr__(self, name: str):
         try:
@@ -903,17 +1105,185 @@ class MultiLoraExperts(nn.Module):
     def _run(self, adapter: Optional[int], args) -> torch.Tensor:
         if adapter is None:
             return self.base_layer(*args)
-        if self.mode is None:
-            # Probe on one token without autograd, so a checkpointed forward and its recompute run the same ops.
-            with torch.no_grad():
-                probe = self._run_stash(adapter, tuple(a[:1] for a in args))
-            self.mode = "fold" if probe is None else "stash"
-        if self.mode == "fold":
+        if self.peft_mode == "fold":
             return self._run_fold(adapter, args)
         out = self._run_stash(adapter, args)
         if out is None:
             raise RuntimeError("The experts' forward stopped reading the LoRA stash mid-run.")
         return out
+
+    def _per_adapter(self, hidden_states: torch.Tensor, args, groups) -> torch.Tensor:
+        if len(groups) == 1:
+            return self._run(groups[0][0], (hidden_states, *args))
+        out = None
+        for u, rows in groups:
+            y = self._run(u, (hidden_states[rows], *(a[rows] for a in args)))
+            if out is None:
+                out = y.new_zeros((hidden_states.shape[0], *y.shape[1:]))
+            out = out.index_copy(0, rows, y)
+        return out
+
+    def _choose_mode(self, hidden_states: torch.Tensor, args, groups) -> None:
+        adapter, rows = next(((u, rows) for u, rows in groups if u is not None), (None, None))
+        if adapter is None:
+            return
+        # Probes run without autograd, so a checkpointed forward and its recompute run the same ops.
+        with torch.no_grad():
+            probe = self._run_stash(
+                adapter, (hidden_states[rows[:1]], *(a[rows[:1]] for a in args))
+            )
+        self.peft_mode = "fold" if probe is None else "stash"
+        self.mode = self.peft_mode
+        if _grouped_disabled():
+            return
+        try:
+            reason = self._grouped_unsupported(hidden_states, args) or self._grouped_parity(
+                hidden_states, args, groups
+            )
+        except Exception as error:  # noqa: BLE001 - anything unexpected keeps the per-adapter path
+            reason = f"{type(error).__name__}: {error}"
+        if reason is None:
+            self.mode = "grouped"
+            return
+        if not torch.compiler.is_compiling():
+            MULTI_LORA_MOE_STATS["grouped_fallbacks"] += 1
+        _warn_once(
+            f"Unsloth: batched MoE LoRA on {type(self.base_layer).__name__} runs one adapter at a time ({reason})."
+        )
+
+    def _weights(self, name: str, dtype: torch.dtype) -> _ExpertWeights:
+        base = self.base_layer
+        input_major = bool(
+            getattr(base, "is_transposed", False)
+            or getattr(base, "_unsloth_grouped_mm_format", False)
+        )
+        return _ExpertWeights(getattr(base, name), input_major, dtype)
+
+    def _compute_dtype(self, hidden_states: torch.Tensor) -> torch.dtype:
+        """As Unsloth Zoo's MoE forward: half activations run as they are, then autocast, then half (or quantized)
+        weights set the dtype; float32 everywhere stays float32."""
+        if hidden_states.dtype in _HALF:
+            return hidden_states.dtype
+        device_type = hidden_states.device.type
+        if torch.is_autocast_enabled(device_type):
+            return torch.get_autocast_dtype(device_type)
+        param = self.base_layer.gate_up_proj
+        if _is_quantized(param):
+            qdtype = getattr(getattr(param, "quant_state", None), "dtype", None)
+            return qdtype if qdtype in _HALF else torch.bfloat16
+        return param.dtype if param.dtype in _HALF else hidden_states.dtype
+
+    def _grouped_unsupported(self, hidden_states: torch.Tensor, args) -> Optional[str]:
+        """Why the grouped path cannot run these experts, or None."""
+        base = self.base_layer
+        if not set(self.parameter_names) <= {"gate_up_proj", "down_proj"}:
+            return f"LoRA on {self.parameter_names}"
+        if "GptOss" in type(base).__name__ or getattr(base, "is_concatenated", True) is False:
+            return "interleaved gate_up_proj"
+        if base.__dict__.get("_unsloth_own_apply_gate") or getattr(
+            type(base), "_unsloth_own_apply_gate", False
+        ):
+            return "a custom gate"
+        if not callable(getattr(base, "act_fn", None)):
+            return "no act_fn"
+        names = [n for n, _ in base.named_parameters()] + [n for n, _ in base.named_buffers()]
+        if any("bias" in n for n in names):
+            return "expert biases"
+        params = [getattr(base, n, None) for n in ("gate_up_proj", "down_proj")]
+        if not all(isinstance(p, torch.Tensor) for p in params):
+            return "no fused gate_up_proj / down_proj"
+        if len(args) != 2 or hidden_states.dim() != 2:
+            return "an experts forward not called as (hidden_states, top_k_index, top_k_weights)"
+        top_k_index, top_k_weights = args
+        if (
+            top_k_index.dtype.is_floating_point
+            or not top_k_weights.dtype.is_floating_point
+            or top_k_index.shape != top_k_weights.shape
+            or top_k_index.dim() != 2
+        ):
+            return "an experts forward not called as (hidden_states, top_k_index, top_k_weights)"
+        dtype = self._compute_dtype(hidden_states)
+        if any(_is_quantized(p) for p in params):
+            try:
+                from unsloth_zoo.temporary_patches.moe_utils import _get_base_weight  # noqa: F401
+            except Exception:  # noqa: BLE001
+                return "quantized experts without Unsloth Zoo"
+        gate_up, down = (self._weights(n, dtype) for n in ("gate_up_proj", "down_proj"))
+        H = hidden_states.shape[-1]
+        if (
+            gate_up.num_experts != down.num_experts
+            or gate_up.in_features != H
+            or down.out_features != H
+            or gate_up.out_features != 2 * down.in_features
+        ):
+            return "unexpected expert shapes"
+        # Grouped GEMM needs 16-byte rows (the LoRA rank is padded to 8).
+        step = 16 // torch.empty((), dtype = dtype).element_size()
+        if any(d % step for d in (H, down.in_features)):
+            return "expert dims not a multiple of 16 bytes"
+        if not _grouped_mm_ok(hidden_states.device, dtype):
+            return f"no native grouped GEMM in {dtype} on {hidden_states.device.type}"
+        return None
+
+    def _grouped_parity(self, hidden_states: torch.Tensor, args, groups) -> Optional[str]:
+        """A few rows per adapter through both paths; None when they agree."""
+        ids = _token_adapters(next(iter(self.adapters.values())).batch)
+        picks = [rows[:4] for _, rows in groups]
+        sel = torch.cat(picks)
+        with torch.no_grad():
+            got = self._grouped(hidden_states[sel], *(a[sel] for a in args), ids[sel]).float()
+            ref = torch.cat(
+                [
+                    self._run(u, (hidden_states[r], *(a[r] for a in args))).float()
+                    for (u, _), r in zip(groups, picks)
+                ]
+            )
+        err = (got - ref).abs().max().item()
+        tol = 5e-2 if self._compute_dtype(hidden_states) in _HALF else 1e-3
+        if err <= tol * max(ref.abs().max().item(), 1e-6):
+            return None
+        return f"the grouped probe differs by {err:.3g}"
+
+    def _project(self, name: str, x: torch.Tensor, offs_expert, offs_pair, dtype) -> torch.Tensor:
+        y = _FrozenGroupedMM.apply(x, self._weights(name, dtype), offs_expert)
+        if name in self.adapters:
+            first, second = self.adapters[name].grouped_stacks(self.reversed_io, dtype)
+            y = y + _GroupedMM.apply(_GroupedMM.apply(x, first, offs_pair), second, offs_pair)
+        return y
+
+    def _grouped(
+        self,
+        hidden_states: torch.Tensor,
+        top_k_index: torch.Tensor,
+        top_k_weights: torch.Tensor,
+        adapter_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        T, k = top_k_index.shape
+        E = _expert_stack_shape(self.base_layer.gate_up_proj)[0]
+        U = self.num_adapters
+        Ug = U + 1
+        dtype = self._compute_dtype(hidden_states)
+        # Route = expert * Ug + adapter, slot U for rows of no adapter (zero factors) and for dropped routes
+        # (expert id outside [0, E), weight zeroed); sorted, each expert's rows stay contiguous.
+        index = top_k_index.long()
+        valid = (index >= 0) & (index < E)
+        slot = torch.where(adapter_ids < 0, U, adapter_ids).to(index.device).unsqueeze(1)
+        key = (torch.where(valid, index, 0) * Ug + torch.where(valid, slot, U)).reshape(-1)
+        order = torch.argsort(key, stable = True)
+        offs_pair = torch.cumsum(torch.bincount(key, minlength = E * Ug), 0).to(torch.int32)
+        offs_expert = offs_pair.view(E, Ug)[:, -1].contiguous()
+        with torch.autocast(device_type = hidden_states.device.type, enabled = False):
+            x = hidden_states[order // k].to(dtype)
+            h = self._project("gate_up_proj", x, offs_expert, offs_pair, dtype)
+            gate, up = h.chunk(2, dim = -1)
+            y = self._project(
+                "down_proj", self.base_layer.act_fn(gate) * up, offs_expert, offs_pair, dtype
+            )
+            y = y * top_k_weights.reshape(-1)[order].unsqueeze(1)
+            y = torch.where(valid.reshape(-1)[order].unsqueeze(1), y, 0)
+            # Deterministic unpermute: each route back to its own slot, then a sum over the k routes.
+            out = y.new_zeros(T * k, y.shape[1]).index_copy(0, order, y)
+            return out.view(T, k, -1).sum(1).to(hidden_states.dtype)
 
     def forward(self, hidden_states: torch.Tensor, *args):
         batch = next(iter(self.adapters.values())).batch
@@ -921,16 +1291,17 @@ class MultiLoraExperts(nn.Module):
             raise ValueError(
                 "Call set_multi_lora_batch(model, ...) with this batch's adapter ids first."
             )
+        if self.mode is None:
+            self._choose_mode(hidden_states, args, _adapter_groups(batch))
+        if self.mode == "grouped":
+            if not torch.compiler.is_compiling():
+                MULTI_LORA_MOE_STATS["grouped_calls"] += 1
+            # Every adapter's factors are in the graph, so absent adapters get exact zero grads.
+            return self._grouped(hidden_states, *args, _token_adapters(batch))
+        if not torch.compiler.is_compiling():
+            MULTI_LORA_MOE_STATS["per_adapter_calls"] += 1
         groups = _adapter_groups(batch)
-        if len(groups) == 1:
-            out = self._run(groups[0][0], (hidden_states, *args))
-        else:
-            out = None
-            for u, rows in groups:
-                y = self._run(u, (hidden_states[rows], *(a[rows] for a in args)))
-                if out is None:
-                    out = y.new_zeros((hidden_states.shape[0], *y.shape[1:]))
-                out = out.index_copy(0, rows, y)
+        out = self._per_adapter(hidden_states, args, groups)
         present = {u for u, _ in groups}
         absent = [u for u in range(self.num_adapters) if u not in present]
         if absent and torch.is_grad_enabled():
@@ -1222,8 +1593,9 @@ def adapter_state_dict(
         depth = len(experts.parameter_names)
         for i, param in enumerate(experts.parameter_names):
             key = f"{prefix}{name}" + ".base_layer" * (depth - 1 - i)
-            # Folded experts load through PEFT's own ParamWrapper delta, which is rank-major whatever Zoo uses.
-            layout = "rank_major" if experts.mode == "fold" else b_layout
+            # Experts whose forward ignores the stash load through PEFT's own ParamWrapper delta, which is
+            # rank-major whatever Zoo uses; how they trained here (grouped or not) does not matter.
+            layout = "rank_major" if experts.peft_mode == "fold" else b_layout
             A, B = experts.adapters[param].peft_tensors(adapter, layout)
             out[f"{key}.lora_A.weight"] = A
             out[f"{key}.lora_B.weight"] = B
