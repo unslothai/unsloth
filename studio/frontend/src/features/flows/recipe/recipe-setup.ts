@@ -4,6 +4,7 @@
 // A recipe group's seed, provider connections, model presets and tool profiles as canvas cards. They are not
 // flow nodes: the group's recipe config is their source, and a dragged card keeps its spot in the group's `ui`.
 
+import type { RfEdge } from "../editor/derive-rf";
 import type { DocGraph } from "../stores/doc-store";
 import { GROUP_KEY } from "../stores/doc-store";
 import type { FlowGroup } from "../types";
@@ -310,4 +311,34 @@ export function withSetupPosition(
       },
     },
   };
+}
+
+/** Reference edge class: dashed and neutral (styled in index.css), so a link to a preset never reads as data. */
+export const REFERENCE_EDGE_CLASS = "flows-reference-edge";
+
+/**
+ * Setup links as canvas edges of the flow's own edge type, so they follow the wire style like every
+ * other edge (Curved, or routed on the bus lanes where the router is present). Not selectable or
+ * deletable: the recipe config is their source.
+ */
+export function setupEdges(
+  links: SetupLink[],
+  graph: DocGraph,
+  handles: { source: string; target: string },
+): RfEdge[] {
+  return links
+    .filter((link) => !graph.nodes[link.target]?.collapsed)
+    .map((link) => ({
+      id: link.id,
+      source: link.source,
+      target: link.target,
+      sourceHandle: handles.source,
+      targetHandle: handles.target,
+      type: "flowEdge",
+      className: REFERENCE_EDGE_CLASS,
+      data: { kind: "data", portType: "any" },
+      selectable: false,
+      deletable: false,
+      focusable: false,
+    }));
 }

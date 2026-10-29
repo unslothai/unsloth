@@ -137,7 +137,8 @@ export class RfDeriver {
         position: pos,
         data: { noteId },
         selected: isSelected,
-        style: { width: note.rect[2], height: note.rect[3] },
+        // At least its stored height, taller when its text needs it: a note never clips mid-line.
+        style: { width: note.rect[2], minHeight: note.rect[3] },
         ...(size ? { measured: size } : {}),
       };
       this.noteCache.set(noteId, {

@@ -470,3 +470,44 @@ test("a Hub seed still named by its repo id is picked out for resolving, a reade
     preview_size: 1,
   });
 });
+
+test("setup links are the flow's own edge type, dashed as references, so they follow the wire style", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { recipeSetup, setupEdges, REFERENCE_EDGE_CLASS } = await import(
+    "../src/features/flows/recipe/recipe-setup.ts"
+  );
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group, nodes } = sqlGroup();
+  const sql = byName(nodes, "sql");
+  const folded = nodes.map((n) => (n.id === sql.id ? { ...n, collapsed: true } : n));
+  useDocStore.getState().load({ ...doc(folded), groups: [group] });
+  const graph = useDocStore.getState().graph;
+  const { links } = recipeSetup(graph, group);
+  const edges = setupEdges(links, graph, { source: "out", target: "in" });
+  assert.ok(edges.length > 0);
+  for (const edge of edges) {
+    // flowEdge: Curved or bus-routed with every other wire; the class keeps it a dashed reference.
+    assert.equal(edge.type, "flowEdge");
+    assert.equal(edge.className, REFERENCE_EDGE_CLASS);
+    assert.deepEqual([edge.sourceHandle, edge.targetHandle], ["out", "in"]);
+    assert.equal(edge.selectable, false);
+    assert.equal(edge.deletable, false);
+  }
+  assert.ok(!edges.some((e) => e.target === sql.id), "a collapsed column draws no link");
+  const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+  assert.match(css, new RegExp(`\\.${REFERENCE_EDGE_CLASS} \\.react-flow__edge-path[^}]*stroke-dasharray`));
+});
+
+test("a note is at least its stored height and grows with its text instead of clipping", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { RfDeriver } = await import("../src/features/flows/editor/derive-rf.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  useDocStore.getState().load({
+    ...doc([]),
+    notes: [{ id: "n1", text: "a long note", rect: [0, 0, 320, 200] }],
+  });
+  const note = new RfDeriver()
+    .nodes(useDocStore.getState().graph, new Set(), null)
+    .find((n) => n.type === "flowNote");
+  assert.deepEqual(note?.style, { width: 320, minHeight: 200 });
+});

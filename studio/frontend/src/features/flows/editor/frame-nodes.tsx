@@ -188,10 +188,10 @@ function NoteFrameImpl({ data, selected }: NodeProps<RfNode>) {
       />
       {showEditor ? (
         <Textarea
-          fieldSizing="fixed"
+          fieldSizing="content"
           // biome-ignore lint/a11y/noAutofocus: editing starts on double-click
           autoFocus={editing}
-          className="nodrag nowheel h-full min-h-0 w-full resize-none rounded-xl border-0 bg-transparent text-xs leading-snug shadow-none focus-visible:ring-0 dark:bg-transparent"
+          className="nodrag nowheel min-h-[inherit] w-full resize-none rounded-xl border-0 bg-transparent text-xs leading-snug shadow-none focus-visible:ring-0 dark:bg-transparent"
           placeholder="Write a note…"
           value={note.text}
           onBlur={() => setEditing(false)}
@@ -200,7 +200,7 @@ function NoteFrameImpl({ data, selected }: NodeProps<RfNode>) {
           }
         />
       ) : (
-        <BaseNodeContent className="nowheel h-full overflow-y-auto px-3 py-2">
+        <BaseNodeContent className="px-3 py-2">
           <Suspense
             fallback={
               <p className="whitespace-pre-wrap text-xs">{note.text}</p>
