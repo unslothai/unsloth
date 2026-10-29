@@ -2871,6 +2871,11 @@ class TestAnAutoContextIsMarkedShrinkable:
 
     @pytest.fixture(autouse = True)
     def wide(self, tmp_path, monkeypatch):
+        import utils.hardware as hardware
+
+        # The layer-split floor (8192). Metal reprices down to 256 instead; that path is
+        # TestTheContextFloorFollowsThePlacementPath's, and on a Mac runner it would be taken here.
+        monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
         gguf = _write_gguf(tmp_path, "qwen3", {**_GQA_FIELDS, "context_length": 262144})
         config = SimpleNamespace(
             identifier = "local/wide",
