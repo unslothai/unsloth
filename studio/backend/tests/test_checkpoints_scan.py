@@ -454,7 +454,7 @@ def test_scan_checkpoints_reads_history_once_for_many_fallback_runs(tmp_path, mo
     assert len(parsed) <= 12 + len(models)
 
 
-def test_scan_checkpoints_asks_sqlite_on_a_tied_exact_match(tmp_path, monkeypatch):
+def test_scan_checkpoints_tied_exact_match_follows_sqlite_order(tmp_path, monkeypatch):
     outputs_dir = _make_outputs_dir(tmp_path, monkeypatch)
     run_dir = outputs_dir / "custom-run"
     run_dir.mkdir()

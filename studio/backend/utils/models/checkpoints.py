@@ -41,165 +41,103 @@ def _checkpoint_sort_key(checkpoint_path: Path) -> tuple[int, int, str]:
     return (1, 0, str(checkpoint_path))
 
 
-class _HistoryRows:
-    """One scan's view of the run history: one connection, each query run and each config parsed at most once."""
-
-    _FAILED = object()
+class _History:
+    """Run history for one checkpoint listing: one connection, each query run at most once."""
 
     def __init__(self) -> None:
         self._conn = None
-        self._suffix_rows: Optional[list] = None
-        self._generated_rows: Optional[list] = None
-        self._project_names: dict = {}
+        self._dirs: Optional[list] = None
+        self._pairs: Optional[list] = None
 
-    def connection(self):
-        # A failed open is retried by the next run, as each run opened its own connection before.
+    def _fetch(self, sql: str) -> list:
+        # A failed open or query is retried by the next run, as when each run opened its own connection.
         if self._conn is None:
             self._conn = get_connection()
-        return self._conn
+        return self._conn.execute(sql).fetchall()
 
-    def suffix_rows(self) -> list:
-        if self._suffix_rows is None:
-            self._suffix_rows = (
-                self.connection()
-                .execute(
-                    """
-                SELECT model_name, output_dir, started_at
-                FROM training_runs
-                WHERE +output_dir IS NOT NULL
-                ORDER BY started_at DESC
-                """
+    def dir_rows(self) -> list:
+        """(model_name, output_dir), newest first."""
+        if self._dirs is None:
+            self._dirs = [
+                (row["model_name"], row["output_dir"])
+                for row in self._fetch(
+                    "SELECT model_name, output_dir FROM training_runs"
+                    " WHERE output_dir IS NOT NULL ORDER BY started_at DESC"
                 )
-                .fetchall()
-            )
-        return self._suffix_rows
+            ]
+        return self._dirs
 
-    def generated_rows(self) -> list:
-        if self._generated_rows is None:
-            self._generated_rows = (
-                self.connection()
-                .execute(
-                    """
-                SELECT model_name, config_json
-                FROM training_runs
-                ORDER BY started_at DESC
-                """
-                )
-                .fetchall()
-            )
-        return self._generated_rows
-
-    def project_name(self, index: int, config_json) -> Optional[str]:
-        cached = self._project_names.get(index, self._FAILED)
-        if cached is self._FAILED:
-            project_name = None
-            if config_json:
-                try:
-                    project_name = extract_project_name(json.loads(config_json))
-                except (TypeError, json.JSONDecodeError):
-                    project_name = None
-            self._project_names[index] = cached = project_name
-        return cached
+    def model_projects(self) -> list:
+        """Distinct (model_name, project_name), in order of their newest run."""
+        if self._pairs is None:
+            pairs = {}
+            for row in self._fetch(
+                "SELECT model_name, config_json FROM training_runs ORDER BY started_at DESC"
+            ):
+                if not row["model_name"]:
+                    continue
+                project_name = None
+                if row["config_json"]:
+                    try:
+                        project_name = extract_project_name(json.loads(row["config_json"]))
+                    except Exception:
+                        project_name = None
+                pairs.setdefault((row["model_name"], project_name), None)
+            self._pairs = list(pairs)
+        return self._pairs
 
     def close(self) -> None:
-        if self._conn is not None:
-            conn, self._conn = self._conn, None
-            conn.close()
-
-
-def _infer_base_model_from_history(
-    checkpoint_dir: Path, history: Optional[_HistoryRows] = None
-) -> Optional[str]:
-    """Best-effort base-model lookup using persisted Unsloth run metadata.
-
-    ``history`` shares one connection and its rows across a scan; without it the lookup opens and closes its own."""
-    if history is None:
-        history = _HistoryRows()
-        try:
-            return _infer_base_model_from_history(checkpoint_dir, history)
-        finally:
+        conn, self._conn = self._conn, None
+        if conn is not None:
             try:
-                history.close()
+                conn.close()
             except Exception:
                 pass
 
+
+def _infer_base_model_from_history(
+    checkpoint_dir: Path, history: Optional[_History] = None
+) -> Optional[str]:
+    """Best-effort base-model lookup using persisted Unsloth run metadata."""
+    own_history = history is None
+    if own_history:
+        history = _History()
+    try:
+        return _lookup_base_model(checkpoint_dir, history)
+    except Exception:
+        return None
+    finally:
+        if own_history:
+            history.close()
+
+
+def _lookup_base_model(checkpoint_dir: Path, history: _History) -> Optional[str]:
     checkpoint_name = checkpoint_dir.name
-    resolved_checkpoint_dir = str(checkpoint_dir.resolve())
+    exact_dirs = (str(checkpoint_dir.resolve()), str(checkpoint_dir))
+    dir_rows = history.dir_rows()
+    for model_name, output_dir in dir_rows:
+        if model_name and output_dir in exact_dirs:
+            return model_name
 
-    try:
-        conn = history.connection()
-    except Exception:
+    for model_name, output_dir in dir_rows:
+        output_dir = str(output_dir).rstrip("/\\")
+        if model_name and (
+            output_dir.endswith(f"/{checkpoint_name}")
+            or output_dir.endswith(f"\\{checkpoint_name}")
+        ):
+            return model_name
+
+    parts = checkpoint_name.rsplit("_", 1)
+    if len(parts) != 2 or not parts[1].isdigit():
         return None
 
-    try:
-        exact_dirs = (resolved_checkpoint_dir, str(checkpoint_dir))
-        # Exact matches are a subset of the suffix rows, already newest first. Only runs started at
-        # the same instant under different models leave the pick to SQLite's tie order: ask it then.
-        matches = [
-            row
-            for row in history.suffix_rows()
-            if row["output_dir"] in exact_dirs and row["model_name"]
-        ]
-        if matches:
-            newest = matches[0]
-            if all(
-                row["model_name"] == newest["model_name"]
-                for row in matches
-                if row["started_at"] == newest["started_at"]
-            ):
-                return newest["model_name"]
-            exact_rows = conn.execute(
-                """
-                SELECT model_name
-                FROM training_runs
-                WHERE +output_dir IN (?, ?)
-                ORDER BY started_at DESC
-                """,
-                exact_dirs,
-            ).fetchall()
-            for row in exact_rows:
-                model_name = row["model_name"]
-                if model_name:
-                    return model_name
-
-        for row in history.suffix_rows():
-            output_dir = str(row["output_dir"] or "").rstrip("/\\")
-            if not (
-                output_dir.endswith(f"/{checkpoint_name}")
-                or output_dir.endswith(f"\\{checkpoint_name}")
-            ):
-                continue
-            model_name = row["model_name"]
-            if model_name:
-                return model_name
-
-        parts = checkpoint_name.rsplit("_", 1)
-        if len(parts) != 2 or not parts[1].isdigit():
-            return None
-
-        timestamp = int(parts[1])
-        # The name depends only on (model, project) for this timestamp, and most runs share a few pairs.
-        expected_names: dict = {}
-        for index, row in enumerate(history.generated_rows()):
-            model_name = row["model_name"]
-            if not model_name:
-                continue
-
-            project_name = history.project_name(index, row["config_json"])
-
-            key = (model_name, project_name)
-            expected_dir_name = expected_names.get(key)
-            if expected_dir_name is None:
-                expected_dir_name = expected_names[key] = build_default_output_dir_name(
-                    model_name,
-                    project_name,
-                    timestamp = timestamp,
-                )
-            if expected_dir_name == checkpoint_name:
-                return model_name
-    except Exception:
-        return None
-
+    timestamp = int(parts[1])
+    for model_name, project_name in history.model_projects():
+        if (
+            build_default_output_dir_name(model_name, project_name, timestamp = timestamp)
+            == checkpoint_name
+        ):
+            return model_name
     return None
 
 
@@ -332,18 +270,15 @@ def scan_checkpoints(
     """
     if outputs_dir is None:
         outputs_dir = str(outputs_root())
-    history = _HistoryRows()
+    history = _History()
     try:
         return _scan_checkpoints(outputs_dir, include_decision, history)
     finally:
-        try:
-            history.close()
-        except Exception:
-            pass
+        history.close()
 
 
 def _scan_checkpoints(
-    outputs_dir: str, include_decision: bool, history: _HistoryRows
+    outputs_dir: str, include_decision: bool, history: _History
 ) -> List[Tuple[str, List[Tuple[str, str, Optional[float]]], dict]]:
     models = []
     outputs_path = resolve_output_dir(outputs_dir)
