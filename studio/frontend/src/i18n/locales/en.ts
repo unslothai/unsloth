@@ -3392,8 +3392,9 @@ export const en = {
         loadError: "Couldn't load Decision API settings.",
         sendsTo: "Requests are sent to {provider}.",
         connectionMissing: "This connection is gone or has no decision models. Pick another model.",
-        addConnection: "To use a cloud hosted decision model, add TypeSafe, OpenRouter etc. in Connections.",
-        openConnections: "Open Connections",
+        addConnection: "To use a cloud hosted decision model, add one in ",
+        connectionsLink: "Connections",
+        addConnectionSuffix: ".",
       },
       mcp: {
         title: "Agent access (MCP)",

@@ -3328,8 +3328,9 @@ export const ar = {
         loadError: "تعذّر تحميل إعدادات واجهة القرارات.",
         sendsTo: "تُرسَل الطلبات إلى {provider}.",
         connectionMissing: "هذا الاتصال لم يعد موجودًا أو لا يحتوي على نماذج قرارات. اختر نموذجًا آخر.",
-        addConnection: "لاستخدام نموذج قرارات مستضاف، أضف TypeSafe أو Liquid AI أو OpenRouter في الاتصالات.",
-        openConnections: "فتح الاتصالات",
+        addConnection: "لاستخدام نموذج قرارات مستضاف، أضفه في ",
+        connectionsLink: "الاتصالات",
+        addConnectionSuffix: ".",
       },
       mcp: {
         title: "وصول الوكلاء (MCP)",

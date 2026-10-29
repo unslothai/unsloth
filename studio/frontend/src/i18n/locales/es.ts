@@ -3369,8 +3369,9 @@ export const es = {
         loadError: "No se pudieron cargar los ajustes de la API de decisiones.",
         sendsTo: "Las solicitudes se envían a {provider}.",
         connectionMissing: "Esta conexión ya no existe o no tiene modelos de decisiones. Elige otro modelo.",
-        addConnection: "Para usar un modelo de decisiones alojado, añade TypeSafe, Liquid AI u OpenRouter en Conexiones.",
-        openConnections: "Abrir Conexiones",
+        addConnection: "Para usar un modelo de decisiones alojado, añádelo en ",
+        connectionsLink: "Conexiones",
+        addConnectionSuffix: ".",
       },
       mcp: {
         title: "Acceso de agentes (MCP)",

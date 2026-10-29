@@ -3317,8 +3317,9 @@ export const ko = {
         loadError: "판단 API 설정을 불러오지 못했습니다.",
         sendsTo: "요청은 {provider}(으)로 전송됩니다.",
         connectionMissing: "이 연결이 없거나 판단 모델이 없습니다. 다른 모델을 선택하세요.",
-        addConnection: "호스팅된 판단 모델을 사용하려면 연결에서 TypeSafe, Liquid AI 또는 OpenRouter를 추가하세요.",
-        openConnections: "연결 열기",
+        addConnection: "호스팅된 판단 모델을 사용하려면 ",
+        connectionsLink: "연결",
+        addConnectionSuffix: "에서 추가하세요.",
       },
       mcp: {
         title: "에이전트 액세스 (MCP)",

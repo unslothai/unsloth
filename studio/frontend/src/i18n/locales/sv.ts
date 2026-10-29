@@ -3568,9 +3568,9 @@ export const sv = {
         sendsTo: "Begäranden skickas till {provider}.",
         connectionMissing:
           "Denna anslutning finns inte längre eller har inga beslutsmodeller. Välj en annan modell.",
-        addConnection:
-          "Lägg till TypeSafe, Liquid AI eller OpenRouter under Anslutningar för att använda en värdbaserad beslutsmodell.",
-        openConnections: "Öppna Anslutningar",
+        addConnection: "Lägg till en värdbaserad beslutsmodell under ",
+        connectionsLink: "Anslutningar",
+        addConnectionSuffix: ".",
       },
       mcp: {
         title: "Agentåtkomst (MCP)",

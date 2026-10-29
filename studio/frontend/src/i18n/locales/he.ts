@@ -3464,9 +3464,9 @@ export const he = {
         sendsTo: "הבקשות נשלחות אל {provider}.",
         connectionMissing:
           "החיבור הזה אינו קיים עוד או שאין בו מודלי החלטות. בחר מודל אחר.",
-        addConnection:
-          "כדי להשתמש במודל החלטות מתארח, הוסף את TypeSafe,‏ Liquid AI או OpenRouter ב'חיבורים'.",
-        openConnections: "פתח את 'חיבורים'",
+        addConnection: "כדי להשתמש במודל החלטות מתארח, הוסף אותו במסך ",
+        connectionsLink: "חיבורים",
+        addConnectionSuffix: ".",
       },
       mcp: {
         title: "גישת סוכנים (MCP)",

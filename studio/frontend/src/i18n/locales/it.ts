@@ -3247,8 +3247,9 @@ export const it = {
         loadError: "Impossibile caricare le impostazioni dell'API decisionale.",
         sendsTo: "Le richieste vengono inviate a {provider}.",
         connectionMissing: "Questa connessione non esiste più o non ha modelli decisionali. Scegli un altro modello.",
-        addConnection: "Per usare un modello decisionale ospitato, aggiungi TypeSafe, Liquid AI o OpenRouter in Connessioni.",
-        openConnections: "Apri Connessioni",
+        addConnection: "Per usare un modello decisionale ospitato, aggiungilo in ",
+        connectionsLink: "Connessioni",
+        addConnectionSuffix: ".",
       },
       mcp: {
         title: "Accesso degli agenti (MCP)",

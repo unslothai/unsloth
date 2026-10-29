@@ -3337,8 +3337,9 @@ export const hi = {
         loadError: "निर्णय API की सेटिंग्स लोड नहीं हो सकीं।",
         sendsTo: "अनुरोध {provider} को भेजे जाते हैं।",
         connectionMissing: "यह कनेक्शन अब मौजूद नहीं है या इसमें कोई निर्णय मॉडल नहीं है। कोई दूसरा मॉडल चुनें।",
-        addConnection: "होस्ट किया गया निर्णय मॉडल इस्तेमाल करने के लिए कनेक्शन में TypeSafe, Liquid AI या OpenRouter जोड़ें।",
-        openConnections: "कनेक्शन खोलें",
+        addConnection: "होस्ट किया गया निर्णय मॉडल इस्तेमाल करने के लिए उसे ",
+        connectionsLink: "कनेक्शन",
+        addConnectionSuffix: " में जोड़ें।",
       },
       mcp: {
         title: "एजेंट एक्सेस (MCP)",
