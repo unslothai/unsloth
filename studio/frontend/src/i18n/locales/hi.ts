@@ -3305,6 +3305,7 @@ export const hi = {
       readDocs: "API दस्तावेज़ पढ़ें",
       noAccess: "अभी तक कोई API एक्सेस नहीं।",
       accessTokens: "एक्सेस टोकन",
+      quickstartTitle: "क्विकस्टार्ट",
       columnName: "नाम",
       columnToken: "टोकन",
       columnCreated: "बनाया गया",

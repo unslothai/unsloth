@@ -3316,6 +3316,7 @@ export const ptBR = {
       readDocs: "Leia a documentação da API",
       noAccess: "Nenhum acesso à API ainda.",
       accessTokens: "Tokens de acesso",
+      quickstartTitle: "Início rápido",
       columnName: "Nome",
       columnToken: "Token",
       columnCreated: "Criado",

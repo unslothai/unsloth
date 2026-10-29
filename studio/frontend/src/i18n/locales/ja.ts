@@ -3270,6 +3270,7 @@ export const ja = {
       readDocs: "API ドキュメントを読む",
       noAccess: "アクセストークンはまだありません。",
       accessTokens: "アクセストークン",
+      quickstartTitle: "クイックスタート",
       columnName: "名前",
       columnToken: "トークン",
       columnCreated: "作成",

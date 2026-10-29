@@ -3344,6 +3344,7 @@ export const fr = {
       readDocs: "Lire la documentation de l'API",
       noAccess: "Aucun accès API pour le moment.",
       accessTokens: "Jetons d’accès",
+      quickstartTitle: "Démarrage rapide",
       columnName: "Nom",
       columnToken: "Jeton",
       columnCreated: "Créé",

@@ -3343,6 +3343,7 @@ export const de = {
       readDocs: "API-Dokumentation lesen",
       noAccess: "Noch kein API-Zugriff.",
       accessTokens: "Zugriffstoken",
+      quickstartTitle: "Schnellstart",
       columnName: "Name",
       columnToken: "Token",
       columnCreated: "Erstellt",
