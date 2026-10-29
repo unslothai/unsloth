@@ -629,6 +629,49 @@ def real_apple_metal_budget(monkeypatch):
     )
 
 
+# Below the ephemeral range on Linux (32768+), macOS and Windows (49152+), one block per xdist worker.
+_ENGINE_PORT_BASE = 21000
+_ENGINE_PORTS_PER_WORKER = 250
+_engine_port_counter = itertools.count()
+
+
+@pytest.fixture(autouse = True)
+def _engine_ports_no_other_worker_can_take(monkeypatch):
+    """managed_engine._free_port releases an ephemeral port that the engine binds later. In that
+    gap any bind(0) on the runner, such as another worker's test server, can be handed the same
+    port and answer /health, and a start that should time out returns ready. Each worker gets its
+    own ports below the ephemeral range instead, which bind(0) never hands out."""
+    module = sys.modules.get("core.inference.managed_engine")
+    if module is None:
+        return
+    import socket
+
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "gw0")
+    index = int(worker[2:]) if worker[2:].isdigit() else 0
+    base = _ENGINE_PORT_BASE + (index % 40) * _ENGINE_PORTS_PER_WORKER
+
+    def _worker_port(limit = None):
+        for _ in range(_ENGINE_PORTS_PER_WORKER):
+            port = base + next(_engine_port_counter) % _ENGINE_PORTS_PER_WORKER
+            with socket.socket() as sock:
+                try:
+                    sock.bind(("127.0.0.1", port))
+                except OSError:
+                    continue
+            return port
+        raise RuntimeError("no free engine port left in this worker's block")
+
+    _worker_port.__wrapped__ = module._free_port
+    monkeypatch.setattr(module, "_free_port", _worker_port)
+
+
+@pytest.fixture
+def real_engine_free_port(monkeypatch):
+    """The real allocator, for the tests of the allocator itself."""
+    from core.inference import managed_engine
+    monkeypatch.setattr(managed_engine, "_free_port", managed_engine._free_port.__wrapped__)
+
+
 @pytest.fixture(autouse = True)
 def _not_on_metal(monkeypatch):
     """Keep co-residency verdicts off the host's device: on a Mac they take the Metal paths."""
