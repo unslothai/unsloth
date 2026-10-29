@@ -100,7 +100,11 @@ class Exl3QuantState:
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     @torch.no_grad()
-    def dequantize(self, dtype: Optional[torch.dtype] = None, transpose: bool = False) -> torch.Tensor:
+    def dequantize(
+        self,
+        dtype: Optional[torch.dtype] = None,
+        transpose: bool = False,
+    ) -> torch.Tensor:
         """Reconstruct the dense weight as ``[out_features, in_features]``
         (or ``[in_features, out_features]`` with ``transpose=True``, the layout
         the LoRA matmul wants, without an extra transpose copy).
@@ -117,7 +121,6 @@ class Exl3QuantState:
         fused = not (n_in % 128 or n_out % 128) and hasattr(inner, "K")
         if fused:  # only a real LinearEXL3 gets here, so exllamav3 is importable
             from exllamav3.modules.quant import exl3 as _exl3
-
             fused = not _exl3.no_fused_reconstruct
         if not fused:
             # shortcut: full-width fp32 Hadamard (~3x the weight in scratch), only for
@@ -127,11 +130,15 @@ class Exl3QuantState:
         # Column chunks bound the fp16 scratch (~128MB) for big-vocab heads.
         step = min(n_out, _exl3.MAX_RECONSTRUCT_SLICE_N, max(128, ((1 << 26) // n_in) // 128 * 128))
         device = inner.trellis.device
-        out = torch.empty((n_in, n_out) if transpose else (n_out, n_in), dtype = out_dtype, device = device)
+        out = torch.empty(
+            (n_in, n_out) if transpose else (n_out, n_in), dtype = out_dtype, device = device
+        )
         buf = torch.empty((n_in * step,), dtype = torch.half, device = device)
         for n0 in range(0, n_out, step):
             n1 = min(n_out, n0 + step)
-            w = buf[: n_in * (n1 - n0)].view(n_in, n1 - n0)  # [in, cols], as LinearEXL3.forward slices it
+            w = buf[: n_in * (n1 - n0)].view(
+                n_in, n1 - n0
+            )  # [in, cols], as LinearEXL3.forward slices it
             _exl3.ext.reconstruct_had_slice(
                 w, inner.trellis, inner.suh, inner.svh[n0:], inner.K, inner.mcg, inner.mul1, n0
             )

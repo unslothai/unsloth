@@ -641,7 +641,11 @@ def _device_for_module(module_path, device_map, default):
     return default
 
 
-def install_quantized_experts_before_load(model, checkpoint_dir, device_map = None) -> int:
+def install_quantized_experts_before_load(
+    model,
+    checkpoint_dir,
+    device_map = None,
+) -> int:
     """Swap fused MoE experts for quantized experts BEFORE transformers loads
     weights, so the dense expert params are never allocated/loaded on GPU.
 

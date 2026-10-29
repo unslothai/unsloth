@@ -121,7 +121,6 @@ class TestOfflineCalibration(unittest.TestCase):
 
     def test_data_free_conversion_does_not_fetch_calibration_data(self):
         import tempfile
-
         for calibrate, expected in ((False, 0), (True, 1)):
             calls = []
             fake = _fake_converter(argparse.ArgumentParser())
@@ -155,7 +154,11 @@ class _MockLinear:
         return self._w
 
 
-def _experts(num_experts = 4, hidden = 16, inter = 8):
+def _experts(
+    num_experts = 4,
+    hidden = 16,
+    inter = 8,
+):
     exp = M.Exl3QuantizedExperts(num_experts, hidden, inter, torch.nn.SiLU())
     for e in range(num_experts):
         gate_up = M._FusedGateUp(_MockLinear(hidden, inter), _MockLinear(hidden, inter))
@@ -172,7 +175,10 @@ class TestSharedExpertBudget(unittest.TestCase):
         hidden, inter = 16, 8
         # One dense expert in fp32: gate_up [2*inter, hidden] + down [hidden, inter].
         per_expert = (2 * inter * hidden + hidden * inter) * 4
-        env = {"UNSLOTH_EXL3_EXPERT_CACHE": "64", "UNSLOTH_EXL3_EXPERT_CACHE_MB": str(3 * per_expert / (1 << 20))}
+        env = {
+            "UNSLOTH_EXL3_EXPERT_CACHE": "64",
+            "UNSLOTH_EXL3_EXPERT_CACHE_MB": str(3 * per_expert / (1 << 20)),
+        }
         with patch.dict(os.environ, env):
             layers = [_experts(hidden = hidden, inter = inter) for _ in range(4)]
             for layer in layers:
@@ -218,7 +224,9 @@ class TestExpertDevicePlacement(unittest.TestCase):
     def test_cpu_and_unmapped_modules_keep_default(self):
         default = torch.device("cuda:0")
         device_map = {"model.layers.0": "cpu"}
-        self.assertEqual(M._device_for_module("model.layers.0.mlp.experts", device_map, default), default)
+        self.assertEqual(
+            M._device_for_module("model.layers.0.mlp.experts", device_map, default), default
+        )
         self.assertEqual(M._device_for_module("lm_head", device_map, default), default)
         self.assertEqual(M._device_for_module("x", "auto", default), default)
 

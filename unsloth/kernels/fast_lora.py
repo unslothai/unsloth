@@ -37,6 +37,7 @@ def _dequantize_t(W, quant_state, dtype):
         return _dequantize_for_lora(W, quant_state, transpose = True, dtype = dtype)
     return fast_dequantize(W.t(), quant_state, dtype = dtype)
 
+
 _is_compiling = torch.compiler.is_compiling
 
 # Inductor before torch 2.11 miscompiles traced backward passes and produces wrong LoRA gradients.

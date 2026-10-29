@@ -1837,9 +1837,7 @@ def fast_linear_forward(
     ):
         out = bnb.matmul_4bit(X, W.t(), quant_state = W_quant, out = out)
     else:
-        W = _dequantize_for_lora(
-            W, W_quant, transpose = True, use_global_buffer = True, dtype = X.dtype
-        )
+        W = _dequantize_for_lora(W, W_quant, transpose = True, use_global_buffer = True, dtype = X.dtype)
         out = torch_matmul(X, W, out = out)
 
     if out.dtype != X.dtype:
