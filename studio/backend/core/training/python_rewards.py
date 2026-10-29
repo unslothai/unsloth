@@ -186,16 +186,98 @@ def _kill_tree(proc) -> None:
         pass
 
 
+_JOB_OBJECT_LIMIT_PROCESS_MEMORY = 0x100
+_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+
+
+def _limit_job_memory(kernel32, handle, limit_bytes: Optional[int]) -> bool:
+    """RLIMIT_AS for the Windows reward job: a per-process commit cap on every process in it.
+    Windows has nothing like RLIMIT_FSIZE, so there is no file-size cap there."""
+    if not limit_bytes or not handle:
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    class _Basic(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_int64),
+            ("PerJobUserTimeLimit", ctypes.c_int64),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class _Io(ctypes.Structure):
+        _fields_ = [
+            (n, ctypes.c_uint64)
+            for n in (
+                "ReadOperationCount",
+                "WriteOperationCount",
+                "OtherOperationCount",
+                "ReadTransferCount",
+                "WriteTransferCount",
+                "OtherTransferCount",
+            )
+        ]
+
+    class _Extended(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", _Basic),
+            ("IoInfo", _Io),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    info = _Extended()
+    info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_PROCESS_MEMORY
+    info.ProcessMemoryLimit = int(limit_bytes)
+    return bool(
+        kernel32.SetInformationJobObject(
+            handle,
+            _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+        )
+    )
+
+
 def _windows_job(proc):
     # Windows has no process groups and taskkill /T cannot reach the children of an exited
-    # worker, so the worker goes in a job object that keeps a handle on every descendant.
+    # worker, so the worker goes in a job object that keeps a handle on every descendant. The
+    # job also carries the memory cap POSIX gets from RLIMIT_AS.
     if os.name != "nt" or proc is None:
         return None
     try:
         from core.inference.tools import _windows_job_capture
-        return _windows_job_capture(proc)
+        job = _windows_job_capture(proc)
     except Exception:  # noqa: BLE001 - taskkill on a live worker is the fallback
         return None
+    if job is not None:
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = job._kernel32
+            setter = kernel32.SetInformationJobObject
+            if hasattr(setter, "argtypes"):  # explicit widths, or ctypes truncates the handle
+                setter.argtypes = [
+                    wintypes.HANDLE,
+                    ctypes.c_int,
+                    ctypes.c_void_p,
+                    wintypes.DWORD,
+                ]
+                setter.restype = wintypes.BOOL
+            if _reward_as_bytes and not _limit_job_memory(kernel32, job._handle, _reward_as_bytes):
+                logger.warning("Python rewards: could not set the memory limit on Windows.")
+        except Exception:  # noqa: BLE001 - the job still cleans up children
+            logger.warning("Python rewards: could not set the memory limit on Windows.")
+    return job
 
 
 def _kill_group(proc, job = None) -> None:
