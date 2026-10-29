@@ -75,10 +75,7 @@ _TOL_OK = float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_TOL", "0.7"))
 
 
 def prefix_grouper_enabled() -> bool:
-    """PrefixGrouper requires seq-packing on (it reuses its de-pad + scatter machinery) and torch >= 2.7.
-
-    unsloth's GRPO trainer and unsloth_zoo's grad path both gate on this.
-    """
+    """Needs seq-packing (reuses its de-pad + scatter) and torch >= 2.7; unsloth_zoo gates on it too."""
     global _OFF_LOGGED
     if _ENV_ENABLED and not _ENABLED and not _OFF_LOGGED:
         _OFF_LOGGED = True

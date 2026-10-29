@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""prefix_grouper_kernel raises dynamo's recompile limits at import under either config name.
-
-torch < 2.7 only has cache_size_limit / accumulated_cache_size_limit, and dynamo's config refuses
-unknown names with AttributeError. Both lazy importers swallow that and turn PrefixGrouper off, so
-the import must not depend on the torch >= 2.7 names.
-
-PrefixGrouper itself stays off below torch 2.7 (its flex kernel does not compile there and the
-silent eager fallback builds the full T x T scores), with one log line and no dynamo change.
-"""
+"""PrefixGrouper on torch < 2.7: kernel imports cleanly, stays off with one log, dynamo untouched."""
 
 import importlib.util
 import pathlib
@@ -64,7 +56,6 @@ def _load_kernel():
 
 
 def test_import_raises_the_old_names_when_only_they_exist(monkeypatch):
-    # The name fallback itself; the version gate is pinned open so it runs on any torch.
     fake = _OldDynamoConfig(torch._dynamo.config)
     monkeypatch.setattr(torch._dynamo, "config", fake)
     monkeypatch.setattr(torch, "__version__", "2.7.0")
