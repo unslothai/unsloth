@@ -33,6 +33,8 @@ const DIM_OPACITY = 0.3;
 const ZONE_MARGIN = 12;
 // Handles sit a few px outside the card; more than this means the route is from before a move.
 const ENDPOINT_TOLERANCE = 2;
+// Matches the canvas's VISIBLE_ONLY_THRESHOLD.
+const MEASURE_ALL_LIMIT = 300;
 
 interface WireRouteState {
   routes: Map<string, WireRoute>;
@@ -231,6 +233,13 @@ export const WireRouterController = memo(function WireRouterController({
 
   useEffect(() => {
     if (!edges) return;
+    // Route once every card has its size, so the first pass does not depend on measure timing.
+    // Past the canvas's render-visible-only size off-screen cards never measure: route anyway.
+    const lookup = store.getState().nodeLookup;
+    if (lookup.size <= MEASURE_ALL_LIMIT)
+      for (const node of lookup.values())
+        if (!node.hidden && !(node.measured.width && node.measured.height))
+          return;
     if (moving?.size) {
       const live = wiresToReroute(store.getState().edges, moving);
       // A note or a frame on its own moves no wire.

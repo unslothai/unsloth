@@ -4,6 +4,7 @@
 // A wire from a card below and left of its target never runs through a card, before or after a resize.
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { routeWires } from "../src/features/flows/editor/wire-router.ts";
@@ -37,4 +38,16 @@ test("after the source card grows over its old route, the next pass routes round
   const route = routeWires([g, grown], [wire], {}, first.cache).routes.get("e");
   assert.ok(route);
   assert.ok(clear(route.points, [g, grown]), JSON.stringify(route.points));
+});
+
+test("the same document routes the same way every time: full passes start from scratch", () => {
+  const g: R = { id: "g", x: 260, y: 0, width: 320, height: 470 };
+  const t: R = { id: "t", x: 0, y: 560, width: 440, height: 400 };
+  const a = routeWires([g, t], [wire]).routes.get("e");
+  const b = routeWires([g, t], [wire]).routes.get("e");
+  assert.deepEqual(a, b);
+  const worker = readFileSync(new URL("../src/features/flows/editor/wire-router.worker.ts", import.meta.url), "utf8");
+  assert.match(worker, /request\.partial && cache\?\.scope === request\.scope \? cache\.value : undefined/);
+  const routing = readFileSync(new URL("../src/features/flows/editor/wire-routing.tsx", import.meta.url), "utf8");
+  assert.match(routing, /if \(!node\.hidden && !\(node\.measured\.width && node\.measured\.height\)\)\s*return;/);
 });

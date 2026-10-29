@@ -44,7 +44,9 @@ scope.onmessage = (event) => {
       request.rects,
       request.edges,
       { hopRadius: request.hopRadius },
-      cache?.scope === request.scope ? cache.value : undefined,
+      // A full pass routes from scratch, so a document always gets the same routes; only a
+      // drag's partial passes reuse the last result.
+      request.partial && cache?.scope === request.scope ? cache.value : undefined,
       request.zones,
     );
     cache = { scope: request.scope, value: result.cache };
