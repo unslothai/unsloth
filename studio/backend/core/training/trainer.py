@@ -3773,7 +3773,13 @@ class UnslothTrainer:
                     "Re-download the model or provide a token, then retry."
                 )
             if objective != "sft" and (
-                self._audio_type or self.is_audio_vlm or _dataset_has_audio_column(dataset) is True
+                self._audio_type
+                or self.is_audio_vlm
+                or any(
+                    _dataset_has_audio_column(d) is True
+                    for d in (dataset, eval_dataset)
+                    if d is not None
+                )
             ):
                 # Not the request's audio flag: the audio preprocessing below would hand the RL
                 # formatter ASR or TTS rows, and the formatter drops audio columns. An audio-capable
@@ -3900,12 +3906,15 @@ class UnslothTrainer:
                     f"{objective.upper()} is not available for vision-language models yet; "
                     "use SFT or GRPO."
                 )
-            if objective == "grpo" and (self.is_vlm or _image_columns(dataset)):
+            if objective != "sft" and (
+                self.is_vlm
+                or any(_image_columns(d) for d in (dataset, eval_dataset) if d is not None)
+            ):
                 # The prompts carry no image parts and the media columns are dropped, so the run
-                # would quietly train on text only.
+                # would quietly train (or evaluate) on text only.
                 raise ValueError(
-                    "GRPO on an image dataset is not available yet; use SFT, or a dataset "
-                    "without image columns."
+                    f"{objective.upper()} on an image dataset is not available yet; use SFT, or a "
+                    "dataset without image columns."
                 )
             if objective != "sft" and self.diffusion_lm_profile:
                 # Text-diffusion models train with their own denoising objective, not TRL's RL trainers.
