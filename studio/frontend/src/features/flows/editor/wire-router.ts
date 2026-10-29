@@ -4,7 +4,8 @@
 // Orthogonal, obstacle-avoiding wire router for the Flows canvas ("Bus" wires), ported from Recipe
 // Studio. A* runs over a sparse grid built from the card edges (plus clearance) and the port stubs,
 // with a cost for every bend, crossing and stretch shared with another wire. Wires that end up on the
-// same line are then spread into lanes, crossings get a hop and fan-out points get a junction dot.
+// same line are then spread into lanes, crossings get a hop and fan-out points get a junction dot;
+// wires into one input meet at its stub and share the last leg in.
 // Group frames are zones: only wires with an end inside a zone may enter it. Graphs too big for one
 // grid route each wire on a grid of the cards around it instead.
 
@@ -914,14 +915,42 @@ function assignLanes(
         bundle[index] = root;
         return root;
       };
+      const nets = cluster.map((segment) => new Set([segment.net]));
+      const sinks = cluster.map((segment) => new Set([segment.sink]));
+      // A bundle is one output's fan-out or one input's fan-in, never a chain of both: that
+      // would draw two unrelated wires as one.
+      const join = (a: number, b: number): void => {
+        const ra = find(a);
+        const rb = find(b);
+        if (ra === rb) {
+          return;
+        }
+        const n = new Set([...nets[ra], ...nets[rb]]);
+        const k = new Set([...sinks[ra], ...sinks[rb]]);
+        if (n.size > 1 && k.size > 1) {
+          return;
+        }
+        bundle[ra] = rb;
+        nets[rb] = n;
+        sinks[rb] = k;
+      };
       for (let a = 0; a < cluster.length; a += 1) {
         for (let b = a + 1; b < cluster.length; b += 1) {
           const sa = cluster[a];
           const sb = cluster[b];
           const touch = Math.min(sa.hi, sb.hi) - Math.max(sa.lo, sb.lo) > EPS;
-          // Only one output's fan-out shares a lane; joining on inputs too chains unrelated wires.
           if (touch && sa.net === sb.net) {
-            bundle[find(a)] = find(b);
+            join(a, b);
+          }
+        }
+      }
+      for (let a = 0; a < cluster.length; a += 1) {
+        for (let b = a + 1; b < cluster.length; b += 1) {
+          const sa = cluster[a];
+          const sb = cluster[b];
+          const touch = Math.min(sa.hi, sb.hi) - Math.max(sa.lo, sb.lo) > EPS;
+          if (touch && sa.sink === sb.sink) {
+            join(a, b);
           }
         }
       }
@@ -1130,6 +1159,95 @@ function findJunctions(paths: WirePoint[][], owners: Owner[]): WirePoint[][] {
   addFor((owner) => owner.net, false);
   addFor((owner) => owner.sink, true);
   return junctions;
+}
+
+type FanIn = { port: WirePoint; side: WireSide; sink: number };
+
+/**
+ * Wires into one input meet at its stub, a fixed distance out, and share the last leg: each
+ * member's final run is moved to the stub's line, so they never hop or lane-split each other
+ * right at the port. A member stays as routed when the move would cross a card or zone.
+ */
+function mergeFanIn(
+  paths: WirePoint[][],
+  ends: FanIn[],
+  owners: Owner[],
+  distance: number,
+  blocked: (index: number, a: WirePoint, b: WirePoint) => boolean,
+): WirePoint[][] {
+  // A moved run must not land on an unrelated wire's lane, including one moved just before it.
+  const result = [...paths];
+  let lanes = collectSegments(result, owners);
+  const onLane = (index: number, a: WirePoint, b: WirePoint): boolean => {
+    const vertical = Math.abs(a.x - b.x) < EPS;
+    const coord = vertical ? a.x : a.y;
+    const lo = vertical ? Math.min(a.y, b.y) : Math.min(a.x, b.x);
+    const hi = vertical ? Math.max(a.y, b.y) : Math.max(a.x, b.x);
+    const { net, sink } = owners[index];
+    return lanes.some(
+      (lane) =>
+        lane.edgeIndex !== index &&
+        lane.net !== net &&
+        lane.sink !== sink &&
+        lane.vertical === vertical &&
+        Math.abs(lane.coord - coord) < 1 &&
+        Math.min(lane.hi, hi) - Math.max(lane.lo, lo) > 1,
+    );
+  };
+  const count = new Map<number, number>();
+  for (const end of ends) {
+    count.set(end.sink, (count.get(end.sink) ?? 0) + 1);
+  }
+  const rewrite = (path: WirePoint[], index: number): WirePoint[] => {
+    const { port, side, sink } = ends[index];
+    if ((count.get(sink) ?? 0) < 2 || path.length < 3) {
+      return path;
+    }
+    const out = DIRS[SIDE_DIR[side]];
+    const d = { x: -out.x, y: -out.y };
+    const along = (p: WirePoint): number => p.x * d.x + p.y * d.y;
+    const across = (p: WirePoint): number => (d.x !== 0 ? p.y : p.x);
+    const make = (a: number, c: number): WirePoint =>
+      d.x !== 0 ? { x: a * d.x, y: c } : { x: c, y: a * d.y };
+    const points = simplify(path);
+    const stub = along(port) - distance;
+    let k = points.length - 1;
+    while (k >= 0 && Math.abs(across(points[k]) - across(port)) < EPS) {
+      k -= 1;
+    }
+    if (k < 1) {
+      return points;
+    }
+    const q = points[k];
+    const prev = points[k - 1];
+    const landed = points[k + 1];
+    if (
+      Math.abs(along(landed) - stub) < EPS ||
+      Math.abs(across(prev) - across(q)) > EPS ||
+      (stub - along(prev)) * (along(q) - along(prev)) <= EPS
+    ) {
+      return points;
+    }
+    const corner = make(stub, across(q));
+    const merge = make(stub, across(port));
+    if (
+      blocked(index, prev, corner) ||
+      blocked(index, corner, merge) ||
+      onLane(index, prev, corner) ||
+      onLane(index, corner, merge)
+    ) {
+      return points;
+    }
+    return simplify([...points.slice(0, k), corner, merge, port]);
+  };
+  result.forEach((path, index) => {
+    const next = rewrite(path, index);
+    if (next !== path) {
+      result[index] = next;
+      lanes = collectSegments(result, owners);
+    }
+  });
+  return result;
 }
 
 type Walls = { cards: WireRect[]; zones: WireRect[] };
@@ -1740,9 +1858,31 @@ export function routeWires(
     }
   }
 
-  const owners = prepared.map((item) => item.owner);
   const walls: Walls = { cards: rects, zones };
-  const jogged = raw.map((route) => withPortJogs(route.points, clearance));
+  const owners = prepared.map((item) => item.owner);
+  const fanIn: FanIn[] = prepared.map((item) => ({
+    port: item.targetPort,
+    side: item.edge.targetSide,
+    sink: item.owner.sink,
+  }));
+  const fanInBlocked = (index: number, a: WirePoint, b: WirePoint): boolean => {
+    const { edge, zones: own } = prepared[index];
+    return (
+      rects.some(
+        (rect) =>
+          rect.id !== edge.target &&
+          segmentHitsRect(a, b, rect.id === edge.source ? rect : inflate(rect, hard)),
+      ) || zones.some((zone, z) => !own.includes(z) && segmentHitsRect(a, b, zone))
+    );
+  };
+  const merged = mergeFanIn(
+    raw.map((route) => route.points),
+    fanIn,
+    owners,
+    clearance,
+    fanInBlocked,
+  );
+  const jogged = merged.map((points) => withPortJogs(points, clearance));
   const roomFor = (segment: Segment): number => {
     if (segment.fixed) {
       return 0;
@@ -1763,6 +1903,7 @@ export function routeWires(
     laned = assignLanes(laned, owners, costs.laneGap, roomFor).map(simplify);
   }
   laned = gatherChannels(laned, owners, walls, costs.laneGap, hard, clearance).map(simplify);
+  laned = mergeFanIn(laned, fanIn, owners, clearance, fanInBlocked);
   const hops = findHops(laned, owners, costs.hopRadius);
   const junctions = findJunctions(laned, owners);
 

@@ -472,3 +472,71 @@ test("wires crossing the same gap share it as parallel lanes, centred between th
   const mid = (xs[0] + xs[2]) / 2;
   assert.ok(Math.abs(mid - 320) <= 12, `bundle centred near the gap's middle (at ${mid})`);
 });
+
+function assertFanIn(rects: Rect[], edges: EdgeIn[], routes: Map<string, Route>, target: Rect): void {
+  const port = wirePortPoint(target, "left");
+  const merge = { x: port.x - 24, y: port.y };
+  const into = edges.filter((edge) => edge.target === target.id).map((edge) => routes.get(edge.id) as Route);
+  for (const route of into) {
+    for (const hop of route.hops) {
+      const onFanIn = into.some(
+        (other) =>
+          other !== route &&
+          segments(other.points).some(
+            ([a, b]) => Math.abs(a.x - hop.x) < 0.5 && Math.abs(b.x - hop.x) < 0.5,
+          ),
+      );
+      assert.ok(!onFanIn, `${route.id} hops a wire into the same port`);
+    }
+    const [q0, q1] = route.points.slice(-2);
+    assert.deepEqual(q1, port);
+    // One shared leg in: every wire is on the port's line by the merge point (a wire already on
+    // that line just runs straight through it).
+    assert.ok(q0.y === port.y && q0.x <= merge.x, `${route.id} joins at the merge point, then one leg in`);
+    for (const [a, b] of segments(route.points.slice(0, -1))) {
+      assert.ok(Math.max(a.x, b.x) <= merge.x + 0.01, `${route.id} squeezes in past the merge point`);
+    }
+  }
+  const dots = new Set(into.flatMap((route) => route.junctions).map((p) => `${p.x}:${p.y}`));
+  assert.deepEqual([...dots], [`${merge.x}:${merge.y}`], "one junction, at the merge point");
+}
+
+test("wires into one input join one lane a fixed distance out, with one junction and no hops", () => {
+  // Poster studio's Make List: one wire straight in, one from above-left, one from below-left.
+  const rects = [
+    card("image", 0, 0, 240, 160),
+    card("make", 420, 0, 240, 160),
+    card("above", -500, -400),
+    card("below", -500, 500),
+  ];
+  const edges = [wire("image", "make"), wire("above", "make"), wire("below", "make")];
+  const { routes } = routeWires(rects, edges);
+  assertWireRules(rects, edges, routes);
+  assertFanIn(rects, edges, routes, rects[1]);
+});
+
+test("a wire into a different input still hops the fan-in it crosses", () => {
+  const rects = [
+    card("image", 0, 0, 240, 160),
+    card("make", 420, 0, 240, 160),
+    card("above", -500, -400),
+    card("below", -500, 500),
+    card("cross", -500, 250),
+    card("other", 900, -400),
+  ];
+  const edges = [
+    wire("image", "make"),
+    wire("above", "make"),
+    wire("below", "make"),
+    wire("cross", "other"),
+  ];
+  const { routes } = routeWires(rects, edges);
+  assertWireRules(rects, edges, routes);
+  assertFanIn(rects, edges, routes, rects[1]);
+  const crossing = routes.get("cross->other") as Route;
+  const fanIn = edges.filter((e) => e.target === "make").map((e) => routes.get(e.id) as Route);
+  assert.ok(
+    crossing.hops.length + fanIn.reduce((n, route) => n + route.hops.length, 0) > 0,
+    "the unrelated crossing still gets a hop",
+  );
+});
