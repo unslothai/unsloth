@@ -439,12 +439,12 @@ export const BUDGET = {
   // (5,942,150 -> 5,972,134 B raw, 1,836,750 -> 1,847,702 B transfer, ed9857c0c3 -> 39b8a6ce13, Node 24,
   // 85 chunks): its color themes are read by the theme store at startup, and loading its dialog on first
   // open saves 3 KB transfer but adds five startup chunks. Raised by that growth.
-  // The Live monitor redesign (#15630: unified memory row, refresh rate setting, edge resize on the floating
-  // panel hook, their strings in the eager en locale) adds 5,067 B raw / 1,447 B transfer (5,977,895 ->
-  // 5,982,962 B raw, 1,845,092 -> 1,846,539 B transfer against 06314b97dd, Node 26, unchanged at 85 chunks).
+  // The Live monitor redesign (#15630: CPU / memory / per-GPU rows, Unsloth's share and per-model split, refresh
+  // rate, width resize, their strings in the eager en locale) adds 10,605 B raw / 3,662 B transfer (5,978,111 ->
+  // 5,988,716 B raw, 1,845,471 -> 1,849,133 B transfer against 4eafe33d5a, Node 26, unchanged at 85 chunks).
   // Raised by that growth.
-  transferBytes: 1_851_220,
-  rawBytes: 5_994_509,
+  transferBytes: 1_853_435,
+  rawBytes: 6_000_047,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.
