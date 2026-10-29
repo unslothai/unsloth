@@ -207,11 +207,12 @@ def _register_prequant_safe_globals() -> bool:
 def restricted_prequant_load_supported(
     scheme: Optional[str] = None, filename: Optional[str] = None
 ) -> bool:
-    """Per scheme (torchao retires int8 constructors before fp8); with a safetensors filename, answer for that file, which needs no allowlist."""
-    from .prequant_safetensors import is_safetensors_checkpoint, safetensors_prequant_supported
+    """Per scheme (torchao retires int8 constructors before fp8); with a safetensors filename, answer for that file, which needs no allowlist
+    but does need a torchao that can rebuild the scheme's subclass (0.16 cannot rebuild nvfp4 / mxfp8)."""
+    from .prequant_safetensors import is_safetensors_checkpoint, safetensors_scheme_supported
 
     if is_safetensors_checkpoint(filename):
-        return safetensors_prequant_supported()
+        return safetensors_scheme_supported(scheme)
     if not _register_prequant_safe_globals():
         return False
     key = (scheme or "").strip().lower()
