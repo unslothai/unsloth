@@ -48,7 +48,7 @@ def truncated_drop_cause(cut, dropped, max_length):
     )
     if dropped > cut:
         cause += (
-            f" The other {dropped - cut} do not contain this model's response template, so "
+            f" For the other {dropped - cut}, this model's response template was not found, so "
             f"'Train on completions' should be turned off for this dataset."
         )
     return cause
