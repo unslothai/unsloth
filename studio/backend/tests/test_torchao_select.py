@@ -269,37 +269,41 @@ def test_the_wanted_tag_follows_the_index_that_will_be_pinned(monkeypatch):
     assert mod._torch_index_tag("2.13.0+cu128") == "cu128"
 
 
+_PYTORCH_WHL = "https://download.pytorch.org/whl"
+_MIRROR_WHL = "https://mirror.example/whl"
+
+
 @pytest.mark.parametrize(
-    "is_windows, torch_version, family, url, leaf",
+    "is_windows, torch_version, family, url, base, expected",
     [
-        # Every cuNNN leaf publishes torchao for Linux only.
-        (True, "2.13.0+cu130", "", "", None),
-        (True, "2.12.0+cu126", "", "", None),
-        (True, "2.10.0+cu128", "", "", None),
-        (True, "2.13.0+cu128", "cu130", "", None),
+        # download.pytorch.org's cuNNN leaves publish torchao for Linux only.
+        (True, "2.13.0+cu130", "", "", _PYTORCH_WHL, None),
+        (True, "2.12.0+cu126", "", "", _PYTORCH_WHL, None),
+        (True, "2.10.0+cu128", "", "", _PYTORCH_WHL, None),
+        (True, "2.13.0+cu128", "cu130", "", _PYTORCH_WHL, None),
         # The cpu and xpu leaves serve Windows a py3-none-any wheel.
-        (True, "2.12.0+cpu", "", "", "cpu"),
-        (True, "2.14.0+xpu", "", "", "xpu"),
-        (True, "2.13.0+cu130", "cpu", "", "cpu"),
-        (True, "2.13.0", "", "", None),
-        # An explicit mirror may well carry a Windows build.
-        (True, "2.13.0+cu130", "", "https://mirror.corp.example/whl/cu130", "mirror"),
-        (False, "2.13.0+cu130", "", "", "cu130"),
-        (False, "2.12.0+cu126", "", "", "cu126"),
+        (True, "2.12.0+cpu", "", "", _PYTORCH_WHL, f"{_PYTORCH_WHL}/cpu"),
+        (True, "2.14.0+xpu", "", "", _PYTORCH_WHL, f"{_PYTORCH_WHL}/xpu"),
+        (True, "2.13.0+cu130", "cpu", "", _PYTORCH_WHL, f"{_PYTORCH_WHL}/cpu"),
+        (True, "2.13.0", "", "", _PYTORCH_WHL, None),
+        # A mirror or explicit index may well carry a Windows build.
+        (True, "2.13.0+cu130", "", "", _MIRROR_WHL, f"{_MIRROR_WHL}/cu130"),
+        (True, "2.13.0+cu130", "", f"{_MIRROR_WHL}/cu130", _PYTORCH_WHL, f"{_MIRROR_WHL}/cu130"),
+        # Not a CUDA leaf, though it starts with "cu".
+        (True, "2.13.0+cu130", "current", "", _PYTORCH_WHL, f"{_PYTORCH_WHL}/current"),
+        (False, "2.13.0+cu130", "", "", _PYTORCH_WHL, f"{_PYTORCH_WHL}/cu130"),
+        (False, "2.12.0+cu126", "", "", _PYTORCH_WHL, f"{_PYTORCH_WHL}/cu126"),
     ],
 )
 def test_windows_cuda_takes_torchao_unpinned(
-    monkeypatch, is_windows, torch_version, family, url, leaf
+    monkeypatch, is_windows, torch_version, family, url, base, expected
 ):
     mod = _load_module(monkeypatch)
     monkeypatch.setattr(mod, "IS_WINDOWS", is_windows)
+    monkeypatch.setattr(mod, "_PYTORCH_WHL_BASE", base)
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", family)
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", url)
-    got = mod._torchao_index_url(torch_version)
-    if leaf == "mirror":
-        assert got == url
-    else:
-        assert got == (f"https://download.pytorch.org/whl/{leaf}" if leaf else None)
+    assert mod._torchao_index_url(torch_version) == expected
 
 
 def test_a_windows_cuda_update_leaves_the_installed_torchao_alone(monkeypatch):

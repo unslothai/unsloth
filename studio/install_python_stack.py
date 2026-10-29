@@ -1097,16 +1097,18 @@ def _torchcodec_index_url(torch_version: "str | None", spec: str = "") -> "str |
 def _torchao_index_url(torch_version: "str | None") -> "str | None":
     """The torchao index serving the resident torch's build, or None to stay unpinned.
 
-    Windows CUDA is the one case excluded: every cuNNN leaf publishes torchao for Linux only,
-    so a pin there is a guaranteed wasted resolve, and the untagged wheel the retry installs
-    then fails the next run's tag check, forcing a reinstall on every update. PyPI's
-    py3-none-any wheel carries the same Python sources; what the leaf adds is Linux .so files.
-    The cpu and xpu leaves do serve Windows a py3-none-any wheel, so those keep their pin.
+    Windows CUDA is the one case excluded: download.pytorch.org's cuNNN leaves publish torchao
+    for Linux only, so a pin there is a guaranteed wasted resolve, and the untagged wheel the
+    retry installs then fails the next run's tag check, forcing a reinstall on every update.
+    PyPI's py3-none-any wheel carries the same Python sources; what the leaf adds is Linux .so
+    files. Only that host's leaf is skipped: a mirror or explicit index may carry a Windows
+    build, and the cpu and xpu leaves do serve Windows a py3-none-any wheel.
     """
+    url = _torch_accelerator_index_url(torch_version)
     tag = _torch_index_tag(torch_version)
-    if IS_WINDOWS and tag and tag.startswith("cu"):
+    if IS_WINDOWS and tag and _is_cuda_family_leaf(tag) and url == f"{_PYTORCH_DEFAULT_WHL}/{tag}":
         return None
-    return _torch_accelerator_index_url(torch_version)
+    return url
 
 
 def _torch_index_tag(
