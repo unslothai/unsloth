@@ -37,7 +37,12 @@ def _slow_llama_server(clients: list):
             return self._payload
 
     class _Client:
-        def __init__(self, *_args, timeout = None, **_kwargs):
+        def __init__(
+            self,
+            *_args,
+            timeout = None,
+            **_kwargs,
+        ):
             self.timeout = timeout
             clients.append(self)
 
@@ -47,7 +52,12 @@ def _slow_llama_server(clients: list):
         def __exit__(self, *_exc):
             return False
 
-        def post(self, url, json = None, **_kwargs):
+        def post(
+            self,
+            url,
+            json = None,
+            **_kwargs,
+        ):
             body = json or {}
             if url.endswith("/apply-template"):
                 text = "|".join(str(m.get("content") or "") for m in body.get("messages", []))
