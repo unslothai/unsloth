@@ -1493,7 +1493,9 @@ fn setup_unix_termination_signals(app: &tauri::App) -> Result<(), Box<dyn std::e
                 if UNIX_TERMINATION_REQUESTED.swap(true, Ordering::SeqCst) {
                     // A repeat signal means stop waiting: exit straight away.
                     warn!("Received {name} ({signal}) while cleaning up, exiting immediately");
-                    std::process::exit(exit_code);
+                    // SAFETY: this is an explicit forced exit. libc exit handlers may wait on
+                    // GTK/driver locks held by the cleanup we are being asked to abandon.
+                    unsafe { libc::_exit(exit_code) };
                 }
                 info!("Received Unix termination signal {name} ({signal})");
 
