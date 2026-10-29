@@ -96,6 +96,5 @@ def test_minimax_history_keeps_reasoning():
 
 def test_studio_tool_loop_replays_minimax_reasoning():
     from core.inference.external_tool_transport import OAICompatTransport
-
     client = ep.ExternalProviderClient("minimax", get_base_url("minimax"), "sk-test")
     assert OAICompatTransport(client, model = "MiniMax-M3").preserves_reasoning is True
