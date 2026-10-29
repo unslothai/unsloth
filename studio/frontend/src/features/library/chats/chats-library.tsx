@@ -63,7 +63,6 @@ import {
   ArchiveRestoreIcon,
   Cancel01Icon,
   Delete02Icon,
-  Folder02Icon,
   FolderAddIcon,
   LayerIcon,
   MoreHorizontalIcon,
@@ -74,6 +73,7 @@ import {
   CheckmarkCircle02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 import { useNavigate } from "@tanstack/react-router";
 import {
   type ReactNode,
@@ -192,7 +192,7 @@ const SECTION_LABELS: Record<ChatsSection, TranslationKey> = {
 
 const SECTION_ICONS: Partial<Record<ChatsSection, IconSvgElement>> = {
   chats: MessageCircleIcon,
-  projects: Folder02Icon,
+  projects: ProjectIcon,
   sections: LayerIcon,
   archived: Archive03Icon,
 };
@@ -1249,13 +1249,13 @@ export function ChatsLibrary({
     if (visibleProjects.length === 0) {
       return query.trim() ? (
         <EmptyState
-          icon={Folder02Icon}
+          icon={ProjectIcon}
           title={t("library.empty.noMatchesTitle")}
           description={t("library.empty.noMatchesDescription")}
         />
       ) : (
         <EmptyState
-          icon={Folder02Icon}
+          icon={ProjectIcon}
           title={t("library.chats.empty.projectsTitle")}
           description={t("library.chats.empty.projectsDescription")}
           action={

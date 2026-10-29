@@ -45,7 +45,6 @@ import {
   Download01Icon,
   Edit03Icon,
   FolderAddIcon,
-  Folder02Icon,
   FolderExportIcon,
   LayerIcon,
   MoreHorizontalIcon,
@@ -60,6 +59,7 @@ import {
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 import { ForkIcon } from "@/lib/fork-icon";
 import {
   ArrowDownIcon,
@@ -282,7 +282,7 @@ export function MoveSubmenu({
                 {projectTargets.map((entry) => (
                   <MenuItem
                     key={entry.id}
-                    icon={Folder02Icon}
+                    icon={ProjectIcon}
                     label={entry.name}
                     onSelect={() => onMove({ kind: "project", id: entry.id })}
                   />
@@ -675,7 +675,7 @@ function ChatLocation({
         className={cn(CHIP, "max-w-full")}
       >
         <HugeiconsIcon
-          icon={projectId ? Folder02Icon : LayerIcon}
+          icon={projectId ? ProjectIcon : LayerIcon}
           strokeWidth={1.75}
           className="size-3.5 shrink-0"
         />
@@ -695,7 +695,7 @@ function ChatLocation({
           className={cn(CHIP, "shrink")}
         >
           <HugeiconsIcon
-            icon={Folder02Icon}
+            icon={ProjectIcon}
             strokeWidth={1.75}
             className="size-3.5 shrink-0"
           />
@@ -1198,7 +1198,7 @@ export function ChatCard({
           if (selecting) actions.toggleSelected(chat.id, event.shiftKey);
           else actions.open(chat);
         }}
-        className={cn(CARD_TITLE, !showTile && TILELESS_TITLE)}
+        className={CARD_TITLE}
       >
         {/* Buttons ignore line-clamp, so clamp an inner span. */}
         <span className="line-clamp-2">{chatTitle(chat, t)}</span>
@@ -1226,9 +1226,8 @@ function CardFooter({ meta, date, className }: { meta?: ReactNode; date: string;
   );
 }
 
-// Without a tile, the empty marks row collapses and the title clears the corner menu.
+// Without a tile the empty marks row collapses; the title keeps the full width and the hover menu overlays it.
 const TILELESS_ROW = "empty:hidden pe-8";
-const TILELESS_TITLE = "pe-6";
 const TILELESS_ROW_NAME = "min-h-13";
 
 const CARD_TITLE =
@@ -1424,7 +1423,7 @@ export function ProjectCard({
       className={CARD}
     >
       <div className={cn("flex items-center gap-2", !showTile && TILELESS_ROW)}>
-        {showTile && <CollectionTile icon={Folder02Icon} bare />}
+        {showTile && <CollectionTile icon={ProjectIcon} bare />}
         {actions.favoriteProjects.has(project.id) && <FavoriteMark />}
         {pinned && <PinMark />}
       </div>
@@ -1435,7 +1434,7 @@ export function ProjectCard({
           event.stopPropagation();
           actions.viewProject(project.id);
         }}
-        className={cn(CARD_TITLE, !showTile && TILELESS_TITLE)}
+        className={CARD_TITLE}
       >
         <span className="line-clamp-2">{project.name}</span>
       </button>
@@ -1476,7 +1475,7 @@ export function ProjectRow({
       )}
     >
       <div className={cn("flex min-w-0 flex-1 items-center gap-4 py-2", !showTile && TILELESS_ROW_NAME)}>
-        {showTile && <CollectionTile icon={Folder02Icon} />}
+        {showTile && <CollectionTile icon={ProjectIcon} />}
         <div className="flex min-w-0 flex-col">
           <span className="flex min-w-0 items-center gap-2">
             <button
@@ -1683,7 +1682,7 @@ export function SectionCard({
           event.stopPropagation();
           actions.viewSection(section.id);
         }}
-        className={cn(CARD_TITLE, !showTile && TILELESS_TITLE)}
+        className={CARD_TITLE}
       >
         <span className="line-clamp-2">{section.name}</span>
       </button>
@@ -1865,7 +1864,7 @@ export function FavoriteProjectTile({
       title={project.name}
       icon={
         <HugeiconsIcon
-          icon={Folder02Icon}
+          icon={ProjectIcon}
           strokeWidth={1.5}
           className={FILE_CARD_ICON_CLASS}
         />

@@ -118,7 +118,6 @@ import {
   Bookmark02Icon,
   CodeIcon,
   Download01Icon,
-  Folder01Icon,
   FolderAddIcon,
   Image03Icon,
   McpServerIcon,
@@ -132,6 +131,7 @@ import { StopIcon } from "@/lib/media-control-icons";
 import { useNavigate } from "@tanstack/react-router";
 import { useChatActive } from "./runtime-provider";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 import { toast } from "@/lib/toast";
 import {
   PromptStorageDialog,
@@ -2612,7 +2612,7 @@ export function SharedComposer({
     projects: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
-          <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
+          <HugeiconsIcon icon={ProjectIcon} strokeWidth={2} />
           Projects
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent className="unsloth-plus-menu w-[calc(232px*var(--ui-space-scale,1))]">
@@ -2627,7 +2627,7 @@ export function SharedComposer({
                 key={project.id}
                 onSelect={() => openProject(project.id)}
               >
-                <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
+                <HugeiconsIcon icon={ProjectIcon} strokeWidth={2} />
                 <span className="truncate">{project.name}</span>
               </DropdownMenuItem>
             ))

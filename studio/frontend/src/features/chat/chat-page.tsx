@@ -119,7 +119,6 @@ import {
   Download01Icon,
   Edit03Icon,
   FolderAttachmentIcon,
-  Folder01Icon,
   Folder02Icon,
   FolderExportIcon,
   LayoutAlignRightIcon,
@@ -132,6 +131,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { useAui } from "@assistant-ui/react";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 import { useNavigate } from "@tanstack/react-router";
 import {
   SaveTemporaryChatMenu,
@@ -2430,7 +2430,7 @@ function ProjectLanding({
                                 }
                               >
                                 <HugeiconsIcon
-                                  icon={Folder01Icon}
+                                  icon={ProjectIcon}
                                   strokeWidth={1.75}
                                   className="size-icon"
                                 />

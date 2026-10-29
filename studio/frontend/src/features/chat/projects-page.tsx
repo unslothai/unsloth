@@ -68,7 +68,6 @@ import {
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  Folder01Icon,
   Folder02Icon,
   PencilEdit02Icon,
   PinIcon,
@@ -81,6 +80,7 @@ import {
   MoreHorizontalIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 import { ArrowDownIcon } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -696,7 +696,7 @@ export function ProjectsPage() {
                 className="mt-2 border-none bg-background shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none"
                 onClick={() => setCreating(true)}
               >
-                <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+                <HugeiconsIcon icon={ProjectIcon} strokeWidth={1.75} className="size-icon" />
                 Create your first project
               </Button>
             </>
@@ -754,7 +754,7 @@ export function ProjectsPage() {
                 >
                   <span className="mr-1 flex size-9 shrink-0 items-center justify-center rounded-md bg-muted text-foreground/70 transition-colors group-hover/project-row:bg-primary/10 group-hover/project-row:text-primary">
                     <HugeiconsIcon
-                      icon={chatsOpen ? Folder02Icon : Folder01Icon}
+                      icon={chatsOpen ? Folder02Icon : ProjectIcon}
                       strokeWidth={1.75}
                       className="size-5"
                     />

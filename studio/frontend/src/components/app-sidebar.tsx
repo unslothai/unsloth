@@ -125,7 +125,6 @@ import {
   Download01Icon,
   Edit03Icon,
   FolderExportIcon,
-  Folder01Icon,
   Folder02Icon,
   FlimSlateIcon,
   HelpCircleIcon,
@@ -170,6 +169,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 import { ArrowRightIcon, GitBranchIcon } from "lucide-react";
 import { SortIcon } from "@/lib/sort-icon";
 import { ForkIcon } from "@/lib/fork-icon";
@@ -591,7 +591,7 @@ const ORGANIZE_OPTIONS: Array<{
   key: TranslationKey;
   icon: typeof ZapIcon;
 }> = [
-  { value: "project", key: "shell.organize.byProject", icon: Folder01Icon },
+  { value: "project", key: "shell.organize.byProject", icon: ProjectIcon },
   { value: "list", key: "shell.organize.inOneList", icon: LeftToRightListBulletIcon },
 ];
 
@@ -3325,7 +3325,7 @@ export function AppSidebar() {
 
   const navRows: Record<SidebarNavItemId, NavRowDef> = {
     projects: {
-      icon: Folder01Icon,
+      icon: ProjectIcon,
       label: t("shell.navigation.projects"),
       active: pathname === "/projects" || pathname.startsWith("/projects/"),
       onClick: () => {
@@ -4480,7 +4480,7 @@ export function AppSidebar() {
               closeMobileIfOpen();
             }}
           >
-            <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+            <HugeiconsIcon icon={ProjectIcon} strokeWidth={1.75} className="size-icon" />
             <span>{t("shell.organize.projectsHome")}</span>
           </DropdownMenuItem>
         </>
@@ -5289,7 +5289,7 @@ export function AppSidebar() {
                         key={project.id}
                         onSelect={() => void moveChatToProjectFromMenu(item, project.id)}
                       >
-                        <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+                        <HugeiconsIcon icon={ProjectIcon} strokeWidth={1.75} className="size-icon" />
                         <span className="truncate">{project.name}</span>
                       </P.Item>
                     ))}
@@ -5669,7 +5669,7 @@ export function AppSidebar() {
     return (
       <>
           <P.Item onSelect={() => openProject(project.id)}>
-            <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+            <HugeiconsIcon icon={ProjectIcon} strokeWidth={1.75} className="size-icon" />
             <span>Project home</span>
           </P.Item>
           <P.Item onSelect={() => toggleProjectPin(project.id)}>
@@ -5790,7 +5790,7 @@ export function AppSidebar() {
             className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-16 [@media(pointer:coarse)]:pr-16"
           >
             <HugeiconsIcon
-              icon={expanded ? Folder02Icon : Folder01Icon}
+              icon={expanded ? Folder02Icon : ProjectIcon}
               strokeWidth={1.75}
               className="size-icon! shrink-0"
             />

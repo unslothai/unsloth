@@ -15,7 +15,6 @@ import { StarPointedIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import {
   FilterMailIcon,
-  Folder02Icon,
   FolderAddIcon,
   LayerIcon,
   PencilEdit02Icon,
@@ -23,6 +22,7 @@ import {
   Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 import { Columns2Icon, GitBranchIcon } from "lucide-react";
 import { SortIcon } from "@/lib/sort-icon";
 import type { ReactNode } from "react";
@@ -170,7 +170,7 @@ function FilterMenu({
             {facets.projects.map((project) => (
               <CheckItem
                 key={project.id}
-                icon={<HugeiconsIcon icon={Folder02Icon} strokeWidth={1.75} className={ICON} />}
+                icon={<HugeiconsIcon icon={ProjectIcon} strokeWidth={1.75} className={ICON} />}
                 label={project.name}
                 checked={filters.projects.has(project.id)}
                 onToggle={() =>

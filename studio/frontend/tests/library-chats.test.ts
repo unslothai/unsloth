@@ -463,7 +463,7 @@ test("grid cards share a two-line title and a footer of contents over date", () 
     cardOf("export function SectionCard(", "export function SectionRow("),
   ];
   for (const card of cards) {
-    assert.match(card, /className=\{cn\(CARD_TITLE, !showTile && TILELESS_TITLE\)\}/);
+    assert.match(card, /className=\{CARD_TITLE\}/);
     assert.match(card, /<span className="line-clamp-2">/);
     assert.match(card, /<CardFooter/);
     assert.match(card, /showTile = true,/);
@@ -558,13 +558,13 @@ test("the library header row casts a light shadow once stuck", () => {
   assert.match(header, /setStuck\(gap > /);
 });
 
-test("a favorite project tile uses the open project folder, not the file folder", () => {
+test("a favorite project tile uses the closed project folder, not the file folder", () => {
   const items = readSrc("features/library/chats/chats-items.tsx");
   const tile = items.slice(
     items.indexOf("export function FavoriteProjectTile("),
     items.indexOf("}", items.indexOf("menu={<ProjectMenu", items.indexOf("export function FavoriteProjectTile("))),
   );
-  assert.match(tile, /icon=\{Folder02Icon\}/);
+  assert.match(tile, /icon=\{ProjectIcon\}/);
   assert.doesNotMatch(tile, /Folder01Icon/);
 });
 
@@ -660,7 +660,7 @@ test("a section's menu reads New chat, New project and Edit", () => {
 test("a chat card's location has its project or section icon; menus leave out View chats", () => {
   const items = readSrc("features/library/chats/chats-items.tsx");
   const plain = items.slice(items.indexOf("  if (plain) {"), items.indexOf('<span className="flex min-w-0 items-center gap-3">'));
-  assert.match(plain, /icon=\{projectId \? Folder02Icon : LayerIcon\}/);
+  assert.match(plain, /icon=\{projectId \? ProjectIcon : LayerIcon\}/);
   assert.match(plain, /<span className="truncate">\{projectId \? projectName : section\?\.name\}<\/span>/);
   for (const file of [
     "features/library/chats/chats-items.tsx",
@@ -673,11 +673,11 @@ test("a chat card's location has its project or section icon; menus leave out Vi
   assert.doesNotMatch(readSrc("i18n/locales/en.ts"), /viewChats/);
 });
 
-test("the Chats library draws every project with the open project folder", () => {
+test("the Chats library draws every project with the closed project folder", () => {
   for (const file of ["chats-library.tsx", "chats-toolbar.tsx", "chats-items.tsx"]) {
     assert.doesNotMatch(readSrc(`features/library/chats/${file}`), /Folder01Icon/, file);
   }
-  assert.match(readSrc("features/library/chats/chats-library.tsx"), /projects: Folder02Icon,/);
+  assert.match(readSrc("features/library/chats/chats-library.tsx"), /projects: ProjectIcon,/);
 });
 
 test("a chat's menu has no Open chat, and its folder sits under Export", () => {
