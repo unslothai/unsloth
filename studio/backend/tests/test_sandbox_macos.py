@@ -269,7 +269,7 @@ def _console_script_wheel(directory: Path, name: str) -> None:
 
 def test_a_second_pip_install_keeps_its_commands_and_namespace_modules(tmp_path):
     if subprocess.run([sys.executable, "-m", "pip", "--version"], capture_output = True).returncode:
-        pytest.skip("pip is not installed in this interpreter")
+        pytest.skip(reason = "pip is not installed in this interpreter, so there is no install to run")
     wheels = tmp_path / "wheels"
     wheels.mkdir()
     for name in ("alpha", "beta"):
