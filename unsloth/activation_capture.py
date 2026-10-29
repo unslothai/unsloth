@@ -456,8 +456,6 @@ class ActivationCapture:
 
     def _make_layer_hook(self, layer_idx: int, kind: str):
         """Return a forward hook closure for the given layer index and kind."""
-        sampled = self._sampled_channels
-        n_channels = len(sampled)
         key = (layer_idx, kind)
 
         def hook(module, inputs, output):
@@ -492,7 +490,8 @@ class ActivationCapture:
                 # Reduces peak VRAM spike by H/K (e.g. 64x for K=64, d=4096).
                 # flatten(0, -2) merges all leading dims before channels,
                 # making this robust to 2-D, 3-D, and 4-D hidden states.
-                flat = hidden.detach().flatten(0, -2)[..., sampled].float()  # [*, K]
+                # Read at call time: full coverage re-picks the columns at the first flush.
+                flat = hidden.detach().flatten(0, -2)[..., self._sampled_channels].float()  # [*, K]
                 buf_key = layer_idx if kind == "layer" else f"{layer_idx}_mlp"
                 n, sum_abs, total = self._act_sums.get(buf_key, (0, 0.0, 0.0))
                 n, sum_abs, total = (
@@ -626,6 +625,9 @@ class ActivationCapture:
             fill = random.Random(cfg.seed).sample(rest, cfg.max_channels - len(top))
             self._pinned = sorted(top)
             self._sampled_channels = sorted(top + fill)
+            # MLP outputs this step were sampled on the old columns; drop them rather than mislabel them.
+            for k in [k for k in self._buffer if not isinstance(k, int)]:
+                del self._buffer[k]
 
         if self._run is None:
             zeros = torch.zeros_like(mean_abs)

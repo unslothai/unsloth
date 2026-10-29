@@ -118,3 +118,40 @@ def test_a_second_flush_writes_nothing(tmp_path):
     cap.flush()  # on_train_end flushes again after the last step was written
     _, records = _read(tmp_path)
     assert len(records) == 1
+
+
+class _WithMlp(_Layer):
+    def __init__(self):
+        super().__init__()
+        self.mlp = torch.nn.Identity()
+
+    def forward(self, x):
+        return (self.mlp(x * self.scale),)
+
+
+def test_mlp_columns_follow_the_pinned_channels(tmp_path):
+    model = torch.nn.Module()
+    model.model = torch.nn.Module()
+    model.model.layers = torch.nn.ModuleList([_WithMlp(), _WithMlp()])
+    model.config = SimpleNamespace(hidden_size = H, intermediate_size = H, _name_or_path = "tiny")
+    cap = ac.ActivationCapture(
+        model,
+        ac.ActivationCaptureConfig(
+            output_dir = str(tmp_path),
+            max_channels = K,
+            pinned_channels = 3,
+            capture_mlp_out = True,
+            capture_lora_norms = False,
+            capture_gradients = False,
+        ),
+    )
+    cap.attach()
+    _run(model, cap, steps = 2)
+    meta, records = _read(tmp_path)
+    # Step 0 picked the columns after its MLP outputs were taken, so it carries none.
+    assert not any(k.endswith("_mlp") for k in records[0]["layers"])
+    mlp = records[1]["layers"]["0_mlp"]["mean_abs"]
+    cols = meta["captured_channels"]
+    assert set(OUTLIERS) <= set(cols)
+    for i, ch in enumerate(cols):
+        assert mlp[i] == pytest.approx(50.0 if ch in OUTLIERS else 0.0 if ch in DEAD else 1.0)
