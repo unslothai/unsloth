@@ -740,6 +740,7 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
 
     if is_plain_text_dataset(dataset):
         # Before the VLM branch: text-only data trains as raw text on a vision model too.
+        # Media flags off: a name match (a "speech" column) would route an audio model to its audio path.
         return {
             "requires_manual_mapping": False,
             "detected_format": "raw",
@@ -747,9 +748,11 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
             "suggested_mapping": None,
             "detected_image_column": None,
             "detected_text_column": None,
-            "is_image": multimodal_info["is_image"],
-            "multimodal_columns": multimodal_info.get("multimodal_columns"),
-            **audio_fields,
+            "is_image": False,
+            "multimodal_columns": None,
+            "is_audio": False,
+            "detected_audio_column": None,
+            "detected_speaker_column": None,
         }
 
     if is_vlm:

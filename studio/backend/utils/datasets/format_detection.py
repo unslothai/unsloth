@@ -175,7 +175,10 @@ def _is_single_string_row(row) -> bool:
     if not isinstance(row, dict) or len(row) != 1:
         return False
     value = next(iter(row.values()))
-    return isinstance(value, str) and bool(value.strip())
+    if not isinstance(value, str) or not value.strip() or _is_image_value(value):
+        return False
+    # A column of media paths still needs its other roles mapped.
+    return not value.strip().lower().endswith(_AUDIO_EXTENSIONS)
 
 
 def detect_dataset_format(dataset):

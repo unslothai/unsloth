@@ -48,6 +48,15 @@ def test_text_column_keeps_detection_flags_for_other_branches():
     assert result["detected_image_column"] is None
 
 
+def test_media_named_text_column_is_not_routed_as_media():
+    result = dataset_format.check_dataset_format(_text_dataset("speech"), is_vlm = True)
+
+    assert result["detected_format"] == "raw"
+    assert result["is_audio"] is False
+    assert result["detected_audio_column"] is None
+    assert result["is_image"] is False
+
+
 @pytest.mark.parametrize(
     "rows",
     [
@@ -60,6 +69,16 @@ def test_other_shapes_still_require_mapping(rows):
     result = dataset_format.check_dataset_format(Dataset.from_list(rows))
 
     assert result["detected_format"] == "unknown"
+    assert result["requires_manual_mapping"] is True
+
+
+@pytest.mark.parametrize(
+    "row", [{"image": "photos/sloth.jpg"}, {"audio": "clips/sloth.wav"}], ids = ["image", "audio"]
+)
+def test_media_path_column_is_not_raw_text(row):
+    result = dataset_format.check_dataset_format(Dataset.from_list([row]))
+
+    assert result["detected_format"] != "raw"
     assert result["requires_manual_mapping"] is True
 
 
