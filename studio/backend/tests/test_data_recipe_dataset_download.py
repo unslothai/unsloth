@@ -961,3 +961,126 @@ def test_a_column_named_file_row_number_also_survives(tmp_path: Path):
         "filename": "a.png",
         "label": "x",
     }
+
+
+def _general_path(row):
+    from core.data_recipe import export
+    return export._json_dumps_value(export._sanitize_json_value(row))
+
+
+def _encode_or_error(fn, row):
+    try:
+        return fn(row)
+    except Exception as exc:  # the same failure, not just a failure
+        return f"{type(exc).__name__}: {exc}"
+
+
+def _random_value(rng, depth = 0):
+    import datetime
+    import enum
+    from decimal import Decimal
+
+    numpy = pytest.importorskip("numpy")
+    pandas = pytest.importorskip("pandas")
+
+    class Text(str):
+        pass
+
+    class Level(enum.IntEnum):
+        LOW = 1
+
+    leaves = [
+        lambda: rng.choice(
+            ["", "plain", "café \U0001f600", 'q"uo\\te\n\t\r\x00\x1f', "  ", "\ud800"]
+        ),
+        lambda: rng.choice([0, -1, 2**63, -(2**70), True, False, None]),
+        lambda: rng.choice(
+            [0.0, -0.0, 1.5, 1e300, 5e-324, 0.1 + 0.2, float("nan"), float("inf"), -float("inf")]
+        ),
+        lambda: Decimal(rng.choice(["1.20", "0E-8", "-0", "1E+3", "NaN", "Infinity", "-12.3400"])),
+        lambda: rng.choice([b"", b"\x00\xff", bytearray(b"ab")]),
+        lambda: rng.choice(
+            [
+                datetime.datetime(2026, 1, 2, 3, 4, 5, 6),
+                datetime.date(2026, 1, 2),
+                datetime.time(1, 2),
+            ]
+        ),
+        lambda: rng.choice(
+            [
+                numpy.float32(1.1),
+                numpy.float64("nan"),
+                numpy.int64(7),
+                numpy.bool_(True),
+                numpy.str_("np"),
+            ]
+        ),
+        lambda: rng.choice([pandas.NA, pandas.NaT, pandas.Timestamp("2026-01-02 03:04:05")]),
+        lambda: rng.choice([Text("sub"), Level.LOW, numpy.arange(3), (1, "t"), {"one"}]),
+    ]
+    if depth < 3 and rng.random() < 0.3:
+        if rng.random() < 0.5:
+            return [_random_value(rng, depth + 1) for _ in range(rng.randint(0, 3))]
+        keys = ["k", "é", 1, True, None, "1", 1.5]
+        return {rng.choice(keys): _random_value(rng, depth + 1) for _ in range(rng.randint(0, 3))}
+    return rng.choice(leaves)()
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_json_dumps_row_writes_what_the_general_path_writes(seed):
+    import random
+    rng = random.Random(seed)
+    for _ in range(1500):
+        # Mostly plain rows (the fast path) with some special columns mixed in.
+        plain_only = rng.random() < 0.4
+        row = {}
+        for index in range(rng.randint(0, 8)):
+            value = _random_value(rng)
+            if plain_only and not _is_plain_for_test(value):
+                value = rng.choice(["text", 3, 2.5, None, [1, "a"], {"n": {"m": [True]}}])
+            # Mostly str column names; a few rows carry keys str() makes collide.
+            key = (
+                rng.choice([1, "1", True, None])
+                if rng.random() < 0.03
+                else rng.choice([f"c{index}", "café", 'k"\n'])
+            )
+            row[key] = value
+        assert _encode_or_error(_json_dumps_row, row) == _encode_or_error(_general_path, row), row
+
+
+def _is_plain_for_test(value):
+    from core.data_recipe import export
+    try:
+        return export._is_plain_json(value)
+    except export._TooDeep:
+        return False
+
+
+@pytest.mark.parametrize("depth", [31, 32, 33, 400, 2000])
+def test_json_dumps_row_matches_the_general_path_at_any_depth(depth):
+    plain = [] if depth % 2 else {}
+    node = plain
+    for _ in range(depth):
+        child = []
+        node.append(child) if isinstance(node, list) else node.update(k = child)
+        node = child
+    for row in ({"deep": plain}, {"deep": plain, "when": float("nan")}):
+        assert _encode_or_error(_json_dumps_row, row) == _encode_or_error(_general_path, row)
+
+
+def test_a_plain_row_is_written_without_the_per_value_walk(monkeypatch):
+    from core.data_recipe import export
+
+    calls = []
+    monkeypatch.setattr(export, "to_jsonable", lambda value: calls.append(value) or value)
+    row = {
+        "question": "Qé",
+        "n": 3,
+        "score": 0.5,
+        "ok": True,
+        "tags": ["a", None],
+        "meta": {"x": 1},
+    }
+
+    assert _json_dumps_row(row) == json.dumps(row, ensure_ascii = False)
+    assert calls == []
