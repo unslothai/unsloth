@@ -1015,8 +1015,9 @@ def test_the_worker_bounds_scores_like_rule_rewards():
     assert reward_worker_main.MAX_SCORE == rewards.MAX_SCORE
 
 
-def test_training_refuses_a_python_score_past_the_bound(worker_factory):
-    huge = _spec("huge", "def reward(completions, **kw):\n    return [1e308]\n")
+@pytest.mark.parametrize("value", ["1e308", "float('inf')", "-float('inf')"])
+def test_training_refuses_a_python_score_past_the_bound(worker_factory, value):
+    huge = _spec("huge", f"def reward(completions, **kw):\n    return [{value}]\n")
     worker = worker_factory([huge])
     with pytest.raises(PythonRewardError, match = "outside -1,000,000 to 1,000,000"):
         worker.score(["huge"], [], [[{"content": "x"}]], {})
