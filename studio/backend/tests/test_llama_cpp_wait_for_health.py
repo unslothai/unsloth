@@ -30,6 +30,8 @@ import httpx  # noqa: E402
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 from core.inference.llama_cpp import GgufLoadIntent
 
+from ._fake_llama_server import fake_llama_server
+
 # Sibling tests may install an httpx stub lacking get; fill gaps so order does not matter.
 if not hasattr(httpx, "get"):
     httpx.get = None
@@ -42,20 +44,6 @@ for _exc_name in (
 ):
     if not hasattr(httpx, _exc_name):
         setattr(httpx, _exc_name, type(_exc_name, (Exception,), {}))
-
-
-def _fake_llama_server(directory: Path) -> str:
-    """A stand-in llama-server that ignores its arguments and exits 0 at once, as
-    /usr/bin/true does, but also on Windows: the load really spawns it."""
-    directory.mkdir(parents = True, exist_ok = True)
-    if sys.platform == "win32":
-        fake = directory / "llama-server.cmd"
-        fake.write_text("@exit /b 0\r\n", encoding = "utf-8")
-    else:
-        fake = directory / "llama-server"
-        fake.write_text("#!/bin/sh\nexit 0\n", encoding = "utf-8")
-        fake.chmod(0o755)
-    return str(fake)
 
 
 def _make_backend(port: int = 12345) -> LlamaCppBackend:
@@ -682,7 +670,7 @@ class TestCancelledWaitEndsTheLoad:
         gguf.write_bytes(b"GGUF" + b"\0" * 4096)
 
         b = LlamaCppBackend()
-        fake_server = _fake_llama_server(tmp_path / "bin")
+        fake_server = fake_llama_server(tmp_path / "bin")
         b._find_llama_server_binary = lambda *a, **kw: fake_server
         b._non_chat_gguf_refusal_for_path = lambda *a, **kw: None
         b._non_chat_gguf_refusal = lambda *a, **kw: None
@@ -729,7 +717,7 @@ class TestCancelledWaitEndsTheLoad:
         gguf.write_bytes(b"GGUF" + b"\0" * 4096)
 
         b = LlamaCppBackend()
-        fake_server = _fake_llama_server(tmp_path / "bin")
+        fake_server = fake_llama_server(tmp_path / "bin")
         b._find_llama_server_binary = lambda *a, **kw: fake_server
         b._non_chat_gguf_refusal_for_path = lambda *a, **kw: None
         b._non_chat_gguf_refusal = lambda *a, **kw: None
@@ -856,7 +844,7 @@ def test_a_diffusion_cancel_after_health_reaps_the_runner():
 def _cancel_scaffold(tmp_path, kills):
     """A backend wired far enough to run load_model without weights or a server."""
     b = LlamaCppBackend()
-    fake_server = _fake_llama_server(tmp_path / "bin")
+    fake_server = fake_llama_server(tmp_path / "bin")
     b._find_llama_server_binary = lambda *a, **kw: fake_server
     b._non_chat_gguf_refusal_for_path = lambda *a, **kw: None
     b._non_chat_gguf_refusal = lambda *a, **kw: None

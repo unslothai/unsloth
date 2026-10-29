@@ -84,24 +84,12 @@ from core.inference.llama_cpp import (
 )
 from core.inference.openai_auto_download import _DISK_RESERVE_BYTES
 
+from ._fake_llama_server import fake_llama_server
+
 
 REPO = "unsloth/gemma-test-GGUF"
 VARIANT = "UD-Q4_K_XL"
 MAIN = f"gemma-test-{VARIANT}.gguf"
-
-
-def _fake_llama_server(directory: Path) -> str:
-    """A stand-in llama-server that ignores its arguments and exits 0 at once, as
-    /usr/bin/true does, but also on Windows: the load really spawns it."""
-    directory.mkdir(parents = True, exist_ok = True)
-    if sys.platform == "win32":
-        fake = directory / "llama-server.cmd"
-        fake.write_text("@exit /b 0\r\n", encoding = "utf-8")
-    else:
-        fake = directory / "llama-server"
-        fake.write_text("#!/bin/sh\nexit 0\n", encoding = "utf-8")
-        fake.chmod(0o755)
-    return str(fake)
 
 
 def _build_cache(
@@ -690,15 +678,14 @@ class TestLoadReusesCachedCopy:
         backend = LlamaCppBackend()
         served = tmp_path / "gemma-test-Q4_K_M.gguf"
         served.write_bytes(b"GGUF" + b"\0" * 4096)
-        fake_server = _fake_llama_server(tmp_path / "bin")
+        fake_server = fake_llama_server(tmp_path / "bin")
         backend._find_llama_server_binary = lambda *_a, **_k: fake_server
         backend._remote_non_chat_gguf_refusal = lambda **_k: None
         backend._non_chat_gguf_refusal_for_path = lambda *_a, **_k: None
         backend._non_chat_gguf_refusal = lambda *_a, **_k: None
         backend._kill_process = lambda *_a, **_k: None
         backend._wait_for_health = lambda timeout = 600.0, interval = 0.5, cancelled = None: True
-        # On Apple Silicon the unified-memory planner adds an unmeasured-context notice for this
-        # header-only GGUF; keep the planner on the same path as every other host.
+        # Apple's unified-memory planner adds a notice for this header-only GGUF.
         monkeypatch.setattr(
             LlamaCppBackend, "_apple_metal_memory_budget_bytes", staticmethod(lambda: 0)
         )
