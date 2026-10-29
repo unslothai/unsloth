@@ -35,13 +35,13 @@ import { cn } from "@/lib/utils";
 import {
   Bookmark02Icon,
   Download01Icon,
-  FileDatabaseIcon,
   Folder01Icon,
   LibrariesIcon,
   McpServerIcon,
   Scroll01Icon,
   Telescope02Icon,
 } from "@hugeicons/core-free-icons";
+import { FileSearchIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { CursorInWindowIcon } from "@/lib/browser-use-icon";
 import { useNavigate } from "@tanstack/react-router";
@@ -108,7 +108,7 @@ const PLUS_MENU_SETTINGS: {
     labelKey: "settings.chat.menu.chatWithFiles",
     icon: (
       <HugeiconsIcon
-        icon={FileDatabaseIcon}
+        icon={FileSearchIcon}
         strokeWidth={2}
         className={PLUS_MENU_ICON_CLASS}
       />
@@ -381,12 +381,6 @@ export function ChatTab() {
   const setAutoScrollWhileGenerating = useChatPreferencesStore(
     (state) => state.setAutoScrollWhileGenerating,
   );
-  const showScrollToBottomButton = useChatPreferencesStore(
-    (state) => state.showScrollToBottomButton,
-  );
-  const setShowScrollToBottomButton = useChatPreferencesStore(
-    (state) => state.setShowScrollToBottomButton,
-  );
   const notifyWhenReplyFinishes = useChatPreferencesStore(
     (state) => state.notifyWhenReplyFinishes,
   );
@@ -599,16 +593,6 @@ export function ChatTab() {
               </button>
             ))}
           </div>
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.scrollToBottomButton")}
-          description={t("settings.chat.scrollToBottomButtonDescription")}
-        >
-          <Switch
-            aria-label={t("settings.chat.scrollToBottomButton")}
-            checked={showScrollToBottomButton}
-            onCheckedChange={setShowScrollToBottomButton}
-          />
         </SettingsRow>
         <SettingsRow
           label={t("settings.chat.replyNotification")}

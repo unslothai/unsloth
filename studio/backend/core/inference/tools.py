@@ -20680,12 +20680,20 @@ def _stamp_size(stamp: str) -> "int | None":
 
 def _file_digest(path: str, expected_size: "int | None" = None) -> "str | None":
     """Opened with O_NOFOLLOW and O_NONBLOCK, so a symlink or FIFO swapped in at the path is rejected."""
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | no_follow | getattr(os, "O_NONBLOCK", 0)
     fd = None
     try:
+        # Windows has no O_NOFOLLOW: refuse a link up front, and a link swapped in before the
+        # open shows up as a different file once it is open.
+        named = None if no_follow else os.lstat(path)
+        if named is not None and not stat.S_ISREG(named.st_mode):
+            return None
         fd = os.open(path, flags)
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
+            return None
+        if named is not None and (info.st_dev, info.st_ino) != (named.st_dev, named.st_ino):
             return None
         if expected_size is not None and info.st_size != expected_size:
             return None
@@ -20863,18 +20871,20 @@ def _spill_full_output(
         return None, True
 
 
-def _spill_files(root: str, directory: str, owned: "set[str]") -> "list[str]":
-    """The spills in one directory: the ones ``owned`` records this process having written.
-    Everything else there is the user's, whatever it is called. Links are never spills."""
+def _spill_files(root: str, directory: str, owned: "dict[str, tuple[str, str]]") -> "list[str]":
+    """The spills in one directory, by stamp only: hashing every kept spill on each prune costs up to
+    the whole byte cap, and `_unlink_verified_spill` checks the digest before anything is deleted."""
     try:
         names = os.listdir(directory)
     except OSError:
         return []
-    return [
-        path
-        for path in (os.path.join(directory, name) for name in names)
-        if _is_recorded_spill(root, path, owned)
-    ]
+    spills = []
+    for name in names:
+        path = os.path.join(directory, name)
+        recorded = owned.get(os.path.relpath(path, root).replace(os.sep, "/"))
+        if recorded is not None and recorded[0] == _spill_stamp(path):
+            spills.append(path)
+    return spills
 
 
 def _unlink_verified_spill(root: str, path: str, owned: "dict[str, tuple[str, str]]") -> bool:
@@ -20982,6 +20992,9 @@ def _prune_spills_locked(target_dir: str, root: str) -> None:
             if _unlink_verified_spill(root, path, owned):
                 removed.add(path)
         # Manifest follows the files: a name left after its file is gone would still count as owned.
+        # Sandbox removal drops the record without this lock; a recreated directory must not inherit it.
+        if not os.path.exists(_spill_record_path(root)):
+            identity = None
         _write_spill_manifest(
             root,
             {
@@ -20989,6 +21002,7 @@ def _prune_spills_locked(target_dir: str, root: str) -> None:
                 for name, stamp in owned.items()
                 if os.path.join(root, *name.split("/")) not in removed
             },
+            identity = identity,
         )
         # Remove emptied scopes so cleanup does not see the sandbox as non-empty.
         for name in sorted(os.listdir(root)):

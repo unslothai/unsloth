@@ -27,7 +27,13 @@ from typing import List, Optional, Tuple
 
 import torch
 
-from .prefix_grouper_kernel import build_seg_info_multigroup, compile_check_failed, PrefixSegInfo
+from .prefix_grouper_kernel import (
+    build_seg_info_multigroup,
+    compile_check_failed,
+    PrefixSegInfo,
+    PREFIX_GROUPER_MIN_TORCH,
+    TORCH_SUPPORTS_PREFIX_GROUPER,
+)
 
 
 def env_on(name: str, default: str = "0") -> bool:
@@ -35,14 +41,27 @@ def env_on(name: str, default: str = "0") -> bool:
 
 
 # One-time env reads; the helpers stay callable, since unsloth_zoo imports and calls them.
-_ENABLED = env_on("UNSLOTH_GRPO_SEQ_PACKING", "1") and env_on("UNSLOTH_GRPO_PREFIX_GROUPER", "1")
+_ENV_ENABLED = env_on("UNSLOTH_GRPO_SEQ_PACKING", "1") and env_on(
+    "UNSLOTH_GRPO_PREFIX_GROUPER", "1"
+)
+_ENABLED = _ENV_ENABLED and TORCH_SUPPORTS_PREFIX_GROUPER
+_OFF_LOGGED = False
 _VERIFY_ON = env_on("UNSLOTH_GRPO_PREFIX_GROUPER_VERIFY", "1")
 _TOKR_THRESHOLD = float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_TOKR", "1.3"))
 _TOL_OK = float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_TOL", "0.7"))
 
 
 def prefix_grouper_enabled() -> bool:
-    """PrefixGrouper requires seq-packing on and a flex kernel that passed its compile check."""
+    """Needs seq-packing, torch >= 2.7 and a flex kernel that passed its compile check."""
+    global _OFF_LOGGED
+    if _ENV_ENABLED and not _ENABLED and not _OFF_LOGGED:
+        _OFF_LOGGED = True
+        print(
+            f"Unsloth: GRPO PrefixGrouper is off on torch {torch.__version__} (needs torch >= "
+            f"{PREFIX_GROUPER_MIN_TORCH[0]}.{PREFIX_GROUPER_MIN_TORCH[1]}: its flex attention kernel "
+            "does not compile there); using the packed path.",
+            flush = True,
+        )
     return _ENABLED and compile_check_failed() is None
 
 
@@ -175,7 +194,7 @@ def _tok_r(groups) -> float:
     return (tok_full / tok_sp) if tok_sp else 1.0
 
 
-def build_group_layout(
+def _build_group_layout_reference(
     input_ids,
     logits_to_keep,
     pad_id,
@@ -185,7 +204,7 @@ def build_group_layout(
     apply_tokr_gate = True,
     max_segment_cap = None,
 ):
-    """Shared-prefix GroupLayout, or None to use the packed path.
+    """Token-by-token shared-prefix GroupLayout (build_group_layout's fallback), or None.
 
     input_ids [B, L]: prompt left-padded, completion right-padded.
     """
@@ -193,21 +212,33 @@ def build_group_layout(
     total_rows, L = input_ids.shape
     keep = input_ids != pad_id
     # Completion start column per row, matching create_completion_attention_mask / _pk_cstart.
-    cstart = ((L - logits_to_keep) - left_pad_tokens_per_prompt).to(torch.long)
-    cstart_cpu = cstart.tolist()
-    ids_cpu = input_ids.tolist()
+    cstart = ((L - logits_to_keep) - left_pad_tokens_per_prompt).to(device = device, dtype = torch.long)
     # GRPO rows are one contiguous real run; the O(B*L) scan is only a fallback.
     n_real = keep.sum(dim = 1)
     first = torch.argmax(keep.to(torch.int8), dim = 1)
     ar = torch.arange(L, device = device)
-    contiguous = bool(
-        (keep == ((ar >= first.unsqueeze(1)) & (ar < (first + n_real).unsqueeze(1)))).all()
-    )
-    if contiguous:
-        real_cols_cpu = [list(range(f, f + n)) for f, n in zip(first.tolist(), n_real.tolist())]
+    contiguous = (keep == ((ar >= first.unsqueeze(1)) & (ar < (first + n_real).unsqueeze(1)))).all()
+    # One device-to-host read for everything below.
+    host = torch.cat(
+        [
+            input_ids.reshape(-1).to(torch.long),
+            cstart.reshape(-1),
+            first.to(torch.long),
+            n_real.to(torch.long),
+            contiguous.to(torch.long).reshape(1),
+        ]
+    ).tolist()
+    n_ids = total_rows * L
+    ids_cpu = [host[r * L : (r + 1) * L] for r in range(total_rows)]
+    cstart_cpu = host[n_ids : n_ids + total_rows]
+    first_cpu = host[n_ids + total_rows : n_ids + 2 * total_rows]
+    n_real_cpu = host[n_ids + 2 * total_rows : n_ids + 3 * total_rows]
+    if host[-1]:
+        real_cols_cpu = [list(range(f, f + n)) for f, n in zip(first_cpu, n_real_cpu)]
     else:
-        keep_cpu = keep.tolist()
-        real_cols_cpu = [[c for c in range(L) if keep_cpu[r][c]] for r in range(total_rows)]
+        real_cols_cpu = [
+            [c for c in range(L) if ids_cpu[r][c] != pad_id] for r in range(total_rows)
+        ]
 
     groups = _build_groups(ids_cpu, real_cols_cpu, cstart_cpu, num_generations, total_rows)
     if groups is None:
@@ -265,7 +296,8 @@ def build_group_layout(
     flat_ids = input_ids[fr, fc].unsqueeze(0)  # [1, T] (grad-safe gather)
     position_ids = torch.tensor(pos_list, device = device, dtype = torch.long).unsqueeze(0)
 
-    max_left_pad = int(left_pad_tokens_per_prompt.max().item()) if total_rows else 0
+    # cstart = (L - logits_to_keep) - left_pad, so max left pad comes from the host copy.
+    max_left_pad = ((L - logits_to_keep) - min(cstart_cpu)) if total_rows else 0
     W = logits_to_keep + max_left_pad
 
     # The logic is structural, so key on (num_groups, group_sizes), not exact lengths.
@@ -280,6 +312,184 @@ def build_group_layout(
         tgt_cols = torch.tensor(tgt_cols, device = device, dtype = torch.long),
         tgt_pred = torch.tensor(tgt_pred, device = device, dtype = torch.long),
         tgt_flat = torch.tensor(tgt_flat, device = device, dtype = torch.long),
+        total_rows = total_rows,
+        L = L,
+        W = W,
+        tok_r = tok_r,
+        signature = sig,
+    )
+
+
+_INDEX_DTYPES = (torch.int64, torch.int32)
+
+
+def _is_int(x) -> bool:
+    return isinstance(x, int) and not isinstance(x, bool)
+
+
+def build_group_layout(
+    input_ids,
+    logits_to_keep,
+    pad_id,
+    num_generations,
+    left_pad_tokens_per_prompt,
+    *,
+    apply_tokr_gate = True,
+    max_segment_cap = None,
+):
+    """Build the shared-prefix GroupLayout, or return None to fall back to the packed path.
+
+    input_ids : [B, L]. GRPO's layout is left-padded in the prompt and right-padded in
+        the completion. Real tokens of a row are a contiguous run not necessarily
+        starting at column 0.
+    logits_to_keep : int
+    left_pad_tokens_per_prompt : [B] long tensor (per-row left-pad count in the prompt).
+
+    Same result as _build_group_layout_reference, with one device->host and one
+    host->device copy instead of per-token loops.
+    """
+    args = (input_ids, logits_to_keep, pad_id, num_generations, left_pad_tokens_per_prompt)
+    kwargs = dict(apply_tokr_gate = apply_tokr_gate, max_segment_cap = max_segment_cap)
+    lp = left_pad_tokens_per_prompt
+    if not (
+        isinstance(input_ids, torch.Tensor)
+        and input_ids.dim() == 2
+        and input_ids.shape[0] > 0
+        and input_ids.dtype in _INDEX_DTYPES
+        and isinstance(lp, torch.Tensor)
+        and lp.dim() == 1
+        and lp.shape[0] == input_ids.shape[0]
+        and lp.dtype in _INDEX_DTYPES
+        and lp.device == input_ids.device
+        and _is_int(logits_to_keep)
+        and _is_int(pad_id)
+        and (num_generations is None or _is_int(num_generations))
+        and torch.iinfo(input_ids.dtype).min <= pad_id <= torch.iinfo(input_ids.dtype).max
+    ):
+        return _build_group_layout_reference(*args, **kwargs)
+    device = input_ids.device
+    total_rows, L = input_ids.shape
+    G = num_generations
+    # Completion start column per row, matching create_completion_attention_mask / _pk_cstart.
+    cstart = ((L - logits_to_keep) - lp).to(torch.long)
+    host = torch.cat(
+        [input_ids.to(torch.long), cstart.unsqueeze(1), lp.to(torch.long).unsqueeze(1)], dim = 1
+    ).cpu()
+    ids = host[:, :L]
+    cs = host[:, L]
+    keep = ids != pad_id
+    n_real = keep.sum(dim = 1)
+    first = torch.argmax(keep.to(torch.int8), dim = 1)
+    ar = torch.arange(L, device = "cpu")
+    end = first + n_real
+    if not bool((keep == ((ar >= first.unsqueeze(1)) & (ar < end.unsqueeze(1)))).all()):
+        return _build_group_layout_reference(*args, **kwargs)
+    if G is None or G < 2 or total_rows % G != 0:
+        return None
+    # Prompt real columns [first, pe), completion [pe, end).
+    pe = torch.minimum(torch.maximum(cs, first), end)
+    P_row = pe - first
+    R_row = end - pe
+    num_groups = total_rows // G
+    P_g = P_row.view(num_groups, G)
+    if bool((P_g == 0).any()) or bool((P_g != P_g[:, :1]).any()):
+        return None
+    R_g = R_row.view(num_groups, G)
+    if bool((R_g.sum(dim = 1) == 0).any()):
+        return None
+    first_g = first.view(num_groups, G)
+    P_list = P_g[:, 0].tolist()
+    for gi, P in enumerate(P_list):
+        cols = first_g[gi].unsqueeze(1) + torch.arange(P, device = "cpu")
+        prompts = ids[gi * G : (gi + 1) * G].gather(1, cols)
+        if not bool((prompts == prompts[:1]).all()):
+            return None
+    R_lists = R_g.tolist()
+    groups = [dict(P = P, R_list = R_list) for P, R_list in zip(P_list, R_lists)]
+
+    # Sliding-window guard: a group's PG span is P + max(R), so fall back if it exceeds the window.
+    if max_segment_cap is not None:
+        for gm in groups:
+            if gm["P"] + max(gm["R_list"]) > max_segment_cap:
+                return None
+
+    tok_r = _tok_r(groups)
+    if apply_tokr_gate and tok_r < tokr_threshold():
+        return None  # low reuse -> not worth it; use the full-row packed path
+
+    from .prefix_grouper_kernel import _labels_to_device, _seg_labels_host
+
+    group_specs = [(gm["P"], gm["R_list"]) for gm in groups]
+    labels, T, T_pad, _, sig_parts = _seg_labels_host(group_specs)
+
+    # Flat order per group: shared prefix (from its first row), then one suffix per row.
+    rows_g = torch.arange(total_rows, device = "cpu").view(num_groups, G)
+    P_t = P_g[:, :1]
+    seg_len = torch.cat([P_t, R_g], dim = 1).reshape(-1)
+    seg_row = torch.cat([rows_g[:, :1], rows_g], dim = 1).reshape(-1)
+    seg_col = torch.cat([first_g[:, :1], pe.view(num_groups, G)], dim = 1).reshape(-1)
+    seg_pos = torch.cat([torch.zeros_like(P_t), P_t.expand(num_groups, G)], dim = 1).reshape(-1)
+    seg_is_suffix = torch.ones((num_groups, G + 1), dtype = torch.bool, device = "cpu")
+    seg_is_suffix[:, 0] = False
+    seg_is_suffix = seg_is_suffix.reshape(-1)
+    seg_start = torch.cumsum(seg_len, dim = 0) - seg_len
+    group_base = seg_start.view(num_groups, G + 1)[:, :1]
+    seg_plast = (group_base + P_t - 1).expand(num_groups, G + 1).reshape(-1)
+
+    flat = torch.arange(T, device = "cpu")
+    j = flat - torch.repeat_interleave(seg_start, seg_len, output_size = T)
+    flat_src_rows = torch.repeat_interleave(seg_row, seg_len, output_size = T)
+    flat_src_cols = torch.repeat_interleave(seg_col, seg_len, output_size = T) + j
+    pos = torch.repeat_interleave(seg_pos, seg_len, output_size = T) + j
+    is_tgt = torch.repeat_interleave(seg_is_suffix, seg_len, output_size = T)
+    tgt_flat = flat[is_tgt]
+    tgt_j = j[is_tgt]
+    # Position 0 is predicted from the prefix's last token; j >= 1 from the previous suffix token.
+    tgt_pred = torch.where(
+        tgt_j == 0,
+        torch.repeat_interleave(seg_plast, seg_len, output_size = T)[is_tgt],
+        tgt_flat - 1,
+    )
+    N = int(tgt_flat.numel())
+    table = torch.cat(
+        [
+            flat_src_rows,
+            flat_src_cols,
+            pos,
+            flat_src_rows[is_tgt],
+            flat_src_cols[is_tgt],
+            tgt_pred,
+            tgt_flat,
+            labels.reshape(-1),
+        ]
+    ).to(device)
+    pieces = torch.split(table, [T, T, T, N, N, N, N, 3 * T_pad])
+    fr, fc, position_ids, tgt_rows, tgt_cols, tgt_pred_d, tgt_flat_d, labels_d = pieces
+    group_of_kv, is_prefix, suffix_of_kv = _labels_to_device(labels_d.view(3, T_pad), T_pad, device)
+    seg = PrefixSegInfo(
+        group_of_kv = group_of_kv,
+        is_prefix = is_prefix,
+        suffix_of_kv = suffix_of_kv,
+        signature = ("multi", T_pad, tuple(sig_parts)),
+        T = T,
+        T_pad = T_pad,
+    )
+    flat_ids = input_ids[fr, fc].unsqueeze(0)  # [1, T] (grad-safe gather)
+
+    max_left_pad = int(host[:, L + 1].max().item())
+    W = logits_to_keep + max_left_pad
+
+    # The logic is structural, so key on (num_groups, group_sizes), not exact lengths.
+    sig = (num_groups, tuple(sorted(len(gm["R_list"]) for gm in groups)))
+
+    return GroupLayout(
+        flat_ids = flat_ids,
+        position_ids = position_ids.clone().unsqueeze(0),
+        prefix_seg_info = seg,
+        tgt_rows = tgt_rows.clone(),
+        tgt_cols = tgt_cols.clone(),
+        tgt_pred = tgt_pred_d.clone(),
+        tgt_flat = tgt_flat_d.clone(),
         total_rows = total_rows,
         L = L,
         W = W,
