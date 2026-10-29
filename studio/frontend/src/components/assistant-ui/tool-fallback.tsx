@@ -43,9 +43,10 @@ import {
   type ToolCallMessagePartStatus,
   useAuiState,
 } from "@assistant-ui/react";
-import { AlertCircleIcon } from "@hugeicons/core-free-icons";
-import { LoaderIcon, WrenchIcon, XCircleIcon } from "lucide-react";
+import { AlertCircleIcon, CancelCircleIcon } from "@hugeicons/core-free-icons";
+import { LoaderIcon } from "lucide-react";
 import { InternetGlyph } from "@/lib/internet-icon";
+import { WrenchIcon } from "@/lib/wrench-icon";
 import {
   type CSSProperties,
   type ComponentProps,
@@ -164,7 +165,16 @@ type ToolStatus = ToolCallMessagePartStatus["type"];
 
 // Not a tick: "Used tool" already says it finished.
 function completeToolIcon(name: string): ElementType {
-  return name.startsWith("browser_") ? InternetGlyph : WrenchIcon;
+  return name.startsWith("browser_") ? InternetGlyph : WrenchGlyph;
+}
+
+// Stroke 2 like InternetGlyph beside it.
+function WrenchGlyph(props: { className?: string }) {
+  return <HugeiconsIcon icon={WrenchIcon} strokeWidth={2} {...props} />;
+}
+
+function CancelCircleGlyph(props: { className?: string }) {
+  return <HugeiconsIcon icon={CancelCircleIcon} {...props} />;
 }
 
 function AlertCircleGlyph(props: { className?: string }) {
@@ -173,7 +183,7 @@ function AlertCircleGlyph(props: { className?: string }) {
 
 const statusIconMap: Record<Exclude<ToolStatus, "complete">, ElementType> = {
   running: LoaderIcon,
-  incomplete: XCircleIcon,
+  incomplete: CancelCircleGlyph,
   "requires-action": AlertCircleGlyph,
 };
 

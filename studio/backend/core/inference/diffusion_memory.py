@@ -1014,6 +1014,43 @@ def _wrap_cpu_offload_hook(
     setattr(hook, _KEEP_ATTR, True)
 
 
+def offload_host_copy(module: Any, name: str, tensor: Any) -> Any:
+    """The keep-cpu host tensor for ``name`` while ``tensor`` is on the device unchanged since its onload (``_init_hook``'s
+    re-point rule: same object, version and storage), else None."""
+    state = getattr(module, "__dict__", {}).get(_KEEP_ATTR)
+    if (
+        not isinstance(state, dict)
+        or getattr(getattr(tensor, "device", None), "type", "cpu") == "cpu"
+    ):
+        return None
+    try:
+        kept = (state.get("host") or {}).get(name)
+        if kept is not None:
+            seen = (state.get("version") or {}).get(name)
+            if (
+                (state.get("owner") or {}).get(name) is tensor
+                and seen is not None
+                and seen[0] is tensor
+                and seen[1] == tensor._version
+                and seen[2] == _tensor_ptr(tensor)
+            ):
+                return kept
+            return None
+        kept = (state.get("buffer_host") or {}).get(name)
+        seen = (state.get("buffer_version") or {}).get(name)
+        if (
+            kept is not None
+            and seen is not None
+            and seen[0] is tensor
+            and seen[1] == _buffer_version(tensor)
+            and seen[2] == tensor.data_ptr()
+        ):
+            return kept
+    except Exception:  # noqa: BLE001 - a state mid-update: the caller reads the device copy
+        return None
+    return None
+
+
 def reclaim_offload_host_memory(offload_policy: str, logger: Any = None) -> bool:
     """Return unused allocator pages after whole-model CPU offload, without touching live
     tensors, Python GC, or device caches. Unsupported allocators and failures are non-fatal."""
@@ -3352,10 +3389,11 @@ _MEASURED_DENSE_BF16_EAGER_PEAK_MIB: dict[str, tuple[int, int]] = {
 
 
 # Small-host int8 DiT, eager: (peak MiB above resident weights at 1024^2, largest int8 DiT MiB covered).
-# FLUX.2-klein-4B, Kaggle T4 fp16, 4 steps, sliced VAE. "0" = learned peak alone.
+# T4 fp16, 4 steps, sliced VAE: FLUX.2-klein-4B 2805 (Kaggle), 9B 2459 (Colab); the 4B's covers both.
+# "0" = learned peak alone.
 MEASURED_ACTIVATION_SMALL_HOST_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_SMALL_HOST"
 _MEASURED_SMALL_HOST_INT8_EAGER_PEAK_MIB: dict[str, tuple[int, int]] = {
-    "flux.2-klein": (2805, 3800),
+    "flux.2-klein": (2805, 8700),
 }
 
 
@@ -6709,11 +6747,14 @@ class _GroupPinner:
         self.device = device
         self.logger = logger
         self.pinned = 0
+        self.copied = 0
         self.waited_s = 0.0
         self._done = {id(g): threading.Event() for g in groups}
         self._stop = threading.Event()
         self._lock = threading.Lock()
-        self._thread = threading.Thread(target = self._run, name = "unsloth-offload-pin", daemon = True)
+        self.after: list = []
+        self.late = False
+        self._thread = threading.Thread(target = self._entry, name = "unsloth-offload-pin", daemon = True)
         self._started = False
         for group in groups:
             setattr(group, _BG_PIN_ATTR, self)
@@ -6723,6 +6764,34 @@ class _GroupPinner:
             if not self._started:
                 self._started = True
                 self._thread.start()
+
+    def _entry(self) -> None:
+        import time
+
+        began = time.perf_counter()
+        for dep in self.after:
+            dep.start()
+        while self.after and not self._stop.is_set():
+            if all(dep.join(0) for dep in self.after):
+                break
+            elapsed = time.perf_counter() - began
+            # Fast (not disk-bound) pins: pinning beside the others wins; overlapping the render only moves the cost.
+            rate = sum(max(dep.copied, dep.pinned) for dep in self.after) / max(elapsed, 1e-3)
+            if elapsed >= _LATE_PIN_PROBE_S and rate >= _LATE_PIN_PARALLEL_BPS:
+                self.late = False
+                if self.logger is not None:
+                    self.logger.info(
+                        "diffusion.memory: host weights pin at %.1f GiB/s; %s pins beside the others",
+                        rate / 2**30,
+                        self.label,
+                    )
+                break
+            time.sleep(0.1)
+        if self._stop.is_set():
+            for event in self._done.values():
+                event.set()
+            return
+        self._run()
 
     def wait(self, group: Any) -> None:
         import threading
@@ -6766,6 +6835,15 @@ class _GroupPinner:
             and src.numel() > 0
             and not src.is_pinned()
         ]
+
+    def _submit(self, pool: Any, src: Any) -> Any:
+        future = pool.submit(_registered_pin, src, self.device)
+        future.add_done_callback(functools.partial(self._count_copy, int(src.nbytes)))
+        return future
+
+    def _count_copy(self, nbytes: int, future: Any) -> None:
+        if not future.cancelled():
+            self.copied += nbytes
 
     @staticmethod
     def _fast_result(future: Any, src: Any) -> Any:
@@ -6849,7 +6927,7 @@ class _GroupPinner:
                         (
                             tensor,
                             src,
-                            pool.submit(_registered_pin, src, self.device),
+                            self._submit(pool, src),
                         )
                         for tensor, src in self._unpinned(group)
                     ]
@@ -6940,18 +7018,64 @@ def start_background_pins(pipe: Any) -> int:
     return len(pinners)
 
 
-def finish_background_pins(pipe: Any, cancel: Any = None) -> float:
+def finish_background_pins(
+    pipe: Any,
+    cancel: Any = None,
+    include_late: bool = True,
+) -> float:
     """Blocks until deferred pinners finish, since a render overlapping one runs measurably slower."""
     import time
 
     start = time.perf_counter()
-    for pinner in list(getattr(pipe, _PENDING_PINS_ATTR, None) or ()):
+    pinners = list(getattr(pipe, _PENDING_PINS_ATTR, None) or ())
+    for pinner in pinners:
         pinner.start()
+    # Late pinners last: one may still turn early until the pinners before it finish.
+    for pinner in sorted(pinners, key = lambda p: bool(getattr(p, "late", False))):
+        if not include_late and getattr(pinner, "late", False):
+            continue
         # Polled so a cancelled request leaves now; the pin itself keeps running for the next render.
         while not pinner.join(0.25):
             if cancel is not None and cancel.is_set():
                 return time.perf_counter() - start
     return time.perf_counter() - start
+
+
+# "0": a two-expert denoiser's second expert pins beside the other weights, before the first render.
+LATE_EXPERT_PIN_ENV = "UNSLOTH_VIDEO_LATE_EXPERT_PIN"
+_LATE_PIN_PROBE_S = 0.2
+_LATE_PIN_PARALLEL_BPS = 3 << 30
+
+
+def defer_late_expert_pins(
+    pipe: Any,
+    late_modules: Any,
+    logger: Any = None,
+) -> int:
+    """Pin ``late_modules`` after the other pinners when disk-bound, so the render waits only for those; a late
+    group's onload still waits for its own pin. Wan2.2-A14B (A100): both experts at once made the first render wait
+    47.8 s."""
+    if _env_off(LATE_EXPERT_PIN_ENV):
+        return 0
+    late_ids = {id(m) for m in late_modules or () if m is not None}
+    pending = list(getattr(pipe, _PENDING_PINS_ATTR, None) or ())
+    late = [p for p in pending if id(p.module) in late_ids]
+    early = [p for p in pending if id(p.module) not in late_ids]
+    if not late or not early:
+        return 0
+    for pinner in late:
+        pinner.after = list(early)
+        pinner.late = True
+    if logger is not None:
+        logger.info(
+            "diffusion.memory: %d late expert(s) (%.1f GiB) pin after the other %d pinner(s) (%.1f GiB); "
+            "the first render waits for those only",
+            len(late),
+            sum(p.outstanding_bytes() for p in late) / 2**30,
+            len(early),
+            sum(p.outstanding_bytes() for p in early) / 2**30,
+        )
+    return len(late)
 
 
 def stop_background_pins(pipe: Any, timeout: Optional[float] = 30.0) -> None:
@@ -7094,6 +7218,8 @@ def install_group_offload_buffer_restore() -> bool:
 
 
 PIN_TOP_GROUP_ENV = "UNSLOTH_DIFFUSION_PIN_TOP_GROUP"
+# read-only: diffusers leaves the top-level group's cpu_param_dict empty
+TOP_GROUP_HOST_ATTR = "_unsloth_top_host"
 
 
 def _pin_top_level_group(
@@ -7190,6 +7316,7 @@ def _pin_top_level_group(
         group.onload_ = onload_
         group.offload_ = offload_
         group._unsloth_pinned_top = True
+        setattr(group, TOP_GROUP_HOST_ATTR, host)
         if pinned_mib is not None:
             pinned_mib[0] = already + need_mib
         if logger is not None:
@@ -7270,6 +7397,7 @@ def _skip_top_level_copy_back(module: Any, logger: Any = None) -> bool:
         group.onload_ = onload_
         group.offload_ = offload_
         group._unsloth_top_no_copy_back = True
+        setattr(group, TOP_GROUP_HOST_ATTR, host)
         if logger is not None:
             logger.info(
                 "diffusion.memory: %s top-level weights (%d MiB) not pinnable here; offload re-points to the host "

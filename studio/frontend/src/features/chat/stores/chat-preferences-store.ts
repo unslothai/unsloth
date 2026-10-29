@@ -21,7 +21,7 @@ import {
 
 // Client-side chat UI prefs kept in localStorage, not the chat DB. confirmDeleteChats: off skips
 // the delete confirm dialog. alwaysDeleteChatFiles: on also removes the sandbox folder.
-// showModelDisclaimer: off hides the "LLMs can make mistakes" footer. showResponseModel: on shows
+// showResponseModel: on shows
 // the producing model on responses. thinkingVisibility / toolVisibility: collapsed, auto or
 // expanded, see display-visibility.ts. foldToolActivityIntoThinking: on hides a round's tool calls
 // until its thinking block is opened, and has no effect while toolVisibility is "expanded".
@@ -32,7 +32,8 @@ import {
 // showGenerationDetails: on shows live prefill / decode figures while a reply streams and where
 // a local model's layers ended up after it loads.
 // filesPanelCollapsed: on shrinks Chat with files to a header and
-// a row of pills.
+// a row of pills. newChatComposerAtBottom: on docks a new chat's composer at the bottom, as once
+// the chat has messages, instead of under the greeting mid-page.
 export interface ChatPreferencesState {
   plainTextComposer: boolean;
   setPlainTextComposer: (value: boolean) => void;
@@ -46,8 +47,6 @@ export interface ChatPreferencesState {
   setConfirmDeleteChats: (value: boolean) => void;
   alwaysDeleteChatFiles: boolean;
   setAlwaysDeleteChatFiles: (value: boolean) => void;
-  showModelDisclaimer: boolean;
-  setShowModelDisclaimer: (value: boolean) => void;
   showResponseModel: boolean;
   setShowResponseModel: (value: boolean) => void;
   showReplyTimes: boolean;
@@ -66,12 +65,12 @@ export interface ChatPreferencesState {
   setPastedTextMinChars: (value: number) => void;
   autoScrollWhileGenerating: boolean;
   setAutoScrollWhileGenerating: (value: boolean) => void;
-  showScrollToBottomButton: boolean;
-  setShowScrollToBottomButton: (value: boolean) => void;
   notifyWhenReplyFinishes: boolean;
   setNotifyWhenReplyFinishes: (value: boolean) => void;
   filesPanelCollapsed: boolean;
   setFilesPanelCollapsed: (value: boolean) => void;
+  newChatComposerAtBottom: boolean;
+  setNewChatComposerAtBottom: (value: boolean) => void;
 }
 
 // A stale stored value would leave the dropdown blank and unfixable.
@@ -98,9 +97,6 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       alwaysDeleteChatFiles: false,
       setAlwaysDeleteChatFiles: (alwaysDeleteChatFiles) =>
         set({ alwaysDeleteChatFiles }),
-      showModelDisclaimer: false,
-      setShowModelDisclaimer: (showModelDisclaimer) =>
-        set({ showModelDisclaimer }),
       showResponseModel: false,
       setShowResponseModel: (showResponseModel) => set({ showResponseModel }),
       // Off by default: it adds text under every reply, so it stays opt in.
@@ -127,9 +123,6 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       autoScrollWhileGenerating: true,
       setAutoScrollWhileGenerating: (autoScrollWhileGenerating) =>
         set({ autoScrollWhileGenerating }),
-      showScrollToBottomButton: true,
-      setShowScrollToBottomButton: (showScrollToBottomButton) =>
-        set({ showScrollToBottomButton }),
       // Off by default: it asks for notification permission, so it stays opt in.
       notifyWhenReplyFinishes: false,
       setNotifyWhenReplyFinishes: (notifyWhenReplyFinishes) =>
@@ -137,6 +130,9 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       filesPanelCollapsed: false,
       setFilesPanelCollapsed: (filesPanelCollapsed) =>
         set({ filesPanelCollapsed }),
+      newChatComposerAtBottom: false,
+      setNewChatComposerAtBottom: (newChatComposerAtBottom) =>
+        set({ newChatComposerAtBottom }),
     }),
     {
       name: "unsloth_chat_preferences",
@@ -160,7 +156,6 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           ...normalizeComposerPreferences(saved),
           confirmDeleteChats: saved?.confirmDeleteChats ?? true,
           alwaysDeleteChatFiles: saved?.alwaysDeleteChatFiles ?? false,
-          showModelDisclaimer: saved?.showModelDisclaimer ?? false,
           showResponseModel: saved?.showResponseModel ?? false,
           showReplyTimes: saved?.showReplyTimes === true,
           showGenerationDetails: saved?.showGenerationDetails === true,
@@ -181,9 +176,9 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
             saved?.pastedTextMinChars,
           ),
           autoScrollWhileGenerating: saved?.autoScrollWhileGenerating ?? true,
-          showScrollToBottomButton: saved?.showScrollToBottomButton ?? true,
           notifyWhenReplyFinishes: saved?.notifyWhenReplyFinishes === true,
           filesPanelCollapsed: saved?.filesPanelCollapsed === true,
+          newChatComposerAtBottom: saved?.newChatComposerAtBottom === true,
         };
       },
     },

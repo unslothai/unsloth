@@ -31,11 +31,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
-  Add01Icon,
   AlertCircleIcon,
   BookOpen01Icon,
   Cancel01Icon,
   CodeIcon,
+  PlusSignIcon,
   SlidersHorizontalIcon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
@@ -281,7 +281,7 @@ function AddButton({
       onClick={onClick}
       className="w-fit gap-1.5 px-2.5 text-ui-12 text-muted-foreground"
     >
-      <HugeiconsIcon icon={Add01Icon} strokeWidth={1.75} className="size-3.5" />
+      <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-3.5" />
       {children}
     </Button>
   );

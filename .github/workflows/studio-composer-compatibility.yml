@@ -54,6 +54,8 @@ jobs:
       run:
         shell: bash
     env:
+      # A release published mid-run puts an update card over the controls the scripts click.
+      UNSLOTH_DISABLE_UPDATE_CHECK: '1'
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/temp/queue-validation/browsers
       PIP_CACHE_DIR: ${{ github.workspace }}/temp/queue-validation/pip-cache
       npm_config_cache: ${{ github.workspace }}/temp/queue-validation/npm-cache

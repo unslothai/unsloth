@@ -1115,7 +1115,7 @@ export const hi = {
       lastVisited: "पिछली बार देखा गया",
     },
     tabs: {
-      sandbox: "सैंडबॉक्स",
+      sandbox: "सुरक्षा",
       accounts: "खाते",
       general: "सामान्य",
       profile: "प्रोफ़ाइल",
@@ -1399,7 +1399,7 @@ export const hi = {
       },
     },
     sandbox: {
-      title: "सैंडबॉक्स",
+      title: "सुरक्षा",
       description: "क्या इस कंप्यूटर पर Python और टर्मिनल टूल कॉल OS सैंडबॉक्स के अंदर चलती हैं।",
       docs: "दस्तावेज़",
       docsLabel: "सैंडबॉक्स दस्तावेज़ खोलें",
@@ -1475,6 +1475,7 @@ export const hi = {
       managedNote: "OS सैंडबॉक्स इस Unsloth सर्वर का स्वामी सेट अप करता है।",
     },
     debugging: {
+      description: "ऐप छोड़े बिना Unsloth के लॉग पढ़ें।",
       logSection: "लॉग फ़ाइल",
       source: "लॉग फ़ाइल",
       sourceHint: "मॉडल रनर अपने अलग लॉग लिखते हैं, इसलिए लोड या जनरेशन विफल होने का कारण अक्सर सर्वर लॉग के बजाय वहीं मिलता है।",
@@ -2132,8 +2133,8 @@ export const hi = {
       uploadPhoto: "फ़ोटो अपलोड करें",
       removePhoto: "हटाएं",
       pictureOptions: "प्रोफ़ाइल फ़ोटो विकल्प",
-      greetingSloth: "अभिवादन में स्लॉथ",
-      greetingSlothDescription: "चैट के अभिवादन में स्लॉथ दिखाएं।",
+      greetingSloth: "अभिवादन",
+      greetingSlothDescription: "नई चैट में अभिवादन दिखाएँ।",
       noPicture: "कोई प्रोफ़ाइल फ़ोटो नहीं",
       noneLabel: "कोई नहीं",
       stats: {
@@ -2361,7 +2362,8 @@ export const hi = {
       description: "इस Unsloth सर्वर के हार्डवेयर और स्टोरेज की निगरानी करें।",
       liveUpdates: "लाइव अपडेट",
       floatingWindow: "फ्लोटिंग विंडो",
-      disableOverlay: "ओवरले अक्षम करें",
+      showFloatingWindow: "फ्लोटिंग विंडो दिखाएँ",
+      showFloatingWindowDescription: "CPU, RAM और GPU का उपयोग Unsloth के ऊपर दिखता रहे।",
       liveMonitor: {
         title: "लाइव मॉनिटर",
         apiTitle: "API मॉनिटर",
@@ -2803,11 +2805,6 @@ export const hi = {
       autoScrollManual: "मैन्युअल",
       autoScrollKeywords:
         "स्क्रॉल ऑटो-स्क्रॉल फ़ॉलो नीचे स्ट्रीमिंग जनरेट लॉक scroll autoscroll follow",
-      scrollToBottomButton: "नीचे स्क्रॉल करने का बटन",
-      scrollToBottomButtonDescription:
-        "ऊपर स्क्रॉल करने के बाद नवीनतम संदेश पर वापस जाने के लिए बटन दिखाएँ।",
-      scrollToBottomButtonKeywords:
-        "स्क्रॉल नीचे नवीनतम तीर बटन छिपाएँ scroll bottom button",
       replyNotification: "जवाब पूरा होने पर सूचना दें",
       replyNotificationDescription:
         "जब Unsloth छोटा किया हुआ हो या बैकग्राउंड में हो, तब जवाब पूरा होने पर सिस्टम सूचना दिखाएँ।",
@@ -2829,9 +2826,8 @@ export const hi = {
         "विवरण गति टोकन आँकड़े परतें verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "जवाबों पर जवाब संपादित करें",
       inlineEditResponseDescription: "जवाब संपादित करें को More मेन्यू के बजाय हर जवाब पर दिखाएँ।",
-      modelDisclaimer: "मॉडल अस्वीकरण दिखाएं",
-      modelDisclaimerDescription:
-        'चैट बॉक्स के नीचे "LLMs can make mistakes" दिखाएं।',
+      composerAtBottom: "कंपोज़र नीचे",
+      composerAtBottomDescription: "नई चैट में कंपोज़र को पेज के बीच के बजाय नीचे दिखाएँ।",
       projectAttachments: "प्रोजेक्ट भर में फ़ाइलें साझा करें",
       projectAttachmentsDescription:
         "नए चैट अटैचमेंट प्रोजेक्ट की हर चैट में उपलब्ध कराएँ।",
@@ -3198,6 +3194,7 @@ export const hi = {
       readDocs: "API दस्तावेज़ पढ़ें",
       noAccess: "अभी तक कोई API एक्सेस नहीं।",
       accessTokens: "एक्सेस टोकन",
+      quickstartTitle: "क्विकस्टार्ट",
       columnName: "नाम",
       columnToken: "टोकन",
       columnCreated: "बनाया गया",
@@ -3337,8 +3334,9 @@ export const hi = {
         loadError: "निर्णय API की सेटिंग्स लोड नहीं हो सकीं।",
         sendsTo: "अनुरोध {provider} को भेजे जाते हैं।",
         connectionMissing: "यह कनेक्शन अब मौजूद नहीं है या इसमें कोई निर्णय मॉडल नहीं है। कोई दूसरा मॉडल चुनें।",
-        addConnection: "होस्ट किया गया निर्णय मॉडल इस्तेमाल करने के लिए कनेक्शन में TypeSafe, Liquid AI या OpenRouter जोड़ें।",
-        openConnections: "कनेक्शन खोलें",
+        addConnection: "होस्ट किया गया निर्णय मॉडल इस्तेमाल करने के लिए उसे ",
+        connectionsLink: "कनेक्शन",
+        addConnectionSuffix: " में जोड़ें।",
       },
       mcp: {
         title: "एजेंट एक्सेस (MCP)",
