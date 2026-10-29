@@ -68,7 +68,6 @@ test("one tab row holds every example, with no jump links above it; Agents opens
   ]) {
     assert.match(tabs, card);
   }
-  // One "Examples" heading over the tab row; the cards under it stay untitled.
   assert.equal(tabs.match(/<h2/g)?.length, 1);
   assert.match(tabs, /<h2[^>]*>\s*\{t\("settings\.apiKeys\.examplesTitle"\)\}/);
   assert.doesNotMatch(tabs, /<h3/);
