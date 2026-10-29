@@ -2991,9 +2991,7 @@ html[data-chat-font] .aui-root {
 		background-color: var(--panel-input-surface-hover);
 	}
 
-	/* Images (Create + Train) and Video: a lighter control border in the Standard, Classic and
-	   Minimal light themes; the other palettes keep their own. Overrides the token, so every
-	   derived shade stays in step. */
+	/* Images and Video: a lighter border in the Standard, Classic and Minimal light themes. */
 	html:not(.dark):is(:not([data-palette]), [data-palette="classic"], [data-palette="minimal"]) .diffusion-surface {
 		--border-base: #e9e9e9;
 		--input-base: #e9e9e9;

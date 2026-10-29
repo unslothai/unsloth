@@ -220,11 +220,7 @@ _LLAMA_GPU_REFRESH = threading.Lock()
 
 
 def _llama_cpp_has_gpu() -> bool:
-    """Without torch, asks llama-server for its GPUs, once per binary path and mtime.
-
-    After 60 s the cached answer is still returned and re-probed in the background:
-    a cold llama-server takes seconds to list its devices, which blocked the settings page.
-    """
+    """Asks llama-server for its GPUs without torch; past 60 s, answers from cache and re-probes in the background."""
     try:
         from core.systemone.native_worker import resolve_binary
 

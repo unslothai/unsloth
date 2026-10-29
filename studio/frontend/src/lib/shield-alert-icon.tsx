@@ -3,7 +3,6 @@
 
 import { ShieldAlert } from "lucide-react";
 
-// Lucide's shield, the one "Approve for me" uses: Hugeicons' Shield Alert drew 2px wider.
 export function ShieldAlertGlyph({
   className,
   strokeWidth,

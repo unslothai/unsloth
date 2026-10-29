@@ -85,7 +85,6 @@ test("the sibling link keeps its icon where the square button puts it and trails
 
 test("media headers keep their links beside Create / Train, hiding them only when both cannot fit or on a tablet", () => {
   const actions = readSrc("components/media-header-actions.tsx");
-  // Full, then compact (pill padding and link labels), then hidden.
   assert.match(actions, /grid\.toggleAttribute\(MEDIA_HEADER_TIGHT_ATTR, step > 0\)/);
   assert.match(actions, /if \(width === undefined \|\| width <= room\)/);
   assert.match(actions, /step === 2 && "hidden"/);

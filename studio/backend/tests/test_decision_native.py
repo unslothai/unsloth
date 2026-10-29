@@ -1405,7 +1405,6 @@ def test_an_expired_llama_cpp_gpu_answer_is_served_while_it_refreshes(monkeypatc
     monkeypatch.setattr(
         systemone_settings, "_LLAMA_GPU_CACHE", [(time.monotonic() - 120, key, True)]
     )
-    # Stale: answered at once from the cache, one background probe however often it is asked.
     assert systemone_settings._llama_cpp_has_gpu() is True
     assert systemone_settings._llama_cpp_has_gpu() is True
     release.set()

@@ -417,7 +417,6 @@ export function DecisionApiSection({
   ) : null;
 
   if (!settings) {
-    // The header renders while the first request is in flight, so the tab is never blank.
     return (
       <section
         data-settings-label={t("settings.apiKeys.decisionApi.title")}

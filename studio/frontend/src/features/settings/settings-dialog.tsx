@@ -593,7 +593,6 @@ export function SettingsDialog() {
                 onScroll={onRailScroll}
                 className={cn(
                   // A short window leaves the list taller than the clipped sidebar, so scroll it.
-                  // -mr-2 runs the scrollbar out to the sidebar's edge, so labels keep the width.
                   "hover-scrollbar settings-rail-fade -mr-2 flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto py-1 pl-1 pr-0.5 group-data-stacked/settings:mr-0",
                   railFadeClass,
                   "group-data-stacked/settings:flex-none group-data-stacked/settings:flex-row group-data-stacked/settings:overflow-x-auto group-data-stacked/settings:py-0",

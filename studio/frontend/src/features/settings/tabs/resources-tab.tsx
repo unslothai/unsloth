@@ -167,7 +167,6 @@ function MetricTile({
           {showUsage && percentKnown ? (
             <span
               className={cn(
-                // -my-1 keeps the pill out of the row's height, so top and bottom padding match.
                 "-my-1 shrink-0 rounded-full px-2 py-1 font-mono text-ui-12 leading-none tabular-nums",
                 usagePillClass(safePercent),
               )}
@@ -180,7 +179,6 @@ function MetricTile({
           title={value}
           className={cn(
             "truncate font-mono text-ui-14 font-medium leading-tight tabular-nums",
-            // Only the pill and bar carry the usage colour; the reading stays neutral.
             showUsage && !percentKnown
               ? "text-muted-foreground/70"
               : "text-foreground",
