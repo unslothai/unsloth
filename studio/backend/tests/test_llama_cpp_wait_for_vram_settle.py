@@ -396,7 +396,11 @@ def test_kill_orphaned_servers_returns_count():
 
     class _FakeProc:
         def __init__(self, pid, name, exe):
-            self.info = {"pid": pid, "name": name, "exe": exe}
+            self.info = {"pid": pid, "name": name}
+            self._exe = exe
+
+        def exe(self):
+            return self._exe
 
         def kill(self):
             killed.append(self.info["pid"])
@@ -443,7 +447,11 @@ def test_kill_orphaned_servers_spares_live_parent():
 
     class _FakeProc:
         def __init__(self, pid, name, exe):
-            self.info = {"pid": pid, "name": name, "exe": exe}
+            self.info = {"pid": pid, "name": name}
+            self._exe = exe
+
+        def exe(self):
+            return self._exe
 
         def kill(self):
             killed.append(self.info["pid"])

@@ -45,8 +45,12 @@ def _server_subpath() -> Path:
 
 class _FakeProc:
     def __init__(self, pid: int, exe: str) -> None:
-        self.info = {"pid": pid, "name": "llama-server", "exe": exe}
+        self.info = {"pid": pid, "name": "llama-server"}
+        self._exe = exe
         self.killed = False
+
+    def exe(self) -> str:
+        return self._exe
 
     def kill(self) -> None:
         self.killed = True
@@ -147,7 +151,7 @@ def _fake_procfs(tmp_path: Path, fake: _FakeProc) -> Path:
     (entry / "stat").write_bytes(
         f"{fake.info['pid']} (llama-server) S {filler} 1000".encode("utf-8")
     )
-    (entry / "exe").symlink_to(fake.info["exe"])
+    (entry / "exe").symlink_to(fake._exe)
     (root / "self").mkdir()
     other = root / str(fake.info["pid"] + 1)
     other.mkdir()

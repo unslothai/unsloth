@@ -34135,14 +34135,18 @@ class LlamaCppBackend:
 
                         return _kill
 
-                    for proc in psutil.process_iter(["pid", "name", "exe"]):
+                    # Resolve exe only on a name match, like the /proc scan: reading exe for
+                    # every process nearly doubles the scan.
+                    for proc in psutil.process_iter(["pid", "name"]):
                         try:
                             pid = proc.info["pid"]
                             if pid == my_pid:
                                 continue
                             if not _looks_like_server(proc.info.get("name") or ""):
                                 continue
-                            exe = proc.info.get("exe")
+                            # AccessDenied / ZombieProcess / NoSuchProcess skip the process
+                            # below, matching process_iter's None exe and dropped entries.
+                            exe = proc.exe()
                             if not exe:
                                 continue
                             candidates.append(
