@@ -8,7 +8,8 @@ UNSLOTH_DECODE_CUDA_GRAPHS_FULL=1 also captures the attention cores: each step i
 attends over a fixed span of cache rows (the next power of two >= the KV length, at least BUCKET, at
 most the cache) with a device-side keep mask, so no eager launch is left between the layers. Rows past
 the true length are masked to -inf, so the result matches the eager step up to the summation order of
-the softmax / PV reductions (not bit for bit); one graph is captured per (batch size, span)."""
+the softmax / PV reductions (not bit for bit); one graph is captured per (batch size, span). Only
+batch 1 by default (UNSLOTH_DECODE_FULL_GRAPH_MAX_BSZ): larger batches keep the segmented capture."""
 
 import math
 import os
@@ -21,6 +22,9 @@ import torch
 ENABLED = None
 # Whole-step graphs (attention captured too, over a power-of-two span of cache rows).
 FULL = os.environ.get("UNSLOTH_DECODE_CUDA_GRAPHS_FULL", "0") == "1"
+# Largest batch the whole-step capture takes; larger batches keep the segmented (bit-exact) capture.
+# Batched decode measured slower whole-step on a T4 (+9-15%: GPU bound, nothing to hide).
+FULL_MAX_BSZ = int(os.environ.get("UNSLOTH_DECODE_FULL_GRAPH_MAX_BSZ", "1"))
 # KV-cache rows are allocated in multiples of this with graphs on.
 BUCKET = 256
 # Captured steps (one per batch size / autocast state) kept per model.
@@ -449,9 +453,9 @@ def _eligible(model, layers):
     return None
 
 
-def _full_span(model, kv_len, cap):
+def _full_span(model, kv_len, cap, bsz = 1):
     """The cache rows a whole-step graph attends over, or None for the segmented capture."""
-    if not FULL:
+    if not FULL or bsz > FULL_MAX_BSZ:
         return None
     sliding_window = getattr(model.config, "sliding_window", None)
     if sliding_window is not None and cap > sliding_window:
@@ -641,7 +645,7 @@ def decode_step(
     s["pos"].copy_(last.view(bsz, 1))
     s["slot"].fill_(seq_len)
 
-    span = _full_span(model, kv_len, cap)
+    span = _full_span(model, kv_len, cap, bsz)
     if span is not None:
         mask = mask_fn(model, attention_mask, bsz, 1, s["like"], seq_len)
         if mask is not None and mask.shape[-2] != 1:
