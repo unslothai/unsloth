@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A dataset with one string column is the training text: no roles to map, and it
-must reach the trainer as raw text whatever the column is called. Regression tests
-for the preview and the formatter agreeing on that shape."""
+"""One string column is raw training text: the preview and the formatter must agree on it."""
 
 import sys
 from pathlib import Path
