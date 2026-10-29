@@ -2417,6 +2417,15 @@ export const es = {
         refreshRate: "Frecuencia de actualización",
         refreshRateDescription: "Con qué frecuencia el monitor flotante lee el uso de memoria y GPU mientras está abierto.",
         refreshEvery: "Cada {seconds} s",
+        unsloth: "Unsloth",
+        otherApps: "Otras apps",
+        freeLabel: "Libre",
+        byModel: "Por modelo",
+        unslothApp: "App de Unsloth Studio",
+        unslothShare: "Mostrar la parte de Unsloth",
+        unslothShareDescription: "Divide la memoria entre lo que usa Unsloth, lo que usan otras apps y lo libre.",
+        modelBreakdown: "Desglosar por modelo",
+        modelBreakdownDescription: "Muestra la memoria de cada modelo cargado y el resto de Unsloth Studio.",
       },
       gpu: {
         title: "Dispositivos GPU",
@@ -5049,7 +5058,7 @@ export const es = {
     monitor: {
       dragHandleLabel: "Mover el monitor en vivo. Las teclas de flecha lo desplazan un poco; con doble clic se restablece.",
       reconnecting: "Reconectando...",
-      resizeHint: "Arrastra cualquier borde para cambiar el tamaño. Doble clic restablece el tamaño.",
+      resizeHint: "Arrastra un lado o una esquina para cambiar el ancho. Doble clic lo restablece.",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

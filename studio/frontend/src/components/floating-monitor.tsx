@@ -13,6 +13,18 @@ import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page/lib/find-attribut
 
 import { useMonitorOverlayStore } from "@/features/settings";
 import { monitorRefreshMs } from "./monitor-refresh";
+import {
+  formatGiB,
+  MeterRow,
+  ModelBreakdownList,
+  ShareBar,
+  ShareLegend,
+  UsageBar,
+  usageIndicatorClass,
+  usageTextClass,
+} from "./monitor-memory";
+import { memoryShare, modelBreakdown, modelShares } from "./monitor-share";
+import type { LoadedModelEntry } from "@/features/loaded-models";
 import { useCornerCardFrameStore } from "@/features/settings/stores/monitor-frame-store";
 import { gpuMemoryDisplay } from "@/hooks/gpu-memory-display";
 import { gpuMemoryTotalsGb, resolveGpuVramUsedGb } from "@/hooks/gpu-vram";
@@ -31,8 +43,8 @@ import { useRouterState } from "@tanstack/react-router";
 import { CpuIcon, GripVerticalIcon } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import {
-  type CSSProperties,
-  type ReactNode,
+  lazy,
+  Suspense,
   useEffect,
   useRef,
   useState,
@@ -57,26 +69,6 @@ import { HugeiconsIcon } from "@hugeicons/react";
 
 function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, value));
-}
-
-function usageIndicatorClass(percent: number): string {
-  if (percent >= 90) {
-    return "bg-destructive";
-  }
-  if (percent >= 70) {
-    return "bg-amber-500";
-  }
-  return "bg-control-accent";
-}
-
-function usageTextClass(percent: number): string {
-  if (percent >= 90) {
-    return "text-destructive";
-  }
-  if (percent >= 70) {
-    return "text-amber-600 dark:text-amber-400";
-  }
-  return "text-primary";
 }
 
 const LEVEL_INDICATOR_CLASS = {
@@ -121,68 +113,9 @@ function DetailBar({
   );
 }
 
-function MemoryRow({
-  label,
-  detail,
-  percent,
-  amount,
-  testId,
-  children,
-}: {
-  label: string;
-  detail?: string;
-  percent: number | null;
-  amount: string;
-  testId: string;
-  children?: ReactNode;
-}) {
-  return (
-    <div className="space-y-1.5" data-testid={testId}>
-      <div className="flex items-baseline justify-between gap-2 text-xs">
-        <span className="font-medium text-foreground">{label}</span>
-        <span
-          className={cn(
-            "shrink-0 font-mono font-medium tabular-nums",
-            percent === null ? "text-muted-foreground" : usageTextClass(percent),
-          )}
-        >
-          {percent === null ? "--" : `${Math.round(percent)}%`}
-        </span>
-      </div>
-      <Progress
-        value={percent ?? 0}
-        className="h-1.5 rounded-full bg-muted"
-        indicatorClassName={usageIndicatorClass(percent ?? 0)}
-      />
-      <div className="space-y-0.5 text-ui-11 text-muted-foreground">
-        <div className="font-mono tabular-nums">{amount}</div>
-        {detail && (
-          <div className="truncate" title={detail}>
-            {detail}
-          </div>
-        )}
-        {children}
-      </div>
-    </div>
-  );
-}
-
-// Content zooms with the card, so a wider card reads bigger instead of leaving empty space.
-function panelScaleStyle(width: number | null): CSSProperties {
-  return {
-    "--panel-scale": String((width ?? FLOATING_MONITOR_WIDTH) / FLOATING_MONITOR_WIDTH),
-  } as CSSProperties;
-}
-
-function formatGiB(value: number): string {
-  // Backend reports binary units (bytes / 1024**3), so label GiB.
-  const digits = value >= 10 ? 1 : 2;
-  return `${value.toFixed(digits)} GiB`;
-}
+const MonitorLoadedModels = lazy(() => import("./monitor-loaded-models"));
 
 const RESIZE_HANDLES: { edge: string; edges: ResizeEdges; className: string }[] = [
-  { edge: "n", edges: { x: 0, y: -1 }, className: "inset-x-0 top-0 h-1.5 cursor-ns-resize" },
-  { edge: "s", edges: { x: 0, y: 1 }, className: "inset-x-0 bottom-0 h-1.5 cursor-ns-resize" },
   { edge: "w", edges: { x: -1, y: 0 }, className: "inset-y-0 left-0 w-1.5 cursor-ew-resize" },
   { edge: "e", edges: { x: 1, y: 0 }, className: "inset-y-0 right-0 w-1.5 cursor-ew-resize" },
   { edge: "nw", edges: { x: -1, y: -1 }, className: "left-0 top-0 z-20 size-4 cursor-nwse-resize" },
@@ -192,7 +125,6 @@ const RESIZE_HANDLES: { edge: string; edges: ResizeEdges; className: string }[] 
 ];
 
 const MONITOR_RESIZE = {
-  baseWidth: FLOATING_MONITOR_WIDTH,
   minWidth: 232,
   maxWidth: 520,
   storageKey: FLOATING_PANEL_POSITION_KEYS.liveMonitorWidth,
@@ -312,10 +244,9 @@ function FloatingMonitorPanel({
     (state) => state.detailMetrics,
   );
   const detailMetrics = selectedDetailMetrics(storedDetailMetrics);
-  const cpuPercent =
-    showDetails && detailMetrics.has("cpuLoad") && systemInfo.status === "ready"
-      ? clampPercent(systemInfo.cpu?.usage_percent ?? 0)
-      : null;
+  const cpuPercent = ramKnown
+    ? clampPercent(systemInfo.cpu?.usage_percent ?? 0)
+    : null;
   const telemetryRows =
     showDetails && displayedGpu?.available
       ? gpuTelemetryRows(displayedGpu.devices, detailMetrics)
@@ -330,6 +261,36 @@ function FloatingMonitorPanel({
     devices.length > 0 &&
     unifiedPool &&
     memoryDisplay.sharedDevices.length === 0;
+  const discreteVram = hasGpu && devices.length > 0 && !unifiedRow;
+
+  const showShare = useMonitorOverlayStore((state) => state.showUnslothShare);
+  const showBreakdown = useMonitorOverlayStore(
+    (state) => state.showModelBreakdown,
+  );
+  const wantsModels = showShare || showBreakdown;
+  const [loadedModels, setLoadedModels] = useState<LoadedModelEntry[]>([]);
+  const models = wantsModels ? modelShares(loadedModels) : [];
+  const modelsGb = models.reduce((sum, model) => sum + model.gb, 0);
+  // Unsloth Studio's server plus its children (llama-server, workers), resident set.
+  const processMb =
+    systemInfo.memory?.process_tree_used_mb ?? systemInfo.memory?.process_used_mb;
+  const unslothRamGb =
+    ramKnown && processMb !== undefined ? processMb / 1024 : null;
+  const ramShare = showShare
+    ? memoryShare(ramUsed, ramTotal, unslothRamGb)
+    : null;
+  // On a discrete GPU the models are what Unsloth holds in VRAM.
+  const vramShare =
+    showShare && discreteVram && vramUsageKnown && !hasSharedPool
+      ? memoryShare(vramUsed, vramTotal, modelsGb)
+      : null;
+  const breakdown = showBreakdown
+    ? modelBreakdown(discreteVram ? null : unslothRamGb, models, !discreteVram)
+    : null;
+  const ramAmount = ramKnown
+    ? `${formatGiB(ramUsed)} / ${formatGiB(ramTotal)}`
+    : "-- / --";
+  const unslothLabel = t("settings.resources.liveMonitor.unsloth");
 
   // The container sits on the floating panel layer, above the bottom-right overlay stack. The stack
   // is anchored to that same corner and does not move for this monitor; at its default corner the
@@ -386,11 +347,15 @@ function FloatingMonitorPanel({
                 maxWidth: layout.maxWidth,
                 maxHeight: layout.maxHeight,
                 width: width ?? undefined,
-                ...panelScaleStyle(width),
               }
-            : { width: width ?? undefined, ...panelScaleStyle(width) }
+            : { width: width ?? undefined }
         }
       >
+        {wantsModels && (
+          <Suspense fallback={null}>
+            <MonitorLoadedModels onEntries={setLoadedModels} />
+          </Suspense>
+        )}
         {RESIZE_HANDLES.map(({ edge, edges, className }) => (
           <div
             key={edge}
@@ -414,7 +379,7 @@ function FloatingMonitorPanel({
         >
           <path d="M7 1 1 7M7 4 4 7" stroke="currentColor" strokeLinecap="round" fill="none" />
         </svg>
-        <div className="mb-2 flex items-center justify-between gap-2 border-b border-border/60 pb-2 [zoom:var(--panel-scale,1)]">
+        <div className="mb-2 flex items-center justify-between gap-2 border-b border-border/60 pb-2">
           <div className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-xs font-semibold text-foreground">
             <CpuIcon className="size-3.5 shrink-0 text-primary" />
             <span className="truncate">
@@ -463,68 +428,105 @@ function FloatingMonitorPanel({
           </div>
         </div>
 
-        <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto [zoom:var(--panel-scale,1)]">
+        <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
           <div
             ref={contentRef}
             data-testid="floating-monitor-content"
             className={cn("space-y-3 transition-opacity", stale && "opacity-50")}
           >
-            {unifiedRow ? (
-              <MemoryRow
-                testId="floating-monitor-memory"
-                label={t("settings.resources.liveMonitor.memory")}
-                detail={deviceLabel}
-                percent={ramKnown ? ramPercent : null}
-                amount={
-                  ramKnown
-                    ? `${formatGiB(ramUsed)} / ${formatGiB(ramTotal)}`
-                    : "-- / --"
+            <MeterRow
+              testId="floating-monitor-cpu"
+              label={t("settings.resources.liveMonitor.cpu")}
+              readout={cpuPercent === null ? "--" : `${Math.round(cpuPercent)}%`}
+              readoutClassName={
+                cpuPercent === null ? undefined : usageTextClass(cpuPercent)
+              }
+            >
+              <UsageBar percent={cpuPercent} />
+            </MeterRow>
+            <MeterRow
+              testId={unifiedRow ? "floating-monitor-memory" : "floating-monitor-ram"}
+              label={
+                unifiedRow
+                  ? t("settings.resources.liveMonitor.memory")
+                  : t("settings.resources.liveMonitor.ram")
+              }
+              readout={ramAmount}
+              footer={
+                (ramShare || (breakdown && !discreteVram) || unifiedRow) && (
+                  <>
+                    {ramShare && (
+                      <ShareLegend share={ramShare} unslothLabel={unslothLabel} />
+                    )}
+                    {breakdown && !discreteVram && (
+                      <ModelBreakdownList breakdown={breakdown} className="pt-1" />
+                    )}
+                    {unifiedRow && !ramShare && (
+                      <div className="flex justify-between gap-2">
+                        <span>{t("settings.resources.liveMonitor.gpuInUse")}</span>
+                        <span className="shrink-0 font-mono tabular-nums">
+                          {vramUsageKnown ? formatGiB(vramUsed) : unknownLabel}
+                        </span>
+                      </div>
+                    )}
+                    {unifiedRow &&
+                      !ramShare &&
+                      memoryDisplay.unifiedAvailableGb !== null && (
+                        <div className="flex justify-between gap-2">
+                          <span>
+                            {t("settings.resources.liveMonitor.availableForModels")}
+                          </span>
+                          <span className="shrink-0 font-mono tabular-nums">
+                            {formatGiB(memoryDisplay.unifiedAvailableGb)}
+                          </span>
+                        </div>
+                      )}
+                  </>
+                )
+              }
+            >
+              {ramShare ? (
+                <ShareBar share={ramShare} />
+              ) : (
+                <UsageBar percent={ramKnown ? ramPercent : null} />
+              )}
+            </MeterRow>
+            {discreteVram && (
+              <MeterRow
+                testId="floating-monitor-vram"
+                label={t("settings.resources.liveMonitor.vram")}
+                readout={`${vramUsageKnown ? formatGiB(vramUsed) : "--"} / ${
+                  hasSharedPool && !unifiedPool
+                    ? t("settings.resources.environment.vramWithShared", {
+                        vram: formatGiB(memoryTotals.dedicated),
+                        shared: formatGiB(memoryTotals.shared),
+                      })
+                    : formatGiB(vramTotal)
+                }`}
+                footer={
+                  (deviceLabel || vramShare || breakdown) && (
+                    <>
+                      {deviceLabel && (
+                        <div className="truncate" title={deviceLabel}>
+                          {deviceLabel}
+                        </div>
+                      )}
+                      {vramShare && (
+                        <ShareLegend share={vramShare} unslothLabel={unslothLabel} />
+                      )}
+                      {breakdown && (
+                        <ModelBreakdownList breakdown={breakdown} className="pt-1" />
+                      )}
+                    </>
+                  )
                 }
               >
-                <div className="flex justify-between gap-2">
-                  <span>{t("settings.resources.liveMonitor.gpuInUse")}</span>
-                  <span className="shrink-0 font-mono tabular-nums">
-                    {vramUsageKnown ? formatGiB(vramUsed) : unknownLabel}
-                  </span>
-                </div>
-                {memoryDisplay.unifiedAvailableGb !== null && (
-                  <div className="flex justify-between gap-2">
-                    <span>{t("settings.resources.liveMonitor.availableForModels")}</span>
-                    <span className="shrink-0 font-mono tabular-nums">
-                      {formatGiB(memoryDisplay.unifiedAvailableGb)}
-                    </span>
-                  </div>
+                {vramShare ? (
+                  <ShareBar share={vramShare} />
+                ) : (
+                  <UsageBar percent={vramUsageKnown ? vramPercent : null} />
                 )}
-              </MemoryRow>
-            ) : (
-              <>
-                <MemoryRow
-                  testId="floating-monitor-ram"
-                  label={t("settings.resources.liveMonitor.ram")}
-                  percent={ramKnown ? ramPercent : null}
-                  amount={
-                    ramKnown
-                      ? `${formatGiB(ramUsed)} / ${formatGiB(ramTotal)}`
-                      : "-- / --"
-                  }
-                />
-                {hasGpu && devices.length > 0 && (
-                  <MemoryRow
-                    testId="floating-monitor-vram"
-                    label={t("settings.resources.liveMonitor.vram")}
-                    detail={deviceLabel}
-                    percent={vramUsageKnown ? vramPercent : null}
-                    amount={`${vramUsageKnown ? formatGiB(vramUsed) : unknownLabel} / ${
-                      hasSharedPool && !unifiedPool
-                        ? t("settings.resources.environment.vramWithShared", {
-                            vram: formatGiB(memoryTotals.dedicated),
-                            shared: formatGiB(memoryTotals.shared),
-                          })
-                        : formatGiB(vramTotal)
-                    }`}
-                  />
-                )}
-              </>
+              </MeterRow>
             )}
             {hasGpu && memoryDisplay.sharedDevices.length > 0 && (
               <div className="space-y-1 text-xs">
@@ -572,20 +574,6 @@ function FloatingMonitorPanel({
                       </span>
                     )}
                 </span>
-              </div>
-            )}
-            {cpuPercent !== null && (
-              <div
-                className="border-t border-border/60 pt-2"
-                data-testid="floating-monitor-cpu"
-              >
-                <DetailBar
-                  label={t("settings.resources.liveMonitor.cpuLoad")}
-                  value={`${Math.round(cpuPercent)}%`}
-                  percent={cpuPercent}
-                  indicatorClassName={usageIndicatorClass(cpuPercent)}
-                  textClassName={usageTextClass(cpuPercent)}
-                />
               </div>
             )}
             {telemetryRows.map((row) => (

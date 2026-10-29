@@ -89,6 +89,8 @@ export interface SystemInfoResponse {
     available_gb: number;
     percent_used: number;
     process_used_mb: number;
+    /** The server plus its child processes (llama-server, workers). */
+    process_tree_used_mb?: number;
   };
   disk: {
     total_gb: number;

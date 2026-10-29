@@ -2492,6 +2492,15 @@ export const he = {
         refreshRate: "קצב רענון",
         refreshRateDescription: "באיזו תדירות המוניטור הצף קורא את השימוש בזיכרון וב-GPU כשהוא פתוח.",
         refreshEvery: "כל {seconds} שנ׳",
+        unsloth: "Unsloth",
+        otherApps: "אפליקציות אחרות",
+        freeLabel: "פנוי",
+        byModel: "לפי מודל",
+        unslothApp: "אפליקציית Unsloth Studio",
+        unslothShare: "הצגת החלק של Unsloth",
+        unslothShareDescription: "חלוקת הזיכרון בין Unsloth, אפליקציות אחרות וזיכרון פנוי.",
+        modelBreakdown: "פירוט לפי מודל",
+        modelBreakdownDescription: "הצגת הזיכרון של כל מודל טעון ושל שאר Unsloth Studio.",
       },
       gpu: {
         title: "התקני GPU",
@@ -5123,7 +5132,7 @@ export const he = {
     monitor: {
       dragHandleLabel: "הזז את מסך הניטור החי. מקשי החיצים מזיזים אותו מעט, ולחיצה כפולה מאפסת אותו.",
       reconnecting: "מתחבר מחדש...",
-      resizeHint: "גררו כל קצה כדי לשנות גודל. לחיצה כפולה מאפסת את הגודל.",
+      resizeHint: "גררו צד או פינה כדי לשנות את הרוחב. לחיצה כפולה מאפסת אותו.",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

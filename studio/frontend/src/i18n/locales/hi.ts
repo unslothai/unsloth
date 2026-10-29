@@ -2396,6 +2396,15 @@ export const hi = {
         refreshRate: "रीफ़्रेश दर",
         refreshRateDescription: "खुला रहने पर फ़्लोटिंग मॉनिटर कितनी बार मेमोरी और GPU उपयोग पढ़ता है।",
         refreshEvery: "हर {seconds} से.",
+        unsloth: "Unsloth",
+        otherApps: "अन्य ऐप्स",
+        freeLabel: "खाली",
+        byModel: "मॉडल के अनुसार",
+        unslothApp: "Unsloth Studio ऐप",
+        unslothShare: "Unsloth का हिस्सा दिखाएं",
+        unslothShareDescription: "मेमोरी को Unsloth, अन्य ऐप्स और खाली हिस्से में बांटें।",
+        modelBreakdown: "मॉडल के अनुसार विवरण",
+        modelBreakdownDescription: "हर लोड किए गए मॉडल की मेमोरी और बाकी Unsloth Studio दिखाएं।",
       },
       gpu: {
         title: "GPU डिवाइस",
@@ -4986,7 +4995,7 @@ export const hi = {
     monitor: {
       dragHandleLabel: "लाइव मॉनिटर हिलाएँ। एरो कुंजियाँ इसे थोड़ा खिसकाती हैं, डबल-क्लिक करने पर यह रीसेट हो जाता है।",
       reconnecting: "फिर से कनेक्ट हो रहा है...",
-      resizeHint: "आकार बदलने के लिए कोई भी किनारा खींचें। डबल-क्लिक से आकार रीसेट होता है।",
+      resizeHint: "चौड़ाई बदलने के लिए कोई किनारा या कोना खींचें। डबल-क्लिक से रीसेट होता है।",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

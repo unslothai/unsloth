@@ -75,6 +75,18 @@ import {
 } from "@/components/monitor-refresh";
 import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
 import {
+  MeterRow,
+  ModelBreakdownList,
+  ShareBar,
+  ShareLegend,
+} from "@/components/monitor-memory";
+import {
+  memoryShare,
+  modelBreakdown,
+  modelShares,
+} from "@/components/monitor-share";
+import { useLoadedModels } from "@/features/loaded-models/use-loaded-models";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -318,7 +330,16 @@ export function ResourcesTab() {
     setDetailMetric,
     refreshMs,
     setRefreshMs,
+    showUnslothShare,
+    setShowUnslothShare,
+    showModelBreakdown,
+    setShowModelBreakdown,
   } = useMonitorOverlayStore();
+  const wantsModels = showUnslothShare || showModelBreakdown;
+  const { polledEntries: loadedModels } = useLoadedModels(
+    wantsModels,
+    wantsModels,
+  );
   const detailMetrics = selectedDetailMetrics(storedDetailMetrics);
   // always fetch once: the switch is persisted now, so gating the hook on it
   // would leave a session that opens with it off reading zeros forever.
@@ -636,6 +657,29 @@ export function ResourcesTab() {
           shared: formatGiB(metrics.vramShared),
         })
       : formatGiB(unifiedPool ? metrics.vramShared : metrics.vramTotal);
+  const discreteVram =
+    hasGpu && !unifiedPool && !memoryDisplay.sharedOnly && metrics.vramShared === 0;
+  const models = modelShares(loadedModels);
+  const processMb =
+    systemInfo.memory?.process_tree_used_mb ?? systemInfo.memory?.process_used_mb;
+  const unslothRamGb =
+    !hostUnread && processMb !== undefined ? processMb / 1024 : null;
+  const ramShare = showUnslothShare
+    ? memoryShare(metrics.ramUsed, metrics.ramTotal, unslothRamGb)
+    : null;
+  const vramShare =
+    showUnslothShare && discreteVram && metrics.vramUsageKnown
+      ? memoryShare(
+          metrics.vramUsed ?? 0,
+          metrics.vramTotal,
+          models.reduce((sum, model) => sum + model.gb, 0),
+        )
+      : null;
+  const breakdown = showModelBreakdown
+    ? modelBreakdown(discreteVram ? null : unslothRamGb, models, !discreteVram)
+    : null;
+  const shareCardClass =
+    "flex min-w-0 flex-col gap-3 rounded-xl border border-border/60 bg-card px-5 py-4 dark:border-transparent";
   // The placeholder's cpu backend and empty package list are not facts about the host either.
   const hostReading = (value: string) => (hostUnread ? unknownLabel : value);
   // systemInfo.gpu, not displayedGpu: a Vulkan llama.cpp makes displayedGpu use the inference
@@ -814,6 +858,74 @@ export function ResourcesTab() {
             percent={metrics.vramUsageKnown ? metrics.vramPercent : null}
           />
         </div>
+        {(ramShare || vramShare || breakdown) && (
+          <div
+            className="grid gap-3 pb-3 sm:grid-cols-2 sm:[&>:last-child:nth-child(odd)]:col-span-2"
+            data-testid="settings-unsloth-share"
+          >
+            {ramShare && (
+              <div className={shareCardClass}>
+                <MeterRow
+                  label={t(
+                    unifiedPool
+                      ? "settings.resources.liveMonitor.memory"
+                      : "settings.resources.liveMonitor.ram",
+                  )}
+                  readout={`${formatGiB(metrics.ramUsed)} / ${formatGiB(metrics.ramTotal)}`}
+                  footer={
+                    <ShareLegend
+                      share={ramShare}
+                      unslothLabel={t("settings.resources.liveMonitor.unsloth")}
+                    />
+                  }
+                >
+                  <ShareBar share={ramShare} />
+                </MeterRow>
+              </div>
+            )}
+            {vramShare && (
+              <div className={shareCardClass}>
+                <MeterRow
+                  label={t("settings.resources.liveMonitor.vram")}
+                  readout={`${formatGiB(metrics.vramUsed)} / ${formatGiB(metrics.vramTotal)}`}
+                  footer={
+                    <ShareLegend
+                      share={vramShare}
+                      unslothLabel={t("settings.resources.liveMonitor.unsloth")}
+                    />
+                  }
+                >
+                  <ShareBar share={vramShare} />
+                </MeterRow>
+              </div>
+            )}
+            {breakdown && (
+              <div className={shareCardClass}>
+                <ModelBreakdownList breakdown={breakdown} />
+              </div>
+            )}
+          </div>
+        )}
+        <SettingsRow
+          label={t("settings.resources.liveMonitor.unslothShare")}
+          description={t("settings.resources.liveMonitor.unslothShareDescription")}
+        >
+          <Switch
+            aria-label={t("settings.resources.liveMonitor.unslothShare")}
+            checked={showUnslothShare}
+            onCheckedChange={setShowUnslothShare}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.resources.liveMonitor.modelBreakdown")}
+          description={t("settings.resources.liveMonitor.modelBreakdownDescription")}
+        >
+          <Switch
+            aria-label={t("settings.resources.liveMonitor.modelBreakdown")}
+            checked={showModelBreakdown}
+            onCheckedChange={setShowModelBreakdown}
+          />
+        </SettingsRow>
         <SettingsRow
           label={t("settings.resources.liveMonitor.detailedView")}
           description={t(

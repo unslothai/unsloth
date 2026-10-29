@@ -2422,6 +2422,15 @@ export const de = {
         refreshRate: "Aktualisierungsrate",
         refreshRateDescription: "Wie oft der schwebende Monitor Speicher- und GPU-Auslastung liest, solange er geöffnet ist.",
         refreshEvery: "Alle {seconds} s",
+        unsloth: "Unsloth",
+        otherApps: "Andere Apps",
+        freeLabel: "Frei",
+        byModel: "Nach Modell",
+        unslothApp: "Unsloth Studio-App",
+        unslothShare: "Anteil von Unsloth anzeigen",
+        unslothShareDescription: "Teilt den Speicher in Unsloth, andere Apps und freien Speicher auf.",
+        modelBreakdown: "Nach Modell aufschlüsseln",
+        modelBreakdownDescription: "Zeigt den Speicher jedes geladenen Modells und den Rest von Unsloth Studio.",
       },
       gpu: {
         title: "GPU-Geräte",
@@ -5050,7 +5059,7 @@ export const de = {
     monitor: {
       dragHandleLabel: "Live-Monitor verschieben. Mit den Pfeiltasten feinjustieren, per Doppelklick zurücksetzen.",
       reconnecting: "Verbindung wird wiederhergestellt...",
-      resizeHint: "Zum Ändern der Größe an einer Kante ziehen. Doppelklick setzt die Größe zurück.",
+      resizeHint: "Zum Ändern der Breite an einer Seite oder Ecke ziehen. Doppelklick setzt sie zurück.",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

@@ -110,15 +110,13 @@ function clampWidth(value: number, min: number, max: number): number {
 
 /** Opt-in edge resize. Only width is user-set; height follows the content, so it never gains empty space. */
 export interface PanelResizeOptions {
-  /** The unscaled width; content zooms by width / baseWidth through `--panel-scale`. */
-  baseWidth: number;
   minWidth: number;
   maxWidth: number;
   /** localStorage key for the chosen width. */
   storageKey: string;
 }
 
-/** -1 = left/top edge, 1 = right/bottom edge, 0 = that axis is not grabbed. */
+/** -1 = left/top edge, 1 = right/bottom edge, 0 = that axis is not grabbed. `y` only picks which edge stays put as the height changes. */
 export interface ResizeEdges {
   x: -1 | 0 | 1;
   y: -1 | 0 | 1;
@@ -138,23 +136,12 @@ export function readPanelWidth(
   }
 }
 
-/** Width for a pointer delta; an edge-only grab on the other axis scales by the panel's aspect. */
+/** Width for a pointer delta. Only horizontal movement counts: the height follows the content. */
 export function resizedWidth(
-  session: { width: number; height: number; edges: ResizeEdges },
+  session: { width: number; edges: ResizeEdges },
   dx: number,
-  dy: number,
   bounds: { min: number; max: number },
 ): number {
-  const { edges, width, height } = session;
-  const fromX = edges.x * dx;
-  const fromY = edges.y * dy * (height > 0 ? width / height : 1);
-  const delta =
-    edges.x !== 0 && edges.y !== 0
-      ? Math.abs(fromX) >= Math.abs(fromY)
-        ? fromX
-        : fromY
-      : edges.x !== 0
-        ? fromX
-        : fromY;
-  return clampWidth(width + delta, bounds.min, Math.max(bounds.min, bounds.max));
+  const next = session.width + session.edges.x * dx;
+  return clampWidth(next, bounds.min, Math.max(bounds.min, bounds.max));
 }

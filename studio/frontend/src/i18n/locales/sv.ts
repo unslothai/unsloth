@@ -2566,6 +2566,15 @@ export const sv = {
         refreshRate: "Uppdateringsfrekvens",
         refreshRateDescription: "Hur ofta den flytande monitorn läser minnes- och GPU-användning medan den är öppen.",
         refreshEvery: "Var {seconds} s",
+        unsloth: "Unsloth",
+        otherApps: "Andra appar",
+        freeLabel: "Ledigt",
+        byModel: "Per modell",
+        unslothApp: "Unsloth Studio-appen",
+        unslothShare: "Visa Unsloths andel",
+        unslothShareDescription: "Delar upp minnet i det Unsloth använder, det andra appar använder och det lediga.",
+        modelBreakdown: "Dela upp per modell",
+        modelBreakdownDescription: "Visar minnet för varje inläst modell och resten av Unsloth Studio.",
       },
       gpu: {
         title: "GPU-enheter",
@@ -5271,7 +5280,7 @@ export const sv = {
     monitor: {
       dragHandleLabel: "Flytta liveövervakaren. Piltangenterna flyttar den lite i taget, dubbelklick återställer den.",
       reconnecting: "Återansluter …",
-      resizeHint: "Dra i en kant för att ändra storlek. Dubbelklicka för att återställa storleken.",
+      resizeHint: "Dra i en sida eller ett hörn för att ändra bredden. Dubbelklicka för att återställa den.",
     },
   },
 } as const;

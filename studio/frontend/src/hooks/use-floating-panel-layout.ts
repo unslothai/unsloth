@@ -577,8 +577,8 @@ export function useFloatingPanelLayout(
       height: box.height,
       constraintsWidth: constraintsBox.width,
       constraintsHeight: constraintsBox.height,
-      // An edge grab on one axis grows the other away from the edge the panel is anchored to.
       hx: edges.x !== 0 ? edges.x : intent.left === null ? -1 : 1,
+      // As the height follows the content, the edge the panel is anchored to stays put.
       vy: edges.y !== 0 ? edges.y : intent.top === null ? -1 : 1,
       edges,
       moved: false,
@@ -601,22 +601,19 @@ export function useFloatingPanelLayout(
     const right = session.left + session.width;
     const bottom = session.top + session.height;
     const room = session.hx === -1 ? right : session.constraintsWidth - session.left;
-    const next = resizedWidth(
-      session,
-      event.clientX - session.startX,
-      event.clientY - session.startY,
-      { min: options.minWidth, max: Math.min(options.maxWidth, room) },
-    );
+    const next = resizedWidth(session, event.clientX - session.startX, {
+      min: options.minWidth,
+      max: Math.min(options.maxWidth, room),
+    });
     if (!session.moved && Math.abs(next - session.width) < 0.5) {
       return;
     }
     session.moved = true;
     const left = session.hx === -1 ? right - next : session.left;
     // Write the node first: the panel is a motion.div, whose style props land a frame late, and the
-    // height below has to be read at the new width since the content zooms with it.
+    // height below has to be read at the new width since text can rewrap.
     monitor.style.maxWidth = `${session.constraintsWidth - left}px`;
     monitor.style.width = `${next}px`;
-    monitor.style.setProperty("--panel-scale", String(next / options.baseWidth));
     monitor.style.left = `${left}px`;
     const height = desiredPanelHeight(
       monitor.offsetHeight,

@@ -12,36 +12,29 @@ import {
 import { readSrc } from "./helpers/kit.ts";
 
 const BOUNDS = { min: 232, max: 520 };
-const PANEL = { width: 256, height: 128 };
+const PANEL = { width: 256 };
 
 test("a side edge follows the pointer, mirrored on the left", () => {
   const right = { ...PANEL, edges: { x: 1, y: 0 } } as const;
   const left = { ...PANEL, edges: { x: -1, y: 0 } } as const;
-  assert.equal(resizedWidth(right, 40, 0, BOUNDS), 296);
-  assert.equal(resizedWidth(left, -40, 0, BOUNDS), 296);
-  assert.equal(resizedWidth(left, 40, 0, BOUNDS), 232);
+  assert.equal(resizedWidth(right, 40, BOUNDS), 296);
+  assert.equal(resizedWidth(left, -40, BOUNDS), 296);
+  assert.equal(resizedWidth(left, 40, BOUNDS), 232);
 });
 
-test("a top or bottom edge scales width by the panel's aspect, so the card grows taller", () => {
-  const top = { ...PANEL, edges: { x: 0, y: -1 } } as const;
-  // 20px up on a 2:1 card is 40px wider.
-  assert.equal(resizedWidth(top, 0, -20, BOUNDS), 296);
-  const bottom = { ...PANEL, edges: { x: 0, y: 1 } } as const;
-  assert.equal(resizedWidth(bottom, 0, 20, BOUNDS), 296);
-});
-
-test("a corner takes whichever axis moved further", () => {
+test("a corner only changes the width: the height follows the content", () => {
   const corner = { ...PANEL, edges: { x: 1, y: 1 } } as const;
-  assert.equal(resizedWidth(corner, 40, 0, BOUNDS), 296);
-  assert.equal(resizedWidth(corner, 10, 30, BOUNDS), 316);
+  assert.equal(resizedWidth(corner, 40, BOUNDS), 296);
+  const top = { ...PANEL, edges: { x: 0, y: -1 } } as const;
+  assert.equal(resizedWidth(top, 40, BOUNDS), 256);
 });
 
 test("width stays inside min and max, and the max yields to a smaller min", () => {
   const right = { ...PANEL, edges: { x: 1, y: 0 } } as const;
-  assert.equal(resizedWidth(right, 1000, 0, BOUNDS), 520);
-  assert.equal(resizedWidth(right, -1000, 0, BOUNDS), 232);
+  assert.equal(resizedWidth(right, 1000, BOUNDS), 520);
+  assert.equal(resizedWidth(right, -1000, BOUNDS), 232);
   // No room at all (a corner against the viewport edge) keeps the floor, never below it.
-  assert.equal(resizedWidth(right, 50, 0, { min: 232, max: 100 }), 232);
+  assert.equal(resizedWidth(right, 50, { min: 232, max: 100 }), 232);
 });
 
 test("a stored width is clamped, and junk is ignored", () => {
@@ -51,7 +44,7 @@ test("a stored width is clamped, and junk is ignored", () => {
     getItem: (key: string) => store.get(key) ?? null,
   } as Storage;
   try {
-    const options = { baseWidth: 256, ...{ minWidth: 232, maxWidth: 520 }, storageKey: "w" };
+    const options = { minWidth: 232, maxWidth: 520, storageKey: "w" };
     assert.equal(readPanelWidth(options), null);
     store.set("w", "300");
     assert.equal(readPanelWidth(options), 300);
@@ -70,5 +63,5 @@ test("the stored width is cleared with the stored positions", () => {
   const monitor = readSrc("components/floating-monitor.tsx");
   assert.match(monitor, /storageKey: FLOATING_PANEL_POSITION_KEYS\.liveMonitorWidth/);
   assert.match(monitor, /data-edge=\{edge\}/);
-  assert.match(monitor, /\[zoom:var\(--panel-scale,1\)\]/);
+  assert.doesNotMatch(monitor, /panel-scale/);
 });

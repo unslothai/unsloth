@@ -2370,6 +2370,15 @@ export const ja = {
         refreshRate: "更新間隔",
         refreshRateDescription: "フローティングモニターを開いている間、メモリと GPU の使用量を読み取る頻度です。",
         refreshEvery: "{seconds} 秒ごと",
+        unsloth: "Unsloth",
+        otherApps: "他のアプリ",
+        freeLabel: "空き",
+        byModel: "モデル別",
+        unslothApp: "Unsloth Studio アプリ",
+        unslothShare: "Unsloth の使用分を表示",
+        unslothShareDescription: "メモリを Unsloth、他のアプリ、空きに分けて表示します。",
+        modelBreakdown: "モデル別に表示",
+        modelBreakdownDescription: "読み込んだ各モデルのメモリと Unsloth Studio のその他の分を表示します。",
       },
       gpu: {
         title: "GPU デバイス",
@@ -4924,7 +4933,7 @@ export const ja = {
     monitor: {
       dragHandleLabel: "ライブモニターを移動します。矢印キーで少しずつ動かせ、ダブルクリックで位置をリセットします。",
       reconnecting: "再接続中...",
-      resizeHint: "端をドラッグしてサイズを変更します。ダブルクリックでサイズをリセットします。",
+      resizeHint: "辺または角をドラッグして幅を変更します。ダブルクリックでリセットします。",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

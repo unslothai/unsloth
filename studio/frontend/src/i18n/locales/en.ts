@@ -2454,6 +2454,15 @@ export const en = {
         refreshRate: "Refresh rate",
         refreshRateDescription: "How often the floating monitor reads memory and GPU usage while it is open.",
         refreshEvery: "Every {seconds} s",
+        unsloth: "Unsloth",
+        otherApps: "Other apps",
+        freeLabel: "Free",
+        byModel: "By model",
+        unslothApp: "Unsloth Studio app",
+        unslothShare: "Show Unsloth's share",
+        unslothShareDescription: "Split memory into what Unsloth uses, what other apps use, and what is free.",
+        modelBreakdown: "Break down by model",
+        modelBreakdownDescription: "List the memory each loaded model holds, plus the rest of Unsloth Studio.",
       },
       gpu: {
         title: "GPU devices",
@@ -5060,7 +5069,7 @@ export const en = {
       dragHandleLabel:
         "Move the live monitor. Arrow keys nudge it, double-click resets it.",
       reconnecting: "Reconnecting...",
-      resizeHint: "Drag any edge to resize. Double-click resets the size.",
+      resizeHint: "Drag a side or corner to change the width. Double-click resets it.",
     },
   },
 } as const;

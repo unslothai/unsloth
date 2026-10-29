@@ -2401,6 +2401,15 @@ export const ru = {
         refreshRate: "Частота обновления",
         refreshRateDescription: "Как часто плавающий монитор считывает использование памяти и GPU, пока он открыт.",
         refreshEvery: "Каждые {seconds} с",
+        unsloth: "Unsloth",
+        otherApps: "Другие приложения",
+        freeLabel: "Свободно",
+        byModel: "По моделям",
+        unslothApp: "Приложение Unsloth Studio",
+        unslothShare: "Показывать долю Unsloth",
+        unslothShareDescription: "Делит память на занятую Unsloth, другими приложениями и свободную.",
+        modelBreakdown: "Разбивка по моделям",
+        modelBreakdownDescription: "Показывает память каждой загруженной модели и остальной части Unsloth Studio.",
       },
       gpu: {
         title: "Устройства GPU",
@@ -5007,7 +5016,7 @@ export const ru = {
     monitor: {
       dragHandleLabel: "Переместить живой монитор. Стрелки сдвигают его понемногу, двойной щелчок сбрасывает положение.",
       reconnecting: "Повторное подключение…",
-      resizeHint: "Потяните за любой край, чтобы изменить размер. Двойной щелчок сбрасывает размер.",
+      resizeHint: "Потяните за сторону или угол, чтобы изменить ширину. Двойной щелчок сбрасывает её.",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

@@ -50,8 +50,5 @@ test("the Live Monitor shows -- for RAM until the host has been read", () => {
     floatingMonitor,
     /percent=\{ramKnown \? ramPercent : null\}/,
   );
-  assert.match(
-    floatingMonitor,
-    /percent === null \? "--" : `\$\{Math\.round\(percent\)\}%`/,
-  );
+  assert.match(floatingMonitor, /: "-- \/ --";/);
 });

@@ -2361,6 +2361,15 @@ export const zhCN = {
         refreshRate: "刷新频率",
         refreshRateDescription: "浮动监视器打开时读取内存和 GPU 使用情况的频率。",
         refreshEvery: "每 {seconds} 秒",
+        unsloth: "Unsloth",
+        otherApps: "其他应用",
+        freeLabel: "空闲",
+        byModel: "按模型",
+        unslothApp: "Unsloth Studio 应用",
+        unslothShare: "显示 Unsloth 占用",
+        unslothShareDescription: "将内存分为 Unsloth 占用、其他应用占用和空闲。",
+        modelBreakdown: "按模型细分",
+        modelBreakdownDescription: "列出每个已加载模型的内存以及 Unsloth Studio 其余部分。",
       },
       gpu: {
         title: "GPU 设备",
@@ -4876,7 +4885,7 @@ export const zhCN = {
     monitor: {
       dragHandleLabel: "移动实时监控。方向键可微调位置，双击可重置。",
       reconnecting: "正在重新连接...",
-      resizeHint: "拖动任意边缘调整大小。双击恢复默认大小。",
+      resizeHint: "拖动侧边或角落调整宽度。双击恢复。",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

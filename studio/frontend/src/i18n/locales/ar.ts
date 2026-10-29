@@ -2390,6 +2390,15 @@ export const ar = {
         refreshRate: "معدل التحديث",
         refreshRateDescription: "عدد مرات قراءة الشاشة العائمة لاستخدام الذاكرة وGPU أثناء فتحها.",
         refreshEvery: "كل {seconds} ث",
+        unsloth: "Unsloth",
+        otherApps: "تطبيقات أخرى",
+        freeLabel: "متاح",
+        byModel: "حسب النموذج",
+        unslothApp: "تطبيق Unsloth Studio",
+        unslothShare: "إظهار حصة Unsloth",
+        unslothShareDescription: "تقسيم الذاكرة بين ما يستخدمه Unsloth وما تستخدمه التطبيقات الأخرى والمتاح.",
+        modelBreakdown: "التفصيل حسب النموذج",
+        modelBreakdownDescription: "عرض ذاكرة كل نموذج محمّل وبقية Unsloth Studio.",
       },
       gpu: {
         title: "أجهزة GPU",
@@ -4975,7 +4984,7 @@ export const ar = {
     monitor: {
       dragHandleLabel: "انقل شاشة المراقبة المباشرة. مفاتيح الأسهم تحركها قليلًا، والنقر المزدوج يعيدها إلى مكانها.",
       reconnecting: "جارٍ إعادة الاتصال...",
-      resizeHint: "اسحب أي حافة لتغيير الحجم. انقر نقرًا مزدوجًا لإعادة الحجم.",
+      resizeHint: "اسحب جانبًا أو زاوية لتغيير العرض. انقر نقرًا مزدوجًا لإعادته.",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

@@ -983,12 +983,13 @@ def exercise_floating_monitor_geometry(page):
     page.set_viewport_size(viewport)
     wait_for_box("viewport restore", lambda box: is_inside(box, viewport))
 
-    # Width is the one user-set size: the content zooms with it, so height follows and never gains empty space.
+    # Width is the one user-set size: the text stays its size and the height follows the content,
+    # so a corner drag never adds empty space below it.
     resize_start = drag_monitor_to(0, 0)
-    _, resized_box = resize_monitor_by(40, 0)
+    _, resized_box = resize_monitor_by(40, 40)
     expect_close(resized_box["width"], resize_start["width"] + 40, "resize width")
-    if resized_box["height"] <= resize_start["height"] + tolerance:
-        fail(f"content did not scale with width: {resize_start!r} -> {resized_box!r}")
+    if resized_box["height"] > resize_start["height"] + tolerance:
+        fail(f"a wider card grew taller: {resize_start!r} -> {resized_box!r}")
     expect_close(resized_box["x"], resize_start["x"], "resize left edge")
     expect_close(resized_box["y"], resize_start["y"], "resize top edge")
     content_fits("corner resize")
