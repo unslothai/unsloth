@@ -649,14 +649,15 @@ def _mcp_tool_search_specs(arguments: Any) -> list:
 
 
 def _tool_name_key(name: str) -> str:
-    return name.casefold().replace("-", "_")
+    return name.lower().replace("-", "_")
 
 
 def _canonical_tool_name(name: str, allowed: Collection[str]) -> "str | None":
     """The one enabled tool a sampled name means when only its case or ``-``/``_`` differ (WEB_SEARCH,
     web-search). Never an execution-class or MCP tool: those run only under their exact name, so a bare
     call cannot reach them by a near spelling. None when no tool, or more than one, matches."""
-    if not name:
+    # ASCII only: Unicode case folding maps other letters onto ASCII ones (``ſ`` -> ``s``, Kelvin sign -> ``k``).
+    if not name or not name.isascii():
         return None
     key = _tool_name_key(name)
     matches = [tool for tool in allowed if _tool_name_key(tool) == key]

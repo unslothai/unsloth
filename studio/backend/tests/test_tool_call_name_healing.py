@@ -79,3 +79,8 @@ def test_exact_name_is_untouched():
     decision = _decide("web_search")
     assert decision.action == "execute" and decision.tool_name == "web_search"
     assert not decision.provenance.get("healed")
+
+
+@pytest.mark.parametrize("sampled", ["web_ſearch", "WEB_ſEARCH", "search_docѕ"])
+def test_non_ascii_spelling_is_not_folded_onto_a_tool(sampled):
+    assert _decide(sampled).action == "disabled"
