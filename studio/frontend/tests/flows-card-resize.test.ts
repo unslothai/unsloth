@@ -90,3 +90,10 @@ test("a drag of several cards is one store write and one undo step", () => {
   const stop = src.slice(src.indexOf("const onNodeDragStop"));
   assert.equal((stop.slice(0, stop.indexOf("const onConnect")).match(/\.moveNodes\(/g) ?? []).length, 1);
 });
+
+test("a resized card clips its content top to bottom only, so the port dots on its edges stay whole", () => {
+  const view = readSrc("features/flows/editor/flow-node.tsx");
+  assert.match(view, /group-data-\[sized\]\/node:\[overflow-y:clip\]/);
+  assert.doesNotMatch(view, /group-data-\[sized\]\/node:overflow-(hidden|clip)\b/);
+  assert.match(readSrc("features/flows/editor/node-card.tsx"), /corner-squircle group\/node min-w-0 overflow-visible/);
+});

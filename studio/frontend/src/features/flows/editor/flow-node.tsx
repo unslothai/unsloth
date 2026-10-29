@@ -331,7 +331,7 @@ function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
           />
         )
       ) : (
-        <div className="flex flex-col gap-1.5 py-2 group-data-[sized]/node:min-h-0 group-data-[sized]/node:flex-1 group-data-[sized]/node:overflow-hidden">
+        <div className="flex flex-col gap-1.5 py-2 group-data-[sized]/node:min-h-0 group-data-[sized]/node:flex-1 group-data-[sized]/node:[overflow-y:clip]">
           {Ports ? (
             <Ports node={node} collapsed={false} />
           ) : (
