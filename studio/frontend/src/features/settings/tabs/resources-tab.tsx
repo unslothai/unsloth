@@ -795,7 +795,8 @@ export function ResourcesTab() {
           )}
           <MetricTile
             label={t(
-              memoryDisplay.sharedOnly
+              // Unified memory has no VRAM of its own; it is the GPU's share of system RAM.
+              memoryDisplay.sharedOnly || unifiedPool
                 ? "settings.resources.gpu.memory"
                 : "settings.resources.liveMonitor.vram",
             )}

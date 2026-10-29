@@ -53,3 +53,10 @@ test("the Live Monitor shows -- for RAM until the host has been read", () => {
   );
   assert.match(floatingMonitor, /: "-- \/ --";/);
 });
+
+test("a unified pool's tile is GPU memory, not VRAM", () => {
+  assert.match(
+    resourcesTab,
+    /memoryDisplay\.sharedOnly \|\| unifiedPool\s*\?\s*"settings\.resources\.gpu\.memory"/,
+  );
+});
