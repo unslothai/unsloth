@@ -78,7 +78,7 @@ MODES = ["grouped", "stash", "fold"]
 
 def _need_grouped(dtype = torch.float32):
     """Skip where this torch / device has no native grouped GEMM in ``dtype`` (the module then runs per adapter)."""
-    if not ml._grouped_mm_ok(torch.device(DEVICE), dtype):
+    if not ml._grouped_supported(torch.device(DEVICE), dtype):
         pytest.skip(f"no native grouped GEMM in {dtype} on {DEVICE} with torch {torch.__version__}")
 
 
@@ -451,53 +451,36 @@ def test_grouped_matches_a_float64_oracle(monkeypatch, rslora, present):
             )
 
 
-def test_grouped_dequantizes_quantized_stacks_per_chunk(monkeypatch):
+@pytest.mark.parametrize("U", [1, 3])
+def test_grouped_is_one_pass_on_zoo_gemms(monkeypatch, U):
+    """Every adapter in one pass: 2 base GEMMs through Zoo's base path and 4 LoRA grouped GEMMs, whatever U is."""
     _need_grouped()
-    """A quantized stack: dequantized in expert chunks, again in backward, and the result is unchanged."""
     from unsloth_zoo.temporary_patches import moe_utils
 
     monkeypatch.delenv("UNSLOTH_MULTI_LORA_MOE_GROUPED", raising = False)
     T, k, E = 24, 2, 5
-    ids = torch.tensor([0, 1, 2, -1] * 6)
+    ids = torch.tensor([u % U for u in range(T)])
+    experts = _wrapped(_Experts(E), RANKS[:U], ALPHAS[:U], False, ids)
     index, weights = _routes(T, k, E)
-    index[index == 2] = 4  # experts 2 and 3 get no rows: their chunk is never dequantized
     hidden = torch.randn(T, 20, generator = torch.Generator().manual_seed(2))
-    ref = _wrapped(_Experts(E), RANKS, ALPHAS, False, ids)
-    x_ref = hidden.clone().requires_grad_()
-    ref(x_ref, index, weights).sum().backward()
-
-    experts = _wrapped(_Experts(E), RANKS, ALPHAS, False, ids)
-    experts.mode = experts.peft_mode = None
-    seen = []
-
-    def dequant(
-        param,
-        dtype = None,
-        token_counts = None,
-        experts = None,
-    ):
-        seen.append(experts)
-        return param.data[experts if experts is not None else slice(None)].to(dtype)
-
-    monkeypatch.setattr(ml, "_is_quantized", lambda param: True)
-    monkeypatch.setattr(ml, "_DEQUANT_CHUNKS", 3)
-    monkeypatch.setattr(
-        moe_utils, "_bnb4bit_expert_split", lambda param: (E, tuple(param.shape[1:]))
-    )
-    monkeypatch.setattr(moe_utils, "_get_base_weight", dequant)
-    monkeypatch.setattr(ml.MultiLoraExperts, "_compute_dtype", lambda self, h: h.dtype)
-    monkeypatch.setattr(ml, "_zoo_stash_read_store", lambda experts: None)
-    monkeypatch.setattr(ml.MultiLoraExperts, "_grouped_parity", lambda *a: None)
-    x = hidden.clone().requires_grad_()
-    out = experts(x, index, weights)
+    experts(hidden, index, weights)
     assert experts.mode == "grouped"
-    forward_chunks = len(seen)
-    out.sum().backward()
-    # Chunks of 2 experts, [2, 4) skipped; nothing kept from forward, so backward dequantizes again.
-    # Two stacks, each read in forward and again in backward.
-    assert forward_chunks == 4 and seen == [slice(0, 2), slice(4, 5)] * 4
-    torch.testing.assert_close(out, ref(hidden, index, weights), atol = 1e-6, rtol = 1e-5)
-    torch.testing.assert_close(x.grad, x_ref.grad, atol = 1e-6, rtol = 1e-5)
+    calls = {"base": 0, "lora": 0}
+    base_mm, lora_mm = moe_utils._base_grouped_mm, moe_utils._grouped_mm_with_backward_fix
+
+    def count(kind, fn):
+        def wrapper(*args, **kwargs):
+            # LoRA GEMMs are the ones on the stacked (E * (U + 1), ...) factors; Zoo's base path may call the same op.
+            if kind == "base" or args[1].shape[0] == E * (U + 1):
+                calls[kind] += 1
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    monkeypatch.setattr(moe_utils, "_base_grouped_mm", count("base", base_mm))
+    monkeypatch.setattr(moe_utils, "_grouped_mm_with_backward_fix", count("lora", lora_mm))
+    experts(hidden, index, weights)
+    assert calls == {"base": 2, "lora": 4}
 
 
 def test_grouped_engages_and_the_switch_turns_it_off(base, monkeypatch):
@@ -537,7 +520,7 @@ def test_unsupported_experts_fall_back_to_one_adapter_at_a_time(monkeypatch, why
     torch.testing.assert_close(out, experts(hidden, index, weights), atol = 0, rtol = 0)
 
 
-def test_grouped_reads_bnb_4bit_stacks_a_chunk_at_a_time(monkeypatch):
+def test_grouped_reads_bnb_4bit_stacks_through_zoo(monkeypatch):
     _need_grouped()
     bnb = pytest.importorskip("bitsandbytes")
     from unsloth_zoo.temporary_patches import moe_utils
@@ -558,24 +541,25 @@ def test_grouped_reads_bnb_4bit_stacks_a_chunk_at_a_time(monkeypatch):
     experts = _wrapped(module, RANKS, ALPHAS, False, ids)
     index, weights = _routes(T, k, E)
     hidden = torch.randn(T, 32, generator = torch.Generator().manual_seed(2), requires_grad = True)
-    calls = moe_utils.SELECTIVE_DEQUANT_STATS["dequant_calls"]
+    seen = []
+    get_base = moe_utils._get_base_weight
+    monkeypatch.setattr(
+        moe_utils, "_get_base_weight", lambda *a, **kw: seen.append(1) or get_base(*a, **kw)
+    )
     out = experts(hidden, index, weights)
     assert experts.mode == "grouped" and out.dtype == torch.float32
-    # One expert per chunk (E < 8 chunks): one call per expert with rows, per stack.
-    hit = len(set(index[index < E].tolist()))
-    assert moe_utils.SELECTIVE_DEQUANT_STATS["dequant_calls"] - calls == 2 * hit
+    # Zoo's provider dequantizes both stacks in forward and, where Zoo recomputes, again in backward.
+    forward_reads = len(seen)
+    assert forward_reads >= 2
     out.sum().backward()
-    assert moe_utils.SELECTIVE_DEQUANT_STATS["dequant_calls"] - calls == 4 * hit
+    if moe_utils._moe_recompute_enabled(experts.base_layer.gate_up_proj, dtype = torch.bfloat16):
+        assert len(seen) >= 2 * forward_reads
     float_module = _Experts(E, H = 32, I = 16)
     with torch.no_grad():
         for name in ("gate_up_proj", "down_proj"):
-            # The oracle reads each expert as Zoo dequantizes it alone.
+            # The oracle reads the stack as Zoo's provider does (CPU bitsandbytes slices differ from full reads).
             param = getattr(experts.base_layer, name)
-            W = [
-                moe_utils._get_base_weight(param, torch.bfloat16, experts = slice(e, e + 1))
-                for e in range(E)
-            ]
-            getattr(float_module, name).copy_(torch.cat(W).float())
+            getattr(float_module, name).copy_(get_base(param, torch.bfloat16).float())
     reference = _wrapped(float_module, RANKS, ALPHAS, False, ids)
     ref, _ = _oracle(reference, hidden.detach().double(), index, weights.double(), ids, False)
     # bfloat16 compute, as Unsloth Zoo runs 4-bit experts.
@@ -659,7 +643,10 @@ def test_grouped_under_torch_compile(monkeypatch, dtype):
     eager = experts(hidden, index, weights)
     assert experts.mode == "grouped"
     torch._dynamo.reset()
-    compiled = torch.compile(experts, backend = "eager", fullgraph = True)(hidden, index, weights)
+    # fullgraph on CUDA, where Zoo's grouped GEMM traces as a custom op; on CPU it is a compile-disabled loop.
+    compiled = torch.compile(experts, backend = "eager", fullgraph = DEVICE == "cuda")(
+        hidden, index, weights
+    )
     torch.testing.assert_close(compiled.float(), eager.float(), atol = 2e-2, rtol = 2e-2)
     compiled.sum().backward()
     assert torch.isfinite(hidden.grad).all()
