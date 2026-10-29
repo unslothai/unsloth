@@ -25675,7 +25675,12 @@ async def _external_source_transcript(
     return _source_transcript(result, source, False)
 
 
-def _refuse_long_source(source, cap: float, *, connection: bool = False) -> None:
+def _refuse_long_source(
+    source,
+    cap: float,
+    *,
+    connection: bool = False,
+) -> None:
     """413 before any model load or upload when the source runs past ``cap`` seconds."""
     from core.inference import audio_edit, audio_inputs
 

@@ -245,9 +245,7 @@ def kib_limits(monkeypatch):
 
 
 @pytest.mark.parametrize("setting, cap", [(300, 300 * 1024), (100, 200 * 1024)])
-def test_the_audio_cap_follows_the_upload_setting_above_its_floor(
-    client, kib_limits, setting, cap
-):
+def test_the_audio_cap_follows_the_upload_setting_above_its_floor(client, kib_limits, setting, cap):
     import main
 
     kib_limits["mb"] = setting

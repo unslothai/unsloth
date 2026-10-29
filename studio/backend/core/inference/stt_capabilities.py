@@ -91,7 +91,6 @@ def max_seconds_for(engine: Optional[str]) -> int:
     """The longest audio Transcribe takes on ``engine``; audio.cpp reads it whole."""
     if engine == "audiocpp":
         from core.inference import audio_inputs
-
         return audio_inputs.transcribe_max_seconds()
     from core.inference import stt_sidecar
 
