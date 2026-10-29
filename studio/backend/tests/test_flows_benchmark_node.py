@@ -26,7 +26,15 @@ class _Ctx:
         self.params.update(params)
         self.caller = object()
 
-    async def call(self, method, path, json = None, params = None, files = None, **_):
+    async def call(
+        self,
+        method,
+        path,
+        json = None,
+        params = None,
+        files = None,
+        **_,
+    ):
         self.calls.append((method, path, params, json, files))
         return self.routes(method, path, params, json)
 
@@ -39,7 +47,13 @@ class _Ctx:
 
 def _samples(correct):
     return [
-        {"doc_id": i, "question": r["instruction"], "target": r["response"], "response": "x", "correct": ok}
+        {
+            "doc_id": i,
+            "question": r["instruction"],
+            "target": r["response"],
+            "response": "x",
+            "correct": ok,
+        }
         for i, (r, ok) in enumerate(zip(ROWS, correct))
     ]
 
@@ -103,7 +117,9 @@ def test_adapter_is_scored_against_itself_off_and_failures_keep_the_row(monkeypa
     results = out["results"]
     assert (results["passed"], results["scored"], results["base_score"]) == (3, 4, 0.0)
     assert results["run_id"] == "r1" and len(results["preview"]) == 4
-    assert results["preview"][2]["passed"] is False and results["preview"][2]["base_passed"] is False
+    assert (
+        results["preview"][2]["passed"] is False and results["preview"][2]["base_passed"] is False
+    )
     assert results["preview"][3]["reason"] == "HTTP 500: boom"
     failed = next(rows for name, rows in _uploads(ctx).items() if name.endswith("-failures.jsonl"))
     assert failed == [
@@ -162,7 +178,10 @@ def test_lm_eval_refuses_an_adapter_and_scores_a_gguf_with_a_limit(monkeypatch):
             return {"success": True, "details": {"run_id": "h1"}}
         if path == "/api/benchmarks/evals/runs/h1":
             return {
-                "metrics": [{"name": "acc_norm,none", "score": 0.3}, {"name": "acc,none", "score": 0.25}],
+                "metrics": [
+                    {"name": "acc_norm,none", "score": 0.3},
+                    {"name": "acc,none", "score": 0.25},
+                ],
                 "samples": _samples([True, False, False, False]),
             }
         if path == "/api/hub/datasets/upload":
@@ -172,7 +191,12 @@ def test_lm_eval_refuses_an_adapter_and_scores_a_gguf_with_a_limit(monkeypatch):
     ctx = _Ctx(routes, task = "HellaSwag", max_rows = 10)
     out = asyncio.run(benchmark.benchmark(ctx))
     assert sent == [
-        {"checkpoint_path": "unsloth/Qwen3-0.6B-GGUF", "model_source": "local", "task": "hellaswag", "limit": 10}
+        {
+            "checkpoint_path": "unsloth/Qwen3-0.6B-GGUF",
+            "model_source": "local",
+            "task": "hellaswag",
+            "limit": 10,
+        }
     ]
     # The Evals tab's headline metric, acc_norm for HellaSwag, not the first one listed.
     assert out["score"] == 0.3 and out["results"]["metric"] == "acc_norm,none"
@@ -200,7 +224,9 @@ def test_a_hub_split_is_streamed_and_cut_to_max_rows(monkeypatch):
     monkeypatch.setattr("datasets.load_dataset", load_dataset)
     monkeypatch.setattr("core.training.account_jobs.account_hf_token", lambda token: None)
     ctx = _Ctx(lambda *a: {})
-    rows = asyncio.run(benchmark._read_rows(ctx, {"kind": "dataset", "source": "hf", "ref": "o/d"}, 2))
+    rows = asyncio.run(
+        benchmark._read_rows(ctx, {"kind": "dataset", "source": "hf", "ref": "o/d"}, 2)
+    )
     assert rows == ROWS[:2]
     assert seen == {"name": "o/d", "split": "train", "streaming": True, "take": 2}
 
@@ -220,5 +246,11 @@ def test_a_local_file_is_streamed_too(monkeypatch):
     monkeypatch.setattr("core.flows.nodes.data.local_seed_path", lambda ref: "/cache/x.jsonl")
     monkeypatch.setattr("core.training.account_jobs.account_hf_token", lambda token: None)
     ctx = _Ctx(lambda *a: {})
-    rows = asyncio.run(benchmark._read_rows(ctx, {"kind": "dataset", "source": "local", "ref": "ref:x"}, 3))
-    assert rows == ROWS[:3] and seen == {"builder": "json", "data_files": "/cache/x.jsonl", "streaming": True}
+    rows = asyncio.run(
+        benchmark._read_rows(ctx, {"kind": "dataset", "source": "local", "ref": "ref:x"}, 3)
+    )
+    assert rows == ROWS[:3] and seen == {
+        "builder": "json",
+        "data_files": "/cache/x.jsonl",
+        "streaming": True,
+    }

@@ -45,7 +45,11 @@ def _text(value: Any) -> str:
     return json.dumps(value, ensure_ascii = False)
 
 
-def failure_row(failure: Any, prompt_column: str = "", reference_column: str = "") -> Optional[dict]:
+def failure_row(
+    failure: Any,
+    prompt_column: str = "",
+    reference_column: str = "",
+) -> Optional[dict]:
     if not isinstance(failure, dict):
         return None
     lowered = {str(k).lower(): v for k, v in failure.items()}

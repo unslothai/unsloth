@@ -167,7 +167,12 @@ def run_benchmark(
             if is_cancelled():
                 cancelled = True
                 break
-            result: dict[str, Any] = {"index": index, "passed": False, "error": None, "output": None}
+            result: dict[str, Any] = {
+                "index": index,
+                "passed": False,
+                "error": None,
+                "output": None,
+            }
             try:
                 output = strip_thinking(chat(target, messages))
                 passed, reason = _score_answer(spec, chat, prompt, output, reference)
@@ -226,7 +231,11 @@ def run_benchmark(
         "failed_examples": failed[:MAX_FAILED_EXAMPLES],
         "failed_total": len(failed),
         # Kept out of the stored samples, so callers still see which rows could not be scored.
-        "errored": [{"index": r["index"], "error": r["error"]} for r in candidate if r.get("error") is not None],
+        "errored": [
+            {"index": r["index"], "error": r["error"]}
+            for r in candidate
+            if r.get("error") is not None
+        ],
         "samples": samples,
     }
 
@@ -237,7 +246,13 @@ def eval_metrics(summary: dict[str, Any]) -> list[dict[str, Any]]:
     if score is None:
         return []
     stderr = math.sqrt(score * (1 - score) / (n - 1)) if n > 1 else None
-    return [{"name": "acc,none", "score": round(score, 4), "stderr": None if stderr is None else f"{stderr:.4f}"}]
+    return [
+        {
+            "name": "acc,none",
+            "score": round(score, 4),
+            "stderr": None if stderr is None else f"{stderr:.4f}",
+        }
+    ]
 
 
 DEFAULT_MAX_TOKENS = 512

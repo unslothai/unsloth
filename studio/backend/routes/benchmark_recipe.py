@@ -62,7 +62,6 @@ def _model_label(alias: str, configs: dict[str, dict], local_names: set) -> str:
 
 def _store(run_id: str, model: str, summary: dict, samples: list[dict], duration: float) -> None:
     from storage.studio_db import insert_benchmark_run, insert_benchmark_samples
-
     insert_benchmark_run(
         id = run_id,
         task = RECIPE_HELDOUT_TASK_ID,
@@ -76,10 +75,7 @@ def _store(run_id: str, model: str, summary: dict, samples: list[dict], duration
 
 
 async def run_recipe_heldout(
-    request: BenchmarkRunRequest,
-    http_request: Request,
-    credential: tuple,
-    via_api_key: bool,
+    request: BenchmarkRunRequest, http_request: Request, credential: tuple, via_api_key: bool
 ) -> BenchmarkOperationResponse:
     spec = request.recipe
     if spec is None:
@@ -160,7 +156,9 @@ async def run_recipe_heldout(
             if spec.scorer == "judge":
                 targets["judge"] = resolve_chat_target(spec.judge_alias, configs, providers)
                 judge_provider = configs[spec.judge_alias].get("provider")
-                if (spec.baseline.mode == "adapter_off" or spec.local_adapter) and judge_provider in local_names:
+                if (
+                    spec.baseline.mode == "adapter_off" or spec.local_adapter
+                ) and judge_provider in local_names:
                     # The local model can judge, but never with the adapter it is grading.
                     targets["judge"]["body"]["use_adapter"] = False
         except ValueError as exc:
@@ -210,7 +208,9 @@ async def run_recipe_heldout(
         # Two runs can finish in the same second (a Loop scores probe then test rows).
         run_id = f"benchmark_{RECIPE_HELDOUT_TASK_ID}_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
         run_ids = {"candidate": run_id}
-        _store(run_id, candidate_model, result["candidate"], result["samples"]["candidate"], duration)
+        _store(
+            run_id, candidate_model, result["candidate"], result["samples"]["candidate"], duration
+        )
         if "baseline" in result:
             run_ids["baseline"] = f"{run_id}_baseline"
             _store(

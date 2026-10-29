@@ -50,7 +50,9 @@ class RecipeHeldoutSpec(BaseModel):
     model_alias: str = Field(..., min_length = 1)
     baseline: RecipeHeldoutBaseline = RecipeHeldoutBaseline()
     judge_alias: Optional[str] = None
-    local_adapter: bool = Field(False, description = "The local model has a LoRA loaded; a local judge turns it off")
+    local_adapter: bool = Field(
+        False, description = "The local model has a LoRA loaded; a local judge turns it off"
+    )
     model_providers: list[dict[str, Any]] = Field(default_factory = list)
     model_configs: list[dict[str, Any]] = Field(default_factory = list)
 

@@ -92,7 +92,13 @@ def test_no_delta_when_the_two_sides_scored_different_rows():
         return {"2+2?": "4", "Capital of France?": "Paris", "3*3?": "9"}[messages[-1]["content"]]
 
     result = run_benchmark(
-        {"rows": ROWS, "prompt_column": "question", "reference_column": "answer", "scorer": "reference", "with_baseline": True},
+        {
+            "rows": ROWS,
+            "prompt_column": "question",
+            "reference_column": "answer",
+            "scorer": "reference",
+            "with_baseline": True,
+        },
         chat = chat,
     )
     assert result["candidate"]["score"] == 1.0 and result["baseline"]["score"] == 1.0
@@ -102,7 +108,11 @@ def test_no_delta_when_the_two_sides_scored_different_rows():
 def test_judge_and_row_errors():
     def chat(target, messages):
         if target == "judge":
-            return "PASS" if "Paris" in messages[-1]["content"].split("Answer to grade:")[1] else "FAIL"
+            return (
+                "PASS"
+                if "Paris" in messages[-1]["content"].split("Answer to grade:")[1]
+                else "FAIL"
+            )
         if messages[-1]["content"] == "3*3?":
             raise RuntimeError("HTTP 500: boom")
         return "Paris"
@@ -122,7 +132,12 @@ def test_judge_and_row_errors():
 def test_stops_on_cancel():
     calls = []
     result = run_benchmark(
-        {"rows": ROWS, "prompt_column": "question", "reference_column": "answer", "scorer": "reference"},
+        {
+            "rows": ROWS,
+            "prompt_column": "question",
+            "reference_column": "answer",
+            "scorer": "reference",
+        },
         chat = lambda target, messages: calls.append(1) or "4",
         is_cancelled = lambda: len(calls) >= 1,
     )
@@ -163,7 +178,11 @@ def _request(**recipe):
     )
 
 
-def _fake_inject(recipe, request, expect_gen = None):
+def _fake_inject(
+    recipe,
+    request,
+    expect_gen = None,
+):
     for provider in recipe["model_providers"]:
         if provider.pop("is_local", None):
             provider.update(endpoint = "http://127.0.0.1:8888/v1", api_key = "sk-unsloth-test")
@@ -179,9 +198,15 @@ def harness(monkeypatch):
     monkeypatch.setattr(route, "_revoke_internal_api_key_safe", revoked.append)
     monkeypatch.setattr(route, "managed_account", lambda: False)
     monkeypatch.setattr(route, "current_account", lambda: None)
-    monkeypatch.setattr(route, "_loaded_local_model_identity", lambda: (True, "unsloth/Qwen3-0.6B", ""))
     monkeypatch.setattr(
-        route, "_store", lambda run_id, model, summary, samples, duration: stored.update({run_id: (model, summary, samples)})
+        route, "_loaded_local_model_identity", lambda: (True, "unsloth/Qwen3-0.6B", "")
+    )
+    monkeypatch.setattr(
+        route,
+        "_store",
+        lambda run_id, model, summary, samples, duration: stored.update(
+            {run_id: (model, summary, samples)}
+        ),
     )
 
     def fake_post(client, target, messages):
@@ -195,7 +220,9 @@ def harness(monkeypatch):
 
 
 def _run(request, via_api_key = False):
-    return asyncio.run(route.run_recipe_heldout(request, SimpleNamespace(), ("admin", None), via_api_key))
+    return asyncio.run(
+        route.run_recipe_heldout(request, SimpleNamespace(), ("admin", None), via_api_key)
+    )
 
 
 def test_adapter_off_runs_through_the_evals_slot_and_storage(harness):

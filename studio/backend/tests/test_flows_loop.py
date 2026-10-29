@@ -74,7 +74,10 @@ def test_loop_body_takes_the_fed_recipe_group_and_stays_acyclic():
     "change, message",
     [
         (lambda d: d["edges"].pop(), "Draw the dashed feeds-the-next-round wire"),
-        (lambda d: d["edges"].append(edge("train", "holdout", "gen", "seed")), "takes one connection"),
+        (
+            lambda d: d["edges"].append(edge("train", "holdout", "gen", "seed")),
+            "takes one connection",
+        ),
         (
             lambda d: d["edges"][-1].update(source = "train", source_port = "metrics"),
             "scores the model",
@@ -161,8 +164,22 @@ def _engine(leak = False, test_pass = None):
     async def train(ctx):
         starts.append(ctx.inputs.get("start"))
         learned = {r["failed_prompt"] for rows in seen for r in rows if r["origin"] == "failure"}
-        held = {"kind": "dataset", "source": "local", "ref": "held", "rows": len(HELD), "data": [{"prompt": p, "reference": "billing"} for p in HELD]}
-        return {"checkpoint": {"kind": "checkpoint", "name": f"run{len(seen)}", "learned": sorted(learned)}, "holdout": held, "metrics": {}}
+        held = {
+            "kind": "dataset",
+            "source": "local",
+            "ref": "held",
+            "rows": len(HELD),
+            "data": [{"prompt": p, "reference": "billing"} for p in HELD],
+        }
+        return {
+            "checkpoint": {
+                "kind": "checkpoint",
+                "name": f"run{len(seen)}",
+                "learned": sorted(learned),
+            },
+            "holdout": held,
+            "metrics": {},
+        }
 
     async def bench(ctx):
         rows = ctx.inputs["dataset"]["data"]
@@ -173,7 +190,9 @@ def _engine(leak = False, test_pass = None):
             passed = test_pass[len([s for s in scored if s[0] == "test"]) - 1]
             return {"score": passed, "failures": []}
         if leak:
-            failed = failed + [{"prompt": HELD[i], "reference": "billing", "output": "x"} for i in range(8)]
+            failed = failed + [
+                {"prompt": HELD[i], "reference": "billing", "output": "x"} for i in range(8)
+            ]
         return {
             "score": 1 - len(failed) / len(rows),
             "failures": [{**r, "output": "wrong"} for r in failed],
@@ -246,7 +265,12 @@ async def test_stops_at_the_target_test_score_and_keeps_the_best_checkpoint():
 
 
 def test_benchmark_failures_map_to_the_seed_columns():
-    failure = {"ticket": "I was charged twice", "queue": "billing", "model_output": "shipping", "reason": "no match"}
+    failure = {
+        "ticket": "I was charged twice",
+        "queue": "billing",
+        "model_output": "shipping",
+        "reason": "no match",
+    }
     assert loop_rounds.failure_row(failure, "ticket", "queue") == {
         "origin": "failure",
         "failed_prompt": "I was charged twice",
@@ -273,7 +297,12 @@ def test_a_recipe_names_the_local_model_to_load_before_each_round():
     recipe = {
         "model_providers": [{"name": "local", "is_local": True}, {"name": "api"}],
         "model_configs": [
-            {"alias": "writer", "provider": "local", "model": "unsloth/Qwen3-1.7B-GGUF", "gguf_variant": "Q4_K_M"},
+            {
+                "alias": "writer",
+                "provider": "local",
+                "model": "unsloth/Qwen3-1.7B-GGUF",
+                "gguf_variant": "Q4_K_M",
+            },
             {"alias": "unused", "provider": "local", "model": "other/model"},
         ],
         "columns": [{"name": "ticket", "column_type": "llm-text", "model_alias": "writer"}],
@@ -308,8 +337,10 @@ def test_a_recipe_step_validates_against_the_seed_it_runs_on(monkeypatch, tmp_pa
         inputs = {"seed": {"kind": "dataset", "source": "local", "ref": "loop-seed"}},
     )
     asyncio.run(data.recipe_group(ctx))
-    assert checked[0]["recipe"]["seed_config"]["source"] == {"seed_type": "local", "path": str(seed)}
-
+    assert checked[0]["recipe"]["seed_config"]["source"] == {
+        "seed_type": "local",
+        "path": str(seed),
+    }
 
 
 def test_a_loop_refuses_an_lm_eval_task_on_its_benchmark():
@@ -320,7 +351,6 @@ def test_a_loop_refuses_an_lm_eval_task_on_its_benchmark():
     assert not errors, errors
     with pytest.raises(CompileError, match = "set Benchmark's Task to Recipe held-out"):
         compile_flow(parsed)
-
 
 
 @run_async
@@ -361,7 +391,12 @@ def test_fine_tune_continues_a_wired_checkpoint_as_an_adapter(monkeypatch):
     monkeypatch.setattr("hub.utils.host_paths.cache_reference", lambda p: f"cache:{p}")
     started = []
     ctx = TrainCtx(_recipe_routes(started))
-    ctx.inputs["start"] = {"kind": "checkpoint", "name": "run1", "base_model": "unsloth/Qwen3-0.6B", "output_dir": "/out/run1"}
+    ctx.inputs["start"] = {
+        "kind": "checkpoint",
+        "name": "run1",
+        "base_model": "unsloth/Qwen3-0.6B",
+        "output_dir": "/out/run1",
+    }
     with pytest.raises(RuntimeError, match = "started"):
         asyncio.run(training.finetune(ctx))
     assert started[0]["model_name"] == "/out/run1" and started[0]["model_format"] == "adapter"

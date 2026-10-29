@@ -50,7 +50,12 @@ class _Ctx:
         self.calls.append((method, path, params, json, files))
         return self.routes(method, path, params, json)
 
-    async def ensure_model(self, kind, choice, options = None):
+    async def ensure_model(
+        self,
+        kind,
+        choice,
+        options = None,
+    ):
         self.loaded = choice
 
     def on_cancel(self, fn):

@@ -381,7 +381,6 @@ async def run_benchmark(
     """Run a benchmark on the specified model using lm_eval."""
     if request.task == RECIPE_HELDOUT_TASK_ID:
         from routes.benchmark_recipe import run_recipe_heldout
-
         return await run_recipe_heldout(request, http_request, credential, via_api_key)
     backend = get_benchmark_backend()
 

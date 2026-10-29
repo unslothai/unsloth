@@ -576,6 +576,9 @@ def test_a_hub_run_is_named_with_its_loaded_quant(monkeypatch):
     assert label(repo) == f"{repo}:Q8_0"
     assert label(f"{repo}:Q4_K_M") == f"{repo}:Q4_K_M"  # the request already names one
     assert label("unsloth/Qwen3-4B-GGUF") == "unsloth/Qwen3-4B-GGUF"  # not the loaded model
-    assert label("/models/Llama-3.2-1B-Instruct-Q8_0.gguf") == "/models/Llama-3.2-1B-Instruct-Q8_0.gguf"
+    assert (
+        label("/models/Llama-3.2-1B-Instruct-Q8_0.gguf")
+        == "/models/Llama-3.2-1B-Instruct-Q8_0.gguf"
+    )
     llama.is_loaded = False
     assert label(repo) == repo

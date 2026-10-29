@@ -28,13 +28,23 @@ SCORERS = {"Reference match": "reference", "LLM judge": "judge"}
 MAX_ROWS = 200
 PREVIEW_CHARS = 400
 PROMPT_GUESSES = ("prompt", "instruction", "question", "input", "query", "user")
-REFERENCE_GUESSES = ("response", "output", "answer", "completion", "reference", "target", "assistant")
+REFERENCE_GUESSES = (
+    "response",
+    "output",
+    "answer",
+    "completion",
+    "reference",
+    "target",
+    "assistant",
+)
 
 
 def guess_column(columns: list[str], wanted: str, guesses: tuple[str, ...]) -> Optional[str]:
     if wanted:
         if wanted not in columns:
-            raise FlowNodeError(f"The rows have no {wanted!r} column (they have {', '.join(columns)})")
+            raise FlowNodeError(
+                f"The rows have no {wanted!r} column (they have {', '.join(columns)})"
+            )
         return wanted
     lower = {c.lower(): c for c in columns}
     return next((lower[g] for g in guesses if g in lower), None)
@@ -70,7 +80,13 @@ async def _load_target(ctx: NodeContext) -> tuple[str, bool]:
         ctx.set_status("loading_model", f"Loading {name}")
         try:
             trained = await trained_models.resolve_by(
-                deadline, ctx.caller, model = None, checkpoint = name, export = None, kind = "llm", variant = None
+                deadline,
+                ctx.caller,
+                model = None,
+                checkpoint = name,
+                export = None,
+                kind = "llm",
+                variant = None,
             )
             await loading.load_llm(
                 ctx.caller,
@@ -96,7 +112,9 @@ async def _load_target(ctx: NodeContext) -> tuple[str, bool]:
     await ctx.ensure_model("chat", model if isinstance(model, dict) and model.get("repo") else None)
     label = await resident_name(ctx, "chat")
     if not label:
-        raise FlowNodeError("Wire a Fine-tune checkpoint in, pick a model, or load one in Chat first")
+        raise FlowNodeError(
+            "Wire a Fine-tune checkpoint in, pick a model, or load one in Chat first"
+        )
     return label, False
 
 
@@ -129,7 +147,9 @@ async def _read_rows(ctx: NodeContext, dataset: Any, limit: int) -> list[dict]:
     from core.training.account_jobs import account_hf_token
 
     if not isinstance(dataset, dict) or dataset.get("kind") != "dataset":
-        raise FlowNodeError("Recipe held-out scores a dataset: wire Fine-tune's Held-out rows or a recipe in")
+        raise FlowNodeError(
+            "Recipe held-out scores a dataset: wire Fine-tune's Held-out rows or a recipe in"
+        )
     if dataset.get("source") == "recipe" and not recipe_artifact(dataset.get("ref")):
         rows = (await recipe_rows(ctx, str(dataset["ref"]), limit = limit))[:limit]
     else:
@@ -153,13 +173,17 @@ async def _samples(ctx: NodeContext, run_id: Optional[str]) -> list[dict]:
         return []
     detail = await ctx.call("GET", f"{EVALS}/runs/{quote(run_id, safe = '')}")
     samples = detail.get("samples") if isinstance(detail, dict) else None
-    return sorted((s for s in samples or [] if isinstance(s, dict)), key = lambda s: s.get("doc_id", 0))
+    return sorted(
+        (s for s in samples or [] if isinstance(s, dict)), key = lambda s: s.get("doc_id", 0)
+    )
 
 
 async def _recipe_heldout(ctx: NodeContext, label: str, is_lora: bool, max_rows: int) -> dict:
     rows = await _read_rows(ctx, ctx.inputs.get("dataset"), max_rows)
     columns = sorted({k for r in rows for k in r})
-    prompt_col = guess_column(columns, str(ctx.params.get("prompt_column") or "").strip(), PROMPT_GUESSES)
+    prompt_col = guess_column(
+        columns, str(ctx.params.get("prompt_column") or "").strip(), PROMPT_GUESSES
+    )
     if not prompt_col:
         raise FlowNodeError("Set the prompt column under Advanced: no column looks like a prompt")
     reference_col = guess_column(
@@ -169,7 +193,9 @@ async def _recipe_heldout(ctx: NodeContext, label: str, is_lora: bool, max_rows:
     )
     scorer = SCORERS.get(str(ctx.params.get("scorer") or ""), "reference")
     if scorer == "reference" and not reference_col:
-        raise FlowNodeError("Reference match needs a reference column; set it under Advanced or use LLM judge")
+        raise FlowNodeError(
+            "Reference match needs a reference column; set it under Advanced or use LLM judge"
+        )
     with_base = is_lora and ctx.params.get("compare_base") is not False
     spec = {
         "rows": rows,
@@ -187,11 +213,18 @@ async def _recipe_heldout(ctx: NodeContext, label: str, is_lora: bool, max_rows:
         "model_providers": [{"name": "local", "is_local": True}],
         "model_configs": [{"alias": "candidate", "provider": "local", "model": ""}],
     }
-    ctx.progress(phase = f"Scoring {len(rows)} rows" + (" with the adapter on and off" if with_base else ""))
+    ctx.progress(
+        phase = f"Scoring {len(rows)} rows" + (" with the adapter on and off" if with_base else "")
+    )
     done = await ctx.call(
         "POST",
         f"{EVALS}/run",
-        json = {"checkpoint_path": label, "model_source": "local", "task": RECIPE_TASK, "recipe": spec},
+        json = {
+            "checkpoint_path": label,
+            "model_source": "local",
+            "task": RECIPE_TASK,
+            "recipe": spec,
+        },
     )
     done = done if isinstance(done, dict) else {}
     details = done.get("details") or {}
@@ -202,11 +235,18 @@ async def _recipe_heldout(ctx: NodeContext, label: str, is_lora: bool, max_rows:
     candidate = await _samples(ctx, run_ids.get("candidate"))
     base = {s.get("doc_id"): s for s in await _samples(ctx, run_ids.get("baseline"))}
     results, failures = [], []
-    errored = {e.get("index"): e.get("error") for e in found.get("errored") or [] if isinstance(e, dict)}
+    errored = {
+        e.get("index"): e.get("error") for e in found.get("errored") or [] if isinstance(e, dict)
+    }
     candidate = sorted(
         candidate
         + [
-            {"doc_id": i, "question": rows[i].get(prompt_col), "target": rows[i].get(reference_col) if reference_col else None, "raw_response": err}
+            {
+                "doc_id": i,
+                "question": rows[i].get(prompt_col),
+                "target": rows[i].get(reference_col) if reference_col else None,
+                "raw_response": err,
+            }
             for i, err in errored.items()
             if isinstance(i, int) and 0 <= i < len(rows)
         ],
@@ -254,7 +294,9 @@ async def _lm_eval(ctx: NodeContext, task: str, label: str, is_lora: bool, max_r
     except Exception:
         status = None
     if not isinstance(status, dict) or status.get("is_gguf") is not True:
-        raise FlowNodeError("lm-eval tasks score a GGUF loaded in llama.cpp; pick a GGUF model on this node")
+        raise FlowNodeError(
+            "lm-eval tasks score a GGUF loaded in llama.cpp; pick a GGUF model on this node"
+        )
     ctx.progress(phase = f"Running {task} on {max_rows} samples")
     done = await ctx.call(
         "POST",
@@ -270,7 +312,8 @@ async def _lm_eval(ctx: NodeContext, task: str, label: str, is_lora: bool, max_r
     detail = detail if isinstance(detail, dict) else {}
     score, metric = headline(detail.get("metrics") or [])
     samples = sorted(
-        (s for s in (detail.get("samples") or []) if isinstance(s, dict)), key = lambda s: s.get("doc_id", 0)
+        (s for s in (detail.get("samples") or []) if isinstance(s, dict)),
+        key = lambda s: s.get("doc_id", 0),
     )
     results = [
         {
@@ -300,7 +343,6 @@ async def _lm_eval(ctx: NodeContext, task: str, label: str, is_lora: bool, max_r
 
 async def _as_dataset(ctx: NodeContext, rows: list[dict], name: str) -> dict:
     from core.flows.nodes.data import upload_rows
-
     if not rows:
         return {"kind": "dataset", "source": "local", "ref": "", "rows": 0, "columns": []}
     return await upload_rows(ctx, rows, name)
@@ -336,5 +378,7 @@ async def benchmark(ctx: NodeContext) -> dict:
         }
     )
     failures = await _as_dataset(ctx, found["failures"], f"{tag}-failures")
-    failures["preview"] = [{k: _short(v) for k, v in r.items()} for r in found["failures"][:MAX_ROWS]]
+    failures["preview"] = [
+        {k: _short(v) for k, v in r.items()} for r in found["failures"][:MAX_ROWS]
+    ]
     return {"score": found["score"], "results": results, "failures": failures}

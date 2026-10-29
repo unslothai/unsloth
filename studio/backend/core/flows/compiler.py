@@ -512,7 +512,9 @@ def _check_feedback(
         while loop is not None and nodes[loop]["type"] != LOOP:
             loop = owner.get(loop)
         if loop is None or not _within(dst, loop, owner):
-            errors.append(issue("A feeds-the-next-round wire runs inside one Loop group", edge_id = eid))
+            errors.append(
+                issue("A feeds-the-next-round wire runs inside one Loop group", edge_id = eid)
+            )
             continue
         if edge["source_port"] != "failures" or not {"failures", "score"} <= {
             p["id"] for p in sspec["outputs"]
@@ -525,7 +527,10 @@ def _check_feedback(
             )
             continue
         task = next((p for p in sspec["params"] if p["id"] == "task"), None)
-        if task and (nodes[src].get("params") or {}).get("task", task["default"]) != task["default"]:
+        if (
+            task
+            and (nodes[src].get("params") or {}).get("task", task["default"]) != task["default"]
+        ):
             errors.append(
                 issue(
                     f"A Loop scores its own held-out rows: set {sspec['title']}'s Task to {task['default']}",

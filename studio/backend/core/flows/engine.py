@@ -1776,7 +1776,11 @@ class FlowEngine:
                 else:
                     if not isinstance(exc, FlowNodeError):
                         logger.exception("flows: %s (%s) failed", nid, spec["type"])
-                    rs.node(nid).error = str(exc) if isinstance(exc, FlowNodeError) else f"{spec['title']} failed: {exc}"
+                    rs.node(nid).error = (
+                        str(exc)
+                        if isinstance(exc, FlowNodeError)
+                        else f"{spec['title']} failed: {exc}"
+                    )
                     rs.set_status(nid, "failed")
                 self._record(rs, nid, rs.node(nid).status, None, rs.node(nid).error, iteration)
             return
@@ -2094,7 +2098,6 @@ class FlowEngine:
 
     async def _upload_rows(self, ctx: NodeContextImpl, rows: list[dict], name: str) -> dict:
         from core.flows.nodes.data import upload_rows
-
         return await upload_rows(ctx, rows, name)
 
     async def _seed_upload(self, ctx: NodeContextImpl, rows: list[dict], name: str) -> dict:
@@ -2102,7 +2105,10 @@ class FlowEngine:
         dataset: two Loops on the same flow seed share round 1 and with it the probe/test split."""
         from core.flows.nodes.data import local_seed_path
 
-        key = (ctx._rs.account.account_id, hashlib.sha256(json.dumps(rows, sort_keys = True).encode()).hexdigest())
+        key = (
+            ctx._rs.account.account_id,
+            hashlib.sha256(json.dumps(rows, sort_keys = True).encode()).hexdigest(),
+        )
         found = self._seed_uploads.get(key)
         if found is not None:
             try:
@@ -2117,12 +2123,7 @@ class FlowEngine:
         return dict(found)
 
     async def _rounds(
-        self,
-        rs: RunState,
-        nid: str,
-        env: Env,
-        ctx: NodeContextImpl,
-        iteration: Optional[tuple],
+        self, rs: RunState, nid: str, env: Env, ctx: NodeContextImpl, iteration: Optional[tuple]
     ) -> None:
         """Run the Loop's body once per round. The score step runs twice a round, on the probe rows and
         on the test rows; only the probe run's failures reach the next round's seed."""
@@ -2150,7 +2151,9 @@ class FlowEngine:
         rounds = max(1, min(int(params.get("rounds") or 3), 20))
         target = float(params.get("target") if params.get("target") is not None else 90)
         feed = params.get("feedback") is not False
-        failure_percent = int(params.get("failure_percent") if params.get("failure_percent") is not None else 50)
+        failure_percent = int(
+            params.get("failure_percent") if params.get("failure_percent") is not None else 50
+        )
         seed_rows = int((plan.nodes[seed_node].get("params") or {}).get("rows") or 50)
         scorer_params = plan.nodes[scorer].get("params") or {}
         rs.set_status(nid, "running")
@@ -2165,7 +2168,9 @@ class FlowEngine:
             b
             for b in before
             if params.get("continue_rounds") is not False
-            and any(p["id"] == "start" and p["type"] == "checkpoint" for p in plan.specs[b]["inputs"])
+            and any(
+                p["id"] == "start" and p["type"] == "checkpoint" for p in plan.specs[b]["inputs"]
+            )
             and not plan.inputs[b].get("start")
         ]
         last: dict[str, dict] = {}
@@ -2188,7 +2193,12 @@ class FlowEngine:
                     break
                 rs.progress(
                     nid,
-                    {"fraction": r / rounds, "step": r + 1, "total": rounds, "phase": f"Round {r + 1} of {rounds}"},
+                    {
+                        "fraction": r / rounds,
+                        "step": r + 1,
+                        "total": rounds,
+                        "phase": f"Round {r + 1} of {rounds}",
+                    },
                 )
                 key = (*(iteration or ()), r)
                 child = Env(env)
@@ -2219,23 +2229,37 @@ class FlowEngine:
                     produced = child.get(held_src[0])
                     held = produced.get(held_src[1]) if isinstance(produced, dict) else None
                     if not held:
-                        raise FlowNodeError("Round 1 produced no held-out rows to score; set Hold out % on Fine-tune")
+                        raise FlowNodeError(
+                            "Round 1 produced no held-out rows to score; set Hold out % on Fine-tune"
+                        )
                     probe_rows, test_rows = loop_rounds.split_holdout(
                         await self._dataset_rows(ctx, held),
                         int(params.get("probe_percent") or 50),
                         int(params.get("split_seed") or 0),
                     )
                     if not probe_rows or not test_rows:
-                        raise FlowNodeError("The Loop needs at least 2 held-out rows: one to probe, one to test")
-                    probe = {**await self._upload_rows(ctx, probe_rows, f"loop-{nid}-probe"), "split": "probe"}
-                    test = {**await self._upload_rows(ctx, test_rows, f"loop-{nid}-test"), "split": "test"}
+                        raise FlowNodeError(
+                            "The Loop needs at least 2 held-out rows: one to probe, one to test"
+                        )
+                    probe = {
+                        **await self._upload_rows(ctx, probe_rows, f"loop-{nid}-probe"),
+                        "split": "probe",
+                    }
+                    test = {
+                        **await self._upload_rows(ctx, test_rows, f"loop-{nid}-test"),
+                        "split": "test",
+                    }
                 probe_out = await score(probe, Env(child), (*key, 0))
                 test_layer = Env(child)
                 test_out = await score(test, test_layer, (*key, 1))
                 if after:
-                    await self._run_scope(rs, [b for b in body if b in after], test_layer, (*key, 1))
+                    await self._run_scope(
+                        rs, [b for b in body if b in after], test_layer, (*key, 1)
+                    )
                 found = probe_out.get(fail_port)
-                failures = loop_rounds.drop_test_rows(await self._dataset_rows(ctx, found), test_rows)
+                failures = loop_rounds.drop_test_rows(
+                    await self._dataset_rows(ctx, found), test_rows
+                )
                 entry = {
                     "round": r + 1,
                     "test_score": loop_rounds.as_percent(test_out.get("score")),
@@ -2263,7 +2287,9 @@ class FlowEngine:
                     best is None or entry["test_score"] > best["test_score"]
                 ):
                     best = {**entry, "checkpoint": checkpoint}
-                rs.partial(nid, {"port": "history", "value": list(history), "step": r + 1, "total": rounds})
+                rs.partial(
+                    nid, {"port": "history", "value": list(history), "step": r + 1, "total": rounds}
+                )
                 if entry["test_score"] is not None and entry["test_score"] >= target:
                     stopped = "target"
                     break
@@ -2286,14 +2312,22 @@ class FlowEngine:
                 "feedback": feed,
                 "continue": bool(carry),
                 # Same id, same test rows: runs that share it are scored on the same split.
-                "split": hashlib.sha256(json.dumps(test_rows, sort_keys = True, default = str).encode()).hexdigest()[:12]
+                "split": hashlib.sha256(
+                    json.dumps(test_rows, sort_keys = True, default = str).encode()
+                ).hexdigest()[:12]
                 if test_rows
                 else None,
             },
             "checkpoint": best["checkpoint"] if best else None,
         }
-        message = f"Reached {best['test_score']:g}% in round {best['round']}" if stopped == "target" and best else (
-            f"Best {best['test_score']:g}% (round {best['round']}), target {target:g}%" if best else None
+        message = (
+            f"Reached {best['test_score']:g}% in round {best['round']}"
+            if stopped == "target" and best
+            else (
+                f"Best {best['test_score']:g}% (round {best['round']}), target {target:g}%"
+                if best
+                else None
+            )
         )
         self._finish(rs, nid, env, outputs, "done", iteration, message = message)
 
