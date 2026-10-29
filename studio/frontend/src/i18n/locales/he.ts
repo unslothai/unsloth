@@ -716,6 +716,36 @@ export const he = {
     compactEmpty: "אין עדיין מה לכווץ",
     compactUnsupported: "כיווץ שיחה דורש מודל GGUF או MLX עם תמיכה בכלים",
   },
+  halloween: {
+    navLabel: "ממתק או תעלול…",
+    title: "ממתק או תעלול?!",
+    description: "רקחנו כמה הפחדות בשביל Unsloth, כאן עד סוף אוקטובר.",
+    chooseTheme: "בחירת ערכת נושא מפחידה",
+    spookyGreetings: "ברכות מפחידות",
+    spookyGreetingsDescription: "העצלן מקבל שיחות חדשות בהפחדה.",
+    decorations: "עכבישים ועטלפים",
+    decorationsDescription:
+      "קורי עכביש בפינות, ומדי פעם עכביש או עטלף בערכת נושא של ליל כל הקדושים.",
+    surprise: "ממתק או תעלול!",
+    surpriseDescription: "העצלן יבחר בשבילך ערכת נושא.",
+    themesTitle: "ערכות נושא מפחידות",
+    back: "חזרה",
+    footer: "Unsloth יחזור לרגיל בחצות של 1 בנובמבר.",
+    removeNow: "הסרה עכשיו",
+    hideFromSidebar: "הסתרה מסרגל הצד",
+    greeting: {
+      pumpkins: "הדלעות כבר מגולפות. מה הלאה?",
+      brewing: "בואו נרקח משהו",
+      trickOrTreat: "ממתק או תעלול?",
+      manor: "ברוכים הבאים לאחוזה",
+      manorName: "ברוכים הבאים לאחוזה, {name}",
+      happyHalloween: "ליל כל הקדושים שמח",
+      happyHalloweenName: "ליל כל הקדושים שמח, {name}",
+      spirits: "הרוחות מקשיבות…",
+      mysteries: "אילו תעלומות נגלה הלילה?",
+      conjure: "מה אוכל לכשף בשבילך?",
+    },
+  },
   welcome: {
     goodToSeeYou: "טוב לראות אותך",
     goodToSeeYouName: "טוב לראות אותך, {name}",
@@ -875,6 +905,8 @@ export const he = {
       guidedTour: "סיור מודרך",
       help: "עזרה",
       logOut: "התנתקות",
+      logOutNeedsPassword: "לפני ההתנתקות, הגדירו סיסמה בהגדרות > גישה מרחוק כדי שתוכלו להתחבר שוב.",
+      logOutFailed: "לא ניתן היה להתנתק בבטחה. נסו שוב בעוד רגע.",
       shutdown: "כיבוי",
     },
     commandPalette: {
@@ -1019,6 +1051,11 @@ export const he = {
   },
   settings: {
     accounts: {
+      signsInAs: "מתחבר בתור {username}",
+      signsInAsOwner: "מתחבר בתור {alias} או {username}",
+      signInName: "שם ההתחברות שלך",
+      signInNameDescription: "השם שמקלידים כדי להתחבר כשבהתקנה הזו יש יותר מחשבון אחד. גם unsloth תמיד עובד. השאירו ריק כדי להשתמש רק ב-unsloth.",
+      signInNameSave: "שמירת השם",
       title: "חשבונות",
       description:
         "צור חשבונות Unsloth פרטיים. משתמשים חדשים יתחברו באמצעות קוד הגדרה חד-פעמי ויבחרו סיסמה.",
@@ -1172,7 +1209,7 @@ export const he = {
       lastVisited: "ביקור אחרון",
     },
     tabs: {
-      sandbox: "ארגז חול",
+      sandbox: "אבטחה",
       accounts: "חשבונות",
       general: "כללי",
       profile: "פרופיל",
@@ -1457,7 +1494,7 @@ export const he = {
       },
     },
     sandbox: {
-      title: "ארגז חול",
+      title: "אבטחה",
       description:
         "האם קריאות לכלי Python ו-Terminal רצות בתוך ארגז חול של מערכת ההפעלה במחשב זה.",
       docs: "תיעוד",
@@ -1523,7 +1560,7 @@ export const he = {
       installRuntimeFailed: "התקנת סביבת זמן הריצה נכשלה.",
       installRuntimeError: "לא ניתן להתחיל את התקנת סביבת זמן הריצה.",
       unsupportedArch:
-        "ארגז החול של Windows (MXC) פועל רק ב-Windows x64, ולכן אינו זמין במחשב זה.",
+        "ארגז החול של Windows (MXC) פועל רק ב-Windows x64 ו-ARM64, ולכן אינו זמין במחשב זה.",
       builtinNeedsUpdate:
         "המכל המובנה של Windows דורש גרסת build {required} ומעלה, והמחשב הזה מריץ {current}. התקינו את עדכון Windows האחרון כדי להשתמש בו בלי שלב מנהל, או הפעילו את ארגז החול החלופי שלמטה.",
       unsupportedBuild:
@@ -1547,6 +1584,7 @@ export const he = {
         "הבעלים של שרת Unsloth זה מגדיר את ארגז החול של מערכת ההפעלה.",
     },
     debugging: {
+      description: "קרא את יומני Unsloth בלי לצאת מהאפליקציה.",
       logSection: "קובץ יומן",
       source: "קובץ יומן",
       sourceHint:
@@ -2182,8 +2220,8 @@ export const he = {
       avatarShape: "צורת תמונת פרופיל",
       avatarShapeCircle: "עיגול",
       avatarShapeRounded: "פינות מעוגלות",
-      greetingSloth: "עצלן בברכת השלום",
-      greetingSlothDescription: "הצג את העצלן בברכת הפתיחה של הצ'אט.",
+      greetingSloth: "ברכה",
+      greetingSlothDescription: "הצגת הברכה בצ'אטים חדשים.",
       chooseSloth: "או בחר עצלן",
       noPicture: "ללא תמונת פרופיל",
       noneLabel: "ללא",
@@ -2284,6 +2322,12 @@ export const he = {
         classic: "קלאסית",
         minimal: "מינימלית",
         moreThemes: "ערכות נושא נוספות",
+        halloween: "האלווין",
+      },
+      trickOrTreat: {
+        label: "ממתק או תעלול",
+        description:
+          "ערכות נושא של ליל כל הקדושים וברכות מפחידות, עד 1 בנובמבר.",
       },
       custom: {
         chatWidth: {
@@ -2414,7 +2458,8 @@ export const he = {
       description: "עקוב אחר החומרה והאחסון של שרת Unsloth זה.",
       liveUpdates: "עדכונים בזמן אמת",
       floatingWindow: "חלון צף",
-      disableOverlay: "השבת שכבת תצוגה",
+      showFloatingWindow: "הצג חלון צף",
+      showFloatingWindowDescription: "השאר את השימוש ב-CPU, ב-RAM וב-GPU גלוי מעל Unsloth.",
       liveMonitor: {
         title: "מוניטור חי",
         apiTitle: "מוניטור API",
@@ -2437,7 +2482,7 @@ export const he = {
         gpuUnusableDetail: "זוהה, אך PyTorch אינו יכול להשתמש בו",
         detailedView: "תצוגה מפורטת",
         detailedViewDescription:
-          "הצגת עומס המעבד ועומס, טמפרטורה וצריכת חשמל של כל GPU בחלון הצף וכאן.",
+          "הצגת עומס המעבד ועומס, טמפרטורה וצריכת חשמל של כל GPU בחלון הצף.",
         cpuLoad: "עומס מעבד",
         gpuLoad: "עומס GPU",
         temperature: "טמפרטורה",
@@ -2470,6 +2515,10 @@ export const he = {
         used: "{value} בשימוש",
         free: "{value} פנוי",
         total: "{value} סה״כ",
+        usedOf: "{used} בשימוש מתוך {total}",
+        segmentUsed: "בשימוש ה-GPU",
+        segmentSystem: "בשימוש המערכת",
+        segmentAvailable: "זמין",
       },
       llamaBackend: {
         title: "מנוע הסקה GGUF",
@@ -2626,6 +2675,10 @@ export const he = {
           hideDetailsAction: "הסתר פרטים",
           clearAction: "נקה מטמונים",
           clearOneAction: "ניקוי",
+          showFolders: "הצגת תיקיות",
+          hideFolders: "הסתרת תיקיות",
+          previousLocations: "כולל מיקומים קודמים. לחצן הניקוי הראשי משפיע על תיקיית המטמון הנוכחית. לחצני המודלים מנקים רק את העותק שנבחר.",
+          clearModelDescription: "פעולה זו מסירה רק את העותק השמור הזה. הוא יורד שוב בעת הצורך.",
           clearingAction: "מנקה...",
           confirmTitle: "לנקות את הקבצים השמורים במטמון?",
           confirmDescription: "פעולה זו תפנה כ-{size}.",
@@ -2872,11 +2925,6 @@ export const he = {
       autoScrollManual: "ידני",
       autoScrollKeywords:
         "scroll autoscroll auto-scroll follow stick bottom jump streaming generating viewport lock hold auto manual גלילה אוטומטי ידני",
-      scrollToBottomButton: "לחצן גלילה לתחתית",
-      scrollToBottomButtonDescription:
-        "הצג לחצן לקפיצה חזרה להודעה האחרונה לאחר גלילה למעלה.",
-      scrollToBottomButtonKeywords:
-        "scroll bottom jump latest newest arrow down button floating hide show גלילה תחתית לחצן חץ",
       replyNotification: "התראה כשתשובה מסתיימת",
       replyNotificationDescription:
         "הצגת התראת מערכת כשתשובה מסתיימת בזמן ש-Unsloth ממוזער או ברקע.",
@@ -2898,9 +2946,8 @@ export const he = {
       inlineEditResponse: "עריכת תגובה על גבי התגובות",
       inlineEditResponseDescription:
         "הצג את 'עריכת תגובה' בכל תגובה, במקום בתפריט 'עוד'.",
-      modelDisclaimer: "הבהרה לגבי המודל",
-      modelDisclaimerDescription:
-        'הצג את הכיתוב "מודלי שפה עלולים לטעות" מתחת לתיבת הצ\'אט.',
+      composerAtBottom: "תיבת הכתיבה למטה",
+      composerAtBottomDescription: "התחלת צ'אטים חדשים עם תיבת הכתיבה בתחתית הדף במקום באמצע.",
       projectAttachments: "שתף קבצים בכל הפרויקט",
       projectAttachmentsDescription:
         "הפוך קבצים מצורפים חדשים לזמינים לכל צ'אט בפרויקט.",
@@ -3268,6 +3315,7 @@ export const he = {
       readDocs: "קרא את תיעוד ה-API",
       noAccess: "אין עדיין גישת API.",
       accessTokens: "טוקני גישה",
+      quickstartTitle: "התחלה מהירה",
       columnName: "שם",
       columnToken: "טוקן",
       columnCreated: "נוצר",
@@ -3413,9 +3461,9 @@ export const he = {
         sendsTo: "הבקשות נשלחות אל {provider}.",
         connectionMissing:
           "החיבור הזה אינו קיים עוד או שאין בו מודלי החלטות. בחר מודל אחר.",
-        addConnection:
-          "כדי להשתמש במודל החלטות מתארח, הוסף את TypeSafe,‏ Liquid AI או OpenRouter ב'חיבורים'.",
-        openConnections: "פתח את 'חיבורים'",
+        addConnection: "כדי להשתמש במודל החלטות מתארח, הוסף אותו במסך ",
+        connectionsLink: "חיבורים",
+        addConnectionSuffix: ".",
       },
       mcp: {
         title: "גישת סוכנים (MCP)",
@@ -4312,7 +4360,6 @@ export const he = {
       terminalStart: "> אימון unsloth מתחיל...",
       preparingResources: "> מכין מודל ומערך נתונים...",
       gettingReady: "> מכינים הכל לקראת ההרצה שלך...",
-      waitingForFirstStep: "> {message} | ממתין לצעד ראשון... ({step})",
       resumingTraining: "מחדש אימון...",
       startingTraining: "מתחיל אימון...",
       dataset: "מערך נתונים",

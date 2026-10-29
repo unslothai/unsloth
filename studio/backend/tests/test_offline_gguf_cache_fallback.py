@@ -2563,6 +2563,7 @@ class TestWaitForHealthRetriesOnReadError:
             url,
             timeout = None,
             trust_env = None,
+            verify = None,
         ):
             calls["n"] += 1
             if calls["n"] == 1:

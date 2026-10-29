@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Backend-neutral tool-call parser shared by GGUF, safetensors, and MLX, so the safetensors + MLX
-agentic loop sees the same call shape llama-server gives GGUF. Formats:
-``<tool_call>{json}</tool_call>`` (Qwen / Hermes);
-``<function=name><parameter=k>v</parameter></function>`` (Qwen3.5 xml);
-``<|python_tag|>NAME.call(k="v", ...)`` and ``<|python_tag|>{"name":..., "parameters":...}``
-(Llama-3); bare ``{"name":..., "parameters":...}`` (Llama-3.2); ``[TOOL_CALLS]`` array /
-``name{json}`` / ``name[ARGS]{json}`` (Mistral v0.3 through Large 3);
-``<|tool_call>call:NAME{k:<|"|>v<|"|>}<tool_call|>`` (Gemma 4); the fullwidth-pipe envelopes of
-DeepSeek R1 / V3 / V3.1; ``<tool_call>NAME<arg_key>..<arg_value>..</tool_call>`` (GLM 4.5-4.7);
-and the ``<|tool_calls_section_begin|>`` form (Kimi K2). Missing closing tags / brackets are
-tolerated: models often truncate mid-stream."""
+"""Backend-neutral tool-call parser for all backends; tolerates missing closing tags from truncation."""
 
 # Lazy annotations keep the standalone python 3.9 import working.
 from __future__ import annotations
@@ -1113,6 +1103,18 @@ def _unmask_blocked_bodies(text: str, bodies: list) -> Optional[str]:
     return result if count == len(bodies) else None
 
 
+def _search_from_literal(pattern: re.Pattern, literal: str, text: str, pos: int):
+    """``pattern.search(text, pos)`` for a pattern whose every match starts with ``literal``: the regex is
+    tried only where ``find`` lands, not at every position (a lookbehind still sees the text before)."""
+    at = text.find(literal, pos)
+    while at >= 0:
+        m = pattern.match(text, at)
+        if m:
+            return m
+        at = text.find(literal, at + 1)
+    return None
+
+
 def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] = None) -> str:
     """Strips closed bare call:NAME{...} calls; non-promotable, quoted and unanchored ones stay visible; None strips every anchored closed non-execution call."""
     if _whole_content_is_json_value(text):
@@ -1127,7 +1129,7 @@ def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] 
     floor = blocked_markerless_prefix_end(text, cursor, enabled_tool_names)
     code_spans, code_from = None, 0
     while cursor < n:
-        m = _GEMMA_BARE_TC_RE.search(text, cursor)
+        m = _search_from_literal(_GEMMA_BARE_TC_RE, "call", text, cursor)
         if not m:
             out.append(text[cursor:])
             break
@@ -1403,6 +1405,24 @@ _SENTINEL_MAX_LEN = max(len(sentinel) for sentinel in _STRIP_SENTINELS)
 # Bytes sampled from each end when checking that a buffer continues the previous one.
 _EXTENSION_SAMPLE = 64
 
+# Literals that can change the strip of an open ``prefix + <tool_call>{...`` body (see ``_gate_try_arm``).
+_OPEN_CALL_OPENER = "<tool_call>"
+_OPEN_CALL_TRIGGERS = (
+    "<tool_call",
+    "</tool_call",
+    "<|tool_call",
+    "<function",
+    "[TOOL_CALLS]",
+    "[ARGS]",
+    "<｜",
+    "<think",
+    "</think",
+    "[THINK",
+    "[/THINK",
+)
+_OPEN_CALL_TRIGGER_MAX_LEN = max(len(trigger) for trigger in _OPEN_CALL_TRIGGERS)
+_OPEN_CALL_WS_RE = re.compile(r"\s*")
+
 
 def _promotable_gemma_call_pos(text: str, start: int, enabled_tool_names) -> int:
     """The sentinel find is exact, not a heuristic: sweeping call-free prose per chunk was quadratic."""
@@ -1522,6 +1542,12 @@ class StreamingMarkupStripper:
         "_seen_head",
         "_seen_mid",
         "_seen_tail",
+        "_gate_on",
+        "_gate_out",
+        "_gate_dead",
+        "_gate_from",
+        "_gate_scanned",
+        "_gate_call_ws",
     )
 
     def __init__(
@@ -1552,6 +1578,98 @@ class StreamingMarkupStripper:
         self._seen_head = ""
         self._seen_mid = ""
         self._seen_tail = ""
+        self._gate_on = False
+        self._gate_out = ""
+        # (floor, first) the gate can never arm for; append-only growth cannot undo its reason.
+        self._gate_dead = None
+        self._gate_from = 0
+        self._gate_scanned = 0
+        # Where a ``call`` followed only by whitespace so far resumes its colon check, else -1.
+        self._gate_call_ws = -1
+
+    def _gate_clean(self, text: str) -> bool:
+        """Scan only text appended since the last call (plus an overlap) for anything that could change the strip."""
+        n = len(text)
+        lo = self._gate_scanned - _OPEN_CALL_TRIGGER_MAX_LEN + 1
+        if lo < self._gate_from:
+            lo = self._gate_from
+        for trigger in _OPEN_CALL_TRIGGERS:
+            if text.find(trigger, lo) >= 0:
+                return False
+        at = self._gate_call_ws
+        if at >= 0:
+            at = _OPEN_CALL_WS_RE.match(text, at).end()
+            if at < n:
+                if text[at] == ":":
+                    return False
+                at = -1
+            self._gate_call_ws = at
+        lo = self._gate_scanned - len(_GEMMA_BARE_SENTINEL) + 1
+        found = text.find(_GEMMA_BARE_SENTINEL, lo if lo > self._gate_from else self._gate_from)
+        while found >= 0:
+            at = _OPEN_CALL_WS_RE.match(text, found + len(_GEMMA_BARE_SENTINEL)).end()
+            if at == n:
+                self._gate_call_ws = at
+                break
+            if text[at] == ":":
+                return False
+            found = text.find(_GEMMA_BARE_SENTINEL, found + 1)
+        self._gate_scanned = n
+        return True
+
+    def _gate_try_arm(self, text: str, seg_start: int, out: str, seg_out: str):
+        """Arm when ``text[seg_start:]`` is ``P + <tool_call> + B``: P without ``<``, ``[``, ``{``, ``call\\s*:``;
+        B starting ``\\s*{`` without a trigger or ``call\\s*:``. Then only ``<tool_call>.*$`` matches (the masking
+        walk stops at the opener, GLM needs a name, every other arm needs a ``<`` or ``[`` in P), so the segment
+        strips to P (``seg_final``) or itself, and so do the cut decisions, until a trigger arrives."""
+        key = (self._floor, self._first)
+        if self._gate_dead == key:
+            return
+        start = self._floor + self._first
+        prefix = text[seg_start:start]
+        body = start + len(_OPEN_CALL_OPENER)
+        if (
+            not text.startswith(_OPEN_CALL_OPENER, start)
+            # ``<param`` in the kept head makes the cut depend on later text (``_inside_open_parameter``).
+            or text.find("<param", self._floor, seg_start) >= 0
+            or "<" in prefix
+            or "[" in prefix
+            or "{" in prefix
+            or _has_gemma_bare_trigger(prefix)
+            or len(text) - self._floor > _tool_healing._MAX_BRACKET_SCAN_CHARS
+            # Holding the caller's buffer would make each of its appends a copy; only the final strip is cached.
+            or (self._seg_final and out is text)
+        ):
+            self._gate_dead = key
+            return
+        brace = _OPEN_CALL_WS_RE.match(text, body).end()
+        if brace == len(text):
+            return
+        # Fail closed if the full strip just run disagrees with the reasoning above.
+        if text[brace] != "{" or seg_out != (prefix if self._seg_final else text[seg_start:]):
+            self._gate_dead = key
+            return
+        self._gate_from = body
+        self._gate_scanned = body
+        self._gate_call_ws = -1
+        if not self._gate_clean(text):
+            self._gate_dead = key
+            return
+        self._gate_on = True
+        self._gate_out = out if self._seg_final else ""
+
+    def _gate_hold(self, text: str):
+        """The cached result while the gate holds, else None (and the gate is dropped for this call)."""
+        if len(text) - self._floor > _tool_healing._MAX_BRACKET_SCAN_CHARS or not self._gate_clean(
+            text
+        ):
+            self._gate_on = False
+            self._gate_out = ""
+            self._gate_dead = (self._floor, self._first)
+            return None
+        if self._seg_final:
+            return self._gate_out
+        return text if self._floor_identity else self._floor_out + text[self._floor :]
 
     def _think_block(self, text: str, first: int) -> str:
         """Returns settled, open, or empty (full strip); fires only if the opener is the first sentinel and the body has no other markup, as a closer in args is data."""
@@ -1649,13 +1767,22 @@ class StreamingMarkupStripper:
         if not self._is_extension(text):
             self._reset()
 
+        if self._gate_on:
+            out = self._gate_hold(text)
+            if out is not None:
+                self._note(text)
+                return out
+
         if self._degenerate:
             # Guard on ``_floor``: with nothing settled both arms match, so the check would only add two scans.
-            out = (
-                self._floor_out + self._full_strip(text[self._floor :])
-                if self._floor and not self._needs_whole_buffer(text)
-                else self._full_strip(text)
-            )
+            if self._floor and not self._needs_whole_buffer(text):
+                seg = self._full_strip(text[self._floor :])
+                out = self._floor_out + seg
+                self._gate_try_arm(text, self._floor, out, seg)
+            else:
+                out = self._full_strip(text)
+                if not self._floor:
+                    self._gate_try_arm(text, 0, out, out)
             self._note(text)
             return out
 
@@ -1692,8 +1819,10 @@ class StreamingMarkupStripper:
             out = self._full_strip(text)
             self._note(text)
             return out
-        stripped = tail[:cut] + self._full_strip(tail[cut:]) if cut else self._full_strip(tail)
+        seg = self._full_strip(tail[cut:]) if cut else self._full_strip(tail)
+        stripped = tail[:cut] + seg if cut else seg
         out = self._floor_out + stripped if self._floor else stripped
+        self._gate_try_arm(text, self._floor + cut, out, seg)
         self._note(text)
         return out
 

@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The page shell's fetch and XMLHttpRequest. Wrapped to count the page's requests in flight, so the
-browser agent can wait for content a page fetches after load before it reads the page; and to send
-the page's requests to its own site through the panel, as the sandbox's opaque origin makes them
-cross-origin. Runs inside ``boot`` in routes/browser.py."""
+"""Page fetch/XHR wrappers run inside boot; count in-flight requests, route own-site calls via panel."""
 
 BROWSER_NETWORK_JS = r"""
         const nativeFetch = window.fetch.bind(window);

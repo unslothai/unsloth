@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Memory coordination between inference and training. Uses live free VRAM to keep resident chat and STT
-models when they fit. STT is evicted before chat when training needs memory.
-"""
+"""Chat and STT models stay resident only if free VRAM fits; STT is evicted before chat for training"""
 
 import sys
 from typing import Any, Callable, Dict, List, Optional, Tuple

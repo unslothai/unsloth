@@ -20,18 +20,20 @@ def _write_gguf(
     *,
     arch: str | None,
     tensor_count: int = 1,
+    general_type: str | None = None,
 ) -> Path:
-    """Minimal GGUF header: magic, version, counts, then one optional
-    ``general.architecture`` string KV. The parser never reads the tensor data."""
+    """Minimal GGUF header: magic, version, counts, then optional ``general.architecture`` and
+    ``general.type`` string KVs. The parser never reads the tensor data."""
     body = b""
     kv_count = 0
-    if arch is not None:
-        key = b"general.architecture"
-        val = arch.encode()
+    for key, value in ((b"general.architecture", arch), (b"general.type", general_type)):
+        if value is None:
+            continue
+        val = value.encode()
         body += struct.pack("<Q", len(key)) + key
         body += struct.pack("<I", 8)
         body += struct.pack("<Q", len(val)) + val
-        kv_count = 1
+        kv_count += 1
     header = struct.pack("<II", GGUF_MAGIC, 3) + struct.pack("<QQ", tensor_count, kv_count)
     path.write_bytes(header + body)
     return path
@@ -56,6 +58,30 @@ def test_chat_arch_is_not_refused(tmp_path):
     assert backend._architecture == "llama"
     assert backend._gguf_header_parsed is True
     assert message is None
+
+
+def test_adapter_gguf_requires_its_base_model(tmp_path):
+    path = _write_gguf(tmp_path / "weights.gguf", arch = "deepseek41", general_type = "adapter")
+    message = LlamaCppBackend._non_chat_gguf_refusal_for_path(str(path), None)
+    assert message is not None
+    assert "LoRA adapter" in message
+    assert "base model" in message
+
+
+@pytest.mark.parametrize("general_type", [None, "model"])
+def test_merged_lora_model_is_allowed(tmp_path, general_type):
+    path = _write_gguf(tmp_path / "merged-LoRA.gguf", arch = "llama", general_type = general_type)
+    assert LlamaCppBackend._non_chat_gguf_refusal_for_path(str(path), None) is None
+
+
+def test_reading_a_model_clears_the_previous_adapter_type(tmp_path):
+    adapter = _write_gguf(tmp_path / "adapter.gguf", arch = "llama", general_type = "adapter")
+    model = _write_gguf(tmp_path / "model.gguf", arch = "llama")
+    backend = LlamaCppBackend()
+    backend._read_gguf_metadata(str(adapter))
+    assert backend._non_chat_gguf_refusal(str(adapter)) is not None
+    backend._read_gguf_metadata(str(model))
+    assert backend._non_chat_gguf_refusal(str(model)) is None
 
 
 def test_image_arch_names_the_images_page(tmp_path):

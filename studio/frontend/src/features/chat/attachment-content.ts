@@ -1923,6 +1923,9 @@ function collectHtmlBlockText(
   if (tag === "br") {
     return "\n";
   }
+  if (tag === "input" && /^(checkbox|radio)$/i.test(element.getAttribute("type") ?? "")) {
+    return element.hasAttribute("checked") ? " ☒ " : " ☐ ";
+  }
 
   if (tag === "pre" && preformatted) {
     const code = Array.from(element.childNodes)

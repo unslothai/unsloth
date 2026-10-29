@@ -29,6 +29,7 @@ from .import_fixes import (
     fix_torch_check_is_size,
     fix_torchao_torch_symbol_skew,
     fix_torchao_pytree_register_constant,
+    disable_torchao_if_torch_too_old,
     propagate_torchao_fix_to_subprocesses,
     check_fbgemm_gpu_version,
     check_transformers_dependency_versions,
@@ -93,6 +94,8 @@ from ._torchao_nodist import fix_torchao_without_torch_distributed
 
 fix_torchao_without_torch_distributed()
 del fix_torchao_without_torch_distributed
+# After the torchao shims, before transformers imports torchao: a torchao too new for this torch reads as absent.
+disable_torchao_if_torch_too_old()
 disable_broken_causal_conv1d()
 disable_broken_vllm()
 fix_message_factory_issue()
@@ -121,6 +124,7 @@ del patch_torch_missing_attribute_error
 del fix_torch_check_is_size
 del fix_torchao_torch_symbol_skew
 del fix_torchao_pytree_register_constant
+del disable_torchao_if_torch_too_old
 del propagate_torchao_fix_to_subprocesses
 del check_fbgemm_gpu_version
 del check_transformers_dependency_versions
@@ -335,6 +339,7 @@ from .import_fixes import (
     fix_transformers_bnb_prequantized_save,
     fix_transformers_fully_masked_rows,
     fix_transformers_flash_attention_mrope_packed_sequence,
+    fix_transformers_flash_attention_mrope_packed_rows,
     fix_transformers_untrusted_config_fields,
     fix_transformers_chat_template_path_traversal,
     fix_transformers_tokenizer_config_vocab_file_override,
@@ -400,6 +405,7 @@ fix_transformers5_bare_annotation_configs()
 # Probe-gated: no-op unless SDPA gets a query row that attends to nothing; runs before model imports so plain generate is covered.
 fix_transformers_fully_masked_rows()
 fix_transformers_flash_attention_mrope_packed_sequence()
+fix_transformers_flash_attention_mrope_packed_rows()
 fix_transformers_chunked_mask_block_sequence_ids()
 fix_transformers_flex_mask_graph_breaks()
 # CVE-2026-4372 / 5241 / 9856 and the tokenizer_config.json vocab path traversal, no-ops once

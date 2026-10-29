@@ -1,24 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Local cache of runtime-quantized denoisers for families with no hosted pre-quant, written in the hosted
-artifacts' exact container + metadata so the next load takes the hosted path from a local file.
-
-KEY: sha256 of every source shard's safetensors header plus content identity (Hub blob name, else stat; two uploads
-of one architecture share a header), component, scheme, POLICY_VERSION, class, Linear filter, ConvRot, fp8
-fast-accum and torch / torchao minors. The multi-GB payload is never read for the key.
-
-TRUST: only Studio writes the root (safetensors, no pickle), so files under its exact realpath count as allowlisted.
-
-COMMIT: artifact then manifest, each via temp + os.replace; the manifest is the commit point.
-
-ENV:
-  UNSLOTH_DIFFUSION_PREQUANT_CACHE         0 disables lookups and saves (default on)
-  UNSLOTH_DIFFUSION_PREQUANT_CACHE_DIR     cache root (default <studio cache>/diffusion_prequant_cache)
-  UNSLOTH_DIFFUSION_PREQUANT_CACHE_MAX_GB  LRU budget in GB (default 40; 0 disables eviction)
-  UNSLOTH_DIFFUSION_PREQUANT_CACHE_ASYNC   0 writes a pipeline load's build before the load returns (default: on a
-                                           background thread once the load is published)
-"""
+"""Runtime-quantized denoiser cache, hosted artifact format; only Studio writes it (safetensors, no
+pickle), so files under its exact realpath are allowlisted; manifest is commit point"""
 
 from __future__ import annotations
 
@@ -304,12 +288,6 @@ def source_shards(
 ) -> Optional[list[str]]:
     """Local paths of the dense safetensors shards of ``base``'s ``component``, or None when not all are local."""
     for found in _shard_sets(base, component, cache_dir):
-        return found
-    return None
-
-
-def _source_shards_in(base: str, component: str, cache_dir: Optional[str]) -> Optional[list[str]]:
-    for found in _shard_sets_in(base, component, cache_dir):
         return found
     return None
 
@@ -605,7 +583,6 @@ _REMOTE_MEMO: dict[tuple, tuple] = {}
 _GONE = "gone"
 # Shared hub_reachability verdict: after one failure, lookups answer "unknown" (local snapshot stands) for the TTL.
 _UNREACHABLE = _reach._UNREACHABLE
-_connection_failed = _reach.connection_failed
 _endpoint = _reach.endpoint
 
 
