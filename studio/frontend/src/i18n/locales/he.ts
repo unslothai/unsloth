@@ -2493,6 +2493,8 @@ export const he = {
         refreshEvery: "כל {seconds} שנ׳",
         unsloth: "Unsloth",
         otherApps: "אפליקציות אחרות",
+        otherInUse: "שימוש אחר",
+        otherInUseHint: "כולל את מטמון ה-KV של Unsloth וכל אימון: מנהל ההתקן לא מדווח VRAM לפי אפליקציה.",
         freeLabel: "פנוי",
         unslothApp: "אפליקציית Unsloth Studio",
         unslothShare: "הצגת החלק של Unsloth",

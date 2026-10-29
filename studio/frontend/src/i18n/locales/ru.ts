@@ -2402,6 +2402,8 @@ export const ru = {
         refreshEvery: "Каждые {seconds} с",
         unsloth: "Unsloth",
         otherApps: "Другие приложения",
+        otherInUse: "Прочее",
+        otherInUseHint: "Включает KV-кэш Unsloth и обучение: драйвер не сообщает VRAM по приложениям.",
         freeLabel: "Свободно",
         unslothApp: "Приложение Unsloth Studio",
         unslothShare: "Показывать долю Unsloth",

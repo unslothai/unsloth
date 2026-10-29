@@ -84,7 +84,8 @@ export function modelBreakdown(
 
 export interface MemorySegment {
   id: string;
-  kind: "model" | "app" | "unsloth" | "other" | "free";
+  /** "unattributed": in use, owner unknown (VRAM, where only model weights are measured). */
+  kind: "model" | "app" | "unsloth" | "other" | "unattributed" | "free";
   /** Set for models; the rest are labelled by kind. */
   name?: string;
   gb: number;
@@ -94,6 +95,8 @@ export interface MemorySegment {
 export function memorySegments(
   share: MemoryShare,
   breakdown: ModelBreakdown | null,
+  /** False on VRAM: the rest may be Unsloth's own KV cache or a training run, not other apps. */
+  restIsOtherApps = true,
 ): MemorySegment[] {
   // Nothing loaded: splitting would only rename Unsloth's segment to "app".
   const unsloth: MemorySegment[] = breakdown && breakdown.models.length > 0
@@ -111,7 +114,7 @@ export function memorySegments(
     : [{ id: "unsloth", kind: "unsloth", gb: share.unsloth }];
   return [
     ...unsloth,
-    { id: "other", kind: "other", gb: share.other },
+    { id: "other", kind: restIsOtherApps ? "other" : "unattributed", gb: share.other },
     { id: "free", kind: "free", gb: share.free },
   ];
 }

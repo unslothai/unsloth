@@ -77,6 +77,7 @@ const KIND_COLORS = {
   unsloth: "bg-control-accent",
   app: "bg-sky-500",
   other: "bg-muted-foreground/45",
+  unattributed: "bg-muted-foreground/45",
   free: "bg-muted ring-1 ring-inset ring-border",
 } as const;
 // Models are Unsloth's, so they stay in its colour, stepping lighter down the list.
@@ -140,6 +141,8 @@ export function MemoryLegend({
         return t("settings.resources.liveMonitor.unsloth");
       case "other":
         return t("settings.resources.liveMonitor.otherApps");
+      case "unattributed":
+        return t("settings.resources.liveMonitor.otherInUse");
       case "free":
         return t("settings.resources.liveMonitor.freeLabel");
     }
@@ -149,7 +152,14 @@ export function MemoryLegend({
       {colored(segments).map(({ segment, color }) => (
         <div key={segment.id} className="flex items-center gap-2">
           <span className={cn("size-2 shrink-0 rounded-full", color)} />
-          <span className="min-w-0 flex-1 truncate" title={label(segment)}>
+          <span
+            className="min-w-0 flex-1 truncate"
+            title={
+              segment.kind === "unattributed"
+                ? t("settings.resources.liveMonitor.otherInUseHint")
+                : label(segment)
+            }
+          >
             {label(segment)}
           </span>
           <span className="shrink-0 font-mono tabular-nums text-foreground">

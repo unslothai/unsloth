@@ -2407,6 +2407,8 @@ export const ptBR = {
         refreshEvery: "A cada {seconds} s",
         unsloth: "Unsloth",
         otherApps: "Outros apps",
+        otherInUse: "Outro uso",
+        otherInUseHint: "Inclui o cache KV do Unsloth e qualquer treinamento: o driver não informa a VRAM por app.",
         freeLabel: "Livre",
         unslothApp: "App do Unsloth Studio",
         unslothShare: "Mostrar a parte do Unsloth",

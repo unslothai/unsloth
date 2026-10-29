@@ -690,7 +690,7 @@ export function ResourcesTab() {
     wantsModels && discreteVram && vram.usedGb !== null
       ? memoryShare(vram.usedGb, vram.totalGb, modelsGb)
       : null;
-  const vramSegments = vramShare ? memorySegments(vramShare, breakdown) : null;
+  const vramSegments = vramShare ? memorySegments(vramShare, breakdown, false) : null;
   const shareCardClass =
     "flex min-w-0 flex-col gap-3 rounded-xl border border-border/60 bg-card px-5 py-4 dark:border-transparent";
   // The placeholder's cpu backend and empty package list are not facts about the host either.

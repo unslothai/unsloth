@@ -2371,6 +2371,8 @@ export const ja = {
         refreshEvery: "{seconds} 秒ごと",
         unsloth: "Unsloth",
         otherApps: "他のアプリ",
+        otherInUse: "その他の使用",
+        otherInUseHint: "Unsloth の KV キャッシュや学習を含みます。ドライバーはアプリごとの VRAM を報告しません。",
         freeLabel: "空き",
         unslothApp: "Unsloth Studio アプリ",
         unslothShare: "Unsloth の使用分を表示",

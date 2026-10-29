@@ -88,3 +88,14 @@ test("no separate By model list: the split lives in the memory legend", () => {
     assert.doesNotMatch(readSrc(file), /ModelBreakdownList|liveMonitor\.byModel/);
   }
 });
+
+test("on VRAM the rest is unattributed: Unsloth's KV cache and training land there, not in other apps", () => {
+  const share = { unsloth: 6.46, other: 10.8, free: 46.5 };
+  assert.deepEqual(
+    memorySegments(share, null, false).map((segment) => segment.kind),
+    ["unsloth", "unattributed", "free"],
+  );
+  for (const file of ["components/floating-monitor.tsx", "features/settings/tabs/resources-tab.tsx"]) {
+    assert.match(readSrc(file), /memorySegments\(vramShare, breakdown, false\)/);
+  }
+});

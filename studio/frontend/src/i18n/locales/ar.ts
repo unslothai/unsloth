@@ -2391,6 +2391,8 @@ export const ar = {
         refreshEvery: "كل {seconds} ث",
         unsloth: "Unsloth",
         otherApps: "تطبيقات أخرى",
+        otherInUse: "استخدام آخر",
+        otherInUseHint: "يشمل ذاكرة KV المؤقتة في Unsloth وأي تدريب جارٍ: لا يبلّغ برنامج التشغيل عن VRAM لكل تطبيق.",
         freeLabel: "متاح",
         unslothApp: "تطبيق Unsloth Studio",
         unslothShare: "إظهار حصة Unsloth",

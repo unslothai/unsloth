@@ -2422,6 +2422,8 @@ export const fr = {
         refreshEvery: "Toutes les {seconds} s",
         unsloth: "Unsloth",
         otherApps: "Autres apps",
+        otherInUse: "Autre usage",
+        otherInUseHint: "Inclut le cache KV d'Unsloth et tout entraînement : le pilote ne rapporte pas la VRAM par app.",
         freeLabel: "Libre",
         unslothApp: "App Unsloth Studio",
         unslothShare: "Afficher la part d'Unsloth",

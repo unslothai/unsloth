@@ -304,7 +304,7 @@ function FloatingMonitorPanel({
     wantsModels && discreteVram && cardsUsedKnown
       ? memoryShare(cardsUsed, vram.totalGb, modelsGb)
       : null;
-  const vramSegments = vramShare ? memorySegments(vramShare, breakdown) : null;
+  const vramSegments = vramShare ? memorySegments(vramShare, breakdown, false) : null;
   const ramAmount = ramKnown
     ? `${formatGiB(ramUsed)} / ${formatGiB(ramTotal)}`
     : "-- / --";

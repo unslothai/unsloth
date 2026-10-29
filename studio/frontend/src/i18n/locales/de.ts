@@ -2423,6 +2423,8 @@ export const de = {
         refreshEvery: "Alle {seconds} s",
         unsloth: "Unsloth",
         otherApps: "Andere Apps",
+        otherInUse: "Sonstige Nutzung",
+        otherInUseHint: "Enthält den KV-Cache von Unsloth und laufendes Training: Der Treiber meldet VRAM nicht pro App.",
         freeLabel: "Frei",
         unslothApp: "Unsloth Studio-App",
         unslothShare: "Anteil von Unsloth anzeigen",

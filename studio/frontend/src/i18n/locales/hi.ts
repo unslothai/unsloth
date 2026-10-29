@@ -2397,6 +2397,8 @@ export const hi = {
         refreshEvery: "हर {seconds} से.",
         unsloth: "Unsloth",
         otherApps: "अन्य ऐप्स",
+        otherInUse: "अन्य उपयोग",
+        otherInUseHint: "इसमें Unsloth का KV कैश और कोई भी ट्रेनिंग शामिल है: ड्राइवर हर ऐप का VRAM नहीं बताता।",
         freeLabel: "खाली",
         unslothApp: "Unsloth Studio ऐप",
         unslothShare: "Unsloth का हिस्सा दिखाएं",

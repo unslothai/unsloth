@@ -2567,6 +2567,8 @@ export const sv = {
         refreshEvery: "Var {seconds} s",
         unsloth: "Unsloth",
         otherApps: "Andra appar",
+        otherInUse: "Övrig användning",
+        otherInUseHint: "Inkluderar Unsloths KV-cache och eventuell träning: drivrutinen rapporterar inte VRAM per app.",
         freeLabel: "Ledigt",
         unslothApp: "Unsloth Studio-appen",
         unslothShare: "Visa Unsloths andel",

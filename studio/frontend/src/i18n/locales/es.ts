@@ -2418,6 +2418,8 @@ export const es = {
         refreshEvery: "Cada {seconds} s",
         unsloth: "Unsloth",
         otherApps: "Otras apps",
+        otherInUse: "Otro uso",
+        otherInUseHint: "Incluye la caché KV de Unsloth y cualquier entrenamiento: el controlador no informa la VRAM por app.",
         freeLabel: "Libre",
         unslothApp: "App de Unsloth Studio",
         unslothShare: "Mostrar la parte de Unsloth",
