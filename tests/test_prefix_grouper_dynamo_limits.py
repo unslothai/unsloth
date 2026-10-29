@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+
 """prefix_grouper_kernel raises dynamo's recompile limits at import under either config name.
 
 torch < 2.7 only has cache_size_limit / accumulated_cache_size_limit, and dynamo's config refuses
