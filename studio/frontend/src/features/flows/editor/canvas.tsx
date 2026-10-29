@@ -44,6 +44,7 @@ import {
   type RfEdge,
   type RfNode,
 } from "./derive-rf";
+import { useWireReconnect } from "./use-wire-reconnect";
 import { addFileNodes } from "./file-drop";
 import { FlowEdgeView } from "./flow-edge";
 import { FlowNodeView } from "./flow-node";
@@ -122,6 +123,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
   const selectedEdges = useUiStore((s) => s.selectedEdges);
   const snapToGrid = useUiStore((s) => s.snapToGrid);
   const { screenToFlowPosition } = useReactFlow();
+  const wireReconnect = useWireReconnect(!readOnly);
 
   const deriver = useRef<RfDeriver | null>(null);
   deriver.current ??= new RfDeriver();
@@ -503,6 +505,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
         onConnectEnd={onConnectEnd}
         isValidConnection={isValidConnection}
         onDelete={onDelete}
+        {...wireReconnect}
         onNodeDoubleClick={onNodeDoubleClick}
         onDragOver={onDragOver}
         onDrop={onDrop}
