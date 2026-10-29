@@ -41,6 +41,7 @@ test("the controller sends partial requests at most once per frame and a full pa
   assert.match(routing, /frame = requestAnimationFrame\(/);
   assert.match(routing, /const next = partial\s*\? new Map<string, WireRoute>\(previous\)/);
   assert.match(src("canvas.tsx"), /<WireRouterController[^>]*moving=\{moving\}/);
+  assert.match(routing, /show=\{deletable !== false && \(hover \|\| !!selected\)\}/);
 });
 
 test("a route a frame behind its card follows the handles instead of jumping to a curve", () => {
