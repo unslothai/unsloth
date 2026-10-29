@@ -57,7 +57,6 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
   AlertCircleIcon,
-  ChipIcon,
   FolderSearchIcon,
   InformationCircleIcon,
   Key01Icon,
@@ -125,6 +124,7 @@ import {
   useExportRuntimeStore,
 } from "./stores/export-runtime-store";
 import { exportTourSteps } from "./tour";
+import { ChipIcon } from "@/lib/hugeicons-derived";
 
 const SEARCH_INPUT_REASONS = new Set([
   "input-change",

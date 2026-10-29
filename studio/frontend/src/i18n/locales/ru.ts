@@ -1114,7 +1114,7 @@ export const ru = {
       lastVisited: "Последняя открытая",
     },
     tabs: {
-      sandbox: "Песочница",
+      sandbox: "Безопасность",
       accounts: "Учётные записи",
       general: "Общие",
       profile: "Профиль",
@@ -1398,7 +1398,7 @@ export const ru = {
       },
     },
     sandbox: {
-      title: "Песочница",
+      title: "Безопасность",
       description: "Выполняются ли вызовы инструментов Python и терминала в песочнице ОС на этом компьютере.",
       docs: "Документация",
       docsLabel: "Открыть документацию по песочнице",
@@ -1474,6 +1474,7 @@ export const ru = {
       managedNote: "Песочницу ОС настраивает владелец этого сервера Unsloth.",
     },
     debugging: {
+      description: "Читайте журналы Unsloth, не выходя из приложения.",
       logSection: "Файл журнала",
       source: "Файл журнала",
       sourceHint: "Средства запуска моделей ведут собственные журналы, поэтому причина неудачной загрузки или генерации чаще всего указана именно в них, а не в журнале сервера.",
@@ -2136,8 +2137,8 @@ export const ru = {
       uploadPhoto: "Загрузить фото",
       removePhoto: "Удалить",
       pictureOptions: "Параметры фото профиля",
-      greetingSloth: "Ленивец в приветствии",
-      greetingSlothDescription: "Показывать ленивца в приветствии чата.",
+      greetingSloth: "Приветствие",
+      greetingSlothDescription: "Показывать приветствие в новых чатах.",
       noPicture: "Нет фото профиля",
       noneLabel: "Нет",
       stats: {
@@ -2365,7 +2366,8 @@ export const ru = {
       description: "Мониторинг оборудования и хранилища этого сервера Unsloth.",
       liveUpdates: "Обновления в реальном времени",
       floatingWindow: "Плавающее окно",
-      disableOverlay: "Отключить оверлей",
+      showFloatingWindow: "Показывать плавающее окно",
+      showFloatingWindowDescription: "Использование CPU, RAM и GPU всегда видно поверх Unsloth.",
       liveMonitor: {
         title: "Монитор в реальном времени",
         apiTitle: "Монитор API",
@@ -2811,11 +2813,6 @@ export const ru = {
       autoScrollManual: "Вручную",
       autoScrollKeywords:
         "прокрутка автопрокрутка следовать вниз низ поток генерация зафиксировать scroll autoscroll follow",
-      scrollToBottomButton: "Кнопка «Прокрутить вниз»",
-      scrollToBottomButtonDescription:
-        "Показывать кнопку для возврата к последнему сообщению после прокрутки вверх.",
-      scrollToBottomButtonKeywords:
-        "прокрутка вниз последнее стрелка кнопка скрыть scroll bottom button",
       replyNotification: "Уведомлять о готовом ответе",
       replyNotificationDescription:
         "Показывать системное уведомление, когда ответ готов, а Unsloth свернут или в фоне.",
@@ -2837,9 +2834,8 @@ export const ru = {
         "подробности скорость токены статистика слои выгрузка verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Изменение ответа в ответах",
       inlineEditResponseDescription: "Показывать «Изменить ответ» у каждого ответа, а не в меню «Ещё».",
-      modelDisclaimer: "Показывать предупреждение о модели",
-      modelDisclaimerDescription:
-        "Показывать сообщение «LLM могут ошибаться» под полем ввода.",
+      composerAtBottom: "Поле ввода внизу",
+      composerAtBottomDescription: "Начинать новые чаты с полем ввода внизу страницы, а не посередине.",
       projectAttachments: "Общий доступ к файлам в проекте",
       projectAttachmentsDescription:
         "Делает новые вложения доступными во всех чатах проекта.",
@@ -3345,8 +3341,9 @@ export const ru = {
         loadError: "Не удалось загрузить настройки API решений.",
         sendsTo: "Запросы отправляются в {provider}.",
         connectionMissing: "Этого подключения больше нет или в нём нет моделей решений. Выберите другую модель.",
-        addConnection: "Чтобы использовать облачную модель решений, добавьте TypeSafe, Liquid AI или OpenRouter в разделе «Подключения».",
-        openConnections: "Открыть подключения",
+        addConnection: "Чтобы использовать облачную модель решений, добавьте её в разделе ",
+        connectionsLink: "Подключения",
+        addConnectionSuffix: ".",
       },
       mcp: {
         title: "Доступ агентов (MCP)",

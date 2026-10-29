@@ -431,7 +431,7 @@ from hub.utils.download_registry import (
 )
 from routes.settings import router as settings_router
 from routes.sandbox_capability import router as sandbox_capability_router
-from routes.systemone import MCP_PATH as DECISIONS_MCP_PATH, RequireStudioAuth, decisions_mcp
+from routes.systemone import MCP_PATH as DECISIONS_MCP_PATH, RequireStudioAuth
 from routes.systemone import router as systemone_router
 from routes.prompts import router as prompts_router
 from routes.scheduled_tasks import router as scheduled_tasks_router
@@ -1136,18 +1136,38 @@ app = FastAPI(
 app.openapi_url = "/openapi.json"
 app.state.secure = os.environ.get("UNSLOTH_SECURE") == "1"
 
-from fastmcp.utilities.lifespan import combine_lifespans  # noqa: E402
+from utils.lazy_asgi_app import LazyLifespanApp, combine_lifespans  # noqa: E402
 
+
+def _build_decisions_mcp_app():
+    from routes.systemone import decisions_mcp
+    return decisions_mcp.http_app(path = "/", stateless_http = True, json_response = True)
+
+
+def _decisions_on_at_startup() -> bool:
+    from utils import systemone_settings
+    return systemone_settings.get_enabled()
+
+
+# Built on first request, or at startup when switched on: fastmcp is most of a second of import.
 # Mounted ahead of /mcp, which would otherwise swallow this path.
-_decisions_mcp_app = decisions_mcp.http_app(path = "/", stateless_http = True, json_response = True)
+_decisions_mcp_app = LazyLifespanApp(
+    _build_decisions_mcp_app, wanted_at_startup = _decisions_on_at_startup
+)
 app.router.lifespan_context = combine_lifespans(lifespan, _decisions_mcp_app.lifespan)
 app.mount(DECISIONS_MCP_PATH, RequireStudioAuth(_decisions_mcp_app))
 
 # Always mounted; the gate answers 404 until the owner turns agent access on.
-from mcp_server import create_studio_mcp  # noqa: E402
 from studio_mcp.gate import StudioMcpGate  # noqa: E402
+from utils.mcp_access import is_mcp_enabled  # noqa: E402
 
-_studio_mcp_app = create_studio_mcp().http_app(path = "/", stateless_http = True)
+
+def _build_studio_mcp_app():
+    from mcp_server import create_studio_mcp
+    return create_studio_mcp().http_app(path = "/", stateless_http = True)
+
+
+_studio_mcp_app = LazyLifespanApp(_build_studio_mcp_app, wanted_at_startup = is_mcp_enabled)
 app.router.lifespan_context = combine_lifespans(
     app.router.lifespan_context, _studio_mcp_app.lifespan
 )

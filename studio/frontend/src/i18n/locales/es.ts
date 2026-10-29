@@ -1116,7 +1116,7 @@ export const es = {
       lastVisited: "Última visitada",
     },
     tabs: {
-      sandbox: "Sandbox",
+      sandbox: "Seguridad",
       accounts: "Cuentas",
       general: "General",
       profile: "Perfil",
@@ -1400,7 +1400,7 @@ export const es = {
       },
     },
     sandbox: {
-      title: "Sandbox",
+      title: "Seguridad",
       description: "Si las llamadas a herramientas de Python y Terminal se ejecutan dentro de un sandbox del sistema en este equipo.",
       docs: "Documentación",
       docsLabel: "Abrir la documentación del sandbox",
@@ -1475,6 +1475,7 @@ export const es = {
       managedNote: "El propietario de este servidor de Unsloth configura el sandbox del sistema.",
     },
     debugging: {
+      description: "Lee los registros de Unsloth sin salir de la aplicación.",
       logSection: "Archivo de registro",
       source: "Archivo de registro",
       sourceHint: "Los ejecutores de modelos escriben sus propios registros, así que un fallo al cargar o al generar suele explicarse ahí y no en el registro del servidor.",
@@ -2151,8 +2152,8 @@ export const es = {
       uploadPhoto: "Subir foto",
       removePhoto: "Quitar",
       pictureOptions: "Opciones de la foto de perfil",
-      greetingSloth: "Perezoso en el saludo",
-      greetingSlothDescription: "Muestra el perezoso en el saludo del chat.",
+      greetingSloth: "Saludo",
+      greetingSlothDescription: "Mostrar el saludo en los chats nuevos.",
       noPicture: "Sin foto de perfil",
       noneLabel: "Ninguno",
       stats: {
@@ -2381,7 +2382,8 @@ export const es = {
         "Monitorea el hardware y el almacenamiento de este servidor de Unsloth.",
       liveUpdates: "Actualizaciones en vivo",
       floatingWindow: "Ventana flotante",
-      disableOverlay: "Desactivar superposición",
+      showFloatingWindow: "Mostrar ventana flotante",
+      showFloatingWindowDescription: "Mantén a la vista el uso de CPU, RAM y GPU sobre Unsloth.",
       liveMonitor: {
         title: "Monitor en vivo",
         apiTitle: "Monitor de API",
@@ -2827,11 +2829,6 @@ export const es = {
       autoScrollManual: "Manual",
       autoScrollKeywords:
         "desplazamiento desplazar automático seguir abajo saltar transmisión generar vista bloquear scroll autoscroll follow",
-      scrollToBottomButton: "Botón para ir al final",
-      scrollToBottomButtonDescription:
-        "Muestra un botón para volver al último mensaje después de desplazarte hacia arriba.",
-      scrollToBottomButtonKeywords:
-        "desplazar final abajo saltar último flecha botón ocultar scroll bottom button",
       replyNotification: "Avisar cuando termine una respuesta",
       replyNotificationDescription:
         "Muestra una notificación del sistema cuando termina una respuesta mientras Unsloth está minimizado o en segundo plano.",
@@ -2853,9 +2850,8 @@ export const es = {
         "detalles velocidad tokens estadísticas capas descarga verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Editar respuesta en las respuestas",
       inlineEditResponseDescription: "Mostrar Editar respuesta en cada respuesta, en lugar de en el menú Más.",
-      modelDisclaimer: "Mostrar aviso del modelo",
-      modelDisclaimerDescription:
-        'Muestra "Los LLM pueden cometer errores" bajo el cuadro de chat.',
+      composerAtBottom: "Cuadro de texto abajo",
+      composerAtBottomDescription: "Empieza los chats nuevos con el cuadro de texto abajo en lugar de en el centro.",
       projectAttachments: "Compartir archivos en todo el proyecto",
       projectAttachmentsDescription:
         "Comparte los nuevos archivos adjuntos con todos los chats del proyecto.",
@@ -3370,8 +3366,9 @@ export const es = {
         loadError: "No se pudieron cargar los ajustes de la API de decisiones.",
         sendsTo: "Las solicitudes se envían a {provider}.",
         connectionMissing: "Esta conexión ya no existe o no tiene modelos de decisiones. Elige otro modelo.",
-        addConnection: "Para usar un modelo de decisiones alojado, añade TypeSafe, Liquid AI u OpenRouter en Conexiones.",
-        openConnections: "Abrir Conexiones",
+        addConnection: "Para usar un modelo de decisiones alojado, añádelo en ",
+        connectionsLink: "Conexiones",
+        addConnectionSuffix: ".",
       },
       mcp: {
         title: "Acceso de agentes (MCP)",

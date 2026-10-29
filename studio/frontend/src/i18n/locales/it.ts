@@ -986,7 +986,7 @@ export const it = {
       lastVisited: "Ultima visitata",
     },
     tabs: {
-      sandbox: "Sandbox",
+      sandbox: "Sicurezza",
       accounts: "Account",
       general: "Generali",
       profile: "Profilo",
@@ -1270,7 +1270,7 @@ export const it = {
       },
     },
     sandbox: {
-      title: "Sandbox",
+      title: "Sicurezza",
       description: "Indica se le chiamate agli strumenti Python e Terminale vengono eseguite in una sandbox del sistema su questo computer.",
       docs: "Documentazione",
       docsLabel: "Apri la documentazione della sandbox",
@@ -1345,6 +1345,7 @@ export const it = {
       managedNote: "Il proprietario di questo server Unsloth configura la sandbox del sistema.",
     },
     debugging: {
+      description: "Leggi i log di Unsloth senza uscire dall'app.",
       logSection: "File di log",
       source: "File di log",
       sourceHint: "I runner dei modelli scrivono i propri log, quindi un caricamento o una generazione non riusciti sono spesso spiegati lì anziché nel log del server.",
@@ -2015,8 +2016,8 @@ export const it = {
       avatarShape: "Forma dell'avatar",
       avatarShapeCircle: "Circolare",
       avatarShapeRounded: "Arrotondata",
-      greetingSloth: "Bradipo nel saluto",
-      greetingSlothDescription: "Mostra il bradipo nel saluto della chat.",
+      greetingSloth: "Saluto",
+      greetingSlothDescription: "Mostra il saluto nelle nuove chat.",
       chooseSloth: "Oppure scegli un bradipo",
       noPicture: "Nessuna immagine del profilo",
       noneLabel: "Nessuna",
@@ -2258,7 +2259,8 @@ export const it = {
         "Monitora hardware e archiviazione di questo server Unsloth.",
       liveUpdates: "Aggiornamenti in tempo reale",
       floatingWindow: "Finestra mobile",
-      disableOverlay: "Disattiva la sovrapposizione",
+      showFloatingWindow: "Mostra finestra mobile",
+      showFloatingWindowDescription: "Mantieni visibile l'uso di CPU, RAM e GPU sopra Unsloth.",
       liveMonitor: {
         title: "Monitor in tempo reale",
         apiTitle: "Monitor API",
@@ -2706,11 +2708,6 @@ export const it = {
       autoScrollManual: "Manuale",
       autoScrollKeywords:
         "scorrimento scorrere automatico seguire fondo saltare streaming generazione vista bloccare scroll autoscroll follow",
-      scrollToBottomButton: "Pulsante per scorrere in fondo",
-      scrollToBottomButtonDescription:
-        "Mostra un pulsante per tornare all'ultimo messaggio dopo aver scorso verso l'alto.",
-      scrollToBottomButtonKeywords:
-        "scorrere fondo saltare ultimo freccia pulsante nascondere scroll bottom button",
       replyNotification: "Avvisa quando una risposta è finita",
       replyNotificationDescription:
         "Mostra una notifica di sistema quando una risposta finisce mentre Unsloth è ridotto a icona o in background.",
@@ -2732,9 +2729,8 @@ export const it = {
         "dettagli velocità token statistiche livelli scaricamento verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Modifica risposta nelle risposte",
       inlineEditResponseDescription: "Mostra Modifica risposta su ogni risposta, invece che nel menu Altro.",
-      modelDisclaimer: "Mostra l'avviso sul modello",
-      modelDisclaimerDescription:
-        "Mostra «Gli LLM possono commettere errori» sotto il campo della chat.",
+      composerAtBottom: "Casella di testo in basso",
+      composerAtBottomDescription: "Avvia le nuove chat con la casella di testo in fondo alla pagina invece che al centro.",
       projectAttachments: "Condividi i file nel progetto",
       projectAttachmentsDescription:
         "Rende i nuovi allegati disponibili in tutte le chat del progetto.",
@@ -3248,8 +3244,9 @@ export const it = {
         loadError: "Impossibile caricare le impostazioni dell'API decisionale.",
         sendsTo: "Le richieste vengono inviate a {provider}.",
         connectionMissing: "Questa connessione non esiste più o non ha modelli decisionali. Scegli un altro modello.",
-        addConnection: "Per usare un modello decisionale ospitato, aggiungi TypeSafe, Liquid AI o OpenRouter in Connessioni.",
-        openConnections: "Apri Connessioni",
+        addConnection: "Per usare un modello decisionale ospitato, aggiungilo in ",
+        connectionsLink: "Connessioni",
+        addConnectionSuffix: ".",
       },
       mcp: {
         title: "Accesso degli agenti (MCP)",
