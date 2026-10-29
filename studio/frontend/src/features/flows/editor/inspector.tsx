@@ -10,7 +10,7 @@ import {
 import { CollapsibleSectionTriggerButton } from "@/features/recipe-studio/dialogs/shared/collapsible-section-trigger";
 import { FieldLabel } from "@/features/recipe-studio/dialogs/shared/field-label";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { memo, useCallback, useState } from "react";
+import { Fragment, memo, useCallback, useState } from "react";
 import { loopMembers } from "../app/app-form";
 import { useCatalogStore } from "../stores/catalog-store";
 import { cloneFragment, useDocStore } from "../stores/doc-store";
@@ -87,7 +87,7 @@ function ParamRow({
 }) {
   return (
     <div className="grid gap-1.5">
-      <FieldLabel label={param.label} />
+      <FieldLabel label={param.label} hint={param.help} />
       {bound ? (
         <p className="rounded-lg border border-dashed border-border/60 px-3 py-2 text-xs text-muted-foreground">
           Set by its connected input
@@ -286,14 +286,20 @@ function InspectorImpl() {
                       param.advanced &&
                       paramVisible(param, node.params, spec.params),
                   )
-                  .map((param) => (
-                    <ParamRow
-                      key={param.id}
-                      param={param}
-                      bound={param.bindable === true && boundParams.has(param.id)}
-                      value={node.params[param.id]}
-                      onChange={(value) => setParam(param.id, value)}
-                    />
+                  .map((param, i, shown) => (
+                    <Fragment key={param.id}>
+                      {param.group && param.group !== shown[i - 1]?.group && (
+                        <p className="border-border/60 border-t pt-3 text-xs font-medium text-foreground first:border-t-0 first:pt-0">
+                          {param.group}
+                        </p>
+                      )}
+                      <ParamRow
+                        param={param}
+                        bound={param.bindable === true && boundParams.has(param.id)}
+                        value={node.params[param.id]}
+                        onChange={(value) => setParam(param.id, value)}
+                      />
+                    </Fragment>
                   ))}
               </CollapsibleContent>
             </Collapsible>

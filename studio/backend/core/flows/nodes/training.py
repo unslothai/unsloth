@@ -18,18 +18,27 @@ from core.flows.registry import FlowNodeError, NodeContext, handler
 
 POLL_S = 5.0
 BUSY_WAIT_S = 180.0
-TRAINING_TYPES = {"lora": "LoRA/QLoRA", "full": "Full Finetuning"}
+TRAINING_TYPES = {"lora": "LoRA/QLoRA", "full": "Full Finetuning", "cpt": "Continued Pretraining"}
+# What the Train page sends when the node leaves batch size and accumulation blank (GRPO sets its own).
+TRAIN_PAGE_BATCH = {"batch_size": 4, "gradient_accumulation_steps": 8}
+CPT_EMBEDDING_MODULES = ("embed_tokens", "lm_head")
+LORA_VARIANTS = ("rslora", "loftq", "dora")
+VISION_LORA = (
+    "finetune_vision_layers",
+    "finetune_language_layers",
+    "finetune_attention_modules",
+    "finetune_mlp_modules",
+)
 TASK_FLAGS = {
     "vision": {"is_dataset_image": True},
     "audio": {"is_dataset_audio": True},
     "embedding": {"is_embedding": True},
 }
 OPTIONAL_INTS = (
-    "lora_alpha",
     "batch_size",
     "gradient_accumulation_steps",
-    "warmup_steps",
     "vision_image_size",
+    "dataset_slice_start",
     "dataset_slice_end",
 )
 HOLDOUT_MAX_ROWS = 200_000
@@ -41,6 +50,9 @@ GRPO_SETTINGS = {
     "max_completion_length": ("grpo_max_completion_length", int),
     "temperature": ("grpo_temperature", float),
     "grpo_variant": ("grpo_variant", str),
+    "epsilon_high": ("grpo_epsilon_high", float),
+    "enable_thinking": ("grpo_enable_thinking", bool),
+    "mask_truncated_completions": ("grpo_mask_truncated_completions", bool),
 }
 EXPORT_QUANTS = {"q4_k_m": "Q4_K_M", "q5_k_m": "Q5_K_M", "q8_0": "Q8_0", "f16": "F16"}
 
@@ -53,40 +65,38 @@ async def finetune(ctx: NodeContext) -> dict:
     dataset = ctx.inputs["dataset"]
     if not isinstance(dataset, dict) or dataset.get("kind") != "dataset":
         raise FlowNodeError("Fine-tune needs a dataset")
+    params = ctx.params
+    objective = str(params.get("objective") or "sft")
+    if objective not in OBJECTIVES:
+        raise FlowNodeError(f"Unknown objective {objective!r}")
     config: dict[str, Any] = {
-        "model_name": str(ctx.params.get("base_model") or "").strip(),
-        "training_type": TRAINING_TYPES.get(str(ctx.params.get("training_type")), "LoRA/QLoRA"),
-        "format_type": str(ctx.params.get("format_type") or "auto"),
-        "max_steps": int(ctx.params.get("max_steps") or 60),
-        "learning_rate": str(ctx.params.get("learning_rate") or "2e-4"),
-        "lora_r": int(ctx.params.get("lora_r") or 16),
-        "max_seq_length": int(ctx.params.get("max_seq_length") or 2048),
-        "random_seed": ctx.seed % (2**31),
+        "model_name": str(params.get("base_model") or "").strip(),
+        "format_type": str(params.get("format_type") or "auto"),
+        "max_steps": int(params.get("max_steps") or 60),
         "start_request_id": f"flow-{secrets.token_hex(8)}",
     }
     if not config["model_name"]:
         raise FlowNodeError("Name the base model to fine-tune")
-    config.update(TASK_FLAGS.get(str(ctx.params.get("task") or "text"), {}))
-    if ctx.params.get("num_epochs") not in (None, ""):
-        config["num_epochs"] = int(ctx.params["num_epochs"])
+    config.update(TASK_FLAGS.get(str(params.get("task") or "text"), {}))
+    if params.get("num_epochs") not in (None, ""):
+        config["num_epochs"] = int(params["num_epochs"])
         config["max_steps"] = None
     for key in OPTIONAL_INTS:
-        if ctx.params.get(key) not in (None, ""):
-            config[key] = int(ctx.params[key])
-    if ctx.params.get("dataset_streaming"):
+        if params.get(key) not in (None, ""):
+            config[key] = int(params[key])
+    if str(params.get("project_name") or "").strip():
+        config["project_name"] = str(params["project_name"]).strip()
+    method_fields(params, config)
+    lora_fields(params, config)
+    schedule_fields(params, config, ctx.seed)
+    memory_fields(params, config, objective)
+    if params.get("dataset_streaming") and objective == "sft":
         config["dataset_streaming"] = True
-    if ctx.params.get("load_in_4bit") is False:
-        config["load_in_4bit"] = False
-    if ctx.params.get("train_on_completions"):
-        config["train_on_completions"] = True
-    if ctx.params.get("weight_decay") not in (None, ""):
-        config["weight_decay"] = float(ctx.params["weight_decay"])
+    if params.get("drafter_enabled") and objective == "sft" and config["training_type"] != TRAINING_TYPES["cpt"]:
+        config["drafter"] = drafter_request(params)
     mapping = ctx.params.get("custom_format_mapping")
     prompt_col = str(ctx.params.get("prompt_column") or "").strip()
     response_col = str(ctx.params.get("response_column") or "").strip()
-    objective = str(ctx.params.get("objective") or "sft")
-    if objective not in OBJECTIVES:
-        raise FlowNodeError(f"Unknown objective {objective!r}")
     rewards: list[dict] = []
     if isinstance(mapping, dict) and mapping:
         config["custom_format_mapping"] = mapping
@@ -102,6 +112,8 @@ async def finetune(ctx: NodeContext) -> dict:
         raise FlowNodeError("Set both the prompt and the response column, or leave both blank")
     if objective != "sft":
         rewards = rl_config(ctx.params, objective, config)
+    for key, value in TRAIN_PAGE_BATCH.items():
+        config.setdefault(key, value)
     holdout = None
     percent = int(ctx.params.get("holdout_percent") or 0)
     if percent > 0:
@@ -109,6 +121,7 @@ async def finetune(ctx: NodeContext) -> dict:
             ctx, dataset, percent, int(ctx.params.get("holdout_seed") or 0)
         )
         # The split already covers only the sliced rows; slicing the train half again would shrink it.
+        config.pop("dataset_slice_start", None)
         config.pop("dataset_slice_end", None)
     if dataset.get("source") == "hf":
         config["hf_dataset"] = dataset["ref"]
@@ -116,6 +129,8 @@ async def finetune(ctx: NodeContext) -> dict:
             config["subset"] = dataset["subset"]
         if dataset.get("split"):
             config["train_split"] = dataset["split"]
+        if str(ctx.params.get("eval_split") or "").strip():
+            config["eval_split"] = str(ctx.params["eval_split"]).strip()
     elif dataset.get("source") == "local":
         config["local_datasets"] = [dataset["ref"]]
     elif dataset.get("source") == "recipe" and recipe_artifact(dataset.get("ref")):
@@ -229,6 +244,99 @@ async def finetune(ctx: NodeContext) -> dict:
     }
 
 
+def method_fields(params: dict, config: dict) -> None:
+    """Method, precision, sequence length and learning rates, as the Train page sends them."""
+    method = str(params.get("training_type") or "lora")
+    config["training_type"] = TRAINING_TYPES.get(method, TRAINING_TYPES["lora"])
+    if method == "lora":
+        config["load_in_4bit"] = params.get("load_in_4bit") is not False
+    else:
+        # Full trains in 16-bit; CPT loads 4-bit only for a pre-quantized checkpoint, like the Train page.
+        config["load_in_4bit"] = method == "cpt" and "4bit" in config["model_name"].lower()
+    config["max_seq_length"] = int(params.get("max_seq_length") or 2048)
+    config["learning_rate"] = str(params.get("learning_rate") or "2e-4")
+    if method == "cpt" and params.get("embedding_learning_rate") not in (None, ""):
+        config["embedding_learning_rate"] = float(params["embedding_learning_rate"])
+
+
+def lora_fields(params: dict, config: dict) -> None:
+    adapter = config["training_type"] != TRAINING_TYPES["full"]
+    config["use_lora"] = adapter
+    config["lora_r"] = int(params.get("lora_r") or 16)
+    config["lora_alpha"] = int(params.get("lora_alpha") or 32)
+    if params.get("lora_dropout") not in (None, ""):
+        config["lora_dropout"] = float(params["lora_dropout"])
+    variant = str(params.get("lora_variant") or "lora")
+    for name in LORA_VARIANTS:
+        config[f"use_{name}"] = adapter and variant == name
+    modules = [str(m).strip() for m in params.get("target_modules") or [] if str(m).strip()]
+    if config["training_type"] == TRAINING_TYPES["cpt"] and not set(CPT_EMBEDDING_MODULES) & set(modules):
+        modules += CPT_EMBEDDING_MODULES
+    config["target_modules"] = modules if adapter else []
+    for key in VISION_LORA:
+        config[key] = params.get(key) is not False
+
+
+def schedule_fields(params: dict, config: dict, flow_seed: int) -> None:
+    config["optim"] = str(params.get("optim") or "adamw_8bit")
+    config["lr_scheduler_type"] = str(params.get("lr_scheduler_type") or "linear")
+    if params.get("weight_decay") not in (None, ""):
+        config["weight_decay"] = float(params["weight_decay"])
+    if params.get("warmup_steps") not in (None, ""):
+        config["warmup_steps"] = int(params["warmup_steps"])
+    config["save_steps"] = int(params.get("save_steps") or 0)
+    eval_steps = float(params.get("eval_steps") or 0)
+    config["eval_steps"] = eval_steps
+    # Patience needs evaluation, and the Train page sends 0 without it.
+    config["early_stopping_patience"] = int(params.get("early_stopping_patience") or 0) if eval_steps > 0 else 0
+    seed = params.get("random_seed")
+    config["random_seed"] = int(seed) if seed not in (None, "") else flow_seed % (2**31)
+
+
+def memory_fields(params: dict, config: dict, objective: str) -> None:
+    sft = objective == "sft"
+    task = str(params.get("task") or "text")
+    cpt = config["training_type"] == TRAINING_TYPES["cpt"]
+    config["packing"] = bool(params.get("packing")) and sft and task != "embedding"
+    config["train_on_completions"] = (
+        bool(params.get("train_on_completions"))
+        and sft
+        and not cpt
+        and task != "embedding"
+        and config["format_type"] != "raw"
+    )
+    checkpointing = str(params.get("gradient_checkpointing") or "unsloth")
+    config["gradient_checkpointing"] = checkpointing
+    mode = str(params.get("offload_layers") or "off")
+    offloads = (
+        config["training_type"] != TRAINING_TYPES["full"]
+        and checkpointing != "none"
+        and task in ("text", "vision")
+    )
+    if not offloads or mode == "off":
+        config["offload_layers"] = 0
+    elif mode == "auto":
+        config["offload_layers"] = "auto"
+        if params.get("offload_vram_gb") not in (None, ""):
+            config["offload_vram_gb"] = float(params["offload_vram_gb"])
+    else:
+        config["offload_layers"] = min(1024, max(1, int(params.get("offload_count") or 8)))
+    depth = str(params.get("prefetch_depth") or "2")
+    config["prefetch_depth"] = "auto" if depth == "auto" else min(8, max(1, int(depth)))
+
+
+def drafter_request(params: dict) -> dict:
+    lr = params.get("drafter_learning_rate")
+    return {
+        "enabled": True,
+        "data_source": str(params.get("drafter_data_source") or "dataset"),
+        "max_examples": int(params.get("drafter_max_examples") or 2000),
+        "epochs": float(params.get("drafter_epochs") or 1.0),
+        "learning_rate": float(lr) if lr not in (None, "") and float(lr) > 0 else None,
+        "draft_steps": int(params.get("drafter_draft_steps") or 3),
+    }
+
+
 def rl_roles(params: dict, objective: str) -> dict:
     """Column -> RL role for the columns the node names; Studio detects the rest by name."""
     named = {"prompt": params.get("prompt_column")}
@@ -251,6 +359,8 @@ def rl_config(params: dict, objective: str, config: dict) -> list[dict]:
     config["objective"] = objective
     if params.get("beta") not in (None, ""):
         config["rl_beta"] = float(params["beta"])
+    if params.get("max_prompt_length") not in (None, ""):
+        config["rl_max_prompt_length"] = int(params["max_prompt_length"])
     if objective != "grpo":
         return []
     rewards = [
@@ -420,7 +530,7 @@ async def holdout_split(
             "Hold-out works on text datasets that are not streamed; set Hold out % to 0"
         )
     ctx.progress(phase = "Holding out rows")
-    # Same "use rows up to" slice the trainer would apply, so the split is of the configured range.
+    # Same train split start/end slice the trainer would apply, so the split is of the configured range.
     end = ctx.params.get("dataset_slice_end")
     end = None if end in (None, "") else int(end)
     if dataset.get("source") == "recipe" and not recipe_artifact(dataset.get("ref")):
@@ -436,6 +546,9 @@ async def holdout_split(
             raise
         except Exception as exc:
             raise FlowNodeError(f"Could not read the dataset to hold rows out: {exc}") from None
+    start = ctx.params.get("dataset_slice_start")
+    if start not in (None, ""):
+        rows = rows[int(start) :]
     held_ids = holdout_row_ids(len(rows), percent, seed)
     if not held_ids:
         raise FlowNodeError(f"{len(rows)} row(s) is too few to hold any out; set Hold out % to 0")

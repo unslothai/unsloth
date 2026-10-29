@@ -172,3 +172,51 @@ test("Chat with it finds the adapter by the run folder's name", () => {
   assert.equal(adapterPathFor(loras, "run-2"), "C:\\out\\run-2");
   assert.equal(adapterPathFor(loras, "run-3"), null);
 });
+
+test("Advanced holds every Train page setting, grouped in the Train page's order", () => {
+  const groups: string[] = [];
+  for (const p of finetune.params as ParamSpec[]) {
+    if (p.advanced) assert.ok(p.group, `${p.id} has no group`);
+    if (p.group && groups.at(-1) !== p.group) {
+      assert.ok(!groups.includes(p.group), `${p.group} is split`);
+      groups.push(p.group);
+    }
+  }
+  assert.deepEqual(groups, [
+    "Model",
+    "Dataset",
+    "Training",
+    "LoRA Settings",
+    "Optimization",
+    "Schedule",
+    "Memory",
+    "RL settings",
+    "Speculative Decoding Drafter",
+  ]);
+  const ids = new Set(finetune.params.map((p: ParamSpec) => p.id));
+  for (const id of [
+    "project_name", "dataset_slice_start", "eval_split", "embedding_learning_rate",
+    "lora_dropout", "lora_variant", "target_modules", "finetune_vision_layers",
+    "optim", "lr_scheduler_type", "save_steps", "eval_steps", "early_stopping_patience",
+    "random_seed", "packing", "gradient_checkpointing", "offload_layers", "offload_vram_gb",
+    "prefetch_depth", "enable_thinking", "epsilon_high", "mask_truncated_completions",
+    "max_prompt_length", "drafter_enabled", "drafter_draft_steps",
+  ])
+    assert.ok(ids.has(id), id);
+});
+
+test("drafter fields show only for SFT with the drafter on, LoRA fields only for adapter methods", () => {
+  const visible = (params: Record<string, unknown>) =>
+    finetune.params
+      .filter((p: ParamSpec) => paramVisible(p, params, finetune.params))
+      .map((p: ParamSpec) => p.id);
+  assert.ok(!visible({}).includes("drafter_epochs"));
+  assert.ok(visible({ drafter_enabled: true }).includes("drafter_epochs"));
+  assert.ok(!visible({ drafter_enabled: true, objective: "grpo" }).includes("drafter_enabled"));
+  assert.ok(!visible({ training_type: "full" }).includes("lora_r"));
+  assert.ok(visible({ training_type: "cpt" }).includes("embedding_learning_rate"));
+  assert.ok(visible({ task: "vision" }).includes("finetune_vision_layers"));
+  assert.ok(!visible({ task: "vision" }).includes("target_modules"));
+  assert.ok(visible({ offload_layers: "auto" }).includes("offload_vram_gb"));
+  assert.ok(!visible({ offload_layers: "count" }).includes("offload_vram_gb"));
+});

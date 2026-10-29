@@ -238,17 +238,43 @@ def _start_body(params: dict) -> dict:
     return body
 
 
-def test_unset_new_settings_send_the_same_start_request():
+def test_unset_settings_send_the_train_pages_defaults():
     body = _start_body({})
     assert body == {
         "model_name": "unsloth/Qwen3-0.6B",
         "training_type": "LoRA/QLoRA",
+        "load_in_4bit": True,
         "format_type": "auto",
         "max_steps": 60,
         "learning_rate": "0.0002",
-        "lora_r": 16,
         "max_seq_length": 2048,
+        "use_lora": True,
+        "lora_r": 16,
+        "lora_alpha": 32,
+        "lora_dropout": 0.05,
+        "use_rslora": False,
+        "use_loftq": False,
+        "use_dora": False,
+        "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        "finetune_vision_layers": True,
+        "finetune_language_layers": True,
+        "finetune_attention_modules": True,
+        "finetune_mlp_modules": True,
+        "optim": "adamw_8bit",
+        "lr_scheduler_type": "linear",
+        "batch_size": 4,
+        "gradient_accumulation_steps": 8,
+        "weight_decay": 0.001,
+        "warmup_steps": 5,
+        "save_steps": 0,
+        "eval_steps": 0.0,
+        "early_stopping_patience": 0,
         "random_seed": 1,
+        "packing": False,
+        "train_on_completions": False,
+        "gradient_checkpointing": "unsloth",
+        "offload_layers": 0,
+        "prefetch_depth": 2,
         "hf_dataset": "org/data",
         "train_split": "train",
     }
@@ -352,8 +378,8 @@ def test_decision_notebooks_stay_in_colab():
     assert doc is None and any("decision" in line for line in report["unsupported"])
 
 
-def test_load_in_4bit_is_sent_only_when_off_and_orpheus_trains_16bit():
-    assert "load_in_4bit" not in _start_body({})
+def test_load_in_4bit_follows_the_switch_and_orpheus_trains_16bit():
+    assert _start_body({})["load_in_4bit"] is True
     assert _start_body({"load_in_4bit": False})["load_in_4bit"] is False
     doc = next(d for d in build_examples.build() if d["id"] == "notebook-tts-sft")
     assert _tune(doc)["load_in_4bit"] is False
@@ -407,7 +433,7 @@ def test_importer_carries_responses_only_vision_by_name_and_no_embedding_streami
     )
     assert _tune(doc)["train_on_completions"] is True
     assert _start_body({"train_on_completions": True})["train_on_completions"] is True
-    assert "train_on_completions" not in _start_body({})
+    assert _start_body({})["train_on_completions"] is False
     vision, _ = notebook_import.read_notebook(
         _nb(
             "model, processor = FastModel.from_pretrained(model_name = 'unsloth/gemma-3n-E4B-it')",

@@ -362,3 +362,126 @@ def test_a_coded_route_error_reaches_the_node_as_its_message():
     from core.flows.caller import route_detail
     body = b'{"detail": {"code": "hf_model_verification_failed", "message": "The Hugging Face model could not be verified."}}'
     assert route_detail(body) == "The Hugging Face model could not be verified."
+
+
+def _hub_body(**params):
+    started = []
+
+    def routes(method, path, query, body):
+        if path == "/api/train/start":
+            started.append(body)
+            raise RuntimeError("started")
+        raise AssertionError(path)
+
+    ctx = _Ctx(routes, **params)
+    ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/data", "split": "train"}}
+    with pytest.raises(RuntimeError, match = "started"):
+        asyncio.run(training.finetune(ctx))
+    return started[0]
+
+
+def test_model_group_sends_method_precision_and_project():
+    cpt = _hub_body(training_type = "cpt", embedding_learning_rate = 2e-5, project_name = " books ")
+    assert cpt["training_type"] == "Continued Pretraining" and cpt["load_in_4bit"] is False
+    assert cpt["embedding_learning_rate"] == 2e-5 and cpt["project_name"] == "books"
+    assert cpt["target_modules"][-2:] == ["embed_tokens", "lm_head"]
+    assert _hub_body(training_type = "cpt", base_model = "unsloth/x-bnb-4bit")["load_in_4bit"] is True
+    full = _hub_body(training_type = "full", load_in_4bit = True, embedding_learning_rate = 1e-5)
+    assert full["training_type"] == "Full Finetuning" and full["load_in_4bit"] is False
+    assert full["use_lora"] is False and full["target_modules"] == [] and full["offload_layers"] == 0
+    assert "embedding_learning_rate" not in full
+    assert _hub_body(load_in_4bit = False)["load_in_4bit"] is False
+
+
+def test_dataset_group_sends_slices_eval_split_and_format():
+    body = _hub_body(
+        dataset_slice_start = 10, dataset_slice_end = 99, eval_split = "test", format_type = "raw",
+        train_on_completions = True,
+    )
+    assert (body["dataset_slice_start"], body["dataset_slice_end"]) == (10, 99)
+    assert body["eval_split"] == "test" and body["format_type"] == "raw"
+    assert body["train_on_completions"] is False
+    assert "dataset_streaming" not in _hub_body(dataset_streaming = True, objective = "grpo")
+    assert _hub_body(dataset_streaming = True)["dataset_streaming"] is True
+
+
+def test_holdout_starts_at_the_train_split_start(monkeypatch):
+    monkeypatch.setattr("hub.utils.host_paths.cache_reference", lambda p: f"cache:{p}")
+    started = []
+    ctx = _Ctx(_recipe_routes(started), holdout_percent = 10, dataset_slice_start = 10)
+    with pytest.raises(RuntimeError, match = "started"):
+        asyncio.run(training.finetune(ctx))
+    rows = [r for f in _uploads(ctx).values() for r in f]
+    assert len(rows) == 10 and {r["q"] for r in rows} == {f"q{i}" for i in range(10, 20)}
+    assert "dataset_slice_start" not in started[0]
+
+
+def test_lora_group_sends_dropout_variant_modules_and_vision_layers():
+    body = _hub_body(
+        lora_r = 32, lora_alpha = 64, lora_dropout = 0.1, lora_variant = "dora",
+        target_modules = ["q_proj", " ", "v_proj"], finetune_vision_layers = False,
+    )
+    assert (body["lora_r"], body["lora_alpha"], body["lora_dropout"]) == (32, 64, 0.1)
+    assert (body["use_rslora"], body["use_loftq"], body["use_dora"]) == (False, False, True)
+    assert body["target_modules"] == ["q_proj", "v_proj"]
+    assert body["finetune_vision_layers"] is False and body["finetune_mlp_modules"] is True
+
+
+def test_optimization_group_sends_optimizer_scheduler_and_batch():
+    body = _hub_body(optim = "adamw_torch_fused", lr_scheduler_type = "cosine", batch_size = 2,
+                     gradient_accumulation_steps = 16, weight_decay = 0.01)
+    assert (body["optim"], body["lr_scheduler_type"]) == ("adamw_torch_fused", "cosine")
+    assert (body["batch_size"], body["gradient_accumulation_steps"], body["weight_decay"]) == (2, 16, 0.01)
+    grpo = _hub_body(objective = "grpo", num_generations = 8)
+    assert (grpo["batch_size"], grpo["gradient_accumulation_steps"]) == (8, 1)
+
+
+def test_schedule_group_sends_warmup_checkpoints_eval_and_seed():
+    body = _hub_body(warmup_steps = 10, save_steps = 50, eval_steps = 0.1, early_stopping_patience = 3,
+                     random_seed = 42)
+    assert (body["warmup_steps"], body["save_steps"], body["eval_steps"]) == (10, 50, 0.1)
+    assert body["early_stopping_patience"] == 3 and body["random_seed"] == 42
+    assert _hub_body(early_stopping_patience = 3)["early_stopping_patience"] == 0
+    assert _hub_body()["random_seed"] == 1
+
+
+def test_memory_group_sends_packing_checkpointing_and_offload():
+    body = _hub_body(packing = True, gradient_checkpointing = "true", offload_layers = "auto",
+                     offload_vram_gb = 12.5, prefetch_depth = "auto")
+    assert body["packing"] is True and body["gradient_checkpointing"] == "true"
+    assert (body["offload_layers"], body["offload_vram_gb"], body["prefetch_depth"]) == ("auto", 12.5, "auto")
+    counted = _hub_body(offload_layers = "count", offload_count = 12, offload_vram_gb = 8, prefetch_depth = "3")
+    assert (counted["offload_layers"], counted["prefetch_depth"]) == (12, 3) and "offload_vram_gb" not in counted
+    assert _hub_body(offload_layers = "auto", gradient_checkpointing = "none")["offload_layers"] == 0
+    assert _hub_body(packing = True, objective = "dpo")["packing"] is False
+    assert _hub_body(task = "vision", vision_image_size = 512)["vision_image_size"] == 512
+
+
+def test_rl_group_sends_clip_thinking_masking_and_prompt_length():
+    grpo = _hub_body(objective = "grpo", epsilon_high = 0.28, enable_thinking = True,
+                     mask_truncated_completions = True, max_prompt_length = 256)
+    assert grpo["grpo_epsilon_high"] == 0.28 and grpo["grpo_enable_thinking"] is True
+    assert grpo["grpo_mask_truncated_completions"] is True and grpo["rl_max_prompt_length"] == 256
+    dpo = _hub_body(objective = "dpo", max_prompt_length = 128, epsilon_high = 0.28)
+    assert dpo["rl_max_prompt_length"] == 128 and "grpo_epsilon_high" not in dpo
+
+
+def test_drafter_group_sends_the_drafter_only_for_sft():
+    body = _hub_body(drafter_enabled = True, drafter_data_source = "regenerate", drafter_max_examples = 500,
+                     drafter_epochs = 2.5, drafter_draft_steps = 4)
+    assert body["drafter"] == {
+        "enabled": True, "data_source": "regenerate", "max_examples": 500, "epochs": 2.5,
+        "learning_rate": None, "draft_steps": 4,
+    }
+    assert "drafter" not in _hub_body(drafter_enabled = True, objective = "grpo")
+    assert "drafter" not in _hub_body(drafter_enabled = True, training_type = "cpt")
+    assert "drafter" not in _hub_body()
+
+
+def test_every_setting_reaches_a_valid_training_request():
+    from models.training import TrainingStartRequest
+
+    body = _hub_body(training_type = "cpt", offload_layers = "auto", offload_vram_gb = 10, drafter_enabled = True,
+                     eval_steps = 0.05, early_stopping_patience = 2, random_seed = 7)
+    TrainingStartRequest.model_validate(body)
+    TrainingStartRequest.model_validate(_hub_body(objective = "grpo", epsilon_high = 0.28, max_prompt_length = 64))

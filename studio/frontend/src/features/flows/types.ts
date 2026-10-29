@@ -157,6 +157,10 @@ export interface ParamSpec {
   /** Shown only while each named param holds one of these values. */
   show_when?: Record<string, string[]>;
   option_labels?: Record<string, string>;
+  /** Heading the param sits under inside Advanced. */
+  group?: string;
+  /** Shown on the label's info button. */
+  help?: string;
 }
 
 export interface PortSpec {
