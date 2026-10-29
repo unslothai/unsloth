@@ -379,7 +379,6 @@ export function PermissionModeMenuItems({
           <option.icon
             className={cn(
               "permission-mode-icon mt-[calc(0.14rem*var(--ui-font-scale,1))] size-[calc(var(--ui-icon-size)*1.15)] shrink-0",
-              // Beside the shields the hand reads larger; on its own in the trigger it keeps full size.
               option.value === "ask" && "scale-[0.94]",
             )}
             strokeWidth={2}

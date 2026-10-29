@@ -3,7 +3,7 @@
 
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 
-// Hugeicons shield-check's outline with Hugeicons "sparkle" (stroke-rounded) at 55%, raised 0.48 units to the shield's visual middle.
+// Hugeicons "shield-check" outline with "sparkle" at 55%, raised 2%.
 export const SparklesIcon: IconSvgElement = [
   [
     "path",
