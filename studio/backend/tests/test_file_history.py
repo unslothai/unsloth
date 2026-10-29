@@ -457,6 +457,20 @@ def test_a_dot_folder_file_recreated_by_hand_is_a_conflict(chat):
     assert ci.read_text(encoding = "utf-8") == "user\n"
 
 
+def test_a_rename_that_only_changes_case_is_rewound(chat):
+    workdir, history = chat
+    file_history.set_turn("chat-1", "u1")
+    execute_tool("python", {"code": "open('Readme.md', 'w').write('keep')"}, session_id = "s")
+    file_history.set_turn("chat-1", "u2")
+    execute_tool(
+        "python", {"code": "import os; os.rename('Readme.md', 'README.md')"}, session_id = "s"
+    )
+
+    _rewind(history, ["u2"])
+    assert [p.name for p in workdir.iterdir() if p.name.lower() == "readme.md"] == ["Readme.md"]
+    assert (workdir / "Readme.md").read_text(encoding = "utf-8") == "keep"
+
+
 @pytest.mark.skipif(os.name != "posix", reason = "uses a POSIX shell")
 def test_a_file_past_the_download_card_walk_is_rewound(chat, monkeypatch):
     workdir, _history = chat

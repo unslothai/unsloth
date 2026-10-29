@@ -135,10 +135,17 @@ def _probe(workdir: str, rels: "Iterable[str]") -> dict:
     """Regular files among *rels*, keyed as a walk keys them; one behind a linked folder counts as gone."""
     root = os.path.realpath(workdir)
     found = {}
+    listings: dict = {}
     for rel in rels:
         path = os.path.join(root, *rel.split("/"))
+        parent = os.path.dirname(path)
         try:
-            if os.path.realpath(os.path.dirname(path)) != os.path.dirname(path):
+            if os.path.realpath(parent) != parent:
+                continue
+            # A case-insensitive volume finds "Readme.md" after a rename to "README.md".
+            if parent not in listings:
+                listings[parent] = set(os.listdir(parent))
+            if os.path.basename(path) not in listings[parent]:
                 continue
             info = os.lstat(path)
         except OSError:
