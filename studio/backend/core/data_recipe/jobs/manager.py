@@ -150,18 +150,24 @@ def _shard_rows_signature(
     if read_started_ns is None:
         read_started_ns = time.time_ns()
     settled_before_ns = read_started_ns - _SHARD_ROWS_SETTLE_NS
+    # Cheapest first: a shard landing mid run moves the dir stamps, so most misses stop at one stat.
     try:
         dir_key = _stat_key(str(parquet_dir), settled_before_ns)
-        file_keys = [_stat_key(name, settled_before_ns) for name in file_names]
+        if dir_key is None:
+            return None
         # Names too: FAT leaves a dir mtime alone on add; DuckDB globs match dot-prefixed names.
-        listed = tuple(
-            sorted(entry for entry in os.listdir(parquet_dir) if entry.lower().endswith(".parquet"))
+        listed = sorted(
+            entry for entry in os.listdir(parquet_dir) if entry.lower().endswith(".parquet")
         )
+        if listed != sorted(os.path.basename(name) for name in file_names):
+            return None
+        file_keys = []
+        for name in file_names:
+            key = _stat_key(name, settled_before_ns)
+            if key is None:
+                return None
+            file_keys.append(key)
     except (OSError, ValueError):
-        return None
-    if dir_key is None or any(key is None for key in file_keys):
-        return None
-    if listed != tuple(sorted(os.path.basename(name) for name in file_names)):
         return None
     return (dir_key, tuple(file_keys))
 
