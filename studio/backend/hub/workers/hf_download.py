@@ -3,7 +3,7 @@
 
 """HF download subprocess (SIGKILL stops chunk threads); resume needs single-stream writes per file, enforced
 by HF_HUB_DISABLE_XET=1, HF_HUB_ENABLE_HF_TRANSFER=0 (http), one writer per blob, purge of unprovable
-.incomplete blobs. Files overlap only over HTTP with resumable partials (see :func:`_file_workers`)."""
+.incomplete blobs."""
 
 from __future__ import annotations
 
@@ -38,32 +38,24 @@ from hub.utils.gguf_plan import (
     sibling_sha256,
 )
 from hub.utils.state_dir import RepoType
-from hub.utils.resumable_partials import restore_resumable_partials
+from hub.utils.resumable_partials import (
+    LAST_STOCK_RESUMABLE_VERSION,
+    _hub_version,
+    restore_resumable_partials,
+)
 
 # Put huggingface_hub's 1.17 HTTP writer back: the SIGKILL then restart loop reads .incomplete for its resume offset, and 1.18+ leaves nothing to read.
 _PARTIALS_RESUMABLE = restore_resumable_partials()
 
-# Files fetched at once over HTTP. Each file is still one sequential writer under huggingface_hub's per-blob lock, so every partial resumes from its length; overlapping them only hides per-request latency and per-connection caps. huggingface_hub's own default is 8.
+# Each file is still one sequential writer under huggingface_hub's per-blob lock, so overlapping files only hides request latency and per-connection caps.
 _HTTP_FILE_WORKERS = 4
 
 
 def _file_workers(mode: str) -> int:
-    """``snapshot_download(max_workers=...)`` for *mode*. Xet stays one file at a time: hf_xet already fans out inside a file, its buffers scale per file, and a killed Xet file restarts from zero. HTTP overlaps files only where an interrupted partial resumes (:func:`hf_partials_are_resumable`), so a kill never costs more than the at-most-one in-flight file it costs serially."""
-    if mode != "http":
-        return 1
-    try:
-        from hub.utils.hf_cache_state import hf_partials_are_resumable
-        from hub.utils.resumable_partials import LAST_STOCK_RESUMABLE_VERSION, _hub_version
-
-        if not hf_partials_are_resumable():
-            return 1
-        # Past 1.17 only the writer restored at import resumes. The probe is re-run here and is not cached when it fails, so a probe that failed at import and passes now would otherwise overlap files on the stock writer, whose partials cannot resume.
-        version = _hub_version()
-        if not version or (version > LAST_STOCK_RESUMABLE_VERSION and not _PARTIALS_RESUMABLE):
-            return 1
-    except Exception:  # noqa: BLE001 - an unanswerable probe keeps the serial writer
-        return 1
-    return _HTTP_FILE_WORKERS
+    """``snapshot_download(max_workers=...)``. Xet stays serial: hf_xet fans out inside a file and a killed Xet file restarts from zero. HTTP overlaps only where a killed partial resumes: the stock writer up to 1.17, past it only the writer restored at import."""
+    version = _hub_version()
+    resumes = _PARTIALS_RESUMABLE or (bool(version) and version <= LAST_STOCK_RESUMABLE_VERSION)
+    return _HTTP_FILE_WORKERS if mode == "http" and resumes else 1
 
 
 # typing.Union, not `str | bool | None`: an alias is evaluated on import and PEP 604 raises below 3.10.

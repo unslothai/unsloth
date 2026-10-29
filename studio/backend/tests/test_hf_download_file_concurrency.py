@@ -33,40 +33,21 @@ def test_xet_and_unknown_transports_stay_serial():
     assert hf_download._file_workers("auto") == 1
 
 
-def test_http_overlaps_only_when_partials_resume(monkeypatch):
-    import hub.utils.hf_cache_state as cache_state
-
-    monkeypatch.setattr(hf_download, "_PARTIALS_RESUMABLE", True)
-    monkeypatch.setattr(cache_state, "hf_partials_are_resumable", lambda *a, **k: True)
-    assert hf_download._file_workers("http") > 1
-    monkeypatch.setattr(cache_state, "hf_partials_are_resumable", lambda *a, **k: False)
-    assert hf_download._file_workers("http") == 1
-
-    def _boom(*a, **k):
-        raise RuntimeError("probe failed")
-
-    monkeypatch.setattr(cache_state, "hf_partials_are_resumable", _boom)
-    assert hf_download._file_workers("http") == 1
-
-
-def test_http_stays_serial_when_the_restored_writer_is_not_installed(monkeypatch):
-    import hub.utils.hf_cache_state as cache_state
-    import hub.utils.resumable_partials as resumable
-
-    monkeypatch.setattr(cache_state, "hf_partials_are_resumable", lambda *a, **k: True)
-    # 1.18+: a probe that answers True now does not mean the import-time restore succeeded.
-    monkeypatch.setattr(resumable, "_hub_version", lambda: (1, 33))
-    monkeypatch.setattr(hf_download, "_PARTIALS_RESUMABLE", False)
-    assert hf_download._file_workers("http") == 1
-    monkeypatch.setattr(hf_download, "_PARTIALS_RESUMABLE", True)
-    assert hf_download._file_workers("http") > 1
-    # Up to 1.17 the stock writer appends to the shared partial, so nothing has to be restored.
-    monkeypatch.setattr(resumable, "_hub_version", lambda: (0, 36))
-    monkeypatch.setattr(hf_download, "_PARTIALS_RESUMABLE", False)
-    assert hf_download._file_workers("http") > 1
-    # An unreadable version proves neither writer.
-    monkeypatch.setattr(resumable, "_hub_version", lambda: ())
-    assert hf_download._file_workers("http") == 1
+@pytest.mark.parametrize(
+    "version, restored, workers",
+    [
+        ((0, 36), False, 4),  # stock writer appends to the shared partial
+        ((1, 17), False, 4),
+        ((1, 33), True, 4),
+        ((1, 33), False, 1),  # stock 1.18+ writer: a killed partial cannot resume
+        ((), False, 1),  # unreadable version proves neither writer
+    ],
+)
+def test_http_overlaps_only_when_partials_resume(monkeypatch, version, restored, workers):
+    monkeypatch.setattr(hf_download, "_hub_version", lambda: version)
+    monkeypatch.setattr(hf_download, "_PARTIALS_RESUMABLE", restored)
+    assert hf_download._file_workers("http") == workers
+    assert hf_download._file_workers("xet") == 1
 
 
 def test_every_snapshot_download_call_uses_the_transport_budget():
