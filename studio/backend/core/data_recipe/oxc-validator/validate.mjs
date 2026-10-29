@@ -650,18 +650,27 @@ function serve() {
       }
     }, 1000).unref();
   }
-  let buffered = "";
+  // Only each new chunk is scanned: rescanning the whole pending line made large requests quadratic.
+  let pending = [];
+  let pendingChars = 0;
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (chunk) => {
-    buffered += chunk;
-    let newline = buffered.indexOf("\n");
+    let start = 0;
+    let newline = chunk.indexOf("\n");
     while (newline !== -1) {
-      const line = buffered.slice(0, newline);
-      buffered = buffered.slice(newline + 1);
+      pending.push(chunk.slice(start, newline));
+      const line = pending.join("");
+      pending = [];
+      pendingChars = 0;
       serveLine(line);
-      newline = buffered.indexOf("\n");
+      start = newline + 1;
+      newline = chunk.indexOf("\n", start);
     }
-    if (buffered.length > SERVE_MAX_LINE_CHARS) {
+    if (start < chunk.length) {
+      pending.push(chunk.slice(start));
+      pendingChars += chunk.length - start;
+    }
+    if (pendingChars > SERVE_MAX_LINE_CHARS) {
       process.exit(2);
     }
   });

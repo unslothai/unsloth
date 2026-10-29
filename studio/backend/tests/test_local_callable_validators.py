@@ -331,3 +331,25 @@ def test_the_worker_exits_when_its_caller_is_killed(tmp_path):
     else:
         psutil.Process(worker_pid).kill()
         pytest.fail("the OXC worker outlived the process that started it")
+
+
+@real_parser
+def test_a_large_batch_costs_the_worker_about_what_it_costs_one_shot(monkeypatch):
+    import time
+
+    # A JSON line carries no raw newline until its end, so rescanning the buffer per stdin chunk
+    # was quadratic: 18x one-shot for 32 MB, past the deadline on slower hosts.
+    batch = (
+        "js",
+        "syntax",
+        "auto",
+        tuple("/*" + "a" * 3_200_000 + "*/\nconst x = 1;\n" for _ in range(10)),
+    )
+    started = time.monotonic()
+    expected = _run_batch(batch)
+    monkeypatch.setattr(validators, "_OXC_TIMEOUT_S", max(3.0, 5 * (time.monotonic() - started)))
+    launches = _count_launches(monkeypatch)
+    with validators.oxc_validator_session():
+        assert _run_batch(batch) == expected
+    assert launches == {"popen": 1, "run": 0}
+    assert all(result["is_valid"] for result in expected)
