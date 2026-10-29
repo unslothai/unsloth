@@ -9,8 +9,8 @@ loads. studio/precompile_bytecode.py runs compileall over site-packages (and an 
 after setup.sh / setup.ps1 changed the venv. uv itself is left alone: no installer sets
 UV_COMPILE_BYTECODE, because a uv compile failure or timeout fails the install command (#5983).
 
-On Windows it is opt-in (UNSLOTH_STUDIO_COMPILE_BYTECODE=1): Defender scans every .pyc the update
-writes, which made updates slower than Python's lazy compile on first import.
+Opt-in on every OS (UNSLOTH_STUDIO_COMPILE_BYTECODE=1): a whole-venv compile per update cost more
+than Python's lazy compile on first import.
 """
 
 from __future__ import annotations
