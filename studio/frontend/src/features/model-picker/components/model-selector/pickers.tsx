@@ -132,7 +132,6 @@ import { cn, formatCompact } from "@/lib/utils";
 import type { VramFitStatus } from "@/lib/vram";
 import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
 import {
-  Add01Icon,
   ArrowUpDownIcon,
   Cancel01Icon,
   DashboardCircleIcon,
@@ -140,9 +139,10 @@ import {
   FlimSlateIcon,
   Folder02Icon,
   HelpCircleIcon,
-  Image03Icon,
+  ImageIcon,
   InformationCircleIcon,
   PinIcon,
+  PlusSignIcon,
   RemoveCircleIcon,
   Search01Icon,
   Settings02Icon,
@@ -593,7 +593,7 @@ const CAPABILITY_BADGES: {
     title: "Generates images",
     tone: "text-pink-700 dark:text-pink-300",
     Glyph: (props) => (
-      <HugeiconsIcon icon={Image03Icon} strokeWidth={1.8} {...props} />
+      <HugeiconsIcon icon={ImageIcon} strokeWidth={1.8} {...props} />
     ),
   },
   {
@@ -7668,7 +7668,7 @@ export function HubModelPicker({
                           className="shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                         >
                           <HugeiconsIcon
-                            icon={showFolderInput ? Cancel01Icon : Add01Icon}
+                            icon={showFolderInput ? Cancel01Icon : PlusSignIcon}
                             className="size-3"
                           />
                         </button>

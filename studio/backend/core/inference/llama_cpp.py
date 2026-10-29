@@ -134,6 +134,9 @@ from core.inference.llama_server_args import (
     fit_target_margin_in,
     MANAGED_DIO_FLAGS,
     no_reserve_requires_dio,
+    keep_resident_lock_applicable,
+    keep_resident_lock_flags,
+    load_mode_support,
     resolve_launch_load_mode,
     resolve_effective_load_state,
     resolve_effective_memory_state,
@@ -597,6 +600,20 @@ def _apple_wired_headroom_bytes() -> Optional[int]:
     if in_use is None:
         return None
     return max(0, int((cap_bytes - in_use) * _APPLE_WIRED_CEILING_FRACTION))
+
+
+def _apple_budget_beside_media_mib(held_mib: int, unallocated_mib: int) -> int:
+    """Unified-memory budget beside resident media: price off the working set, unallocated part off available RAM."""
+    from utils.hardware.hardware import _metal_recommended_working_set_bytes
+    import psutil
+
+    mib = 1024 * 1024
+    working_set = _metal_recommended_working_set_bytes() or int(psutil.virtual_memory().total)
+    available = int(psutil.virtual_memory().available)
+    left = working_set // mib - held_mib
+    if available > 0:
+        left = min(left, available // mib - unallocated_mib)
+    return max(0, int(left * _APPLE_UNIFIED_MEMORY_FRACTION))
 
 
 def _gpu_plan_mib(total_bytes: int, on: list[int], gpus) -> dict[int, int]:
@@ -18294,6 +18311,8 @@ class LlamaCppBackend:
             total_ram_mib = self._total_system_memory_mib()
             if total_ram_mib is None:
                 return None
+            if self._host_offload_fits_without_gpus(argv, total_ram_mib):
+                return None
             probed = self._get_gpu_memory(binary)
             # an igpu and a MIG/vGPU line report total 0, leaving the ceiling unknown
             if any(total <= 0 for _idx, _free, total in probed):
@@ -18306,6 +18325,22 @@ class LlamaCppBackend:
         except Exception as e:  # noqa: BLE001 -- a probe that failed is not a verdict
             logger.debug("Host-RAM preflight failed for the route: %s", e)
         return None
+
+    def _host_offload_fits_without_gpus(self, argv: list[str], total_ram_mib: int) -> bool:
+        """Whole GGUF fits RAM less headroom: every credit (VRAM, lazy read) only lowers the
+        priced bytes, so no GPU probe can warn. False when unsure or opted out (that path logs)."""
+        if self._host_offload_warning_opted_out():
+            return False
+        model_path = _extra_args_device(argv, self._ARGV_MODEL)
+        if not model_path:
+            return False
+        try:
+            model_bytes = self._get_gguf_size_bytes(model_path)
+        except Exception:  # noqa: BLE001
+            return False
+        return 0 < model_bytes and model_bytes / (1024 * 1024) <= (
+            total_ram_mib - _HOST_RAM_HEADROOM_MIB
+        )
 
     # Each ask may take several 15s Hub calls, so the route hands its verdict to the load.
     # Taken once by its own load; the TTL only covers a route ask no load came for.
@@ -20011,6 +20046,16 @@ class LlamaCppBackend:
                 for name in candidates
                 if name.lower().endswith(".gguf") and not _is_root_dflash_drafter_path(name)
             ]
+            eligible = [
+                name
+                for name in candidates
+                if _is_root_dflash_drafter_path(name)
+                and Path(name).name not in rejected
+                # Before ranking, as dflash_plan_files: the fetch refuses a half-listed set, and returning one would end the loop.
+                and split_listing_is_complete(candidates, name)
+            ]
+            if not eligible:
+                return None
             # Same size bound as dflash_plan_files: header reads only after download, a drafter is a few layers of its target, and an unlisted size keeps the candidate.
             sizes = self._remote_root_gguf_sizes(hf_repo, hf_token)
             try:
@@ -20020,13 +20065,9 @@ class LlamaCppBackend:
             files = sorted(
                 (
                     name
-                    for name in candidates
-                    if _is_root_dflash_drafter_path(name)
-                    and Path(name).name not in rejected
-                    # Before ranking, as dflash_plan_files: the fetch refuses a half-listed set, and returning one would end the loop.
-                    and split_listing_is_complete(candidates, name)
+                    for name in eligible
                     # Whole set, not the picked shard: each half of a split weight can sit under the target while the set does not.
-                    and not (
+                    if not (
                         target_bytes and _drafter_set_bytes(sizes, Path(name).name) >= target_bytes
                     )
                 ),
@@ -25543,6 +25584,26 @@ class LlamaCppBackend:
 
                     # Unified-memory budget (0 off Apple Silicon) for the no-GPU Metal cap below.
                     _apple_budget_mib = self._apple_metal_memory_budget_bytes() // (1024 * 1024)
+                    _metal_media_mib, _metal_media_unallocated_mib = (
+                        self._metal_media_mib() if _apple_budget_mib > 0 else (0, 0)
+                    )
+                    if _metal_media_mib:
+                        # 0 would mean "not Apple Silicon" and skip every Metal check.
+                        _apple_budget_mib = max(
+                            1,
+                            min(
+                                _apple_budget_mib,
+                                _apple_budget_beside_media_mib(
+                                    _metal_media_mib, _metal_media_unallocated_mib
+                                ),
+                            ),
+                        )
+                    _metal_media_wired_mib = int(
+                        _metal_media_unallocated_mib * _APPLE_WIRED_CEILING_FRACTION
+                    )
+
+                    def _apple_wired_left_mib(wired_bytes: int) -> int:
+                        return max(0, wired_bytes // (1024 * 1024) - _metal_media_wired_mib)
 
                     if tensor_parallel and tp_gpus:
                         # The planner can shrink ctx/KV, not weights or the MTP reserve.
@@ -26092,7 +26153,7 @@ class LlamaCppBackend:
                             extra_args,
                             binary = binary,
                             requested_load_mode = load_mode,
-                            supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                            supports_load_mode = load_mode_support(server_caps),
                             settings = _mem_settings,
                             layers_fixed = _caller_owns_budget or _paravirtual_cpu_forced,
                             mtp_may_engage = _mtp_will_engage,
@@ -26271,9 +26332,7 @@ class LlamaCppBackend:
                                         extra_args,
                                         binary = binary,
                                         requested_load_mode = load_mode,
-                                        supports_load_mode = bool(
-                                            server_caps.get("supports_load_mode")
-                                        ),
+                                        supports_load_mode = load_mode_support(server_caps),
                                         settings = _mem_settings,
                                         layers_fixed = _caller_owns_budget or _paravirtual_cpu_forced,
                                         mtp_may_engage = False,
@@ -26386,8 +26445,7 @@ class LlamaCppBackend:
                                     )
                             # Past free memory macOS swaps; past the wired limit the machine panics.
                             _apple_wired_mib = int(
-                                self._apple_metal_wired_ceiling_bytes()
-                                // (1024 * 1024)
+                                _apple_wired_left_mib(self._apple_metal_wired_ceiling_bytes())
                                 * max(0.0, 1.0 - _flat_mtp_reserve)
                             )
                             if (
@@ -26441,8 +26499,7 @@ class LlamaCppBackend:
                         # Past the wired limit Metal refuses, so it is the harder ceiling when readable.
                         _fit_wired_mib = (
                             int(
-                                self._apple_metal_wired_ceiling_bytes()
-                                // (1024 * 1024)
+                                _apple_wired_left_mib(self._apple_metal_wired_ceiling_bytes())
                                 * max(0.0, 1.0 - _flat_mtp_reserve)
                             )
                             if _vram_fit_ctx
@@ -26491,6 +26548,8 @@ class LlamaCppBackend:
                         # them, so it must see the same wired limit the refusals do.
                         if not _caller_owns_budget and not _paravirtual_cpu_forced:
                             _metal_fit_target_floor_mib = self._metal_fit_target_floor_mib()
+                            if _metal_fit_target_floor_mib > 0:
+                                _metal_fit_target_floor_mib += _metal_media_wired_mib
 
                         if (
                             intent.refuse_partial_gpu_fit
@@ -26507,7 +26566,8 @@ class LlamaCppBackend:
                             wired_bytes = self._apple_metal_wired_headroom_bytes()
                             if wired_bytes is not None:
                                 wired_mib = int(
-                                    wired_bytes // (1024 * 1024) * max(0.0, 1.0 - _flat_mtp_reserve)
+                                    _apple_wired_left_mib(wired_bytes)
+                                    * max(0.0, 1.0 - _flat_mtp_reserve)
                                 )
                                 budget_mib = min(budget_mib, wired_mib)
                             need_mib = math.ceil(
@@ -28923,7 +28983,7 @@ class LlamaCppBackend:
                 # Armed here, not at load start: rows from before the Hub download are stale.
                 _arm_load_probe_memo()
                 _mem_dio_possible = no_reserve_requires_dio(
-                    supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                    supports_load_mode = load_mode_support(server_caps),
                     gpu_offload_confirmed = True,
                 )
                 # NOT gated on the toggle: the answer is this launch's recorded placement
@@ -28973,7 +29033,7 @@ class LlamaCppBackend:
                 )
                 _mem_managed, _mem_extras = apply_model_memory_policy(
                     extra_args,
-                    supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                    supports_load_mode = load_mode_support(server_caps),
                     weights_in_host_memory = _mem_host_resident,
                     gpu_offload_confirmed = _mem_gpu_offload_confirmed,
                     env = _fit_load_mode_env_view,
@@ -29007,7 +29067,7 @@ class LlamaCppBackend:
                 _resolved_load_mode = load_mode or _fit_load_mode
                 _load_mode_managed, _mem_extras = apply_load_mode_policy(
                     _mem_extras,
-                    supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                    supports_load_mode = load_mode_support(server_caps),
                     weights_in_host_memory = _mem_host_resident,
                     requested_load_mode = _resolved_load_mode,
                     settings = _mem_settings,
@@ -29021,7 +29081,7 @@ class LlamaCppBackend:
                 def _ask(pair, env_view):
                     return resolve_launch_load_mode(
                         extra_args,
-                        supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                        supports_load_mode = load_mode_support(server_caps),
                         weights_in_host_memory = _mem_host_resident,
                         gpu_offload_confirmed = _mem_gpu_offload_confirmed,
                         requested_load_mode = _resolved_load_mode,
@@ -29097,7 +29157,7 @@ class LlamaCppBackend:
                     def _for(pair, env_view):
                         return resolve_launch_load_mode(
                             extra_args,
-                            supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                            supports_load_mode = load_mode_support(server_caps),
                             weights_in_host_memory = host_resident,
                             gpu_offload_confirmed = confirmed,
                             requested_load_mode = _resolved_load_mode,
@@ -29129,6 +29189,19 @@ class LlamaCppBackend:
                     and is_vulkan_backend
                     and not self._vulkan_probe_answered(binary)
                 )
+                # An unknown build gets no lock, so none is owed either.
+                self._memory_mlock_applicable = keep_resident_lock_applicable(
+                    self._memory_mlock_applicable, load_mode_support(server_caps)
+                )
+                if (
+                    _mem_should_mlock
+                    and _mem_host_resident
+                    and load_mode_support(server_caps) is None
+                ):
+                    logger.info(
+                        "Model Memory: skipping page-lock, the llama-server --help "
+                        "probe was inconclusive and newer builds reject --mlock."
+                    )
                 if _mem_should_mlock and not _mem_host_resident:
                     logger.info(
                         "Model Memory: skipping page-lock, the weights are fully "
@@ -30576,19 +30649,20 @@ class LlamaCppBackend:
                             )
                             # With --fit off, -ngl defaults to every layer, so the host-resident verdict may no longer hold.
                             if _mem_should_mlock and not _mem_host_resident:
-                                _run.extend(
-                                    ["--load-mode", "mmap+mlock"]
-                                    if server_caps.get("supports_load_mode")
-                                    else ["--mlock"]
+                                _retry_lock = keep_resident_lock_flags(
+                                    load_mode_support(server_caps)
                                 )
+                                _run.extend(_retry_lock)
                                 _mem_host_resident = True
-                                self._memory_mlock_applicable = True
-                                self._memory_policy_active = True
-                                logger.info(
-                                    "Model Memory: re-applying the page-lock for "
-                                    "the --fit on retry; the full-offload "
-                                    "prediction did not hold."
-                                )
+                                # An unknown build gets no lock, so none is owed either.
+                                self._memory_mlock_applicable = bool(_retry_lock)
+                                if _retry_lock:
+                                    self._memory_policy_active = True
+                                    logger.info(
+                                        "Model Memory: re-applying the page-lock for "
+                                        "the --fit on retry; the full-offload "
+                                        "prediction did not hold."
+                                    )
                             run_cmd = _run
                             self._record_memory_state(_run, env)
                             _did_fit_retry = True
@@ -31416,7 +31490,7 @@ class LlamaCppBackend:
                         if _retry_host_resident and not _mem_host_resident:
                             _retry_managed, _ = apply_model_memory_policy(
                                 extra_args,
-                                supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                                supports_load_mode = load_mode_support(server_caps),
                                 # Not the requested load mode: the first launch
                                 # emitted it and this call only ADDS, so a second
                                 # copy would land after the extras and mark
@@ -31432,7 +31506,9 @@ class LlamaCppBackend:
                                 # flag. Nothing is stripped, so kept extras survive.
                                 cmd.extend(_retry_managed)
                             _mem_host_resident = _retry_host_resident
-                            self._memory_mlock_applicable = _retry_host_resident
+                            self._memory_mlock_applicable = keep_resident_lock_applicable(
+                                _retry_host_resident, load_mode_support(server_caps)
+                            )
                             # Stays active if it already was: the flag also
                             # covers extras this policy touched and env it
                             # scrubbed, neither of which the respawn undoes.
@@ -33709,6 +33785,21 @@ class LlamaCppBackend:
 
         return media_unallocated_mib()
 
+    def _metal_media_mib(self) -> tuple[int, int]:
+        """(price, unallocated) MiB of media resident on Apple's GPU, plus MLX chat growth beside them."""
+        if self not in _serving_backends_snapshot():
+            return 0, 0
+        from core.inference.gpu_residency import (
+            _mlx_chat_unallocated_mib,
+            media_held_mib,
+            media_unallocated_mib,
+        )
+
+        held = media_held_mib().get(0, 0)
+        if not held:
+            return 0, 0
+        return held, media_unallocated_mib().get(0, 0) + (_mlx_chat_unallocated_mib() or 0)
+
     def _note_server_pid(self, pid: int) -> None:
         if getattr(self, "_owns_pidfile", True):
             self._record_server_pid(pid)
@@ -33792,7 +33883,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _pid_start_identity(pid: int) -> str:
-        """True when the parent still runs, so the server is not orphaned; uncertainty reads as alive so a live server is never mistakenly reaped"""
+        """Process start time as a string ('' when unknown); a recycled PID will not match it."""
         try:
             import psutil
             try:
@@ -33813,7 +33904,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _pid_parent_is_alive(pid: int) -> bool:
-        """Reaps only true orphans so a second backend cannot kill a live server; recycled PIDs are rejected by start time and name; SIGKILL becomes SIGTERM on Windows"""
+        """True when the parent still runs, so the server is not orphaned; uncertainty reads as alive."""
         try:
             import psutil
 
@@ -33838,7 +33929,7 @@ class LlamaCppBackend:
             if ppid <= 1:
                 return False
             return Path(f"/proc/{ppid}").exists()
-        return False
+        return True  # no psutil and no /proc: unknown
 
     @staticmethod
     def _unlink_pidfile(path: Path) -> None:
@@ -33871,7 +33962,6 @@ class LlamaCppBackend:
             return 0  # never our own pid; leave the record alone
 
         if cls._pid_parent_is_alive(pid):
-            # Kills only Unsloth-root or env-override servers, gathering all candidates first so a failed scan kills none; a positive count arms the VRAM settle wait
             return 0
 
         # Parent is gone: candidate orphan. Reject a PID recycled to something else.
@@ -34087,7 +34177,6 @@ class LlamaCppBackend:
 
             # -- Ownership check, orphan check, kill ---------------------------
             for pid, binary, kill in candidates:
-                # atexit: log streams may be closed, so log nothing; stdlib loggers need raiseExceptions off, while the except covers structlog; neither alone is enough
                 if not _is_signalable_pid(pid):
                     continue
                 # Ownership: exact match OR binary under a known root.
@@ -35131,7 +35220,8 @@ class LlamaCppBackend:
 
             try:
                 # trust_env=False: an HTTP proxy can 503 for 127.0.0.1 and hang the load.
-                resp = httpx.get(url, timeout = 2.0, trust_env = False)
+                # Shared context: httpx otherwise loads the CA bundle on every probe.
+                resp = httpx.get(url, timeout = 2.0, trust_env = False, verify = _local_ssl_context())
                 if resp.status_code == 200:
                     # A cancel during the 2s probe must not publish the dropped model.
                     if cancelled is not None and cancelled():
@@ -36767,6 +36857,7 @@ class LlamaCppBackend:
         sandbox_level: Optional[str] = None,
         compact_context: bool = False,
         website_policy: Optional[dict] = None,
+        live_permissions = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -36816,6 +36907,10 @@ class LlamaCppBackend:
         permission_mode, bypass_permissions = normalize_tool_permissions(
             permission_mode, bypass_permissions
         )
+        from state.tool_approvals import LiveToolPermissions, bind_permission_upgrade
+
+        if live_permissions is None:
+            live_permissions = LiveToolPermissions(session_id, cancel_event)
         sandbox_level = normalize_sandbox_level(sandbox_level)
         stream_tool_execution = account_tool_stream(stream_tool_execution)
 
@@ -38892,6 +38987,9 @@ class LlamaCppBackend:
                     # Bypass wins here too, so a direct internal caller with both
                     # flags never prompts. "auto" pauses only high-risk calls; "off"
                     # pauses only a high-risk python/terminal call without OS isolation.
+                    permission_mode, bypass_permissions = live_permissions.apply(
+                        permission_mode, bypass_permissions
+                    )
                     needs_confirm = needs_tool_confirmation(
                         confirm_tool_calls = bool(confirm_tool_calls),
                         bypass_permissions = bypass_permissions,
@@ -38918,6 +39016,9 @@ class LlamaCppBackend:
                     approval_id = new_approval_id() if needs_confirm else ""
                     decision_slot = (
                         begin_tool_decision(session_id, approval_id) if needs_confirm else None
+                    )
+                    bind_permission_upgrade(
+                        decision_slot, live_permissions, eligible = image_share is None
                     )
                     if needs_confirm:
                         note_host_access(approval_id, decision.tool_name, decision.arguments)
@@ -38954,6 +39055,11 @@ class LlamaCppBackend:
                         )
                         # Read before decision_slot is dropped in the deny branch.
                         _decision_reason = decision_reason(decision_slot)
+                        permission_mode, bypass_permissions = live_permissions.apply(
+                            permission_mode, bypass_permissions
+                        )
+                        if bypass_permissions:
+                            strict_isolation = False
                         if _decision is not None and _decision != "deny":
                             # tool_approved first: the route forwards it before retaking the model slot.
                             yield decision.tool_approved_event(approval_id)

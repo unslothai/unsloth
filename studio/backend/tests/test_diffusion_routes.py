@@ -508,6 +508,23 @@ def test_generate_batch_size_persists_each_image(client):
     assert len(client.get("/api/inference/images/gallery").json()["images"]) == 3
 
 
+def test_generate_batch_persists_through_one_save_many(client, monkeypatch):
+    batches = []
+    real = gallery_module.save_many
+
+    def _spy(items):
+        items = list(items)
+        batches.append([meta["batch_index"] for _, meta in items])
+        return real(items)
+
+    monkeypatch.setattr(gallery_module, "save_many", _spy)
+    _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
+    resp = _post_generate(client, prompt = "p", batch_size = 3, seed = 5)
+    assert resp.status_code == 200
+    assert batches == [[0, 1, 2]]
+    assert [i["batch_index"] for i in resp.json()["images"]] == [0, 1, 2]
+
+
 def test_generate_seed_list_records_replay_from_each_own_seed(client):
     # a seeds list gives each image its own seed, so restore must prefer batch_seed
     _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")

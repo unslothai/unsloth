@@ -3,8 +3,8 @@
 
 import {
   Delete02Icon,
-  Image03Icon,
   FlimSlateIcon,
+  ImageIcon,
 } from "@hugeicons/core-free-icons";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -591,7 +591,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
                         isAudio
                           ? AiSpeechIcon
                           : isImages
-                            ? Image03Icon
+                            ? ImageIcon
                             : FlimSlateIcon
                       }
                       className="size-5 text-muted-foreground"

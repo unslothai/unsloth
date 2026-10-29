@@ -234,9 +234,9 @@ def save_source_clip(
             and meta.get("role") == "source"
             and meta.get("workflow") == "edit"
             and meta.get("source_sha256") == sha
-            and audio_gallery.owned_audio_path(path.stem) is not None
+            and audio_gallery.owned_audio_path(path.stem, directory) is not None
         ):
-            return audio_gallery._record(path.stem, meta)
+            return audio_gallery._record(path.stem, meta, directory = directory)
     with wave.open(str(prepared_path)) as w:
         sample_rate, duration_s = w.getframerate(), round(w.getnframes() / w.getframerate(), 3)
     meta: dict[str, Any] = {

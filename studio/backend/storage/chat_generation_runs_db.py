@@ -24,6 +24,7 @@ ACTIVE_STATUSES = frozenset({"queued", "running", "cancelling"})
 TERMINAL_STATUSES = frozenset({"cancelled", "completed", "failed"})
 ALL_STATUSES = ACTIVE_STATUSES | TERMINAL_STATUSES
 _EVENTS_CHANGED = threading.Condition()
+_EVENTS_COMMITS = 0
 _RUN_TOMBSTONE_PREFIX = "chat-generation-run-tombstone:"
 ChatGenerationEventInput = Union[tuple[str, dict[str, Any]], tuple[str, dict[str, Any], int]]
 
@@ -405,9 +406,11 @@ def _touch_progress_locked(conn: sqlite3.Connection, run_id: str, tokens: int) -
 
 
 def _commit(conn: sqlite3.Connection, *, notify: bool = False) -> None:
+    global _EVENTS_COMMITS
     conn.commit()
     if notify:
         with _EVENTS_CHANGED:
+            _EVENTS_COMMITS += 1
             _EVENTS_CHANGED.notify_all()
 
 
@@ -638,6 +641,25 @@ def get_run(run_id: str, owner_subject: str | None = None) -> dict[str, Any] | N
                 (run_id, owner_subject),
             ).fetchone()
         return _run_from_row(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def get_run_state(run_id: str) -> dict[str, Any] | None:
+    """Status, lastEventSeq and updatedAt of get_run's row, without reading or parsing request_json."""
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT status, last_event_seq, updated_at FROM chat_generation_runs WHERE id=?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "status": row["status"],
+            "lastEventSeq": int(row["last_event_seq"]),
+            "updatedAt": int(row["updated_at"]),
+        }
     finally:
         conn.close()
 
@@ -937,13 +959,16 @@ def wait_for_events(
     after: int = 0,
     timeout: float = 15,
 ) -> list[dict[str, Any]]:
+    # Bumped under the lock after each notifying commit: unchanged means the unlocked read saw them all.
+    seen = _EVENTS_COMMITS
     events = list_events(run_id, after)
     if events:
         return events
     with _EVENTS_CHANGED:
-        events = list_events(run_id, after)
-        if events:
-            return events
+        if _EVENTS_COMMITS != seen:
+            events = list_events(run_id, after)
+            if events:
+                return events
         _EVENTS_CHANGED.wait(timeout)
     return list_events(run_id, after)
 

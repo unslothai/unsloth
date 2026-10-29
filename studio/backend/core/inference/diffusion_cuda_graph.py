@@ -1191,6 +1191,9 @@ class GraphedForward:
         self._sealed_scopes: set = set()
         self._scope_captures: dict = {}
         self._render_scopes: set = set()
+        # Keys warmed since the last render end/reset may still record after a seal (true CFG's other-length
+        # negative). Not ``_warmed``: it outlives resets, so would reopen sealed scopes.
+        self._open_warmups: set = set()
         _LIVE_WRAPPERS.add(self)
 
     @property
@@ -1271,6 +1274,7 @@ class GraphedForward:
         self._sealed_scopes.clear()
         self._scope_captures.clear()
         self._render_scopes.clear()
+        self._open_warmups.clear()
         if getattr(self, "fallback_handle", None) is not None:
             try:
                 self.fallback_handle.reset()
@@ -1659,8 +1663,10 @@ class GraphedForward:
                 return self._eager(eager_args, eager_kwargs)
             if scope is not None:
                 self._render_scopes.add(scope)
-            if scope in getattr(self, "_sealed_scopes", ()) and (
-                self.placement is None or key not in self._recorded
+            if (
+                scope in getattr(self, "_sealed_scopes", ())
+                and (self.placement is None or key not in self._recorded)
+                and not (self.plan is not None and key in self._open_warmups)
             ):
                 # A prompt length first seen after the first render: no warm-up, no capture, no eviction on this
                 # render. (An offloaded key it recorded before re-records after its weights moved, as before.)
@@ -1680,6 +1686,7 @@ class GraphedForward:
                 self._warmed[key] = None
                 while len(self._warmed) > 4 * self.max_graphs:
                     self._warmed.pop(next(iter(self._warmed)))
+                self._open_warmups.add(key)
                 self.stats["shape_warmups"] += 1
                 # Copies laid out like the capture statics: compiled code guards on strides/offsets, else the
                 # capture compiles a new variant inside itself and fails.
@@ -2726,6 +2733,7 @@ def seal_lengths(handles: Any) -> None:
                 if handle._scope_captures.get(scope, 0) > 0:
                     handle._sealed_scopes.add(scope)
             handle._render_scopes.clear()
+            handle._open_warmups.clear()
         except Exception:  # noqa: BLE001 - optimisation only
             pass
 

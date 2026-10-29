@@ -5489,15 +5489,16 @@ _print_llama_gpu_notes() {
 
 _frontend_bg_join
 
-# ── Precompile bytecode ── (uv installs without .pyc; only after a dependency pass, never fatal)
+# ── Precompile bytecode ── (opt-in: a whole-venv compile per update cost more than lazy compile on import; never fatal)
 _setup_bytecode_opted_out() {
-    local _sbo
+    local _sbo _sbo_out=0
     for _sbo in "${UV_COMPILE_BYTECODE:-}" "${UNSLOTH_STUDIO_COMPILE_BYTECODE:-}"; do
         case "$(printf '%s' "$_sbo" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in
             0|false|no|off) return 0 ;;
+            1|true|yes|on) _sbo_out=1 ;;
         esac
     done
-    return 1
+    return "$_sbo_out"
 }
 if { [ "${_SETUP_VENV_CHANGED:-false}" = true ] || [ "${UNSLOTH_SETUP_RERUN:-}" = 1 ]; } \
     && [ "${_COLAB_NO_VENV:-false}" != true ] && [ -x "$VENV_DIR/bin/python" ] \

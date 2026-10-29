@@ -154,11 +154,11 @@ export function SpookyDecorations() {
       );
       later(between(30_000, 60_000), bats);
     };
-    // A page gets a spider or bats, never both: a quarter of the time each.
+    // A page gets a spider or bats, never both: a third of the time each.
     const roll = Math.random();
-    if (roll < 0.25) {
+    if (roll < 1 / 3) {
       later(between(2000, 6000), spider);
-    } else if (roll < 0.5) {
+    } else if (roll < 2 / 3) {
       later(between(2000, 6000), bats);
     }
     return () => {
