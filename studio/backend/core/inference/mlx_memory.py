@@ -51,8 +51,7 @@ _COMPUTE_BASE_BYTES = int(0.64 * 1024**3)
 
 _RECURRENT_DTYPE_SIZE = 4
 
-# Copies of the scores an unfused attention call holds at the queries' width, quantized or not:
-# measured 1.03 to 1.15 on Metal (mlx 0.32.4, mlx-lm 0.32.2).
+# Score copies an unfused call holds at the queries' width; Metal measured 1.03 to 1.15 (mlx 0.32.4).
 _SCORE_LIVE = 1.25
 
 _WIDTH_NAMES = {"float64": "f64", "float32": "f32", "bfloat16": "bf16", "float16": "f16"}
@@ -1018,7 +1017,6 @@ def _widest_unfused_scores(widths, dtype_size: int, n_ctx: int, prefill_chunk: i
         return not _attention_fuses(route, widths, dtype_size, queries, keys)
 
     def longest_tail(whole, limit):
-        # The tail of a prompt holding `whole` chunks is square only when it is the first call.
         lengths = _unfused_tails(route, widths, dtype_size, chunk)[min(whole, 1)]
         if limit > _TAIL_SCAN and unfused(limit, limit + whole * chunk):
             return limit
