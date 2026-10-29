@@ -2328,13 +2328,14 @@ def _visible_chars(text: str) -> int:
     return sum(_visible_len(line) for line in text.split("\n") if line.strip())
 
 
+_BACKTICK_RUN = re.compile(r"`+")
+
+
 def _fence_for(raw: str) -> str:
     """Fence long enough to survive backticks in *raw*, as CommonMark requires:
-    a literal ``` line inside the block would otherwise close it early."""
-    longest = run = 0
-    for char in raw:
-        run = run + 1 if char == "`" else 0
-        longest = max(longest, run)
+    a literal ``` line inside the block would otherwise close it early. The runs are
+    found by regex, so a large code block is not walked one character at a time."""
+    longest = max(map(len, _BACKTICK_RUN.findall(raw)), default = 0)
     return "`" * max(3, longest + 1)
 
 
