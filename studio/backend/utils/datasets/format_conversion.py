@@ -460,6 +460,27 @@ def _fetch_row_image(url):
     return Image.open(BytesIO(fetch(url))).convert("RGB")
 
 
+def _non_null_rows(dataset, column):
+    """Row positions whose ``column`` is not None, read from Arrow validity so cells are never built or decoded."""
+    try:
+        # numpy / pandas / torch / custom formats turn nulls into values (NaN, pd.NA) the walk keeps.
+        if dataset.format["type"] not in (None, "python"):
+            raise TypeError("formatted dataset")
+        values = dataset.with_format("arrow")[column]
+        if values.null_count == 0:
+            return range(len(values))
+        import numpy as np
+        import pyarrow as pa
+        import pyarrow.compute as pc
+
+        valid = pc.is_valid(values)
+        if isinstance(valid, pa.ChunkedArray):
+            valid = valid.combine_chunks()
+        return np.flatnonzero(valid.to_numpy(zero_copy_only = False)).tolist()
+    except Exception:
+        return [i for i, value in enumerate(dataset[column]) if value is not None]
+
+
 def convert_to_vlm_format(
     dataset,
     instruction = None,
@@ -558,14 +579,14 @@ def convert_to_vlm_format(
     has_urls = isinstance(first_image, str) and first_image.startswith(("http://", "https://"))
 
     if has_urls:
-        with_image = [i for i, url in enumerate(dataset[image_column]) if url is not None]
+        with_image = _non_null_rows(dataset, image_column)
         if len(with_image) < total:
             logger.info(f"Skipping {total - len(with_image)}/{total} rows without an image")
             dataset = dataset.select(with_image)
             total = len(with_image)
 
     # A null caption would render as the word "None" in the assistant turn, so leave those rows out like rows without an image.
-    with_text = [i for i, text in enumerate(dataset[text_column]) if text is not None]
+    with_text = _non_null_rows(dataset, text_column)
     if len(with_text) < total:
         logger.info(f"Skipping {total - len(with_text)}/{total} rows without text")
         dataset = dataset.select(with_text)
