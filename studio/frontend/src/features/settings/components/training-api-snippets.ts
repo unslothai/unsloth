@@ -18,6 +18,18 @@ export interface TrainingApiSnippetInput {
 
 const LORA = "LoRA/QLoRA";
 
+/** Run type and layer choices, sent only where they differ from the route's defaults. */
+const FLAG_DEFAULTS = {
+  "is_dataset_image": false,
+  "is_dataset_audio": false,
+  "is_embedding": false,
+  "is_decision": false,
+  "finetune_vision_layers": false,
+  "finetune_language_layers": true,
+  "finetune_attention_modules": true,
+  "finetune_mlp_modules": true,
+} as const;
+
 /**
  * The Studio settings a fine-tuning job takes beyond the OpenAI fields. Everything else Start sends
  * (tokens, cache and host paths, offload, drafter, the Hub / S3 dataset) stays out of the example.
@@ -53,6 +65,10 @@ function trainingExtras(payload: TrainingStartRequest): Record<string, unknown> 
     for (const flag of ["use_rslora", "use_dora", "use_loftq"] as const) {
       if (payload[flag]) extras[flag] = true;
     }
+  }
+  for (const [flag, fallback] of Object.entries(FLAG_DEFAULTS)) {
+    const value = payload[flag as keyof typeof FLAG_DEFAULTS];
+    if (value != null && value !== fallback) extras[flag] = value;
   }
   extras.train_on_completions = payload.train_on_completions;
   if (payload.format_type && payload.format_type !== "auto") {

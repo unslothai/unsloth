@@ -72,6 +72,14 @@ function payload(overrides: Partial<TrainingStartRequest> = {}): TrainingStartRe
     use_loftq: false,
     use_dora: true,
     train_on_completions: true,
+    finetune_vision_layers: false,
+    finetune_language_layers: true,
+    finetune_attention_modules: true,
+    finetune_mlp_modules: true,
+    is_dataset_image: false,
+    is_dataset_audio: false,
+    is_embedding: false,
+    is_decision: false,
     enable_wandb: true,
     wandb_token: "wandb_SECRET",
     enable_tensorboard: true,
@@ -101,6 +109,14 @@ const ALLOWED = new Set([
   "use_dora",
   "use_loftq",
   "train_on_completions",
+  "is_dataset_image",
+  "is_dataset_audio",
+  "is_embedding",
+  "is_decision",
+  "finetune_vision_layers",
+  "finetune_language_layers",
+  "finetune_attention_modules",
+  "finetune_mlp_modules",
   "format_type",
   "custom_format_mapping",
 ]);
@@ -142,6 +158,25 @@ test("full finetuning names its training type and drops the LoRA settings", () =
   assert.equal(request.extras.max_steps, 60);
   for (const key of ["lora_r", "lora_alpha", "lora_dropout", "target_modules", "use_dora"]) {
     assert.ok(!(key in request.extras), key);
+  }
+});
+
+test("a vision, audio, embedding or decision run keeps its run type and layer choices", () => {
+  const plain = trainingApiRequestFromPayload(payload(), "chats.jsonl");
+  for (const key of ["is_dataset_image", "finetune_vision_layers", "finetune_mlp_modules"]) {
+    assert.ok(!(key in plain.extras), key);
+  }
+  const vision = trainingApiRequestFromPayload(
+    payload({ is_dataset_image: true, finetune_vision_layers: true, finetune_mlp_modules: false }),
+    "images.zip",
+  );
+  assert.equal(vision.extras.is_dataset_image, true);
+  assert.equal(vision.extras.finetune_vision_layers, true);
+  assert.equal(vision.extras.finetune_mlp_modules, false);
+  assert.ok(!("finetune_language_layers" in vision.extras));
+  for (const flag of ["is_dataset_audio", "is_embedding", "is_decision"] as const) {
+    const request = trainingApiRequestFromPayload(payload({ [flag]: true }), null);
+    assert.equal(request.extras[flag], true, flag);
   }
 });
 
@@ -325,6 +360,12 @@ test("the backend contract fixture is what the examples send", () => {
     continuedPretraining: trainingApiJobBody(
       trainingApiRequestFromPayload(
         payload({ training_type: "Continued Pretraining", use_dora: false, use_loftq: true }),
+        null,
+      ),
+    ),
+    vision: trainingApiJobBody(
+      trainingApiRequestFromPayload(
+        payload({ is_dataset_image: true, finetune_vision_layers: true, use_dora: false }),
         null,
       ),
     ),
