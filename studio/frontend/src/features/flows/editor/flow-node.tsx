@@ -96,7 +96,8 @@ function nodeFields(
 function OutputPreview({
   runtime,
   spec,
-}: { runtime: NodeRuntime; spec: NodeSpec }) {
+  expanded = false,
+}: { runtime: NodeRuntime; spec: NodeSpec; expanded?: boolean }) {
   if (
     runtime.preview &&
     (runtime.status === "running" || runtime.status === "loading_model")
@@ -132,19 +133,39 @@ function OutputPreview({
               : `Partial (stopped at ${at.step} of ${at.total})`
             : "Partial"}
         </span>
-        <OutputValues outputs={runtime.partial} spec={spec} />
+        <OutputValues
+          outputs={runtime.partial}
+          spec={spec}
+          expanded={expanded}
+        />
       </div>
     );
   }
   const outputs = runtime.outputs;
   if (!outputs) return null;
-  return <OutputValues outputs={outputs} spec={spec} />;
+  return <OutputValues outputs={outputs} spec={spec} expanded={expanded} />;
+}
+
+/** A list or object written out in full, for a card resized big enough to read it. */
+export function expandedText(value: unknown): string {
+  if (Array.isArray(value))
+    return value
+      .map((item) =>
+        typeof item === "string" ? item : JSON.stringify(item, null, 2),
+      )
+      .join("\n");
+  return JSON.stringify(value, null, 2);
 }
 
 function OutputValues({
   outputs,
   spec,
-}: { outputs: Record<string, unknown>; spec: NodeSpec }) {
+  expanded = false,
+}: {
+  outputs: Record<string, unknown>;
+  spec: NodeSpec;
+  expanded?: boolean;
+}) {
   for (const port of spec.outputs) {
     const value = outputs[port.id];
     if (isMediaValue(value)) {
@@ -177,6 +198,16 @@ function OutputValues({
     const value = outputs[port.id];
     if (value === undefined || value === null) continue;
     if (isStructuredValue(value)) return <StructuredBadge value={value} />;
+    if (expanded && typeof value === "object") {
+      return (
+        <pre
+          className="nowheel min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words font-mono text-ui-11 leading-snug text-foreground"
+          data-testid="flow-output-expanded"
+        >
+          {expandedText(value)}
+        </pre>
+      );
+    }
     if (typeof value === "string") {
       return (
         <p className="line-clamp-4 whitespace-pre-wrap text-ui-11 leading-snug text-foreground group-data-[sized]/node:line-clamp-none">
@@ -357,7 +388,11 @@ function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
             runtime.text ||
             runtime.preview) && (
             <div className="flow-detail px-3 group-data-[sized]/node:flex group-data-[sized]/node:min-h-0 group-data-[sized]/node:flex-1 group-data-[sized]/node:flex-col">
-              <OutputPreview runtime={runtime} spec={spec} />
+              <OutputPreview
+                runtime={runtime}
+                spec={spec}
+                expanded={!!node.size}
+              />
             </div>
           )}
           {runtime.status === "failed" && runtime.error && (

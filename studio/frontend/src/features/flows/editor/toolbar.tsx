@@ -9,6 +9,7 @@ import { memo } from "react";
 import { toast } from "sonner";
 import { newId, useDocStore } from "../stores/doc-store";
 import { useUiStore } from "../stores/ui-store";
+import { FIT_MIN_ZOOM } from "./canvas-rules";
 import {
   ArrowLeft01Icon,
   GridViewIcon,
@@ -140,7 +141,12 @@ function ToolbarImpl({ onBack }: { onBack: () => void }) {
             void autoLayout(getInternalNode, kind === "story" ? "LR" : "LR")
               .then(() =>
                 setTimeout(
-                  () => void fitView({ padding: 0.2, duration: 300 }),
+                  () =>
+                    void fitView({
+                      padding: 0.2,
+                      duration: 300,
+                      minZoom: FIT_MIN_ZOOM,
+                    }),
                   50,
                 ),
               )

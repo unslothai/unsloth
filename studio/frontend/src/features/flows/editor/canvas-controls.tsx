@@ -8,19 +8,20 @@ import { MiniMap, Panel, useReactFlow } from "@xyflow/react";
 import { memo, useEffect, useState } from "react";
 import { useCatalogStore } from "../stores/catalog-store";
 import { useUiStore } from "../stores/ui-store";
+import { FIT_MIN_ZOOM } from "./canvas-rules";
 import type { RfNode } from "./derive-rf";
-import { addNodeConnected } from "./node-factory";
-import { PlacementGhost } from "./placement-ghost";
-import { placementPosition, stopPlacement, usePlacement } from "./placement";
 import {
   CenterFocusIcon,
   MapsIcon,
   MinusSignIcon,
   PlusSignIcon,
 } from "./icon-data";
+import { addNodeConnected } from "./node-factory";
+import { placementPosition, stopPlacement, usePlacement } from "./placement";
+import { PlacementGhost } from "./placement-ghost";
 
 // React Flow Controls' fit (default padding), animated.
-const FIT_VIEW_OPTIONS = { duration: 200 };
+const FIT_VIEW_OPTIONS = { duration: 200, minZoom: FIT_MIN_ZOOM };
 const MINIMAP_STYLE = { width: 168, height: 112 };
 // Above every node, recipe notes and frames included.
 const PANEL_STYLE = { zIndex: 1001 };

@@ -138,7 +138,10 @@ export function useEditorShortcuts(active: boolean): void {
       if (key === "escape") {
         const ui = useUiStore.getState();
         if (ui.quickAdd) ui.setQuickAdd(null);
-        else if (!isTyping(event.target)) ui.setSelection([], []);
+        else if (!isTyping(event.target)) {
+          ui.setSelection([], []);
+          ui.openInspector(null);
+        }
         return;
       }
       if (mod && key === "s") {

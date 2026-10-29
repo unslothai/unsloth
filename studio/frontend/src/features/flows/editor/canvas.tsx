@@ -21,6 +21,7 @@ import {
   type DragEvent,
   type MouseEvent as ReactMouseEvent,
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -31,7 +32,7 @@ import { useDocStore } from "../stores/doc-store";
 import { useUiStore } from "../stores/ui-store";
 import type { FlowEdge } from "../types";
 import { CanvasControls } from "./canvas-controls";
-import { dragHasFiles } from "./canvas-rules";
+import { FIT_MIN_ZOOM, dragHasFiles } from "./canvas-rules";
 import {
   checkConnection,
   parseHandle,
@@ -45,6 +46,7 @@ import {
   type RfEdge,
   type RfNode,
 } from "./derive-rf";
+import { watchRewiredOutputs } from "./stale-outputs";
 import { useWireReconnect } from "./use-wire-reconnect";
 import { addFileNodes } from "./file-drop";
 import { FlowEdgeView } from "./flow-edge";
@@ -67,7 +69,7 @@ const VISIBLE_ONLY_THRESHOLD = 300;
 const PRO_OPTIONS = { hideAttribution: true };
 const DELETE_KEYS = ["Delete", "Backspace"];
 const MULTI_SELECT_KEYS = ["Meta", "Control", "Shift"];
-const FIT_VIEW_OPTIONS = { padding: 0.2, maxZoom: 1.1 };
+const FIT_VIEW_OPTIONS = { padding: 0.2, maxZoom: 1.1, minZoom: FIT_MIN_ZOOM };
 
 type Size = { width: number; height: number };
 type Positions = Record<string, { x: number; y: number }>;
@@ -126,6 +128,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
   const { screenToFlowPosition } = useReactFlow();
   const wireReconnect = useWireReconnect(!readOnly);
   const updateNodeInternals = useRef(useUpdateNodeInternals());
+  useEffect(() => (readOnly ? undefined : watchRewiredOutputs()), [readOnly]);
 
   const deriver = useRef<RfDeriver | null>(null);
   deriver.current ??= new RfDeriver();
