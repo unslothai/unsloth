@@ -52,16 +52,23 @@ export function bareHubSeed(
   return source;
 }
 
-/** Recipe Studio's server-side check of the group as it would run. */
-export async function checkRecipeGroup(groupId: string): Promise<string[]> {
+export type RecipeCheck = {
+  valid: boolean;
+  errors: string[];
+  rawDetail: string | null;
+};
+
+/** Recipe Studio's check of the group as it would run: its client checks, then the server's validate, over
+ * the columns a run sends and with a bare Hub seed resolved. Every check and run gate in Flows uses this. */
+export async function checkRecipeGroupDetail(groupId: string): Promise<RecipeCheck> {
   const graph = useDocStore.getState().graph;
   const group = graph.groups[groupId];
-  if (!group) return ["This recipe is gone"];
+  if (!group) return { valid: false, errors: ["This recipe is gone"], rawDetail: null };
   try {
     const columns = runColumns(graph, groupId);
     const { clientErrors } = await import("./recipe-adapter");
     const local = clientErrors(group, columns);
-    if (local.length) return local;
+    if (local.length) return { valid: false, errors: local, rawDetail: null };
     const { inspectSeedDataset, validateRecipe } = await import(
       "@/features/recipe-studio/api"
     );
@@ -74,10 +81,24 @@ export async function checkRecipeGroup(groupId: string): Promise<string[]> {
       hub.path = inspected.resolved_path;
     }
     const result = await validateRecipe({ recipe });
-    return (result.errors ?? []).map((e) => e.message);
+    const errors = (result.errors ?? []).map((e) => e.message);
+    return {
+      valid: result.valid !== false && errors.length === 0,
+      errors,
+      rawDetail: result.raw_detail ?? null,
+    };
   } catch (error) {
-    return [error instanceof Error ? error.message : String(error)];
+    return {
+      valid: false,
+      errors: [error instanceof Error ? error.message : String(error)],
+      rawDetail: null,
+    };
   }
+}
+
+/** The check's messages; empty when the recipe is ready to run. */
+export async function checkRecipeGroup(groupId: string): Promise<string[]> {
+  return (await checkRecipeGroupDetail(groupId)).errors;
 }
 
 /** The `/seed/inspect` request for a bare Hub seed, with what the run sends too (split, subset, token). */

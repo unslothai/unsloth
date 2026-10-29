@@ -604,3 +604,67 @@ test("no two nodes of a recipe group overlap after import, after adding setup bl
   useDocStore.getState().patchGraph({ groups: withLaidOutSetup(useDocStore.getState().graph, result) });
   assert.deepEqual(await recipeOverlaps(sizes), [], "after Tidy up");
 });
+
+test("a starter recipe and a new column both keep clear of setup cards, even dragged ones", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { freeSpot, nextColumnSlot } = await import("../src/features/flows/recipe/recipe-actions.ts");
+  const { withSetupPosition, setupLayout, CARD_SIZE } = await import(
+    "../src/features/flows/recipe/recipe-setup.ts"
+  );
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group, nodes } = sqlGroup();
+  // Every cell of a two-row frame is full, so a new column needs a new row.
+  const extra = { ...nodes[0], id: "extra", params: { column: { ...(nodes[0].params.column as object), name: "extra" } } };
+  const placed = [...nodes, extra].map((n, i) => ({ ...n, pos: [(i % 4) * 320, Math.floor(i / 4) * 180] as [number, number] }));
+  assert.equal(placed.length, 8);
+  const frame = { ...group, rect: [-40, -60, 1280, 400] as [number, number, number, number] };
+  const card = setupLayout({ ...useDocStore.getState().graph, groups: {}, groupOrder: [] }, null, new Map());
+  assert.equal(card.elements.length, 0);
+  useDocStore.getState().load({ ...doc(placed), groups: [frame] });
+  const first = setupLayout(useDocStore.getState().graph, null, new Map()).elements[0];
+  // Dragged to where the next row would start, and to the empty canvas below the frame.
+  const g = useDocStore.getState().graph.groups.recipe;
+  useDocStore.getState().upsertGroup(withSetupPosition(g, first.card.id, [0, 360]));
+  const { pos } = nextColumnSlot(useDocStore.getState().graph, "recipe");
+  const hit = (p: [number, number], at: { x: number; y: number }) =>
+    p[0] < at.x + CARD_SIZE.width && at.x < p[0] + 280 && p[1] < at.y + CARD_SIZE.height && at.y < p[1] + 140;
+  const moved = setupLayout(useDocStore.getState().graph, null, new Map()).elements.find(
+    (e) => e.card.id === first.card.id,
+  );
+  assert.ok(moved);
+  assert.ok(!hit(pos, moved), `column at ${pos} sits on the card at ${moved.x},${moved.y}`);
+  useDocStore.getState().upsertGroup(
+    withSetupPosition(useDocStore.getState().graph.groups.recipe, first.card.id, [0, 900]),
+  );
+  const below = setupLayout(useDocStore.getState().graph, null, new Map()).elements.find(
+    (e) => e.card.id === first.card.id,
+  );
+  assert.ok(below);
+  const spot = freeSpot(useDocStore.getState().graph, [below.x + 40, below.y + 60], [600, 400]);
+  assert.notDeepEqual(spot, [below.x + 40, below.y + 60], "the starter does not land on the card");
+});
+
+test("the run dialogs' check leaves disabled columns out, like the frame's Check", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { checkRecipeGroupDetail } = await import(
+    "../src/features/flows/recipe/recipe-group-actions.ts"
+  );
+  const editor = readFileSync(
+    new URL("../src/features/flows/recipe/recipe-editor.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(editor, /const checkGroup = checkRecipeGroupDetail;/);
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group, nodes } = sqlGroup();
+  (group.config as { model_providers: Record<string, unknown>[] }).model_providers[0].endpoint =
+    "http://localhost:8000/v1";
+  const off = new Set(["sql_prompt", "sql", "sql-validator"]);
+  useDocStore.getState().load({
+    ...doc(nodes.map((n) => (off.has(columnName(n)) ? { ...n, disabled: true } : n))),
+    groups: [group],
+  });
+  // Past the client checks (the blank-model preset is only used by disabled columns); the server
+  // half cannot load under node, which is fine: the point is the client half did not stop it.
+  const result = await checkRecipeGroupDetail("recipe");
+  assert.ok(!result.errors.some((e) => /model is required/.test(e)), result.errors.join("; "));
+});

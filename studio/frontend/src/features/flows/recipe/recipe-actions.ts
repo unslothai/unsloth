@@ -3,7 +3,7 @@
 
 import { type DocGraph, newId, useDocStore } from "../stores/doc-store";
 import type { FlowGroup, FlowNode } from "../types";
-import { setupBoxes } from "./recipe-setup";
+import { CARD_SIZE, setupBoxes, setupLayout } from "./recipe-setup";
 import {
   COLUMN_TYPE,
   GENERATE_TYPE,
@@ -154,13 +154,20 @@ export function freeSpot(
   size: [number, number],
   margin: [number, number] = [40, 60],
 ): [number, number] {
+  const setup = setupLayout(graph, null, new Map());
   const boxes: Box[] = [
     ...graph.nodeOrder.map((id): Box => {
       const node = graph.nodes[id];
       return [node.pos[0], node.pos[1], COLUMN_SIZE[0] - 40, COLUMN_SIZE[1] - 40];
     }),
-    ...graph.groupOrder.map((id) => graph.groups[id].rect as Box),
+    // A recipe frame as drawn: grown to hold its setup cards.
+    ...graph.groupOrder.map((id): Box => {
+      const [x, y, w, h] = graph.groups[id].rect;
+      return [x, y, w, Math.max(h, setup.heights[id] ?? 0)];
+    }),
     ...graph.noteOrder.map((id) => graph.notes[id].rect as Box),
+    // Setup cards are canvas cards but not graph nodes, wherever they were dragged.
+    ...setup.elements.map(({ x, y }): Box => [x, y, CARD_SIZE.width, CARD_SIZE.height]),
   ];
   const want: Box = [pos[0] - margin[0], pos[1] - margin[1], size[0], size[1]];
   if (!boxes.some((box) => overlaps(want, box))) return pos;
@@ -255,7 +262,20 @@ export function nextColumnSlot(
   const bottom = members
     .filter((n) => n.type === COLUMN_TYPE)
     .reduce((max, n) => Math.max(max, n.pos[1]), y + 60 - ch);
-  const pos: [number, number] = [x + 40, bottom + ch];
+  // A new row below the columns, past anything already there (a card dragged into it).
+  let pos: [number, number] = [x + 40, bottom + ch];
+  for (let i = 0; i < 200 && taken(pos[0], pos[1]); i++) {
+    const free = (() => {
+      for (let cx = x + 40; cx + cw - 40 <= x + w; cx += cw)
+        if (!taken(cx, pos[1])) return cx;
+      return null;
+    })();
+    if (free !== null) {
+      pos = [free, pos[1]];
+      break;
+    }
+    pos = [x + 40, pos[1] + ch];
+  }
   const height = Math.max(h, pos[1] - y + ch);
   return { pos, group: { ...group, rect: [x, y, w, height] } };
 }
