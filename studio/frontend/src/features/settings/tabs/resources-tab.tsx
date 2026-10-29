@@ -169,7 +169,6 @@ function MetricTile({
   const safePercent = clampPercent(percent);
   return (
     <div className="flex min-w-0 flex-col gap-3 rounded-xl border border-border/60 bg-card px-6 py-5 dark:border-transparent">
-      {/* The reading (44.6 GiB / 64 GiB) is the headline; the percent is a pill beside the label. */}
       <div className="flex min-w-0 flex-col gap-0.5">
         <div className="flex min-w-0 items-center justify-between gap-3">
           <span className="text-ui-12 text-muted-foreground">{label}</span>
