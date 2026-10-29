@@ -127,3 +127,17 @@ test("the preload follows main.tsx for the single-user Desktop app", () => {
     [],
   );
 });
+
+test("a failed chat page load stays inside the chat area and retries", () => {
+  const root = readSrc("app/routes/__root.tsx");
+  // Each attempt gets its own lazy(), since lazy() keeps a rejection for good.
+  assert.match(root, /function lazyChatPage\(\) \{\s*return lazy\(/);
+  assert.match(root, /<LazyImportBoundary\s+key=\{page\.attempt\}/);
+  assert.match(
+    root,
+    /<Suspense fallback=\{<RouteFallback \/>\}>\s*<Page \{\.\.\.props\} \/>/,
+  );
+  const loader = readSrc("features/chat/load-chat-page.ts");
+  // A rejected import is dropped so the next caller fetches again.
+  assert.match(loader, /chatPageModule = null;\s*throw error;/);
+});
