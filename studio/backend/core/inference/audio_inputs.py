@@ -464,13 +464,8 @@ def _derived(directory: Path, stem: str) -> list[Path]:
         return []
 
 
-_UNLISTED = object()
-
-
 def _derived_index(directory: Path) -> Optional[dict[str, list[Path]]]:
-    """``_derived`` for every id-shaped stem from one listing: an id has no dot, so a name matching
-    ``{stem}.*.wav`` is one whose part before its first dot is the stem. Case folds as pathlib's
-    glob does on this platform; None (use ``_derived``) where that cannot be matched exactly."""
+    """``_derived`` for every id from one listing (an id has no dot); None where pathlib's case folding cannot be matched exactly."""
     fold = os.path.normcase
     insensitive = fold("A") != "A"
     try:
@@ -539,7 +534,7 @@ def sweep(
         now = _now()
         removed = 0
         live: list[tuple[float, str, int]] = []
-        derived: Any = _UNLISTED
+        derived = _derived_index(directory)
         for sidecar in directory.glob("*.json"):
             input_id = sidecar.stem
             meta = _read_sidecar(sidecar)
@@ -548,9 +543,6 @@ def sweep(
             if input_id != keep and _touched(meta) + ttl <= now:
                 removed += _remove(directory, input_id)
                 continue
-            if derived is _UNLISTED:
-                # One listing for every live input instead of a glob per input.
-                derived = _derived_index(directory)
             size = _size(directory / f"{input_id}.wav") + sum(
                 _size(p) for p in _derived_from(derived, directory, input_id)
             )

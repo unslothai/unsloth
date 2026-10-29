@@ -149,8 +149,7 @@ def _clip_bytes(audio_id: str) -> int:
 
 
 def _under_caps(directory: Path, cap: int, byte_cap: int) -> bool:
-    """Every clip WAV, owned or not, fits both caps, so the clips the prune would rank (a subset)
-    fit too and nothing goes; decided from names and sizes without reading any sidecar."""
+    """All clip WAVs (a superset of what the prune ranks) fit both caps, decided without reading sidecars."""
     try:
         paths = _clip_wavs(directory)
     except OSError:
