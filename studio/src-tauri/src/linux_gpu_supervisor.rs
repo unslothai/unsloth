@@ -166,21 +166,40 @@ fn localized_eproto() -> Option<String> {
 /// Child only (no-op without a channel): reports GDK's Wayland protocol error to the parent
 /// before GTK's `_exit(1)`, then hands the message to GLib's default handler as before.
 pub fn install_gdk_hook() {
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
     if CHANNEL.get().is_none() {
         return;
     }
-    glib::log_set_handler(
-        Some("Gdk"),
-        glib::LogLevels::LEVEL_MESSAGE,
-        false,
-        false,
-        |domain, level, message| {
-            if is_wayland_protocol_error(message) {
+    INSTALLED.call_once(|| {
+        glib::log_set_handler(
+            Some("Gdk"),
+            glib::LogLevels::LEVEL_MESSAGE,
+            false,
+            false,
+            |domain, level, message| {
+                if is_wayland_protocol_error(message) {
+                    send(MSG_ERROR71);
+                }
+                glib::log_default_handler(domain, level, Some(message));
+            },
+        );
+        // GTK 3 builds with G_LOG_USE_STRUCTURED, so its own g_message bypasses the handler above
+        // and only reaches the writer. The writer can be set once per process, before any logging.
+        glib::log_set_writer_func(|level, fields| {
+            let field = |key: &str| {
+                fields
+                    .iter()
+                    .find(|field| field.key() == key)
+                    .and_then(|field| field.value_str())
+            };
+            if field("GLIB_DOMAIN") == Some("Gdk")
+                && field("MESSAGE").is_some_and(is_wayland_protocol_error)
+            {
                 send(MSG_ERROR71);
             }
-            glib::log_default_handler(domain, level, Some(message));
-        },
-    );
+            glib::log_writer_default(level, fields)
+        });
+    });
 }
 
 /// Call when a `--hidden` launch decides to show its window after all (an in-app relaunch).
@@ -261,9 +280,11 @@ pub fn maybe_simulate_error71() {
     if CHANNEL.get().is_none() || !test_hook_requested() {
         return;
     }
-    glib::g_message!(
+    // Structured, like GTK's own message (built with G_LOG_USE_STRUCTURED).
+    glib::log_structured!(
         "Gdk",
-        "Error 71 (Protocol error) dispatching to Wayland display."
+        glib::LogLevel::Message,
+        {"MESSAGE" => "Error 71 (Protocol error) dispatching to Wayland display."}
     );
     std::process::exit(1);
 }
@@ -703,8 +724,9 @@ mod tests {
         }
     }
 
-    /// Runs `supervise` with `sh -c <script>` children; returns (status, spawn flags, fallback
-    /// calls, log lines).
+    /// Runs `supervise` with `bash -c <script>` children; returns (status, spawn flags, fallback
+    /// calls, log lines). Not sh: dash rejects `>&N` once N has two digits, which a parallel test
+    /// run reaches.
     fn fake_supervise(scripts: &[&str]) -> (ExitStatus, Vec<bool>, usize, Vec<String>) {
         let spawns = RefCell::new(Vec::new());
         let fallbacks = Cell::new(0);
@@ -714,7 +736,7 @@ mod tests {
             |fallback, _shown| {
                 let index = spawns.borrow().len().min(scripts.len() - 1);
                 spawns.borrow_mut().push(fallback);
-                let mut command = Command::new("sh");
+                let mut command = Command::new("bash");
                 command.arg("-c").arg(scripts[index]);
                 if fallback {
                     command.env(FALLBACK_ENV, FALLBACK_REASON);
@@ -865,7 +887,7 @@ mod tests {
         // The child exits 143 once it reads T, like the real app.exit(143).
         let status = supervise(
             |_, _| {
-                let mut command = Command::new("sh");
+                let mut command = Command::new("bash");
                 command.arg("-c").arg(
                     "c=$(dd bs=1 count=1 <&$UNSLOTH_GPU_SUPERVISOR_FD 2>/dev/null); \
                      [ \"$c\" = T ] && exit 143; exit 2",
@@ -896,7 +918,7 @@ mod tests {
         });
         let status = supervise(
             |_, _| {
-                let mut command = Command::new("sh");
+                let mut command = Command::new("bash");
                 command.arg("-c").arg("exec sleep 30");
                 command
             },
@@ -965,7 +987,7 @@ mod tests {
         let status = supervise(
             |fallback, was_shown| {
                 shown.borrow_mut().push(was_shown);
-                let mut command = Command::new("sh");
+                let mut command = Command::new("bash");
                 let script = if fallback {
                     "exit 0"
                 } else {
@@ -1010,7 +1032,7 @@ mod tests {
         let logs = RefCell::new(Vec::new());
         let status = supervise(
             |fallback, _| {
-                let mut command = Command::new("sh");
+                let mut command = Command::new("bash");
                 // A CPU child that did start would exit 7.
                 let script = if fallback { "exit 7" } else { "printf E >&$UNSLOTH_GPU_SUPERVISOR_FD; exit 1" };
                 command.arg("-c").arg(script);
