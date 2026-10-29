@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""torch 2.12+ keeps dynamo / inductor config writes in a ContextVar, so knobs set on the load thread are invisible on
-the render thread that compiles. Knobs are recorded here and ``apply()`` re-writes them into the current context."""
+"""torch 2.12+ stores dynamo/inductor config in a ContextVar; apply() re-sets knobs per thread."""
 
 from __future__ import annotations
 
@@ -139,3 +138,16 @@ def _reset_for_tests() -> None:
     with _LOCK:
         _KNOBS.clear()
         _generation += 1
+
+
+_STUDIO_CACHE_TAG_PREFIXES = ("unsloth_fp8_unit_scale=", "unsloth_nvfp4_act_quant=")
+
+
+def canonical_compile_cache_tag(current: str, prefix: str, tag: str | None) -> str:
+    """``prefix``'s token set to ``tag`` (None drops it); Studio's sorted so setter order never changes torch's cache key."""
+    parts = [p for p in current.split(";") if p and not p.startswith(prefix)]
+    if tag:
+        parts.append(prefix + tag)
+    foreign = [p for p in parts if not p.startswith(_STUDIO_CACHE_TAG_PREFIXES)]
+    owned = sorted(p for p in parts if p.startswith(_STUDIO_CACHE_TAG_PREFIXES))
+    return ";".join(foreign + owned)

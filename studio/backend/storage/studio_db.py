@@ -381,6 +381,12 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_run_id ON training_metrics(run_id)")
+    # Partial on the resumed_later subquery's exact status list so no other query (or its tie order) changes plan.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_training_runs_resumed_later "
+        "ON training_runs(output_dir, started_at) "
+        "WHERE status IN ('stopped', 'completed', 'error', 'running')"
+    )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS api_usage_events (
@@ -1642,39 +1648,68 @@ def finish_run(
         conn.close()
 
 
+_INSERT_METRICS_SQL = """
+    INSERT INTO training_metrics
+        (run_id, step, loss, learning_rate, grad_norm, eval_loss, epoch, num_tokens, elapsed_seconds)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(run_id, step) DO UPDATE SET
+        loss = COALESCE(excluded.loss, loss),
+        learning_rate = COALESCE(excluded.learning_rate, learning_rate),
+        grad_norm = COALESCE(excluded.grad_norm, grad_norm),
+        eval_loss = COALESCE(excluded.eval_loss, eval_loss),
+        epoch = COALESCE(excluded.epoch, epoch),
+        num_tokens = COALESCE(excluded.num_tokens, num_tokens),
+        elapsed_seconds = COALESCE(excluded.elapsed_seconds, elapsed_seconds)
+"""
+
+
+def _insert_metrics_rows(conn: sqlite3.Connection, run_id: str, metrics: list[dict]) -> None:
+    conn.executemany(
+        _INSERT_METRICS_SQL,
+        [
+            (
+                run_id,
+                m.get("step"),
+                m.get("loss"),
+                m.get("learning_rate"),
+                m.get("grad_norm"),
+                m.get("eval_loss"),
+                m.get("epoch"),
+                m.get("num_tokens"),
+                m.get("elapsed_seconds"),
+            )
+            for m in metrics
+        ],
+    )
+
+
 def insert_metrics_batch(run_id: str, metrics: list[dict]) -> None:
     if not metrics:
         return
     conn = get_connection()
     try:
-        conn.executemany(
-            """
-            INSERT INTO training_metrics
-                (run_id, step, loss, learning_rate, grad_norm, eval_loss, epoch, num_tokens, elapsed_seconds)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(run_id, step) DO UPDATE SET
-                loss = COALESCE(excluded.loss, loss),
-                learning_rate = COALESCE(excluded.learning_rate, learning_rate),
-                grad_norm = COALESCE(excluded.grad_norm, grad_norm),
-                eval_loss = COALESCE(excluded.eval_loss, eval_loss),
-                epoch = COALESCE(excluded.epoch, epoch),
-                num_tokens = COALESCE(excluded.num_tokens, num_tokens),
-                elapsed_seconds = COALESCE(excluded.elapsed_seconds, elapsed_seconds)
-            """,
-            [
-                (
-                    run_id,
-                    m.get("step"),
-                    m.get("loss"),
-                    m.get("learning_rate"),
-                    m.get("grad_norm"),
-                    m.get("eval_loss"),
-                    m.get("epoch"),
-                    m.get("num_tokens"),
-                    m.get("elapsed_seconds"),
-                )
-                for m in metrics
-            ],
+        _insert_metrics_rows(conn, run_id, metrics)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def insert_metrics_with_progress(
+    run_id: str,
+    metrics: list[dict],
+    *,
+    step: int,
+    loss: Optional[float],
+    duration_seconds: Optional[float],
+) -> None:
+    """insert_metrics_batch + update_run_progress in one commit: a failure writes neither."""
+    conn = get_connection()
+    try:
+        if metrics:
+            _insert_metrics_rows(conn, run_id, metrics)
+        conn.execute(
+            "UPDATE training_runs SET final_step = ?, final_loss = ?, duration_seconds = ? WHERE id = ?",
+            (step, loss, duration_seconds, run_id),
         )
         conn.commit()
     finally:

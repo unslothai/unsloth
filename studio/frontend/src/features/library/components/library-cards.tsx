@@ -22,14 +22,7 @@ import { formatCardTime, formatItemCount } from "../format";
 import { useColumnCount, useLibraryThumbnail, useSeen } from "../hooks";
 import { useLibraryActions } from "../actions-context";
 import { CARD_COLUMNS, useLibrarySettingsStore } from "../settings-store";
-import {
-  CARD_SHADOW,
-  GLASS_CONTROL,
-  GLASS_SURFACE,
-  OVERLAY_CONTROL,
-  RAISED_SURFACE,
-  SELECTED_TINT,
-} from "../surface";
+import { CARD_MIN_HEIGHT, CARD_SHADOW, GLASS_CONTROL, GLASS_SURFACE, OVERLAY_CONTROL, RAISED_SURFACE, SELECTED_TINT } from "../surface";
 import { CardSelectionContext } from "./card-selection";
 import { LibraryActionsMenu } from "./library-actions";
 import { PlayIcon } from "lucide-react";
@@ -90,7 +83,9 @@ function ImageThumb({
       style={
         loaded && !square
           ? { aspectRatio: 1 / Math.min(Math.max(ratio, MIN_THUMB_RATIO), MAX_THUMB_RATIO) }
-          : undefined
+          : square
+            ? { minHeight: CARD_MIN_HEIGHT }
+            : undefined
       }
     >
       {!loaded && <div className="aspect-square w-full animate-pulse bg-muted" />}
@@ -240,7 +235,7 @@ export function ItemCard({ item }: { item: LibraryItem }) {
     >
       {thumb ? (
         <>
-          <ImageThumb item={item} square={square && fileKind(item) === "image"} />
+          <ImageThumb item={item} square={square || fileKind(item) !== "image"} />
           {showTime && (
             <span
               className={cn(
@@ -253,7 +248,10 @@ export function ItemCard({ item }: { item: LibraryItem }) {
           )}
         </>
       ) : (
-        <div className="grid aspect-square grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr_auto] px-5 pt-5 pb-3.5">
+        <div
+          className="grid aspect-square grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr_auto] px-5 pt-5 pb-3.5"
+          style={{ minHeight: CARD_MIN_HEIGHT }}
+        >
           <p className="line-clamp-2 min-h-[2.75em] break-all font-medium text-ui-13p5 leading-snug text-foreground">
             {item.name}
           </p>
@@ -302,7 +300,10 @@ function FolderCard({
         menu={<LibraryActionsMenu target={{ kind: "folder", folder }} variant="overlay" />}
         className={CARD_SURFACE}
       >
-        <div className="flex aspect-square items-center justify-center">
+        <div
+          className="flex aspect-square items-center justify-center"
+          style={{ minHeight: CARD_MIN_HEIGHT }}
+        >
           <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.5} className={CARD_ICON_CLASS} />
         </div>
       </CardFrame>
@@ -321,10 +322,12 @@ function FolderCard({
 }
 
 const CARD_ROW_GAP = "gap-y-6";
+// gap-5 (Masonry) and gap-x-5 (CardGrid) at 100%.
+const CARD_COLUMN_GAP_PX = 20;
 
 function useCardColumns(container: RefObject<HTMLDivElement | null>): number {
-  const { minWidth, max } = CARD_COLUMNS[useLibrarySettingsStore((s) => s.cardSize)];
-  return useColumnCount(container, minWidth, max);
+  const { minWidth, max, wideMinWidth } = CARD_COLUMNS[useLibrarySettingsStore((s) => s.cardSize)];
+  return useColumnCount(container, minWidth, max, CARD_COLUMN_GAP_PX, wideMinWidth);
 }
 
 export function Masonry<T>({
@@ -358,7 +361,6 @@ export function CardGrid({
   minRowHeight,
 }: {
   children: ReactNode;
-  /** Rows are max(this, the column's 8:7 height). */
   minRowHeight?: string;
 }) {
   const container = useRef<HTMLDivElement>(null);
@@ -370,7 +372,7 @@ export function CardGrid({
       style={{
         gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
         gridAutoRows: minRowHeight
-          ? `max(${minRowHeight}, calc((100cqw - ${columns - 1} * var(--spacing) * 5) / ${columns} * 7 / 8))`
+          ? `max(${minRowHeight}, calc((100cqw - ${columns - 1} * var(--spacing) * 5) / ${columns}))`
           : undefined,
       }}
     >

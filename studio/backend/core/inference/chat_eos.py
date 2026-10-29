@@ -1,19 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Resolve a chat model's assistant-turn-end stop tokens.
-
-Some checkpoints set eos_token_id to a bare document terminator (Qwen3.5 ships
-config eos ``<|endoftext|>`` though chat turns end with ``<|im_end|>``, and its
-small chat variants ship no generation_config), so generation runs past the turn
-and loops -- re-emitting tool calls or hallucinating ``<|im_start|>`` turns.
-
-Turn-end markers are derived from the tokenizer's ``chat_template`` (the tokens it
-actually uses to end a turn), not raw vocab membership: a base/coder model can
-carry ChatML control tokens in a shared vocab without using them, and a loader
-may have synced ``eos_token`` to the document terminator. Dependency-light (no
-torch / unsloth) so it is unit-testable without the full inference stack.
-"""
+"""Turn-end stop tokens for chat models: some checkpoints set eos to a bare document terminator
+while chat turns end with <|im_end|>, so generation runs on. Markers come from the chat_template,
+not vocab membership, since base models may carry unused ChatML tokens. Dependency-light for unit
+tests."""
 
 from typing import Optional
 

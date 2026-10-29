@@ -201,11 +201,56 @@ def configure_padding_free(config):
     setattr(config, "remove_unused_columns", False)
 
 
-def _enable_hf_packed_attention() -> None:
+def _longest_document(model, trainer) -> Optional[int]:
+    args = getattr(trainer, "args", None)
+    for value in (
+        getattr(args, "max_length", None),
+        getattr(args, "max_seq_length", None),
+        getattr(model, "max_seq_length", None),
+    ):
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return None
+
+
+def _packed_row_tokens(model, trainer) -> Optional[int]:
+    """Tokens in one flattened row: the padding-free collator joins a whole device batch, the eval
+    batch too when there is an eval dataset (transformers' default eval batch is 8)."""
+    longest = _longest_document(model, trainer)
+    if longest is None:
+        return None
+    args = getattr(trainer, "args", None)
+    names = ["per_device_train_batch_size"]
+    if getattr(trainer, "eval_dataset", None) is not None:
+        names.append("per_device_eval_batch_size")
+    batches = [getattr(args, name, None) for name in names]
+    batches = [b for b in batches if isinstance(b, int) and not isinstance(b, bool) and b > 0]
+    return longest * max(batches, default = 1)
+
+
+def _enable_hf_packed_attention(model = None, trainer = None) -> None:
     # packed rows on the transformers modeling path run varlen instead of SDPA over a dense mask.
     try:
         from .hf_packed_attention import enable_hf_packed_attention
-        enable_hf_packed_attention()
+
+        # A whole-model torch.compile (torch_compile=True, or an already compiled model) inlines the
+        # blocks, where the varlen wrapper falls back to dense-mask SDPA: those keep flex.
+        outer_compile = bool(getattr(getattr(trainer, "args", None), "torch_compile", False)) or (
+            hasattr(model, "_orig_mod")
+        )
+        # A collator padding the flattened row to a multiple leaves a tail the varlen wrapper declines.
+        pad_multiple = getattr(getattr(trainer, "data_collator", None), "pad_to_multiple_of", None)
+        aligned_tail = isinstance(pad_multiple, int) and pad_multiple > 1
+        if (
+            enable_hf_packed_attention()
+            and model is not None
+            and not outer_compile
+            and not aligned_tail
+        ):
+            from ..models._utils import use_sdpa_for_packed_head_dim_flex
+            use_sdpa_for_packed_head_dim_flex(
+                model, _longest_document(model, trainer), _packed_row_tokens(model, trainer)
+            )
     except Exception as exc:
         logging.getLogger(__name__).info(f"Unsloth: packed varlen attention not enabled ({exc})")
 
@@ -247,7 +292,7 @@ def enable_sample_packing(
     collator = getattr(trainer, "data_collator", None)
     if collator is None or not hasattr(collator, "torch_call"):
         return
-    _enable_hf_packed_attention()
+    _enable_hf_packed_attention(model, trainer)
     _scope_flash_attention_impl(model, trainer, sequence_lengths_key)
     if getattr(collator, "_unsloth_packing_wrapped", False):
         return
@@ -294,7 +339,7 @@ def enable_padding_free_metadata(model, trainer):
         return
 
     mark_allow_overlength(model)
-    _enable_hf_packed_attention()
+    _enable_hf_packed_attention(model, trainer)
     if hasattr(collator, "return_position_ids"):
         collator.return_position_ids = True
     if hasattr(trainer, "args") and hasattr(trainer.args, "remove_unused_columns"):
@@ -1772,8 +1817,9 @@ def get_packed_info_from_kwargs(
         lengths = seq_lengths.to(device = device, dtype = torch.int32, non_blocking = True)
         cu_seqlens = torch.zeros(lengths.numel() + 1, dtype = torch.int32, device = device)
         torch.cumsum(lengths, dim = 0, dtype = torch.int32, out = cu_seqlens[1:])
-        # The one D2H read per batch.
-        host = tuple(lengths.tolist())
+        host = _attached_host_lengths(seq_lengths)
+        if host is None:
+            host = tuple(lengths.tolist())
 
     max_seqlen = max(host)
     result = (lengths, cu_seqlens, max_seqlen)
@@ -1784,6 +1830,14 @@ def get_packed_info_from_kwargs(
     }
     _PACKED_HOST_LENGTHS_CACHE[lengths.device] = (lengths, cu_seqlens, host)
     return result
+
+
+def _attached_host_lengths(seq_lengths) -> Optional[Tuple[int, ...]]:
+    """Host `_unsloth_lengths_tuple` attached by the producer (unsloth_zoo GRPO), used if the count matches."""
+    host = getattr(seq_lengths, "_unsloth_lengths_tuple", None)
+    if not isinstance(host, tuple) or len(host) != seq_lengths.numel():
+        return None
+    return host
 
 
 def _cached_host_lengths(seq_lengths, cu_seqlens = None) -> Optional[Tuple[int, ...]]:
@@ -1799,6 +1853,8 @@ def _cached_host_lengths(seq_lengths, cu_seqlens = None) -> Optional[Tuple[int, 
 
 def _host_segment_lengths(seq_lengths) -> Tuple[int, ...]:
     host = _cached_host_lengths(seq_lengths)
+    if host is None:
+        host = _attached_host_lengths(seq_lengths)
     if host is not None:
         return host
     return tuple(int(length) for length in seq_lengths.tolist())

@@ -57,6 +57,14 @@ export const FolderPlusIcon: IconSvgElement = [
   ],
 ];
 
+// HugeIcons "images" from @hugeicons/core-free-icons 4.3.5; the installed 4.1 predates it.
+export const ImagesIcon: IconSvgElement = [
+  ["path", { d: "M4 17.0429L8.75635 12.6942C10.4331 11.1612 11.2714 10.3947 12.3096 10.3191C13.3478 10.2435 14.2884 10.8805 16.1695 12.1545L17.5 13.0556", stroke: "currentColor", strokeLinecap: "round", strokeWidth: "1.5", key: "0" }],
+  ["path", { d: "M7.375 7.25H7.25M7.5 7.25C7.5 7.38807 7.38807 7.5 7.25 7.5C7.11193 7.5 7 7.38807 7 7.25C7 7.11193 7.11193 7 7.25 7C7.38807 7 7.5 7.11193 7.5 7.25Z", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "1" }],
+  ["path", { d: "M6 17.9745C6.1287 19.2829 6.41956 20.1636 7.07691 20.8209C8.25596 22 10.1536 22 13.9489 22C17.7442 22 19.6419 22 20.8209 20.8209C22 19.6419 22 17.7442 22 13.9489C22 10.1536 22 8.25596 20.8209 7.07691C20.1636 6.41956 19.2829 6.1287 17.9745 6", stroke: "currentColor", strokeWidth: "1.5", key: "2" }],
+  ["path", { d: "M2 10C2 6.22876 2 4.34315 3.17157 3.17157C4.34315 2 6.22876 2 10 2C13.7712 2 15.6569 2 16.8284 3.17157C18 4.34315 18 6.22876 18 10C18 13.7712 18 15.6569 16.8284 16.8284C15.6569 18 13.7712 18 10 18C6.22876 18 4.34315 18 3.17157 16.8284C2 15.6569 2 13.7712 2 10Z", stroke: "currentColor", strokeWidth: "1.5", key: "3" }],
+];
+
 export const StarPointedIcon: IconSvgElement = [
   [
     "path",
@@ -126,3 +134,17 @@ export function withNoticeDot(icon: IconSvgElement): IconSvgElement {
     ],
   ] as unknown as IconSvgElement;
 }
+
+// Speedometer: open-bottom dial broken where the needle points; HugeIcons' DashboardSpeed icons are framed or half-dial.
+export const SpeedMeterIcon: IconSvgElement = [
+  ["path", { d: "M4.929 19.571A10 10 0 0 1 16.226 3.437", stroke: "currentColor", strokeLinecap: "round", strokeWidth: "1.5", key: "0" }],
+  ["path", { d: "M21.063 8.274A10 10 0 0 1 19.071 19.571", stroke: "currentColor", strokeLinecap: "round", strokeWidth: "1.5", key: "1" }],
+  ["circle", { cx: "12", cy: "12.5", r: "2.25", stroke: "currentColor", strokeWidth: "1.5", key: "2" }],
+  ["path", { d: "M13.59 10.91L18.01 6.49", stroke: "currentColor", strokeLinecap: "round", strokeWidth: "1.5", key: "3" }],
+];
+
+// FileSearchIcon scaled 1.1x about the centre to match the square menu glyphs.
+export const FileSearchIcon: IconSvgElement = [
+  ["path", { d: "M13.65 16.95L15.3 18.6M14.2 14.75C14.2 16.2688 12.9688 17.5 11.45 17.5C9.9312 17.5 8.7 16.2688 8.7 14.75C8.7 13.2312 9.9312 12 11.45 12C12.9688 12 14.2 13.2312 14.2 14.75Z", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "0" }],
+  ["path", { d: "M13.1 1.55V2.1C13.1 5.2113 13.1 6.7669 14.0666 7.7335C15.0331 8.7 16.5888 8.7 19.7 8.7H20.25M20.8 10.5226V14.2C20.8 18.3483 20.8 20.4226 19.5112 21.7112C18.2226 23 16.1483 23 12 23C7.8516 23 5.7775 23 4.4887 21.7112C3.2 20.4226 3.2 18.3483 3.2 14.2V9.2014C3.2 5.6319 3.2 3.8471 4.1747 2.6383C4.3716 2.394 4.594 2.1716 4.8383 1.9747C6.0471 1 7.8319 1 11.4014 1C12.1775 1 12.5655 1 12.9209 1.1254C12.9948 1.1515 13.0672 1.1815 13.138 1.2153C13.478 1.3779 13.7523 1.6523 14.3011 2.2011L19.5112 7.4113C20.1472 8.0471 20.465 8.3651 20.6326 8.7694C20.8 9.1737 20.8 9.6233 20.8 10.5226Z", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "1" }],
+];

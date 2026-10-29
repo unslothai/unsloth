@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Shared LoRA support for the Unsloth diffusion backends.
-
-The native sd-cli engine selects adapters by `<lora:NAME:WEIGHT>` prompt tags resolved against a
-`--lora-model-dir`; diffusers loads them with `load_lora_weights()` + `set_adapters()`. This
-module holds the shared parts: a curated + local catalog, id->file resolution (with HF download),
-a managed directory materialiser, native alias naming, and the single `supports_lora()` gate.
-
-The request layer only passes a LoRA *id* (discovery id, local stem, or HF repo id) plus a
-weight, never a raw path, so a client cannot make the backend read an arbitrary file. Resolution
-validates the id against the catalog / local dir / HF hub before loading.
-"""
+"""Shared LoRA catalog and id resolution; requests pass only an id, never a path (no arbitrary reads)."""
 
 from __future__ import annotations
 
@@ -31,9 +21,6 @@ from utils.paths.storage_roots import account_path
 from .diffusion_families import DIFFUSION_CANCELLED_MSG
 from utils.paths.path_utils import is_appledouble_metadata
 
-# Accepted LoRA formats. safetensors + gguf only (.pt is pickled -> excluded for safety).
-_NATIVE_EXTS = (".safetensors", ".gguf")
-_DIFFUSERS_EXTS = (".safetensors",)
 _ALL_EXTS = (".safetensors", ".gguf")
 # ``kind`` in a ``<stem>.json`` sidecar marking the weight beside it as an image LoRA, not model weights.
 LORA_SIDECAR_KIND = "diffusion-lora"

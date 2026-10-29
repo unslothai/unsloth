@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Ollama model inventory: manifest parsing and writable-symlink materialization.
-
-Ollama stores models content-addressed under ``<root>/manifests/`` and
-``<root>/blobs/``. Inventory scans read the manifests directly (no writes),
-returning rows whose ``id`` is an opaque ``ollama-manifest:`` reference. The
-load path then calls :func:`materialize_ollama_model_ref`, which creates a
-``.gguf``-named symlink (or hardlink) so that downstream loaders see a path
-with the GGUF suffix without copying multi-GB blobs inside an API request.
-"""
+"""Ollama inventory is read-only; materialize_ollama_model_ref makes a .gguf link to blobs, no copy."""
 
 from __future__ import annotations
 
