@@ -463,6 +463,9 @@ def test_decode_rows_above_the_gemv_cap_use_the_bnb_gemm(bsz, monkeypatch):
         "bf16",
         "weight_elsewhere",
         "unaligned_k",
+        "misaligned_x",
+        "scalar_offset",
+        "list_state2",
     ],
 )
 def test_the_bnb_gemm_is_skipped_where_it_does_not_apply(case, monkeypatch):
@@ -482,6 +485,13 @@ def test_the_bnb_gemm_is_skipped_where_it_does_not_apply(case, monkeypatch):
         # K not a multiple of the 64 blocksize.
         proj = _linear4bit(1024, 4128, dtype = dtype)
         X = torch.randn(bsz, 1, 4128, dtype = dtype, device = "cuda")
+    if case == "misaligned_x":
+        X = torch.randn(bsz * 4096 + 1, dtype = dtype, device = "cuda")[1:].view(bsz, 1, 4096)
+    if case == "scalar_offset":
+        proj.weight.quant_state.offset = proj.weight.quant_state.offset.item()
+    if case == "list_state2":
+        s2 = proj.weight.quant_state.state2
+        proj.weight.quant_state.state2 = [s2.absmax, s2.code, s2.blocksize]
     if case == "weight_elsewhere":
         assert not utils._bnb_gemm_4bit_ok(
             X.view(bsz, -1), proj.weight.data.cpu(), proj.weight.quant_state
@@ -496,7 +506,19 @@ def test_the_bnb_gemm_is_skipped_where_it_does_not_apply(case, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "case", ["eligible", "switch_off", "grad", "bf16", "compiling", "env_override", "other_arch"]
+    "case",
+    [
+        "eligible",
+        "switch_off",
+        "grad",
+        "bf16",
+        "compiling",
+        "env_override",
+        "other_arch",
+        "misaligned_x",
+        "scalar_offset",
+        "list_state2",
+    ],
 )
 def test_t4_batch_4_leaves_the_gemv_only_for_a_bnb_gemm_that_runs(case, monkeypatch):
     """T4 batch 4 takes the bitsandbytes gemm_4bit; wherever that branch would not run, it keeps the
@@ -506,13 +528,16 @@ def test_t4_batch_4_leaves_the_gemv_only_for_a_bnb_gemm_that_runs(case, monkeypa
     monkeypatch.setattr(utils, "_GEMV_ROWS_CAP", {})
     monkeypatch.setattr(utils, "_GEMV_ROWS_BNB_FROM", {})
     monkeypatch.setattr(utils, "_GEMV_MAX_ROWS", 4)
-    monkeypatch.setattr(torch.version, "hip", None)
-    arch = (8, 0) if case == "other_arch" else (7, 5)
-    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: arch)
     if case == "env_override":
         monkeypatch.setenv("UNSLOTH_GEMV_MAX_ROWS", "4")
     else:
         monkeypatch.delenv("UNSLOTH_GEMV_MAX_ROWS", raising = False)
+    # Only the routing cache sees the faked architecture; Triton must still compile for the real GPU.
+    with monkeypatch.context() as routing:
+        routing.setattr(torch.version, "hip", None)
+        arch = (8, 0) if case == "other_arch" else (7, 5)
+        routing.setattr(torch.cuda, "get_device_capability", lambda *a: arch)
+        utils._gemv_rows_cap(torch.device("cuda", torch.cuda.current_device()))
     monkeypatch.setattr(utils, "_BNB_GEMM_4BIT", case != "switch_off")
     monkeypatch.setattr(utils, "_bnb_gemm_4bit_device_ok", lambda device: True)
     if case == "compiling":
@@ -520,14 +545,21 @@ def test_t4_batch_4_leaves_the_gemv_only_for_a_bnb_gemm_that_runs(case, monkeypa
     dtype = torch.bfloat16 if case == "bf16" else torch.float16
     proj = _linear4bit(1024, 4096, dtype = dtype)
     W, W_quant = utils.get_lora_parameters_bias(proj)[:2]
+    assert W_quant.nested
+    if case == "scalar_offset":
+        W_quant.offset = W_quant.offset.item()
+    if case == "list_state2":
+        s2 = W_quant.state2
+        W_quant.state2 = [s2.absmax, s2.code, s2.blocksize]
+
+    def x(bsz):
+        if case == "misaligned_x":
+            # Contiguous, but 2 bytes past a 16-byte boundary.
+            return torch.randn(bsz * 4096 + 1, dtype = dtype, device = "cuda")[1:].view(bsz, 1, 4096)
+        return torch.randn(bsz, 1, 4096, dtype = dtype, device = "cuda")
+
     with torch.set_grad_enabled(case == "grad"):
-        rows = {
-            bsz: utils._gemv_rows(
-                torch.randn(bsz, 1, 4096, dtype = dtype, device = "cuda"), W, W_quant, None
-            )
-            is not None
-            for bsz in (2, 3, 4)
-        }
+        rows = {bsz: utils._gemv_rows(x(bsz), W, W_quant, None) is not None for bsz in (2, 3, 4)}
     if case == "other_arch":
         assert rows == {2: True, 3: False, 4: False}
     else:

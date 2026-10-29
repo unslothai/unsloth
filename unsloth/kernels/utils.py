@@ -1582,13 +1582,22 @@ def _bnb_gemm_4bit_ok(X, W, quant_state):
         and _bnb_gemm_4bit_device_ok(X.device)
         # bitsandbytes passes raw pointers to the kernel on X's device.
         and W.device == X.device
+        # Its fp16 kernels load 16 bytes at a time from both pointers.
+        and not (X.data_ptr() & 15 or W.data_ptr() & 15)
         and type(quant_state) is not list
         and quant_state.absmax.device == X.device
         and getattr(quant_state, "quant_type", None) in ("nf4", "fp4")
         # bitsandbytes dequantizes (and warns) itself when K is not a multiple of the blocksize.
         and quant_state.shape[-1] % quant_state.blocksize == 0
-        # matmul_4bit raises for any other nested blocksize.
-        and (not quant_state.nested or quant_state.state2.blocksize == 256)
+        # matmul_4bit raises for any other nested blocksize, a list state2 or a non-tensor offset.
+        and (
+            not quant_state.nested
+            or (
+                type(quant_state.state2) is not list
+                and quant_state.state2.blocksize == 256
+                and isinstance(quant_state.offset, torch_Tensor)
+            )
+        )
     )
 
 
