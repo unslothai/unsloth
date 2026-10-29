@@ -289,3 +289,11 @@ export function numericChartX(chart: Pick<ChartValue, "type" | "x">): boolean {
     chart.x.every((x) => typeof x === "number" && Number.isFinite(x))
   );
 }
+
+/** The output ids a card draws: its ports, or for a sink card with none (Preview, Result) what the run returned. */
+export function shownOutputIds(
+  ports: readonly { id: string }[],
+  outputs: Record<string, unknown>,
+): string[] {
+  return ports.length ? ports.map((port) => port.id) : Object.keys(outputs);
+}
