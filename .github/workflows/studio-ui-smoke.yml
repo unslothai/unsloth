@@ -547,6 +547,13 @@ jobs:
           mkdir -p logs/playwright_image_footprint
           python tests/studio/playwright_image_model_footprint.py
 
+      - name: Image gallery keyboard navigation (Playwright)
+        if: matrix.shard == 'extra'
+        env:
+          BASE_URL: http://127.0.0.1:18894
+        run: |
+          python tests/studio/playwright_images_gallery_keys.py
+
       - name: Image staged-download cancel/retry regression (Playwright)
         if: matrix.shard == 'extra'
         env:
