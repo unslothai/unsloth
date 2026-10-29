@@ -63,7 +63,6 @@ def with_session_packages(env: dict, workdir: str) -> dict:
     updated = dict(env)
     # Block a planted usercustomize.py; in safe mode the trusted sitecustomize shim stays first on PYTHONPATH.
     updated["PYTHONNOUSERSITE"] = "1"
-    # pip puts console scripts in Scripts on Windows and bin elsewhere.
     scripts = "Scripts" if os.name == "nt" else "bin"
     for key, value in (
         ("PYTHONPATH", os.pathsep.join(session_package_paths(packages))),
