@@ -119,6 +119,43 @@ def test_speed_reaches_the_model_without_a_saved_voice(monkeypatch):
     assert calls[2]["payload"].audio_options is None
 
 
+def test_worker_sends_audio_options_only_to_a_backend_that_takes_them():
+    import inspect
+    import queue
+
+    from core.inference.native_audio import NativeAudioBackend
+    from core.inference.worker import _handle_generate_audio
+
+    seen = []
+
+    class _Native:
+        def generate_audio_response(self, **kwargs):
+            seen.append(kwargs)
+            return _WAV, 24000
+
+        generate_audio_response.__signature__ = inspect.signature(
+            NativeAudioBackend.generate_audio_response
+        )
+
+    class _Options:
+        def generate_audio_response(
+            self,
+            text,
+            audio_options = None,
+            **kwargs,
+        ):
+            seen.append({"audio_options": audio_options})
+            return _WAV, 24000
+
+    for backend in (_Native(), _Options()):
+        out = queue.Queue()
+        cmd = {"request_id": "r", "text": "hi", "audio_options": {"speed": 0.5}}
+        _handle_generate_audio(backend, cmd, out, threading.Event())
+        assert out.get_nowait()["type"] == "audio_done"
+    assert "audio_options" not in seen[0]
+    assert seen[1] == {"audio_options": {"speed": 0.5}}
+
+
 def test_unknown_response_format_is_400(monkeypatch):
     cli, calls, saved = _make_client(monkeypatch)
     resp = cli.post("/v1/audio/speech", json = {"input": "hi", "response_format": "wma"})
