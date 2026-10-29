@@ -1450,6 +1450,11 @@ def _chat_content_chunk(completion_id, created, model_name, text) -> str:
     )
 
 
+def _speech_reply_audio(item: dict) -> dict:
+    """A backend speech item as the message / delta ``audio`` part (OpenAI's field, carrying the WAV inline)."""
+    return {"data": item.get("speech"), "format": "wav", "sample_rate": item.get("sample_rate")}
+
+
 def _chat_reasoning_chunk(completion_id, created, model_name, text) -> str:
     """Reasoning delta with empty content alongside, so strict OpenAI adapters do not drop it."""
     return _chat_chunk_sse(
@@ -8072,6 +8077,7 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         # Not MLX, so the MLX runtime fields report as absent.
         is_mlx = False,
         is_npu = False,
+        speaks = False,
         mlx_kv_quant = None,
         mlx_kv_quant_requested = None,
         mlx_kv_bits = None,
@@ -18697,6 +18703,7 @@ async def _load_model_impl(
                     audio_type = _model_info.get("audio_type"),
                     has_audio_input = _model_info.get("has_audio_input", False),
                     has_video_input = _model_info.get("has_video_input", False),
+                    speaks = bool(_model_info.get("speaks", False)),
                     is_mlx = bool(_model_info.get("is_mlx", False)),
                     mlx_kv_quant = _model_info.get("mlx_kv_quant"),
                     mlx_kv_quant_requested = _model_info.get("mlx_kv_quant_requested"),
@@ -19539,7 +19546,7 @@ async def _load_model_impl(
             status = "loaded",
             model = model_log_label if native_grant_backed else config.identifier,
             display_name = model_log_label if native_grant_backed else config.display_name,
-            is_vision = config.is_vision,
+            is_vision = _model_info.get("is_vision", config.is_vision),
             is_lora = config.is_lora,
             is_gguf = False,
             is_local_model = config.is_local,
@@ -19548,6 +19555,7 @@ async def _load_model_impl(
             audio_type = _model_info.get("audio_type", config.audio_type),
             has_audio_input = _model_info.get("has_audio_input", config.has_audio_input),
             has_video_input = _model_info.get("has_video_input", False),
+            speaks = bool(_model_info.get("speaks", False)),
             audio_family = _model_info.get("audio_family"),
             audio_options = _model_info.get("audio_options"),
             audio_workflows = _model_info.get("audio_workflows"),
@@ -22075,6 +22083,7 @@ async def _slot_status(current_subject: str):
             audio_type = audio_type,
             has_audio_input = has_audio_input,
             has_video_input = has_video_input,
+            speaks = bool(model_info.get("speaks", False)),
             audio_family = model_info.get("audio_family"),
             audio_options = model_info.get("audio_options"),
             audio_workflows = model_info.get("audio_workflows"),
@@ -30586,6 +30595,8 @@ async def produce_openai_chat_completions(
     normalized_stop = _normalize_stop_sequences(payload.stop)
 
     if using_gguf:
+        if "audio" in (payload.modalities or ()):
+            raise HTTPException(status_code = 400, detail = "The loaded model cannot answer in speech.")
         # Advertised repo id after an auto-switch load, else a clean public id,
         # never the absolute .gguf path.
         model_name = _llama_public_model_id(llama_backend, payload.model)
@@ -30735,9 +30746,83 @@ async def produce_openai_chat_completions(
             api_monitor.fail(monitor_id, _MLX_MULTI_AUDIO_DETAIL)
             raise HTTPException(status_code = 400, detail = _MLX_MULTI_AUDIO_DETAIL)
 
+        _speak = "audio" in (payload.modalities or ())
+        _speak_detail = None
+        if _speak and not model_info.get("speaks"):
+            _speak_detail = "The loaded model cannot answer in speech."
+        elif _speak and not payload.audio_base64:
+            _speak_detail = "A spoken reply answers a spoken question: send it as audio_base64."
+        elif _speak and _normalize_stop_sequences(payload.stop):
+            # The speech cannot be cut at a text marker, so the stop would not hold.
+            _speak_detail = "Stop sequences do not apply to a spoken reply."
+        if _speak_detail is not None:
+            api_monitor.fail(monitor_id, _speak_detail)
+            raise HTTPException(status_code = 400, detail = _speak_detail)
+
         # ── Audio INPUT path: decode WAV and route to audio input generation ──
         if payload.audio_base64 and model_info.get("has_audio_input"):
             _refuse_unused_mcp_image(_mcp_image)
+            # Client tools as the text path takes them: none under tool_choice none, the forced one alone.
+            _audio_tools = None
+            if payload.tools and payload.tool_choice != "none":
+                from core.inference.chat_template_helpers import forced_tool_name
+
+                if model_info.get("audio_type") == "whisper" or _speak:
+                    _detail = "Tools do not apply to a transcription or a spoken reply."
+                    api_monitor.fail(monitor_id, _detail)
+                    _raise_unsupported_openai_parameter("tools", _detail)
+                _forced = forced_tool_name(payload.tool_choice)
+                _audio_tools = [
+                    tool
+                    for tool in payload.tools
+                    if not _forced
+                    or ((tool.get("function") or {}) if isinstance(tool, dict) else {}).get("name")
+                    == _forced
+                ]
+                # Heal and render the same catalogue: a tool dropped for markup was never shown (#7066).
+                from core.inference.chat_template_helpers import (
+                    chat_render_target,
+                    renderable_tool_catalog_for_targets,
+                )
+
+                _audio_target = chat_render_target(
+                    model_info.get("processor"), model_info.get("tokenizer")
+                )
+                _audio_tools = await asyncio.to_thread(
+                    renderable_tool_catalog_for_targets,
+                    _audio_tools,
+                    (_audio_target, getattr(_audio_target, "tokenizer", _audio_target)),
+                    model_info,
+                    active_model_name = backend.active_model_name,
+                )
+                _tool_refusal = None
+                if _forced and not _audio_tools:
+                    _tool_refusal = (
+                        "tool_choice",
+                        f"Invalid 'tool_choice': function '{_forced}' is not enabled.",
+                    )
+                elif not _sf_rendered_features(backend, model_info, payload.tools)[0].get(
+                    "supports_tools"
+                ):
+                    _tool_refusal = (
+                        "tools",
+                        "Client-supplied tools require a chat template with tool-call "
+                        "support; the current model/template does not advertise tools.",
+                    )
+                if _tool_refusal is not None:
+                    api_monitor.fail(monitor_id, _tool_refusal[1])
+                    _raise_unsupported_openai_parameter(*_tool_refusal)
+            # Tool calls and results reach the template as sent, which alternating turns would drop.
+            _audio_tool_kwargs = (
+                {"tools": _audio_tools or []}
+                if _audio_tools or _has_openai_tool_history(payload.messages)
+                else {}
+            )
+            _audio_heal = (
+                heal_gate(payload.auto_heal_tool_calls, _audio_tools, payload.tool_choice)
+                if _audio_tools
+                else None
+            )
             # No boundary to resume from: this route re-listens and answers afresh.
             if _continue_final_message(payload):
                 raise HTTPException(
@@ -30765,7 +30850,12 @@ async def produce_openai_chat_completions(
                 system_prompt, chat_messages, _ = await _extract_content_parts_async(
                     payload.messages
                 )
-                system_prompt = _audio_input_system_prompt(system_prompt, request)
+                # A spoken reply answers the question, so the transcription default does not apply.
+                system_prompt = (
+                    _apply_current_date_prompt(system_prompt, request)
+                    if _speak
+                    else _audio_input_system_prompt(system_prompt, request)
+                )
             except _DecodedAudioTooLongError as e:
                 # A limit the caller can act on, not a server fault.
                 api_monitor.fail(monitor_id, str(e))
@@ -30813,6 +30903,8 @@ async def produce_openai_chat_completions(
                     stats_holder = _audio_stats_holder,
                     stop = normalized_stop,
                     **extra_audio_kwargs,
+                    **({"speak": True} if _speak else {}),
+                    **_audio_tool_kwargs,
                 )
 
             if payload.stream:
@@ -30828,6 +30920,10 @@ async def produce_openai_chat_completions(
                         from core.inference.llama_keepwarm import mark_current_response_failed
 
                         yield _chat_role_chunk(completion_id, created, model_name)
+                        healer = (
+                            StreamToolCallHealer(_audio_heal, _audio_tools) if _audio_heal else None
+                        )
+                        heal_state = {"idx": 0}
 
                         gen = audio_input_generate()
                         gen_step = ThreadStepper(gen).next
@@ -30857,14 +30953,52 @@ async def produce_openai_chat_completions(
                                     {"error": {"message": _msg, "type": "server_error"}}
                                 )
                                 return
-                            if chunk_text:
+                            if isinstance(chunk_text, dict):
+                                yield _chat_chunk_sse(
+                                    completion_id,
+                                    created,
+                                    model_name,
+                                    delta = ChoiceDelta(audio = _speech_reply_audio(chunk_text)),
+                                    finish_reason = None,
+                                )
+                                continue
+                            if chunk_text and healer is not None:
+                                for line in _sf_heal_events_to_sse(
+                                    healer.feed(chunk_text),
+                                    completion_id,
+                                    created,
+                                    model_name,
+                                    heal_state,
+                                    payload.parallel_tool_calls,
+                                    monitor_id,
+                                ):
+                                    yield line
+                            elif chunk_text:
                                 api_monitor.append_reply(monitor_id, chunk_text)
                                 yield _chat_content_chunk(
                                     completion_id, created, model_name, chunk_text
                                 )
+                        # A cancelled stream must not heal incomplete markup into a call.
+                        if healer is not None and not cancelled:
+                            for line in _sf_heal_events_to_sse(
+                                healer.finalize(),
+                                completion_id,
+                                created,
+                                model_name,
+                                heal_state,
+                                payload.parallel_tool_calls,
+                                monitor_id,
+                            ):
+                                yield line
 
                         _audio_stats = _audio_stats_holder.get("stats")
-                        _audio_finish = "stop" if cancelled else _stats_finish_reason(_audio_stats)
+                        _audio_finish = (
+                            "stop"
+                            if cancelled
+                            else "tool_calls"
+                            if healer is not None and healer.healed
+                            else _stats_finish_reason(_audio_stats)
+                        )
                         # The worker fills these stats for both backends (MLX adds timings), so the row has counts and speed.
                         if isinstance(_audio_stats, dict):
                             _monitor_usage(
@@ -30908,12 +31042,16 @@ async def produce_openai_chat_completions(
                 _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
                 _tracker.__enter__()
                 try:
+                    _speech_reply = {}
 
                     def _drain_audio_input():
                         text_parts = []
                         for chunk_text in audio_input_generate():
                             if isinstance(chunk_text, GenStreamError):
                                 return chunk_text
+                            if isinstance(chunk_text, dict):
+                                _speech_reply.update(_speech_reply_audio(chunk_text))
+                                continue
                             text_parts.append(chunk_text)
                         return "".join(text_parts)
 
@@ -30941,10 +31079,27 @@ async def produce_openai_chat_completions(
                 finally:
                     # Nested under the except arms too: api_monitor.fail() can throw, and a leaked entry 409s swaps.
                     _tracker.__exit__(None, None, None)
-                api_monitor.set_reply(monitor_id, full_text)
                 _audio_json_stats = _audio_stats_holder.get("stats")
                 _audio_json_finish = (
                     "stop" if cancel_event.is_set() else _stats_finish_reason(_audio_json_stats)
+                )
+                _audio_msg = {"role": "assistant", "content": full_text}
+                if (
+                    _audio_heal
+                    and not cancel_event.is_set()
+                    and heal_openai_message(_audio_msg, _audio_heal, _audio_tools)
+                ):
+                    _audio_json_finish = "tool_calls"
+                    if payload.parallel_tool_calls is False:
+                        _audio_msg["tool_calls"] = _audio_msg["tool_calls"][:1]
+                _audio_calls = "; ".join(
+                    f"{call['function']['name']}({call['function']['arguments']})"
+                    for call in _audio_msg.get("tool_calls") or []
+                )
+                api_monitor.set_reply(
+                    monitor_id,
+                    (_audio_msg["content"] or "")
+                    + (f"[tool_calls] {_audio_calls}" if _audio_calls else ""),
                 )
                 _mark_cancelled_json_response_failed(request, cancel_event)
                 if isinstance(_audio_json_stats, dict):
@@ -30963,7 +31118,11 @@ async def produce_openai_chat_completions(
                     model = model_name,
                     choices = [
                         CompletionChoice(
-                            message = CompletionMessage(content = full_text),
+                            message = CompletionMessage(
+                                content = _audio_msg["content"],
+                                audio = _speech_reply or None,
+                                tool_calls = _audio_msg.get("tool_calls"),
+                            ),
                             finish_reason = _audio_json_finish,
                         )
                     ],

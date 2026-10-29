@@ -501,6 +501,7 @@ export function syncModelCapabilities(
     audio_type?: string | null;
     has_audio_input?: boolean;
     has_video_input?: boolean;
+    speaks?: boolean;
   },
 ): void {
   const store = useChatRuntimeStore.getState();
@@ -514,6 +515,8 @@ export function syncModelCapabilities(
     hasAudioInput: Boolean(resp.has_audio_input),
     // /api/models/list omits this for the active GGUF row.
     hasVideoInput: Boolean(resp.has_video_input),
+
+    speaks: Boolean(resp.speaks),
   };
   const idx = models.findIndex((m) => m.id === modelId);
   if (idx === -1) {

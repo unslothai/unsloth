@@ -233,6 +233,7 @@ export interface LoadModelResponse {
   audio_device_fallback?: "cpu" | null;
   has_audio_input?: boolean;
   has_video_input?: boolean;
+  speaks?: boolean;
   inference?: {
     temperature?: number;
     top_p?: number;
@@ -359,6 +360,8 @@ export interface InferenceStatusResponse {
   audio_music?: unknown;
   has_audio_input?: boolean;
   has_video_input?: boolean;
+  /** Answers a spoken question in its own voice when asked for modalities ["text", "audio"]. */
+  speaks?: boolean;
   loading: string[];
   loaded: string[];
   serving?: string[];

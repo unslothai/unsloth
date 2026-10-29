@@ -4587,6 +4587,103 @@ def test_mlx_generate_audio_input_deltas_and_reject(monkeypatch):
         next(backend.generate_audio_input_response(**args))
 
 
+@pytest.mark.parametrize(
+    ("samples", "cancel_at", "reply"),
+    [
+        (4, None, ["Paris.", {"speech": "UklGRndhdg==", "sample_rate": 24000}]),
+        (0, None, ["Paris."]),
+        (4, 2, []),
+    ],
+)
+def test_mlx_spoken_reply(monkeypatch, samples, cancel_at, reply):
+    from core.inference import mlx_inference
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    cancel, sampled, seen = threading.Event(), [], {}
+
+    class _SpeakingModel:
+        def stream_slots(self):
+            for slot in range(4):
+                if slot == cancel_at:
+                    cancel.set()
+                yield slot
+
+    def _generate_audio(model, processor, prompt, **kwargs):
+        seen.update(kwargs, prompt = prompt)
+        sampled.extend(model.stream_slots())
+
+        class _Result:
+            text, sample_rate, finish_reason = "Paris.", 24000, "stop"
+            audio = SimpleNamespace(size = samples)
+            prompt_tokens = prompt_tps = generation_tokens = generation_tps = 1
+
+            def to_wav_bytes(self):
+                return b"RIFFwav" if samples else pytest.fail("empty WAV")
+
+        return _Result()
+
+    render = lambda processor, model, messages, **kwargs: messages[0]["content"]
+    monkeypatch.setattr(mlx_inference, "_render_registered_vlm_prompt", render)
+    generate = SimpleNamespace(generate_audio = _generate_audio)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.generate", generate)
+    backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
+    backend._generation_lock = threading.Lock()
+    backend._model, backend._processor = _SpeakingModel(), _audio_processor()
+    backend.active_model_name, backend.last_generation_stats = "m", None
+    backend.models = {"m": {"audio_type": "audio_vlm", "speaks": True}}
+    args = dict(messages = [{"role": "user", "content": ""}], system_prompt = "Be brief.")
+    args.update(audio_array = [0.1], cancel_event = cancel, speak = True)
+
+    assert list(backend.generate_audio_input_response(**args)) == reply
+    assert sampled == [0, 1, 2, 3][: cancel_at or 4]
+    assert "stream_slots" not in vars(backend._model)
+    assert (seen["generation_mode"], seen["audio"]) == ("interleaved", [[0.1]])
+    assert seen["prompt"] == "Respond with interleaved text and audio.\n\nBe brief."
+
+
+@pytest.mark.parametrize(
+    ("config", "served", "zoo", "expected"),
+    [
+        ({"model_type": "lfm3_audio"}, False, True, True),
+        ({"model_type": "oxr"}, False, False, False),
+        # mlx-lm serves it, so it stays on the text path whatever mlx-vlm declares.
+        (
+            {"model_type": "gemma3", "architectures": ["Gemma3ForConditionalGeneration"]},
+            True,
+            True,
+            False,
+        ),
+        (None, False, True, False),
+        ({}, False, True, False),
+    ],
+)
+def test_zoo_multimodal_detection_only_for_mlx_vlm_only_families(
+    monkeypatch, config, served, zoo, expected
+):
+    from core.inference import mlx_inference
+    from utils.models import model_config
+
+    asked = []
+    monkeypatch.setattr(model_config, "_read_raw_config_json", lambda name, token: config)
+    monkeypatch.setattr(mlx_inference, "_mlx_lm_serves", lambda model_type: served)
+    loader = SimpleNamespace(_is_vlm = lambda cfg: asked.append(cfg) or zoo)
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.loader", loader)
+
+    assert mlx_inference._zoo_declares_multimodal("repo") is expected
+    assert asked == ([config] if config and not served else [])
+
+
+def test_zoo_multimodal_detection_fails_open_to_text(monkeypatch):
+    from core.inference import mlx_inference
+    from utils.models import model_config
+
+    def unreadable(name, token):
+        raise OSError("offline")
+
+    monkeypatch.setattr(model_config, "_read_raw_config_json", unreadable)
+    assert mlx_inference._zoo_declares_multimodal("repo") is False
+
+
 def test_mlx_audio_input_normalizes_split_native_reasoning_channels(monkeypatch):
     from core.inference import mlx_inference
     from core.inference.mlx_inference import MLXInferenceBackend

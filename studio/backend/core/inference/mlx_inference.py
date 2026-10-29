@@ -38,10 +38,9 @@ from core.inference.chat_template_helpers import (
     count_structured_videos as _count_vlm_videos,
     detect_reasoning_channel_markers,
     make_reasoning_normalizer,
-    markup_for_tokenizer,
     messages_have_tool_history as _vlm_messages_have_tool_history,
     messages_with_attached_image,
-    neutralize_control_markup_in_messages,
+    neutralize_for_render,
     normalize_reasoning_snapshots,
     prompt_opens_reasoning_channel,
     strip_open_reasoning_prefill,
@@ -1490,6 +1489,7 @@ def _render_registered_vlm_prompt(
     num_images,
     num_audios = 0,
     continue_final_message = False,
+    tools = None,
 ):
     """Resumes a partial from the swept messages, since a raw partial could close the turn."""
     from mlx_vlm import prompt_utils
@@ -1522,7 +1522,7 @@ def _render_registered_vlm_prompt(
     if _resumes_thought(messages, continue_final_message):
         return None
     # Recovery path: sweeps the caller's original list rather than reusing a copy (#7066).
-    swept = neutralize_control_markup_in_messages(messages, None, markup_for_tokenizer(processor))
+    swept, tools, _ = neutralize_for_render(processor, messages, tools)
     partial = trailing_assistant_text(swept) if continue_final_message else None
     rendered = prompt_utils.apply_chat_template(
         processor,
@@ -1531,6 +1531,7 @@ def _render_registered_vlm_prompt(
         add_generation_prompt = True,
         num_images = num_images,
         num_audios = num_audios,
+        **({"tools": tools} if tools else {}),
     )
     if isinstance(rendered, str) and rendered.strip():
         # A prefilled open "<think>" would resume the answer inside the reasoning block.
@@ -1732,6 +1733,35 @@ def _discard_video_clip(path: str) -> None:
         os.remove(path)
     except OSError:
         pass
+
+
+_SPEECH_REPLY_SYSTEM_PROMPT = "Respond with interleaved text and audio."
+
+
+def _mlx_lm_serves(model_type) -> bool:
+    from importlib.util import find_spec
+
+    from mlx_lm.utils import MODEL_REMAPPING
+    return find_spec(f"mlx_lm.models.{MODEL_REMAPPING.get(model_type, model_type)}") is not None
+
+
+def _zoo_declares_multimodal(model_name, hf_token = None) -> bool:
+    """unsloth_zoo's verdict from mlx-vlm's own configs, for mlx-vlm-only families the transformers
+    registry does not know (an audio-only speech model, a tower under another name)."""
+    try:
+        from utils.models.model_config import _read_raw_config_json
+
+        config = _read_raw_config_json(model_name, hf_token)
+        model_type = (config or {}).get("model_type")
+        # A type mlx-lm serves keeps its text path, and skips zoo's scan of every mlx-vlm family.
+        if not isinstance(model_type, str) or not model_type or _mlx_lm_serves(model_type):
+            return False
+        from unsloth_zoo.mlx.loader import _is_vlm
+
+        return _is_vlm(config)
+    except Exception as exc:  # noqa: BLE001 -- detection must never fail a load
+        logger.debug("unsloth_zoo multimodal detection skipped for %s (%s)", model_name, exc)
+        return False
 
 
 def _classify_mlx_audio_type(
@@ -3572,6 +3602,27 @@ def _stream_until_cancelled(stream_generate, cancel_event, *args, **kwargs):
         return
 
 
+@contextmanager
+def _slots_until_cancelled(model, cancel_event):
+    """mlx-vlm's ``generate_audio`` takes no stop hook; LFM3 samples through ``stream_slots``, so end that loop."""
+    slots = getattr(model, "stream_slots", None)
+    if cancel_event is None or slots is None:
+        yield
+        return
+
+    def until_cancelled(*args, **kwargs):
+        for slot in slots(*args, **kwargs):
+            if cancel_event.is_set():
+                return
+            yield slot
+
+    model.stream_slots = until_cancelled
+    try:
+        yield
+    finally:
+        del model.stream_slots
+
+
 class LogprobsUnsupported(ValueError):
     """``n_probs`` asked of a model that does not sample one token per step."""
 
@@ -5260,6 +5311,10 @@ class MLXInferenceBackend:
         self._resume_load_args = (bool(load_in_4bit), repr(dtype), repr(tuple(offload or ())))
         model_name = config.identifier if hasattr(config, "identifier") else str(config)
         is_vision = getattr(config, "is_vision", False)
+        is_lora = getattr(config, "is_lora", False)
+        zoo_multimodal = not is_vision and _zoo_declares_multimodal(
+            getattr(config, "base_model", None) if is_lora else model_name, hf_token
+        )
         kv_bits, turboquant = parse_mlx_kv_quant(kv_quant)
         self._turboquant = turboquant
         if self._turboquant:
@@ -5271,7 +5326,6 @@ class MLXInferenceBackend:
                 ) from exc
         distributed_rank, distributed_size = _mlx_distributed_rank_size(distributed_group)
         is_distributed = distributed_group is not None and distributed_size > 1
-        is_lora = getattr(config, "is_lora", False)
         self._turboquant_refusal = (
             _turboquant_refusal(is_vision = is_vision, is_distributed = is_distributed, is_lora = is_lora)
             if self._turboquant
@@ -5303,6 +5357,7 @@ class MLXInferenceBackend:
         # Speculation runs on mlx-vlm models and caches.
         use_vlm = (
             is_vision
+            or zoo_multimodal
             or speculates
             or (self._turboquant and not self._turboquant_refusal)
             or batches_quantized_text
@@ -5476,6 +5531,9 @@ class MLXInferenceBackend:
                 FastMLXModel.from_pretrained, load_source, load_kwargs, offload
             )
 
+        zoo_loaded_multimodal = zoo_multimodal and not served_by_mlx_lm
+        if zoo_loaded_multimodal:
+            is_vision = getattr(model, "_unsloth_supports_images", None) is True
         self._reads_vision = bool(is_vision)
         if use_vlm:
             processor = tokenizer_or_processor
@@ -5501,7 +5559,7 @@ class MLXInferenceBackend:
         _audio_type = _classify_mlx_audio_type(
             model,
             self._processor,
-            is_vision,
+            is_vision or zoo_loaded_multimodal,
             config_audio_type = _config_audio_type,
         )
         _served_ctx, _native_ctx, _max_ctx = self._resolve_context_lengths(
@@ -5675,6 +5733,8 @@ class MLXInferenceBackend:
             "is_audio": _audio_type is not None and _audio_type != "audio_vlm",
             "audio_type": _audio_type,
             "has_audio_input": is_audio_input_type(_audio_type),
+            "speaks": _audio_type == "audio_vlm"
+            and getattr(self._model, "joint_audio_text_generation", False) is True,
             "has_video_input": is_vision and _mlx_reads_video(self._processor),
             "context_length": _served_ctx,
             # Matches llama.cpp requested_n_ctx; served window alone cannot tell if a size was asked for.
@@ -7703,11 +7763,15 @@ class MLXInferenceBackend:
         cancel_event = None,
         stop = None,
         extra_audio_arrays = None,
+        speak = False,
+        tools = None,
         **_sampler,
     ):
         """Audio-input chat (omni models): waveform in, incremental text deltas out (the audio route
         forwards deltas, unlike the snapshot-diffing text/vision paths). Greedy, so the worker's
-        sampler kwargs go unused."""
+        sampler kwargs go unused. ``speak`` answers in the model's own voice instead: the reply
+        text, then one ``{"speech": <base64 wav>, "sample_rate": ...}`` item. ``tools`` (a list,
+        empty for tool history alone) renders the catalogue and keeps ``messages`` as sent."""
         entry = self.models.get(self.active_model_name) or {}
         if entry.get("audio_type") != "audio_vlm":
             raise RuntimeError(
@@ -7719,13 +7783,19 @@ class MLXInferenceBackend:
         if extra_audio_arrays:
             raise RuntimeError("This MLX model takes one audio file per message.")
 
+        if speak:
+            yield from self._speak_audio_reply(
+                messages, system_prompt, audio_array, max_new_tokens, use_adapter, cancel_event
+            )
+            return
+
         from mlx_vlm import stream_generate as vlm_stream
 
         if not system_prompt:
             system_prompt = "You are an assistant that transcribes speech accurately."
 
         audio_messages = messages_with_attached_image(
-            alternating_turns(messages),
+            alternating_turns(messages) if tools is None else messages,
             system_prompt = system_prompt,
             fallback_user_text = "Please transcribe this audio.",
             image = 0,
@@ -7737,6 +7807,7 @@ class MLXInferenceBackend:
             audio_messages,
             num_images = 0,
             num_audios = 1,
+            **({"tools": tools} if tools else {}),
         )
         if prompt is None:
             raise RuntimeError(
@@ -7835,6 +7906,76 @@ class MLXInferenceBackend:
                 yield tail
         if stopped:
             self._mark_stopped()
+
+    def _speak_audio_reply(
+        self,
+        messages,
+        system_prompt,
+        audio_array,
+        max_new_tokens,
+        use_adapter,
+        cancel_event = None,
+    ):
+        """One spoken question answered in interleaved text and speech, not streamed."""
+        import base64
+
+        from mlx_vlm.generate import generate_audio
+
+        if not (self.models.get(self.active_model_name) or {}).get("speaks"):
+            raise RuntimeError("The loaded model cannot answer in speech.")
+        # The model card's prompt for speech chat; a user prompt still applies after it.
+        system = "\n\n".join(p for p in (_SPEECH_REPLY_SYSTEM_PROMPT, system_prompt) if p)
+        prompt = _render_registered_vlm_prompt(
+            self._processor,
+            self._model,
+            messages_with_attached_image(
+                alternating_turns(messages),
+                system_prompt = system,
+                image = 0,
+                audio = audio_array,
+            ),
+            num_images = 0,
+            num_audios = 1,
+        )
+        max_new_tokens = self._generation_limit(
+            prompt, max_new_tokens, audio = [audio_array], cap = UNSET_GENERATION_BUDGET
+        )
+        with (
+            self._generation_lock,
+            _temporary_mlx_adapter_state(self._model, use_adapter),
+            ExitStack() as generation_scope,
+        ):
+            self._release_vlm_snapshots()
+            generation_scope.enter_context(self._generation_scopes("vision", "audio"))
+            generation_scope.enter_context(_slots_until_cancelled(self._model, cancel_event))
+            result = generate_audio(
+                self._model,
+                self._processor,
+                prompt,
+                audio = [audio_array],
+                generation_mode = "interleaved",
+                max_tokens = max_new_tokens,
+            )
+            cancelled = cancel_event is not None and cancel_event.is_set()
+            # Nothing to encode once stopped, nor for a reply that ended before its first speech frame.
+            spoke = not cancelled and result.audio is not None and result.audio.size > 0
+            wav = result.to_wav_bytes() if spoke else None
+        self.last_generation_stats = _build_generation_stats(
+            result.prompt_tokens,
+            result.prompt_tps,
+            result.generation_tokens,
+            result.generation_tps,
+            finish_reason = result.finish_reason,
+        )
+        if cancelled:
+            return
+        if result.text:
+            yield result.text
+        if spoke:
+            yield {
+                "speech": base64.b64encode(wav).decode("ascii"),
+                "sample_rate": result.sample_rate,
+            }
 
     def generate_with_adapter_control(
         self,
