@@ -85,6 +85,22 @@ def test_the_wrapper_kills_oxlint_against_the_remaining_caller_budget():
 
 
 @real_oxlint
+def test_windows_launches_oxlint_through_its_bin_entry():
+    source = validators._OXC_RUNNER_PATH.read_text(encoding = "utf-8")
+    entry = re.search(r"const OXLINT_ENTRY = join\(TOOL_DIR, ([^)]*)\);", source)
+    assert entry, "validate.mjs must name oxlint's bin entry for Windows"
+    parts = [part.strip().strip('"') for part in entry.group(1).split(",")]
+    package_dir = validators._OXC_TOOL_DIR / "node_modules" / "oxlint"
+    package = json.loads((package_dir / "package.json").read_text(encoding = "utf-8"))
+    bin_field = package["bin"]
+    bin_path = bin_field["oxlint"] if isinstance(bin_field, dict) else bin_field
+    assert validators._OXC_TOOL_DIR.joinpath(*parts) == (package_dir / bin_path).resolve(
+        strict = False
+    )
+    assert "process.execPath" in source
+
+
+@real_oxlint
 @pytest.mark.parametrize("depth", [0, 1, 2])
 @pytest.mark.parametrize("config_name", ["oxlint.config.ts", ".oxlintrc.json"])
 def test_oxlint_never_loads_a_config_planted_around_the_snippets(
@@ -117,3 +133,36 @@ def test_oxlint_never_loads_a_config_planted_around_the_snippets(
     assert not marker.exists()
     # Pinned to the shipped, empty config: the default rules still report.
     assert [result["code"] for result in results] == ["eslint(no-debugger)"]
+
+
+@real_oxlint
+def test_oxlint_lints_snippets_under_a_gitignored_temp_root(monkeypatch, tmp_path):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check = True)
+    (tmp_path / ".gitignore").write_text("*\n", encoding = "utf-8")
+    oxc_tmp = tmp_path / "studio" / "oxc-validator"
+    oxc_tmp.mkdir(parents = True)
+    monkeypatch.setattr(validators, "oxc_validator_tmp_root", lambda: oxc_tmp)
+
+    results = validators._run_oxc_batch(
+        node_lang = "js",
+        validation_mode = "lint",
+        code_shape = "module",
+        code_values = ["debugger;\n", "export const x = 1;\n"],
+    )
+
+    assert [result["code"] for result in results] == ["eslint(no-debugger)", None]
+
+
+@real_oxlint
+def test_oxlint_lints_a_batch_longer_than_one_command_line(monkeypatch, tmp_path):
+    monkeypatch.setattr(validators, "oxc_validator_tmp_root", lambda: tmp_path)
+    codes = ["debugger;\n", "export const x = 1;\n"] * 1500
+
+    results = validators._run_oxc_batch(
+        node_lang = "js",
+        validation_mode = "lint",
+        code_shape = "module",
+        code_values = codes,
+    )
+
+    assert [result["code"] for result in results] == ["eslint(no-debugger)", None] * 1500
