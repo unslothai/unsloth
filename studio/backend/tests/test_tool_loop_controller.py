@@ -182,7 +182,7 @@ def test_successful_duplicate_is_internal_noop_and_keeps_remaining_tools():
     )
     assert "previous tool request" not in duplicate_nudge.lower()
     assert "already completed successfully" in duplicate_nudge
-    assert "different enabled tool" in duplicate_nudge
+    assert "call a different tool only if" in duplicate_nudge
     assert completion.model_message()["role"] == "user"
     _shared_setup_1(controller)
 
@@ -1005,3 +1005,38 @@ def test_a_hard_cap_below_the_window_cap_leaves_truncated_terminal_output_alone(
         controller.prepare_call(_call("terminal", {"command": "yes t"})), already
     )
     assert completion.tool_message()["content"] == already
+
+
+def test_a_read_only_mcp_tool_is_not_new_work_that_licenses_a_rerun():
+    """status, models, status: the second status would read the same state, so it stays a duplicate."""
+    from core.inference import tool_facts
+
+    status, models, generate = (
+        "mcp__unsloth__studio_status",
+        "mcp__unsloth__list_models",
+        "mcp__unsloth__generate_audio",
+    )
+    for name in (status, models):
+        tool_facts.note_mcp_tool(name, {"annotations": {"readOnlyHint": True}})
+    tool_facts.note_mcp_tool(generate, {"annotations": {"readOnlyHint": False}})
+    controller = ToolLoopController(tools = [_tool(status), _tool(models), _tool(generate)])
+
+    controller.record_result(controller.prepare_call(_call(status, {})), '{"chat":{}}')
+    controller.record_result(controller.prepare_call(_call(models, {})), '{"models":[]}')
+    duplicate = controller.prepare_call(_call(status, {}))
+    assert duplicate.action == "duplicate"
+    assert "Answer from the results you have" in duplicate.noop_result
+    assert "Continue with a different enabled tool" not in duplicate.noop_result
+
+    controller.record_result(controller.prepare_call(_call(generate, {"text": "x"})), "Error: x")
+    assert controller.prepare_call(_call(status, {})).action == "execute"
+
+
+def test_a_tool_that_drops_its_read_only_hint_counts_as_work_again():
+    from core.inference import tool_facts
+
+    name = "mcp__docs__lister"
+    tool_facts.note_mcp_tool(name, {"annotations": {"readOnlyHint": True}})
+    assert tool_facts.reads_only(name)
+    tool_facts.note_mcp_tool(name, {"name": "lister"})
+    assert not tool_facts.reads_only(name)

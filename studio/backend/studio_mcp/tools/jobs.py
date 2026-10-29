@@ -16,7 +16,7 @@ from fastmcp.tools import ToolResult
 from pydantic import Field
 
 from studio_mcp import checkpoints as named
-from studio_mcp import export_jobs, loading, model_downloads, video_queue
+from studio_mcp import export_jobs, loading, model_downloads, profile, video_queue
 from studio_mcp.caller import Caller, current_caller
 from studio_mcp.errors import raise_for_route
 from studio_mcp.forward import forward
@@ -369,9 +369,9 @@ async def get_job(
     kind "video": with ``id``, its status and progress, and once completed a thumbnail plus the video's URL; without ``id``, recent video jobs.
     kind "recipe": a data recipe job's status and progress (without ``id``, the current one), and with ``rows`` that many generated rows from ``offset``.
     Unsloth Studio runs one recipe at a time; a recipe job id is not tied to an account.
-    kind "export": an export_model job by its id (without ``id``, this key's export jobs), with its output named relative to Unsloth Studio's exports folder.
-    kind "training" or "diffusion_training": the current run started by start_training (``id`` is its job id), and once completed its run folder and checkpoint names; ``loss_history`` names the list_training_runs call with the full loss curve.
-    kind "load": a load_model call that returned ``status`` "loading", by its ``job_id``; once completed, ``load`` is the load's result with what it unloaded.
+    kind "export": an <<export_model: export_model | export>> job by its id (without ``id``, this key's export jobs), with its output named relative to Unsloth Studio's exports folder.
+    kind "training" or "diffusion_training": the current run<<start_training:  started by start_training>> (``id`` is its job id), and once completed its run folder and checkpoint names; ``loss_history`` names the list_training_runs call with the full loss curve.
+    kind "load": a <<load_model: load_model call | load>> that returned ``status`` "loading", by its ``job_id``; once completed, ``load`` is the load's result with what it unloaded.
     kind "download": a download_model download by the id it returned."""
     caller = current_caller()
     deadline = time.monotonic() + min(wait_s, loading.MAX_WAIT_S)
@@ -444,6 +444,10 @@ def _with_poll_after(kind: str, result: ToolResult, after: float) -> ToolResult:
         return result
     status = JobStatus.model_validate({**structured, "poll_after_s": after})
     return media_result(list(result.content[1:]), status)
+
+
+# A recipe can send host env credentials and host files to the provider endpoint it names.
+FACTS = {"run_recipe": {profile.SENDS_HOST_SECRETS}}
 
 
 async def run_recipe(

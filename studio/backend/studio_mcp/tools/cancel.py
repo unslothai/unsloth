@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from fastmcp.exceptions import ToolError
 
-from studio_mcp import export_jobs, job_store, model_downloads, video_queue
+from studio_mcp import export_jobs, job_store, model_downloads, profile, video_queue
 from studio_mcp.caller import current_caller
 from studio_mcp.outputs import CancelResult
 from studio_mcp.tools import DESTRUCTIVE, EXPORT_STATUS, as_dict, opt_text, route_json
@@ -49,6 +49,9 @@ ROUTES = {
     "audio": ("/api/inference/audio/cancel", "cancel_id"),
     "dataset_download": ("/api/hub/datasets/download/cancel", "repo_id"),
 }
+
+
+FACTS = {"cancel": {profile.STOPS_WORK}}
 
 
 def _message(answer: Any) -> Optional[str]:

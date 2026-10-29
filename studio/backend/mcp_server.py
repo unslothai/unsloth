@@ -6,8 +6,11 @@
 from __future__ import annotations
 
 from fastmcp import FastMCP
+from fastmcp.tools import Tool
 
 from studio_mcp import prompts
+from studio_mcp.profile import AGENT, CHAT, CallerProfile
+from studio_mcp.surface import render, render_schema
 from studio_mcp.tool_access import StudioToolAccess
 from studio_mcp.tools import (
     audio,
@@ -72,28 +75,49 @@ def tool_names() -> tuple[str, ...]:
     return tuple(entry["name"] for entry in tool_catalog())
 
 
-# Never offered to an Unsloth Studio chat: they would evict, restart, cancel or re-enter the chat that calls them.
-# export_model also keeps working after the call returns, past the chat's per-call key, and loads a checkpoint.
-# run_recipe can send host env credentials and host files to a provider endpoint the recipe names.
-CHAT_DENYLIST = frozenset(
-    {"chat", "load_model", "unload_model", "cancel", "start_training", "export_model", "run_recipe"}
-)
+def tool_facts() -> dict[str, frozenset[str]]:
+    """What each tool declares about itself (studio_mcp.profile), for the profiles to choose by."""
+    return {
+        name: frozenset(facts)
+        for module in TOOL_MODULES
+        for name, facts in getattr(module, "FACTS", {}).items()
+    }
 
 
-def create_studio_mcp(exclude: frozenset = frozenset()) -> FastMCP:
-    """Create the Unsloth MCP server and register the high-value tools, minus ``exclude``."""
+def withheld(profile: CallerProfile = CHAT) -> dict[str, str]:
+    """The tools ``profile`` is never offered, each with the reason."""
+    return profile.withheld(tool_facts())
+
+
+def surface(profile: CallerProfile) -> frozenset[str]:
+    return profile.tools(tool_facts(), tool_names())
+
+
+def create_studio_mcp(profile: CallerProfile = AGENT, exclude: frozenset = frozenset()) -> FastMCP:
+    """The Unsloth MCP server as ``profile`` sees it: its tools minus ``exclude``, their text rendered for that surface."""
     mcp = FastMCP("Unsloth Studio", instructions = INSTRUCTIONS)
     mcp.add_middleware(StudioToolAccess())
+    tools = surface(profile) - exclude
 
     for module in TOOL_MODULES:
         for tool, annotations, *schema in module.TOOLS:
-            if tool.__name__ in exclude:
+            if tool.__name__ not in tools:
                 continue
-            mcp.tool(
+            built = Tool.from_function(
                 tool, annotations = annotations, **({"output_schema": schema[0]} if schema else {})
             )
+            mcp.add_tool(
+                built.model_copy(
+                    update = {
+                        "description": render(built.description, tools),
+                        "parameters": render_schema(built.parameters, tools),
+                        "output_schema": render_schema(built.output_schema, tools),
+                    }
+                )
+            )
 
-    for prompt, title in prompts.PROMPTS:
-        mcp.prompt(prompt, title = title)
+    if profile.prompts:
+        for prompt, title in prompts.PROMPTS:
+            mcp.prompt(prompt, title = title)
 
     return mcp

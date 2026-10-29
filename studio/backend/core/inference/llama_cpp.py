@@ -462,7 +462,6 @@ from core.inference.mcp_images import (
     mentions_images as mcp_images_mentioned_in,
 )
 from core.inference.tool_loop_controller import (
-    _WORKSPACE_READ_TOOLS,
     BROWSER_TOOL_NAMES,
     REPEATABLE_TOOL_NAMES,
     TRUNCATED_TOOL_TURN_MESSAGE,
@@ -472,6 +471,7 @@ from core.inference.tool_loop_controller import (
     awaiting_approval_status,
     deferred_nudge_text,
     provisional_tool_provenance,
+    reads_only,
     restore_replayed_tool_results,
     with_appended_text,
     tool_call_limit_nudge,
@@ -38884,7 +38884,7 @@ class LlamaCppBackend:
                             if _key in _seen_keys:
                                 if _novel_kept <= _novel_at_last_keep.get(_key, 0):
                                     continue
-                            elif _fn.get("name") not in _WORKSPACE_READ_TOOLS:
+                            elif not reads_only(_fn.get("name")):
                                 _novel_kept += 1
                             _novel_at_last_keep[_key] = _novel_kept
                             _last_workspace_key = _key

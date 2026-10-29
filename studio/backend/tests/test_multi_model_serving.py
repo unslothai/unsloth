@@ -480,6 +480,47 @@ def test_a_model_that_fits_nowhere_beside_the_others_replaces_the_active_one(bac
     assert primary.model_identifier == "org/C-GGUF" and primary.is_loaded
 
 
+BESIDE_ONLY = AccountContext(
+    "owner", "unsloth", "owner", via_api_key = True, load_policy = "beside_only"
+)
+
+
+def test_a_beside_only_load_that_fits_nowhere_beside_unloads_nothing(backends, monkeypatch):
+    primary, extra = backends
+    extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
+    monkeypatch.setattr(multi_model_settings, "get_multi_model_mode", lambda: "fit")
+    _gated_load_fakes(monkeypatch, short_fits = [1, 1])
+    request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
+    with pytest.raises(HTTPException) as exc:
+        gated = inf.load_model_gated(request, None, "s", background = True)
+        run_as(BESIDE_ONLY, asyncio.run, gated)
+    assert exc.value.status_code == 403
+    assert exc.value.headers["X-Unsloth-Problem"].startswith("needs_user_load kind=llm")
+    # When they fit would have evicted B and then replaced A; both stay.
+    assert model_slots.slots == [extra] and extra.llama.is_active
+    assert primary.model_identifier == "org/A-GGUF" and primary.is_loaded
+
+
+def test_a_beside_only_load_that_fits_beside_keeps_every_model(backends, monkeypatch):
+    primary, extra = backends
+    monkeypatch.setattr(multi_model_settings, "get_multi_model_mode", lambda: "fit")
+    _gated_load_fakes(monkeypatch, short_fits = [])
+    request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
+    assert run_as(BESIDE_ONLY, asyncio.run, inf.load_model_gated(request, None, "s")) == "loaded"
+    assert primary.model_identifier == "org/A-GGUF" and extra.llama.is_active
+    assert model_slots.slots[-1].llama.model_identifier == "org/C-GGUF"
+
+
+def test_a_beside_only_load_never_replaces_the_primary(backends, monkeypatch):
+    primary, _extra = backends
+    _gated_load_fakes(monkeypatch, short_fits = [])
+    request = LoadRequest(model_path = "org/C-GGUF")
+    with pytest.raises(HTTPException) as exc:
+        run_as(BESIDE_ONLY, asyncio.run, inf.load_model_gated(request, None, "s"))
+    assert exc.value.status_code == 403
+    assert primary.model_identifier == "org/A-GGUF" and primary.is_loaded
+
+
 def _short_load_fakes(monkeypatch, errors):
     monkeypatch.setattr(inf, "release_chat_gpu_claim", lambda: None)
     seen = []

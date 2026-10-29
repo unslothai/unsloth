@@ -29,6 +29,8 @@ class AccountContext:
     credential_gen: Optional[str] = field(default = None, compare = False, repr = False)
     # An sk-unsloth key or keyless API access admitted the request, not a UI session; not part of identity.
     via_api_key: bool = field(default = False, compare = False)
+    # core.inference.load_policy.LoadPolicy value the credential allows; not part of identity.
+    load_policy: str = field(default = "any", compare = False)
 
     @property
     def is_owner(self) -> bool:

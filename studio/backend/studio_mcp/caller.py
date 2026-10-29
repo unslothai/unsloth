@@ -9,6 +9,8 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from studio_mcp.profile import AGENT, CallerProfile
+
 STATE_KEY = "unsloth_mcp"
 
 
@@ -23,8 +25,16 @@ class Caller:
     # The outer Studio app, so forwarded calls never need to import main.
     studio_app: Any = field(repr = False)
     hf_token: Optional[str] = field(default = None, repr = False)
-    # The token ends with this tool call (the chat bridge's per-call key), so nothing may keep it for later work.
-    call_scoped: bool = False
+    # Who the call answers to: an agent on /mcp, or a chat turn through the bridge.
+    profile: CallerProfile = AGENT
+
+    @property
+    def call_scoped(self) -> bool:
+        return self.profile.call_scoped
+
+    @property
+    def reads_host_files(self) -> bool:
+        return self.direct_local and self.profile.host_files
 
 
 def caller_from_scope(scope: dict) -> Optional[Caller]:
@@ -33,18 +43,6 @@ def caller_from_scope(scope: dict) -> Optional[Caller]:
 
 
 _bound: ContextVar[Optional[Caller]] = ContextVar("unsloth_mcp_bound_caller", default = None)
-
-
-CHAT_TOOLS_SWITCH_REFUSED = (
-    "An Unsloth chat tool cannot load or switch models: it would replace the model serving this chat. "
-    "Leave model unset to use the loaded one, or load the model from the Unsloth UI first."
-)
-
-
-def chat_tools_call() -> bool:
-    """True inside a call from the chat's Unsloth tools bridge (never for an /mcp request)."""
-    caller = _bound.get()
-    return caller is not None and caller.call_scoped
 
 
 def bind_caller(caller: Caller) -> Token:

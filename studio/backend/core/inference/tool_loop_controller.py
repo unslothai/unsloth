@@ -18,6 +18,7 @@ from core.inference.browser_agent import BROWSER_TOOL_NAMES
 from core.inference.llama_tool_schema import unrelaxed
 from core.inference.mcp_images import is_image_tool, split_images as split_mcp_images
 from core.inference.media_chat_tools import MEDIA_CHAT_TOOLS
+from core.inference.tool_facts import REPEATABLE, reads_only
 
 # Provenance the envelope is trusted on; stamped by mcp_client.
 MCP_TOOL_PREFIX = "mcp__"
@@ -26,7 +27,7 @@ MCP_TOOL_SEARCH_NAME = "mcp_tool_search"
 from core.inference.tool_call_parser import TOOL_ERROR_NUDGE, TOOL_ERROR_PREFIXES
 
 # Never deduplicated: an identical call is new work (the page as it is now, another render).
-REPEATABLE_TOOL_NAMES = BROWSER_TOOL_NAMES | MEDIA_CHAT_TOOLS
+REPEATABLE_TOOL_NAMES = REPEATABLE
 
 
 _CANONICAL_HEAL_ARG = {
@@ -1000,9 +1001,7 @@ _MCP_TOOL_PREFIX = "mcp__"
 # than the card the user is looking at.
 _IMAGE_SENTINEL_TOOLS = _SANDBOX_TOOLS | {"code_execution", "generate_image"}
 _SOURCE_MAP_TOOLS = frozenset({"search_knowledge_base", "search_conversation"})
-# Invalidated by workspace writes, but reading an image is not new work that licenses a rerun.
-_WORKSPACE_READ_TOOLS = frozenset({"view_image"})
-_WORKSPACE_TOOLS = _SANDBOX_TOOLS | {"edit_file"} | _WORKSPACE_READ_TOOLS
+_WORKSPACE_TOOLS = _SANDBOX_TOOLS | {"edit_file", "view_image"}
 
 
 def _reruns_after_new_work(tool_name: Any) -> bool:
@@ -1121,10 +1120,9 @@ def _noop_result(reason: NoopReason, tool_name: str) -> str:
         return (
             f"One earlier request to call tool '{tool_name}' in this batch was "
             "not executed because an identical call had already completed "
-            "successfully. Do not repeat the same "
-            "tool call. Continue with a different enabled tool if that would "
-            "materially help, or provide the final answer if you have enough "
-            "information."
+            "successfully and nothing has changed since, so its result above still holds. "
+            "Do not repeat the same tool call. Answer from the results you have; call a "
+            "different tool only if it would return information you do not have yet."
         )
     if reason == "render_html_repeat":
         return (
@@ -1318,10 +1316,7 @@ class ToolLoopController:
         # otherwise apply the edit twice. Here as well as in the prefilters, which a
         # structured batch skips. A failed command can still have written, so it counts too.
         if _reruns_after_new_work(decision.tool_name):
-            if (
-                decision.tool_name not in _WORKSPACE_READ_TOOLS
-                and decision.key not in self._workspace_ran
-            ):
+            if not reads_only(decision.tool_name) and decision.key not in self._workspace_ran:
                 self._workspace_ran.add(decision.key)
                 self._workspace_novel += 1
             stale = {

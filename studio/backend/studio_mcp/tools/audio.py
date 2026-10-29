@@ -10,7 +10,6 @@ import base64
 import binascii
 import time
 import uuid
-from dataclasses import dataclass
 from typing import Annotated, Any, Literal, Optional
 
 from fastmcp import Context
@@ -19,6 +18,7 @@ from fastmcp.tools import ToolResult
 from pydantic import Field
 
 from studio_mcp import loading
+from studio_mcp.audio_runs import _CANCELLED, _RUNS, _Run, _forget_old_cancels, stop_run  # noqa: F401
 from studio_mcp.caller import Caller, current_caller
 from studio_mcp.errors import raise_for_audio, raise_for_route
 from studio_mcp.forward import forward, ndjson_last
@@ -43,8 +43,6 @@ from studio_mcp.outputs import (
 from studio_mcp.progress import with_heartbeat
 from studio_mcp.tools import WRITES, opt_text, present, route_json, strings, try_json
 
-LOAD_AUDIO_HINT = "Load a text-to-speech or music model with load_model(kind='tts') first."
-NOT_LOADED = "No model loaded"
 # 16-bit samples; channels are not reported, so mono is assumed and a stereo clip may still be fetched and then linked.
 _WAV_BYTES_PER_SAMPLE = 2
 
@@ -103,40 +101,9 @@ async def _checked_options(
     return checked
 
 
-@dataclass
-class _Run:
-    cancelled: bool = False
-    in_flight: bool = False
-
-
-# generate_audio runs by (account, cancel_id), and ids cancelled lately; the route keeps an early
-# cancel as long, so a reused id would be stopped on arrival.
-_RUNS: dict[tuple[str, str], _Run] = {}
-_CANCELLED: dict[tuple[str, str], float] = {}
-CANCEL_MEMORY_S = 30.0
-
-
-def _forget_old_cancels() -> None:
-    cutoff = time.monotonic() - CANCEL_MEMORY_S
-    for key in [key for key, at in _CANCELLED.items() if at < cutoff]:
-        del _CANCELLED[key]
-
-
-def stop_run(account: str, cancel_id: str) -> Optional[bool]:
-    """Mark run ``cancel_id`` cancelled: None when no generate_audio run here has that id, True when it stops between takes, False when a take is running and the route must stop it."""
-    _forget_old_cancels()
-    _CANCELLED[(account, cancel_id)] = time.monotonic()
-    run = _RUNS.get((account, cancel_id))
-    if run is None:
-        return None
-    run.cancelled = True
-    return not run.in_flight
-
-
 async def _post_run(caller: Caller, body: dict[str, Any]) -> Any:
     response = await forward(caller, "POST", "/v1/audio/run", json_body = body)
-    named = response.status_code == 400 and NOT_LOADED in response.text
-    return raise_for_audio(response, hints = {400: LOAD_AUDIO_HINT} if named else None)
+    return raise_for_audio(response)
 
 
 async def _takes_how(caller: Caller, body: dict[str, Any]) -> Optional[str]:
@@ -266,8 +233,8 @@ async def generate_audio(
             min_length = 8,
             max_length = 64,
             pattern = r"^[A-Za-z0-9_-]+$",
-            description = "Your id for this run, so cancel(kind='audio', id=...) can stop it from "
-            "another call; made when omitted and returned as cancel_id.",
+            description = "Your id for this run<<cancel: , so cancel(kind='audio', id=...) can stop it from "
+            "another call>>; made when omitted and returned as cancel_id.",
         ),
     ] = None,
     edit: Optional[dict[str, Any]] = None,

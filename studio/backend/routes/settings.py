@@ -4528,7 +4528,9 @@ def _require_ui_session_for_mcp(via_api_key: bool = Depends(authenticated_via_ap
 
 
 def _mcp_access_response(request: Request) -> McpAccessResponse:
-    from mcp_server import CHAT_DENYLIST, tool_catalog
+    from mcp_server import tool_catalog, withheld
+
+    from_chat = withheld()
 
     record = mcp_owner_record()
     tools = None
@@ -4538,7 +4540,7 @@ def _mcp_access_response(request: Request) -> McpAccessResponse:
             McpToolSetting(
                 **entry,
                 enabled = disabled is not None and entry["name"] not in disabled,
-                chat = entry["name"] not in CHAT_DENYLIST,
+                chat = entry["name"] not in from_chat,
             )
             for entry in tool_catalog()
         ]

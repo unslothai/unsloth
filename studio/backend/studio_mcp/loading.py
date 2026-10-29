@@ -13,12 +13,12 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 from fastmcp import Context
 from fastmcp.exceptions import ToolError
 
+from core.inference import model_identity
 from studio_mcp import job_store
 from studio_mcp import placement as place
 from studio_mcp.caller import Caller
@@ -113,34 +113,13 @@ def deadline_after(wait_s: Optional[float]) -> float:
     return time.monotonic() + wait
 
 
-def _is_path(name: str) -> bool:
-    if name.startswith(("/", "~", ".")) or "\\" in name or name[1:3] in (":/", ":\\"):
-        return True
-    # A relative path (models/Foo.gguf) reads like a Hub id; one that exists on disk is a path.
-    try:
-        return Path(name).expanduser().exists()
-    except (OSError, ValueError):
-        return False
-
-
 def _same(left: Optional[str], right: Optional[str]) -> bool:
-    # Hub ids match in any case; a local path keeps the file system's case.
-    if not left or not right:
-        return False
-    return left == right if _is_path(left) or _is_path(right) else left.lower() == right.lower()
-
-
-def _repo(name: str) -> str:
-    # A GGUF is listed as repo:variant in one place and the bare repo in another. A local path
-    # (C:\models\a.gguf) has a drive letter there, not a variant, and a ref: handle is one opaque id.
-    if name.startswith("ref:"):
-        return name
-    head, sep, tail = name.partition(":")
-    return head if sep and len(head) > 1 and "/" not in tail and "\\" not in tail else name
+    # A relative path that exists on disk keeps its case, as the loaders read it.
+    return model_identity.same_model(left, right, probe = True)
 
 
 def _same_id(left: str, right: str) -> bool:
-    return _same(left, right) or _same(_repo(left), _repo(right))
+    return model_identity.same_repo(left, right, probe = True)
 
 
 def _in_flight(caller: Caller, asked: LoadJob) -> Optional[LoadJob]:
@@ -148,7 +127,7 @@ def _in_flight(caller: Caller, asked: LoadJob) -> Optional[LoadJob]:
         if (
             job.slot == asked.slot
             and _same(job.model, asked.model)
-            and (job.variant or "").lower() == (asked.variant or "").lower()
+            and model_identity.same_variant(job.variant, asked.variant)
             and job.options == asked.options
         ):
             return job
@@ -357,7 +336,7 @@ def _llm_poll(caller: Caller, model: str) -> Callable[[], Awaitable[Progress]]:
         fraction = number(loading.get("fraction")) if isinstance(loading, dict) else None
         if fraction and opt_text(loading.get("phase")):
             return min(fraction, 1.0), f"Loading into memory ({loading['phase']})"
-        if model.startswith(("/", "\\", "ref:")) or ":" in model[:3]:
+        if model_identity.is_local(model):
             return None
         download = await route_json(
             "GET",
@@ -566,6 +545,7 @@ def _resident_matches(
     if not isinstance(status, dict) or status.get("loaded") is not True:
         return False
     names = {opt_text(status.get("repo_id")), opt_text(status.get("display_repo_id"))}
+    # Any case, paths too: status may spell the resident path differently from the request.
     if model.lower() not in {name.lower() for name in names if name}:
         return False
     # Another file of the same repo is another model: a missing field reads as not loaded yet.
@@ -578,16 +558,13 @@ def _resident_matches(
     resident = opt_text(status.get("gguf_filename"))
     if resident:
         return os.path.normcase(resident) == os.path.normcase(wanted)
-    from hub.utils.gguf import extract_quant_token, quant_token_with_bpw
-
     # Video status names only a GGUF's quant; a plain checkpoint has none to compare.
-    quant = extract_quant_token(wanted) if wanted.lower().endswith(".gguf") else None
-    if not quant:
+    quant = model_identity.resident_quant_matches(
+        opt_text(status.get("gguf_variant")), wanted, settled = settled
+    )
+    if quant is None:
         return True
-    if (opt_text(status.get("gguf_variant")) or "").lower() != quant.lower():
-        return False
-    # Status drops a -3.97bpw style suffix, so until the load reports ready a sibling build matches too.
-    if not settled and quant_token_with_bpw(wanted) != quant:
+    if not quant:
         return False
     # MiniMax-H3 ships its fl2va and ref2va partitions at the same quant; status names the one loaded.
     h3_task = opt_text(status.get("h3_task"))

@@ -111,6 +111,7 @@ from utils.account_context import (
 )
 from utils.current_date_prompt_settings import strip_current_date_update_note
 from utils import sandbox_memory_limit, tool_result_limit
+from core.inference import tool_facts
 from core.inference.tool_confinement import ToolConfinementUnavailable, account_confinement
 from pathlib import Path
 from utils.paths.storage_roots import RetiredAccountError, ensure_dir
@@ -13026,6 +13027,7 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
             logger.warning("Skipping duplicate MCP tool '%s' on '%s'.", raw_name, display)
             continue
         seen_names.add(name)
+        tool_facts.note_mcp_tool(name, tool)
         description = tool.get("description") or ""
         if name.split("__", 2)[2] != raw_name:
             _MCP_TOOL_ALIASES[name] = raw_name

@@ -372,7 +372,8 @@ async def _gated_start_load(
                             openai_errors = openai_errors,
                             code = "multi_model_always",
                         )
-                        refusal.headers = dict(MULTI_MODEL_REFUSAL_HEADERS)
+                        # The arbiter's code header names the kind it would unload.
+                        refusal.headers = dict(exc.headers or MULTI_MODEL_REFUSAL_HEADERS)
                         raise refusal from exc
                     raise
             return False
@@ -447,15 +448,12 @@ async def maybe_auto_switch_media_model(
     if satisfied_by(await asyncio.to_thread(backend_for(owner).status), name, pick):
         return
 
-    from studio_mcp.caller import CHAT_TOOLS_SWITCH_REFUSED, chat_tools_call
+    from core.inference.ensure_model import ensure_media_load
 
-    if chat_tools_call():
-        raise refuse(
-            CHAT_TOOLS_SWITCH_REFUSED,
-            status_code = 403,
-            openai_errors = openai_errors,
-            code = "model_switch_refused",
-        )
+    # Before before_switch and the locks: a refused switch must not touch anything.
+    await asyncio.to_thread(
+        functools.partial(ensure_media_load, owner, kind, name, openai_errors = openai_errors)
+    )
 
     if before_switch is not None:
         await bounded(

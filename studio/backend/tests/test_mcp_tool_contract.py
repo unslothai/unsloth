@@ -8,7 +8,9 @@ from typing import Optional
 import pytest
 from fastapi.responses import JSONResponse
 
-from studio_mcp.errors import ACTIVE_GENERATIONS_HINT
+from mcp_server import surface
+from studio_mcp import problems
+from studio_mcp.profile import AGENT
 from studio_mcp.inputs import PATH_REMOTE
 from studio_mcp.outputs import RouteText, ToolOutput, Usage
 
@@ -152,14 +154,26 @@ ACTIVE_GENERATIONS = {
     "thread_ids": ["thread-a", "thread-b"],
 }
 STT_LOAD = ("POST", "/api/inference/audio/stt/load")
+ACTIVE_GENERATIONS_HINT = problems.wait_hint(surface(AGENT))
+
+
+def _not_loaded(kind):
+    return {"X-Unsloth-Problem": f"not_loaded kind={kind}"}
+
 
 # (tool, args, the studio's routes, then the whole message or (check, text) pairs).
 ROUTE_ERRORS = [
     (
         "chat",
         {"prompt": "hi"},
-        {CHAT: openai_error("No model loaded. Call POST /inference/load first.", 400)},
-        ("starts", "[not_loaded kind=chat] No model loaded. (HTTP 400) "),
+        {
+            CHAT: openai_error(
+                "No model loaded. Call POST /inference/load first.",
+                400,
+                headers = _not_loaded("llm"),
+            )
+        },
+        ("starts", "[not_loaded kind=llm] No model loaded. (HTTP 400) "),
         ("ends", "Load a chat model with load_model first; list_models shows the downloaded ones."),
     ),
     (
@@ -206,7 +220,11 @@ ROUTE_ERRORS = [
     (
         "generate_audio",
         {"workflow": "speak", "text": "Hi"},
-        {("POST", "/v1/audio/run"): openai_error("No model loaded.", 400)},
+        {
+            ("POST", "/v1/audio/run"): openai_error(
+                "No model loaded.", 400, headers = _not_loaded("audio")
+            )
+        },
         ("starts", "[not_loaded kind=audio] "),
         (
             "ends",
@@ -246,7 +264,11 @@ ROUTE_ERRORS = [
     (
         "generate_video",
         {"prompt": "waves"},
-        {("POST", "/v1/videos"): openai_error("No video model is loaded.", 503)},
+        {
+            ("POST", "/v1/videos"): openai_error(
+                "No video model is loaded.", 503, headers = _not_loaded("video")
+            )
+        },
         ("starts", "[not_loaded kind=video] "),
         (
             "ends",
@@ -257,7 +279,7 @@ ROUTE_ERRORS = [
     (
         "generate_image",
         {"prompt": "x"},
-        {IMAGES: _detail("No diffusion model is loaded.", 409)},
+        {IMAGES: _detail("No diffusion model is loaded.", 409, **_not_loaded("image"))},
         ("starts", "[not_loaded kind=image] "),
         (
             "ends",

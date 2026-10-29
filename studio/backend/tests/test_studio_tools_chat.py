@@ -22,7 +22,10 @@ from auth.authentication import get_current_subject
 from auth.policy import OwnerOnly
 from core.inference import mcp_client, media_chat_tools, studio_tools_mcp
 from core.inference import tools as tools_mod
-from mcp_server import CHAT_DENYLIST, create_studio_mcp
+from mcp_server import create_studio_mcp, withheld
+from studio_mcp.profile import CHAT
+
+CHAT_WITHHELD = frozenset(withheld())
 from storage import mcp_servers_db
 from studio_mcp import caller as caller_mod
 from studio_mcp import forward as forward_mod
@@ -179,20 +182,21 @@ def test_the_frontend_preset_uses_the_same_url():
     assert f'export const UNSLOTH_STUDIO_TOOLS_MCP_URL = "{URL}";' in source.read_text("utf-8")
 
 
-def test_the_chat_instance_drops_exactly_the_denylist_and_mcp_keeps_every_tool():
+def test_the_chat_instance_drops_exactly_the_withheld_tools_and_mcp_keeps_every_tool():
     everything = [tool.name for tool in asyncio.run(create_studio_mcp().list_tools())]
     chat = [tool.name for tool in asyncio.run(studio_tools_mcp.chat_tools_mcp().list_tools())]
-    assert CHAT_DENYLIST == {
+    assert CHAT_WITHHELD == {
         "chat",
         "load_model",
         "unload_model",
+        "plan_load",
         "cancel",
         "start_training",
         "export_model",
         "run_recipe",
     }
-    assert CHAT_DENYLIST <= set(everything)
-    assert chat == [name for name in everything if name not in CHAT_DENYLIST]
+    assert CHAT_WITHHELD <= set(everything)
+    assert chat == [name for name in everything if name not in CHAT_WITHHELD]
     assert studio_tools_mcp.chat_tools_mcp() is studio_tools_mcp.chat_tools_mcp()
 
 
@@ -205,8 +209,8 @@ def test_the_chat_lists_only_chat_tools_under_the_row_id(studio_home, accounts, 
     raw = [name.removeprefix(prefix) for name in names]
     assert all(name.startswith(prefix) for name in names)
     assert "list_models" in raw and "studio_status" in raw
-    assert not CHAT_DENYLIST & set(raw)
-    assert len(raw) == len(asyncio.run(create_studio_mcp().list_tools())) - len(CHAT_DENYLIST)
+    assert not CHAT_WITHHELD & set(raw)
+    assert len(raw) == len(asyncio.run(create_studio_mcp().list_tools())) - len(CHAT_WITHHELD)
 
 
 def test_without_the_row_nothing_is_listed_or_probed(studio_home, accounts, monkeypatch):
@@ -227,7 +231,7 @@ def test_the_row_is_relisted_every_send_so_a_tool_turned_off_drops_out_without_e
     add_row(OWNER)
     first = [tool["function"]["name"] for tool in listed(OWNER)]
     assert any(name.endswith("__list_models") for name in first)
-    narrower = create_studio_mcp(exclude = CHAT_DENYLIST | {"list_models"})
+    narrower = create_studio_mcp(CHAT, exclude = frozenset({"list_models"}))
     monkeypatch.setattr(studio_tools_mcp, "_mcp", narrower)
     second = [tool["function"]["name"] for tool in listed(OWNER)]
     assert not any(name.endswith("__list_models") for name in second)
@@ -255,7 +259,7 @@ def test_an_owner_disabled_tool_is_unlisted_and_refused(
     assert "qwen-lora" in bridge(accounts.alice, "list_training_runs")
 
 
-@pytest.mark.parametrize("name", sorted(CHAT_DENYLIST))
+@pytest.mark.parametrize("name", sorted(CHAT_WITHHELD))
 def test_a_denylisted_tool_is_unknown_and_never_forwarded(
     studio_home, accounts, server_loop, monkeypatch, name
 ):
@@ -478,6 +482,33 @@ def test_route_host_paths_do_not_reach_the_chat(studio_home, accounts, server_lo
     result = bridge(OWNER, "list_training_runs", {"run_id": "run-1", "include_checkpoints": True})
     assert "qwen-lora" in result
     assert not any(root in result for root in SENTINEL_ROOTS), result
+
+
+MUSIC = "audio-cpp/audio.cpp-gguf/Stable-Audio-3-Small-Music-GGUF"
+
+
+def test_a_chat_tool_loads_only_beside_and_is_told_to_ask_the_user(
+    studio_home, accounts, server_loop, monkeypatch
+):
+    from core.inference.load_policy import current_load_policy
+
+    policies = []
+
+    def not_loaded(_request):
+        # What the route decides from the credential the real auth dependency admitted.
+        policies.append(current_load_policy().value)
+        return JSONResponse(
+            {"error": {"message": "Load a music model first.", "type": "x", "code": None}},
+            status_code = 400,
+            headers = {"X-Unsloth-Problem": f"not_loaded kind=audio model={MUSIC} page=Audio"},
+        )
+
+    studio(monkeypatch, {("POST", "/v1/audio/run"): not_loaded})
+    result = bridge(OWNER, "generate_audio", {"workflow": "music", "text": "lofi", "model": MUSIC})
+    assert policies == ["beside_only"]
+    assert "[not_loaded kind=audio]" in result, result
+    assert "load_model" not in result and "unload_model" not in result
+    assert "on the Audio page in Unsloth Studio" in result
 
 
 def test_after_a_call_no_caller_is_left_bound(studio_home, accounts, server_loop, monkeypatch):
@@ -865,3 +896,28 @@ def test_the_middleware_hands_each_request_its_root_path():
     with TestClient(inner) as http:
         assert http.get("/seen").text == ""
     assert studio_tools_mcp._root_path.get() == ""
+
+
+def test_chat_results_drop_the_null_fields_the_model_would_pay_for(
+    studio_home, accounts, server_loop, monkeypatch
+):
+    studio(monkeypatch, RUN_PAYLOADS)
+    result = bridge(OWNER, "list_training_runs", timeout = None)
+    assert "qwen-lora" in result and not result.startswith("Error"), result
+    assert ":null" not in result and ": null" not in result, result
+
+
+def test_dropping_nulls_keeps_empty_lists_false_and_zero():
+    from mcp.types import TextContent
+
+    result = SimpleNamespace(
+        content = [
+            TextContent(type = "text", text = '{"a":null,"b":[],"c":false,"d":0,"e":[{"f":null}]}'),
+            TextContent(type = "text", text = "not json {"),
+        ],
+        structured_content = {"a": None, "b": {"c": None, "d": 1}},
+    )
+    studio_tools_mcp._without_nulls(result)
+    assert result.content[0].text == '{"b":[],"c":false,"d":0,"e":[{}]}'
+    assert result.content[1].text == "not json {"
+    assert result.structured_content == {"b": {"d": 1}}

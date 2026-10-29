@@ -64,7 +64,7 @@ def sniff_image(data: bytes) -> Optional[str]:
 
 def read_local(caller: Caller, path: str, max_bytes: int) -> bytes:
     """A file named by the agent, read only for a caller on this computer and only when within ``max_bytes``."""
-    if not caller.direct_local:
+    if not caller.reads_host_files:
         raise ToolError(PATH_REMOTE)
     file = Path(path).expanduser()
     try:

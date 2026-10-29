@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from studio_mcp import video_queue
+from studio_mcp.profile import CHAT
 
 from .mcp_harness import call_tool, fake_studio, make_caller, openai_error, run_tool, served
 
@@ -226,7 +227,14 @@ def test_a_settled_record_drops_its_request_and_caller(monkeypatch):
     [
         (MODEL_CHANGED, "[model_changed] The requested video model changed"),
         (GPU_BUSY, "GPU busy: Another account is generating. Retry after 0 s."),
-        (openai_error("No video model is loaded.", 503), "Load a video model with load_model"),
+        (
+            openai_error(
+                "No video model is loaded.",
+                503,
+                headers = {"X-Unsloth-Problem": "not_loaded kind=video"},
+            ),
+            "Load a video model with load_model",
+        ),
     ],
 )
 def test_other_refusals_raise_as_before_and_queue_nothing(monkeypatch, answer, text):
@@ -385,7 +393,7 @@ def test_a_call_scoped_caller_is_told_to_retry_instead_of_queued():
     # The chat bridge's key is revoked when its call returns, so a clip queued for later would fail with 401.
     fake = OneVideoStudio()
     agent = make_caller(studio_app = fake.app)
-    chat = make_caller(studio_app = fake.app, call_scoped = True)
+    chat = make_caller(studio_app = fake.app, profile = CHAT)
 
     async def run():
         first = await video_queue.post_or_queue(agent, {"prompt": "A"})

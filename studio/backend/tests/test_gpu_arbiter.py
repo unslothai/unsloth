@@ -847,7 +847,10 @@ def test_always_refuses_instead_of_evicting(arb_log, monkeypatch, resident, owne
     assert arb.residents() == {resident: None}
 
     http = excinfo.value.as_http_exception("/api/inference/load")
-    assert http.status_code == 409 and http.headers == {"X-Unsloth-Refusal": "multi-model-always"}
+    assert http.status_code == 409 and http.headers == {
+        "X-Unsloth-Refusal": "multi-model-always",
+        "X-Unsloth-Problem": f"multi_model_always kind={kind}",
+    }
     assert isinstance(http.detail, str) and "is set to Always" in http.detail
     v1 = excinfo.value.as_http_exception("/v1/chat/completions")
     assert v1.status_code == 409 and v1.detail["error"]["code"] == "multi_model_always"

@@ -14,6 +14,7 @@ from fastmcp.exceptions import ToolError
 from fastmcp.tools import ToolResult
 from pydantic import Field
 
+from studio_mcp import profile
 from studio_mcp import loading, model_downloads, placement, trained_models
 from studio_mcp.caller import current_caller
 from studio_mcp.media import media_result
@@ -288,14 +289,14 @@ async def list_models(
     ] = "local",
 ) -> ModelList:
     """Models this Unsloth Studio can serve: loaded ones and those already downloaded.
-    Each entry has the id to pass to load_model, its kind and whether it is loaded.
-    ``kind`` is read from the model's task; a model with no task is reported as "llm", which also covers embedding models and unloaded text-to-speech models Unsloth Studio cannot classify yet, so pass the kind explicitly to load_model.
+    Each entry has the id to pass <<load_model: to load_model | as a generate tool's ``model``>>, its kind and whether it is loaded.
+    ``kind`` is read from the model's task; a model with no task is reported as "llm", which also covers embedding models and unloaded text-to-speech models Unsloth Studio cannot classify yet, <<load_model: , so pass the kind explicitly to load_model>>.
     ``loaded_only`` returns just the resident models.
     ``model`` narrows the list to that model (empty when it is not downloaded yet) and adds Unsloth Studio's training defaults for it, which also works for a Hugging Face repo id that is not downloaded (send X-Unsloth-HF-Token for a gated repo).
     ``workflow`` keeps only audio models that run that Unsloth Studio Audio page (their ``audio_workflows``), such as the ids to pass to generate_audio as ``model``.
     With source="catalog" it lists image, video and audio models Unsloth Studio can download, with size_bytes (decimal), low_vram and fits_now (whether it fits in the free memory of one GPU right now; null when unknown).
     LLM rows are not in the catalog: list downloaded LLMs with the default source, or load a Hugging Face id.
-    Load a catalog row with load_model(model=id, kind=its kind).
+    <<load_model: Load a catalog row with load_model(model=id, kind=its kind).>>
     """
     if source == "catalog":
         models = await _catalog(kind, loaded_only, workflow)
@@ -560,13 +561,13 @@ async def download_model(
     h3_task: H3Task = None,
     ctx: Optional[Context] = None,
 ) -> DownloadRef:
-    """Download a model ahead of time without loading it, so a later load_model starts sooner.
+    """Download a model ahead of time without loading it, so a later load starts sooner.
     The download keeps running in Unsloth Studio's download manager after this returns.
-    ``kind`` is the kind load_model takes: "llm", "tts" and "audio" fetch the repo (for a GGUF repo only ``variant``, by default the recommended one), "image" and "video" the files their load reads, and "stt" a speech-to-text model.
-    Follow it with get_job(kind="download", id=<the returned id>) and stop it with cancel(kind="model_download", id=<the same id>).
+    ``kind`` is the kind <<load_model: load_model takes | list_models reports>>: "llm", "tts" and "audio" fetch the repo (for a GGUF repo only ``variant``, by default the recommended one), "image" and "video" the files their load reads, and "stt" a speech-to-text model.
+    Follow it with get_job(kind="download", id=<the returned id>)<<cancel:  and stop it with cancel(kind="model_download", id=<the same id>)>>.
     A speech-to-text download finishes before this returns, so it has no id.
-    load_model waits for a running download of the same model.
-    ``hf_token`` is for gated repos. For image and video, pass the options the later load_model will take: they pick the files it reads, such as a pre-cast text encoder."""
+    <<load_model: load_model waits for a running download of the same model.>>
+    ``hf_token`` is for gated repos. For image and video, pass the options the later load will take: they pick the files it reads, such as a pre-cast text encoder."""
     knobs = placement.media_knobs(
         kind,
         memory_mode = memory_mode,
@@ -585,6 +586,12 @@ async def download_model(
         knobs = knobs,
     )
 
+
+FACTS = {
+    "load_model": {profile.SWAPS_MODELS},
+    "unload_model": {profile.SWAPS_MODELS},
+    "plan_load": {profile.PREVIEWS_SWAPS},
+}
 
 TOOLS = (
     (list_models, READ_ONLY),

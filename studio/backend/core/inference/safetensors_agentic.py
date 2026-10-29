@@ -62,7 +62,6 @@ from core.inference.mcp_images import (
     trim_image_turns,
 )
 from core.inference.tool_loop_controller import (
-    _WORKSPACE_READ_TOOLS,
     BROWSER_TOOL_NAMES,
     REPEATABLE_TOOL_NAMES,
     TRUNCATED_TOOL_TURN_MESSAGE,
@@ -71,6 +70,7 @@ from core.inference.tool_loop_controller import (
     append_deferred_nudges,
     awaiting_approval_status,
     coerce_tool_arguments,
+    reads_only,
     restore_replayed_tool_results,
     with_appended_text,
     status_for_tool,
@@ -1345,7 +1345,7 @@ def run_safetensors_tool_loop(
                     if _key in seen_keys:
                         if novel_kept <= novel_at_last_keep.get(_key, 0):
                             continue
-                    elif _fn.get("name") not in _WORKSPACE_READ_TOOLS:
+                    elif not reads_only(_fn.get("name")):
                         novel_kept += 1
                     novel_at_last_keep[_key] = novel_kept
                     last_workspace_key = _key

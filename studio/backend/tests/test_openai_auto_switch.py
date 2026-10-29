@@ -4,6 +4,7 @@
 """Opt-in /v1 model auto-switch tests; the backend and load route are mocked, no llama-server."""
 
 import asyncio
+import contextlib
 import json
 import os
 import threading
@@ -293,30 +294,116 @@ def test_already_loaded_does_not_reload(monkeypatch):
     assert rec.calls == []
 
 
-def test_a_chat_tools_call_never_switches_the_loaded_model(monkeypatch):
-    from studio_mcp.caller import Caller, bind_caller, reset_caller
+@contextlib.contextmanager
+def _as_chat_tools_key():
+    """Bound as the auth layer binds a request made with the chat's per-call tools key."""
+    from dataclasses import replace
 
+    from core.inference.load_policy import LoadPolicy
+    from utils.account_context import OWNER, bind_account, reset_account
+
+    token = bind_account(replace(OWNER, via_api_key = True, load_policy = LoadPolicy.BESIDE_ONLY))
+    try:
+        yield
+    finally:
+        reset_account(token)
+
+
+def _problem(exc):
+    return (exc.headers or {}).get("X-Unsloth-Problem")
+
+
+def test_a_chat_tools_key_never_replaces_the_loaded_model(monkeypatch):
+    from utils import multi_model_settings
+
+    monkeypatch.setattr(multi_model_settings, "get_multi_model_enabled", lambda: False)
     backend, rec = _wired(
         monkeypatch, _FakeBackend("unsloth/A-GGUF"), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF")
     )
-    caller = Caller(
-        token = "k",
-        account_id = "owner",
-        direct_local = False,
-        public_base = "",
-        studio_app = None,
-        call_scoped = True,
-    )
-    token = bind_caller(caller)
-    try:
-        with pytest.raises(HTTPException) as excinfo:
-            _run_hook("unsloth/B-GGUF:Q4_K_M")
-    finally:
-        reset_caller(token)
+    with _as_chat_tools_key(), pytest.raises(HTTPException) as excinfo:
+        _run_hook("unsloth/B-GGUF:Q4_K_M")
     assert excinfo.value.status_code == 403 and rec.calls == []
+    assert _problem(excinfo.value) == (
+        "needs_user_load kind=llm model=unsloth/B-GGUF:Q4_K_M page=Chat"
+    )
+    assert "Chat page" in excinfo.value.detail
     assert backend.model_identifier == "unsloth/A-GGUF"
+    # Any other credential still switches, as "Switch model by request" allows.
     _run_hook("unsloth/B-GGUF:Q4_K_M")
     assert len(rec.calls) == 1
+
+
+def _music_beside_text(monkeypatch, mode):
+    """A text model serving chat; a music model on disk; multi-model in ``mode``."""
+    from utils import multi_model_settings
+
+    monkeypatch.setattr(multi_model_settings, "get_multi_model_enabled", lambda: mode != "off")
+    monkeypatch.setattr(multi_model_settings, "get_multi_model_mode", lambda: mode)
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend("unsloth/A-GGUF"), ("org/Music-GGUF", "Q4_K_M", "org/Music-GGUF")
+    )
+    backend.is_active = True
+    backend._is_audio = False
+    monkeypatch.setattr(inference_route, "_llama_cpp_backend", backend)
+    monkeypatch.setattr(inference_route, "_target_speech_audio_type", lambda *_a: "music_type")
+    monkeypatch.setattr(inference_route, "_target_audio_workflows", lambda *_a: {"music"})
+    beside = []
+
+    async def gated(request, *_a, **_kw):
+        beside.append(request.alongside)
+        raise _Reached()
+
+    monkeypatch.setattr(inference_route, "load_model_gated", gated)
+    return backend, rec, beside
+
+
+def _run_music(model = "org/Music-GGUF:Q4_K_M"):
+    _run_hook(model, claim_resident = False, require_speech = True, require_audio_workflow = "music")
+
+
+def test_a_chat_tools_key_loads_a_music_model_beside_the_chat_model(monkeypatch):
+    backend, rec, beside = _music_beside_text(monkeypatch, "always")
+    with _as_chat_tools_key(), pytest.raises(_Reached):
+        _run_music()
+    # Beside, through the gated load, never the replacing one.
+    assert beside == [True] and rec.calls == []
+    assert backend.model_identifier == "unsloth/A-GGUF"
+
+
+def test_a_chat_tools_key_refuses_a_music_model_that_would_replace_the_chat_model(monkeypatch):
+    backend, rec, beside = _music_beside_text(monkeypatch, "off")
+    with _as_chat_tools_key(), pytest.raises(HTTPException) as excinfo:
+        _run_music()
+    assert excinfo.value.status_code == 403
+    assert _problem(excinfo.value) == (
+        "needs_user_load kind=audio model=org/Music-GGUF:Q4_K_M page=Audio"
+    )
+    assert beside == [] and rec.calls == []
+    assert backend.model_identifier == "unsloth/A-GGUF"
+
+
+AUDIO_CPP_MUSIC = "audio-cpp/audio.cpp-gguf/Stable-Audio-3-Small-Music-GGUF"
+
+
+@pytest.mark.parametrize("chat_tools", [False, True])
+def test_switch_off_refuses_an_audio_cpp_model_that_is_not_loaded(monkeypatch, chat_tools):
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None, enabled = False)
+    with (
+        _as_chat_tools_key() if chat_tools else contextlib.nullcontext(),
+        pytest.raises(HTTPException) as excinfo,
+    ):
+        _run_hook(AUDIO_CPP_MUSIC, require_speech = True, require_audio_workflow = "music")
+    assert rec.calls == []
+    if chat_tools:
+        assert excinfo.value.status_code == 403
+        assert _problem(excinfo.value).startswith("needs_user_load kind=audio model=audio-cpp/")
+        return
+    # Not the bare "Load a music model first.": the code, the model and the way out.
+    assert excinfo.value.status_code == 400
+    assert _problem(excinfo.value) == (f"not_loaded kind=audio model={AUDIO_CPP_MUSIC} page=Audio")
+    assert AUDIO_CPP_MUSIC in excinfo.value.detail
+    assert "Switch model by request" in excinfo.value.detail
+    assert "Audio page" in excinfo.value.detail
 
 
 def test_known_unloaded_model_switches_once(monkeypatch):

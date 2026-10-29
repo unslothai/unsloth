@@ -460,6 +460,8 @@ async def _get_current_credential(
     token = credentials.credentials
 
     if token.startswith(API_KEY_PREFIX):
+        from core.inference.load_policy import policy_for_credential
+
         verified = await run_in_threadpool(validate_api_key_account, token)
         if verified is None:
             raise HTTPException(
@@ -476,6 +478,9 @@ async def _get_current_credential(
                 record["role"],
                 credential_gen = generation,
                 via_api_key = True,
+                load_policy = policy_for_credential(
+                    internal = bool(record.get("key_internal")), key_name = record.get("key_name")
+                ).value,
             )
         )
         return record["username"], generation

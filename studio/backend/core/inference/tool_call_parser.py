@@ -113,13 +113,6 @@ TOOL_ERROR_PREFIXES = (
     "No query provided",
 )
 
-DUPLICATE_CALL_NUDGE = (
-    "You already made this exact call. Do not repeat the same tool "
-    "call. Try a different approach: fetch a URL from previous "
-    "results, use Python to process data you already have, or "
-    "provide your final answer now."
-)
-
 RENDER_HTML_REPEAT_NUDGE = (
     "Error: render_html was already called for this response. Do not call "
     "render_html again in this response unless the user asks for changes. "

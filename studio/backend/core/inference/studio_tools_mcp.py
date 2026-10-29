@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The chat's "Unsloth Studio" MCP row: the /mcp tools minus ``CHAT_DENYLIST``, answered in process.
+"""The chat's "Unsloth Studio" MCP row: the /mcp tools the CHAT profile offers, answered in process.
 
 Nothing here passes the /mcp gate, so the owner's Agent access switch does not apply and nothing new listens on
 the network. Each call mints an internal API key for the chat's own account and binds it as the tools' caller, so
@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextvars
+import json
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -73,8 +74,9 @@ def chat_tools_mcp() -> Any:
     global _mcp
     with _mcp_lock:
         if _mcp is None:
-            from mcp_server import CHAT_DENYLIST, create_studio_mcp
-            _mcp = create_studio_mcp(exclude = CHAT_DENYLIST)
+            from mcp_server import create_studio_mcp
+            from studio_mcp.profile import CHAT
+            _mcp = create_studio_mcp(CHAT)
         return _mcp
 
 
@@ -129,6 +131,41 @@ async def _call(
         reset_caller(token)
 
 
+def _drop_nulls(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _drop_nulls(item) for key, item in value.items() if item is not None}
+    if isinstance(value, list):
+        return [_drop_nulls(item) for item in value]
+    return value
+
+
+def _without_nulls(result: Any) -> Any:
+    """The model pays for every ``"x":null`` the typed outputs carry, so its JSON text goes without them."""
+    content = []
+    for block in getattr(result, "content", None) or []:
+        text = getattr(block, "text", None) if getattr(block, "type", None) == "text" else None
+        if isinstance(text, str) and text[:1] in "{[":
+            try:
+                parsed = json.loads(text)
+            except ValueError:
+                parsed = None
+            if isinstance(parsed, (dict, list)):
+                block = block.model_copy(
+                    update = {
+                        "text": json.dumps(
+                            _drop_nulls(parsed), ensure_ascii = False, separators = (",", ":")
+                        )
+                    }
+                )
+        content.append(block)
+    if content:
+        result.content = content
+    structured = getattr(result, "structured_content", None)
+    if isinstance(structured, (dict, list)):
+        result.structured_content = _drop_nulls(structured)
+    return result
+
+
 def _stop(future: Any, ticket: Any) -> None:
     # Cancelling the route alone leaves an image render running on the GPU; stop it and let the route unwind.
     if ticket.stop():
@@ -149,6 +186,7 @@ def call(
     from core.inference.mcp_client import _flatten_result
     from core.inference.media_chat_tools import server_loop
     from studio_mcp.caller import Caller
+    from studio_mcp.profile import CHAT
     from utils.account_context import arun_as, current_account
 
     if cancel_event is not None and cancel_event.is_set():
@@ -180,12 +218,11 @@ def call(
         caller = Caller(
             token = key,
             account_id = account.account_id,
-            # A prompt-injected model must not reach host files, even the owner's.
             direct_local = False,
             public_base = root_path,
             studio_app = app,
             hf_token = None,
-            call_scoped = True,
+            profile = CHAT,
         )
         # Empty context: another request's fastmcp HTTP request on this thread would outrank the bound caller.
         ticket = GenerationTicket()
@@ -210,7 +247,7 @@ def call(
         except Exception as exc:  # noqa: BLE001
             logger.exception("Unsloth Studio chat tool %s failed", name)
             return f"Error: MCP tool '{name}' failed: {exc}"
-        return _flatten_result(result, ui_resource_uri)
+        return _flatten_result(_without_nulls(result), ui_resource_uri)
     finally:
         # Here, not on the loop: a cancelled or timed-out call still loses its key at once.
         _revoke(row["id"])

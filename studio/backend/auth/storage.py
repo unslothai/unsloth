@@ -2006,7 +2006,7 @@ def validate_api_key_account(raw_key: str, *, touch: bool = True) -> Optional[Tu
                 touch = False
         cur = conn.execute(
             f"""
-            SELECT k.id, k.username, k.name, k.purpose, k.is_active, k.expires_at,
+            SELECT k.id, k.username, k.name, k.purpose, k.is_active, k.is_internal, k.expires_at,
                    u.account_id, u.role, u.is_active AS account_active,
                    COALESCE(u.account_jwt_secret, u.jwt_secret) AS jwt_secret
             FROM api_keys k JOIN auth_user u ON u.username = k.username
@@ -2051,6 +2051,7 @@ def validate_api_key_account(raw_key: str, *, touch: bool = True) -> Optional[Tu
             "expires_at": row["expires_at"],
             "key_name": row["name"],
             "key_purpose": row["purpose"],
+            "key_internal": bool(row["is_internal"]),
         }
         return record, secret
     finally:

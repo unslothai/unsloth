@@ -425,25 +425,39 @@ def test_a_video_refusal_carries_a_plain_detail(catalog, enabled, loads):
     assert isinstance(excinfo.value.detail, str)
 
 
-def test_a_chat_tools_call_never_switches_the_media_model(flux, enabled, loads):
-    from studio_mcp.caller import Caller, bind_caller, reset_caller
-
-    caller = Caller(
-        token = "k",
-        account_id = "owner",
-        direct_local = False,
-        public_base = "",
-        studio_app = None,
-        call_scoped = True,
+def _switch_as_chat_tools_key(name):
+    from utils.account_context import OWNER, AccountContext, run_as
+    key = AccountContext(
+        OWNER.account_id,
+        OWNER.username,
+        OWNER.role,
+        via_api_key = True,
+        load_policy = "beside_only",
     )
-    token = bind_caller(caller)
-    try:
-        with pytest.raises(HTTPException) as excinfo:
-            _switch("black-forest-labs/FLUX.1-dev")
-    finally:
-        reset_caller(token)
+    return run_as(key, _switch, name)
+
+
+@pytest.mark.parametrize(
+    "takes_the_gpu, evicts, refused",
+    [(True, True, True), (True, False, False), (False, True, False)],
+)
+def test_a_chat_tools_key_switches_media_only_when_the_chat_model_stays(
+    flux, enabled, loads, monkeypatch, takes_the_gpu, evicts, refused
+):
+    monkeypatch.setattr(backends, "load_takes_the_gpu", lambda: takes_the_gpu)
+    monkeypatch.setattr(mas, "load_takes_the_gpu", lambda: takes_the_gpu)
+    monkeypatch.setattr(arb, "would_evict", lambda owner, **_kw: evicts)
+    if not refused:
+        _switch_as_chat_tools_key("black-forest-labs/FLUX.1-dev")
+        assert len(loads) == 1
+        return
+    with pytest.raises(HTTPException) as excinfo:
+        _switch_as_chat_tools_key("black-forest-labs/FLUX.1-dev")
     assert excinfo.value.status_code == 403
-    assert excinfo.value.detail["error"]["code"] == "model_switch_refused"
+    assert excinfo.value.detail["error"]["code"] == "needs_user_load"
+    assert excinfo.value.headers["X-Unsloth-Problem"] == (
+        "needs_user_load kind=image model=black-forest-labs/FLUX.1-dev page=Image"
+    )
     assert loads == []
 
 

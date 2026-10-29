@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import contextlib
 import json
 
 import httpx
@@ -9,6 +10,7 @@ from fastmcp.exceptions import ToolError
 
 from studio_mcp.errors import raise_for_payload, raise_for_route, raise_for_status_field, tool_error
 from studio_mcp.forward import ndjson_last
+from studio_mcp.profile import CHAT
 
 from .mcp_harness import DEFERRED, openai_error
 
@@ -257,42 +259,70 @@ def _assert_always(message, tag = ALWAYS_TAG):
     assert TOOL_HINT not in message
 
 
+# What MultiModelAlwaysRefusal.as_http_exception sends with the refusal.
+ALWAYS_HEADERS = {
+    "X-Unsloth-Refusal": "multi-model-always",
+    "X-Unsloth-Problem": "multi_model_always kind=chat",
+}
+
+
 @pytest.mark.parametrize(
     "resp",
     [
-        _padded({"status_code": 409, "detail": OWNER_ALWAYS}),
-        _response(
-            409,
-            {"detail": OWNER_ALWAYS},
-            headers = {"X-Unsloth-Refusal": "multi-model-always", "Retry-After": "5"},
+        _padded(
+            {
+                "status_code": 409,
+                "detail": OWNER_ALWAYS,
+                "headers": {key.lower(): value for key, value in ALWAYS_HEADERS.items()},
+            }
         ),
-        _response(409, {"detail": MANAGED_ALWAYS}),
-        _v1(409, OWNER_ALWAYS, type = "conflict_error", param = "model", code = "multi_model_always"),
-        # A route that copies the headers into the padded body; the copy is not the marker text.
+        _response(409, {"detail": OWNER_ALWAYS}, headers = {**ALWAYS_HEADERS, "Retry-After": "5"}),
+        _response(409, {"detail": MANAGED_ALWAYS}, headers = ALWAYS_HEADERS),
+        _v1(
+            409,
+            OWNER_ALWAYS,
+            type = "conflict_error",
+            param = "model",
+            code = "multi_model_always",
+            headers = ALWAYS_HEADERS,
+        ),
+        # A route that copies the headers into the padded body.
         _padded(
             {
                 "status_code": 409,
                 "detail": "Loading this model would unload the chat model x.",
-                "headers": {"X-UNSLOTH-REFUSAL": "multi-model-always"},
+                "headers": {"X-UNSLOTH-PROBLEM": "multi_model_always kind=chat"},
             }
         ),
         _response(
             409, {"detail": {"code": "multi_model_always", "kind": "chat", "message": "No."}}
         ),
     ],
-    ids = ["padded-deferred", "header", "managed-phrase", "v1-code", "deferred-headers", "code"],
+    ids = ["padded-deferred", "header", "managed", "v1-code", "deferred-headers", "code"],
 )
 def test_a_multi_model_always_refusal_is_tagged_and_names_unload_model(resp):
     _assert_always(_message(resp, hints = {409: TOOL_HINT}))
 
 
 def test_a_multi_model_always_refusal_of_an_unknown_kind_keeps_a_bare_tag():
-    resp = _response(409, {"detail": "Keep multiple models loaded is set to Always."})
+    resp = _response(
+        409,
+        {"detail": "Keep multiple models loaded is set to Always."},
+        headers = {"X-Unsloth-Refusal": "multi-model-always"},
+    )
     message = _message(resp, hints = {409: TOOL_HINT})
     assert message.startswith("[multi_model_always] ")
     assert message.endswith(
         "Call unload_model(kind=…) for the model it names to free the GPU; retrying won't help."
     )
+
+
+@pytest.mark.parametrize("detail", [OWNER_ALWAYS, MANAGED_ALWAYS])
+def test_the_always_wording_alone_is_not_read_as_a_refusal(detail):
+    # The route always sends its code; the English is for people.
+    message = _message(_response(409, {"detail": detail}))
+    assert not message.startswith("[")
+    assert "unload_model" not in message
 
 
 def test_always_wording_on_another_status_is_not_a_refusal():
@@ -374,60 +404,116 @@ def _at(status, body, path):
     )
 
 
+def _not_loaded(kind):
+    return {"X-Unsloth-Problem": f"not_loaded kind={kind}"}
+
+
 @pytest.mark.parametrize(
     "resp,kind",
     [
-        (_at(400, {"detail": "No model loaded."}, "/v1/audio/run"), "audio"),
-        (_at(400, {"detail": "No model loaded."}, "/v1/audio/transcriptions"), "stt"),
-        (_at(409, {"detail": "No model loaded"}, "/api/inference/audio/stt/load"), "stt"),
-        (_at(400, {"detail": "No model loaded."}, "/v1/images/generations"), "image"),
-        (_at(400, {"detail": "No model loaded."}, "/v1/chat/completions"), "chat"),
-        (_at(400, {"detail": "No model loaded."}, "/api/inference/unload"), "chat"),
-        (_response(409, {"detail": "No diffusion model is loaded."}), "image"),
-        (_response(503, {"detail": "No video model loaded. Load a video model first."}), "video"),
-        (_v1(400, "No model loaded. Call POST /inference/load first."), "chat"),
+        (_response(400, {"detail": "No model loaded."}, headers = _not_loaded("audio")), "audio"),
+        (_response(409, {"detail": "No model"}, headers = _not_loaded("stt")), "stt"),
         (
-            _at(
-                503, {"detail": "No GGUF model loaded. Load a GGUF model first."}, "/v1/embeddings"
-            ),
-            "chat",
-        ),
-        (
-            _at(
-                503,
-                {"detail": "No image model loaded. Load an image model first."},
-                "/v1/images/generations",
+            _response(
+                409, {"detail": "No diffusion model is loaded."}, headers = _not_loaded("image")
             ),
             "image",
         ),
+        (
+            _response(503, {"detail": "No video model loaded."}, headers = _not_loaded("video")),
+            "video",
+        ),
+        (_v1(400, "No model loaded.", headers = _not_loaded("llm")), "llm"),
     ],
-    ids = [
-        "audio-path",
-        "stt-v1-path",
-        "stt-api-path",
-        "image-path",
-        "chat-path",
-        "unload-path",
-        "diffusion-wording",
-        "video-wording",
-        "no-request",
-        "gguf-wording",
-        "image-wording",
-    ],
+    ids = ["audio", "stt", "image", "video", "v1-llm"],
 )
-def test_not_loaded_names_the_kind(resp, kind):
+def test_not_loaded_names_the_kind_the_route_sent(resp, kind):
     assert _message(resp).startswith(f"[not_loaded kind={kind}] No ")
 
 
-def test_a_deferred_not_loaded_uses_the_route_path():
-    padded = httpx.Response(
-        200,
-        content = json.dumps(
-            {"_deferred_error": {"status_code": 400, "detail": "No model loaded."}}
-        ).encode(),
-        request = httpx.Request("POST", "http://x/api/inference/audio/load"),
+@pytest.mark.parametrize(
+    "resp",
+    [
+        _response(400, {"detail": "No model loaded."}),
+        _response(409, {"detail": "No diffusion model is loaded."}),
+        _v1(503, "No GGUF model loaded. Load a GGUF model first."),
+    ],
+)
+def test_not_loaded_wording_without_a_code_is_not_tagged(resp):
+    message = _message(resp)
+    assert not message.startswith("[") and "load_model" not in message
+
+
+def test_a_deferred_not_loaded_keeps_the_routes_code():
+    padded = _padded(
+        {
+            "status_code": 400,
+            "detail": "No model loaded.",
+            "headers": {"x-unsloth-problem": "not_loaded kind=audio"},
+        }
     )
     assert _message(padded).startswith("[not_loaded kind=audio] ")
+
+
+MUSIC = "audio-cpp/audio.cpp-gguf/Stable-Audio-3-Small-Music-GGUF"
+
+
+@contextlib.contextmanager
+def _as_chat_caller():
+    from studio_mcp.caller import bind_caller, reset_caller
+
+    from .mcp_harness import make_caller
+
+    token = bind_caller(make_caller(profile = CHAT, direct_local = False))
+    try:
+        yield
+    finally:
+        reset_caller(token)
+
+
+def test_a_not_loaded_music_model_hint_fits_the_callers_tools():
+    resp = _response(
+        400,
+        {"detail": f"The music model '{MUSIC}' is not loaded."},
+        headers = {"X-Unsloth-Problem": f"not_loaded kind=audio model={MUSIC} page=Audio"},
+    )
+    agent = _message(resp, hints = {400: "Load one."})
+    assert agent.startswith("[not_loaded kind=audio] ")
+    assert agent.endswith("with load_model(kind='tts') first.")
+    with _as_chat_caller():
+        chat = _message(resp, hints = {400: "Load one."})
+    assert chat.startswith("[not_loaded kind=audio] ")
+    assert "load_model" not in chat and "unload_model" not in chat
+    assert chat.endswith("on the Audio page in Unsloth Studio, then try again.")
+
+
+def test_needs_user_load_names_the_page_and_never_a_tool():
+    resp = _v1(
+        403,
+        "Loading the music model here would unload the model serving this chat.",
+        code = "needs_user_load",
+        headers = {"X-Unsloth-Problem": f"needs_user_load kind=audio model={MUSIC} page=Audio"},
+    )
+    for scope in (contextlib.nullcontext(), _as_chat_caller()):
+        with scope:
+            message = _message(resp)
+        assert message.startswith("[needs_user_load kind=audio page=Audio] ")
+        assert f"Ask the user to load '{MUSIC}' on the Audio page" in message
+        assert "load_model" not in message
+
+
+@pytest.mark.parametrize(
+    "resp",
+    [
+        _response(409, {"detail": OWNER_ALWAYS}, headers = ALWAYS_HEADERS),
+        _response(409, {"detail": ACTIVE}),
+    ],
+    ids = ["multi-model", "active-generations"],
+)
+def test_a_chat_caller_is_never_told_to_unload_or_cancel(resp):
+    with _as_chat_caller():
+        message = _message(resp)
+    assert "unload_model" not in message and "cancel(" not in message
 
 
 NOISE = [f"load_tensors: layer {i} assigned to device CUDA0" for i in range(300)]
