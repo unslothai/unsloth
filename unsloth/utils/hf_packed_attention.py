@@ -765,9 +765,8 @@ def _leaves_block_probe(device_type, device_index, dtype, head_dim, window):
 
 
 def _constant_probe(fn):
-    """assume_constant_result only takes Python constants, but dynamic=True makes head_dim and the
-    head counts SymInts (int() keeps them symbolic). operator.index specialises them with a guard:
-    they are fixed per model, so the probe runs once per shape and dynamic=None is unchanged."""
+    """assume_constant_result only takes Python constants; int() keeps a SymInt symbolic, so
+    operator.index specialises it with a guard (head sizes are fixed per model). dynamic=None is unchanged."""
     constant = torch._dynamo.assume_constant_result(fn)
 
     def probe(*args):

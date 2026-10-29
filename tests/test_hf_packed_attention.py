@@ -1623,9 +1623,7 @@ def test_traced_block_varlen_call_stays_in_the_graph(monkeypatch, in_graph):
 
 @pytest.mark.parametrize("in_graph", [True, False])
 def test_traced_packed_probes_take_symbolic_head_dims(monkeypatch, in_graph):
-    """compile(fullgraph = True, dynamic = True) makes head_dim and the head counts SymInts, which
-    assume_constant_result cannot take: both probes get them specialised to plain ints, run once
-    per key, and the sequence dim stays dynamic (one graph for every length)."""
+    """dynamic = True head sizes reach the probes as plain ints; the sequence dim stays dynamic."""
     from torch._dynamo.testing import CompileCounter
 
     keys = []
@@ -1699,9 +1697,8 @@ def test_traced_packed_probes_take_symbolic_head_dims(monkeypatch, in_graph):
 
 
 def test_shared_forward_with_mixed_head_dims_compiles(monkeypatch):
-    """One compiled forward shared by layers with different head_dim (Gemma4 style), under the
-    allow_unspec_int_on_nn_module setting unsloth_zoo enables: the head dim turns symbolic after the
-    second layer even with dynamic = None, and the probes must still get plain ints."""
+    """Gemma4-style mixed head_dim: allow_unspec_int_on_nn_module (set by unsloth_zoo) makes
+    self.head_dim symbolic even with dynamic = None; the probes must still get plain ints."""
     from torch._dynamo.testing import CompileCounter
 
     if not hasattr(torch._dynamo.config, "allow_unspec_int_on_nn_module"):
