@@ -3772,11 +3772,15 @@ class UnslothTrainer:
                     "has an audio column, so training cannot fall back to the text path. "
                     "Re-download the model or provide a token, then retry."
                 )
-            if objective != "sft" and (self._audio_type or self.is_audio_vlm):
-                # Checked on the model, not the request's audio flag: the audio preprocessing below
-                # would hand the RL formatter ASR or TTS rows.
+            if objective != "sft" and (
+                self._audio_type or self.is_audio_vlm or _dataset_has_audio_column(dataset) is True
+            ):
+                # Not the request's audio flag: the audio preprocessing below would hand the RL
+                # formatter ASR or TTS rows, and the formatter drops audio columns. An audio-capable
+                # model on a text dataset still trains on the text.
                 raise ValueError(
-                    f"{objective.upper()} is not available for audio models yet; use SFT."
+                    f"{objective.upper()} is not available for audio models or audio datasets "
+                    "yet; use SFT."
                 )
             # Every audio branch below, and the VLM path, casts an Audio column and reads its array.
             if self._audio_type or self.is_audio_vlm:
