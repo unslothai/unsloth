@@ -76,8 +76,16 @@ def _ids():
 MODES = ["grouped", "stash", "fold"]
 
 
+def _need_grouped(dtype = torch.float32):
+    """Skip where this torch / device has no native grouped GEMM in ``dtype`` (the module then runs per adapter)."""
+    if not ml._grouped_mm_ok(torch.device(DEVICE), dtype):
+        pytest.skip(f"no native grouped GEMM in {dtype} on {DEVICE} with torch {torch.__version__}")
+
+
 def _use_mode(monkeypatch, mode):
     """grouped: every adapter in one pass; stash / fold: one adapter at a time, through Zoo's stash or folded."""
+    if mode == "grouped":
+        _need_grouped()
     if mode == "grouped":
         monkeypatch.delenv("UNSLOTH_MULTI_LORA_MOE_GROUPED", raising = False)
     else:
@@ -401,6 +409,7 @@ def _oracle(experts, hidden, index, weights, ids, rslora):
 @pytest.mark.parametrize("rslora", [False, True])
 @pytest.mark.parametrize("present", ["all", "no_adapter_1"])
 def test_grouped_matches_a_float64_oracle(monkeypatch, rslora, present):
+    _need_grouped()
     monkeypatch.delenv("UNSLOTH_MULTI_LORA_MOE_GROUPED", raising = False)
     T, k, E = 24, 2, 5
     ids = torch.tensor([0, 0, 2, -1, 0, 1, 2, 0] * 3)
@@ -441,6 +450,7 @@ def test_grouped_matches_a_float64_oracle(monkeypatch, rslora, present):
 
 
 def test_grouped_dequantizes_quantized_stacks_per_chunk(monkeypatch):
+    _need_grouped()
     """A quantized stack: dequantized in expert chunks, again in backward, and the result is unchanged."""
     from unsloth_zoo.temporary_patches import moe_utils
 
@@ -489,6 +499,7 @@ def test_grouped_dequantizes_quantized_stacks_per_chunk(monkeypatch):
 
 
 def test_grouped_engages_and_the_switch_turns_it_off(base, monkeypatch):
+    _need_grouped()
     ids = _ids()
     counts = []
     for value in ("1", "0"):
@@ -525,6 +536,7 @@ def test_unsupported_experts_fall_back_to_one_adapter_at_a_time(monkeypatch, why
 
 
 def test_grouped_reads_bnb_4bit_stacks_a_chunk_at_a_time(monkeypatch):
+    _need_grouped()
     bnb = pytest.importorskip("bitsandbytes")
     from unsloth_zoo.temporary_patches import moe_utils
 
@@ -569,6 +581,7 @@ def test_grouped_reads_bnb_4bit_stacks_a_chunk_at_a_time(monkeypatch):
 
 
 def test_grouped_dropped_route_never_poisons_gradients(monkeypatch):
+    _need_grouped()
     # A dropped route (expert id E) with a NaN weight must add exactly nothing, forward and backward.
     monkeypatch.delenv("UNSLOTH_MULTI_LORA_MOE_GROUPED", raising = False)
     T, k, E = 8, 2, 5
@@ -601,6 +614,7 @@ def test_grouped_dropped_route_never_poisons_gradients(monkeypatch):
 
 
 def test_grouped_empty_top_k_gives_zeros(monkeypatch):
+    _need_grouped()
     monkeypatch.delenv("UNSLOTH_MULTI_LORA_MOE_GROUPED", raising = False)
     ids = torch.tensor([0, 1, 2, -1])
     experts = _wrapped(_Experts(5), RANKS, ALPHAS, False, ids)
@@ -626,6 +640,7 @@ class _StaticExperts(_Experts):
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 def test_grouped_under_torch_compile(monkeypatch, dtype):
     # Grouped GEMM only traces in bfloat16; other dtypes take the per-adapter path inside a compiled graph.
+    _need_grouped(dtype)
     monkeypatch.delenv("UNSLOTH_MULTI_LORA_MOE_GROUPED", raising = False)
     T, k, E = 16, 2, 5
     ids = torch.tensor([0, 1, 2, -1] * 4)

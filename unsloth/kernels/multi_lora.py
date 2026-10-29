@@ -944,13 +944,17 @@ class _ExpertWeights:
             if _bnb4bit_expert_split(param) is not None:
                 self.chunk = -(-E // _DEQUANT_CHUNKS)
 
-    def get(self, experts: slice = slice(None)) -> torch.Tensor:
+    def get(self, experts: Optional[slice] = None) -> torch.Tensor:
+        # No slice object unless chunking: torch.compile on torch <= 2.10 cannot trace a default slice argument.
         if self.get_base is None:
-            W = self.param[experts].to(self.dtype)
+            W = (self.param if experts is None else self.param[experts]).to(self.dtype)
         elif self.chunk is None:
-            W = self.get_base(self.param, self.dtype)[experts]
+            W = self.get_base(self.param, self.dtype)
+            W = W if experts is None else W[experts]
         else:
-            W = self.get_base(self.param, self.dtype, experts = experts)
+            W = self.get_base(
+                self.param, self.dtype, experts = slice(None) if experts is None else experts
+            )
         return W if self.input_major else W.transpose(-2, -1)
 
     def matmul(
