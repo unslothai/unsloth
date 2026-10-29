@@ -111,9 +111,8 @@ def test_matcher_keeps_last_rule_wins(rules, rel, is_dir):
 def test_adjacent_rules_share_one_regex():
     text = "\n".join(f"*.ext{i}" for i in range(100)) + "\n!keep.ext1\ncache/\n*.tmp\n"
     matcher = gitignore.Matcher(tuple(gitignore.parse(text, "")))
-    # Files: one run of 100 rules, the negation, then *.tmp (cache/ is directory-only).
+    # Files skip the directory-only cache/; directories run it together with *.tmp.
     assert len(matcher._file_plan) == 3
-    # Directories: the trailing cache/ and *.tmp share a run.
     assert len(matcher._dir_plan) == 3
     assert all(isinstance(m, re.Pattern) for _, m in matcher._file_plan)
 
@@ -172,5 +171,4 @@ def test_scan_matches_through_one_matcher_per_gitignore(linkable_temp_base, tmp_
         "local.md",
     }
     assert report["gitignored"] == 3
-    # The root and pkg/ hold a .gitignore; pkg/deep reuses pkg/'s matcher.
     assert sorted(built) == [3, 4]
