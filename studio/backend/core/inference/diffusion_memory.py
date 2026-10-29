@@ -6775,8 +6775,8 @@ class _GroupPinner:
                 break
             elapsed = time.perf_counter() - began
             # Fast pins are bound by the copy and register, not the disk: pinning beside the others wins there,
-            # and overlapping the render only moves the register cost into the encode (G4: +1.1 s).
-            rate = sum(max(dep.copied, dep.pinned) for dep in self.after) / elapsed
+            # and overlapping the render only moves the register cost into the encode.
+            rate = sum(max(dep.copied, dep.pinned) for dep in self.after) / max(elapsed, 1e-3)
             if elapsed >= _LATE_PIN_PROBE_S and rate >= _LATE_PIN_PARALLEL_BPS:
                 self.late = False
                 if self.logger is not None:
