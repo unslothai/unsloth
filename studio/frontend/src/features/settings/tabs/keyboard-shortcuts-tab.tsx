@@ -377,7 +377,6 @@ export function KeyboardShortcutsTab() {
       >
         <div className="flex min-h-8 items-center gap-2.5">
           <Switch
-            className="origin-left scale-[0.88]"
             checked={enabled}
             onCheckedChange={(on) => setEnabled(def.id, on)}
             aria-label={label}

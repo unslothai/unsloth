@@ -102,13 +102,6 @@ function usagePillClass(percent: number | null): string {
   return "bg-control-accent/10 text-control-accent";
 }
 
-function usageValueClass(percent: number | null): string {
-  if (!isFiniteNumber(percent)) return "text-muted-foreground/70";
-  if (percent >= 90) return "text-[#df4530] dark:text-[#ef5b40]";
-  if (percent >= 70) return "text-amber-600 dark:text-amber-400";
-  return "text-foreground";
-}
-
 function formatGb(value: number | null | undefined): string {
   const safe = isFiniteNumber(value) ? Math.max(0, value) : 0;
   const digits = safe >= 10 ? 1 : 2;
@@ -189,8 +182,9 @@ function MetricTile({
           title={value}
           className={cn(
             "truncate font-mono text-ui-14 font-medium leading-tight tabular-nums",
-            showUsage
-              ? usageValueClass(percentKnown ? safePercent : null)
+            // Only the pill and bar carry the usage colour; the reading stays neutral.
+            showUsage && !percentKnown
+              ? "text-muted-foreground/70"
               : "text-foreground",
           )}
         >
@@ -675,14 +669,14 @@ export function ResourcesTab() {
               : t("settings.resources.floatingWindow")}
           </Button>
 
-          <div className="flex h-8 shrink-0 items-center gap-2 rounded-full border border-border/60 px-2.5 text-xs font-medium text-foreground">
+          <label className="flex h-8 shrink-0 items-center gap-2.5 text-xs font-medium text-foreground">
             <span>{t("settings.resources.liveUpdates")}</span>
             <Switch
               aria-label={t("settings.resources.liveUpdates")}
               checked={liveUpdates}
               onCheckedChange={setLiveUpdates}
             />
-          </div>
+          </label>
         </div>
       </header>
 
