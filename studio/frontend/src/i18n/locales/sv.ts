@@ -863,6 +863,38 @@ export const sv = {
     compactEmpty: "Inget att komprimera än",
     compactUnsupported: "Komprimering kräver en GGUF- eller MLX-modell med verktygsstöd",
   },
+  halloween: {
+    navLabel: "Bus eller godis…",
+    title: "Bus eller godis?!",
+    description:
+      "Vi har bryggt ihop lite skräck för Unsloth, här resten av oktober.",
+    chooseTheme: "Välj ett läskigt tema",
+    spookyGreetings: "Läskiga hälsningar",
+    spookyGreetingsDescription:
+      "Sengångaren hälsar nya chattar med en liten skräck.",
+    decorations: "Spindlar och fladdermöss",
+    decorationsDescription:
+      "Spindelnät i hörnen och då och då en spindel eller fladdermus med ett halloweentema.",
+    surprise: "Bus eller godis!",
+    surpriseDescription: "Låt sengångaren välja ett tema åt dig.",
+    themesTitle: "Läskiga teman",
+    back: "Tillbaka",
+    footer: "Unsloth återgår till det normala vid midnatt den 1 november.",
+    removeNow: "Ta bort nu",
+    hideFromSidebar: "Dölj från sidofältet",
+    greeting: {
+      pumpkins: "Pumporna är snidade. Vad händer nu?",
+      brewing: "Dags att brygga",
+      trickOrTreat: "Bus eller godis?",
+      manor: "Välkommen till herrgården",
+      manorName: "Välkommen till herrgården, {name}",
+      happyHalloween: "Glad halloween",
+      happyHalloweenName: "Glad halloween, {name}",
+      spirits: "Andarna lyssnar…",
+      mysteries: "Vilka mysterier ska vi avslöja i natt?",
+      conjure: "Vad kan jag trolla fram åt dig?",
+    },
+  },
   welcome: {
     goodToSeeYou: "Kul att se dig",
     goodToSeeYouName: "Kul att se dig, {name}",
@@ -1025,6 +1057,8 @@ export const sv = {
       guidedTour: "Guidad tur",
       help: "Hjälp",
       logOut: "Logga ut",
+      logOutNeedsPassword: "Ange ett lösenord under Inställningar > Fjärråtkomst innan du loggar ut, så att du kan logga in igen.",
+      logOutFailed: "Det gick inte att logga ut säkert. Försök igen om en stund.",
       shutdown: "Stäng av",
     },
     commandPalette: {
@@ -1171,6 +1205,11 @@ export const sv = {
   },
   settings: {
     accounts: {
+      signsInAs: "Loggar in som {username}",
+      signsInAsOwner: "Loggar in som {alias} eller {username}",
+      signInName: "Ditt inloggningsnamn",
+      signInNameDescription: "Namnet du skriver för att logga in när installationen har mer än ett konto. unsloth fungerar alltid också. Lämna tomt för att bara använda unsloth.",
+      signInNameSave: "Spara namn",
       title: "Konton",
       description:
         "Skapa privata Unsloth-konton. Nya användare loggar in med en engångskod för konfiguration och väljer ett lösenord.",
@@ -1331,7 +1370,7 @@ export const sv = {
       lastVisited: "Senast besökt",
     },
     tabs: {
-      sandbox: "Sandlåda",
+      sandbox: "Säkerhet",
       accounts: "Konton",
       general: "Allmänt",
       profile: "Profil",
@@ -1617,7 +1656,7 @@ export const sv = {
       },
     },
     sandbox: {
-      title: "Sandlåda",
+      title: "Säkerhet",
       description:
         "Om verktygsanrop för Python och Terminal körs i en OS-sandlåda på den här datorn.",
       docs: "Dokumentation",
@@ -1687,7 +1726,7 @@ export const sv = {
       installRuntimeError:
         "Det gick inte att starta installationen av körmiljön.",
       unsupportedArch:
-        "Windows-sandlådan (MXC) körs bara på x64-Windows, så den är inte tillgänglig på den här datorn.",
+        "Windows-sandlådan (MXC) körs bara på x64- och ARM64-Windows, så den är inte tillgänglig på den här datorn.",
       builtinNeedsUpdate:
         "Windows inbyggda container kräver version {required} eller senare, och den här datorn kör {current}. Installera den senaste Windows-uppdateringen för att använda den utan administratörssteg, eller slå på reservsandlådan nedan.",
       unsupportedBuild:
@@ -1712,6 +1751,7 @@ export const sv = {
       managedNote: "Ägaren av den här Unsloth-servern konfigurerar OS-sandlådan.",
     },
     debugging: {
+      description: "Läs Unsloths loggar utan att lämna appen.",
       logSection: "Loggfil",
       source: "Loggfil",
       sourceHint:
@@ -2487,6 +2527,12 @@ export const sv = {
         classic: "Klassisk",
         minimal: "Minimal",
         moreThemes: "Fler teman",
+        halloween: "Halloween",
+      },
+      trickOrTreat: {
+        label: "Bus eller godis",
+        description:
+          "Halloweenteman och kusliga hälsningar, till 1 november.",
       },
       custom: {
         chatWidth: {
@@ -2618,7 +2664,8 @@ export const sv = {
       description: "Övervaka maskinvara och lagring på denna Unsloth-server.",
       liveUpdates: "Direktuppdateringar",
       floatingWindow: "Flytande fönster",
-      disableOverlay: "Inaktivera överlägg",
+      showFloatingWindow: "Visa flytande fönster",
+      showFloatingWindowDescription: "Håll CPU-, RAM- och GPU-användning synlig ovanpå Unsloth.",
       liveMonitor: {
         title: "Direktövervakning",
         apiTitle: "API-övervakning",
@@ -2641,7 +2688,7 @@ export const sv = {
         gpuUnusableDetail: "Identifierad, men PyTorch kan inte använda den",
         detailedView: "Detaljerad vy",
         detailedViewDescription:
-          "Visa CPU-belastning samt belastning, temperatur och effekt för varje GPU i det flytande fönstret och här.",
+          "Visa CPU-belastning samt belastning, temperatur och effekt för varje GPU i det flytande fönstret.",
         cpuLoad: "CPU-belastning",
         gpuLoad: "GPU-belastning",
         temperature: "Temperatur",
@@ -2676,6 +2723,10 @@ export const sv = {
         used: "{value} används",
         free: "{value} ledigt",
         total: "{value} totalt",
+        usedOf: "{used} använt av {total}",
+        segmentUsed: "Används av GPU",
+        segmentSystem: "Används av systemet",
+        segmentAvailable: "Tillgängligt",
       },
       llamaBackend: {
         title: "GGUF-inferensmotor",
@@ -2837,6 +2888,10 @@ export const sv = {
           hideDetailsAction: "Dölj detaljer",
           clearAction: "Rensa cacheminnen",
           clearOneAction: "Rensa",
+          showFolders: "Visa mappar",
+          hideFolders: "Dölj mappar",
+          previousLocations: "Inkluderar tidigare platser. Huvudknappen Rensa påverkar den aktuella cachemappen. Modellknapparna rensar bara den valda kopian.",
+          clearModelDescription: "Detta tar bara bort den här cachade kopian. Den laddas ned igen vid behov.",
           clearingAction: "Rensar...",
           confirmTitle: "Rensa cachade filer?",
           confirmDescription: "Detta frigör ungefär {size}.",
@@ -3086,11 +3141,6 @@ export const sv = {
       autoScrollManual: "Manuell",
       autoScrollKeywords:
         "rulla automatisk rullning autoscroll följ fäst botten hoppa strömning generering visningsområde lås håll auto manuell scroll auto-scroll follow stick bottom jump streaming generating viewport lock hold manual",
-      scrollToBottomButton: "Knapp för att rulla till botten",
-      scrollToBottomButtonDescription:
-        "Visa en knapp för att hoppa tillbaka till senaste meddelandet efter att du har rullat uppåt.",
-      scrollToBottomButtonKeywords:
-        "rulla botten hoppa senaste nyaste pil ner knapp flytande dölj visa scroll bottom jump latest newest arrow down button floating hide show",
       replyNotification: "Avisera när ett svar är klart",
       replyNotificationDescription:
         "Visa en systemavisering när ett svar blir klart medan Unsloth är minimerat eller i bakgrunden.",
@@ -3499,6 +3549,7 @@ export const sv = {
       readDocs: "Läs API-dokumentationen",
       noAccess: "Ingen API-åtkomst ännu.",
       accessTokens: "Åtkomsttoken",
+      quickstartTitle: "Snabbstart",
       columnName: "Namn",
       columnToken: "Token",
       columnCreated: "Skapad",
@@ -3647,9 +3698,9 @@ export const sv = {
         sendsTo: "Begäranden skickas till {provider}.",
         connectionMissing:
           "Denna anslutning finns inte längre eller har inga beslutsmodeller. Välj en annan modell.",
-        addConnection:
-          "Lägg till TypeSafe, Liquid AI eller OpenRouter under Anslutningar för att använda en värdbaserad beslutsmodell.",
-        openConnections: "Öppna Anslutningar",
+        addConnection: "Lägg till en värdbaserad beslutsmodell under ",
+        connectionsLink: "Anslutningar",
+        addConnectionSuffix: ".",
       },
       mcp: {
         title: "Agentåtkomst (MCP)",
@@ -4574,7 +4625,6 @@ export const sv = {
       terminalStart: "> unsloth-träningen startar ...",
       preparingResources: "> Förbereder modell och datauppsättning ...",
       gettingReady: "> Vi förbereder allt för din körning ...",
-      waitingForFirstStep: "> {message} | väntar på första steget ... ({step})",
       resumingTraining: "Återupptar träning ...",
       startingTraining: "startar träning ...",
       dataset: "Datauppsättning",

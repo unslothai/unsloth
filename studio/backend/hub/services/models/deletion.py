@@ -1077,16 +1077,25 @@ async def delete_cached_model_response(
             detail = f"Invalid gguf_variant: {variant!r}",
         )
     guard_id = (await asyncio.to_thread(folder_row_for_download, repo_id, variant) or (repo_id,))[0]
+    # A base listed from its artifact mirror's copy deletes that copy, so guard both identities.
+    mirror_id = (
+        await asyncio.to_thread(cache_inventory.artifact_mirror_delete_id, repo_id, cache_path)
+        if variant is None
+        else None
+    )
+    guard_ids = (guard_id, mirror_id) if mirror_id else (guard_id,)
 
     # Fail closed with 503 rather than unlink weights under a running process.
     def _load_state_blocks_delete() -> Optional[str]:
-        if _llama_cpp_blocks_delete(guard_id, variant) or (
-            _inference_backend_blocks_delete(guard_id)
-        ):
-            return "Unload the model before deleting"
-        if _audio_cpp_blocks_delete(guard_id):
-            return "Unload the audio model before deleting"
-        return _diffusion_blocks_delete(guard_id) or _video_blocks_delete(guard_id)
+        for gid in guard_ids:
+            if _llama_cpp_blocks_delete(gid, variant) or _inference_backend_blocks_delete(gid):
+                return "Unload the model before deleting"
+            if _audio_cpp_blocks_delete(gid):
+                return "Unload the audio model before deleting"
+            blocked = _diffusion_blocks_delete(gid) or _video_blocks_delete(gid)
+            if blocked:
+                return blocked
+        return None
 
     try:
         blocks_detail = await asyncio.to_thread(_load_state_blocks_delete)
@@ -1103,13 +1112,23 @@ async def delete_cached_model_response(
         )
 
     repo_key = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")
-    if not downloads.registry.begin_delete(repo_key, variant):
-        detail = (
-            f"Cancel the {variant} download before deleting it."
-            if variant is not None
-            else "Cancel the active downloads before deleting."
+    reserved_keys = [repo_key]
+    if mirror_id:
+        reserved_keys.append(
+            await asyncio.to_thread(resolve_cached_repo_id_case, mirror_id, repo_type = "model")
         )
-        raise HTTPException(status_code = 400, detail = detail)
+    reserved: list[str] = []
+    for key in reserved_keys:
+        if not downloads.registry.begin_delete(key, variant):
+            for held in reserved:
+                downloads.registry.end_delete(held, variant)
+            detail = (
+                f"Cancel the {variant} download before deleting it."
+                if variant is not None
+                else "Cancel the active downloads before deleting."
+            )
+            raise HTTPException(status_code = 400, detail = detail)
+        reserved.append(key)
     try:
         # recheck after reserving the scope so a concurrent load claim is visible.
         try:
@@ -1140,7 +1159,7 @@ async def delete_cached_model_response(
                 )
         result = await asyncio.to_thread(
             _delete_cached_model_blocking,
-            repo_id,
+            mirror_id or repo_id,
             variant,
             hf_token,
             cache_path,
@@ -1160,9 +1179,10 @@ async def delete_cached_model_response(
         from core.inference.audio_cpp_models import forget
 
         forget()
-        return result
+        return {**result, "repo_id": repo_id} if mirror_id else result
     finally:
-        downloads.registry.end_delete(repo_key, variant)
+        for key in reserved:
+            downloads.registry.end_delete(key, variant)
         cache_inventory.invalidate_hf_cache_scans()
 
 

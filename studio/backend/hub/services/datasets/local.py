@@ -202,6 +202,56 @@ def _build_local_dataset_items() -> list[LocalDatasetItem]:
     return items
 
 
+# The datasets json loader types its first batch of this many bytes; the preview types the same window.
+_JSONL_SCHEMA_BYTES = 10 << 20
+
+
+def _jsonl_head(path: Path, preview_size: int) -> tuple[list[dict], bytes] | None:
+    """First ``preview_size`` JSON Lines objects and the bytes of the loader's first batch. ``None`` if not JSON Lines."""
+    rows, keys, window, scanned = [], {}, [], 0
+    with path.open("rb") as f:
+        for line in f:
+            if line.strip():
+                try:
+                    row = json.loads(line.decode("utf-8"))
+                except ValueError:
+                    row = None
+                if not isinstance(row, dict):
+                    # Within the preview rows the loader decides; past them the window ends.
+                    if len(rows) < preview_size:
+                        return None
+                    break
+                keys.update(dict.fromkeys(row))
+                if len(rows) < preview_size:
+                    rows.append(row)
+            window.append(line)
+            scanned += len(line)
+            if len(rows) >= preview_size and scanned >= _JSONL_SCHEMA_BYTES:
+                break
+    # Columns are the union over the window, as the Arrow reader builds them (from_list reads row 0's keys).
+    return [{key: row.get(key) for key in keys} for row in rows], b"".join(window)
+
+
+def _jsonl_rows_dataset(rows: list[dict], window: bytes):
+    import io
+
+    import pyarrow as pa
+    import pyarrow.json as paj
+    from datasets import Dataset
+
+    try:
+        # The loader's reader types as training does; one block, no threads: #15681 segfaults only threaded.
+        options = paj.ReadOptions(use_threads = False, block_size = len(window))
+        table = paj.read_json(io.BytesIO(window), read_options = options)
+        return Dataset.from_list(table.slice(0, len(rows)).to_pylist())
+    except pa.ArrowException as error:
+        # A field that is a string in one row and an object in another (#15681): show the rows as written.
+        try:
+            return Dataset.from_list(rows)
+        except (TypeError, ValueError, OverflowError):
+            raise error from None
+
+
 def _stream_file_preview_slice(path: Path, preview_size: int, **load_kwargs):
     """Stream the first ``preview_size`` rows so a large file is never fully parsed into Arrow; returns ``(Dataset, None)`` or ``None`` if empty/unsupported."""
     from itertools import islice
@@ -210,6 +260,10 @@ def _stream_file_preview_slice(path: Path, preview_size: int, **load_kwargs):
 
     name = path.name.lower()
     if name.endswith((".json", ".jsonl")):
+        if not load_kwargs:
+            head = _jsonl_head(path, preview_size)
+            if head is not None:
+                return (_jsonl_rows_dataset(*head), None) if head[0] else None
         loader = "json"
     elif name.endswith((".csv", ".tsv")):
         loader = "csv"

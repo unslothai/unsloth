@@ -760,6 +760,37 @@ export const ru = {
     compactEmpty: "Пока нечего сжимать",
     compactUnsupported: "Для сжатия нужна модель GGUF или MLX с поддержкой инструментов",
   },
+  halloween: {
+    navLabel: "Сладость или гадость…",
+    title: "Сладость или гадость?!",
+    description:
+      "Мы приготовили для Unsloth немного страшилок до конца октября.",
+    chooseTheme: "Выберите жуткую тему",
+    spookyGreetings: "Жуткие приветствия",
+    spookyGreetingsDescription: "Ленивец встречает новые чаты страшилкой.",
+    decorations: "Пауки и летучие мыши",
+    decorationsDescription:
+      "Паутина по углам, а иногда паук или летучая мышь с темой Хэллоуина.",
+    surprise: "Сладость или гадость!",
+    surpriseDescription: "Пусть ленивец выберет тему за вас.",
+    themesTitle: "Жуткие темы",
+    back: "Назад",
+    footer: "Unsloth вернётся к обычному виду в полночь 1 ноября.",
+    removeNow: "Убрать сейчас",
+    hideFromSidebar: "Скрыть с боковой панели",
+    greeting: {
+      pumpkins: "Тыквы вырезаны. Что дальше?",
+      brewing: "Пора варить зелье",
+      trickOrTreat: "Сладость или гадость?",
+      manor: "Добро пожаловать в особняк",
+      manorName: "Добро пожаловать в особняк, {name}",
+      happyHalloween: "С Хэллоуином",
+      happyHalloweenName: "С Хэллоуином, {name}",
+      spirits: "Духи слушают…",
+      mysteries: "Какие тайны мы раскроем этой ночью?",
+      conjure: "Что мне наколдовать для вас?",
+    },
+  },
   welcome: {
     goodToSeeYou: "Рады вас видеть",
     goodToSeeYouName: "Рады вас видеть, {name}",
@@ -924,6 +955,8 @@ export const ru = {
       guidedTour: "Обзор интерфейса",
       help: "Справка",
       logOut: "Выйти",
+      logOutNeedsPassword: "Перед выходом задайте пароль в разделе Настройки > Удалённый доступ, чтобы потом снова войти.",
+      logOutFailed: "Не удалось безопасно выйти. Повторите попытку чуть позже.",
       shutdown: "Выключить",
     },
     commandPalette: {
@@ -1068,6 +1101,11 @@ export const ru = {
   },
   settings: {
     accounts: {
+      signsInAs: "Входит как {username}",
+      signsInAsOwner: "Входит как {alias} или {username}",
+      signInName: "Ваше имя для входа",
+      signInNameDescription: "Имя, которое вы вводите для входа, когда в этой установке больше одной учётной записи. unsloth тоже всегда работает. Оставьте пустым, чтобы использовать только unsloth.",
+      signInNameSave: "Сохранить имя",
       title: "Учётные записи",
       description: "Создавайте отдельные учётные записи Unsloth. Новые пользователи входят по одноразовому коду настройки и задают пароль.",
       username: "Имя пользователя",
@@ -1208,7 +1246,7 @@ export const ru = {
       lastVisited: "Последняя открытая",
     },
     tabs: {
-      sandbox: "Песочница",
+      sandbox: "Безопасность",
       accounts: "Учётные записи",
       general: "Общие",
       profile: "Профиль",
@@ -1492,7 +1530,7 @@ export const ru = {
       },
     },
     sandbox: {
-      title: "Песочница",
+      title: "Безопасность",
       description: "Выполняются ли вызовы инструментов Python и терминала в песочнице ОС на этом компьютере.",
       docs: "Документация",
       docsLabel: "Открыть документацию по песочнице",
@@ -1547,7 +1585,7 @@ export const ru = {
       installingRuntime: "Установка…",
       installRuntimeFailed: "Не удалось установить среду.",
       installRuntimeError: "Не удалось начать установку среды.",
-      unsupportedArch: "Песочница Windows (MXC) работает только на Windows x64, поэтому на этом ПК она недоступна.",
+      unsupportedArch: "Песочница Windows (MXC) работает только на Windows x64 и ARM64, поэтому на этом ПК она недоступна.",
       builtinNeedsUpdate:
         "Встроенному контейнеру Windows нужна сборка {required} или новее, а на этом ПК установлена {current}. Установите последнее обновление Windows, чтобы использовать его без шага администратора, или включите резервную песочницу ниже.",
       unsupportedBuild: "Песочнице Windows (MXC) нужна Windows 11 24H2 (сборка 26100) или новее, поэтому на этом ПК она недоступна.",
@@ -1568,6 +1606,7 @@ export const ru = {
       managedNote: "Песочницу ОС настраивает владелец этого сервера Unsloth.",
     },
     debugging: {
+      description: "Читайте журналы Unsloth, не выходя из приложения.",
       logSection: "Файл журнала",
       source: "Файл журнала",
       sourceHint: "Средства запуска моделей ведут собственные журналы, поэтому причина неудачной загрузки или генерации чаще всего указана именно в них, а не в журнале сервера.",
@@ -2321,6 +2360,12 @@ export const ru = {
         classic: "Классическая",
         minimal: "Минималистичная",
         moreThemes: "Другие темы",
+        halloween: "Хеллоуин",
+      },
+      trickOrTreat: {
+        label: "Сладость или гадость",
+        description:
+          "Темы Хэллоуина и жуткие приветствия до 1 ноября.",
       },
       custom: {
         chatWidth: {
@@ -2453,7 +2498,8 @@ export const ru = {
       description: "Мониторинг оборудования и хранилища этого сервера Unsloth.",
       liveUpdates: "Обновления в реальном времени",
       floatingWindow: "Плавающее окно",
-      disableOverlay: "Отключить оверлей",
+      showFloatingWindow: "Показывать плавающее окно",
+      showFloatingWindowDescription: "Использование CPU, RAM и GPU всегда видно поверх Unsloth.",
       liveMonitor: {
         title: "Монитор в реальном времени",
         apiTitle: "Монитор API",
@@ -2477,7 +2523,7 @@ export const ru = {
         gpuUnusableDetail: "Обнаружен, но PyTorch не может его использовать",
         detailedView: "Подробный вид",
         detailedViewDescription:
-          "Показывать загрузку CPU, а также загрузку, температуру и мощность каждой GPU в плавающем окне и здесь.",
+          "Показывать загрузку CPU, а также загрузку, температуру и мощность каждой GPU в плавающем окне.",
         cpuLoad: "Загрузка CPU",
         gpuLoad: "Загрузка GPU",
         temperature: "Температура",
@@ -2511,6 +2557,10 @@ export const ru = {
         used: "{value} использовано",
         free: "{value} свободно",
         total: "{value} всего",
+        usedOf: "Занято {used} из {total}",
+        segmentUsed: "Занято GPU",
+        segmentSystem: "Занято системой",
+        segmentAvailable: "Доступно",
       },
       llamaBackend: {
         title: "Движок инференса GGUF",
@@ -2640,6 +2690,10 @@ export const ru = {
           hideDetailsAction: "Скрыть подробности",
           clearAction: "Очистить кеши",
           clearOneAction: "Очистить",
+          showFolders: "Показать папки",
+          hideFolders: "Скрыть папки",
+          previousLocations: "Включает прежние расположения. Основная кнопка «Очистить» затрагивает текущую папку кэша. Кнопки моделей очищают только выбранную копию.",
+          clearModelDescription: "Будет удалена только эта копия в кэше. При необходимости она будет загружена снова.",
           clearingAction: "Очистка...",
           confirmTitle: "Очистить кешированные файлы?",
           confirmDescription: "Это освободит примерно {size}.",
@@ -2891,11 +2945,6 @@ export const ru = {
       autoScrollManual: "Вручную",
       autoScrollKeywords:
         "прокрутка автопрокрутка следовать вниз низ поток генерация зафиксировать scroll autoscroll follow",
-      scrollToBottomButton: "Кнопка «Прокрутить вниз»",
-      scrollToBottomButtonDescription:
-        "Показывать кнопку для возврата к последнему сообщению после прокрутки вверх.",
-      scrollToBottomButtonKeywords:
-        "прокрутка вниз последнее стрелка кнопка скрыть scroll bottom button",
       replyNotification: "Уведомлять о готовом ответе",
       replyNotificationDescription:
         "Показывать системное уведомление, когда ответ готов, а Unsloth свернут или в фоне.",
@@ -3285,6 +3334,7 @@ export const ru = {
       readDocs: "Читать документацию API",
       noAccess: "Доступа к API пока нет.",
       accessTokens: "Токены доступа",
+      quickstartTitle: "Быстрый старт",
       columnName: "Имя",
       columnToken: "Токен",
       columnCreated: "Создан",
@@ -3424,8 +3474,9 @@ export const ru = {
         loadError: "Не удалось загрузить настройки API решений.",
         sendsTo: "Запросы отправляются в {provider}.",
         connectionMissing: "Этого подключения больше нет или в нём нет моделей решений. Выберите другую модель.",
-        addConnection: "Чтобы использовать облачную модель решений, добавьте TypeSafe, Liquid AI или OpenRouter в разделе «Подключения».",
-        openConnections: "Открыть подключения",
+        addConnection: "Чтобы использовать облачную модель решений, добавьте её в разделе ",
+        connectionsLink: "Подключения",
+        addConnectionSuffix: ".",
       },
       mcp: {
         title: "Доступ агентов (MCP)",
@@ -4356,7 +4407,6 @@ export const ru = {
       terminalStart: "> обучение unsloth начинается...",
       preparingResources: "> Подготовка модели и датасета...",
       gettingReady: "> Мы готовим всё для вашего запуска...",
-      waitingForFirstStep: "> {message} | ожидание первого шага... ({step})",
       resumingTraining: "Продолжение обучения...",
       startingTraining: "начало обучения...",
       dataset: "Датасет",

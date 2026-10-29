@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Consent gate for loads that would execute model repo code.
-
-The LOAD-path counterpart to the capability probes (which read raw config and never need remote code). A deliberate load calls ``evaluate_remote_code_consent`` right before passing ``trust_remote_code=True``, and decides by the severity of a static scan of the repo's ``auto_map`` ``.py``: no ``auto_map`` in any config (model/tokenizer/processor) means nothing runs, so allow; CRITICAL (reverse shell, IMDS, credential theft, droppers) is a hard block, never approvable even first-party, defending a compromised trusted repo; HIGH/MEDIUM (subprocess/exec/eval/network/b64decode, or a large embedded blob) blocks but is user-approvable, with the dialog pinning approval to the scanned ``fingerprint``, for EVERY repo since first-party is not a blanket bypass; an ``auto_map`` present but unscannable (gated/offline/listing failure) fails closed as a hard block, since unseen code cannot be verified or fingerprinted.
-
-Hardening plus consent, not a sandbox: static patterns are evadable, so subprocess / venv isolation remains the containment layer.
-"""
+"""Remote-code consent: CRITICAL always blocks; HIGH/MEDIUM need approval; unscannable fails closed."""
 
 import os
 from dataclasses import dataclass, field

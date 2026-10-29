@@ -771,6 +771,14 @@
       "reason": "Iterates a fixed tuple of torch wrapper classes (DataParallel, FSDP, OptimizedModule)."
     },
     {
+      "file": "unsloth_cli/__init__.py",
+      "rule": "dynamic-import",
+      "sink": "import_module",
+      "digest": "59e72c01edb14c86",
+      "count": 1,
+      "reason": "Module-level __getattr__ for the lazily loaded command names: the module name comes only from the literal _LAZY_ATTRIBUTES table of unsloth_cli.commands.* modules, and an unknown name raises AttributeError before any import."
+    },
+    {
       "file": "unsloth_cli/_studio_deps.py",
       "rule": "dynamic-import",
       "sink": "spec_from_file_location",
@@ -782,9 +790,9 @@
       "file": "unsloth_cli/commands/eval.py",
       "rule": "unsafe-deserialize",
       "sink": "yaml.load",
-      "digest": "99bb2a156edb2dfc",
+      "digest": "7a94da1fd84a23da",
       "count": 1,
-      "reason": "_TaskYamlLoader subclasses yaml.SafeLoader; it only adds a tag for lm-eval's !function references."
+      "reason": "_task_yaml_loader() returns a yaml.SafeLoader subclass; it only adds a tag for lm-eval's !function references."
     },
     {
       "file": "unsloth_cli/commands/studio.py",

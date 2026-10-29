@@ -2,12 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useAppShellReadySignal } from "@/components/app-readiness";
-import { apiUrl } from "@/lib/api-base";
+import { apiUrl, isTauri } from "@/lib/api-base";
 import { normalizeAccountUsername, transitionBrowserAccount } from "@/lib/account-transition";
 import { sessionAccount, useLoginMode } from "../account-session";
 import { fetchAuthStatus, loginFromForm, loginWithPassword, setLoginMode, type TokenResponse } from "../login-client";
 import { Button } from "@/components/ui/button";
 import { MascotImg } from "@/components/mascot-img";
+import { useSpookyGreetings } from "@/features/halloween/halloween-store";
+import { pickSpookySloth } from "@/features/halloween/spooky-greetings";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -15,6 +17,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import type { SyntheticEvent } from "react";
 import { refreshSession, refreshSessionOutcome } from "../api";
+import { clearDesktopSignedOut, continueAsDesktopOwner } from "../tauri-auto-auth";
 import {
   deadlineFromStatus,
   formatCountdown,
@@ -75,6 +78,9 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     password: string;
     token: TokenResponse;
   } | null>(null);
+  const spooky = useSpookyGreetings();
+  const [halloweenSloth] = useState(pickSpookySloth);
+  const spookySloth = isLoginMode && spooky ? halloweenSloth : null;
 
   useEffect(() => {
     if (deadlineAt === null) {
@@ -91,7 +97,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       // Server first: localStorage flags can be stale (e.g. tokens from a previous install).
       try {
         const result = await fetchAuthStatus();
-        const requiresChange = result.login_mode === "multi"
+        const requiresChange = result.login_mode === "multi" || isTauri
           ? hasAuthToken() && mustChangePassword()
           : result.requires_password_change;
         if (!canceled) {
@@ -312,6 +318,8 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         token = (await response.json()) as TokenResponse;
       }
 
+      // A failed clear only shows login on the next launch.
+      if (isTauri) await clearDesktopSignedOut().catch(() => undefined);
       const finishSession = () => {
         setLoginMode(loginMode);
         if (!isLoginMode) setRequiresPasswordChange(false);
@@ -339,16 +347,35 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     }
   }
 
+  async function handleContinueAsOwner() {
+    setError(null);
+    setLoading(true);
+    try {
+      if (await continueAsDesktopOwner()) {
+        navigate({ to: getPostAuthRoute() });
+      } else {
+        setError("Sign in with your username and password.");
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
   if (statusLoading && initialized === null && error === null) return null;
 
   return (
     <div className="w-full max-w-sm space-y-6">
       <div className="space-y-1.5 text-center">
         <MascotImg
-          src="Sloth emojis/large sloth wave.png"
+          src={
+            spookySloth
+              ? `Sloth emojis/${spookySloth.sloth}`
+              : "Sloth emojis/large sloth wave.png"
+          }
           className="mx-auto mb-2 h-20 w-20 object-contain"
+          style={spookySloth?.enlarge ? { scale: "1.15" } : undefined}
         />
-        <h2 className="text-2xl font-semibold text-foreground">{title}</h2>
+        <h2 className="text-[calc(1.5rem*var(--ui-font-scale,1))] font-semibold text-foreground">{title}</h2>
         <p className="text-muted-foreground">{subtitle}</p>
       </div>
       {/* Not a live region: it re-renders every second, so it would be read aloud on every tick. */}
@@ -397,6 +424,9 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
             />
             <p id="setup-code-hint" className="text-sm text-muted-foreground">
               First sign in? Paste the setup code your administrator gave you as the password.
+            </p>
+            <p className="text-sm text-muted-foreground">
+              Installation owner? Sign in as unsloth, or the sign-in name shown in Settings &gt; Accounts.
             </p>
           </div>
         )}
@@ -542,9 +572,10 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         )}
 
         <Button
-          variant="dark"
+          variant="primary"
           type="submit"
-          className="mx-auto flex w-fit"
+          size="hero"
+          className="mx-auto flex h-[2.967em] w-fit bg-control-accent px-[1.56em] pt-0 pb-[0.07em] [font-family:var(--font-heading)] text-[0.9375rem] font-semibold tracking-[0.02em] text-control-accent-foreground hover:bg-control-accent/85"
           disabled={
             loading ||
             statusLoading ||
@@ -555,6 +586,18 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         >
           {loading ? "Please wait..." : submitLabel}
         </Button>
+        {/* Single mode only: there the shell secret proves the owner, who may never have set a password. */}
+        {isTauri && isLoginMode && loginMode === "single" && (
+          <Button
+            type="button"
+            variant="ghost"
+            className="mx-auto flex w-fit"
+            disabled={loading || statusLoading}
+            onClick={() => void handleContinueAsOwner()}
+          >
+            Continue as owner
+          </Button>
+        )}
       </form>
 
       {showSwitchLink && (

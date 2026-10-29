@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""CUDA graphs per denoiser block, for denoisers whose weights an offload tier moves.
-
-A whole-forward graph only holds while every weight stays at one address. Here each repeated block records on its
-own, keyed by its inputs AND the device addresses of its weights: moved weights run eagerly once, then record again.
-Streamed blocks get fixed addresses from the prefetcher's slot ring (``GroupPrefetcher.enable_slots``). The offload
-hooks stay eager around the recorded compute. Static inputs are shared per (block class, layout) since replays never
-overlap, and all recordings share one pool per denoiser.
-"""
+"""Per-block CUDA graphs keyed by inputs and weight addresses; moved weights re-record once; offload
+hooks stay eager; static inputs shared since replays never overlap"""
 
 from __future__ import annotations
 

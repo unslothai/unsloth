@@ -760,6 +760,36 @@ export const zhCN = {
     compactEmpty: "暂无可压缩的内容",
     compactUnsupported: "对话压缩需要支持工具调用的 GGUF 或 MLX 模型",
   },
+  halloween: {
+    navLabel: "不给糖就捣蛋…",
+    title: "不给糖就捣蛋？！",
+    description: "我们为 Unsloth 准备了一些惊吓，持续到十月底。",
+    chooseTheme: "选择一个惊悚主题",
+    spookyGreetings: "惊悚问候",
+    spookyGreetingsDescription: "树懒会在新对话中吓你一跳。",
+    decorations: "蜘蛛和蝙蝠",
+    decorationsDescription:
+      "使用万圣节主题时，角落会有蛛网，偶尔还会出现蜘蛛或蝙蝠。",
+    surprise: "不给糖就捣蛋！",
+    surpriseDescription: "让树懒为你挑选主题。",
+    themesTitle: "惊悚主题",
+    back: "返回",
+    footer: "Unsloth 将于 11 月 1 日零点恢复正常。",
+    removeNow: "立即移除",
+    hideFromSidebar: "从侧边栏隐藏",
+    greeting: {
+      pumpkins: "南瓜灯已经刻好了。接下来做什么？",
+      brewing: "开始熬制魔药吧",
+      trickOrTreat: "不给糖就捣蛋？",
+      manor: "欢迎来到古宅",
+      manorName: "{name}，欢迎来到古宅",
+      happyHalloween: "万圣节快乐",
+      happyHalloweenName: "{name}，万圣节快乐",
+      spirits: "幽灵们正在聆听……",
+      mysteries: "今晚我们要揭开什么谜团？",
+      conjure: "想让我为你变出什么？",
+    },
+  },
   welcome: {
     goodToSeeYou: "很高兴见到你",
     goodToSeeYouName: "很高兴见到你，{name}",
@@ -919,6 +949,8 @@ export const zhCN = {
       guidedTour: "引导教程",
       help: "帮助",
       logOut: "退出登录",
+      logOutNeedsPassword: "退出登录前，请先在 设置 > 远程访问 中设置密码，以便重新登录。",
+      logOutFailed: "无法安全退出登录，请稍后重试。",
       shutdown: "关闭服务",
     },
     commandPalette: {
@@ -1063,6 +1095,11 @@ export const zhCN = {
   },
   settings: {
     accounts: {
+      signsInAs: "以 {username} 登录",
+      signsInAsOwner: "以 {alias} 或 {username} 登录",
+      signInName: "你的登录名",
+      signInNameDescription: "当此安装有多个账户时，登录时输入的名称。unsloth 也始终可用。留空则只使用 unsloth。",
+      signInNameSave: "保存名称",
       title: "账户",
       description: "创建独立的 Unsloth 账户。新用户使用一次性设置码登录并设置密码。",
       username: "用户名",
@@ -1203,7 +1240,7 @@ export const zhCN = {
       lastVisited: "上次访问",
     },
     tabs: {
-      sandbox: "沙盒",
+      sandbox: "安全",
       accounts: "账户",
       general: "通用",
       profile: "个人资料",
@@ -1487,7 +1524,7 @@ export const zhCN = {
       },
     },
     sandbox: {
-      title: "沙盒",
+      title: "安全",
       description: "Python 和终端工具调用是否在此计算机上的系统沙箱中运行。",
       docs: "文档",
       docsLabel: "打开沙盒文档",
@@ -1542,7 +1579,7 @@ export const zhCN = {
       installingRuntime: "正在安装…",
       installRuntimeFailed: "运行时安装失败。",
       installRuntimeError: "无法开始安装运行时。",
-      unsupportedArch: "Windows 沙箱 (MXC) 仅支持 x64 版 Windows，因此在此电脑上不可用。",
+      unsupportedArch: "Windows 沙箱 (MXC) 仅支持 x64 和 ARM64 版 Windows，因此在此电脑上不可用。",
       builtinNeedsUpdate:
         "Windows 内置容器需要版本 {required} 或更高，而这台电脑运行的是 {current}。安装最新的 Windows 更新即可无需管理员步骤使用它，或在下方开启备用沙盒。",
       unsupportedBuild: "Windows 沙箱 (MXC) 需要 Windows 11 24H2（版本 26100）或更高版本，因此在此电脑上不可用。",
@@ -1563,6 +1600,7 @@ export const zhCN = {
       managedNote: "操作系统沙盒由此 Unsloth 服务器的所有者设置。",
     },
     debugging: {
+      description: "无需离开应用即可查看 Unsloth 日志。",
       logSection: "日志文件",
       source: "日志文件",
       sourceHint: "模型运行器会各自写入日志，因此加载或生成失败的原因通常记录在那里，而不是服务器日志中。",
@@ -2295,6 +2333,12 @@ export const zhCN = {
         classic: "经典",
         minimal: "极简",
         moreThemes: "更多主题",
+        halloween: "万圣节",
+      },
+      trickOrTreat: {
+        label: "不给糖就捣蛋",
+        description:
+          "万圣节主题和惊悚问候，持续到 11 月 1 日。",
       },
       custom: {
         chatWidth: {
@@ -2415,7 +2459,8 @@ export const zhCN = {
       description: "监控此 Unsloth 服务器的硬件和存储。",
       liveUpdates: "实时更新",
       floatingWindow: "悬浮窗口",
-      disableOverlay: "禁用悬浮层",
+      showFloatingWindow: "显示悬浮窗口",
+      showFloatingWindowDescription: "在 Unsloth 上方持续显示 CPU、内存和 GPU 使用情况。",
       liveMonitor: {
         title: "实时监控",
         apiTitle: "API 监控",
@@ -2438,7 +2483,7 @@ export const zhCN = {
         gpuUnusableDetail: "已检测到，但 PyTorch 无法使用",
         detailedView: "详细视图",
         detailedViewDescription:
-          "在浮动窗口和此处显示 CPU 负载以及每个 GPU 的负载、温度和功耗。",
+          "在浮动窗口中显示 CPU 负载以及每个 GPU 的负载、温度和功耗。",
         cpuLoad: "CPU 负载",
         gpuLoad: "GPU 负载",
         temperature: "温度",
@@ -2469,6 +2514,10 @@ export const zhCN = {
         used: "已用 {value}",
         free: "{value} 可用",
         total: "共 {value}",
+        usedOf: "已用 {used}，共 {total}",
+        segmentUsed: "GPU 已用",
+        segmentSystem: "系统已用",
+        segmentAvailable: "可用",
       },
       llamaBackend: {
         title: "GGUF 推理引擎",
@@ -2595,6 +2644,10 @@ export const zhCN = {
           hideDetailsAction: "隐藏详情",
           clearAction: "清理缓存",
           clearOneAction: "清理",
+          showFolders: "显示文件夹",
+          hideFolders: "隐藏文件夹",
+          previousLocations: "包含以前的位置。主清理按钮作用于当前缓存文件夹。模型按钮仅清理所选副本。",
+          clearModelDescription: "这只会删除此缓存副本。需要时会重新下载。",
           clearingAction: "正在清理...",
           confirmTitle: "要清理缓存文件吗？",
           confirmDescription: "这将释放约{size}。",
@@ -2832,11 +2885,6 @@ export const zhCN = {
       autoScrollManual: "手动",
       autoScrollKeywords:
         "滚动 自动滚动 跟随 底部 跳转 流式 生成 锁定 scroll autoscroll follow",
-      scrollToBottomButton: "滚动到底部按钮",
-      scrollToBottomButtonDescription:
-        "向上滚动后显示一个按钮，用于跳回最新消息。",
-      scrollToBottomButtonKeywords:
-        "滚动 底部 跳转 最新 箭头 按钮 隐藏 scroll bottom button",
       replyNotification: "回复完成时通知",
       replyNotificationDescription:
         "当 Unsloth 最小化或在后台时，回复完成后显示系统通知。",
@@ -3215,6 +3263,7 @@ export const zhCN = {
       readDocs: "阅读 API 文档",
       noAccess: "还没有 API 访问权限。",
       accessTokens: "访问 token",
+      quickstartTitle: "快速开始",
       columnName: "名称",
       columnToken: "Token",
       columnCreated: "创建时间",
@@ -3354,8 +3403,9 @@ export const zhCN = {
         loadError: "无法加载决策 API 设置。",
         sendsTo: "请求将发送到 {provider}。",
         connectionMissing: "此连接已不存在或没有决策模型。请选择其他模型。",
-        addConnection: "要使用托管的决策模型，请在连接中添加 TypeSafe、Liquid AI 或 OpenRouter。",
-        openConnections: "打开连接",
+        addConnection: "要使用托管的决策模型，请在",
+        connectionsLink: "连接",
+        addConnectionSuffix: "中添加。",
       },
       mcp: {
         title: "智能体访问 (MCP)",
@@ -4226,7 +4276,6 @@ export const zhCN = {
       terminalStart: "> Unsloth 训练开始...",
       preparingResources: "> 正在准备模型和数据集...",
       gettingReady: "> 正在为本次运行做好准备...",
-      waitingForFirstStep: "> {message} | 正在等待首个训练步...（{step}）",
       resumingTraining: "正在继续训练...",
       startingTraining: "正在开始训练...",
       dataset: "数据集",

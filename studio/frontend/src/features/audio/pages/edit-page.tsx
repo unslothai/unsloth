@@ -16,6 +16,7 @@ import {
   AudioHistoryProvider,
   AudioSourceInput,
 } from "../components/audio-source-input";
+import { FieldLabel, FieldTag } from "../components/field";
 import { TranscriptDiffEditor } from "../components/transcript-diff-editor";
 import { EDIT_COPY } from "../edit-policy";
 import {
@@ -86,17 +87,13 @@ function EditInputs({
 
       <div className="grid gap-1.5" data-tour="audio-edit-transcript">
         <div className="flex items-center justify-between gap-2">
-          <label
+          <FieldLabel
             htmlFor={EDIT_TRANSCRIPT_FIELD_ID}
             className="text-ui-13 font-medium text-foreground"
           >
             {EDIT_COPY.transcriptLabel}
-            {mode === "delivery" ? (
-              <span className="ml-1.5 font-normal text-muted-foreground">
-                Optional
-              </span>
-            ) : null}
-          </label>
+            {mode === "delivery" ? <FieldTag>Optional</FieldTag> : null}
+          </FieldLabel>
           <Button
             type="button"
             variant="ghost"

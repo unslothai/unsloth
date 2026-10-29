@@ -11,6 +11,7 @@ import type {
 import {
   type HubCapabilityFilter,
   detectCapabilities,
+  isVideoFamilyName,
 } from "./model-capabilities";
 import { matchesHubCapability } from "./view-models";
 
@@ -33,11 +34,22 @@ export function matchesInventoryCapabilities(
     return true;
   }
   const tags = row.tags ?? undefined;
-  const pipelineTag = row.pipelineTag ?? undefined;
   const id = rowName(row);
+  // A diffusion GGUF this host cannot build still makes images or video.
+  const task =
+    row.task === "image-diffusion-unsupported"
+      ? isVideoFamilyName(id)
+        ? "text-to-video"
+        : "text-to-image"
+      : row.task;
+  const pipelineTag = row.pipelineTag ?? task ?? undefined;
   const view = {
     capabilities: detectCapabilities(tags, pipelineTag, id),
     result: { tags, pipelineTag, id },
   };
-  return picks.some((key) => matchesHubCapability(view, key));
+  return picks.some(
+    (key) =>
+      !(key === "text" && row.capabilities.supportsVision) &&
+      matchesHubCapability(view, key),
+  );
 }

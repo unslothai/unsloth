@@ -32,7 +32,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
-import { Progress } from "@/components/ui/progress";
+import { DiffusionRunProgress } from "./diffusion-run-progress";
 import { Button } from "@/components/ui/button";
 import { InfoHint } from "@/components/ui/info-hint";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
@@ -1124,7 +1124,7 @@ export function DiffusionTrainPanel({
         compile_transformer: supportsCompile ? compileTransformer : undefined,
         hf_token: hfApiToken(getHfToken()) || undefined,
       });
-      toast.success("Training started");
+      toast.success("Preparing training…");
       void poll();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed to start training");
@@ -2016,7 +2016,7 @@ export function DiffusionTrainPanel({
             {starting
               ? "Starting..."
               : running
-                ? "Training in progress"
+                ? runProgress.preparing ? "Preparing training…" : "Training in progress"
                 : familyUntrainable
                   ? "Not supported on this GPU"
                   : "Start training"}
@@ -2186,20 +2186,7 @@ export function DiffusionTrainPanel({
         ) : (
           <>
             <div className="flex flex-col gap-3">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-semibold capitalize">
-                  {runProgress.title}
-                </span>
-                <span className="text-xs text-muted-foreground">
-                  {runProgress.count}
-                </span>
-              </div>
-              <Progress
-                className="h-2"
-                value={runProgress.percent ?? undefined}
-                indeterminate={runProgress.percent === null}
-                aria-label={runProgress.title}
-              />
+              <DiffusionRunProgress progress={runProgress} status={status} active={active} />
               {!runProgress.preparing && (
                 <div className="grid grid-cols-2 gap-3 @min-[440px]:grid-cols-4">
                 <Stat
@@ -2227,11 +2214,6 @@ export function DiffusionTrainPanel({
                   }
                 />
                 </div>
-              )}
-              {runProgress.detail && (
-                <p role="status" className="text-ui-11 text-muted-foreground">
-                  {runProgress.detail}
-                </p>
               )}
               {running && (
                 <Button

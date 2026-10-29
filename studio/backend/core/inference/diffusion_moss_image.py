@@ -4,33 +4,8 @@
 # The transformer, scheduler and pipeline below are a port of OpenMOSS-Team's ``pipeline_moss_image.py``
 # (Apache-2.0, https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT), keeping its state-dict names and numerics.
 
-"""MOSS-Image (OpenMOSS-Team/MOSS-Image-SFT and -Base) as an in-tree diffusers pipeline.
-
-The official repos ship the transformer and scheduler as remote code (``model_index.json`` points both at the repo's
-``pipeline_moss_image.py``), and Studio never runs repo code: no ``trust_remote_code``, no ``custom_pipeline``. So the
-model lives here and the pipeline is assembled per component from safetensors and JSON only: ``MOSSImageTransformer``
-(this file) from ``transformer/``, the Qwen3.5 text encoder (``transformers.Qwen3_5Model``, transformers >= 5.3) from
-``text_encoder/``, the FLUX.2 small-decoder VAE (``diffusers.AutoencoderKLFlux2``) from ``vae/`` and the tokenizer.
-
-Numerics follow the reference op for op (fp32 RMSNorm with the weight applied after the cast, fp64 timestep sinusoid,
-fp32 RoPE phases cast to the activation dtype, fp32 noise, CFG and Euler update, fp32 VAE decode); the tests check the
-port bit for bit against the reference file on a tiny random model. What differs is only how the same values are
-reached:
-
-- RoPE tables are built once per (height, width, text length) and reused (the reference rebuilt them per forward).
-- The text refiner (two unmodulated text blocks) does not read the latent or the timestep, so the pipeline runs it
-  once per prompt per render (``refine_text``) and hands the refined tokens to every step (``refined_text``), unless
-  the transformer carries offload hooks (then every step refines, as the reference does).
-- One sample at its full text length takes no boolean-mask indexing and no ``torch.all`` mask check, so the forward
-  is free of host syncs (CUDA-graph capturable); the pipeline passes no mask when every row has the same length.
-- Attention goes through diffusers' dispatcher (``set_attention_backend`` reaches it), whose native backend is the
-  same ``scaled_dot_product_attention`` call.
-
-Sampling defaults follow ComfyUI's MOSS-Image workflow (the baseline): 1024x1024, 50 steps, CFG 3, shift 5, Euler
-over ``sgm_uniform`` sigmas, skip-layer guidance on block 22 for the negative pass, empty negative prompt. The
-reference pipeline snaps its sigmas to the 1000-point training grid instead; ``sigma_schedule = "training_grid"`` on
-the scheduler (or ``UNSLOTH_MOSS_SIGMAS=training_grid``) selects that.
-"""
+"""MOSS-Image in-tree diffusers pipeline, no remote code; numerics bit-identical to reference, only
+default sigmas differ"""
 
 from __future__ import annotations
 

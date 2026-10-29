@@ -1,18 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Browser use: tools that let the model drive the browser panel the user is looking at.
-
-Every tool loop (GGUF, safetensors/MLX, external providers) runs these like any other tool; the
-page itself is driven by the chat tab, which runs each action in the agent's own browser tab and
-posts the result back (``state.browser_actions``). The tab is where the user can watch, stop and
-take over, and it gates the risky actions (submitting forms, buying, signing in, new sites) with a
-prompt this side cannot classify: only the live page knows what ``r12`` is.
-
-What this side enforces: argument shapes, http(s) only, public hosts or this machine off Studio's own
-ports, the request's website policy before and after a navigation, and that page text reaches the model
-fenced as untrusted.
-"""
+"""Lets the model drive the chat tab browser panel (user can watch, stop, take over; tab gates risky
+actions). Enforces argument shapes, http(s) only, public or this-machine hosts off Studio ports,
+website policy before and after navigation, and fenced untrusted page text."""
 
 from __future__ import annotations
 
