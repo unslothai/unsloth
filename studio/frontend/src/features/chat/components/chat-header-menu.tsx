@@ -35,7 +35,7 @@ import {
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  Folder02Icon,
+  Folder01Icon,
   FolderExportIcon,
   LayerIcon,
   MoreHorizontalIcon,
@@ -321,7 +321,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
               {menu.projects.map((entry) => (
                 <Item
                   key={entry.id}
-                  icon={Folder02Icon}
+                  icon={Folder01Icon}
                   onSelect={() => menu.moveToProject(entry.id)}
                 >
                   {entry.name}

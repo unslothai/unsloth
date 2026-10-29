@@ -68,6 +68,13 @@ export const CARD_COLUMNS: Record<
   large: { minWidth: 210, max: 4, wideMinWidth: 275 },
 };
 
+/** Chat, project and section cards are text with a small tile, so they run wider and shorter. */
+export const CHAT_CARD_COLUMNS: typeof CARD_COLUMNS = {
+  small: { minWidth: 210, max: 5, wideMinWidth: 250 },
+  medium: { minWidth: 250, max: 4, wideMinWidth: 300 },
+  large: { minWidth: 300, max: 3, wideMinWidth: 360 },
+};
+
 export type LibraryView = "grid" | "list";
 
 export const useLibraryViewStore = create<{

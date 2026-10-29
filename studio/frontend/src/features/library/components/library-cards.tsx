@@ -325,8 +325,11 @@ const CARD_ROW_GAP = "gap-y-6";
 // gap-5 (Masonry) and gap-x-5 (CardGrid) at 100%.
 const CARD_COLUMN_GAP_PX = 20;
 
-function useCardColumns(container: RefObject<HTMLDivElement | null>): number {
-  const { minWidth, max, wideMinWidth } = CARD_COLUMNS[useLibrarySettingsStore((s) => s.cardSize)];
+function useCardColumns(
+  container: RefObject<HTMLDivElement | null>,
+  table: typeof CARD_COLUMNS = CARD_COLUMNS,
+): number {
+  const { minWidth, max, wideMinWidth } = table[useLibrarySettingsStore((s) => s.cardSize)];
   return useColumnCount(container, minWidth, max, CARD_COLUMN_GAP_PX, wideMinWidth);
 }
 
@@ -358,29 +361,22 @@ export function Masonry<T>({
 
 export function CardGrid({
   children,
-  minRowHeight,
+  columns: table,
 }: {
   children: ReactNode;
-  minRowHeight?: string;
+  columns?: typeof CARD_COLUMNS;
 }) {
   const container = useRef<HTMLDivElement>(null);
-  const columns = useCardColumns(container);
-  const grid = (
+  const columns = useCardColumns(container, table);
+  return (
     <div
       ref={container}
       className={cn("grid gap-x-5", CARD_ROW_GAP)}
-      style={{
-        gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
-        gridAutoRows: minRowHeight
-          ? `max(${minRowHeight}, calc((100cqw - ${columns - 1} * var(--spacing) * 5) / ${columns}))`
-          : undefined,
-      }}
+      style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
     >
       {children}
     </div>
   );
-  // cqw resolves against an ancestor container, never the grid itself.
-  return minRowHeight ? <div className="@container">{grid}</div> : grid;
 }
 
 export function FolderGrid({
