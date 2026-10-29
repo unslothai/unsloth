@@ -1004,9 +1004,14 @@ def _load_correct_tokenizer(
     # else: keep a caller-supplied cache_dir so the tokenizer loads from the prefetch-warmed dir instead of risking an in-process Hub/Xet transfer.
 
     _repair_kwargs = dict(cache_dir = cache_dir, revision = revision)
+    _load_kwargs = dict(
+        model_max_length = model_max_length,
+        padding_side = padding_side,
+        token = token,
+        trust_remote_code = trust_remote_code,
+    )
     _name_lower = tokenizer_name.lower()
-    # These branches return the fast tokenizer as is, so skip the slow load (and its repair) they never read.
-    # _apply_post_load_tokenizer_fixes repairs the fast backend itself.
+    # These return the fast tokenizer unread by the slow one, so skip the slow load; the post-load fixes repair the fast backend.
     if (
         not fix_tokenizer
         or _name_lower in IGNORED_TOKENIZER_NAMES
@@ -1016,13 +1021,7 @@ def _load_correct_tokenizer(
         or "phi-4" in _name_lower
     ):
         fast_tokenizer = AutoTokenizer.from_pretrained(
-            tokenizer_name,
-            model_max_length = model_max_length,
-            padding_side = padding_side,
-            token = token,
-            trust_remote_code = trust_remote_code,
-            cache_dir = cache_dir,
-            revision = revision,
+            tokenizer_name, cache_dir = cache_dir, revision = revision, **_load_kwargs
         )
         return _apply_post_load_tokenizer_fixes(
             fast_tokenizer, fix_tokenizer, config, **_repair_kwargs
@@ -1033,16 +1032,13 @@ def _load_correct_tokenizer(
     try:
         slow_tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_name,
-            model_max_length = model_max_length,
-            padding_side = padding_side,
-            token = token,
-            trust_remote_code = trust_remote_code,
             # use_fast = False alone is not enough; see twitter.com/danielhanchen/status/1789659394302718373
             use_fast = False,
             legacy = False,
             from_slow = True,
             cache_dir = cache_dir,
             revision = revision,
+            **_load_kwargs,
         )
     except:
         slow_tokenizer = None
@@ -1050,13 +1046,7 @@ def _load_correct_tokenizer(
         slow_tokenizer = None
 
     fast_tokenizer = AutoTokenizer.from_pretrained(
-        tokenizer_name,
-        model_max_length = model_max_length,
-        padding_side = padding_side,
-        token = token,
-        trust_remote_code = trust_remote_code,
-        cache_dir = cache_dir,
-        revision = revision,
+        tokenizer_name, cache_dir = cache_dir, revision = revision, **_load_kwargs
     )
     # Repair both before comparing them, or a v5 byte-level mismatch detours into the legacy path.
     if slow_tokenizer is not None:
