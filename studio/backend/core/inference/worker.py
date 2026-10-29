@@ -864,8 +864,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                     if k in _entry
                 }
             )
-            # MLX decides at load: a vision config mlx-lm built as text reads no images, and a tower
-            # the transformers registry does not know (an mlx-vlm-only family) does.
+            # MLX decides at load: an mlx-lm text build reads no images, an mlx-vlm-only tower does.
             if model_info["is_mlx"] and isinstance(_entry.get("is_vision"), bool):
                 model_info["is_vision"] = _entry["is_vision"]
             # Resolved MLX runtime knobs; only the backend knows what it honored.
@@ -1959,7 +1958,6 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
                 break
 
             if isinstance(text_chunk, dict):
-                # A spoken reply's waveform, sent once after its text.
                 _send_response(
                     resp_queue, {"type": "speech", "request_id": request_id, **text_chunk}
                 )

@@ -6856,7 +6856,6 @@ export function createOpenAIStreamAdapter(
             // Turn-scoped: a stale screenshot here made the backend refuse every later text turn's durable run.
             image_base64: findLatestUserImageBase64(currentTurnMessages),
             audio_base64: turnAudioBase64,
-            // A model that speaks answers a spoken question in its own voice too.
             ...(activeModel?.speaks && turnAudioBase64
               ? { modalities: ["text", "audio"] }
               : {}),

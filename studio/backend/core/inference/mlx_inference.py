@@ -5733,7 +5733,6 @@ class MLXInferenceBackend:
             "is_audio": _audio_type is not None and _audio_type != "audio_vlm",
             "audio_type": _audio_type,
             "has_audio_input": is_audio_input_type(_audio_type),
-            # Answers a spoken question in its own voice (LFM3-Audio / LFM3-Omni).
             "speaks": _audio_type == "audio_vlm"
             and getattr(self._model, "joint_audio_text_generation", False) is True,
             "has_video_input": is_vision and _mlx_reads_video(self._processor),
