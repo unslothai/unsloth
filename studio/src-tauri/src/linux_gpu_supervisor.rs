@@ -280,12 +280,19 @@ pub fn maybe_simulate_error71() {
     if CHANNEL.get().is_none() || !test_hook_requested() {
         return;
     }
-    // Structured, like GTK's own message (built with G_LOG_USE_STRUCTURED).
-    glib::log_structured!(
-        "Gdk",
-        glib::LogLevel::Message,
-        {"MESSAGE" => "Error 71 (Protocol error) dispatching to Wayland display."}
-    );
+    // Use GTK's exact structured API with NUL-terminated fields. Older GLib default writers
+    // do not reliably print the explicitly sized, non-NUL fields in log_structured!.
+    // SAFETY: all pointers are static C strings, and the format has no variadic arguments.
+    unsafe {
+        glib::ffi::g_log_structured_standard(
+            c"Gdk".as_ptr(),
+            glib::ffi::G_LOG_LEVEL_MESSAGE,
+            c"linux_gpu_supervisor.rs".as_ptr(),
+            c"0".as_ptr(),
+            c"maybe_simulate_error71".as_ptr(),
+            c"Error 71 (Protocol error) dispatching to Wayland display.".as_ptr(),
+        );
+    }
     std::process::exit(1);
 }
 
@@ -309,7 +316,7 @@ pub fn outcome(status: &ExitStatus, saw_ready: bool, saw_error71: bool) -> Outco
     }
 }
 
-/// The child currently running, for the SIGTERM thread.
+/// The child currently running, for the signal watcher.
 #[derive(Default)]
 struct Current {
     pid: Option<libc::pid_t>,
@@ -319,7 +326,7 @@ struct Current {
 struct Shared {
     current: Mutex<Current>,
     terminations: AtomicUsize,
-    /// Any SIGTERM, or a SIGINT/SIGQUIT/SIGHUP while no child runs: start no further child.
+    /// Any termination signal: start no further child.
     /// Read under `current`'s lock by [`run_attempt`], so a request cannot slip between the
     /// check and the spawn.
     stopping: AtomicBool,
@@ -334,13 +341,16 @@ impl Shared {
         })
     }
 
-    /// SIGINT, SIGQUIT and SIGHUP reach a running child through the shared process group, so
-    /// they are only remembered when no child exists (before the first spawn, or between the
-    /// crashed GPU child and the CPU relaunch).
-    fn on_interrupt(&self) {
+    /// The child has its own process group, so both PID-directed and group-directed signals
+    /// reach it exactly once through this watcher.
+    fn on_interrupt(&self, signal: libc::c_int) {
         let current = self.current.lock().unwrap_or_else(|e| e.into_inner());
-        if current.pid.is_none() {
-            self.stopping.store(true, Ordering::SeqCst);
+        self.stopping.store(true, Ordering::SeqCst);
+        if let Some(pid) = current.pid {
+            // SAFETY: our own child, still registered under the same lock as spawn/reap.
+            unsafe {
+                libc::kill(pid, signal);
+            }
         }
     }
 
@@ -419,9 +429,9 @@ pub fn run_parent(on_fallback: impl FnOnce(), log: impl Fn(&str)) -> Result<Infa
     }
 }
 
-/// SIGINT, SIGQUIT and SIGHUP are caught rather than forwarded: the terminal or session already
-/// delivers them to the child through the shared process group, and a second copy would make
-/// the child see a repeat and skip backend cleanup.
+/// Forward interrupts to the child's separate process group via its PID. It does not receive
+/// the original terminal/session group delivery, which would otherwise look like a repeat and
+/// skip backend cleanup. SIGTERM retains the graceful shutdown control message.
 fn install_parent_signals(shared: &Arc<Shared>) -> Option<signal_hook::iterator::Handle> {
     match signal_hook::iterator::Signals::new([
         libc::SIGTERM,
@@ -439,7 +449,7 @@ fn install_parent_signals(shared: &Arc<Shared>) -> Option<signal_hook::iterator:
                         if signal == libc::SIGTERM {
                             shared.on_sigterm();
                         } else {
-                            shared.on_interrupt();
+                            shared.on_interrupt(signal);
                         }
                     }
                 });
@@ -516,7 +526,11 @@ fn run_attempt(mut command: Command, shared: &Shared) -> io::Result<Option<Attem
     let (mut parent_end, child_end) = UnixStream::pair()?;
     let child_fd = child_end.as_raw_fd();
     command.env(SUPERVISOR_FD_ENV, child_fd.to_string());
-    // SAFETY: the closure only calls async-signal-safe fcntl(2) and signal(2).
+    command.process_group(0);
+    let parent_pid = std::process::id() as libc::pid_t;
+    // SAFETY: the closure only calls fcntl(2), signal(2), prctl(2) and getppid(2), without
+    // allocating or taking locks. The parent-death signal also covers an uncatchable SIGKILL
+    // sent to the supervisor's group, which no longer includes the app.
     unsafe {
         command.pre_exec(move || {
             if !set_cloexec(child_fd, false) {
@@ -524,6 +538,13 @@ fn run_attempt(mut command: Command, shared: &Shared) -> io::Result<Option<Attem
             }
             for signal in [libc::SIGINT, libc::SIGQUIT, libc::SIGHUP, libc::SIGTERM] {
                 libc::signal(signal, libc::SIG_DFL);
+            }
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // The supervisor may have died between fork and prctl, before the signal was armed.
+            if libc::getppid() != parent_pid {
+                return Err(io::Error::from_raw_os_error(libc::ECANCELED));
             }
             Ok(())
         });
@@ -747,7 +768,7 @@ mod tests {
             || fallbacks.set(fallbacks.get() + 1),
             &|line| logs.borrow_mut().push(line.to_string()),
         )
-        .expect("sh spawns");
+        .expect("bash spawns");
         (
             status,
             spawns.into_inner(),
@@ -819,7 +840,7 @@ mod tests {
     }
 
     /// Re-execs this test binary as the supervised child (the windows_job.rs pattern), so the
-    /// real take_child_channel -> install_gdk_hook -> g_message("Gdk", ...) -> exit(1) path runs.
+    /// real take_child_channel -> install_gdk_hook -> g_log_structured_standard -> exit(1) runs.
     #[cfg(debug_assertions)]
     #[test]
     fn real_gdk_hook_drives_fallback_end_to_end() {
@@ -969,7 +990,10 @@ mod tests {
         let exe = std::env::current_exe().unwrap();
         assert_eq!(app_program(Ok(exe.clone())), exe);
         let gone = std::path::PathBuf::from("/nonexistent/unsloth-studio (deleted)");
-        assert_eq!(app_program(Ok(gone)), std::path::PathBuf::from("/proc/self/exe"));
+        assert_eq!(
+            app_program(Ok(gone)),
+            std::path::PathBuf::from("/proc/self/exe")
+        );
         assert_eq!(
             app_program(Err(std::io::Error::other("no exe"))),
             std::path::PathBuf::from("/proc/self/exe")
@@ -978,9 +1002,16 @@ mod tests {
 
     #[test]
     fn a_shown_window_drops_hidden_from_the_cpu_relaunch() {
-        let args = || ["--hidden", "unsloth://open"].map(OsString::from).into_iter();
+        let args = || {
+            ["--hidden", "unsloth://open"]
+                .map(OsString::from)
+                .into_iter()
+        };
         assert_eq!(relaunch_args(args(), false), args().collect::<Vec<_>>());
-        assert_eq!(relaunch_args(args(), true), vec![OsString::from("unsloth://open")]);
+        assert_eq!(
+            relaunch_args(args(), true),
+            vec![OsString::from("unsloth://open")]
+        );
 
         // The parent learns about the shown window from the crashed child's S.
         let shown = RefCell::new(Vec::new());
@@ -1034,7 +1065,11 @@ mod tests {
             |fallback, _| {
                 let mut command = Command::new("bash");
                 // A CPU child that did start would exit 7.
-                let script = if fallback { "exit 7" } else { "printf E >&$UNSLOTH_GPU_SUPERVISOR_FD; exit 1" };
+                let script = if fallback {
+                    "exit 7"
+                } else {
+                    "printf E >&$UNSLOTH_GPU_SUPERVISOR_FD; exit 1"
+                };
                 command.arg("-c").arg(script);
                 spawned.borrow_mut().push(fallback);
                 command
@@ -1045,18 +1080,173 @@ mod tests {
         )
         .unwrap();
         assert_eq!(status.code(), Some(1));
-        assert!(logs.borrow().iter().any(|line| line.contains("not relaunching")));
+        assert!(logs
+            .borrow()
+            .iter()
+            .any(|line| line.contains("not relaunching")));
         assert_eq!(shared.current.lock().unwrap().pid, None);
     }
 
     #[test]
-    fn interrupts_only_count_while_no_child_runs() {
-        let shared = Shared::new();
-        shared.current.lock().unwrap().pid = Some(1);
-        shared.on_interrupt();
-        assert!(!shared.stopping.load(Ordering::SeqCst));
-        shared.current.lock().unwrap().pid = None;
-        shared.on_interrupt();
-        assert!(shared.stopping.load(Ordering::SeqCst));
+    fn interrupts_before_a_spawn_stop_the_supervisor() {
+        for signal in [libc::SIGINT, libc::SIGHUP, libc::SIGQUIT] {
+            let shared = Shared::new();
+            shared.on_interrupt(signal);
+            assert!(shared.stopping.load(Ordering::SeqCst));
+            assert!(run_attempt(Command::new("false"), &shared)
+                .unwrap()
+                .is_none());
+        }
+    }
+
+    /// Separate processes exercise real signal delivery without installing handlers in the
+    /// parallel test runner. A duplicate signal would interrupt the child's simulated cleanup.
+    #[test]
+    fn pid_and_group_signals_reach_the_child_once() {
+        const ROLE: &str = "UNSLOTH_SUPERVISOR_SIGNAL_TEST";
+        const STATE: &str = "UNSLOTH_SUPERVISOR_SIGNAL_TEST_STATE";
+        const NAME: &str =
+            "linux_gpu_supervisor::tests::pid_and_group_signals_reach_the_child_once";
+
+        if std::env::var_os(ROLE).is_some() {
+            let channel = take_child_channel();
+            if !channel.supervised {
+                run_parent(|| panic!("no fallback"), |_| {}).unwrap();
+            }
+            let state = std::path::PathBuf::from(std::env::var_os(STATE).unwrap());
+            let received = Arc::new(AtomicUsize::new(0));
+            let on_signal = {
+                let received = Arc::clone(&received);
+                let state = state.clone();
+                move |signal: libc::c_int| {
+                    if received.fetch_add(1, Ordering::SeqCst) != 0 {
+                        std::process::exit(90);
+                    }
+                    let state = state.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(200));
+                        std::fs::write(state.join("cleaned"), signal.to_string()).unwrap();
+                        std::process::exit(128 + signal);
+                    });
+                }
+            };
+            let mut signals = signal_hook::iterator::Signals::new([
+                libc::SIGINT,
+                libc::SIGHUP,
+                libc::SIGQUIT,
+                libc::SIGTERM,
+            ])
+            .unwrap();
+            let on_control = on_signal.clone();
+            start_control_reader(move || on_control(libc::SIGTERM));
+            // SAFETY: getpgrp only reads the calling process's group ID.
+            let pgid = unsafe { libc::getpgrp() };
+            std::fs::write(
+                state.join("ready"),
+                format!("{} {pgid}", std::process::id()),
+            )
+            .unwrap();
+            for signal in signals.forever() {
+                on_signal(signal);
+            }
+            unreachable!();
+        }
+
+        for signal in [libc::SIGINT, libc::SIGHUP, libc::SIGQUIT, libc::SIGTERM] {
+            for group in [false, true] {
+                check_signal(signal, group, false);
+            }
+        }
+        // An uncatchable group signal must not strand the app in its separate group.
+        check_signal(libc::SIGKILL, true, true);
+
+        fn check_signal(signal: libc::c_int, group: bool, parent_death: bool) {
+            let state = tempfile::tempdir().unwrap();
+            let mut supervisor = Command::new(std::env::current_exe().unwrap())
+                .args([NAME, "--exact", "--nocapture"])
+                .env(ROLE, "1")
+                .env(STATE, state.path())
+                .process_group(0)
+                .spawn()
+                .unwrap();
+            let supervisor_pid = supervisor.id() as libc::pid_t;
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let mut child_pid = None;
+            let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let ready = loop {
+                    if let Ok(ready) = std::fs::read_to_string(state.path().join("ready")) {
+                        break ready;
+                    }
+                    assert!(
+                        supervisor.try_wait().unwrap().is_none(),
+                        "supervisor exited early"
+                    );
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "child did not become ready"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                };
+                let ids: Vec<libc::pid_t> = ready
+                    .split_whitespace()
+                    .map(|id| id.parse().unwrap())
+                    .collect();
+                child_pid = Some(ids[0]);
+                assert_eq!(ids[0], ids[1], "child leads its own process group");
+                assert_ne!(
+                    ids[1], supervisor_pid,
+                    "child cannot receive the original group signal"
+                );
+                let target = if group {
+                    -supervisor_pid
+                } else {
+                    supervisor_pid
+                };
+                // SAFETY: the test created this isolated process group and waited for its child.
+                assert_eq!(unsafe { libc::kill(target, signal) }, 0);
+                let status = loop {
+                    if let Some(status) = supervisor.try_wait().unwrap() {
+                        break status;
+                    }
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "supervisor ignored signal {signal}"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                };
+                if parent_death {
+                    assert_eq!(status.signal(), Some(libc::SIGKILL));
+                } else {
+                    assert_eq!(
+                        status.code(),
+                        Some(128 + signal),
+                        "signal {signal}, group={group}"
+                    );
+                }
+                let cleaned = loop {
+                    if let Ok(cleaned) = std::fs::read_to_string(state.path().join("cleaned")) {
+                        break cleaned;
+                    }
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "child cleanup did not finish"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                };
+                let expected = if parent_death { libc::SIGTERM } else { signal };
+                assert_eq!(cleaned, expected.to_string());
+            }));
+            if checked.is_err() {
+                let _ = supervisor.kill();
+                if let Some(pid) = child_pid {
+                    // SAFETY: only the child PID recorded for this test can be killed.
+                    unsafe { libc::kill(pid, libc::SIGKILL) };
+                }
+            }
+            let _ = supervisor.wait();
+            if let Err(error) = checked {
+                std::panic::resume_unwind(error);
+            }
+        }
     }
 }
