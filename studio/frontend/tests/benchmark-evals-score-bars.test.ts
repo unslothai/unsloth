@@ -12,6 +12,7 @@ import {
   fmtScore,
   latestScores,
   metricValue,
+  modelsOf,
   scoreboardGroups,
 } from "../src/features/benchmark/lib/score-bars.ts";
 
@@ -104,4 +105,9 @@ test("a metric outside 0-1 stays raw and turns the percent axis off", () => {
   assert.deepEqual(metricValue(raw, "perplexity"), { value: 12.5, stderr: 0.3, ratio: false });
   assert.equal(comparisonGroups([raw], "perplexity", () => "#000", String).percent, false);
   assert.equal(metricValue(raw, "missing"), null);
+});
+
+test("the comparison colours a model the way the scoreboard does, whatever the run order", () => {
+  const reordered = [runs[3], runs[0], runs[2], runs[1]];
+  assert.deepEqual(modelsOf(reordered), latestScores(runs, 7).models);
 });

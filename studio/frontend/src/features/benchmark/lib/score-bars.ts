@@ -188,10 +188,13 @@ export function comparisonGroups(
   return { groups: [...byTask.values()], percent, peak };
 }
 
-/** Models in first-seen order, for colour slots. */
+/** Models by their oldest run, the scoreboard's colour order, so a model keeps its colour. */
 export function modelsOf(runs: BenchmarkRunSummary[]): string[] {
   const out: string[] = [];
-  for (const r of runs) {
+  const oldestFirst = [...runs].sort((a, b) =>
+    a.created_at.localeCompare(b.created_at),
+  );
+  for (const r of oldestFirst) {
     const m = modelName(r.model);
     if (!out.includes(m)) out.push(m);
   }
