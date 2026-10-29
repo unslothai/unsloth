@@ -218,8 +218,7 @@ def _build_group_layout_reference(
     max_segment_cap = None,
 ):
     """Build the shared-prefix GroupLayout, or return None to fall back to the packed path.
-    Token by token over host lists; build_group_layout takes it for rows that are not one
-    contiguous real run and for inputs its single-copy path does not cover.
+    Token-by-token builder; build_group_layout's fallback for inputs its fast path skips.
 
     input_ids : [B, L]. GRPO's layout is left-padded in the prompt and right-padded in
         the completion. Real tokens of a row are a contiguous run not necessarily
@@ -354,9 +353,8 @@ def build_group_layout(
     logits_to_keep : int
     left_pad_tokens_per_prompt : [B] long tensor (per-row left-pad count in the prompt).
 
-    Same layout as _build_group_layout_reference, built from one device to host copy of
-    input_ids + the per-row completion start and one host to device copy of every index
-    table, with the per-token index maps built by tensor ops instead of Python loops.
+    Same result as _build_group_layout_reference, with one device->host and one
+    host->device copy instead of per-token loops.
     """
     args = (input_ids, logits_to_keep, pad_id, num_generations, left_pad_tokens_per_prompt)
     kwargs = dict(apply_tokr_gate = apply_tokr_gate, max_segment_cap = max_segment_cap)
@@ -396,7 +394,7 @@ def build_group_layout(
         return _build_group_layout_reference(*args, **kwargs)
     if G is None or G < 2 or total_rows % G != 0:
         return None
-    # Prompt real columns [first, pe), completion region real columns [pe, end).
+    # Prompt real columns [first, pe), completion [pe, end).
     pe = torch.minimum(torch.maximum(cs, first), end)
     P_row = pe - first
     R_row = end - pe
@@ -409,7 +407,6 @@ def build_group_layout(
         return None
     first_g = first.view(num_groups, G)
     P_list = P_g[:, 0].tolist()
-    # Byte-identical prompts across each group, the shared-prefix precondition.
     for gi, P in enumerate(P_list):
         cols = first_g[gi].unsqueeze(1) + torch.arange(P)
         prompts = ids[gi * G : (gi + 1) * G].gather(1, cols)
@@ -433,9 +430,7 @@ def build_group_layout(
     group_specs = [(gm["P"], gm["R_list"]) for gm in groups]
     labels, T, T_pad, _, sig_parts = _seg_labels_host(group_specs)
 
-    # Segments in flat order: per group the shared prefix (from its first row), then one
-    # suffix per row. Columns, positions and predicting indices are per-segment starts
-    # plus the offset inside the segment.
+    # Flat order per group: shared prefix (from its first row), then one suffix per row.
     rows_g = torch.arange(total_rows).view(num_groups, G)
     P_t = P_g[:, :1]
     seg_len = torch.cat([P_t, R_g], dim = 1).reshape(-1)

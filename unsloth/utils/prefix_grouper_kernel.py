@@ -174,10 +174,8 @@ def build_seg_info_multigroup(
 
 
 def _seg_labels_host(group_specs):
-    """Host side of build_seg_info_multigroup: one int64 CPU tensor [3, T_pad] holding
-    group_of_kv, is_prefix (0 / 1) and suffix_of_kv, already padded with the pad sentinels,
-    plus T, T_pad, group_meta and the signature parts. Built from the Python ints alone, so
-    the labels reach the device in one copy instead of three tiny fills per segment."""
+    """CPU int64 [3, T_pad] rows (group_of_kv, is_prefix, suffix_of_kv), pad sentinels
+    included, plus T, T_pad, group_meta and signature parts."""
     group_meta = []
     sig_parts = []
     seg_lens = []
@@ -226,8 +224,7 @@ def _seg_labels_host(group_specs):
 
 
 def _labels_to_device(labels, T_pad, device):
-    """(group_of_kv, is_prefix, suffix_of_kv) on device, each in its own storage, from the
-    [3, T_pad] host labels (one host to device copy)."""
+    """One host->device copy; each returned tensor gets its own storage."""
     moved = labels.to(device)
     return moved[0].clone(), moved[1].to(torch.bool), moved[2].clone()
 
