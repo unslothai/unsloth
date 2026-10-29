@@ -372,7 +372,6 @@ class SmallHostDecision:
     # component -> stored dtype it loads at (memory-mapped)
     storage_dtypes: dict[str, str] = field(default_factory = dict)
     refuse: Optional[str] = None
-    # int8 denoiser weights in an Int8Spill, not host RAM
     int8_spill: bool = False
     spill_route_host_mib: int = 0
 
