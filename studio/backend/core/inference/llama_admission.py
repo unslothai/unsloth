@@ -420,6 +420,8 @@ class LlamaAdmissionLease:
         deadline = None if not timeout_s or timeout_s <= 0 else time.monotonic() + timeout_s
         try:
             while True:
+                # Read before the test, so a change between the test and the wait is not missed.
+                seen = queue._changes
                 if queue.try_reclaim_commitment(want):
                     with self._release_lock:
                         if self._released:
@@ -436,7 +438,8 @@ class LlamaAdmissionLease:
                     return self._give_up_repark(queue, held, cancelled = True)
                 if deadline is not None and time.monotonic() >= deadline:
                     return self._give_up_repark(queue, held, cancelled = False)
-                time.sleep(poll_s)
+                # The cancel event and the deadline do not notify, so the poll interval still bounds them.
+                queue.wait_for_change(seen, poll_s)
         except BaseException:
             self._give_up_repark(queue, held, cancelled = True)
             raise
@@ -576,6 +579,9 @@ class LlamaAdmissionQueue:
         "_committed",
         "_budget",
         "_reparking",
+        "_changes",
+        "_changed",
+        "_change_events",
     )
 
     def __init__(self, key: str):
@@ -601,6 +607,10 @@ class LlamaAdmissionQueue:
         self._budget = 0
         # Reparkers still hold a slot, so they are not in _waiters. See yield_commitment.
         self._reparking = 0
+        # Bumped on every state change so polling waits wake on it; their poll stays as the fallback.
+        self._changes = 0
+        self._changed = threading.Condition(self._lock)
+        self._change_events: dict = {}
 
     def _resize_pool_locked(self, capacity: int) -> None:
         # Slots past a shrunk capacity retire when their holder releases them.
@@ -869,15 +879,20 @@ class LlamaAdmissionQueue:
     ) -> Optional[int]:
         """Ordered by ticket so approvals resume in return order; the claim never admits over budget."""
         tokens = max(0, int(tokens or 0))
+        loop = asyncio.get_running_loop()
+        changed = asyncio.Event()
         with self._lock:
             self._unpark_seq += 1
             ticket = self._unpark_seq
             self._unpark_tickets.append(ticket)
             self._unpark_tokens[ticket] = tokens
+            self._change_events[ticket] = (loop, changed)
         deadline = None if not timeout_s or timeout_s <= 0 else time.monotonic() + timeout_s
         try:
             while True:
                 with self._lock:
+                    # Cleared under the lock before the test: a later change sets it again.
+                    changed.clear()
                     if deadline is not None and time.monotonic() >= deadline:
                         self._unpark_lapsed.add(ticket)
                         deadline = None
@@ -890,9 +905,15 @@ class LlamaAdmissionQueue:
                         return None
                     if abandoned is not None and abandoned():
                         return None
-                await asyncio.sleep(poll_s)
+                # The cancel event, abandoned() and the deadline do not notify, so the poll still bounds them.
+                timer = loop.call_later(poll_s, changed.set)
+                try:
+                    await changed.wait()
+                finally:
+                    timer.cancel()
         finally:
             with self._lock:
+                self._change_events.pop(ticket, None)
                 try:
                     self._unpark_tickets.remove(ticket)
                 except ValueError:
@@ -933,7 +954,24 @@ class LlamaAdmissionQueue:
             # A parked holder will return here; evicting would resume it against a fresh 1-slot pool.
             return self._in_use == 0 and not self._waiters and not self._parked
 
+    def _note_change_locked(self) -> None:
+        """Every state change runs _grant_waiters_locked, so that is where the polling waits get woken."""
+        self._changes += 1
+        self._changed.notify_all()
+        for loop, event in self._change_events.values():
+            try:
+                loop.call_soon_threadsafe(event.set)
+            except RuntimeError:
+                pass
+
+    def wait_for_change(self, seen: int, timeout_s: float) -> None:
+        """Sleeps up to ``timeout_s``, returning early once the state has changed since ``seen``."""
+        with self._lock:
+            if self._changes == seen:
+                self._changed.wait(max(0.0, timeout_s))
+
     def _grant_waiters_locked(self) -> None:
+        self._note_change_locked()
         # Reparkers go first, or steady arrivals hold a growing run at its old size.
         if self._reparking > 0:
             return
