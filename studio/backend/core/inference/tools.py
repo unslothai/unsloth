@@ -20680,12 +20680,20 @@ def _stamp_size(stamp: str) -> "int | None":
 
 def _file_digest(path: str, expected_size: "int | None" = None) -> "str | None":
     """Opened with O_NOFOLLOW and O_NONBLOCK, so a symlink or FIFO swapped in at the path is rejected."""
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | no_follow | getattr(os, "O_NONBLOCK", 0)
     fd = None
     try:
+        # Windows has no O_NOFOLLOW: refuse a link up front, and a link swapped in before the
+        # open shows up as a different file once it is open.
+        named = None if no_follow else os.lstat(path)
+        if named is not None and not stat.S_ISREG(named.st_mode):
+            return None
         fd = os.open(path, flags)
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
+            return None
+        if named is not None and (info.st_dev, info.st_ino) != (named.st_dev, named.st_ino):
             return None
         if expected_size is not None and info.st_size != expected_size:
             return None

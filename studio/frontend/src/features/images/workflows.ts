@@ -5,12 +5,12 @@ import {
   AiImageIcon,
   ArrowExpand01Icon,
   Edit03Icon,
-  ImageUpload01Icon,
   MagicWand01Icon,
   ZoomInAreaIcon,
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 // Relative with .ts: the node tests import this file and cannot resolve @/.
+import { ImagesIcon } from "../../lib/hugeicons-derived.ts";
 import { PaintbrushIcon } from "../../lib/paintbrush-icon.ts";
 
 export type WorkflowId =
@@ -78,7 +78,7 @@ export const WORKFLOW_TABS: Array<{
   {
     id: "reference",
     label: "Reference",
-    icon: ImageUpload01Icon,
+    icon: ImagesIcon,
     requires: "reference",
     hint: "Generate guided by a reference image",
   },

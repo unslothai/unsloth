@@ -986,7 +986,7 @@ export const it = {
       lastVisited: "Ultima visitata",
     },
     tabs: {
-      sandbox: "Sandbox",
+      sandbox: "Sicurezza",
       accounts: "Account",
       general: "Generali",
       profile: "Profilo",
@@ -1270,7 +1270,7 @@ export const it = {
       },
     },
     sandbox: {
-      title: "Sandbox",
+      title: "Sicurezza",
       description: "Indica se le chiamate agli strumenti Python e Terminale vengono eseguite in una sandbox del sistema su questo computer.",
       docs: "Documentazione",
       docsLabel: "Apri la documentazione della sandbox",
@@ -1345,6 +1345,7 @@ export const it = {
       managedNote: "Il proprietario di questo server Unsloth configura la sandbox del sistema.",
     },
     debugging: {
+      description: "Leggi i log di Unsloth senza uscire dall'app.",
       logSection: "File di log",
       source: "File di log",
       sourceHint: "I runner dei modelli scrivono i propri log, quindi un caricamento o una generazione non riusciti sono spesso spiegati lì anziché nel log del server.",
@@ -2258,7 +2259,8 @@ export const it = {
         "Monitora hardware e archiviazione di questo server Unsloth.",
       liveUpdates: "Aggiornamenti in tempo reale",
       floatingWindow: "Finestra mobile",
-      disableOverlay: "Disattiva la sovrapposizione",
+      showFloatingWindow: "Mostra finestra mobile",
+      showFloatingWindowDescription: "Mantieni visibile l'uso di CPU, RAM e GPU sopra Unsloth.",
       liveMonitor: {
         title: "Monitor in tempo reale",
         apiTitle: "Monitor API",
@@ -2722,11 +2724,6 @@ export const it = {
       autoScrollManual: "Manuale",
       autoScrollKeywords:
         "scorrimento scorrere automatico seguire fondo saltare streaming generazione vista bloccare scroll autoscroll follow",
-      scrollToBottomButton: "Pulsante per scorrere in fondo",
-      scrollToBottomButtonDescription:
-        "Mostra un pulsante per tornare all'ultimo messaggio dopo aver scorso verso l'alto.",
-      scrollToBottomButtonKeywords:
-        "scorrere fondo saltare ultimo freccia pulsante nascondere scroll bottom button",
       replyNotification: "Avvisa quando una risposta è finita",
       replyNotificationDescription:
         "Mostra una notifica di sistema quando una risposta finisce mentre Unsloth è ridotto a icona o in background.",
@@ -3121,6 +3118,7 @@ export const it = {
       readDocs: "Leggi la documentazione delle API",
       noAccess: "Nessun accesso API configurato.",
       accessTokens: "Token di accesso",
+      quickstartTitle: "Avvio rapido",
       columnName: "Nome",
       columnToken: "Token",
       columnCreated: "Creato",
@@ -3263,8 +3261,9 @@ export const it = {
         loadError: "Impossibile caricare le impostazioni dell'API decisionale.",
         sendsTo: "Le richieste vengono inviate a {provider}.",
         connectionMissing: "Questa connessione non esiste più o non ha modelli decisionali. Scegli un altro modello.",
-        addConnection: "Per usare un modello decisionale ospitato, aggiungi TypeSafe, Liquid AI o OpenRouter in Connessioni.",
-        openConnections: "Apri Connessioni",
+        addConnection: "Per usare un modello decisionale ospitato, aggiungilo in ",
+        connectionsLink: "Connessioni",
+        addConnectionSuffix: ".",
       },
       mcp: {
         title: "Accesso degli agenti (MCP)",

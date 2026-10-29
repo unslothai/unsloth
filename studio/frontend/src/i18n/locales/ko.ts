@@ -1110,7 +1110,7 @@ export const ko = {
       lastVisited: "마지막으로 본 탭",
     },
     tabs: {
-      sandbox: "샌드박스",
+      sandbox: "보안",
       accounts: "계정",
       general: "일반",
       profile: "프로필",
@@ -1394,7 +1394,7 @@ export const ko = {
       },
     },
     sandbox: {
-      title: "샌드박스",
+      title: "보안",
       description: "이 컴퓨터에서 Python 및 터미널 도구 호출을 OS 샌드박스 안에서 실행할지 여부입니다.",
       docs: "문서",
       docsLabel: "샌드박스 문서 열기",
@@ -1470,6 +1470,7 @@ export const ko = {
       managedNote: "OS 샌드박스는 이 Unsloth 서버의 소유자가 설정합니다.",
     },
     debugging: {
+      description: "앱을 벗어나지 않고 Unsloth 로그를 확인하세요.",
       logSection: "로그 파일",
       source: "로그 파일",
       sourceHint: "모델 실행기는 별도의 로그를 기록하므로, 모델 로드나 생성 실패 원인은 서버 로그보다 해당 로그에서 확인되는 경우가 많습니다.",
@@ -2348,7 +2349,8 @@ export const ko = {
       description: "이 Unsloth 서버의 하드웨어와 저장소를 모니터링합니다.",
       liveUpdates: "실시간 업데이트",
       floatingWindow: "플로팅 창",
-      disableOverlay: "오버레이 비활성화",
+      showFloatingWindow: "플로팅 창 표시",
+      showFloatingWindowDescription: "Unsloth 위에 CPU, RAM, GPU 사용량을 계속 표시합니다.",
       liveMonitor: {
         title: "실시간 모니터",
         apiTitle: "API 모니터",
@@ -2802,11 +2804,6 @@ export const ko = {
       autoScrollManual: "수동",
       autoScrollKeywords:
         "스크롤 자동 스크롤 따라가기 아래 이동 스트리밍 생성 고정 scroll autoscroll follow",
-      scrollToBottomButton: "맨 아래로 스크롤 버튼",
-      scrollToBottomButtonDescription:
-        "위로 스크롤한 뒤 최신 메시지로 돌아가는 버튼을 표시합니다.",
-      scrollToBottomButtonKeywords:
-        "스크롤 맨 아래 최신 화살표 버튼 숨기기 scroll bottom button",
       replyNotification: "응답이 끝나면 알림",
       replyNotificationDescription:
         "Unsloth가 최소화되었거나 백그라운드에 있을 때 응답이 끝나면 시스템 알림을 표시합니다.",
@@ -3194,6 +3191,7 @@ export const ko = {
       readDocs: "API 문서 읽기",
       noAccess: "아직 액세스 토큰이 없습니다.",
       accessTokens: "액세스 토큰",
+      quickstartTitle: "빠른 시작",
       columnName: "이름",
       columnToken: "토큰",
       columnCreated: "생성",
@@ -3333,8 +3331,9 @@ export const ko = {
         loadError: "판단 API 설정을 불러오지 못했습니다.",
         sendsTo: "요청은 {provider}(으)로 전송됩니다.",
         connectionMissing: "이 연결이 없거나 판단 모델이 없습니다. 다른 모델을 선택하세요.",
-        addConnection: "호스팅된 판단 모델을 사용하려면 연결에서 TypeSafe, Liquid AI 또는 OpenRouter를 추가하세요.",
-        openConnections: "연결 열기",
+        addConnection: "호스팅된 판단 모델을 사용하려면 ",
+        connectionsLink: "연결",
+        addConnectionSuffix: "에서 추가하세요.",
       },
       mcp: {
         title: "에이전트 액세스 (MCP)",

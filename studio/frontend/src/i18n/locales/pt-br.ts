@@ -1115,7 +1115,7 @@ export const ptBR = {
       lastVisited: "Última visitada",
     },
     tabs: {
-      sandbox: "Sandbox",
+      sandbox: "Segurança",
       accounts: "Contas",
       general: "Geral",
       profile: "Perfil",
@@ -1399,7 +1399,7 @@ export const ptBR = {
       },
     },
     sandbox: {
-      title: "Sandbox",
+      title: "Segurança",
       description: "Indica se as chamadas de ferramentas de Python e Terminal rodam dentro de um sandbox do sistema neste computador.",
       docs: "Documentação",
       docsLabel: "Abrir a documentação do sandbox",
@@ -1474,6 +1474,7 @@ export const ptBR = {
       managedNote: "O proprietário deste servidor Unsloth configura o sandbox do sistema.",
     },
     debugging: {
+      description: "Leia os logs do Unsloth sem sair do app.",
       logSection: "Arquivo de log",
       source: "Arquivo de log",
       sourceHint: "Os executores de modelos gravam os próprios logs, então uma falha ao carregar ou ao gerar costuma ser explicada ali, e não no log do servidor.",
@@ -2370,7 +2371,8 @@ export const ptBR = {
       description: "Monitore o hardware e o armazenamento deste servidor Unsloth.",
       liveUpdates: "Atualizações ao vivo",
       floatingWindow: "Janela flutuante",
-      disableOverlay: "Desativar sobreposição",
+      showFloatingWindow: "Mostrar janela flutuante",
+      showFloatingWindowDescription: "Mantém o uso de CPU, RAM e GPU visível sobre o Unsloth.",
       liveMonitor: {
         title: "Monitor ao vivo",
         apiTitle: "Monitor da API",
@@ -2830,11 +2832,6 @@ export const ptBR = {
       autoScrollManual: "Manual",
       autoScrollKeywords:
         "rolagem rolar automática acompanhar fim pular streaming gerar visualização travar scroll autoscroll follow",
-      scrollToBottomButton: "Botão de rolar até o final",
-      scrollToBottomButtonDescription:
-        "Mostra um botão para voltar à mensagem mais recente depois de rolar para cima.",
-      scrollToBottomButtonKeywords:
-        "rolar final baixo pular recente seta botão ocultar scroll bottom button",
       replyNotification: "Avisar quando uma resposta terminar",
       replyNotificationDescription:
         "Mostra uma notificação do sistema quando uma resposta termina enquanto o Unsloth está minimizado ou em segundo plano.",
@@ -3225,6 +3222,7 @@ export const ptBR = {
       readDocs: "Leia a documentação da API",
       noAccess: "Nenhum acesso à API ainda.",
       accessTokens: "Tokens de acesso",
+      quickstartTitle: "Início rápido",
       columnName: "Nome",
       columnToken: "Token",
       columnCreated: "Criado",
@@ -3364,8 +3362,9 @@ export const ptBR = {
         loadError: "Não foi possível carregar as configurações da API de decisões.",
         sendsTo: "As solicitações são enviadas para {provider}.",
         connectionMissing: "Esta conexão não existe mais ou não tem modelos de decisões. Escolha outro modelo.",
-        addConnection: "Para usar um modelo de decisões hospedado, adicione TypeSafe, Liquid AI ou OpenRouter em Conexões.",
-        openConnections: "Abrir Conexões",
+        addConnection: "Para usar um modelo de decisões hospedado, adicione-o em ",
+        connectionsLink: "Conexões",
+        addConnectionSuffix: ".",
       },
       mcp: {
         title: "Acesso de agentes (MCP)",
