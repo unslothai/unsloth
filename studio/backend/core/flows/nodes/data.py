@@ -11,7 +11,7 @@ import re
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterable, Optional, Sequence
 from urllib.parse import quote
 
 from core.flows.nodes._common import poll_job
@@ -154,6 +154,13 @@ async def recipe(ctx: NodeContext) -> dict:
     return await run_recipe(ctx, body, {})
 
 
+def group_label(ctx: NodeContext) -> str:
+    doc = getattr(ctx, "doc", None) or {}
+    node = next((n for n in doc.get("nodes") or [] if n.get("id") == ctx.node_id), None)
+    group = next((g for g in doc.get("groups") or [] if node and g.get("id") == node.get("group")), None)
+    return str((group or {}).get("label") or "").strip()
+
+
 @handler("recipe.generate")
 async def recipe_group(ctx: NodeContext) -> dict:
     from core.flows.compiler import RECIPE_PARAM
@@ -184,6 +191,8 @@ async def recipe_group(ctx: NodeContext) -> dict:
         )
     mode = "preview" if ctx.params.get("mode") == "preview" else "full"
     run = run_settings(compiled.get("run"), int(ctx.params.get("rows") or 0), mode, body)
+    if mode == "full" and not run.get("run_name") and (label := group_label(ctx)):
+        run["run_name"] = label  # what the Run settings dialog fills in, so the Run button names it too
     return await run_recipe(ctx, body, run, history = RunHistory(ctx))
 
 
@@ -403,11 +412,24 @@ async def run_recipe(
             "job_id": job_id,
             "rows": rows,
         }
+        if preview:
+            dataset["columns"] = lead_columns({k for r in preview for k in r}, generated_columns(body))
     else:
         if not kept:
             raise FlowNodeError("The Data Recipe produced no rows")
-        dataset = await upload_rows(ctx, kept, f"recipe-{job_id}")
+        dataset = await upload_rows(
+            ctx,
+            kept,
+            f"recipe-{job_id}",
+            made_by = "preview" if run.get("execution_type") == "preview" else "recipe",
+            first = generated_columns(body),
+        )
     return {"dataset": dataset, "preview": preview}
+
+
+def generated_columns(recipe: Any) -> list[str]:
+    columns = recipe.get("columns") if isinstance(recipe, dict) else None
+    return [c["name"] for c in columns or [] if isinstance(c, dict) and isinstance(c.get("name"), str)]
 
 
 def recipe_artifact(ref: Any) -> bool:
@@ -478,11 +500,18 @@ async def rows_to_dataset(ctx: NodeContext) -> dict:
         rows = rows.get("rows") or rows.get("data") or [rows]
     if not isinstance(rows, list) or not rows or not all(isinstance(r, dict) for r in rows):
         raise FlowNodeError("Rows to Dataset takes a JSON list of objects")
-    return {"dataset": await upload_rows(ctx, rows, str(ctx.params.get("name") or "flow-dataset"))}
+    name = str(ctx.params.get("name") or "flow-dataset")
+    return {"dataset": await upload_rows(ctx, rows, name, made_by = "rows")}
 
 
-async def upload_rows(ctx: NodeContext, rows: list[dict], name: str) -> dict:
-    """Save rows as a JSONL training dataset and return its DatasetValue."""
+async def upload_rows(
+    ctx: NodeContext,
+    rows: list[dict],
+    name: str,
+    made_by: Optional[str] = None,
+    first: Sequence[str] = (),
+) -> dict:
+    """Save rows as a JSONL training dataset and return its DatasetValue; ``first`` columns lead."""
     name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-") or "flow-dataset"
     data = "\n".join(json.dumps(r, ensure_ascii = False) for r in rows).encode()
     saved = await ctx.call(
@@ -503,14 +532,23 @@ async def upload_rows(ctx: NodeContext, rows: list[dict], name: str) -> dict:
         ref = f"uploads/{path.relative_to(dataset_uploads_root()).as_posix()}"
     except ValueError:
         ref = cache_reference(stored)
-    columns = sorted({k for r in rows for k in r})
-    return {
+    value = {
         "kind": "dataset",
         "source": "local",
         "ref": ref,
         "rows": len(rows),
-        "columns": columns,
+        "columns": lead_columns({k for r in rows for k in r}, first),
     }
+    if made_by:
+        value["made_by"] = made_by
+    return value
+
+
+def lead_columns(names: Iterable[str], first: Sequence[str]) -> list[str]:
+    """``first`` (in order) then the rest sorted: a recipe's generated columns ahead of its seed's."""
+    names = set(names)
+    lead = [n for n in dict.fromkeys(first) if n in names]
+    return lead + sorted(names - set(lead))
 
 
 async def recipe_rows(

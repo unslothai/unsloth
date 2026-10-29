@@ -10,6 +10,7 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 registerBundlerResolver();
 
 const {
+  columnNames,
   columnStats,
   datasetSummary,
   datasetTitle,
@@ -96,4 +97,32 @@ test("node, inspector, app and run drawer outputs all show datasets with the vie
   assert.match(viewer, /ExecutionDataTab/);
   assert.match(viewer, /ExecutionColumnsTab/);
   assert.match(read("editor/dataset-output.tsx"), /import\("\.\.\/dataset\/dataset-viewer"\)/);
+});
+
+test("a local upload is labelled by the block that wrote it, not as an upload", () => {
+  const upload = { kind: "dataset" as const, source: "local" as const, ref: "uploads/x.jsonl", rows: 10 };
+  assert.equal(datasetSummary({ ...upload, made_by: "preview" }), "Preview · 10 rows");
+  assert.equal(datasetSummary({ ...upload, made_by: "rows" }), "Rows to Dataset · 10 rows");
+  assert.equal(datasetSummary({ ...upload, made_by: "recipe" }), "Data Recipe · 10 rows");
+  assert.equal(datasetSummary(upload), "Uploaded · 10 rows", "older values keep their label");
+});
+
+test("the card table leads with a recipe's generated columns and scrolls to the rest", () => {
+  const rows = [{ quote: "q", author: "a", tags: "t", persona: "p", remix: "r" }];
+  assert.deepEqual(columnNames(rows, ["persona", "remix", "gone"]), [
+    "persona",
+    "remix",
+    "quote",
+    "author",
+    "tags",
+  ]);
+  assert.deepEqual(columnNames(rows), ["quote", "author", "tags", "persona", "remix"]);
+  const viewer = readFileSync(
+    new URL("../src/features/flows/dataset/dataset-viewer.tsx", import.meta.url),
+    "utf8",
+  );
+  const preview = viewer.slice(viewer.indexOf("export function DatasetPreview"));
+  assert.doesNotMatch(preview, /names\.slice\(/, "every column is in the card table");
+  assert.match(preview, /overflow-x-auto/);
+  assert.match(preview, /columnNames\(rows, value\.columns\)/);
 });

@@ -226,6 +226,8 @@ export interface DatasetValue {
   ref: string;
   rows?: number | null;
   columns?: string[] | null;
+  /** Which block wrote a local upload, for its label. */
+  made_by?: "preview" | "recipe" | "rows" | null;
 }
 
 export interface ModelValue {

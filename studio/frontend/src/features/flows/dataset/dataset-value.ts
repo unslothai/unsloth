@@ -44,9 +44,18 @@ export function datasetTitle(value: DatasetValue): string {
     : name.replace(/^[0-9a-f]{32}_/, ""); // uploads are stored as `<uuid>_<name>`
 }
 
+// A local upload is labelled by the block that wrote it, when it says.
+const MADE_BY_LABEL: Record<string, string> = {
+  preview: "Preview",
+  recipe: "Data Recipe",
+  rows: "Rows to Dataset",
+};
+
 export function datasetSummary(value: DatasetValue, total?: number | null): string {
   const rows = total ?? value.rows;
-  const parts = [SOURCE_LABEL[value.source] ?? value.source];
+  const parts = [
+    (value.made_by && MADE_BY_LABEL[value.made_by]) ?? SOURCE_LABEL[value.source] ?? value.source,
+  ];
   if (typeof rows === "number") parts.push(`${rows.toLocaleString()} rows`);
   if (value.columns?.length) parts.push(`${value.columns.length} columns`);
   return parts.join(" · ");
@@ -84,10 +93,15 @@ function dtypeOf(value: unknown): string {
   return "dict";
 }
 
-export function columnNames(rows: Record<string, unknown>[]): string[] {
+/** Every column in the rows, those the value lists first (a recipe's generated columns ahead of its seed's). */
+export function columnNames(
+  rows: Record<string, unknown>[],
+  order?: readonly string[] | null,
+): string[] {
   const names = new Set<string>();
   for (const row of rows) for (const key of Object.keys(row)) names.add(key);
-  return [...names];
+  const lead = (order ?? []).filter((name) => names.has(name));
+  return [...new Set([...lead, ...names])];
 }
 
 /** Per-column type, distinct values and nulls over the rows shown, in Recipe Studio's Columns-tab shape. */

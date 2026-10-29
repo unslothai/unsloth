@@ -17,7 +17,7 @@ import { commitRecipe } from "./recipe-actions";
 import { applyConfigPatch, commitStudioEdit, studioView } from "./recipe-adapter";
 import { groupColumns, groupGenerate } from "./recipe-columns";
 import { type RecipeCheck, checkRecipeGroupDetail } from "./recipe-group-actions";
-import { runWithSettings, settingsFromRun } from "./recipe-run-settings";
+import { fullRunName, runWithSettings, settingsFromRun } from "./recipe-run-settings";
 
 // The same check as the frame's Check: disabled columns left out, a bare Hub seed resolved.
 const checkGroup = checkRecipeGroupDetail;
@@ -36,9 +36,7 @@ function RecipeRunSettings({ target }: { target: RecipeEditorTarget }) {
   const generate = useDocStore((s) => groupGenerate(s.graph, target.groupId));
   const running = useRuntimeStore((s) => s.runStatus === "running");
   const [settings, setSettings] = useState(() => settingsFromRun(group?.run));
-  const [runName, setRunName] = useState(() =>
-    typeof group?.run?.run_name === "string" ? group.run.run_name : "",
-  );
+  const [runName, setRunName] = useState(() => fullRunName(group));
   const [check, setCheck] = useState<RecipeCheck | null>(null);
   const [checking, setChecking] = useState(false);
   const close = () => useUiStore.getState().setRecipeEditor(null);

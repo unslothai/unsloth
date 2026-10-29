@@ -1440,7 +1440,7 @@ NODE_SPECS: list[dict] = [
         "recipe.column",
         "Recipe column",
         "data",
-        "One column of a Data Recipe group. Double-click to edit it with the Recipe Studio editor; wires show "
+        "One column of a Data Recipe group. Double-click it to edit it in the inspector; wires show "
         "which columns its prompt reads.",
         inputs = [inp("in", "text", "Reads", optional = True, multi = True)],
         outputs = [out("out", "text", "Column")],

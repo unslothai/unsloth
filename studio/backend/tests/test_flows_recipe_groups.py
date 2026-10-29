@@ -586,3 +586,40 @@ def test_a_full_run_keeps_its_run_name(monkeypatch):
     )
     asyncio.run(data.recipe_group(ctx))
     assert saved and all(r["run_name"] == "nightly sql" for r in saved)
+
+
+def test_a_recipe_dataset_lists_its_generated_columns_first(monkeypatch):
+    from storage import flows_db
+
+    monkeypatch.setattr(flows_db, "save_recipe_run", lambda flow, node, record: None)
+    compiled = _compiled(_flow())
+    generated = data.generated_columns(compiled["recipe"])
+    base = _job_routes("completed")
+
+    def routes(method, path, params, body):
+        if path.endswith("/dataset"):
+            return {"dataset": [{"a_seed": 1, **{name: 1 for name in generated}}], "total": 1}
+        return base(method, path, params, body)
+
+    ctx = _FlowCtx(routes, params = {RECIPE_PARAM: compiled, "rows": 1, "mode": "preview"})
+    columns = asyncio.run(data.recipe_group(ctx))["dataset"]["columns"]
+    assert columns == generated + ["a_seed"]
+
+
+def test_an_unnamed_full_run_is_named_after_its_group(monkeypatch):
+    saved = []
+    from storage import flows_db
+
+    monkeypatch.setattr(flows_db, "save_recipe_run", lambda flow, node, record: saved.append(record))
+    doc = _flow()
+    step = next(n for n in doc["nodes"] if n["type"] == "recipe.generate")
+
+    class Ctx(_FlowCtx):
+        node_id = step["id"]
+
+    for mode, name in (("full", "Text to SQL"), ("preview", None)):
+        saved.clear()
+        ctx = Ctx(_job_routes("completed"), params = {RECIPE_PARAM: _compiled(doc), "rows": 3, "mode": mode})
+        ctx.doc = doc
+        asyncio.run(data.recipe_group(ctx))
+        assert saved and all(r["run_name"] == name for r in saved), mode
