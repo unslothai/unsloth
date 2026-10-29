@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Fused batch-1 NF4 decode (UNSLOTH_DECODE_FUSED_NF4): each call site against an fp64 oracle of the
-bitsandbytes weights, in the Triton interpreter (CPU) and on a GPU; the weight re-homing keeps every
-projection's values and leaves one buffer per site."""
+"""Fused batch-1 NF4 decode: each call site vs an fp64 oracle, in the Triton interpreter and on GPU."""
 
 from __future__ import annotations
 

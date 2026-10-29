@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Opt-in fused batch-1 decode for 4bit (NF4) Llama models: UNSLOTH_DECODE_FUSED_NF4=1 on the GPUs
-with a tuned config (A100, L4, T4), =force on any NVIDIA GPU, unset / 0 off. Each layer runs as 4
-fused launches (unsloth/kernels/nf4_decode_fused.py) around the usual attention core. The first
-decode step of a sequence builds a plan; any check that fails leaves that sequence on the regular
-path. Building a plan moves each call site's NF4 weights (q|k|v, gate|up) into one buffer and
-points the projections' weight / absmax tensors at views of it, so no memory is added."""
+"""Opt-in fused batch-1 NF4 Llama decode: UNSLOTH_DECODE_FUSED_NF4=1 (tuned GPUs) or =force.
+A failed check leaves the sequence on the regular path. Each site's NF4 weights are re-homed into
+one buffer the projections view, so no memory is added."""
 
 import functools
 import os
@@ -20,7 +17,6 @@ from ..kernels import utils as KU
 __all__ = ["requested", "decode_forward", "rehome_site", "release", "STATS"]
 
 ENV = "UNSLOTH_DECODE_FUSED_NF4"
-# Steps / layers that ran fused, and why the last plan was refused (tests and diagnostics).
 STATS = {
     "steps": 0,
     "layers": 0,
@@ -124,9 +120,7 @@ def _proj_parts(proj, K):
 
 
 def rehome_site(Ws, states):
-    """Moves the NF4 fields of a call site's projections into one buffer each (packed bytes, absmax,
-    nested absmax2); every projection's weight / absmax becomes a view, so nothing is duplicated.
-    Returns (packed, absmax, absmax2); a site whose views are still in place is left as it is."""
+    """Moves a site's NF4 fields into one buffer each, leaving views; returns (packed, absmax, absmax2)."""
     nested = states[0].state2 is not None
     with _decode_graphs._no_inference_tensors(), torch.no_grad():
         packed = torch.cat([W.reshape(-1) for W in Ws])
@@ -242,7 +236,6 @@ def _site(model, key, kind, projs, K):
 
 
 def _build(model, X):
-    """A _Plan for this model, or the reason it cannot run fused."""
     config = model.config
     if getattr(config, "model_type", None) != "llama":
         return "model type"
@@ -404,7 +397,6 @@ def _decode_forward(
     static = _decode_graphs.static()
     device = X.device
     capability = plan.capability
-    # RoPE tables (validated before anything is written).
     ropes = {}
     for entry in plan.layers:
         rope = entry.rope

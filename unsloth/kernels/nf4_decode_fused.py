@@ -1,17 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-# Fused batch-1 NF4 decode call sites for Llama-style layers (UNSLOTH_DECODE_FUSED_NF4=1).
-# A layer is 4 launches (+1 LoRA shrink per site) instead of ~12 (27-33 with LoRA):
-#   qkv     : Q|K|V GEMV [+ LoRA] + RoPE on Q, K, K / V straight into the cache slot
-#   o       : GEMV [+ LoRA] + residual add, next norm's input xg, sum(h^2) partials (EPI_RESNORM)
-#   gate_up : gate|up GEMV [+ LoRA] + SiLU(gate) * up
-#   down    : GEMV [+ LoRA] + EPI_RESNORM for the next layer's input norm
-# The norm before qkv / gate_up is split: the producing site's epilogue writes xg = h * gamma and
-# per-program sum(h^2) partials; the consumer runs the plain GEMV over xg and scales its fp32
-# accumulators by rsqrt(sum / K + eps) once (fixed-order sum: deterministic, no atomics). The main
-# loop is gemv_nf4's byte kernel. Each site reads one contiguous buffer per weight field, so the
-# segments' NF4 weights are re-homed into it (the projections keep views; no extra memory).
+# Fused batch-1 NF4 decode (UNSLOTH_DECODE_FUSED_NF4=1): 4 launches per layer (qkv, o, gate_up, down).
+# RMSNorm is split: the producer writes xg = h * gamma plus sum(h^2) partials, the consumer scales
+# its accumulators by rstd (fixed-order sum: deterministic, no atomics).
 
 import functools
 
@@ -65,7 +57,6 @@ def _nf4_decode_fused_kernel(
     pid = tl.program_id(0)
     R2: tl.constexpr = 2 * BLOCK_P
     i = tl.arange(0, R2)
-    # Rows in (j, j + HALF) pairs: RoPE halves of a head, gate / up rows, or contiguous rows.
     p = pid * BLOCK_P + i % BLOCK_P
     rows = (p // HALF) * (2 * HALF) + p % HALF + (i // BLOCK_P) * HALF
     rmask = rows < N
@@ -127,8 +118,7 @@ def _nf4_decode_fused_kernel(
 
     out_ty = OUT.dtype.element_ty
     if EPI == 3:
-        # This program owns rows pid * R2 .. + R2 (HALF = BLOCK_P): one thread reads and writes each
-        # residual element, so the in-place update is safe.
+        # Each residual element is read and written by one thread, so the in-place update is safe.
         ri = pid * R2 + tl.arange(0, R2)
         rm = ri < N
         h = acc.to(out_ty).to(tl.float32) + tl.load(R + ri, mask = rm, other = 0.0).to(tl.float32)
@@ -186,9 +176,7 @@ def _lora_shrink_kernel(
     SCALING: tl.constexpr, EPS: tl.constexpr, RANK_PAD: tl.constexpr, BLOCK_R: tl.constexpr,
     SPLIT_K: tl.constexpr, PRE: tl.constexpr, SS_BLOCK: tl.constexpr,
 ):  # fmt: skip
-    # H[seg * RANK_PAD + j] = scaling * (A_seg[j] . xn). Split-K: each program stores partial dot
-    # products; the last to arrive (acq_rel counter) sums them in split order (deterministic), writes
-    # H and re-arms the counter, so a captured launch replays.
+    # Split-K: the last program (acq_rel counter) sums in order and re-arms the counter for graph replay.
     pid = tl.program_id(0)
     rows = tl.arange(0, BLOCK_R)
     rm = rows < n_rows
@@ -224,7 +212,6 @@ def _lora_shrink_kernel(
 def _final_norm_kernel(
     R, SS, W, OUT, n_ss, K, EPS: tl.constexpr, SS_BLOCK: tl.constexpr, BLOCK: tl.constexpr
 ):
-    # The model's final RMSNorm over the residual stream, rstd from the last site's partials.
     k = tl.arange(0, BLOCK)
     km = k < K
     rstd = _rstd_from_partials(SS, n_ss, K, EPS, SS_BLOCK)
@@ -234,9 +221,7 @@ def _final_norm_kernel(
     tl.store(OUT + k, (xn * tl.load(W + k, mask = km, other = 0.0).to(tl.float32)).to(out_ty), mask = km)
 
 
-# (BLOCK_P, BLOCK_K, num_warps) per call site, from CUDA-graph sweeps over Llama 1B / 8B site shapes
-# (27 configs each, best worst case over both models). Other GPUs: gemv_nf4's config, which lost on
-# T4 (0.93-0.98x), so they need UNSLOTH_DECODE_FUSED_NF4=force.
+# Tuned on Llama 1B / 8B; other GPUs use gemv_nf4's config (lost on T4) and need =force.
 _TABLE = {
     (8, 0): dict(qkv = (2, 1024, 2), o = (2, 2048, 4), gate_up = (2, 1024, 2), down = (2, 2048, 4)),  # A100
     (8, 9): dict(qkv = (4, 512, 2), o = (2, 1024, 2), gate_up = (4, 1024, 2), down = (2, 2048, 4)),  # L4
@@ -251,7 +236,6 @@ def supported_capability(capability):
 
 @functools.lru_cache(maxsize = None)
 def site_config(kind, N, K, blocksize, capability):
-    """(BLOCK_P, BLOCK_K, num_warps, LUT_MODE) for one call site."""
     entry = _TABLE.get(tuple(capability), {}).get(kind)
     if entry is not None:
         block_p, block_k, num_warps = entry
@@ -264,9 +248,7 @@ def site_config(kind, N, K, blocksize, capability):
 
 
 class FusedSite:
-    """One call site: its segments' NF4 fields in contiguous buffers (packed bytes, absmax, nested
-    absmax2), the per-segment offsets, and optionally the segments' LoRA A / B tensors (no copies).
-    kind: "qkv", "o", "gate_up" or "down"."""
+    """One call site's NF4 fields in contiguous buffers, plus its segments' LoRA A / B (no copies)."""
 
     def __init__(
         self,
@@ -312,7 +294,6 @@ class FusedSite:
             self.H = torch.zeros(3 * self.rank_pad, device = device, dtype = torch.float32)
             n_rows = self.n_seg * r
             self.block_r = max(16, triton.next_power_of_2(n_rows))
-            # Keep each shrink program's tile at or under 16K elements.
             self.split_k = max(16, min(256, triton.next_power_of_2(K), 16384 // self.block_r))
             self.n_splits = triton.cdiv(K, self.split_k)
             self.partials = torch.zeros(
@@ -384,8 +365,7 @@ def fused_site(
     head_dim = None,
     config = None,
 ):
-    """One fused call site (two launches with LoRA); returns the number of ss partials it wrote
-    (EPI_RESNORM) or its program count.
+    """One fused call site; returns its ss partial / program count.
     pre: PRE_NONE (x is the GEMV input), PRE_SCALED (x = h * gamma; rstd from ss_in[:n_ss]),
          PRE_INLOOP (x = h, gamma = norm_weight; the norm runs in the main loop).
     EPI_RESNORM: residual += out (in place), xg_out = residual * next_norm_weight, ss_out[pid] partials.
