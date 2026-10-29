@@ -53,11 +53,17 @@ def test_row_bounds_are_unchanged(route):
     assert route(65, SMALL) == "scaled_mm"
 
 
-@pytest.mark.parametrize("autocast_dtype, expected", [(None, "scaled_mm"), (torch.bfloat16, "scaled_mm"),
-                                                      (torch.float16, None)])
-def test_autocast_in_another_dtype_keeps_the_compiled_path(route, monkeypatch, autocast_dtype, expected):
+@pytest.mark.parametrize(
+    "autocast_dtype, expected",
+    [(None, "scaled_mm"), (torch.bfloat16, "scaled_mm"), (torch.float16, None)],
+)
+def test_autocast_in_another_dtype_keeps_the_compiled_path(
+    route, monkeypatch, autocast_dtype, expected
+):
     # The direct path would round the dequantized weight into X's dtype before autocast's GEMM.
-    monkeypatch.setattr(torch, "is_autocast_enabled", lambda device_type = None: autocast_dtype is not None)
+    monkeypatch.setattr(
+        torch, "is_autocast_enabled", lambda device_type = None: autocast_dtype is not None
+    )
     monkeypatch.setattr(torch, "get_autocast_dtype", lambda device_type: autocast_dtype)
     assert route(32, LARGE) == expected
 
