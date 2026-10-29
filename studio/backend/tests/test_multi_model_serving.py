@@ -1905,3 +1905,61 @@ def test_an_unattended_load_that_fits_beside_the_primary_is_not_rechecked(backen
     )
     assert primary.model_identifier == "org/A-GGUF"
     assert model_slots.slots[-1].request.model_path == "org/C-GGUF"
+
+
+def test_a_beside_only_load_into_an_empty_primary_frees_no_kept_chat_model(backends, monkeypatch):
+    """Primary empty, a kept chat model loaded, the new model short: only image and video may go."""
+    from core.inference import gpu_residency
+
+    primary, extra = backends
+    extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
+    primary.unload_model()
+    assert not primary.is_loaded and model_slots.slots == [extra]
+    monkeypatch.setattr(multi_model_settings, "get_multi_model_mode", lambda: "fit")
+    monkeypatch.setattr(gpu_residency, "current_policy", lambda: "fit")
+    _gated_load_fakes(monkeypatch, short_fits = [1])
+    calls = []
+
+    async def free_for_chat(
+        exc,
+        evicted,
+        media_only = False,
+    ):
+        calls.append(media_only)
+        if media_only:
+            return []
+        # What gpu_residency._free_steps does past the media steps: idle kept chat models.
+        dropped = model_slots.evict_these(model_slots.eviction_victims(None, exc.short_mib))
+        evicted += [inf._model_key(s.request) for s in dropped]
+        return ["chat"] if dropped else []
+
+    monkeypatch.setattr(inf, "_free_for_chat", free_for_chat)
+    request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
+    run_as(BESIDE_ONLY, asyncio.run, inf.load_model_gated(request, None, "s", background = True))
+    assert calls == [True]
+    assert model_slots.slots == [extra] and extra.llama.is_active
+
+
+def test_a_beside_only_credential_cannot_retire_kept_models_for_a_managed_engine(backends):
+    """vLLM and SGLang take every kept model down; the beside-only refusal comes before any gate or cancel."""
+    source = inspect.getsource(inf._load_model_impl)
+    refuse = source.index("_require_load_keeps_chat(fastapi_request, request)")
+    assert refuse < source.index("_gate_kept_models(request, cancel = False)")
+    _, extra = backends
+    request = LoadRequest(model_path = "org/C", engine = "vllm")
+    with pytest.raises(HTTPException) as excinfo:
+        run_as(BESIDE_ONLY, inf._require_load_keeps_chat, None, request)
+    assert excinfo.value.status_code == 403
+    assert excinfo.value.headers["X-Unsloth-Problem"].startswith("needs_user_load kind=llm")
+    assert model_slots.slots == [extra] and extra.llama.is_active
+
+
+def test_a_measured_always_refusal_names_no_model_to_unload():
+    """Its kind would read as the model to unload; the GPU may be held by an image or video model instead."""
+    from core.inference.gpu_arbiter import MultiModelAlwaysRefusal
+
+    source = inspect.getsource(inf.load_model_gated)
+    assert "raise MultiModelAlwaysRefusal(str(exc)) from exc" in source
+    assert 'MultiModelAlwaysRefusal(str(exc), kind = "chat")' not in source
+    headers = MultiModelAlwaysRefusal("needs 13 GB, 8 GB free").as_http_exception("/v1/x").headers
+    assert headers["X-Unsloth-Problem"] == "multi_model_always"

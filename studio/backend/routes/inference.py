@@ -12059,7 +12059,8 @@ async def _make_room_for_primary(request: LoadRequest, exc, evicted: list) -> Lo
             for s in gpu_arbiter.resident_slots(o)
         ]
         raise gpu_residency.need_free_refusal(info if gpus else {}, slots)
-    freed = await _free_for_chat(exc, evicted)
+    # A beside-only credential frees image and video models only; a kept chat model stays loaded.
+    freed = await _free_for_chat(exc, evicted, media_only = not _loads_anything())
     # Anything freed (an idle video server counts) earns a retry at full size; else llama-server fits what it can.
     return request if freed else request.model_copy(update = {"force_alongside": True})
 
@@ -17718,7 +17719,8 @@ async def load_model_gated(
                                 continue
                             if measured and not account_access.managed_account():
                                 # Its Always copy already says nothing is unloaded to make room.
-                                raise MultiModelAlwaysRefusal(str(exc), kind = "chat") from exc
+                                # No kind: it names the model to unload, and this message names none.
+                                raise MultiModelAlwaysRefusal(str(exc)) from exc
                             raise refusal_for(
                                 await asyncio.to_thread(chat_eviction_reports)
                             ) from exc
@@ -19451,6 +19453,8 @@ async def _load_model_impl(
             request.engine != "auto" and replacing and bool(model_slots.slots or model_slots.stuck)
         )
         if retire_kept:
+            # vLLM and SGLang take every kept model down, which a beside-only credential may not do.
+            _require_load_keeps_chat(fastapi_request, request)
             _gate_kept_models(request, cancel = False)
         if serving and on_reload_confirmed is not None:
             on_reload_confirmed(cancel = True)

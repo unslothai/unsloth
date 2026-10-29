@@ -324,41 +324,7 @@ async def list_models(
         if workflow and workflow not in (entry.audio_workflows or []):
             continue
         models.append(entry)
-    if not loaded_only and kind in (None, *AUDIO_KINDS):
-        models += [
-            entry
-            for entry in await _downloaded_audio(kind, workflow)
-            if not (model and not _same_model_id(entry.id, model))
-            and not any(_same_model_id(listed.id, entry.id) for listed in models)
-        ]
     return ModelList(models = models, training_defaults = await _training_defaults_for(model))
-
-
-async def _downloaded_audio(kind: Optional[str], workflow: Optional[str]) -> list[ModelEntry]:
-    """Downloaded audio.cpp models, which the /v1/models scan does not list. Best effort: the
-    local listing must not fail because the audio catalog could not be read."""
-    try:
-        rows = await _catalog_part("/api/inference/audio/catalog", "audio", None)
-    except ToolError:
-        return []
-    entries = []
-    for row in rows:
-        if (
-            not opt_text(row.get("id"))
-            or row.get("unsupported_reason")
-            or row.get("downloaded") is not True
-        ):
-            continue
-        entry = ModelEntry(
-            id = row["id"],
-            kind = AUDIO_KIND.get(row.get("task") or "", "audio"),
-            display_name = opt_text(row.get("display_name")),
-            audio_workflows = strings(row.get("workflows")),
-        )
-        if (kind and entry.kind != kind) or (workflow and workflow not in entry.audio_workflows):
-            continue
-        entries.append(entry)
-    return entries
 
 
 async def load_model(
