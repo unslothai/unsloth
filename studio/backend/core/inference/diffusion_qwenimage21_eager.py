@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Qwen-Image-2.1 renders that run eager while the deferred speed profile waits: q/k RMSNorm + RoPE in one Triton
-kernel (stock rounding steps; the fp32 sum of squares may differ in its last bit) and broadcast modulation on
-decode steps (bit-identical). Never on a compiled call or an explicit speed ``off``; kill switch
-UNSLOTH_DIFFUSION_Q21_EAGER_FAST=0"""
+"""Eager Qwen-Image-2.1 renders before the deferred profile: fused q/k RMSNorm + RoPE (fp32 sum of squares may
+differ in the last bit) and bit-identical broadcast modulation. Kill switch UNSLOTH_DIFFUSION_Q21_EAGER_FAST=0"""
 
 from __future__ import annotations
 
@@ -201,8 +199,7 @@ def _eligible(x: Any, norm: Any, freqs: Any) -> bool:
 
 
 def _stock_norm(norm: Any) -> bool:
-    """The stock forward, or the eager tier's fused RMSNorm (the deferred profile installs it on render 3): the
-    kernel stands in for either, which differ only in rounding x * rsqrt before the weight."""
+    """Stock forward or the eager tier's RMSNorm (installed on render 3); they differ only in rounding x * rsqrt."""
     import inspect
 
     forward = getattr(type(norm), "forward", None)
