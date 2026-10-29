@@ -2531,7 +2531,8 @@ export const sv = {
       description: "Övervaka maskinvara och lagring på denna Unsloth-server.",
       liveUpdates: "Direktuppdateringar",
       floatingWindow: "Flytande fönster",
-      disableOverlay: "Inaktivera överlägg",
+      showFloatingWindow: "Visa flytande fönster",
+      showFloatingWindowDescription: "Håll CPU-, RAM- och GPU-användning synlig ovanpå Unsloth.",
       liveMonitor: {
         title: "Direktövervakning",
         apiTitle: "API-övervakning",

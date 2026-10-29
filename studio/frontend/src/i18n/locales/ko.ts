@@ -2348,7 +2348,8 @@ export const ko = {
       description: "이 Unsloth 서버의 하드웨어와 저장소를 모니터링합니다.",
       liveUpdates: "실시간 업데이트",
       floatingWindow: "플로팅 창",
-      disableOverlay: "오버레이 비활성화",
+      showFloatingWindow: "플로팅 창 표시",
+      showFloatingWindowDescription: "Unsloth 위에 CPU, RAM, GPU 사용량을 계속 표시합니다.",
       liveMonitor: {
         title: "실시간 모니터",
         apiTitle: "API 모니터",

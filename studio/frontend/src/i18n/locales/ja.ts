@@ -2334,7 +2334,8 @@ export const ja = {
       description: "この Unsloth サーバーのハードウェアとストレージを監視します。",
       liveUpdates: "リアルタイム更新",
       floatingWindow: "フローティングウィンドウ",
-      disableOverlay: "オーバーレイを無効化",
+      showFloatingWindow: "フローティングウィンドウを表示",
+      showFloatingWindowDescription: "CPU・RAM・GPU の使用状況を Unsloth の上に表示し続けます。",
       liveMonitor: {
         title: "リアルタイムモニター",
         apiTitle: "API モニター",

@@ -2370,7 +2370,8 @@ export const ptBR = {
       description: "Monitore o hardware e o armazenamento deste servidor Unsloth.",
       liveUpdates: "Atualizações ao vivo",
       floatingWindow: "Janela flutuante",
-      disableOverlay: "Desativar sobreposição",
+      showFloatingWindow: "Mostrar janela flutuante",
+      showFloatingWindowDescription: "Mantém o uso de CPU, RAM e GPU visível sobre o Unsloth.",
       liveMonitor: {
         title: "Monitor ao vivo",
         apiTitle: "Monitor da API",

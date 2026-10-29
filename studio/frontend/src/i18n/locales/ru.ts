@@ -2365,7 +2365,8 @@ export const ru = {
       description: "Мониторинг оборудования и хранилища этого сервера Unsloth.",
       liveUpdates: "Обновления в реальном времени",
       floatingWindow: "Плавающее окно",
-      disableOverlay: "Отключить оверлей",
+      showFloatingWindow: "Показывать плавающее окно",
+      showFloatingWindowDescription: "Использование CPU, RAM и GPU всегда видно поверх Unsloth.",
       liveMonitor: {
         title: "Монитор в реальном времени",
         apiTitle: "Монитор API",

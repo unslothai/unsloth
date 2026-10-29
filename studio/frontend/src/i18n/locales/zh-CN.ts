@@ -2326,7 +2326,8 @@ export const zhCN = {
       description: "监控此 Unsloth 服务器的硬件和存储。",
       liveUpdates: "实时更新",
       floatingWindow: "悬浮窗口",
-      disableOverlay: "禁用悬浮层",
+      showFloatingWindow: "显示悬浮窗口",
+      showFloatingWindowDescription: "在 Unsloth 上方持续显示 CPU、内存和 GPU 使用情况。",
       liveMonitor: {
         title: "实时监控",
         apiTitle: "API 监控",

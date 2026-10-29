@@ -2457,7 +2457,8 @@ export const he = {
       description: "עקוב אחר החומרה והאחסון של שרת Unsloth זה.",
       liveUpdates: "עדכונים בזמן אמת",
       floatingWindow: "חלון צף",
-      disableOverlay: "השבת שכבת תצוגה",
+      showFloatingWindow: "הצג חלון צף",
+      showFloatingWindowDescription: "השאר את השימוש ב-CPU, ב-RAM וב-GPU גלוי מעל Unsloth.",
       liveMonitor: {
         title: "מוניטור חי",
         apiTitle: "מוניטור API",

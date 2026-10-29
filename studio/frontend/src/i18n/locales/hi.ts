@@ -2361,7 +2361,8 @@ export const hi = {
       description: "इस Unsloth सर्वर के हार्डवेयर और स्टोरेज की निगरानी करें।",
       liveUpdates: "लाइव अपडेट",
       floatingWindow: "फ्लोटिंग विंडो",
-      disableOverlay: "ओवरले अक्षम करें",
+      showFloatingWindow: "फ्लोटिंग विंडो दिखाएँ",
+      showFloatingWindowDescription: "CPU, RAM और GPU का उपयोग Unsloth के ऊपर दिखता रहे।",
       liveMonitor: {
         title: "लाइव मॉनिटर",
         apiTitle: "API मॉनिटर",

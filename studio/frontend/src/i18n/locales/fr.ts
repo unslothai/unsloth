@@ -2385,7 +2385,8 @@ export const fr = {
         "Surveillez le matériel et le stockage de ce serveur Unsloth.",
       liveUpdates: "Mises à jour en direct",
       floatingWindow: "Fenêtre flottante",
-      disableOverlay: "Désactiver la superposition",
+      showFloatingWindow: "Afficher la fenêtre flottante",
+      showFloatingWindowDescription: "Garde l'utilisation du CPU, de la RAM et du GPU visible par-dessus Unsloth.",
       liveMonitor: {
         title: "Moniteur en direct",
         apiTitle: "Moniteur d’API",

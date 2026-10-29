@@ -2258,7 +2258,8 @@ export const it = {
         "Monitora hardware e archiviazione di questo server Unsloth.",
       liveUpdates: "Aggiornamenti in tempo reale",
       floatingWindow: "Finestra mobile",
-      disableOverlay: "Disattiva la sovrapposizione",
+      showFloatingWindow: "Mostra finestra mobile",
+      showFloatingWindowDescription: "Mantieni visibile l'uso di CPU, RAM e GPU sopra Unsloth.",
       liveMonitor: {
         title: "Monitor in tempo reale",
         apiTitle: "Monitor API",

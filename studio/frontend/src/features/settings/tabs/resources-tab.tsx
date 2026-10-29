@@ -73,7 +73,6 @@ import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
 import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { LayersIcon } from "lucide-react";
 
 const POLL_MS = 3000;
 
@@ -165,16 +164,15 @@ function MetricTile({
       <div className="flex min-w-0 flex-col gap-0.5">
         <div className="flex min-w-0 items-center justify-between gap-3">
           <span className="text-ui-12 text-muted-foreground">{label}</span>
-          {showUsage ? (
+          {showUsage && percentKnown ? (
             <span
               className={cn(
-                "shrink-0 rounded-full px-1.5 py-1 font-mono text-ui-12 leading-none tabular-nums",
-                percentKnown
-                  ? usagePillClass(safePercent)
-                  : "bg-muted text-muted-foreground",
+                // -my-1 keeps the pill out of the row's height, so top and bottom padding match.
+                "-my-1 shrink-0 rounded-full px-2 py-1 font-mono text-ui-12 leading-none tabular-nums",
+                usagePillClass(safePercent),
               )}
             >
-              {percentKnown ? formatPercent(safePercent) : "--"}
+              {formatPercent(safePercent)}
             </span>
           ) : null}
         </div>
@@ -657,18 +655,6 @@ export function ResourcesTab() {
         </div>
         {/* Top edge on the h1's cap top (text-xl at leading 1.4; Hellix: 0.322em). */}
         <div className="mt-[calc(var(--text-xl)*0.322)] flex min-w-0 flex-wrap items-center gap-2">
-          <Button
-            variant={isOpen ? "secondary" : "outline"}
-            size="sm"
-            className="gap-1.5 h-8 text-xs rounded-full px-3"
-            onClick={() => setIsOpen(!isOpen)}
-          >
-            <LayersIcon className="size-3.5" />
-            {isOpen
-              ? t("settings.resources.disableOverlay")
-              : t("settings.resources.floatingWindow")}
-          </Button>
-
           <label className="flex h-8 shrink-0 items-center gap-2.5 text-xs font-medium text-foreground">
             <span>{t("settings.resources.liveUpdates")}</span>
             <Switch
@@ -793,6 +779,19 @@ export function ResourcesTab() {
             percent={metrics.vramUsageKnown ? metrics.vramPercent : null}
           />
         </div>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.resources.floatingWindow")}>
+        <SettingsRow
+          label={t("settings.resources.showFloatingWindow")}
+          description={t("settings.resources.showFloatingWindowDescription")}
+        >
+          <Switch
+            aria-label={t("settings.resources.showFloatingWindow")}
+            checked={isOpen}
+            onCheckedChange={setIsOpen}
+          />
+        </SettingsRow>
         <SettingsRow
           label={t("settings.resources.liveMonitor.detailedView")}
           description={t(

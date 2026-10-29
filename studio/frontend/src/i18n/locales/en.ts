@@ -2419,7 +2419,8 @@ export const en = {
       description: "Monitor this Unsloth server's hardware and storage.",
       liveUpdates: "Live updates",
       floatingWindow: "Floating window",
-      disableOverlay: "Disable overlay",
+      showFloatingWindow: "Show floating window",
+      showFloatingWindowDescription: "Keep CPU, RAM and GPU usage on screen over Unsloth.",
       liveMonitor: {
         title: "Live monitor",
         apiTitle: "API monitor",

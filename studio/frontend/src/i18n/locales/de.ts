@@ -2386,7 +2386,8 @@ export const de = {
         "Überwachen Sie Hardware und Speicher dieses Unsloth-Servers.",
       liveUpdates: "Live-Updates",
       floatingWindow: "Schwebendes Fenster",
-      disableOverlay: "Overlay deaktivieren",
+      showFloatingWindow: "Schwebendes Fenster anzeigen",
+      showFloatingWindowDescription: "Zeigt CPU-, RAM- und GPU-Auslastung dauerhaft über Unsloth an.",
       liveMonitor: {
         title: "Live-Monitor",
         apiTitle: "API-Monitor",

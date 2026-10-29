@@ -2355,7 +2355,8 @@ export const ar = {
       description: "راقب عتاد خادم Unsloth هذا ومساحة تخزينه.",
       liveUpdates: "التحديثات المباشرة",
       floatingWindow: "نافذة عائمة",
-      disableOverlay: "تعطيل التراكب",
+      showFloatingWindow: "إظهار النافذة العائمة",
+      showFloatingWindowDescription: "أبقِ استخدام المعالج والذاكرة ووحدة الرسوميات ظاهرًا فوق Unsloth.",
       liveMonitor: {
         title: "المراقبة المباشرة",
         apiTitle: "مراقبة API",
