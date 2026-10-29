@@ -33911,7 +33911,8 @@ class LlamaCppBackend:
             if ppid <= 1:
                 return False
             return Path(f"/proc/{ppid}").exists()
-        return False
+        # No psutil and no /proc (Windows, macOS): liveness is unknown, so read it as alive.
+        return True
 
     @staticmethod
     def _unlink_pidfile(path: Path) -> None:
