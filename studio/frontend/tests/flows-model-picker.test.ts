@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
-import { choiceFromPick, modelChoiceOf } from "../src/features/flows/editor/model-choice.ts";
+import { choiceFromPick, isTrainableRepo, modelChoiceOf } from "../src/features/flows/editor/model-choice.ts";
 
 test("values saved before the picker still load", () => {
   assert.equal(modelChoiceOf(null), null);
@@ -43,4 +43,19 @@ test("the model field renders Studio's ModelSelector, keeps the loaded-model che
 test("Fine-tune's base model keeps its plain string and uses the same picker", () => {
   const fields = readSrc("features/flows/editor/param-fields.tsx");
   assert.match(fields, /spec\.id === "base_model"[\s\S]{0,200}<FlowModelPicker[\s\S]{0,200}onChange=\{\(choice\) => onChange\(choice\.repo\)\}/);
+});
+
+test("Fine-tune's base model picker leaves GGUF repos out", () => {
+  assert.equal(isTrainableRepo("unsloth/Qwen3-4B"), true);
+  assert.equal(isTrainableRepo("unsloth/Qwen3-4B-GGUF"), false);
+  const fields = readSrc("features/flows/editor/param-fields.tsx");
+  assert.match(fields, /spec\.id === "base_model"[\s\S]{0,120}kind="train"/);
+  const picker = readSrc("features/flows/editor/model-picker-field.tsx");
+  assert.match(picker, /train: \{[^}]*rowFilter: \(row\) => isTrainableRepo\(row\.id\)/);
+});
+
+test("a select param the doc never stored shows its default, not an empty box", () => {
+  const fields = readSrc("features/flows/editor/param-fields.tsx");
+  const select = fields.slice(fields.indexOf('case "select":'), fields.indexOf('case "seed":'));
+  assert.match(select, /spec\.default \?\? spec\.options\?\.\[0\]/);
 });

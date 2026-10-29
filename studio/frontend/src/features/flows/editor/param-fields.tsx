@@ -349,7 +349,7 @@ function ParamFieldImpl({ spec, value, onChange }: FieldProps) {
       if (spec.id === "base_model")
         return (
           <FlowModelPicker
-            kind="chat"
+            kind="train"
             choice={{ repo: String(value ?? ""), variant: null }}
             onChange={(choice) => onChange(choice.repo)}
           />
@@ -407,7 +407,12 @@ function ParamFieldImpl({ spec, value, onChange }: FieldProps) {
     case "select":
       return (
         <Select
-          value={String(value ?? "")}
+          // A param the doc never stored shows its default, as the run uses it, not an empty box.
+          value={String(
+            value === null || value === undefined || value === ""
+              ? (spec.default ?? spec.options?.[0] ?? "")
+              : value,
+          )}
           onValueChange={(next) => onChange(next)}
         >
           <SelectTrigger className={`${FIELD} w-full`}>

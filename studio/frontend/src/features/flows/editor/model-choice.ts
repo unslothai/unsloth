@@ -18,3 +18,8 @@ export function choiceFromPick(
 ): ModelChoice {
   return { repo: id, variant: meta?.ggufVariant ?? null };
 }
+
+/** Fine-tune trains safetensors weights; a GGUF repo can't be its base model. */
+export function isTrainableRepo(id: string): boolean {
+  return !/gguf/i.test(id);
+}

@@ -12,7 +12,7 @@ import {
 } from "@/features/model-picker/components/model-selector/pickers";
 import { type ModelOption, ModelSelector } from "@/features/model-picker";
 import { type ComponentProps, useEffect, useState } from "react";
-import { choiceFromPick } from "./model-choice";
+import { choiceFromPick, isTrainableRepo } from "./model-choice";
 import type { ModelChoice } from "../types";
 
 type SelectorProps = ComponentProps<typeof ModelSelector>;
@@ -20,6 +20,8 @@ type SelectorProps = ComponentProps<typeof ModelSelector>;
 /** Each Flows model kind opens Studio's picker on the page that owns that kind. */
 const KIND_PROPS: Record<string, Partial<SelectorProps>> = {
   chat: { hubCapability: "text" },
+  // Fine-tune's base model: a GGUF can't be trained, so the picker leaves them out.
+  train: { hubCapability: "text", rowFilter: (row) => isTrainableRepo(row.id) },
   vision: { hubCapability: "vision" },
   image: {
     task: IMAGE_GEN_TASKS,
@@ -65,7 +67,7 @@ export function FlowModelPicker({
   choice: ModelChoice;
   onChange: (choice: ModelChoice) => void;
 }) {
-  const textKind = kind === "chat" || kind === "vision";
+  const textKind = kind === "chat" || kind === "vision" || kind === "train";
   const [models, setModels] = useState<ModelOption[]>([]);
   useEffect(() => {
     if (!textKind) return;
@@ -73,7 +75,9 @@ export function FlowModelPicker({
     void loadChatModels().then((all) => {
       if (!alive) return;
       const vision = all.filter((m) => (m as { isVision?: boolean }).isVision);
-      setModels(kind === "vision" && vision.length ? vision : all);
+      if (kind === "train")
+        setModels(all.filter((m) => !m.isGguf && isTrainableRepo(m.id)));
+      else setModels(kind === "vision" && vision.length ? vision : all);
     });
     return () => {
       alive = false;
@@ -88,7 +92,7 @@ export function FlowModelPicker({
       onValueChange={(id, meta) => onChange(choiceFromPick(id, meta))}
       variant="outline"
       size="sm"
-      placeholder={`Choose a ${kind === "tts" ? "speech" : kind} model`}
+      placeholder={`Choose a ${kind === "tts" ? "speech" : kind === "train" ? "base" : kind} model`}
       className="nodrag h-8 w-full max-w-full justify-between rounded-md px-2.5 text-ui-12"
       contentClassName="nodrag nowheel"
       {...KIND_PROPS[kind]}
