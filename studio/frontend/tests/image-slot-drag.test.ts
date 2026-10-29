@@ -33,7 +33,6 @@ test("real files are classified by extension", () => {
   assert.equal(classifyNativeImageDrop(undefined), "none");
 });
 
-// macOS reports an in-page drag as a native drop with no paths, right after dragend.
 test("a slot image outlives dragend just long enough for the native drop", () => {
   startImageSlotDrag("data:image/png;base64,AAAA");
   assert.equal(draggedImageSlot(), "data:image/png;base64,AAAA");
@@ -83,8 +82,7 @@ test("an in-app native drop never shows the file format error", () => {
   );
 });
 
-// macOS reports every in-page drop natively with no paths, so a gallery tile
-// dropped right after a cancelled slot drag must not land as that slot's image.
+// macOS drops arrive pathless, so a stale slot image must not claim the next drag.
 test("any other drag drops the slot image", async () => {
   const doc = new EventTarget();
   Object.assign(globalThis, { document: doc });
