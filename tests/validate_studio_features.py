@@ -2,14 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
-"""Cross-platform validation of the Unsloth Docker JupyterLab/notebook features.
-
-Runs WITHOUT Docker or a GPU, so it executes on every CI lane, and it exercises the
-real notebook-helper logic rather than py_compile.
-
-Usage:  python tests/validate_studio_features.py
-Exit 0 = all checks pass; non-zero = at least one failed.
-"""
+"""Runs without Docker or a GPU, exercising the real notebook helpers rather than py_compile."""
 
 from __future__ import annotations
 
@@ -147,7 +140,7 @@ def test_overrides() -> None:
     if not os.path.isfile(path):
         return
     with open(path, encoding = "utf-8") as f:
-        d = json.load(f)  # raises, so invalid JSON fails CI
+        d = json.load(f)
     themes = d.get("@jupyterlab/apputils-extension:themes", {})
     check(
         "default theme = Unsloth Dark",
@@ -207,8 +200,7 @@ def test_labext_and_branding() -> None:
     check("uiChrome wired in index.ts", "uiChromePlugin" in index_src)
     check("right activity bar hidden", "jp-mod-right" in all_src and "display: none" in all_src)
     check("ctrl+A output select", "selectNodeContents" in all_src)
-    # the remembered pointer-down must be revalidated against the ACTIVE cell, or
-    # Ctrl+A on a later cell selects the old output
+    # Pointer-down must be revalidated against the active cell, or Ctrl+A selects the old output.
     check(
         "ctrl+A fallback revalidated",
         "isConnected" in all_src and "jp-mod-active" in all_src,
@@ -240,7 +232,7 @@ def main() -> int:
     ):
         try:
             t()
-        except Exception as e:  # a thrown exception is a failure, not a crash
+        except Exception as e:
             _failures.append(f"{t.__name__}: {e!r}")
             print(f"  [FAIL] {t.__name__} raised {e!r}")
     print()

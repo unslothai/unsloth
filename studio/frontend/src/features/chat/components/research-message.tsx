@@ -11,9 +11,8 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { useAuiState } from "@assistant-ui/react";
-import { Telescope02Icon } from "@hugeicons/core-free-icons";
+import { Telescope02Icon, Alert02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Check, TriangleAlert } from "lucide-react";
 import { type ReactElement, useEffect } from "react";
 import {
   ensureResearchRunFollowed,
@@ -24,7 +23,9 @@ import {
 } from "../stores/research-run-store";
 import type { ResearchMessageMetadata } from "../types/research";
 import { researchReplyOwnsRun } from "../utils/research-run-binding";
+import { researchCitation } from "../utils/research-citations";
 import { researchStatusLabel } from "./research-activity-panel";
+import { Tick02Icon } from "@/lib/tick-icon";
 
 export function ResearchMessage(): ReactElement | null {
   const metadata = useAuiState(
@@ -79,7 +80,7 @@ export function ResearchMessage(): ReactElement | null {
     );
   }
 
-  // A failed run's report opens with its own notice, so nothing here repeats it.
+  // failed reports include their own notice; avoid repeating it here.
   if ((run.status === "completed" || run.status === "failed") && run.report) {
     const failed = run.status === "failed";
     const sources: SourceData[] = run.sources.map((source) => ({
@@ -88,19 +89,17 @@ export function ResearchMessage(): ReactElement | null {
       title: source.title || source.url,
       description: source.snippet ?? undefined,
     }));
-    const documentSources: Citation[] = (run.documentSources ?? []).map(
-      (source, index) => ({
-        id: source.chunkId ?? String(source.id ?? index),
-        filename: source.filename,
-        page: source.page,
-        score: source.score,
-        text: source.snippet ?? "",
-        documentId: source.documentId,
-        chunkId: source.chunkId,
-      }),
-    );
+    const documentSources: Citation[] = [];
+    const mcpSources: Citation[] = [];
+    (run.documentSources ?? []).forEach((source, index) => {
+      (source.kind === "mcp" ? mcpSources : documentSources).push(
+        researchCitation(source, index),
+      );
+    });
     const documentCount = new Set(
-      documentSources.map((source) => source.documentId ?? source.filename),
+      [...documentSources, ...mcpSources].map(
+        (source) => source.documentId ?? source.filename,
+      ),
     ).size;
     const sourceCount = sources.length + documentCount;
     return (
@@ -112,9 +111,9 @@ export function ResearchMessage(): ReactElement | null {
         >
           <span className="flex size-5 items-center justify-center rounded-full bg-primary/10 text-primary">
             {failed ? (
-              <TriangleAlert className="size-3" />
+              <HugeiconsIcon icon={Alert02Icon} className="size-3" />
             ) : (
-              <Check className="size-3" />
+              <HugeiconsIcon icon={Tick02Icon} className="size-3" />
             )}
           </span>
           <span>
@@ -131,6 +130,7 @@ export function ResearchMessage(): ReactElement | null {
         />
         <SourcesGroup sources={sources} allowRemoteIcons={false} />
         <DocumentSourcesGroup sources={documentSources} />
+        <DocumentSourcesGroup sources={mcpSources} label="MCP Sources" />
       </div>
     );
   }
@@ -138,7 +138,7 @@ export function ResearchMessage(): ReactElement | null {
   const failed = run.status === "failed";
   const cancelled = run.status === "cancelled";
   const needsApproval = run.status === "awaiting_approval";
-  // Name the current model call, so the long silent phases read as work rather than a stall.
+  // name the model call so long silent phases do not appear stalled.
   const liveDetail =
     runningResearchActivityTitle(session?.activities) ??
     run.plan?.title ??
@@ -146,7 +146,7 @@ export function ResearchMessage(): ReactElement | null {
   return (
     <div
       className={cn(
-        "rounded-[22px] border border-border/70 bg-card/65 p-4",
+        "rounded-2xl border border-border/70 bg-card/65 p-4",
         needsApproval && "border-amber-500/25 bg-amber-500/[0.035]",
         failed && "border-destructive/25 bg-destructive/[0.025]",
       )}
@@ -154,12 +154,12 @@ export function ResearchMessage(): ReactElement | null {
       <div className="flex items-start gap-3">
         <span
           className={cn(
-            "mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-[12px] bg-primary/10 text-primary",
+            "mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-sm bg-primary/10 text-primary",
             failed && "bg-destructive/10 text-destructive",
           )}
         >
           {failed ? (
-            <TriangleAlert className="size-4" />
+            <HugeiconsIcon icon={Alert02Icon} className="size-4" />
           ) : cancelled ? (
             <HugeiconsIcon icon={Telescope02Icon} className="size-4" />
           ) : (
@@ -189,7 +189,7 @@ export function ResearchMessage(): ReactElement | null {
           </p>
           <Button
             size="sm"
-            variant={needsApproval ? "default" : "outline"}
+            variant={needsApproval ? "dark" : "outline"}
             className="mt-3"
             onClick={() => openResearchRun(run)}
           >

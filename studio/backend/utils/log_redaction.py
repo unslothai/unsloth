@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Mask credentials in log text before it leaves the process.
-
-Nothing redacts secrets today: loggers/handlers.py:filter_sensitive_data only masks native path leases, and raw output (faulthandler dumps, uvicorn, third party prints) never passes through a structlog processor at all. The log viewer invites users to copy lines into a bug report, so the masking happens on read.
-
-Every pattern is anchored on a known credential prefix or a key name. There is deliberately NO generic "long high entropy string" rule: that would eat sha256 blob digests, HF revisions, snapshot paths and GGUF tensor names, exactly the content someone opened the log to read.
-"""
+"""Masks credentials in logs on read; anchored on known prefixes or key names, never generic entropy."""
 
 from __future__ import annotations
 
@@ -14,8 +9,7 @@ import re
 
 REDACTED = "<redacted>"
 
-# Stripped BEFORE anything is matched: a colorized writer puts an escape between a key and its value, and the "m" ending a colour code is a word character, so every anchored rule below stops matching. ECMA-48 5.4 (CSI) and 5.6 (OSC / DCS / SOS / PM / APC).
-# _strip_ansi replaces one alternation of lazy `[\s\S]*?` bodies whose FAILURE was quadratic: an unterminated introducer scanned to end of record, failed, and the engine retried from the next position. Its output is identical to that pattern on every input, by differential fuzzing, and must stay so: a redactor is the wrong place to smuggle a behaviour change into a performance fix, and every attempt to also improve the truncated cases moved a leak rather than removing one (unslothai/unsloth#10721).
+# Strip ANSI first, as escapes defeat the anchored rules. Output must stay identical to the old regex: fixing truncated cases moved a leak.
 _CSI_7BIT_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _CSI_8BIT_RE = re.compile(r"\x9b[0-?]*[ -/]*[@-~]")
 # Fe covers 0x40-0x5F, so it also claims a "]" or "P" whose control string never terminated. Hence tried last.
@@ -101,7 +95,7 @@ _KEY_START = r"(?<![A-Za-z0-9])"
 
 _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # Hugging Face
-    (re.compile(r"\bhf_[A-Za-z0-9]{20,}"), "hf_" + REDACTED),
+    (re.compile(r"\bhf_(?:oauth_[A-Za-z0-9._~+/=-]{20,}|[A-Za-z0-9]{20,})"), "hf_" + REDACTED),
     # OpenAI and other sk- keys (project, Anthropic, OpenRouter). Not a word boundary: that also fires after a hyphen, eating checkpoint-sk-9f8a... in a filename.
     (
         re.compile(r"(?<![A-Za-z0-9-])sk-(?:proj-|ant-api\d{2}-|or-v1-)?[A-Za-z0-9_-]{16,}"),

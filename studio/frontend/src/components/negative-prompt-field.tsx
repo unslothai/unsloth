@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { ChevronDown } from "lucide-react";
 
 import { InfoHint } from "@/components/ui/info-hint";
 import { Textarea } from "@/components/ui/textarea";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
+import { HugeiconsIcon } from "@hugeicons/react";
 
-/** Collapsible negative prompt, shared by the Images and Video Create panels. */
-// Keep normal input below the unload request budget. Restored legacy recipes may be longer, and
-// the preset API accepts them because the generation contract does too.
+// Below the unload request budget; restored legacy recipes may be longer.
 export const NEGATIVE_PROMPT_MAX_LENGTH = 20_000;
+
+// Prompt boxes: scrollbar inset from the corners.
+export const PROMPT_BOX_CLASS = "image-prompt-box rounded-xl";
 
 export function NegativePromptField({
   value,
@@ -18,14 +20,15 @@ export function NegativePromptField({
   open,
   onOpenChange,
   hint,
+  textareaClassName = PROMPT_BOX_CLASS,
 }: {
   value: string;
   onChange: (value: string) => void;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   hint: string;
+  textareaClassName?: string;
 }) {
-  // Same shape as Field, so it keeps the panel's spacing.
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-1">
@@ -37,7 +40,6 @@ export function NegativePromptField({
         >
           Negative prompt
         </button>
-        {/* Chevron before the hint, so it stays next to the label it expands. */}
         <button
           type="button"
           // The labelled button above is the accessible toggle; this is decoration.
@@ -46,7 +48,8 @@ export function NegativePromptField({
           onClick={() => onOpenChange(!open)}
           className="inline-flex"
         >
-          <ChevronDown
+          <HugeiconsIcon
+            icon={ChevronDownStandardIcon}
             className={cn(
               "size-3 text-muted-foreground transition-transform",
               open && "rotate-180",
@@ -58,6 +61,7 @@ export function NegativePromptField({
       {open && (
         <Textarea
           rows={2}
+          className={textareaClassName}
           maxLength={NEGATIVE_PROMPT_MAX_LENGTH}
           placeholder="What to avoid (optional)"
           value={value}

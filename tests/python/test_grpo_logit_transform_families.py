@@ -1,19 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""Pins the logit transforms the GRPO path applies, per model family.
-
-The GRPO loss recomputes log-probs from hidden states, so it has to reproduce what
-the model's own ``forward`` does to its logits. A wrong factor does not raise: it
-silently shifts every log-prob, and with it the importance ratio.
-
-``detect_logit_transforms`` owns the field names, this test owns the expected
-*values*, so a change in its coverage shows up here as a diff rather than a quiet
-numerics shift.
-
-The loss applies them in the order multiply, divide, soft cap
-(``unsloth_zoo/rl_replacements.py``), matching what each family's ``modeling_*.py``
-does on the line after ``lm_head``.
-"""
+"""The GRPO loss applies multiply, divide, then soft cap, in that order, as each modeling file does."""
 
 from __future__ import annotations
 
@@ -50,7 +37,6 @@ def _grpo_transforms(config):
     )
 
 
-# (name, config, (softcapping, multiply, divide), why)
 _COVERED = [
     (
         "granite",
@@ -84,8 +70,6 @@ def test_stable_families(name, config, expected, why):
     assert _grpo_transforms(config) == expected, why
 
 
-# Families the helper only bucketed recently. Each entry records what the GRPO path
-# used to apply, so the behaviour change stays legible.
 _RECENT = [
     (
         "muse_glimmer",
@@ -119,11 +103,7 @@ _RECENT = [
 
 @pytest.mark.parametrize("name, config, expected, previously, why", _RECENT)
 def test_recently_rebucketed_families(name, config, expected, previously, why):
-    """These three changed what the GRPO path applies. Deliberate, see the PR body.
-
-    Skips rather than fails on an unsloth_zoo predating the coverage, so the suite
-    stays green across the version window instead of pinning one release.
-    """
+    """Skips on an unsloth_zoo that predates the coverage, keeping the suite green across versions."""
     got = _grpo_transforms(config)
     if got == previously:
         pytest.skip(f"installed unsloth_zoo predates {name} coverage")

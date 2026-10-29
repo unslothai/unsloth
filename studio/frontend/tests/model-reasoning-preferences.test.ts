@@ -31,7 +31,15 @@ const CAPS: ExternalReasoningCapabilities = {
 type RuntimeModule = typeof import("../src/features/chat/stores/chat-runtime-store.ts");
 const runtimeUrl = new URL("../src/features/chat/stores/chat-runtime-store.ts", import.meta.url).href;
 
+// Drain the previous store copy's 400 ms debounced write, or it lands in the next test's stubs.
+let previousRuntime: RuntimeModule | null = null;
+
 async function boot(scenario: string, paired: boolean | null = true): Promise<RuntimeModule> {
+  if (previousRuntime !== null) {
+    await previousRuntime.flushPendingChatSettings();
+    await previousRuntime.awaitThreadScopedSettingsWrite(THREAD);
+    await previousRuntime.awaitStartedThreadScopedSettingsWrites();
+  }
   storageData.clear();
   storageData.set("unsloth_chat_settings_imported_to_studio_db", "true");
   useModelReasoningEffortStore.getState().syncFromStorage();
@@ -47,6 +55,7 @@ async function boot(scenario: string, paired: boolean | null = true): Promise<Ru
   if (paired) store.getState().applyThreadScopedSettings(THREAD, { reasoningEffort: "medium" });
   else if (paired === false) runtime.beginThreadScopedPairing(THREAD);
   settingsHttp.puts.length = 0;
+  previousRuntime = runtime;
   return runtime;
 }
 

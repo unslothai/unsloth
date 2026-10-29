@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Every launch flag is gated on the binary advertising it.
-
-The probe checks 17 optional flags with _is_real before emitting them, but
---flash-attn, --no-context-shift and --jinja were emitted unconditionally. That
-is fine for the pinned prebuilt, which has all three. It is not fine for a stale
-or user-supplied LLAMA_SERVER_PATH, which Unsloth explicitly supports: an unknown
-argument makes llama-server exit immediately rather than start degraded, and the
-user sees a generic startup failure.
-
-These three differ from the other 17 in one important way: they are part of
-today's command on every launch, so their gates FAIL OPEN. An unreadable or
-unparseable --help must keep emitting them; only a build whose help positively
-lacks one may drop it.
-"""
+"""Launch flags are gated on --help; the three always-emitted ones fail open on unreadable help."""
 
 from __future__ import annotations
 
@@ -55,8 +42,7 @@ GATED = (
     "flash_attn_takes_value",
 )
 
-# Help text as llama.cpp actually prints it: the declaration starts at column 0
-# and its description is padded to column 40 (common_arg::to_string).
+# llama.cpp help format: declaration at column 0, description padded to column 40
 NEW_HELP = (
     "usage: llama-server [options]\n"
     "\n"
@@ -68,7 +54,6 @@ NEW_HELP = (
     "--jinja, --no-jinja                     whether to use jinja template engine for\n"
     "                                        chat (default: disabled)\n"
 )
-# The pre-enum vintage: -fa is a bare boolean and there is no --jinja.
 OLD_HELP = (
     "usage: llama-server [options]\n"
     "\n"
@@ -77,7 +62,6 @@ OLD_HELP = (
     "--no-context-shift                      disables context shift on infinite text\n"
     "                                        generation\n"
 )
-# A build predating flash attention: the flag does not exist at all.
 NO_FLASH_ATTN_HELP = (
     "usage: llama-server [options]\n"
     "\n"
@@ -86,7 +70,6 @@ NO_FLASH_ATTN_HELP = (
     "--no-context-shift                      disables context shift on infinite text\n"
     "                                        generation\n"
 )
-# What a wrapper prints before it gives up: real flags, but only some of them.
 PARTIAL_HELP = (
     "usage: llama-server [options]\n\n-m,    --model FNAME                    model path\n"
 )
@@ -99,11 +82,7 @@ def probe(
     returncode = 0,
     stream = "stdout",
 ):
-    """Run the real probe against a stubbed ``llama-server --help``.
-
-    ``subprocess`` is stubbed rather than a script dropped on disk so the test
-    means the same thing on Windows, where a shebang file is not executable.
-    """
+    """Stubs subprocess instead of writing a script, since a shebang file is not executable on Windows."""
     binary = tmp_path / "llama-server"
     binary.write_text("")
     completed = subprocess.CompletedProcess(
@@ -133,14 +112,7 @@ class TestTheGatesFailOpen:
     def test_a_nonzero_help_keeps_every_flag(
         self, tmp_path, monkeypatch, label, help_text, returncode, key
     ):
-        """A partial listing is still a FAILED probe.
-
-        The wrapper case that motivates this: it prints a few parseable options
-        and then exits nonzero. ``blocks`` is non-empty, but nothing in it is
-        authoritative, and reading it as "flag absent" would drop
-        ``--no-context-shift`` (context silently rotates again) or ``--jinja``
-        (no template rendering) on a launch the probe never understood.
-        """
+        """A partial listing from a failed probe is not evidence of absence, so no flag may be dropped."""
         assert probe(tmp_path, monkeypatch, help_text, returncode)[key] is True
 
     @pytest.mark.parametrize("key", GATED)
@@ -183,13 +155,8 @@ class TestASuccessfulProbeIsAuthoritative:
         assert caps["flash_attn_takes_value"] is False
 
     def test_a_build_without_flash_attention_drops_the_flag_itself(self, tmp_path, monkeypatch):
-        """The value form is not the only way -fa breaks a launch.
-
-        llama.cpp gained flash attention in b2775; anything older has no flag to
-        emit, and emitting it is an immediate "invalid argument" exit. Gating the
-        value alone would still send the flag. There is no speed to protect here:
-        the build the probe just read has no flash attention at all.
-        """
+        """Builds older than b2775 have no flash attention flag, and emitting -fa exits as invalid
+        argument."""
         caps = probe(tmp_path, monkeypatch, NO_FLASH_ATTN_HELP)
         assert caps["supports_flash_attn"] is False
         assert caps["supports_no_context_shift"] is True
@@ -242,13 +209,7 @@ class TestFlashAttentionValueForm:
 
 
 class TestTheCrashRecoveryMatchesTheEmittedForm:
-    """``_with_flash_attn_off`` has to speak the same dialect the launch does.
-
-    llama.cpp looks every argv token up verbatim (only ``_`` becomes ``-``); it
-    never splits on ``=``. So ``--flash-attn=off`` is "invalid argument" on every
-    build, and the bare form only exists on builds whose flag takes no value at
-    all. The retry therefore drops a bare flag instead of giving it a value.
-    """
+    """llama.cpp matches argv tokens verbatim and never splits on =, so the retry drops a bare flag."""
 
     @pytest.mark.parametrize("flag", ["--flash-attn", "-fa"])
     def test_a_bare_flag_is_dropped(self, flag):
@@ -324,22 +285,13 @@ def _flash_attn_env_scrub(*, known_off: bool) -> dict:
 
 
 class TestAFlaglessBuildIgnoresTheFlashAttentionEnv:
-    """A build with no --flash-attn never reads LLAMA_ARG_FLASH_ATTN either.
+    """Without the flag llama.cpp ignores LLAMA_ARG_FLASH_ATTN; recording it on under-sizes the V cache."""
 
-    llama.cpp resolves each LLAMA_ARG_* variable through the common_arg that
-    declares it, so a binary predating the flag registers neither. Unsloth still
-    reads the inherited env when it records what the child is running, and a
-    recorded-on flash attention under-sizes the padded V cache the resume-slot
-    estimate is capped on.
-    """
-
-    # What the gate leaves on the command line for such a build: no -fa at all.
     CMD = ["llama-server", "-m", "m.gguf", "--no-context-shift", "-c", "8192"]
 
     def test_the_inherited_value_is_dropped(self):
         env = _flash_attn_env_scrub(known_off = True)
         assert "LLAMA_ARG_FLASH_ATTN" not in env
-        # ...and nothing else in the inherited env is touched.
         assert env == {"LLAMA_ARG_CTX_SIZE": "4096"}
 
     def test_the_recorded_state_then_matches_the_launch(self):
@@ -360,15 +312,7 @@ class TestAFlaglessBuildIgnoresTheFlashAttentionEnv:
 
 
 class _SelfShim:
-    """Stand-in for the backend instance the fixup block runs against.
-
-    The block reads instance state (``_kv_lora_rank``, ``_architecture``,
-    ``_mtp_draft_path``) as well as class methods, and binding the class itself
-    meant any new ``self.<attr>`` in that block raised AttributeError here rather
-    than failing on its merits. Anything not set on the shim falls through to the
-    class, and a plain function found there is bound to the shim so the block can
-    call ``self.<method>()`` the way the real backend does.
-    """
+    """Stand-in self for the fixup block; unset attributes fall through to the class; methods bind to it."""
 
     def __init__(
         self,
@@ -421,14 +365,7 @@ def _flagless_v_cache_fixup(
 
 
 class TestAFlaglessBuildCannotRunAQuantizedVCache:
-    """Dropping --flash-attn has to take the quantized V cache with it.
-
-    llama.cpp aborts init with "V cache quantization requires flash_attn", and
-    the KV type is emitted straight from the user's setting with no flash-attn
-    coupling. The crash-recovery rung resets V for exactly this abort, but
-    _with_flash_attn_off returns None when the argv has no flag to turn off, so
-    on a build that never had one nothing downstream would catch it.
-    """
+    """A quantized V cache also needs flash attention, so dropping the flag must reset V too."""
 
     CMD = [
         "llama-server",
@@ -479,11 +416,7 @@ class TestAFlaglessBuildCannotRunAQuantizedVCache:
 
 
 class TestTheFlaglessFixupKeepsMlaKAndVEqual:
-    """An MLA model rejects K != V outright, above the V-quantization check.
-
-    So the launch-site reset, which normally leaves K quantized on purpose,
-    has to bring K down with V there or it trades one abort for another.
-    """
+    """MLA rejects unequal K and V cache types, so the launch-site V reset must bring K down too."""
 
     CMD = [
         "llama-server",
@@ -504,3 +437,136 @@ class TestTheFlaglessFixupKeepsMlaKAndVEqual:
         cmd, _ = _flagless_v_cache_fixup(known_off = True, cmd = self.CMD, env = {}, mla = False)
         assert cmd[cmd.index("--cache-type-k") + 1] == "q8_0"
         assert cmd[cmd.index("--cache-type-v") + 1] == "f16"
+
+
+TRACE_HELP = NEW_HELP + (
+    "-lv,   --verbosity, --log-verbosity N   Set the verbosity threshold. Messages with a higher verbosity will be\n"
+    "                                        ignored. Values:\n"
+    "                                         - 0: generic output\n"
+    "                                         - 1: error\n"
+    "                                         - 2: warning\n"
+    "                                         - 3: info\n"
+    "                                         - 4: trace (more info)\n"
+    "                                         - 5: debug\n"
+    "                                        (default: 3)\n"
+)
+PRE_TRACE_HELP = NEW_HELP + (
+    "-lv,   --verbosity, --log-verbosity N   Set the verbosity threshold. Messages with a higher verbosity will be\n"
+    "                                        ignored.\n"
+)
+
+
+class TestTraceVerbosityRestoresTheLoadLog:
+    """Load lines the offload report and classifiers read are trace-level on current builds."""
+
+    def test_a_trace_build_is_detected(self, tmp_path, monkeypatch):
+        assert probe(tmp_path, monkeypatch, TRACE_HELP)["supports_trace_verbosity"] is True
+
+    @pytest.mark.parametrize(
+        "help_text,returncode",
+        [(PRE_TRACE_HELP, 0), (NEW_HELP, 0), (TRACE_HELP, 1), ("", 0)],
+    )
+    def test_anything_else_fails_closed(self, tmp_path, monkeypatch, help_text, returncode):
+        caps = probe(tmp_path, monkeypatch, help_text, returncode)
+        assert caps["supports_trace_verbosity"] is False
+
+    def test_an_unprobeable_binary_fails_closed(self, tmp_path):
+        caps = LlamaCppBackend.probe_server_capabilities(str(tmp_path / "absent"))
+        assert caps["supports_trace_verbosity"] is False
+
+    def test_a_trace_build_gets_level_4(self):
+        args = llama_cpp_module._trace_verbosity_args({"supports_trace_verbosity": True}, [], {})
+        assert args == ["--verbosity", "4"]
+
+    @pytest.mark.parametrize(
+        "extra_args",
+        [["-lv", "2"], ["--verbosity=5"], ["--log-verbosity", "1"], ["-v"], ["--log-disable"]],
+    )
+    def test_the_users_own_logging_choice_wins(self, extra_args):
+        caps = {"supports_trace_verbosity": True}
+        assert llama_cpp_module._trace_verbosity_args(caps, extra_args, {}) == []
+
+    def test_the_env_form_wins_too(self):
+        caps = {"supports_trace_verbosity": True}
+        env = {"LLAMA_ARG_LOG_VERBOSITY": "3"}
+        assert llama_cpp_module._trace_verbosity_args(caps, None, env) == []
+
+    def test_other_builds_get_nothing(self):
+        assert llama_cpp_module._trace_verbosity_args({}, None, {}) == []
+
+    def test_the_launch_emits_it(self):
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        assert "cmd.extend(_trace_verbosity_args(_caps, extra_args, os.environ))" in src
+
+
+class TestTheStdoutBufferIsBounded:
+    """Level 4 adds about 30 lines a request; the buffer lives as long as the server."""
+
+    def _drain(self, lines):
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        backend._stdout_lines = []
+        backend._process = _types.SimpleNamespace(stdout = iter(f"{l}\n" for l in lines))
+        backend._drain_stdout()
+        return backend._stdout_lines
+
+    def test_the_startup_head_and_the_tail_survive(self):
+        startup = [f"load {i}" for i in range(200)] + ["main: server is listening on 127.0.0.1"]
+        requests = [f"request {i}" for i in range(60000)]
+        kept = self._drain(startup + requests)
+        assert len(kept) <= llama_cpp_module._STDOUT_TRIM_AT
+        assert kept[: len(startup)] == startup
+        assert kept[-1] == "request 59999"
+        assert len(kept) >= len(startup) + llama_cpp_module._STDOUT_TAIL_KEEP
+
+    def test_a_short_log_is_untouched(self):
+        lines = [f"line {i}" for i in range(500)]
+        assert self._drain(lines) == lines
+
+
+def test_a_flood_before_readiness_keeps_the_startup_head():
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._stdout_lines = []
+    lines = ["load_tensors: offloaded 13/37 layers to GPU"] + [f"trace {i}" for i in range(30000)]
+    backend._process = _types.SimpleNamespace(stdout = iter(f"{l}\n" for l in lines))
+    backend._drain_stdout()
+    assert backend._stdout_lines[0] == lines[0]
+    assert len(backend._stdout_lines) <= llama_cpp_module._STDOUT_TRIM_AT
+
+
+def test_the_offload_report_covers_metal_and_env_pinned_layers():
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    assert "(_detected_gpus or _metal_capable_host())" in src
+    assert "_offload_counts[0] <= 0" in src
+    start = src.index("self._offload_overridden = ")
+    assignment = src[start : src.index("\n                if ", start)]
+    assert "self._strip_device_extra_args(extra_args)" in assignment
+    assert "if _gpu_ids_own_device_flags" in assignment
+    assert "_env_fixes_gpu_layers(env)" in assignment
+
+
+def test_the_active_log_file_stops_growing_past_its_cap(tmp_path, monkeypatch):
+    monkeypatch.setattr(llama_cpp_module, "_LLAMA_LOG_FULL_BYTES", 4096)
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._stdout_lines = []
+    log = tmp_path / "llama.log"
+    backend._llama_log_fh = open(log, "w", encoding = "utf-8")
+    lines = [f"0.00.{i:06d} I slot launch: id 0 | task {i} | padding padding" for i in range(2000)]
+    lines += ["0.09.000000 W srv  a warning after the cap", "\trepeat_last_n = 64", "error: boom"]
+    backend._process = _types.SimpleNamespace(stdout = iter(f"{l}\n" for l in lines))
+    backend._drain_stdout()
+    backend._llama_log_fh.close()
+    text = log.read_text(encoding = "utf-8")
+    assert len(text) < 4096 + 512
+    assert "keeping warnings and errors only" in text
+    assert "a warning after the cap" in text and "error: boom" in text
+    assert "repeat_last_n" not in text
+
+
+def test_metal_device_rows_count_as_gpu():
+    rows = [
+        "device_info:",
+        "  - MTL0    : Apple M3 Max (98304 MiB, 98303 MiB free)",
+        "  - CPU     : Apple M3 Max",
+    ]
+    assert llama_cpp_module.llama_saw_gpu_device(rows) is True
+    assert llama_cpp_module.llama_saw_gpu_device([rows[0], rows[2]]) is False

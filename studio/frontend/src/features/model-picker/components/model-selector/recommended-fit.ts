@@ -1,17 +1,27 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Pure helpers for the Recommended list: which formats to surface and whether a model fits
-// the device. No React/DOM deps so they are easy to test.
-
 import { classifyGgufFit } from "../../../../lib/gguf-fit.ts";
-import { classifyMediaGgufFit, type curatedArtifactFit } from "./model-catalog.ts";
+import {
+  LOADING_OVERHEAD_GB,
+  checkVramFit,
+  estimateLoadingVram,
+} from "../../../../lib/vram.ts";
+import {
+  audioCppDisplayName,
+  isAudioCppFolderId,
+} from "../../../audio/audio-cpp-catalog.ts";
+import { matchesRecommended } from "../../../hub/lib/format-filters.ts";
+import {
+  classifyMediaGgufFit,
+  type curatedArtifactFit,
+} from "./model-catalog.ts";
 
 const GGUF_SUFFIX_RE = /-GGUF(?:$|-)/i;
-// Mirrors the backend's _looks_like_mlx_repo: owner prefix, or a bounded mlx token in the leaf.
+// Mirrors the backend's _looks_like_mlx_repo.
 const MLX_RE = /(?:^|[-_.])mlx(?:$|[-_.])/i;
 const MLX_OWNER_PREFIX = "mlx-community/";
-// Callers pass LocalModelInfo.id, a filesystem path, so a Windows one must split too.
+// Callers pass a filesystem path, which may be Windows.
 const PATH_SEP_RE = /[\\/]/;
 
 export function isGgufId(id: string, hintedIsGguf?: boolean): boolean {
@@ -25,16 +35,13 @@ export function isMlxId(id: string): boolean {
   return MLX_RE.test(leaf);
 }
 
-// "mobile" build token (e.g. "gemma-4-E4B-it-qat-mobile-GGUF"); bounded so it never matches inside a longer word.
 const MOBILE_RE = /(?:^|[-_/. ])mobile(?:$|[-_/. ])/i;
 
-/** A mobile-targeted build, which we keep out of the Recommended list. */
 export function isMobileVariant(id: string): boolean {
   return MOBILE_RE.test(id);
 }
 
-/** What Recommended may suggest: GGUF anywhere; on Mac also MLX and safetensors. GPU keeps
- *  GGUF-only recommendations. */
+/** GGUF anywhere; on Mac also MLX and safetensors. */
 export function isRecommendableFormat(
   id: string,
   hintedIsGguf: boolean | undefined,
@@ -44,8 +51,24 @@ export function isRecommendableFormat(
   return isMac;
 }
 
+/** An FP8 / NVFP4 checkpoint (not a GGUF) this host's GPUs run natively. */
+export function isCapableCheckpointQuant(
+  id: string,
+  quantMethod: string | undefined,
+  checkpointQuantFormats: readonly string[],
+  hintedIsGguf?: boolean,
+): boolean {
+  return (
+    !isGgufId(id, hintedIsGguf) &&
+    matchesRecommended(
+      { id, isGguf: false, quantMethod },
+      checkpointQuantFormats,
+    )
+  );
+}
+
 /** Format filter for the listing toggle. "safetensors" means anything that is neither GGUF nor MLX. */
-export type FormatFilter = "all" | "gguf" | "mlx" | "safetensors";
+export type FormatFilter = "all" | "gguf" | "mlx" | "safetensors" | "npu";
 
 export function matchesFormatFilter(
   id: string,
@@ -59,17 +82,59 @@ export function matchesFormatFilter(
       return isMlxId(id);
     case "safetensors":
       return !isGgufId(id, hintedIsGguf) && !isMlxId(id);
+    case "npu":
+      return false;
     default:
       return true;
   }
+}
+
+/** The format filters a picker offers, in menu order. MLX only where it can run, NPU only with a
+ *  catalog to show. */
+export function formatFilterValues(opts: { npu: boolean; mlx: boolean }): FormatFilter[] {
+  return (["all", "gguf", "mlx", "safetensors", "npu"] as const).filter(
+    (value) => (value !== "mlx" || opts.mlx) && (value !== "npu" || opts.npu),
+  );
+}
+
+/** A remembered filter the picker no longer offers falls back to "all". */
+export function coerceFormatFilter(
+  chosen: FormatFilter,
+  offered: readonly FormatFilter[],
+): FormatFilter {
+  return offered.includes(chosen) ? chosen : "all";
+}
+
+const normalizeSearchText = (s: string): string =>
+  s.toLowerCase().replace(/[\s_.-]/g, "");
+
+/** Whether a picker search matches a row on what the row shows. A bundled folder shows only its
+ *  folder name, so its package repo id matches nothing, and neither does a query that is just
+ *  part of the -GGUF every folder name ends in. */
+export function pickerSearchMatches(
+  id: string,
+  aliases: readonly string[],
+  label: string | null | undefined,
+  query: string,
+): boolean {
+  const q = normalizeSearchText(query);
+  if (!q) return true;
+  if (isAudioCppFolderId(id)) {
+    const name = audioCppDisplayName(id);
+    return (
+      normalizeSearchText(name.replace(/-gguf$/i, "")).includes(q) ||
+      (!"gguf".includes(q) && normalizeSearchText(name).includes(q))
+    );
+  }
+  return (label ? [...aliases, label] : aliases).some((term) =>
+    normalizeSearchText(term).includes(q),
+  );
 }
 
 // First "<n>B" token in a repo id, e.g. "Qwen3-30B-A3B" -> 30. Digits must be
 // separator-bounded so "16" is never read from "bf16".
 const PARAM_RE = /(?:^|[-_/. ])[eE]?(\d+(?:\.\d+)?)\s*[bB](?=$|[-_./ ])/;
 
-/** Parameter count parsed from a repo id, or undefined when it has no size token, so callers
- *  can treat the size as unknown. */
 export function paramsFromId(id: string): number | undefined {
   const match = PARAM_RE.exec(id);
   if (!match) return undefined;
@@ -77,20 +142,15 @@ export function paramsFromId(id: string): number | undefined {
   return Number.isFinite(billions) && billions > 0 ? billions * 1e9 : undefined;
 }
 
-// Smallest practical GGUF/MLX quant (~Q2_K). The fit check asks whether a model can run at
-// all, so it uses this rather than a default 4-bit size.
+// ~Q2_K: the fit check asks whether a model can run at all.
 const MIN_QUANT_BYTES_PER_PARAM = 0.4;
 
-/** Rough on-disk bytes for the smallest practical quant of `params` weights. */
 export function estimateQuantBytes(params: number): number {
   return params * MIN_QUANT_BYTES_PER_PARAM;
 }
 
-/** A model fits when it can run at all: `classifyGgufFit` short of `oom`, so a partial CPU
- *  offload counts. Shares the loader's formula with the Hub badge and the quant rows, since
- *  this predicate ALSO gates the "Fits on device" filter. Unknown device means we cannot
- *  tell, so treat it as fitting. Unknown size normally fits too, but Recommended passes
- *  `requireKnown` so an unsizable model is hidden rather than wrongly shown. */
+/** Fits when classifyGgufFit is short of `oom` (CPU offload counts); also gates "Fits on device".
+  Unknown device fits; unknown size fits unless `requireKnown`. */
 export function fitsDevice(opts: {
   sizeBytes?: number;
   gpuGb?: number;
@@ -98,14 +158,11 @@ export function fitsDevice(opts: {
   budgetKnown?: boolean;
   requireKnown?: boolean;
   budgetFraction?: number;
-  /** How many GPUs gpuGb sums, so the gate charges the loader's per-card VRAM reserve the same
-   *  number of times the badge does. Absent means one. */
+  /** GPUs summed in gpuGb, so the per-card VRAM reserve is charged as the badge does. Default 1. */
   gpuCount?: number;
-  /** Images / Video: the row is placed by the diffusion backend, not llama-server, so it takes
-   *  the media rule the quant rows use. Applies to every format on those pages. */
+  /** Images / Video: diffusion backend placement, so the media rule applies. */
   mediaLoad?: boolean;
-  /** The load device's memory is a window into host RAM, so RAM is not a second budget to add.
-   *  Media rule only; the llama.cpp one already takes a RAM figure with the pool removed. */
+  /** Load device memory is host RAM, so RAM is not a second budget. Media rule only. */
   hostPooledMemory?: boolean;
 }): boolean {
   const {
@@ -119,15 +176,13 @@ export function fitsDevice(opts: {
     mediaLoad,
     hostPooledMemory,
   } = opts;
-  // Unified-memory hosts report system RAM but no GPU, so the budget must include RAM. Only an
-  // entirely unknown budget fits freely.
+  // Unified-memory hosts report RAM but no GPU; only an entirely unknown budget fits freely.
   const anyBudget =
     Math.max(0, gpuGb ?? 0) > 0 || Math.max(0, systemRamGb ?? 0) > 0;
   if (!anyBudget) return !budgetKnown;
   if (sizeBytes && sizeBytes > 0) {
     if (mediaLoad) {
-      // No RAM tier on a host pool: diffusion offload moves bytes inside that one pool and frees
-      // nothing. llama.cpp keeps its tier, since a GGUF really does spill into host RAM.
+      // No RAM tier on a host pool: diffusion offload frees nothing there, unlike a GGUF spill.
       return (
         classifyMediaGgufFit(
           sizeBytes,
@@ -148,11 +203,35 @@ export function fitsDevice(opts: {
   return requireKnown ? false : true;
 }
 
+/** A safetensors load on a discrete GPU: a prequantized checkpoint as stored (Studio rebuilds none
+ *  of them as bnb), anything else at the row badge's 4-bit estimate. `raise_if_offloaded` refuses
+ *  CPU offload, except that one CUDA / ROCm card block-swaps 16-bit or bnb layers into host RAM. */
+function fitsTransformersLoad(
+  model: { totalParams: number; estimatedSizeBytes?: number; quantMethod?: string },
+  gpu: { memoryTotalGb: number; systemRamAvailableGb: number; backend?: string },
+  gpuCount = 1,
+): boolean {
+  const quant = model.quantMethod?.toLowerCase();
+  const swapGb =
+    gpuCount <= 1 && (gpu.backend === "cuda" || gpu.backend === "rocm")
+      ? Math.max(0, gpu.systemRamAvailableGb)
+      : 0;
+  const fits = (requiredGb: number, budgetGb: number) =>
+    checkVramFit(requiredGb, budgetGb) !== "exceeds";
+  if (!quant)
+    return fits(estimateLoadingVram(model.totalParams, "qlora"), gpu.memoryTotalGb + swapGb);
+  const storedBytes =
+    model.estimatedSizeBytes ?? estimateQuantBytes(model.totalParams);
+  return fits(
+    storedBytes / 1024 ** 3 + LOADING_OVERHEAD_GB,
+    gpu.memoryTotalGb + (quant === "bitsandbytes" ? swapGb : 0),
+  );
+}
+
 /** Fit predicate for one Hub listing row, shared by the chat model selector and the Hub page
- *  filter. GGUF repos use metadata size or the smallest-quant estimate. Safetensors / MLX
- *  always use the params-based estimate, matching the badge's quantized-load assumption,
- *  since their estimatedSizeBytes is the full-precision checkpoint. `curatedSizeBytes`
- *  outranks both. Anything still unsizable is hidden; an unknown device budget keeps all. */
+ *  filter. GGUF repos use metadata size or the smallest-quant estimate, safetensors on a discrete
+ *  GPU `fitsTransformersLoad`, and MLX / host-pool rows the params-based quant estimate.
+ *  `curatedSizeBytes` outranks all. Unsizable rows are hidden; an unknown budget keeps all. */
 export function hfModelFitsDevice(
   model: {
     id: string;
@@ -160,15 +239,15 @@ export function hfModelFitsDevice(
     estimatedSizeBytes?: number;
     curatedSizeBytes?: number;
     isGguf?: boolean;
+    quantMethod?: string;
   },
   gpu: {
     memoryTotalGb: number;
     systemRamAvailableGb: number;
     budgetKnown?: boolean;
+    backend?: string;
   },
-  /** `budgetFraction` is the user's saved VRAM Budget: omitted scores against the loader's
-   *  default, so a caller that forgets it judges rows on a replaced budget. `mediaLoad` picks
-   *  the diffusion rule for an Images / Video row. */
+  /** Omitted `budgetFraction` scores against the loader default, not the user's saved budget. */
   opts: {
     budgetFraction?: number;
     gpuCount?: number;
@@ -183,10 +262,21 @@ export function hfModelFitsDevice(
   )
     return true;
   const params = model.totalParams ?? paramsFromId(model.id);
+  const isGguf = isGgufId(model.id, model.isGguf);
+  if (
+    params &&
+    model.curatedSizeBytes == null &&
+    !isGguf &&
+    !isMlxId(model.id) &&
+    !opts.mediaLoad &&
+    !opts.hostPooledMemory &&
+    gpu.memoryTotalGb > 0
+  )
+    return fitsTransformersLoad({ ...model, totalParams: params }, gpu, opts.gpuCount);
   const quantBytes = params ? estimateQuantBytes(params) : undefined;
   const sizeBytes =
     model.curatedSizeBytes ??
-    (isGgufId(model.id, model.isGguf)
+    (isGguf
       ? (model.estimatedSizeBytes ?? quantBytes)
       : (quantBytes ?? model.estimatedSizeBytes));
   return fitsDevice({
@@ -202,9 +292,7 @@ export function hfModelFitsDevice(
   });
 }
 
-/** The budget a task-scoped (Images / Video) row may claim. Those loads put the whole pipeline
- *  on ONE device, so fit is judged against that card, never the multi-GPU sum, which would
- *  recommend a checkpoint that OOMs where the load lands. Chat keeps the sum. */
+/** Task loads put the whole pipeline on ONE device, so fit uses that card, not the multi-GPU sum. */
 export function loadScopedGpu<
   T extends {
     available: boolean;
@@ -224,21 +312,16 @@ export function loadScopedGpu<
   return {
     ...gpu,
     memoryTotalGb: deviceGb,
-    // Narrowed with the capacity it describes, or the per-card VRAM reserve gets charged once per
-    // HOST GPU against a ONE-card budget. Two 24 GiB cards at 1.0 scored an audio quant
-    // against 23.28 GiB where the loader offers the selected card's 23.5.
+    // Narrowed with the capacity, or the per-card reserve is charged once per host GPU.
     deviceCount: 1,
-    // The raw-host figure is the RAM a DEDICATED task device may claim back from a shared GPU's
-    // reservation. Gated on the folded flag, not shared_memory, which is Windows-only: a Linux
-    // ROCm APU took this branch and undid the subtraction keeping its GTT window out.
+    // Gated on the folded flag, not Windows-only shared_memory, so a Linux ROCm APU keeps its GTT subtracted.
     systemRamAvailableGb: hostPooledLoadDevice(gpu)
       ? gpu.systemRamAvailableGb
       : (gpu.systemRamAvailableHostGb ?? gpu.systemRamAvailableGb),
   };
 }
 
-/** Whether the device a task load lands on draws from host RAM. Prefers the folded flag, which
- *  counts a Linux APU reporting unified_memory without shared_memory. */
+/** Prefers the folded flag, which counts a Linux APU with unified_memory but no shared_memory. */
 function hostPooledLoadDevice(gpu: {
   loadDeviceSharedMemory?: boolean;
   loadDeviceSharesHostMemory?: boolean;
@@ -246,9 +329,7 @@ function hostPooledLoadDevice(gpu: {
   return gpu.loadDeviceSharesHostMemory ?? gpu.loadDeviceSharedMemory === true;
 }
 
-/** One fit predicate for both search lists. The curated list only suppresses ids it kept, so a
- *  row it drops reappears from the Hub list: judge both on the same size and budget, or the
- *  toggle leaks an oversized row. */
+/** Both search lists must judge rows identically, or the curated toggle leaks an oversized row. */
 export function searchRowFitsDevice<
   G extends {
     available: boolean;
@@ -265,6 +346,7 @@ export function searchRowFitsDevice<
     totalParams?: number;
     estimatedSizeBytes?: number;
     curatedSizeBytes?: number;
+    quantMethod?: string;
   },
   opts: {
     isGguf: boolean;
@@ -272,14 +354,10 @@ export function searchRowFitsDevice<
     gpu: G;
     inferenceGpu: G;
     taskScoped: boolean;
-    /** Images / Video only. `taskScoped` picks the single-device budget for every task page; this
-     *  picks the diffusion RULE, which Audio must not get: its GGUFs run under llama.cpp. */
+    /** Images / Video only: Audio GGUFs run under llama.cpp and must not get the diffusion rule. */
     diffusionLoad?: boolean;
     budgetFraction?: number;
-    /** How many GPUs the aggregate sums, when the caller's inventory does not carry the count.
-     *  loadScopedGpu narrows it to 1 with the capacity, so a task page needs nothing here. */
     gpuCount?: number;
-    /** The image/video load device's pool is host RAM, so RAM is not a second budget. */
     hostPooledMemory?: boolean;
   },
 ): boolean {
@@ -294,11 +372,9 @@ export function searchRowFitsDevice<
       curatedSizeBytes: row.curatedSizeBytes ?? opts.curatedSizeBytes,
     },
     source,
-    // A task-scoped row is a media load, so it takes the media rule as well as the single-device
-    // budget. Without this the search gate disagreed with the quant rows it gates.
+    // Task-scoped rows take the media rule too, so the search gate matches the quant rows.
     {
       budgetFraction: opts.budgetFraction,
-      // From the SCOPED budget, so the count always describes the capacity beside it.
       gpuCount: source.deviceCount ?? opts.gpuCount,
       mediaLoad: opts.diffusionLoad,
       hostPooledMemory: opts.hostPooledMemory,
@@ -306,11 +382,8 @@ export function searchRowFitsDevice<
   );
 }
 
-/** The id pool the Recommended SEARCH matches against: curated seeds first, then listing ids,
- *  each id once. The listing pool drops ids already on disk, since a downloaded model has
- *  its own On Device row; the seed pool does not, because the unfiltered list keeps painting
- *  a downloaded curated model. Without this a curated pick disappears from search once
- *  downloaded, and only a live Hub listing row could bring it back. */
+/** Curated seeds first, then listing ids. Only the listing pool drops on-disk ids, so a
+  downloaded curated pick stays searchable. */
 export function searchableRecommendedIds(
   seedIds: readonly string[],
   listingIds: readonly string[],
@@ -326,11 +399,8 @@ export function searchableRecommendedIds(
   return out;
 }
 
-/** Order Recommended: curated seeds first in catalog order, then the rest of the listing, each
- *  id once. A seed hands off only to a row that survived `keep`, so a painted curated row
- *  does not vanish when the listing reports it with rejected metadata. The taking-over row
- *  inherits the seed's curated size, or a prequantized artifact would flip to the params
- *  guess, which assumes a quant still to come. */
+/** Curated seeds first, then the listing. A seed hands off only to a row that survived `keep`,
+  and that row inherits the seed's curated size. */
 export function orderRecommendedRows<
   T extends { id: string; curatedSizeBytes?: number },
 >(opts: {
@@ -339,8 +409,25 @@ export function orderRecommendedRows<
   keep: (row: T) => boolean;
   deviceFiltered: boolean;
   fits: (row: T) => boolean;
+  /** `results` must be one sorted listing of unsloth/* repos, since a family ranks by its index. */
+  familyOf?: (id: string) => string | undefined;
+  /** Family keys (as returned by `familyOf`) that lead the list in this order, whatever the sort.
+   *  Their rows interleave by position: every pinned family's first row, then every second one. */
+  pinnedFamilies?: readonly string[];
+  /** Pinned family keys whose rows stay together instead of interleaving: all of them come before
+   *  the next pinned family's, so a GGUF sits right under its own lead row. */
+  pinnedTogether?: readonly string[];
 }): T[] {
-  const { seeds, results, keep, deviceFiltered, fits } = opts;
+  const {
+    seeds,
+    results,
+    keep,
+    deviceFiltered,
+    fits,
+    familyOf,
+    pinnedFamilies = [],
+    pinnedTogether = [],
+  } = opts;
   const seedById = new Map(seeds.map((s) => [s.id, s]));
   const rows = results.filter(keep).map((row) => {
     const curatedSizeBytes = seedById.get(row.id)?.curatedSizeBytes;
@@ -358,19 +445,75 @@ export function orderRecommendedRows<
   const rest = (deviceFiltered ? rows.filter(fits) : rows).filter(
     (r) => !curatedIds.has(r.id),
   );
-  return [...curated, ...rest];
+  const ordered = [...curated, ...rest];
+  if (!familyOf) return ordered;
+  // Unlisted families go last, except first-party unslothai/* ones the listing never returns.
+  const keyOf = (r: T) => familyOf(r.id) ?? r.id.toLowerCase();
+  const firstParty = (id: string) => /^unsloth(ai)?\//i.test(id);
+  const listable = new Set(
+    ordered.filter((r) => /^unsloth\//i.test(r.id)).map(keyOf),
+  );
+  const rank = new Map<string, number>();
+  results.forEach((r, i) => {
+    const key = keyOf(r);
+    if (!rank.has(key)) rank.set(key, i);
+  });
+  const firstSeen = new Map<string, number>();
+  ordered.forEach((r, i) => {
+    const key = keyOf(r);
+    if (!firstSeen.has(key)) firstSeen.set(key, i);
+  });
+  const pinIndex = new Map(pinnedFamilies.map((key, i) => [key, i]));
+  const together = new Set(pinnedTogether);
+  // Row position within its family: pinned families' lead rows ("Fast FP8") come before their GGUFs.
+  const slotOf = new Map<number, number>();
+  const seenPerFamily = new Map<string, number>();
+  ordered.forEach((r, i) => {
+    const key = keyOf(r);
+    const slot = seenPerFamily.get(key) ?? 0;
+    slotOf.set(i, slot);
+    seenPerFamily.set(key, slot + 1);
+  });
+  const sortKey = (r: T, i: number) => {
+    const key = keyOf(r);
+    // Pinned families lead, ahead of first-party rows that trend higher.
+    const pin = pinIndex.get(key);
+    if (pin != null) {
+      const slot = slotOf.get(i) ?? 0;
+      return together.has(key)
+        ? [0, pin, slot, firstSeen.get(key) ?? i, i]
+        : [slot, pin, 0, firstSeen.get(key) ?? i, i];
+    }
+    const ours = firstParty(r.id);
+    const unranked = ours && !listable.has(key) ? -1 : Infinity;
+    return [
+      Number.POSITIVE_INFINITY,
+      ours ? 0 : 1,
+      rank.get(key) ?? unranked,
+      firstSeen.get(key) ?? i,
+      i,
+    ];
+  };
+  return ordered
+    .map((row, i) => ({ row, key: sortKey(row, i) }))
+    .sort((a, b) => {
+      for (let k = 0; k < a.key.length; k++) {
+        if (a.key[k] !== b.key[k]) return a.key[k] < b.key[k] ? -1 : 1;
+      }
+      return 0;
+    })
+    .map(({ row }) => row);
 }
 
-/** The allowance a curated row was judged against, the memory it is 70% of, and the unrounded size. */
 export type CuratedBudget = {
   allowanceGb: number;
   deviceGb: number;
-  device: "GPU" | "RAM";
+  device: "GPU" | "RAM" | "GPU + RAM";
   sizeGb: number;
 };
 
 export function curatedBudget(
-  fit: NonNullable<ReturnType<typeof curatedArtifactFit>>,
+  fit: Omit<NonNullable<ReturnType<typeof curatedArtifactFit>>, "device"> & { device?: CuratedBudget["device"] },
 ): CuratedBudget | undefined {
   const { allowanceGb, deviceGb, device, sizeGb } = fit;
   return allowanceGb != null && deviceGb != null && device && sizeGb != null
@@ -381,7 +524,11 @@ export function curatedBudget(
 /** Over-budget text for a curated row. When the whole-GB badge figure does not read above the
  *  one-decimal budget (24 against 24.1), the size is rounded up and the budget down to a tenth, so
  *  the shown size is always strictly above the shown budget. The epsilon keeps 16.7999... at 16.8. */
-export function curatedBudgetText(est: number, gpuGb: number, budget: CuratedBudget): string {
+export function curatedBudgetText(
+  est: number,
+  gpuGb: number,
+  budget: CuratedBudget,
+): string {
   const shownBudget = Number(budget.allowanceGb.toFixed(1));
   const wholeReadsOver = est > shownBudget;
   const needGb = wholeReadsOver
@@ -391,8 +538,23 @@ export function curatedBudgetText(est: number, gpuGb: number, budget: CuratedBud
     ? shownBudget.toFixed(1)
     : (Math.floor(budget.allowanceGb * 10 + 1e-9) / 10).toFixed(1);
   const of =
-    budget.device === "RAM"
+    budget.device === "GPU + RAM"
+      ? `${Number(budget.deviceGb.toFixed(2))}GB combined GPU and available RAM`
+      : budget.device === "RAM"
       ? `${Number(budget.deviceGb.toFixed(2))}GB available RAM`
       : `a ${gpuGb}GB GPU`;
   return `Needs ~${needGb}GB for weights (budget: ~${budgetGb}GB, 70% of ${of})`;
+}
+
+export function recommendedEmptyState({
+  isLoading,
+  error,
+  hubPhase,
+}: {
+  isLoading: boolean;
+  error: string | null;
+  hubPhase: "available" | "probing" | "unavailable";
+}): "loading" | "failed" | "empty" {
+  if (isLoading) return "loading";
+  return error || hubPhase !== "available" ? "failed" : "empty";
 }

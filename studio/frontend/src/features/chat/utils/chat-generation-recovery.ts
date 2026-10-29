@@ -7,6 +7,9 @@ import {
   extractDeltaText,
   parseAssistantContent,
 } from "./parse-assistant-content";
+import type { ContextUsageMarkers } from "./saved-context-usage";
+import { isExternalModelId } from "../external-providers";
+import { contextUsageReasoningKey, type ContextUsageReasoningFields } from "./context-usage-reasoning";
 
 export type StoredGenerationStatus = ChatGenerationStatus;
 
@@ -48,14 +51,25 @@ export function generationChunkCountsTowardTiming(payload: unknown): boolean {
   const chunk = payload as
     | {
         _reasoningDurationMs?: unknown;
+        _contextUsage?: unknown;
+        _generationProgress?: unknown;
         context_truncated?: unknown;
+        quote_cut?: unknown;
         usage?: unknown;
         choices?: unknown[];
       }
     | null
     | undefined;
   if (!chunk || typeof chunk !== "object") return false;
-  if ("_reasoningDurationMs" in chunk || chunk.context_truncated) return false;
+  if (
+    "_reasoningDurationMs" in chunk ||
+    "_contextUsage" in chunk ||
+    "_generationProgress" in chunk ||
+    chunk.context_truncated ||
+    chunk.quote_cut
+  ) {
+    return false;
+  }
   return !(chunk.usage && Array.isArray(chunk.choices) && chunk.choices.length === 0);
 }
 
@@ -92,6 +106,32 @@ export function generationIsSettled(
   return status !== null && TERMINAL.has(status) && cursor >= lastEventSeq;
 }
 
+export function createRecoveryPublishSchedule(
+  intervalMs: number,
+  now: () => number = Date.now,
+): {
+  attach(lastEventSeq: number): void;
+  shouldPublish(cursor: number, settled: boolean): boolean;
+  takeSave(settled: boolean): boolean;
+} {
+  let attachSeq = 0;
+  let lastSaveAt = Number.NEGATIVE_INFINITY;
+  return {
+    attach(lastEventSeq) {
+      attachSeq = lastEventSeq;
+    },
+    shouldPublish(cursor, settled) {
+      return settled || cursor >= attachSeq;
+    },
+    takeSave(settled) {
+      const at = now();
+      if (!settled && at - lastSaveAt < intervalMs) return false;
+      lastSaveAt = at;
+      return true;
+    },
+  };
+}
+
 export async function loadGenerationOverlaySnapshot<TMessage, TRun>(
   threadId: string,
   listActiveRuns: (id: string) => Promise<TRun[]>,
@@ -99,12 +139,10 @@ export async function loadGenerationOverlaySnapshot<TMessage, TRun>(
 ): Promise<{
   messages: TMessage[];
   activeRuns: TRun[];
-  /** False when the active-run read failed, so its empty list is "unknown", not "none". A caller
-   *  deciding a reply is dead from an absent run has to tell the two apart. */
+  /** False when the read failed, so an empty list means unknown, not none. */
   activeRunsLoaded: boolean;
 }> {
-  // Runs first closes the create-between-snapshots gap. If a run commits after this read, the
-  // later message snapshot already carries its durable metadata.
+  // Reading runs first closes the create-between-snapshots gap.
   let activeRunsLoaded = true;
   const activeRuns = await listActiveRuns(threadId).catch(() => {
     activeRunsLoaded = false;
@@ -118,10 +156,19 @@ type RecoveryUsage = {
   prompt_tokens?: unknown;
   completion_tokens?: unknown;
   total_tokens?: unknown;
-  prompt_tokens_details?: { cached_tokens?: unknown };
+  context_tokens?: unknown;
+  prompt_tokens_details?: { cached_tokens?: unknown; cache_write_tokens?: unknown };
   cache_creation_input_tokens?: unknown;
   cache_read_input_tokens?: unknown;
 };
+
+export function usageCacheWriteTokens(usage: RecoveryUsage | undefined): number {
+  if (typeof usage?.cache_creation_input_tokens === "number") {
+    return usage.cache_creation_input_tokens;
+  }
+  const details = usage?.prompt_tokens_details?.cache_write_tokens;
+  return typeof details === "number" ? details : 0;
+}
 
 type RecoveryTimings = {
   cache_n?: unknown;
@@ -129,22 +176,26 @@ type RecoveryTimings = {
   [key: string]: unknown;
 };
 
+const RECOVERED_STOP_REASONS = new Set(["stop", "length", "tool_calls", "content_filter"]);
+
 export function recoveredGenerationFinalMetadata(options: {
   current: Record<string, unknown>;
   run: {
     id: string;
-    requestPayload: { model?: unknown };
+    requestPayload: { model?: unknown } & ContextUsageReasoningFields;
     createdAt: number;
     startedAt: number | null;
     completedAt: number | null;
+    finishReason?: string | null;
   };
   usage?: RecoveryUsage;
   timings?: RecoveryTimings;
   firstChunkAt?: number;
   totalChunks: number;
   toolCalls?: string[];
+  markers: ContextUsageMarkers;
 }): Record<string, unknown> {
-  const { current, run, usage, timings, firstChunkAt, totalChunks } = options;
+  const { current, run, usage, timings, firstChunkAt, totalChunks, markers } = options;
   const modelId =
     typeof run.requestPayload.model === "string"
       ? run.requestPayload.model
@@ -166,6 +217,10 @@ export function recoveredGenerationFinalMetadata(options: {
   if (next.serverTimings === undefined && timings !== undefined) {
     next.serverTimings = timings;
   }
+  // Only the stream's own vocabulary: "cancelled" / "interrupted" are run states the reply already shows.
+  if (next.stopReason === undefined && RECOVERED_STOP_REASONS.has(run.finishReason ?? "")) {
+    next.stopReason = run.finishReason;
+  }
   if (
     next.contextUsage === undefined &&
     typeof usage?.prompt_tokens === "number" &&
@@ -176,6 +231,9 @@ export function recoveredGenerationFinalMetadata(options: {
       promptTokens: usage.prompt_tokens,
       completionTokens,
       totalTokens: usage.total_tokens,
+      ...(typeof usage.context_tokens === "number"
+        ? { contextTokens: usage.context_tokens }
+        : {}),
       cachedTokens:
         (typeof timings?.cache_n === "number" ? timings.cache_n : undefined) ??
         (typeof usage.prompt_tokens_details?.cached_tokens === "number"
@@ -184,11 +242,16 @@ export function recoveredGenerationFinalMetadata(options: {
         (typeof usage.cache_read_input_tokens === "number"
           ? usage.cache_read_input_tokens
           : 0),
-      cacheWriteTokens:
-        typeof usage.cache_creation_input_tokens === "number"
-          ? usage.cache_creation_input_tokens
-          : 0,
+      cacheWriteTokens: usageCacheWriteTokens(usage),
       modelId,
+      ...(!isExternalModelId(modelId)
+        ? { reasoningKey: contextUsageReasoningKey(run.requestPayload) }
+        : {}),
+      // Revisions only grow: above zero, an edit may have landed after this run started, so the
+      // count calibrates an estimate instead of being certified for the revised branch.
+      ...(markers.revision > 0
+        ? { messageCount: markers.messageCount, estimatedTokens: markers.estimatedTokens }
+        : markers),
     };
   }
   if (next.responseDetails === undefined) {
@@ -224,7 +287,6 @@ export function recoveredGenerationFinalMetadata(options: {
 const THINK_OPEN = "<think>";
 const THINK_CLOSE = "</think>";
 
-/** A part the raw projection cannot express, kept with the offset it sat at. */
 export type CarriedPart = { at: number; part: unknown };
 
 export function generationRawContent(content: unknown): {
@@ -312,10 +374,7 @@ export function restoreCarriedParts<TPart>(
   return out;
 }
 
-/** A card offset is the raw length at a chunk boundary, and a think tag can arrive split
- *  across two chunks, so an offset can land inside one. Cutting there leaves the tag's halves
- *  as text AND lets the tracker reopen the block, so the reply projects back with the tag
- *  twice. A tag is atomic: put the card past it. */
+/** Think tags can split across chunks; treat a tag as atomic and put the card past it. */
 function pastThinkTag(raw: string, at: number): number {
   for (const tag of [THINK_OPEN, THINK_CLOSE]) {
     const start = raw.lastIndexOf(tag, at);
@@ -326,7 +385,7 @@ function pastThinkTag(raw: string, at: number): number {
   return at;
 }
 
-/** Split raw replay before parsing, since parsing can coalesce separate think blocks. */
+/** Split before parsing, since parsing can coalesce separate think blocks. */
 export function restoreCarriedPartsFromRaw(
   raw: string,
   carried: readonly CarriedPart[],
@@ -357,13 +416,21 @@ export function restoreCarriedPartsFromRaw(
   return out;
 }
 
-// Whether a reply to this request can carry real <think> reasoning. Recovery reads it from the
-// stored request because the server-created placeholder has no parseThinkTags until the first save.
+// Read from the stored request: the placeholder lacks parseThinkTags until the first save.
 export function requestParsesThinkTags(payload: {
   enable_thinking?: boolean | null;
   reasoning_effort?: string | null;
   thinking?: { type?: string } | null;
+  provider_type?: string | null;
+  external_model?: string | null;
+  model?: string | null;
 }): boolean {
+  const provider = payload.provider_type?.trim().toLowerCase();
+  const model = (payload.external_model ?? payload.model)?.trim().toLowerCase();
+  const sonnet55BetweenTools =
+    provider === "anthropic" &&
+    (model === "claude-sonnet-5-5" || model?.startsWith("claude-sonnet-5-5-") === true);
+  if (sonnet55BetweenTools) return true;
   return !(
     payload.thinking?.type === "disabled" ||
     payload.enable_thinking === false ||
@@ -399,7 +466,7 @@ function followingCarriedMatches(matches: (number | undefined)[]) {
 }
 
 function carriedPartMatches(view: CarriedPart[], recovered: CarriedPart[]) {
-  // Every occurrence, not the last: sources are not deduplicated, so a repeated url needs a slot each.
+  // Every occurrence: sources are not deduplicated, so a repeated url needs a slot each.
   const byId = new Map<string, number[]>();
   recovered.forEach((entry, i) => {
     const key = carriedPartKey(entry);
@@ -422,7 +489,6 @@ function carriedPartMatches(view: CarriedPart[], recovered: CarriedPart[]) {
     used.add(index);
     return index;
   });
-  // Legacy cards lack replay ids. Pair occurrences at the same position one to one.
   const following = followingCarriedMatches(matches);
   let previous: number | undefined;
   view.forEach((entry, i) => {
@@ -520,9 +586,7 @@ export function recoveredContentToImport<TContent>(
     if (matches.every((index) => index !== undefined)) {
       return recoveredContent;
     }
-    // Only a recovered reply that HAS text disagrees: an empty projection is a prefix of every
-    // reply, and with both text-free an unmatched view card is as likely a call replay has not
-    // reached as a stale one.
+    // Only a recovered reply with text disagrees; an empty projection prefixes every reply.
     if (!view.raw && recovered.raw) {
       return recoveredContent;
     }
@@ -543,11 +607,8 @@ export function generationNeedsRecovery(
   metadata: Record<string, unknown>,
 ): boolean {
   const status = String(metadata.generationStatus) as StoredGenerationStatus;
-  // Stamped by a follower that hit its no-progress deadline. Re-following on every recovery
-  // trigger turned one stuck run into a permanently blocked composer; history.load clears the
-  // marker if /chat-runs/active still names the run. Non-terminal only: a run the backend
-  // finished is stored completed, and /chat-runs/active excludes completed runs, so honouring
-  // the marker there would leave that reply running forever.
+  // Set by a follower that hit its no-progress deadline. Non-terminal only: completed runs are
+  // absent from /chat-runs/active, so honouring it would leave them running forever.
   if (metadata.generationLocallyInterrupted === true && !TERMINAL.has(status)) {
     return false;
   }
@@ -557,6 +618,30 @@ export function generationNeedsRecovery(
   );
 }
 
+/** Usage arrives before the terminal event, so a saved cursor must carry it or lose it. */
+export function generationReplayMetadata(state: {
+  cursor: number;
+  firstChunkAt?: number;
+  totalChunks?: number;
+  usage?: unknown;
+  timings?: unknown;
+}): Record<string, unknown> {
+  const next: Record<string, unknown> = { generationSeq: state.cursor };
+  if (state.firstChunkAt !== undefined) {
+    next.generationFirstChunkAt = state.firstChunkAt;
+  }
+  if (state.totalChunks !== undefined) {
+    next.generationChunkCount = state.totalChunks;
+  }
+  if (state.usage !== undefined) {
+    next.generationRecoveryUsage = state.usage;
+  }
+  if (state.timings !== undefined) {
+    next.generationRecoveryTimings = state.timings;
+  }
+  return next;
+}
+
 export function generationRecoveryMetadata(options: {
   current: Record<string, unknown>;
   runId: string;
@@ -564,6 +649,7 @@ export function generationRecoveryMetadata(options: {
   cursor: number;
   lastEventSeq: number;
   lengthLimited: boolean;
+  quoteCut?: boolean;
   firstChunkAt?: number;
   totalChunks?: number;
   usage?: unknown;
@@ -576,6 +662,7 @@ export function generationRecoveryMetadata(options: {
     cursor,
     lastEventSeq,
     lengthLimited,
+    quoteCut = false,
     firstChunkAt,
     totalChunks,
     usage,
@@ -584,8 +671,14 @@ export function generationRecoveryMetadata(options: {
   const settled = generationIsSettled(status, cursor, lastEventSeq);
   const next: Record<string, unknown> = {
     ...current,
+    ...generationReplayMetadata({
+      cursor,
+      firstChunkAt,
+      totalChunks,
+      usage,
+      timings,
+    }),
     generationRunId: runId,
-    generationSeq: cursor,
     generationStatus: status,
     generationSettled: settled,
     serverManaged: true,
@@ -593,6 +686,9 @@ export function generationRecoveryMetadata(options: {
   if (status === "completed") {
     if (lengthLimited) {
       next.incomplete = { reason: "length" };
+    } else if (quoteCut) {
+      // Must match the producer's stamp, or the server refuses the settle.
+      next.incomplete = { reason: "quote_cut" };
     } else {
       next.incomplete = undefined;
     }
@@ -600,21 +696,6 @@ export function generationRecoveryMetadata(options: {
     next.incomplete = { reason: "interrupted" };
   } else {
     next.incomplete = { reason: "cancelled" };
-  }
-  if (firstChunkAt !== undefined) {
-    next.generationFirstChunkAt = firstChunkAt;
-  }
-  if (totalChunks !== undefined) {
-    next.generationChunkCount = totalChunks;
-  }
-  // Carried with the cursor for the same reason as the two above: the usage chunk arrives before
-  // the terminal event, so a cursor published past it and reloaded would resume after it and
-  // lose the token counts and server timings for good.
-  if (usage !== undefined) {
-    next.generationRecoveryUsage = usage;
-  }
-  if (timings !== undefined) {
-    next.generationRecoveryTimings = timings;
   }
   return next;
 }
@@ -659,36 +740,51 @@ export function subscribeGenerationRecoveryTriggers(
       recover();
     }
   };
+  const onFocus = () => {
+    if (documentTarget.visibilityState !== "hidden") {
+      recover();
+    }
+  };
   windowTarget.addEventListener("online", recover);
   windowTarget.addEventListener("pageshow", recover);
+  windowTarget.addEventListener("focus", onFocus);
   documentTarget.addEventListener("visibilitychange", onVisible);
   return () => {
     windowTarget.removeEventListener("online", recover);
     windowTarget.removeEventListener("pageshow", recover);
+    windowTarget.removeEventListener("focus", onFocus);
     documentTarget.removeEventListener("visibilitychange", onVisible);
   };
 }
 
-/** Runs this tab is streaming itself, so a recovery never follows one. A durable run otherwise
- *  gets TWO readers in the tab that started it: the adapter streams it and
- *  scheduleGenerationRecovery replays it from storage, since its only gate is
- *  generationNeedsRecovery and history.load force-writes generationSettled false. That
- *  second reader publishes on EVERY chunk, each publish re-parsing the whole reply and
- *  awaiting a PUT of the entire message: quadratic in the answer length, on the main thread.
- *  Module state deliberately: a reload is exactly when this tab has stopped being the
- *  producer, and a reload clears this by construction. */
+/** Runs this tab streams itself, so recovery never adds a second (quadratic) reader.
+ *  Module state: a reload is exactly when this tab stops being the producer. */
 const liveGenerationRuns = new Set<string>();
-// runId -> owning thread. The Set above answers "is this run live"; the checkpoint scheduler
-// needs the inverse, "does this thread have a durable run at all".
 const liveGenerationThreads = new Map<string, string>();
 
-/** Runs claimed before the server admitted them. The early claim stops a recovery trigger
- *  starting a second follower during that await. Boundedness is separate: until the POST
- *  lands the thread's checkpoints are its only persistence, and the create retries until
- *  aborted, so the await can outlast the cap. */
+/** Claimed before server admission so a recovery trigger cannot start a second follower. */
 const provisionalGenerationRuns = new Set<string>();
 
-/** Claim a run as streamed by this tab. Pair with `releaseLiveGenerationRun` in a finally. */
+const recoveredRunStops = new Map<string, () => void>();
+
+export function registerRecoveredRunStop(
+  threadId: string,
+  stop: () => void,
+): () => void {
+  recoveredRunStops.set(threadId, stop);
+  return () => {
+    if (recoveredRunStops.get(threadId) === stop) {
+      recoveredRunStops.delete(threadId);
+    }
+  };
+}
+
+export function stopRecoveredRun(threadId: string | null | undefined): boolean {
+  const stop = threadId ? recoveredRunStops.get(threadId) : undefined;
+  stop?.();
+  return stop !== undefined;
+}
+
 export function claimLiveGenerationRun(
   runId: string,
   threadId?: string,
@@ -696,7 +792,6 @@ export function claimLiveGenerationRun(
 ): void {
   liveGenerationRuns.add(runId);
   if (threadId) liveGenerationThreads.set(runId, threadId);
-  // A later non-provisional claim confirms admission, so this clears as well as sets.
   if (options?.provisional) {
     provisionalGenerationRuns.add(runId);
   } else {
@@ -704,40 +799,38 @@ export function claimLiveGenerationRun(
   }
 }
 
-/** Release a run this tab was streaming. Must be unconditional, in a finally: a run left
- *  claimed after its stream died is one this tab will never recover. */
+/** Must run unconditionally in a finally, or this tab never recovers the run. */
 export function releaseLiveGenerationRun(runId: string): void {
   liveGenerationRuns.delete(runId);
   liveGenerationThreads.delete(runId);
   provisionalGenerationRuns.delete(runId);
 }
 
-/** Whether this tab is the one streaming `runId`. */
 export function isLiveGenerationRun(runId: string): boolean {
   return liveGenerationRuns.has(runId);
+}
+
+export function threadHasLiveGenerationRun(threadId: string): boolean {
+  for (const [runId, owner] of liveGenerationThreads.entries()) {
+    if (owner === threadId && !provisionalGenerationRuns.has(runId)) return true;
+  }
+  return false;
 }
 
 /** Whether `threadId` has a durable run, streaming here or named by the server. A
  *  subscriber-owned stream has none, and its periodic checkpoint is its ONLY persistence. */
 export function threadHasDurableGenerationRun(threadId: string): boolean {
-  for (const [runId, owner] of liveGenerationThreads.entries()) {
-    if (owner === threadId && !provisionalGenerationRuns.has(runId)) return true;
-  }
+  if (threadHasLiveGenerationRun(threadId)) return true;
   for (const owner of serverActiveGenerationRuns.values()) {
     if (owner === threadId) return true;
   }
   return false;
 }
 
-/** Runs the server has named as still going, keyed by the thread whose load asked. Persisted
- *  metadata is not evidence of a live run: a run that never terminalises leaves
- *  `generationStatus: "running"` in storage for good. Only /chat-runs/active can say a run
- *  is still going. Module state, so a reload drops the previous session's word for it. */
+/** Only /chat-runs/active proves a run is live; stored "running" metadata can be stale forever. */
 const serverActiveGenerationRuns = new Map<string, string>();
 
-/** Replace what the server last said about `threadId`. Call only after a SUCCESSFUL read of
- *  the active-run list: a failed read is not a report of "nothing is running", and treating
- *  it as one would mark a live reply interrupted. */
+/** Call only after a successful read; a failed read is not "nothing running". */
 export function syncServerActiveGenerationRuns(
   threadId: string,
   runIds: Iterable<string>,
@@ -749,36 +842,26 @@ export function syncServerActiveGenerationRuns(
   serverAnsweredThreads.add(threadId);
 }
 
-/** Threads the server has answered the active-run question for. Per thread, not per process:
- *  one global flag let A's answer turn a FAILED read for B into an empty list. */
+/** Per thread: a global flag let one thread's answer mask another's failed read. */
 const serverAnsweredThreads = new Set<string>();
 
 export function serverHasAnsweredActiveRuns(threadId: string): boolean {
   return serverAnsweredThreads.has(threadId);
 }
 
-/** Forget what the server last said about `threadId`, because the newest read failed. The
- *  answer is a point in time, not a permanent property: another tab can start a run after a
- *  successful read, so keeping the old answer would restore a running reply as interrupted. */
 export function markServerActiveGenerationRunsUnknown(threadId: string): void {
   serverAnsweredThreads.delete(threadId);
-  // The run mappings go with it. They are the same stale answer in another shape, and
-  // isServerActiveGenerationRun is consulted BEFORE the local-interruption marker, so a
-  // leftover entry restores the message as running while generationNeedsRecovery refuses to
-  // start a follower: a blocked composer with neither recovery nor a local Stop handle.
+  // Drop run mappings too: a leftover entry restores "running" with no follower or Stop handle.
   for (const [runId, owner] of [...serverActiveGenerationRuns]) {
     if (owner === threadId) serverActiveGenerationRuns.delete(runId);
   }
 }
 
-/** Drop one run from the server-active map now that it has reached a terminal status. Only
- *  another successful sync would otherwise remove it, so the thread would keep reading as
- *  durable and a later subscriber-owned stream on it would be capped, losing its only saves. */
+/** Drop a terminal run, or the thread reads durable and a later subscriber-owned stream is capped. */
 export function forgetServerActiveGenerationRun(runId: string): void {
   serverActiveGenerationRuns.delete(runId);
 }
 
-/** Test-only: forget every active-run answer. */
 export function resetServerActiveGenerationRuns(): void {
   serverActiveGenerationRuns.clear();
   serverAnsweredThreads.clear();
@@ -787,13 +870,10 @@ export function resetServerActiveGenerationRuns(): void {
   provisionalGenerationRuns.clear();
 }
 
-/** Whether the server has named `runId` as still going in this session. */
 export function isServerActiveGenerationRun(runId: string): boolean {
   return serverActiveGenerationRuns.has(runId);
 }
 
-/** Whether a restored assistant message may be shown as still generating. The corroboration
- *  gate: unfinished metadata says only that this reply once had a run. */
 export function generationIsCorroboratedLive(
   metadata: Record<string, unknown>,
   threadId?: string,
@@ -801,16 +881,13 @@ export function generationIsCorroboratedLive(
   const runId = metadata.generationRunId;
   if (typeof runId !== "string") return false;
   if (isLiveGenerationRun(runId) || isServerActiveGenerationRun(runId)) return true;
-  // A follower already gave up on this run locally. Without this it keeps taking the benefit of
-  // the doubt below, so every online/pageshow/visibility trigger starts another follower that
-  // republishes the message as running. Only the server naming the run live may revive it.
+  // A follower already gave up locally; only the server naming the run live may revive it.
   if (
     metadata.generationLocallyInterrupted === true &&
     !TERMINAL.has(String(metadata.generationStatus) as StoredGenerationStatus)
   ) {
     return false;
   }
-  // No answer for THIS thread is not a "no". Stay with the persisted status until this thread's
-  // own read has landed; the recovery follower settles it from there.
+  // No answer for this thread is not a "no"; keep the persisted status until its read lands.
   return threadId === undefined || !serverHasAnsweredActiveRuns(threadId);
 }

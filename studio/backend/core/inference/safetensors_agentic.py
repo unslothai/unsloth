@@ -20,6 +20,7 @@ from typing import Callable, Generator, Optional
 
 from loggers import get_logger
 
+from core.inference.llama_cpp import _has_answer_artifact
 from core.inference.tool_call_parser import (
     _GEMMA_BARE_TC_PREFIX_RE,
     _balanced_brace_end,
@@ -61,18 +62,26 @@ from core.inference.mcp_images import (
     trim_image_turns,
 )
 from core.inference.tool_loop_controller import (
-    _WORKSPACE_TOOLS,
+    _WORKSPACE_READ_TOOLS,
+    BROWSER_TOOL_NAMES,
+    REPEATABLE_TOOL_NAMES,
+    TRUNCATED_TOOL_TURN_MESSAGE,
     ToolLoopController,
+    _reruns_after_new_work,
     append_deferred_nudges,
     awaiting_approval_status,
     coerce_tool_arguments,
+    restore_replayed_tool_results,
+    with_appended_text,
     status_for_tool,
     tool_call_limit_nudge,
     tool_event_provenance,
 )
 from core.inference.chat_template_helpers import (
     append_assistant_turn,
-    trailing_assistant_text,
+    trailing_assistant_resume_kind,
+    forced_tool_name,
+    forced_turn_tools,
 )
 from core.inference.passthrough_healing import nudge_enabled
 from state.tool_approvals import (
@@ -83,6 +92,7 @@ from state.tool_approvals import (
     begin_tool_decision,
     new_approval_id,
     decision_reason,
+    note_host_access,
     wait_tool_decision,
 )
 
@@ -97,8 +107,7 @@ _MAX_BUFFER_CHARS = 32
 _MAX_BARE_JSON_BUFFER = 16384
 
 
-# No grammar constraint here (unlike llama-server's lazy grammar): collapse
-# exact-duplicate calls and cap the count so a runaway turn cannot fan out.
+# No grammar constraint here: dedupe calls and cap the count against runaway turns.
 _MAX_TOOL_CALLS_PER_TURN = 8
 
 # Enough settled text to catch a protocol literal split across two cumulative snapshots.
@@ -115,8 +124,7 @@ def _active_tool_names(active_tools: list[dict]) -> list[str]:
     return [name for name in names if name]
 
 
-# Unrestricted mode has no tool list, so any identifier may open a NAME[ARGS] rehearsal;
-# ``[`` and each ARGS letter stay optional so a chunk split after ``NAME[`` is still held.
+# Unrestricted mode has no tool list, so any identifier may open a rehearsal; [ and ARGS letters optional so split chunks are still held.
 _UNRESTRICTED_REHEARSAL_RE = re.compile(r"[\w-]+(?:\[(?:A(?:R(?:G(?:S)?)?)?)?)?")
 
 
@@ -126,23 +134,17 @@ def _is_rehearsal_prefix(
     *,
     unrestricted: bool = False,
 ) -> bool:
-    """True if ``stripped`` is a (possibly partial) prefix of a ``NAME[ARGS]``
-    rehearsal split across chunks (``web_search`` then ``[ARGS]{...}``). A space
-    means prose. Unrestricted mode accepts any identifier; else NAME must be active. Either
-    way NAME must be markerless-promotable, so a bare execution-class name streams as prose
-    instead of being held for a call that never comes."""
+    """Names that are not markerless-promotable stream as prose rather than being held for a call."""
     if not stripped or any(ch.isspace() for ch in stripped):
         return False
     if unrestricted:
         if _UNRESTRICTED_REHEARSAL_RE.fullmatch(stripped) is None:
             return False
         name, bracket, _ = stripped.partition("[")
-        # Until the ``[`` lands the name is open: ``terminal`` may yet become
-        # ``terminal_logs``, which IS promotable. Decide once the shape settles.
+        # Until '[' lands the name is open: terminal may yet become terminal_logs.
         return not bracket or _markerless_promotable(name, None)
     for name in _active_tool_names(active_tools):
-        # Active by construction, so only the class is left. The shared gate, not the built-in
-        # three: an mcp__* name is refused too, and holding its suffix withholds visible text.
+        # Shared gate, not the built-in three: refuses mcp__* names too, and holding a suffix hides text.
         if not _markerless_promotable(name, None):
             continue
         if stripped == name or f"{name}[ARGS]".startswith(stripped):
@@ -156,19 +158,27 @@ def _held_rehearsal_tail_len(
     *,
     unrestricted: bool = False,
 ) -> int:
-    """Length of a trailing bare tool-name token that may be a split rehearsal call
-    (``...web_search`` with ``[ARGS]{...}`` still to arrive), so STREAMING can hold it
-    instead of leaking the name. Returns 0 for ordinary prose.
-
-    A trailing bare-Gemma ``call:NAME{..`` is held the same way: the signal scan only sees it
-    once its ``{`` arrives, so the prefix would otherwise stream ahead of the call."""
+    """Length of a trailing bare tool-name token held while streaming so the name does not leak; also call:NAME{ prefixes, seen only once the brace arrives."""
+    # Restricted mode: same NAME[ARGS] bound as llama_cpp._held_rehearsal_tail_len.
+    limit = (
+        len(text)
+        if unrestricted
+        else max(
+            (len(name) for name in _active_tool_names(active_tools) if isinstance(name, str)),
+            default = 0,
+        )
+        + len("[ARGS]")
+    )
     i = len(text)
-    while i > 0 and not text[i - 1].isspace():
+    stop = max(0, i - limit - 1)
+    while i > stop and not text[i - 1].isspace():
         i -= 1
     tail = text[i:]
     held = (
         len(tail)
-        if tail and _is_rehearsal_prefix(tail, active_tools, unrestricted = unrestricted)
+        if tail
+        and len(tail) <= limit
+        and _is_rehearsal_prefix(tail, active_tools, unrestricted = unrestricted)
         else 0
     )
     return max(
@@ -186,10 +196,7 @@ def _rehearsal_name_start(
     *,
     unrestricted: bool = False,
 ) -> int:
-    """For an ``[ARGS]`` signal at ``signal_pos``, return the start of the preceding
-    bare tool-name token (``NAME[ARGS]``), else ``signal_pos`` unchanged when the
-    signal is not ``[ARGS]`` or NAME is not markerless-promotable. Draining on a name the
-    parser will not promote would withhold the turn for a call that never comes."""
+    """Draining on a name the parser will not promote would hold the turn for a call that never comes."""
     if not candidate.startswith("[ARGS]", signal_pos):
         return signal_pos
     j = signal_pos
@@ -211,17 +218,7 @@ def _earliest_tool_signal(
     start: int = 0,
     streaming: bool = False,
 ) -> int:
-    """Index where the turn's first genuine tool-call boundary begins, or -1.
-
-    Non-``[ARGS]`` markup wins on first occurrence. An ``[ARGS]`` hit is a rehearsal
-    only when an active tool name (any name in unrestricted mode) precedes it, so a
-    literal ``foo[ARGS]`` in prose is skipped rather than draining the turn; for a
-    real ``NAME[ARGS]`` the boundary is pulled back to NAME.
-
-    A marker inside a ``<think>`` / ``[THINK]`` block is NOT a boundary: the parser masks
-    reasoning spans, so draining on one stopped the stream at the marker and a cancel then
-    lost every token after it, including the visible answer past the block. The scan resumes
-    past such a span, with ``floor`` rejecting the look-behind that would re-find it."""
+    """Markers inside <think> or [THINK] are not boundaries; draining there drops the visible answer."""
     think_spans = None
     floor = 0
     while True:
@@ -244,11 +241,9 @@ def _earliest_tool_signal(
                     if name_start >= floor and (best < 0 or name_start < best):
                         best = name_start
                     break
-                # Bare/prose [ARGS]: skip it so a later real call in the same chunk is
-                # still found.
+                # Bare or prose [ARGS] is skipped so a later real call in the same chunk is still found.
                 from_idx = p + len("[ARGS]")
-        # Bare Gemma is not in ``signals`` but the parser promotes it anywhere, so a mid-prose
-        # one is a boundary too. Lazy catalogue: this runs per streamed delta.
+        # Bare Gemma is promoted anywhere by the parser, so a mid-prose one is a boundary too; the catalogue is lazy because this runs per streamed delta.
         gemma = promotable_gemma_call_pos(
             candidate,
             None if unrestricted else (lambda: _active_tool_names(active_tools)),
@@ -280,12 +275,7 @@ def _has_genuine_tool_signal(
     *,
     unrestricted: bool = False,
 ) -> bool:
-    """True when ``candidate`` holds a genuine tool-call boundary for one of ``signals``.
-
-    Non-``[ARGS]`` markers count on a substring hit; an ``[ARGS]`` hit is genuine only
-    when an active tool name (any in unrestricted mode) precedes it. Mirrors the
-    ``_earliest_tool_signal`` name-gating so BUFFERING / end-of-stream checks do not
-    drain inactive-name prose."""
+    """An [ARGS] hit counts only after an active tool name, so buffering does not drain ordinary prose."""
     for sig in signals:
         if sig == "[ARGS]":
             if (
@@ -308,34 +298,20 @@ def strip_tool_markup_streaming(
     tool_protocol_active: bool = False,
     enabled_tool_names: Optional[set] = None,
 ) -> str:
-    """Strip open-ended tool XML from display text without trimming whitespace.
-
-    Mirrors the parser-side ``strip_tool_markup`` segment scan (minus the final trim) so
-    streaming and final display agree: balanced strips first (nested JSON removed whole),
-    then the guarded function-XML / GLM scans that close at each call's REAL terminator so
-    literal markup inside argument values is data and trailing prose survives. Reasoning
-    ``<think>`` / ``[THINK]`` blocks are preserved verbatim (a rehearsed call inside one must
-    not be deleted, else the cumulative text shrinks then regrows). ``enabled_tool_names``
-    keeps an inactive-name ``foo[ARGS]{..}`` / ``call:NAME{..}`` example visible (it is prose,
-    not a call), matching the parse / detection active-tool gate."""
+    """Keeps reasoning blocks verbatim (else cumulative text shrinks then regrows), leaves inactive-name examples visible, and does not trim whitespace."""
     if not (auto_heal_tool_calls or tool_protocol_active):
         return text
 
-    # Drop a leading Magistral ``[THINK]...[/THINK]`` block (bracket reasoning form, not the
-    # ``<think>`` channel) so raw reasoning does not leak into streamed display; an unclosed
-    # leading block is held (dropped to EOF) until its closer streams in.
+    # Drop a leading Magistral [THINK] block (not the think channel); an unclosed one is held, then dropped at EOF if its closer never arrives.
     text = _strip_mistral_reasoning(text)
 
     def _seg(segment: str, is_last: bool) -> str:
-        # Scan order lives in the parser's ``strip_segment`` so this path, the GGUF
-        # streaming path and ``strip_tool_markup`` cannot drift. Its end-of-turn arms
-        # run only on the last segment.
+        # Scan order lives in the parser's strip_segment so all strip paths cannot drift; end-of-turn arms run only on the last segment.
         return _parser_strip_segment(
             segment, seg_final = is_last, enabled_tool_names = enabled_tool_names
         )
 
-    # Preserve think blocks verbatim: stripping a rehearsed call inside one shrinks then
-    # regrows the cumulative text, corrupting append-by-length consumers.
+    # Keep think blocks verbatim: shrinking cumulative text breaks append-by-length consumers.
     return strip_outside_think(text, _seg)
 
 
@@ -356,24 +332,42 @@ def _status_for_tool(tool_name: str, arguments: dict) -> str:
     return status_for_tool(tool_name, arguments)
 
 
-def _reprompt_intent_text(text: str, *, reasoning_prefilled: bool = False) -> str:
-    """Return visible answer text for the plan-without-action classifier.
+def _append_raw_turn(conversation: list, assistant_msg: dict, *, continue_final_message: bool):
+    """``append_assistant_turn`` for raw-text turns: a resumed thought is replayed whole after the
+    re-emitted ``<think>``; text without that opener drops it."""
+    if not (
+        continue_final_message
+        and trailing_assistant_resume_kind(conversation) == "reasoning_content"
+        and isinstance(assistant_msg.get("content"), str)
+    ):
+        append_assistant_turn(
+            conversation, assistant_msg, continue_final_message = continue_final_message
+        )
+        return
+    thought = conversation[-1]["reasoning_content"]
+    merged = {**conversation[-1], **assistant_msg}
+    merged.pop("reasoning_content", None)
+    if merged["content"].startswith("<think>"):
+        merged["content"] = f"<think>{thought}{merged['content'][len('<think>'):]}"
+    conversation[-1] = merged
 
-    Safetensors reasoning shares the cumulative text channel with the answer.
-    Forward-looking phrases inside ``<think>`` / ``[THINK]`` are private
-    planning, not a user-visible promise to call a tool. Match GGUF's behavior:
-    classify visible content when present and fall back to reasoning only for a
-    reasoning-only stall.
-    """
+
+def _reprompt_intent_text(
+    text: str,
+    *,
+    reasoning_prefilled: bool = False,
+    visible_only: bool = False,
+) -> str:
+    """Classifies visible text (think-block promises are private planning); reasoning falls back only on a reasoning-only stall, visible_only returns empty."""
     prefilled_reasoning = ""
     if reasoning_prefilled:
         close = _THINK_CLOSE_RE.search(text)
         if close is None:
-            return text.strip()
+            return "" if visible_only else text.strip()
         prefilled_reasoning = text[: close.end()].strip()
         text = text[close.end() :].strip()
         if not text:
-            return prefilled_reasoning
+            return "" if visible_only else prefilled_reasoning
 
     spans = _think_spans_outside_tool_markup(text)
     if not spans:
@@ -390,7 +384,7 @@ def _reprompt_intent_text(text: str, *, reasoning_prefilled: bool = False) -> st
 
     visible_text = "".join(visible).strip()
     reasoning_text = "".join(reasoning).strip()
-    if visible_text:
+    if visible_text or visible_only:
         return visible_text
     return "\n".join(part for part in (prefilled_reasoning, reasoning_text) if part).strip()
 
@@ -405,8 +399,7 @@ def _looks_like_enabled_bare_json(text: str, enabled_tool_names: Optional[set]) 
 
 _FUNCTION_SIGNAL_RE = re.compile(r"<function=([\w-]+)>")
 _TOOL_CALL_NAME_RE = re.compile(r'"name"\s*:\s*"([\w-]+)"')
-# Mistral name/v11 and rehearsal forms, aligned with the parser so the provisional
-# render-html card fires for bracket-tag serializations too.
+# Mistral name/v11 and rehearsal forms, matching the parser so bracket-tag render_html fires early.
 _MISTRAL_RENDER_NAME_RE = re.compile(
     r"\[TOOL_CALLS\]\s*([\w-]+)(?:\[CALL_ID\][\w-]+)?(?:\[ARGS\])?\s*(?=\{)"
 )
@@ -414,12 +407,7 @@ _REHEARSAL_RENDER_NAME_RE = re.compile(r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]\s*(?
 
 
 def _first_detected_tool_name(content: str) -> Optional[str]:
-    """Return the first clearly resolved tool name, or None while incomplete.
-
-    Covers every serialization the loop executes (XML ``<function=>`` / ``<tool_call>``,
-    Mistral ``[TOOL_CALLS]``, rehearsal ``NAME[ARGS]``); the earliest marker wins so a
-    render_html marker inside another call's argument is treated as data. Markers inside
-    a ``<think>`` / ``[THINK]`` block are dropped since the parser skips them."""
+    """The earliest marker wins; markers inside <think> or [THINK] blocks are skipped."""
     think_spans = _think_spans_outside_tool_markup(content)
     _think_starts = [s for s, _e in think_spans]
 
@@ -450,8 +438,7 @@ def _first_detected_tool_name(content: str) -> Optional[str]:
         if mm:
             candidates.append((mt, mm.group(1)))
         else:
-            # Array shape: a bare ``"name"`` search can latch onto an argument key, so resolve the
-            # first call through the parser (it reads top-level names).
+            # A bare "name" search can latch onto an argument key; use the parser.
             arr_calls = parse_tool_calls_from_text(content[mt:])
             if arr_calls:
                 candidates.append((mt, (arr_calls[0].get("function") or {}).get("name") or ""))
@@ -501,11 +488,7 @@ def _tool_event_provenance(**flags: object) -> dict[str, object]:
 
 
 def _accepts_kwarg(func: Callable[..., str], name: str) -> bool:
-    """Whether an injectable ``execute_tool`` supports the keyword ``name``.
-
-    The loop's ``execute_tool`` is a parameter (tests inject fakes), so forward
-    an optional kwarg only when the callable declares it or takes ``**kwargs``.
-    """
+    """Forward a kwarg only when the callable declares it or takes **kwargs; tests inject fakes."""
     try:
         sig = inspect.signature(func)
     except (TypeError, ValueError):
@@ -560,23 +543,7 @@ def _spent_prompt_tokens(
     generation_stats_holder: Optional[dict],
     prompt_dense_tokens: int,
 ) -> int:
-    """Tokens the next prompt already owes, from the count the last turn reported.
-
-    The backend tokenises the turn's prompt to run it and ships that count on gen_done, tool
-    catalogue included, so the only part left to estimate is what the loop appended afterwards: this
-    turn's assistant text and the results of any tool already run in the same batch. Estimating that
-    tail alone is what stops a long English preamble being charged several times what it costs.
-
-    An exact recount is not available: this loop runs in the PARENT process and
-    `InferenceOrchestrator.models` mirrors the worker's model_info, which carries no tokenizer, so
-    counting again would mean a round trip into the worker between every tool call.
-
-    Without a report the estimate covers the whole thread, as it did before. Dense because four
-    characters per token undercounts CJK and emoji by about half (measured on an 81-message CJK
-    chat: 1295 estimated against 2737 real, reporting 1777 tokens of room where 335 remained). Never
-    floored to zero, which reaches the tool as "there is no room left to search earlier
-    conversation" and switches recall off on exactly the tight windows that need it.
-    """
+    """Estimates only the tail since the last reported count (no tokenizer here); dense because 4 chars/token undercounts CJK; never zero, or recall switches off."""
     stats = (generation_stats_holder or {}).get("stats")
     usage = stats.get("usage") if isinstance(stats, dict) else None
     prompt_tokens = usage.get("prompt_tokens") if isinstance(usage, dict) else None
@@ -594,15 +561,19 @@ def run_safetensors_tool_loop(
     execute_tool: Callable[..., str],
     cancel_event: Optional[threading.Event] = None,
     auto_heal_tool_calls: bool = True,
+    deduplicate_tool_calls: bool = True,
     nudge_tool_calls: Optional[bool] = None,
     max_tool_iterations: int = 25,
     tool_call_timeout: int = 300,
     session_id: Optional[str] = None,
     thread_id: Optional[str] = None,
     rag_scope: Optional[dict] = None,
+    website_policy: Optional[dict] = None,
     confirm_tool_calls: bool = False,
+    mcp_image = None,
     bypass_permissions: bool = False,
     permission_mode: Optional[str] = None,
+    sandbox_level: Optional[str] = None,
     reasoning_prefilled: bool = False,
     continue_final_message: bool = False,
     markup = None,
@@ -612,91 +583,112 @@ def run_safetensors_tool_loop(
     generation_stats_holder: Optional[dict] = None,
     images_sink: Optional[list] = None,
     caller_image_indexes: "tuple[int, ...]" = (),
+    context_fitter: Optional[Callable[[list, list, list], dict]] = None,
+    tool_choice = None,
+    disable_parallel_tool_use: bool = False,
 ) -> Generator[dict, None, None]:
-    """Drive an agentic tool loop on top of a cumulative-text generator.
-
-    ``single_turn(messages)`` must yield cumulative assistant text (each yield is a snapshot of all
-    tokens so far). The loop buffers each turn's leading chars to decide whether a tool call is
-    coming, drains the rest of the turn silently once a call marker appears, executes each tool via
-    ``execute_tool``, appends the assistant tool-call message and tool result, and re-enters
-    ``single_turn``. After ``max_tool_iterations`` turns without a final answer it asks once more
-    with no tools.
-
-    Yields event dicts matching the GGUF path:
-
-    * ``{"type": "status", "text": ...}`` -- empty string clears the badge.
-
-    * ``{"type": "content", "text": ...}`` -- cumulative cleaned text for the current turn (consumer
-    diffs against its own ``prev_text`` cursor).
-
-    * ``{"type": "tool_start", "tool_name", "tool_call_id", "arguments"}``
-
-    * ``{"type": "tool_end", "tool_name", "tool_call_id", "result"}``
-    """
-    conversation = list(messages)
+    """Yields status, content, tool_start and tool_end event dicts; content is cumulative text per turn."""
+    if mcp_image is not None:
+        from core.inference.mcp_image import note_attached_image
+        from core.inference.tools import mcp_image_targets
+        messages = note_attached_image(messages, mcp_image_targets(_active_tool_names(tools)))
+    conversation = restore_replayed_tool_results(messages)
     # Where the caller's own attachment sits in the seeded sink. The cap is about what
     # the loop RE-SENDS, so that entry is never the one it drops -- but it is not the
     # whole seed: a resumed chat seeds replayed pictures too, and exempting those would
     # let the prompt carry a second full allowance. The route reserves the attachment's
     # slot by trimming replay to limit - 1 before interleaving it.
     caller_images = tuple(caller_image_indexes)
-    # The branch this request is on, before the loop appends anything. A GGUF-compacted
-    # thread keeps its archive across a switch to safetensors, so search_conversation is
-    # advertised here too and needs the same filtering: the stored rows are the whole
-    # DAG, and Retry leaves the replaced response in them.
-    request_branch = list(messages)
+    # The branch this request is on. A GGUF-compacted thread keeps its archive across a
+    # switch to safetensors, so search_conversation is advertised here too and needs the
+    # same filtering: the stored rows are the whole DAG, and Retry leaves the replaced
+    # response in them.
+    # Restored dicts are new; the branch matches by identity.
+    _live_branch = list(conversation)
+    # ...and the replies and tool results the loop adds to it: a fit can evict this request's
+    # own earlier tool exchange into the archive, where the client's messages alone would
+    # refuse it. Not the loop's user turns: those are its own notices, and recall searches
+    # for the branch's last user turn, which has to stay the request.
+    _live_branch_ids = {id(message) for message in _live_branch}
 
-    # Mirrors the GGUF loop: "full" and bypass_permissions are the same switch;
-    # unset defaults to "auto", unknown falls back to the stricter "ask"; "off"
-    # keeps the sandbox but never prompts. An explicit confirm_tool_calls=True with
-    # no mode is already resolved to "ask" at the request layer, so it never
-    # arrives here as an ambiguous unset.
+    def _extend_live_branch(current: list) -> list:
+        for message in current:
+            if id(message) not in _live_branch_ids and message.get("role") != "user":
+                _live_branch_ids.add(id(message))
+                _live_branch.append(message)
+        return _live_branch
+
+    # Mirrors GGUF: full == bypass, unset -> auto, unknown -> ask, off keeps sandbox but never prompts; confirm_tool_calls=True alone is resolved to ask upstream.
     from core.inference.tool_stream_exec import stream_tool_execution
-    from state.tool_policy import account_tool_stream, normalize_tool_permissions
+    from state.tool_policy import (
+        account_tool_stream,
+        needs_tool_confirmation,
+        normalize_sandbox_level,
+        normalize_tool_permissions,
+        requires_os_isolation,
+        runs_without_os_sandbox,
+        tool_call_may_prompt,
+    )
 
     permission_mode, bypass_permissions = normalize_tool_permissions(
         permission_mode, bypass_permissions
     )
-    stream_tool_execution = account_tool_stream(stream_tool_execution)
+    from state.tool_approvals import LiveToolPermissions, bind_permission_upgrade
 
-    # Forced first-pass RAG (mirrors the GGUF loop) so doc Qs don't lose to
-    # web_search. Skip only when a retrieval call would actually prompt (ask
-    # mode); auto never gates the safe search_knowledge_base tool.
+    live_permissions = LiveToolPermissions(session_id, cancel_event)
+    sandbox_level = normalize_sandbox_level(sandbox_level)
+    stream_tool_execution = account_tool_stream(stream_tool_execution)
+    from core.inference.skill_mentions import load_mentioned_skills
+
+    yield from load_mentioned_skills(
+        conversation,
+        tools if max_tool_iterations > 0 else [],
+        permission_mode = permission_mode,
+        bypass_permissions = bypass_permissions,
+        confirm_tool_calls = confirm_tool_calls,
+        session_id = session_id,
+        cancel_event = cancel_event,
+        permission_upgrade = live_permissions,
+        context_length = context_length,
+        continue_final_message = continue_final_message,
+        # The downstream tokenizer owns fitting; only system context is guaranteed.
+        dedup_tool_context = False,
+    )
+
+    # Forced first-pass RAG (GGUF parity) so doc questions do not lose to web_search; skipped only when retrieval would prompt (ask mode).
     from core.inference.tools import build_rag_autoinject
 
-    # off never prompts, so (like auto) it must not lose first-pass retrieval
-    # even if a direct caller passes a stale confirm_tool_calls flag.
-    # A resumed turn must keep the partial trailing: autoinject appends a tool call
-    # plus its result, moving the boundary so the model opens a fresh answer.
+    # Resumed turn keeps partial trailing (autoinject would move the boundary); off/auto never prompt, so keep first-pass RAG despite a stale confirm flag.
     _skip_autoinject = (
         confirm_tool_calls and not bypass_permissions and permission_mode not in ("auto", "off")
-    ) or bool(continue_final_message and trailing_assistant_text(conversation))
+    ) or bool(continue_final_message and trailing_assistant_resume_kind(conversation) is not None)
     _auto = None if _skip_autoinject else build_rag_autoinject(conversation, rag_scope)
     if _auto:
         for _ev in _auto["events"]:
             yield _ev
         conversation.extend(_auto["messages"])
-    # Autoinject ran a KB search outside the controller, so it counts as an
-    # executed tool for the plan-without-action gate.
+    # Autoinjected KB search counts as an executed tool for the plan-without-action gate.
     rag_autoinjected = bool(_auto)
+    # As on llama-server: a forced tool is the only one offered until a call runs or is denied.
+    forced_resolved = rag_autoinjected and forced_tool_name(tool_choice) == "search_knowledge_base"
 
     unrestricted_tools = not tools
     # Gate telling a genuine NAME[ARGS] rehearsal from inactive-name prose; built from the
     # ORIGINAL tools list so a spent one-shot still reads as a tool name. None = unrestricted.
-    _enabled_names_gate = None if unrestricted_tools else set(_active_tool_names(tools))
+    from core.inference.tools import mcp_loadable_specs
+
+    # Plus the MCP tools a search can load mid-turn (#10997).
+    _loadable_mcp = [] if unrestricted_tools else mcp_loadable_specs(tools)
+    _detect_tools = [] if unrestricted_tools else list(tools or []) + _loadable_mcp
+    _enabled_names_gate = None if unrestricted_tools else set(_active_tool_names(_detect_tools))
     # Detection must see the same names as the strip gate (ORIGINAL list, incl. a spent
     # one-shot), else its repeat is stripped but never drained and the turn ends blank.
-    _detect_tools = [] if unrestricted_tools else list(tools or [])
     # Sanitized at construction: prepare_call authorizes against the controller, so a tool
     # dropped from the prompt for unsafe markup must leave the controller too. The gates above
     # keep the ORIGINAL names: those decide what LOOKS like a call, not what may run (#7066).
     from core.inference.chat_template_helpers import neutralize_tool_descriptions
 
-    # *markup* is the same profile the renderer uses, so a tool is never dropped from the
-    # controller over a marker this model does not treat as structure. *renderable_tools*,
-    # when the caller supplies it, is the catalog safe under every template this turn could
-    # select: the native-template fallback renders with a different profile, and prepare_call
-    # must not authorize a tool that render left out of the prompt (#7066).
+    # Use the renderer's markup profile and the all-templates-safe catalog, so prepare_call never authorizes a tool the render left out of the prompt.
     _authorized = (
         renderable_tools
         if renderable_tools is not None
@@ -705,20 +697,25 @@ def run_safetensors_tool_loop(
     tool_controller = ToolLoopController(
         tools = (None if unrestricted_tools else _authorized),
         auto_heal_tool_calls = auto_heal_tool_calls,
+        deduplicate_tool_calls = deduplicate_tool_calls,
+        session_id = session_id,
+        thread_id = thread_id,
     )
     # RAG: cap knowledge-base searches per assistant turn (controller-agnostic).
     kb_search_count = 0
     final_attempt_done = False
     next_call_id = 0
     reprompt_count = 0
+    # A browser task is many steps, each a chance to announce the next one and stop: there one
+    # nudge per tool turn, as in the GGUF and external loops; other requests never nudge after a tool.
+    browser_turns = any(name in BROWSER_TOOL_NAMES for name in _active_tool_names(tools or []))
+    post_tool_reprompts = 0
     # Text that triggered the last nudge; if the retry restates it, stop (GGUF parity).
     last_reprompt_text = ""
     # A denied tool confirmation must not be answered with a plan-without-action
     # re-prompt (which would raise the confirmation gate again).
     tool_denied = False
-    # Real tool-call turns completed. Only turns that actually executed a tool count
-    # against ``max_tool_iterations``; a duplicate/disabled no-op correction turn (and a
-    # plan-without-action re-prompt) must not consume budget, matching the GGUF loop.
+    # Only turns that executed a tool consume max_tool_iterations (GGUF parity).
     _executed_tool_iters = 0
 
     def _tool_succeeded(tool_name: str) -> bool:
@@ -738,7 +735,11 @@ def run_safetensors_tool_loop(
     _state_draining = 2
 
     # Reserve re-prompt slots so they don't eat the caller's tool budget.
-    _extra_iters = MAX_ACT_REPROMPTS if max_tool_iterations > 0 else 0
+    _extra_iters = (
+        MAX_ACT_REPROMPTS + (max_tool_iterations if browser_turns else 0)
+        if max_tool_iterations > 0
+        else 0
+    )
     for iteration in range(max_tool_iterations + _extra_iters + 1):
         if cancel_event is not None and cancel_event.is_set():
             return
@@ -752,15 +753,28 @@ def run_safetensors_tool_loop(
             if not active_tools and not unrestricted_tools:
                 final_attempt_done = True
                 active_tools = []
+            elif not forced_resolved:
+                active_tools = forced_turn_tools(tool_choice, active_tools)
 
         tool_protocol_active = not final_attempt_done and (unrestricted_tools or bool(active_tools))
         tool_xml_signals = TOOL_XML_SIGNALS if tool_protocol_active else ()
         # Gate the markerless bare-JSON form on enabled names so an ordinary JSON answer isn't misread as a call.
-        _enabled_tool_names = None if unrestricted_tools else set(_active_tool_names(active_tools))
+        _enabled_tool_names = (
+            None
+            if unrestricted_tools
+            else set(_active_tool_names(active_tools))
+            | (set(_active_tool_names(_loadable_mcp)) if active_tools else set())
+        )
 
-        # This loop receives cumulative snapshots, so keep both whole-prefix scans
-        # incremental: the stripper settles safe prefixes, the signal detector resumes
-        # with enough overlap for a literal split across snapshots.
+        # Refit each iteration, since tool results grow the prompt; returns messages and events.
+        if context_fitter is not None:
+            fit_result = context_fitter(
+                conversation, active_tools, _extend_live_branch(conversation)
+            )
+            conversation = list(fit_result.get("messages") or conversation)
+            yield from fit_result.get("events") or ()
+
+        # Cumulative snapshots: keep scans incremental with overlap for split literals.
         _streaming_stripper = StreamingMarkupStripper(_enabled_names_gate)
         _tool_signal_scanned_upto = 0
 
@@ -771,18 +785,7 @@ def run_safetensors_tool_loop(
             return _streaming_stripper.strip(_strip_mistral_reasoning(text))
 
         def _cancelled_buffer_text() -> str:
-            """Display text a cancel would otherwise drop, in any state.
-
-            BUFFERING holds a blocked call, which is prose the parser never executes, so
-            returning before the resolution below loses text the stream never sent. STREAMING
-            withholds its own tail: ``cal`` may still become ``call:`` and a bare tool name
-            may still become a rehearsal, so both are kept out of ``last_emitted`` until the
-            next snapshot settles them, and a cancel arriving first lost them too. The strip
-            is the final one, which removes promotable markup, so an aborted real call
-            contributes only its surrounding prose."""
-            # The buffer is folded into the display without being cleared, so add it only
-            # while that has not happened. Keying on BUFFERING misses the bare-JSON and
-            # bare-Gemma branches, which enter DRAINING without folding.
+            """Held text a cancel would drop: the streaming tail not yet in last_emitted, and the buffer only while not already folded (BUFFERING misses bare-JSON/Gemma)."""
             held = cumulative_display + ("" if buffer_in_display else content_buffer)
             if not held:
                 return ""
@@ -799,29 +802,18 @@ def run_safetensors_tool_loop(
         provisional_render_html_started = False
         provisional_resolved = False
         provisional_render_html_id = f"call_{next_call_id}"
-        # Live-args offset for the provisional render_html card: the drained call
-        # text streams as tool_args so the canvas shows the HTML being written.
+        # Live-args offset for the provisional render_html card, streaming drained call text as tool_args.
         _live_args_streamed_upto = -1
-        # When a human confirmation gate is active the real tool_start is keyed by an approval id and carries
-        # awaiting_confirmation, so an early provisional card (keyed by tool_call_id, no approval) would show the tool
-        # as "running" before the user has approved it. Suppress the early card in that case. In auto mode render_html
-        # is always safe and never prompts, so keep its early canvas card; mirrors the GGUF path's _confirm_gated
-        # exemption.
-        from core.inference.tools import is_always_safe_tool
-
-        _provisional_confirm_gated = (
-            bool(confirm_tool_calls)
-            and not bypass_permissions
-            and not (permission_mode == "auto" and is_always_safe_tool("render_html"))
+        # Suppress the early render_html card when confirmation can prompt, since a provisional card would show it running before approval (auto mode keeps it).
+        _provisional_confirm_gated = tool_call_may_prompt(
+            confirm_tool_calls = bool(confirm_tool_calls),
+            bypass_permissions = bypass_permissions,
+            permission_mode = permission_mode,
+            name = "render_html",
         )
 
         def _should_start_provisional_render_html(content: str) -> bool:
-            # Every part of this is re-resolved per chunk. The gates are a dict lookup and a scan of a handful of
-            # tools, so hoisting them saves nothing measurable and would bake in an invariant nothing enforces:
-            # active_tools is handed to the injectable single_turn callback, which is free to append to it while
-            # generating. The name lookup is likewise not cached, because the first call's name is not final until its
-            # marker completes: a truncated ``<function=rende`` ahead of a finished ``<function=get_weather>`` reads
-            # as get_weather until it closes, then as render_html, so caching the first answer would drop the panel.
+            # Re-resolved per chunk: single_turn may mutate active_tools and the first name can change.
             if (
                 _tool_succeeded("render_html")
                 or _provisional_confirm_gated
@@ -834,8 +826,7 @@ def run_safetensors_tool_loop(
                 return False
             return _first_detected_tool_name(content) == "render_html"
 
-        # The conversation as this turn's prompt renders it, so what the loop appends
-        # afterwards can be charged on its own against the count the turn reports.
+        # Conversation as the prompt renders it, so later appends are charged alone against the count.
         prompt_dense_tokens = _dense_message_tokens(conversation)
         gen = _call_single_turn(single_turn, conversation, active_tools, tool_protocol_active)
         prev_cumulative = ""
@@ -847,9 +838,7 @@ def run_safetensors_tool_loop(
             except StopIteration:
                 break
             except Exception:
-                # The model pipeline raised mid-stream. If a provisional
-                # render_html card was already surfaced, close it as errored so
-                # the UI never leaves a tool card spinning after the turn fails.
+                # Pipeline raised mid-stream: close a provisional render_html card as errored so it never spins.
                 if provisional_render_html_started and not provisional_resolved:
                     provisional_resolved = True
                     yield {
@@ -870,10 +859,7 @@ def run_safetensors_tool_loop(
             if not isinstance(cumulative, str):
                 continue  # defensive: pipeline yields only strings
 
-            # Deltas by length: this needs snapshots that only grow. A producer that
-            # rebuilds its text each step can revise one instead, and diffing that
-            # splices two renderings together -- which is why the MLX text producer
-            # withholds while it is matching stop sequences.
+            # Length deltas need grow-only snapshots: a rebuilt text diffed by length splices two renderings; MLX withholds while matching stop sequences.
             delta = cumulative[len(prev_cumulative) :]
             prev_cumulative = cumulative
             if not delta:
@@ -903,9 +889,7 @@ def run_safetensors_tool_loop(
                     and _live_args_streamed_upto >= 0
                     and len(content_accum) > _live_args_streamed_upto
                 ):
-                    # Still writing the call: stream the fragment so the canvas
-                    # renders live. Display only; content_accum still feeds the
-                    # stream-end parser verbatim.
+                    # Display-only partial call for the live canvas; content_accum still feeds the stream-end parser.
                     yield {
                         "type": "tool_args",
                         "tool_call_id": provisional_render_html_id,
@@ -917,8 +901,7 @@ def run_safetensors_tool_loop(
 
             if detect_state == _state_streaming:
                 candidate = cumulative_display + delta
-                # Earliest genuine boundary: bare [ARGS] in prose is skipped; a real NAME[ARGS] is
-                # pulled back to NAME so the name is not flushed.
+                # Earliest real boundary: skip prose [ARGS], but pull a NAME[ARGS] back to NAME so it is kept.
                 signal_pos = _earliest_tool_signal(
                     candidate,
                     tool_xml_signals,
@@ -955,8 +938,7 @@ def run_safetensors_tool_loop(
                 _tool_signal_scanned_upto = len(candidate)
                 cumulative_display = candidate
                 cleaned = _strip_streaming_display(cumulative_display)
-                # Hold a trailing bare active-tool-name (split rehearsal) until its [ARGS] arrives;
-                # released by later prose or the end-of-stream flush.
+                # Hold a trailing bare tool name until its [ARGS] arrives; later prose or stream end releases it.
                 if tool_protocol_active:
                     _hold = _held_rehearsal_tail_len(
                         cleaned, _detect_tools, unrestricted = unrestricted_tools
@@ -983,8 +965,7 @@ def run_safetensors_tool_loop(
                 if sig.startswith(stripped):
                     is_prefix = True
                     break
-                # Bracket-tag forms arrive mid-buffer, so substring-check too (mirrors GGUF); [ARGS]
-                # counts only with an active NAME so prose is not drained into a no-op.
+                # Substring-match mid-buffer bracket tags, as GGUF does; bare [ARGS] counts only with an active NAME.
                 if sig == "[ARGS]":
                     if (
                         _earliest_tool_signal(
@@ -1012,9 +993,7 @@ def run_safetensors_tool_loop(
                 is_prefix = True
                 is_rehearsal_prefix = True
 
-            # Llama-3.2 ``custom_tools`` emits a bare ``{"name":..,"parameters":..}`` with no XML
-            # signal. Hold a leading ``{`` (after any sentinel) until it closes: drain if it parses
-            # as a call, else stream as content. Non-call text is always recovered downstream.
+            # Llama-3.2 bare JSON has no XML signal: hold a leading brace until it closes, then drain if it parses as a call, else stream it as content.
             bare_probe = strip_llama3_leading_sentinels(stripped)
             if (
                 not is_match
@@ -1026,8 +1005,7 @@ def run_safetensors_tool_loop(
                     if len(stripped) < _MAX_BARE_JSON_BUFFER:
                         continue  # object still open -- keep buffering
                     elif _looks_like_enabled_bare_json(bare_probe, _enabled_tool_names):
-                        # Oversized still-open ENABLED-tool call: stop holding (memory bound) but
-                        # DRAIN instead of leaking the raw prefix; a giant ordinary JSON answer still streams.
+                        # Oversized open enabled-tool call: drain (memory bound) rather than leak the raw prefix; ordinary large JSON answers still stream.
                         detect_state = _state_draining
                         continue
                 elif parse_tool_calls_from_text(
@@ -1046,11 +1024,7 @@ def run_safetensors_tool_loop(
                     detect_state = _state_draining
                     continue
 
-            # Gemma wrapper-less ``call:NAME{...}`` has no tool_xml_signals entry:
-            # buffer it here or it streams raw until the end-of-turn safety net.
-            # ``(?<!\w)`` keeps "recall:" out; the prefix regex is whitespace-tolerant.
-            # The completed shape takes the parser's gate, so a name it will not promote
-            # streams instead of draining.
+            # Gemma call:NAME{...} has no signal entry, so buffer it or it streams raw until end-of-turn; (?<!\w) keeps recall: out.
             _gemma_lead = leading_bare_gemma_call_is_promotable(stripped, _enabled_tool_names)
             _gemma_chain = blocked_gemma_chain_may_continue(stripped, _enabled_tool_names)
             if (
@@ -1082,11 +1056,7 @@ def run_safetensors_tool_loop(
                         continue
                     detect_state = _state_draining
                     continue
-                # A ``call:`` / ``call:partial_name`` prefix with no ``{`` yet: keep
-                # buffering the variable-length name instead of leaking ``call:longname``.
-                # Names can exceed 32 chars (OpenAI 64, MCP longer), so a fixed cap would
-                # flush real calls raw. The prefix regex self-terminates on ordinary prose
-                # and the ``{`` drains above; bound generously like the bare-JSON path.
+                # Names can exceed 32 chars (MCP), so buffer a call: prefix up to the bare-JSON bound rather than a short fixed cap that would flush real calls raw.
                 if _GEMMA_BARE_TC_PREFIX_RE.match(stripped) is not None:
                     if len(stripped) < _MAX_BARE_JSON_BUFFER:
                         continue
@@ -1096,8 +1066,7 @@ def run_safetensors_tool_loop(
                     continue  # bare "call:" prefix still forming
 
             if is_match:
-                # Tool signal -- flush any visible prefix before DRAINING
-                # so the route sends it before tool_start.
+                # Tool signal: flush any visible prefix before DRAINING so the route sends it before tool_start.
                 cumulative_display += content_buffer
                 buffer_in_display = True
                 cleaned = _strip_streaming_display(cumulative_display)
@@ -1148,8 +1117,7 @@ def run_safetensors_tool_loop(
             return
 
         if detect_state == _state_buffering:
-            # Buffer never resolved: [ARGS] is name-gated so a prose answer with a literal
-            # ``foo[ARGS]{...}`` is not parsed.
+            # [ARGS] is name-gated so prose with a literal foo[ARGS]{...} is not parsed.
             stripped = content_buffer.lstrip()
             _bare_eos = strip_llama3_leading_sentinels(stripped)
             if (
@@ -1166,12 +1134,10 @@ def run_safetensors_tool_loop(
             elif tool_protocol_active and _looks_like_enabled_bare_json(
                 _bare_eos, _enabled_tool_names
             ):
-                # A held bare-JSON ENABLED-tool fragment has no XML signal; DRAIN it (an ordinary
-                # JSON answer falls through to the else and streams as content, GGUF parity).
+                # A held bare-JSON enabled-tool fragment has no XML signal, so drain it; plain JSON still streams.
                 detect_state = _state_draining
             else:
-                # Drain and fall through to STREAMING so the intent re-prompt + safety-net parser
-                # still fire on short emissions like "Let me search." that never exit BUFFERING.
+                # Drain so re-prompt + safety-net parser still fire on short emissions.
                 if content_buffer:
                     cumulative_display += content_buffer
                     buffer_in_display = True
@@ -1193,36 +1159,54 @@ def run_safetensors_tool_loop(
                 enabled_tool_names = _enabled_tool_names,
             )
             if not safety_tc:
-                # Re-prompt once on plan-without-action, before any tool runs
-                # (GGUF loop parity). Omitted flags follow the shared process
-                # default, while explicit request values win.
+                # Re-prompt once on plan-without-action before tools run; explicit request flags beat the default.
                 intent_text = _reprompt_intent_text(
                     content_accum,
                     reasoning_prefilled = reasoning_prefilled,
                 )
+                already_acted = any(record.executed for record in tool_controller.history)
                 if (
                     auto_heal_tool_calls
                     and nudge_enabled(nudge_tool_calls)
                     and active_tools
-                    and reprompt_count < MAX_ACT_REPROMPTS
-                    and not rag_autoinjected
+                    and (
+                        post_tool_reprompts < 1
+                        if already_acted
+                        else reprompt_count < MAX_ACT_REPROMPTS
+                    )
+                    # Retrieval injected up front is no reason to stop a browser task mid-way.
+                    and (not rag_autoinjected or (browser_turns and already_acted))
                     and not tool_denied
-                    and not any(record.executed for record in tool_controller.history)
+                    and (browser_turns or not already_acted)
                     and not is_reprompt_repeat(intent_text, last_reprompt_text)
                     and is_short_intent_without_action(intent_text)
+                    # Markup stripped first: a call fenced inside <tool_call> is not an answer.
+                    and not _has_answer_artifact(
+                        strip_tool_markup(
+                            _reprompt_intent_text(
+                                content_accum,
+                                reasoning_prefilled = reasoning_prefilled,
+                                visible_only = True,
+                            ),
+                            final = True,
+                            enabled_tool_names = _enabled_tool_names,
+                        )
+                    )
                 ):
-                    reprompt_count += 1
+                    if already_acted:
+                        post_tool_reprompts += 1
+                    else:
+                        reprompt_count += 1
                     last_reprompt_text = intent_text
                     logger.info(
                         "Safetensors re-prompt %d/%d: model responded without "
                         "calling tools (%d chars)",
-                        reprompt_count,
-                        MAX_ACT_REPROMPTS,
+                        post_tool_reprompts if already_acted else reprompt_count,
+                        1 if already_acted else MAX_ACT_REPROMPTS,
                         len(intent_text),
                     )
-                    # Merges into a resumed partial: the nudge that follows is a user
-                    # turn, so a second assistant turn breaks alternation.
-                    append_assistant_turn(
+                    # Merge into a resumed partial: a second assistant turn breaks alternation.
+                    _append_raw_turn(
                         conversation,
                         {"role": "assistant", "content": intent_text},
                         continue_final_message = continue_final_message,
@@ -1240,14 +1224,11 @@ def run_safetensors_tool_loop(
                     yield {"type": "status", "text": NUDGE_TOOL_CALLS_STATUS}
                     continue
 
-                # Final answer. If a literal tool marker in prose was buffered but
-                # never parsed as a call, restore the raw text so the prose surfaces
-                # in full; route-level cleanup still applies the Auto-Heal policy.
+                # Restore raw text when a literal tool marker in prose never parsed as a call; route-level cleanup still applies the Auto-Heal policy afterward.
                 if content_accum and any(sig in content_accum for sig in tool_xml_signals):
                     yield {"type": "content", "text": content_accum}
                 else:
-                    # Turn ended as a plain answer (no [ARGS] followed): the held rehearsal tail is real
-                    # prose, release it.
+                    # No [ARGS] followed, so the held rehearsal tail is real prose and is released.
                     final_clean = _strip_streaming_display(cumulative_display)
                     if len(final_clean) > len(last_emitted):
                         yield {"type": "content", "text": final_clean}
@@ -1265,11 +1246,7 @@ def run_safetensors_tool_loop(
                 len(tool_calls),
             )
         else:
-            # DRAINING: parse tool calls out of full content. Gate the bare rehearsal on the
-            # ORIGINAL tool list (``_enabled_names_gate``), the same names detection/strip used to
-            # drain here: a spent one-shot (render_html) is off the active list but its re-emitted
-            # ``render_html[ARGS]{..}`` must still parse so it routes to the repeat no-op instead of
-            # being dropped into a blank continuation.
+            # Gate on the ORIGINAL tools so a spent one-shot repeat routes to the no-op.
             tool_calls = parse_tool_calls_from_text(
                 content_accum,
                 id_offset = next_call_id,
@@ -1287,8 +1264,7 @@ def run_safetensors_tool_loop(
                         tool_protocol_active = False,
                         enabled_tool_names = _enabled_tool_names,
                     )
-                    # Drained bare-JSON call that didn't parse: with Auto-Heal on, drop the fragment
-                    # (plain JSON answers are left untouched); off keeps it visible per the strict contract.
+                    # Unparsed bare-JSON call: auto-heal drops it, while off keeps it visible under the strict contract.
                     if tool_protocol_active and auto_heal_tool_calls:
                         _drain_text = strip_leading_bare_json_call(_drain_text, _enabled_tool_names)
                     if _drain_text:
@@ -1313,9 +1289,33 @@ def run_safetensors_tool_loop(
 
         if tool_calls:
             next_call_id += len(tool_calls)
-            # Strip a leading bare-JSON call from the kept content so it isn't replayed as text or
-            # next-turn history (``_strip_tool_markup_final`` only knows XML). No-op for plain JSON answers.
+            # Strip a leading bare-JSON call from kept content, since _strip_tool_markup_final only knows XML.
             content_text = strip_leading_bare_json_call(content_text, _enabled_tool_names)
+
+        # Transformers/MLX report the finished turn here; never run a healed, token-cut call.
+        turn_stats = (generation_stats_holder or {}).get("stats") or {}
+        if tool_calls and (
+            turn_stats.get("truncated")
+            or turn_stats.get("finish_reason") in ("length", "content_filter")
+        ):
+            if provisional_render_html_started and not provisional_resolved:
+                provisional_resolved = True
+                yield {
+                    "type": "tool_end",
+                    "tool_name": "render_html",
+                    "tool_call_id": provisional_render_html_id,
+                    "result": TRUNCATED_TOOL_TURN_MESSAGE,
+                    "provenance": _tool_event_provenance(provisional = True),
+                }
+            # Empty status resets the route cursor; send only text not already streamed.
+            display = _strip_streaming_display(cumulative_display)
+            notice = display[len(last_emitted) :] + ("\n\n" if display else "")
+            yield {"type": "status", "text": ""}
+            yield {
+                "type": "content",
+                "text": notice + TRUNCATED_TOOL_TURN_MESSAGE,
+            }
+            return
 
         if final_attempt_done:
             if content_text:
@@ -1333,20 +1333,25 @@ def run_safetensors_tool_loop(
             novel_kept = 0
             novel_at_last_keep: dict = {}
             deduped: list = []
-            for _tc in tool_calls:
+            if not deduplicate_tool_calls:
+                deduped = tool_calls[:_MAX_TOOL_CALLS_PER_TURN]
+                over_cap = tool_calls[_MAX_TOOL_CALLS_PER_TURN:]
+            for _tc in tool_calls if deduplicate_tool_calls else ():
                 _fn = _tc.get("function", {}) or {}
                 _key = (_fn.get("name", ""), str(_fn.get("arguments", "")))
-                if _fn.get("name") in _WORKSPACE_TOOLS:
+                if _reruns_after_new_work(_fn.get("name")):
                     if _key == last_workspace_key:
                         continue
                     if _key in seen_keys:
                         if novel_kept <= novel_at_last_keep.get(_key, 0):
                             continue
-                    else:
+                    elif _fn.get("name") not in _WORKSPACE_READ_TOOLS:
                         novel_kept += 1
                     novel_at_last_keep[_key] = novel_kept
                     last_workspace_key = _key
-                elif _key in seen_keys:
+                # A browser call acts on the page as it is then: two scrolls are two scrolls.
+                # Two identical generate_image calls are two images.
+                elif _key in seen_keys and _fn.get("name") not in REPEATABLE_TOOL_NAMES:
                     continue
                 seen_keys.add(_key)
                 if len(deduped) < _MAX_TOOL_CALLS_PER_TURN:
@@ -1366,11 +1371,13 @@ def run_safetensors_tool_loop(
                     _MAX_TOOL_CALLS_PER_TURN,
                 )
             tool_calls = deduped
+            # Truncated before the assistant turn is built, so extra calls never run.
+            if disable_parallel_tool_use and len(tool_calls) > 1:
+                tool_calls, over_cap = tool_calls[:1], []
 
         assistant_msg: dict = {"role": "assistant", "content": content_text}
         assistant_appended = False
-        # Collect no-op nudges and flush them after the batch, so a no-op doesn't
-        # abort it and drop the parallel calls that follow.
+        # Defer no-op nudges so one no-op does not abort the rest of the batch.
         deferred_noop_msgs: list = []
         # Per result; see append_image_turn's per_result note.
         batch_mcp_images: list = []
@@ -1386,25 +1393,27 @@ def run_safetensors_tool_loop(
                 and tc.get("id", "") == provisional_render_html_id
             )
             decision = tool_controller.prepare_call(tc, provisional = provisional_match)
-            # The frontend keeps a round's tool cards together by this id
-            # (codexLocalToolRoundId) and otherwise flushes each completed pair on its
-            # own. This loop shows a parallel batch as ONE picture, and replay groups
-            # consecutive results the same way -- so without the id a batch persisted
-            # as separate pairs replayed as several pictures on the next request.
+            # Frontend groups a batch's tool cards by round_id; without it replay splits the batch.
             decision.provenance["round_id"] = iteration
+            image_share = None
+            if decision.should_execute and mcp_image is not None:
+                from core.inference.tools import mcp_image_share
+                image_share = mcp_image_share(decision.tool_name, decision.arguments, mcp_image)
+                if image_share is not None:
+                    decision = tool_controller.reprepare_call(
+                        decision, provisional = provisional_match
+                    )
 
             if not decision.should_execute:
                 if content_text and not assistant_appended:
-                    append_assistant_turn(
+                    _append_raw_turn(
                         conversation,
                         assistant_msg,
                         continue_final_message = continue_final_message,
                     )
                     assistant_appended = True
                 if provisional_match and not provisional_resolved:
-                    # A provisional render_html card is already on screen for
-                    # this id; close it so it never dangles when the controller
-                    # turns the call into an internal no-op (duplicate / repeat).
+                    # Close a shown provisional render_html card so it never dangles if the call becomes a no-op.
                     provisional_resolved = True
                     yield {
                         "type": "tool_end",
@@ -1423,9 +1432,8 @@ def run_safetensors_tool_loop(
 
             if not assistant_appended:
                 assistant_msg["tool_calls"] = [decision.as_assistant_tool_call()]
-                # Merges into a resumed partial, so a continued turn that calls a tool
-                # stays one assistant message.
-                append_assistant_turn(
+                # Merges into a resumed partial, so a continued turn that calls a tool stays one assistant message.
+                _append_raw_turn(
                     conversation,
                     assistant_msg,
                     continue_final_message = continue_final_message,
@@ -1435,19 +1443,41 @@ def run_safetensors_tool_loop(
                 assistant_msg.setdefault("tool_calls", []).append(decision.as_assistant_tool_call())
 
             # Bypass wins here too, so a direct internal caller with both flags
-            # never prompts. "auto" pauses only high-risk calls; "off" never
-            # prompts (sandbox stays on).
-            needs_confirm = (
-                bool(confirm_tool_calls) and not bypass_permissions and permission_mode != "off"
+            # never prompts. "auto" pauses only high-risk calls; "off" pauses only a
+            # high-risk python/terminal call without OS isolation.
+            permission_mode, bypass_permissions = live_permissions.apply(
+                permission_mode, bypass_permissions
             )
-            if needs_confirm and permission_mode == "auto":
-                from core.inference.tools import is_high_risk_tool_call
-                needs_confirm = is_high_risk_tool_call(decision.tool_name, decision.arguments)
+            needs_confirm = needs_tool_confirmation(
+                confirm_tool_calls = bool(confirm_tool_calls),
+                bypass_permissions = bypass_permissions,
+                permission_mode = permission_mode,
+                name = decision.tool_name,
+                arguments = decision.arguments,
+                sandbox_level = sandbox_level,
+                session_id = session_id,
+            )
+            # Sending the user's image always asks, whatever the permission mode.
+            needs_confirm = needs_confirm or image_share is not None
+            strict_isolation = requires_os_isolation(
+                confirm_tool_calls = bool(confirm_tool_calls),
+                bypass_permissions = bypass_permissions,
+                permission_mode = permission_mode,
+                name = decision.tool_name,
+                arguments = decision.arguments,
+                prompted = needs_confirm,
+                sandbox_level = sandbox_level,
+            )
             approval_id = new_approval_id() if needs_confirm else ""
             decision_slot = begin_tool_decision(session_id, approval_id) if needs_confirm else None
+            bind_permission_upgrade(decision_slot, live_permissions, eligible = image_share is None)
+            if needs_confirm:
+                note_host_access(approval_id, decision.tool_name, decision.arguments)
             start_event = decision.tool_start_event()
             start_event["approval_id"] = approval_id
             start_event["awaiting_confirmation"] = needs_confirm
+            if image_share is not None:
+                start_event["image_disclosure"] = image_share["disclosure"]
 
             try:
                 # A gated call has not started: say waiting, not "Running" (GGUF parity).
@@ -1470,18 +1500,21 @@ def run_safetensors_tool_loop(
                     if decision_slot is not None
                     else None
                 )
-                # The slot is where the waiter says WHY: the user's refusal, or an approval nobody
-                # answered. Read before decision_slot is dropped in the deny branch below.
+                # Read before decision_slot is dropped in the deny branch below.
                 _decision_reason = decision_reason(decision_slot)
+                permission_mode, bypass_permissions = live_permissions.apply(
+                    permission_mode, bypass_permissions
+                )
+                if bypass_permissions:
+                    strict_isolation = False
                 if _decision is not None and _decision != "deny":
+                    yield decision.tool_approved_event(approval_id)
                     yield {"type": "status", "text": decision.status_text}
                 if _decision == "deny":
                     decision_slot = None
                     if provisional_match:
                         provisional_resolved = True
-                    # An approval nobody answered is not the user's decision, and this string is
-                    # the only account of the call both the model and the reopened card get: the
-                    # buttons are gone by the time it lands.
+                    # An unanswered approval is not the user's decision; this string is the only record.
                     _denied_text = (
                         TOOL_APPROVAL_EXPIRED_MESSAGE
                         if _decision_reason == DECISION_EXPIRED
@@ -1517,11 +1550,15 @@ def run_safetensors_tool_loop(
             ):
                 result = RAG_SEARCH_CAP_NUDGE
             else:
-                # Execute in a worker thread so live stdout chunks and heartbeats
-                # stream while the tool blocks (the SSE route turns heartbeats into
-                # keepalives). execute_tool is injectable; pass output_callback
-                # only when it accepts it.
-                def _invoke_tool(_output_callback, _decision = decision):
+                # Worker thread so stdout/heartbeats stream; host paths only for an answered call.
+                _host_access_approved = _decision not in (None, "deny")
+
+                def _invoke_tool(
+                    _output_callback,
+                    _decision = decision,
+                    _approved = _host_access_approved,
+                    _strict = strict_isolation,
+                ):
                     kwargs = dict(
                         cancel_event = cancel_event,
                         timeout = eff_timeout,
@@ -1530,21 +1567,26 @@ def run_safetensors_tool_loop(
                         rag_scope = rag_scope,
                         disable_sandbox = bypass_permissions,
                     )
+                    if website_policy:
+                        kwargs["website_policy"] = website_policy
+                    # Run unasked only because the OS sandbox was on: refuse if it is not any more.
+                    if _strict and _accepts_kwarg(execute_tool, "tool_execution_mode"):
+                        kwargs["tool_execution_mode"] = "required"
+                    elif runs_without_os_sandbox(
+                        _decision.tool_name, sandbox_level
+                    ) and _accepts_kwarg(execute_tool, "tool_execution_mode"):
+                        kwargs["tool_execution_mode"] = "software"
                     if _accepts_kwarg(execute_tool, "conversation_branch"):
-                        kwargs["conversation_branch"] = request_branch
-                    # And the room the model has left, as the GGUF loop does: without a
-                    # budget the tool's clamp is skipped and a model-chosen top_k of 8
-                    # appends roughly 4K tokens to an already full prompt.
+                        kwargs["conversation_branch"] = _extend_live_branch(conversation)
+                    if _approved and _accepts_kwarg(execute_tool, "host_access_approved"):
+                        kwargs["host_access_approved"] = True
+                    # Without a budget the tool clamp is skipped and top_k=8 adds ~4K tokens.
                     if context_length and _accepts_kwarg(
                         execute_tool, "conversation_budget_tokens"
                     ):
                         from core.inference.context_window import retrieval_budget
 
-                        # From the tokenizer count the last turn reported rather than from characters alone:
-                        # `conversation` already carries this turn's assistant preamble and its tool call, and pricing
-                        # the whole thread by characters is what hands a retrieval room the next prompt does not have.
-                        # `reply_returns`, as the GGUF loop does: result and reply are both protected on the next fit,
-                        # so one retrieval cannot spend the budget they share.
+                        # From the last reported token count, not characters (which hand out room the prompt lacks); result and reply share the budget (GGUF parity).
                         spent = _spent_prompt_tokens(
                             conversation,
                             tools,
@@ -1557,11 +1599,7 @@ def run_safetensors_tool_loop(
                             spent,
                             reply_returns = True,
                         )
-                    # And what a RESULT may add, which is the same question asked of
-                    # every tool rather than of retrieval alone. This loop has no rolling
-                    # fit behind it either, so a `cat` of a file the model just wrote is
-                    # protected as the newest exchange and there is nothing downstream to
-                    # evict it.
+                    # No rolling fit downstream, so cap every tool result, not just retrieval.
                     if context_length and _accepts_kwarg(execute_tool, "result_budget_tokens"):
                         from core.inference.context_window import (
                             estimate_messages_tokens_conservative as _spent_tokens,
@@ -1569,32 +1607,18 @@ def run_safetensors_tool_loop(
                             tool_result_budget,
                         )
 
-                        # The window itself as well, not only the room: nothing in the
-                        # tools layer can see a native model's context length (its probe
-                        # answers for a resident GGUF), and a cap with no window to size
-                        # against falls back to the window-independent constant.
+                        # Tools layer cannot see a native model's window; pass it explicitly.
                         if _accepts_kwarg(execute_tool, "context_tokens"):
                             kwargs["context_tokens"] = int(context_length)
-                        # Tool results are counted TWICE, which charges them two characters per token instead of four.
-                        # The estimator's rate is an English one, and this budget exists because the results these
-                        # tools return are base64, minified JSON, hashes and command output, which run nearer two.
-                        # Under-pricing what is already in the conversation hands the next call room that is occupied,
-                        # and this loop has no exact count and no rolling fit to catch it.
+                        # Results priced at 2 chars/token: base64/JSON/hashes run denser than English.
                         results = [
                             message for message in conversation if message.get("role") == "tool"
                         ]
-                        # Removed from the thread below rather than added on top of it: the conservative estimate
-                        # already prices every message it is given, so leaving the results in and adding them again
-                        # charges them twice, and a CJK result twice over. A thread with one sizable earlier result
-                        # would then report no room while it still had plenty.
+                        # Tool results excluded here and priced separately, else charged twice.
                         rest = [
                             message for message in conversation if message.get("role") != "tool"
                         ]
-                        # Split across the calls still to run in this batch, and after
-                        # their arguments, exactly as the GGUF loop does: one turn can
-                        # call several tools and each call is appended only as it runs,
-                        # so sizing a result as if it were alone lets the first take the
-                        # room the rest of the batch still needs.
+                        # Split across pending calls so the first does not take the batch's room (GGUF parity).
                         pending = list(tool_calls or [])[_call_index + 1 :]
                         pending_args = [
                             {"role": "assistant", "content": json.dumps(call, default = str)}
@@ -1608,24 +1632,19 @@ def run_safetensors_tool_loop(
                         kwargs["result_budget_tokens"] = tool_result_budget(
                             int(context_length),
                             max_tokens,
-                            # Conservative for the thread as a whole, not only for the tool turns doubled below: a
-                            # user or assistant turn can hold a pasted blob or a block of minified JSON, and priced at
-                            # the English rate it reports a third of what it costs. Nothing here can measure exactly,
-                            # and the room this produces is what the next result is admitted against.
+                            # Conservative for the whole thread: user turns can hold dense blobs too.
                             _spent_tokens(rest)
                             + _spent_tokens(tools or [])
-                            # Every ASCII character of a result at two per token, not only
-                            # its unbroken runs: a result is `hexdump`, `ls -l` or a stack
-                            # trace as often as it is a blob, and those carry spaces.
+                            # All ASCII of a result counts at two per token, since hexdumps and stack traces carry spaces.
                             + _spent_tokens(results, dense_ascii = True)
-                            # Doubled for the same reason the results above are: a pending
-                            # call can carry base64, minified JSON or a block of code, and
-                            # nothing on this path can price a string exactly.
+                            # Doubled: pending args can hold base64, minified JSON or code, which cannot be priced exactly.
                             + 2 * _dense_tokens(pending_args),
                         ) // (len(pending) + 1)
                     if _accepts_output_callback(execute_tool):
                         kwargs["output_callback"] = _output_callback
                     kwargs.update(_search_images_kwargs(execute_tool, _decision.tool_name))
+                    if image_share is not None:
+                        kwargs["mcp_image"] = image_share["image"]
                     return execute_tool(_decision.tool_name, _decision.arguments, **kwargs)
 
                 try:
@@ -1644,7 +1663,11 @@ def run_safetensors_tool_loop(
             completion = tool_controller.record_result(decision, result)
             if provisional_match:
                 provisional_resolved = True
-            _turn_executed_real_tool = True
+            # Loading MCP tools is not a tool round, or a budget of one could never call what it found.
+            if decision.tool_name != "mcp_tool_search":
+                _turn_executed_real_tool = True
+            # Any executed call, discovery included, releases a forced choice (as on llama-server).
+            forced_resolved = True
             yield completion.tool_end_event()
             conversation.append(completion.tool_message())
             # Parsed only when there is a sink for them.
@@ -1674,15 +1697,11 @@ def run_safetensors_tool_loop(
             )
         append_deferred_nudges(conversation, deferred_noop_msgs)
         if batch_mcp_images and images_sink is not None:
-            # A sink only when the loaded model reads images; the pixels ride
-            # beside the prompt, so the turn carries markers rather than data.
+            # Sink only for image-reading models: pixels ride beside the prompt, which carries markers only.
             encoded = png_payloads_per_result(batch_mcp_images)
             if encoded:
                 images_sink.extend(encoded)
-                # Merged into the deferred nudge above when there was one: two
-                # user turns in a row is what a strict VLM template rejects.
-                # Same wording rule as the other loops: several results, and "the
-                # tool call above" names whichever ran last.
+                # Merged into the deferred nudge: two user turns in a row break strict VLM templates.
                 _batch_results = sum(
                     1
                     for m in conversation[batch_conversation_start:]
@@ -1696,12 +1715,11 @@ def run_safetensors_tool_loop(
                     if _batch_results != 1
                     else MCP_IMAGE_TURN_TEXT,
                 )
-                # Rebased on the way out: this trim deletes entries before the
-                # attachment, and reusing the original index on the next batch
-                # would protect the wrong payload and delete the attachment.
+                # Rebased: this trim deletes entries before the attachment, and a reused old index would protect the wrong payload and delete the attachment.
                 caller_images = trim_image_turns(conversation, images_sink, keep = caller_images)
 
         yield {"type": "status", "text": ""}
+        forced_resolved = forced_resolved or tool_denied
 
         if tool_controller.force_final_answer:
             final_attempt_done = True
@@ -1709,16 +1727,22 @@ def run_safetensors_tool_loop(
         if not unrestricted_tools and not tool_controller.active_tools():
             final_attempt_done = True
             continue
-        # Count only turns that executed a tool against the cap; a no-op correction turn doesn't
-        # consume budget so the model gets its nudge and another tool-enabled turn (GGUF parity).
+        # Only real tool turns count against the cap, so a no-op correction turn is free (GGUF parity).
         if _turn_executed_real_tool:
             _executed_tool_iters += 1
+            post_tool_reprompts = 0
+            if browser_turns:
+                # A new step may stall in the same words as the last one (external loop parity).
+                last_reprompt_text = ""
         if _executed_tool_iters >= max_tool_iterations and not final_attempt_done:
             final_attempt_done = True
-            if over_cap:
+            # Ride a trailing user turn, as the GGUF loop does.
+            if over_cap or conversation[-1].get("role") == "user":
                 conversation[-1] = {
                     **conversation[-1],
-                    "content": f"{conversation[-1]['content']}\n\n{BUDGET_EXHAUSTED_NUDGE}",
+                    "content": with_appended_text(
+                        conversation[-1]["content"], f"\n\n{BUDGET_EXHAUSTED_NUDGE}"
+                    ),
                 }
             else:
                 conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})

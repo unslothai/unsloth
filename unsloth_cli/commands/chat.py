@@ -2,10 +2,10 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import sys
+from types import SimpleNamespace
 from typing import List, Optional
 
 import typer
-from rich.console import Console
 
 from unsloth_cli._inference import (
     SpeculativeType,
@@ -98,8 +98,7 @@ def _get_base_load_in_4bit(model_config) -> bool:
 
 
 def _compare_needs_second_model() -> bool:
-    # MLX cannot toggle the adapter off, so compare loads the base separately; probe MLX quietly since
-    # detect_hardware() prints into the chat and imports torch.
+    # MLX cannot toggle the adapter off; probe quietly since detect_hardware() prints and imports torch.
     try:
         from studio.backend.utils.hardware import hardware as hw
 
@@ -258,6 +257,8 @@ def chat(
     if not verbose:
         configure_quiet_logging()
 
+    from rich.console import Console
+
     console = Console()
     err = Console(stderr = True)
     is_mlx_distributed, rank, _world_size = mlx_distributed_info()
@@ -285,9 +286,32 @@ def chat(
             raise typer.Exit(code = 1)
         model = _pick_model(console)
 
-    # Resolve first so --compare can be rejected before the slow load.
-    with quiet_if_nonzero_mlx_rank():
-        model_config = resolve_model_config(model, hf_token = hf_token)
+    from unsloth_cli._npu import npu_model_path, npu_needs_studio_message
+
+    # An NPU model runs inside Unsloth Studio, never in this process: no HF config to resolve.
+    npu_path = npu_model_path(model)
+    if npu_path:
+        model = npu_path
+        model_config = SimpleNamespace(
+            display_name = npu_path.split(":", 1)[1],
+            is_gguf = False,
+            is_lora = False,
+            path = None,
+            base_model = None,
+            gguf_variant = None,
+        )
+        if no_server or is_mlx_distributed:
+            if should_print:
+                err.print(
+                    npu_needs_studio_message(npu_path, no_server = True),
+                    style = "red",
+                    markup = False,
+                )
+            raise typer.Exit(code = 1)
+    else:
+        # Resolve first so --compare can be rejected before the slow load.
+        with quiet_if_nonzero_mlx_rank():
+            model_config = resolve_model_config(model, hf_token = hf_token)
     compare_blocked = _compare_blocked_reason(model_config)
     if is_mlx_distributed:
         compare_blocked = (
@@ -318,6 +342,14 @@ def chat(
         else connect_studio_server(model, **server_load_opts(ctx, load_opts))
     )
     server_mode = chat_backend is not None
+    if npu_path and not server_mode:
+        if should_print:
+            err.print(
+                npu_needs_studio_message(npu_path, no_server = False),
+                style = "red",
+                markup = False,
+            )
+        raise typer.Exit(code = 1)
     if server_mode and should_print:
         console.print(
             "(Unsloth server connected — model stays warm after /exit)",
@@ -327,6 +359,15 @@ def chat(
         chat_backend = load_chat_backend(model, model_config = model_config, **load_opts)
 
     name = model_config.display_name or model
+    # Name the quant the server kept, not the local pick (a local dir's display name is a file stem).
+    kept = getattr(chat_backend, "gguf_variant", None) if server_mode else None
+    picked = getattr(model_config, "gguf_variant", None)
+    if kept and kept != picked:
+        if picked:
+            base = name.removesuffix(f" ({picked})")
+        else:
+            base = model.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+        name = f"{base} ({kept})"
     show_thinking = think
     compare_mode = compare
     messages = []
@@ -504,7 +545,10 @@ def chat(
                 )
 
             messages.append(
-                {"role": "assistant", "content": visible_text(answer, show_thinking = False)}
+                {
+                    "role": "assistant",
+                    "content": visible_text(answer, show_thinking = False, final = True),
+                }
             )
     finally:
         chat_backend.close()

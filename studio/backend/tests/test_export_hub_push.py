@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import weakref
+
+import functools
 import importlib.util
 import sys
 import tempfile
@@ -10,6 +13,8 @@ import types
 from pathlib import Path
 
 import pytest
+from huggingface_hub import constants as hf_constants
+from huggingface_hub import get_token as hf_get_token
 
 
 _HELPERS_SPEC = importlib.util.spec_from_file_location(
@@ -212,6 +217,27 @@ def test_merged_export_push_to_a_reused_folder_does_not_upload_its_leftovers(tmp
     assert seen["uploaded"] == ["model.safetensors"]
 
 
+def test_whisper_merged_export_is_a_16bit_merge(tmp_path, monkeypatch):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_merged_backend", calls, seen)
+    backend._audio_type = "whisper"
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    (export_dir / "adapter_config.json").write_text("{}")
+
+    success, message, _ = backend.export_merged_model(
+        str(export_dir),
+        push_to_hub = True,
+        repo_id = "model",
+        hf_token = "hf_fake",
+    )
+
+    assert success is True, message
+    assert backend.current_model.merges == ["merged_16bit", "merged_16bit"]
+    assert seen["uploaded"] == ["model.safetensors"]
+
+
 @pytest.mark.parametrize("roomier", ["temp", "export", "export_but_unwritable"])
 def test_merged_export_push_stages_the_clean_save_where_there_is_room(
     tmp_path, monkeypatch, roomier
@@ -234,7 +260,6 @@ def test_merged_export_push_stages_the_clean_save_where_there_is_room(
     monkeypatch.setattr(shutil, "disk_usage", fake_disk_usage)
 
     if roomier == "export_but_unwritable":
-        # Only the export directory has to be writable; its parent need not be.
         real_temporary_directory = tempfile.TemporaryDirectory
 
         def refusing_temporary_directory(
@@ -319,8 +344,7 @@ def test_merged_export_push_still_uploads_when_the_card_fails(tmp_path, monkeypa
     assert seen["uploaded"] == ["model.safetensors"]
 
 
-# A stale weight file makes the folder look reused, so the emptiness is only visible on the staging
-# copy; a fresh folder shows it on the export directory itself.
+# a stale weight file makes the folder look reused, so emptiness shows only on staging
 @pytest.mark.parametrize("stale_weights", [False, True])
 def test_merged_export_push_merges_again_when_the_save_left_no_weights(
     tmp_path, monkeypatch, stale_weights
@@ -373,6 +397,171 @@ def test_merged_export_push_card_does_not_name_a_local_base_model(tmp_path, monk
     assert success is True, message
     assert "base_model: owner/model" in seen["card"]
     assert str(tmp_path) not in seen["card"]
+
+
+_MLX_MERGED_FILES = ["README.md", "model.safetensors", "model.safetensors.index.json"]
+
+
+class _MlxMergeModel(_Model):
+    def __init__(self, hf_api):
+        super().__init__()
+        self.hf_api = hf_api
+
+    def save_pretrained_merged(
+        self,
+        save_directory,
+        tokenizer,
+        save_method = None,
+        token = None,
+    ):
+        self.merges.append(save_method)
+        output = Path(save_directory)
+        output.mkdir(parents = True, exist_ok = True)
+        for name in _MLX_MERGED_FILES:
+            (output / name).write_bytes(b"merged")
+
+    def push_to_hub_merged(
+        self,
+        repo_id,
+        tokenizer,
+        save_directory = None,
+        token = None,
+        private = None,
+    ):
+        api = self.hf_api(token = token)
+        api.create_repo(repo_id, private = private, exist_ok = True)
+        if private is not None:
+            api.update_repo_settings(repo_id = repo_id, private = private, repo_type = "model")
+        api.upload_folder(folder_path = str(save_directory), repo_id = repo_id, repo_type = "model")
+
+
+# export -> (ExportBackend method, is_peft, extra kwargs, save_method)
+_MLX_EXPORTS = {
+    "merged": ("export_merged_model", True, {}, "merged_16bit"),
+    "merged_4bit": ("export_merged_model", True, {"format_type": "4-bit (FP4)"}, "merged_4bit"),
+    "base": ("export_base_model", False, {}, "merged_16bit"),
+}
+
+
+def _mlx_backend(monkeypatch, name, calls, seen, export):
+    method, is_peft, kwargs, _save_method = _MLX_EXPORTS[export]
+    backend = _non_mlx_backend(monkeypatch, name, calls, seen)
+    export_module = sys.modules[type(backend).__module__]
+    monkeypatch.setattr(export_module, "_IS_MLX", True)
+    monkeypatch.setattr(export_module, "_export_runtime_available", lambda: True)
+    backend.current_model = _MlxMergeModel(export_module.HfApi)
+    backend.is_peft = is_peft
+    return backend, functools.partial(getattr(backend, method), **kwargs)
+
+
+@pytest.mark.parametrize("export", _MLX_EXPORTS)
+def test_mlx_export_push_keeps_the_export_metadata_out_of_the_repo(tmp_path, monkeypatch, export):
+    calls: list[str] = []
+    seen: dict = {}
+    backend, push = _mlx_backend(
+        monkeypatch, "test_export_hub_push_mlx_fresh_backend", calls, seen, export
+    )
+
+    success, message, output_path = push(
+        str(tmp_path / "export"),
+        push_to_hub = True,
+        repo_id = "model",
+        hf_token = "hf_fake",
+    )
+
+    assert success is True, message
+    assert seen["uploaded"] == _MLX_MERGED_FILES
+    assert seen["upload_repo"] == "owner/model"
+    assert Path(output_path, "export_metadata.json").is_file()
+    assert backend.current_model.merges == [_MLX_EXPORTS[export][3]]
+    assert seen["folder"] == output_path
+
+
+@pytest.mark.parametrize("export", _MLX_EXPORTS)
+def test_mlx_export_push_to_a_reused_folder_does_not_upload_its_leftovers(
+    tmp_path, monkeypatch, export
+):
+    calls: list[str] = []
+    seen: dict = {}
+    backend, push = _mlx_backend(
+        monkeypatch, "test_export_hub_push_mlx_reused_backend", calls, seen, export
+    )
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    (export_dir / "adapter_config.json").write_text("{}")
+    (export_dir / "adapters.safetensors").write_bytes(b"lora")
+
+    success, message, output_path = push(
+        str(export_dir),
+        push_to_hub = True,
+        repo_id = "model",
+        hf_token = "hf_fake",
+    )
+
+    assert success is True, message
+    assert seen["uploaded"] == _MLX_MERGED_FILES
+    assert output_path == str(export_dir.resolve())
+    assert backend.current_model.merges == [_MLX_EXPORTS[export][3]] * 2
+    # A REAP report an earlier export pushed to this repo is deleted in the same commit.
+    assert seen["delete_patterns"] == ["reap_report.json"]
+    assert seen["folder"] != output_path
+    assert not Path(seen["folder"]).exists()
+
+
+@pytest.mark.parametrize("export", _MLX_EXPORTS)
+def test_mlx_export_staging_failure_leaves_the_hub_untouched(tmp_path, monkeypatch, export):
+    calls: list[str] = []
+    seen: dict = {}
+    backend, push = _mlx_backend(
+        monkeypatch, "test_export_hub_push_mlx_stage_failure", calls, seen, export
+    )
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    (export_dir / "old.gguf").write_bytes(b"GGUF")
+    save = backend.current_model.save_pretrained_merged
+
+    def fail_staging(directory, *args, **kwargs):
+        save(directory, *args, **kwargs)
+        if len(backend.current_model.merges) == 2:
+            raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(backend.current_model, "save_pretrained_merged", fail_staging)
+    success, message, _path = push(
+        str(export_dir), push_to_hub = True, repo_id = "model", hf_token = "hf_fake"
+    )
+
+    assert success is False
+    assert "No space left on device" in message
+    assert Path(export_dir, "model.safetensors").is_file()
+    assert calls == []
+
+
+@pytest.mark.parametrize("export", _MLX_EXPORTS)
+@pytest.mark.parametrize("private", [True, False])
+def test_mlx_export_push_never_makes_an_existing_private_repo_public(
+    tmp_path, monkeypatch, private, export
+):
+    calls: list[str] = []
+    seen: dict = {}
+    _backend, push = _mlx_backend(
+        monkeypatch, "test_export_hub_push_mlx_private_backend", calls, seen, export
+    )
+
+    success, message, _path = push(
+        str(tmp_path / "export"),
+        push_to_hub = True,
+        repo_id = "owner/model",
+        hf_token = "hf_fake",
+        private = private,
+    )
+
+    assert success is True, message
+    visibility = ["update_repo_settings"] if private else []
+    assert calls == ["create_repo", *visibility, "upload_folder"]
+    assert seen.get("visibility") == (
+        {"repo_id": "owner/model", "private": True} if private else None
+    )
+    assert seen["uploaded"] == _MLX_MERGED_FILES
 
 
 def test_base_export_push_keeps_the_export_metadata_out_of_the_repo(tmp_path, monkeypatch):
@@ -497,10 +686,7 @@ class _LoraModel:
         self.calls.append(f"model_push:{repo_id}")
 
 
-# leg -> (gguf, is_mlx, what lands in the repo)
-# Every leg opens the repo itself: leaving a fresh one to push_to_hub would let another
-# client create it public in the gap. The adapter leg writes the model card that the
-# delegated push can then no longer write.
+# leg -> (gguf, is_mlx, repo contents); each leg opens the repo itself so it cannot go public
 _LORA_LEGS = {
     "adapter": (
         False,
@@ -617,11 +803,7 @@ def test_lora_export_push_uploads_when_the_repo_is_already_private(tmp_path, mon
 def test_lora_adapter_push_writes_the_card_the_delegated_push_can_no_longer_write(
     tmp_path, monkeypatch
 ):
-    """Opening the repo first makes Unsloth's wrapper skip its own card, so we write it.
-
-    `upload_to_huggingface` writes MODEL_CARD only when its `create_repo(exist_ok=False)`
-    finds the repo absent, which opening it here makes impossible.
-    """
+    """Opening the repo first makes the delegated push skip MODEL_CARD, so this path writes it."""
     calls: list[str] = []
     seen: dict = {}
     _module, backend, gguf, _uploads = _lora_backend(
@@ -633,8 +815,7 @@ def test_lora_adapter_push_writes_the_card_the_delegated_push_can_no_longer_writ
     assert success is True, message
     assert seen["card_repo"] == "owner/model"
     assert "base_model: unsloth/Qwen2.5-0.5B-Instruct" in seen["card"]
-    # Same tags upload_to_huggingface produced for this path, trl included and unsloth
-    # not duplicated (the template already carries it).
+    # unsloth not duplicated: the template already carries it
     tags = seen["card"].split("tags:", 1)[1].split("license:", 1)[0]
     assert sorted(line.strip("- ").strip() for line in tags.strip().splitlines()) == [
         "qwen2",
@@ -643,9 +824,8 @@ def test_lora_adapter_push_writes_the_card_the_delegated_push_can_no_longer_writ
         "trl",
         "unsloth",
     ]
-    # empty `method` leaves a double space the template supplies; markdown collapses it
+    # empty `method` leaves a double space from the template; markdown collapses it
     assert "# Uploaded finetuned  model" in seen["card"]
-    # written before the weights, never after
     assert calls.index("model_card") < calls.index("model_push:owner/model")
 
 
@@ -691,7 +871,7 @@ def test_lora_mlx_push_that_cannot_serialise_leaves_no_repo_behind(tmp_path, mon
 
     assert success is False
     assert "MLX serialization failed" in message
-    assert calls == []  # no create_repo, no tightening, no upload
+    assert calls == []
     assert "repo" not in seen
 
 
@@ -746,3 +926,194 @@ def test_lora_gguf_export_push_to_a_reused_folder_does_not_upload_its_leftovers(
     assert Path(seen["folder"]).name == export_dir.name
     assert not Path(seen["folder"]).exists()
     assert seen["uploaded"] == _LORA_GGUF_FILES
+
+
+def _reap_pruned(backend, monkeypatch):
+    # As apply_reap leaves it: the pruning key and the kept experts on the loaded model. The stub
+    # core.export package of this harness gets the real reap module the export imports.
+    spec = importlib.util.spec_from_file_location(
+        "core.export.reap", Path(__file__).resolve().parents[1] / "core/export/reap.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setitem(sys.modules, "core.export.reap", module)
+    backend._reap_key = (0.5, 512, None)
+    backend._reap_model = weakref.ref(backend.current_model)
+    backend.current_model._unsloth_reap_report = {"model.layers.0.mlp": [0, 2]}
+    return backend
+
+
+@pytest.mark.parametrize("reused", [False, True])
+def test_merged_push_of_a_reap_pruned_model_uploads_its_report(tmp_path, monkeypatch, reused):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _reap_pruned(
+        _non_mlx_backend(monkeypatch, "test_export_hub_push_reap_merged", calls, seen), monkeypatch
+    )
+    export_dir = tmp_path / "export"
+    if reused:
+        export_dir.mkdir()
+        (export_dir / "adapter_config.json").write_text("{}")
+    success, message, output_path = backend.export_merged_model(
+        str(export_dir), push_to_hub = True, repo_id = "model", hf_token = "hf_fake"
+    )
+    assert success is True, message
+    # Written before the upload, into whichever folder was uploaded.
+    assert "reap_report.json" in seen["uploaded"]
+    assert Path(output_path, "reap_report.json").is_file()
+
+
+def test_merged_push_into_a_folder_with_a_stale_report_uploads_none(tmp_path, monkeypatch):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_reap_stale", calls, seen)
+    _reap_pruned(backend, monkeypatch)
+    backend._reap_key = None  # not pruned this time
+    export_dir = tmp_path / "export-torchao-fp8"
+    export_dir.mkdir(parents = True)
+    (export_dir / "reap_report.json").write_text('{"kept_experts": {}}')
+    success, message, output_path = backend.export_merged_model(
+        str(tmp_path / "export"),
+        compressed_method = "torchao_fp8",
+        push_to_hub = True,
+        repo_id = "model",
+        hf_token = "hf_fake",
+    )
+    assert success is True, message
+    assert seen["folder"] == output_path
+    assert "reap_report.json" not in seen["uploaded"]
+    assert not Path(output_path, "reap_report.json").exists()
+
+
+def test_base_push_of_a_reap_pruned_model_uploads_its_report(tmp_path, monkeypatch):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _reap_pruned(
+        _non_mlx_backend(monkeypatch, "test_export_hub_push_reap_base", calls, seen), monkeypatch
+    )
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    (export_dir / "old.Q4_K_M.gguf").write_bytes(b"GGUF")
+    success, message, output_path = backend.export_base_model(
+        str(export_dir), push_to_hub = True, repo_id = "model", hf_token = "hf_fake"
+    )
+    assert success is True, message
+    assert "reap_report.json" in seen["uploaded"]
+
+
+def test_base_and_adapter_exports_after_a_reap_merge_of_a_lora_load(tmp_path, monkeypatch):
+    # REAP merged the adapters in memory (is_peft is False now); the load is still a LoRA one.
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_reap_merged_peft", calls, seen)
+    backend._reap_merged_peft = True
+    success, message, _ = backend.export_base_model(str(tmp_path / "base"))
+    assert success is False and "PEFT model" in message
+    assert not (tmp_path / "base").exists()
+    success, message, _ = backend.export_lora_adapter(str(tmp_path / "lora"))
+    assert success is False and "merged into the model for a REAP export" in message
+
+
+@pytest.mark.parametrize("method", ["merged", "base"])
+def test_hub_uploads_delete_a_reap_report_left_in_a_reused_repo(tmp_path, monkeypatch, method):
+    # upload_folder never removes remote files; one it uploads in the same commit is kept, so a
+    # pruned export keeps its new report and any other export drops an old one.
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(
+        monkeypatch, f"test_export_hub_push_reap_delete_{method}", calls, seen
+    )
+    export = backend.export_merged_model if method == "merged" else backend.export_base_model
+    success, message, _ = export(
+        str(tmp_path / "export"), push_to_hub = True, repo_id = "model", hf_token = "hf_fake"
+    )
+    assert success is True, message
+    assert seen["delete_patterns"] == ["reap_report.json"]
+
+
+def test_cleanup_clears_reap_state_even_when_an_unload_fails(tmp_path, monkeypatch):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _reap_pruned(
+        _non_mlx_backend(monkeypatch, "test_export_hub_push_reap_cleanup", calls, seen), monkeypatch
+    )
+    backend._reap_model = weakref.ref(backend.current_model)
+
+    def unload(name):
+        raise RuntimeError("inference engine is busy")
+
+    backend.inference_backend = types.SimpleNamespace(
+        models = {"chat": object()}, unload_model = unload
+    )
+    assert backend.cleanup_memory() is False
+    assert backend._reap_key is None and backend._reap_model is None
+
+
+class _GgufModel:
+    def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
+        output = Path(f"{model_save_path}_gguf")
+        output.mkdir(parents = True)
+        (output / f"model.{quantization_method}.gguf").write_bytes(b"GGUF")
+
+
+def _gguf_model_backend(monkeypatch, calls, seen):
+    _HELPERS._install_export_backend_stubs(monkeypatch)
+    module = _HELPERS._load_module(
+        "test_export_hub_push_cli_login_gguf_backend", "core/export/export.py", monkeypatch
+    )
+    _HELPERS._patch_hub(monkeypatch, module, calls, seen)
+    return _HELPERS._export_backend(module, _GgufModel)
+
+
+def _push_without_a_token(monkeypatch, export, save_directory, calls, seen):
+    if export == "gguf":
+        backend = _gguf_model_backend(monkeypatch, calls, seen)
+        push = functools.partial(backend.export_gguf, quantization_method = "Q4_K_M")
+    elif export == "lora":
+        _module, backend, _gguf, _uploads = _lora_backend(
+            monkeypatch, "test_export_hub_push_cli_login_lora_backend", calls, seen, "adapter"
+        )
+        push = backend.export_lora_adapter
+    else:
+        backend = _non_mlx_backend(
+            monkeypatch, f"test_export_hub_push_cli_login_{export}_backend", calls, seen
+        )
+        push = getattr(backend, f"export_{export}_model")
+    monkeypatch.setattr(sys.modules["huggingface_hub"], "get_token", hf_get_token, raising = False)
+    return push(save_directory, push_to_hub = True, repo_id = "model", hf_token = None)
+
+
+@pytest.mark.parametrize("export", ["base", "merged", "lora", "gguf"])
+def test_hub_push_with_no_token_uses_the_cli_login(tmp_path, monkeypatch, export):
+    login = tmp_path / "hf_token"
+    login.write_text("hf_cli_login")
+    monkeypatch.setattr(hf_constants, "HF_TOKEN_PATH", str(login))
+    for key in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HF_OIDC_RESOURCE"):
+        monkeypatch.delenv(key, raising = False)
+    calls: list[str] = []
+    seen: dict = {}
+
+    success, message, _path = _push_without_a_token(
+        monkeypatch, export, str(tmp_path / "export"), calls, seen
+    )
+
+    assert success is True, message
+    assert seen["token"] == "hf_cli_login"
+    assert calls[0] == "create_repo"
+
+
+@pytest.mark.parametrize("export", ["base", "merged", "lora", "gguf"])
+def test_hub_push_with_no_token_and_no_cli_login_is_refused(tmp_path, monkeypatch, export):
+    monkeypatch.setattr(hf_constants, "HF_TOKEN_PATH", str(tmp_path / "missing"))
+    for key in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HF_OIDC_RESOURCE"):
+        monkeypatch.delenv(key, raising = False)
+    calls: list[str] = []
+    seen: dict = {}
+
+    success, message, _path = _push_without_a_token(
+        monkeypatch, export, str(tmp_path / "export"), calls, seen
+    )
+
+    assert success is False
+    assert "Hugging Face token required" in message
+    assert calls == []

@@ -6,50 +6,74 @@ import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
 
-// The segmented control is a wash on whatever is behind it, so its distance
-// from the selected pill is a property of the surface, not of the control. On
-// the page the wash lands 21 levels below --accent; on an elevated panel the
-// same wash lands 7 below and the two halves stop reading apart. These pin the
-// panel case darkening instead, and the pill's hover on borrowed-pill buttons.
+// The track is a wash on whatever is behind it, so its contrast with the pill depends on the surface.
 
 const HUB_CSS = readSrc("features/hub/hub.css");
 const PICKERS = readSrc(
   "features/model-picker/components/model-selector/pickers.tsx",
 );
 
-const MENU_TRACK =
-  /html\.dark \.menu-soft-surface \.hub-tab-toggle,[\s\S]*?\{([^}]*)\}/;
+const PANELS =
+  ':is(.menu-soft-surface, .menu-soft-surface-up, [data-slot="dialog-content"])';
+const esc = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const PAGE_TRACK = /html\.dark \{([^}]*--hub-tab-track[^}]*)\}/;
+const RAISED = '.bg-background[class*="dark:bg-"]';
+const PANEL_TRACK = new RegExp(
+  `html\\.dark ${esc(PANELS)},\\s*html\\.dark ${esc(PANELS)} ${esc(RAISED)} \\{([^}]*)\\}`,
+);
+const PANE_TRACK = new RegExp(
+  `html\\.dark ${esc(PANELS)} ${esc('.bg-background:not([class*="dark:bg-"])')} \\{([^}]*)\\}`,
+);
+
+test("the track reads its colour from the nearest surface", () => {
+  const rule = HUB_CSS.match(/html\.dark \.hub-tab-toggle \{([^}]*)\}/);
+  assert.ok(rule);
+  assert.match(rule[1] ?? "", /background-color: var\(--hub-tab-track\)/);
+});
 
 test("a track on an elevated panel sinks toward the page, not off the panel", () => {
-  const rule = HUB_CSS.match(MENU_TRACK);
-  assert.ok(rule, "menu-scoped .hub-tab-toggle rule is missing");
-  // Mixing --foreground here is what put the track 7 levels off the pill.
-  assert.match(rule[1] ?? "", /var\(--background\)/);
+  const rule = HUB_CSS.match(PANEL_TRACK);
+  assert.ok(rule, "panel-scoped track is missing");
+  assert.match(rule[1] ?? "", /--hub-tab-track: [^;]*var\(--background\)/);
   assert.doesNotMatch(rule[1] ?? "", /var\(--foreground\)/);
 });
 
-test("the panel track overrides the page one rather than racing it", () => {
-  const base = HUB_CSS.indexOf("html.dark .hub-tab-toggle {");
-  const scoped = HUB_CSS.search(MENU_TRACK);
-  assert.ok(base >= 0 && scoped >= 0);
-  // Higher specificity already wins; source order keeps it obvious.
-  assert.ok(scoped > base, "the scoped rule must follow the page one");
-});
-
 test("the page track is left on its own wash", () => {
-  const base = HUB_CSS.match(/html\.dark \.hub-tab-toggle \{([^}]*)\}/);
+  const base = HUB_CSS.match(PAGE_TRACK);
   assert.ok(base);
-  assert.match(base[1] ?? "", /var\(--foreground\)/);
+  assert.match(base[1] ?? "", /var\(--foreground\) calc\(6\.5%/);
 });
 
 test("the panel track stops just under the panel rather than far below it", () => {
-  const rule = HUB_CSS.match(MENU_TRACK);
   // 27% of #181818 over #272727 is #232323.
-  assert.match(rule?.[1] ?? "", /var\(--background\) 27%/);
+  assert.match(
+    HUB_CSS.match(PANEL_TRACK)?.[1] ?? "",
+    /var\(--background\) 27%/,
+  );
+});
+
+test("a page-coloured pane inside a panel gets the page track back", () => {
+  const pane = HUB_CSS.match(PANE_TRACK);
+  assert.ok(pane, "page-coloured panes inside panels still sink the track");
+  const page = HUB_CSS.match(PAGE_TRACK);
+  assert.equal(
+    pane[1]?.trim(),
+    page?.[1]?.trim(),
+    "pane and page tracks differ",
+  );
+  // Later in the file, so it beats the panel rule on a tie.
+  assert.ok(HUB_CSS.search(PANE_TRACK) > HUB_CSS.search(PANEL_TRACK));
+  const settings = readSrc("features/settings/settings-dialog.tsx");
+  assert.match(settings, /<main className="[^"]*\bbg-background\b/);
+});
+
+test("a raised card inside a page-coloured pane keeps the panel track", () => {
+  assert.ok(HUB_CSS.match(PANEL_TRACK), "raised cards lost the sunk track");
+  const card = readSrc("features/profile/components/stats/stat-primitives.tsx");
+  assert.match(card, /\bbg-background dark:border-transparent dark:bg-\[/);
 });
 
 test("a selected segment shows no hover, being the tab you are already on", () => {
-  // Grouped with the resting rule, so the two cannot drift apart.
   assert.match(
     HUB_CSS,
     /html\.dark \.hub-tab-toggle-pill,\s*html\.dark \.hub-tab-toggle-pill:hover \{[^}]*background-color: var\(--accent\)/,
@@ -60,15 +84,13 @@ test("no tab pins its hover to a colour that is only right in one theme", () => 
   const tabs = readSrc(
     "features/model-picker/components/model-selector/pill-tabs.tsx",
   );
-  // hover:!bg-[var(--background)] carries no mode variant, so in dark it
-  // painted the page colour over the pill and blacked the tab out.
+  // hover:!bg-[var(--background)] has no mode variant, so in dark it blacked the tab out.
   assert.doesNotMatch(tabs, /hover:!bg-\[var\(--background\)\]/);
 });
 
 test("an option menu rests at its trigger's tone, not the panel's", () => {
   const menu = HUB_CSS.match(/html\.dark \.hub-menu-instant \{([^}]*)\}/);
   assert.ok(menu);
-  // The same 60% .field-soft rests at, made opaque for a floating surface.
   assert.match(menu[1] ?? "", /var\(--accent\) 60%, var\(--popover\)/);
 });
 
@@ -77,16 +99,22 @@ test("a highlighted row still lifts clear of the lighter menu", () => {
     /html\.dark \.hub-menu-instant \[data-slot="select-item"\]:focus,[\s\S]*?\{([^}]*)\}/,
   );
   assert.ok(row);
-  // Bare --accent would sit 8 levels above the menu, too close to pick out.
   assert.match(row[1] ?? "", /var\(--foreground\) 6%, var\(--accent\)/);
 });
 
 test("a white pill in light mode stays put, having nowhere lighter to go", () => {
-  const rule = HUB_CSS.match(
-    /html:not\(\.dark\) \.hub-tab-toggle-pill\[role="tab"\]:hover \{([^}]*)\}/,
+  // The selected pill is its own span under the tab, and it takes no pointer,
+  // so hovering the tab cannot move the pill off white.
+  const pill = readSrc("components/segmented-control.tsx").match(
+    /export function SegmentedPill[\s\S]*?className=\{cn\(\s*"([^"]*)"/,
   );
-  assert.ok(rule, "the light tab hover is missing");
-  assert.match(rule[1] ?? "", /background-color:\s*var\(--background\)/);
+  assert.ok(pill, "SegmentedPill not found");
+  assert.match(pill[1] ?? "", /\bhub-tab-toggle-pill\b/);
+  assert.match(pill[1] ?? "", /\bpointer-events-none\b/);
+  const tabs = readSrc(
+    "features/model-picker/components/model-selector/pill-tabs.tsx",
+  );
+  assert.doesNotMatch(tabs, /&& "hub-tab-toggle-pill"/);
 });
 
 test("a button borrowing the pill look gets the hover the pill pins away", () => {
@@ -94,7 +122,6 @@ test("a button borrowing the pill look gets the hover the pill pins away", () =>
     /html\.dark \.hub-tab-toggle-pill\.hub-pill-action:hover \{([^}]*)\}/,
   );
   assert.ok(hover, "hub-pill-action hover rule is missing");
-  // Lighter than rest: --accent carrying a little --foreground.
   assert.match(hover[1] ?? "", /var\(--foreground\) 8%, var\(--accent\)/);
 });
 

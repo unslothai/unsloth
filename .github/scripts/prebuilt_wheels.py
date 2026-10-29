@@ -19,15 +19,18 @@ raw input is never used again.
 
 Subcommands:
 
-  matrix         read UW_PACKAGES / UW_TORCH_VERSIONS / UW_PYTHON_VERSIONS from the environment
-                 and print the `include` list for the build matrix as JSON.
+  matrix         read UW_PACKAGES / UW_TORCH_VERSIONS / UW_PYTHON_VERSIONS / UW_PLATFORMS from
+                 the environment and print the `include` list for the build matrix as JSON.
   wheel-name     print the single upstream-style filename for one cell.
   notes          read `sha256  filename` lines on stdin and print the release body.
+  sums           read `sha256  filename` lines on stdin and print SHA256SUMS for the wheels.
+  size-gate      fail if a built wheel's CUDA extension is larger than its package allows.
 
 Usage:
   prebuilt_wheels.py matrix
-  prebuilt_wheels.py wheel-name --package flash-attn --torch 2.13.0 --python 3.13
+  prebuilt_wheels.py wheel-name --package flash-attn --torch 2.13.0 --python 3.13 [--platform win_amd64]
   prebuilt_wheels.py notes --tag prebuilt-wheels-cu13 --repo unslothai/unsloth < SHA256SUMS
+  prebuilt_wheels.py size-gate --package flash-attn dist/flash_attn-*.whl
 """
 
 from __future__ import annotations
@@ -36,28 +39,148 @@ import argparse
 import json
 import os
 import sys
+import zipfile
 
-# The CUDA major that every wheel here is built against, and the only one. It is the local
-# version segment upstream writes (cu13), not the toolkit patch level: upstream normalises
-# 13.x to "13" in get_wheel_url(), and a wheel built with 13.0 and one built with 13.2 are
-# interchangeable for the purpose the tag serves, which is "do not install this on cu12".
+# Local version segment (cu13), not the toolkit patch level.
 CUDA_TAG = "13"
 
-# The toolkit actually installed on the runner. Separate from CUDA_TAG because this one is a
-# real apt package version and is reported in the notes, where "cu13" alone would be vague.
 CUDA_TOOLKIT = "13.0"
 
-# torch 2.7 and newer ship pip wheels built with _GLIBCXX_USE_CXX11_ABI=1, so there is no
-# abiFALSE variant to build for 2.13 or 2.14 -- upstream's own matrix excludes it from 2.7 on.
-# The tag is still in the filename because it is in every upstream filename, and a resolver
-# that pattern-matches upstream names has to find it here too.
+# torch 2.7+ wheels are cxx11 ABI only; the tag stays to match upstream filenames.
 CXX11_ABI = "TRUE"
 
-# Linux x86_64 only. The wheel is tagged linux_x86_64 rather than manylinux_*, exactly as
-# upstream tags its own, so pip installs it on any glibc without a floor check; the practical
-# floor is the runner's glibc, which is why the build runs on ubuntu-22.04 (glibc 2.35) and
-# not on ubuntu-latest.
+# Device code is most of every wheel. Upstream flash-attn 2.8.1 compressed all of it; the commit
+# we build from dropped those flags, and in default mode its cubins went in uncompressed (the zip
+# still gets 3.5x out of the 1.49 GB extension; upstream's is 139 MB). Measured on one flash-attn
+# TU (nvcc 13.1, sm_80/90/100/120 + compute_120 PTX): 18.8 MB as is, 3.5 MB with these flags, and
+# the module loads no slower. causal-conv1d's and mamba-ssm's large cubins are already compressed
+# in default mode; repacking the released ones in size mode takes causal_conv1d_cuda from 248 to
+# 103 MB and selective_scan_cuda to about two thirds.
+# The workflow appends this to NVCC_APPEND_FLAGS (Windows already puts _USE_MATH_DEFINES there),
+# which nvcc reads itself, so it reaches every nvcc call each setup.py makes without patching
+# them; it is not in SPECS' env because that is word-split. --compress-mode=size needs a
+# CUDA >= 12.4 driver to load, below the cu13 floor.
+NVCC_APPEND_FLAGS = "-Xfatbin -compress-all --compress-mode=size"
+
+# ccache hashes the nvcc command line, not NVCC_APPEND_FLAGS, and the Linux runners' ccache (4.5)
+# has no namespaces, so the flags' identity goes into the actions/cache key instead: a cache
+# saved before them would otherwise hand back uncompressed objects.
+CCACHE_TAG = "fatbin-size-sass"
+
+# SASS targets per package (patch_cuda_targets.py trims each setup.py to these). causal-conv1d's
+# and mamba-ssm's own list also builds sm_87 (Jetson Orin), sm_110 (Jetson Thor) and sm_121 (GB10 /
+# DGX Spark, N1X), which are integrated Arm GPUs: no x86 host can have one, so the x86 wheels drop
+# them and the Arm wheels keep the full list. Every GPU a platform can reach keeps SASS compiled
+# for its own arch (ptxas schedules 87 / 103 / 121 differently from 80 / 100 / 120), so nothing
+# falls back to a sibling's cubin. flash-attn keeps its list in its SPECS env
+# (FLASH_ATTN_CUDA_ARCHS); the patch only drops the PTX its setup.py adds for the newest arch.
+SSM_SASS = "75;80;90;100;103;120"
+SSM_SASS_ARM = "75;80;87;90;100;103;110;120;121"
+SSM_SASS_BY_PLATFORM = {"linux_aarch64": SSM_SASS_ARM, "win_arm64": SSM_SASS_ARM}
+
+
+def cuda_archs(package: str, platform: str) -> str:
+    """The SASS targets one cell must contain, ';'-separated, as the gate checks them."""
+    if package == "flash-attn":
+        return SPECS[package]["env"]["FLASH_ATTN_CUDA_ARCHS"]
+    return SSM_SASS_BY_PLATFORM.get(platform, SSM_SASS)
+
+
+# The Linux tag. The wheel is tagged linux_x86_64 rather than manylinux_*, exactly as upstream
+# tags its own, so pip installs it on any glibc without a floor check; the practical floor is the
+# runner's glibc, which is why the build runs on ubuntu-22.04 (glibc 2.35) and not on
+# ubuntu-latest.
 PLATFORM_TAG = "linux_x86_64"
+
+# Keyed by the wheel's pip platform tag. No upstream release has ever shipped a Windows wheel.
+# `abi` is torch._C._GLIBCXX_USE_CXX11_ABI, which upstream setup.py copies into the name; the
+# Windows cu130 torch reports True too, and the build asserts it. `pytorch_nvcc` goes into
+# build.ninja unquoted and is the only way to cache nvcc on Windows (_wrap_compiler is a no-op
+# there), hence the space-free paths.
+PLATFORMS = {
+    "linux_x86_64": {
+        "os": "linux",
+        "runner": "ubuntu-22.04",
+        "abi": "TRUE",
+        "label": "",
+        "pytorch_nvcc": "ccache /usr/local/cuda-13.0/bin/nvcc",
+        # Upstream's torch2.10 causal-conv1d / mamba-ssm wheels (205 / 351 MB, reused on 2.11 and
+        # 2.12) carry -lineinfo and every arch; ours are ~30 / ~55 MB. Upstream flash-attn 2.8.1 is
+        # already smaller than ours there (125 MB, no PTX), so it is not built for these torches.
+        "extra_torches": ("2.10.0", "2.11.0", "2.12.0"),
+        "extra_torch_packages": ("causal-conv1d", "mamba-ssm"),
+    },
+    "win_amd64": {
+        "os": "windows",
+        # Visual Studio 2022 (MSVC 14.4x), a host compiler CUDA 13.0's Windows guide supports.
+        "runner": "windows-2022",
+        "abi": "TRUE",
+        "label": " / win_amd64",
+        "pytorch_nvcc": "C:/ccache/ccache.exe C:/cuda/bin/nvcc.exe",
+        # On top of TORCH_VERSIONS: upstream's torch2.10 wheels (which Linux also reuses for 2.11
+        # and 2.12) have no Windows build.
+        "extra_torches": ("2.10.0", "2.11.0", "2.12.0"),
+    },
+    # Upstream's aarch64 wheels stop at torch 2.10. ubuntu-22.04-arm keeps the glibc 2.35 floor
+    # the x86_64 build has, and the build asserts it.
+    "linux_aarch64": {
+        "os": "linux",
+        "runner": "ubuntu-22.04-arm",
+        "abi": "TRUE",
+        "label": " / linux_aarch64",
+        "pytorch_nvcc": "ccache /usr/local/cuda-13.0/bin/nvcc",
+        # Same as linux_x86_64 for the older torches.
+        "extra_torches": ("2.10.0", "2.11.0", "2.12.0"),
+        "extra_torch_packages": ("causal-conv1d", "mamba-ssm"),
+    },
+    # NVIDIA publishes flash-attn for Windows on ARM itself (studio resolves it), so only the other
+    # two are built here, against the only CUDA torch that exists for it: NVIDIA's 2.14.0+cu134,
+    # which needs CUDA 13.4, the first toolkit with a Windows ARM64 nvcc.
+    "win_arm64": {
+        "os": "windows",
+        "runner": "windows-11-arm",
+        "abi": "TRUE",
+        "label": " / win_arm64",
+        "pytorch_nvcc": "C:/ccache/ccache.exe C:/cuda/bin/nvcc.exe",
+        "torches": ("2.14.0",),
+        "packages": ("causal-conv1d", "mamba-ssm"),
+        "torch_local": "cu134",
+        "torch_index_args": "--extra-index-url https://pypi.nvidia.com/nvtorch_oot",
+    },
+}
+
+# Per platform, what differs from the x86_64 defaults below without changing any x86_64 cell.
+_PLATFORM_DEFAULTS = {
+    "torches": None,  # every TORCH_VERSIONS entry
+    "packages": None,  # every SPECS entry
+    "extra_torch_packages": None,  # packages built for `extra_torches` (None = `packages`)
+    "torch_local": "",
+    "torch_index_args": "--index-url https://download.pytorch.org/whl/cu130",
+}
+# What the build asserts about its own interpreter and output, so an emulated x64 Python on an
+# ARM runner cannot quietly produce an x64 wheel under an arm64 name.
+_PY_PLATFORM = {
+    "linux_x86_64": "linux-x86_64",
+    "win_amd64": "win-amd64",
+    "linux_aarch64": "linux-aarch64",
+    "win_arm64": "win-arm64",
+}
+
+
+def _platform(platform: str, key: str):
+    return PLATFORMS[platform].get(key, _PLATFORM_DEFAULTS.get(key))
+
+
+# torch 2.10 and 2.11 pin triton==3.6.0, 2.12.0 triton==3.7.0, 2.13 triton==3.7.1 and 2.14
+# triton~=3.8.0 (Linux-only markers); exact pins keep the Windows smoke test reproducible.
+TRITON_WINDOWS = {
+    "2.10": "3.6.0.post26",
+    "2.11": "3.6.0.post26",
+    "2.12": "3.7.0.post26",
+    "2.13": "3.7.1.post27",
+    "2.14": "3.8.0.post29",
+}
+WINDOWS_SMOKE_EXCLUDE = ("triton", "tilelang", "apache-tvm-ffi", "quack-kernels")
 
 # Source revisions, pinned to a commit rather than a branch or a tag.
 #
@@ -74,27 +197,23 @@ SPECS = {
         "repo": "Dao-AILab/flash-attention",
         "ref": "edb5c76ee329b18ed95d1f7ea9aa522a1331ab7d",
         "submodules": True,
-        # The build is one nvcc invocation per (kernel, arch) and the kernels are large. On a
-        # 4-core, 16 GB hosted runner nvcc 13 goes OOM above one job; this is upstream's own
-        # value for the cu13 legs of its publish matrix, arrived at the same way.
+        # nvcc 13 OOMs above one job on a 16 GB hosted runner.
         "max_jobs": "1",
         "nvcc_threads": "2",
         "env": {
             "FLASH_ATTENTION_FORCE_BUILD": "TRUE",
             "FLASH_ATTENTION_FORCE_CXX11_ABI": CXX11_ABI,
-            # Upstream's default is "80;90;100;110;120". 110 (Thor) is dropped because nothing
-            # Unsloth targets runs it and each arch is a full pass over every kernel. 86 and 89
-            # are absent for a different reason: they are not needed. A cubin is compatible
-            # forward across the minor versions of its major, so sm_80 code runs on sm_86 and
-            # sm_89 hardware, and setup.py additionally emits PTX for the newest arch so an
-            # unlisted future card JITs rather than failing.
+            # sm_86/89 run sm_80 cubins and PTX covers future cards; 110 is not targeted.
             "FLASH_ATTN_CUDA_ARCHS": "80;90;100;120",
         },
-        # ~4.5 h for the four architectures at MAX_JOBS=1. GitHub kills a job at 6 h, so the
-        # build is wrapped in `timeout` below that, to fail as a build timeout with logs
-        # rather than as a job cancellation with none.
+        # Shard the compile to stay below GitHub's 6-hour job limit.
+        "shards": 8,
+        # Leave time to upload partial caches after a build timeout.
         "build_timeout": "300m",
         "import_names": ["flash_attn", "flash_attn_2_cuda"],
+        # Largest CUDA extension the size gate lets through, in MB. SASS only and compressed it is
+        # ~176 (PTX was 23% of each measured TU); with the PTX ~229, uncompressed 1,488.
+        "max_extension_mb": 230,
     },
     "causal-conv1d": {
         "dist": "causal_conv1d",
@@ -109,6 +228,8 @@ SPECS = {
         },
         "build_timeout": "120m",
         "import_names": ["causal_conv1d", "causal_conv1d_cuda"],
+        # x86 ~31 trimmed without -lineinfo (Arm ~53), 117 before, 263 in default mode.
+        "max_extension_mb": 80,
     },
     "mamba-ssm": {
         "dist": "mamba_ssm",
@@ -120,22 +241,46 @@ SPECS = {
         "nvcc_threads": "2",
         "env": {
             "MAMBA_FORCE_BUILD": "TRUE",
-            # Mamba-1's selective-scan CUDA kernels are opt-in upstream. They are the reason
-            # this wheel is worth building: without them mamba_ssm falls back to the reference
-            # path, and selective_scan_cuda -- the extension whose missing symbols are the
-            # whole ABI problem -- is not in the wheel at all.
+            # Mamba-1's selective-scan kernels are opt-in upstream and are the reason for this wheel.
             "MAMBA_KEEP_CUDA_BUILD": "TRUE",
         },
-        # The one source edit in this workflow. See patch_mamba_cxx20.py.
+        # See patch_mamba_cxx20.py.
         "patch": "cxx20",
         "build_timeout": "180m",
         "import_names": ["mamba_ssm", "selective_scan_cuda"],
+        # x86 ~62 trimmed without -lineinfo (Arm ~88), 241 before, 358 in default mode: the gate
+        # catches flags or a trim that never reached nvcc.
+        "max_extension_mb": 130,
     },
 }
 
-# torch minors, not patch levels, are what the ABI is keyed on, but the build needs an exact
-# version to pip install, so the table is keyed by the full version and the minor is derived.
 TORCH_VERSIONS = ("2.13.0", "2.14.0")
+
+
+def _platform_torches(platform: str) -> tuple[str, ...]:
+    """What a platform builds: its own `torches`, else TORCH_VERSIONS plus its `extra_torches`."""
+    return _platform(platform, "torches") or (
+        *(_platform(platform, "extra_torches") or ()),
+        *TORCH_VERSIONS,
+    )
+
+
+def _platform_packages(platform: str, torch_version: str) -> tuple[str, ...]:
+    """Packages a platform builds for one torch: `extra_torch_packages` for its `extra_torches`."""
+    packages = _platform(platform, "packages") or tuple(SPECS)
+    if torch_version in (_platform(platform, "extra_torches") or ()):
+        packages = _platform(platform, "extra_torch_packages") or packages
+    return packages
+
+
+# Accepted from a dispatch; each platform builds only its own subset (2.10.0, 2.11.0 and 2.12.0:
+# every package on win_amd64, causal-conv1d and mamba-ssm on Linux).
+ALLOWED_TORCH = tuple(
+    sorted(
+        {torch for platform in PLATFORMS for torch in _platform_torches(platform)},
+        key = lambda v: tuple(map(int, v.split("."))),
+    )
+)
 
 # cp313 is the default and the only one the dispatch defaults to, because each extra
 # interpreter is a whole extra flash-attn build. 3.11 and 3.12 are here so a run can add them
@@ -146,6 +291,8 @@ PYTHON_VERSIONS = ("3.11", "3.12", "3.13")
 DEFAULT_PACKAGES = tuple(SPECS)
 DEFAULT_TORCH = TORCH_VERSIONS
 DEFAULT_PYTHON = ("3.13",)
+# ARM is opt-in, so an ordinary dispatch builds exactly what it did before ARM existed.
+DEFAULT_PLATFORMS = ("linux_x86_64", "win_amd64")
 
 
 def torch_minor(torch_version: str) -> str:
@@ -160,12 +307,18 @@ def python_tag(python_version: str) -> str:
     return f"cp{major}{minor}"
 
 
-def local_version(torch_version: str) -> str:
+def local_version(torch_version: str, platform: str = PLATFORM_TAG) -> str:
     """The `+cu13torch2.13cxx11abiTRUE` segment, byte for byte as upstream writes it."""
-    return f"+cu{CUDA_TAG}torch{torch_minor(torch_version)}cxx11abi{CXX11_ABI}"
+    abi = PLATFORMS[platform]["abi"]
+    return f"+cu{CUDA_TAG}torch{torch_minor(torch_version)}cxx11abi{abi}"
 
 
-def wheel_name(package: str, torch_version: str, python_version: str) -> str:
+def wheel_name(
+    package: str,
+    torch_version: str,
+    python_version: str,
+    platform: str = PLATFORM_TAG,
+) -> str:
     """The published filename for one cell.
 
     This is the whole point of the local version segment: pip refuses to install a wheel whose
@@ -176,8 +329,8 @@ def wheel_name(package: str, torch_version: str, python_version: str) -> str:
     spec = SPECS[package]
     tag = python_tag(python_version)
     return (
-        f"{spec['dist']}-{spec['version']}{local_version(torch_version)}"
-        f"-{tag}-{tag}-{PLATFORM_TAG}.whl"
+        f"{spec['dist']}-{spec['version']}{local_version(torch_version, platform)}"
+        f"-{tag}-{tag}-{platform}.whl"
     )
 
 
@@ -200,207 +353,349 @@ def _resolve(raw: str, allowed, default, label: str) -> list[str]:
     return [item for item in allowed if item in wanted]
 
 
+def _build_env(spec: dict, platform: str) -> str:
+    """The package's NAME=VALUE pairs for one platform.
+
+    The only per-platform value is flash-attn's FORCE_CXX11_ABI, which makes its setup.py set
+    torch._C._GLIBCXX_USE_CXX11_ABI before it builds and names the wheel. It follows the platform's
+    `abi`, so the name it writes always agrees with the one the build asserts. Today that is TRUE on
+    both platforms, which on a torch already reporting True is a no-op.
+    """
+    abi = PLATFORMS[platform]["abi"]
+    pairs = []
+    for key, value in spec["env"].items():
+        if key.endswith("FORCE_CXX11_ABI"):
+            value = abi
+        pairs.append(f"{key}={value}")
+    return " ".join(pairs)
+
+
+def _smoke(package: str, torch_version: str, platform: str) -> tuple[str, str]:
+    """(dependencies to leave out, extra requirement to add) for the import smoke test."""
+    if PLATFORMS[platform]["os"] != "windows" or package != "mamba-ssm":
+        return "", ""
+    return (
+        " ".join(WINDOWS_SMOKE_EXCLUDE),
+        f"triton-windows=={TRITON_WINDOWS[torch_minor(torch_version)]}",
+    )
+
+
 def build_matrix(
     packages: str = "",
     torches: str = "",
     pythons: str = "",
+    platforms: str = "",
 ) -> list[dict]:
     chosen_packages = _resolve(packages, DEFAULT_PACKAGES, DEFAULT_PACKAGES, "package")
-    chosen_torch = _resolve(torches, TORCH_VERSIONS, DEFAULT_TORCH, "torch version")
+    chosen_torch = _resolve(torches, ALLOWED_TORCH, DEFAULT_TORCH, "torch version")
     chosen_python = _resolve(pythons, PYTHON_VERSIONS, DEFAULT_PYTHON, "python version")
+    chosen_platforms = _resolve(platforms, tuple(PLATFORMS), DEFAULT_PLATFORMS, "platform")
 
     include = []
-    for torch_version in chosen_torch:
-        for python_version in chosen_python:
-            for package in chosen_packages:
-                spec = SPECS[package]
-                include.append(
-                    {
-                        "package": package,
-                        "dist": spec["dist"],
-                        "version": spec["version"],
-                        "repo": spec["repo"],
-                        "ref": spec["ref"],
-                        "submodules": "recursive" if spec["submodules"] else "false",
-                        "patch": spec.get("patch", ""),
-                        "torch": torch_version,
-                        "torch_mm": torch_minor(torch_version),
-                        "python": python_version,
-                        "python_tag": python_tag(python_version),
-                        "cuda_tag": CUDA_TAG,
-                        "abi": CXX11_ABI,
-                        "max_jobs": spec["max_jobs"],
-                        "nvcc_threads": spec["nvcc_threads"],
-                        "build_timeout": spec["build_timeout"],
-                        "build_env": " ".join(
-                            f"{key}={value}" for key, value in spec["env"].items()
-                        ),
-                        "import_names": " ".join(spec["import_names"]),
-                        "wheel_name": wheel_name(package, torch_version, python_version),
-                        # Only used for the job name in the Actions UI, where "flash-attn /
-                        # torch 2.13 / cp313" is the difference between reading the matrix and
-                        # counting the cells.
-                        "label": f"{package} / torch {torch_minor(torch_version)} / "
-                        f"{python_tag(python_version)}",
-                    }
-                )
+    for platform in chosen_platforms:
+        target = PLATFORMS[platform]
+        torches = _platform_torches(platform)
+        local = _platform(platform, "torch_local")
+        for torch_version in chosen_torch:
+            if torch_version not in torches:
+                continue
+            packages_here = _platform_packages(platform, torch_version)
+            for python_version in chosen_python:
+                for package in chosen_packages:
+                    if package not in packages_here:
+                        continue
+                    spec = SPECS[package]
+                    smoke_exclude, smoke_extra = _smoke(package, torch_version, platform)
+                    include.append(
+                        {
+                            "package": package,
+                            "dist": spec["dist"],
+                            "version": spec["version"],
+                            "repo": spec["repo"],
+                            "ref": spec["ref"],
+                            "submodules": "recursive" if spec["submodules"] else "false",
+                            "patch": spec.get("patch", ""),
+                            "torch": torch_version,
+                            "torch_mm": torch_minor(torch_version),
+                            "python": python_version,
+                            "python_tag": python_tag(python_version),
+                            "cuda_tag": CUDA_TAG,
+                            "abi": target["abi"],
+                            "max_jobs": spec["max_jobs"],
+                            "nvcc_threads": spec["nvcc_threads"],
+                            "build_timeout": spec["build_timeout"],
+                            "shards": spec.get("shards", 0),
+                            "build_env": _build_env(spec, platform),
+                            "nvcc_append_flags": NVCC_APPEND_FLAGS,
+                            "ccache_tag": CCACHE_TAG,
+                            "cuda_archs": cuda_archs(package, platform),
+                            "max_extension_mb": spec["max_extension_mb"],
+                            "import_names": " ".join(spec["import_names"]),
+                            "wheel_name": wheel_name(
+                                package, torch_version, python_version, platform
+                            ),
+                            # Job name in the Actions UI; Linux keeps its old label.
+                            "label": f"{package} / torch {torch_minor(torch_version)} / "
+                            f"{python_tag(python_version)}{target['label']}",
+                            "platform": platform,
+                            "os": target["os"],
+                            "runner": target["runner"],
+                            "pytorch_nvcc": target["pytorch_nvcc"],
+                            "smoke_exclude": smoke_exclude,
+                            "smoke_extra": smoke_extra,
+                            "torch_spec": f"torch=={torch_version}"
+                            + (f"+{local}" if local else ""),
+                            "torch_index_args": _platform(platform, "torch_index_args"),
+                            "py_platform": _PY_PLATFORM[platform],
+                        }
+                    )
+    if not include:
+        raise SystemExit(
+            "no cells: none of the chosen platforms builds that package / torch combination "
+            "(torch 2.10.0 to 2.12.0 build flash-attn on win_amd64 only; win_arm64 builds "
+            "causal-conv1d and mamba-ssm for torch 2.14.0 only)."
+        )
     return include
+
+
+def gpu_matrix(include: list[dict]) -> list[dict]:
+    """Cells the (x86_64 Linux) self-hosted GPU runner can load."""
+    return [cell for cell in include if cell["platform"] == "linux_x86_64"]
+
+
+# mamba-ssm without its CUDA extension. Since 2.3.2.post1 its setup.py builds selective_scan_cuda
+# only with MAMBA_KEEP_CUDA_BUILD=TRUE, and the Mamba-2 hybrids (Nemotron-H, Falcon-H1, Granite-4.0-H,
+# Bamba, Zamba2, Mamba2) never call it on transformers 5: they need mamba_ssm's Triton ops plus a
+# causal conv, which unsloth-zoo supplies in Triton. One py3-none-any wheel (about 224 KB) then serves
+# every torch, Python and OS, instead of a 230 to 594 MB CUDA wheel per cell. Built from the same pin
+# as the CUDA wheel and published beside it whenever a run builds mamba-ssm.
+PURE_PACKAGE = "mamba-ssm"
+PURE_SMOKE_TORCH = "2.13.0"
+# Import smoke only (no GPU on these runners). triton / triton-windows match that torch's Triton.
+PURE_SMOKE_TRITON = {"linux": "triton==3.7.1", "windows": "triton-windows==3.7.1.post27"}
+# What `import mamba_ssm` pulls in besides torch and Triton: mixer_seq_simple imports
+# huggingface_hub and transformers.generation. tilelang / quack-kernels (Mamba-3) are optional.
+PURE_SMOKE_DEPS = ("einops", "packaging", "huggingface_hub", "transformers")
+PURE_IMPORTS = (
+    "import mamba_ssm",
+    "from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined",
+    "from mamba_ssm.ops.triton.selective_state_update import selective_state_update",
+)
+
+
+def pure_wheel_name() -> str:
+    return f"{SPECS[PURE_PACKAGE]['dist']}-{SPECS[PURE_PACKAGE]['version']}-py3-none-any.whl"
+
+
+def pure_matrix(packages: str = "") -> list[dict]:
+    """The extension-free mamba-ssm build: one cell when the run builds mamba-ssm, else none."""
+    chosen = _resolve(packages, DEFAULT_PACKAGES, DEFAULT_PACKAGES, "package")
+    if PURE_PACKAGE not in chosen:
+        return []
+    spec = SPECS[PURE_PACKAGE]
+    return [
+        {
+            "package": PURE_PACKAGE,
+            "dist": spec["dist"],
+            "version": spec["version"],
+            "repo": spec["repo"],
+            "ref": spec["ref"],
+            "wheel_name": pure_wheel_name(),
+            "smoke_torch": PURE_SMOKE_TORCH,
+            "smoke_triton_linux": PURE_SMOKE_TRITON["linux"],
+            "smoke_triton_windows": PURE_SMOKE_TRITON["windows"],
+            "smoke_deps": " ".join(PURE_SMOKE_DEPS),
+            "smoke_imports": "; ".join(PURE_IMPORTS),
+        }
+    ]
+
+
+def check_pure_wheel(wheel: str) -> list[str]:
+    """Problems with the extension-free wheel: its exact name, no compiled code, a pure tag."""
+    problems = []
+    name = os.path.basename(wheel)
+    if name != pure_wheel_name():
+        problems.append(f"{name}: expected {pure_wheel_name()}")
+    with zipfile.ZipFile(wheel) as archive:
+        names = archive.namelist()
+        compiled = [n for n in names if n.endswith((".so", ".pyd", ".dll", ".dylib"))]
+        if compiled:
+            problems.append(f"{name}: carries compiled code: {', '.join(compiled)}")
+        dist = SPECS[PURE_PACKAGE]["dist"]
+        for required in (f"{dist}/__init__.py", f"{dist}/ops/triton/ssd_combined.py"):
+            if required not in names:
+                problems.append(f"{name}: {required} is missing")
+        wheel_meta = [n for n in names if n.endswith(".dist-info/WHEEL")]
+        if len(wheel_meta) != 1:
+            problems.append(f"{name}: expected one .dist-info/WHEEL, found {len(wheel_meta)}")
+        else:
+            meta = archive.read(wheel_meta[0]).decode("utf-8", "replace").splitlines()
+            if "Root-Is-Purelib: true" not in meta or "Tag: py3-none-any" not in meta:
+                problems.append(f"{name}: WHEEL metadata is not pure py3-none-any")
+    return problems
+
+
+def warm_matrix(include: list[dict]) -> list[dict]:
+    """One warm job per (cell, shard), for the cells whose package is sharded."""
+    return [
+        {
+            **cell,
+            "shard": shard,
+            "label": f"{cell['label']} / shard {shard + 1} of {cell['shards']}",
+        }
+        for cell in include
+        for shard in range(cell["shards"])
+    ]
 
 
 def parse_wheel_name(name: str) -> dict | None:
     """Filename back to the facts the notes table needs, or None if it is not one of ours.
 
     Deliberately strict. The release holds SHA256SUMS and .sigstore.json bundles beside the
-    wheels, and a loose parse would put them in the table as packages.
+    wheels, and a loose parse would put them in the table as packages. The ABI must match the
+    platform's, so a stray `cxx11abiFALSE` wheel is not one of ours.
     """
-    if not name.endswith(f"-{PLATFORM_TAG}.whl"):
+    platform = next((tag for tag in PLATFORMS if name.endswith(f"-{tag}.whl")), None)
+    if platform is None:
         return None
-    stem = name[: -len(f"-{PLATFORM_TAG}.whl")]
+    stem = name[: -len(f"-{platform}.whl")]
     parts = stem.split("-")
     if len(parts) != 4:
         return None
     dist, version_local, tag, abi_tag = parts
     if tag != abi_tag or "+" not in version_local:
         return None
-    _, local = version_local.split("+", 1)
+    version, local = version_local.split("+", 1)
     if not local.startswith(f"cu{CUDA_TAG}torch") or "cxx11abi" not in local:
         return None
     torch_part, abi = local[len(f"cu{CUDA_TAG}torch") :].split("cxx11abi", 1)
+    if abi != PLATFORMS[platform]["abi"]:
+        return None
     package = next((key for key, spec in SPECS.items() if spec["dist"] == dist), None)
     if package is None:
         return None
     return {
         "package": package,
         "dist": dist,
-        "version": SPECS[package]["version"],
+        # From the file, not SPECS: an asset left over from an older pin is a different version.
+        "version": version,
         "torch": torch_part,
         "cuda": CUDA_TAG,
         "python": tag,
         "abi": abi,
+        "platform": platform,
         "name": name,
     }
 
 
-NOTES_PREAMBLE = """\
-Prebuilt Linux x86_64 CUDA 13 wheels for flash-attn, causal-conv1d and mamba-ssm, built against \
-PyTorch 2.13 and 2.14.
+def _join(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
 
-### Why these exist
 
-Upstream publishes prebuilt wheels for these three packages, but only against PyTorch 2.10 and \
-2.11. Those wheels were ABI compatible through torch 2.12 and stopped being so at 2.13:
+# How the release body names each platform.
+PLATFORM_NAMES = {
+    "linux_x86_64": "Linux x86_64",
+    "win_amd64": "Windows x86_64",
+    "linux_aarch64": "Linux aarch64",
+    "win_arm64": "Windows ARM64",
+}
 
-- `torch 2.13` changed `c10::impl::cow::materialize_cow_storage` and the signature of \
-`c10::cuda::c10_cuda_check_implementation`, so an upstream wheel imports on 2.13 as \
-`ImportError: undefined symbol: ...`.
-- `torch 2.14` changed it again, so a 2.13 wheel is not usable on 2.14 either.
 
-There is no version of these wheels that covers several torch minors from 2.13 on. Every torch \
-minor needs its own build, which is what this release is: one wheel per (package, torch minor, \
-interpreter), named so it cannot be installed against the wrong one.
+def _coverage(rows: list[dict]) -> str:
+    """`PyTorch 2.13 and 2.14 on Python 3.13` for a set of parsed rows.
 
-Building them from source instead takes roughly five hours of nvcc for flash-attn alone, needs \
-the CUDA toolkit present, and is out of reach on most machines that want to run the result.
+    Torch minors with different interpreter sets are listed separately, so 2.11 on 3.11-3.13
+    beside 2.13 on 3.13 alone never reads as 2.13 on 3.11.
+    """
+    by_torch: dict[str, set[str]] = {}
+    for row in rows:
+        by_torch.setdefault(row["torch"], set()).add(row["python"])
+    groups: dict[tuple[str, ...], list[str]] = {}
+    for torch in sorted(by_torch, key = lambda v: tuple(map(int, v.split(".")))):
+        # cp313 -> 3.13
+        pythons = tuple(
+            f"{cp[2]}.{cp[3:]}" for cp in sorted(by_torch[torch], key = lambda cp: int(cp[3:]))
+        )
+        groups.setdefault(pythons, []).append(torch)
+    parts = [
+        f"{_join(torches)} on Python {_join(list(pythons))}" for pythons, torches in groups.items()
+    ]
+    return f"PyTorch {'; '.join(parts)}"
 
-### Compatibility
 
-| | |
-| --- | --- |
-| Platform | Linux x86_64 only |
-| CUDA | 13.0 toolkit, `cu13` wheels, usable with any CUDA 13.x runtime |
-| PyTorch | exactly the minor in the filename, any patch level of it |
-| GPU architectures | sm_80, sm_86, sm_89, sm_90, sm_100, sm_120 |
-| C++11 ABI | `TRUE`, matching every PyTorch pip wheel from 2.7 on |
-| glibc | 2.35 or newer (built on Ubuntu 22.04) |
+def _packages(rows: list[dict]) -> str:
+    """`flash-attn 2.8.4 and mamba-ssm 2.3.2.post1` for a set of parsed rows, in SPECS order."""
+    order = {package: index for index, package in enumerate(SPECS)}
+    pairs = sorted(
+        {(row["package"], row["version"]) for row in rows}, key = lambda pv: (order[pv[0]], pv[1])
+    )
+    return _join([f"{package} {version}" for package, version in pairs])
 
-sm_86 and sm_89 are covered by the sm_80 cubin, which is forward compatible across the minor \
-versions of its major. Newer architectures fall back to the embedded PTX and JIT on first use.
 
-Not covered: Windows, macOS, ROCm, CUDA 12 or earlier, aarch64, and free-threaded interpreters.
-
-### Installing
-
-```
-pip install https://github.com/{repo}/releases/download/{tag}/<wheel>
-```
-
-The `+cu13torch2.13cxx11abiTRUE` segment in each filename is a PEP 440 local version. pip \
-refuses to install a wheel whose local version does not match the environment it was built \
-for, so picking the wrong torch is a clean install error rather than an `undefined symbol` \
-traceback the first time a kernel is called.
-
-### Verifying
-
-Every wheel is signed with [Sigstore](https://www.sigstore.dev/) through GitHub OIDC, with the \
-bundle published beside it as `<wheel>.sigstore.json`, and carries an \
-[SLSA build provenance](https://slsa.dev/) attestation.
-
-Sigstore, which proves the wheel was produced by this workflow in this repository:
-
-```
-python -m pip install sigstore
-python -m sigstore verify identity \\
-  --cert-identity "https://github.com/{repo}/.github/workflows/prebuilt-cuda-wheels.yml@refs/heads/main" \\
-  --cert-oidc-issuer https://token.actions.githubusercontent.com \\
-  --bundle <wheel>.sigstore.json \\
-  <wheel>
-```
-
-`verify identity` rather than `verify github`, because it takes both the identity and the issuer \
-on every sigstore-python version; `verify github` dropped `--cert-oidc-issuer` in 4.0 and takes \
-`--repository` and `--ref` instead. Use whichever your installed version accepts.
-
-Build provenance, which reports the exact run, commit and workflow that produced it. Needs \
-GitHub CLI 2.49 or newer:
-
-```
-gh attestation verify <wheel> --repo {repo}
-```
-
-Digests, which is the cheap check and still worth doing:
-
-```
-sha256sum -c SHA256SUMS --ignore-missing
-```
-
-### Wheels
-"""
+def _built(rows: list[dict]) -> str:
+    """`flash-attn 2.8.4, built for PyTorch ...`, split by package where coverage differs (Linux
+    builds causal-conv1d and mamba-ssm for torch 2.10 to 2.12 but flash-attn only for 2.13+)."""
+    by_coverage: dict[str, list[dict]] = {}
+    for package in SPECS:
+        package_rows = [row for row in rows if row["package"] == package]
+        if package_rows:
+            by_coverage.setdefault(_coverage(package_rows), []).extend(package_rows)
+    return "; ".join(
+        f"{_packages(group)}, built for {coverage}" for coverage, group in by_coverage.items()
+    )
 
 
 def render_notes(entries: list[tuple[str, str]], tag: str, repo: str) -> str:
-    """Release body from `(sha256, filename)` pairs.
+    """One-sentence release body from `(sha256, filename)` pairs.
 
-    Regenerated from the release's current assets on every publish rather than appended to, so
-    a second run that adds the torch 2.14 half produces notes describing both halves, and a
-    third run that replaces one wheel does not leave the old digest in the table.
+    Regenerated from the release's current assets on every publish, so a run that adds one
+    torch minor or one platform still describes everything attached.
+    """
+    parsed = [row for row in (parse_wheel_name(name) for _, name in entries) if row is not None]
+    pure = any(name == pure_wheel_name() for _, name in entries)
+    tail = (
+        f" Also {PURE_PACKAGE} {SPECS[PURE_PACKAGE]['version']} without its CUDA extension "
+        f"({pure_wheel_name()}), for Mamba-2 models whose causal conv runs on Triton.\n"
+        if pure
+        else "\n"
+    )
+    if not parsed:
+        return tail.lstrip() if pure else "No wheels are attached to this release yet.\n"
+    platforms = [tag for tag in PLATFORMS if any(row["platform"] == tag for row in parsed)]
+    if len(platforms) == 1:
+        return (
+            f"Prebuilt {PLATFORM_NAMES[platforms[0]]} CUDA {CUDA_TAG} wheels for "
+            f"{_built(parsed)}.{tail}"
+        )
+    # Per platform: separate runs need not cover the same packages or torch minors.
+    per_platform = " ".join(
+        f"{PLATFORM_NAMES[platform]}: {_built(rows)}."
+        for platform in platforms
+        for rows in [[row for row in parsed if row["platform"] == platform]]
+    )
+    return f"Prebuilt CUDA {CUDA_TAG} wheels. {per_platform}{tail}"
+
+
+def render_sums(entries: list[tuple[str, str]]) -> str:
+    """SHA256SUMS for every wheel on the release, in `sha256sum` format, sorted by filename.
+
+    Built from the whole release, not from one run's output, because runs add to the tag one
+    platform or one torch minor at a time and the file is replaced on every publish: a run that
+    only built Windows wheels must not leave a SHA256SUMS that no longer lists the Linux ones. A
+    digest that is not a 64-digit hex string is refused rather than written, because a checksum
+    file with a placeholder in it is worse than none.
     """
     rows = []
     for digest, name in entries:
-        parsed = parse_wheel_name(name)
-        if parsed is None:
+        if not name.endswith(".whl"):
             continue
-        rows.append((parsed, digest))
-    rows.sort(key = lambda row: (row[0]["torch"], row[0]["python"], row[0]["package"]))
-
-    lines = [NOTES_PREAMBLE.format(repo = repo, tag = tag).rstrip("\n"), ""]
+        digest = digest.removeprefix("sha256:").lower()
+        if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            raise SystemExit(f"no usable sha256 for {name}: {digest!r}")
+        rows.append((name, digest))
     if not rows:
-        lines.append("No wheels are attached to this release yet.")
-        return "\n".join(lines) + "\n"
-
-    lines.append("| Wheel | Package | Version | torch | CUDA | Python | C++11 ABI | sha256 |")
-    lines.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
-    for parsed, digest in rows:
-        lines.append(
-            "| `{name}` | {package} | {version} | {torch} | {cuda} | {python} | {abi} | `{digest}` |".format(
-                digest = digest, **parsed
-            )
-        )
-    lines.append("")
-    lines.append(
-        f"{len(rows)} wheels, each with a `.sigstore.json` bundle beside it. "
-        "`SHA256SUMS` lists the same digests in `sha256sum -c` form."
-    )
-    return "\n".join(lines) + "\n"
+        raise SystemExit("no wheels to list")
+    return "".join(f"{digest}  {name}\n" for name, digest in sorted(rows))
 
 
 def _cmd_matrix(args: argparse.Namespace) -> int:
@@ -408,38 +703,58 @@ def _cmd_matrix(args: argparse.Namespace) -> int:
         packages = os.environ.get("UW_PACKAGES", ""),
         torches = os.environ.get("UW_TORCH_VERSIONS", ""),
         pythons = os.environ.get("UW_PYTHON_VERSIONS", ""),
+        platforms = os.environ.get("UW_PLATFORMS", ""),
     )
     matrix = json.dumps({"include": include}, separators = (",", ":"))
+    warm = warm_matrix(include)
+    gpu = gpu_matrix(include)
+    pure = pure_matrix(os.environ.get("UW_PACKAGES", ""))
     print(matrix)
 
-    # Writing the step output here rather than echoing it in YAML keeps the JSON -- which is
-    # full of quotes and braces -- out of a shell round trip entirely.
+    # Written here to keep quote-heavy JSON out of a shell round trip.
     if args.github:
         output = os.environ.get("GITHUB_OUTPUT")
         if output:
             with open(output, "a", encoding = "utf-8") as handle:
                 handle.write(f"matrix={matrix}\n")
                 handle.write(f"count={len(include)}\n")
+                warm_json = json.dumps({"include": warm}, separators = (",", ":"))
+                handle.write(f"warm_matrix={warm_json}\n")
+                handle.write(f"warm_count={len(warm)}\n")
+                gpu_json = json.dumps({"include": gpu}, separators = (",", ":"))
+                handle.write(f"gpu_matrix={gpu_json}\n")
+                handle.write(f"gpu_count={len(gpu)}\n")
+                pure_json = json.dumps({"include": pure}, separators = (",", ":"))
+                handle.write(f"pure_matrix={pure_json}\n")
+                handle.write(f"pure_count={len(pure)}\n")
         summary = os.environ.get("GITHUB_STEP_SUMMARY")
         if summary:
-            listing = "\n".join(f"- `{cell['wheel_name']}`" for cell in include)
+            listing = "\n".join(f"- `{cell['wheel_name']}`" for cell in include + pure)
             with open(summary, "a", encoding = "utf-8") as handle:
-                handle.write(f"### Build plan\n\n{len(include)} cells:\n\n{listing}\n")
+                handle.write(f"### Build plan\n\n{len(include) + len(pure)} cells:\n\n{listing}\n")
     return 0
 
 
 def _cmd_wheel_name(args: argparse.Namespace) -> int:
     if args.package not in SPECS:
         raise SystemExit(f"unknown package: {args.package}")
-    if args.torch not in TORCH_VERSIONS:
+    if args.torch not in ALLOWED_TORCH:
         raise SystemExit(f"unknown torch version: {args.torch}")
     if args.python not in PYTHON_VERSIONS:
         raise SystemExit(f"unknown python version: {args.python}")
-    print(wheel_name(args.package, args.torch, args.python))
+    if args.platform not in PLATFORMS:
+        raise SystemExit(f"unknown platform: {args.platform}")
+    # The same cells build_matrix accepts: no name for a wheel nothing builds.
+    if args.torch not in _platform_torches(args.platform):
+        raise SystemExit(f"torch {args.torch} is not built for {args.platform}")
+    if args.package not in _platform_packages(args.platform, args.torch):
+        raise SystemExit(f"{args.package} for torch {args.torch} is not built for {args.platform}")
+    print(wheel_name(args.package, args.torch, args.python, args.platform))
     return 0
 
 
-def _cmd_notes(args: argparse.Namespace) -> int:
+def _read_digest_lines() -> list[tuple[str, str]]:
+    """`digest  filename` lines on stdin, in sha256sum's layout or with a single space."""
     entries = []
     for line in sys.stdin:
         line = line.strip()
@@ -449,7 +764,139 @@ def _cmd_notes(args: argparse.Namespace) -> int:
         if not name:
             digest, _, name = line.partition(" ")
         entries.append((digest.strip(), name.strip().lstrip("*")))
-    sys.stdout.write(render_notes(entries, tag = args.tag, repo = args.repo))
+    return entries
+
+
+def extension_sizes(wheel: str) -> dict[str, int]:
+    """Uncompressed size of each compiled extension (.so / .pyd) in a wheel, by member name."""
+    with zipfile.ZipFile(wheel) as archive:
+        return {
+            info.filename: info.file_size
+            for info in archive.infolist()
+            if info.filename.endswith((".so", ".pyd"))
+        }
+
+
+def _cmd_size_gate(args: argparse.Namespace) -> int:
+    if args.package not in SPECS:
+        raise SystemExit(f"unknown package {args.package!r}")
+    limit = SPECS[args.package]["max_extension_mb"]
+    sizes = extension_sizes(args.wheel)
+    if not sizes:
+        raise SystemExit(f"{args.wheel}: no compiled extension in the wheel")
+    over = False
+    for name, size in sorted(sizes.items()):
+        megabytes = size / 1e6
+        print(f"{name}: {megabytes:.0f} MB (limit {limit} MB)")
+        over = over or megabytes > limit
+    if over:
+        print(
+            f"::error::{args.wheel}: a CUDA extension is over {limit} MB; is NVCC_APPEND_FLAGS "
+            "reaching nvcc?"
+        )
+        return 1
+    return 0
+
+
+# A fatbin container: magic, version 1, a 16-byte header and the size of the entries after it.
+# Each entry's header starts with kind (1 PTX, 2 ELF), its own header size, the payload size,
+# and the target arch at byte 28. Read straight from the file rather than through cuobjdump,
+# which only reads its host's object format (a Linux cuobjdump says a Windows .pyd "does not
+# contain device code") and names PTX entries sm_XX.ptx, easy to miss with a pattern.
+_FATBIN_MAGIC = (0xBA55ED50).to_bytes(4, "little")
+_FATBIN_PTX, _FATBIN_ELF = 1, 2
+
+
+def device_targets(data: bytes) -> tuple[set[str], set[str]]:
+    """(SASS archs, PTX archs) of every fatbin embedded in an ELF .so or PE .pyd."""
+    sass, ptx = set(), set()
+    pos = data.find(_FATBIN_MAGIC)
+    while pos >= 0:
+        version = int.from_bytes(data[pos + 4 : pos + 6], "little")
+        header = int.from_bytes(data[pos + 6 : pos + 8], "little")
+        size = int.from_bytes(data[pos + 8 : pos + 16], "little")
+        end = pos + 16 + size
+        if version != 1 or header != 16 or size <= 0 or end > len(data):
+            pos = data.find(_FATBIN_MAGIC, pos + 4)
+            continue
+        entry = pos + 16
+        while entry + 32 <= end:
+            kind = int.from_bytes(data[entry : entry + 2], "little")
+            entry_header = int.from_bytes(data[entry + 4 : entry + 8], "little")
+            payload = int.from_bytes(data[entry + 8 : entry + 16], "little")
+            arch = str(int.from_bytes(data[entry + 28 : entry + 32], "little"))
+            if kind not in (_FATBIN_PTX, _FATBIN_ELF) or entry_header < 32:
+                break
+            if entry + entry_header + payload > end:
+                break
+            (ptx if kind == _FATBIN_PTX else sass).add(arch)
+            entry += entry_header + payload
+        pos = data.find(_FATBIN_MAGIC, end)
+    return sass, ptx
+
+
+def _archs(prefix: str, archs: set[str]) -> str:
+    return ", ".join(f"{prefix}_{arch}" for arch in sorted(archs, key = int))
+
+
+def check_targets(name: str, sass: set[str], ptx: set[str], want: set[str]) -> list[str]:
+    """Problems with one extension's device code: every wanted SASS present, nothing else."""
+    problems = []
+    if missing := want - sass:
+        problems.append(f"{name}: no SASS for {_archs('sm', missing)}")
+    if extra := sass - want:
+        problems.append(f"{name}: SASS for {_archs('sm', extra)} was not asked for")
+    if ptx:
+        problems.append(f"{name}: carries PTX for {_archs('compute', ptx)}")
+    return problems
+
+
+def _cmd_targets_gate(args: argparse.Namespace) -> int:
+    want = {arch for arch in args.archs.split(";") if arch}
+    if not want:
+        raise SystemExit("--archs is empty")
+    problems, checked = [], 0
+    with zipfile.ZipFile(args.wheel) as archive:
+        members = [n for n in archive.namelist() if n.endswith((".so", ".pyd"))]
+        if not members:
+            raise SystemExit(f"{args.wheel}: no compiled extension in the wheel")
+        for member in members:
+            sass, ptx = device_targets(archive.read(member))
+            # A host-only helper module has no device code at all; only a CUDA one is checked.
+            if not sass and not ptx:
+                print(f"{member}: no device code")
+                continue
+            checked += 1
+            print(
+                f"{member}: SASS sm_{';'.join(sorted(sass, key = int))}"
+                + (f", PTX compute_{';'.join(sorted(ptx, key = int))}" if ptx else ", no PTX")
+            )
+            problems += check_targets(member, sass, ptx, want)
+    if not checked:
+        # Every package here is a CUDA extension; none with device code means the scan found
+        # nothing, not that there was nothing to check.
+        problems.append(f"{args.wheel}: no extension with device code")
+    for problem in problems:
+        print(f"::error::{problem}")
+    return 1 if problems else 0
+
+
+def _cmd_pure_gate(args: argparse.Namespace) -> int:
+    problems = check_pure_wheel(args.wheel)
+    for problem in problems:
+        print(f"::error::{problem}")
+    if not problems:
+        print(f"{os.path.basename(args.wheel)}: pure py3-none-any, no compiled code")
+    return 1 if problems else 0
+
+
+def _cmd_notes(args: argparse.Namespace) -> int:
+    sys.stdout.write(render_notes(_read_digest_lines(), tag = args.tag, repo = args.repo))
+    return 0
+
+
+def _cmd_sums(args: argparse.Namespace) -> int:
+    sys.stdout.write(render_sums(_read_digest_lines()))
     return 0
 
 
@@ -461,7 +908,8 @@ def main(argv: list[str] | None = None) -> int:
     matrix_parser.add_argument(
         "--github",
         action = "store_true",
-        help = "also append matrix/count to $GITHUB_OUTPUT and a listing to $GITHUB_STEP_SUMMARY",
+        help = "also append matrix/count, warm_matrix/warm_count, gpu_matrix/gpu_count and "
+        "pure_matrix/pure_count to $GITHUB_OUTPUT and a listing to $GITHUB_STEP_SUMMARY",
     )
     matrix_parser.set_defaults(func = _cmd_matrix)
 
@@ -469,12 +917,34 @@ def main(argv: list[str] | None = None) -> int:
     name_parser.add_argument("--package", required = True)
     name_parser.add_argument("--torch", required = True)
     name_parser.add_argument("--python", required = True)
+    name_parser.add_argument("--platform", default = PLATFORM_TAG)
     name_parser.set_defaults(func = _cmd_wheel_name)
 
     notes_parser = sub.add_parser("notes", help = "print the release body, digests on stdin")
     notes_parser.add_argument("--tag", required = True)
     notes_parser.add_argument("--repo", required = True)
     notes_parser.set_defaults(func = _cmd_notes)
+
+    sums_parser = sub.add_parser("sums", help = "print SHA256SUMS for every wheel, digests on stdin")
+    sums_parser.set_defaults(func = _cmd_sums)
+
+    gate_parser = sub.add_parser("size-gate", help = "fail if the wheel's extension is too large")
+    gate_parser.add_argument("--package", required = True)
+    gate_parser.add_argument("wheel")
+    gate_parser.set_defaults(func = _cmd_size_gate)
+
+    targets_parser = sub.add_parser(
+        "targets-gate", help = "fail unless the wheel's device code is exactly --archs SASS"
+    )
+    targets_parser.add_argument("--archs", required = True)
+    targets_parser.add_argument("wheel")
+    targets_parser.set_defaults(func = _cmd_targets_gate)
+
+    pure_parser = sub.add_parser(
+        "pure-gate", help = "fail unless the wheel is the extension-free mamba-ssm build"
+    )
+    pure_parser.add_argument("wheel")
+    pure_parser.set_defaults(func = _cmd_pure_gate)
 
     args = parser.parse_args(argv)
     return args.func(args)

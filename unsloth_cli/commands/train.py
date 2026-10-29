@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import os
 import time
 from pathlib import Path
 from typing import Optional
 
 import typer
 
-from unsloth_cli._inference import ensure_studio_backend_path
+from unsloth_cli._inference import ensure_studio_backend_path, mlx_distributed_info
 from unsloth_cli._studio_deps import studio_backend_imports
 from unsloth_cli.config import Config, ConfigError, load_config
 from unsloth_cli.options import add_options_from_config
@@ -23,10 +24,18 @@ def _should_use_mlx_backend_for_cli() -> bool:
 def _activate_mlx_transformers(model_name: str, hf_token: Optional[str]) -> None:
     # Activate before any transformers import: adapter model-type detection imports utils.models.
     ensure_studio_backend_path()
+    from filelock import FileLock
+    from utils.paths.storage_roots import studio_root
     from utils.transformers_version import activate_transformers_for_subprocess
+
     try:
-        activate_transformers_for_subprocess(model_name, hf_token)
+        root = studio_root()
+        root.mkdir(parents = True, exist_ok = True)
+        with FileLock(str(root / ".transformers-sidecar.lock")):
+            activate_transformers_for_subprocess(model_name, hf_token)
     except Exception as exc:
+        if mlx_distributed_info()[0]:
+            raise
         typer.echo(f"Warning: failed to activate Transformers sidecar: {exc}", err = True)
 
 
@@ -72,6 +81,232 @@ def _optimizer_for_host(requested: Optional[str] = None) -> str:
     return normalize_training_optimizer_for_device(optimizer, device_backend = device_backend)
 
 
+_MEDIA_SNIFF_ROWS = 16
+# Containers the PyAV audio decoder reads beyond the detector's extension list.
+_MORE_AUDIO_EXTENSIONS = (".amr", ".aif", ".aiff", ".aifc", ".caf")
+
+
+def _dataset_modalities(
+    cfg: Config, hf_token: Optional[str], load_in_4bit: bool
+) -> tuple[bool, bool]:
+    ensure_studio_backend_path()
+    with studio_backend_imports("unsloth train"):
+        from hub.services.datasets.local import _load_local_preview_slice
+        from hub.utils.dataset_format import detect_multimodal_dataset
+        from utils.datasets.audio_decode import ensure_audio_decoding
+        from utils.datasets.cache_safe import load_dataset_cache_safe
+        from utils.datasets.saved import load_saved_dataset
+        from utils.models import detect_audio_type_checked, is_vision_model_checked
+        from utils.models.unsloth_mirror import unsloth_public_mirror
+        from utils.paths import resolve_dataset_path
+
+    model_name = unsloth_public_mirror(cfg.model, load_in_4bit) or cfg.model
+    audio_type, audio_type_known = detect_audio_type_checked(model_name, hf_token)
+    if audio_type is None and audio_type_known:
+        vision, vision_known = is_vision_model_checked(model_name, hf_token = hf_token)
+        if not vision and vision_known:
+            return False, False
+
+    def preview(path):
+        path = os.path.expanduser(path)
+        if not os.path.isabs(path) and not os.path.exists(path):
+            path = resolve_dataset_path(path)
+        saved = load_saved_dataset(path)
+        if saved is not None:
+            return saved
+        dataset, _ = _load_local_preview_slice(
+            dataset_path = Path(path), train_split = "train", preview_size = _MEDIA_SNIFF_ROWS
+        )
+        return dataset
+
+    image = audio = False
+    try:
+        ensure_audio_decoding()
+        if cfg.data.local_dataset:
+            previews = [preview(path) for path in cfg.data.local_dataset]
+        else:
+            previews = [load_dataset_cache_safe(cfg.data.dataset, split = "train", token = hf_token)]
+        for dataset in previews:
+            detected = detect_multimodal_dataset(dataset)
+            has_image, has_audio = _media_columns_hold_media(dataset, detected)
+            image = image or (detected["is_image"] and has_image)
+            audio = audio or (detected["is_audio"] and has_audio)
+    except Exception as exc:  # noqa: BLE001
+        typer.echo(f"Warning: could not check the dataset for images or audio: {exc}", err = True)
+        return False, False
+    return image, audio
+
+
+def _media_columns_hold_media(dataset, detected) -> tuple[bool, bool]:
+    # The detector also flags columns by name alone, so a text column called `filename` or `speech` must hold media.
+    from itertools import islice
+
+    from datasets import Audio, Image
+    from hub.utils.dataset_format import (
+        _AUDIO_EXTENSIONS,
+        _has_image_header,
+        _holds_images,
+        _is_audio_value,
+        _is_image_value,
+    )
+
+    features = getattr(dataset, "features", None) or {}
+    rows = []
+
+    def values(column):
+        if not rows:
+            rows.extend(row or {} for row in islice(iter(dataset), _MEDIA_SNIFF_ROWS))
+        return [row.get(column) for row in rows]
+
+    def bare(value):
+        return value.strip().split("?")[0] if isinstance(value, str) else ""
+
+    def sniff(head, kind):
+        if kind == "image":
+            return _has_image_header(head) or head[:4] in (b"II*\x00", b"MM\x00*")
+        return (
+            head[:4] in (b"fLaC", b"OggS", b"\x1aE\xdf\xa3", b"0&\xb2u", b"caff")
+            or head[:3] == b"ID3"
+            or head[:5] == b"#!AMR"
+            or (head[:4] == b"FORM" and head[8:12] in (b"AIFF", b"AIFC"))
+            or head[4:8] == b"ftyp"
+            or (head[:4] == b"RIFF" and head[8:12] == b"WAVE")
+            or (len(head) > 1 and head[0] == 0xFF and head[1] & 0xE0 == 0xE0)
+        )
+
+    def reference(value, kind):
+        if isinstance(value, dict):
+            value = value.get("bytes") or value.get("path")
+        if isinstance(value, (bytes, bytearray)):
+            return sniff(bytes(value[:12]), kind)
+        path = bare(value)
+        if not path:
+            return False
+        if path.lower().startswith(("http://", "https://")):
+            from urllib.request import Request, urlopen
+            try:
+                request = Request(value.strip(), headers = {"Range": "bytes=0-11"})
+                with urlopen(request, timeout = 5) as response:
+                    if response.headers.get_content_type().startswith(f"{kind}/"):
+                        return True
+                    return sniff(response.read(12), kind)
+            except Exception:  # noqa: BLE001
+                return False
+        if not os.path.isfile(path):
+            return False
+        with open(path, "rb") as file:
+            return sniff(file.read(12), kind)
+
+    def image(column):
+        return isinstance(features.get(column), Image) or any(
+            _is_image_value(value) or _holds_images(value) or reference(value, "image")
+            for value in values(column)
+        )
+
+    def audio(column):
+        return isinstance(features.get(column), Audio) or any(
+            _is_audio_value(value)
+            or bare(value).lower().endswith(_AUDIO_EXTENSIONS + _MORE_AUDIO_EXTENSIONS)
+            or reference(value, "audio")
+            for value in values(column)
+        )
+
+    return (
+        any(image(column) for column in detected.get("multimodal_columns", [])),
+        any(audio(column) for column in detected.get("audio_columns", [])),
+    )
+
+
+def _launch_rank() -> Optional[int]:
+    # A size alone is not a launch: a stale PMI_SIZE or WORLD_SIZE in a shell would pin every run to one folder.
+    rank = os.environ.get("RANK")
+    size = os.environ.get("WORLD_SIZE")
+    if rank is not None and size is not None:
+        try:
+            rank, size = int(rank), int(size)
+        except ValueError:
+            return None
+        return rank if 0 <= rank < size and size > 1 else None
+    is_launch, rank, _size = mlx_distributed_info()
+    return rank if is_launch and (_size or 0) > 1 else None
+
+
+_RUN_DIR_STORE = None
+
+
+def _torch_launch_store(rank: int):
+    # torchrun's agent hosts a store at MASTER_ADDR:MASTER_PORT; a plain env:// launch has rank 0 host it, and
+    # multi_tenant lets init_process_group reuse this same server instead of failing to bind the port.
+    global _RUN_DIR_STORE
+    if (
+        "RANK" not in os.environ
+        or "MASTER_ADDR" not in os.environ
+        or "MASTER_PORT" not in os.environ
+    ):
+        return None
+    try:
+        from datetime import timedelta
+
+        from torch.distributed import TCPStore
+
+        host = rank == 0 and os.environ.get("TORCHELASTIC_USE_AGENT_STORE") != "True"
+        store = TCPStore(
+            os.environ["MASTER_ADDR"],
+            int(os.environ["MASTER_PORT"]),
+            is_master = host,
+            timeout = timedelta(minutes = 30),
+            multi_tenant = True,
+        )
+    except Exception:  # noqa: BLE001 -- no store reachable: fall back to the launcher's start time
+        return None
+    if host:
+        # Keep the server alive for the other ranks until init_process_group takes it over.
+        _RUN_DIR_STORE = store
+    return store
+
+
+def _launcher_start_time() -> int:
+    # Ranks reach this seconds apart after their own model load; their shared launcher started once.
+    try:
+        import psutil
+        return int(psutil.Process(os.getppid()).create_time())
+    except Exception:  # noqa: BLE001 -- no launcher to ask: fall back to this rank's clock
+        return int(time.time())
+
+
+def _reserve_run_dir(name: str) -> str:
+    from utils.paths import ensure_dir, resolve_output_dir
+    stamp = int(time.time())
+    while True:
+        path = resolve_output_dir(f"{name}_{stamp}")
+        ensure_dir(path.parent)
+        try:
+            path.mkdir()
+            return str(path)
+        except FileExistsError:
+            stamp += 1
+
+
+def _default_output_dir(model_name: str) -> str:
+    ensure_studio_backend_path()
+    from utils.paths import default_run_dir_name, resolve_output_dir
+
+    name = default_run_dir_name(model_name)
+    rank = _launch_rank()
+    if rank is None:
+        return _reserve_run_dir(name)
+    store = _torch_launch_store(rank)
+    if store is None:
+        # mlx.launch / mpirun ranks never write the folder, so rank 0 reserves one alone.
+        if rank == 0 and "RANK" not in os.environ:
+            return _reserve_run_dir(name)
+        return str(resolve_output_dir(f"{name}_{_launcher_start_time()}"))
+    key = "unsloth_cli/output_dir"
+    if rank == 0 and not store.check([key]):
+        store.set(key, _reserve_run_dir(name))
+    return store.get(key).decode()
+
+
 @add_options_from_config(Config)
 def train(
     config: Optional[Path] = typer.Option(
@@ -94,14 +329,13 @@ def train(
     config_overrides: dict = None,
 ):
     """Launch training using the existing Unsloth training backend."""
+    config_overrides = config_overrides or {}
     try:
         cfg = load_config(config)
+        cfg.apply_overrides(**config_overrides)
     except (FileNotFoundError, ConfigError) as e:
         typer.echo(f"Error: {e}", err = True)
         raise typer.Exit(code = 2)
-
-    config_overrides = config_overrides or {}
-    cfg.apply_overrides(**config_overrides)
 
     # CLI/env tokens take precedence; guard against unresolved typer.Option.
     from typer.models import OptionInfo
@@ -118,8 +352,7 @@ def train(
 
         data = cfg.model_dump()
         data["training"]["output_dir"] = str(data["training"]["output_dir"])
-        # model_dump carries the config file's tokens verbatim, and this goes to stdout: CI logs,
-        # notebook output, scrollback. Mask only what is set, so an unset token still reads as null.
+        # This goes to stdout (CI logs, notebooks): mask set tokens, keep unset ones null.
         for name in ("hf_token", "wandb_token"):
             if data["logging"].get(name) is not None:
                 data["logging"][name] = "[redacted]"
@@ -149,6 +382,9 @@ def train(
         raise typer.Exit(code = 2)
 
     trainer = _create_cli_trainer(cfg.model, hf_token)
+    is_dataset_image, is_dataset_audio = _dataset_modalities(
+        cfg, hf_token, use_lora and cfg.training.load_in_4bit
+    )
 
     if not trainer.load_model(
         model_name = cfg.model,
@@ -156,6 +392,8 @@ def train(
         load_in_4bit = cfg.training.load_in_4bit if use_lora else False,
         full_finetuning = not use_lora,
         hf_token = hf_token,
+        is_dataset_image = is_dataset_image,
+        is_dataset_audio = is_dataset_audio,
         use_gradient_checkpointing = cfg.training.gradient_checkpointing,
     ):
         typer.echo("Model load failed", err = True)
@@ -180,6 +418,8 @@ def train(
     ds, eval_ds = result
 
     training_kwargs = cfg.training_kwargs()
+    if "output_dir" not in cfg.training.model_fields_set:
+        training_kwargs["output_dir"] = _default_output_dir(cfg.model)
     training_kwargs["wandb_token"] = wandb_token
     training_kwargs["optim"] = _optimizer_for_host(training_kwargs.get("optim"))
     started = trainer.start_training(dataset = ds, eval_dataset = eval_ds, **training_kwargs)

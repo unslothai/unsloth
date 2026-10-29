@@ -1,8 +1,63 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { InferenceStatusResponse } from "@/features/chat";
 import type { ModelSelectorChangeMeta } from "@/features/model-picker/components/model-selector/types";
 import { nativeAudioCheckpointIsLoadable } from "../model-picker/components/model-selector/audio-picker-policy.ts";
+import {
+  AUDIO_CPP_MUSIC_AUDIO_TYPE,
+  AUDIO_CPP_MUSIC_MAX_SECONDS,
+  AUDIO_CPP_MUSIC_MIN_SECONDS,
+  AUDIO_CPP_SEP_AUDIO_TYPE,
+  AUDIO_CPP_TTS_AUDIO_TYPE,
+  type AudioCppRuntimeStatus,
+  audioCppDisplayName,
+  AUDIO_CPP_REPO,
+  audioCppModelFor,
+  isAudioCppFolderId,
+} from "./audio-cpp-catalog.ts";
+
+/** Mirrors the backend's model_runtime_problem so a pick is refused before a 501; null if unknown. */
+export function audioCppRuntimeProblem(
+  id: string | null | undefined,
+  runtime: AudioCppRuntimeStatus | null | undefined,
+): string | null {
+  const model = audioCppModelFor(id);
+  if (!model || model.task === "asr" || !runtime) return null;
+  if (!runtime.available) {
+    return "The audio runtime is not installed. Run `unsloth studio update` to install it.";
+  }
+  if (model.needsEspeak && !runtime.espeak) {
+    return (
+      `${audioCppDisplayName(model.id)} needs an audio runtime built with eSpeak-ng, and the ` +
+      "installed one has none. Run `unsloth studio update` to install the Unsloth bundle."
+    );
+  }
+  return null;
+}
+
+/** GGUF music families whose prompt needs a description beside the lyrics: MiniMax Music 3
+ *  takes it as the caption and YuE2 as the style. The others fall back to the lyrics. */
+const DESCRIBED_MUSIC_FAMILIES = new Set(["minimax_music3", "yue2"]);
+
+export function musicNeedsDescription(
+  audioType?: string | null,
+  audioFamily?: string | null,
+): boolean {
+  return (
+    audioType === "minimax_music3" ||
+    (audioType === AUDIO_CPP_MUSIC_AUDIO_TYPE &&
+      DESCRIBED_MUSIC_FAMILIES.has(audioFamily ?? ""))
+  );
+}
+
+/** YuE2 can sing from its style description alone, so an empty lyrics field is an instrumental request. */
+export function musicLyricsOptional(
+  audioType?: string | null,
+  audioFamily?: string | null,
+): boolean {
+  return audioType === AUDIO_CPP_MUSIC_AUDIO_TYPE && audioFamily === "yue2";
+}
 
 export type AudioBusy =
   | "loading"
@@ -13,6 +68,7 @@ export type AudioBusy =
 
 export type AudioGenerationPhase =
   | "preparing"
+  | "switching"
   | "generating"
   | "stopping"
   | "finishing"
@@ -24,10 +80,10 @@ export type AudioGenerationPresentation = {
   canStop: boolean;
 };
 
-/** Project request-lifetime phases into truthful UI copy. Audio generation has no
- *  browser-visible numeric progress, so these labels never imply a fraction or ETA. */
+/** No browser-visible numeric progress exists, so labels never imply a fraction or ETA. */
 export function audioGenerationPresentation(
   phase: AudioGenerationPhase,
+  detail?: string | null,
 ): AudioGenerationPresentation | null {
   switch (phase) {
     case "preparing":
@@ -35,6 +91,12 @@ export function audioGenerationPresentation(
         status: "Preparing audio…",
         actionLabel: "Preparing…",
         canStop: false,
+      };
+    case "switching":
+      return {
+        status: detail || "Switching model…",
+        actionLabel: "Stop",
+        canStop: true,
       };
     case "generating":
       return {
@@ -61,7 +123,7 @@ export function audioGenerationPresentation(
 
 export type AudioPickTask = "tts" | "stt" | null;
 export type AudioCreateMode = "speak" | "transcribe";
-export type SttEngine = "transformers" | "gguf" | "mtmd";
+export type SttEngine = "transformers" | "gguf" | "mtmd" | "audiocpp";
 
 const TTS_AUDIO_TYPES = new Set([
   "snac",
@@ -73,27 +135,39 @@ const TTS_AUDIO_TYPES = new Set([
   "moss_tts_nano",
   "higgs_tts3",
   "minimax_music3",
+  AUDIO_CPP_TTS_AUDIO_TYPE,
+  AUDIO_CPP_MUSIC_AUDIO_TYPE,
+  AUDIO_CPP_SEP_AUDIO_TYPE,
 ]);
-const GGUF_TTS_AUDIO_TYPES = new Set(["snac", "bicodec", "dac"]);
+// The GGUF runtime's speech and music load from a GGUF too, so a status may call them one.
+const GGUF_TTS_AUDIO_TYPES = new Set([
+  "snac",
+  "bicodec",
+  "dac",
+  AUDIO_CPP_TTS_AUDIO_TYPE,
+  AUDIO_CPP_MUSIC_AUDIO_TYPE,
+  AUDIO_CPP_SEP_AUDIO_TYPE,
+]);
 const NATIVE_TTS_AUDIO_TYPES = new Set([
   "higgs_tts2",
   "moss_tts_local",
   "moss_tts_nano",
   "higgs_tts3",
   "minimax_music3",
+  AUDIO_CPP_TTS_AUDIO_TYPE,
+  AUDIO_CPP_MUSIC_AUDIO_TYPE,
+  AUDIO_CPP_SEP_AUDIO_TYPE,
 ]);
 export const MOSS_TTS_FRAMES_PER_SECOND = 12.5;
 export const MOSS_TTS_DEFAULT_SECONDS = 15;
 export const MOSS_TTS_MAX_FRAMES = 32768;
-export const MOSS_TTS_MAX_SECONDS =
-  MOSS_TTS_MAX_FRAMES / MOSS_TTS_FRAMES_PER_SECOND;
 export const MINIMAX_MUSIC_FRAMES_PER_SECOND = 25;
 export const MINIMAX_MUSIC_DEFAULT_SECONDS = 30;
 export const MINIMAX_MUSIC_MAX_FRAMES = 9000;
 export const MINIMAX_MUSIC_MAX_SECONDS =
   MINIMAX_MUSIC_MAX_FRAMES / MINIMAX_MUSIC_FRAMES_PER_SECOND;
 
-export type NativeAudioInstructionsKind = "scene" | "style" | "music";
+export type NativeAudioInstructionsKind = "scene" | "style" | "voice" | "music";
 
 export function nativeAudioInstructionsKind(
   audioType?: string | null,
@@ -104,10 +178,32 @@ export function nativeAudioInstructionsKind(
   if (audioType === "moss_tts_local") {
     return "style";
   }
-  if (audioType === "minimax_music3") {
+  // Forwarded as the runtime's instruction; families without one ignore it.
+  if (audioType === AUDIO_CPP_TTS_AUDIO_TYPE) {
+    return "voice";
+  }
+  if (
+    audioType === "minimax_music3" ||
+    audioType === AUDIO_CPP_MUSIC_AUDIO_TYPE
+  ) {
     return "music";
   }
   return null;
+}
+
+/** The GGUF runtime clamps tighter than the MiniMax Music 3 pipeline. */
+export function musicDurationRange(requiresCuda: boolean): {
+  min: number;
+  max: number;
+} {
+  return requiresCuda
+    ? { min: 1, max: MINIMAX_MUSIC_MAX_SECONDS }
+    : { min: AUDIO_CPP_MUSIC_MIN_SECONDS, max: AUDIO_CPP_MUSIC_MAX_SECONDS };
+}
+
+/** GGUF runtime speech keeps each family's sampling and server-bounded length. */
+export function audioSamplingControlsApply(audioType?: string | null): boolean {
+  return audioType !== AUDIO_CPP_TTS_AUDIO_TYPE;
 }
 
 export function minimaxMusicFramesForSeconds(seconds: number): number {
@@ -183,6 +279,7 @@ type SttDownloadedStatus = {
   transformers?: { downloaded_models?: readonly string[] };
   gguf?: { downloaded_models?: readonly string[] };
   mtmd?: { downloaded_models?: readonly string[] };
+  audiocpp?: { downloaded_models?: readonly string[] };
 };
 
 export interface SttDownloadedArtifact {
@@ -191,9 +288,7 @@ export interface SttDownloadedArtifact {
   engine: SttEngine;
 }
 
-/** Engine-qualified picker artifacts for every locally loadable checkpoint. Whisper uses one
- *  short key for distinct Transformers and whisper.cpp downloads, so engine provenance must
- *  survive this boundary. */
+/** Whisper uses one short key for distinct Transformers and whisper.cpp downloads, so keep the engine. */
 export function sttDownloadedArtifacts(
   status: SttDownloadedStatus,
   repoIdForSidecarKey: (sidecarKey: string, engine: SttEngine) => string,
@@ -205,6 +300,7 @@ export function sttDownloadedArtifacts(
     ["transformers", status.transformers],
     ["gguf", status.gguf],
     ["mtmd", status.mtmd],
+    ["audiocpp", status.audiocpp],
   ];
   for (const [engine, block] of blocks) {
     for (const sidecarKey of block?.downloaded_models ?? []) {
@@ -243,6 +339,94 @@ export function canTransitionAudioMode(
   );
 }
 
+/** The main slot's loaded model as the picker rows name it. llama-server reports a custom-folder
+ *  GGUF's file stem as active_model and its path as model_identifier, and that row uses the path;
+ *  a Hub model keeps its repo id, since model_identifier can be a cache snapshot path. */
+export function audioLoadedSelection(
+  status:
+    | {
+        active_model?: string | null;
+        model_identifier?: string | null;
+        gguf_variant?: string | null;
+      }
+    | null
+    | undefined,
+  // The quant a GGUF file name carries (`ggufQuantLabel`); without one a file name stays as is.
+  quantLabel?: (filename: string) => string,
+): { id: string | null; variant: string | null } {
+  const active = status?.active_model ?? null;
+  const id = active
+    ? active.includes("/")
+      ? active
+      : (status?.model_identifier ?? active)
+    : null;
+  return { id, variant: id ? loadedQuantKey(status?.gguf_variant ?? null, quantLabel) : null };
+}
+
+/** llama status echoes the load selector, which is a file name for a pick from the quant list
+ *  (`model-q4_k_m.gguf`); picker rows key that quant `Q4_K_M`, under any directory it sits in. */
+function loadedQuantKey(
+  variant: string | null,
+  quantLabel?: (filename: string) => string,
+): string | null {
+  if (!variant || !quantLabel || !/\.gguf$/i.test(variant.trim())) return variant;
+  const path = variant.trim().replace(/\\/g, "/");
+  const cut = path.lastIndexOf("/") + 1;
+  return `${path.slice(0, cut)}${quantLabel(path.slice(cut)).toUpperCase()}`;
+}
+
+/** A deleted model is gone once the settled inventory no longer lists it; a quant delete leaves
+ *  the model listed. An audio.cpp folder is gone with its package repo, or, once the inventory
+ *  lists folder rows, when its own row is missing. */
+export function rememberedModelIsGone(
+  id: string,
+  inventory: { settled: boolean; error: boolean; available: ReadonlySet<string> },
+): boolean {
+  if (!inventory.settled || inventory.error) return false;
+  if (inventory.available.has(id.toLowerCase())) return false;
+  if (!isAudioCppFolderId(id)) return true;
+  return (
+    !inventory.available.has(AUDIO_CPP_REPO.toLowerCase()) ||
+    [...inventory.available].some((listed) => isAudioCppFolderId(listed))
+  );
+}
+
+/** Whether a delete of `deletedRepoId` can have removed the remembered model: the same repo, or
+ *  the audio.cpp package that holds the remembered folder. */
+export function deleteCoversRememberedModel(
+  deletedRepoId: string,
+  rememberedId: string,
+): boolean {
+  const deleted = deletedRepoId.toLowerCase();
+  const remembered = rememberedId.toLowerCase();
+  return remembered === deleted || remembered.startsWith(`${deleted}/`);
+}
+
+/** Delete markers spent by a settled listing whose Hub cache fetches were all sent after the
+ *  delete; the undebounced local listing lands first beside the old cache rows. */
+export function settledDeleteMarkers(
+  markers: ReadonlyMap<string, number>,
+  inventory: { settled: boolean; error: boolean; refreshStartedAt: number | null },
+): string[] {
+  const { refreshStartedAt } = inventory;
+  if (!inventory.settled || inventory.error || refreshStartedAt === null) return [];
+  return [...markers]
+    .filter(([, deletedAt]) => refreshStartedAt > deletedAt)
+    .map(([repoId]) => repoId);
+}
+
+const HUB_REPO_ID_RE = /^[\w.-]+\/[\w.-]+$/;
+
+/** A remembered Hub repo the settled inventory no longer lists is not offered, even when it was
+ *  deleted while nothing on this page was listening. Local folders and trained checkpoints are not
+ *  listed by repo id, so they are always offered. Nothing is forgotten here. */
+export function rememberedModelUnavailable(
+  id: string,
+  inventory: { settled: boolean; error: boolean; available: ReadonlySet<string> },
+): boolean {
+  return HUB_REPO_ID_RE.test(id) && rememberedModelIsGone(id, inventory);
+}
+
 /** A managed TTS completion owns auto-load only while the same staging generation is selected
  *  in Speak. Downloads continue globally after ownership changes, but their completion must
  *  not mutate the main slot. */
@@ -266,11 +450,7 @@ export function exactGgufLoadSelector(
   return meta.ggufFilename ?? meta.ggufVariant ?? null;
 }
 
-/** Whether a TTS pick loads through llama.cpp.
- *
- * A direct .gguf file and a GGUF repo id carry no variant filename, so the selector
- * alone misses both. `meta.isGguf` wins where a caller has it; this covers the rest.
- */
+/** A .gguf file or GGUF repo id carries no variant filename; `meta.isGguf` wins when known. */
 export function isGgufTtsTarget({
   repoId,
   ggufFilename,
@@ -280,8 +460,7 @@ export function isGgufTtsTarget({
   repoId: string;
   ggufFilename?: string | null;
   loadId?: string | null;
-  /** The catalog's own answer, when the caller has one. The tests below are
-   * name heuristics, blind to a GGUF repo whose ids do not spell it. */
+  /** The catalog's answer, when known; the name heuristics below can miss a GGUF repo. */
   isGguf?: boolean | null;
 }): boolean {
   const endsWithGguf = (value: string | null | undefined): boolean =>
@@ -358,10 +537,38 @@ export function expectedGgufDownloadBytes(variant: AutoGgufVariant): number {
     : variant.size_bytes;
 }
 
-/** Fold a freshly fetched first page into the list already on screen. The page is authoritative
- *  for the newest `page.length` clips and any scrollback below it is kept; replacing outright
- *  collapsed a paginated History on every delete and reselected a different clip.
- *  `removedId` drops a clip this client just deleted; `hasMore` is the server's own report. */
+export async function fetchGalleryWindow<
+  C extends { id: string },
+  P extends { audio: C[]; has_more: boolean },
+  K,
+>(
+  fetchPage: (limit: number, cursor: K | null) => Promise<P>,
+  cursorOf: (page: P) => K | null,
+  wanted: number,
+  maxPage: number,
+  cancelled: () => boolean = () => false,
+): Promise<P> {
+  let page = await fetchPage(Math.min(wanted, maxPage), null);
+  const audio = [...page.audio];
+  const seen = new Set(audio.map((clip) => clip.id));
+  while (audio.length < wanted && page.has_more && !cancelled()) {
+    const cursor = cursorOf(page);
+    if (cursor === null) break;
+    page = await fetchPage(Math.min(maxPage, wanted - audio.length), cursor);
+    if (page.audio.length === 0) break;
+    for (const clip of page.audio) {
+      if (seen.has(clip.id)) continue;
+      seen.add(clip.id);
+      audio.push(clip);
+    }
+  }
+  return { ...page, audio };
+}
+
+/**
+ * The fetched first page is authoritative for its window; scrollback below it is kept.
+ * Replacing outright collapsed a paginated History on every delete.
+ */
 export function mergeGalleryPage<T extends { id: string }>(
   page: readonly T[],
   cached: readonly T[],
@@ -371,22 +578,18 @@ export function mergeGalleryPage<T extends { id: string }>(
   const inPage = new Set(page.map((clip) => clip.id));
   // An empty page means the server holds nothing: a clear from anywhere, not scrollback.
   if (page.length === 0) return { clips: [], stitched: false };
-  // A complete first page IS everything the server holds, so there is no scrollback to keep: a
-  // cached clip below it was deleted by another client or pruned by the size cap, and
-  // stitching it back rendered a row that could never be played again.
+  // A complete first page is everything; cached clips below it were deleted or pruned.
   if (hasMore === false) return { clips: [...page], stitched: false };
-  // The page is authoritative over the window it covers, so a cached clip inside that window and
-  // absent from the page was deleted by another client and must go. Only what sits BELOW the
-  // page's oldest entry is scrollback, keyed on that entry's position.
+  // Only clips BELOW the page's oldest entry are scrollback.
   const oldestInPage = cached.findIndex(
     (clip) => clip.id === page[page.length - 1].id,
   );
-  // Without that boundary the cache cannot prove where safe scrollback begins: an external
-  // archive can shift one unseen row into the page while every earlier row still overlaps.
+  // Without that boundary an external archive could shift an unseen row into the page.
   if (oldestInPage === -1 && cached.length > 0) {
     return { clips: [...page], stitched: false };
   }
-  const scrollback = oldestInPage === -1 ? cached : cached.slice(oldestInPage + 1);
+  const scrollback =
+    oldestInPage === -1 ? cached : cached.slice(oldestInPage + 1);
   const tail = scrollback.filter(
     (clip) => !inPage.has(clip.id) && clip.id !== removedId,
   );
@@ -401,18 +604,66 @@ export function persistedClipForGeneration<T extends { id: string }>(
   return clipId ? (refreshed.find((clip) => clip.id === clipId) ?? null) : null;
 }
 
+/** Compare a picker row with the sidecar's resident name by row id. A legacy dictation key
+ *  (`audiocpp-qwen3-asr-0.6b`) names the same folder as the Transcribe row, and ids differ in case. */
+export function sttSameModel(
+  selectedRepo: string,
+  loadedModel: string,
+  sidecarKeyFor: (repoId: string) => string,
+  engine?: SttEngine | null,
+  repoIdForSidecarKey?: (sidecarKey: string, engine?: SttEngine) => string,
+): boolean {
+  if (loadedModel === sidecarKeyFor(selectedRepo)) return true;
+  if (!repoIdForSidecarKey) return false;
+  const rowId = (id: string) =>
+    repoIdForSidecarKey(id, engine ?? undefined).trim().toLowerCase();
+  return rowId(loadedModel) === rowId(sidecarKeyFor(selectedRepo));
+}
+
 export function sttSelectionReady(
   selectedRepo: string | null,
   loadedModel: string | null,
   sidecarKeyFor: (repoId: string) => string,
   selectedEngine?: SttEngine | null,
   loadedEngine?: SttEngine | null,
+  repoIdForSidecarKey?: (sidecarKey: string, engine?: SttEngine) => string,
 ): boolean {
   return Boolean(
     selectedRepo &&
-      loadedModel === sidecarKeyFor(selectedRepo) &&
+      loadedModel &&
+      sttSameModel(
+        selectedRepo,
+        loadedModel,
+        sidecarKeyFor,
+        loadedEngine ?? selectedEngine,
+        repoIdForSidecarKey,
+      ) &&
       (!selectedEngine || !loadedEngine || selectedEngine === loadedEngine),
   );
+}
+
+/** Eject only what is resident: the selector keeps showing the last Transcribe model after an
+ *  unload, and an Eject there had nothing to release. */
+export function audioEjectAvailable({
+  mode,
+  busy,
+  hasValue,
+  showLastPageModel,
+  sttReady,
+}: {
+  mode: string;
+  busy: AudioBusy;
+  hasValue: boolean;
+  showLastPageModel: boolean;
+  sttReady: boolean;
+}): boolean {
+  if (!hasValue || busy !== null || showLastPageModel) return false;
+  return mode !== "transcribe" || sttReady;
+}
+
+/** Older backends return no `released` flag; treat that as released, like before. */
+export function sttEjectSucceeded(released: boolean | undefined): boolean {
+  return released !== false;
 }
 
 type SttEngineResidency = {
@@ -425,12 +676,10 @@ type SttResidencyStatus = SttEngineResidency & {
   transformers?: SttEngineResidency;
   gguf?: SttEngineResidency;
   mtmd?: SttEngineResidency;
+  audiocpp?: SttEngineResidency;
 };
 
-/** Resolve the resident model from the engine-aware status shape. The legacy top-level fields
- *  mirror Transformers only, so reading them for Qwen3-ASR or whisper.cpp clears a model that
- *  is actually ready. While the selected engine is pending, an older model on another engine
- *  must not steal the selector. */
+/** Read the engine-aware status: the legacy top-level fields mirror Transformers only. */
 export function resolveSttLoadedModel(
   status: SttResidencyStatus,
   selectedEngine: SttEngine | null,
@@ -452,11 +701,8 @@ export function resolveSttResidency(
   selectedEngine: SttEngine | null,
   preserveSelected: boolean,
 ): SttResidency | null {
-  // A whisper.cpp pick on a host without whisper-server is deliberately served through
-  // Transformers, so its residency lives in that block. The engine reported stays the selected
-  // one, since that is what the user picked and what the backend routes; the same
-  // sttEngineStatusFor fallback applies. Without this the refresh completing the load found
-  // nothing, since it runs while preserveSelected is true, and Transcribe stayed disabled.
+  // A whisper.cpp pick on a host without whisper-server is served through Transformers, so its
+  // residency lives there while the reported engine stays the selected one.
   const selectedStatus =
     selectedEngine === "transformers" ||
     (selectedEngine === "gguf" && status.gguf?.available === false)
@@ -480,11 +726,13 @@ export function resolveSttResidency(
   if (status.mtmd?.loaded_model) {
     return { model: status.mtmd.loaded_model, engine: "mtmd" };
   }
+  if (status.audiocpp?.loaded_model) {
+    return { model: status.audiocpp.loaded_model, engine: "audiocpp" };
+  }
   return null;
 }
 
-/** Reconcile the picker selection with the sidecar's authoritative status. Preserve a selection
- *  only while its load/download is genuinely pending. */
+/** Reconcile with sidecar status; keep a selection only while its load or download is pending. */
 export function reconcileSttSelection({
   selectedRepo,
   loadedModel,
@@ -505,7 +753,13 @@ export function reconcileSttSelection({
   if (loadedModel) {
     if (
       selectedRepo &&
-      sidecarKeyFor(selectedRepo) === loadedModel &&
+      sttSameModel(
+        selectedRepo,
+        loadedModel,
+        sidecarKeyFor,
+        loadedEngine,
+        repoIdForSidecarKey,
+      ) &&
       (!loadedEngine ||
         !engineForRepo ||
         engineForRepo(selectedRepo) === loadedEngine)
@@ -517,12 +771,61 @@ export function reconcileSttSelection({
   return preservePending ? selectedRepo : null;
 }
 
-/** Permission prompts cannot be aborted, so freshness is checked immediately after
- *  getUserMedia resolves and stale streams are stopped before recording. */
-export function micStreamRequestIsCurrent(
-  requestGeneration: number,
-  currentGeneration: number,
-  active: boolean,
-): boolean {
-  return active && requestGeneration === currentGeneration;
+/** The audio model the Audio page shows, generates with and ejects. A kept model is never promoted,
+ *  so each other serving model is probed (GET /status?model=). */
+export async function describeAudioSlot(
+  primary: InferenceStatusResponse,
+  probe: (model: string) => Promise<InferenceStatusResponse>,
+): Promise<{
+  status: InferenceStatusResponse;
+  slotModel: string | null;
+  slotLabel: string | null;
+}> {
+  if (primary.is_audio) {
+    return { status: primary, slotModel: null, slotLabel: null };
+  }
+  const serving = primary.serving ?? [];
+  const checkpoints = primary.serving_checkpoints ?? [];
+  // A kept model can share the active one's short name: compare checkpoints when sent.
+  const primaryId = primary.model_identifier || primary.active_model;
+  for (let i = 0; i < serving.length; i++) {
+    const checkpoint = checkpoints[i];
+    const id = checkpoint || serving[i];
+    const isPrimary =
+      Boolean(primary.active_model) &&
+      (checkpoint ? checkpoint === primaryId : serving[i] === primary.active_model);
+    if (!id || isPrimary) {
+      continue;
+    }
+    // An id not held in a slot answers with the primary (the chat model), so only audio counts.
+    const slot: InferenceStatusResponse | null = await probe(id).catch(
+      () => null,
+    );
+    // Route by the probed id: a local model's status shows only a short name.
+    if (slot?.is_audio && slot.active_model) {
+      return { status: slot, slotModel: id, slotLabel: slot.active_model };
+    }
+  }
+  // No audio model loaded: never let Eject or the header act on the chat model.
+  return {
+    status: {
+      ...primary,
+      active_model: null,
+      model_identifier: null,
+      gguf_variant: null,
+      is_audio: false,
+    },
+    slotModel: null,
+    slotLabel: null,
+  };
+}
+
+/** The audio model a keep-others speech load replaces, by its unload id, else two would stay loaded. */
+export function audioModelToReplace(
+  status: InferenceStatusResponse | null | undefined,
+  target: string,
+): string | null {
+  if (!status?.is_audio || !status.active_model) return null;
+  const current = status.model_identifier || status.active_model;
+  return current !== target && status.active_model !== target ? current : null;
 }

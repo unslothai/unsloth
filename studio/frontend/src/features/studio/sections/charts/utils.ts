@@ -5,15 +5,13 @@ import type { LossHistoryItem, OutlierMode, SmoothedLossItem } from "./types";
 
 export const CHART_SYNC_ID = "train-metrics-sync";
 export const MAX_RENDER_POINTS = 800;
-export const CHART_CONTAINER_CLASS = "h-[220px] w-full";
+export const CHART_CONTAINER_CLASS = "h-[calc(220px*var(--ui-space-scale,1))] 4xl:h-[calc(300px*var(--ui-space-scale,1))] w-full";
 export const DEFAULT_CHART_MARGIN = { top: 4, right: 8, bottom: 0, left: 4 };
 export const DEFAULT_Y_AXIS_WIDTH = 45;
 const TRAILING_ZEROES_RE = /\.?0+$/;
 const NEGATIVE_ZERO_RE = /^-0$/;
 
-// Trailing zeroes are only padding after a decimal point. toFixed(0) produces
-// none, and stripping them from a plain integer eats real digits: "25000" would
-// come back as "25", and "1000000" as "1".
+// Only strip trailing zeros after a decimal point, or "25000" becomes "25".
 function trimFormatted(text: string): string {
   const trimmed = text.includes(".")
     ? text.replace(TRAILING_ZEROES_RE, "")

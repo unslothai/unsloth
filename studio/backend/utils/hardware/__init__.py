@@ -7,6 +7,7 @@ from typing import Optional
 
 from . import hardware as _hardware
 from .hardware import (
+    LIVE_GPU_TELEMETRY_KEYS,
     DeviceType,
     DEVICE,
     CHAT_ONLY,
@@ -25,9 +26,12 @@ from .hardware import (
     trusted_mem_get_info,
     get_backend_visible_gpu_info,
     get_vulkan_inference_gpu_info,
+    get_cross_vendor_inference_gpu_info,
+    get_mixed_vulkan_inference_gpu_info,
     get_physical_gpu_count,
     get_visible_gpu_count,
     get_parent_visible_gpu_ids,
+    gpu_ids_with_torch_kernels,
     resolve_requested_gpu_ids,
     estimate_fp16_model_size_bytes,
     estimate_required_model_memory_gb,
@@ -52,12 +56,7 @@ from .vram_estimation import (
 
 
 def ensure_hardware_detected(epoch: Optional[int] = None) -> DeviceType:
-    """Detect once, from any thread; delegate so the live function always runs.
-
-    Wrapper rather than re-export, like export_capability() below: a re-export is an unused
-    module-level import, which scripts/verify_import_hoist.py flags. Must carry the epoch --
-    dropping it raises into the warm's _run_stage, leaving detection undone.
-    """
+    """Pass the epoch through: dropping it raises in the warm's _run_stage and leaves detection undone."""
     return _hardware.ensure_hardware_detected(epoch)
 
 
@@ -76,12 +75,18 @@ def video_capability() -> dict:
     return _hardware.video_capability()
 
 
+def amd_driver_warning_report() -> dict:
+    """Return the AMD driver idle-eviction notice, if the startup check flagged one."""
+    return _hardware.amd_driver_warning_report()
+
+
 def get_torch_device_str() -> str:
     """Return the torch device string ("cuda", "xpu", "cpu") for the detected hardware."""
     return _hardware.get_torch_device_str()
 
 
 __all__ = [
+    "LIVE_GPU_TELEMETRY_KEYS",
     "DeviceType",
     "DEVICE",
     "CHAT_ONLY",
@@ -92,6 +97,7 @@ __all__ = [
     "get_device",
     "export_capability",
     "video_capability",
+    "amd_driver_warning_report",
     "is_apple_silicon",
     "clear_gpu_cache",
     "get_gpu_memory_info",
@@ -105,9 +111,12 @@ __all__ = [
     "trusted_mem_get_info",
     "get_backend_visible_gpu_info",
     "get_vulkan_inference_gpu_info",
+    "get_cross_vendor_inference_gpu_info",
+    "get_mixed_vulkan_inference_gpu_info",
     "get_physical_gpu_count",
     "get_visible_gpu_count",
     "get_parent_visible_gpu_ids",
+    "gpu_ids_with_torch_kernels",
     "resolve_requested_gpu_ids",
     "estimate_fp16_model_size_bytes",
     "estimate_required_model_memory_gb",

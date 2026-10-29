@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedPill } from "@/components/segmented-control";
 import {
   Tooltip,
   TooltipContent,
@@ -13,7 +14,7 @@ import {
 } from "@/features/hub";
 import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import {
   type DownloadTransportSettings,
   loadDownloadTransportSettings,
@@ -45,14 +46,14 @@ const OPTIONS: {
 
 export function DownloadTransportRow() {
   const t = useT();
+  const pillId = useId();
   const [mode, setMode] = useTransportMode();
-  // huggingface_hub 1.18 refetches an interrupted transfer from zero, so promising HTTPS
-  // "resumes where it stopped" there is backwards.
+  // huggingface_hub 1.18 refetches interrupted transfers from zero.
   const partialsResumable = useHttpPartialsResumable();
   const [settings, setSettings] = useState<DownloadTransportSettings | null>(
     null,
   );
-  // Distinct from "settings is null": a FAILED load must not disable Xet for good.
+  // A failed load must not disable Xet for good.
   const [capabilityPending, setCapabilityPending] = useState(true);
 
   useEffect(() => {
@@ -61,8 +62,7 @@ export function DownloadTransportRow() {
       setSettings(next);
       setCapabilityPending(false);
     });
-    // Refreshed on mount: the cache can hold a mode another browser changed, or a stale
-    // Auto verdict.
+    // Refreshed on mount: another browser may have changed the mode.
     loadDownloadTransportSettings({ refresh: true })
       .then(setSettings)
       .catch(() => undefined)
@@ -70,19 +70,15 @@ export function DownloadTransportRow() {
     return unsubscribe;
   }, []);
 
-  // Unknown counts as unavailable while the first load is in flight: clicking Xet there
-  // stored a preference every later download silently ignored.
+  // Unknown counts as unavailable while loading, or Xet could be stored and silently ignored.
   const xetUnavailable = capabilityPending || settings?.xetAvailable === false;
-  // The localized string first: the backend's one reason is English prose, and preferring it
-  // showed English to every other locale. An unknown future reason still gets through.
+  // Localized string first; the backend reason is English prose.
   const serverReason = settings?.xetUnavailableReason;
   const xetReason =
     !serverReason || /hf_xet is not installed/i.test(serverReason)
       ? t("settings.general.downloads.xetMissing")
       : serverReason;
 
-  // Xet selected but unable to run here: say so rather than silently using HTTPS. Only once
-  // known, since while pending we have not been told hf_xet is missing.
   const status =
     !capabilityPending && xetUnavailable && mode === "xet"
       ? xetReason
@@ -96,13 +92,16 @@ export function DownloadTransportRow() {
         : null;
 
   // The health check's own words, on their own line: free-form English, so folding it into a
-  // translated sentence produced half a sentence in each language. Auto is the only branch
-  // with a reason to explain.
-  const statusReason = mode === "auto" ? (settings?.autoReason ?? null) : null;
+  // translated sentence produced half a sentence in each language. Only a fallback to HTTPS has
+  // something to explain (stalls, low RAM, an env switch); on Xet the reason is bookkeeping
+  // like "Xet download succeeded" or "no cached verdict; defaulting to Xet".
+  const statusReason =
+    mode === "auto" && settings?.autoResolvesTo === "http"
+      ? (settings.autoReason ?? null)
+      : null;
 
   return (
     <SettingsRow
-      alignTop={true}
       label={t("settings.general.downloads.transport")}
       description={t(
         partialsResumable
@@ -110,71 +109,77 @@ export function DownloadTransportRow() {
           : "settings.general.downloads.transportDescriptionNoResume",
       )}
       hint={t("settings.general.downloads.transportHint")}
+      below={
+        status || statusReason ? (
+          <div className="flex flex-col items-end gap-1.5">
+            {status ? (
+              <span className="max-w-[calc(280px*var(--ui-space-scale,1))] text-right text-xs text-muted-foreground">
+                {status}
+              </span>
+            ) : null}
+            {statusReason ? (
+              <span
+                lang="en"
+                className="max-w-[calc(280px*var(--ui-space-scale,1))] text-right text-xs text-muted-foreground/70"
+              >
+                {statusReason}
+              </span>
+            ) : null}
+          </div>
+        ) : null
+      }
     >
-      <div className="flex flex-col items-end gap-1.5">
-        <div
-          role="radiogroup"
-          aria-label={t("settings.general.downloads.transport")}
-          className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
-        >
-          {OPTIONS.map((opt) => {
-            const active = mode === opt.value;
-            const disabled = opt.value === "xet" && xetUnavailable;
-            return (
-              <Tooltip key={opt.value}>
-                <TooltipTrigger asChild={true}>
-                  <button
-                    type="button"
-                    role="radio"
-                    // Indexed for settings search, so the result has somewhere to scroll to.
-                    data-settings-label={t(opt.labelKey)}
-                    aria-checked={active}
-                    aria-disabled={disabled || undefined}
-                    onClick={() => {
-                      if (!disabled) setMode(opt.value);
-                    }}
-                    className={cn(
-                      "relative flex h-8 items-center rounded-full px-3 text-xs font-medium transition-colors",
-                      disabled
-                        ? "cursor-not-allowed text-muted-foreground/45"
-                        : active
-                          ? "hub-tab-toggle-pill text-foreground"
-                          : "text-muted-foreground hover:text-foreground",
-                    )}
-                  >
-                    <span className="relative z-10">{t(opt.labelKey)}</span>
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent
-                  side="bottom"
-                  sideOffset={6}
-                  className="max-w-[260px]"
+      <div
+        role="radiogroup"
+        aria-label={t("settings.general.downloads.transport")}
+        className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
+      >
+        {OPTIONS.map((opt) => {
+          const active = mode === opt.value;
+          const disabled = opt.value === "xet" && xetUnavailable;
+          return (
+            <Tooltip key={opt.value}>
+              <TooltipTrigger asChild={true}>
+                <button
+                  type="button"
+                  role="radio"
+                  data-settings-label={t(opt.labelKey)}
+                  aria-checked={active}
+                  aria-disabled={disabled || undefined}
+                  onClick={() => {
+                    if (!disabled) setMode(opt.value);
+                  }}
+                  className={cn(
+                    "relative flex h-8 items-center rounded-full px-3 text-xs font-medium transition-colors",
+                    disabled
+                      ? "cursor-not-allowed text-muted-foreground/45"
+                      : active
+                        ? "text-foreground"
+                        : "text-muted-foreground hover:text-foreground",
+                  )}
                 >
-                  {disabled && !capabilityPending
-                    ? xetReason
-                    : t(
-                        opt.value === "http" && !partialsResumable
-                          ? "settings.general.downloads.httpsHintNoResume"
-                          : opt.hintKey,
-                      )}
-                </TooltipContent>
-              </Tooltip>
-            );
-          })}
-        </div>
-        {status ? (
-          <span className="max-w-[280px] text-right text-xs text-muted-foreground">
-            {status}
-          </span>
-        ) : null}
-        {statusReason ? (
-          <span
-            lang="en"
-            className="max-w-[280px] text-right text-xs text-muted-foreground/70"
-          >
-            {statusReason}
-          </span>
-        ) : null}
+                  {active && !disabled && (
+                    <SegmentedPill group={`${pillId}-transport`} />
+                  )}
+                  <span className="relative z-10">{t(opt.labelKey)}</span>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent
+                side="bottom"
+                sideOffset={6}
+                className="max-w-[calc(260px*var(--ui-space-scale,1))]"
+              >
+                {disabled && !capabilityPending
+                  ? xetReason
+                  : t(
+                      opt.value === "http" && !partialsResumable
+                        ? "settings.general.downloads.httpsHintNoResume"
+                        : opt.hintKey,
+                    )}
+              </TooltipContent>
+            </Tooltip>
+          );
+        })}
       </div>
     </SettingsRow>
   );

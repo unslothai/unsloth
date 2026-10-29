@@ -1,33 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Persistent ``sd-server`` (stable-diffusion.cpp) process manager.
-
-The native diffusion tier used to shell out to one-shot ``sd-cli`` per image, which
-reloaded the multi-GB GGUF from disk every generation. ``sd-server`` (the upstream
-``examples/server`` target) loads the model once at spawn and serves many generations
-over HTTP, exactly like the chat backend's persistent ``llama-server``. This manager
-owns ONLY the process + HTTP lifecycle; the backend (``sd_cpp_backend.py``) still owns
-asset resolution, request validation, and the public Unsloth surface.
-
-Shape mirrors ``core/rag/embed_llama_server.py``:
-  * ``start``      -- pick a free loopback port, spawn the server (model loads here),
-                      drain stdout on a daemon thread, poll until ready.
-  * ``img_gen``    -- POST ``/sdcpp/v1/img_gen`` (the whole batch in one request),
-                      poll the async job to a terminal state, return image bytes.
-  * ``stop``       -- SIGTERM -> wait -> SIGKILL, join the drain thread (idempotent).
-
-Readiness is real: upstream ``main.cpp`` loads the model BEFORE it binds the port and
-prints ``listening on:``, so a 200 from ``GET /v1/models`` (a trivial handler) means the
-model is loaded; a load failure exits the process before listening and is surfaced with
-the captured log tail. (The richer ``/sdcpp/v1/capabilities`` handler can block in some
-builds, so it is not used for readiness.) The job JSON has no per-step field, so step progress is recovered by
-parsing the server's stdout (the same ``N/M`` lines ``sd-cli`` emits), routed to the
-active generation's callback.
-
-Import-light on purpose (no torch / diffusers / PIL), so selecting the native tier on
-a CPU box never drags the GPU stack into the process.
-"""
+"""Persistent sd-server; ready on 200 from GET /v1/models (not capabilities, which can block);
+routes POST /sdcpp/v1/img_gen and POST /sdcpp/v1/vid_gen; import-light, no torch/diffusers/PIL"""
 
 from __future__ import annotations
 
@@ -38,6 +13,7 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -50,9 +26,11 @@ from core.inference.sd_cpp_args import SdCppModelFiles, build_sd_cpp_server_comm
 from core.inference.sd_cpp_engine import (
     NATIVE_GENERATION_TIMEOUT_S,
     SdCppCancelled,
+    _diagnostic_tail,
     _sd_cpp_command_for_log,
     _sd_cpp_command_summary,
     _verbose_native_logs,
+    binary_accelerator,
     runtime_env,
 )
 from utils.native_path_leases import child_env_without_native_path_secret
@@ -74,14 +52,13 @@ _TRANSPORT_ERRORS = (
     httpx.WriteError,
 )
 
-# Readiness probe: the port binds only after the model loads, so any 200 means ready. Use trivial /v1/models, not the
-# capabilities endpoint (which can block).
+# Port binds only after the model loads; the capabilities endpoint can block.
 _READY_PATH = "/v1/models"
 _IMG_GEN_PATH = "/sdcpp/v1/img_gen"
+_VID_GEN_PATH = "/sdcpp/v1/vid_gen"
 _JOBS_PATH = "/sdcpp/v1/jobs"
 
-# Stable parameter residency reported once during startup. Compute-buffer lines are deliberately excluded: those
-# allocations can change between generations, while this floor lives until the server process exits.
+# Compute-buffer lines excluded: they vary per generation, params stay until exit.
 _TOTAL_PARAMS_VRAM_RE = re.compile(
     r"total params memory size\s*=\s*[0-9.]+\s*MB\s*\(\s*VRAM\s+([0-9]+(?:\.[0-9]+)?)\s*MB\b",
     re.IGNORECASE,
@@ -91,43 +68,14 @@ _TERMINAL_OK = "completed"
 _TERMINAL_FAIL = "failed"
 _TERMINAL_CANCELLED = "cancelled"
 
-# Lines worth keeping from a dead server's output whatever their position.
-_DIAGNOSTIC_MARKERS = (
-    "error",
-    "abort",
-    "assert",
-    "unsupported",
-    "not implemented",
-    "out of memory",
-    "failed",
-    "exception",
-)
-
-
-def _diagnostic_tail(
-    lines,
-    *,
-    keep: int = 20,
-    limit: int = 1500,
-) -> str:
-    """The most useful part of the captured output, not merely its last lines.
-
-    A native abort prints its REASON first and then a long backtrace, so taking the last N lines
-    reported nothing but stack frames: a Metal host that died on an unimplemented op showed twenty
-    addresses and no cause. Marked lines come first (in order), then the last few lines for
-    context, deduplicated."""
-    captured = list(lines)
-    marked = [line for line in captured if any(m in line.lower() for m in _DIAGNOSTIC_MARKERS)]
-    chosen: list[str] = []
-    for line in marked[-keep:] + captured[-max(keep // 2, 4) :]:
-        if line not in chosen:
-            chosen.append(line)
-    return "\n".join(chosen)[:limit]
-
-
 # Grace for the best-effort native cancel to show in job status; without the cap a lost cancel would hold the generate
 # lock until the job ends.
 _CANCEL_GRACE_S = 5.0
+
+
+def _socket_owner_is_always_named() -> bool:
+    """Windows names every socket's owner: an unnamed one there is a psutil quirk (#15022)."""
+    return sys.platform == "win32"
 
 
 def _has_ancestor(
@@ -136,11 +84,7 @@ def _has_ancestor(
     *,
     max_depth: int = 8,
 ) -> bool:
-    """True if ``ancestor_pid`` is ``pid``'s parent (or grandparent, ...).
-
-    The listening socket can be held by a child of the process we spawned (a wrapper script, or a
-    shell on Windows), so an exact pid match alone would reject our own server. Depth-capped so a
-    pid-reuse cycle cannot loop."""
+    """Walks ancestors, since the listener may be a wrapper or shell child of our spawned process."""
     try:
         import psutil
         proc = psutil.Process(pid)
@@ -153,6 +97,17 @@ def _has_ancestor(
     except Exception:  # noqa: BLE001 -- gone / no permission: treat as unknown
         return False
     return False
+
+
+class SdCppServerUnsupported(RuntimeError):
+    """The sd-server has no route / mode for this job kind; nothing ran, so the caller can fall back to sd-cli."""
+
+
+def _route_unsupported(status_code: int, text: str, kind: str) -> bool:
+    # 404: no route in this build; 400 "does not support": the loaded model lacks the mode (runtime.cpp).
+    if status_code == 404:
+        return True
+    return status_code == 400 and f"does not support {kind}" in (text or "")
 
 
 class SdCppServer:
@@ -189,10 +144,8 @@ class SdCppServer:
 
     @property
     def lora_dir(self) -> Optional[str]:
-        """The server's ``--lora-model-dir`` scratch dir. Adapters staged here are picked
-        up per request (the sdcpp ``img_gen`` route refreshes its LoRA scan each call), so
-        server-mode LoRA works by materializing here and referencing the files via the
-        structured ``lora`` request field (the server ignores ``<lora:>`` prompt tags)."""
+        """Server rescans this dir per request; reference staged files via the lora field, not
+        prompt tags."""
         return self._scratch_dir
 
     def is_alive(self) -> bool:
@@ -216,16 +169,9 @@ class SdCppServer:
         startup_timeout: float = 600.0,
         extra_args: Optional[list[str]] = None,
     ) -> None:
-        """Spawn the server (which loads the model) and block until it is ready.
-
-        Raises ``RuntimeError`` (with the captured log tail) if the process exits during
-        startup or never answers within ``startup_timeout``. Holds the lifecycle lock so
-        a concurrent start/stop can't interleave. ``extra_args`` is appended last (last
-        wins), which is how the CPU-backend restart pins the graph off the GPU.
-        """
+        """Spawns the server and blocks until ready under the lifecycle lock; extra_args go last so they win, which pins the CPU-backend restart off the GPU."""
         with self._lifecycle_lock:
-            # A stop()/unload that raced in before start() took the lock already set _abort and closed the client; honor
-            # it rather than leak a spawned process.
+            # A stop() that raced in before the lock already closed the client; do not leak a process.
             if self._stopped or self._abort.is_set():
                 raise SdCppCancelled("sd-server start was cancelled before launch.")
             self._abort.clear()
@@ -244,6 +190,7 @@ class SdCppServer:
                 scratch_dir = self._scratch_dir,
                 verbose = True,  # sd-server prints the per-step sampling lines we parse
                 extra_args = list(extra_args or []),
+                accelerator = binary_accelerator(self.binary),
             )
             run_env = runtime_env(self.binary, child_env_without_native_path_secret())
             if env:
@@ -261,13 +208,9 @@ class SdCppServer:
             self._spawn_error: Optional[Exception] = None
             spawned = threading.Event()
 
-            # Spawn INSIDE the long-lived drain thread: child_popen_kwargs() sets PR_SET_PDEATHSIG, bound to the
-            # creating thread on Linux, so the creator must outlive the child.
+            # Spawn in the drain thread: PR_SET_PDEATHSIG is bound to the creating thread on Linux.
             def _own_process() -> None:
-                # One flag at every spawn. No _graceful_shutdown step unloads the
-                # diffusion engine and cancel_pending_loads only knows about chat loads,
-                # so without this a quit during an /images/load can start a multi-GB
-                # sd-server after the step-7 sweep has taken its snapshot.
+                # Nothing in _graceful_shutdown unloads this engine, so gate every spawn on shutdown.
                 if is_process_shutting_down():
                     self._spawn_error = RuntimeError(
                         "Unsloth is shutting down; not starting sd-server"
@@ -293,9 +236,7 @@ class SdCppServer:
                 self._process = proc
                 self.port = port
                 adopt_pid(proc.pid)  # so a global shutdown sweep also reaps it
-                # Recheck once the pid is recorded, for the window between the gate and
-                # this record. Adoption runs first, so a child killed here was in the
-                # sweep record for as long as it existed.
+                # Recheck after recording: covers the window between the gate and adopt_pid.
                 if is_process_shutting_down():
                     logger.info("shutdown began during the spawn; killing the new sd-server")
                     try:
@@ -303,10 +244,7 @@ class SdCppServer:
                         proc.wait(timeout = 5)
                     except Exception:  # noqa: BLE001 - the reap is best-effort
                         pass
-                    # Only drop the record once the child is confirmed gone. If the kill
-                    # or the wait raised, the server is still alive with the sweep
-                    # already past it, and this record is the last thing that could
-                    # reap it; forgetting it here would be the orphan this PR is about.
+                    # Keep the record if kill/wait raised: it is the last thing that could reap the child.
                     if proc.poll() is not None:
                         forget_pid(proc.pid)
                     else:
@@ -349,15 +287,11 @@ class SdCppServer:
         timeout: float,
         interval: float = 0.5,
     ) -> bool:
-        """Poll ``/v1/models`` until 200; bail early if the process exits.
-
-        Upstream binds the port only AFTER the model is loaded, so a 200 here is a true
-        ready signal (no half-loaded race)."""
+        """A 200 is a true ready signal: upstream binds the port only after the model has loaded."""
         deadline = time.monotonic() + timeout
         url = f"{self.base_url}{_READY_PATH}"
         while time.monotonic() < deadline:
-            # a concurrent stop() sets _abort so this wait bails without holding the model load hostage for the full
-            # startup_timeout
+            # stop() sets _abort so the wait bails early instead of holding the load for startup_timeout.
             if self._abort.is_set():
                 logger.info("sd-server startup aborted before ready")
                 return False
@@ -366,7 +300,9 @@ class SdCppServer:
                 logger.error("sd-server exited early during load (code %s)", code)
                 return False
             try:
-                if self._client.get(url, timeout = 2.0).status_code == 200 and self._port_is_ours():
+                # Connection: close keeps a probe answered by a squatter out of the generation pool.
+                resp = self._client.get(url, headers = {"Connection": "close"}, timeout = 2.0)
+                if resp.status_code == 200 and self._port_is_ours():
                     return True
             except (*_TRANSPORT_ERRORS, httpx.TimeoutException):
                 pass
@@ -375,34 +311,62 @@ class SdCppServer:
         return False
 
     def _port_is_ours(self) -> bool:
-        """True unless the 200 at ``/v1/models`` demonstrably came from someone else's process.
-
-        ``_find_free_port`` binds an ephemeral port, reads it and closes the socket, and sd-server
-        binds it only AFTER loading the model -- minutes for a multi-gigabyte checkpoint. Another
-        local process can take the port inside that window, and ``/v1/models`` is a stock
-        OpenAI-compatible route that llama.cpp's own server (and a second Unsloth) answers 200 on,
-        so readiness would pass and every generation would be posted to an unrelated listener.
-
-        Verifying the listener really belongs to our child closes that. Best-effort by design:
-        psutil is optional, and reading another process' connections needs privileges on some
-        platforms, so anything short of a definite "that port belongs to a DIFFERENT pid" keeps
-        today's behaviour rather than failing a healthy start."""
+        """Best-effort: fails only when the port listener is definitely another pid, since another local server can answer /v1/models 200; unknown passes."""
         proc = self._process
         if proc is None or proc.pid is None:
             return True
+        # A child that already exited cannot be the server that answered.
+        poll = getattr(proc, "poll", None)
+        if callable(poll) and poll() is not None:
+            return False
         try:
             import psutil
         except Exception:  # noqa: BLE001 -- optional dependency
             return True
+        windows = _socket_owner_is_always_named()
+
+        def _listens(conn) -> bool:
+            laddr = getattr(conn, "laddr", None)
+            if not laddr or getattr(laddr, "port", None) != self.port:
+                return False
+            if conn.status == psutil.CONN_LISTEN:
+                return True
+            # psutil maps a TCP state it cannot decode to NONE, seen on live Windows listeners (#15022).
+            return (
+                windows
+                and conn.status == getattr(psutil, "CONN_NONE", "NONE")
+                and not getattr(conn, "raddr", None)
+                and getattr(conn, "type", socket.SOCK_STREAM) == socket.SOCK_STREAM
+            )
+
+        # Another user's socket shows no pid on Linux/macOS: our readable tree not listening = foreign.
+        tree_says_foreign = False
+        try:
+            if not isinstance(proc, subprocess.Popen):
+                raise TypeError("not a child we spawned")
+            root = psutil.Process(proc.pid)
+            tree = [root, *root.children(recursive = True)]
+            readable = True
+            for member in tree:
+                try:
+                    read = getattr(member, "net_connections", None) or member.connections
+                    if any(_listens(conn) for conn in read(kind = "inet")):
+                        return True
+                except psutil.NoSuchProcess:
+                    continue
+                except Exception:  # noqa: BLE001 -- access denied / platform quirk
+                    readable = False
+            tree_says_foreign = readable and not windows
+        except Exception as exc:  # noqa: BLE001 -- platform quirk: fall back below
+            if isinstance(exc, getattr(psutil, "NoSuchProcess", ())):
+                return False
         try:
             for conn in psutil.net_connections(kind = "inet"):
-                laddr = getattr(conn, "laddr", None)
-                if not laddr or getattr(laddr, "port", None) != self.port:
-                    continue
-                if conn.status != psutil.CONN_LISTEN:
+                if not _listens(conn):
                     continue
                 owner = conn.pid
-                if owner is None:
+                # pid 0 is the System Idle Process on Windows: psutil's other "unknown owner".
+                if owner is None or (windows and owner == 0):
                     continue  # not visible to us; do not punish a healthy start
                 if owner == proc.pid or _has_ancestor(owner, proc.pid):
                     return True
@@ -416,6 +380,14 @@ class SdCppServer:
                 return False
         except Exception as exc:  # noqa: BLE001 -- permissions / platform quirks
             logger.debug("sd-server port ownership check unavailable: %s", exc)
+        if tree_says_foreign:
+            logger.error(
+                "sd-server readiness port %s answered but our child %s is not listening on it; "
+                "refusing to use it",
+                self.port,
+                proc.pid,
+            )
+            return False
         return True
 
     def _drain_stdout(self, proc: subprocess.Popen) -> None:
@@ -446,12 +418,7 @@ class SdCppServer:
     def reclaimable_params_vram_gb(
         self, physical_gpu_id: Optional[int]
     ) -> Optional[dict[int, float]]:
-        """Stable resident parameter floor released when this server stops.
-
-        Device attribution is supplied by the backend that resolved the
-        CUDA/ROCm child pin. Missing attribution or a changing/dead process
-        fails closed.
-        """
+        """Fails closed (None) when device attribution is missing or the process has exited."""
         process = self._process
         if physical_gpu_id is None or process is None or process.poll() is not None:
             return None
@@ -465,7 +432,7 @@ class SdCppServer:
     def stop(self) -> None:
         """Terminate the server (SIGTERM -> SIGKILL), join the drain, and release the HTTP
         client + atexit handler. Idempotent."""
-        # signal abort BEFORE contending for the lock so a start() readiness wait bails instead of blocking stop()
+        # Set abort BEFORE taking the lock so a start() readiness wait bails instead of blocking.
         self._abort.set()
         self._stopped = True
         with self._lifecycle_lock:
@@ -523,14 +490,58 @@ class SdCppServer:
         submit_timeout: float = 60.0,
         total_timeout: float = NATIVE_GENERATION_TIMEOUT_S,
     ) -> list[bytes]:
-        """Submit one async ``img_gen`` job, poll it to completion, return image bytes.
+        """A set cancel_event cancels the job natively and raises SdCppCancelled; on_step gets
+        stdout lines."""
+        return self._run_job(
+            "img_gen",
+            _IMG_GEN_PATH,
+            payload,
+            self._decode_images,
+            on_step = on_step,
+            cancel_event = cancel_event,
+            poll_interval = poll_interval,
+            submit_timeout = submit_timeout,
+            total_timeout = total_timeout,
+        )
 
-        ``on_step`` receives each server stdout line (for the step bar). ``cancel_event``,
-        when set, cancels the job via the native endpoint and raises ``SdCppCancelled``.
-        Raises ``RuntimeError`` on submit/poll failures (including the server dying), with
-        the log tail attached.
-        """
-        # Already stopped with the cancel event set: report cancellation (route 409), not a generic "server died" 500.
+    def vid_gen(
+        self,
+        payload: dict[str, Any],
+        *,
+        on_step: Optional[Callable[[str], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
+        poll_interval: float = 0.4,
+        submit_timeout: float = 60.0,
+        total_timeout: float = NATIVE_GENERATION_TIMEOUT_S,
+    ) -> bytes:
+        """``img_gen``'s contract for one ``vid_gen`` job, returning the container bytes (audio muxed); raises
+        ``SdCppServerUnsupported`` when the server cannot do video."""
+        return self._run_job(
+            "vid_gen",
+            _VID_GEN_PATH,
+            payload,
+            self._decode_video,
+            on_step = on_step,
+            cancel_event = cancel_event,
+            poll_interval = poll_interval,
+            submit_timeout = submit_timeout,
+            total_timeout = total_timeout,
+        )
+
+    def _run_job(
+        self,
+        kind: str,
+        path: str,
+        payload: dict[str, Any],
+        decode: Callable[[dict[str, Any]], Any],
+        *,
+        on_step: Optional[Callable[[str], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
+        poll_interval: float = 0.4,
+        submit_timeout: float = 60.0,
+        total_timeout: float = NATIVE_GENERATION_TIMEOUT_S,
+    ) -> Any:
+        """Submits and polls one async job; a cancel raises SdCppCancelled (route 409), not a 500; submit or poll failures raise RuntimeError with the log tail."""
         if self._stopped or not self.is_alive():
             if cancel_event is not None and cancel_event.is_set():
                 raise SdCppCancelled("sd-server generation was cancelled.")
@@ -541,29 +552,34 @@ class SdCppServer:
         try:
             try:
                 resp = self._client.post(
-                    f"{self.base_url}{_IMG_GEN_PATH}", json = payload, timeout = submit_timeout
+                    f"{self.base_url}{path}", json = payload, timeout = submit_timeout
                 )
             except (*_TRANSPORT_ERRORS, httpx.TimeoutException) as exc:
-                raise RuntimeError(self._died_message("img_gen submit", exc)) from exc
+                raise RuntimeError(self._died_message(f"{kind} submit", exc)) from exc
             if resp.status_code == 429:
                 raise RuntimeError("sd-server job queue is full (HTTP 429).")
             if resp.status_code not in (200, 202):
+                if _route_unsupported(resp.status_code, resp.text, kind):
+                    raise SdCppServerUnsupported(
+                        f"this sd-server does not serve {kind} (HTTP {resp.status_code}): "
+                        f"{resp.text[:300]}"
+                    )
                 raise RuntimeError(
-                    f"sd-server img_gen submit -> {resp.status_code}: {resp.text[:500]}"
+                    f"sd-server {kind} submit -> {resp.status_code}: {resp.text[:500]}"
                 )
             try:
                 job = resp.json()
             except ValueError as exc:
                 raise RuntimeError(
-                    f"sd-server img_gen returned a non-JSON submit response: {exc}"
+                    f"sd-server {kind} returned a non-JSON submit response: {exc}"
                 ) from exc
             if not isinstance(job, dict):
                 raise RuntimeError(
-                    f"sd-server img_gen returned an unexpected submit response type: {type(job)}"
+                    f"sd-server {kind} returned an unexpected submit response type: {type(job)}"
                 )
             job_id = job.get("id")
             if not job_id:
-                raise RuntimeError(f"sd-server img_gen returned no job id: {job}")
+                raise RuntimeError(f"sd-server {kind} returned no job id: {job}")
 
             deadline = time.monotonic() + total_timeout
             cancel_sent_at: Optional[float] = None
@@ -573,20 +589,16 @@ class SdCppServer:
                         self.cancel(job_id)
                         cancel_sent_at = time.monotonic()
                     elif time.monotonic() - cancel_sent_at > _CANCEL_GRACE_S:
-                        # Cancel not reflected within the grace window, so the job is still running and sd-server will
-                        # not interrupt it. Stop the process before reporting the cancellation: abandoning the poll
-                        # frees the generate lock while the native job keeps the GPU. Safe, since the backend reloads on
-                        # the next generate.
+                        # sd-server will not interrupt the job; stop it so the GPU is freed with the generate lock.
                         self.stop()
                         raise SdCppCancelled("sd-server generation was cancelled.")
                 if not self.is_alive():
                     # Unwinding a cancel (e.g. unload killed the server): clean cancellation.
                     if cancel_event is not None and cancel_event.is_set():
                         raise SdCppCancelled("sd-server generation was cancelled.")
-                    raise RuntimeError(self._died_message("img_gen poll", None))
+                    raise RuntimeError(self._died_message(f"{kind} poll", None))
                 if time.monotonic() > deadline:
-                    # sd-server will not interrupt an in-flight job, so cancel + stop to free the slot; the backend
-                    # reloads on the next generate.
+                    # sd-server will not interrupt an in-flight job; the backend reloads on the next generate.
                     self.cancel(job_id)
                     self.stop()
                     raise RuntimeError(f"sd-server generation timed out after {total_timeout}s")
@@ -596,8 +608,7 @@ class SdCppServer:
                     time.sleep(poll_interval)
                     continue
                 except RuntimeError as exc:
-                    # a concurrent stop() closes the shared client, giving a plain RuntimeError rather than a transport
-                    # error
+                    # A concurrent stop() closes the client, giving a plain RuntimeError, not a transport error.
                     if cancel_event is not None and cancel_event.is_set():
                         raise SdCppCancelled("sd-server generation was cancelled.") from exc
                     raise
@@ -616,13 +627,19 @@ class SdCppServer:
                     )
                 status = jd.get("status")
                 if status == _TERMINAL_OK:
-                    return self._decode_images(jd)
+                    return decode(jd)
                 if status == _TERMINAL_FAIL:
                     err = jd.get("error") or {}
-                    raise RuntimeError(
+                    message = (
                         "sd-server generation failed: "
                         f"{err.get('code', 'error')}: {err.get('message', '')}".strip()
                     )
+                    if kind == "vid_gen":
+                        # The job error is generic; the cause (OOM, abort) is only in the log.
+                        tail = _diagnostic_tail(self._tail)
+                        if tail:
+                            message += "\nLast output:\n" + tail[:1500]
+                    raise RuntimeError(message)
                 if status == _TERMINAL_CANCELLED:
                     raise SdCppCancelled("sd-server generation was cancelled.")
                 time.sleep(poll_interval)
@@ -635,6 +652,17 @@ class SdCppServer:
             self._client.post(f"{self.base_url}{_JOBS_PATH}/{job_id}/cancel", timeout = 5.0)
         except Exception:  # noqa: BLE001 -- cancel is best-effort
             pass
+
+    @staticmethod
+    def _decode_video(job: dict[str, Any]) -> bytes:
+        result = job.get("result") if isinstance(job, dict) else None
+        b64 = result.get("b64_json") if isinstance(result, dict) else None
+        if not b64:
+            raise RuntimeError("sd-server completed the job but returned no video.")
+        try:
+            return base64.b64decode(b64)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"sd-server returned an undecodable video: {exc}") from exc
 
     @staticmethod
     def _decode_images(job: dict[str, Any]) -> list[bytes]:

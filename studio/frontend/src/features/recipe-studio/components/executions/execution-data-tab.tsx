@@ -70,7 +70,7 @@ function RunningDatasetEmptyState({
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="flex min-w-0 gap-3">
             <div
-              className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-muted/20"
+              className="flex size-9 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/20"
             >
               {showProgress ? (
                 <HugeiconsIcon icon={GithubIcon} className="size-4 text-muted-foreground" />
@@ -177,7 +177,14 @@ export function ExecutionDataTab({
   return (
     <div className="mt-3">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm font-semibold">Dataset sample</p>
+        <div className="space-y-0.5">
+          <p className="text-sm font-semibold">Dataset sample</p>
+          {isExecutionInProgress(execution.status) && execution.dataset.length > 0 && (
+            <p className="text-xs text-muted-foreground">
+              Live preview: new rows appear as each batch finishes.
+            </p>
+          )}
+        </div>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           {datasetColumnNames.length > 0 && (
             <DropdownMenu>

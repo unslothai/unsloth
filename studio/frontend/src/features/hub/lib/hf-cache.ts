@@ -4,6 +4,7 @@
 import { type ModelEntry, modelInfo } from "@huggingface/hub";
 
 import { getHfEndpoint } from "@/lib/hf-endpoint";
+import { hubFetch } from "@/lib/hub-fetch";
 import { LruMap } from "./lru-map";
 import { fingerprintToken } from "./token-fingerprint";
 
@@ -70,7 +71,7 @@ function isStale(key: string): boolean {
   return !hit || Date.now() - hit.ts >= CACHE_TTL_MS;
 }
 
-// Endpoint in the key: the same repo id names a different repo on a mirror, so a repo-and-token key would serve the old host's answer for the rest of the TTL.
+// Endpoint in the key: the same repo id names a different repo on a mirror.
 function cacheKey(
   name: string,
   token: string | undefined,
@@ -120,6 +121,7 @@ export async function cachedModelInfo(
         ]),
       );
       const result = await modelInfo({
+        fetch: hubFetch,
         ...params,
         additionalFields,
       });

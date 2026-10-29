@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { Button } from "@/components/ui/button";
 import {
@@ -38,7 +39,7 @@ import { toast } from "@/lib/toast";
 import {
   chatExportOptions,
   DeleteChatFilesSwitch,
-  OpenChatFolderUnavailableItem,
+  OpenChatFolderItem,
   archiveChatItem,
   deleteChatItem,
   deleteChatProject,
@@ -46,10 +47,10 @@ import {
   getSidebarItemThreadIds,
   notifyChatHistoryUpdated,
   renameChatItem,
-  sandboxSessionIdsHolding,
   useChatNavigationStore,
   useChatPreferencesStore,
   useChatProjects,
+  projectActivityAt,
   useChatRuntimeStore,
   usePinnedChatsStore,
   usePinnedProjectsStore,
@@ -57,8 +58,7 @@ import {
   type ProjectRecord,
 } from "@/features/chat";
 import { useSettingsDialogStore } from "@/features/settings";
-import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
-import { revealSandbox } from "@/components/assistant-ui/sandbox-reveal";
+import { useT } from "@/i18n";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildProjectsTourSteps } from "./tour";
 import { EditProjectDialog } from "./components/edit-project-dialog";
@@ -69,23 +69,23 @@ import {
   Download01Icon,
   Edit03Icon,
   Folder02Icon,
-  FolderAddIcon,
-  FolderOpenIcon,
+  PencilEdit02Icon,
   PinIcon,
   PinOffIcon,
+  PlusSignIcon,
   Search01Icon,
   Upload01Icon,
   ViewIcon,
   ViewOffSlashIcon,
+  MoreHorizontalIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ArrowDownIcon, ChevronDownIcon, MoreHorizontalIcon } from "lucide-react";
+import { ArrowDownIcon } from "lucide-react";
 import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   COMBINED_EXPORT_FORMATS_LIST,
-  exportProjectConversations,
   exportBulkConversationsMerged,
   exportBulkConversationsSeparate,
   EXPORT_FORMATS_LIST,
@@ -93,7 +93,6 @@ import {
 } from "./prompt-storage/prompt-storage-dialog";
 import {
   fileImportSource,
-  importConversationsFromSource,
   nativeImportSource,
   type ImportSource,
 } from "./utils/chat-import";
@@ -101,19 +100,26 @@ import {
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
 import { CHAT_HISTORY_UPDATED_EVENT } from "./api/chat-api";
+import { createHistoryRefreshDebounce } from "./utils/chat-history-revision";
 import { groupThreads, type SidebarItem } from "./hooks/use-chat-sidebar-items";
+import { ProjectMenuItems } from "./components/project-menu-items";
+import { SectionNameDialog } from "./components/section-name-dialog";
+import { useFileProjectInSection } from "./hooks/use-file-project-in-section";
+import {
+  normalizeSectionName,
+  useSidebarOrganizationStore,
+} from "./stores/sidebar-organization-store";
+import { runChatImport } from "./utils/import-chats";
 
-// Reveal this many more projects each time the user scrolls near the bottom.
 const PROJECTS_PAGE_STEP = 12;
-// A streaming chat fires the history event per chunk; one reload per quiet window is enough.
+// Streaming fires the history event per chunk, so debounce reloads.
 const PROJECT_CHATS_REFRESH_DEBOUNCE_MS = 300;
+// Chunk saves are spaced wider than that on a slow CPU model, so they wait for a longer lull.
+const PROJECT_CHATS_STREAM_REFRESH_DEBOUNCE_MS = 2000;
 // Visible count before the fit-to-height measurement runs.
 const PROJECTS_INITIAL_FALLBACK = 8;
-// Approx list row height in px, used to estimate how many rows fit the page.
 const PROJECTS_ROW_HEIGHT = 68;
 
-// Updated column, matching a file-list feel: Today / Yesterday / N days ago, then a short date
-// once it is over a week old.
 function formatUpdated(ts: number): string {
   if (!Number.isFinite(ts)) return "";
   const now = new Date();
@@ -140,14 +146,13 @@ function formatUpdated(ts: number): string {
 }
 
 export function ProjectsPage() {
+  const t = useT();
   const signalReady = useAppShellReadySignal();
   const navigate = useNavigate();
   const { projects, hasLoaded } = useChatProjects();
 
   const [query, setQuery] = useState("");
-  // Newest first, the way a file list opens.
   const [sortDir, setSortDir] = useState<"desc" | "asc">("desc");
-  // Rows that fit the page height (measured), plus any revealed via Show more.
   const [baseFit, setBaseFit] = useState(PROJECTS_INITIAL_FALLBACK);
   const [extraCount, setExtraCount] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
@@ -173,32 +178,28 @@ export function ProjectsPage() {
 
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<ProjectRecord | null>(null);
+  const [sectionFor, setSectionFor] = useState<ProjectRecord | null>(null);
+  const createCustomSection = useSidebarOrganizationStore((s) => s.createCustomSection);
+  const fileProjectInSection = useFileProjectInSection();
   const [deleting, setDeleting] = useState<ProjectRecord | null>(null);
   const [renamingChat, setRenamingChat] = useState<SidebarItem | null>(null);
   const [chatNameDraft, setChatNameDraft] = useState("");
   const [deletingChat, setDeletingChat] = useState<SidebarItem | null>(null);
-  // Whether the open confirmation takes the files too. Seeded per delete, never left standing.
   const [deleteFilesOnDelete, setDeleteFilesOnDelete] = useState(false);
 
   const globalImportRef = useRef<HTMLInputElement>(null);
-  const projectImportRefs = useRef<Map<string, HTMLInputElement>>(new Map());
   const [importFile, setImportFile] = useState<ImportSource | null>(null);
   // A second pick mid-import would interleave two streams into one history.
   const [importing, setImporting] = useState(false);
   // null = Recents
   const [importTargetId, setImportTargetId] = useState<string | null>(null);
-  // Rows open their own chats in place, loaded the first time they are opened.
   const [openProjectIds, setOpenProjectIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
-  // Grouped as the sidebar groups them, so a comparison is one row that opens as one.
-  // "error" is a failed first load: the row says so and offers a retry, and reopening it loads
-  // again rather than trusting the entry.
+  // "error" is a failed first load; reopening retries rather than trusting it.
   const [projectChats, setProjectChats] = useState<
     Record<string, SidebarItem[] | "loading" | "error">
   >({});
-  // Rows kept on screen after a reload failed: they may miss a chat or show one that is gone,
-  // so the row says so, and its next open asks again.
   const [staleProjectIds, setStaleProjectIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -212,13 +213,11 @@ export function ProjectsPage() {
     });
   }, []);
 
-  // One sequence per project: a response that a newer request overtook is dropped, so a chat
-  // moved or deleted mid-flight cannot come back.
+  // Per-project sequence so an overtaken response cannot resurrect moved chats.
   const loadSeqRef = useRef(new Map<string, number>());
   const loadProjectChats = useCallback((projectId: string, silent = false) => {
     const seq = (loadSeqRef.current.get(projectId) ?? 0) + 1;
     loadSeqRef.current.set(projectId, seq);
-    // A reload keeps the rows on screen; only a first load shows the skeleton.
     if (!silent) {
       setProjectChats((prev) => ({ ...prev, [projectId]: "loading" }));
     }
@@ -235,9 +234,6 @@ export function ProjectsPage() {
       })
       .catch(() => {
         if (loadSeqRef.current.get(projectId) !== seq) return;
-        // A failed reload keeps rows already showing, marked stale; anything else becomes a
-        // retryable error, including a first load this reload overtook while it was still
-        // pending, and a folder loaded as empty, which the reload may have been about to fill.
         setProjectChats((prev) => {
           const rows = prev[projectId];
           if (silent && Array.isArray(rows) && rows.length > 0) {
@@ -249,21 +245,15 @@ export function ProjectsPage() {
       });
   }, [setStale]);
 
-  // A loaded list goes stale when chats are imported, moved or deleted. Streaming fires the
-  // event per chunk, so the reload is debounced: open rows reload in place, the rest load
-  // again on their next open.
   const openProjectIdsRef = useRef(openProjectIds);
   useEffect(() => {
     openProjectIdsRef.current = openProjectIds;
   }, [openProjectIds]);
   useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const refresh = () => {
-      if (timer !== null) clearTimeout(timer);
-      timer = setTimeout(() => {
-        timer = null;
+    const debounce = createHistoryRefreshDebounce(
+      () => {
         const open = openProjectIdsRef.current;
-        // A closed project's load may still be in flight; its answer must not refill the cache.
+        // A closed project's load may still be in flight; it must not refill the cache.
         for (const [id, seq] of loadSeqRef.current) {
           if (!open.has(id)) loadSeqRef.current.set(id, seq + 1);
         }
@@ -273,65 +263,28 @@ export function ProjectsPage() {
           return kept;
         });
         for (const id of open) loadProjectChats(id, true);
-      }, PROJECT_CHATS_REFRESH_DEBOUNCE_MS);
-    };
-    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, refresh);
+      },
+      PROJECT_CHATS_REFRESH_DEBOUNCE_MS,
+      PROJECT_CHATS_STREAM_REFRESH_DEBOUNCE_MS,
+    );
+    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, debounce.onEvent);
     return () => {
-      if (timer !== null) clearTimeout(timer);
-      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, refresh);
+      debounce.cancel();
+      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, debounce.onEvent);
     };
   }, [loadProjectChats]);
 
   async function handleImport(source: ImportSource, projectId: string | null) {
-    // Counts up while it runs: a large export takes minutes of writes.
     setImporting(true);
-    const toastId = toast.loading("Importing chats...");
     try {
-      const { imported, failed } = await importConversationsFromSource(
-        source,
+      await runChatImport(source, {
         projectId,
-        {
-          onProgress: ({ imported: done, bytesRead, totalBytes }) => {
-            const percent = totalBytes
-              ? Math.min(100, Math.round((bytesRead / totalBytes) * 100))
-              : 0;
-            toast.loading(`Importing chats: ${done} so far (${percent}%)...`, {
-              id: toastId,
-            });
-          },
-        },
-      );
-      if (imported === 0 && failed === 0) {
-        toast.info("No conversations found in file.", { id: toastId });
-        return;
-      }
-      if (imported === 0) {
-        // Nothing was created, so however the count is phrased this is a failure.
-        toast.error("Import failed.", {
-          id: toastId,
-          description: `${failed} conversation${failed === 1 ? "" : "s"} could not be saved.`,
-        });
-        return;
-      }
-      const dest = projectId
-        ? (projects.find((p) => p.id === projectId)?.name ?? "project")
-        : "Recents";
-      toast.success(
-        failed > 0
-          ? `Imported ${imported} conversation${imported === 1 ? "" : "s"} to ${dest}; ${failed} could not be saved.`
-          : `Imported ${imported} conversation${imported === 1 ? "" : "s"} to ${dest}.`,
-        { id: toastId },
-      );
-    } catch (error) {
-      toast.error("Import failed.", {
-        id: toastId,
-        description: error instanceof Error ? error.message : undefined,
+        name: projectId ? (projects.find((p) => p.id === projectId)?.name ?? "project") : undefined,
       });
     } finally {
       setImporting(false);
     }
   }
-
 
   async function selectGlobalImportFile() {
     if (importing) return;
@@ -342,25 +295,8 @@ export function ProjectsPage() {
     try {
       const selected = await pickNativeChatImport();
       if (!selected) return;
-      setImportTargetId(projects[0]?.id ?? null);
+      setImportTargetId(null);
       setImportFile(nativeImportSource(selected));
-    } catch (error) {
-      toast.error("Import failed.", {
-        description: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
-  async function selectProjectImportFile(projectId: string) {
-    if (importing) return;
-    if (!isTauri) {
-      projectImportRefs.current.get(projectId)?.click();
-      return;
-    }
-    try {
-      const selected = await pickNativeChatImport();
-      if (!selected) return;
-      await handleImport(nativeImportSource(selected), projectId);
     } catch (error) {
       toast.error("Import failed.", {
         description: error instanceof Error ? error.message : String(error),
@@ -381,13 +317,14 @@ export function ProjectsPage() {
     const filtered = trimmed
       ? projects.filter((p) => p.name.toLowerCase().includes(trimmed))
       : projects.slice();
+    // By last use, as the sidebar orders them: a project's updatedAt only moves on an edit.
     filtered.sort((a, b) =>
-      sortDir === "asc" ? a.updatedAt - b.updatedAt : b.updatedAt - a.updatedAt,
+      sortDir === "asc"
+        ? projectActivityAt(a) - projectActivityAt(b)
+        : projectActivityAt(b) - projectActivityAt(a),
     );
     return filtered;
   }, [projects, query, sortDir]);
-  // Default view shows as many rows as fit the page, then loads more as the user scrolls near the
-  // bottom. Search always spans every project.
   const isSearching = query.trim() !== "";
   const visibleCount = baseFit + extraCount;
   const visibleProjects = isSearching
@@ -395,7 +332,6 @@ export function ProjectsPage() {
     : sortedProjects.slice(0, visibleCount);
   const hasMore = !isSearching && sortedProjects.length > visibleCount;
 
-  // The list only renders once at least one project exists, so its step is dropped until then.
   const tourSteps = useMemo(
     () => buildProjectsTourSteps({ hasProjects: visibleProjects.length > 0 }),
     [visibleProjects.length],
@@ -410,14 +346,12 @@ export function ProjectsPage() {
     signalReady();
   }, [hasLoaded, signalReady]);
 
-  // Estimate how many rows fit below the list's top so the first page fills the screen without
-  // loading everything up front.
   useEffect(() => {
     function measure() {
       const el = listRef.current;
       if (!el) return;
       const top = el.getBoundingClientRect().top;
-      const reserve = 24; // bottom breathing room
+      const reserve = 24;
       const fits = Math.floor(
         (window.innerHeight - top - reserve) / PROJECTS_ROW_HEIGHT,
       );
@@ -428,7 +362,6 @@ export function ProjectsPage() {
     return () => window.removeEventListener("resize", measure);
   }, [hasLoaded]);
 
-  // Infinite scroll: reveal another page-step whenever the sentinel near the list bottom scrolls into view.
   useEffect(() => {
     const el = sentinelRef.current;
     if (!el || !hasMore) return;
@@ -442,8 +375,7 @@ export function ProjectsPage() {
     );
     io.observe(el);
     return () => io.disconnect();
-    // Re-observe after each load so it keeps filling while the sentinel stays in view
-    // (IntersectionObserver does not re-fire on a steady intersection).
+    // IntersectionObserver does not re-fire on a steady intersection, so re-observe.
   }, [hasMore, visibleCount]);
 
   function toggleProjectChats(projectId: string) {
@@ -454,8 +386,6 @@ export function ProjectsPage() {
       else next.delete(projectId);
       return next;
     });
-    // Only an open asks: a close after a failed load must not start a request the reopen
-    // then waits on.
     if (!opening) return;
     const cached = projectChats[projectId];
     const loaded = cached !== undefined && cached !== "error";
@@ -467,7 +397,6 @@ export function ProjectsPage() {
   function openChat(item: SidebarItem, projectId: string) {
     const runtime = useChatRuntimeStore.getState();
     runtime.setActiveProjectId(projectId);
-    // A comparison restores from its pair id; a pane opened as a thread is half of it.
     if (item.type === "compare") {
       runtime.setActiveThreadId(null);
       navigate({ to: "/chat", search: { compare: item.id, project: projectId } });
@@ -484,16 +413,10 @@ export function ProjectsPage() {
     navigate({ to: "/chat", search: { project: projectId } });
   }
 
-  async function handleProjectExport(project: ProjectRecord, fmt: ConvExportFormat) {
-    try {
-      const threads = await listStoredChatThreads({ projectId: project.id, includeArchived: false });
-      const ids = [...new Set(threads.map((t) => t.id))];
-      await exportProjectConversations(ids, fmt, project.name);
-    } catch (error) {
-      if (!isDownloadCancelled(error)) {
-        toast.error("Export failed.");
-      }
-    }
+  // A saved chat, as the sidebar's New chat.
+  function newChatInProject(projectId: string) {
+    useChatRuntimeStore.getState().setIncognito(false);
+    openProject(projectId);
   }
 
   async function handleBulkProjectExport(
@@ -502,18 +425,12 @@ export function ProjectsPage() {
     merged: boolean,
   ) {
     try {
-      let threads;
-      if (scope === "projects") {
-        threads = (
-          await Promise.all(
-            projects.map((p) =>
-              listStoredChatThreads({ projectId: p.id, includeArchived: false }),
-            ),
-          )
-        ).flat();
-      } else {
-        threads = await listStoredChatThreads({ includeArchived: false });
-      }
+      const listed = await listStoredChatThreads({ includeArchived: false });
+      const projectIds = new Set(projects.map((p) => p.id));
+      const threads =
+        scope === "projects"
+          ? listed.filter((t) => t.projectId && projectIds.has(t.projectId))
+          : listed;
       const ids = [...new Set(threads.map((t) => t.id))];
       if (ids.length === 0) { toast.info("No conversations to export."); return; }
       const ts = new Date().toISOString().slice(0, 10);
@@ -530,7 +447,6 @@ export function ProjectsPage() {
     }
   }
 
-  // Chat row actions, the same calls the sidebar's chat menu makes.
   async function commitChatRename() {
     const target = renamingChat;
     const name = chatNameDraft.trim();
@@ -546,7 +462,6 @@ export function ProjectsPage() {
     }
   }
 
-  // The open chat is the runtime's, not this page's, so its id comes from there.
   function activeThreadId(): string | undefined {
     return useChatRuntimeStore.getState().activeThreadId ?? undefined;
   }
@@ -564,7 +479,7 @@ export function ProjectsPage() {
   async function deleteChat(chat: SidebarItem, deleteFiles: boolean) {
     try {
       await deleteChatItem(chat, activeThreadId(), () => {}, { deleteFiles });
-      // Pins are stored apart from the chats, so a deleted one leaves its id behind forever.
+      // Pins are stored apart from chats, so remove the id explicitly.
       unpinChat(chat.id);
     } catch (err) {
       toast.error("Failed to delete chat", {
@@ -573,9 +488,7 @@ export function ProjectsPage() {
     }
   }
 
-  /** Always through here, as the sidebar does it: a switch left over from the last delete would
-   *  take files this one was never asked to. A chat follows the preference, so the dialog shows
-   *  what is about to happen; a project workspace is bigger, so it asks from scratch. */
+  /** Always reset here, or a leftover switch deletes files this delete never asked for. */
   function openChatDelete(chat: SidebarItem) {
     setDeleteFilesOnDelete(alwaysDeleteChatFiles);
     setDeletingChat(chat);
@@ -593,26 +506,6 @@ export function ProjectsPage() {
     setDeletingChat(null);
     setDeleteFilesOnDelete(false);
     await deleteChat(target, deleteFiles);
-  }
-
-  /** The folder this chat's tool calls wrote to, or a refusal when it wrote to two. */
-  async function openChatFolder(chat: SidebarItem, fallback: string) {
-    try {
-      const ids = getSidebarItemThreadIds(chat);
-      const distinct = await sandboxSessionIdsHolding(ids);
-      if (distinct.length > 1) {
-        toast.error("This chat wrote to more than one folder.", {
-          description:
-            "It ran tools on both sides of a move, so open the folder from a tool card instead.",
-        });
-        return;
-      }
-      await revealSandbox(distinct[0] ?? fallback);
-    } catch (error) {
-      toast.error("Could not open the chat folder.", {
-        description: error instanceof Error ? error.message : String(error),
-      });
-    }
   }
 
   async function handleChatExport(
@@ -638,6 +531,10 @@ export function ProjectsPage() {
     setDeleteFilesOnDelete(false);
     try {
       await deleteChatProject(target.id, { deleteFiles });
+      // As the sidebar's delete: its chats went with it, and the runtime must not reopen it.
+      notifyChatHistoryUpdated();
+      const runtime = useChatRuntimeStore.getState();
+      if (runtime.activeProjectId === target.id) runtime.setActiveProjectId(null);
     } catch (err) {
       toast.error("Failed to delete project", {
         description: err instanceof Error ? err.message : undefined,
@@ -646,9 +543,8 @@ export function ProjectsPage() {
   }
 
   return (
-    <main className="mx-auto w-full max-w-5xl px-6 pb-10 pt-16 font-heading sm:px-10">
+    <main className="mx-auto w-full max-w-5xl 4xl:max-w-6xl px-6 pb-10 pt-8 max-sm:px-4 font-heading sm:px-10">
       <GuidedTour {...tour.tourProps} />
-      {/* Global import file input */}
       <input
         ref={globalImportRef}
         type="file"
@@ -657,7 +553,7 @@ export function ProjectsPage() {
         onChange={(e) => {
           const file = e.target.files?.[0];
           if (file) {
-            setImportTargetId(projects[0]?.id ?? null);
+            setImportTargetId(null);
             setImportFile(fileImportSource(file));
           }
           e.target.value = "";
@@ -667,9 +563,6 @@ export function ProjectsPage() {
         <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
           Projects
         </h1>
-        {/* The Updated column orders the list, so search takes the room a sort control had.
-            Below sm the group wraps to its own row: beside the heading the two buttons left the
-            field narrower than its own padding. */}
         <div className="flex w-full min-w-0 items-center justify-end gap-3 sm:w-auto sm:flex-1">
           <div className="relative min-w-0 flex-1 sm:max-w-md">
             <span className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-muted-foreground">
@@ -678,8 +571,14 @@ export function ProjectsPage() {
             <Input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape" && query) {
+                  e.preventDefault();
+                  setQuery("");
+                }
+              }}
               placeholder="Search projects"
-              className="h-9 w-full rounded-full border-none bg-muted pl-10 pr-4 shadow-none dark:bg-card"
+              className="h-control w-full rounded-full border-none bg-muted pl-10 pr-4 shadow-none dark:bg-card"
               aria-label="Search projects"
             />
           </div>
@@ -690,7 +589,7 @@ export function ProjectsPage() {
                 size="icon"
                 data-tour="projects-io"
                 title="Import / Export projects"
-                className="rounded-full border-none bg-muted shadow-none dark:bg-card"
+                className="size-control rounded-full border-none bg-muted shadow-none dark:bg-card"
               >
                 <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
               </Button>
@@ -755,7 +654,8 @@ export function ProjectsPage() {
               </DropdownMenuSub>
             </DropdownMenuContent>
           </DropdownMenu>
-          <Button data-tour="projects-new" onClick={() => setCreating(true)}>
+          <Button variant="dark" data-tour="projects-new" onClick={() => setCreating(true)}>
+            <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
             New project
           </Button>
         </div>
@@ -763,55 +663,57 @@ export function ProjectsPage() {
 
       {!hasLoaded ? (
         <div className="mt-16">
-          {/* The loaded header without its sort control, which has nothing to sort yet. */}
           <div className="mb-1 flex items-center gap-3 px-5 pb-1 text-ui-13 font-medium text-muted-foreground">
             <span className="flex-1">Name</span>
             <span className="shrink-0 sm:w-40">Updated</span>
+            <span className="size-7 shrink-0" />
             <span className="size-7 shrink-0" />
             <span className="w-8 shrink-0" />
           </div>
           {Array.from({ length: 6 }).map((_, index) => (
             <div
               key={index}
-              className="flex items-center gap-3 rounded-xl px-5 py-4"
+              className="flex items-center gap-3 rounded-md px-5 py-4"
             >
-              <Skeleton className="mr-1 size-9 shrink-0 rounded-[10px]" />
-              <Skeleton className="h-4 w-40 rounded-[8px]" />
+              <Skeleton className="mr-1 size-9 shrink-0 rounded-md" />
+              <Skeleton className="h-4 w-40 rounded-full" />
               <span className="flex-1" />
-              <Skeleton className="h-4 w-16 rounded-[8px]" />
+              <Skeleton className="h-4 w-16 rounded-full" />
               <span className="w-8 shrink-0" />
             </div>
           ))}
         </div>
       ) : visibleProjects.length === 0 ? (
         <div className="mt-16 flex flex-col items-center justify-center gap-2 text-center text-muted-foreground">
-          <p className="text-sm">
-            {projects.length === 0
-              ? "No projects yet."
-              : "No projects match your search."}
-          </p>
-          {projects.length === 0 && (
-            <Button
-              variant="outline"
-              className="mt-2 border-none bg-background shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none"
-              onClick={() => setCreating(true)}
-            >
-              <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className="size-icon" />
-              Create your first project
-            </Button>
+          {projects.length === 0 ? (
+            <>
+              <p className="max-w-sm text-sm">
+                A project keeps related chats together, with shared instructions and sources
+                every chat in it can use.
+              </p>
+              <Button
+                variant="outline"
+                className="mt-2 border-none bg-background shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none"
+                onClick={() => setCreating(true)}
+              >
+                <HugeiconsIcon icon={Folder02Icon} strokeWidth={1.75} className="size-icon" />
+                Create your first project
+              </Button>
+            </>
+          ) : (
+            <>
+              <p className="text-sm">No projects match your search.</p>
+              <Button variant="ghost" size="sm" onClick={() => setQuery("")}>
+                Clear search
+              </Button>
+            </>
           )}
         </div>
       ) : (
         <>
         <div className="mt-16">
-          {/* Column header. Name starts at the folder icon's left edge, and the trailing
-              spacers stand in for the row's pin and menu so Updated sits over its values.
-              Below sm the values go, since 160px of date left a nested chat row no width for
-              its title and pushed its actions off a phone screen; the control stays, shrunk to
-              its label, as the only way to turn the order around. */}
           <div className="mb-1 flex items-center gap-3 px-5 pb-1 text-ui-13 font-medium text-muted-foreground">
             <span className="flex-1">Name</span>
-            {/* The column sorts the list, and the arrow says which way. */}
             <button
               type="button"
               onClick={() => setSortDir((dir) => (dir === "desc" ? "asc" : "desc"))}
@@ -819,7 +721,6 @@ export function ProjectsPage() {
               className="flex shrink-0 cursor-pointer items-center gap-1 text-left transition-colors hover:text-foreground sm:w-40"
             >
               Updated
-              {/* Down for newest first, up for oldest, as a sorted column reads. */}
               <ArrowDownIcon
                 strokeWidth={1.75}
                 className={cn(
@@ -828,6 +729,7 @@ export function ProjectsPage() {
                 )}
               />
             </button>
+            <span className="size-7 shrink-0" />
             <span className="size-7 shrink-0" />
             <span className="w-8 shrink-0" />
           </div>
@@ -838,36 +740,19 @@ export function ProjectsPage() {
             const chats = projectChats[project.id];
             return (
             <div key={`wrap-${project.id}`}>
-            <input
-              key={`import-${project.id}`}
-              type="file"
-              accept=".json,.jsonl,.ndjson,.csv"
-              className="hidden"
-              ref={(el) => {
-                if (el) projectImportRefs.current.set(project.id, el);
-                else projectImportRefs.current.delete(project.id);
-              }}
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) void handleImport(fileImportSource(file), project.id);
-                e.target.value = "";
-              }}
-            />
             <div
               key={project.id}
-              className="group/project-row relative flex items-center gap-3 rounded-xl px-5 py-4 text-left transition-colors duration-150 hover:bg-muted/70 dark:hover:bg-[rgb(255_255_255_/_calc(0.055*var(--contrast-wash-gain,1)))]"
+              className="group/project-row relative flex items-center gap-3 rounded-md px-5 py-4 text-left transition-colors duration-150 hover:bg-muted/70 dark:hover:bg-[rgb(255_255_255_/_calc(0.055*var(--contrast-wash-gain,1)))]"
             >
-              {/* The disclosure belongs to the name, so it sits beside it rather than out by
-                  the Updated column, where it read as another row action. */}
               <span className="flex min-w-0 flex-1 items-center gap-2">
                 {/* A real button holding only text. Giving the whole row the button role made
                     its pin and menu presentational children: one control where there are four. */}
                 <button
                   type="button"
                   onClick={() => openProject(project.id)}
-                  className="flex min-w-0 cursor-pointer items-center gap-3 rounded-lg text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="flex min-w-0 cursor-pointer items-center gap-3 rounded-md text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 >
-                  <span className="mr-1 flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-muted text-foreground/70 transition-colors group-hover/project-row:bg-primary/10 group-hover/project-row:text-primary">
+                  <span className="mr-1 flex size-9 shrink-0 items-center justify-center rounded-md bg-muted text-foreground/70 transition-colors group-hover/project-row:bg-primary/10 group-hover/project-row:text-primary">
                     <HugeiconsIcon
                       icon={Folder02Icon}
                       strokeWidth={1.75}
@@ -878,7 +763,6 @@ export function ProjectsPage() {
                     {project.name}
                   </span>
                 </button>
-                {/* Opens the project's chats in place, without leaving the list. */}
                 <button
                   type="button"
                   aria-label={chatsOpen ? "Hide chats" : "Show chats"}
@@ -892,7 +776,7 @@ export function ProjectsPage() {
                     chatsOpen ? "opacity-100" : "opacity-0",
                   )}
                 >
-                  <ChevronDownIcon
+                  <HugeiconsIcon icon={ChevronDownStandardIcon}
                     strokeWidth={1.75}
                     className={cn(
                       "size-4 transition-transform",
@@ -900,11 +784,17 @@ export function ProjectsPage() {
                     )}
                   />
                 </button>
+                {/* biome-ignore lint/a11y/useKeyWithClickEvents: the chevron is the keyboard target */}
+                {/* biome-ignore lint/a11y/noStaticElementInteractions: a wider mouse target for the chevron */}
+                <span
+                  aria-hidden="true"
+                  onClick={() => toggleProjectChats(project.id)}
+                  className="-my-4 min-w-0 flex-1 cursor-pointer self-stretch"
+                />
               </span>
               <span className="hidden w-40 shrink-0 text-sm text-muted-foreground sm:block">
-                {formatUpdated(project.updatedAt)}
+                {formatUpdated(projectActivityAt(project))}
               </span>
-              {/* Pinning is one click here, as it is on a sidebar row. */}
               <button
                 type="button"
                 aria-label={pinned ? "Unpin project" : "Pin project"}
@@ -912,7 +802,6 @@ export function ProjectsPage() {
                   e.stopPropagation();
                   togglePinProject(project.id);
                 }}
-                // On show for every row, hover or not, so pinning is never hidden.
                 className="flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
               >
                 <HugeiconsIcon
@@ -921,8 +810,20 @@ export function ProjectsPage() {
                   className="size-4"
                 />
               </button>
+              {/* As ChatGPT's project rows: a new chat is one click, beside the menu that also has it. */}
+              <button
+                type="button"
+                aria-label="New chat in project"
+                title="New chat in project"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  newChatInProject(project.id);
+                }}
+                className="flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+              >
+                <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-4" />
+              </button>
               <div className="relative flex w-8 shrink-0 items-center justify-end">
-                {/* On show beside the pin, so the row's actions read the same at rest. */}
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <button
@@ -931,7 +832,7 @@ export function ProjectsPage() {
                       aria-label="Project options"
                       className="absolute right-0 flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground data-[state=open]:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:data-[state=open]:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
                     >
-                      <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
+                      <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-icon" />
                     </button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent
@@ -940,50 +841,15 @@ export function ProjectsPage() {
                     sideOffset={0}
                     onClick={(e) => e.stopPropagation()}
                     onKeyDown={(e) => e.stopPropagation()}
-                    className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 py-2 font-heading rounded-[14px] border-0"
+                    className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-52 font-heading rounded-xl border-0"
                   >
-                    {/* No pin item: the row's own button does it. Edit opens the sidebar's
-                        dialog, which owns the name, instructions and source folders. */}
-                    <DropdownMenuItem onSelect={() => setEditing(project)}>
-                      <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
-                      <span>Edit</span>
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onSelect={(e) => {
-                        e.stopPropagation();
-                        void selectProjectImportFile(project.id);
-                      }}
-                    >
-                      <HugeiconsIcon icon={Upload01Icon} strokeWidth={1.75} className="size-icon" />
-                      <span>Import chats</span>
-                    </DropdownMenuItem>
-                    <DropdownMenuSub>
-                      <DropdownMenuSubTrigger>
-                        <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon mr-1" />
-                        <span>Export</span>
-                      </DropdownMenuSubTrigger>
-                      <DropdownMenuSubContent className="w-52">
-                        {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
-                          <DropdownMenuItem
-                            key={fmt}
-                            onSelect={(e) => {
-                              e.stopPropagation();
-                              void handleProjectExport(project, fmt);
-                            }}
-                          >
-                            {label}
-                          </DropdownMenuItem>
-                        ))}
-                      </DropdownMenuSubContent>
-                    </DropdownMenuSub>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      variant="destructive"
-                      onSelect={() => openProjectDelete(project)}
-                    >
-                      <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
-                      <span>Delete</span>
-                    </DropdownMenuItem>
+                    <ProjectMenuItems
+                      project={project}
+                      onNewChat={() => newChatInProject(project.id)}
+                      onEdit={() => setEditing(project)}
+                      onDelete={() => openProjectDelete(project)}
+                      onNewSection={() => setSectionFor(project)}
+                    />
                   </DropdownMenuContent>
                 </DropdownMenu>
               </div>
@@ -991,7 +857,7 @@ export function ProjectsPage() {
             {chatsOpen && (
               <div className="mb-2 flex flex-col gap-0.5 pl-[calc(76px*var(--ui-space-scale,1))]">
                 {chats === undefined || chats === "loading" ? (
-                  <Skeleton className="h-6 w-48 rounded-[8px]" />
+                  <Skeleton className="h-6 w-48 rounded-full" />
                 ) : chats === "error" ? (
                   <button
                     type="button"
@@ -1010,37 +876,36 @@ export function ProjectsPage() {
                       const chatUnread = chatThreadIds.some((id) =>
                         unreadThreadIds.has(id),
                       );
-                      // Every chat here sits in a project, so the folder is the project's.
-                      const chatSandboxId = sandboxSessionIdFor(
-                        chatThreadIds[0] ?? chat.id,
-                        project.id,
-                      );
                       return (
                       <div
                         key={chat.id}
-                        className="group/chat-row flex items-center gap-3 rounded-xl py-1.5 pl-2 pr-5 text-left text-sm text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.055*var(--contrast-wash-gain,1)))]"
+                        className="group/chat-row flex items-center gap-3 rounded-full py-1.5 pl-2 pr-5 text-left text-sm text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.055*var(--contrast-wash-gain,1)))]"
                       >
-                        {/* A real button holding only text. Giving the whole row the button role
-                            made its pin and menu presentational children. */}
                         <button
                           type="button"
                           onClick={() => openChat(chat, project.id)}
-                          className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-lg text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                          className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-full text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         >
                           <HugeiconsIcon
                             icon={MessageCircleIcon}
                             strokeWidth={1.75}
                             className="size-4 shrink-0"
                           />
-                          <span className="min-w-0 flex-1 truncate">{chat.title}</span>
+                          <span className="min-w-0 truncate">{chat.title}</span>
+                          {chatUnread ? (
+                            <span
+                              role="img"
+                              aria-label="Unread"
+                              className="size-2 shrink-0 rounded-full bg-primary"
+                            />
+                          ) : null}
+                          <span className="flex-1" />
                           {/* Same widths as a project row, so the columns line up under it, and
                               gone with it below sm, where a nested row has no room for both. */}
                           <span className="hidden w-40 shrink-0 sm:block">
                             {formatUpdated(chat.updatedAt)}
                           </span>
                         </button>
-                        {/* A chat's actions belong to the row the cursor is on, so they stay
-                            hover-revealed, and show outright without a cursor to hover with. */}
                         <button
                           type="button"
                           aria-label={chatPinned ? "Unpin chat" : "Pin chat"}
@@ -1059,6 +924,8 @@ export function ProjectsPage() {
                             className="size-4"
                           />
                         </button>
+                        {/* Stands in for the project row's New chat, keeping pin and menu in line. */}
+                        <span className="size-7 shrink-0" />
                         <div className="relative flex w-8 shrink-0 items-center justify-end">
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
@@ -1068,7 +935,7 @@ export function ProjectsPage() {
                                 aria-label="Chat options"
                                 className="absolute right-0 flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground focus-visible:opacity-100 group-hover/chat-row:opacity-100 pointer-coarse:opacity-100 data-[state=open]:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] data-[state=open]:opacity-100 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:data-[state=open]:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
                               >
-                                <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
+                                <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-icon" />
                               </button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent
@@ -1077,7 +944,7 @@ export function ProjectsPage() {
                               sideOffset={0}
                               onClick={(e) => e.stopPropagation()}
                               onKeyDown={(e) => e.stopPropagation()}
-                              className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-52 py-2 font-heading rounded-[14px] border-0"
+                              className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-52 font-heading rounded-xl border-0"
                             >
                               <DropdownMenuItem
                                 onSelect={() => {
@@ -1088,7 +955,6 @@ export function ProjectsPage() {
                                 <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
                                 <span>Rename</span>
                               </DropdownMenuItem>
-                              {/* The dot a finished reply leaves, put back or taken off by hand. */}
                               <DropdownMenuItem
                                 onSelect={() =>
                                   chatUnread
@@ -1102,23 +968,10 @@ export function ProjectsPage() {
                                 }
                               >
                                 <HugeiconsIcon icon={chatUnread ? ViewIcon : ViewOffSlashIcon} strokeWidth={1.75} className="size-icon" />
-                                <span>{chatUnread ? "Mark as read" : "Mark as unread"}</span>
+                                <span>
+                                  {t(chatUnread ? "shell.selection.markRead" : "shell.selection.markUnread")}
+                                </span>
                               </DropdownMenuItem>
-                              {chatSandboxId ? (
-                                isTauri ? (
-                                  <DropdownMenuItem
-                                    title="Open the folder this chat's tool calls read and write"
-                                    onSelect={() =>
-                                      void openChatFolder(chat, chatSandboxId)
-                                    }
-                                  >
-                                    <HugeiconsIcon icon={FolderOpenIcon} strokeWidth={1.75} className="size-icon" />
-                                    <span>Open chat folder</span>
-                                  </DropdownMenuItem>
-                                ) : (
-                                  <OpenChatFolderUnavailableItem />
-                                )
-                              ) : null}
                               <DropdownMenuSub>
                                 <DropdownMenuSubTrigger>
                                   <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon mr-1" />
@@ -1137,7 +990,6 @@ export function ProjectsPage() {
                                     </DropdownMenuItem>
                                   ))}
                                   <DropdownMenuSeparator />
-                                  {/* Bulk export and import live in Settings -> Data. */}
                                   <DropdownMenuItem
                                     onSelect={() =>
                                       useSettingsDialogStore
@@ -1149,6 +1001,7 @@ export function ProjectsPage() {
                                   </DropdownMenuItem>
                                 </DropdownMenuSubContent>
                               </DropdownMenuSub>
+                              <OpenChatFolderItem item={chat} />
                               <DropdownMenuSeparator />
                               <DropdownMenuItem onSelect={() => void archiveChat(chat)}>
                                 <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
@@ -1187,27 +1040,34 @@ export function ProjectsPage() {
             </div>
             );
           })}
-          {/* Loads the next page-step when scrolled into view. */}
           {hasMore && <div ref={sentinelRef} className="h-px w-full" />}
           </div>
         </div>
         </>
       )}
 
-      {/* Create project (name + drag-and-drop sources) */}
       <NewProjectDialog open={creating} onOpenChange={setCreating} />
 
+      <SectionNameDialog
+        open={sectionFor !== null}
+        mode="create"
+        onOpenChange={(open) => !open && setSectionFor(null)}
+        onSubmit={(name) => {
+          const sectionId = createCustomSection(name);
+          if (sectionId && sectionFor) {
+            fileProjectInSection(sectionFor, sectionId, normalizeSectionName(name));
+          }
+        }}
+      />
       {/* Edit project (name + instructions + source folders), the sidebar's dialog. */}
       <EditProjectDialog
         project={editing}
         onOpenChange={(open) => {
           if (!open) setEditing(null);
         }}
-        // Delete keeps this page's own confirmation.
         onDelete={(project) => openProjectDelete(project)}
       />
 
-      {/* Rename chat */}
       <Dialog
         open={renamingChat !== null}
         onOpenChange={(open) => {
@@ -1251,7 +1111,6 @@ export function ProjectsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Delete chat */}
       <Dialog
         open={deletingChat !== null}
         onOpenChange={(open) => {
@@ -1266,7 +1125,6 @@ export function ProjectsPage() {
             Are you sure you want to delete <em>{deletingChat?.title}</em>? Its messages
             will be permanently deleted.
           </p>
-          {/* The files are a second thing to lose, so the delete says so and can be told not to. */}
           <DeleteChatFilesSwitch
             id="projects-delete-chat-files"
             checked={deleteFilesOnDelete}
@@ -1287,7 +1145,6 @@ export function ProjectsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Import destination picker */}
       <Dialog open={importFile !== null} onOpenChange={(open) => { if (!open) setImportFile(null); }}>
         <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
           <DialogHeader>
@@ -1295,8 +1152,6 @@ export function ProjectsPage() {
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
             Choose where to import{" "}
-            {/* A picked local file, and the dialog portals out of any marked
-                ancestor, so the name needs its own marker. */}
             <span
               data-reload-snapshot-sensitive
               className="font-medium text-foreground"
@@ -1326,7 +1181,6 @@ export function ProjectsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Delete project */}
       <Dialog
         open={deleting !== null}
         onOpenChange={(open) => {
@@ -1341,7 +1195,6 @@ export function ProjectsPage() {
             Are you sure you want to delete <em>{deleting?.name}</em>? Its chats will
             be permanently deleted.
           </p>
-          {/* Same offer the sidebar makes, naming the folder when the record carries one. */}
           <DeleteChatFilesSwitch
             id="projects-delete-project-files"
             checked={deleteFilesOnDelete}

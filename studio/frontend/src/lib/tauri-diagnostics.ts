@@ -41,7 +41,7 @@ export function redactDiagnosticsText(text: string): string {
     /\b(authorization\s*[:=]\s*)(bearer|basic)\s+[^\s,;]+/gi,
     "$1$2 <redacted>",
   );
-  redacted = redacted.replace(/\bhf_[A-Za-z0-9]{20,}\b/g, "hf_<redacted>");
+  redacted = redacted.replace(/\bhf_(?:oauth_)?[A-Za-z0-9]{20,}\b/g, "hf_<redacted>");
   redacted = redacted.replace(/\bghp_[A-Za-z0-9_]{20,}\b/g, "ghp_<redacted>");
   redacted = redacted.replace(/\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, "github_pat_<redacted>");
   redacted = redacted.replace(/\bsk-[A-Za-z0-9_-]{20,}\b/g, "sk-<redacted>");

@@ -89,7 +89,8 @@ def db_rows(table):
 
 @pytest.mark.parametrize("actor", ["unsloth", "alice", "bob"])
 @pytest.mark.parametrize(
-    "operation", ["list", "create", "setup-code", "deactivate", "reactivate", "delete"]
+    "operation",
+    ["list", "create", "setup-code", "deactivate", "reactivate", "model-access", "delete"],
 )
 @pytest.mark.parametrize("target", ["unsloth", "alice", "bob"])
 def test_owner_alice_bob_endpoint_matrix(matrix, actor, operation, target):
@@ -103,6 +104,10 @@ def test_owner_alice_bob_endpoint_matrix(matrix, actor, operation, target):
         response = client.post("/api/accounts", headers = headers(actor), json = {"username": "carol"})
     elif operation == "setup-code":
         response = client.post(url + "/setup-code", headers = headers(actor))
+    elif operation == "model-access":
+        response = client.put(
+            url + "/model-access", headers = headers(actor), json = {"model_allowlist": ["unsloth/*"]}
+        )
     elif operation in ("deactivate", "reactivate"):
         response = client.patch(
             url, headers = headers(actor), json = {"is_active": operation == "reactivate"}
@@ -122,7 +127,18 @@ def test_owner_alice_bob_endpoint_matrix(matrix, actor, operation, target):
         assert {r["username"] for r in response.json()["accounts"]} == {"unsloth", "alice", "bob"}
         assert all(
             set(row)
-            == {"account_id", "username", "role", "is_active", "created_at", "setup_code_pending"}
+            == {
+                "account_id",
+                "username",
+                "role",
+                "is_active",
+                "created_at",
+                "setup_code_pending",
+                "model_allowlist",
+                "login_alias",
+                "display_name",
+                "avatar_url",
+            }
             for row in response.json()["accounts"]
         )
 
@@ -134,6 +150,7 @@ def test_owner_alice_bob_endpoint_matrix(matrix, actor, operation, target):
         ("POST", "", {"username": "carol"}),
         ("POST", "/missing/setup-code", None),
         ("PATCH", "/missing", {"is_active": False}),
+        ("PUT", "/missing/model-access", {"model_allowlist": None}),
         ("DELETE", "/missing", None),
     ],
 )
@@ -821,8 +838,7 @@ def test_auth_schema_setup_runs_once_per_database_file(auth_env, tmp_path):
     conn = storage.get_connection()
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     conn.close()
-    # The recreated file may reuse the inode and reach the same schema version, so the key can
-    # collide with the first one; the schema running again is the observable requirement.
+    # A recreated file may reuse the inode and collide on the key; check the schema reran.
     assert "auth_user" in tables
 
 
@@ -887,3 +903,198 @@ def test_a_database_failure_after_retirement_puts_the_roots_back(matrix, monkeyp
     assert (
         client.delete(f"/api/accounts/{account.account_id}", headers = headers()).status_code == 204
     )
+
+
+def test_api_keys_cannot_manage_accounts(auth_env):
+    # A setup code signs in as the account, so a leaked owner API key must not mint one.
+    client, _auth, _accounts = auth_env
+    account = create(client).json()["account"]
+    raw, _row = storage.create_api_key("unsloth", "script")
+    key = {"Authorization": "Bearer " + raw}
+    url = f"/api/accounts/{account['account_id']}"
+    for response in (
+        client.get("/api/accounts", headers = key),
+        client.post("/api/accounts", headers = key, json = {"username": "mallory"}),
+        client.post(url + "/setup-code", headers = key),
+        client.patch(url, headers = key, json = {"is_active": False}),
+        client.delete(url, headers = key),
+    ):
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Account management requires a UI session."
+    assert client.get("/api/accounts", headers = headers()).status_code == 200
+    assert client.post(url + "/setup-code", headers = headers()).status_code == 200
+
+
+def test_keyless_callers_cannot_manage_accounts(auth_env):
+    import asyncio
+
+    _client, _auth, accounts = auth_env
+    keyless = authentication.HTTPAuthorizationCredentials(
+        scheme = authentication.KEYLESS_SCHEME, credentials = ""
+    )
+    via_api_key = asyncio.run(authentication.authenticated_via_api_key(keyless))
+    with pytest.raises(accounts.HTTPException) as refused:
+        accounts._require_ui_session(via_api_key)
+    assert refused.value.status_code == 403
+
+
+def set_alias(
+    client,
+    alias,
+    actor = "unsloth",
+):
+    return client.put(
+        "/api/accounts/owner/login-alias", headers = headers(actor), json = {"login_alias": alias}
+    )
+
+
+def test_owner_signs_in_with_a_chosen_name_and_unsloth_keeps_working(auth_env):
+    client, _, _ = auth_env
+    assert create(client, "alice").status_code == 201
+    response = set_alias(client, "Riley")
+    assert response.status_code == 200 and response.json() == {"login_alias": "riley"}
+    for name in ("Riley", "riley", "unsloth"):
+        session = login(client, name, "owner-password")
+        assert session.status_code == 200, name
+        assert session.json()["account_id"] == "owner"
+    assert login(client, "riley", "wrong-password").status_code == 401
+    owner = next(
+        a
+        for a in client.get("/api/accounts", headers = headers()).json()["accounts"]
+        if a["role"] == "owner"
+    )
+    assert owner["username"] == "unsloth" and owner["login_alias"] == "riley"
+    assert set_alias(client, "unsloth").json() == {"login_alias": None}
+    assert login(client, "riley", "owner-password").status_code == 401
+
+
+@pytest.mark.parametrize(
+    "alias,status",
+    [("ab", 400), ("admin", 400), ("has space", 400), ("alice", 409), ("", 200), (None, 200)],
+)
+def test_owner_sign_in_name_is_validated_like_a_username(auth_env, alias, status):
+    client, _, _ = auth_env
+    create(client, "alice")
+    response = set_alias(client, alias)
+    assert response.status_code == status
+    assert storage.list_accounts()[0]["login_alias"] is None
+
+
+def test_owner_sign_in_name_cannot_be_taken_by_a_new_account(auth_env):
+    client, _, _ = auth_env
+    assert set_alias(client, "riley").status_code == 200
+    assert create(client, "RILEY").status_code == 409
+    assert storage.count_active_accounts() == 1
+
+
+def test_only_the_owner_sets_the_sign_in_name(matrix):
+    client, _, _ = matrix
+    assert set_alias(client, "mallory", actor = "alice").status_code == 403
+    assert storage.list_accounts()[0]["login_alias"] is None
+
+
+def test_owner_sign_in_name_shares_the_owner_rate_limit_bucket(auth_env):
+    client, auth, _ = auth_env
+    create(client, "alice")
+    set_alias(client, "riley")
+    for _ in range(auth._LOGIN_MAX_FAILS):
+        assert login(client, "riley", "wrong").status_code == 401
+    assert login(client, "unsloth", "owner-password").status_code == 429
+
+
+def test_account_list_shows_each_profile_name_and_avatar_without_creating_databases(auth_env):
+    client, _, _ = auth_env
+    from utils.account_context import AccountContext
+    from utils.personalization_settings import set_personalization
+
+    alice_id = create(client, "alice").json()["account"]["account_id"]
+    create(client, "bob")
+    avatar = "data:image/png;base64,AAAA"
+    run_as(
+        OWNER, set_personalization, {"profile": {"displayName": " Riley ", "avatarDataUrl": avatar}}
+    )
+    alice = AccountContext(alice_id, "alice", "user")
+    run_as(alice, set_personalization, {"profile": {"displayName": "Alice A."}})
+    bob = storage.get_account("bob")
+    bob_db = run_as(bob, storage_roots.studio_db_path)
+    rows = {
+        a["username"]: a for a in client.get("/api/accounts", headers = headers()).json()["accounts"]
+    }
+    assert (rows["unsloth"]["display_name"], rows["unsloth"]["avatar_url"]) == ("Riley", avatar)
+    assert (rows["alice"]["display_name"], rows["alice"]["avatar_url"]) == ("Alice A.", None)
+    assert (rows["bob"]["display_name"], rows["bob"]["avatar_url"]) == (None, None)
+    assert not bob_db.exists()
+
+
+@pytest.mark.parametrize("alias,stored", [("  Riley  ", "riley"), ("   ", None), ("UNSLOTH", None)])
+def test_owner_sign_in_name_trims_and_unsloth_or_blank_clears_it(auth_env, alias, stored):
+    client, _, _ = auth_env
+    set_alias(client, "before")
+    assert set_alias(client, alias).json() == {"login_alias": stored}
+
+
+def test_owner_sign_in_name_and_usernames_collide_after_case_folding_either_way(auth_env):
+    client, _, _ = auth_env
+    # validate_account_username casefolds before its ASCII check: "ſ" folds to "s", "K" (Kelvin) to "k".
+    assert create(client, "sam").status_code == 201
+    assert set_alias(client, "ſam").status_code == 409
+    assert set_alias(client, "Kai").json() == {"login_alias": "kai"}
+    assert create(client, "Kai").status_code == 409
+    assert set_alias(client, "rilëy").status_code == 400
+    assert {a["username"] for a in storage.list_accounts()} == {"unsloth", "sam"}
+
+
+def test_alias_signs_in_as_the_owner_identity_and_survives_alias_changes(auth_env):
+    client, _, _ = auth_env
+    create(client, "alice")
+    set_alias(client, "riley")
+    session = login(client, "Riley", "owner-password").json()
+    assert (
+        authentication.jwt.decode(session["access_token"], options = {"verify_signature": False})[
+            "sub"
+        ]
+        == "unsloth"
+    )
+    # Renaming or clearing the sign-in name is not a credential change.
+    set_alias(client, "other")
+    set_alias(client, None)
+    me = {"Authorization": "Bearer " + session["access_token"]}
+    assert client.get("/api/accounts", headers = me).status_code == 200
+    refreshed = client.post("/api/auth/refresh", json = {"refresh_token": session["refresh_token"]})
+    assert refreshed.status_code == 200 and refreshed.json()["account_id"] == "owner"
+
+
+def test_account_routes_cannot_reach_the_owner_through_its_sign_in_name(auth_env):
+    client, _, _ = auth_env
+    create(client, "alice")
+    set_alias(client, "riley")
+    before = db_rows("auth_user")
+    assert (
+        client.patch(
+            "/api/accounts/riley", headers = headers(), json = {"is_active": False}
+        ).status_code
+        == 404
+    )
+    assert client.delete("/api/accounts/riley", headers = headers()).status_code == 404
+    assert client.post("/api/accounts/riley/setup-code", headers = headers()).status_code == 404
+    assert db_rows("auth_user") == before
+
+
+def test_single_mode_login_ignores_the_owner_sign_in_name(auth_env):
+    client, _, _ = auth_env
+    set_alias(client, "riley")
+    assert policy.login_mode() == "single"
+    assert login(client, "riley", "owner-password").status_code == 401
+    assert login(client, "unsloth", "owner-password").status_code == 200
+
+
+def test_cli_reset_resolves_the_owner_sign_in_name(matrix, reset_cli):
+    client, _, _ = matrix
+    set_alias(client, "riley")
+    result = reset_cli.invoke(studio_cli.studio_app, ["reset-password", "--username", "Riley"])
+    assert result.exit_code == 0, result.output
+    assert "New password for 'unsloth' (also signs in as 'riley'): reset-password" in result.output
+    assert login(client, "riley", "reset-password").json()["account_id"] == "owner"
+    assert login(client, "alice", "alice-password").status_code == 200
+    result = reset_cli.invoke(studio_cli.studio_app, ["reset-password", "--username", "nobody"])
+    assert result.exit_code == 1 and "account not found" in result.output

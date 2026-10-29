@@ -62,7 +62,7 @@ class RemoteCodeUnscannable(Exception):
     """The repo's executable code could not be fully fetched/listed to scan. Raised (not returned empty) so the gate distinguishes "code PRESENT but unreadable" (offline/gated/transient/404/listing failure), which fails CLOSED, from "repo has NO .py" (empty result), where trust_remote_code is a no-op and the load is allowed. Conflating them would block a code-free repo or fail open on code we could not see."""
 
 
-# Fallback patterns (used only if scripts/scan_packages.py is absent): (regex, check, severity). A flat subset of the canonical scanner so a stripped install still scans; the canonical scanner (imported below) supersedes it whenever the repo is present.
+# Fallback used only if scripts/scan_packages.py is absent (stripped install).
 _FALLBACK_PATTERNS: tuple[tuple[re.Pattern, str, str], ...] = (
     (
         re.compile(
@@ -464,6 +464,10 @@ def repo_remote_code_files(
             return files
 
         from huggingface_hub import hf_hub_download, list_repo_files
+        from hub.utils.hf_tokens import anonymous_retrying
+
+        hf_hub_download = anonymous_retrying(hf_hub_download)
+        list_repo_files = anonymous_retrying(list_repo_files)
         from huggingface_hub.utils import EntryNotFoundError
         from utils.hf_probe import hf_file_definitely_absent
 
@@ -547,11 +551,39 @@ def _iter_auto_map_strings(value):
             yield from _iter_auto_map_strings(item)
 
 
+_MAX_CONFIG_DEPTH = 12
+
+
+def iter_auto_maps(cfg, _depth: int = 0):
+    """Walks sub-configs too, where composite models keep auto_map; depth-bounded because the config is attacker-supplied JSON."""
+    if _depth > _MAX_CONFIG_DEPTH or not isinstance(cfg, dict):
+        return
+    auto_map = cfg.get("auto_map")
+    if isinstance(auto_map, dict) and auto_map:
+        yield auto_map
+    elif isinstance(auto_map, (list, tuple)) and auto_map:
+        # Legacy tokenizer form: transformers reads a bare [slow, fast] list as AutoTokenizer.
+        yield {"AutoTokenizer": list(auto_map)}
+    for key, value in cfg.items():
+        if key == "auto_map":
+            continue
+        if isinstance(value, dict):
+            yield from iter_auto_maps(value, _depth + 1)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                if isinstance(item, dict):
+                    yield from iter_auto_maps(item, _depth + 1)
+
+
+def config_declares_auto_map(cfg) -> bool:
+    """Whether a config declares executable remote code anywhere in its nesting."""
+    return any(True for _ in iter_auto_maps(cfg))
+
+
 def _auto_map_refs(cfg: dict) -> set:
-    """``(repo, filename)`` pairs referenced by config auto_map. ``repo`` is ``None`` for own-repo code. An external ``owner/name--module.Class`` ref (transformers' cross-repo form) yields ``("owner/name", "module.py")`` so cross-repo code is scanned and fingerprinted too."""
+    """``(repo, filename)`` pairs referenced by config auto_map. ``repo`` is ``None`` for own-repo code. An external ``owner/name--module.Class`` ref (transformers' cross-repo form) yields ``("owner/name", "module.py")`` so cross-repo code is scanned and fingerprinted too. Every nesting level is read, since that is where a composite model's auto_map lives."""
     out = set()
-    am = cfg.get("auto_map") or {}
-    if isinstance(am, dict):
+    for am in iter_auto_maps(cfg):
         for value in am.values():
             # A value may be a string OR a [slow, fast] list (tokenizers); cover both.
             for ref in _iter_auto_map_strings(value):
@@ -600,6 +632,9 @@ def external_auto_map_repos(
             return repos
 
         from huggingface_hub import hf_hub_download
+        from hub.utils.hf_tokens import anonymous_retrying
+
+        hf_hub_download = anonymous_retrying(hf_hub_download)
         from huggingface_hub.utils import EntryNotFoundError
         from utils.hf_probe import hf_file_definitely_absent
 
@@ -633,6 +668,10 @@ def _add_external_refs(files: dict, refs, hf_token, model_name: str) -> bool:
     from pathlib import Path
 
     from huggingface_hub import hf_hub_download, list_repo_files
+    from hub.utils.hf_tokens import anonymous_retrying
+
+    hf_hub_download = anonymous_retrying(hf_hub_download)
+    list_repo_files = anonymous_retrying(list_repo_files)
 
     entries: dict = {}
     for repo, fn in refs:

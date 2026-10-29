@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Where the Windows orphan guarantee holds, and where it stops.
-
-Children inherit a Job Object with KILL_ON_JOB_CLOSE. The desktop updater clears
-that flag before launching the installer, so both sides are pinned here with
-real processes.
-"""
+"""Child processes inherit a KILL_ON_JOB_CLOSE Job Object on Windows; the desktop updater clears it."""
 
 import os
 import subprocess
@@ -85,18 +80,12 @@ def _run_case(tmp_path: Path, mode: str) -> bool:
         payload_pid = int(pidfile.read_text().strip())
         assert _alive(payload_pid)
 
-        # Hard kill, no tree flag: exactly what "End Task" / a crash does.
         if IS_WINDOWS:
             subprocess.run(["taskkill", "/PID", str(parent.pid), "/F"], capture_output = True)
         else:
             os.kill(parent.pid, 9)
         parent.wait(timeout = 30)
-        # Poll the 5s reaping grace out instead of sleeping through it. The verdict
-        # is identical -- "still alive after 5s" is still "survived" -- but where the
-        # payload does die (Linux PR_SET_PDEATHSIG) it dies in milliseconds, so the
-        # answer is available long before the window ends. Only the platforms that
-        # genuinely leak the payload now pay the full 5s, and they are the ones the
-        # window was written for.
+        # Poll out the 5s reaping grace; payloads that die (PR_SET_PDEATHSIG) die in ms.
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline and _alive(payload_pid):
             time.sleep(0.05)

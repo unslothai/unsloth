@@ -21,11 +21,19 @@ import {
 
 // Client-side chat UI prefs kept in localStorage, not the chat DB. confirmDeleteChats: off skips
 // the delete confirm dialog. alwaysDeleteChatFiles: on also removes the sandbox folder.
-// showModelDisclaimer: off hides the "LLMs can make mistakes" footer. showResponseModel: on shows
+// showResponseModel: on shows
 // the producing model on responses. thinkingVisibility / toolVisibility: collapsed, auto or
 // expanded, see display-visibility.ts. foldToolActivityIntoThinking: on hides a round's tool calls
 // until its thinking block is opened, and has no effect while toolVisibility is "expanded".
 // pastedTextMinChars: paste length that becomes a .txt attachment; 0 is off.
+// showInlineEditResponse: on keeps Edit response in each response's action bar instead of its
+// More menu. notifyWhenReplyFinishes: on sends a system notification when a reply ends while the
+// window is hidden or unfocused. showReplyTimes: on shows when each reply finished under it.
+// showGenerationDetails: on shows live prefill / decode figures while a reply streams and where
+// a local model's layers ended up after it loads.
+// filesPanelCollapsed: on shrinks Chat with files to a header and
+// a row of pills. newChatComposerAtBottom: on docks a new chat's composer at the bottom, as once
+// the chat has messages, instead of under the greeting mid-page.
 export interface ChatPreferencesState {
   plainTextComposer: boolean;
   setPlainTextComposer: (value: boolean) => void;
@@ -39,10 +47,14 @@ export interface ChatPreferencesState {
   setConfirmDeleteChats: (value: boolean) => void;
   alwaysDeleteChatFiles: boolean;
   setAlwaysDeleteChatFiles: (value: boolean) => void;
-  showModelDisclaimer: boolean;
-  setShowModelDisclaimer: (value: boolean) => void;
   showResponseModel: boolean;
   setShowResponseModel: (value: boolean) => void;
+  showReplyTimes: boolean;
+  setShowReplyTimes: (value: boolean) => void;
+  showGenerationDetails: boolean;
+  setShowGenerationDetails: (value: boolean) => void;
+  showInlineEditResponse: boolean;
+  setShowInlineEditResponse: (value: boolean) => void;
   thinkingVisibility: DisplayVisibility;
   setThinkingVisibility: (value: DisplayVisibility) => void;
   toolVisibility: DisplayVisibility;
@@ -51,6 +63,14 @@ export interface ChatPreferencesState {
   setFoldToolActivityIntoThinking: (value: boolean) => void;
   pastedTextMinChars: number;
   setPastedTextMinChars: (value: number) => void;
+  autoScrollWhileGenerating: boolean;
+  setAutoScrollWhileGenerating: (value: boolean) => void;
+  notifyWhenReplyFinishes: boolean;
+  setNotifyWhenReplyFinishes: (value: boolean) => void;
+  filesPanelCollapsed: boolean;
+  setFilesPanelCollapsed: (value: boolean) => void;
+  newChatComposerAtBottom: boolean;
+  setNewChatComposerAtBottom: (value: boolean) => void;
 }
 
 // A stale stored value would leave the dropdown blank and unfixable.
@@ -74,33 +94,57 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       confirmDeleteChats: true,
       setConfirmDeleteChats: (confirmDeleteChats) =>
         set({ confirmDeleteChats }),
-      // Off by default: deleting files is the destructive half, so it stays opt in.
       alwaysDeleteChatFiles: false,
       setAlwaysDeleteChatFiles: (alwaysDeleteChatFiles) =>
         set({ alwaysDeleteChatFiles }),
-      showModelDisclaimer: false,
-      setShowModelDisclaimer: (showModelDisclaimer) =>
-        set({ showModelDisclaimer }),
       showResponseModel: false,
       setShowResponseModel: (showResponseModel) => set({ showResponseModel }),
+      // Off by default: it adds text under every reply, so it stays opt in.
+      showReplyTimes: false,
+      setShowReplyTimes: (showReplyTimes) => set({ showReplyTimes }),
+      // Off by default: it adds a line of numbers under streaming replies, so it stays opt in.
+      showGenerationDetails: false,
+      setShowGenerationDetails: (showGenerationDetails) =>
+        set({ showGenerationDetails }),
+      showInlineEditResponse: true,
+      setShowInlineEditResponse: (showInlineEditResponse) =>
+        set({ showInlineEditResponse }),
       thinkingVisibility: DEFAULT_THINKING_VISIBILITY,
       setThinkingVisibility: (thinkingVisibility) =>
         set({ thinkingVisibility }),
       toolVisibility: DEFAULT_TOOL_VISIBILITY,
       setToolVisibility: (toolVisibility) => set({ toolVisibility }),
-      // Off by default: it hides rows the thread shows today, so it stays opt in.
       foldToolActivityIntoThinking: false,
       setFoldToolActivityIntoThinking: (foldToolActivityIntoThinking) =>
         set({ foldToolActivityIntoThinking }),
       pastedTextMinChars: PASTED_TEXT_DEFAULT_MIN_CHARS,
       setPastedTextMinChars: (pastedTextMinChars) =>
         set({ pastedTextMinChars }),
+      autoScrollWhileGenerating: true,
+      setAutoScrollWhileGenerating: (autoScrollWhileGenerating) =>
+        set({ autoScrollWhileGenerating }),
+      // Off by default: it asks for notification permission, so it stays opt in.
+      notifyWhenReplyFinishes: false,
+      setNotifyWhenReplyFinishes: (notifyWhenReplyFinishes) =>
+        set({ notifyWhenReplyFinishes }),
+      filesPanelCollapsed: false,
+      setFilesPanelCollapsed: (filesPanelCollapsed) =>
+        set({ filesPanelCollapsed }),
+      newChatComposerAtBottom: false,
+      setNewChatComposerAtBottom: (newChatComposerAtBottom) =>
+        set({ newChatComposerAtBottom }),
     }),
     {
       name: "unsloth_chat_preferences",
+      // v0 stored the old off default for everyone, so it cannot tell a choice from the default.
+      version: 1,
+      migrate: (persisted, version) =>
+        version < 1 && persisted && typeof persisted === "object"
+          ? { ...persisted, showInlineEditResponse: true }
+          : persisted,
       merge: (persisted, current) => {
         const saved = persisted as Partial<ChatPreferencesState> | undefined;
-        // Records written before the three-state settings carry the two booleans instead.
+        // Records written before the three-state settings carry two booleans instead.
         const legacy = persisted as
           | {
               collapseThinkingByDefault?: unknown;
@@ -112,8 +156,10 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           ...normalizeComposerPreferences(saved),
           confirmDeleteChats: saved?.confirmDeleteChats ?? true,
           alwaysDeleteChatFiles: saved?.alwaysDeleteChatFiles ?? false,
-          showModelDisclaimer: saved?.showModelDisclaimer ?? false,
           showResponseModel: saved?.showResponseModel ?? false,
+          showReplyTimes: saved?.showReplyTimes === true,
+          showGenerationDetails: saved?.showGenerationDetails === true,
+          showInlineEditResponse: saved?.showInlineEditResponse ?? true,
           thinkingVisibility: migrateVisibility(
             saved?.thinkingVisibility,
             legacy?.collapseThinkingByDefault,
@@ -129,6 +175,10 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           pastedTextMinChars: normalisePastedTextMinChars(
             saved?.pastedTextMinChars,
           ),
+          autoScrollWhileGenerating: saved?.autoScrollWhileGenerating ?? true,
+          notifyWhenReplyFinishes: saved?.notifyWhenReplyFinishes === true,
+          filesPanelCollapsed: saved?.filesPanelCollapsed === true,
+          newChatComposerAtBottom: saved?.newChatComposerAtBottom === true,
         };
       },
     },

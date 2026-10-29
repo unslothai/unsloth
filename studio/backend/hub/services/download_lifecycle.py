@@ -19,6 +19,7 @@ from hub.services.models import account_access
 from utils.account_context import OWNER_ACCOUNT_ID, account_thread, current_account_id
 
 from hub.schemas.downloads import ActiveDownload, DownloadJobState
+from hub.utils import download_heartbeat
 from hub.utils import download_manifest
 from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
@@ -77,13 +78,7 @@ _REPO_SIBLINGS: "dict[tuple[str, str, str], tuple[tuple, float]]" = {}
 
 
 def _repo_siblings(repo_type: str, repo_id: str, hf_token: HfTokenArg) -> tuple:
-    """Return a briefly cached file listing with sizes, or an empty tuple when none was ever read.
-
-    A failed refresh serves the last listing instead: sizes at a revision do not change, and
-    discarding them would report an oversized download as unmeasured, which reads as
-    HTTP-eligible. What the refresh is really for, whether the oversized file is now cached, is
-    decided against the local cache by ``largest_download_file_bytes``.
-    """
+    """A failed refresh serves the last listing; unmeasured sizes would wrongly read as HTTP-eligible."""
     key = (str(repo_type), repo_id.lower(), hf_cache_scan.token_fingerprint(hf_token))
     now = time.monotonic()
     with _repo_siblings_lock:
@@ -112,11 +107,39 @@ def _repo_siblings(repo_type: str, repo_id: str, hf_token: HfTokenArg) -> tuple:
         return cached[0] if cached is not None else ()
     with _repo_siblings_lock:
         if key not in _REPO_SIBLINGS and len(_REPO_SIBLINGS) >= _REPO_SIBLINGS_MAX:
-            # Evict least-recently-used, not everything: a clear drops the listings that in-flight
-            # downloads still depend on.
+            # Evict LRU only: in-flight downloads depend on the listings.
             _REPO_SIBLINGS.pop(next(iter(_REPO_SIBLINGS)), None)
         _REPO_SIBLINGS[key] = (siblings, now)
     return siblings
+
+
+def repo_siblings_fetched_since(
+    repo_type: str,
+    repo_id: str,
+    hf_token: Optional[str],
+    *,
+    allow_ambient_token: bool,
+    since: float,
+) -> Optional[tuple]:
+    """The size probe's listing if fetched at/after ``since`` with exactly the credential
+    ``model_info(token = hf_token)`` sends and non-empty, else None (caller lists again)."""
+    if hf_token is None:
+        if not allow_ambient_token:
+            return None  # the memo listed anonymously; model_info(token = None) sends the ambient login
+    elif not (isinstance(hf_token, str) and hf_token and hf_token == hf_token.strip()):
+        return None  # hf_token_arg strips or drops it, so the memo may have sent something else
+    key = (
+        str(repo_type),
+        repo_id.lower(),
+        hf_cache_scan.token_fingerprint(
+            hf_token_arg(hf_token, allow_ambient_token = allow_ambient_token)
+        ),
+    )
+    with _repo_siblings_lock:
+        cached = _REPO_SIBLINGS.get(key)
+    if cached is None or cached[1] < since or not cached[0]:
+        return None
+    return cached[0]
 
 
 def largest_download_file_bytes(
@@ -129,33 +152,19 @@ def largest_download_file_bytes(
     allow_ambient_token: bool = True,
     hub_cache: Optional[str] = None,
 ) -> Optional[int]:
-    """Return the largest selected, uncached file, or None when it cannot be measured.
-
-    Selection matches the worker: explicit files, a GGUF variant plan, filtered model snapshots, or
-    every dataset file. Finalized blobs are excluded because ``snapshot_download`` skips them, so
-    ``0`` means the job has nothing left to fetch. It is not ``None``: only ``None`` says the size
-    is unknown, and a caller carrying an earlier measurement forward needs to tell those apart.
-
-    ``allow_ambient_token`` is the caller's boundary, applied exactly as ``spawn_worker`` applies
-    it: a caller denied the backend's own login measures anonymously, so this probe can never read
-    a repository the download it is deciding for could not.
-    """
+    """None means unmeasurable, 0 nothing left; a caller denied ambient login measures anonymously."""
     siblings = _repo_siblings(
         repo_type, repo_id, hf_token_arg(hf_token, allow_ambient_token = allow_ambient_token)
     )
     if not siblings:
         return None
-    from hub.utils.gguf_plan import (
-        build_gguf_variant_plans,
-        expected_file_from_sibling,
-        plan_for_variant,
-    )
+    from hub.utils.gguf_plan import expected_file_from_sibling, resolve_variant_plan
 
     wanted = {f for f in (files or []) if f}
     if wanted:
         chosen = [s for s in siblings if getattr(s, "rfilename", None) in wanted]
     elif variant:
-        plan = plan_for_variant(build_gguf_variant_plans(siblings), variant)
+        plan = resolve_variant_plan(siblings, variant)
         if plan is None:
             # An unresolvable variant is the worker's error to report, not a transport verdict.
             return None
@@ -214,13 +223,8 @@ def http_rung_reason(
     allow_ambient_token: bool = True,
     known_largest_file_bytes: Optional[int] = None,
 ) -> Optional[str]:
-    """Return why this job cannot use the recovery ladder's HTTP rung, if applicable.
-
-    The measurement is taken again here because the worker may have finalized the oversized file.
-    ``known_largest_file_bytes`` is what the job measured before it ran, and it stands when the
-    fresh attempt cannot measure at all: the sibling cache that would otherwise carry it is
-    bounded, so 64 other repositories are enough to evict an hours-long download's only listing.
-    """
+    """Re-measures, falling back to known_largest_file_bytes when the bounded sibling cache cannot
+    answer."""
     measured = _largest_file_bytes_for_job(
         repo_type,
         repo_id,
@@ -371,14 +375,7 @@ def spawn_worker(
     allow_ambient_token: bool = True,
     files: Optional[Sequence[str]] = None,
 ) -> subprocess.Popen:
-    """Spawn the download worker.
-
-    XET and ``hf_transfer`` write chunks out of order, so their partials can't
-    resume under a sequential writer; the HTTP path stays sequential so
-    SIGKILL -> resume is byte-identical. ``protected_blob_hashes`` are blobs a
-    concurrent same-repo peer is writing, excluded from the cache-prep purge so a
-    shared ``.incomplete`` (e.g. bundled mmproj) is never deleted.
-    """
+    """Only HTTP resumes after SIGKILL (XET reorders writes); blobs a peer is writing are never purged."""
     allow_ambient_token = allow_ambient_token and not account_access.managed_account()
     cwd = backend_dir()
     mode = download_registry.TRANSPORT_XET if use_xet else download_registry.TRANSPORT_HTTP
@@ -409,8 +406,7 @@ def spawn_worker(
         try:
             hf_token = get_token_to_send(None)
         except Exception as e:  # noqa: BLE001
-            # Best effort, like the env lookup this replaced: do not narrow this catch. An OIDCError
-            # or httpx error from hub's OIDC rung would 500 a public download and strand a reservation.
+            # Do not narrow: OIDC/httpx errors would 500 a public download and strand a reservation.
             detail = download_registry.scrub_secrets(f"{type(e).__name__}: {e}")
             logger.warning(
                 f"Could not resolve a saved Hugging Face login ({detail}); downloading anonymously"
@@ -433,7 +429,11 @@ def spawn_worker(
     env["PYTHONPATH"] = f"{cwd}{os.pathsep}{existing_path}" if existing_path else str(cwd)
     proc = None
     files_manifest = None
+    heartbeat = None
     try:
+        if use_xet:
+            heartbeat = download_heartbeat.new_path()
+            args = [*args, "--heartbeat", heartbeat]
         if files:
             files_manifest = write_files_manifest(files)
             args = [*args, "--files-json", files_manifest]
@@ -456,6 +456,8 @@ def spawn_worker(
         )
         return proc
     finally:
+        if proc is None:
+            download_heartbeat.remove(heartbeat)
         if proc is None and files_manifest is not None:
             try:
                 Path(files_manifest).unlink(missing_ok = True)
@@ -534,15 +536,24 @@ def classify_exit(rc: int, *, cancel_requested: bool = False) -> str:
     return "error"
 
 
-def _cleanup_worker_files_manifest(proc: subprocess.Popen) -> None:
+def _worker_arg(proc: subprocess.Popen, flag: str) -> Optional[str]:
     args = getattr(proc, "args", None)
-    if not isinstance(args, (list, tuple)) or "--files-json" not in args:
+    if not isinstance(args, (list, tuple)) or flag not in args:
+        return None
+    index = args.index(flag) + 1
+    return str(args[index]) if index < len(args) else None
+
+
+def _cleanup_worker_files(proc: subprocess.Popen) -> None:
+    heartbeat = _worker_arg(proc, "--heartbeat")
+    files_manifest = _worker_arg(proc, "--files-json")
+    if (heartbeat is None and files_manifest is None) or proc.poll() is None:
         return
-    index = args.index("--files-json") + 1
-    if index >= len(args) or proc.poll() is None:
+    download_heartbeat.remove(heartbeat)
+    if files_manifest is None:
         return
     try:
-        Path(args[index]).unlink(missing_ok = True)
+        Path(files_manifest).unlink(missing_ok = True)
     except OSError:
         logger.warning("Could not remove the exited worker's download files manifest")
 
@@ -564,13 +575,10 @@ def finalize_worker_exit(
     deferred_error_out: "Optional[list[str]]" = None,
     largest_file_bytes: Optional[int] = None,
 ) -> str:
-    """Reap *proc* and record its terminal state.
-
-    ``deferred_error_out`` captures a deferred error for callers that exhaust all retry rungs.
-    """
+    """deferred_error_out captures a deferred error for callers that exhaust all retry rungs."""
     stderr_data = drain_stderr_excerpt(proc.stderr)
     rc = proc.wait()
-    _cleanup_worker_files_manifest(proc)
+    _cleanup_worker_files(proc)
     cancel_requested = registry.cancel_requested(key)
     if not registry.drop_process(key, proc):
         return "idle"
@@ -580,10 +588,24 @@ def finalize_worker_exit(
     )
     metadata = registry.get_job_metadata(key)
     state = classify_exit(rc, cancel_requested = cancel_requested)
+    if repo_type == "model" and state == "complete":
+        # Only on completion: another backend may still be downloading a cancelled key.
+        try:
+            from core.inference.audio_cpp_models import forget_job_row
+            forget_job_row(repo_id, download_registry.variant_from_key(key))
+        except Exception:
+            logger.debug("audio.cpp download row was not pruned", exc_info = True)
     if state == "complete":
         if repo_id and repo_type:
             account_access.record_model_grant(repo_id, repo_type)
         hf_cache_scan.invalidate_hf_cache_scans()
+        if repo_type == "model":
+            # audio.cpp remembers a cache miss (the timing aligner) for 20 s; the UI re-reads it on complete.
+            try:
+                from core.inference.audio_cpp_models import forget
+                forget()
+            except Exception:
+                logger.debug("audio.cpp resolve cache was not cleared", exc_info = True)
         registry.set_job(key, "complete")
         # Where /v1 learns a new model exists: its resolver answers from a cached scan with no watcher, so it would report the model absent and serve whatever is resident. Models only, since noting a dataset id as a local model would refuse a bare request naming it instead of letting a foreign id fall through.
         if repo_type == "model":
@@ -988,7 +1010,7 @@ def kill_and_reap_process(
         logger.warning(f"Cancelled worker for {label} did not exit after SIGKILL")
     except Exception:
         pass
-    _cleanup_worker_files_manifest(proc)
+    _cleanup_worker_files(proc)
 
 
 def _record_xet_failure(reason: str, logger) -> None:
@@ -1058,6 +1080,38 @@ def _record_xet_success(logger) -> None:
         logger.debug("could not record Xet outcome: %s", exc)
 
 
+def _stall_window() -> float:
+    import importlib
+
+    default = float(
+        getattr(importlib.import_module("utils.hf_xet_fallback"), "DEFAULT_STALL_TIMEOUT", 30.0)
+    )
+    try:
+        value = float(os.environ.get("UNSLOTH_XET_STALL_TIMEOUT") or default)
+    except ValueError:
+        return default
+    return value if 0 < value < float("inf") else default
+
+
+class _WatchdogHandle:
+    def __init__(self) -> None:
+        self._inner = None
+        self._stopped = False
+        self._lock = threading.Lock()
+
+    def bind(self, inner) -> None:
+        with self._lock:
+            self._inner = inner
+            if self._stopped and inner is not None:
+                inner.set()
+
+    def set(self) -> None:
+        with self._lock:
+            self._stopped = True
+            if self._inner is not None:
+                self._inner.set()
+
+
 def _start_stall_watchdog(
     registry: download_registry.DownloadRegistry,
     key: str,
@@ -1070,7 +1124,7 @@ def _start_stall_watchdog(
     logger,
     on_stall: Callable[[str], None],
 ):
-    """Kill *proc* if its download stops making byte-level progress. Returns a stop event, or ``None`` when no watchdog could be started. SIGKILL rather than a polite signal: the worker traps SIGTERM and exits 130 ("cancelled"), which would record a user cancel and skip the recovery ladder, while an untrapped kill lands as "error", which is what triggers the retry. What survives the kill depends on the transport the retry picks: over HTTP the writer is sequential and the partial genuinely resumes, while over XET it does not, since hf_xet reconstructs a file from offset zero rather than resuming it, so the recovery worker's own ``prepare_cache_for_transport(..., "xet", ...)`` purges the partial on startup and re-fetches the in-flight file. Every file already finalized into a blob is kept either way, and the worker runs ``snapshot_download(max_workers=1)``, so at most one file is ever replayed."""
+    """Kill *proc* if its download stops making byte-level progress. Returns a stop event, or ``None`` when no watchdog could be started. SIGKILL rather than a polite signal: the worker traps SIGTERM and exits 130 ("cancelled"), which would record a user cancel and skip the recovery ladder, while an untrapped kill lands as "error", which is what triggers the retry. What survives the kill depends on the transport the retry picks: over HTTP the writer is sequential and the partial genuinely resumes, while over XET it does not, since hf_xet reconstructs a file from offset zero rather than resuming it, so the recovery worker's own ``prepare_cache_for_transport(..., "xet", ...)`` purges the partial on startup and re-fetches the in-flight file. Every file already finalized into a blob is kept either way, and the worker fetches one file at a time over XET (HTTP overlaps files only where every partial resumes), so at most one file is ever replayed."""
     try:
         from utils.hf_xet_fallback import start_watchdog
     except Exception as exc:  # noqa: BLE001 - degraded unsloth_zoo: keep the old behaviour
@@ -1079,10 +1133,42 @@ def _start_stall_watchdog(
 
     metadata = registry.get_job_metadata(key)
     cache_dir = getattr(metadata, "hub_cache", None) if metadata is not None else None
+    heartbeat = _worker_arg(proc, "--heartbeat")
+    handle = _WatchdogHandle()
+    window = _stall_window()
+    last_beat = download_heartbeat.read(heartbeat) or 0
+
+    def _transfer_advanced() -> bool:
+        nonlocal last_beat
+        beat = download_heartbeat.read(heartbeat)
+        age = download_heartbeat.age(heartbeat)
+        if beat is None or age is None or beat <= last_beat or age > window:
+            return False
+        last_beat = beat
+        return True
 
     def _on_stall(message: str) -> None:
+        if _transfer_advanced():
+            rearmed = _arm()
+            if rearmed is not None:
+                logger.info(
+                    "%s %s for %s, but the worker is still receiving data; re-arming the watchdog",
+                    log_prefix,
+                    message,
+                    label,
+                )
+                handle.bind(rearmed)
+                return
+            logger.warning(
+                "%s could not re-arm the stall watchdog for %s; treating the verdict as final",
+                log_prefix,
+                label,
+            )
         logger.warning(
-            "%s %s for %s; killing the worker to retry over HTTP", log_prefix, message, label
+            "%s %s for %s; killing the worker so the recovery ladder can retry",
+            log_prefix,
+            message,
+            label,
         )
         on_stall(message)
         try:
@@ -1093,22 +1179,29 @@ def _start_stall_watchdog(
         except Exception:
             logger.exception("%s failed to kill stalled worker for %s", log_prefix, label)
 
-    try:
-        return start_watchdog(
-            repo_ids = [repo_id],
-            repo_type = repo_type,
-            cache_dir = cache_dir,
-            on_stall = _on_stall,
-            child_pid = proc.pid,
-            # Scope the measurement to partials this worker holds open; otherwise the shared helper stays repo-wide, child_pid does nothing, and two concurrent same-transport GGUF variants of one repo reset each other's stall timer. The DATA clock only: before its first byte a variant is still covered by the repo-wide peer-progress check.
-            watch_new_partials_only = True,
-            # The shared 90s zero-byte default assumes a single-file download whose pre-byte phase is one HEAD; snapshot_download(max_workers=1) does a model_info lookup plus one sequential HEAD per file, which for an already-cached repo is the entire job with no byte written.
-            connect_timeout = 600.0,
-            xet_disabled = False,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("%s could not start stall watchdog for %s: %s", log_prefix, label, exc)
+    def _arm():
+        try:
+            return start_watchdog(
+                repo_ids = [repo_id],
+                repo_type = repo_type,
+                cache_dir = cache_dir,
+                on_stall = _on_stall,
+                child_pid = proc.pid,
+                # Scope the measurement to partials this worker holds open; otherwise the shared helper stays repo-wide, child_pid does nothing, and two concurrent same-transport GGUF variants of one repo reset each other's stall timer. The DATA clock only: before its first byte a variant is still covered by the repo-wide peer-progress check.
+                watch_new_partials_only = True,
+                # The shared 90s zero-byte default assumes a single-file download whose pre-byte phase is one HEAD; snapshot_download does a model_info lookup plus one HEAD per file (sequential over XET), which for an already-cached repo is the entire job with no byte written.
+                connect_timeout = 600.0,
+                xet_disabled = False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("%s could not start stall watchdog for %s: %s", log_prefix, label, exc)
+            return None
+
+    inner = _arm()
+    if inner is None:
         return None
+    handle.bind(inner)
+    return handle
 
 
 def register_worker(
@@ -1379,8 +1472,7 @@ def launch_worker(
     watch_name: str,
     allow_ambient_token: bool = True,
 ) -> str:
-    # Only the Xet success-recording consumes this, and sampling lazy-loads unsloth_zoo, so torch and
-    # transformers, on the request path.
+    # Sampling lazy-loads unsloth_zoo, which pulls torch and transformers onto the request path.
     if account_access.account_scope() is not None:
         record_download_account(registry, key)
         require_live_account(registry, key)
@@ -1404,9 +1496,8 @@ def launch_worker(
                 else None
             ),
         )
-    # The one-off `X-Unsloth-HF-Token` is kept nowhere, so a repo fetched with it can sit in the
-    # cache of a host whose credential set is empty. Recorded HERE, after the in-flight check and
-    # the registry claim, so a rejected request cannot mark a repo it never fetched.
+    # A one-off `X-Unsloth-HF-Token` is stored nowhere, so record the repo. After the in-flight
+    # check and claim, so a rejected request marks nothing.
     from hub.utils import hf_tokens as _hf_tokens
 
     _hf_tokens.note_repo_fetched_with_a_request_token(hf_token, repo_id, repo_type)
@@ -1466,8 +1557,7 @@ def cancel_worker(
     if proc is None:
         if not registry.mark_pending_cancel(key, generation):
             return registry.get_job(key).state
-        # Registration can race the first lookup now that launch runs in a thread: if it got
-        # past the pending-cancel check, kill that process below.
+        # Registration can race the lookup; kill below if it slipped past.
         proc = registry.get_process(key)
         if proc is None:
             return "cancelling"
@@ -1554,6 +1644,8 @@ def active_download_refs(
                 cancel_transport = (
                     metadata.cancel_marker_transport if metadata is not None else None
                 ),
+                owner = metadata.owner if metadata is not None else None,
+                load_attached = metadata.load_attached if metadata is not None else None,
                 state = ref.state,
                 generation = ref.generation,
                 files = scoped_files or None,

@@ -3,6 +3,7 @@
 
 import { Button } from "@/components/ui/button";
 import { ReleaseNotesPanel } from "@/components/update/release-notes-panel";
+import { useNotificationGate } from "@/hooks/use-notification-frequency";
 import type {
   DesktopUpdatePolicyMode,
   RetainedUpdateFailure,
@@ -12,7 +13,8 @@ import type {
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
 import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
-import { CircleAlert, Download } from "lucide-react";
+import { AlertCircleIcon, Download01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { useState } from "react";
 
@@ -63,14 +65,19 @@ export function UpdateBanner({
   const [notesVersion, setNotesVersion] = useState<string | null>(null);
   const showFailure = Boolean(lastFailure) && !dismissed;
   const showAvailable = status === "available" && !dismissed && !showFailure;
-  const show = showFailure || (showAvailable && Boolean(info));
+  // Failures always show; only the offer follows the notification frequency.
+  const offerOpen = useNotificationGate(
+    "unsloth",
+    showAvailable && Boolean(info),
+  );
+  const show = showFailure || offerOpen;
   const isManualLinuxPackage = updatePolicyMode === "manual_linux_package";
   const installDisabled = isManualLinuxPackage
     ? manualReleaseUrl === null
     : isExternalServer;
   const currentVersion = formatVersion(info?.currentVersion);
   const latestVersion = formatVersion(info?.version);
-  const Icon = showFailure ? CircleAlert : Download;
+  const icon = showFailure ? AlertCircleIcon : Download01Icon;
   const notesTargetVersion = info?.version?.replace(LEADING_V, "") ?? null;
   const notesOpen =
     notesTargetVersion !== null && notesVersion === notesTargetVersion;
@@ -107,9 +114,9 @@ export function UpdateBanner({
           transition={{ duration: 0.35, ease: EASE_OUT_QUART }}
           className={cn(
             positioned
-              ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[448px]"
+              ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))]"
               : cn(
-                  "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[448px] shrink-0 flex-col",
+                  "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))] shrink-0 flex-col",
                   // Only rendered notes may shrink in the capped rail.
                   "has-[[data-slot=update-release-notes]]:min-h-[calc(117px+93px*var(--ui-font-scale,1))] has-[[data-slot=update-release-notes]]:shrink max-[383px]:has-[[data-slot=update-release-notes]]:min-h-[calc(24px+224px*var(--ui-font-scale,1))]",
                 ),
@@ -117,7 +124,7 @@ export function UpdateBanner({
           data-testid="tauri-update-banner"
         >
           {/* Paint the full floor even when the notes are short. */}
-          <div className="relative flex max-h-[calc(100dvh_-_2rem)] min-h-0 grow flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
+          <div className="relative flex max-h-[calc(100dvh_-_2rem_-_var(--studio-window-chrome-top,0px))] min-h-0 grow flex-col overflow-hidden rounded-2xl bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
             <button
               type="button"
               onClick={onDismiss}
@@ -142,7 +149,8 @@ export function UpdateBanner({
             </button>
 
             <div className="flex min-w-0 shrink-0 items-start gap-4 pr-6">
-              <Icon
+              <HugeiconsIcon
+                icon={icon}
                 aria-hidden="true"
                 className="mt-1 size-5 shrink-0 text-foreground"
                 strokeWidth={1.75}
@@ -229,7 +237,8 @@ export function UpdateBanner({
                   </Button>
                   <Button
                     size="sm"
-                    className="-mr-1 h-auto rounded-full px-3.5 py-2 text-ui-13"
+                    variant="primary"
+                    className="-mr-1 rounded-full text-ui-13"
                     onClick={onInstall}
                     disabled={installDisabled}
                   >
@@ -250,6 +259,7 @@ export function UpdateBanner({
                   </Button>
                   <Button
                     size="sm"
+                    variant="primary"
                     className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
                     onClick={onInstall}
                     disabled={installDisabled}
@@ -276,7 +286,7 @@ export function UpdateBanner({
                     readOnly={true}
                     value={manualReport}
                     onFocus={(event) => event.currentTarget.select()}
-                    className="mt-2 h-28 w-full resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-ui-10 text-muted-foreground"
+                    className="mt-2 h-28 w-full resize-none rounded-xl border border-border/50 bg-muted/30 p-2 font-mono text-ui-10 text-muted-foreground"
                   />
                 )}
               </div>

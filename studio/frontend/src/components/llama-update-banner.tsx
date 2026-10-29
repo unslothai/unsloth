@@ -9,25 +9,43 @@ import {
   useLlamaUpdateCheck,
 } from "@/hooks/use-llama-update-check";
 import {
-  useShowLlamaUpdateBanner,
-  useShowWhisperUpdateBanner,
-} from "@/hooks/use-llama-update-pref";
+  type NotificationChannel,
+  markNotificationShown,
+  useDocumentVisible,
+  useNotificationDue,
+  useNotificationFrequency,
+} from "@/hooks/use-notification-frequency";
 import {
+  type UpdateComponent,
+  type UpdateComponentFlags,
+  audibleComponents,
+  heldJobRows,
   heldUpdateBannerPref,
   llamaReleaseChanged,
   llamaUpdateToastMessage,
-  updateBannerComponent,
+  updateBannerAllowed,
+  updateBannerComponents,
+  updateComponentKey,
+  updateComponentsLabel,
   updateToastTag,
 } from "@/lib/llama-job-lifecycle";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { Download } from "lucide-react";
-import { type ReactElement, useEffect, useRef, useState } from "react";
-// Creep toward this cap between coarse backend progress updates.
+import {
+  type CSSProperties,
+  type MouseEvent,
+  type ReactElement,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import { Download01Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+// cap for interpolation between coarse backend progress updates.
 const RUNNING_CAP = 0.95;
 
-// The banner is not translated, so these mirror features/settings/lib/llama-backend-
-// labels.ts. An unknown backend prints its own identifier rather than nothing.
+// untranslated labels mirror llama-backend-labels.ts; unknown backends keep their identifiers.
 const BACKEND_LABELS: Record<string, string> = {
   auto: "Automatic",
   cpu: "CPU",
@@ -44,7 +62,6 @@ function backendLabel(backend: string | null | undefined): string {
   return BACKEND_LABELS[backend] ?? backend;
 }
 
-// Smooth coarse backend progress without freezing between milestones.
 function useSmoothedProgress(
   active: boolean,
   progress: number | null,
@@ -72,15 +89,15 @@ function useSmoothedProgress(
       const current = displayRef.current;
       const real = progressRef.current ?? 0;
       let target: number;
-      let speed: number; // approach rate (fraction of remaining gap per second)
+      let speed: number;
       if (doneRef.current) {
         target = 1;
         speed = 5;
       } else if (real > current) {
-        target = real; // catch up to a freshly observed milestone
+        target = real;
         speed = 4;
       } else {
-        target = RUNNING_CAP; // no signal: creep toward the cap, never frozen
+        target = RUNNING_CAP;
         speed = 0.3;
       }
       const cap = doneRef.current ? 1 : RUNNING_CAP;
@@ -108,220 +125,425 @@ interface LlamaUpdateBannerProps {
   positioned?: boolean;
 }
 
-/** Bottom-right llama.cpp update toast. */
+function sizeLabelOf(sizeBytes: number | null | undefined): string | null {
+  return sizeBytes && sizeBytes > 0
+    ? `${Math.round(sizeBytes / (1024 * 1024))} MB`
+    : null;
+}
+
+interface UpdateRow {
+  component: UpdateComponent;
+  installedTag: string | null;
+  latestTag: string | null;
+  sizeBytes: number | null;
+  versionChanged: boolean;
+}
+
+function VersionLine({
+  row,
+  bundled,
+  backendPair,
+}: {
+  row: UpdateRow;
+  bundled: boolean;
+  backendPair: readonly [string, string] | null;
+}): ReactElement {
+  const [from, to] = backendPair ?? [
+    row.installedTag ?? "unknown",
+    row.latestTag ?? "",
+  ];
+  const rowSize = bundled ? sizeLabelOf(row.sizeBytes) : null;
+  const sizeSuffix = rowSize ? ` · ${rowSize}` : "";
+  // no audio.cpp runtime yet, so the offer is a first install.
+  const lead =
+    row.component === "audio.cpp" && row.installedTag === null
+      ? "Install the audio runtime"
+      : null;
+  return (
+    <p
+      // one row per line keeps the changelog height calculation exact.
+      className={cn(
+        "mt-0.5 text-xs text-muted-foreground",
+        bundled && "truncate",
+      )}
+      title={
+        bundled
+          ? `${lead ?? `${row.component} ${from} \u2192`} ${to}${sizeSuffix}`
+          : undefined
+      }
+      data-testid="llama-update-version-line"
+    >
+      {lead ? `${lead} ` : null}
+      {bundled && !lead ? (
+        <span className="text-foreground">{row.component} </span>
+      ) : null}
+      {lead ? null : <>{from} &rarr; </>}
+      <span className="font-medium text-foreground">{to}</span>
+      {sizeSuffix}
+    </p>
+  );
+}
+
 export function LlamaUpdateBanner({
   enabled = true,
   positioned = true,
 }: LlamaUpdateBannerProps): ReactElement | null {
-  const showLlamaBannerPref = useShowLlamaUpdateBanner();
-  const showWhisperBannerPref = useShowWhisperUpdateBanner();
-  const [changelogVersion, setChangelogVersion] = useState<string | null>(null);
-  // Not gated on showBannerPref: this hook instance is the app-wide listener
-  // for a cross-tab reload_required resync (the settings-sheet's own instance
-  // only runs during an MTP-fallback rebuild), so muting the banner must not
-  // also silence that resync -- it only suppresses the UI below.
-  const { status, visible, applying, apply, dismiss, snooze } =
+  // an open card remains allowed after recording its components as shown.
+  const [shownChannels, setShownChannels] = useState<
+    readonly NotificationChannel[]
+  >([]);
+  const llamaDue = useNotificationDue("llama");
+  const audioDue = useNotificationDue("audio");
+  const llamaMuted = useNotificationFrequency("llama") === "off";
+  const audioMuted = useNotificationFrequency("audio") === "off";
+  const [detailsVersion, setDetailsVersion] = useState<string | null>(null);
+  const [skipped, setSkipped] = useState<{
+    key: string;
+    fromKeyboard: boolean;
+    message: string;
+  } | null>(null);
+  const clearSkipped = useCallback(() => setSkipped(null), []);
+  // listen regardless of banner preference so muting the UI does not silence cross-tab reload_required resync.
+  const { status, visible, applying, apply, dismiss, undoDismiss, snooze } =
     useLlamaUpdateCheck({
       enabled,
       onReloadRequired: resyncInferenceStatusAfterServerModelChange,
     });
+  // whisper.cpp rides along with llama.cpp and audio.cpp; it opens the card only to retry its own failed phase.
+  const whisperRetry =
+    status?.job.state === "error" && status.job.whisperFailed;
+  const due: UpdateComponentFlags = {
+    llama: llamaDue,
+    whisper: whisperRetry,
+    audio: audioDue,
+  };
+  const muted: UpdateComponentFlags = {
+    llama: llamaMuted,
+    whisper: !whisperRetry,
+    audio: audioMuted,
+  };
 
-  // The card names one component and the switches answer per component, so the
-  // shown one is picked here, before the version line and the toast read it.
   const migrationPending = Boolean(status?.backend_migration_available);
-  const component = updateBannerComponent(
-    status?.component ?? "llama.cpp",
-    {
-      llama: Boolean(status?.llama.update_available) || migrationPending,
-      whisper: Boolean(status?.whisper?.update_available),
-    },
-    { llama: showLlamaBannerPref, whisper: showWhisperBannerPref },
-  );
-  // Its own release pair and download size, not the ones the backend put at the
-  // top level: those are llama's whatever the card shows.
-  const offer =
-    component === "whisper.cpp" ? status?.whisper : status?.llama;
-  const sizeBytes = offer?.update_size_bytes ?? null;
-  const latestTag = offer?.latest_tag ?? null;
-  const installedTag = offer?.installed_tag ?? null;
+  const listed = updateBannerComponents({
+    llama: Boolean(status?.llama.update_available) || migrationPending,
+    whisper: Boolean(status?.whisper?.update_available),
+    audio: Boolean(status?.audio?.update_available),
+  });
+  // muted components stay listed because update installs them, but they are not recorded.
+  const recordKey = audibleComponents(listed, muted)
+    .map(updateComponentKey)
+    .join(" ");
+  // use each component's release pair and size because the top-level fields belong to llama.cpp.
+  const liveRows: UpdateRow[] = listed.map((component) => {
+    const offer = status?.[updateComponentKey(component)];
+    const installedTag = offer?.installed_tag ?? null;
+    const latestTag = offer?.latest_tag ?? null;
+    return {
+      component,
+      installedTag,
+      latestTag,
+      sizeBytes: offer?.update_size_bytes ?? null,
+      versionChanged: llamaReleaseChanged(
+        Boolean(offer?.update_available),
+        installedTag,
+        latestTag,
+      ),
+    };
+  });
+  // treat errors as in flight so a failed phase keeps its retry visible.
+  const jobState = status?.job.state;
+  const inFlight = applying || jobState === "error";
+  const [jobRows, setJobRows] = useState<UpdateRow[] | null>(null);
+  const nextJobRows = heldJobRows(jobRows, applying, liveRows);
+  if (nextJobRows !== jobRows) {
+    setJobRows(nextJobRows);
+  }
+  const rows = jobRows ?? liveRows;
+  const label = updateComponentsLabel(rows.map((row) => row.component));
+  const bundled = rows.length > 1;
+  const llamaRow = rows.find((row) => row.component === "llama.cpp") ?? null;
+  const primary = rows[0] ?? null;
 
   async function handleUpdate() {
-    // Read before applying: the status refreshes as the job runs.
-    const migrating = migrationPending;
+    // prefer the job message for bundles, migrations, and unchanged audio runtimes after refresh.
+    const fromJob =
+      migrationPending || bundled || primary?.component === "audio.cpp";
+    const offerTag = primary?.latestTag ?? null;
     const result = await apply();
     if (result?.ok) {
-      const updatedTag =
-        updateToastTag(component, result.tag, latestTag) ?? "the latest build";
+      const updatedTag = bundled
+        ? null
+        : (updateToastTag(
+            primary?.component ?? "llama.cpp",
+            result.tag,
+            offerTag,
+          ) ?? "the latest build");
       toast.success(
         llamaUpdateToastMessage({
-          component,
-          migrating,
+          component: label,
+          migrating: fromJob,
           jobMessage: result.message,
           updatedTag,
           reloadRequired: result.reloadRequired,
         }),
       );
     } else if (result) {
-      toast.error(
-        `${component} update failed: ${result.error ?? "unknown error"}`,
-      );
+      // the failing phase may differ from the component named by the card.
+      toast.error(`Update failed: ${result.error ?? "unknown error"}`);
     }
   }
 
-  // Muted by the component the card shows.
-  const livePref =
-    component === "whisper.cpp" ? showWhisperBannerPref : showLlamaBannerPref;
-  // Held across a chained apply, which renames the card mid-job. An error counts
-  // as in flight so a failed phase keeps its retry on screen.
-  const jobState = status?.job.state;
+  const livePref = updateBannerAllowed(
+    listed,
+    due,
+    muted,
+    shownChannels.length > 0,
+  );
+  // keep the preference while a chained apply removes completed components from status.
   const [heldPref, setHeldPref] = useState<boolean | null>(null);
   useEffect(() => {
-    setHeldPref((prev) =>
-      heldUpdateBannerPref(prev, applying || jobState === "error", livePref),
-    );
-  }, [applying, jobState, livePref]);
+    setHeldPref((prev) => heldUpdateBannerPref(prev, inFlight, livePref));
+  }, [inFlight, livePref]);
   const showBannerPref = heldPref ?? livePref;
   const show =
     showBannerPref &&
     visible &&
     status != null &&
+    rows.length > 0 &&
     (llamaUpdateOffered(status) || applying);
-  // A migration re-applies the install's own automatic choice, so it can be offered at a
-  // release the machine already has, where the backend pair replaces the version line.
+  const tabVisible = useDocumentVisible();
+  useEffect(() => {
+    // record every audible listed component to suppress separate cards during the quiet period.
+    if (show && tabVisible && livePref) {
+      const fresh = (recordKey.split(" ") as NotificationChannel[])
+        .filter(Boolean)
+        .filter((channel) => !shownChannels.includes(channel));
+      if (fresh.length > 0) {
+        for (const channel of fresh) {
+          markNotificationShown(channel);
+        }
+        setShownChannels([...shownChannels, ...fresh]);
+      }
+    } else if (!(show || skipped) && shownChannels.length > 0) {
+      // the skip notice still stands for the card, so Undo can reopen it past the frequency gate.
+      setShownChannels([]);
+    }
+  }, [show, skipped, tabVisible, livePref, recordKey, shownChannels]);
+  // a migration can reapply the automatic backend at the installed release.
   const backendChange =
-    status?.backend_migration_available && status.to_backend
+    llamaRow && status?.backend_migration_available && status.to_backend
       ? `${backendLabel(status.from_backend)} \u2192 ${backendLabel(status.to_backend)}`
       : null;
-  const versionChanged = llamaReleaseChanged(
-    Boolean(offer?.update_available),
-    installedTag,
-    latestTag,
-  );
-  // Only the migration offer, and only the pair it was measured on: a version update
-  // or a hand-picked switch keeps the plain line.
+  const llamaVersionChanged = Boolean(llamaRow?.versionChanged);
+  const backendOnly = Boolean(backendChange) && !llamaVersionChanged;
+  // a skip dismisses the whole offer, so a bundle reads plural even when llama.cpp only migrates.
+  const skipLabel = bundled
+    ? "Skip these versions"
+    : backendOnly
+      ? "Skip this change"
+      : "Skip this version";
+
+  function handleSkip(event: MouseEvent<HTMLButtonElement>) {
+    const skippedTag = bundled || backendOnly ? null : primary?.latestTag;
+    const key = dismiss();
+    if (!key) {
+      return;
+    }
+    setSkipped({
+      key,
+      // detail is 0 for Enter or Space, so only keyboard users get focus moved to Undo.
+      fromKeyboard: event.detail === 0,
+      message: skippedTag
+        ? `Skipped ${label} ${skippedTag} for now`
+        : `Skipped the ${label} ${bundled ? "updates" : "update"} for now`,
+    });
+  }
+  // show the backend pair when a migration has no version change.
+  const backendPair = backendOnly
+    ? ([
+        backendLabel(status?.from_backend),
+        backendLabel(status?.to_backend),
+      ] as const)
+    : null;
+  // only the measured migration pair gets the speed note; other updates do not.
   const restartNote =
-    backendChange &&
-    !versionChanged &&
+    backendOnly &&
     status?.from_backend === "rocm" &&
     status?.to_backend === "vulkan"
-      ? "Vulkan is >10% faster than ROCM. No restart needed after update"
-      : "No restart needed after update";
-  const changelogKey =
-    component === "llama.cpp" && versionChanged
-      ? `${installedTag}\0${latestTag}`
+      ? "Vulkan is >10% faster than ROCM. No restart needed"
+      : "No restart needed";
+  const changelogTags =
+    llamaRow?.versionChanged && llamaRow.installedTag && llamaRow.latestTag
+      ? { installedTag: llamaRow.installedTag, latestTag: llamaRow.latestTag }
       : null;
-  const changelogAvailable = Boolean(changelogKey && !status?.source_build);
-  const changelogOpen =
-    changelogKey !== null && changelogVersion === changelogKey;
-  // Use the same predicate for the panel and its protective height floor.
+  const changelogAvailable = Boolean(changelogTags && !status?.source_build);
+  // a different offer starts collapsed.
+  const detailsKey = [
+    ...rows.map(
+      (row) => `${row.component}\0${row.installedTag}\0${row.latestTag}`,
+    ),
+    backendChange ?? "",
+  ].join("\n");
+  const detailsOpen = !applying && detailsVersion === detailsKey;
+  // the panel and its protective height floor must use the same predicate.
   const changelogPanelOpen = Boolean(
-    !applying &&
-      changelogAvailable &&
-      changelogOpen &&
-      installedTag &&
-      latestTag,
+    detailsOpen && changelogAvailable && changelogTags,
   );
-  const sizeLabel =
-    sizeBytes && sizeBytes > 0
-      ? `${Math.round(sizeBytes / (1024 * 1024))} MB`
-      : null;
+  const sizeLabel = sizeLabelOf(
+    rows.every((row) => row.sizeBytes && row.sizeBytes > 0)
+      ? rows.reduce((total, row) => total + (row.sizeBytes ?? 0), 0)
+      : null,
+  );
+  const summary = [
+    bundled ? label : null,
+    sizeLabel ? `${sizeLabel} download` : null,
+    backendChange ? `${backendChange} backend` : null,
+    restartNote,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  // use the phase record because migration and source-build offers disappear while jobs run.
+  const runningPhase = status?.job.runningPhase ?? null;
+  const phaseIndex = rows.findIndex(
+    (row) => updateComponentKey(row.component) === runningPhase,
+  );
+  // no audio.cpp runtime yet, so this offer installs it.
+  const firstInstall =
+    !bundled &&
+    primary?.component === "audio.cpp" &&
+    primary.installedTag === null;
+  let title: string;
+  if (applying && !bundled) {
+    title = firstInstall
+      ? "Installing the audio runtime..."
+      : `Updating ${label}...`;
+  } else if (applying) {
+    title =
+      phaseIndex >= 0
+        ? `Installing ${rows[phaseIndex].component} (${phaseIndex + 1} of ${rows.length})...`
+        : `Installing ${rows.length} updates...`;
+  } else if (bundled) {
+    title = `${rows.length} runtime updates`;
+  } else {
+    title = firstInstall
+      ? "Install the audio runtime"
+      : backendOnly
+        ? `New ${label} backend`
+        : `New ${label} update`;
+  }
   const updateProgress = status?.job.progress ?? null;
   const jobSucceeded = status?.job.state === "success";
-  // Display value animates; aria uses the real progress.
+  // aria reports real progress while the visible value is smoothed.
   const displayProgress = useSmoothedProgress(
     applying,
     updateProgress,
     jobSucceeded,
   );
+  // a returning card or a hidden banner retires the notice.
+  useEffect(() => {
+    if (show || !enabled) {
+      setSkipped(null);
+    }
+  }, [show, enabled]);
 
-  // Avoid opacity/transform transitions; GPU layer churn can flash.
-  return show ? (
+  if (!show) {
+    return skipped && enabled ? (
+      <SkippedNotice
+        message={skipped.message}
+        focusUndo={skipped.fromKeyboard}
+        positioned={positioned}
+        onUndo={() => {
+          undoDismiss(skipped.key);
+          setSkipped(null);
+        }}
+        onExpire={clearSkipped}
+      />
+    ) : null;
+  }
+
+  // opacity and transform transitions can flash during gpu layer churn.
+  return (
     <div
       className={cn(
         positioned
-          ? "fixed bottom-4 right-4 z-[9998] w-[calc(100vw-2rem)] max-w-[448px]"
+          ? "fixed bottom-4 right-4 z-[9998] w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))]"
           : cn(
-              "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[448px] flex-col",
-              // Only an open changelog needs a shrinkable height floor.
+              "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))] flex-col",
+              // the desktop floor plus 22px for the details toggle; each bundled row adds one text-xs line.
               changelogPanelOpen
-                ? "min-h-[calc(117px+93px*var(--ui-font-scale,1))] max-[383px]:min-h-[calc(24px+224px*var(--ui-font-scale,1))]"
+                ? "min-h-[calc(117px+(115px+18px*var(--llama-update-extra-rows,0))*var(--ui-font-scale,1))] max-[383px]:min-h-[calc(24px+(246px+18px*var(--llama-update-extra-rows,0))*var(--ui-font-scale,1))]"
                 : "shrink-0",
             ),
       )}
+      style={
+        {
+          "--llama-update-extra-rows": Math.max(rows.length - 1, 0),
+        } as CSSProperties
+      }
       data-testid="llama-update-banner"
     >
-      {/* Paint the full floor even when the changelog content is short. */}
-      <div className="relative flex max-h-[calc(100dvh_-_2rem)] min-h-0 grow flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
+      {/* fill the height floor even when the changelog content is short. */}
+      <div className="relative flex max-h-[calc(100dvh_-_2rem_-_var(--studio-window-chrome-top,0px))] min-h-0 grow flex-col overflow-hidden rounded-2xl bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
+        {/* Hides the card until the app is reopened, the same skip What's new offers. */}
         {applying ? null : (
           <button
             type="button"
-            onClick={dismiss}
-            className="absolute top-2.5 right-3 flex size-6 items-center justify-center rounded-full text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
-            aria-label={`Dismiss ${component} update notification`}
+            onClick={handleSkip}
+            aria-label={`Hide the ${label} ${bundled ? "updates" : "update"} until Unsloth is reopened`}
+            className="absolute right-3 top-3 flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            data-testid="llama-update-close-button"
           >
-            <svg
-              aria-hidden="true"
-              width="12"
-              height="12"
-              viewBox="0 0 14 14"
-              fill="none"
-              xmlns="http://www.w3.org/2000/svg"
-            >
-              <path
-                d="M11 3L3 11M3 3l8 8"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-              />
-            </svg>
+            <HugeiconsIcon icon={Cancel01Icon} aria-hidden="true" className="size-4" strokeWidth={2} />
           </button>
         )}
-
         <div className="flex min-w-0 shrink-0 items-start gap-4 pr-6">
-          <Download
+          <HugeiconsIcon icon={Download01Icon}
             aria-hidden="true"
             className="mt-1 size-5 shrink-0 text-foreground"
             strokeWidth={1.75}
           />
           <div className="min-w-0">
             <p className="font-heading text-base font-medium text-foreground">
-              {applying
-                ? `Updating ${component}...`
-                : backendChange && !versionChanged
-                  ? `New ${component} backend`
-                  : `New ${component} update`}
+              {title}
             </p>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              {versionChanged || !backendChange ? (
-                <>
-                  {installedTag ?? "unknown"} &rarr;{" "}
-                  <span className="font-medium text-foreground">
-                    {latestTag ?? ""}
-                  </span>
-                </>
-              ) : (
-                <>
-                  {backendLabel(status?.from_backend)} &rarr;{" "}
-                  <span className="font-medium text-foreground">
-                    {backendLabel(status?.to_backend)}
-                  </span>
-                </>
-              )}
+            <p
+              className="mt-0.5 text-xs text-muted-foreground"
+              data-testid="llama-update-summary"
+            >
+              {summary}
             </p>
-            <p className="mt-1 text-ui-11 text-muted-foreground/70">
-              {sizeLabel ? `${sizeLabel} download · ` : ""}
-              {versionChanged && backendChange
-                ? `${backendChange} backend · `
-                : ""}
-              {restartNote}
-            </p>
+            {applying ? null : (
+              <button
+                type="button"
+                className="-mx-1 mt-1 block rounded-full px-1 text-xs font-medium text-foreground underline decoration-foreground/30 underline-offset-2 hover:decoration-foreground/70"
+                onClick={() =>
+                  setDetailsVersion(detailsOpen ? null : detailsKey)
+                }
+                aria-expanded={detailsOpen}
+                data-testid="llama-update-changelog-toggle"
+              >
+                {detailsOpen ? "Hide what's new" : "What's new"}
+              </button>
+            )}
+            {detailsOpen ? (
+              <div className="mt-2" data-testid="llama-update-details">
+                {rows.map((row) => (
+                  <VersionLine
+                    key={row.component}
+                    row={row}
+                    bundled={bundled}
+                    backendPair={row === llamaRow ? backendPair : null}
+                  />
+                ))}
+              </div>
+            ) : null}
           </div>
         </div>
 
-        {changelogPanelOpen && installedTag && latestTag ? (
+        {changelogPanelOpen && changelogTags ? (
           <LlamaUpdateChangelogPanel
-            installedTag={installedTag}
-            latestTag={latestTag}
+            installedTag={changelogTags.installedTag}
+            latestTag={changelogTags.latestTag}
           />
         ) : null}
 
@@ -330,7 +552,7 @@ export function LlamaUpdateBanner({
           <div
             className="mb-1.5 mt-4 h-1 overflow-hidden rounded-full bg-muted"
             role="progressbar"
-            aria-label={`Updating ${component}`}
+            aria-label={`Updating ${label}`}
             aria-valuemin={0}
             aria-valuemax={100}
             aria-valuenow={
@@ -346,49 +568,114 @@ export function LlamaUpdateBanner({
             />
           </div>
         ) : (
-          <div
-            className={cn(
-              "mt-4 flex shrink-0 flex-wrap items-center gap-x-1 gap-y-2",
-              changelogAvailable ? "justify-between" : "justify-end",
-            )}
-          >
-            {changelogAvailable ? (
+          <div className="mt-4 flex shrink-0 flex-wrap items-center justify-end gap-x-1 gap-y-2">
+            {detailsOpen ? (
               <Button
                 size="sm"
                 variant="ghost"
-                className="-ml-2 h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
-                onClick={() =>
-                  setChangelogVersion(changelogOpen ? null : changelogKey)
-                }
-                aria-expanded={changelogOpen}
-                data-testid="llama-update-changelog-toggle"
+                className="-ml-2 mr-auto h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-muted-foreground hover:text-foreground"
+                onClick={handleSkip}
+                data-testid="llama-update-skip-button"
               >
-                {changelogOpen ? "Hide what's new" : "Show what's new"}
+                {skipLabel}
               </Button>
             ) : null}
-            <div className="flex flex-wrap items-center justify-end gap-x-1 gap-y-2">
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
-                onClick={snooze}
-                data-testid="llama-update-snooze-button"
-              >
-                Remind me later
-              </Button>
-              <Button
-                size="sm"
-                // Align pill edge with card padding.
-                className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
-                onClick={handleUpdate}
-                data-testid="llama-update-button"
-              >
-                Update
-              </Button>
-            </div>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
+              onClick={snooze}
+              data-testid="llama-update-snooze-button"
+            >
+              Later
+            </Button>
+            <Button
+              size="sm"
+              variant="primary"
+              // align the pill edge with the card padding.
+              className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
+              onClick={handleUpdate}
+              data-testid="llama-update-button"
+            >
+              Update
+            </Button>
           </div>
         )}
       </div>
     </div>
-  ) : null;
+  );
+}
+
+// long enough to read and reach Undo; hover or focus holds it open.
+const SKIPPED_NOTICE_MS = 6000;
+
+function SkippedNotice({
+  message,
+  focusUndo,
+  positioned,
+  onUndo,
+  onExpire,
+}: {
+  message: string;
+  focusUndo: boolean;
+  positioned: boolean;
+  onUndo: () => void;
+  onExpire: () => void;
+}): ReactElement {
+  const undoRef = useRef<HTMLButtonElement>(null);
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  // the skip button is gone, so keyboard focus moves to Undo instead of the page.
+  useEffect(() => {
+    if (focusUndo) {
+      undoRef.current?.focus({ preventScroll: true });
+    }
+  }, [focusUndo]);
+  // expiring under focus would drop it on the page body.
+  useEffect(() => {
+    if (hovered || focused) {
+      return;
+    }
+    const timer = setTimeout(onExpire, SKIPPED_NOTICE_MS);
+    return () => clearTimeout(timer);
+  }, [hovered, focused, onExpire]);
+  return (
+    <div
+      className={cn(
+        "w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))]",
+        positioned
+          ? "fixed bottom-4 right-4 z-[9998]"
+          : "pointer-events-auto shrink-0",
+      )}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocus={() => setFocused(true)}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          setFocused(false);
+        }
+      }}
+      data-testid="llama-update-skipped"
+    >
+      <div className="flex items-center gap-3 rounded-full bg-white py-2.5 pl-5 pr-3 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
+        {/* <output> carries the implicit status role, so screen readers announce the skip. */}
+        <output
+          className="block min-w-0 grow truncate text-ui-13 text-foreground"
+          title={message}
+        >
+          {message}
+        </output>
+        <Button
+          ref={undoRef}
+          size="sm"
+          variant="ghost"
+          className="h-auto shrink-0 whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
+          onClick={onUndo}
+          data-testid="llama-update-undo-skip"
+        >
+          Undo
+        </Button>
+      </div>
+    </div>
+  );
 }

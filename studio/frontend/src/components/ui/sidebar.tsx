@@ -8,8 +8,7 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { Slot } from "radix-ui"
 
 import { cn } from "@/lib/utils"
-// Deep import, not the feature barrel: the barrel pulls in SettingsDialog,
-// which renders sidebar-aware panels and would close an import cycle.
+// Deep import: the feature barrel pulls in SettingsDialog and closes an import cycle.
 import { useShortcut } from "@/features/settings/hooks/use-shortcut"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -38,7 +37,7 @@ import {
   useSidebarWidth,
 } from "@/hooks/use-sidebar-width"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { LayoutAlignLeftIcon } from "@hugeicons/core-free-icons"
+import { LayoutAlignLeftIcon, PanelLeftIcon } from "@hugeicons/core-free-icons"
 
 const noop = () => {}
 
@@ -60,11 +59,6 @@ type SidebarContextProps = {
   /** The unpinned sidebar is held out over the content, from the window edge. */
   peeking: boolean
   setPeeking: (value: boolean) => void
-  width: number
-  storedWidth: number
-  maxWidth: number
-  setWidth: (value: number) => void
-  resetWidth: () => void
 }
 
 const SidebarContext = React.createContext<SidebarContextProps | null>(null)
@@ -77,6 +71,9 @@ function useSidebar() {
 
   return context
 }
+
+const OPEN_DIALOG_SELECTOR =
+  '[data-slot="dialog-content"][data-state="open"], [data-slot="alert-dialog-content"][data-state="open"]'
 
 function SidebarProvider({
   defaultOpen = true,
@@ -97,16 +94,12 @@ function SidebarProvider({
   setPinned?: (value: boolean) => void
   togglePinned?: () => void
 }) {
-  // The shell decision, not the viewport: a narrowed desktop window keeps the
-  // desktop sidebar. Panels with only room to overlay still read useIsMobile.
+  // The shell decision, not the viewport: a narrowed desktop window keeps the desktop sidebar.
   const isMobile = useIsMobileShell()
   const [openMobile, setOpenMobile] = React.useState(false)
   const {
     width,
-    max: maxWidth,
-    stored: storedWidth,
-    setWidth,
-    resetWidth,
+    scale: widthScale,
   } = useSidebarWidth()
 
   const prevIsMobileRef = React.useRef(isMobile)
@@ -117,15 +110,11 @@ function SidebarProvider({
     prevIsMobileRef.current = isMobile
   }, [isMobile])
 
-  // Whether pin mode is active (caller provides pinned + setPinned + togglePinned).
   const hasPinMode = pinnedProp !== undefined && setPinnedProp !== undefined && togglePinnedProp !== undefined
 
-  // This is the internal state of the sidebar.
-  // We use openProp and setOpenProp for control from outside the component.
   const [_open, _setOpen] = React.useState(defaultOpen)
 
-  // When pin mode is active, open is driven entirely by `pinned` (explicit
-  // user toggle). Otherwise fall back to the controlled/uncontrolled pattern.
+  // Pin mode drives open entirely from `pinned`; otherwise controlled/uncontrolled.
   const open = hasPinMode ? !!pinnedProp : (openProp ?? _open)
 
   const setOpen = React.useCallback(
@@ -133,7 +122,6 @@ function SidebarProvider({
       const openState = typeof value === "function" ? value(open) : value
 
       if (hasPinMode) {
-        // In pin mode, setOpen controls pinned state.
         setPinnedProp?.(openState)
         return
       }
@@ -147,21 +135,22 @@ function SidebarProvider({
     [setOpenProp, open, hasPinMode, setPinnedProp]
   )
 
-  // Helper to toggle the sidebar.
   const toggleSidebar = React.useCallback(() => {
     if (isMobile) return setOpenMobile((open) => !open)
     if (hasPinMode && togglePinnedProp) return togglePinnedProp()
     return setOpen((open) => !open)
   }, [isMobile, setOpen, setOpenMobile, hasPinMode, togglePinnedProp])
 
-  // Chord comes from the shortcuts store, so Settings -> Shortcuts can rebind or clear it.
-  useShortcut("toggleSidebar", toggleSidebar)
+  // Not behind an open dialog (Settings leaves the app un-hidden); the mobile drawer is itself one.
+  useShortcut("toggleSidebar", toggleSidebar, {
+    claims: () =>
+      (isMobile && openMobile) || document.querySelector(OPEN_DIALOG_SELECTOR) === null,
+  })
 
   const pinned = pinnedProp ?? false
   const setPinned = setPinnedProp ?? noop
   const togglePinned = togglePinnedProp ?? noop
 
-  // Reaches a collapsed sidebar from the window edge without pinning it.
   const [peeking, setPeekingState] = React.useState(false)
   const retractRef = React.useRef<number | undefined>(undefined)
   // Deferred so the handoff from the edge strip to the panel cannot flicker.
@@ -174,15 +163,11 @@ function SidebarProvider({
     retractRef.current = window.setTimeout(() => setPeekingState(false), 120)
   }, [])
   React.useEffect(() => () => window.clearTimeout(retractRef.current), [])
-  // Nothing to hold out once it is pinned, or once it is a mobile sheet.
   React.useEffect(() => {
     if (pinned || isMobile) setPeekingState(false)
   }, [pinned, isMobile])
 
-  // We add a state so that we can do data-state="expanded" or "collapsed".
-  // This makes it easier to style the sidebar with Tailwind classes. Held out
-  // counts as expanded: the panel is on screen, so the rows it renders are the
-  // ones its tooltips, disclosures and chat chords should see.
+  // Held out counts as expanded: the panel is on screen.
   const state = open || peeking ? "expanded" : "collapsed"
 
   const contextValue = React.useMemo<SidebarContextProps>(
@@ -200,13 +185,8 @@ function SidebarProvider({
       togglePinned,
       peeking,
       setPeeking,
-      width,
-      storedWidth,
-      maxWidth,
-      setWidth,
-      resetWidth,
     }),
-    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, hasPinMode, pinned, setPinned, togglePinned, peeking, setPeeking, width, storedWidth, maxWidth, setWidth, resetWidth]
+    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, hasPinMode, pinned, setPinned, togglePinned, peeking, setPeeking]
   )
 
   return (
@@ -215,58 +195,19 @@ function SidebarProvider({
         data-slot="sidebar-wrapper"
         style={
           {
-            // The drag handle writes this same property live while resizing. Under
-            // PANEL_RESIZE_SCOPED_VARS_ENABLED it moves DOWN to [data-slot="sidebar"], which holds
-            // every consumer, and cannot also stay here: this wrapper is an ancestor of the chat
-            // thread, so a declaration left behind would keep restyling the thread on every render
-            // even once the drag-time write had moved.
+            // Under PANEL_RESIZE_SCOPED_VARS_ENABLED the var moves to [data-slot="sidebar"]: this
+            // wrapper is an ancestor of the thread, so declaring it here would restyle the thread.
             ...(PANEL_RESIZE_SCOPED_VARS_ENABLED
               ? null
-              : { "--sidebar-width": `${width}px` }),
+              : { "--sidebar-width": `${width * widthScale}px` }),
             "--sidebar-width-icon": SIDEBAR_WIDTH_ICON,
             ...style,
           } as React.CSSProperties
         }
         className={cn(
-          // `has-[>...]`, not `has-[...]`, and the combinator is the whole point.
-          // This wrapper is an ancestor of the chat thread, as the note on
-          // --sidebar-width above already says. A `:has()` whose argument is a
-          // DESCENDANT selector has to be re-checked whenever anything is
-          // inserted or removed anywhere in the subject's subtree, and
-          // answering it means WALKING that subtree. On an ancestor of the
-          // thread that walk is the whole thread, on every mutation.
-          // It is a traversal, NOT a restyle, and the difference matters
-          // because it is why containment does not help. Blink's own
-          // `UpdateLayoutTree.elementCount` for one inserted span is 1 with
-          // these rules in their child form, 2 with one of them in descendant
-          // form and 3 with both: only the subjects are restyled, never the
-          // thread. So there is no scope for `contain:` to reduce, which is
-          // what the note in index.css near `content-visibility: visible` was
-          // seeing when it recorded containment on the message roots as no
-          // help. `content-visibility: auto` on the message roots does not
-          // help either, measured at -7%: the argument re-check walks skipped
-          // content too.
-          // Measured at the 500K rung, corpus 23cd2464, on a 357,843-element
-          // thread: appending one EMPTY span inside a message cost 17.5 and
-          // 18.6 ms in two concurrent arms with this rule in place, 8.7 ms with
-          // this rule alone deleted, and 0.10 ms with this rule and the one on
-          // chat-page.tsx deleted. Deleting the other eleven `:has()` rules
-          // that survived the bisect changed nothing (17.2 / 19.2 ms), and the
-          // same span appended to <body> costs 0.10 ms either way.
-          // CHROMIUM ONLY. On a synthetic thread carrying this same ancestor
-          // chain and the built Unsloth stylesheet, at 300,464 elements, one
-          // inserted span costs 1.20 ms plain / 1.29 ms child / 5.63 ms one
-          // descendant rule / 10.30 ms both in Chromium, and 4.33 / 4.58 /
-          // 4.58 / 4.33 ms in WebKitGTK and 4.65 / 4.72 / 4.45 / 5.10 ms in
-          // Firefox: flat in both, within noise of each other. So this change
-          // is free where it does not help and it does not regress the engine
-          // Unsloth uses on Linux.
-          // The child combinator is not a weakening. `data-variant` is rendered
-          // on the root element of `Sidebar` below, and `Sidebar` is a direct
-          // child of this wrapper (AppSidebar returns it inside a Fragment,
-          // which is not a DOM node), so the two selectors match the same
-          // elements. What changes is that a mutation deep in the thread can no
-          // longer make Blink ask this question again.
+          // `has-[>...]`, not `has-[...]`: on an ancestor of the thread a descendant :has() is
+          // re-checked by walking the whole thread on every mutation (Chromium). The child
+          // combinator matches the same elements, since Sidebar is a direct child of this wrapper.
           "group/sidebar-wrapper has-[>[data-variant=inset]]:bg-sidebar flex min-h-svh w-full",
           className
         )}
@@ -293,17 +234,16 @@ function Sidebar({
   collapsible?: "offcanvas" | "icon" | "none"
   collapseToZero?: boolean
 }) {
-  const { isMobile, state, openMobile, setOpenMobile, hasPinMode, pinned, peeking, setPeeking, width } =
+  const { isMobile, state, openMobile, setOpenMobile, hasPinMode, pinned, peeking, setPeeking } =
     useSidebar()
+  const { width, scale: widthScale } = useSidebarWidth()
   // Only a sidebar that collapses to nothing has an edge to be held out from.
   const holdsOut = hasPinMode && !pinned && collapseToZero
   const heldOut = holdsOut && peeking
 
-  // The scoped home for --sidebar-width: every consumer (this element,
-  // sidebar-gap, sidebar-container) is inside it and the chat thread is not.
-  // Empty with the flag off, where the wrapper keeps the declaration.
+  // Scoped home for --sidebar-width: every consumer is inside it and the thread is not.
   const scopedWidthStyle = (
-    PANEL_RESIZE_SCOPED_VARS_ENABLED ? { "--sidebar-width": `${width}px` } : {}
+    PANEL_RESIZE_SCOPED_VARS_ENABLED ? { "--sidebar-width": `${width * widthScale}px` } : {}
   ) as React.CSSProperties
 
   if (collapsible === "none") {
@@ -330,7 +270,7 @@ function Sidebar({
           data-sidebar="sidebar"
           data-slot="sidebar"
           data-mobile="true"
-          className="bg-sidebar text-sidebar-foreground w-2/3 max-w-[18rem] p-0 [&>button]:hidden"
+          className="bg-sidebar text-sidebar-foreground w-2/3 max-w-[calc(18rem*var(--ui-space-scale,1))] max-sm:w-[85vw] p-0 [&>button]:hidden"
           side={side}
         >
           <SheetHeader className="sr-only">
@@ -346,15 +286,12 @@ function Sidebar({
   return (
     <div
       className={cn(
-        "group peer text-sidebar-foreground relative shrink-0",
+        "group sidebar-peer text-sidebar-foreground relative shrink-0",
         hasPinMode && pinned && "w-(--sidebar-width)",
         hasPinMode && !pinned && (collapseToZero ? "w-0" : "w-(--sidebar-width-icon)"),
       )}
       data-state={state}
-      // "zero" when the panel collapses to nothing: the icon-rail rules keyed on
-      // "icon" centre every button, hide every label and repaint the panel white,
-      // which a w-0 sidebar wore for a frame on its way out. That was the ghost.
-      // No selector matches "zero", so the intermediate state no longer exists.
+      // "zero" rather than "icon": the icon-rail rules made a w-0 sidebar flash on its way out.
       data-collapsible={
         state === "collapsed"
           ? hasPinMode && collapseToZero
@@ -370,7 +307,6 @@ function Sidebar({
       aria-hidden={(holdsOut && !heldOut) || undefined}
       inert={(holdsOut && !heldOut) || undefined}
     >
-      {/* This is what handles the sidebar gap on desktop */}
       <div
         data-slot="sidebar-gap"
         className={cn(
@@ -378,7 +314,6 @@ function Sidebar({
           "group-data-[side=right]:rotate-180",
           hasPinMode
             ? cn(
-                // Pin mode: always push content. Expanded when pinned.
                 pinned
                   ? "w-(--sidebar-width)"
                   : collapseToZero
@@ -388,7 +323,6 @@ function Sidebar({
                         : "w-(--sidebar-width-icon)"),
               )
             : cn(
-                // Legacy mode: original shadcn behavior.
                 "w-(--sidebar-width)",
                 "group-data-[collapsible=offcanvas]:w-0",
                 variant === "floating" || variant === "inset"
@@ -401,30 +335,23 @@ function Sidebar({
         data-slot="sidebar-container"
         data-side={side}
         data-held-out={heldOut || undefined}
-        // A hover state of the panel as much as of the edge: the pointer
-        // crosses between them, and only leaving both retracts it.
+        // Hover spans panel and edge; only leaving both retracts it.
         onPointerEnter={holdsOut ? () => setPeeking(true) : undefined}
         onPointerLeave={holdsOut ? () => setPeeking(false) : undefined}
-        // The same for focus, which arrives by Shift+Tab off the edge strip.
-        // Without it the strip's own blur retracts the panel around the focus
-        // that just landed in it, and going inert drops that focus entirely.
+        // Without this the strip's blur retracts the panel around the focus that just landed in it.
         onFocus={holdsOut ? () => setPeeking(true) : undefined}
         onBlur={holdsOut ? () => setPeeking(false) : undefined}
         className={cn(
           hasPinMode
             ? cn(
-                // Pin mode: always push content, full height.
                 "absolute top-0 bottom-0 flex data-[side=left]:left-0",
                 pinned
                   ? "w-(--sidebar-width)"
                   : collapseToZero
                     ? cn(
-                        // Full width all along, parked off-screen: animating a
-                        // width reflows the panel's contents every frame, a
-                        // transform does not.
+                        // Parked off-screen at full width: a transform does not reflow contents.
                         "w-(--sidebar-width)",
-                        // The transition rides on the held-out class alone, so
-                        // collapsing a pinned sidebar still goes instantly.
+                        // Transition only when held out, so collapsing a pinned one is instant.
                         heldOut
                           ? "z-[45] translate-x-0 transition-transform duration-200 ease-out"
                           : "-translate-x-full pointer-events-none",
@@ -432,10 +359,8 @@ function Sidebar({
                     : "w-(--sidebar-width-icon)",
               )
             : cn(
-                // Legacy mode: fixed to viewport (original shadcn behavior).
                 "fixed inset-y-0 z-10 flex h-svh w-(--sidebar-width) data-[side=left]:left-0 data-[side=left]:group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)] data-[side=right]:right-0 data-[side=right]:group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)]",
               ),
-          // Adjust the padding for floating and inset variants.
           variant === "floating" || variant === "inset"
             ? "p-2 group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)+(--spacing(4))+2px)]"
             : !hasPinMode && "group-data-[collapsible=icon]:w-(--sidebar-width-icon) group-data-[side=left]:border-r group-data-[side=right]:border-l",
@@ -447,18 +372,16 @@ function Sidebar({
           data-sidebar="sidebar"
           data-slot="sidebar-inner"
           className={cn(
-            "bg-sidebar flex size-full flex-col overflow-hidden border-r border-sidebar-border dark:border-r-0",
-            "group-data-[variant=floating]:ring-sidebar-border group-data-[variant=floating]:rounded-lg group-data-[variant=floating]:shadow-sm group-data-[variant=floating]:ring-1",
+            "bg-sidebar flex size-full flex-col overflow-hidden",
+            "group-data-[variant=floating]:ring-sidebar-border group-data-[variant=floating]:rounded-2xl group-data-[variant=floating]:shadow-sm group-data-[variant=floating]:ring-1",
           )}
         >
           {children}
         </div>
-        {(!collapseToZero || pinned) && (
+        {state === "expanded" && (!collapseToZero || pinned) && (
           <SidebarResizeHandle
             side={side}
-            // The shared handle hides itself below `sm`, a viewport rule that
-            // does not hold for a desktop window the user narrowed: there the
-            // sidebar is still the desktop one and still resizable.
+            // The handle hides below `sm`, but a narrowed desktop window still has a resizable sidebar.
             className={collapseToZero ? "block" : undefined}
           />
         )}
@@ -467,9 +390,6 @@ function Sidebar({
   )
 }
 
-/**
- * The sidebar's draggable edge, over the shared panel handle.
- */
 function SidebarResizeHandle({
   className,
   side = "left",
@@ -477,8 +397,15 @@ function SidebarResizeHandle({
   className?: string
   side?: "left" | "right"
 }) {
-  const { open, toggleSidebar, width, storedWidth, maxWidth, setWidth, resetWidth } =
-    useSidebar()
+  const { open, toggleSidebar } = useSidebar()
+  const {
+    width,
+    scale: widthScale,
+    stored: storedWidth,
+    max: maxWidth,
+    setWidth,
+    resetWidth,
+  } = useSidebarWidth()
   const ref = React.useRef<HTMLDivElement>(null)
   const t = useT()
 
@@ -491,6 +418,7 @@ function SidebarResizeHandle({
         stored={storedWidth}
         min={SIDEBAR_WIDTH_MIN}
         max={maxWidth}
+        scale={widthScale}
         clamp={clampSidebarWidth}
         setWidth={setWidth}
         resetWidth={resetWidth}
@@ -501,22 +429,20 @@ function SidebarResizeHandle({
         cssVar="--sidebar-width"
         // The custom titlebar renders outside the wrapper and cannot inherit it.
         rootVar="--studio-sidebar-live-width"
-        // Both used only under PANEL_RESIZE_SCOPED_VARS_ENABLED. The rail sits
-        // inside sidebar-container, so [data-slot="sidebar"] always encloses it.
+        // Used only under PANEL_RESIZE_SCOPED_VARS_ENABLED; the rail is inside the sidebar slot.
         scopedTarget={() =>
           ref.current?.closest<HTMLElement>('[data-slot="sidebar"]') ?? null
         }
-        // Empty on every build without a custom titlebar: nothing reads the
-        // property there, so nothing needs writing.
+        // Empty without a custom titlebar: nothing reads the property there.
         rootVarTargets={() =>
           Array.from(
             document.querySelectorAll<HTMLElement>("[data-titlebar-live-width-scope]"),
           )
         }
         measure={() =>
-          ref.current
+          (ref.current
             ?.closest<HTMLElement>('[data-slot="sidebar-container"]')
-            ?.getBoundingClientRect().width ?? SIDEBAR_WIDTH_MIN
+            ?.getBoundingClientRect().width ?? SIDEBAR_WIDTH_MIN * widthScale) / widthScale
         }
         label={t("shell.aria.resizeSidebar")}
         toggleLabel={t("shell.aria.openSidebar")}
@@ -536,7 +462,7 @@ function SidebarTrigger({
   onClick,
   ...props
 }: React.ComponentProps<typeof Button>) {
-  const { toggleSidebar } = useSidebar()
+  const { toggleSidebar, isMobile, open, openMobile } = useSidebar()
 
   return (
     <Button
@@ -551,7 +477,11 @@ function SidebarTrigger({
       }}
       {...props}
     >
-      <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
+      <HugeiconsIcon
+        icon={(isMobile ? openMobile : open) ? PanelLeftIcon : LayoutAlignLeftIcon}
+        strokeWidth={1.75}
+        className="size-icon"
+      />
       <span className="sr-only">Toggle Sidebar</span>
     </Button>
   )
@@ -587,7 +517,7 @@ function SidebarInset({ className, ...props }: React.ComponentProps<"main">) {
     <main
       data-slot="sidebar-inset"
       className={cn(
-        "bg-background md:peer-data-[variant=inset]:m-2 md:peer-data-[variant=inset]:ml-0 md:peer-data-[variant=inset]:rounded-xl md:peer-data-[variant=inset]:shadow-sm md:peer-data-[variant=inset]:peer-data-[state=collapsed]:ml-2 relative flex min-h-0 w-full flex-1 flex-col",
+        "bg-background md:[:where(.sidebar-peer)[data-variant=inset]~&]:m-2 md:[:where(.sidebar-peer)[data-variant=inset]~&]:ml-0 md:[:where(.sidebar-peer)[data-variant=inset]~&]:rounded-xl md:[:where(.sidebar-peer)[data-variant=inset]~&]:shadow-sm md:[:where(.sidebar-peer)[data-variant=inset]~&]:[:where(.sidebar-peer)[data-state=collapsed]~&]:ml-2 relative flex min-h-0 w-full flex-1 flex-col",
         className
       )}
       {...props}
@@ -686,7 +616,7 @@ function SidebarGroupLabel({
       data-slot="sidebar-group-label"
       data-sidebar="group-label"
       className={cn(
-        "text-[#94a3b8] dark:text-muted-foreground ring-sidebar-ring h-auto pt-3 pb-2 px-4 rounded-md text-ui-10 font-semibold uppercase tracking-[0em] group-data-[collapsible=icon]:-mt-8 group-data-[collapsible=icon]:opacity-0 focus-visible:ring-1 [&>svg]:size-3 flex shrink-0 items-center outline-hidden [&>svg]:shrink-0",
+        "text-[#94a3b8] dark:text-muted-foreground ring-sidebar-ring h-auto pt-3 pb-2 px-4 rounded-full text-ui-10 font-semibold uppercase tracking-[0em] group-data-[collapsible=icon]:-mt-8 group-data-[collapsible=icon]:opacity-0 focus-visible:ring-1 [&>svg]:size-3 flex shrink-0 items-center outline-hidden [&>svg]:shrink-0",
         className
       )}
       {...props}
@@ -706,7 +636,7 @@ function SidebarGroupAction({
       data-slot="sidebar-group-action"
       data-sidebar="group-action"
       className={cn(
-        "text-sidebar-foreground ring-sidebar-ring hover:bg-sidebar-accent hover:text-sidebar-accent-foreground absolute top-3.5 right-3 w-5 rounded-md p-0 focus-visible:ring-1 [&>svg]:size-4 flex aspect-square items-center justify-center outline-hidden transition-transform group-data-[collapsible=icon]:hidden after:absolute after:-inset-2 md:after:hidden [&>svg]:shrink-0",
+        "text-sidebar-foreground ring-sidebar-ring hover:bg-sidebar-accent hover:text-sidebar-accent-foreground absolute top-3.5 right-3 w-5 rounded-full p-0 focus-visible:ring-1 [&>svg]:size-4 flex aspect-square items-center justify-center outline-hidden transition-transform group-data-[collapsible=icon]:hidden after:absolute after:-inset-2 md:after:hidden [&>svg]:shrink-0",
         className
       )}
       {...props}
@@ -751,7 +681,7 @@ function SidebarMenuItem({ className, ...props }: React.ComponentProps<"li">) {
 }
 
 const sidebarMenuButtonVariants = cva(
-  "ring-sidebar-ring hover:bg-sidebar-accent hover:text-sidebar-accent-foreground active:bg-sidebar-accent active:text-sidebar-accent-foreground data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground data-open:hover:bg-sidebar-accent data-open:hover:text-sidebar-accent-foreground gap-2 rounded-md p-2 text-left text-sm cursor-pointer group-has-data-[sidebar=menu-action]/menu-item:pr-8 group-data-[collapsible=icon]:w-full! group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:p-2! data-active:font-medium peer/menu-button flex w-full items-center overflow-hidden outline-hidden group/menu-button disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 [&>span:last-child]:truncate group-data-[collapsible=icon]:[&>span]:hidden [&_svg]:size-4 [&_svg]:shrink-0 group-data-[collapsible=icon]:[&_svg]:size-[var(--icon-size)]",
+  "ring-sidebar-ring hover:bg-sidebar-accent hover:text-sidebar-accent-foreground active:bg-sidebar-accent active:text-sidebar-accent-foreground data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground data-open:hover:bg-sidebar-accent data-open:hover:text-sidebar-accent-foreground gap-2 rounded-full p-2 text-left text-sm cursor-pointer group-has-data-[sidebar=menu-action]/menu-item:pr-8 group-data-[collapsible=icon]:w-full! group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:p-2! data-active:font-medium peer/menu-button flex w-full items-center overflow-hidden outline-hidden group/menu-button disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 [&>span:last-child]:truncate group-data-[collapsible=icon]:[&>span]:hidden [&_svg]:size-4 [&_svg]:shrink-0 group-data-[collapsible=icon]:[&_svg]:size-[var(--icon-size)]",
   {
     variants: {
       variant: {
@@ -761,7 +691,7 @@ const sidebarMenuButtonVariants = cva(
       size: {
         default: "h-9 text-sm",
         sm: "h-8 text-xs",
-        lg: "h-12 text-sm group-data-[collapsible=icon]:p-0!",
+        lg: "h-12 rounded-xl text-sm group-data-[collapsible=icon]:p-0!",
       },
     },
     defaultVariants: {
@@ -778,6 +708,7 @@ function SidebarMenuButton({
   size = "default",
   tooltip,
   alwaysTooltip = false,
+  interactiveTooltip = false,
   className,
   ...props
 }: React.ComponentProps<"button"> & {
@@ -786,6 +717,8 @@ function SidebarMenuButton({
   tooltip?: string | React.ComponentProps<typeof TooltipContent>
   /** Show the tooltip while expanded and enabled, not only on the collapsed rail. */
   alwaysTooltip?: boolean
+  /** The tooltip holds a control, so the pointer must be able to move onto it. */
+  interactiveTooltip?: boolean
 } & VariantProps<typeof sidebarMenuButtonVariants>) {
   const Comp = asChild ? Slot.Root : "button"
   const { isMobile, state } = useSidebar()
@@ -813,9 +746,7 @@ function SidebarMenuButton({
     }
   }
 
-  // A disabled <button> fires no pointer events (and is not focusable), so the
-  // tooltip would never open. Wrap it in a focusable span with a hoverable box
-  // so the explanation (e.g. why Train/Export are greyed out) is reachable.
+  // A disabled <button> fires no pointer events; wrap it so the tooltip explaining why is reachable.
   const trigger = isDisabled ? (
     <span tabIndex={0} className="flex w-full">
       {button}
@@ -825,21 +756,20 @@ function SidebarMenuButton({
   )
 
   return (
-    <Tooltip>
+    <Tooltip disableHoverableContent={interactiveTooltip ? false : undefined}>
       <TooltipTrigger asChild>{trigger}</TooltipTrigger>
       <TooltipContent
         side="right"
         align="center"
-        // Enabled items only show the tooltip when collapsed (icon labels);
-        // a disabled item shows it while expanded too, since it explains why.
-        // alwaysTooltip is the third case: an enabled row whose tooltip is a
-        // status, not a label repeat, e.g. a capability still being measured.
+        // Enabled items show the tooltip only when collapsed; disabled and alwaysTooltip rows always.
         hidden={isMobile || (!isDisabled && !alwaysTooltip && state !== "collapsed")}
         {...tooltip}
       />
     </Tooltip>
   )
 }
+
+const sidebarMenuPeerActiveClass = String.raw`[:where(.peer\/menu-button):where([data-state=active],[data-active]:not([data-active=false]))~&]:text-sidebar-accent-foreground`
 
 function SidebarMenuAction({
   className,
@@ -857,9 +787,11 @@ function SidebarMenuAction({
       data-slot="sidebar-menu-action"
       data-sidebar="menu-action"
       className={cn(
-        "text-sidebar-foreground ring-sidebar-ring hover:bg-sidebar-accent hover:text-sidebar-accent-foreground peer-hover/menu-button:text-sidebar-accent-foreground absolute top-1.5 right-1 aspect-square w-5 rounded-md p-0 peer-data-[size=default]/menu-button:top-2 peer-data-[size=lg]/menu-button:top-2.5 peer-data-[size=sm]/menu-button:top-1 focus-visible:ring-1 [&>svg]:size-4 flex items-center justify-center outline-hidden transition-transform group-data-[collapsible=icon]:hidden after:absolute after:-inset-2 md:after:hidden [&>svg]:shrink-0",
-        showOnHover &&
-          "peer-data-active/menu-button:text-sidebar-accent-foreground group-focus-within/menu-item:opacity-100 group-hover/menu-item:opacity-100 data-open:opacity-100 md:opacity-0",
+        "text-sidebar-foreground ring-sidebar-ring hover:bg-sidebar-accent hover:text-sidebar-accent-foreground peer-hover/menu-button:text-sidebar-accent-foreground absolute top-1.5 right-1 aspect-square w-5 rounded-full p-0 peer-data-[size=default]/menu-button:top-2 peer-data-[size=lg]/menu-button:top-2.5 peer-data-[size=sm]/menu-button:top-1 focus-visible:ring-1 [&>svg]:size-4 flex items-center justify-center outline-hidden transition-transform group-data-[collapsible=icon]:hidden after:absolute after:-inset-2 md:after:hidden [&>svg]:shrink-0",
+        showOnHover && [
+          sidebarMenuPeerActiveClass,
+          "group-focus-within/menu-item:opacity-100 group-hover/menu-item:opacity-100 data-open:opacity-100 md:opacity-0",
+        ],
         className
       )}
       {...props}
@@ -876,7 +808,8 @@ function SidebarMenuBadge({
       data-slot="sidebar-menu-badge"
       data-sidebar="menu-badge"
       className={cn(
-        "text-sidebar-foreground peer-hover/menu-button:text-sidebar-accent-foreground peer-data-active/menu-button:text-sidebar-accent-foreground pointer-events-none absolute right-1 flex h-5 min-w-5 rounded-md px-1 text-xs font-medium peer-data-[size=default]/menu-button:top-1.5 peer-data-[size=lg]/menu-button:top-2.5 peer-data-[size=sm]/menu-button:top-1 flex items-center justify-center tabular-nums select-none group-data-[collapsible=icon]:hidden",
+        "text-sidebar-foreground peer-hover/menu-button:text-sidebar-accent-foreground pointer-events-none absolute right-1 flex h-5 min-w-5 rounded-full px-1 text-xs font-medium peer-data-[size=default]/menu-button:top-1.5 peer-data-[size=lg]/menu-button:top-2.5 peer-data-[size=sm]/menu-button:top-1 flex items-center justify-center tabular-nums select-none group-data-[collapsible=icon]:hidden",
+        sidebarMenuPeerActiveClass,
         className
       )}
       {...props}
@@ -891,7 +824,6 @@ function SidebarMenuSkeleton({
 }: React.ComponentProps<"div"> & {
   showIcon?: boolean
 }) {
-  // Random width between 50 to 90%.
   const [width] = React.useState(() => {
     return `${Math.floor(Math.random() * 40) + 50}%`
   })
@@ -900,12 +832,12 @@ function SidebarMenuSkeleton({
     <div
       data-slot="sidebar-menu-skeleton"
       data-sidebar="menu-skeleton"
-      className={cn("h-8 gap-2 rounded-md px-2 flex items-center", className)}
+      className={cn("h-8 gap-2 rounded-full px-2 flex items-center", className)}
       {...props}
     >
       {showIcon && (
         <Skeleton
-          className="size-4 rounded-md"
+          className="size-4 rounded-full"
           data-sidebar="menu-skeleton-icon"
         />
       )}
@@ -967,7 +899,7 @@ function SidebarMenuSubButton({
       data-size={size}
       data-active={isActive}
       className={cn(
-        "text-sidebar-foreground ring-sidebar-ring hover:bg-sidebar-accent hover:text-sidebar-accent-foreground active:bg-sidebar-accent active:text-sidebar-accent-foreground [&>svg]:text-sidebar-accent-foreground data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground h-7 gap-2 rounded-md px-2 focus-visible:ring-1 data-[size=md]:text-sm data-[size=sm]:text-xs [&>svg]:size-4 flex min-w-0 -translate-x-px items-center overflow-hidden outline-hidden group-data-[collapsible=icon]:hidden disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 [&>span:last-child]:truncate [&>svg]:shrink-0",
+        "text-sidebar-foreground ring-sidebar-ring hover:bg-sidebar-accent hover:text-sidebar-accent-foreground active:bg-sidebar-accent active:text-sidebar-accent-foreground [&>svg]:text-sidebar-accent-foreground data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground h-7 gap-2 rounded-full px-2 focus-visible:ring-1 data-[size=md]:text-sm data-[size=sm]:text-xs [&>svg]:size-4 flex min-w-0 -translate-x-px items-center overflow-hidden outline-hidden group-data-[collapsible=icon]:hidden disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 [&>span:last-child]:truncate [&>svg]:shrink-0",
         className
       )}
       {...props}

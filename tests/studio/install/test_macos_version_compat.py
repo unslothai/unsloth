@@ -180,12 +180,10 @@ class TestPreflightMacosInstalledBinaries:
 
     def test_accepts_compatible_prebuilt(self, tmp_path):
         install_dir, binaries = self._install_dir(tmp_path, (14, 0))
-        # Must not raise on a macOS 15 host.
         ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host((15, 5)))
 
     def test_skips_the_minos_comparison_when_host_version_unknown(self, tmp_path):
         install_dir, binaries = self._install_dir(tmp_path, (26, 0))
-        # No host version to compare against, so the static check cannot run.
         ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host(None))
 
     def test_noop_on_non_macos_host(self, tmp_path):
@@ -209,10 +207,7 @@ class TestPreflightMacosInstalledBinaries:
 
 
 class TestMacosDyldLoadProbe:
-    """The minos scan reads a header; it cannot see an install name pointing at a
-    library that exists on the builder and nowhere else. That shipped: a bundle
-    whose libggml-rpc.0.dylib wanted /usr/lib/librdma.dylib passed preflight, was
-    logged "prebuilt installed and validated", and then died on first launch."""
+    """A minos scan cannot see an install name that exists only on the builder; the dyld probe must run."""
 
     def _bundle(
         self,
@@ -223,9 +218,7 @@ class TestMacosDyldLoadProbe:
     ):
         bin_dir = tmp_path / "build" / "bin"
         bin_dir.mkdir(parents = True)
-        # A real spawnable file, not a Mach-O sample: the point is to reach dyld.
-        # macho_minimum_macos returns None for a non-Mach-O, so the minos gate ahead of the probe stays quiet and the
-        # probe is what decides.
+        # A spawnable non-Mach-O: macho_minimum_macos returns None, so the dyld probe decides.
         server = bin_dir / "llama-server"
         server.write_text(f'#!/bin/sh\necho "{message}" >&2\nexit {exit_code}\n')
         server.chmod(0o755)
@@ -248,7 +241,6 @@ class TestMacosDyldLoadProbe:
         )
         with pytest.raises(PrebuiltFallback) as caught:
             ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host((15, 5)))
-        # Without the name the operator gets an exit code and no lead to follow.
         assert "librdma" in str(caught.value)
 
     def test_accepts_a_binary_that_loads(self, tmp_path):
@@ -263,11 +255,7 @@ class TestMacosDyldLoadProbe:
         ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host((15, 5)))
 
     def test_the_probe_still_runs_when_the_host_version_is_unknown(self, tmp_path):
-        """Only the static comparison needs the version; dyld does not.
-
-        Skipping both left the checksummed path with no check at all, since the
-        runtime validation it deferred to is disabled by default (#5854).
-        """
+        """The dyld probe runs without a known host version; only the static minos check needs one."""
         install_dir, binaries = self._bundle(
             tmp_path,
             exit_code = 1,
@@ -277,11 +265,7 @@ class TestMacosDyldLoadProbe:
             ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host(None))
 
     def test_a_nonzero_exit_with_program_output_is_not_a_link_failure(self, tmp_path):
-        """llama-quantize answers --version by printing its quantization table and
-        exiting non-zero. Reading the exit code as the verdict rejected every
-        published prebuilt, walked the release history to its end, and fell back to
-        a source build on every macOS runner.
-        """
+        """llama-quantize --version exits non-zero after printing output; that is not a link failure."""
         install_dir, binaries = self._bundle(
             tmp_path,
             exit_code = 1,
@@ -332,8 +316,7 @@ class TestLooksLikeMacosLoaderFailure:
             "usage: llama-quantize [--help] model-f32.gguf",
             "error: failed to load model 'foo.gguf'",
             "main: build = 10639 (f6f92fe)",
-            # DYLD_PRINT_LIBRARIES narrates a perfectly healthy load under the
-            # same prefix a failure uses, so the prefix alone cannot be the test.
+            # DYLD_PRINT_LIBRARIES uses the failure prefix on healthy loads too.
             "dyld[4711]: /usr/lib/libSystem.B.dylib\ndyld[4711]: /usr/lib/libc++.1.dylib",
         ],
     )
@@ -427,7 +410,7 @@ class TestMacosReleasePin:
             "",
         )
         assert tag == "latest"
-        assert plans[0].release_tag == self.TAGS[0]  # newest release
+        assert plans[0].release_tag == self.TAGS[0]
         assert len(plans) == ILP.DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS
 
     def test_unknown_macos_host_uses_default(self, monkeypatch):
@@ -444,7 +427,6 @@ class TestMacosReleasePin:
 class TestForwardsBackwardsCompat:
     """The gate is host >= prebuilt minos with no hardcoded version; each host takes the newest release it can load across a multi-tier release set."""
 
-    # Newest first: future 27 builds, current 26 builds, an old 14 tier, a 13.
     RELEASES = [
         ("b9600", (27, 0)),
         ("b9450", (26, 0)),
@@ -469,10 +451,10 @@ class TestForwardsBackwardsCompat:
     @pytest.mark.parametrize(
         "host_version, expected",
         [
-            ((13, 0), "b8300"),  # older host takes the older prebuilt
+            ((13, 0), "b8300"),
             ((14, 7), "b9415"),  # backwards: skip 26/27, take newest that loads
             ((15, 5), "b9415"),
-            ((26, 0), "b9450"),  # unchanged: newest <= host
+            ((26, 0), "b9450"),
             ((27, 1), "b9600"),  # forwards: future host takes the future build
         ],
     )
@@ -480,5 +462,4 @@ class TestForwardsBackwardsCompat:
         assert self._select(tmp_path, host_version) == expected
 
     def test_host_below_prebuilt_floor_falls_through(self, tmp_path):
-        # macOS 12 is below every prebuilt -> nothing matches -> source build.
         assert self._select(tmp_path, (12, 0)) is None

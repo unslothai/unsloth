@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""HF cache inspection, download registry state, and orphan-worker reaping. Worker spawning and exit handling live in :mod:`hub.services.download_lifecycle`; this module owns the registry state machine plus the cache/marker inspection those workers depend on.
-
-Resume model: up to huggingface_hub 1.17 the HTTP transport supported true partial-file resume, opening ``<etag>.incomplete`` in append mode and sending ``Range: bytes={resume_size}-``. 1.18 replaced that with a process-unique ``<etag>.<nonce>.incomplete`` opened ``"wb"`` and unlinked on the way out, so no transport resumes within a file any more and a surviving partial is litter (see :func:`hf_partials_are_resumable`); resume is now whole-file only, with ``snapshot_download`` skipping shards already materialized. The XET transport CANNOT resume from a ``.incomplete`` partial at all, since ``hf_xet.download_files`` rewrites the destination from scratch, though network-level dedup still happens through the separate chunk cache these helpers never touch.
-
-Cross-transport corruption: a partial written by XET (or ``hf_transfer``'s parallel-Range writer) can be sparse, with a high reported size and zero-filled gaps below, and feeding it to the HTTP resumer would produce a correct-sized blob whose internal bytes are silently wrong. So transport markers are kept at the download's scope (repo for snapshots/datasets, variant for GGUF) and an HTTP partial is never inherited unless the marker proves the previous writer was the same single-stream sequential writer. Marker writes go through tmp+rename in :func:`prepare_cache_for_transport` before the worker hands off to ``snapshot_download``, so the next process always sees a consistent provenance signal.
-"""
+"""HF cache and registry; HTTP partials resume only if a marker proves a sequential writer (XET or
+hf_transfer partials can be sparse and silently wrong); XET cannot resume; markers written
+tmp+rename before snapshot_download handoff."""
 
 from __future__ import annotations
 
@@ -32,6 +29,7 @@ from loggers import get_logger
 from utils.process_lifetime import is_signalable_pid
 
 from hub.utils import state_dir
+from hub.utils.hf_errors import modelscope_missing
 from hub.utils.state_dir import RepoType
 
 logger = get_logger(__name__)
@@ -77,11 +75,7 @@ def http_max_file_bytes() -> int:
 
 
 def http_size_ceiling_reason(largest_file_bytes: Optional[int]) -> Optional[str]:
-    """Why HTTP cannot serve a download whose biggest file is *largest_file_bytes*, or None.
-
-    An unknown size (``None``/0, e.g. metadata that could not be read) is not evidence of anything and
-    leaves the transport choice exactly as it was.
-    """
+    """An unknown size (None or 0) is no evidence, so the transport choice is left exactly as it was."""
     try:
         largest = int(largest_file_bytes or 0)
     except (TypeError, ValueError):
@@ -97,7 +91,11 @@ def http_size_ceiling_reason(largest_file_bytes: Optional[int]) -> Optional[str]
 
 
 def humanize_worker_error(text: str, *, largest_file_bytes: Optional[int] = None) -> str:
-    """Replace the hub's misleading >50GB dependency error with the transport limit."""
+    """Name a repo missing on ModelScope, and replace the hub's misleading >50GB dependency
+    error with the transport limit."""
+    missing = modelscope_missing(text)
+    if missing:
+        return missing
     if not text or _HTTP_SIZE_CEILING_MARKER not in text:
         return text
     reason = http_size_ceiling_reason(largest_file_bytes)
@@ -133,11 +131,7 @@ def get_download_transport_capabilities(
     ram_gate: bool = False,
     largest_file_bytes: Optional[int] = None,
 ) -> DownloadTransportCapabilities:
-    """Return transport availability and the current Auto choice.
-
-    ``probe`` checks live Xet health, ``ram_gate`` applies memory pressure, and
-    ``largest_file_bytes`` applies the HTTP size limit.
-    """
+    """probe checks live Xet health, ram_gate applies memory pressure, largest_file_bytes HTTP size limit."""
     xet_available = importlib.util.find_spec("hf_xet") is not None
     http_reason = http_size_ceiling_reason(largest_file_bytes)
     auto_transport = TRANSPORT_XET if xet_available else TRANSPORT_HTTP
@@ -326,7 +320,7 @@ def _is_our_worker(pid: int, repo_id: Optional[str]) -> bool:
 
 def _kill_orphan(pid: int) -> bool:
     """Signal the process and wait for it to actually be gone; True once it is. The wait is what makes the boot sweep meaningful: the signal only schedules the death, and a sweep that runs a microsecond later still sees the worker's Hugging Face blob lock and spares a partial nothing will ever finish. Bounded, because a pid we cannot reap is not a reason to hold up startup, and answering False there matters: a survivor must keep its breadcrumb and must not have its live partial claimed as ours to delete."""
-    # Repeated here because this one sends the signal, and a helper that kills should not depend on every future caller having checked first.
+    # Rechecked here: a helper that kills must not rely on every caller checking first.
     if not is_signalable_pid(pid):
         return False
     try:
@@ -502,8 +496,6 @@ class _PurgeOutcome(NamedTuple):
 
 
 # Only the unresumable sweep waits out ABANDONED_PARTIAL_SECONDS: it reclaims disk, while a marker-mismatch purge exists to stop a corrupt append and cannot defer.
-
-
 def _purge_incomplete_blobs(
     entry: Path,
     only_hashes: Optional[frozenset[str]] = None,
@@ -513,12 +505,7 @@ def _purge_incomplete_blobs(
     owned_hashes: Optional[frozenset[str]] = None,
     owns_all_blobs: bool = False,
 ) -> _PurgeOutcome:
-    """Delete selected partials while preserving protected concurrent writes, reporting failed deletions so sparse partials cannot receive an HTTP marker.
-
-    ``unresumable_only`` restricts the sweep to partials no writer can reuse AND that nothing has touched for ``ABANDONED_PARTIAL_SECONDS``. Unlinking a live partial does not stop its writer on POSIX: it keeps filling an unlinked inode and then fails at the rename, so the cost of that mistake is another client's whole download.
-
-    ``owned_hashes``, or ``owns_all_blobs`` for a job that owns its whole repo dir, are blobs whose only Unsloth-side writer has just been reaped. Those do not wait out the full grace, since the corpse would outlive the retry that follows a cancel, but they are not simply trusted either: registry ownership proves OUR writer is gone, never that no independent process shares the cache. They go through a stillness probe instead, the one liveness test that survives a filesystem where flock is granted to every caller.
-    """
+    """unresumable_only sweeps only partials idle past ABANDONED_PARTIAL_SECONDS, never a live writer's."""
     now = time.time()
     blobs_dir = entry / "blobs"
     if not blobs_dir.is_dir():
@@ -718,14 +705,7 @@ def prepare_cache_for_transport(
     protected_blob_hashes: Optional[frozenset[str]] = None,
     root: Optional[Path] = None,
 ) -> int:
-    """Guarantee any pre-existing ``.incomplete`` blobs are SAFE to resume under *mode*. Returns the number of partial blobs purged for untrusted provenance.
-
-    Two marker scopes govern GGUF downloads: ``only_blob_hashes`` are the variant's own main-quant blobs, judged by the ``variant``-scoped marker, and ``None`` widens the scope to every partial for full-repo snapshots/datasets. ``companion_blob_hashes`` are blobs shared across sibling variants (a vision mmproj), judged by a separate repo-scoped companion marker, so a companion partial is trusted against the transport that wrote it rather than whichever sibling variant resumes next.
-
-    In HTTP mode a partial is trusted ONLY when its governing marker equals ``"http"``; any missing, unreadable or mismatched marker purges, since the HTTP resumer would otherwise append to a sparse XET/parallel-Range partial and silently produce a corrupt blob. On huggingface_hub >= 1.18 there is no resumer left to trust a partial for, so the marker is bypassed and every selected partial purges. In XET mode incomplete blobs are purged (``hf_xet.download_files`` rewrites from scratch, so this only fixes UI accounting), scoped to ``only_blob_hashes`` so companion blobs survive.
-
-    ``protected_blob_hashes`` are blobs a concurrent same-repo peer is writing and are excluded from every purge. ``root`` selects the cache captured by the caller, defaulting to the active ``HF_HUB_CACHE`` root for workers that inherit their cache through the environment. Markers are written for the new mode before returning, except when an HTTP purge cannot remove every selected partial, since withholding the marker keeps the surviving partial untrusted.
-    """
+    """Only http-marked partials resume; others are purged. Protected blobs are excluded from every purge."""
     if mode not in VALID_TRANSPORTS:
         if mode == TRANSPORT_AUTO:
             # "auto" is a request preference, not a cache writer: naming it turns "invalid transport" into the actual bug.
@@ -796,7 +776,7 @@ def prepare_cache_for_transport(
     return total_purged
 
 
-_HF_TOKEN_RE = re.compile(r"hf_[A-Za-z0-9]{20,}")
+_HF_TOKEN_RE = re.compile(r"hf_(?:oauth_[A-Za-z0-9._~+/=-]{20,}|[A-Za-z0-9]{20,})")
 _BEARER_RE = re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-]+")
 
 
@@ -871,7 +851,6 @@ def sweep_abandoned_partials(
     root: Optional[str | Path] = None,
 ) -> int:
     """Remove partials nothing can resume and nothing has touched; returns how many went. ``prepare_cache_for_transport`` runs once, before a download, and skips anything still inside the abandonment grace, which lands on the common case: the orphan is the file a hard kill left behind and the user restarts within seconds. Run this when a download reaches a terminal state and every file skipped then gets a second look, by which point the grace has long since elapsed."""
-    # DownloadMetadata.hub_cache is a str and every caller hands its captured root straight through, so normalize here rather than trusting each one.
     if isinstance(root, str):
         root = Path(root) if root else None
     removed = 0
@@ -911,14 +890,7 @@ def is_resumable_partial(
     *,
     root: Optional[Path] = None,
 ) -> bool:
-    """True only when a partial exists AND something can still resume from it.
-
-    Two ways to fail that: XET partials exist on disk but ``hf_xet`` rewrites the destination from scratch, so the marker has to say HTTP; and an HTTP partial is only resumable while a writer that reopens it is installed, and the UI turns this flag into "Resume with HTTP to keep the progress you already have", which must not be promised for bytes about to be swept.
-
-    Decided per cache entry, the way :func:`prepare_cache_for_transport` decides what to purge, because one repo can own several active directories at once (a case-sensitive filesystem holds ``models--Org--Model`` beside ``models--org--model``) and a marker only vouches for partials sitting beside it. Within an entry the split matters too: main blobs answer to the variant marker while a shared companion answers to ``.transport.companion``, and a blob in neither set, or a variant with no manifest, backs nothing rather than an unscoped yes.
-
-    ``root`` is the hub cache the row being judged was found in: a row can come from a remembered, legacy or custom cache, and that root holds both its own partials and its own manifest scope, so leaving it out asked the ACTIVE root about a directory it does not contain. ``None`` keeps the active root.
-    """
+    """True only for an HTTP partial vouched for by its own cache entry; XET partials never resume."""
     main, companion = (
         _manifest_hash_split(repo_type, repo_id, variant, root = root) if variant else (set(), set())
     )
@@ -1135,6 +1107,8 @@ class DownloadMetadata:
     xet_cache: Optional[str] = None
     # Scoped jobs only: the exact files to fetch, kept so the XET -> HTTP retry respawns the same scoped download.
     scoped_files: tuple[str, ...] = ()
+    owner: Optional[str] = None
+    load_attached: bool = False
 
 
 @dataclass(frozen = True)
@@ -1217,11 +1191,11 @@ class DownloadRegistry:
         self._cancel_marker_transports: dict[str, str] = {}
         self._pending_cancel: dict[str, Optional[int]] = {}
         self._generations: dict[str, int] = {}
+        self._attempts: dict[str, int] = {}
         # Monotonic across keys so an evicted then re-claimed key never reuses a prior generation, which would let a stale cancel match a new run.
         self._generation_seq = 0
         self._deleting: dict[str, set[Optional[str]]] = {}
-        # A whole-cache purge, which begin_delete cannot express: it reserves one
-        # repository, and emptying the root has to hold every one of them.
+        # Whole-cache purge, which begin_delete cannot express, must hold every repository, not just one.
         self._purging = 0
         # Publish external cache owners under the same lock as Model Hub jobs.
         self._repository_owners: dict[str, object] = {}
@@ -1243,6 +1217,7 @@ class DownloadRegistry:
                     self._jobs.pop(stale_key, None)
                     self._metadata.pop(stale_key, None)
                     self._generations.pop(stale_key, None)
+                    self._attempts.pop(stale_key, None)
                     if len(self._jobs) <= self._max_terminal:
                         break
 
@@ -1321,6 +1296,34 @@ class DownloadRegistry:
                 return
             self._metadata[key] = replace(metadata, transport = transport)
 
+    def release_owned(self, key: str, owner: str) -> bool:
+        key = normalize_job_key(key)
+        with self._lock:
+            metadata = self._metadata.get(key)
+            if metadata is None or metadata.owner != owner:
+                return False
+            if self._jobs.get(key, DownloadState("idle")).state not in _ACTIVE_STATES:
+                return False
+            self._jobs[key] = DownloadState("idle")
+            self._discard_active_locked(key)
+            return True
+
+    def _discard_active_locked(self, key: str) -> None:
+        repo = _repo_of_key(key)
+        active = self._repo_active.get(repo)
+        if active is not None:
+            active.discard(key)
+            if not active:
+                self._repo_active.pop(repo, None)
+
+    def mark_load_attached(self, key: str, attached: bool) -> None:
+        key = normalize_job_key(key)
+        with self._lock:
+            metadata = self._metadata.get(key)
+            if metadata is None or metadata.load_attached == attached:
+                return
+            self._metadata[key] = replace(metadata, load_attached = attached)
+
     def release_active_slot(self, key: str) -> None:
         key = normalize_job_key(key)
         repo = _repo_of_key(key)
@@ -1341,6 +1344,11 @@ class DownloadRegistry:
         key = normalize_job_key(key)
         with self._lock:
             return self._generations.get(key, 0)
+
+    def current_attempt(self, key: str) -> int:
+        key = normalize_job_key(key)
+        with self._lock:
+            return self._attempts.get(key, 1)
 
     def get_job_metadata(self, key: str) -> Optional[DownloadMetadata]:
         key = normalize_job_key(key)
@@ -1457,6 +1465,7 @@ class DownloadRegistry:
         hub_cache: Optional[str] = None,
         xet_cache: Optional[str] = None,
         scoped_files: Optional[Sequence[str]] = None,
+        owner: Optional[str] = None,
     ) -> tuple[bool, str]:
         key = normalize_job_key(key)
         repo = _repo_of_key(key)
@@ -1517,8 +1526,11 @@ class DownloadRegistry:
             if generation is None:
                 self._generation_seq += 1
                 self._generations[key] = self._generation_seq
+                self._attempts[key] = 1
             else:
                 self._generations[key] = generation
+                self._attempts[key] = self._attempts.get(key, 1) + 1
+            previous = self._metadata.get(key) if current in _ACTIVE_STATES else None
             self._jobs[key] = DownloadState("running")
             self._repo_active.setdefault(repo, active).add(key)
             if repo_type and repo_id:
@@ -1537,6 +1549,8 @@ class DownloadRegistry:
                     hub_cache = hub_cache,
                     xet_cache = xet_cache,
                     scoped_files = tuple(scoped_files or ()),
+                    owner = owner,
+                    load_attached = previous.load_attached if previous is not None else False,
                 )
                 if cancel_marker_transport is not None:
                     self._cancel_marker_transports[key] = cancel_marker_transport
@@ -1576,6 +1590,9 @@ class DownloadRegistry:
         """True when *key* itself has a live job a client can attach to. Lets a rejected claim distinguish a collision with this key's own in-flight job (pollable) from one blocked by a different repo job or an in-progress delete, where no job exists for this key."""
         key = normalize_job_key(key)
         with self._lock:
+            metadata = self._metadata.get(key)
+            if metadata is not None and metadata.owner is not None:
+                return False
             return self._jobs.get(key, DownloadState("idle")).state in _ACTIVE_STATES
 
     def _active_job_variant_locked(self, key: str) -> Optional[str]:
@@ -1701,16 +1718,8 @@ class DownloadRegistry:
             return True
 
     def begin_cache_purge(self) -> bool:
-        """Reserve the WHOLE cache for a purge. False while anything is active.
-
-        ``begin_delete`` closes the check-then-delete race for one repository by
-        making :func:`claim` reject it until the delete finishes. A purge empties
-        the root instead, so it needs the same promise over every repository, or
-        a worker that claims just after the check writes into a tree already
-        being removed. The two exclude each other in both directions, since a
-        scoped delete is removing files from the same root. Counted, so
-        overlapping purges of two caches that share this registry nest.
-        """
+        """Reserves the whole cache for a purge, refusing while any repo is active or deleting;
+        purges nest."""
         with self._lock:
             if not self._purging:
                 if self._repository_owners or self._deleting:
@@ -1740,17 +1749,29 @@ class DownloadRegistry:
             if not scopes:
                 self._deleting.pop(repo_id, None)
 
-    def has_active_peer_variant(self, repo_id: str, variant: Optional[str]) -> bool:
+    def has_active_peer_variant(
+        self,
+        repo_id: str,
+        variant: Optional[str],
+        *,
+        prefix: Optional[str] = None,
+    ) -> bool:
         """Whether a DIFFERENT quantization of *repo_id* is downloading while *variant* is being deleted. When one is, the delete reclaims only this variant's files and leaves the shared companion (mmproj) for the live sibling. Point-in-time, but safe: the finalized companion is held by deletion's reference-count walk and a sibling starting mid-delete re-fetches it, so protection never depends on the sibling having resolved its blob hashes."""
         repo_id = normalize_repo_key(repo_id)
         target = (variant or "").strip().lower() or None
+        scope = (prefix or "").strip().lower()
+
+        def is_peer(key: str) -> bool:
+            peer = self._active_job_variant_locked(key)
+            return peer != target and (not scope or (peer or "").startswith(scope))
+
         with self._lock:
             active_keys = self._repo_active.get(repo_id, set())
             for key in active_keys:
                 job = self._jobs.get(key)
                 if job is None or job.state not in _ACTIVE_STATES:
                     continue
-                if self._active_job_variant_locked(key) != target:
+                if is_peer(key):
                     return True
             # A retry peer between release_active_slot() and its reclaim is briefly absent from _repo_active while it still owns the shared companion, so mirror the released-but-active scan.
             for key, job in self._jobs.items():
@@ -1758,7 +1779,7 @@ class DownloadRegistry:
                     continue
                 if job.state not in _ACTIVE_STATES:
                     continue
-                if self._active_job_variant_locked(key) != target:
+                if is_peer(key):
                     return True
         return False
 
@@ -1796,6 +1817,11 @@ class DownloadRegistry:
             # Settle active jobs without a live worker: a retry parked in the reclaim wait has dropped its worker, and a registered worker that errored before its watcher ran would stay running and spawn an HTTP retry. Skip one that exited cleanly, which would strand a stale marker.
             for key, job in list(self._jobs.items()):
                 if job.state not in _ACTIVE_STATES or key in live_keys:
+                    continue
+                placeholder = self._metadata.get(key)
+                if placeholder is not None and placeholder.owner is not None:
+                    self._jobs[key] = DownloadState("idle")
+                    self._discard_active_locked(key)
                     continue
                 proc = self._processes.get(key)
                 if proc is not None:

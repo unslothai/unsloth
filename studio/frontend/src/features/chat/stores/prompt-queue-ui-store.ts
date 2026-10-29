@@ -24,6 +24,7 @@ export type PromptQueueUIItem = {
   id: string;
   runId: string;
   prompt: string;
+  attachmentNames?: string[];
   position: number;
   total: number;
   status: PromptQueueUIItemStatus;

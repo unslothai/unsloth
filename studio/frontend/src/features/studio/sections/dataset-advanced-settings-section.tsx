@@ -26,6 +26,7 @@ export function DatasetAdvancedSettingsSection() {
     isDatasetAudio,
     isDatasetImage,
     isEmbeddingModel,
+    isDecisionModel,
     isVisionModel,
     maxSteps,
     setDatasetFormat,
@@ -47,6 +48,7 @@ export function DatasetAdvancedSettingsSection() {
       isDatasetAudio: state.isDatasetAudio,
       isDatasetImage: state.isDatasetImage,
       isEmbeddingModel: state.isEmbeddingModel,
+      isDecisionModel: state.modelType === "decision",
       isVisionModel: state.isVisionModel,
       maxSteps: state.maxSteps,
       setDatasetFormat: state.setDatasetFormat,
@@ -97,6 +99,7 @@ export function DatasetAdvancedSettingsSection() {
       datasetSliceEnd={datasetSliceEnd}
       datasetSliceStart={datasetSliceStart}
       datasetStreaming={datasetStreaming}
+      isDecisionModel={isDecisionModel}
       isStreamingSupported={isStreamingSupported}
       setDatasetFormat={setDatasetFormat}
       setDatasetSliceEnd={setDatasetSliceEnd}

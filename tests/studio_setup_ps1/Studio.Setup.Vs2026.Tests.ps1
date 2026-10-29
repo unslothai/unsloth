@@ -1,19 +1,7 @@
 <#
-    Pester v5 unit tests for the Visual Studio 2026 completion helpers in
-    studio/setup.ps1:
-      - Get-VcBuildCustomizationsDir : derive the VC MSBuild BuildCustomizations
-        folder (v160 / v170 / v180) from the detected VS generator.
-      - Test-CmakeSupportsGenerator  : gate the "Visual Studio 18 2026" generator
-        on CMake >= 4.2 (no-op for older VS generators).
-
-    Both are pure functions (no GPU, no Visual Studio, no CUDA, no network), so the
-    suite runs on a stock windows-latest runner - and on any pwsh host.
-
-    The real functions are extracted from setup.ps1 and dot-sourced (the script is
-    a top-level installer and cannot be loaded wholesale). Path resolution honors
-    $env:SETUP_PS1_PATH (set by the PR-validate workflow) and falls back to the
-    repo-relative path. If a target function cannot be found, the suite FAILS
-    loudly rather than silently passing.
+    Pester tests for setup.ps1's Visual Studio 2026 helpers (Get-VcBuildCustomizationsDir,
+    Test-CmakeSupportsGenerator). Pure functions, extracted and dot-sourced; honors
+    $env:SETUP_PS1_PATH and fails loudly if a target function is missing.
 #>
 
 BeforeAll {
@@ -27,10 +15,8 @@ BeforeAll {
     if (-not $script:SetupPs1) { throw "Could not locate studio/setup.ps1 (set SETUP_PS1_PATH)." }
     Write-Host "setup.ps1 under test: $script:SetupPs1"
 
-    # Ensure-BuildToolsForLlamaSourceBuild reports through setup.ps1's UTF-8 stdout
-    # sink, which the real script defines above every call site. On a host without
-    # cmake the "CMake not found" line is the first thing it reaches, so unstubbed it
-    # is a command-not-found terminating error and the no-op case fails on the throw.
+    # Stubbed: without cmake the "CMake not found" line hits Write-StudioLine first, and unstubbed
+    # that is a command-not-found terminating error.
     function Write-StudioLine { param([string]$Message, [string]$ForegroundColor) Write-Host $Message }
 
     foreach ($fn in @('Resolve-VsGeneratorFromLabel', 'Find-VsBuildTools', 'Get-VcBuildCustomizationsDir',
@@ -45,8 +31,7 @@ BeforeAll {
 }
 
 Describe 'Resolve-VsGeneratorFromLabel (vswhere/dir label -> generator)' {
-    # Guards that detection accepts both '18' (the internal major vswhere reports
-    # for VS 2026) and the year form.
+    # vswhere reports VS 2026's internal major as '18'; both forms must map.
     It 'maps the VS 2026 internal major "18" to the VS 2026 generator' {
         Resolve-VsGeneratorFromLabel '18' | Should -Be 'Visual Studio 18 2026'
     }
@@ -74,11 +59,9 @@ Describe 'Resolve-VsGeneratorFromLabel (vswhere/dir label -> generator)' {
 }
 
 Describe 'Find-VsBuildTools (VS 2026 generator discovery)' {
-    # Exercises the real discovery entry point. Windows-only: Find-VsBuildTools builds
-    # backslash candidate paths that only resolve as directories on Windows.
+    # Windows-only: Find-VsBuildTools builds backslash paths that only resolve there.
     BeforeAll {
-        # Define in BeforeAll, not the Describe body: Pester 5 runs the body only at
-        # discovery, so body-level functions are not visible in the run-phase It blocks.
+        # Pester 5 runs the Describe body only at discovery, so define helpers in BeforeAll.
         function New-FakeVsTree {
             param([string]$Root, [string]$VersionDir, [string]$Edition = 'BuildTools')
             $clDir = Join-Path $Root "Microsoft Visual Studio\$VersionDir\$Edition\VC\Tools\MSVC\14.50.00000\bin\Hostx64\x64"
@@ -99,7 +82,7 @@ Describe 'Find-VsBuildTools (VS 2026 generator discovery)' {
         $root = Join-Path $TestDrive 'PF'
         New-FakeVsTree -Root $root -VersionDir '18'
         ${env:ProgramFiles}      = $root
-        ${env:ProgramFiles(x86)} = Join-Path $TestDrive 'PFx86'   # no vswhere here -> filesystem fallback
+        ${env:ProgramFiles(x86)} = Join-Path $TestDrive 'PFx86'
         $r = Find-VsBuildTools
         $r.Generator | Should -Be 'Visual Studio 18 2026'
     }
@@ -121,7 +104,6 @@ Describe 'Find-VsBuildTools (VS 2026 generator discovery)' {
     }
 
     It 'detects an older VS installed under the Preview edition dir' -Skip:(-not $IsWindows) {
-        # Preview installs under a "Preview" edition folder; the fallback must include it.
         $root = Join-Path $TestDrive 'PF2022prev'
         New-FakeVsTree -Root $root -VersionDir '2022' -Edition 'Preview'
         ${env:ProgramFiles}      = $root
@@ -131,8 +113,6 @@ Describe 'Find-VsBuildTools (VS 2026 generator discovery)' {
 }
 
 Describe 'Get-VcBuildCustomizationsDir (CUDA to VS MSBuild integration path)' {
-    # Use TestDrive as the root so Join-Path resolves on any OS; assertions accept
-    # either path separator.
 
     It 'derives v180 for the VS 2026 generator' {
         Get-VcBuildCustomizationsDir -VsInstallPath "$TestDrive" -Generator 'Visual Studio 18 2026' |
@@ -188,8 +168,7 @@ Describe 'Test-CmakeSupportsGenerator (CMake 4.2 guard for VS 2026)' {
 }
 
 Describe 'Test-CmakeListsGenerator (probe cmake --help)' {
-    # Mock cmake as a function (resolved before any on-PATH exe): PowerShell caches
-    # its app-path table, so a $env:Path shim would not reliably beat a real cmake.
+    # Mock cmake as a function: PowerShell caches its app-path table, so a PATH shim is unreliable.
 
     It 'returns true when cmake --help lists the generator' {
         Mock cmake { "Generators`n  Visual Studio 18 2026        = Generates VS 2026 project files.`n  Visual Studio 17 2022        = Generates VS 2022 project files." }
@@ -209,7 +188,6 @@ Describe 'Test-CmakeListsGenerator (probe cmake --help)' {
 
 Describe 'Test-CmakeCanDriveGenerator (probe OR version floor)' {
     It 'accepts a sub-4.2 cmake that lists the VS 2026 generator (bundled cmake)' {
-        # 3.31.0 is below the 4.2 floor but lists the generator, so the help-probe accepts it.
         Mock cmake {
             if ($args -contains '--version') { 'cmake version 3.31.0' }
             else { "Generators`n  Visual Studio 18 2026        = Generates VS 2026 project files." }
@@ -218,7 +196,6 @@ Describe 'Test-CmakeCanDriveGenerator (probe OR version floor)' {
     }
 
     It 'accepts a 4.2 cmake via the version floor when the help probe misses it' {
-        # Help omits the generator but 4.2.0 meets the floor, so the version branch accepts it.
         Mock cmake {
             if ($args -contains '--version') { 'cmake version 4.2.0' }
             else { 'Generators' }
@@ -268,7 +245,6 @@ Describe 'Get-FallbackVsGenerator (older VS the cmake can drive)' {
         New-FakeVsTree2 -Root $root -VersionDir '2022'
         ${env:ProgramFiles} = $root
         ${env:ProgramFiles(x86)} = Join-Path $TestDrive 'PFx86_none'
-        # cmake lists only VS 2026 (not 2022/2019/2017), so no older fallback is usable.
         Mock cmake { "Generators`n  Visual Studio 18 2026        = Generates VS 2026 project files." }
         $r = Get-FallbackVsGenerator
         $r | Should -BeNullOrEmpty
@@ -285,9 +261,8 @@ Describe 'Get-FallbackVsGenerator (older VS the cmake can drive)' {
 }
 
 Describe 'Deferred build tools (prebuilt path needs no VS/CMake)' {
-    # Phase-1 detection must be non-fatal (prebuilt path never blocked) and the
-    # deferred installer must no-op when VS was already detected. The install +
-    # exit-1 path is covered by studio-windows-no-vs-smoke.yml.
+    # Phase-1 detection must be non-fatal; the install + exit-1 path is covered by
+    # studio-windows-no-vs-smoke.yml.
     BeforeEach {
         $script:OrigPF    = ${env:ProgramFiles}
         $script:OrigPFx86 = ${env:ProgramFiles(x86)}
@@ -300,8 +275,6 @@ Describe 'Deferred build tools (prebuilt path needs no VS/CMake)' {
     }
 
     It 'Find-VsBuildTools returns null when no VS is present (probe stays non-fatal)' {
-        # Empty discovery roots so no VS is found; the probe must return null
-        # (then log and continue, never exit).
         ${env:ProgramFiles}      = (Join-Path $TestDrive 'EmptyPF')
         ${env:ProgramFiles(x86)} = (Join-Path $TestDrive 'EmptyPFx86')
         New-Item -ItemType Directory -Force -Path ${env:ProgramFiles}, ${env:ProgramFiles(x86)} | Out-Null
@@ -309,8 +282,6 @@ Describe 'Deferred build tools (prebuilt path needs no VS/CMake)' {
     }
 
     It 'Ensure-BuildToolsForLlamaSourceBuild no-ops when VS is already detected' {
-        # With $VsInstallPath already set, the deferred installer must return without
-        # re-scanning or installing.
         $script:VsInstallPath  = 'C:\Program Files\Microsoft Visual Studio\2022\BuildTools'
         $script:CmakeGenerator = 'Visual Studio 17 2022'
         { Ensure-BuildToolsForLlamaSourceBuild } | Should -Not -Throw
@@ -320,9 +291,8 @@ Describe 'Deferred build tools (prebuilt path needs no VS/CMake)' {
 }
 
 Describe 'Source-build ordering invariant: CUDA integration runs AFTER the VS generator is finalized (#6473 review)' {
-    # Resolve-CudaToolkit copies the CUDA .targets into the current generator's dir,
-    # so it must run after the VS 2026 gate/fallback; otherwise a fallback to VS 2022
-    # builds v170 while the .targets went to v180 ("No CUDA toolset found").
+    # Resolve-CudaToolkit copies .targets into the current generator's dir, so it must run after the
+    # VS 2026 fallback or the build fails with "No CUDA toolset found".
     It 'the source-build Resolve-CudaToolkit call appears AFTER the Get-FallbackVsGenerator fallback' {
         $text = Get-Content -Raw -LiteralPath $script:SetupPs1
         $idxFallback = $text.IndexOf('$fallback = Get-FallbackVsGenerator')
@@ -334,8 +304,7 @@ Describe 'Source-build ordering invariant: CUDA integration runs AFTER the VS ge
 }
 
 Describe 'Get-FallbackVsGenerator discovery is symmetric with Find-VsBuildTools (#6473 review)' {
-    # The fallback must also query vswhere, else a VS in a custom location is found
-    # as primary but missed as fallback -> avoidable hard exit.
+    # The fallback must query vswhere too, or a custom-location VS is missed there.
     It 'queries vswhere as part of fallback discovery' {
         $src = Get-FunctionSource -Path $script:SetupPs1 -Name Get-FallbackVsGenerator
         $src | Should -Match 'vswhere'
@@ -343,12 +312,10 @@ Describe 'Get-FallbackVsGenerator discovery is symmetric with Find-VsBuildTools 
 }
 
 Describe 'Test-VCRedistInstalled (VC++ 2015-2022 runtime needed by the prebuilt llama.cpp + PyTorch)' {
-    # The prebuilts link the VC++ runtime DLLs (which the Universal CRT lacks);
-    # detection is System32\vcruntime140_1.dll with a registry fallback.
+    # The prebuilts link the VC++ runtime DLLs, which the Universal CRT lacks.
     BeforeEach { $script:OrigSysRoot = $env:SystemRoot }
     AfterEach  { $env:SystemRoot = $script:OrigSysRoot }
 
-    # Probes Test-Path once (System32 DLL), then the registry; mock both.
     It 'returns true when vcruntime140_1.dll is present in System32' {
         $env:SystemRoot = 'C:\Windows'
         Mock Test-Path { $true }

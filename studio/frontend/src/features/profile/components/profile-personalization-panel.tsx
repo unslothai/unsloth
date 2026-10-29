@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { publicAssetUrl } from "@/components/mascot-img";
+import { SegmentedPill } from "@/components/segmented-control";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -21,7 +22,7 @@ import {
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { SLOTH_AVATARS } from "../sloth-avatars";
 import { loginDisplayName } from "../hooks/use-effective-profile";
 import { decodeJwtSubject } from "../utils/jwt-subject";
@@ -47,7 +48,6 @@ function readPersistedProfile(): {
     const parsed = JSON.parse(raw) as unknown;
     if (!parsed || typeof parsed !== "object") return null;
 
-    // Zustand persist shape: { state: {...}, version }
     const maybeState =
       "state" in parsed ? (parsed as { state?: unknown }).state : parsed;
     if (!maybeState || typeof maybeState !== "object") return null;
@@ -71,6 +71,7 @@ function readPersistedProfile(): {
 
 export function ProfilePersonalizationPanel() {
   const t = useT();
+  const pillId = useId();
   const displayName = useUserProfileStore((s) => s.displayName);
   const nickname = useUserProfileStore((s) => s.nickname);
   const avatarDataUrl = useUserProfileStore((s) => s.avatarDataUrl);
@@ -89,7 +90,6 @@ export function ProfilePersonalizationPanel() {
   const lastNicknameRef = useRef(nickname);
 
   const sessionSub = decodeJwtSubject(getAuthToken()) ?? "";
-  // Fallback only: the draft being typed still wins over this.
   const loginName = loginDisplayName(sessionSub);
   const previewName = draftName.trim() || loginName || "Unsloth";
 
@@ -105,8 +105,6 @@ export function ProfilePersonalizationPanel() {
     setDraftNickname((draft) => (draft === previous ? nickname : draft));
   }, [nickname]);
 
-  // Committed on blur and on Enter rather than behind a Save button, so each
-  // field is a single row like the rest of Settings.
   const saveName = () => {
     const trimmed = draftName.trim();
     if (trimmed !== draftName) setDraftName(trimmed);
@@ -141,9 +139,7 @@ export function ProfilePersonalizationPanel() {
     }
   };
 
-  // Escape, or any programmatic close, unmounts the tab without dispatching a
-  // blur, which would drop whatever was typed. Commit the drafts on the way
-  // out; both saves no-op on an unchanged value, so a double commit is safe.
+  // Escape unmounts without a blur, so commit drafts on the way out; saves no-op when unchanged.
   const flushDrafts = useRef<() => void>(() => {});
   useEffect(() => {
     flushDrafts.current = () => {
@@ -179,10 +175,8 @@ export function ProfilePersonalizationPanel() {
     }
   };
 
-  // The avatar is shown all over the app (sidebar, chat messages, greeting),
-  // so writing it to the store can trigger a wide re-render. Mark the picked
-  // value locally first so its ring moves this frame, then commit the store
-  // write on the next frame. Boxed because null is a valid pick (no picture).
+  // The avatar store write re-renders widely, so mark the pick locally first and commit next frame.
+  // Boxed because null is a valid pick.
   const [pendingAvatar, setPendingAvatar] = useState<{
     value: string | null;
   } | null>(null);
@@ -215,8 +209,6 @@ export function ProfilePersonalizationPanel() {
 
       <div className="flex items-center gap-10 py-6 pr-2">
         <div className="relative shrink-0">
-          {/* The picture itself is the shortcut to "upload a photo"; the pencil
-              opens the rest of the options. */}
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
@@ -227,9 +219,9 @@ export function ProfilePersonalizationPanel() {
               name={previewName}
               imageUrl={shownAvatar}
               size="lg"
-              className="size-[128px] text-[calc(3.2rem*var(--ui-font-scale,1))]"
+              className="size-[calc(128px*var(--ui-space-scale,1))] text-[calc(3.2rem*var(--ui-font-scale,1))]"
             />
-            <span className="absolute inset-0 flex items-center justify-center rounded-full bg-black/45 opacity-0 transition-opacity group-hover:opacity-100">
+            <span className="absolute inset-0 flex items-center justify-center rounded-full bg-black/45 opacity-0 any-pointer-coarse:opacity-100 transition-opacity group-hover:opacity-100">
               <HugeiconsIcon
                 icon={Image01Icon}
                 className="size-8 text-white"
@@ -256,7 +248,7 @@ export function ProfilePersonalizationPanel() {
             <PopoverContent
               align="start"
               sideOffset={10}
-              className="w-[320px] gap-4 p-4"
+              className="w-[calc(320px*var(--ui-space-scale,1))] gap-4 p-4"
             >
               <div className="flex items-center justify-between gap-3">
                 <span className="text-ui-11 font-medium uppercase tracking-wide text-muted-foreground">
@@ -270,12 +262,15 @@ export function ProfilePersonalizationPanel() {
                       onClick={() => setAvatarShape(shape)}
                       aria-pressed={avatarShape === shape}
                       className={cn(
-                        "inline-flex h-8 items-center justify-center rounded-full px-3.5 text-ui-13 font-medium transition-colors",
+                        "relative inline-flex h-8 items-center justify-center rounded-full px-3.5 text-ui-13 font-medium transition-colors",
                         avatarShape === shape
-                          ? "hub-tab-toggle-pill text-foreground"
+                          ? "text-foreground"
                           : "text-muted-foreground hover:text-foreground",
                       )}
                     >
+                      {avatarShape === shape && (
+                        <SegmentedPill group={`${pillId}-avatar-shape`} />
+                      )}
                       {shape === "circle"
                         ? t("settings.profile.avatarShapeCircle")
                         : t("settings.profile.avatarShapeRounded")}
@@ -289,7 +284,7 @@ export function ProfilePersonalizationPanel() {
                   type="button"
                   variant="outline"
                   onClick={() => fileInputRef.current?.click()}
-                  className="h-9 w-fit gap-2 rounded-full px-4 text-sm"
+                  className="w-fit gap-2 rounded-full text-sm"
                 >
                   <HugeiconsIcon
                     icon={Upload01Icon}
@@ -319,7 +314,7 @@ export function ProfilePersonalizationPanel() {
                 <span className="text-ui-11 font-medium uppercase tracking-wide text-muted-foreground">
                   {t("settings.profile.chooseSloth")}
                 </span>
-                <div className="grid grid-cols-7 gap-2">
+                <div className="grid grid-cols-7 gap-2 max-[400px]:grid-cols-6">
                   {SLOTH_AVATARS.map((path) => {
                     const url = publicAssetUrl(path);
                     const selected = shownAvatar === url;
@@ -339,8 +334,7 @@ export function ProfilePersonalizationPanel() {
                         aria-label={label}
                         title={label}
                         className={cn(
-                          // No transition here: animating the ring makes the old
-                          // icon's selection border linger when switching sloths.
+                          // No transition: animating the ring makes the old selection border linger.
                           "relative aspect-square overflow-hidden rounded-full bg-muted ring-1 ring-border hover:ring-ring focus-visible:outline-none focus-visible:ring-ring",
                           selected &&
                             "ring-2 ring-ring-strong hover:ring-ring-strong",

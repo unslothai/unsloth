@@ -6,6 +6,7 @@ import test from "node:test";
 import type * as GpuHooks from "../src/hooks/use-gpu-info.ts";
 import type * as SystemHooks from "../src/hooks/use-system.ts";
 import { normalizeDenseQuantSchemes } from "../src/lib/dense-quant-schemes.ts";
+import { normalizeReportedOffloadFitTiers } from "../src/lib/offload-fit-tiers.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 let snapshot: unknown = null;
@@ -21,9 +22,9 @@ const hooks = loadWithStubs<typeof GpuHooks>(
       useMemo: (read: () => unknown) => read(),
     },
     "./use-system": { getCachedSystemInfo: () => snapshot },
-    // Aliased, so the passthrough above cannot resolve it. The real implementation, since a
-    // hand-written normaliser would answer for the source rather than from it.
+    // Aliased, so passthrough cannot resolve it; use the real implementation, not a stub.
     "@/lib/dense-quant-schemes": { normalizeDenseQuantSchemes },
+    "@/lib/offload-fit-tiers": { normalizeReportedOffloadFitTiers },
   },
   { relativePassthrough: true },
 );

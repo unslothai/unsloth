@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Trusted-org checks for the ``trust_remote_code`` auto-enable paths.
-
-A bare ``name.startswith("unsloth/")`` is spoofable by a local path like
-``./unsloth/evil``. ``is_trusted_org_repo`` rejects local paths, requires an
-``org/repo`` under a trusted org, and (online) confirms via the Hub. Fails CLOSED
-on any uncertainty and never raises; a False just means "do not auto-enable".
-"""
+"""Trusted-org check for remote-code auto-enable; rejects local paths, fails closed on any
+uncertainty, never raises; a bare name prefix is spoofable."""
 
 from __future__ import annotations
 
@@ -23,9 +18,8 @@ logger = get_logger(__name__)
 # Orgs we auto-enable remote code for.
 TRUSTED_ORGS: frozenset[str] = frozenset({"unsloth", "nvidia"})
 
-# Keyed on (name, verify_remote, token) so an unauthenticated failure cannot poison a later
-# authenticated lookup; the token is hashed, never stored raw.
-_verdict_cache: dict[tuple[str, bool, str], bool] = {}
+# Keyed on (name, verify_remote, token hash, endpoint) so an unauthenticated failure cannot poison a later authenticated lookup.
+_verdict_cache: dict[tuple[str, bool, str, str], bool] = {}
 
 
 def _token_key(hf_token: Optional[str]) -> str:
@@ -47,18 +41,22 @@ def is_trusted_org_repo(
     *,
     verify_remote: bool = True,
 ) -> bool:
-    """True only if *name* is a genuine HF repo under a trusted org. Fails closed
-    (local paths, malformed names, untrusted namespaces, Hub errors); never raises.
-    Offline trusts the namespace shape, since the Hub is unreachable by design.
-    """
+    """Fails closed on any error; offline it trusts the namespace shape, as the Hub is unreachable."""
     if not name or not isinstance(name, str):
         return False
+    from utils.hub_settings import MODELSCOPE, active_source
 
-    cache_key = (name, verify_remote, _token_key(hf_token))
+    if active_source() == MODELSCOPE:
+        return False
+
+    from huggingface_hub import constants
+
+    endpoint = constants.ENDPOINT.rstrip("/")
+    cache_key = (name, verify_remote, _token_key(hf_token), endpoint)
     if cache_key in _verdict_cache:
         return _verdict_cache[cache_key]
 
-    verdict = _evaluate(name, hf_token, verify_remote)
+    verdict = _evaluate(name, hf_token, verify_remote, endpoint)
     _verdict_cache[cache_key] = verdict
     return verdict
 
@@ -71,7 +69,7 @@ def _namespace(name: str) -> Optional[str]:
     return parts[0].lower()
 
 
-def _evaluate(name: str, hf_token: Optional[str], verify_remote: bool) -> bool:
+def _evaluate(name: str, hf_token: Optional[str], verify_remote: bool, endpoint: str) -> bool:
     # Local paths are never a trusted remote repo (the spoof this guards against).
     try:
         if is_local_path(name):
@@ -91,7 +89,7 @@ def _evaluate(name: str, hf_token: Optional[str], verify_remote: bool) -> bool:
     try:
         from huggingface_hub import HfApi
 
-        info = HfApi().model_info(name, token = hf_token)
+        info = HfApi(endpoint = endpoint).model_info(name, token = hf_token)
         resolved_id = getattr(info, "id", None) or name
         resolved_ns = _namespace(resolved_id)
         author = getattr(info, "author", None)

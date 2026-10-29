@@ -72,15 +72,15 @@ def test_wrapper_injects_kernel_options_above_256():
 
 
 def test_wrapper_leaves_256_alone():
-    # Not "injects an empty dict": it must not appear at all, so torch keeps its own default.
+    # Must be absent, not an empty dict, so torch keeps its own default.
     assert _call(256).get("kernel_options") is None
 
 
 def test_a_caller_that_asked_for_something_keeps_it():
     got = _call(512, kernel_options = {"BLOCK_M": 16, "num_warps": 8})["kernel_options"]
-    assert got["BLOCK_M"] == 16  # caller's
-    assert got["num_warps"] == 8  # caller's
-    assert got["BLOCK_N"] == 32  # ours, filling the gap
+    assert got["BLOCK_M"] == 16
+    assert got["num_warps"] == 8
+    assert got["BLOCK_N"] == 32
 
 
 def test_other_kwargs_are_passed_through_untouched():
@@ -122,3 +122,90 @@ def test_the_wrapper_keeps_the_original_signature():
     parameters = inspect.signature(ALL_ATTENTION_FUNCTIONS["flex_attention"]).parameters
     for name in ("module", "query", "key", "value", "attention_mask"):
         assert name in parameters
+
+
+class _GradTensor(_Tensor):
+    def __init__(
+        self,
+        shape,
+        requires_grad,
+        device_type = "cuda",
+    ):
+        super().__init__(shape)
+        self.requires_grad = requires_grad
+        self.device = type("device", (), {"type": device_type})()
+
+
+def _call_with(query, **kwargs):
+    original, seen = _record()
+    u._wrap_flex_attention_forward(original)(None, query, query, query, None, **kwargs)
+    return seen.get("kernel_options")
+
+
+def test_a_call_that_needs_a_backward_forces_the_main_flex_kernel():
+    assert _call_with(_GradTensor((2, 16, 121, 128), True)) == {"FORCE_USE_FLEX_ATTENTION": True}
+    got = _call_with(_GradTensor((2, 16, 121, 512), True))
+    assert got["FORCE_USE_FLEX_ATTENTION"] is True and got["BLOCK_M"] == 32
+
+
+def test_inference_keeps_flex_decoding():
+    import torch
+
+    assert _call_with(_GradTensor((2, 16, 1, 128), False)) is None
+    with torch.no_grad():
+        assert _call_with(_GradTensor((2, 16, 121, 128), True)) is None
+    assert _call_with(_GradTensor((2, 16, 121, 128), True, device_type = "cpu")) is None
+
+
+def test_an_explicit_backend_is_not_combined_with_the_legacy_knob():
+    # torch refuses BACKEND together with FORCE_USE_FLEX_ATTENTION.
+    got = _call_with(
+        _GradTensor((2, 16, 121, 128), True), kernel_options = {"BACKEND": "TRITON_DECODE"}
+    )
+    assert got == {"BACKEND": "TRITON_DECODE"}
+    got = _call_with(
+        _GradTensor((2, 16, 121, 128), True), kernel_options = {"FORCE_USE_FLEX_ATTENTION": False}
+    )
+    assert got == {"FORCE_USE_FLEX_ATTENTION": False}
+
+
+def test_compiled_flex_backward_matches_eager_for_a_short_static_batch():
+    # B > 1, static query 121 < 128, 16 * 121 floats per batch (not a multiple of 32): the shape
+    # where flex_decoding's padded logsumexp gave grads off by 10x.
+    import torch
+
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device for the Triton flex kernels")
+    try:
+        from torch.nn.attention.flex_attention import create_block_mask
+    except ImportError:
+        pytest.skip("torch has no flex_attention")
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+    torch._dynamo.reset()
+    B, H, S, D = 2, 16, 121, 64
+    gen = torch.Generator(device = "cuda").manual_seed(0)
+    q, k, v, grad = (
+        torch.randn(B, H, S, D, device = "cuda", dtype = torch.bfloat16, generator = gen)
+        for _ in range(4)
+    )
+    mask = create_block_mask(
+        lambda b, h, qi, ki: qi >= ki, B = B, H = None, Q_LEN = S, KV_LEN = S, device = "cuda"
+    )
+    module = torch.nn.Module().train()
+
+    def grads(eager):
+        qq, kk, vv = (t.clone().requires_grad_(True) for t in (q, k, v))
+        if eager:
+            from torch.nn.attention.flex_attention import flex_attention
+            out = flex_attention(qq, kk, vv, block_mask = mask, scale = D**-0.5).transpose(1, 2)
+        else:
+            out, _ = ALL_ATTENTION_FUNCTIONS["flex_attention"](
+                module, qq, kk, vv, mask, scaling = D**-0.5
+            )
+        out.backward(grad.transpose(1, 2))
+        return [t.grad.float() for t in (qq, kk, vv)]
+
+    for name, got, want in zip("qkv", grads(eager = False), grads(eager = True)):
+        err = ((got - want).abs().max() / want.abs().max()).item()
+        assert err < 0.05, f"d{name} relative error {err:.3g} vs eager flex attention"

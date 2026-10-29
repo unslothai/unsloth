@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { DOMParser as XmlDomParser, XMLSerializer as XmlSerializer } from "@xmldom/xmldom";
 import {
   Unzip,
   UnzipInflate,
@@ -21,16 +22,28 @@ const {
   attachmentAudioSrc,
   attachmentTextLanguage,
   countAttachmentTextLines,
+  decodeHtmlAttachmentBytes,
   extractHtmlAttachmentText,
   extractPdfAttachmentText,
   getDocxAttachmentError,
+  getPdfAttachmentTextError,
   isAudioAttachment,
+  isTextAttachment,
+  linearizeDocxMath,
+  markDocxNotes,
   parseAttachmentText,
   readAttachmentText,
   repackDocxAttachmentArchive,
+  repackDocxPreviewArchive,
   truncateAttachmentPreviewText,
+  writeDocxBreaksAndCheckboxes,
+  writeDocxListNumbers,
+  writeDocxTableRows,
 } = await import("../src/features/chat/attachment-content.ts");
+const { writeDocxSymbols } = await import("../src/features/chat/docx-reader.ts");
 const { definePDFJSModule } = await import("unpdf");
+const { readRtfAttachmentContent } =
+  await import("../src/features/chat/rtf.ts");
 
 type StubNode = {
   nodeType: number;
@@ -61,7 +74,6 @@ function descendants(node: StubNode): StubNode[] {
   return node.childNodes.flatMap((child) => [child, ...descendants(child)]);
 }
 
-/** DOMParser is absent under node, so the extractor is driven over a hand-built tree. */
 async function withStubDom<T>(
   build: (source: string) => StubNode,
   run: () => T | Promise<T>,
@@ -88,8 +100,6 @@ async function withStubDom<T>(
   }
 }
 
-// The preview reads a sent attachment back out of the text the adapter built,
-// so every wrapper the adapters write has to round-trip.
 test("parseAttachmentText unwraps a labelled document header", () => {
   const parsed = parseAttachmentText("[PDF: report.pdf]\nline one\nline two");
   assert.deepEqual(parsed, {
@@ -143,8 +153,7 @@ test("countAttachmentTextLines counts empty and single-line text", () => {
   assert.equal(countAttachmentTextLines("one\ntwo\n"), 3);
 });
 
-// The sent audio part only carries "mp3" or "wav", so an OGG or FLAC upload
-// would be mislabelled without the attachment's own content type.
+// The sent audio part only carries "mp3" or "wav", so the attachment's own MIME is needed.
 test("attachmentAudioSrc keeps the uploaded audio MIME", () => {
   const part = { data: "AAA", format: "wav" };
   assert.equal(
@@ -161,8 +170,6 @@ test("attachmentAudioSrc keeps the uploaded audio MIME", () => {
   );
 });
 
-// An extension-only upload reaches the sent preview with an empty content type
-// and format "wav", so the filename is what identifies the container.
 test("attachmentAudioSrc falls back to the extension for untyped uploads", () => {
   const part = { data: "AAA", format: "wav" };
   assert.equal(
@@ -179,8 +186,6 @@ test("attachmentAudioSrc falls back to the extension for untyped uploads", () =>
   );
 });
 
-// The text and HTML adapters accept uploads with no size limit, so opening a
-// preview must not materialize the whole file.
 test("readAttachmentText reads a bounded slice of a large text file", async () => {
   const oversized = new File(["a".repeat(2_000_000)], "huge.txt", {
     type: "text/plain",
@@ -250,7 +255,15 @@ test("readAttachmentText reads a bounded slice of a large html file", async () =
   assert.equal(text.length, 1_000_000);
 });
 
-// the adapter sends the extraction; the preview shows the markup unextracted
+test("readAttachmentText does not decode a file only the python tool reads", async () => {
+  const file = new File([new Uint8Array([0x50, 0x41, 0x52, 0x31])], "t.PARQUET");
+  assert.deepEqual(await readAttachmentText(file, file.name, file.type), {
+    label: null,
+    text: "t.PARQUET has no preview: only the python tool can read it.",
+    truncated: false,
+  });
+});
+
 test("readAttachmentText previews an html file as its markup", async () => {
   const markup = "<p>Drag to rotate<br>Scroll to zoom</p>";
   const file = new File([markup], "page.html", { type: "text/html" });
@@ -262,7 +275,6 @@ test("readAttachmentText previews an html file as its markup", async () => {
   });
 });
 
-/** textContent runs a whole page onto one line, and this extraction is what the html adapter sends the model. */
 test("extractHtmlAttachmentText keeps the line structure of the page", async () => {
   const extracted = await withStubDom(
     () =>
@@ -292,6 +304,99 @@ test("extractHtmlAttachmentText keeps the line structure of the page", async () 
   );
 });
 
+test("extractHtmlAttachmentText keeps the ticked state of check boxes", async () => {
+  const input = (attrs: Record<string, string>) => ({
+    ...element("input"),
+    getAttribute: (name: string) => attrs[name] ?? null,
+    hasAttribute: (name: string) => name in attrs,
+  });
+  const extracted = await withStubDom(
+    () =>
+      element(
+        "body",
+        element(
+          "ul",
+          element("li", input({ type: "checkbox", checked: "" }), textNode("Ship")),
+          element("li", input({ type: "checkbox" }), textNode("Docs")),
+        ),
+        element(
+          "p",
+          textNode("Smoker:"),
+          input({ type: "radio", checked: "" }),
+          textNode("Yes"),
+          input({ type: "radio" }),
+          textNode("No"),
+          input({ type: "text" }),
+        ),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(extracted, "☒ Ship\n\n☐ Docs\n\nSmoker: ☒ Yes ☐ No");
+});
+
+test("extractHtmlAttachmentText keeps the indentation of preformatted code", async () => {
+  const extracted = await withStubDom(
+    () =>
+      element(
+        "body",
+        element("h1", textNode("Totals")),
+        element(
+          "pre",
+          textNode("def total(items):\n    s = 0\n"),
+          element("span", textNode("    for x in items:\n        s += x\n")),
+          textNode("    return s\n"),
+        ),
+        element("p", textNode("Done  here")),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(
+    extracted,
+    "Totals\n\ndef total(items):\n    s = 0\n    for x in items:\n        s += x\n    return s\n\nDone here",
+  );
+});
+
+test("extractHtmlAttachmentText adds no blank lines for an empty preformatted block", async () => {
+  const between = await withStubDom(
+    () =>
+      element(
+        "body",
+        element("p", textNode("X")),
+        element("pre", textNode("  \n  ")),
+        element("p", textNode("Y")),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+  const last = await withStubDom(
+    () =>
+      element(
+        "body",
+        element("p", textNode("X")),
+        element("pre", textNode("\n")),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(between, "X\n\nY");
+  assert.equal(last, "X");
+});
+
+test("extractHtmlAttachmentText drops blank lines leading a preformatted block", async () => {
+  const extracted = await withStubDom(
+    () =>
+      element(
+        "body",
+        element("pre", textNode("\n  \n  first\n    second\n")),
+        element("p", textNode("Z")),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(extracted, "  first\n    second\n\nZ");
+});
+
 test("isAudioAttachment matches by MIME and by extension", () => {
   assert.equal(isAudioAttachment("clip.m4a", ""), true);
   assert.equal(isAudioAttachment("clip", "audio/webm"), true);
@@ -299,9 +404,7 @@ test("isAudioAttachment matches by MIME and by extension", () => {
   assert.equal(isAudioAttachment(undefined, undefined), false);
 });
 
-// CompositeAttachmentAdapter checks TextAttachmentAdapter before the
-// document-specific adapters, so a browser-declared text MIME wins over a
-// misleading extension in both the sent payload and its preview.
+// CompositeAttachmentAdapter checks TextAttachmentAdapter first, so a text MIME wins over extension.
 test("readAttachmentText follows text adapter precedence over document extensions", async () => {
   for (const name of ["notes.pdf", "notes.docx", "notes.html"]) {
     const file = new File([`plain text from ${name}`], name, {
@@ -318,8 +421,6 @@ test("readAttachmentText follows text adapter precedence over document extension
   }
 });
 
-// Stored payloads have no size limit, so unwrapping must copy at most the
-// capped body rather than the whole attachment.
 test("parseAttachmentText caps the body it copies out of a wrapper", () => {
   const body = "d".repeat(300_000);
   const tagged = parseAttachmentText(
@@ -339,8 +440,6 @@ test("parseAttachmentText caps the body it copies out of a wrapper", () => {
   assert.equal(bare.truncated, true);
 });
 
-// A File the preview only ever asks for its size and its bytes, so the read can
-// be observed without materializing a document-sized buffer.
 function fakeDocumentFile(
   name: string,
   size: number,
@@ -370,8 +469,7 @@ function docxBytes(documentXml: string): Uint8Array {
   });
 }
 
-// unpdf and mammoth parse on the main thread, so an oversized document has to be
-// refused before its bytes are read, not after.
+// unpdf and mammoth parse on the main thread, so oversized documents are refused before reading.
 test("readAttachmentText refuses an oversized pdf before reading it", async () => {
   const reads: string[] = [];
   const oversized = fakeDocumentFile(
@@ -416,6 +514,7 @@ test("extractPdfAttachmentText destroys the PDF proxy after success and failure"
           ],
         }),
       }),
+      getFieldObjects: async () => null,
       destroy: async () => {
         destroyed.push("success");
       },
@@ -450,8 +549,197 @@ test("extractPdfAttachmentText destroys the PDF proxy after success and failure"
   }
 });
 
-// The bytes are requested synchronously, so the extractor is reached without
-// waiting on unpdf, which the preview test does not exercise.
+function singlePagePdf(
+  content: string,
+  resources: string,
+  extra: string[],
+  pageEntries = "",
+  catalogEntries = "",
+) {
+  const objects = [
+    `<< /Type /Catalog /Pages 2 0 R ${catalogEntries}>>`,
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources ${resources} /Contents 4 0 R ${pageEntries}>>`,
+    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+    ...extra,
+  ];
+  return pdfBytes(objects);
+}
+
+function pdfBytes(objects: string[]) {
+  let body = "%PDF-1.4\n";
+  const offsets = objects.map((object, index) => {
+    const offset = body.length;
+    body += `${index + 1} 0 obj\n${object}\nendobj\n`;
+    return offset;
+  });
+  const xref = body.length;
+  body += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  body += offsets
+    .map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`)
+    .join("");
+  body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Uint8Array.from(body, (char) => char.charCodeAt(0));
+}
+
+test("a scanned pdf is refused unless the python tool can open it", async () => {
+  const pixels = "\x80".repeat(4);
+  const scan = new File(
+    [
+      singlePagePdf(
+        "q 200 0 0 200 0 0 cm /Im1 Do Q",
+        "<< /XObject << /Im1 5 0 R >> >>",
+        [
+          `<< /Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length ${pixels.length} >>\nstream\n${pixels}\nendstream`,
+        ],
+      ),
+    ],
+    "scan.pdf",
+    { type: "application/pdf" },
+  );
+  const typed = new File(
+    [
+      singlePagePdf(
+        "BT /F1 12 Tf 20 100 Td (quokka invoice) Tj ET",
+        "<< /Font << /F1 5 0 R >> >>",
+        ["<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"],
+      ),
+    ],
+    "typed.pdf",
+    { type: "application/pdf" },
+  );
+
+  const scanText = await extractPdfAttachmentText(scan);
+  const typedText = await extractPdfAttachmentText(typed);
+  assert.equal(scanText, "");
+  assert.equal(typedText, "quokka invoice");
+  assert.equal(
+    (await readAttachmentText(scan, scan.name, scan.type)).text,
+    "",
+  );
+
+  assert.match(
+    getPdfAttachmentTextError(scan.name, scanText, false) ?? "",
+    /^PDF has no readable text: scan\.pdf\./,
+  );
+  assert.equal(getPdfAttachmentTextError(scan.name, scanText, true), null);
+  assert.equal(getPdfAttachmentTextError(typed.name, typedText, false), null);
+});
+
+test("a filled pdf form keeps the values typed into its fields", async () => {
+  const font = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+  const field = (name: string, value: string, y: number) =>
+    `<< /Type /Annot /Subtype /Widget /FT /Tx /T (${name}) /V (${value}) /Rect [60 ${y} 190 ${y + 20}] /P 3 0 R >>`;
+  const checkbox = (name: string, state: string, y: number) =>
+    `<< /Type /Annot /Subtype /Widget /FT /Btn /T (${name}) /V /${state} /AS /${state} /AP << /N << /Yes 10 0 R /Off 11 0 R >> >> /Rect [60 ${y} 70 ${y + 10}] /P 3 0 R >>`;
+  const blank = "<< /Length 0 >>\nstream\n\nendstream";
+  const filled = new File(
+    [
+      singlePagePdf(
+        "BT /F1 12 Tf 20 100 Td (Name:) Tj ET",
+        "<< /Font << /F1 5 0 R >> >>",
+        [
+          font,
+          field("name", "Oscar Papa Quebec", 95),
+          field("notes", "", 60),
+          checkbox("agree", "Yes", 30),
+          checkbox("newsletter", "Off", 10),
+          blank,
+          blank,
+          `<< /Type /Annot /Subtype /Widget /FT /Tx /F 2 /T (internal) /V (hidden) /Rect [0 0 1 1] /P 3 0 R >>`,
+          `<< /Type /Annot /Subtype /Widget /FT /Ch /Ff 131072 /T (status) /TU (Marital\\nstatus) /Opt [[(1) (Single)] [(2) (Married)]] /V (2) /Rect [60 150 190 170] /P 3 0 R >>`,
+          `<< /Type /Annot /Subtype /Widget /FT /Tx /Ff 8192 /T (pin) /V (4321) /Rect [60 175 190 195] /P 3 0 R >>`,
+        ],
+        "/Annots [6 0 R 7 0 R 8 0 R 9 0 R 12 0 R 13 0 R 14 0 R] ",
+        "/AcroForm << /Fields [6 0 R 7 0 R 8 0 R 9 0 R 12 0 R 13 0 R 14 0 R] >> ",
+      ),
+    ],
+    "filled.pdf",
+    { type: "application/pdf" },
+  );
+  const fieldsOnly = new File(
+    [
+      singlePagePdf(
+        "",
+        "<< >>",
+        [field("name", "Romeo Sierra", 95)],
+        "/Annots [5 0 R] ",
+        "/AcroForm << /Fields [5 0 R] >> ",
+      ),
+    ],
+    "fields-only.pdf",
+    { type: "application/pdf" },
+  );
+
+  assert.equal(
+    await extractPdfAttachmentText(filled),
+    "Name:\nname: Oscar Papa Quebec\nagree: Yes\nMarital status: Married",
+  );
+  const fieldsOnlyText = await extractPdfAttachmentText(fieldsOnly);
+  assert.equal(fieldsOnlyText, "name: Romeo Sierra");
+  assert.equal(
+    getPdfAttachmentTextError(fieldsOnly.name, fieldsOnlyText, false),
+    null,
+  );
+});
+
+test("a multi-page pdf form keeps each page's values with that page", async () => {
+  const stream = (content: string) =>
+    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`;
+  const page = (contents: number, annots: string) =>
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << /Font << /F1 10 0 R >> >> /Contents ${contents} 0 R /Annots [${annots}] >>`;
+  const option = (exportName: string, tooltip: string, x: number, on: boolean) =>
+    `<< /Type /Annot /Subtype /Widget /Parent 6 0 R /TU (${tooltip}) /AS /${on ? exportName : "Off"} /AP << /N << /${exportName} 12 0 R /Off 12 0 R >> >> /Rect [${x} 20 ${x + 10} 30] /P 3 0 R >>`;
+  const form = new File(
+    [
+      pdfBytes([
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [6 0 R 9 0 R 13 0 R 14 0 R] >> >>",
+        "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+        page(5, "7 0 R 8 0 R"),
+        page(11, "9 0 R 13 0 R 14 0 R"),
+        stream("BT /F1 12 Tf 20 100 Td (Filing status) Tj ET"),
+        "<< /FT /Btn /Ff 49152 /T (form1[0].c1_1[0]) /V /S /Kids [7 0 R 8 0 R] >>",
+        option("S", "Single", 20, true),
+        option("M", "Married", 60, false),
+        "<< /Type /Annot /Subtype /Widget /FT /Tx /T (form1[0].f2_01[0]) /TU (Date\\nsigned) /V (2026-09-30) /Rect [60 95 190 115] /P 4 0 R >>",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        stream("BT /F1 12 Tf 20 100 Td (Signature) Tj ET"),
+        stream(""),
+        "<< /Type /Annot /Subtype /Widget /FT /Ch /Ff 2097152 /T (languages) /Opt [(English) (French) (German)] /V [(English) (German)] /Rect [60 40 190 80] /P 4 0 R >>",
+        "<< /Type /Annot /Subtype /Widget /FT /Tx /T (lights) /V (Off) /Rect [60 10 190 30] /P 4 0 R >>",
+      ]),
+    ],
+    "form.pdf",
+    { type: "application/pdf" },
+  );
+
+  assert.equal(
+    await extractPdfAttachmentText(form),
+    "Filing status\nform1[0].c1_1[0]: S\n\nSignature\nDate signed: 2026-09-30\nlanguages: English, German\nlights: Off",
+  );
+});
+
+test("a pdf with a damaged form field still reads its text", async () => {
+  const damaged = new File(
+    [
+      singlePagePdf(
+        "BT /F1 12 Tf 20 100 Td (Budget: 4200) Tj ET",
+        "<< /Font << /F1 5 0 R >> >>",
+        [
+          "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+          "<< /Type /Annot /Subtype /Widget /FT /Tx /T null /V (x) /Rect [60 20 190 40] >>",
+        ],
+        "/Annots [6 0 R] ",
+        "/AcroForm << /Fields [6 0 R] >> ",
+      ),
+    ],
+    "damaged.pdf",
+    { type: "application/pdf" },
+  );
+
+  assert.equal(await extractPdfAttachmentText(damaged), "Budget: 4200");
+});
+
 test("readAttachmentText reads a pdf under the ceiling", () => {
   const reads: string[] = [];
   const small = fakeDocumentFile(
@@ -465,8 +753,7 @@ test("readAttachmentText reads a pdf under the ceiling", () => {
   assert.deepEqual(reads, ["small.pdf"]);
 });
 
-// mammoth's node build takes a buffer rather than an arrayBuffer, so the small
-// case asserts the archive cleared both guards and reached mammoth itself.
+// mammoth's node build takes a buffer, not an arrayBuffer.
 test("readAttachmentText lets a normal docx through to the extractor", async () => {
   const reads: string[] = [];
   const bytes = docxBytes("<w:document><w:body/></w:document>");
@@ -481,7 +768,6 @@ test("readAttachmentText lets a normal docx through to the extractor", async () 
   }
 });
 
-// A DOCX is a zip, so a small upload can still declare a huge document.xml.
 test("readAttachmentText refuses a docx that declares an oversized document.xml", async () => {
   const reads: string[] = [];
   const bytes = docxBytes("a".repeat(11 * 1024 * 1024));
@@ -493,9 +779,7 @@ test("readAttachmentText refuses a docx that declares an oversized document.xml"
   );
 });
 
-// mammoth reads "_rels/.rels" first and "[Content_Types].xml" next, and picks
-// the body part out of "word/_rels/document.xml.rels", so a bomb parked in any
-// of them never passes through word/*.xml.
+// mammoth reads _rels/.rels, [Content_Types].xml and word/_rels/document.xml.rels too.
 test("readAttachmentText refuses an oversized docx part outside word/*.xml", async () => {
   const huge = "a".repeat(11 * 1024 * 1024);
   const parts = [
@@ -537,9 +821,7 @@ function relationships(entries: Array<[string, string]>): Uint8Array {
   );
 }
 
-// mammoth resolves the body and its styles/numbering/note parts through the
-// relationships and parses whatever they point at as XML, so a target named
-// "payload.bin" is inflated on the main thread even though no suffix says XML.
+// mammoth parses any relationship target as XML regardless of suffix.
 test("readAttachmentText refuses an oversized docx part reached through a relationship", async () => {
   const huge = strToU8("a".repeat(11 * 1024 * 1024));
 
@@ -575,8 +857,6 @@ test("readAttachmentText refuses an oversized docx part reached through a relati
   );
 });
 
-// extractRawText never reads an image part, so a document that merely embeds a
-// large picture still previews: the bound follows what mammoth parses.
 test("readAttachmentText lets a docx with a large embedded image through", async () => {
   const reads: string[] = [];
   const bytes = zipSync({
@@ -599,9 +879,6 @@ test("readAttachmentText lets a docx with a large embedded image through", async
   }
 });
 
-// mammoth hands the relationships to a real XML parser, so every attribute
-// form that parser resolves has to resolve here too: a target it reaches and
-// the guard does not is inflated on the main thread unbounded.
 test("readAttachmentText refuses a relationship target in any XML attribute form", async () => {
   const huge = strToU8("a".repeat(11 * 1024 * 1024));
   const type =
@@ -652,11 +929,6 @@ test("readAttachmentText refuses a relationship target in any XML attribute form
   }
 });
 
-/**
- * A relationship inside non-element markup is text to mammoth's parser, so it
- * must not select the bounded part in either direction: it cannot stand in for
- * the real target and hide it, and it cannot refuse a document mammoth reads.
- */
 test("readAttachmentText ignores a relationship inside non-element markup", async () => {
   const huge = strToU8("a".repeat(11 * 1024 * 1024));
   const type =
@@ -716,7 +988,6 @@ test("readAttachmentText ignores a relationship inside non-element markup", asyn
   }
 });
 
-/** The XML declaration every real .rels file opens with is a processing instruction too, so stripping them must not cost a live relationship. */
 test("readAttachmentText keeps resolving a rels file that opens with its xml declaration", async () => {
   const bytes = zipSync({
     "[Content_Types].xml": strToU8("<Types/>"),
@@ -734,9 +1005,6 @@ test("readAttachmentText keeps resolving a rels file that opens with its xml dec
   );
 });
 
-// findPartPaths only opens the package parts and what the relationships point
-// at, so an .xml part nothing references is never inflated. Custom XML data is
-// a standard payload and may be large, so the suffix must not decide.
 test("readAttachmentText lets a docx with a large unreferenced xml part through", async () => {
   const reads: string[] = [];
   const bytes = zipSync({
@@ -759,8 +1027,7 @@ test("readAttachmentText lets a docx with a large unreferenced xml part through"
   }
 });
 
-// The composer empties itself before it awaits send(), so a part that only
-// fails there takes the typed message with it: add() has to decide instead.
+// The composer empties itself before awaiting send(), so add() must refuse oversized parts.
 test("getDocxAttachmentError refuses an oversized part before the attachment is added", async () => {
   const bytes = zipSync({
     "[Content_Types].xml": strToU8("<Types/>"),
@@ -792,7 +1059,6 @@ test("getDocxAttachmentError refuses an oversized part before the attachment is 
   assert.equal(await getDocxAttachmentError(ok), null);
 });
 
-/** Rewrites every field holding `size` down to `declared`, the way a crafted archive lies about a part. */
 function understateDeclaredSizes(
   archive: Uint8Array,
   size: number,
@@ -813,12 +1079,7 @@ function understateDeclaredSizes(
   return patched;
 }
 
-/**
- * Inflated sizes as jszip sees them: the whole stream, whatever the archive
- * declares. `unzipSync` cannot answer this, since it allocates each entry at
- * its declared size and stops there, which is why the declared size proves
- * nothing about what mammoth would decompress.
- */
+/** Inflated sizes as jszip sees them; fflate's unzipSync stops at the declared size. */
 function inflatedSizes(archive: Uint8Array): Map<string, number> {
   const sizes = new Map<string, number>();
   const unzip = new Unzip();
@@ -837,12 +1098,6 @@ function inflatedSizes(archive: Uint8Array): Map<string, number> {
   return sizes;
 }
 
-/**
- * jszip takes each part's size from the central directory and inflates the part
- * in full before it can be rejected, so a lying header still expands inside
- * mammoth. fflate allocates the entry at the declared size and stops, so the
- * repack is what contains the lie.
- */
 test("repackDocxAttachmentArchive bounds a part that lies about its size", () => {
   const body = strToU8("a".repeat(30 * 1024 * 1024));
   const archive = zipSync(
@@ -879,7 +1134,6 @@ test("repackDocxAttachmentArchive keeps an honest archive intact", () => {
   }
 });
 
-/** Every part can sit under the XML ceiling while the archive as a whole still unpacks to more than the webview can hold. */
 test("repackDocxAttachmentArchive refuses an archive that unpacks past the ceiling", () => {
   const part = new Uint8Array(9 * 1024 * 1024);
   const files: Record<string, Uint8Array> = {
@@ -898,14 +1152,945 @@ test("repackDocxAttachmentArchive refuses an archive that unpacks past the ceili
   );
 });
 
-/** A preview only colours what the filename says is source; extracted document text is prose whatever the file was called. */
+test("markDocxNotes numbers the references extractRawText keeps and marks the body", async () => {
+  const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const note = (kind: string, id: number, text: string) =>
+    `<w:${kind} w:id="${id}"><w:p><w:r><w:${kind}Ref/></w:r><w:r><w:t xml:space="preserve"> ${text}</w:t></w:r></w:p></w:${kind}>`;
+  const notes = (kind: string, body: string) =>
+    strToU8(
+      `<w:${kind}s ${w}>` +
+        `<w:${kind} w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:${kind}>` +
+        `<w:${kind} w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:${kind}>` +
+        body +
+        `</w:${kind}s>`,
+    );
+  const ref = (kind: string, id: number) =>
+    kind === "endnote"
+      ? `<w:r><w:${kind}Reference w:id="${id}">\n</w:${kind}Reference >\n</w:r>`
+      : `<w:r><w:${kind}Reference w:id="${id}"/></w:r>`;
+  const archive = repackDocxAttachmentArchive(
+    "paper.docx",
+    zipSync({
+      "[Content_Types].xml": strToU8("<Types/>"),
+      "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+      "word/document.xml": strToU8(
+        `<w:document ${w}><w:body><w:p><w:del w:id="9">${ref("footnote", 4)}</w:del>` +
+          `<w:r><w:t>First.</w:t></w:r>${ref("footnote", 2)}` +
+          `<w:r><w:t> Second.</w:t></w:r>${ref("footnote", 1)}${ref("endnote", 1)}` +
+          `<w:r><w:t xml:space="preserve"> \uE0007\uE001</w:t></w:r>` +
+          `<w:r><x:footnoteReference xmlns:x="http://schemas.openxmlformats.org/wordprocessingml/2006/main" x:id="3"/></w:r>` +
+          `</w:p></w:body></w:document>`,
+      ),
+      "word/_rels/document.xml.rels": relationships([
+        ["footnotes", "notes/foot.xml"],
+        ["endnotes", "endnotes.xml"],
+      ]),
+      "word/notes/foot.xml": notes(
+        "footnote",
+        note("footnote", 1, "Source: LATER") +
+          note("footnote", 2, "Source: EARLIER") +
+          note("footnote", 3, "Source: LOCALLY DECLARED") +
+          note("footnote", 4, "Source: DELETED"),
+      ),
+      "word/endnotes.xml": notes("endnote", note("endnote", 1, "Source: ENDNOTEBODY")),
+    }),
+  );
+  const original = (globalThis as { DOMParser?: unknown }).DOMParser;
+  (globalThis as { DOMParser?: unknown }).DOMParser = XmlDomParser;
+  try {
+    const marked = markDocxNotes(archive);
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({
+      buffer: Buffer.from(marked.archive),
+    });
+    assert.equal(
+      marked.label(value),
+      "First.[1] Second.[2][i] \uE0007\uE001[3]\n\n" +
+        "Footnotes\n[1] Source: EARLIER\n[2] Source: LATER\n[3] Source: LOCALLY DECLARED\n\n" +
+        "Endnotes\n[i] Source: ENDNOTEBODY",
+    );
+  } finally {
+    (globalThis as { DOMParser?: unknown }).DOMParser = original;
+  }
+});
+
+test("linearizeDocxMath keeps equations in the body, tables and notes", async () => {
+  const ns =
+    'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ' +
+    'xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"';
+  const run = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>`;
+  const m = (text: string) => `<m:r><m:t>${text}</m:t></m:r>`;
+  const half = `<m:f><m:num>${m("1")}</m:num><m:den>${m("2")}</m:den></m:f>`;
+  const squared = `<m:sSup><m:e>${m("v")}</m:e><m:sup>${m("2")}</m:sup></m:sSup>`;
+  const mean = `<m:bar><m:barPr><m:pos m:val="top"/></m:barPr><m:e>${m("x")}</m:e></m:bar>`;
+  const root = `<m:rad><m:radPr><m:degHide m:val="1"/></m:radPr><m:deg/><m:e>${m("n")}</m:e></m:rad>`;
+  const archive = repackDocxAttachmentArchive(
+    "physics.docx",
+    zipSync({
+      "[Content_Types].xml": strToU8("<Types/>"),
+      "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+      "word/document.xml": strToU8(
+        `<w:document ${ns}><w:body>` +
+          `<w:p>${run("The kinetic energy is ")}<m:oMath>${m("E=")}${half}${m("m")}${squared}</m:oMath>${run(" joules.")}` +
+          `<w:r><w:footnoteReference w:id="1"/></w:r></w:p>` +
+          `<w:p><m:oMathPara><m:oMath>${m("F=ma")}</m:oMath><m:oMath>${m("p=mv")}</m:oMath></m:oMathPara></w:p>` +
+          `<w:tbl><w:tr><w:tc><w:p>${run("Error")}</w:p></w:tc><w:tc><w:p><m:oMath>` +
+          `<m:d><m:e>${m("a+b")}</m:e></m:d><w:del w:id="2" w:author="a">${m("+c")}</w:del>${root}` +
+          `</m:oMath></w:p></w:tc></w:tr></w:tbl>` +
+          `<w:p><w:del w:id="3" w:author="a"><m:oMath>${m("gone")}</m:oMath></w:del></w:p>` +
+          `</w:body></w:document>`,
+      ),
+      "word/_rels/document.xml.rels": relationships([["footnotes", "footnotes.xml"]]),
+      "word/footnotes.xml": strToU8(
+        `<w:footnotes ${ns}><w:footnote w:id="1"><w:p>${run("Where ")}<m:oMath>${mean}</m:oMath>${run(" is the mean.")}</w:p></w:footnote></w:footnotes>`,
+      ),
+    }),
+  );
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const marked = markDocxNotes(linearizeDocxMath(archive));
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({ buffer: Buffer.from(marked.archive) });
+    assert.equal(
+      marked.label(value),
+      "The kinetic energy is E=\\frac{1}{2}mv^{2} joules.[1]\n\nF=ma\np=mv\n\nError\n\n(a+b)\\sqrt{n}\n\n\n\n" +
+        "Footnotes\n[1] Where \\overline{x} is the mean.",
+    );
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
+test("writeDocxSymbols keeps Insert > Symbol characters in the body, equations and notes as the backend does", async () => {
+  const ns =
+    'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ' +
+    'xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"';
+  const run = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>`;
+  const sym = (font: string, char: string) => `<w:sym w:font="${font}" w:char="${char}"/>`;
+  const archive = repackDocxAttachmentArchive(
+    "form.docx",
+    zipSync({
+      "[Content_Types].xml": strToU8("<Types/>"),
+      "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+      "word/document.xml": strToU8(
+        `<w:document ${ns}><w:body>` +
+          `<w:p>${run("Smoker: ")}<w:r>${sym("Wingdings", "F0FE")}</w:r>${run(" Yes")}<w:r><w:footnoteReference w:id="1"/></w:r></w:p>` +
+          `<w:p>${run("Limit ")}<w:r>${sym("Symbol", "221E")}${sym("Arial", "2713")}${sym("Symbol", "F0B1")}</w:r></w:p>` +
+          `<w:p><m:oMath><m:r><m:t>x</m:t></m:r><m:r>${sym("Symbol", "F0B3")}</m:r><m:r><m:t>1</m:t></m:r>` +
+          `<w:r>${sym("Symbol", "F0B1")}</w:r><m:r><m:t>e</m:t></m:r></m:oMath></w:p>` +
+          `</w:body></w:document>`,
+      ),
+      "word/_rels/document.xml.rels": relationships([["footnotes", "footnotes.xml"]]),
+      "word/footnotes.xml": strToU8(
+        `<w:footnotes ${ns}><w:footnote w:id="1"><w:p>${run("Above ")}<w:r>` +
+          sym("Symbol", "F0B3") + sym("symbol", "b0") + sym("Symbol", "221E") + sym("Wingdings 2", "F054") +
+          sym("Arial", "2713") + sym("Unknown", "F041") + sym("Symbol", "zz") +
+          `</w:r>${run(" C")}</w:p></w:footnote></w:footnotes>`,
+      ),
+    }),
+  );
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const marked = markDocxNotes(linearizeDocxMath(writeDocxSymbols(archive, 10 * 1024 * 1024)));
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({ buffer: Buffer.from(marked.archive) });
+    assert.equal(marked.label(value), "Smoker: 🗹 Yes[1]\n\nLimit ∞✓±\n\nx≥1±e\n\nFootnotes\n[1] Above ≥°∞☒✓ C");
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
+test("writeDocxSymbols follows a main document target without an .xml name, as mammoth does", async () => {
+  const archive = zipSync({
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "_rels/.rels": relationships([["officeDocument", "word/body.bin"]]),
+    "word/body.bin": strToU8(
+      '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p>' +
+        '<w:r><w:t xml:space="preserve">Limit </w:t><w:sym w:font="Symbol" w:char="221E"/><w:sym w:font="Arial" w:char="2713"/></w:r>' +
+        "</w:p></w:body></w:document>",
+    ),
+  });
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({ buffer: Buffer.from(writeDocxSymbols(archive, 10 * 1024 * 1024)) });
+    assert.equal(value.trim(), "Limit ∞✓");
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
+// Same cases and expected text as the backend reader's test_docx_equation_structures.
+const OMML_CASES: [string, string][] = [
+  [
+    '<m:nary><m:naryPr><m:chr m:val="∑"/></m:naryPr><m:sub>{i=1}</m:sub><m:sup>{n}</m:sup><m:e>{i}</m:e></m:nary>',
+    "∑_{i=1}^{n}i",
+  ],
+  ["<m:nary><m:sub>{0}</m:sub><m:sup>{1}</m:sup><m:e>{x}</m:e></m:nary>", "∫_{0}^{1}x"],
+  [
+    "<m:sSubSup><m:e>{x}</m:e><m:sub>{i}</m:sub><m:sup>{2}</m:sup></m:sSubSup><m:sSub><m:e>{a}</m:e><m:sub>{0}</m:sub></m:sSub>",
+    "x_{i}^{2}a_{0}",
+  ],
+  ["<m:sPre><m:sub>{6}</m:sub><m:sup>{14}</m:sup><m:e>{C}</m:e></m:sPre>", "{}_{6}^{14}C"],
+  ["<m:limUpp><m:e>{x}</m:e><m:lim>{def}</m:lim></m:limUpp>", "x^{def}"],
+  ["<m:limLow><m:e>{lim}</m:e><m:lim>{n→∞}</m:lim></m:limLow>", "lim_{n→∞}"],
+  [
+    '<m:f><m:fPr><m:type m:val="noBar"/></m:fPr><m:num>{n}</m:num><m:den>{k}</m:den></m:f>' +
+      '<m:phant><m:phantPr><m:show m:val="off"/></m:phantPr><m:e>{xyz}</m:e></m:phant>',
+    "{n \\atop k}",
+  ],
+  ["<m:acc><m:e>{θ}</m:e></m:acc><m:rad><m:deg>{3}</m:deg><m:e>{y}</m:e></m:rad>", "θ̂\\sqrt[3]{y}"],
+  [
+    '<m:rad><m:radPr><m:degHide m:val="1"/></m:radPr><m:deg>{3}</m:deg><m:e>{x}</m:e></m:rad>' +
+      '<m:nary><m:naryPr><m:chr m:val="∑"/><m:subHide m:val="0"/><m:supHide/></m:naryPr><m:sub>{k}</m:sub><m:sup>{n}</m:sup><m:e>{a}</m:e></m:nary>',
+    "\\sqrt{x}∑_{k}a",
+  ],
+  ["<m:func><m:fName>{sin}</m:fName><m:e>{x}</m:e></m:func>", "sin x"],
+  [
+    "<m:m><m:mr><m:e>{a}</m:e><m:e>{b}</m:e></m:mr><m:mr><m:e>{c}</m:e><m:e>{d}</m:e></m:mr></m:m>",
+    "a & b \\\\ c & d",
+  ],
+  ["<m:eqArr><m:e>{x=1}</m:e><m:e>{y=2}</m:e></m:eqArr>", "x=1\ny=2"],
+  [
+    '<m:d><m:e>{a}</m:e><m:e>{b}</m:e></m:d><m:d><m:dPr><m:begChr m:val="["/><m:endChr m:val=""/></m:dPr><m:e>{c}</m:e></m:d>',
+    "(a|b)[c",
+  ],
+  [
+    '<m:bar><m:e>{x}</m:e></m:bar><m:groupChr><m:groupChrPr><m:chr m:val="⏞"/><m:pos m:val="top"/></m:groupChrPr><m:e>{y}</m:e></m:groupChr>' +
+      '<m:groupChr><m:groupChrPr><m:chr m:val="←"/></m:groupChrPr><m:e>{z}</m:e></m:groupChr>',
+    "\\underline{x}\\overbrace{y}\\underset{←}{z}",
+  ],
+  [
+    '{a}<w:r><w:t xml:space="preserve"> if </w:t></w:r>' +
+      "<w:sdt><w:sdtPr><w:showingPlcHdr/></w:sdtPr><w:sdtContent>{prompt}</w:sdtContent></w:sdt>{b}",
+    "a if b",
+  ],
+];
+
+test("linearizeDocxMath writes equations as the backend does and leaves other parts untouched", () => {
+  const ns =
+    'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ' +
+    'xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"';
+  const archive = (body: string) =>
+    zipSync({ "word/document.xml": strToU8(`<w:document ${ns}><w:body>${body}</w:body></w:document>`) });
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const plain = archive('<w:p><w:r><w:t>oMath is only a word here</w:t></w:r></w:p>');
+    assert.equal(linearizeDocxMath(plain), plain);
+    const truncated = archive(
+      '<parsererror xmlns="http://www.w3.org/1999/xhtml"/><w:p><m:oMath><m:r><m:t>x</m:t></m:r></m:oMath></w:p>',
+    );
+    assert.equal(linearizeDocxMath(truncated), truncated);
+    const strict = zipSync({
+      "word/document.xml": strToU8(
+        '<w:document xmlns:w="http://purl.oclc.org/ooxml/wordprocessingml/main" xmlns:m="http://purl.oclc.org/ooxml/officeDocument/math">' +
+          "<w:body><w:p><m:oMath><m:sSup><m:e><m:r><m:t>x</m:t></m:r></m:e><m:sup><m:r><m:t>2</m:t></m:r></m:sup></m:sSup></m:oMath></w:p></w:body></w:document>",
+      ),
+    });
+    assert.ok(strFromU8(unzipSync(linearizeDocxMath(strict))["word/document.xml"]).includes(">x^{2}<"));
+    for (const [omml, expected] of OMML_CASES) {
+      const filled = omml.replace(/\{([^{}]*)\}/g, (_, text: string) => `<m:r><m:t>${text}</m:t></m:r>`);
+      const xml = strFromU8(unzipSync(linearizeDocxMath(archive(`<w:p><m:oMath>${filled}</m:oMath></w:p>`)))["word/document.xml"]);
+      const doc = new XmlDomParser().parseFromString(xml, "application/xml");
+      assert.equal(doc.getElementsByTagNameNS("http://schemas.openxmlformats.org/wordprocessingml/2006/main", "t")[0]?.textContent, expected);
+    }
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
+test("markDocxNotes reads Strict OOXML notes and skips unfilled content controls", () => {
+  const w = 'xmlns:w="http://purl.oclc.org/ooxml/wordprocessingml/main"';
+  const run = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>`;
+  const archive = repackDocxAttachmentArchive(
+    "strict.docx",
+    zipSync({
+      "[Content_Types].xml": strToU8("<Types/>"),
+      "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+      "word/document.xml": strToU8(`<w:document ${w}><w:body/></w:document>`),
+      "word/footnotes.xml": strToU8(
+        `<w:footnotes ${w}><w:footnote w:id="1"><w:p>` +
+          run("Keep") +
+          `<w:sdt><w:sdtPr><w:showingPlcHdr/></w:sdtPr><w:sdtContent>${run(" Click or tap here to enter text.")}</w:sdtContent></w:sdt>` +
+          `<w:sdt><w:sdtPr><w:showingPlcHdr w:val="0"/></w:sdtPr><w:sdtContent>${run(" FILLED")}</w:sdtContent></w:sdt>` +
+          "</w:p></w:footnote></w:footnotes>",
+      ),
+    }),
+  );
+  const original = (globalThis as { DOMParser?: unknown }).DOMParser;
+  (globalThis as { DOMParser?: unknown }).DOMParser = XmlDomParser;
+  try {
+    assert.equal(markDocxNotes(archive).label(""), "Footnotes\n[1] Keep FILLED");
+  } finally {
+    (globalThis as { DOMParser?: unknown }).DOMParser = original;
+  }
+});
+
+test("markDocxNotes skips move sources, deletions and text box fallbacks", () => {
+  const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const mc = 'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"';
+  const run = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>`;
+  const box = `<w:txbxContent><w:p>${run("BOX")}</w:p></w:txbxContent>`;
+  const archive = repackDocxAttachmentArchive(
+    "moved.docx",
+    zipSync({
+      "[Content_Types].xml": strToU8("<Types/>"),
+      "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+      "word/document.xml": strToU8(`<w:document ${w}><w:body/></w:document>`),
+      "word/_rels/document.xml.rels": relationships([["footnotes", "footnotes.xml"]]),
+      "word/footnotes.xml": strToU8(
+        `<w:footnotes ${w} ${mc}><w:footnote w:id="1"><w:p>` +
+          run("Keep") +
+          `<w:moveFrom w:id="7">${run(" MOVED")}</w:moveFrom>` +
+          `<w:del w:id="8"><w:r><w:delText> GONE</w:delText></w:r></w:del>` +
+          run(" COVID") + "<w:r><w:noBreakHyphen/></w:r>" + run("19") +
+          `<w:moveTo w:id="9">${run(" MOVED")}</w:moveTo>` +
+          `<w:r><mc:AlternateContent><mc:Choice Requires="wps">${box}</mc:Choice>` +
+          `<mc:Fallback>${box}</mc:Fallback></mc:AlternateContent></w:r>` +
+          "</w:p></w:footnote></w:footnotes>",
+      ),
+    }),
+  );
+  const original = (globalThis as { DOMParser?: unknown }).DOMParser;
+  (globalThis as { DOMParser?: unknown }).DOMParser = XmlDomParser;
+  try {
+    assert.equal(
+      markDocxNotes(archive).label(""),
+      "Footnotes\n[1] Keep COVID-19 MOVED BOX",
+    );
+  } finally {
+    (globalThis as { DOMParser?: unknown }).DOMParser = original;
+  }
+});
+
+test("a Word file keeps its line breaks and which boxes are ticked", async () => {
+  const ns =
+    'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ' +
+    'xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml"';
+  const run = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>`;
+  const box = (checked: string, glyph: string, label: string) =>
+    `<w:p><w:sdt><w:sdtPr><w14:checkbox><w14:checked w14:val="${checked}"/>` +
+    '<w14:checkedState w14:val="2612" w14:font="MS Gothic"/><w14:uncheckedState w14:val="2610" w14:font="MS Gothic"/>' +
+    `</w14:checkbox></w:sdtPr><w:sdtContent>${run(glyph)}</w:sdtContent></w:sdt>${run(label)}</w:p>`;
+  const field = (state: string, label: string) =>
+    `<w:p><w:r><w:fldChar w:fldCharType="begin"><w:ffData><w:checkBox><w:sizeAuto/>${state}</w:checkBox></w:ffData></w:fldChar></w:r>` +
+    '<w:r><w:instrText xml:space="preserve"> FORMCHECKBOX </w:instrText></w:r>' +
+    `<w:r><w:fldChar w:fldCharType="end"/></w:r>${run(label)}</w:p>`;
+  const archive = docxBytes(
+    `<w:document ${ns}><w:body>` +
+      '<w:p><w:r><w:t>Jane Doe</w:t><w:br/><w:t>42 Elm Street</w:t></w:r><w:r><w:br w:type="textWrapping"/></w:r>' +
+      `${run("Springfield, IL 62704")}</w:p>` +
+      '<w:p><w:r><w:t>Summary</w:t><w:br w:type="page"/><w:t>Details</w:t></w:r></w:p>' +
+      `<w:tbl><w:tr><w:tc><w:p>${run("Built APIs")}<w:r><w:cr/><w:t>Led team of 5</w:t></w:r></w:p></w:tc></w:tr></w:tbl>` +
+      box("1", "☒", " Smoker") +
+      box("0", "☐", " Diabetic") +
+      field('<w:default w:val="0"/><w:checked/>', " Allergies") +
+      field('<w:default w:val="0"/>', " Pregnant") +
+      '<w:p><w:r><w:t xml:space="preserve">Consent </w:t><w:fldChar w:fldCharType="begin"><w:ffData><w:checkBox><w:checked/></w:checkBox></w:ffData></w:fldChar></w:r>' +
+      '<w:r><w:instrText xml:space="preserve"> FORMCHECKBOX </w:instrText></w:r>' +
+      `<w:r><w:fldChar w:fldCharType="end"/></w:r>${run(" given")}</w:p>` +
+      "</w:body></w:document>",
+  );
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({
+      buffer: Buffer.from(writeDocxBreaksAndCheckboxes(archive)),
+    });
+    assert.equal(
+      value,
+      "Jane Doe\n42 Elm Street\nSpringfield, IL 62704\n\n" +
+        "Summary\nDetails\n\n" +
+        "Built APIs\nLed team of 5\n\n" +
+        "☒ Smoker\n\n☐ Diabetic\n\n☒ Allergies\n\n☐ Pregnant\n\nConsent ☒ given\n\n",
+    );
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
+test("a Word table keeps its columns when a cell is empty", async () => {
+  const ns = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const cell = (...paragraphs: string[]) =>
+    `<w:tc>${paragraphs.map((text) => `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`).join("") || "<w:p/>"}</w:tc>`;
+  const row = (...cells: string[]) => `<w:tr>${cells.join("")}</w:tr>`;
+  const bytes = docxBytes(
+    `<w:document ${ns}><w:body><w:p><w:r><w:t>Timetable</w:t></w:r></w:p><w:tbl>` +
+      row('<w:tc><w:tcPr><w:gridSpan w:val="6"/></w:tcPr><w:p><w:r><w:t>Week 1</w:t></w:r></w:p></w:tc>') +
+      row(cell("Time"), cell("Mon"), cell("Tue"), cell("Wed"), cell("Thu"), cell("Fri")) +
+      row(cell("10:00"), cell("History"), cell(), cell("Maths"), cell("Art"), cell()) +
+      row(
+        cell("11:00"),
+        '<w:tc><w:tcPr><w:gridSpan w:val="2"/></w:tcPr><w:p><w:r><w:t>Trip</w:t></w:r></w:p></w:tc>',
+        cell("Music", "Room 4"),
+        cell(),
+        cell("PE"),
+      ) +
+      "</w:tbl></w:body></w:document>",
+  );
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({
+      buffer: Buffer.from(writeDocxTableRows(writeDocxBreaksAndCheckboxes(bytes))),
+    });
+    assert.equal(
+      value,
+      "Timetable\n\nWeek 1\n\n" +
+        "Time\tMon\tTue\tWed\tThu\tFri\n\n" +
+        "10:00\tHistory\t\tMaths\tArt\t\n\n" +
+        "11:00\tTrip\t\tMusic Room 4\t\tPE\n\n",
+    );
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
+test("an html table keeps its columns when a cell is empty", async () => {
+  const cell = (tag: string, text = "", colspan?: string) =>
+    Object.assign(element(tag, ...(text ? [textNode(text)] : [])), {
+      getAttribute: (name: string) => (name === "colspan" ? (colspan ?? null) : null),
+    });
+  const extracted = await withStubDom(
+    () =>
+      element(
+        "body",
+        element("h2", textNode("Timetable")),
+        element(
+          "table",
+          element(
+            "tbody",
+            element("tr", cell("th", "Time"), cell("th", "Mon"), cell("th", "Tue"), cell("th", "Wed")),
+            textNode("\n    "),
+            element("tr", cell("td", "10:00"), cell("td", "History"), cell("td"), cell("td", "Maths")),
+            element(
+              "tr",
+              cell("td", "11:00"),
+              cell("td", "Trip", "2"),
+              Object.assign(element("td", element("p", textNode("Art")), element("p", textNode("Room  4"))), {
+                getAttribute: () => null,
+              }),
+            ),
+          ),
+        ),
+        element("p", textNode("Bring a  pencil")),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(
+    extracted,
+    "Timetable\n\nTime\tMon\tTue\tWed\n\n10:00\tHistory\t\tMaths\n\n11:00\tTrip\t\tArt Room 4\n\nBring a pencil",
+  );
+});
+
+test("a Word row keeps its columns past skipped grid cells, tabs, line breaks and nested tables", async () => {
+  const ns = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const p = (text: string) => `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`;
+  const row = (cells: string, pr = "") => `<w:tr>${pr}${cells}</w:tr>`;
+  const nested = `<w:tbl>${row(`<w:tc>${p("Room")}</w:tc><w:tc>${p("4")}</w:tc>`)}</w:tbl>`;
+  const bytes = docxBytes(
+    `<w:document ${ns}><w:body><w:tbl>` +
+      row(`<w:tc>${p("Time")}</w:tc><w:tc>${p("Mon")}</w:tc><w:tc>${p("Tue")}</w:tc>`) +
+      row(`<w:tc>${p("Lab 3")}</w:tc><w:tc>${p("Lab 4")}</w:tc>`, '<w:trPr><w:gridBefore w:val="1"/></w:trPr>') +
+      row(`<w:tc>${p("Only Tue")}</w:tc>`, '<w:trPr><w:gridBefore w:val="2"/></w:trPr>') +
+      row(`<w:tc>${p("Only Time")}</w:tc>`, '<w:trPr><w:gridAfter w:val="2"/></w:trPr>') +
+      row(
+        `<w:tc>${p("10:00")}</w:tc>` +
+          `<w:tc><w:p><w:r><w:t>A</w:t><w:tab/><w:t>B</w:t></w:r></w:p></w:tc>` +
+          `<w:tc>${nested}<w:p/></w:tc>`,
+      ) +
+      row(`<w:tc>${p("11:00")}</w:tc><w:tc><w:p><w:r><w:t>Line one</w:t><w:br/><w:t>Line two</w:t></w:r></w:p></w:tc><w:tc>${p("C")}</w:tc>`) +
+      "</w:tbl></w:body></w:document>",
+  );
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({
+      buffer: Buffer.from(writeDocxTableRows(writeDocxBreaksAndCheckboxes(bytes))),
+    });
+    assert.equal(
+      value,
+      "Time\tMon\tTue\n\n\tLab 3\tLab 4\n\n\t\tOnly Tue\n\nOnly Time\t\t\n\n10:00\tA B\tRoom 4 \n\n11:00\tLine one Line two\tC\n\n",
+    );
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
+test("an html table keeps its columns under a rowspan and leaves code in a cell alone", async () => {
+  const cell = (tag: string, text = "", attributes: Record<string, string> = {}) =>
+    Object.assign(element(tag, ...(text ? [textNode(text)] : [])), {
+      getAttribute: (name: string) => attributes[name] ?? null,
+    });
+  const extracted = await withStubDom(
+    () =>
+      element(
+        "body",
+        element(
+          "table",
+          element(
+            "tbody",
+            element("tr", cell("th", "Time"), cell("th", "Mon"), cell("th", "Tue"), cell("th", "Wed")),
+            element("tr", cell("td", "09:00"), cell("td", "Science", { rowspan: "2" }), cell("td", "Art"), cell("td", "PE")),
+            element("tr", cell("td", "10:00"), cell("td", "Maths"), cell("td", "French")),
+            element("tr", cell("td", "11:00"), cell("td", "Music", { colspan: "3" })),
+            element("tr", cell("td", "ship()"), Object.assign(element("td", element("pre", textNode("def ship():\n    return 1"))), {
+              getAttribute: () => null,
+            })),
+          ),
+        ),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(
+    extracted,
+    "Time\tMon\tTue\tWed\n\n09:00\tScience\tArt\tPE\n\n10:00\t\tMaths\tFrench\n\n11:00\tMusic\t\t\n\nship()\n\ndef ship():\n    return 1",
+  );
+});
+
+test("an html rowspan of zero covers the rest of its row group", async () => {
+  const cell = (text: string, rowspan?: string) =>
+    Object.assign(element("td", textNode(text)), {
+      getAttribute: (name: string) => (name === "rowspan" ? (rowspan ?? null) : null),
+    });
+  const extracted = await withStubDom(
+    () =>
+      element(
+        "body",
+        element(
+          "table",
+          element(
+            "tbody",
+            element("tr", cell("All day", "0"), cell("Mon 09:00"), cell("Tue 09:00")),
+            element("tr", cell("Mon 10:00"), cell("Tue 10:00")),
+          ),
+          element("tbody", element("tr", cell("Evening"), cell("Mon 18:00"), cell("Tue 18:00"))),
+        ),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(
+    extracted,
+    "All day\tMon 09:00\tTue 09:00\n\n\tMon 10:00\tTue 10:00\n\nEvening\tMon 18:00\tTue 18:00",
+  );
+});
+
+test("an html rowspan keeps its full standards-defined range", async () => {
+  const cell = (text: string, rowspan?: string) =>
+    Object.assign(element("td", textNode(text)), {
+      getAttribute: (name: string) => (name === "rowspan" ? (rowspan ?? null) : null),
+    });
+  const labels = Array.from({ length: 1000 }, (_, index) => `row ${index + 1}`);
+  const extracted = await withStubDom(
+    () =>
+      element(
+        "body",
+        element(
+          "table",
+          element(
+            "tbody",
+            element("tr", cell("Group", "1001"), cell("row 0")),
+            ...labels.map((label) => element("tr", cell(label))),
+          ),
+        ),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(extracted, ["Group\trow 0", ...labels.map((label) => `\t${label}`)].join("\n\n"));
+});
+
+test("a Word numbered list keeps its numbers", async () => {
+  const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const lvl = (ilvl: number, format: string, text: string) =>
+    `<w:lvl w:ilvl="${ilvl}"><w:start w:val="1"/><w:numFmt w:val="${format}"/><w:lvlText w:val="${text}"/></w:lvl>`;
+  const p = (text: string, pPr = "") => `<w:p>${pPr && `<w:pPr>${pPr}</w:pPr>`}<w:r><w:t>${text}</w:t></w:r></w:p>`;
+  const numPr = (numId: number, ilvl = 0) => `<w:numPr><w:ilvl w:val="${ilvl}"/><w:numId w:val="${numId}"/></w:numPr>`;
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+    "word/_rels/document.xml.rels": relationships([["numbering", "numbering.xml"], ["styles", "styles.xml"]]),
+    "word/document.xml": strToU8(
+      `<w:document ${w}><w:body>` +
+        p("Terms") +
+        p("Payment is due within 30 days.", numPr(2)) +
+        p("By bank transfer", numPr(2, 1)) +
+        p("Late payments incur a 2% fee.", numPr(2)) +
+        p("Termination", '<w:pStyle w:val="ListNumber"/>') +
+        p("Restarted", numPr(3)) +
+        p("Bullet", numPr(4)) +
+        "</w:body></w:document>",
+    ),
+    "word/numbering.xml": strToU8(
+      `<w:numbering ${w}>` +
+        `<w:abstractNum w:abstractNumId="1">${lvl(0, "decimal", "%1.")}${lvl(1, "lowerLetter", "(%2)")}</w:abstractNum>` +
+        `<w:abstractNum w:abstractNumId="2">${lvl(0, "bullet", "\u2022")}</w:abstractNum>` +
+        '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>' +
+        '<w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num>' +
+        '<w:num w:numId="3"><w:abstractNumId w:val="1"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="1"/></w:lvlOverride></w:num>' +
+        '<w:num w:numId="4"><w:abstractNumId w:val="2"/></w:num>' +
+        "</w:numbering>",
+    ),
+    "word/styles.xml": strToU8(
+      `<w:styles ${w}><w:style w:type="paragraph" w:styleId="ListNumber"><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr></w:style></w:styles>`,
+    ),
+  });
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({
+      buffer: Buffer.from(writeDocxTableRows(writeDocxBreaksAndCheckboxes(writeDocxListNumbers(bytes)))),
+    });
+    assert.equal(
+      value,
+      "Terms\n\n1. Payment is due within 30 days.\n\n(a) By bank transfer\n\n2. Late payments incur a 2% fee.\n\n" +
+        "3. Termination\n\n1. Restarted\n\nBullet\n\n",
+    );
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
+test("Word heading styles linked to list levels number by their level", async () => {
+  const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const heading = (text: string, style: string) => `<w:p><w:pPr><w:pStyle w:val="${style}"/></w:pPr><w:r><w:t>${text}</w:t></w:r></w:p>`;
+  // A numbering style (here through basedOn) points at the list whose abstract definition holds the levels.
+  const linkStyle =
+    '<w:style w:type="numbering" w:styleId="BaseList"><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr></w:style>' +
+    '<w:style w:type="numbering" w:styleId="ClauseList"><w:basedOn w:val="BaseList"/></w:style>';
+  const styleXml = (id: string) =>
+    `<w:style w:type="paragraph" w:styleId="${id}"><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr></w:style>`;
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+    "word/_rels/document.xml.rels": relationships([["numbering", "numbering.xml"], ["styles", "styles.xml"]]),
+    "word/document.xml": strToU8(
+      `<w:document ${w}><w:body>${heading("Scope", "Heading1")}${heading("Terms", "Heading2")}${heading("Notice", "Heading2")}${heading("Fees", "Heading1")}${heading("Detail", "CustomHeading2")}` +
+        '<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="2"/></w:numPr></w:pPr><w:r><w:t>Styled</w:t></w:r></w:p></w:body></w:document>',
+    ),
+    "word/numbering.xml": strToU8(
+      `<w:numbering ${w}><w:abstractNum w:abstractNumId="1">` +
+        '<w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:pStyle w:val="Heading1"/><w:lvlText w:val="%1."/></w:lvl>' +
+        '<w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:pStyle w:val="Heading2"/><w:lvlText w:val="%1.%2"/></w:lvl>' +
+        '</w:abstractNum><w:abstractNum w:abstractNumId="2"><w:numStyleLink w:val="ClauseList"/></w:abstractNum>' +
+        '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num><w:num w:numId="2"><w:abstractNumId w:val="2"/></w:num></w:numbering>',
+    ),
+    "word/styles.xml": strToU8(
+      `<w:styles ${w}>${styleXml("Heading1")}${styleXml("Heading2")}${linkStyle}` +
+        '<w:style w:type="paragraph" w:styleId="CustomHeading2"><w:basedOn w:val="Heading2"/></w:style></w:styles>',
+    ),
+  });
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({ buffer: Buffer.from(writeDocxListNumbers(bytes)) });
+    assert.equal(value, "1. Scope\n\n1.1 Terms\n\n1.2 Notice\n\n2. Fees\n\n2.1 Detail\n\n3. Styled\n\n");
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
+test("Word styles inherit their list and level through basedOn and the default style", async () => {
+  const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const p = (text: string, style?: string) =>
+    `<w:p>${style ? `<w:pPr><w:pStyle w:val="${style}"/></w:pPr>` : ""}<w:r><w:t>${text}</w:t></w:r></w:p>`;
+  const style = (id: string, numPr: string, extra = "") =>
+    `<w:style w:type="paragraph" w:styleId="${id}"${extra}><w:pPr><w:numPr>${numPr}</w:numPr></w:pPr></w:style>`;
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+    "word/_rels/document.xml.rels": relationships([["numbering", "numbering.xml"], ["styles", "styles.xml"]]),
+    "word/document.xml": strToU8(
+      `<w:document ${w}><w:body>${p("Rent", "Clause1")}${p("Amount", "Clause2")}${p("Due date", "Clause2")}${p("Pets", "Clause1")}${p("Plain")}</w:body></w:document>`,
+    ),
+    "word/numbering.xml": strToU8(
+      `<w:numbering ${w}><w:abstractNum w:abstractNumId="1">` +
+        '<w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl>' +
+        '<w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1.%2"/></w:lvl>' +
+        '</w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>',
+    ),
+    "word/styles.xml": strToU8(
+      `<w:styles ${w}>${style("Normal", '<w:numId w:val="1"/>', ' w:default="1"')}${style("Clause1", '<w:numId w:val="1"/>')}` +
+        `<w:style w:type="paragraph" w:styleId="Clause2"><w:basedOn w:val="Clause1"/><w:pPr><w:numPr><w:ilvl w:val="1"/></w:numPr></w:pPr></w:style></w:styles>`,
+    ),
+  });
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({ buffer: Buffer.from(writeDocxListNumbers(bytes)) });
+    assert.equal(value, "1. Rent\n\n1.1 Amount\n\n1.2 Due date\n\n2. Pets\n\n3. Plain\n\n");
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
+test("a Word legal list reads every level as a decimal and skips unnumbered levels", async () => {
+  const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const p = (text: string, ilvl: number) =>
+    `<w:p><w:pPr><w:numPr><w:ilvl w:val="${ilvl}"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>${text}</w:t></w:r></w:p>`;
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+    "word/_rels/document.xml.rels": relationships([["numbering", "numbering.xml"]]),
+    "word/document.xml": strToU8(`<w:document ${w}><w:body>${p("Term", 0)}${p("Renewal", 1)}${p("Notice", 2)}</w:body></w:document>`),
+    "word/numbering.xml": strToU8(
+      `<w:numbering ${w}><w:abstractNum w:abstractNumId="1">` +
+        '<w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="upperRoman"/><w:lvlText w:val="Article %1"/></w:lvl>' +
+        '<w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="decimalZero"/><w:isLgl/><w:lvlText w:val="Section %1.%2"/></w:lvl>' +
+        '<w:lvl w:ilvl="2"><w:start w:val="1"/><w:numFmt w:val="none"/><w:lvlText w:val="%3"/></w:lvl>' +
+        '</w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>',
+    ),
+  });
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({ buffer: Buffer.from(writeDocxListNumbers(bytes)) });
+    assert.equal(value, "Article I Term\n\nSection 1.01 Renewal\n\nNotice\n\n");
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
+async function docxListText(
+  levels: string,
+  nums: string,
+  paragraphs: [string, number, number, boolean?][],
+  abstractAttributes = "",
+): Promise<string> {
+  const w =
+    'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w15="http://schemas.microsoft.com/office/word/2012/wordml"';
+  const body = paragraphs
+    .map(([text, numId, ilvl, sectionEnd]) =>
+      `<w:p><w:pPr><w:numPr><w:ilvl w:val="${ilvl}"/><w:numId w:val="${numId}"/></w:numPr>${sectionEnd ? "<w:sectPr/>" : ""}</w:pPr><w:r><w:t>${text}</w:t></w:r></w:p>`,
+    )
+    .join("");
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+    "word/_rels/document.xml.rels": relationships([["numbering", "numbering.xml"]]),
+    "word/document.xml": strToU8(`<w:document ${w}><w:body>${body}</w:body></w:document>`),
+    "word/numbering.xml": strToU8(`<w:numbering ${w}><w:abstractNum w:abstractNumId="1"${abstractAttributes}>${levels}</w:abstractNum>${nums}</w:numbering>`),
+  });
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const { default: mammoth } = await import("mammoth");
+    return (await mammoth.extractRawText({ buffer: Buffer.from(writeDocxListNumbers(bytes)) })).value.trim().split(/\n+/).join(" | ");
+  } finally {
+    Object.assign(globals, original);
+  }
+}
+
+const wordLevel = (ilvl: number, format: string, text: string, extra = "") =>
+  `<w:lvl w:ilvl="${ilvl}"><w:start w:val="1"/><w:numFmt w:val="${format}"/>${extra}<w:lvlText w:val="${text}"/></w:lvl>`;
+
+test("Word list counters follow Word's sharing, restart and bullet rules", async () => {
+  const levels = wordLevel(0, "decimal", "%1.") + wordLevel(1, "decimal", "%1.%2");
+  const nums =
+    '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>' +
+    '<w:num w:numId="2"><w:abstractNumId w:val="1"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="1"/></w:lvlOverride></w:num>';
+  // A restart applies once; the original instance then continues from the restarted count.
+  assert.equal(
+    await docxListText(levels, nums, [["a", 1, 0], ["b", 1, 0], ["c", 2, 0], ["d", 1, 0]]),
+    "1. a | 2. b | 1. c | 2. d",
+  );
+  // A bullet parent still restarts its numbered children.
+  const mixed = wordLevel(0, "bullet", "\u2022") + wordLevel(1, "decimal", "%2)");
+  assert.equal(
+    await docxListText(mixed, '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>', [["x", 1, 0], ["x1", 1, 1], ["x2", 1, 1], ["y", 1, 0], ["y1", 1, 1]]),
+    "x | 1) x1 | 2) x2 | y | 1) y1",
+  );
+  // A tracked-deleted item neither prints nor counts.
+  const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const redline = await (async () => {
+    const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+    const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+    globals.DOMParser = XmlDomParser;
+    globals.XMLSerializer = XmlSerializer;
+    const item = (text: string, rPr = "") =>
+      `<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>${rPr}</w:pPr><w:r><w:t>${text}</w:t></w:r></w:p>`;
+    try {
+      const bytes = zipSync({
+        "[Content_Types].xml": strToU8("<Types/>"),
+        "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+        "word/_rels/document.xml.rels": relationships([["numbering", "numbering.xml"]]),
+        "word/document.xml": strToU8(
+          `<w:document ${w}><w:body>${item("a")}` +
+            `<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr><w:rPr><w:del w:id="1" w:author="x"/></w:rPr></w:pPr><w:del w:id="2" w:author="x"><w:r><w:delText>gone</w:delText></w:r></w:del></w:p>` +
+            `${item("b")}</w:body></w:document>`,
+        ),
+        "word/numbering.xml": strToU8(
+          `<w:numbering ${w}><w:abstractNum w:abstractNumId="1">${levels}</w:abstractNum>` +
+            '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>' +
+            '<w:num w:numId="2"><w:abstractNumId w:val="1"/><w:lvlOverride w:ilvl="0.5"><w:startOverride w:val="1"/></w:lvlOverride></w:num></w:numbering>',
+        ),
+      });
+      const { default: mammoth } = await import("mammoth");
+      return (await mammoth.extractRawText({ buffer: Buffer.from(writeDocxListNumbers(bytes)) })).value.trim().split(/\n+/).join(" | ");
+    } finally {
+      Object.assign(globals, original);
+    }
+  })();
+  assert.equal(redline, "1. a | 2. b");
+  // A fractional override level is ignored rather than aborting the extraction.
+  assert.equal(
+    await docxListText(levels, '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num><w:num w:numId="2"><w:abstractNumId w:val="1"/><w:lvlOverride w:ilvl="0.5"><w:startOverride w:val="1"/></w:lvlOverride></w:num>', [["a", 1, 0], ["b", 2, 0]]),
+    "1. a | 2. b",
+  );
+  // A section break restarts only the lists that opt in.
+  const plain = '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>';
+  // Only the mc:Fallback copy of compatibility content is read, so only it counts.
+  const boxed = await (async () => {
+    const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+    const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+    globals.DOMParser = XmlDomParser;
+    globals.XMLSerializer = XmlSerializer;
+    const ns =
+      'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"';
+    const item = (text: string) =>
+      `<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>${text}</w:t></w:r></w:p>`;
+    try {
+      const bytes = zipSync({
+        "[Content_Types].xml": strToU8("<Types/>"),
+        "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+        "word/_rels/document.xml.rels": relationships([["numbering", "numbering.xml"]]),
+        "word/document.xml": strToU8(
+          `<w:document ${ns}><w:body>${item("a")}<w:p><w:r><mc:AlternateContent><mc:Choice Requires="wps">${item("box")}</mc:Choice>` +
+            `<mc:Fallback>${item("box")}</mc:Fallback></mc:AlternateContent></w:r></w:p>${item("b")}` +
+            '<w:p><w:r><mc:AlternateContent><mc:Choice Requires="wps"><w:p><w:pPr><w:sectPr/></w:pPr></w:p></mc:Choice><mc:Fallback/></mc:AlternateContent></w:r></w:p>' +
+            `${item("c")}</w:body></w:document>`,
+        ),
+        "word/numbering.xml": strToU8(
+          `<w:numbering ${ns} xmlns:w15="http://schemas.microsoft.com/office/word/2012/wordml"><w:abstractNum w:abstractNumId="1" w15:restartNumberingAfterBreak="1">${levels}</w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>`,
+        ),
+      });
+      const { default: mammoth } = await import("mammoth");
+      return (await mammoth.extractRawText({ buffer: Buffer.from(writeDocxListNumbers(bytes)) })).value.trim().split(/\n+/).join(" | ");
+    } finally {
+      Object.assign(globals, original);
+    }
+  })();
+  assert.equal(boxed, "1. a | 2. box | 3. b | 4. c");
+  const sections: [string, number, number, boolean?][] = [["a", 1, 0], ["b", 1, 0, true], ["c", 1, 0]];
+  assert.equal(await docxListText(levels, plain, sections, ' w15:restartNumberingAfterBreak="1"'), "1. a | 2. b | 1. c");
+  assert.equal(await docxListText(levels, plain, sections, ' w15:restartNumberingAfterBreak="0"'), "1. a | 2. b | 3. c");
+  // Ordinal levels read 1st, 2nd, ..., 11th, 12th.
+  const ordinals = Array.from({ length: 12 }, (_, i): [string, number, number] => [`o${i + 1}`, 1, 0]);
+  assert.ok(
+    (await docxListText(wordLevel(0, "ordinal", "%1"), plain, ordinals)).endsWith("1st o1 | 2nd o2 | 3rd o3 | 4th o4 | 5th o5 | 6th o6 | 7th o7 | 8th o8 | 9th o9 | 10th o10 | 11th o11 | 12th o12"),
+  );
+  // lvlRestart 0 keeps a level counting across its parents.
+  const running = wordLevel(0, "decimal", "%1.") + wordLevel(1, "decimal", "(%2)", '<w:lvlRestart w:val="0"/>');
+  assert.equal(
+    await docxListText(running, '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>', [["a", 1, 0], ["a1", 1, 1], ["b", 1, 0], ["b1", 1, 1]]),
+    "1. a | (1) a1 | 2. b | (2) b1",
+  );
+});
+
+test("list counters past the alphabet or out of range stay bounded", async () => {
+  const letters = wordLevel(0, "lowerLetter", "%1)");
+  const many = Array.from({ length: 28 }, (_, i): [string, number, number] => [`i${i + 1}`, 1, 0]);
+  const word = await docxListText(letters, '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>', many);
+  assert.ok(word.endsWith("z) i26 | aa) i27 | bb) i28"), word);
+  const long = wordLevel(0, "decimal", `%1.${"x".repeat(300)}`);
+  const repeated = wordLevel(0, "upperLetter", "%1".repeat(100));
+  const letters300 = Array.from({ length: 300 }, (_, i): [string, number, number] => [`r${i + 1}`, 1, 0]);
+  assert.ok((await docxListText(repeated, '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>', letters300)).endsWith("| r300"));
+  assert.equal(await docxListText(long, '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>', [["plain", 1, 0]]), "plain");
+  // Past a total label budget the archive is left as it was.
+  const wide = wordLevel(0, "decimal", `%1${"x".repeat(250)}`);
+  const crowd = Array.from({ length: 4200 }, (_, i): [string, number, number] => [`c${i}`, 1, 0]);
+  assert.ok((await docxListText(wide, '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>', crowd)).startsWith("c0 | c1 |"));
+  const huge = '<w:lvl w:ilvl="999999999"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl>';
+  assert.equal(await docxListText(huge, '<w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>', [["deep", 1, 999999999]]), "deep");
+
+  const withAttributes = (node: StubNode, attributes: Record<string, string> = {}) =>
+    Object.assign(node, { getAttribute: (name: string) => attributes[name] ?? null });
+  const item = (text: string) => withAttributes(element("li", textNode(text)));
+  const extracted = await withStubDom(
+    () =>
+      element(
+        "body",
+        withAttributes(element("ol", item("p"), item("q")), { start: "27", type: "a" }),
+        withAttributes(element("ol", item("r")), { start: "9".repeat(400), type: "i" }),
+        withAttributes(element("ol", item("s")), { start: "4000", type: "I" }),
+        withAttributes(element("ol", item("w")), { start: "6657", type: "a" }),
+        withAttributes(element("ol", item("t"), withAttributes(element("li", textNode("u")), { type: "A" }), item("v")), { type: "1" }),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+  assert.equal(extracted, "aa. p\n\nab. q\n\nInfinity. r\n\n4000. s\n\niva. w\n\n1. t\n\nB. u\n\n3. v");
+});
+
+test("an html ordered list keeps its numbers", async () => {
+  const withAttributes = (node: StubNode, attributes: Record<string, string> = {}) =>
+    Object.assign(node, { getAttribute: (name: string) => attributes[name] ?? null });
+  const item = (text: string, attributes?: Record<string, string>) =>
+    withAttributes(element("li", textNode(text)), attributes);
+  const extracted = await withStubDom(
+    () =>
+      element(
+        "body",
+        element("p", textNode("Steps:")),
+        withAttributes(element("ol", textNode("\n  "), item("Build the image"), textNode("\n  "), item("Push the image"))),
+        withAttributes(element("ol", item("five"), item("nine", { value: "9" }), item("ten")), { start: "5" }),
+        withAttributes(element("ol", item("third"), item("second"), item("first")), { reversed: "", type: "I" }),
+        element("ul", element("li", textNode("bullet"))),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(
+    extracted,
+    "Steps:\n\n1. Build the image\n\n2. Push the image\n\n5. five\n\n9. nine\n\n10. ten\n\nIII. third\n\nII. second\n\nI. first\n\nbullet",
+  );
+});
+
 test("attachmentTextLanguage maps source files and leaves prose alone", () => {
   assert.equal(attachmentTextLanguage("train.py", null), "python");
   assert.equal(attachmentTextLanguage("Chart.YAML", null), "yaml");
   assert.equal(attachmentTextLanguage("page.html", null), "html");
   assert.equal(attachmentTextLanguage("notes.txt", null), null);
   assert.equal(attachmentTextLanguage("script.py", "PDF"), null);
-  // the label parsed from the adapter's wrapper keeps a sent extraction unhighlighted
+  // parsed adapter labels keep sent extractions unhighlighted
   assert.equal(
     attachmentTextLanguage(
       "page.html",
@@ -916,12 +2101,7 @@ test("attachmentTextLanguage maps source files and leaves prose alone", () => {
   assert.equal(attachmentTextLanguage(undefined, null), null);
 });
 
-/**
- * Every extension and entity table here is a plain object literal, so a key
- * that names a member of Object.prototype resolves to a function rather than
- * missing. The entity case is the one that matters: a resolved target would
- * carry the source text of that function and bound a path mammoth never reads.
- */
+/** Tables are plain object literals, so Object.prototype member names must not resolve. */
 test("prototype member names do not resolve as table entries", async () => {
   assert.equal(attachmentTextLanguage("notes.constructor", null), null);
   assert.equal(attachmentTextLanguage("notes.toString", null), null);
@@ -958,9 +2138,6 @@ test("parseAttachmentText keeps an unterminated tag as plain text", () => {
 });
 
 test("a preview is never stricter than the adapter that took the file", async () => {
-  // .html belongs to the HTML adapter, which sends a legacy page happily. The
-  // preview went through the strict text decoder and threw on the same file,
-  // so opening an attachment that had already been accepted failed.
   const head = new TextEncoder().encode(
     '<!doctype html><meta charset="windows-1252"><body>Caf',
   );
@@ -974,8 +2151,6 @@ test("a preview is never stricter than the adapter that took the file", async ()
   assert.equal(typeof preview.text, "string");
   assert.ok(preview.text.includes("Caf"));
 
-  // A file the text adapter does own stays strict: mojibake reaching the model
-  // is worse than a message saying the encoding could not be read.
   const { UndecodableTextError } = await import(
     "../src/features/chat/text-attachment-accept.ts"
   );
@@ -987,4 +2162,297 @@ test("a preview is never stricter than the adapter that took the file", async ()
     ),
     (error: Error) => error instanceof UndecodableTextError,
   );
+});
+
+function legacyPage(head: string, body: number[]) {
+  return new Uint8Array([
+    ...new TextEncoder().encode(head),
+    ...body,
+    ...new TextEncoder().encode("</p>"),
+  ]);
+}
+
+const WINDOWS_1252_BODY = [
+  0x43, 0x61, 0x66, 0xe9, 0x20, 0x80, 0x31, 0x32, 0x2c, 0x20, 0x6e, 0x61, 0xef,
+  0x76, 0x65,
+];
+const SHIFT_JIS_BODY = [
+  0x93, 0xfa, 0x96, 0x7b, 0x8c, 0xea, 0x82, 0xcc, 0x83, 0x79, 0x81, 0x5b, 0x83,
+  0x57,
+];
+
+test("an html attachment is read in the encoding its page declares", async () => {
+  const word = legacyPage(
+    '<html><head><meta http-equiv=Content-Type content="text/html; charset=windows-1252"></head><p>',
+    WINDOWS_1252_BODY,
+  );
+  const japanese = legacyPage('<meta charset="Shift_JIS"><p>', SHIFT_JIS_BODY);
+  for (const [bytes, name, expected] of [
+    [word, "report.htm", "Café €12, naïve"],
+    [japanese, "page.html", "日本語のページ"],
+  ] as const) {
+    const file = new File([bytes], name, { type: "text/html" });
+    const { text } = await readAttachmentText(file, file.name, file.type);
+    assert.ok(text.includes(expected), text);
+    assert.ok(!text.includes("\uFFFD"), text);
+  }
+});
+
+test("decodeHtmlAttachmentBytes reads the charset the way a browser does", () => {
+  const utf8 = new TextEncoder().encode(
+    "<meta charset=windows-1252><p>Café</p>",
+  );
+  assert.equal(
+    decodeHtmlAttachmentBytes(new Uint8Array([0xef, 0xbb, 0xbf, ...utf8])),
+    "<meta charset=windows-1252><p>Café</p>",
+  );
+  assert.equal(
+    decodeHtmlAttachmentBytes(new TextEncoder().encode("<p>Café</p>")),
+    "<p>Café</p>",
+  );
+  for (const head of [
+    "<!-- <meta charset=Shift_JIS> --><meta charset=windows-1252><p>",
+    '<div title="<meta charset=Shift_JIS>"><meta charset=windows-1252><p>',
+  ]) {
+    assert.equal(
+      decodeHtmlAttachmentBytes(legacyPage(head, WINDOWS_1252_BODY)),
+      `${head}Café €12, naïve</p>`,
+    );
+  }
+  assert.equal(
+    decodeHtmlAttachmentBytes(
+      new TextEncoder().encode('<meta charset="utf-16"><p>Café</p>'),
+    ),
+    '<meta charset="utf-16"><p>Café</p>',
+  );
+});
+
+test("a UTF-8 html page keeps its text when its meta names a legacy charset", async () => {
+  const page =
+    '<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1"><p>Café €12 日本語</p>';
+  const file = new File([new TextEncoder().encode(page)], "saved.html", {
+    type: "text/html",
+  });
+  const { text } = await readAttachmentText(file, file.name, file.type);
+  assert.equal(text, page);
+  assert.equal(
+    decodeHtmlAttachmentBytes(new TextEncoder().encode(page).subarray(0, -6), true),
+    page.slice(0, -5),
+  );
+  const jis = legacyPage('<meta charset="iso-2022-jp"><p>', [
+    0x1b, 0x24, 0x42, 0x46, 0x7c, 0x4b, 0x5c, 0x38, 0x6c, 0x1b, 0x28, 0x42,
+  ]);
+  assert.equal(
+    decodeHtmlAttachmentBytes(jis),
+    '<meta charset="iso-2022-jp"><p>日本語</p>',
+  );
+  const sjis = '<meta charset="Shift_JIS"><p>日本語のページです</p>';
+  assert.equal(decodeHtmlAttachmentBytes(new TextEncoder().encode(sjis)), sjis);
+  assert.equal(
+    decodeHtmlAttachmentBytes(
+      legacyPage('<meta charset="gbk"><p>', [0xd7, 0xa8, 0xd2, 0xb5]),
+    ),
+    '<meta charset="gbk"><p>专业</p>',
+  );
+});
+
+test("a UTF-16 Markdown file previews as its text in the document viewer", async () => {
+  const utf16 = new Uint8Array([0xff, 0xfe, ...Array.from("# Notes", (c) => [c.charCodeAt(0), 0]).flat()]);
+  const file = new File([utf16], "notes.md", { type: "text/markdown" });
+  assert.equal((await readAttachmentText(file, file.name, file.type)).text, "# Notes");
+  assert.notEqual(await file.text(), "# Notes");
+  const { readFile } = await import("node:fs/promises");
+  const dialog = await readFile(new URL("../src/components/assistant-ui/attachment-document-dialog.tsx", import.meta.url), "utf8");
+  assert.match(dialog, /blob instanceof File\s*\?\s*await readAttachmentText\(blob, source\.name, source\.contentType\)/);
+});
+
+test("a UTF-16 text source opened from the files panel previews as its text", async () => {
+  const utf16 = new Uint8Array([0xff, 0xfe, ...Array.from("Café notes", (c) => [c.charCodeAt(0), 0]).flat()]);
+  const file = new File([utf16], "notes.txt", { type: "text/plain" });
+  assert.equal((await readAttachmentText(file, file.name, file.type)).text, "Café notes");
+  assert.notEqual(await file.text(), "Café notes");
+  const { readFile } = await import("node:fs/promises");
+  const dialog = await readFile(new URL("../src/components/assistant-ui/attachment-document-dialog.tsx", import.meta.url), "utf8");
+  assert.match(dialog, /blob instanceof File\s*\?\s*await readAttachmentText\(blob, source\.name, blob\.type\)/);
+  const sourceFile = await readFile(new URL("../src/features/rag/components/source-file.ts", import.meta.url), "utf8");
+  assert.match(sourceFile, /new File\(\[file\], file\.name, \{ type: "text\/plain" \}\)/);
+  const trigger = await readFile(new URL("../src/features/rag/components/rag-document-trigger.tsx", import.meta.url), "utf8");
+  assert.match(trigger, /return asViewerFile\(file\);/);
+});
+
+async function readRtf(rtf: string | Uint8Array<ArrayBuffer>): Promise<string> {
+  const content = await readRtfAttachmentContent(
+    new File([rtf], "doc.rtf"),
+    "doc.rtf",
+  );
+  assert.equal(content.label, "RTF");
+  return content.text;
+}
+
+test("TextEdit output decodes bytes by the font charset, not the ANSI code page", async () => {
+  const text = await readRtf(
+    [
+      "{\\rtf1\\ansi\\ansicpg936\\cocoartf2870",
+      "{\\fonttbl\\f0\\fswiss\\fcharset0 Helvetica;}",
+      "{\\colortbl;\\red255\\green255\\blue255;}",
+      "{\\*\\expandedcolortbl;;}",
+      "\\f0\\fs24 \\cf0 H\\'e9llo \\'93world\\'94\\",
+      "\\",
+      "Tab\there \\uc0\\u26085 \\u26412 \\",
+      "}",
+    ].join("\n"),
+  );
+  assert.equal(text, "Héllo “world”\n\nTab\there 日本");
+});
+
+test("Word-style output reads fields, tables and double-byte fonts", async () => {
+  const text = await readRtf(
+    new Uint8Array([
+      ...new TextEncoder().encode(
+        [
+          "{\\rtf1\\ansi\\ansicpg1252\\deff0\\uc1",
+          "{\\fonttbl{\\f0\\fnil\\fcharset134 SimSun;}{\\f1\\fcharset0 Arial;}{\\f2\\fcharset128 MS Mincho;}{\\f3\\fcharset204 Arial;}}",
+          "{\\header Page header\\par}",
+          "{\\info{\\title Secret title}}",
+          "\\pard \\'c4\\'e3\\'ba\\'c3 \\f1 caf\\'e9\\emdash\\u8364?\\u-10179?\\u-8704?\\{x\\}\\par",
+          '{\\field{\\*\\fldinst{HYPERLINK "https://x.test"}}{\\fldrslt link}}\\par',
+          "{\\pict\\bin4 ",
+        ].join("\n"),
+      ),
+      0x7d,
+      0x7b,
+      0x5c,
+      0x7d,
+      ...new TextEncoder().encode(
+        [
+          "}",
+          "\\trowd\\cellx100\\cellx200",
+          "\\pard\\intbl first\\par second\\par\\cell b\\cell\\row",
+          "\\pard after\\par more \\f2\\'83e\\'83X\\'83g\\'83\\\\ \\f3\\'cf\\plain\\'c4\\'e3\\par}",
+        ].join("\n"),
+      ),
+    ]),
+  );
+  assert.equal(
+    text,
+    "你好 café—€😀{x}\nlink\nfirst second\tb\nafter\nmore テストソ П你",
+  );
+});
+
+test("an RTF reader stays bounded", async () => {
+  const long = await readRtf(
+    `{\\rtf1 ${"x".repeat(11 * 1024 * 1024)}${"{".repeat(2000)}`,
+  );
+  assert.ok(long.length < 11 * 1024 * 1024);
+  assert.match(long, /^x+\n\n\[Truncated: [^\n]*\]$/);
+  await assert.rejects(readRtf(`{\\rtf1 ${"{".repeat(2000)}`), /nest too deeply/);
+  await assert.rejects(readRtf("plain text"), /Not an RTF file/);
+});
+
+test("a thumbnail repack inflates only the images its kept paragraphs use", () => {
+  const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+  const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+  const A = "http://schemas.openxmlformats.org/drawingml/2006/main";
+  const picture = (id: string) => `<w:p><w:r><w:drawing><a:blip r:embed="${id}"/></w:drawing></w:r></w:p>`;
+  const image = (id: string) =>
+    `<Relationship Id="${id}" Type="${R}/image" Target="media/${id}.png"/>`;
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8(
+      `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="png" ContentType="image/png"/></Types>`,
+    ),
+    "_rels/.rels": strToU8(
+      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="d" Type="${R}/officeDocument" Target="word/document.xml"/></Relationships>`,
+    ),
+    "word/document.xml": strToU8(
+      `<w:document xmlns:w="${W}" xmlns:r="${R}" xmlns:a="${A}"><w:body>${picture("rId1")}${picture("rId2")}</w:body></w:document>`,
+    ),
+    "word/_rels/document.xml.rels": strToU8(
+      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${image("rId1")}${image("rId2")}</Relationships>`,
+    ),
+    "word/media/rId1.png": new Uint8Array([1, 2, 3]),
+    "word/media/rId2.png": new Uint8Array([4, 5, 6]),
+  });
+  const names = (archive: Uint8Array) => Object.keys(unzipSync(archive)).filter((name) => name.endsWith(".png")).sort();
+  assert.deepEqual(names(repackDocxPreviewArchive("a.docx", bytes, 1).archive), ["word/media/rId1.png", "word/media/rId2.png"]);
+  const thumbnail = repackDocxPreviewArchive("a.docx", bytes, 1, { keptImagesOnly: true });
+  assert.equal(thumbnail.truncated, true);
+  assert.deepEqual(names(thumbnail.archive), ["word/media/rId1.png"]);
+  const whole = repackDocxPreviewArchive("a.docx", bytes, 10, { keptImagesOnly: true });
+  assert.deepEqual(names(whole.archive), ["word/media/rId1.png", "word/media/rId2.png"]);
+});
+
+test("a thumbnail repack restores only image parts the kept elements reference", () => {
+  const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+  const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+  const A = "http://schemas.openxmlformats.org/drawingml/2006/main";
+  const rel = (id: string, type: string, target: string) =>
+    `<Relationship Id="${id}" Type="${R}/${type}" Target="${target}"/>`;
+  const body =
+    `<w:p><w:r><w:drawing><a:blip r:embed="rId1"/></w:drawing></w:r></w:p>` +
+    `<!-- <a:blip r:embed="rId2"/> --><w:p><w:r><w:t>r:embed="rId2"</w:t></w:r></w:p>` +
+    `<w:altChunk r:id="rId3"/>`;
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8(
+      `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="png" ContentType="image/png"/></Types>`,
+    ),
+    "_rels/.rels": strToU8(
+      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="d" Type="${R}/officeDocument" Target="word/document.xml"/></Relationships>`,
+    ),
+    "word/document.xml": strToU8(
+      `<w:document xmlns:w="${W}" xmlns:r="${R}" xmlns:a="${A}"><w:body>${body}<w:p/><w:p/></w:body></w:document>`,
+    ),
+    "word/_rels/document.xml.rels": strToU8(
+      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${rel("rId1", "image", "media/one.png")}${rel("rId2", "image", "media/two.png")}${rel("rId3", "aFChunk", "chunk.mht")}</Relationships>`,
+    ),
+    "word/media/one.png": new Uint8Array([1, 2, 3]),
+    "word/media/two.png": new Uint8Array([4, 5, 6]),
+    "word/chunk.mht": new Uint8Array(11 * 1024 * 1024),
+  });
+  const kept = Object.keys(unzipSync(repackDocxPreviewArchive("a.docx", bytes, 3, { keptImagesOnly: true }).archive));
+  assert.ok(kept.includes("word/media/one.png"));
+  assert.ok(!kept.includes("word/media/two.png"));
+  assert.ok(!kept.includes("word/chunk.mht"));
+});
+
+test("the text adapter claims text/plain documents but not real ones", () => {
+  const cases: [string, string, boolean][] = [
+    ["notes.pdf", "text/plain", true],
+    ["notes.docx", "text/plain", true],
+    ["a.pdf", "application/pdf", false],
+    ["a.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", false],
+    ["a.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", false],
+    ["a.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", false],
+    ["a.pdf", "", false],
+  ];
+  for (const [name, type, text] of cases) assert.equal(isTextAttachment(name, type), text, `${name} (${type || "no type"})`);
+});
+
+test("a thumbnail repack restores images in the notes its kept paragraphs refer to", () => {
+  const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+  const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+  const A = "http://schemas.openxmlformats.org/drawingml/2006/main";
+  const PKG = "http://schemas.openxmlformats.org/package/2006/relationships";
+  const ns = `xmlns:w="${W}" xmlns:r="${R}" xmlns:a="${A}"`;
+  const note = (id: string, image: string) =>
+    `<w:footnote w:id="${id}"><w:p><w:r><w:drawing><a:blip r:embed="${image}"/></w:drawing></w:r></w:p></w:footnote>`;
+  const ref = (id: string) => `<w:p><w:r><w:footnoteReference w:id="${id}"/></w:r></w:p>`;
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8(
+      `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="png" ContentType="image/png"/></Types>`,
+    ),
+    "_rels/.rels": strToU8(`<Relationships xmlns="${PKG}"><Relationship Id="d" Type="${R}/officeDocument" Target="word/document.xml"/></Relationships>`),
+    "word/document.xml": strToU8(`<w:document ${ns}><w:body>${ref("1")}${ref("2")}</w:body></w:document>`),
+    "word/_rels/document.xml.rels": strToU8(
+      `<Relationships xmlns="${PKG}"><Relationship Id="f" Type="${R}/footnotes" Target="footnotes.xml"/></Relationships>`,
+    ),
+    "word/footnotes.xml": strToU8(`<w:footnotes ${ns}>${note("1", "rIdA")}${note("2", "rIdB")}</w:footnotes>`),
+    "word/_rels/footnotes.xml.rels": strToU8(
+      `<Relationships xmlns="${PKG}"><Relationship Id="rIdA" Type="${R}/image" Target="media/a.png"/><Relationship Id="rIdB" Type="${R}/image" Target="media/b.png"/></Relationships>`,
+    ),
+    "word/media/a.png": new Uint8Array([1]),
+    "word/media/b.png": new Uint8Array([2]),
+  });
+  const kept = Object.keys(unzipSync(repackDocxPreviewArchive("a.docx", bytes, 1, { keptImagesOnly: true }).archive));
+  assert.ok(kept.includes("word/media/a.png"));
+  assert.ok(!kept.includes("word/media/b.png"));
 });

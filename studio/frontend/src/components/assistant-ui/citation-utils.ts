@@ -17,7 +17,6 @@ function asNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-// null if absent so callers fall back to generic JSON shapes.
 function parseSentinelSources(result: unknown): Citation[] | null {
   if (typeof result !== "string") return null;
   const idx = result.indexOf(RAG_SOURCES_SENTINEL);
@@ -61,14 +60,20 @@ export function parseCitations(result: unknown): Citation[] {
       try {
         const parsed = JSON.parse(trimmed);
         if (Array.isArray(parsed)) rows = parsed;
-        else if (parsed && Array.isArray((parsed as { results?: unknown }).results)) {
+        else if (
+          parsed &&
+          Array.isArray((parsed as { results?: unknown }).results)
+        ) {
           rows = (parsed as { results: unknown[] }).results;
         }
       } catch {
         rows = null;
       }
     }
-  } else if (result && Array.isArray((result as { results?: unknown }).results)) {
+  } else if (
+    result &&
+    Array.isArray((result as { results?: unknown }).results)
+  ) {
     rows = (result as { results: unknown[] }).results;
   }
   if (!rows) return [];
@@ -102,4 +107,158 @@ export function parseCitations(result: unknown): Citation[] {
     });
   });
   return citations;
+}
+
+/** One citation per document, its best-scoring passage, in first-seen order. */
+export function topCitationPerDocument(
+  citations: readonly Citation[],
+): Citation[] {
+  const byDoc = new Map<string, Citation>();
+  for (const c of citations) {
+    const key = c.documentId ?? c.filename;
+    const prev = byDoc.get(key);
+    if (
+      !prev ||
+      (c.score ?? Number.NEGATIVE_INFINITY) >
+        (prev.score ?? Number.NEGATIVE_INFINITY)
+    ) {
+      byDoc.set(key, c);
+    }
+  }
+  return Array.from(byDoc.values());
+}
+
+/** The key a citation's document goes by: its id, else its filename. */
+export function documentKey(citation: Citation): string {
+  return citation.documentId ?? citation.filename;
+}
+
+/** Each document's cited pages, ascending and deduplicated, keyed by documentKey. */
+export function citedPagesPerDocument(
+  citations: readonly Citation[],
+): Map<string, number[]> {
+  const pages = new Map<string, Set<number>>();
+  for (const c of citations) {
+    const key = documentKey(c);
+    const set = pages.get(key) ?? new Set<number>();
+    if (c.page != null) {
+      set.add(c.page);
+    }
+    pages.set(key, set);
+  }
+  return new Map(
+    Array.from(pages, ([key, set]) => [key, [...set].sort((a, b) => a - b)]),
+  );
+}
+
+/** An empty chunk would render as a blank card, so it is not a passage. */
+export function isPassage(citation: Citation): boolean {
+  return citation.text.trim().length > 0;
+}
+
+/** number: 1-based position in the search result, the `<chunk id>` the model was given. */
+export interface Passage {
+  citation: Citation;
+  number: number;
+}
+
+/**
+ * The first `limit` passages in the order the model received them. An empty chunk is skipped but keeps its
+ * number, so every passage is numbered as the model saw it, merged whole-document and project reads included.
+ */
+export function orderedPassages(
+  citations: readonly Citation[],
+  limit = Number.POSITIVE_INFINITY,
+): Passage[] {
+  const passages: Passage[] = [];
+  for (const [i, citation] of citations.entries()) {
+    if (passages.length >= limit) break;
+    if (isPassage(citation)) passages.push({ citation, number: i + 1 });
+  }
+  return passages;
+}
+
+const FENCE = /^[ \t]*```/;
+const FENCE_WITH_LANGUAGE = /^[ \t]*```\S/;
+const HEADING_MARKER = /^#{1,6}[ \t]+/;
+const PDF_FILENAME = /\.pdf$/i;
+
+/**
+ * Which lines sit inside a ``` block. pymupdf4llm puts code on the line after an opening fence and a blank line
+ * after a closing one, so a closing fence seen first means the chunk began inside a block.
+ */
+function fencedLines(lines: readonly string[]): boolean[] {
+  const fenced = lines.map(() => false);
+  let inside = false;
+  let seenFence = false;
+  for (const [i, line] of lines.entries()) {
+    if (!FENCE.test(line)) {
+      fenced[i] = inside;
+      continue;
+    }
+    const opens =
+      FENCE_WITH_LANGUAGE.test(line) || (lines[i + 1] ?? "").trim() !== "";
+    if (!(opens || seenFence)) {
+      fenced.fill(true, 0, i);
+    }
+    inside = opens;
+    seenFence = true;
+  }
+  return fenced;
+}
+
+/**
+ * Only PDFs drop `#` markers (added by their Markdown conversion), outside code blocks; code and config keep their
+ * `#` comments.
+ */
+export function passageDisplayText(text: string, filename = ""): string {
+  let lines = text.trim().split("\n");
+  if (PDF_FILENAME.test(filename)) {
+    const fenced = fencedLines(lines);
+    lines = lines.map((line, i) =>
+      fenced[i] ? line : line.replace(HEADING_MARKER, ""),
+    );
+  }
+  return lines.join("\n").replace(/\n(?:[ \t]*\n)+/g, "\n");
+}
+
+// About four lines of text-xs in the desktop chat column, so shorter passages are not clamped for nothing.
+const PASSAGE_CLAMP_CHARS = 450;
+const PASSAGE_CLAMP_LINES = 4;
+
+export function passageNeedsClamp(text: string): boolean {
+  return (
+    text.length > PASSAGE_CLAMP_CHARS ||
+    text.split("\n").length > PASSAGE_CLAMP_LINES
+  );
+}
+
+/** "p.3", "p.1–5" or "pp.1–3, 7": runs of consecutive pages collapse into ranges. */
+export function pageLabel(pages: readonly number[]): string {
+  const runs: string[] = [];
+  for (let i = 0; i < pages.length; i++) {
+    let end = i;
+    while (
+      end + 1 < pages.length &&
+      pages[end + 1] === Number(pages[end]) + 1
+    ) {
+      end++;
+    }
+    runs.push(end === i ? `${pages[i]}` : `${pages[i]}–${pages[end]}`);
+    i = end;
+  }
+  return `${runs.length > 1 ? "pp." : "p."}${runs.join(", ")}`;
+}
+
+/** A badge's label: the filename, then the pages it stands for, else the citation's own page. */
+export function citationLabel(
+  citation: Citation,
+  pages?: readonly number[],
+): string {
+  if (pages && pages.length > 0) {
+    return `${citation.filename} · ${pageLabel(pages)}`;
+  }
+  return citation.page != null
+    ? `${citation.filename} · p.${citation.page}`
+    : citation.filename;
 }

@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use tauri::{Manager, WebviewWindow};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tauri::Manager;
 
 use tauri_plugin_window_state::AppHandleExt;
 
@@ -109,6 +110,22 @@ fn should_restore_saved_layout(config_dir: &Path, state_file_name: &str) -> bool
     is_initialized(config_dir) || !is_setup_window_size(width, height)
 }
 
+/// Checked before the main window exists, so setup-size resizes cannot overwrite saved state.
+pub(crate) fn should_restore_initial_window_state(
+    config_dir: &Path,
+    state_file_name: &str,
+) -> bool {
+    should_restore_saved_layout(config_dir, state_file_name)
+}
+
+pub(crate) struct NativeLayoutRestored(pub(crate) AtomicBool);
+
+/// Read once: a natively restored window has no pending events to wait for before show.
+#[tauri::command]
+pub fn take_native_layout_restored(state: tauri::State<'_, NativeLayoutRestored>) -> bool {
+    state.0.swap(false, Ordering::SeqCst)
+}
+
 fn mark_initialized(config_dir: &Path) -> Result<(), String> {
     write_marker(config_dir, INITIALIZED_MARKER)
 }
@@ -119,38 +136,49 @@ fn app_config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| format!("Could not determine app configuration directory: {error}"))
 }
 
-/// Returns whether a full-app layout has previously completed. Legacy state is
-/// migrated unless it matches the fixed setup-window size at any display scale.
+/// Whether a full-app layout has completed. Legacy state counts unless it is the setup-window size.
 #[tauri::command]
 pub fn has_initialized_app_window_layout(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     app: tauri::AppHandle,
 ) -> Result<bool, String> {
-    crate::native_intents::ensure_main_window(&window)?;
+    crate::native_intents::ensure_main_window(&webview)?;
     let config_dir = app_config_dir(&app)?;
     Ok(should_restore_saved_layout(&config_dir, &app.filename()))
 }
 
-/// Persist only after the caller has successfully sized/centered or restored,
-/// shown, constrained, and minimum-sized the full application window.
+/// Call only after the full window is sized or restored, shown and constrained.
 #[tauri::command]
 pub fn mark_app_window_layout_initialized(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    crate::native_intents::ensure_main_window(&window)?;
+    crate::native_intents::ensure_main_window(&webview)?;
     mark_initialized(&app_config_dir(&app)?)
 }
 
-/// Force the next full-app transition to use a monitor-safe layout. Setup can
-/// overwrite the plugin's saved full-app dimensions before the process exits.
+/// Force a monitor-safe layout next time; setup may have overwritten the saved full-app size.
 #[tauri::command]
 pub fn reset_app_window_layout_initialized(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     app: tauri::AppHandle,
+    native_restored: tauri::State<'_, NativeLayoutRestored>,
 ) -> Result<(), String> {
-    crate::native_intents::ensure_main_window(&window)?;
-    reset_initialized(&app_config_dir(&app)?)
+    crate::native_intents::ensure_main_window(&webview)?;
+    reset_initialized(&app_config_dir(&app)?)?;
+    native_restored.0.store(false, Ordering::SeqCst);
+    let window = webview.window();
+    window.unmaximize().map_err(|error| error.to_string())?;
+    window
+        .set_resizable(true)
+        .map_err(|error| error.to_string())?;
+    window
+        .set_size(tauri::LogicalSize::new(
+            SETUP_WINDOW_WIDTH,
+            SETUP_WINDOW_HEIGHT,
+        ))
+        .map_err(|error| error.to_string())?;
+    window.center().map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -159,12 +187,16 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_dir(name: &str) -> PathBuf {
+        // Parallel tests plus macOS's microsecond clock can collide on names; the counter keeps
+        // them unique.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "unsloth-app-layout-{name}-{}-{nanos}",
+            "unsloth-app-layout-{name}-{}-{nanos}-{seq}",
             std::process::id()
         ))
     }
@@ -253,6 +285,26 @@ mod tests {
         assert!(!should_restore_saved_layout(&dir, state_file));
         mark_initialized(&dir).unwrap();
         assert!(should_restore_saved_layout(&dir, state_file));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_startup_restores_saved_full_app_layouts_without_managed_backend() {
+        let dir = temp_dir("native-startup");
+        fs::create_dir_all(&dir).unwrap();
+        let state_file = ".window-state.json";
+        let state_path = dir.join(state_file);
+        assert!(!should_restore_initial_window_state(&dir, state_file));
+        fs::write(&state_path, window_state(1200, 800, false)).unwrap();
+        assert!(should_restore_initial_window_state(&dir, state_file));
+        reset_initialized(&dir).unwrap();
+        assert!(!should_restore_initial_window_state(&dir, state_file));
+        mark_initialized(&dir).unwrap();
+        assert!(should_restore_initial_window_state(&dir, state_file));
+        fs::write(&state_path, window_state(760, 560, false)).unwrap();
+        assert!(should_restore_initial_window_state(&dir, state_file));
+        reset_initialized(&dir).unwrap();
+        assert!(!should_restore_initial_window_state(&dir, state_file));
         let _ = fs::remove_dir_all(dir);
     }
 

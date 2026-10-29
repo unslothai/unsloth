@@ -3,6 +3,9 @@
 
 """Malware / unsafe-file gate for model loads. The ``trust_remote_code`` consent gate covers the ``auto_map`` Python vector; this covers the other one, a malicious pickle inside a weight file, which executes during ``from_pretrained`` deserialization even with ``trust_remote_code=False``. It reads Hugging Face's OWN scan (picklescan + ClamAV) via ``model_info(securityStatus=True).security_repo_status``. METADATA-ONLY: it never downloads, opens, or unpickles the flagged files. Policy: a hard, non-approvable block whenever ``filesWithIssues`` lists a non-``safe`` level, regardless of ``scansDone`` (often false even for clean repos); unknown/future levels fail CLOSED so Hub schema drift cannot silently allow a bad verdict, and only a small allowlist of clean / not-yet-scanned levels is non-blocking, while an unavailable status falls back to local inspection for a pinned cache snapshot and otherwise fails open. Scoped to the load-path RCE vector: a root-level (or load-subdir-level) code-executing file, since inert formats (safetensors / gguf / config / text) and subdirectory pickles that no root weight-index references are not loaded and do not block, while an index-referenced shard does, wherever it lives. That blocks real malware (eicar's root ``*.pkl``/``*.dat``) without false-blocking repos like ``nvidia/Nemotron-H-8B-Base-8K`` (flagged NeMo pickles under ``nemo/`` that no index lists). No first-party exemption (scoping is by load path/format, not org), and local paths are skipped (no Hub scan) while a remote ``*.gguf``-named repo is still scanned so a repo cannot dodge the gate by suffixing its name."""
 
+import json
+import os
+import posixpath
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -61,6 +64,136 @@ _TRANSFORMERS_INDEX_FILES = (
     "tf_model.h5.index.json",
     "flax_model.msgpack.index.json",
 )
+
+
+def _escapes_folder(name: str) -> bool:
+    spelled = name.replace("\\", "/")
+    if spelled.startswith("/") or (len(spelled) > 1 and spelled[1] == ":"):
+        return True
+    # weights/../weights/shard.bin stays inside; only a name that normalizes above the folder escapes.
+    normalized = posixpath.normpath(spelled)
+    return normalized == ".." or normalized.startswith("../")
+
+
+def _confinement_roots(folder: Path) -> list:
+    # Plus a Hub snapshot's models--org--repo folder: its files link into that repo's blobs.
+    root = os.path.realpath(folder)
+    roots = [root]
+    ref = _hf_cache_snapshot_ref(root)
+    if ref is not None:
+        roots.append(os.path.realpath(ref[2].parent.parent))
+    return roots
+
+
+def _within(path: str, root: str) -> bool:
+    path, root = os.path.normcase(path), os.path.normcase(root)
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:
+        return False
+
+
+def _climbs_through_link(folder: Path, name: str) -> bool:
+    # POSIX follows a link before applying "..", so link/../x opens x beside the link's target.
+    # Windows (and ntpath.realpath) collapse ".." first, so both sides agree there.
+    parts = name.replace("\\", "/").split("/")
+    if ".." not in parts:
+        return False
+    head = "/".join(parts[: len(parts) - parts[::-1].index("..")])
+    try:
+        landing = os.path.realpath(os.path.join(folder, head))
+        roots = _confinement_roots(folder)
+    except (OSError, ValueError):
+        return True
+    return not any(_within(landing, root) for root in roots)
+
+
+def _escapes(folder: Path, name: str) -> bool:
+    return _escapes_folder(name) or _climbs_through_link(folder, name)
+
+
+def _in_subfolder(sub: str, name: str) -> str:
+    # A rooted or drive-qualified name ignores the subfolder it is joined onto.
+    spelled = name.replace("\\", "/")
+    if spelled.startswith("/") or name[1:2] == ":":
+        return name
+    return posixpath.join(sub.replace("\\", "/"), name)
+
+
+def _weight_names(folder: Path) -> list:
+    names = []
+    for index_name in _TORCH_INDEX_FILES:
+        try:
+            payload = json.loads((folder / index_name).read_text(encoding = "utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        weight_map = payload.get("weight_map") if isinstance(payload, dict) else None
+        if isinstance(weight_map, dict):
+            names.extend(v for v in weight_map.values() if isinstance(v, str))
+    try:
+        config = json.loads((folder / "config.json").read_text(encoding = "utf-8-sig"))
+    except (OSError, ValueError):
+        config = None
+    weights = config.get("transformers_weights") if isinstance(config, dict) else None
+    if isinstance(weights, str):
+        weights = [weights]
+    for name in weights if isinstance(weights, (list, tuple)) else []:
+        if not isinstance(name, str):
+            continue
+        names.append(name)
+        # A custom index named here is read like the standard ones.
+        if name.endswith(".index.json") and not _escapes(folder, name):
+            try:
+                payload = json.loads((folder / name).read_text(encoding = "utf-8-sig"))
+            except (OSError, ValueError):
+                continue
+            weight_map = payload.get("weight_map") if isinstance(payload, dict) else None
+            if isinstance(weight_map, dict):
+                names.extend(v for v in weight_map.values() if isinstance(v, str))
+    return names
+
+
+def escaping_weight_references(folder) -> list:
+    """Weight names a local model folder's index files or config.json ``transformers_weights``
+    give that point outside the folder: transformers joins each onto the folder as is. Judged by
+    the text, so Hub cache snapshots whose files link into the blob store still pass, except that
+    a ``..`` is judged where the kernel sends it. A Sentence Transformers folder's modules.json
+    module folders are read too, judged against the model folder."""
+    try:
+        folder = Path(str(folder)).expanduser()
+        if not folder.is_dir():
+            return []
+    except (OSError, ValueError):
+        return []
+    names = _weight_names(folder)
+    try:
+        modules = json.loads((folder / "modules.json").read_text(encoding = "utf-8-sig"))
+    except (OSError, ValueError):
+        modules = None
+    for module in modules if isinstance(modules, list) else []:
+        sub = module.get("path") if isinstance(module, dict) else None
+        if not isinstance(sub, str):
+            continue
+        # Before the self-folder skip: "..", "../.." and "/" are only dots and slashes too.
+        if _escapes(folder, sub):
+            names.append(sub)
+            continue
+        # Sentence Transformers opens Path(folder, sub): "\\" separates on Windows only, so judge
+        # both spellings. Only a path normalizing to "." is the model root; "..." is a real folder.
+        windows = sub.replace("\\", "/")
+        posix = "/".join(part.replace("\\", "_") for part in sub.split("/"))
+        spellings = {posixpath.normpath(p) for p in (windows, posix) if p} - {"."}
+        if any(_escapes_folder(spelled) for spelled in spellings):
+            names.append(sub)
+            continue
+        if spellings:
+            module_names = _weight_names(folder / sub)
+            for spelled in spellings:
+                names.extend(_in_subfolder(spelled, name) for name in module_names)
+    # Spark-TTS / BiCodec load their transformers model from LLM/.
+    if (folder / "LLM").is_dir():
+        names.extend(_in_subfolder("LLM", name) for name in _weight_names(folder / "LLM"))
+    return [name for name in dict.fromkeys(names) if _escapes(folder, name)]
 
 
 def _normalize_repo_path(path: str) -> str:
@@ -130,6 +263,8 @@ def _indexed_shard_paths(
         from huggingface_hub.utils import EntryNotFoundError
         from utils.hf_cache_settings import active_hf_hub_cache
         from utils.hf_probe import hf_file_definitely_absent
+
+        from hub.utils.hf_tokens import call_hub_with_anonymous_retry
     except Exception:
         return None
 
@@ -143,11 +278,12 @@ def _indexed_shard_paths(
             ):
                 continue
             try:
-                index_path = hf_hub_download(
+                index_path = call_hub_with_anonymous_retry(
+                    hf_hub_download,
+                    hf_token or None,
                     model_name,
                     prefix + filename,
                     revision = revision,
-                    token = hf_token or None,
                     cache_dir = active_hf_hub_cache(),
                 )
             except EntryNotFoundError:
@@ -245,15 +381,18 @@ def _fetch_security_status(
 ):
     """``security_repo_status`` (a dict) or None if unavailable. Hub metadata only; retries once on a transient error, then returns None so the caller can apply its local-fallback policy. ``revision`` scopes the scan to a specific cached commit (else the default branch)."""
     from huggingface_hub import model_info as hf_model_info
+    from hub.utils.hf_tokens import call_hub_with_anonymous_retry
 
     token_arg = hf_token if hf_token else False
     last_exc = None
     for attempt, timeout in enumerate((_REQUEST_TIMEOUT, _RETRY_TIMEOUT)):
         try:
-            info = hf_model_info(
+            # A refused token still gets the public repo's scan, as the worker's load will.
+            info = call_hub_with_anonymous_retry(
+                hf_model_info,
+                token_arg,
                 model_name,
                 revision = revision,
-                token = token_arg,
                 securityStatus = True,
                 timeout = timeout,
             )
@@ -479,6 +618,70 @@ def _evaluate_local_snapshot(
     )
 
 
+def _modelscope_serves() -> bool:
+    try:
+        from utils.hub_settings import MODELSCOPE, active_source
+    except Exception:
+        return False
+    return active_source() == MODELSCOPE
+
+
+def _evaluate_unscanned_listing(
+    model_name: str,
+    hf_token: Optional[str],
+    load_subdirs = (),
+) -> FileSecurityDecision:
+    """ModelScope publishes no malware scan, so its "unavailable" is permanent, not transient:
+    fail closed on pickle weights, as the offline gate does for a cached snapshot."""
+    context = "ModelScope has no malware scan"
+    try:
+        from huggingface_hub import HfApi
+        files = HfApi().list_repo_files(model_name, token = hf_token or False)
+    except Exception:
+        logger.warning(
+            "Blocking load of '%s': %s and its files could not be listed.", model_name, context
+        )
+        return FileSecurityDecision(
+            model_name, True, reason = f"{context}; could not list the repository"
+        )
+    by_dir: dict[str, set] = {}
+    for path in files:
+        folder, _, name = _normalize_repo_path(str(path)).rpartition("/")
+        by_dir.setdefault(folder, set()).add(name)
+    blocked = []
+    roots = {"", *(_normalize_repo_path(str(d)).strip("/") for d in load_subdirs or ())}
+    for folder, names in sorted(by_dir.items()):
+        if folder not in roots:
+            continue
+        prefix = f"{folder}/" if folder else ""
+        has_base = bool(names & {"model.safetensors", "model.safetensors.index.json"})
+        has_adapter = "adapter_model.safetensors" in names
+        for name in sorted(names):
+            if _PICKLE_WEIGHT_RE.match(name):
+                if not (has_adapter if name.lower().startswith("adapter_model") else has_base):
+                    blocked.append(prefix + name)
+        # Its shards are named freely and torch.loaded unless they end in .safetensors.
+        if "pytorch_model.bin.index.json" in names and not has_base:
+            blocked.append(prefix + "pytorch_model.bin.index.json")
+    if not blocked:
+        return FileSecurityDecision(
+            model_name, False, reason = f"{context}; no pickle weights to load"
+        )
+    listed = ", ".join(blocked)
+    logger.warning(
+        "Blocking load of '%s': %s and it ships pickle weights (%s).", model_name, context, listed
+    )
+    return FileSecurityDecision(
+        model_name,
+        True,
+        unsafe_files = [{"path": path, "level": "unscanned"} for path in blocked],
+        reason = (
+            f"{context}; unscanned pickle weights with no safetensors alternative: {listed}. "
+            "Switch the model source to Hugging Face in Settings to load it."
+        ),
+    )
+
+
 def evaluate_file_security(
     model_name: str,
     hf_token: Optional[str] = None,
@@ -487,7 +690,7 @@ def evaluate_file_security(
     local_only_load: bool = False,
 ) -> FileSecurityDecision:
     """Block a load when HF's security scan flags unsafe serialized files. Call UNCONDITIONALLY before any load (independent of trust_remote_code): a malicious pickle deserializes during ``from_pretrained`` regardless. Metadata-only; when the scan is unavailable, exact cached snapshots receive a local fail-closed inspection while unresolved remote refs remain fail-open. ``load_subdirs`` names subdirs the load calls ``from_pretrained`` on (e.g. ``("LLM",)`` for Spark-TTS / BiCodec, loading ``<snapshot>/LLM``): a flagged file directly under one is root-level there and blocks, and an index inside it is honored when scoping shards. ``local_only_load`` marks an offline load and skips the Hub request."""
-    # Scan the repo the load actually fetches, not the literal alias (which 404s and fails open).
+    # Scan the repo the load actually fetches; the literal alias 404s and fails open.
     model_name, load_subdirs = load_scan_target(model_name, tuple(load_subdirs))
 
     # Local paths have no Hub scan, EXCEPT an HF-cache snapshot whose canonical path encodes a repo id + commit: scan that exact commit so an inactive-cache load can't dodge the gate.
@@ -522,6 +725,8 @@ def evaluate_file_security(
                 context = "Hub scan unavailable",
                 load_subdirs = load_subdirs,
             )
+        if _modelscope_serves():
+            return _evaluate_unscanned_listing(model_name, hf_token, load_subdirs)
         return FileSecurityDecision(
             model_name, False, reason = "scan unavailable; allowed (fail-open)"
         )

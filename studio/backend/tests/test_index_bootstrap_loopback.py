@@ -35,8 +35,7 @@ def test_loopback_peers_are_local():
 def test_non_loopback_peers_are_remote():
     from main import _is_local_bootstrap_request
 
-    # ::1%eth0 is a scope-id'd address, which ipaddress treats as loopback on
-    # 3.9+; it must not count as a direct local peer.
+    # ipaddress treats scope-id'd ::1%eth0 as loopback on 3.9+; it must not count as local.
     for host in ("192.168.1.10", "::ffff:192.168.1.10", "::1%eth0"):
         assert _is_local_bootstrap_request(_request(host)) is False, host
 
@@ -107,24 +106,18 @@ def test_colab_allows_notebook_proxy_but_not_shareable_tunnel(monkeypatch):
     import main
 
     monkeypatch.setattr(main, "_IS_COLAB", True)
-    # In-notebook proxy: same-origin, its own authority, injects off-loopback too.
     notebook = _request(
         "10.0.0.2",
         "abc123-496ff2e9c6d22116-8888-colab.googleusercontent.com",
         headers = {"x-forwarded-for": "10.0.0.2"},
     )
     assert main._should_inject_bootstrap(notebook) is True
-    # Shareable Cloudflare link marks visitors with cf-connecting-ip; withhold.
     tunnel = _request("127.0.0.1", "localhost", headers = {"cf-connecting-ip": "203.0.113.7"})
     assert main._should_inject_bootstrap(tunnel) is False
 
 
 def test_colab_withholds_from_every_relay_not_just_cloudflare(monkeypatch):
-    """Any relay, not only the one that sets cf-connecting-ip, is remote on the Colab branch.
-
-    The branch used to test cf-connecting-ip alone, so an ngrok / localtunnel / bore / ssh -R
-    publication of the notebook port was served the plaintext admin password by GET /.
-    """
+    """On Colab, any relay header marks the caller remote; otherwise GET / serves the admin password."""
     import main
 
     monkeypatch.setattr(main, "_IS_COLAB", True)

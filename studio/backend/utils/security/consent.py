@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Consent gate for loads that would execute model repo code.
-
-The LOAD-path counterpart to the capability probes (which read raw config and never need remote code). A deliberate load calls ``evaluate_remote_code_consent`` right before passing ``trust_remote_code=True``, and decides by the severity of a static scan of the repo's ``auto_map`` ``.py``: no ``auto_map`` in any config (model/tokenizer/processor) means nothing runs, so allow; CRITICAL (reverse shell, IMDS, credential theft, droppers) is a hard block, never approvable even first-party, defending a compromised trusted repo; HIGH/MEDIUM (subprocess/exec/eval/network/b64decode, or a large embedded blob) blocks but is user-approvable, with the dialog pinning approval to the scanned ``fingerprint``, for EVERY repo since first-party is not a blanket bypass; an ``auto_map`` present but unscannable (gated/offline/listing failure) fails closed as a hard block, since unseen code cannot be verified or fingerprinted.
-
-Hardening plus consent, not a sandbox: static patterns are evadable, so subprocess / venv isolation remains the containment layer.
-"""
+"""Remote-code consent: CRITICAL always blocks; HIGH/MEDIUM need approval; unscannable fails closed."""
 
 import os
 from dataclasses import dataclass, field
@@ -20,6 +15,7 @@ from utils.security.remote_code_scan import (
     HIGH,
     MEDIUM,
     RemoteCodeUnscannable,
+    config_declares_auto_map,
     remote_code_config_paths,
     remote_code_fingerprint,
     repo_remote_code_files,
@@ -80,19 +76,23 @@ def _config_has_auto_map(
     *,
     load_subdirs = (),
 ) -> Optional[bool]:
-    """Whether any config (model/tokenizer/processor) declares an ``auto_map`` the load would execute. Reads raw JSON with ``hf_token``; returns None when a config is unreadable (transient/auth) so the caller treats it as "unknown" and scans, False when the repo genuinely ships none.
-
-    GGUF-inertness is the LOADER's property, decided upstream by the caller's ``is_gguf`` check, not here. Every path that reaches this helper (export, training, non-GGUF inference) loads via ``from_pretrained``, which imports ``auto_map`` even for a ``.gguf``-only repo, so a GGUF-classified repo id MUST still be scanned. Only a direct ``.gguf`` FILE reference is inert, a genuine single-file llama.cpp load.
-    """
-    # A direct .gguf FILE loads via llama.cpp (auto_map inert); a bare repo id ending in .gguf can still ship safetensors + auto_map, so it falls through to the scan.
+    """A repo id ending in .gguf can still ship auto_map, so only a direct .gguf file is skipped; returns None when a config is unreadable, so the caller scans."""
     if _is_direct_gguf_file_ref(model_name):
         return False
     configs = _load_remote_code_configs(model_name, hf_token, load_subdirs = load_subdirs)
     if configs is None:
         return None
-    if not any(bool((cfg or {}).get("auto_map")) for cfg in configs):
+    # Check every nesting level: composite models declare auto_map on a sub-config.
+    if not any(
+        config_declares_auto_map(cfg or {}) or _config_declares_model_file(cfg) for cfg in configs
+    ):
         return False
     return True
+
+
+def _config_declares_model_file(cfg) -> bool:
+    """MLX loaders exec a config's ``model_file`` like an ``auto_map`` entry."""
+    return isinstance(cfg, dict) and bool(cfg.get("model_file"))
 
 
 def _is_direct_gguf_file_ref(model_name: str) -> bool:
@@ -133,6 +133,9 @@ def _load_remote_code_configs(
             return configs
 
         from huggingface_hub import hf_hub_download
+        from hub.utils.hf_tokens import anonymous_retrying
+
+        hf_hub_download = anonymous_retrying(hf_hub_download)
         from huggingface_hub.utils import EntryNotFoundError
         from utils.hf_cache_settings import active_hf_hub_cache
         from utils.hf_probe import hf_file_definitely_absent
@@ -206,10 +209,7 @@ def evaluate_remote_code_consent_for_targets(
     subject: Optional[str] = None,
     load_subdirs_by_target = None,
 ) -> RemoteCodeDecision:
-    """Decide whether a ``trust_remote_code=True`` load may proceed, over every repo whose code the load would execute. A LoRA load runs adapter AND base code, so all targets are scanned as ONE unit and pinned by ONE fingerprint over the union of their ``.py``: one approval covers every repo, and a base-only fingerprint cannot leave an adapter's own ``auto_map`` unreviewed. On ``blocked``, the caller surfaces ``response_payload()`` and retries with ``approved_fingerprint`` if the user accepts.
-
-    When ``subject`` is given, a prior approval by that user can skip the DIALOG (never the scan): the stored fingerprint seeds the authoritative content check below, so an unchanged repo auto-approves while any change re-prompts. A genuine approval is recorded for next time.
-    """
+    """Scans every target as one unit under one fingerprint, so adapter code is never unreviewed; a prior approval skips the dialog, never the scan."""
     targets = [t for t in dict.fromkeys(targets) if t]
     primary = targets[0] if targets else ""
 

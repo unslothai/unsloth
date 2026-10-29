@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 
@@ -39,8 +41,6 @@ def _table_pdf(path):
 
 
 def test_pdf_extracts_markdown_table(tmp_path, monkeypatch):
-    # With Markdown on, the layout is emitted as Markdown markup (heading, and a pipe table
-    # where the extractor detects one) that flat get_text never produces.
     pytest.importorskip("pymupdf4llm")
     from core.rag import config, parsers
 
@@ -48,13 +48,113 @@ def test_pdf_extracts_markdown_table(tmp_path, monkeypatch):
     pdf = tmp_path / "table.pdf"
     _table_pdf(pdf)
     text = "\n".join(p.text for p in parsers.parse(str(pdf)))
-    assert "Q2" in text and "$1.5M" in text  # cell values preserved
-    assert "#" in text or "|" in text  # Markdown markup (heading or table pipes)
+    assert "Q2" in text and "$1.5M" in text
+    assert "#" in text or "|" in text
+
+
+def test_pdf_markdown_keeps_text_drawn_over_a_picture(tmp_path, monkeypatch):
+    pytest.importorskip("pymupdf4llm")
+    import pymupdf
+
+    from core.rag import config, parsers
+
+    monkeypatch.setattr(config, "PDF_MARKDOWN", True)
+    doc = pymupdf.open()
+    page = doc.new_page()
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 60, 300), False)
+    pix.set_rect(pix.irect, (40, 70, 120))
+    page.insert_image(pymupdf.Rect(0, 0, 170, page.rect.height), pixmap = pix)
+    for i, line in enumerate(["jane.doe@example.com", "Kubernetes", "Spanish"]):
+        page.insert_text((15, 80 + i * 22), line, fontsize = 11, color = (1, 1, 1))
+    page.insert_text((190, 60), "Experience", fontsize = 16)
+    for i in range(30):
+        page.insert_text((190, 90 + i * 22), f"Led project {i} for customers.", fontsize = 10)
+    pdf = tmp_path / "resume.pdf"
+    doc.save(str(pdf))
+    doc.close()
+
+    text = "\n".join(p.text for p in parsers.parse(str(pdf)))
+    assert "# Experience" in text
+    assert "Led project 29" in text
+    for sidebar in ("jane.doe@example.com", "Kubernetes", "Spanish"):
+        assert sidebar in text
+
+
+def test_pdf_markdown_does_not_render_scanned_pages(tmp_path, monkeypatch):
+    # pymupdf4llm's background-colour probe renders page corners; under a full-page scan that
+    # decodes the whole image while holding the GIL, which starved the event loop until the
+    # desktop watchdog killed the backend (#13094). Text pages keep the probe.
+    pytest.importorskip("pymupdf4llm")
+    import pymupdf
+
+    from core.rag import config, parsers
+
+    monkeypatch.setattr(config, "PDF_MARKDOWN", True)
+    doc = pymupdf.open()
+    scan = doc.new_page()
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 1000, 1300), False)
+    pix.set_rect(pix.irect, (250, 250, 240))
+    scan.insert_image(scan.rect, pixmap = pix, keep_proportion = False)
+    scan.insert_text((60, 120), "Chapter one covers shelter.", fontsize = 10)
+    text_page = doc.new_page()
+    text_page.insert_text((60, 80), "Survival Training", fontsize = 16)
+    text_page.insert_text((60, 120), "Chapter two covers water.", fontsize = 10)
+    pdf = tmp_path / "scan.pdf"
+    doc.save(str(pdf))
+    doc.close()
+
+    rendered = []
+    real_get_pixmap = pymupdf.Page.get_pixmap
+
+    def recording_get_pixmap(self, *args, **kwargs):
+        rendered.append(self.number)
+        return real_get_pixmap(self, *args, **kwargs)
+
+    monkeypatch.setattr(pymupdf.Page, "get_pixmap", recording_get_pixmap)
+    pages = parsers.parse(str(pdf))
+    assert [p.page_number for p in pages] == [1, 2]
+    assert "Chapter one covers shelter." in pages[0].text
+    assert "Chapter two covers water." in pages[1].text
+    assert "# Survival Training" in pages[1].text
+    assert 0 not in rendered
+    assert 1 in rendered
+
+
+@pytest.mark.parametrize("rotation", [0, 90, 180, 270])
+def test_scan_corner_check_follows_page_rotation(rotation):
+    import pymupdf
+
+    from core.rag import parsers
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 2000, 500), False)
+    pix.set_rect(pix.irect, (250, 250, 240))
+    # A strip along the unrotated bottom edge covers two corners at every rotation.
+    page.insert_image(pymupdf.Rect(0, 700, 595, 842), pixmap = pix, keep_proportion = False)
+    inset = doc.new_page()
+    inset.insert_image(pymupdf.Rect(100, 100, 400, 600), pixmap = pix, keep_proportion = False)
+    for number in range(2):
+        doc[number].set_rotation(rotation)
+    assert parsers._image_covers_a_corner(doc, 0)
+    assert not parsers._image_covers_a_corner(doc, 1)
+
+
+def test_scan_corner_check_ignores_small_corner_logos():
+    # A logo is cheap to decode, so its page keeps pymupdf4llm's background probe.
+    import pymupdf
+
+    from core.rag import parsers
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    logo = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 200, 200), False)
+    logo.set_rect(logo.irect, (200, 30, 30))
+    page.insert_image(pymupdf.Rect(0, 0, 60, 60), pixmap = logo)
+    assert not parsers._image_covers_a_corner(doc, 0)
 
 
 def test_pdf_markdown_off_uses_plain_text(tmp_path, monkeypatch):
-    # The toggle (RAG_PDF_MARKDOWN=0) falls back to flat PyMuPDF text: content is still
-    # there, but with no Markdown markup.
     from core.rag import config, parsers
 
     monkeypatch.setattr(config, "PDF_MARKDOWN", False)
@@ -62,7 +162,135 @@ def test_pdf_markdown_off_uses_plain_text(tmp_path, monkeypatch):
     _table_pdf(pdf)
     text = "\n".join(p.text for p in parsers.parse(str(pdf)))
     assert "Q2" in text and "$1.5M" in text
-    assert "#" not in text and "|" not in text  # plain text path emits no Markdown markup
+    assert "#" not in text and "|" not in text
+
+
+@pytest.mark.parametrize("markdown", [True, False])
+def test_pdf_form_keeps_which_boxes_are_ticked(tmp_path, monkeypatch, markdown):
+    if markdown:
+        pytest.importorskip("pymupdf4llm")
+    import pymupdf
+
+    from core.rag import config, parsers
+
+    monkeypatch.setattr(config, "PDF_MARKDOWN", markdown)
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((40, 60), "Smoker:")
+    for x, answer, ticked in ((120, "Yes", False), (180, "No", True)):
+        widget = pymupdf.Widget()
+        widget.field_type = pymupdf.PDF_WIDGET_TYPE_CHECKBOX
+        widget.field_name = f"smoker_{answer.lower()}"
+        widget.field_label = f"Smoker {answer}"
+        widget.rect = pymupdf.Rect(x, 50, x + 12, 62)
+        widget.field_value = ticked
+        page.add_widget(widget)
+        page.insert_text((x + 16, 60), answer)
+    pdf = tmp_path / "form.pdf"
+    doc.save(str(pdf))
+    doc.close()
+
+    text = "\n".join(p.text for p in parsers.parse(str(pdf)))
+    assert "Smoker No: Yes" in text
+    assert "Smoker Yes" not in text
+
+
+@pytest.mark.parametrize("shared_field", [True, False])
+def test_pdf_form_names_the_ticked_box_when_boxes_share_a_name_or_tooltip(tmp_path, shared_field):
+    import pymupdf
+
+    from core.rag import parsers
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    refs = []
+    for x, answer in ((120, "Yes"), (210, "No")):
+        widget = pymupdf.Widget()
+        widget.field_type = pymupdf.PDF_WIDGET_TYPE_CHECKBOX
+        widget.field_name = f"smoker_{answer.lower()}"
+        widget.field_label = f"Smoker {answer}" if shared_field else "Smoker"
+        widget.field_value = answer == ("Yes" if shared_field else "No")
+        widget.rect = pymupdf.Rect(x, 50, x + 12, 62)
+        refs.append(page.add_widget(widget).xref)
+    if shared_field:
+        # One /Btn field, two kids with export values Yes / No; both inherit /V /Yes.
+        parent = doc.get_new_xref()
+        doc.update_object(
+            parent, f"<< /FT /Btn /T (smoker) /V /Yes /Kids [{refs[0]} 0 R {refs[1]} 0 R] >>"
+        )
+        for ref in refs:
+            doc.xref_set_key(ref, "Parent", f"{parent} 0 R")
+            for key in ("T", "FT", "V"):
+                doc.xref_set_key(ref, key, "null")
+        _, on = doc.xref_get_key(refs[1], "AP/N/Yes")
+        _, off = doc.xref_get_key(refs[1], "AP/N/Off")
+        doc.xref_set_key(refs[1], "AP/N", f"<< /Off {off} /No {on} >>")
+        doc.xref_set_key(doc.pdf_catalog(), "AcroForm/Fields", f"[{parent} 0 R]")
+    pdf = tmp_path / "form.pdf"
+    doc.save(str(pdf))
+    doc.close()
+
+    with pymupdf.open(str(pdf)) as reopened:
+        lines = parsers._pdf_form_field_lines(reopened[0])
+    if shared_field:
+        # pymupdf 2.x labels the kid with its parent field ("smoker: Yes").
+        assert len(lines) == 1 and lines[0].endswith(": Yes") and "No" not in lines[0]
+    else:
+        assert lines == ["Smoker (smoker_no): Yes"]
+
+
+@pytest.mark.parametrize("flag", [1, 2, 32])
+def test_pdf_form_skips_invisible_hidden_and_noview_fields(tmp_path, flag):
+    import pymupdf
+
+    from core.rag import parsers
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    for name, y in (("shown", 80), ("masked", 120)):
+        widget = pymupdf.Widget()
+        widget.field_type = pymupdf.PDF_WIDGET_TYPE_TEXT
+        widget.field_name = name
+        widget.field_value = f"{name} value"
+        widget.rect = pymupdf.Rect(40, y, 240, y + 20)
+        xref = page.add_widget(widget).xref
+    doc.xref_set_key(xref, "F", str(flag))
+    pdf = tmp_path / "form.pdf"
+    doc.save(str(pdf))
+    doc.close()
+
+    with pymupdf.open(str(pdf)) as reopened:
+        assert parsers._pdf_form_field_lines(reopened[0]) == ["shown: shown value"]
+
+
+# PyMuPDF raises while loading either widget; main never read widgets, so it parsed these.
+@pytest.mark.parametrize("key, value", [("DA", "(garbage Tf)"), ("Parent", "self")])
+@pytest.mark.parametrize("markdown", [True, False])
+def test_pdf_with_a_malformed_form_field_still_reads_its_text(
+    tmp_path, monkeypatch, markdown, key, value
+):
+    if markdown:
+        pytest.importorskip("pymupdf4llm")
+    import pymupdf
+
+    from core.rag import config, parsers
+
+    monkeypatch.setattr(config, "PDF_MARKDOWN", markdown)
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((40, 60), "Budget: 4200")
+    widget = pymupdf.Widget()
+    widget.field_type = pymupdf.PDF_WIDGET_TYPE_TEXT
+    widget.field_name = "notes"
+    widget.field_value = "x"
+    widget.rect = pymupdf.Rect(40, 80, 240, 100)
+    xref = page.add_widget(widget).xref
+    doc.xref_set_key(xref, key, f"{xref} 0 R" if value == "self" else value)
+    pdf = tmp_path / "damaged.pdf"
+    doc.save(str(pdf))
+    doc.close()
+
+    assert "Budget: 4200" in "\n".join(p.text for p in parsers.parse(str(pdf)))
 
 
 def test_pdf_bytes_use_same_extraction_path(tmp_path, monkeypatch):
@@ -93,7 +321,7 @@ def test_pdf_bytes_limit_pages_before_extraction(monkeypatch):
     pages, total_pages = parsers.parse_pdf_bytes(data, max_pages = 2)
     assert len(pages) == 2
     assert "page two" in pages[-1].text
-    assert total_pages == 3  # full count, not the 2 extracted
+    assert total_pages == 3
 
 
 def test_pdf_markdown_receives_page_limit(monkeypatch):
@@ -112,12 +340,16 @@ def test_pdf_markdown_receives_page_limit(monkeypatch):
 
     monkeypatch.setitem(__import__("sys").modules, "pymupdf4llm", _FakePymupdf4llm)
     assert parsers._pdf_markdown(_Doc(), range(2)) == ["page", "page"]
-    assert captured == {"page_chunks": True, "show_progress": False, "pages": [0, 1]}
+    assert captured == {
+        "page_chunks": True,
+        "show_progress": False,
+        "ignore_images": True,
+        "pages": [0, 1],
+    }
 
 
 def test_pdf_markdown_passes_only_supported_legacy_kwargs(monkeypatch):
-    # The pinned PyMuPDF4LLM legacy path ignores unknown kwargs; do not pass the
-    # newer layout-only OCR knobs or Markdown extraction silently loses policy control.
+    # The pinned PyMuPDF4LLM legacy path ignores unknown kwargs; do not pass layout-only OCR knobs.
     from core.rag import parsers
 
     captured = {}
@@ -133,12 +365,10 @@ def test_pdf_markdown_passes_only_supported_legacy_kwargs(monkeypatch):
 
     monkeypatch.setitem(__import__("sys").modules, "pymupdf4llm", _FakePymupdf4llm)
     assert parsers._pdf_markdown(_Doc()) == ["plain markdown"]
-    assert captured == {"page_chunks": True, "show_progress": False}
+    assert captured == {"page_chunks": True, "show_progress": False, "ignore_images": True}
 
 
 def test_pdf_markdown_falls_back_when_lib_missing(tmp_path, monkeypatch):
-    # If pymupdf4llm extraction returns None (missing/failed), parsing still yields the
-    # plain-text pages rather than raising.
     from core.rag import config, parsers
 
     monkeypatch.setattr(config, "PDF_MARKDOWN", True)
@@ -154,29 +384,27 @@ def _long_text_pdf(path):
 
     doc = pymupdf.open()
     page = doc.new_page()
-    body = "The quick brown fox jumps over the lazy dog. " * 12  # >200 letters
+    body = "The quick brown fox jumps over the lazy dog. " * 12
     page.insert_textbox(pymupdf.Rect(40, 40, 550, 750), body, fontsize = 11)
     doc.save(str(path))
     doc.close()
 
 
 def test_pdf_markdown_corruption_falls_back_to_plain(tmp_path, monkeypatch):
-    # pymupdf4llm can emit shaped RTL Presentation Forms for Arabic/Hebrew; the parser
-    # detects that and uses PyMuPDF's logical-order text instead of the mangled Markdown.
+    # pymupdf4llm can emit shaped RTL Presentation Forms; the parser uses logical-order text.
     from core.rag import config, parsers
 
     monkeypatch.setattr(config, "PDF_MARKDOWN", True)
-    shaped = "".join(chr(c) for c in range(0xFE8D, 0xFEA0)) * 20  # heavy shaped forms
+    shaped = "".join(chr(c) for c in range(0xFE8D, 0xFEA0)) * 20
     monkeypatch.setattr(parsers, "_pdf_markdown", lambda doc: [shaped] * doc.page_count)
     pdf = tmp_path / "table.pdf"
     _table_pdf(pdf)
     text = "\n".join(p.text for p in parsers.parse(str(pdf)))
-    assert "Quarter" in text  # real logical-order text recovered
-    assert not parsers._markdown_corrupted(text)  # shaped garbage not carried through
+    assert "Quarter" in text
+    assert not parsers._markdown_corrupted(text)
 
 
 def test_pdf_markdown_incomplete_falls_back_to_plain(tmp_path, monkeypatch):
-    # If pymupdf4llm silently drops most of a page, the parser prefers the fuller raw layer.
     from core.rag import config, parsers
 
     monkeypatch.setattr(config, "PDF_MARKDOWN", True)
@@ -184,7 +412,7 @@ def test_pdf_markdown_incomplete_falls_back_to_plain(tmp_path, monkeypatch):
     pdf = tmp_path / "long.pdf"
     _long_text_pdf(pdf)
     text = "\n".join(p.text for p in parsers.parse(str(pdf)))
-    assert "quick brown fox" in text  # fuller raw layer used, not the near-empty Markdown
+    assert "quick brown fox" in text
 
 
 def _docx_with_table(path):
@@ -202,49 +430,43 @@ def _docx_with_table(path):
 
 
 def test_docx_extracts_table_cells(tmp_path):
-    # document.paragraphs alone drops tables; the parser walks body content in order so
-    # table cells survive (pipe-joined, which the preview locator anchors on).
+    # document.paragraphs drops tables; cells are pipe-joined, which the preview locator anchors on.
     pytest.importorskip("docx")
     from core.rag import parsers
 
     docx_path = tmp_path / "t.docx"
     _docx_with_table(docx_path)
     text = "\n".join(p.text for p in parsers.parse(str(docx_path)))
-    assert all(v in text for v in ("NAME", "SCORE", "Alice", "97pts"))  # cells kept
-    assert "Alice | 97pts" in text  # row cells joined
-    assert text.index("Intro") < text.index("NAME") < text.index("Outro")  # order kept
+    assert all(v in text for v in ("NAME", "SCORE", "Alice", "97pts"))
+    assert "Alice | 97pts" in text
+    assert text.index("Intro") < text.index("NAME") < text.index("Outro")
 
 
 def test_docx_table_keeps_columns_and_collapses_cell_newlines(tmp_path):
-    # Empty cells are kept (so columns stay aligned across rows) and a cell's internal
-    # newlines are collapsed to spaces (so a multi-paragraph cell can't break the row).
     document, docx, parsers = _shared_setup_1()
     table = document.add_table(rows = 2, cols = 3)
     table.cell(0, 0).text = "A"
-    table.cell(0, 1).text = ""  # empty middle cell
+    table.cell(0, 1).text = ""
     table.cell(0, 2).text = "C"
     multiline = table.cell(1, 0)
     multiline.text = "line1"
-    multiline.add_paragraph("line2")  # cell now holds an internal newline
+    multiline.add_paragraph("line2")
     table.cell(1, 1).text = "mid"
     table.cell(1, 2).text = "end"
     path = tmp_path / "aligned.docx"
     document.save(str(path))
 
     text = "\n".join(p.text for p in parsers.parse(str(path)))
-    assert "A |  | C" in text  # empty cell preserved -> columns line up
-    assert "line1 line2 | mid | end" in text  # internal newline collapsed to a space
+    assert "A |  | C" in text
+    assert "line1 line2 | mid | end" in text
 
 
 def test_docx_table_merged_cell_keeps_grid_alignment(tmp_path):
-    # A horizontally merged cell repeats across the spanned columns: emit its text once
-    # then a placeholder, so the row keeps as many fields as its siblings (columns stay
-    # aligned) without duplicating the merged text.
     document, docx, parsers = _shared_setup_1()
     table = document.add_table(rows = 2, cols = 3)
     table.cell(0, 0).text = "WIDE"
     table.cell(0, 2).text = "END"
-    table.cell(0, 0).merge(table.cell(0, 1))  # span the first two columns
+    table.cell(0, 0).merge(table.cell(0, 1))
     table.cell(1, 0).text = "a"
     table.cell(1, 1).text = "b"
     table.cell(1, 2).text = "c"
@@ -252,14 +474,12 @@ def test_docx_table_merged_cell_keeps_grid_alignment(tmp_path):
     document.save(str(path))
 
     text = "\n".join(p.text for p in parsers.parse(str(path)))
-    assert text.count("WIDE") == 1  # merged cell not duplicated across spanned columns
-    assert "WIDE |  | END" in text  # placeholder keeps 3 fields, aligned with "a | b | c"
+    assert text.count("WIDE") == 1
+    assert "WIDE |  | END" in text
     assert "a | b | c" in text
 
 
 def test_docx_table_pads_omitted_grid_columns(tmp_path):
-    # A row that skips leading grid columns exposes the gap via grid_cols_before; pad it
-    # with empty fields so the value stays under the right header instead of shifting left.
     pytest.importorskip("docx")
     import docx
     from docx.oxml.ns import qn
@@ -271,21 +491,19 @@ def test_docx_table_pads_omitted_grid_columns(tmp_path):
     table.cell(0, 0).text = "H1"
     table.cell(0, 1).text = "H2"
     table.cell(0, 2).text = "H3"
-    tr = table.rows[1]._tr  # drop the first cell and mark it skipped via <w:gridBefore>
+    tr = table.rows[1]._tr
     tr.remove(tr.tc_lst[0])
     trPr = tr.get_or_add_trPr()
     trPr.insert(0, trPr.makeelement(qn("w:gridBefore"), {qn("w:val"): "1"}))
-    table.rows[1].cells[0].text = "X"  # sits in column 2
+    table.rows[1].cells[0].text = "X"
     path = tmp_path / "gap.docx"
     document.save(str(path))
 
     text = "\n".join(p.text for p in parsers.parse(str(path)))
-    assert " | X | " in text  # leading gap padded so X lines up under H2, not H1
+    assert " | X | " in text
 
 
 def test_docx_flattens_nested_table(tmp_path):
-    # cell.text ignores tables nested inside a cell; walk cell.tables so nested rows are
-    # not silently dropped from the indexed text.
     document, docx, parsers = _shared_setup_1()
     outer = document.add_table(rows = 1, cols = 1).cell(0, 0)
     outer.text = "outer"
@@ -296,12 +514,10 @@ def test_docx_flattens_nested_table(tmp_path):
     document.save(str(path))
 
     text = "\n".join(p.text for p in parsers.parse(str(path)))
-    assert "NESTED-A | NESTED-B" in text  # nested table flattened, not dropped
+    assert "NESTED-A | NESTED-B" in text
 
 
 def test_docx_nested_table_keeps_in_cell_order(tmp_path):
-    # A cell holding paragraph, nested table, paragraph must serialize in that order
-    # (cell.text alone would emit both paragraphs before the nested rows).
     document, docx, parsers = _shared_setup_1()
     cell = document.add_table(rows = 1, cols = 1).cell(0, 0)
     cell.text = "before"
@@ -317,8 +533,6 @@ def test_docx_nested_table_keeps_in_cell_order(tmp_path):
 
 
 def test_docx_table_vertical_merge_emitted_once(tmp_path):
-    # A vertically merged cell maps every continuation row back to the origin <w:tc>;
-    # emit it once and leave placeholders below so a row-spanning label isn't repeated.
     document, docx, parsers = _shared_setup_1()
     table = document.add_table(rows = 3, cols = 2)
     table.cell(0, 0).merge(table.cell(1, 0)).merge(table.cell(2, 0)).text = "SECTION"
@@ -329,5 +543,867 @@ def test_docx_table_vertical_merge_emitted_once(tmp_path):
     document.save(str(path))
 
     text = "\n".join(p.text for p in parsers.parse(str(path)))
-    assert text.count("SECTION") == 1  # not repeated on each spanned row
+    assert text.count("SECTION") == 1
     assert "SECTION | r0" in text and " | r1" in text and " | r2" in text
+
+
+_W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+_DOCX_XMLNS = (
+    'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+    'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+    'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" '
+    'xmlns:v="urn:schemas-microsoft-com:vml" '
+    'xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"'
+)
+
+
+def _docx_from_xml(tmp_path, *fragments):
+    document, docx, parsers = _shared_setup_1()
+    from docx.oxml import parse_xml
+
+    section = document.element.body[-1]
+    for element in list(parse_xml(f"<w:body {_DOCX_XMLNS}>{''.join(fragments)}</w:body>")):
+        section.addprevious(element)
+    path = tmp_path / "xml.docx"
+    document.save(str(path))
+    return "\n".join(p.text for p in parsers.parse(str(path)))
+
+
+def _r(text):
+    return f'<w:r><w:t xml:space="preserve">{text}</w:t></w:r>'
+
+
+def test_docx_reads_tracked_insertions_not_deletions(tmp_path):
+    text = _docx_from_xml(
+        tmp_path,
+        "<w:p>"
+        + _r("The fee is ")
+        + '<w:del w:id="1" w:author="a"><w:r><w:delText>ten</w:delText><w:tab/></w:r></w:del>'
+        + f'<w:ins w:id="2" w:author="a">{_r("twelve")}</w:ins>'
+        + f'<w:moveFrom w:id="3" w:author="a">{_r(" moved away")}</w:moveFrom>'
+        + _r(" euros.")
+        + "</w:p>",
+    )
+    assert text == "The fee is twelve euros."
+
+
+def test_docx_reads_content_controls_fields_and_smart_tags(tmp_path):
+    text = _docx_from_xml(
+        tmp_path,
+        f"<w:p>{_r('Client: ')}<w:sdt><w:sdtPr/><w:sdtContent>{_r('Acme Corp')}</w:sdtContent></w:sdt></w:p>",
+        f"<w:sdt><w:sdtPr/><w:sdtContent><w:p>{_r('Block control')}</w:p></w:sdtContent></w:sdt>",
+        f'<w:p><w:fldSimple w:instr=" DOCPROPERTY Company ">{_r("Field result")}</w:fldSimple></w:p>',
+        f'<w:p><w:smartTag w:uri="urn:x" w:element="place">{_r("Smart tag")}</w:smartTag></w:p>',
+        f'<w:customXml w:element="clause"><w:p>{_r("Custom XML")}</w:p></w:customXml>',
+    )
+    assert text == "Client: Acme Corp\nBlock control\nField result\nSmart tag\nCustom XML"
+
+
+def test_docx_table_cells_read_content_controls_and_insertions(tmp_path):
+    text = _docx_from_xml(
+        tmp_path,
+        "<w:tbl><w:tr>"
+        f"<w:tc><w:p>{_r('Owner')}</w:p></w:tc>"
+        f"<w:tc><w:sdt><w:sdtPr/><w:sdtContent><w:p>{_r('Ada')}</w:p></w:sdtContent></w:sdt></w:tc>"
+        f'<w:tc><w:p><w:ins w:id="1" w:author="a">{_r("Engineer")}</w:ins></w:p></w:tc>'
+        "</w:tr></w:tbl>",
+    )
+    assert text == "Owner | Ada | Engineer"
+
+
+def test_docx_reads_text_box_once_after_its_paragraph(tmp_path):
+    # Word writes a text box twice: the DrawingML shape and a VML fallback copy.
+    box = f"<w:txbxContent><w:p>{_r('Callout')}</w:p></w:txbxContent>"
+    text = _docx_from_xml(
+        tmp_path,
+        "<w:p>"
+        + _r("Host line")
+        + "<w:r><mc:AlternateContent>"
+        + f'<mc:Choice Requires="wps"><w:drawing><wps:wsp><wps:txbx>{box}</wps:txbx></wps:wsp></w:drawing></mc:Choice>'
+        + f"<mc:Fallback><w:pict><v:shape><v:textbox>{box}</v:textbox></v:shape></w:pict></mc:Fallback>"
+        + "</mc:AlternateContent></w:r></w:p>",
+    )
+    assert text == "Host line\nCallout"
+
+
+def test_docx_drops_text_box_inside_tracked_deletion_or_move(tmp_path):
+    def box(text):
+        shape = f"<w:txbxContent><w:p>{_r(text)}</w:p></w:txbxContent>"
+        return f"<w:r><w:pict><v:shape><v:textbox>{shape}</v:textbox></v:shape></w:pict></w:r>"
+
+    text = _docx_from_xml(
+        tmp_path,
+        "<w:p>"
+        + _r("Kept")
+        + f'<w:del w:id="1" w:author="a">{box("Deleted box")}</w:del>'
+        + f'<w:moveFrom w:id="2" w:author="a">{box("Moved-away box")}</w:moveFrom>'
+        + "</w:p>",
+    )
+    assert text == "Kept"
+
+
+def test_docx_reads_ruby_base_without_its_guide(tmp_path):
+    text = _docx_from_xml(
+        tmp_path,
+        f"<w:p><w:r><w:ruby><w:rubyPr/><w:rt>{_r('kanji')}</w:rt><w:rubyBase>{_r('漢字')}</w:rubyBase></w:ruby></w:r></w:p>",
+    )
+    assert text == "漢字"
+
+
+def test_docx_reads_one_branch_of_alternate_content(tmp_path):
+    text = _docx_from_xml(
+        tmp_path,
+        "<w:p><mc:AlternateContent>"
+        f'<mc:Choice Requires="w14">{_r("Preferred")}</mc:Choice>'
+        f"<mc:Fallback>{_r('Fallback')}</mc:Fallback>"
+        "</mc:AlternateContent></w:p>",
+    )
+    assert text == "Preferred"
+
+
+def _legacy_checkbox(state):
+    return (
+        f'<w:r><w:fldChar w:fldCharType="begin"><w:ffData><w:checkBox><w:sizeAuto/>{state}</w:checkBox>'
+        "</w:ffData></w:fldChar></w:r>"
+        '<w:r><w:instrText xml:space="preserve"> FORMCHECKBOX </w:instrText></w:r>'
+        '<w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r>'
+    )
+
+
+def test_docx_keeps_ticked_state_of_legacy_form_checkboxes(tmp_path):
+    ticked = _legacy_checkbox('<w:default w:val="0"/><w:checked/>')
+    unticked = _legacy_checkbox('<w:default w:val="0"/>')
+    ticked_by_default = _legacy_checkbox("<w:default/>")
+    cleared = _legacy_checkbox('<w:default w:val="1"/><w:checked w:val="0"/>')
+    text = _docx_from_xml(
+        tmp_path,
+        f"<w:p>{_r('Smoker: ')}{ticked}{_r(' Yes ')}{unticked}{_r(' No')}</w:p>",
+        f"<w:tbl><w:tr><w:tc><w:p>{_r('Allergies')}</w:p></w:tc>"
+        f"<w:tc><w:p>{ticked_by_default}{_r(' Yes ')}{cleared}{_r(' No')}</w:p></w:tc></w:tr></w:tbl>",
+    )
+    assert text == "Smoker: ☒ Yes ☐ No\nAllergies | ☒ Yes ☐ No"
+
+
+def test_docx_legacy_checkbox_sharing_a_run_with_its_label_stays_in_place(tmp_path):
+    def labelled_box(label, state):
+        return (
+            f'<w:r><w:t xml:space="preserve">{label}</w:t><w:fldChar w:fldCharType="begin">'
+            f"<w:ffData><w:checkBox>{state}</w:checkBox></w:ffData></w:fldChar></w:r>"
+            '<w:r><w:instrText xml:space="preserve"> FORMCHECKBOX </w:instrText></w:r>'
+            '<w:r><w:fldChar w:fldCharType="end"/></w:r>'
+        )
+
+    text = _docx_from_xml(
+        tmp_path,
+        f"<w:p>{labelled_box('Smoker: ', '')}{labelled_box(' Yes ', '<w:checked/>')}{_r(' No')}</w:p>",
+    )
+    assert text == "Smoker: ☐ Yes ☒ No"
+
+
+def _sym(font, char):
+    return f'<w:sym w:font="{font}" w:char="{char}"/>'
+
+
+def test_docx_keeps_symbol_font_characters(tmp_path):
+    def run(*parts):
+        return "<w:r>" + "".join(parts) + "</w:r>"
+
+    text = _docx_from_xml(
+        tmp_path,
+        f"<w:p>{_r('Smoker: ')}{run(_sym('Wingdings', 'F0FE'))}{_r(' Yes ')}"
+        f"{run(_sym('Wingdings', 'F0A8'))}{_r(' No')}</w:p>",
+        f"<w:p>{_r('Escalate if temperature ')}{run(_sym('Symbol', 'F0B3'))}{_r(' 38')}"
+        f"{run(_sym('SYMBOL', 'B0'))}{_r('C')}</w:p>",
+        f"<w:p>{run('<w:t>Dose: 5 mg</w:t><w:tab/>', _sym('Symbol', 'F0B1'), '<w:t>0.5</w:t>')}</w:p>",
+        f"<w:p>{run(_sym('Wingdings 2', 'F054'), _sym('Webdings', 'F061'), _sym('Arial', '2713'), _sym('Symbol', '221E'))}"
+        f"{run(_sym('Unknown', 'F041'), _sym('Symbol', 'zz'))}</w:p>",
+        f"<w:p><m:oMath><m:r><m:t>x</m:t></m:r><m:r>{_sym('Symbol', 'F0B3')}</m:r><m:r><m:t>1</m:t></m:r>"
+        f"{run(_sym('Symbol', 'F0B1'))}<m:r><m:t>e</m:t></m:r></m:oMath></w:p>",
+    )
+    assert (
+        text == "Smoker: 🗹 Yes 🞎 No\nEscalate if temperature ≥ 38°C\nDose: 5 mg\t±0.5\n☒✔✓∞\nx≥1±e"
+    )
+
+
+def _m(text):
+    return f'<m:r><w:rPr><w:rFonts w:ascii="Cambria Math"/></w:rPr><m:t>{text}</m:t></m:r>'
+
+
+def test_docx_keeps_equations_where_they_appear(tmp_path):
+    half = f"<m:f><m:fPr><m:ctrlPr><w:rPr><w:i/></w:rPr></m:ctrlPr></m:fPr><m:num>{_m('1')}</m:num><m:den>{_m('2')}</m:den></m:f>"
+    squared = f"<m:sSup><m:e>{_m('v')}</m:e><m:sup>{_m('2')}</m:sup></m:sSup>"
+    text = _docx_from_xml(
+        tmp_path,
+        f"<w:p>{_r('The kinetic energy is ')}<m:oMath>{_m('E=')}{half}{_m('m')}{squared}</m:oMath>{_r(' joules.')}</w:p>",
+        f"<w:p><m:oMathPara><m:oMathParaPr/><m:oMath>{_m('F=ma')}</m:oMath><m:oMath>{_m('p=mv')}</m:oMath></m:oMathPara></w:p>",
+    )
+    assert text == "The kinetic energy is E=\\frac{1}{2}mv^{2} joules.\nF=ma\np=mv"
+
+
+def test_docx_table_cells_keep_equations_without_deleted_parts(tmp_path):
+    root = f"<m:rad><m:radPr><m:degHide m:val=\"1\"/></m:radPr><m:deg/><m:e>{_m('x')}</m:e></m:rad>"
+    text = _docx_from_xml(
+        tmp_path,
+        "<w:tbl><w:tr>"
+        f"<w:tc><w:p>{_r('Work')}</w:p></w:tc>"
+        f"<w:tc><w:p><m:oMath>{_m('W=F')}<m:d><m:e>{_m('a+b')}</m:e></m:d>"
+        f'<w:del w:id="1" w:author="a">{_m("+c")}</w:del>{root}</m:oMath></w:p></w:tc>'
+        "</w:tr></w:tbl>",
+    )
+    assert text == "Work | W=F(a+b)\\sqrt{x}"
+
+
+def test_docx_equations_keep_binomials_and_skip_hidden_phantoms(tmp_path):
+    binom = f'<m:d><m:e><m:f><m:fPr><m:type m:val="noBar"/></m:fPr><m:num>{_m("n")}</m:num><m:den>{_m("k")}</m:den></m:f></m:e></m:d>'
+    phantom = (
+        f'<m:phant><m:phantPr><m:show m:val="off"/></m:phantPr><m:e>{_m("xyz")}</m:e></m:phant>'
+    )
+    text = _docx_from_xml(
+        tmp_path, f"<w:p><m:oMath>{binom}{_m('a')}{phantom}{_m('b')}</m:oMath></w:p>"
+    )
+    assert text == "({n \\atop k})ab"
+
+
+def test_docx_equations_keep_bars_and_group_characters(tmp_path):
+    mean = f'<m:bar><m:barPr><m:pos m:val="top"/></m:barPr><m:e>{_m("x")}</m:e></m:bar>'
+    brace = f"<m:limLow><m:e><m:groupChr><m:e>{_m('a+b')}</m:e></m:groupChr></m:e><m:lim>{_m('n')}</m:lim></m:limLow>"
+    arrow = f'<m:groupChr><m:groupChrPr><m:chr m:val="→"/><m:pos m:val="top"/></m:groupChrPr><m:e>{_m("Δ")}</m:e></m:groupChr>'
+    text = _docx_from_xml(
+        tmp_path, f"<w:p><m:oMath>{mean}{_m('=')}{brace}{_m(',')}{arrow}</m:oMath></w:p>"
+    )
+    assert text == "\\overline{x}=\\underbrace{a+b}_{n},\\overset{→}{Δ}"
+
+
+# Same cases and expected text as the chat attachment reader's test (attachment-preview-text.test.ts).
+_OMML_CASES = [
+    (
+        '<m:nary><m:naryPr><m:chr m:val="∑"/></m:naryPr><m:sub>{i=1}</m:sub><m:sup>{n}</m:sup><m:e>{i}</m:e></m:nary>',
+        "∑_{i=1}^{n}i",
+    ),
+    ("<m:nary><m:sub>{0}</m:sub><m:sup>{1}</m:sup><m:e>{x}</m:e></m:nary>", "∫_{0}^{1}x"),
+    (
+        "<m:sSubSup><m:e>{x}</m:e><m:sub>{i}</m:sub><m:sup>{2}</m:sup></m:sSubSup><m:sSub><m:e>{a}</m:e><m:sub>{0}</m:sub></m:sSub>",
+        "x_{i}^{2}a_{0}",
+    ),
+    ("<m:sPre><m:sub>{6}</m:sub><m:sup>{14}</m:sup><m:e>{C}</m:e></m:sPre>", "{}_{6}^{14}C"),
+    ("<m:limUpp><m:e>{x}</m:e><m:lim>{def}</m:lim></m:limUpp>", "x^{def}"),
+    ("<m:limLow><m:e>{lim}</m:e><m:lim>{n→∞}</m:lim></m:limLow>", "lim_{n→∞}"),
+    (
+        '<m:f><m:fPr><m:type m:val="noBar"/></m:fPr><m:num>{n}</m:num><m:den>{k}</m:den></m:f>'
+        '<m:phant><m:phantPr><m:show m:val="off"/></m:phantPr><m:e>{xyz}</m:e></m:phant>',
+        "{n \\atop k}",
+    ),
+    (
+        "<m:acc><m:e>{θ}</m:e></m:acc><m:rad><m:deg>{3}</m:deg><m:e>{y}</m:e></m:rad>",
+        "θ̂\\sqrt[3]{y}",
+    ),
+    (
+        '<m:rad><m:radPr><m:degHide m:val="1"/></m:radPr><m:deg>{3}</m:deg><m:e>{x}</m:e></m:rad>'
+        '<m:nary><m:naryPr><m:chr m:val="∑"/><m:subHide m:val="0"/><m:supHide/></m:naryPr><m:sub>{k}</m:sub><m:sup>{n}</m:sup><m:e>{a}</m:e></m:nary>',
+        "\\sqrt{x}∑_{k}a",
+    ),
+    ("<m:func><m:fName>{sin}</m:fName><m:e>{x}</m:e></m:func>", "sin x"),
+    (
+        "<m:m><m:mr><m:e>{a}</m:e><m:e>{b}</m:e></m:mr><m:mr><m:e>{c}</m:e><m:e>{d}</m:e></m:mr></m:m>",
+        "a & b \\\\ c & d",
+    ),
+    ("<m:eqArr><m:e>{x=1}</m:e><m:e>{y=2}</m:e></m:eqArr>", "x=1\ny=2"),
+    (
+        '<m:d><m:e>{a}</m:e><m:e>{b}</m:e></m:d><m:d><m:dPr><m:begChr m:val="["/><m:endChr m:val=""/></m:dPr><m:e>{c}</m:e></m:d>',
+        "(a|b)[c",
+    ),
+    (
+        '<m:bar><m:e>{x}</m:e></m:bar><m:groupChr><m:groupChrPr><m:chr m:val="⏞"/><m:pos m:val="top"/></m:groupChrPr><m:e>{y}</m:e></m:groupChr>'
+        '<m:groupChr><m:groupChrPr><m:chr m:val="←"/></m:groupChrPr><m:e>{z}</m:e></m:groupChr>',
+        "\\underline{x}\\overbrace{y}\\underset{←}{z}",
+    ),
+    (
+        '{a}<w:r><w:t xml:space="preserve"> if </w:t></w:r>'
+        "<w:sdt><w:sdtPr><w:showingPlcHdr/></w:sdtPr><w:sdtContent>{prompt}</w:sdtContent></w:sdt>{b}",
+        "a if b",
+    ),
+]
+
+
+@pytest.mark.parametrize(("omml", "expected"), _OMML_CASES)
+def test_docx_equation_structures(tmp_path, omml, expected):
+    filled = re.sub(r"\{([^{}]*)\}", lambda match: _m(match.group(1)), omml)
+    text = _docx_from_xml(tmp_path, f"<w:p><m:oMath>{filled}</m:oMath></w:p>")
+    assert text == expected
+
+
+def test_docx_keeps_rows_and_cells_wrapped_in_content_controls(tmp_path):
+    document, docx, parsers = _shared_setup_1()
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+
+    ns = nsdecls("w")
+    table = document.add_table(rows = 1, cols = 2)
+    table.cell(0, 0).text = "Name"
+    tr = table.rows[0]._tr
+    tc = table.cell(0, 1)._tc
+    tr.remove(tc)
+    tr.append(
+        parse_xml(
+            f"<w:sdt {ns}><w:sdtContent><w:tc><w:p><w:r><w:t>CELL-WRAPPED</w:t></w:r></w:p></w:tc>"
+            "</w:sdtContent></w:sdt>"
+        )
+    )
+    table._tbl.append(
+        parse_xml(
+            f"<w:sdt {ns}><w:sdtContent><w:sdt><w:sdtContent><w:tr>"
+            "<w:tc><w:p><w:r><w:t>ROW-A</w:t></w:r></w:p></w:tc>"
+            "<w:tc><w:p><w:r><w:t>ROW-B</w:t></w:r></w:p></w:tc>"
+            "</w:tr></w:sdtContent></w:sdt></w:sdtContent></w:sdt>"
+        )
+    )
+    path = tmp_path / "wrapped.docx"
+    document.save(str(path))
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert "Name | CELL-WRAPPED" in text
+    assert "ROW-A | ROW-B" in text
+
+
+def test_docx_skips_placeholder_text_and_keeps_field_and_bidi_runs(tmp_path):
+    document, docx, parsers = _shared_setup_1()
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+
+    ns = nsdecls("w")
+
+    def sdt(props, inner):
+        return parse_xml(
+            f"<w:sdt {ns}><w:sdtPr>{props}</w:sdtPr><w:sdtContent>{inner}</w:sdtContent></w:sdt>"
+        )
+
+    body = document.element.body
+    body.insert(
+        len(body) - 1,
+        sdt("<w:showingPlcHdr/>", "<w:p><w:r><w:t>BLOCK-PROMPT</w:t></w:r></w:p>"),
+    )
+    p = document.add_paragraph("Name: ")._p
+    p.append(sdt("<w:showingPlcHdr/>", "<w:r><w:t>Click or tap here to enter text.</w:t></w:r>"))
+    p = document.add_paragraph("Client: ")._p
+    p.append(sdt('<w:showingPlcHdr w:val="0"/>', "<w:r><w:t>ACME</w:t></w:r>"))
+    p = document.add_paragraph("Ref ")._p
+    p.append(
+        parse_xml(
+            f'<w:fldSimple {ns} w:instr=" MERGEFIELD Name "><w:r><w:t>FIELD</w:t></w:r></w:fldSimple>'
+        )
+    )
+    p.append(parse_xml(f'<w:dir {ns} w:val="rtl"><w:r><w:t> RTL</w:t></w:r></w:dir>'))
+    table = document.add_table(rows = 1, cols = 2)
+    table.cell(0, 0).text = "Owner"
+    table.cell(0, 1)._tc.append(
+        sdt("<w:showingPlcHdr/>", "<w:p><w:r><w:t>CELL-PROMPT</w:t></w:r></w:p>")
+    )
+    path = tmp_path / "placeholders.docx"
+    document.save(str(path))
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert "PROMPT" not in text and "Click or tap" not in text
+    assert "Client: ACME" in text
+    assert "Ref FIELD RTL" in text
+    assert "Owner | " in text
+
+
+def test_docx_skips_placeholder_rows_and_cells_but_keeps_columns(tmp_path):
+    document, docx, parsers = _shared_setup_1()
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+
+    ns = nsdecls("w")
+    table = document.add_table(rows = 1, cols = 3)
+    table.cell(0, 0).text = "Name"
+    table.cell(0, 2).text = "END"
+    tr = table.rows[0]._tr
+    tc = table.cell(0, 1)._tc
+    idx = tr.index(tc)
+    tr.remove(tc)
+    tr.insert(
+        idx,
+        parse_xml(
+            f"<w:sdt {ns}><w:sdtPr><w:showingPlcHdr/></w:sdtPr><w:sdtContent>"
+            "<w:tc><w:p><w:r><w:t>CELL-PROMPT</w:t></w:r></w:p></w:tc></w:sdtContent></w:sdt>"
+        ),
+    )
+    table._tbl.append(
+        parse_xml(
+            f"<w:sdt {ns}><w:sdtPr><w:showingPlcHdr/></w:sdtPr><w:sdtContent><w:tr>"
+            "<w:tc><w:p><w:r><w:t>ROW-PROMPT</w:t></w:r></w:p></w:tc>"
+            "<w:tc><w:p/></w:tc><w:tc><w:p/></w:tc></w:tr></w:sdtContent></w:sdt>"
+        )
+    )
+    path = tmp_path / "placeholder_cells.docx"
+    document.save(str(path))
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert "PROMPT" not in text
+    assert "Name |  | END" in text
+
+
+def test_docx_numbers_visible_note_references_and_marks_the_body(tmp_path):
+    document, docx, parsers = _shared_setup_1()
+    from docx.opc.constants import CONTENT_TYPE as CT, RELATIONSHIP_TYPE as RT
+    from docx.opc.packuri import PackURI
+    from docx.opc.part import Part
+    from docx.oxml import parse_xml
+
+    def note(kind, note_id, text):
+        return f'<w:{kind} w:id="{note_id}"><w:p><w:r><w:{kind}Ref/></w:r>{_r(" " + text)}</w:p></w:{kind}>'
+
+    def notes(kind, body):
+        return (
+            f"<w:{kind}s {_DOCX_XMLNS}>"
+            f'<w:{kind} w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:{kind}>'
+            f'<w:{kind} w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:{kind}>'
+            f"{body}</w:{kind}s>"
+        ).encode()
+
+    def ref(kind, note_id):
+        return f'<w:r><w:{kind}Reference w:id="{note_id}"/></w:r>'
+
+    section = document.element.body[-1]
+    section.addprevious(
+        parse_xml(
+            f"<w:p {_DOCX_XMLNS}><w:del w:id=\"9\">{ref('footnote', 4)}</w:del>"
+            f"{_r('First.')}{ref('footnote', 2)}"
+            f"{_r(' Second.')}{ref('footnote', 1)}{ref('endnote', 1)}"
+            f"{_r(' ' + chr(0xE000) + '7' + chr(0xE001))}</w:p>"
+        )
+    )
+    for kind, content_type, reltype, body in (
+        (
+            "footnote",
+            CT.WML_FOOTNOTES,
+            RT.FOOTNOTES,
+            note("footnote", 1, "Source: LATER")
+            + note("footnote", 2, "Source: EARLIER")
+            + note("footnote", 3, "Source: UNREFERENCED")
+            + note("footnote", 4, "Source: DELETED"),
+        ),
+        ("endnote", CT.WML_ENDNOTES, RT.ENDNOTES, note("endnote", 1, "Source: ENDNOTEBODY")),
+    ):
+        part = Part(
+            PackURI(f"/word/{kind}s.xml"), content_type, notes(kind, body), document.part.package
+        )
+        document.part.relate_to(part, reltype)
+    path = tmp_path / "notes.docx"
+    document.save(str(path))
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert text == (
+        "First.[1] Second.[2][i] \ue0007\ue001\n"
+        "Footnotes\n[1] Source: EARLIER\n[2] Source: LATER\n[3] Source: UNREFERENCED\n"
+        "Endnotes\n[i] Source: ENDNOTEBODY"
+    )
+
+
+def test_docx_keeps_list_numbers(tmp_path):
+    document, docx, parsers = _shared_setup_1()
+    document.add_paragraph("Lease terms")
+    for clause in ("Rent is due on the first.", "Tenant pays utilities.", "No pets."):
+        document.add_paragraph(clause, style = "List Number")
+    path = tmp_path / "lease.docx"
+    document.save(str(path))
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert text == (
+        "Lease terms\n1. Rent is due on the first.\n2. Tenant pays utilities.\n3. No pets."
+    )
+
+
+def test_docx_keeps_multilevel_list_numbers(tmp_path):
+    document, docx, parsers = _shared_setup_1()
+    from docx.oxml import parse_xml
+
+    levels = (("decimal", "%1."), ("decimal", "%1.%2"), ("lowerLetter", "(%3)"))
+    document.part.numbering_part.element.append(
+        parse_xml(
+            f'<w:abstractNum {_DOCX_XMLNS} w:abstractNumId="90">'
+            + "".join(
+                f'<w:lvl w:ilvl="{i}"><w:start w:val="1"/><w:numFmt w:val="{fmt}"/>'
+                f'<w:lvlText w:val="{text}"/></w:lvl>'
+                for i, (fmt, text) in enumerate(levels)
+            )
+            + "</w:abstractNum>"
+        )
+    )
+    document.part.numbering_part.element.append(
+        parse_xml(f'<w:num {_DOCX_XMLNS} w:numId="90"><w:abstractNumId w:val="90"/></w:num>')
+    )
+
+    def item(level, text):
+        return (
+            f'<w:p {_DOCX_XMLNS}><w:pPr><w:numPr><w:ilvl w:val="{level}"/>'
+            f'<w:numId w:val="90"/></w:numPr></w:pPr>{_r(text)}</w:p>'
+        )
+
+    section = document.element.body[-1]
+    for level, clause in (
+        (0, "Rent"),
+        (1, "Amount"),
+        (1, "Due date"),
+        (2, "Weekdays"),
+        (2, "Holidays"),
+        (0, "Pets"),
+        (1, "Dogs"),
+    ):
+        section.addprevious(parse_xml(item(level, clause)))
+    path = tmp_path / "clauses.docx"
+    document.save(str(path))
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert text == (
+        "1. Rent\n1.1 Amount\n1.2 Due date\n(a) Weekdays\n(b) Holidays\n2. Pets\n2.1 Dogs"
+    )
+
+
+def test_docx_list_numbers_count_placeholders_and_survive_huge_starts(tmp_path):
+    document, docx, parsers = _shared_setup_1()
+    from docx.oxml import parse_xml
+
+    numbering = document.part.numbering_part.element
+    for num_id, start in ((91, "1"), (92, "9" * 4300)):
+        numbering.append(
+            parse_xml(
+                f'<w:abstractNum {_DOCX_XMLNS} w:abstractNumId="{num_id}"><w:lvl w:ilvl="0">'
+                f'<w:start w:val="{start}"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/>'
+                "</w:lvl></w:abstractNum>"
+            )
+        )
+        numbering.append(
+            parse_xml(
+                f'<w:num {_DOCX_XMLNS} w:numId="{num_id}"><w:abstractNumId w:val="{num_id}"/></w:num>'
+            )
+        )
+
+    def item(num_id, text):
+        return f'<w:p><w:pPr><w:numPr><w:numId w:val="{num_id}"/></w:numPr></w:pPr>{_r(text)}</w:p>'
+
+    placeholder = (
+        "<w:sdt><w:sdtPr><w:showingPlcHdr/></w:sdtPr>"
+        f"<w:sdtContent>{item(91, 'Click here')}</w:sdtContent></w:sdt>"
+    )
+    body = (
+        item(91, "First") + placeholder + item(91, "Third") + item(92, "Big") + item(92, "Bigger")
+    )
+    section = document.element.body[-1]
+    for element in list(parse_xml(f"<w:body {_DOCX_XMLNS}>{body}</w:body>")):
+        section.addprevious(element)
+    path = tmp_path / "placeholder.docx"
+    document.save(str(path))
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert text.splitlines()[:2] == ["1. First", "3. Third"]
+    assert text.splitlines()[-1].endswith(" Bigger")
+
+
+def test_docx_numbers_paragraphs_through_the_default_style(tmp_path):
+    document, docx, parsers = _shared_setup_1()
+    from docx.oxml import parse_xml
+
+    number_style = document.styles["List Number"].element.find(f"{{{_W_NS}}}pPr/{{{_W_NS}}}numPr")
+    normal = document.styles["Normal"].element
+    p_pr = normal.find(f"{{{_W_NS}}}pPr")
+    if p_pr is None:
+        p_pr = parse_xml(f"<w:pPr {_DOCX_XMLNS}/>")
+        normal.append(p_pr)
+    p_pr.append(parse_xml(number_style.xml))
+    document.add_paragraph("Rent")
+    document.add_paragraph("Pets", style = "List Number")
+    path = tmp_path / "default.docx"
+    document.save(str(path))
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert text == "1. Rent\n2. Pets"
+
+
+def test_docx_style_inherits_its_list_from_the_base_style(tmp_path):
+    document, docx, parsers = _shared_setup_1()
+    from docx.oxml import parse_xml
+
+    numbering = document.part.numbering_part.element
+    numbering.append(
+        parse_xml(
+            f'<w:abstractNum {_DOCX_XMLNS} w:abstractNumId="93">'
+            '<w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/>'
+            '<w:lvlText w:val="%1."/></w:lvl>'
+            '<w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="decimal"/>'
+            '<w:lvlText w:val="%1.%2"/></w:lvl>'
+            "</w:abstractNum>"
+        )
+    )
+    numbering.append(
+        parse_xml(f'<w:num {_DOCX_XMLNS} w:numId="93"><w:abstractNumId w:val="93"/></w:num>')
+    )
+    styles = document.styles.element
+    for style_id, based_on, num_pr in (
+        ("Clause1", "Normal", '<w:numId w:val="93"/>'),
+        ("Clause2", "Clause1", '<w:ilvl w:val="1"/>'),
+    ):
+        styles.append(
+            parse_xml(
+                f'<w:style {_DOCX_XMLNS} w:type="paragraph" w:styleId="{style_id}">'
+                f'<w:name w:val="{style_id}"/><w:basedOn w:val="{based_on}"/>'
+                f"<w:pPr><w:numPr>{num_pr}</w:numPr></w:pPr></w:style>"
+            )
+        )
+    for style, text in (
+        ("Clause1", "Rent"),
+        ("Clause2", "Amount"),
+        ("Clause2", "Due date"),
+        ("Clause1", "Pets"),
+    ):
+        document.add_paragraph(text, style = document.styles[style])
+    path = tmp_path / "inherited.docx"
+    document.save(str(path))
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert text == "1. Rent\n1.1 Amount\n1.2 Due date\n2. Pets"
+
+
+def test_docx_with_unreadable_numbering_still_parses(tmp_path):
+    import zipfile
+
+    document, docx, parsers = _shared_setup_1()
+    document.add_paragraph("Hello body")
+    for clause in ("Rent", "Pets"):
+        document.add_paragraph(clause, style = "List Number")
+    source = tmp_path / "source.docx"
+    document.save(str(source))
+    path = tmp_path / "broken.docx"
+    with zipfile.ZipFile(source) as src, zipfile.ZipFile(path, "w") as dst:
+        for info in src.infolist():
+            data = src.read(info)
+            if info.filename == "word/numbering.xml":
+                data = b"<w:numbering broken"
+            elif info.filename == "[Content_Types].xml":
+                data = data.replace(
+                    b"application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml",
+                    b"application/octet-stream",
+                )
+            dst.writestr(info, data)
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert text == "Hello body\nRent\nPets"
+
+
+def _parse_html(tmp_path, body):
+    from core.rag import parsers
+
+    path = tmp_path / "page.html"
+    path.write_text(f"<html><body>{body}</body></html>", encoding = "utf-8")
+    return "\n".join(p.text for p in parsers.parse(str(path)))
+
+
+def test_html_keeps_inline_elements_in_their_line(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        '<p>The <b>quick</b> brown fox jumps over the <a href="#">lazy</a> dog.</p>'
+        "<p>It is un<b>believ</b>able.</p>",
+    )
+    assert text == "The quick brown fox jumps over the lazy dog.\nIt is unbelievable."
+
+
+def test_html_adjacent_buttons_stay_separate_words(tmp_path):
+    text = _parse_html(
+        tmp_path, "<p>Click <button>Accept</button><button>Decline</button> to go on.</p>"
+    )
+    assert text == "Click Accept Decline to go on."
+
+
+def test_html_block_elements_start_new_lines(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<h1>Install <em>guide</em></h1><ul><li>One</li><li>Two <i>items</i></li></ul>"
+        "<p>line one<br>line two</p><table><tr><td>cell a</td><td>cell b</td></tr></table>",
+    )
+    assert text == "Install guide\nOne\nTwo items\nline one\nline two\ncell a | cell b"
+
+
+def test_html_ordered_lists_keep_their_numbers(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<ol><li>Unplug</li><li>Wait<ul><li>Note</li></ul></li></ol><ol start=4><li>Plug in</ol>"
+        '<ol type="a"><li>Left<li value=5>Right</ol><ol reversed><li>Three<li>Two<li>One</ol>',
+    )
+    assert text == (
+        "1. Unplug\n2. Wait\nNote\n4. Plug in\na. Left\ne. Right\n3. Three\n2. Two\n1. One"
+    )
+
+
+def test_html_check_boxes_keep_their_ticked_state(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        '<ul><li><input type="checkbox" checked> Ship</li><li><input type="checkbox"> Docs</li></ul>'
+        '<ol><li><input type="checkbox" checked disabled />Test</ol>'
+        '<p>Smoker:<input type="radio" checked> Yes <input type="radio"> No <input type="text"> Age</p>',
+    )
+    assert text == "☒ Ship\n☐ Docs\n1. ☒ Test\nSmoker: ☒ Yes ☐ No Age"
+
+
+def test_html_list_numbers_stay_in_their_cell(tmp_path):
+    text = _parse_html(tmp_path, '<table><tr><td><ol><li><img src="x"></td><td>B</td></tr></table>')
+    assert text == "1. | B"
+
+
+def test_html_unclosed_lists_parse_in_linear_time(tmp_path):
+    import time
+
+    started = time.perf_counter()
+    text = _parse_html(tmp_path, "<ol>" * 20000 + "x" + "</p>" * 20000)
+    assert text == "x"
+    assert time.perf_counter() - started < 3
+
+
+def test_html_table_rows_keep_their_columns(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<table><tr><th>Plan</th><th>Price</th><th>Support</th><th>Seats</th></tr>"
+        "<tr><td>Starter</td><td>$9</td><td><p>Email</p><p>Chat</p></td><td>1</td></tr>"
+        "<tr><td>Team<td>$49<td><td>10</table><p>After</p>",
+    )
+    assert text == (
+        "Plan | Price | Support | Seats\nStarter | $9 | Email Chat | 1\nTeam | $49 |  | 10\nAfter"
+    )
+
+
+def test_html_table_spans_keep_columns_aligned(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<table><tr><th>Plan</th><th colspan=2>Price</th></tr>"
+        "<tr><td rowspan=2>Pro</td><td>Monthly</td><td>$20</td></tr>"
+        "<tr><td>Annual</td><td>$200</td></tr></table>",
+    )
+    assert text == "Plan | Price | \nPro | Monthly | $20\n | Annual | $200"
+
+
+def test_html_trailing_rowspan_keeps_columns_aligned(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<table><tr><td>Item</td><td rowspan=2>Notes</td></tr><tr><td>Next</td></tr></table>",
+    )
+    assert text == "Item | Notes\nNext | "
+
+
+def test_html_table_preserves_preformatted_cell_whitespace(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<table><tr><td><pre>a\n b<br>  c</pre></td><td>d</td></tr></table>",
+    )
+    assert text == "a\n b\n  c | d"
+
+
+def test_html_layout_and_nested_tables_keep_their_lines(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<table><tr><td><h1>Title</h1><p>Intro</p>"
+        "<table><tr><td>Name<table><tr><td>x</td><td>y</td></tr></table></td><td>Value</td></tr></table>"
+        "<p>Outro</p></td></tr></table>",
+    )
+    assert text == "Title\nIntro\nName | Value\nx | y\nOutro"
+
+
+def test_html_text_after_a_nested_table_stays_in_its_parent_cell(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<table><tr><td>Before<table><tr><td>x</td><td>y</td></tr></table>After</td>"
+        "<td>Peer</td></tr></table>",
+    )
+    assert text == "Before After | Peer\nx | y"
+
+
+def test_html_table_spans_are_capped_by_the_file_size(tmp_path):
+    html = "<table><tr><td colspan=1000 rowspan=65534>x" + "<tr><td>a" * 2000
+    text = _parse_html(tmp_path, html)
+    assert text.count("a") == 2000 and len(text) < 4 * len(html)
+
+
+def test_html_empty_rows_spend_the_span_budget(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<table><tr><td colspan=50 rowspan=65534>x" + "<tr>" * 100 + "<tr><td>a<td>b</table>",
+    )
+    assert text.splitlines()[-1] == "a | b"
+
+
+def test_html_rowspan_stops_at_its_row_group(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<table><thead><tr><th rowspan=3>Plan</th><th>Price</th></tr></thead>"
+        "<tbody><tr><td rowspan=0>Team</td><td>$49</td></tr><tr><td>$490</td></tr></tbody>"
+        "<tbody><tr><td>Pro</td><td>$99</td></tr></tbody></table>",
+    )
+    assert text == "Plan | Price\nTeam | $49\n | $490\nPro | $99"
+
+
+def test_html_tables_nested_past_the_depth_cap_read_as_blocks(tmp_path):
+    text = _parse_html(tmp_path, "<table><tr><td>" * 32 + "<table><tr><td>a<td>b" + "<p>end")
+    assert text == "a\nb\nend"
+
+
+def test_html_stray_cell_end_keeps_words_apart(tmp_path):
+    text = _parse_html(tmp_path, "<table><tr><td>Total</td>Note</td>Extra</tr></table>")
+    assert text == "Note\nExtra\nTotal"
+
+
+def test_html_legend_and_options_stay_separate_words(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<fieldset><legend>Size</legend>Pick one</fieldset>"
+        "<select><option>Small</option><option>Large</option></select>",
+    )
+    assert text == "Size\nPick one\nSmall\nLarge"
+
+
+def test_html_keeps_text_after_the_last_block(tmp_path):
+    text = _parse_html(tmp_path, "<p>First</p>Trailing <b>text</b>")
+    assert text == "First\nTrailing text"
+
+
+def test_html_pre_keeps_its_layout(tmp_path):
+    text = _parse_html(tmp_path, "<p>Code:</p><pre>def f():\n    return 1</pre>")
+    assert text == "Code:\ndef f():\n    return 1"
+
+
+def test_html_textarea_keeps_its_layout_and_svg_labels_stay_apart(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<textarea>line one\n    indented</textarea>"
+        '<svg><text x="0">Revenue</text><text x="0" y="20">Cost</text></svg>',
+    )
+    assert text == "line one\n    indented\nRevenue\nCost"
+
+
+def test_html_positioned_svg_tspans_are_separate_labels(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        '<svg><text><tspan x="0" y="0">Revenue</tspan><tspan x="0" dy="20">Cost</tspan>'
+        "</text><text>Bold<tspan>er</tspan></text></svg>",
+    )
+    assert text == "Revenue\nCost\nBolder"
+
+
+def test_html_skips_script_style_and_template(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<p>Visible</p><script>var x = 1;</script><style>p { color: red }</style>"
+        "<template><p>Inert until cloned</p></template>",
+    )
+    assert text == "Visible"
+
+
+def test_html_keeps_declarative_shadow_root_text(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        '<my-card><template shadowrootmode="open"><p>Shadow text</p>'
+        "<template><p>inert</p></template></template></my-card><p>After</p>",
+    )
+    assert text == "Shadow text\nAfter"
+
+
+def test_html_template_blocks_do_not_split_visible_text(tmp_path):
+    text = _parse_html(tmp_path, "<p>Hello <template><div>hidden</div></template>world</p>")
+    assert text == "Hello world"

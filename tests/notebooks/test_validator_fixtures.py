@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""Golden-fixture tests for scripts/notebook_validator.py: each reconstructs a broken install cell from an unslothai/notebooks PR and asserts the matching rule fires (and falls silent after the fix).
-
-Cross-references: PR #258->R-INST-003, #260->R-EXC-001, #261a->R-INST-004,
-#261b/#264->R-INST-005, #221->R-INST-001, 51b1462->R-DRIFT-001.
-"""
+"""Golden-fixture tests for scripts/notebook_validator.py: each rule fires on a broken install cell."""
 
 from __future__ import annotations
 
@@ -19,7 +15,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 import notebook_validator as nv  # noqa: E402
 
-# Inline subset of Colab GPU pip-freeze recreating the bug environments (CI uses scripts/data/colab_pip_freeze.gpu.txt).
+# Inline subset of Colab GPU pip-freeze (CI uses scripts/data/colab_pip_freeze.gpu.txt).
 COLAB_2026_05 = {
     "torch": "2.10.0+cu128",
     "torchao": "0.10.0",
@@ -30,9 +26,6 @@ COLAB_2026_05 = {
     "accelerate": "1.13.0",
     "datasets": "4.0.0",
 }
-
-
-# ---------- R-INST-001 : forbid git+ HEAD ------------------------------- #
 
 
 def test_r_inst_001_fires_on_transformers_git_head():
@@ -58,9 +51,6 @@ def test_r_inst_001_allowlist_unsloth_zoo_git():
 """
     findings = nv.rule_inst_001_git_plus(cell, "fixture", 0)
     assert findings == []
-
-
-# ---------- R-INST-003 : peft / torchao floor (PR #258) ------------------ #
 
 
 def test_r_inst_003_fires_when_peft_19_with_no_torchao_bump():
@@ -89,9 +79,6 @@ def test_r_inst_003_silent_when_torchao_pinned_high():
     assert findings == []
 
 
-# ---------- R-INST-004 : torch / torchcodec ABI (PR #261a) --------------- #
-
-
 def test_r_inst_004_fires_torch_2_7_with_torchcodec_0_6():
     cell = """%%capture
 !uv pip install "torch==2.7.1"
@@ -110,15 +97,11 @@ def test_r_inst_004_silent_when_torch_2_7_with_torchcodec_0_5():
     assert findings == []
 
 
-# ---------- R-INST-005 : transformers + tokenizers window (PRs #261b/#264) -- #
-
-
 def test_r_inst_005_fires_no_deps_transformers_55_without_tokenizers_pin(monkeypatch):
     """PR #264: --no-deps transformers==5.5.0 leaves Colab tokenizers in place; breaks if Colab ships tokenizers > 0.23.0."""
     cell = """%%capture
 !pip install --no-deps transformers==5.5.0
 """
-    # Colab snapshot where tokenizers bumped past transformers 5.5.0's window.
     colab = dict(COLAB_2026_05, tokenizers = "0.23.5")
 
     def fake_meta(name, version):
@@ -167,8 +150,6 @@ def test_r_inst_005_silent_without_no_deps(monkeypatch):
     assert findings == []
 
 
-# ---------- R-API-003 : suboptimal optim warning (PR #221, partial) ------ #
-
 import json
 from pathlib import Path as _P
 
@@ -200,9 +181,6 @@ def test_r_api_003_silent_on_adamw_8bit():
     assert findings == []
 
 
-# ---------- Environment classifier --------------------------------------- #
-
-
 @pytest.mark.parametrize(
     "path,expected",
     [
@@ -221,9 +199,6 @@ def test_environment_classifier(path, expected):
     assert nv.target_environment(path) == expected
 
 
-# ---------- Integration: walk the live notebooks repo (skipped if absent) -- #
-
-
 def _live_notebooks_dir(candidates: list[Path] | None = None) -> Path | None:
     if candidates is None:
         candidates = [
@@ -231,8 +206,7 @@ def _live_notebooks_dir(candidates: list[Path] | None = None) -> Path | None:
             Path("/mnt/disks/unslothai/ubuntu/workspace_12/notebooks"),
         ]
     for p in candidates:
-        # is_file() only swallows ENOENT/ENOTDIR;
-        # an unreadable candidate raises EACCES on Python <= 3.13 (3.14 suppresses it, gh-101357).
+        # is_file() only swallows ENOENT/ENOTDIR; EACCES raises on Python <= 3.13 (gh-101357).
         try:
             if (p / "update_all_notebooks.py").is_file():
                 return p
@@ -274,18 +248,12 @@ def test_lint_smoke_no_module_errors():
         text = True,
         timeout = 120,
     )
-    # rc=0 means clean, rc=1 means findings reported, rc=2 means crash.
+    # rc=0 clean, rc=1 findings, rc=2 crash.
     assert rc.returncode in (0, 1), rc.stderr[-2000:]
 
 
 def test_live_notebooks_dir_skips_an_unreadable_candidate(tmp_path):
-    """An unreadable candidate must read as absent rather than raise.
-
-    The skipif decorators above call ``_live_notebooks_dir`` at import time, so an
-    uncaught EACCES there aborts collection of this whole file, taking the entire
-    Repo tests (CPU) job with it. The candidates are absolute paths outside the repo,
-    so on a shared machine one of them can belong to another user.
-    """
+    """An unreadable candidate dir must count as absent: skipif calls _live_notebooks_dir at import time."""
     blocked_parent = tmp_path / "blocked"
     blocked = blocked_parent / "notebooks"
     blocked.mkdir(parents = True)

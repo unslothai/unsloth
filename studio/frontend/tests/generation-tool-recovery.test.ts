@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 import type { CarriedPart as Carried } from "../src/features/chat/utils/chat-generation-recovery.ts";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
@@ -19,6 +19,19 @@ const parser = await import(
 );
 const { createGenerationToolRecovery } = await import(
   "../src/features/chat/utils/generation-tool-recovery.ts"
+);
+const { RUN_CHECKPOINT_INTERVAL_MS } = await import(
+  "../src/features/chat/utils/run-checkpoint-scheduler.ts"
+);
+const {
+  providerCompactionConnectionKey,
+  providerCompactionReplayToolCallCount,
+} = await import("../src/features/chat/utils/provider-compaction.ts");
+const { orderBySelectedBranch } = await import(
+  "../src/features/chat/utils/message-order.ts"
+);
+const { contextUsageMarkers } = await import(
+  "../src/features/chat/utils/saved-context-usage.ts"
 );
 
 const start = (id = "call_0") => ({
@@ -50,6 +63,76 @@ test("replay adds new cards and applies their results", () => {
   );
 });
 
+test("recovery keeps provider compaction at its tool-call boundary", () => {
+  const carried: Carried[] = [];
+  const replay = createGenerationToolRecovery(carried, "run").apply;
+  replay(
+    {
+      type: "tool_start",
+      tool_call_id: "hosted_0",
+      tool_name: "web_search",
+      arguments: { _server_tool: true },
+    },
+    0,
+    1,
+  );
+  replay(
+    { type: "tool_end", tool_call_id: "hosted_0", result: "hosted" },
+    0,
+    2,
+  );
+  replay(start(), 12, 3);
+  replay(end(), 20, 4);
+
+  assert.deepEqual(
+    replay(
+      {
+        _toolEvent: {
+          type: "compaction_block",
+          content: "Earlier conversation summary",
+          encrypted_content: "opaque-compaction",
+        },
+      },
+      20,
+      5,
+    ),
+    {
+      providerCompaction: {
+        type: "compaction",
+        content: "Earlier conversation summary",
+        encrypted_content: "opaque-compaction",
+      },
+      providerCompactionAfterToolCalls: 1,
+    },
+  );
+});
+
+test("provider compaction boundaries match replayable call serialization", () => {
+  assert.equal(
+    providerCompactionReplayToolCallCount([
+      {
+        type: "tool-call",
+        toolName: "studio_load_skill",
+        result: "loaded",
+      },
+      {
+        type: "tool-call",
+        toolName: "web_search",
+        args: { _server_tool: true },
+        result: "hosted",
+      },
+      {
+        type: "tool-call",
+        toolName: "web_search",
+        args: { google: { native_part: { functionCall: {} } } },
+      },
+      { type: "tool-call", toolName: "edit_file" },
+      { type: "tool-call", toolName: "edit_file", result: "ok" },
+    ]),
+    2,
+  );
+});
+
 test("replay resumes an existing card without duplicating it", () => {
   const saved = {
     type: "tool-call",
@@ -61,6 +144,42 @@ test("replay resumes an existing card without duplicating it", () => {
   const carried = [{ at: 12, part: saved }];
   createGenerationToolRecovery(carried, "run").apply(end(), 20, 2);
   assert.deepEqual(carried, [{ at: 12, part: { ...saved, result: "ok" } }]);
+});
+
+test("a finished card saved past the cursor is not minted a second time", () => {
+  const carried: Carried[] = [];
+  let replay = createGenerationToolRecovery(carried, "run").apply;
+  replay(start(), 12, 4897);
+  replay(end(), 12, 4898);
+  const finished = { ...(carried[0].part as Record<string, unknown>) };
+  replay = createGenerationToolRecovery(carried, "run", 4800).apply;
+  replay(start(), 12, 4897);
+  replay(end(), 12, 4898);
+  assert.deepEqual(
+    carried.map((entry) => entry.part),
+    [finished],
+  );
+});
+
+test("a live card saved past the cursor is not recovered as a second card", () => {
+  const live = {
+    type: "tool-call",
+    toolCallId: "call_0:live-uuid",
+    backendToolCallId: "call_0",
+    generationToolCallId: "run:4897",
+    toolName: "edit_file",
+    args: { path: "scene.glsl" },
+    argsText: '{"path":"scene.glsl"}',
+    result: "ok",
+  };
+  const carried: Carried[] = [{ at: 12, part: live }];
+  const replay = createGenerationToolRecovery(carried, "run", 4800).apply;
+  replay(start(), 12, 4897);
+  replay(end(), 12, 4898);
+  assert.deepEqual(
+    carried.map((entry) => (entry.part as Record<string, unknown>).toolCallId),
+    ["call_0:live-uuid"],
+  );
 });
 
 test("reused backend ids get separate cards across rounds and reloads", () => {
@@ -121,6 +240,33 @@ test("sandbox results retain files, images and the run's session", () => {
     images: ["plot.png"],
     sessionId: "saved-session",
   });
+});
+
+test("an edit_file result is wrapped only when it created a file", () => {
+  const carried: Carried[] = [];
+  const replay = createGenerationToolRecovery(carried, "run").apply;
+  replay(start("a"), 0, 1);
+  replay(
+    {
+      ...end("a"),
+      result: 'Created index.html (2 lines)\n__FILES__:[{"name":"index.html","size":12}]',
+    },
+    0,
+    2,
+    "saved-session",
+  );
+  replay(start("b"), 0, 3);
+  replay({ ...end("b"), result: "Edited index.html (1 replacement)" }, 0, 4, "saved-session");
+  assert.deepEqual((carried[0].part as Record<string, unknown>).result, {
+    text: "Created index.html (2 lines)",
+    files: [{ name: "index.html", size: 12 }],
+    images: [],
+    sessionId: "saved-session",
+  });
+  assert.equal(
+    (carried[1].part as Record<string, unknown>).result,
+    "Edited index.html (1 replacement)",
+  );
 });
 
 test("MCP image results remain structured and malformed envelopes remain readable", () => {
@@ -236,6 +382,8 @@ test("the live adapter saves identities for ordinary, approval and provider card
             ]
           : [];
       const confirmed: string[] = [];
+      const confirmedThreads: string[] = [];
+      const confirmedRuns: string[] = [];
       const context = vm.createContext({
         toolCallParts: parts,
         toolPartIdByBackendId: new Map(
@@ -243,7 +391,12 @@ test("the live adapter saves identities for ordinary, approval and provider card
         ),
         toolConfirmationIdsByBackendId: new Map(),
         toolConfirmationScopeId: "session:thread",
+        resolvedThreadId: "thread",
         sandboxSessionId: "session",
+        // The run's key when the call parks, which can differ from the one captured at send.
+        serverCancel: () => {},
+        liveThreadKey: () => "thread-live",
+        cancelId: "cancel-1",
         generationRunId,
         generationSeq: 7,
         cumulativeText: "",
@@ -258,7 +411,19 @@ test("the live adapter saves identities for ordinary, approval and provider card
           getState: () => ({
             clearToolLiveOutput() {},
             clearToolFullOutput() {},
-            setToolConfirmation: (id: string) => confirmed.push(id),
+            setToolConfirmation: (
+              id: string,
+              _approvalId: string,
+              _sessionId: string,
+              _scopeId: string,
+              threadId: string,
+              _imageDisclosure: unknown,
+              runId: string,
+            ) => {
+              confirmed.push(id);
+              confirmedThreads.push(threadId);
+              confirmedRuns.push(runId);
+            },
           }),
         },
       });
@@ -293,6 +458,11 @@ test("the live adapter saves identities for ordinary, approval and provider card
         confirmed,
         kind === "approval" ? [saved.toolCallId] : [],
       );
+      assert.deepEqual(
+        confirmedThreads,
+        kind === "approval" ? ["thread-live"] : [],
+      );
+      assert.deepEqual(confirmedRuns, kind === "approval" ? ["cancel-1"] : []);
       const carried = [{ at: 0, part: saved }];
       const replay = createGenerationToolRecovery(carried, "run", 7);
       assert.equal(replay.replayFrom, 7);
@@ -320,8 +490,14 @@ const executable = ts.transpileModule(scheduler, {
 async function recoverRun(
   content: unknown[],
   payloads: unknown[],
-  options: { cursor?: number; viewContent?: unknown[] } = {},
+  options: {
+    cursor?: number;
+    viewContent?: unknown[];
+    metadata?: Record<string, unknown>;
+    stallBefore?: number;
+  } = {},
 ) {
+  class ChatGenerationStalledError extends Error {}
   let shown = {
     messages: [
       { message: { id: "msg", content: options.viewContent ?? content } },
@@ -339,9 +515,7 @@ async function recoverRun(
     registerThreadServerCancel() {},
     setThreadRunning() {},
     clearThreadServerCancel() {},
-    // The real store carries these, and recovery now uses them to put Approve/Deny back in front of
-    // a call that parked while the tab was gone. A stand-in missing them would make a recovery that
-    // touches an approval look broken here and work in the app.
+    // The real store has these; a stand-in missing them would make approval recovery look broken.
     setToolConfirmation() {},
     clearToolConfirmation() {},
   };
@@ -349,9 +523,17 @@ async function recoverRun(
     id: "run",
     threadId: "thread",
     assistantMessageId: "msg",
-    status: "completed",
-    lastEventSeq: payloads.length,
-    requestPayload: { model: "test", session_id: "saved-session" },
+    status: options.stallBefore ? "running" : "completed",
+    lastEventSeq: options.stallBefore ?? payloads.length,
+    requestPayload: {
+      model: "claude-test",
+      provider_id: "provider-a",
+      provider_type: "anthropic",
+      provider_base_url: "https://api.anthropic.com/v1",
+      provider_api_type: "chat_completions",
+      external_model: "claude-test",
+      session_id: "saved-session",
+    },
     createdAt: 1,
     startedAt: 1,
     completedAt: 100,
@@ -360,6 +542,10 @@ async function recoverRun(
     ...recovery,
     ...parser,
     createGenerationToolRecovery,
+    contextUsageMarkers,
+    orderBySelectedBranch,
+    providerCompactionConnectionKey,
+    RUN_CHECKPOINT_INTERVAL_MS,
     generationRecoveries,
     useChatRuntimeStore: { getState: () => runtime },
     cancelChatGenerationRun: async () => {},
@@ -385,26 +571,31 @@ async function recoverRun(
         yield update;
         yield update;
       }
+      if (options.stallBefore) throw new ChatGenerationStalledError();
     },
     restoredAssistantStatus: () => ({ type: "complete", reason: "stop" }),
-    isTerminalChatGenerationRun: () => true,
+    isTerminalChatGenerationRun: () => !options.stallBefore,
     forgetServerActiveGenerationRun() {},
-    ChatGenerationStalledError: class extends Error {},
+    ChatGenerationStalledError,
   });
   vm.runInContext(executable, context);
+  const stored = {
+    id: "msg",
+    role: "assistant",
+    content,
+    createdAt: 1,
+    metadata: {
+      generationRunId: "run",
+      generationSeq: options.cursor ?? 0,
+      generationStatus: "running",
+      generationSettled: false,
+      ...options.metadata,
+    },
+  };
   context.scheduleGenerationRecovery(
     "thread",
-    {
-      id: "msg",
-      content,
-      createdAt: 1,
-      metadata: {
-        generationRunId: "run",
-        generationSeq: options.cursor ?? 0,
-        generationStatus: "running",
-        generationSettled: false,
-      },
-    },
+    stored,
+    [stored],
     {
       threadListItem: () => ({ getState: () => ({ remoteId: "thread" }) }),
       thread: () => ({
@@ -419,7 +610,9 @@ async function recoverRun(
   await generationRecoveries.get("run").promise;
   const final = snapshots.at(-1);
   assert.ok(final);
-  assert.equal(final.metadata.generationSettled, true);
+  if (!options.stallBefore) {
+    assert.equal(final.metadata.generationSettled, true);
+  }
   assert.equal(final.metadata.generationSeq, payloads.length);
   return {
     content: final.content,
@@ -452,6 +645,104 @@ test("the recovery scheduler persists later tool events between reasoning groups
       .map((part) => part.text),
     ["before", "after"],
   );
+});
+
+test("the recovery scheduler persists provider compaction metadata", async () => {
+  const { snapshots } = await recoverRun(
+    [],
+    [
+      start(),
+      end(),
+      {
+        _toolEvent: {
+          type: "compaction_block",
+          content: "Earlier conversation summary",
+          encrypted_content: "opaque-compaction",
+        },
+      },
+      { choices: [{ delta: { content: "done" } }] },
+    ],
+  );
+  const metadata = snapshots.at(-1)?.metadata;
+  assert.deepEqual(metadata?.providerCompaction, {
+    type: "compaction",
+    content: "Earlier conversation summary",
+    encrypted_content: "opaque-compaction",
+  });
+  assert.equal(metadata?.providerCompactionAfterToolCalls, 1);
+  assert.equal(metadata?.providerCompactionProviderType, "anthropic");
+  assert.equal(metadata?.providerCompactionModelId, "claude-test");
+  assert.equal(
+    metadata?.providerCompactionConnectionKey,
+    providerCompactionConnectionKey(
+      "provider-a",
+      "https://api.anthropic.com/v1",
+      "chat_completions",
+    ),
+  );
+});
+
+test("reopening a run that finished without the tab saves and renders only its end", async () => {
+  const payloads = Array.from({ length: 400 }, (_, index) => ({
+    choices: [{ delta: { content: `w${index} ` } }],
+  }));
+  const text = payloads.map((payload) => payload.choices[0].delta.content).join("");
+  const { snapshots, imports } = await recoverRun([], payloads);
+  assert.ok(snapshots.length <= 2, `saved ${snapshots.length} times`);
+  for (const snapshot of snapshots) {
+    assert.equal(snapshot.metadata.generationSettled, true);
+    assert.equal(snapshot.content.map((part) => part.text).join(""), text);
+  }
+  assert.ok(imports.length <= 2, `rendered ${imports.length} times`);
+});
+
+test("a follow that stalls during catch-up saves its cursor with the replayed usage", async () => {
+  const payloads = [
+    { choices: [{ delta: { content: "partial" } }] },
+    {
+      choices: [],
+      usage: { completion_tokens: 7 },
+      timings: { predicted_n: 7 },
+    },
+  ];
+  const { snapshots } = await recoverRun([], payloads, { stallBefore: 10 });
+  assert.equal(snapshots.length, 1, "nothing is published before catch-up");
+  const { metadata, content } = snapshots[0];
+  assert.deepEqual(metadata.incomplete, { reason: "interrupted" });
+  assert.equal(content.map((part) => part.text).join(""), "partial");
+  assert.deepEqual(metadata.generationRecoveryUsage, { completion_tokens: 7 });
+  assert.deepEqual(metadata.generationRecoveryTimings, { predicted_n: 7 });
+  assert.equal(metadata.generationChunkCount, 1);
+  assert.equal(metadata.generationFirstChunkAt, 1);
+});
+
+test("a recovered turn keeps the reasoning cut the backend reported", async () => {
+  const { snapshots } = await recoverRun(
+    [],
+    [
+      { choices: [{ delta: { reasoning_content: "The tokens are `" } }] },
+      { choices: [], quote_cut: true },
+      { choices: [{ delta: {}, finish_reason: "stop" }] },
+    ],
+  );
+  assert.deepEqual(snapshots.at(-1)?.metadata.incomplete, {
+    reason: "quote_cut",
+  });
+});
+
+test("a recovery resumed past the cut keeps the stamp the producer saved", async () => {
+  const { snapshots } = await recoverRun(
+    [],
+    [
+      { choices: [{ delta: { content: "The token is `" } }] },
+      { choices: [], quote_cut: true },
+      { choices: [{ delta: {}, finish_reason: "stop" }] },
+    ],
+    { cursor: 2, metadata: { incomplete: { reason: "quote_cut" } } },
+  );
+  assert.deepEqual(snapshots.at(-1)?.metadata.incomplete, {
+    reason: "quote_cut",
+  });
 });
 
 test("the recovery scheduler completes a saved pending card", async () => {
@@ -1082,7 +1373,6 @@ test("repeated source ids pair one to one instead of multiplying", () => {
   const view = [{ type: "text", text: "answer" }, source(), source()];
   const recovered = [{ type: "text", text: "answer" }, source(), source()];
   let carriedView = view;
-  // Every publish re-imports; a duplicate that reads as missing would grow each round.
   for (let round = 0; round < 3; round++) {
     carriedView = recovery.recoveredContentToImport(
       carriedView,
@@ -1169,7 +1459,6 @@ test("the id-less sentinel keeps the file searchable and cannot collide", () => 
 
 test("a source an earlier recovery saved stays behind text replayed after it", async () => {
   const citations = "Title: Docs\nURL: https://docs.unsloth.ai/\nSnippet: g";
-  // What a previous recovery session persisted: the card, then the source it appended.
   const saved = [
     { type: "text", text: "Searching." },
     {
@@ -1194,7 +1483,6 @@ test("a source an earlier recovery saved stays behind text replayed after it", a
     { choices: [{ delta: { content: " I found** next." } }] },
   ]);
 
-  // Carried at its old offset the source would split the reply, and the emphasis with it.
   assert.equal(content.at(-1)?.type, "source");
   assert.deepEqual(
     content.filter((part) => part.type === "source").map((part) => part.url),
@@ -1226,7 +1514,6 @@ test("two rounds finding the same page keep a source each, with their own titles
       { type: "tool_end", tool_call_id: "ws_1", result: second },
     ],
   );
-  // The live path flat-maps the cards, so the panel lists the page once per round.
   assert.deepEqual(
     content.filter((part) => part.type === "source").map((part) => part.title),
     ["Docs v1", "Docs v2"],
@@ -1234,10 +1521,7 @@ test("two rounds finding the same page keep a source each, with their own titles
 });
 
 test("a card that finishes twice rebuilds its sources from the newer result", () => {
-  // Sources are parsed once per card rather than once per rebuild, so the cache key has to
-  // move whenever the result does. Keying it on the card's backend id instead, which reads
-  // as the obvious choice, breaks exactly here: OpenAI Responses ends a web search twice,
-  // a placeholder and then the citations, and the panel would keep the placeholder's.
+  // Key the cache on the result, not the card id: OpenAI Responses ends a web search twice.
   const carried: Carried[] = [];
   const { apply, withSources } = createGenerationToolRecovery(carried, "run");
   apply({ type: "tool_start", tool_call_id: "ws_0", tool_name: "web_search" }, 0, 1);
@@ -1271,8 +1555,6 @@ test("a card that finishes twice rebuilds its sources from the newer result", ()
 });
 
 test("each rebuild yields its own source objects", () => {
-  // Same reason: the parse is shared between rebuilds, the objects must not be. A caller
-  // that edits a part it was handed would otherwise change what the next rebuild returns.
   const carried: Carried[] = [];
   const { apply, withSources } = createGenerationToolRecovery(carried, "run");
   apply({ type: "tool_start", tool_call_id: "ws_0", tool_name: "web_search" }, 0, 1);
@@ -1292,4 +1574,22 @@ test("each rebuild yields its own source objects", () => {
   assert.notEqual(first, second);
   assert.equal(second.title, "Docs");
   assert.deepEqual(second.metadata, { description: "only" });
+});
+
+test("recovery keeps a model note on the finished card it targets", () => {
+  const carried: Carried[] = [];
+  const replay = createGenerationToolRecovery(carried, "run").apply;
+  replay(start(), 12, 1);
+  replay(end(), 20, 2);
+  const note = {
+    type: "tool_model_note",
+    tool_call_id: "call_0",
+    suffix: "\n\nbudget",
+  };
+  replay({ _toolEvent: note }, 20, 3);
+  replay(note, 20, 3);
+  const part = carried[0].part as Record<string, unknown>;
+  assert.equal(carried.length, 1);
+  assert.equal(part.result, "ok");
+  assert.deepEqual(part.provenance, { model_suffix: "\n\nbudget" });
 });

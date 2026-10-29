@@ -6,7 +6,6 @@ import {
   CHAT_HISTORY_UPDATED_EVENT,
   notifyChatHistoryUpdated,
 } from "../api/chat-api";
-import { useChatArtifactsStore } from "../artifacts/store";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ThreadRecord } from "../types";
 import {
@@ -16,11 +15,13 @@ import {
   listStoredChatThreadsWithMessages,
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
+import { clearBranchHead } from "../utils/branch-head";
 import { clearComposerDraft } from "../utils/composer-draft";
 import { offerToDeleteKeptSandboxes } from "../utils/offer-kept-sandbox-files";
 import { stopChatThread } from "../utils/stop-chat-thread";
 import {
   markChatThreadsDeleted,
+  notifyChatThreadsDeleted,
   removeChatThreadTombstones,
 } from "../utils/chat-thread-tombstones";
 import { requestPromptQueueStop } from "../utils/prompt-queue-boundary";
@@ -29,12 +30,15 @@ import { repairLegacyChatTitles } from "../utils/repair-legacy-chat-titles";
 export interface SidebarItem {
   type: "single" | "compare";
   id: string;
-  /** The pane threads behind this row id; `runningByThreadId` is keyed per pane thread. */
   threadIds?: string[];
   title: string;
   createdAt: number;
   updatedAt: number;
+  modifiedAt?: number;
+  modelIds?: string[];
   isFork?: boolean;
+  /** Made by a scheduled task's run. */
+  isScheduled?: boolean;
   projectId?: string | null;
 }
 
@@ -50,9 +54,7 @@ export function groupThreads(
   const pairItems = new Map<string, SidebarItem>();
 
   for (const t of threads) {
-    // Coerce archived to a boolean before comparing. Legacy threads can have archived undefined or
-    // null, and a raw `!== archived` comparison would drop those from BOTH Recents and Archived,
-    // hiding existing chats. Treat missing as false.
+    // Legacy threads may have archived undefined or null; treat missing as false.
     if (Boolean(t.archived) !== archived) {
       continue;
     }
@@ -61,6 +63,10 @@ export function groupThreads(
       if (existing) {
         existing.createdAt = Math.max(existing.createdAt, t.createdAt);
         existing.updatedAt = Math.max(existing.updatedAt, lastActivityAt(t));
+        if (t.modifiedAt) existing.modifiedAt = Math.max(existing.modifiedAt ?? 0, t.modifiedAt);
+        if (t.modelId && !existing.modelIds?.includes(t.modelId)) {
+          existing.modelIds = [...(existing.modelIds ?? []), t.modelId];
+        }
         existing.threadIds?.push(t.id);
         continue;
       }
@@ -71,6 +77,8 @@ export function groupThreads(
         title: t.title,
         createdAt: t.createdAt,
         updatedAt: lastActivityAt(t),
+        ...(t.modifiedAt ? { modifiedAt: t.modifiedAt } : {}),
+        ...(t.modelId ? { modelIds: [t.modelId] } : {}),
         projectId: t.projectId ?? null,
       };
       pairItems.set(t.pairId, item);
@@ -83,7 +91,10 @@ export function groupThreads(
         title: t.title,
         createdAt: t.createdAt,
         updatedAt: lastActivityAt(t),
+        ...(t.modifiedAt ? { modifiedAt: t.modifiedAt } : {}),
+        ...(t.modelId ? { modelIds: [t.modelId] } : {}),
         isFork: Boolean(t.forkedFromThreadId),
+        ...(t.scheduledTaskId ? { isScheduled: true } : {}),
         projectId: t.projectId ?? null,
       });
     }
@@ -92,8 +103,7 @@ export function groupThreads(
   return items.sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
-// Streaming fires CHAT_HISTORY_UPDATED_EVENT per chunk. Debounce so each quiet window produces
-// at most one O(N) fetch; requestSeq discards stale responses.
+// Streaming fires the history event per chunk; debounce and discard stale responses.
 const SIDEBAR_REFRESH_DEBOUNCE_MS = 300;
 
 export function useChatSidebarItems(options?: {
@@ -120,19 +130,13 @@ export function useChatSidebarItems(options?: {
         const listThreads = requireMessages
           ? listStoredChatThreadsWithMessages
           : listStoredChatThreads;
-        // includeArchived: archived threads are filtered out of Recents by groupThreads, but the hook
-        // still needs them for archivedItems.
         const threads = await listThreads({
           includeArchived: true,
           projectId: options?.projectId,
         });
-        // Discard the response if a newer request was scheduled while we were in flight, or if the
-        // effect was torn down.
         if (cancelled || seq !== requestSeq) return;
         setAllThreads(threads);
         setLoaded(true);
-        // Pre-cut legacy titles cannot grow with the sidebar. The repair reads its own messages, as
-        // late as it can, not this list's.
         void repairLegacyChatTitles(threads).catch(() => undefined);
       } catch (error) {
         if (isExpectedBackgroundChatStorageError(error)) {
@@ -151,7 +155,6 @@ export function useChatSidebarItems(options?: {
       }, SIDEBAR_REFRESH_DEBOUNCE_MS);
     }
 
-    // Initial load fires immediately (no debounce) so the sidebar isn't blank for 300ms on mount.
     requestSeq += 1;
     void doLoad(requestSeq);
     window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, load);
@@ -162,10 +165,7 @@ export function useChatSidebarItems(options?: {
     };
   }, [enabled, options?.projectId, requireMessages]);
 
-  // Memoised for identity as much as for the work. These arrays are the root of every derived
-  // sidebar list, so rebuilding them per render gives each a new identity and an effect
-  // depending on one re-runs every render. Where such an effect sets state, React re-renders
-  // to find the bail-out, rebuilds these, and never settles.
+  // Memoised for identity: dependent effects re-run each render and loop forever if they set state.
   const items = useMemo(() => groupThreads(allThreads ?? []), [allThreads]);
   const archivedItems = useMemo(
     () => groupThreads(allThreads ?? [], true),
@@ -177,8 +177,7 @@ export function useChatSidebarItems(options?: {
 }
 
 function cancelIfRunning(threadId: string): void {
-  // Reaches a background thread, which cancelByThreadId cannot: a deleted chat must stop, or the
-  // run keeps writing to a conversation that is gone.
+  // cancelByThreadId cannot reach background threads; a deleted chat must stop.
   stopChatThread(threadId);
 }
 
@@ -260,15 +259,13 @@ export async function archiveAllChatItems(
   onSelect?: (view: { mode: "single"; newThreadNonce: string }) => void,
 ): Promise<number> {
   const threads = await listStoredChatThreads({ includeArchived: true });
-  // Boolean() mirrors groupThreads: legacy records may have archived undefined or null, which
-  // must count as "not archived".
   const toArchive = threads.filter((t) => !t.archived);
   if (toArchive.length === 0) return 0;
 
   requestPromptQueueStop(toArchive.map((thread) => thread.id));
   for (const t of toArchive) cancelIfRunning(t.id);
 
-  // allSettled, not all: Promise.all rejects while slower siblings are still writing silently.
+  // allSettled: Promise.all rejects while slower siblings are still writing.
   const writes = await Promise.allSettled(
     toArchive.map((t) =>
       updateStoredChatThread(t.id, { archived: true }, { notify: false }),
@@ -278,14 +275,11 @@ export async function archiveAllChatItems(
     (write): write is PromiseRejectedResult => write.status === "rejected",
   );
   if (failure) {
-    // Silent updates mean a partial batch announces itself nowhere, so whatever did archive would
-    // stay listed here and in every other tab until some later change.
     notifyChatHistoryUpdated();
     throw failure.reason;
   }
 
-  // Reset only when this action archived the active single thread or compare pair. An
-  // already-archived chat opened from the archive is not in toArchive and must stay open.
+  // Reset only if this action archived the active chat.
   const archivedActive =
     activeId !== undefined &&
     toArchive.some(
@@ -297,7 +291,6 @@ export async function archiveAllChatItems(
   }
 
   notifyChatHistoryUpdated();
-  // Report sidebar items, not raw threads: a compare pair reads as one chat.
   return groupThreads(toArchive).length;
 }
 
@@ -327,22 +320,17 @@ export async function deleteChatItems(
 ) {
   const threadIds = await collectItemThreadIds(items);
 
-  // Stop queued prompts and in-flight streams before deleting.
   requestPromptQueueStop(threadIds);
 
   for (const id of threadIds) {
     cancelIfRunning(id);
   }
 
-  // Drop saved composer drafts so deleted threads leave no orphan keys.
+  // clear composer drafts so deleted threads leave no orphan keys.
   for (const id of threadIds) clearComposerDraft(id);
 
-  const artifactStore = useChatArtifactsStore.getState();
-  for (const id of threadIds) artifactStore.clearArtifactsForThread(id);
-  artifactStore.clearOrphanedArtifacts();
-
-  // Optimistic tombstone: hide immediately; roll back on backend error.
-  markChatThreadsDeleted(threadIds);
+  // Quiet until the delete lands: a failed one restores the chats, browser tabs and all.
+  markChatThreadsDeleted(threadIds, { quiet: true });
   notifyChatHistoryUpdated();
 
   if (activeId !== undefined && items.some((item) => item.id === activeId)) {
@@ -352,9 +340,13 @@ export async function deleteChatItems(
 
   try {
     const kept = await deleteStoredChatThreads(threadIds, args);
-    // Whether or not deletion was asked for: a sandbox that could not be removed leaves files with
-    // no card to reach them from, and the chat is already gone, so this offer is the only notice
-    // and the only retry.
+    notifyChatThreadsDeleted(
+      threadIds,
+      items.filter((item) => item.type === "compare").map((item) => item.id),
+    );
+    // retain the head until deletion succeeds so a restored chat reopens on the same branch.
+    for (const id of threadIds) clearBranchHead(id);
+    // offer recovery for sandbox files that outlive a deleted chat and lose their sidebar entry.
     offerToDeleteKeptSandboxes(kept);
   } catch (error) {
     removeChatThreadTombstones(threadIds);

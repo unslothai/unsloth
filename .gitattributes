@@ -25,3 +25,7 @@ studio/frontend/** text=auto eol=lf
 # HashMismatch. WDAC treats that as tampering, which is worse than shipping unsigned.
 # -text disables conversion in both directions, matching the docs_ui rule above.
 *.ps1 -text
+
+# Engine locks are pinned by sha256 in their .compat.json and in each install's record, so a
+# Windows clone (core.autocrlf=true) rewriting them to CRLF would mark every engine stale.
+studio/backend/requirements/engines/** -text

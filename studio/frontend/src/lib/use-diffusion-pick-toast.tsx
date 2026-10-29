@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import { useEffect, useState } from "react";
+
+import { ModelLoadDescription } from "@/features/chat";
+import { MODEL_LOAD_TOAST_CLASSNAMES } from "@/features/chat/components/model-load-status";
+import { formatBytes, type StagedDownloadProgress } from "@/features/hub";
+import {
+  createPickToast,
+  type PickToast,
+  type PickToastPhase,
+  type PickToastProgress,
+} from "@/lib/diffusion-pick-toast";
+
+function describePick(phase: PickToastPhase, progress: PickToastProgress | null, modelName?: string) {
+  if (phase === "downloading") {
+    return (
+      <ModelLoadDescription
+        title={modelName ? `Downloading ${modelName}…` : "Downloading model…"}
+        message="The model loads once its files are downloaded."
+        progressPercent={
+          progress ? (progress.downloadedBytes / progress.totalBytes) * 100 : null
+        }
+        progressLabel={
+          progress
+            ? `${formatBytes(progress.downloadedBytes)} of ${formatBytes(progress.totalBytes)}`
+            : null
+        }
+      />
+    );
+  }
+  if (phase === "queued") {
+    return (
+      <ModelLoadDescription
+        title={modelName ? `Download queued: ${modelName}` : "Download queued"}
+        message="It starts once the current download finishes."
+      />
+    );
+  }
+  if (phase === "waiting") {
+    return (
+      <ModelLoadDescription
+        title={modelName ? `Downloaded ${modelName}` : "Model downloaded"}
+        message="It loads once the other downloads finish."
+      />
+    );
+  }
+  if (phase === "ready") {
+    return (
+      <ModelLoadDescription
+        title={modelName ? `Downloaded ${modelName}` : "Model downloaded"}
+        message="It loads when you return to this page."
+      />
+    );
+  }
+  return (
+    <ModelLoadDescription
+      title={modelName ? `Preparing ${modelName} download…` : "Preparing download…"}
+      message="Checking which files this model needs."
+    />
+  );
+}
+
+export function useDiffusionPickToast(): PickToast {
+  const [pickToast] = useState(() =>
+    createPickToast({ describe: describePick, classNames: MODEL_LOAD_TOAST_CLASSNAMES }),
+  );
+  useEffect(() => () => pickToast.dismissAll(), [pickToast]);
+  return pickToast;
+}
+
+/** Separate because staging is initialized after the pick toast. */
+export function usePickToastProgress(
+  pickToast: PickToast,
+  progress: StagedDownloadProgress | null,
+): void {
+  useEffect(() => {
+    pickToast.progress(progress);
+  }, [pickToast, progress]);
+}

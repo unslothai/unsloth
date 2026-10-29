@@ -6,11 +6,9 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 
-// The shipped helper is lifted out of chat-adapter.ts rather than copied, so
-// these assert against the real source. Importing the module would drag in the
-// stores and the toast layer for one pure string function.
+// Lifted from chat-adapter.ts source; importing it would drag in the stores and toast layer.
 const adapterPath = fileURLToPath(
   new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
 );
@@ -27,8 +25,6 @@ const normalizeTarget = new Function(
 const sameKey = (a: string, b: string) => normalizeTarget(a) === normalizeTarget(b);
 
 test("one Windows file spelled with either separator is one candidate", () => {
-  // Two keys meant one spelling burned an attempt on the same file, and a
-  // remembered record written as C:\ never matched C:/.
   assert.ok(sameKey("C:\\Users\\a\\models\\M.gguf", "C:/Users/a/models/M.gguf"));
 });
 
@@ -38,7 +34,6 @@ test("Windows and UNC paths still fold case", () => {
 });
 
 test("WSL UNC paths keep their case, because they address ext4", () => {
-  // Folding merged two real files onto one key, so the second never loaded.
   assert.ok(
     !sameKey("\\\\wsl$\\Ubuntu\\home\\a\\M.gguf", "\\\\wsl$\\Ubuntu\\home\\a\\m.gguf"),
   );
@@ -50,10 +45,60 @@ test("POSIX paths keep their case", () => {
 });
 
 test("a decomposed filename is the same candidate as its composed form", () => {
-  // macOS hands back NFD, so a remembered model was never re-attempted.
+  // macOS returns NFD filenames.
   assert.ok(sameKey("/home/a/caf\u00e9.gguf", "/home/a/cafe\u0301.gguf"));
 });
 
 test("repo ids still fold case", () => {
   assert.ok(sameKey("unsloth/Qwen3-0.6B-GGUF", "UNSLOTH/qwen3-0.6b-gguf"));
+});
+
+
+test("startup remembers an inactive quant through the logical chat inventory target", async () => {
+  const declarations = ["buildAutoLoadSources", "resolveAutoLoadCandidate"].map((name) => {
+    const begin = source.indexOf(`function ${name}(`);
+    assert.ok(begin >= 0);
+    const asyncPrefix = name === "resolveAutoLoadCandidate" ? "async " : "";
+    return asyncPrefix + source.slice(begin, source.indexOf("\n}", begin) + 2);
+  }).join("\n");
+  const compile = new Function(
+    "listGgufVariants", "isGgufLocalRow", "isAutoLoadableGgufVariant",
+    ts.transpileModule(declarations, {
+      compilerOptions: { target: ts.ScriptTarget.ES2020 },
+    }).outputText + "; return { buildAutoLoadSources, resolveAutoLoadCandidate };",
+  );
+  const repoId = "Org/Model";
+  const cachePath = "/cache/default/models--Org--Model";
+  const scopes: (string | undefined)[] = [];
+  const helpers = compile(
+    async (_id: string, _token: undefined, options: { localPath?: string }) => {
+      scopes.push(options.localPath);
+      const quants = options.localPath === repoId ? ["Q6_K", "Q8_0"] : ["Q6_K"];
+      return { variants: quants.map((quant, i) => ({
+        quant, downloaded: true, size_bytes: 100 + i,
+      })) };
+    },
+    () => true,
+    () => true,
+  );
+  const rows = [{ repo_id: repoId, load_id: repoId, cache_path: cachePath, size_bytes: 300 }];
+  const [logical] = helpers.buildAutoLoadSources(rows, [], [], 8192);
+  const candidate = await helpers.resolveAutoLoadCandidate(logical, "Q8_0", () => false);
+  assert.equal(candidate.ggufVariant, "Q8_0");
+  assert.equal(candidate.loadId, repoId);
+  assert.deepEqual(scopes, [repoId]);
+
+  const snapshot = cachePath + "/snapshots/revision";
+  const [explicit] = helpers.buildAutoLoadSources([{ ...rows[0], load_id: snapshot }], [], [], 8192);
+  await explicit.listVariants();
+  assert.equal(scopes.at(-1), snapshot);
+  const [legacy] = helpers.buildAutoLoadSources([{ ...rows[0], load_id: undefined }], [], [], 8192);
+  await legacy.listVariants();
+  assert.equal(scopes.at(-1), cachePath);
+  const localPath = "/models/local";
+  const [local] = helpers.buildAutoLoadSources([], [], [{
+    id: localPath, path: localPath, capabilities: { requires_variant: true },
+  }], 8192);
+  await local.listVariants();
+  assert.equal(scopes.at(-1), localPath);
 });

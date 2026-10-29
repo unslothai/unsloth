@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GPU verification of the Phase 9 pre-quantized load path through the real backend code.
-
-Exercises the actual product functions (``load_prequantized_transformer`` and the runtime
-``quantize_transformer``), not a reimplementation:
-
-  prequant  -- load the checkpoint built by build_prequant_checkpoint.py via the real
-               ``load_prequantized_transformer`` (meta-init + assign), measure GPU load peak,
-               generate.
-  runtime   -- the existing path: from_pretrained dense bf16 -> ``quantize_transformer`` on
-               device, measure GPU load peak, generate (the LPIPS reference).
-
-Asserts the prequant load peak is far below the dense one and the images match (LPIPS ~0).
-Run each mode in its own process for a clean peak. One CUDA GPU."""
+"""Asserts pre-quantized load peak memory is far below runtime quantize and images match (LPIPS ~0)."""
 
 from __future__ import annotations
 
@@ -84,6 +72,7 @@ def _lpips(ref, arr):
 
 def run(mode, steps, seed, res):
     sys.path.insert(0, str(BACKEND))
+    os.environ["UNSLOTH_NVFP4_DIFFUSION"] = "1"
     import torch
     import diffusers
     from core.inference.diffusion_prequant import (
@@ -99,8 +88,7 @@ def run(mode, steps, seed, res):
     torch.cuda.empty_cache()
 
     if mode == "prequant":
-        # Local checkpoints are refused unless allowlisted;
-        # CKPT is operator-supplied and trusted.
+        # CKPT is operator-supplied and trusted, so allowlist its directory.
         ckpt_dir = os.path.dirname(os.path.realpath(CKPT))
         existing = os.environ.get(ALLOW_LOCAL_PREQUANT_PATH_ENV, "")
         os.environ[ALLOW_LOCAL_PREQUANT_PATH_ENV] = (
@@ -127,7 +115,7 @@ def run(mode, steps, seed, res):
         load_peak = torch.cuda.max_memory_allocated() / 1e9
         marker = getattr(transformer, "_unsloth_runtime_quant", None)
         print(f"[prequant] load_gpu_peak={load_peak:.1f} GB  marker={marker}", flush = True)
-    else:  # runtime
+    else:
         transformer = transformer_cls.from_pretrained(
             BASE, subfolder = "transformer", torch_dtype = torch.bfloat16
         ).to("cuda")
@@ -138,7 +126,6 @@ def run(mode, steps, seed, res):
         scheme = quantize_transformer(pipe, _target(torch.bfloat16), mode = "fp8", logger = LOGGER)
         load_peak = torch.cuda.max_memory_allocated() / 1e9
         print(f"[runtime] engaged={scheme}  load_gpu_peak={load_peak:.1f} GB", flush = True)
-        # Persist the dense reference peak so a later prequant run can enforce its VRAM win.
         _RUNTIME_PEAK_FILE.write_text(f"{load_peak:.6f}")
 
     img, dt = _gen(pipe, steps, seed, res)
@@ -149,7 +136,6 @@ def run(mode, steps, seed, res):
     if mode != "prequant":
         return 0
 
-    # Enforce both invariants so a broken checkpoint fails loudly instead of merely completing.
     ref_path = OUT / "runtime.png"
     if not ref_path.exists():
         print("FAIL: runtime reference image missing; run --mode runtime first", flush = True)

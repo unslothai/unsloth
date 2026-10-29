@@ -18,6 +18,23 @@ import pytest
 from unsloth_pwsh_runner import pwsh_env, run_pwsh
 
 
+# A pip-style launcher, not a renamed System32 tool (an AV masquerading shape, AV009).
+_SLEEPER_SOURCE = (
+    "import sys, time\n"
+    "args = sys.argv[1:]\n"
+    "time.sleep(float(args[args.index('-n') + 1]) if '-n' in args else 0)\n"
+)
+
+
+def _write_sleeper(path: Path) -> None:
+    from windows_console_stub import console_stub_bytes
+
+    stub = console_stub_bytes(source = _SLEEPER_SOURCE)
+    if stub is None:
+        pytest.skip("no distlib console launcher to build a stand-in process from")
+    path.write_bytes(stub)
+
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
 COMMANDS_RS = REPO_ROOT / "studio" / "src-tauri" / "src" / "commands.rs"
@@ -38,19 +55,14 @@ def _extract(pattern: str, source: str) -> str:
 
 
 def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
-    # Through a FILE, not -Command: Windows caps a command line at 32767 characters. utf-8-sig, or PowerShell 5.1 reads the .ps1 as ANSI.
+    # Through a FILE: Windows caps command lines at 32767 chars; utf-8-sig since PS 5.1 reads ANSI.
     handle, name = tempfile.mkstemp(suffix = ".ps1")
     os.close(handle)
     try:
         Path(name).write_text(script, encoding = "utf-8-sig")
-        # run_pwsh, not subprocess.run: the assertion below reads a non-zero exit as the
-        # mutex helpers failing, which is exactly what a pwsh killed at startup by the
-        # shared profile cache looks like from here. See tests/_shared/unsloth_pwsh_runner.py.
         result = run_pwsh(
             [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", name],
-            # check = False, then asserted below with the output attached. check = True
-            # reports only "exit status 1" and discards the PowerShell error, which on a
-            # CI runner is the whole diagnosis.
+            # check = False: check = True discards the PowerShell error, which is the whole diagnosis.
             check = False,
             capture_output = True,
             text = True,
@@ -79,7 +91,7 @@ def _ps_file(directory: Path, name: str, script: str) -> str:
     return str(path)
 
 
-# The chain Get-StudioFinalPath dispatches to: extracted alone, the dispatcher yields undefined calls (#9140).
+# Get-StudioFinalPath dispatches to these; extracted alone it yields undefined calls.
 _FINAL_PATH_CHAIN = (
     "Write-StudioLine",
     "Test-StudioDirectoryUsable",
@@ -88,95 +100,149 @@ _FINAL_PATH_CHAIN = (
     "New-StudioPrivateTempDirectory",
     "Initialize-StudioTempEnvironment",
     "Write-StudioFinalPathDegraded",
-    "Test-StudioCanDefineNativeTypes",
-    "Test-StudioEmitInChildProcess",
-    "New-StudioDynamicAssembly",
-    "New-StudioEmittedNativeType",
-    "Initialize-StudioFinalPathNativeType",
-    "Get-StudioNativeFinalPath",
     "Resolve-StudioLinkTarget",
     "Get-StudioSubstTarget",
+    "Get-ElevationState",
+    "Get-StudioEarlyPython",
+    "Invoke-StudioEarlyPythonScript",
+    "New-StudioChildScriptDirectory",
+    "Test-StudioChildScriptDirectoryElevated",
+    "Test-StudioPathUnderAdminRoot",
+    "Test-StudioSddlRightsAreWrite",
+    "Test-StudioSddlPrincipalIsAdminOnly",
+    "Test-StudioSddlWritableByNonAdmin",
+    "Test-StudioDirectoryIsAdminOnly",
+    "Test-StudioInterpreterFileIsAdminOnly",
+    "Get-StudioLexicalParent",
+    "Invoke-StudioSystem32ToolBounded",
+    "Get-StudioSystem32Tool",
+    "Test-StudioPlainFile",
+    "Test-UnslothCmdShimFile",
+    "Invoke-StudioEarlyPython",
+    "Get-StudioPythonFinalPath",
+    "Resolve-StudioFinalPathsInOneChild",
     "Get-StudioLexicalPath",
     "Resolve-StudioFinalPathInfo",
     "Get-StudioFinalPath",
 )
 
 
+# Hosted runners are elevated; these cases model a standard user to test lock identity.
+_STANDARD_USER = "function Test-StudioChildScriptDirectoryElevated { return $false }\n"
+
+
 def _final_path_helpers(source: str) -> str:
-    return "\n".join(
-        _extract(rf"    function {name} \{{.*?\n    \}}\n", source) for name in _FINAL_PATH_CHAIN
+    return (
+        "\n".join(
+            _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
+            for name in _FINAL_PATH_CHAIN
+        )
+        + "\n"
+        + _STANDARD_USER
     )
 
 
 def _mutex_helpers(source: str) -> str:
-    return "\n".join(
-        _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
-        for name in (
-            # These scripts run under -ErrorActionPreference Stop, and Test-StudioPathEqual reports through
-            # Write-StudioLine. Extracted, not stubbed: a stub would keep passing if the real call went wrong.
-            "Write-StudioLine",
-            "Enter-StudioNamedMutex",
-            # Get-StudioFinalPath is a dispatcher: it falls back to the pure PowerShell resolver (#9140).
-            "Test-StudioDirectoryUsable",
-            "Remove-StudioStalePrivateTempDirectories",
-            "Get-StudioPrivateTempRoots",
-            "New-StudioPrivateTempDirectory",
-            "Initialize-StudioTempEnvironment",
-            "Write-StudioFinalPathDegraded",
-            "Initialize-StudioFinalPathNativeType",
-            "Test-StudioCanDefineNativeTypes",
-            "Test-StudioEmitInChildProcess",
-            "New-StudioDynamicAssembly",
-            "New-StudioEmittedNativeType",
-            "Get-StudioNativeFinalPath",
-            "Resolve-StudioLinkTarget",
-            "Get-StudioSubstTarget",
-            "Get-StudioLexicalPath",
-            "Resolve-StudioFinalPathInfo",
-            "Get-StudioFinalPath",
-            "Get-StudioPathHash",
-            "Get-StudioInstallMutexName",
-            "Test-StudioPathEqual",
-            "Get-StudioRuntimeMutexNameForSid",
-            "Get-StudioRuntimePathHash",
-            "Get-StudioRuntimeMutexNameForPath",
-            "Get-StudioCurrentUserSid",
-            "Get-StudioRuntimeMutexName",
-            "Get-StudioRuntimeMutexNames",
-            "Enter-StudioInstallMutex",
-            "Exit-StudioInstallMutex",
+    return (
+        "\n".join(
+            _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
+            for name in (
+                # Extracted, not stubbed: a stub would keep passing if the real call went wrong.
+                "Write-StudioLine",
+                "Enter-StudioNamedMutex",
+                "Test-StudioDirectoryUsable",
+                "Remove-StudioStalePrivateTempDirectories",
+                "Get-StudioPrivateTempRoots",
+                "New-StudioPrivateTempDirectory",
+                "Initialize-StudioTempEnvironment",
+                "Write-StudioFinalPathDegraded",
+                "Resolve-StudioLinkTarget",
+                "Get-StudioSubstTarget",
+                "Get-ElevationState",
+                "Get-StudioEarlyPython",
+                "Invoke-StudioEarlyPythonScript",
+                "New-StudioChildScriptDirectory",
+                "Test-StudioChildScriptDirectoryElevated",
+                "Test-StudioPathUnderAdminRoot",
+                "Test-StudioSddlRightsAreWrite",
+                "Test-StudioSddlPrincipalIsAdminOnly",
+                "Test-StudioSddlWritableByNonAdmin",
+                "Test-StudioDirectoryIsAdminOnly",
+                "Test-StudioInterpreterFileIsAdminOnly",
+                "Get-StudioLexicalParent",
+                "Invoke-StudioSystem32ToolBounded",
+                "Get-StudioSystem32Tool",
+                "Test-StudioPlainFile",
+                "Test-UnslothCmdShimFile",
+                "Invoke-StudioEarlyPython",
+                "Get-StudioPythonFinalPath",
+                "Resolve-StudioFinalPathsInOneChild",
+                "Get-StudioLexicalPath",
+                "Resolve-StudioFinalPathInfo",
+                "Get-StudioFinalPath",
+                "Get-StudioPathHash",
+                "Get-StudioInstallMutexName",
+                "Test-StudioPathEqual",
+                "Get-StudioRuntimeMutexNameForSid",
+                "Get-StudioRuntimePathHash",
+                "Get-StudioRuntimeMutexNameForPath",
+                "Get-StudioCurrentUserSid",
+                "Get-StudioRuntimeMutexName",
+                "Get-StudioRuntimeMutexNames",
+                "Enter-StudioInstallMutex",
+                "Exit-StudioInstallMutex",
+            )
         )
+        + "\n"
+        + _STANDARD_USER
     )
 
 
 def _process_helpers(source: str) -> str:
-    return "\n".join(
-        _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
-        for name in (
-            "Write-StudioLine",
-            "Test-StudioDirectoryUsable",
-            "Remove-StudioStalePrivateTempDirectories",
-            "Get-StudioPrivateTempRoots",
-            "New-StudioPrivateTempDirectory",
-            "Initialize-StudioTempEnvironment",
-            "Write-StudioFinalPathDegraded",
-            "Initialize-StudioFinalPathNativeType",
-            "Test-StudioCanDefineNativeTypes",
-            "Test-StudioEmitInChildProcess",
-            "New-StudioDynamicAssembly",
-            "New-StudioEmittedNativeType",
-            "Get-StudioNativeFinalPath",
-            "Resolve-StudioLinkTarget",
-            "Get-StudioSubstTarget",
-            "Get-StudioLexicalPath",
-            "Resolve-StudioFinalPathInfo",
-            "Get-StudioFinalPath",
-            "Test-StudioProtectedPathMatch",
-            "Initialize-StudioProcessImageNativeType",
-            "Get-StudioNativeProcessImagePath",
-            "Get-StudioProcessImagePath",
-            "Get-RunningStudioVenvProcesses",
+    return (
+        "\n".join(
+            _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
+            for name in (
+                "Write-StudioLine",
+                "Test-StudioDirectoryUsable",
+                "Remove-StudioStalePrivateTempDirectories",
+                "Get-StudioPrivateTempRoots",
+                "New-StudioPrivateTempDirectory",
+                "Initialize-StudioTempEnvironment",
+                "Write-StudioFinalPathDegraded",
+                "Resolve-StudioLinkTarget",
+                "Get-StudioSubstTarget",
+                "Get-ElevationState",
+                "Get-StudioEarlyPython",
+                "Invoke-StudioEarlyPythonScript",
+                "New-StudioChildScriptDirectory",
+                "Test-StudioChildScriptDirectoryElevated",
+                "Test-StudioPathUnderAdminRoot",
+                "Test-StudioSddlRightsAreWrite",
+                "Test-StudioSddlPrincipalIsAdminOnly",
+                "Test-StudioSddlWritableByNonAdmin",
+                "Test-StudioDirectoryIsAdminOnly",
+                "Test-StudioInterpreterFileIsAdminOnly",
+                "Get-StudioLexicalParent",
+                "Invoke-StudioSystem32ToolBounded",
+                "Get-StudioSystem32Tool",
+                "Test-StudioPlainFile",
+                "Test-UnslothCmdShimFile",
+                "Invoke-StudioEarlyPython",
+                "Get-StudioPythonFinalPath",
+                "Resolve-StudioFinalPathsInOneChild",
+                "Get-StudioLexicalPath",
+                "Resolve-StudioFinalPathInfo",
+                "Get-StudioFinalPath",
+                "Test-StudioProtectedPathMatch",
+                "Get-StudioPythonProcessImageTable",
+                "Get-StudioWmiProcessImageRows",
+                "Get-StudioProcessImagePath",
+                "Get-RunningStudioVenvProcesses",
+            )
         )
+        + "\n"
+        + _STANDARD_USER
     )
 
 
@@ -188,10 +254,10 @@ def test_running_venv_process_is_reported(tmp_path: Path, shell: str):
     scripts = tmp_path / "unsloth_studio" / "Scripts"
     scripts.mkdir(parents = True)
     probe = scripts / "guard-probe.exe"
-    shutil.copy2(Path(os.environ["SystemRoot"]) / "System32" / "PING.EXE", probe)
+    _write_sleeper(probe)
 
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    # Long enough that the child outlives the scan: PowerShell 5.1 pays a cold start plus a csc.exe compile first.
+    # Long enough to outlive the scan: PowerShell 5.1 pays a cold start plus a csc.exe compile.
     child = subprocess.Popen(
         [str(probe), "-n", "120", "127.0.0.1"],
         creationflags = creationflags,
@@ -238,7 +304,7 @@ def test_x86_powershell_reports_64_bit_managed_process(tmp_path: Path):
     scripts = tmp_path / "unsloth_studio" / "Scripts"
     scripts.mkdir(parents = True)
     probe = scripts / "guard-probe.exe"
-    shutil.copy2(Path(os.environ["SystemRoot"]) / "System32" / "PING.EXE", probe)
+    _write_sleeper(probe)
     # Long-lived: a 32-bit shell pays a WOW64 start plus an Add-Type compile.
     child = subprocess.Popen(
         [str(probe), "-n", "120", "127.0.0.1"],
@@ -283,7 +349,7 @@ def test_installer_decision_stops_active_process_and_allows_idle(tmp_path: Path,
     marker = venv / "must-remain.txt"
     marker.write_text("untouched", encoding = "utf-8")
     worker = scripts / "worker.exe"
-    shutil.copy2(Path(os.environ["SystemRoot"]) / "System32" / "PING.EXE", worker)
+    _write_sleeper(worker)
     child = subprocess.Popen(
         [str(worker), "-n", "30", "127.0.0.1"],
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -354,8 +420,6 @@ def test_installer_ignores_command_line_and_cwd_only_path_mentions():
     assert "$process.Path" not in detector
     assert "Get-StudioProcessImagePath -ProcessId $process.Id" in detector
 
-    # The same contract on every rung: a confirmed image, never a command line. The Win32_Process rung
-    # exists because a host that cannot compile the native helper would overwrite a venv in use (#9140).
     image = _extract(r"    function Get-StudioProcessImagePath \{.*?\n    \}\n", source)
     assert ".CommandLine" not in image
     assert "ExecutablePath" in image
@@ -363,7 +427,7 @@ def test_installer_ignores_command_line_and_cwd_only_path_mentions():
 
 @pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
 @pytest.mark.parametrize("shell", POWERSHELLS)
-def test_versioned_native_helper_loads_after_older_installer_type(shell: str):
+def test_the_resolver_survives_an_older_installer_type_in_the_session(shell: str):
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     final_path_helper = _mutex_helpers(source)
     script = f"""
@@ -376,10 +440,9 @@ public static class UnslothStudioFinalPath
 '@
 {final_path_helper}
 $resolved = Get-StudioFinalPath -Path $env:SystemRoot
-Write-Output ([bool]("UnslothStudioFinalPathV3" -as [type]))
 Write-Output ([bool]($resolved -and (Test-Path -LiteralPath $resolved)))
 """
-    assert _run_powershell(shell, script, os.environ.copy()).splitlines() == ["True", "True"]
+    assert _run_powershell(shell, script, os.environ.copy()).splitlines() == ["True"]
 
 
 @pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
@@ -438,7 +501,7 @@ def test_junction_alias_process_is_reported_for_physical_venv(tmp_path: Path, sh
         text = True,
     )
     probe = alias / "Scripts" / "guard-probe.exe"
-    shutil.copy2(Path(os.environ["SystemRoot"]) / "System32" / "PING.EXE", probe)
+    _write_sleeper(probe)
     child = subprocess.Popen(
         [str(probe), "-n", "6", "127.0.0.1"],
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -465,7 +528,7 @@ def test_exact_studio_bin_shim_process_is_reported(tmp_path: Path, shell: str):
     detector = _process_helpers(source)
     shim = tmp_path / "studio" / "bin" / "unsloth.exe"
     shim.parent.mkdir(parents = True)
-    shutil.copy2(Path(os.environ["SystemRoot"]) / "System32" / "PING.EXE", shim)
+    _write_sleeper(shim)
     child = subprocess.Popen(
         [str(shim), "-n", "6", "127.0.0.1"],
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -673,9 +736,7 @@ Write-Output "READY"
 [Console]::ReadLine() | Out-Null
 Exit-StudioInstallMutex -Mutex $mutex
 """
-    # pwsh_env, not run_pwsh: the holder is a long-lived process that this test writes to
-    # over its stdin while a second shell races it for the mutex, so it cannot be a
-    # subprocess.run call at all. It still takes the private startup cache.
+    # pwsh_env, not run_pwsh: the holder is long-lived and driven over stdin.
     holder = subprocess.Popen(
         [
             shell,
@@ -822,9 +883,7 @@ if ($null -eq $mutex) {{ Write-Output "BLOCKED"; exit 0 }}
 Write-Output "ACQUIRED"
 Exit-StudioInstallMutex -Mutex $mutex
 """
-    # pwsh_env, not run_pwsh: the holder is a long-lived process that this test writes to
-    # over its stdin while a second shell races it for the mutex, so it cannot be a
-    # subprocess.run call at all. It still takes the private startup cache.
+    # pwsh_env, not run_pwsh: the holder is long-lived and driven over stdin.
     holder = subprocess.Popen(
         [
             shell,
@@ -890,8 +949,6 @@ def test_guard_and_mutex_precede_rollback_and_release_after_restore():
     prompt = source.index("Start Unsloth Studio now?", restore)
     autostart = source.index("Start-Process -FilePath $VenvPython", prompt)
     release_runtime = source.rindex("Exit-StudioInstallMutex -Mutex $studioRuntimeMutexes[$i]")
-    # The install lock is a mutex AND a file now; the runtime locks above are still plain mutexes,
-    # which is why only this one changed spelling. The ordering contract is unchanged.
     release_install = source.rindex("Exit-StudioInstallLock -Lock $studioInstallLock")
     wait_for_exit = source.rindex("$studioAutoStartProcess.WaitForExit()")
 
@@ -970,10 +1027,9 @@ def test_every_tauri_managed_child_spawn_uses_the_runtime_gate():
     provision_wait = desktop_auth_source.index("child.wait_with_output()", provision_spawn)
     assert provision_guard < provision_spawn < provision_wait
 
-    # The guard covers the idle scan and the whole child lifetime.
     update_call = update_source.index("crate::process::with_studio_runtime_launch_guard(")
     update_scan = update_source.index("ensure_managed_environment_is_idle(&bin)", update_call)
-    # A deferred 805-807 rollback still names the live runtime, so it is settled before the update installs there.
+    # A deferred rollback still names the live runtime, so it is settled before the update.
     update_legacy = update_source.index("staged_update::reconcile_before_update(", update_scan)
     update_spawn = update_source.index("spawn_update(&bin, &state)", update_legacy)
     update_wait = update_source.index("wait_for_exit(&state)", update_spawn)
@@ -987,7 +1043,6 @@ def test_every_tauri_managed_child_spawn_uses_the_runtime_gate():
         < update_guard_release
     )
 
-    # The child inherits the gate on every platform: the POSIX shell holds its own flock around the child.
     spawn_fn = update_source.index("fn spawn_update(")
     spawn_gate_env = update_source.index("configure_runtime_gate_environment(&mut cmd);", spawn_fn)
     assert spawn_fn < spawn_gate_env < update_call
@@ -1022,7 +1077,7 @@ def test_runtime_gate_handoff_covers_managed_children():
     )
     assert save < set_handoff < autostart < restore
 
-    # The save sits above the try covering the whole handoff, or a finally clears a value it never set.
+    # The save sits above the try, or a finally clears a value it never set.
     setup_save = install_source.index("$previousSetupRuntimeGateHandoff =")
     setup_try = install_source.index("\n    try {\n        $env:SKIP_STUDIO_BASE", setup_save)
     setup_python = install_source.index("$env:UNSLOTH_SETUP_PYTHON =", setup_try)
@@ -1073,7 +1128,6 @@ def test_legacy_staged_update_cleanup_runs_under_the_runtime_gate():
     reconcile = main_source.index("staged_update::reconcile_legacy_at_launch", reconcile_gate)
     assert setup < reconcile_gate < reconcile
 
-    # Nothing activates a stage any more: the whole directory goes, and before the rollback.
     entry = staged_source.index("pub(crate) fn reconcile_legacy_at_launch(")
     trash = staged_source.index("remove_stale_trash(home);", entry)
     failed = staged_source.index("fs::remove_file(home.join(FAILED_MARKER));", trash)
@@ -1081,7 +1135,6 @@ def test_legacy_staged_update_cleanup_runs_under_the_runtime_gate():
     rollback = staged_source.index("roll_back_unconfirmed(home)", stage)
     assert entry < trash < failed < stage < rollback
 
-    # The stage is a clone of the managed venv, so the launch renames it and unlinks off the launch path.
     discard = staged_source.index("fn discard_stage_with(")
     rename = staged_source.index("rename(&stage, &trash)", discard)
     spawn = staged_source.index("std::thread::spawn", rename)
@@ -1113,12 +1166,13 @@ def test_the_extracted_helpers_can_call_everything_they_call(helpers):
     every platform, unlike the scripts themselves."""
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     extracted = helpers(source)
-    # Every top-level installer function, i.e. everything the harness COULD be missing.
     installer_functions = set(re.findall(r"^    function ([\w-]+) \{", source, flags = re.M))
     provided = set(re.findall(r"^    function ([\w-]+) \{", extracted, flags = re.M))
     assert provided, "the helper extraction produced nothing"
 
-    called = set(re.findall(r"(?<![\w-])([A-Z][\w]*-[\w-]+)", extracted))
+    # Whole-line comments dropped: a function named in prose is not a call.
+    code = "\n".join(line for line in extracted.splitlines() if not line.lstrip().startswith("#"))
+    called = set(re.findall(r"(?<![\w-])([A-Z][\w]*-[\w-]+)", code))
     missing = sorted((called & installer_functions) - provided)
     assert not missing, (
         f"{helpers.__name__} extracts functions that call {missing}, which the "

@@ -1,15 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Completion-only masking policy shared by the CUDA and MLX training paths.
+"""Completion-only masking for CUDA and MLX: explicit dataset markers if requested, else template
+detection with manual markers as fallback; gpt-oss must use detection, not markers"""
 
-Decides how train_on_responses_only is applied for a model: explicit dataset
-markers when requested, otherwise chat template auto-detection with manual
-TEMPLATE_TO_RESPONSES_MAPPER markers as the fallback. gpt-oss included: its
-quantized checkpoints ship a different chat template, so only detection from
-the actual template is reliable.
-"""
-
+from .iterable import is_streaming_dataset
 from .model_mappings import (
     MODEL_TO_TEMPLATE_MAPPER,
     TEMPLATE_TO_RESPONSES_MAPPER,
@@ -28,6 +23,36 @@ def lookup_manual_markers(model_name):
     return template, None, None
 
 
+def _mask_tool_responses(trainer, start_id, end_id, turn_id):
+    def mask(batch):
+        all_labels = []
+        for input_ids, labels in zip(batch["input_ids"], batch["labels"]):
+            if start_id in input_ids:
+                input_ids, labels = list(input_ids), list(labels)
+                starts = [i for i, token in enumerate(input_ids) if token == start_id]
+                for start, limit in zip(starts, starts[1:] + [len(input_ids)]):
+                    span = input_ids[start + 1 : limit]
+                    # An unanswered tool call has no closing marker; its span ends at the next turn.
+                    if end_id in span:
+                        stop = span.index(end_id) + 1
+                    else:
+                        stop = span.index(turn_id) if turn_id in span else len(span)
+                    labels[start + 1 : start + 1 + stop] = [-100] * stop
+            all_labels.append(labels)
+        return {"labels": all_labels}
+
+    for name in ("train_dataset", "eval_dataset"):
+        dataset = getattr(trainer, name, None)
+        columns = (
+            next(iter(dataset), {})
+            if is_streaming_dataset(dataset)
+            else getattr(dataset, "column_names", None)
+        )
+        if "labels" in (columns or ()):
+            setattr(trainer, name, dataset.map(mask, batched = True))
+    return trainer
+
+
 def apply_completion_masking(
     trainer,
     model_name,
@@ -37,33 +62,7 @@ def apply_completion_masking(
     detect_fn = None,
     dataset_template = None,
 ):
-    """Apply completion-only masking with an explicit dataset template or
-    auto-detection followed by the manual model-template fallback.
-
-    Args:
-        trainer: The platform trainer (SFTTrainer or MLXTrainer).
-        model_name: Model repo id used for table lookup and the gpt-oss
-            renamed-checkpoint fallback.
-        train_fn: The platform train_on_responses_only callable.
-        num_proc: Forwarded to train_fn when not None (CUDA path only).
-        notify: Optional callback notify(level, message) with level "info" or
-            "warning" for user-visible progress and warnings.
-        detect_fn: Marker detector (tokenizer/processor) -> (instruction_part,
-            response_part). Defaults to unsloth_zoo's get_chat_template_parts,
-            which raises loudly when the template cannot be parsed. Test seam.
-        dataset_template: Explicit template-table key for already-rendered
-            dataset text. Bypasses tokenizer marker detection when provided.
-
-    Returns:
-        (trainer, applied): the possibly wrapped trainer and whether masking
-        was applied. When applied is False the trainer is unchanged and
-        training runs on full sequences.
-
-    Only marker DETECTION failures trigger the table fallback. Exceptions
-    raised while applying the masking (dataset map, tokenization) propagate
-    to the caller in both the auto and manual paths, so a real failure stops
-    the run instead of silently changing the training objective.
-    """
+    """Only marker detection failures use the table fallback; masking errors propagate so a real failure stops the run instead of silently changing the objective."""
     if notify is None:
         notify = lambda level, message: None
     kwargs = {}
@@ -76,6 +75,17 @@ def apply_completion_masking(
         if wrapped is not None:
             processor = wrapped
     inner = getattr(processor, "tokenizer", processor)
+
+    # Gemma 4 puts tool results inside the model turn; MLX labels its batches inside train_fn, out of reach here.
+    vocab = inner.get_added_vocab() if hasattr(inner, "get_added_vocab") else {}
+    tool_response = (vocab.get("<|tool_response>"), vocab.get("<tool_response|>"))
+    if None not in tool_response and type(trainer).__name__ != "MLXTrainer":
+        mask_responses = train_fn
+
+        def train_fn(trainer, **kwargs):
+            return _mask_tool_responses(
+                mask_responses(trainer, **kwargs), *tool_response, vocab.get("<|turn>")
+            )
 
     if dataset_template is not None:
         markers = TEMPLATE_TO_RESPONSES_MAPPER.get(dataset_template)
@@ -109,8 +119,7 @@ def apply_completion_masking(
 
     template, instruction_part, response_part = lookup_manual_markers(model_name)
 
-    # gpt-oss goes auto-first: quantized/BF16 checkpoints ship a channel-less template, so the manual markers match
-    # nothing and zero tokens are trained.
+    # gpt-oss goes auto-first: some checkpoints ship a channel-less template, so manual markers match nothing and zero tokens train.
     if is_gpt_oss_model_name(model_name) and not (instruction_part and response_part):
         markers = TEMPLATE_TO_RESPONSES_MAPPER.get("gpt-oss")
         if markers:
@@ -128,8 +137,7 @@ def apply_completion_masking(
     auto_instruction = auto_response = None
     try:
         if detect_fn is None:
-            # Torch-backed import is fine: the MLX train_fn itself requires
-            # unsloth_zoo.dataset_utils, so a torch-free host cannot mask either way.
+            # MLX train_fn needs unsloth_zoo.dataset_utils anyway, so torch import is fine.
             from unsloth_zoo.dataset_utils import get_chat_template_parts as detect_fn
         auto_instruction, auto_response = detect_fn(processor)
     except Exception as e:

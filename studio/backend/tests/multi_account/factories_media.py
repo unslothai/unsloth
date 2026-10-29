@@ -3,7 +3,7 @@
 
 from .factory_base import Factory, seeder
 
-# ASCII on purpose: it has to survive JSON escaping, a PNG text chunk and a JPEG comment.
+# ASCII: must survive JSON escaping, a PNG text chunk and a JPEG comment.
 SENTINEL = "media-sentinel-prompt"
 
 VIDEO_ID = "media-video-clip"
@@ -14,6 +14,7 @@ MODEL_ID = "media-local-model-Q4_K_M"
 
 IMAGE_LINK_QUERY: dict[str, str] = {}
 VIDEO_LINK_QUERY: dict[str, str] = {}
+AUDIO_LINK_QUERY: dict[str, str] = {}
 
 
 def _image_meta() -> dict:
@@ -26,7 +27,6 @@ def _image_meta() -> dict:
         "guidance": 1.0,
         "seed": 7,
         "model": "media/none",
-        # GalleryImage dates an image with an epoch float, where audio and video use ISO strings.
         "created_at": 1767225600.0,
     }
 
@@ -45,6 +45,38 @@ def seed_image(account) -> dict[str, str]:
     return {"image_id": record["id"]}
 
 
+# Seeded in both accounts so only the item lookup can refuse, not a missing project.
+MEDIA_PROJECT_ID = "media-project"
+
+
+def _calling_account(actor: str):
+    """The account the matrix sends this actor's request as, when it has one of its own."""
+    from auth import storage
+    from utils.account_context import OWNER
+
+    return {"owner": OWNER, "wrong": storage.get_account("bob")}.get(actor)
+
+
+def _seed_media_project(account) -> None:
+    from storage import studio_db
+    from utils.account_context import run_as
+    run_as(
+        account,
+        studio_db.upsert_chat_project,
+        {"id": MEDIA_PROJECT_ID, "name": SENTINEL, "createdAt": 1000, "updatedAt": 1000},
+    )
+
+
+@seeder("media-image-project")
+def seed_image_and_project(account, actor: str = "right") -> dict[str, str]:
+    params = seed_image(account)
+    _seed_media_project(account)
+    caller = _calling_account(actor)
+    if caller is not None:
+        _seed_media_project(caller)
+    return params
+
+
 def _wav_bytes() -> bytes:
     import io
     import wave
@@ -61,6 +93,7 @@ def _wav_bytes() -> bytes:
 @seeder("media-audio")
 def seed_audio(account) -> dict[str, str]:
     from core.inference import audio_gallery
+    from routes.inference import _sign_audio_id
     from utils.account_context import run_as
 
     meta = {
@@ -72,7 +105,101 @@ def seed_audio(account) -> dict[str, str]:
         "created_at": "2026-01-01T00:00:00+00:00",
     }
     record = run_as(account, audio_gallery.save, _wav_bytes(), meta)
+    AUDIO_LINK_QUERY["token"] = run_as(account, _sign_audio_id, record["id"])
     return {"audio_id": record["id"]}
+
+
+@seeder("media-audio-group")
+def seed_audio_group(account) -> dict[str, str]:
+    from core.inference import audio_gallery
+    from utils.account_context import run_as
+
+    meta = {
+        "prompt": SENTINEL,
+        "model": "media/none",
+        "audio_type": "audiocpp_sep",
+        "workflow": "separate",
+        "role": "vocals",
+        "group_id": "matrixgroup",
+        "sample_rate": 8000,
+        "duration_s": 0.008,
+        "created_at": "2026-01-01T00:00:00+00:00",
+    }
+    run_as(account, audio_gallery.save, _wav_bytes(), meta)
+    return {"group_id": "matrixgroup"}
+
+
+@seeder("media-audio-converted")
+def seed_converted_audio(account) -> dict[str, str]:
+    import tempfile
+    from pathlib import Path
+
+    from core.inference import audio_gallery
+    from utils.account_context import run_as
+
+    meta = {
+        "prompt": SENTINEL,
+        "model": "media/none",
+        "audio_type": "speech",
+        "workflow": "convert",
+        "sample_rate": 8000,
+        "duration_s": 0.008,
+        "created_at": "2026-01-01T00:00:00+00:00",
+    }
+    with tempfile.TemporaryDirectory() as scratch:
+        source = Path(scratch) / "source.wav"
+        source.write_bytes(_wav_bytes())
+        record = run_as(account, audio_gallery.save, _wav_bytes(), meta, source)
+    return {"audio_id": record["id"]}
+
+
+@seeder("media-audio-project")
+def seed_audio_and_project(account, actor: str = "right") -> dict[str, str]:
+    params = seed_audio(account)
+    _seed_media_project(account)
+    caller = _calling_account(actor)
+    if caller is not None:
+        _seed_media_project(caller)
+    return params
+
+
+@seeder("media-audio-input")
+def seed_audio_input(account) -> dict[str, str]:
+    import hashlib
+
+    from core.inference import audio_inputs
+    from utils.account_context import run_as
+
+    data = _wav_bytes()
+
+    def save() -> dict:
+        directory = audio_inputs.inputs_dir()
+        upload = directory / ".matrix.upload.tmp"
+        upload.write_bytes(data)
+        try:
+            record, _ = audio_inputs._finish_upload(
+                directory, upload, hashlib.sha256(data).hexdigest(), SENTINEL, len(data)
+            )
+        finally:
+            upload.unlink(missing_ok = True)
+        return record
+
+    return {"input_id": run_as(account, save)["id"]}
+
+
+@seeder("media-audio-voice")
+def seed_audio_voice(account) -> dict[str, str]:
+    import tempfile
+    from pathlib import Path
+
+    from core.inference import audio_voices
+    from utils.account_context import run_as
+
+    with tempfile.TemporaryDirectory() as scratch:
+        source = Path(scratch) / "voice.wav"
+        source.write_bytes(_wav_bytes())
+        record = run_as(account, audio_voices.create, source, {"name": SENTINEL})
+    return {"voice_id": record["id"]}
 
 
 @seeder("media-transcript")
@@ -133,6 +260,16 @@ def seed_video(account) -> dict[str, str]:
     run_as(account, video_gallery.save, _mp4_bytes(), meta, VIDEO_ID)
     VIDEO_LINK_QUERY["token"] = run_as(account, _sign_video_id, VIDEO_ID)
     return {"video_id": VIDEO_ID}
+
+
+@seeder("media-video-project")
+def seed_video_and_project(account, actor: str = "right") -> dict[str, str]:
+    params = seed_video(account)
+    _seed_media_project(account)
+    caller = _calling_account(actor)
+    if caller is not None:
+        _seed_media_project(caller)
+    return params
 
 
 @seeder("media-search-image")
@@ -198,7 +335,7 @@ def seed_model(account) -> dict[str, str]:
     header = b"GGUF" + struct.pack("<I", 3) + struct.pack("<QQ", 0, 0)
     (folder / f"{MODEL_ID}.gguf").write_bytes(header + b"\x00" * 256)
     run_as(account, studio_db.add_scan_folder_with_status, str(folder))
-    # Drop the catalog's own 30s memo, so the request rescans instead of reusing a stale root.
+    # Drop the catalog's 30s memo so the request rescans.
     inference._CATALOG_CACHE.update(at = 0.0, models = [])
     inference._managed_catalogs.clear()
     inference._SERVABLE_SCAN_CACHE["entry"] = None
@@ -224,15 +361,61 @@ FACTORIES = {
         unauthenticated = (200,),
         reason = _LINK_IS_THE_CREDENTIAL,
     ),
+    "routes.inference:GET:/images/gallery/{image_id}/signed-url": Factory(
+        "media-image", fragment = "file-signed"
+    ),
     "routes.inference:PATCH:/images/gallery/{image_id}": Factory(
         "media-image", {"archived": True}, fragment = SENTINEL
     ),
     "routes.inference:DELETE:/images/gallery/{image_id}": Factory("media-image"),
+    "routes.inference:POST:/images/gallery/{image_id}/move": Factory(
+        "media-image", {"after_id": None}, fragment = SENTINEL
+    ),
+    "routes.inference:POST:/images/gallery/{image_id}/project": Factory(
+        "media-image-project", {"project_id": MEDIA_PROJECT_ID}, fragment = "sandbox"
+    ),
     "routes.inference:GET:/audio/gallery/{audio_id}/file": Factory("media-audio"),
+    "routes.inference:GET:/audio/gallery/{audio_id}/signed-url": Factory(
+        "media-audio", fragment = "file-signed"
+    ),
+    "routes.inference:GET:/audio/gallery/{audio_id}/file-signed": Factory(
+        "media-audio",
+        query = AUDIO_LINK_QUERY,
+        owner = (200,),
+        wrong = (200,),
+        unauthenticated = (200,),
+        reason = _LINK_IS_THE_CREDENTIAL,
+    ),
+    "routes.inference:GET:/audio/gallery/{audio_id}/source/file": Factory("media-audio-converted"),
     "routes.inference:PATCH:/audio/gallery/{audio_id}": Factory(
         "media-audio", {"archived": True}, fragment = SENTINEL
     ),
     "routes.inference:DELETE:/audio/gallery/{audio_id}": Factory("media-audio"),
+    "routes.inference:DELETE:/audio/gallery/group/{group_id}": Factory("media-audio-group"),
+    "routes.inference:POST:/audio/gallery/{audio_id}/move": Factory(
+        "media-audio", {"after_id": None}, fragment = SENTINEL
+    ),
+    "routes.inference:POST:/audio/gallery/{audio_id}/project": Factory(
+        "media-audio-project", {"project_id": MEDIA_PROJECT_ID}, fragment = "sandbox"
+    ),
+    "routes.inference:GET:/audio/inputs/{input_id}/file": Factory("media-audio-input"),
+    "routes.inference:DELETE:/audio/inputs/{input_id}": Factory("media-audio-input"),
+    "routes.inference:POST:/audio/inputs/{input_id}/transcribe": Factory(
+        "media-audio-input",
+        {"model": "media/none"},
+        right = (404,),
+        fragment = "Model not found",
+        self_expected = (409,),
+        reason = "no speech-to-text model is available, so transcription itself refuses",
+    ),
+    "routes.inference:PATCH:/audio/voices/{voice_id}": Factory(
+        "media-audio-voice", {"name": "renamed"}, fragment = "renamed"
+    ),
+    "routes.inference:DELETE:/audio/voices/{voice_id}": Factory("media-audio-voice"),
+    "routes.inference:GET:/audio/voices/{voice_id}/file": Factory("media-audio-voice"),
+    "routes.inference:GET:/audio/transcripts/{transcript_id}": Factory(
+        "media-transcript", fragment = SENTINEL
+    ),
     "routes.inference:PATCH:/audio/transcripts/{transcript_id}": Factory(
         "media-transcript", {"archived": True}, fragment = SENTINEL
     ),
@@ -250,10 +433,25 @@ FACTORIES = {
         "media-video", fragment = "file-signed"
     ),
     "routes.video:GET:/video/gallery/{video_id}/export": Factory("media-video"),
+    "routes.video:GET:/video/gallery/{video_id}/frame": Factory("media-video"),
+    "routes.video:POST:/video/gallery/{video_id}/audio-input": Factory(
+        "media-video",
+        {},
+        right = (400,),
+        self_expected = (400,),
+        fragment = "no audio track",
+        reason = "the seeded clip is silent, so past the ownership check the extract refuses",
+    ),
     "routes.video:PATCH:/video/gallery/{video_id}": Factory(
         "media-video", {"archived": True}, fragment = SENTINEL
     ),
     "routes.video:DELETE:/video/gallery/{video_id}": Factory("media-video"),
+    "routes.video:POST:/video/gallery/{video_id}/move": Factory(
+        "media-video", {"after_id": None}, fragment = SENTINEL
+    ),
+    "routes.video:POST:/video/gallery/{video_id}/project": Factory(
+        "media-video-project", {"project_id": MEDIA_PROJECT_ID}, fragment = "sandbox"
+    ),
     "routes.video:GET:/videos/{video_id}": Factory("media-video", fragment = SENTINEL),
     "routes.video:GET:/videos/{video_id}/content": Factory("media-video"),
     "routes.video:DELETE:/videos/{video_id}": Factory("media-video", fragment = VIDEO_ID),
@@ -277,9 +475,25 @@ FACTORIES = {
     "routes.inference:HEAD:/sandbox/{session_id}/{filename:path}": Factory("media-sandbox"),
 }
 
+_NPU_INSTALLATION_MODEL = (
+    "an NPU model id names FastFlowLM's one per-installation model store, not an account's "
+    "object, and the route is owner-only (policy.require_owner), so no account owns it"
+)
+
 SKIPPED = {
     "routes.inference:POST:/sandbox/{session_id}/reveal": (
         "opens the backend host's file manager, so a success spawns xdg-open on a machine with "
         "no desktop session and the only in-process outcome is the 500 that failure maps to"
     ),
+    "routes.inference:POST:/sandbox/{session_id}/upload": (
+        "needs a multipart body the JSON matrix client cannot send, so every actor stops at the "
+        "same 422; the folder resolves inside the caller's own sandbox root (test_sandbox_upload)"
+    ),
+    "routes.inference:POST:/sandbox/{session_id}/open": (
+        "launches the backend host's default app for the file and is owner-only "
+        "(require_installation_owner), so no account other than the installation's own reaches it"
+    ),
+    "routes.npu:DELETE:/models/{model_id}": _NPU_INSTALLATION_MODEL,
+    "routes.npu:POST:/models/{model_id}/download": _NPU_INSTALLATION_MODEL,
+    "routes.npu:GET:/models/{model_id}/download": _NPU_INSTALLATION_MODEL,
 }

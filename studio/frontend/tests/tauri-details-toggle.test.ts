@@ -30,7 +30,7 @@ test("the shared detail toggle puts a custom down chevron after its label", asyn
   assert.match(summary, /\bflex\b/);
   assert.ok(
     summary.indexOf("<HugeiconsIcon") > summary.indexOf("Show {label}") &&
-      summary.includes("icon={ChevronDownIcon}"),
+      summary.includes("icon={ChevronDownStandardIcon}"),
     "the chevron must be on the right",
   );
 });
@@ -51,8 +51,6 @@ test("every Tauri screen names its logs through the shared toggle", async () => 
     );
   }
 
-  // The copies these replaced drifted apart on spacing and wording; a hand-rolled
-  // <details> back in a screen is the shape that let that happen.
   for (const sourceText of [startup, update]) {
     assert.doesNotMatch(sourceText, /<details/);
   }

@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Optional Hub file probes must not mutate the cache.
-
-Cached 404s can leave refs pointing to absent snapshots, causing cache scans to omit the repo.
-"""
+"""Optional Hub file probes must not mutate the cache: cached 404s can leave refs to absent snapshots."""
 
 from __future__ import annotations
 
@@ -34,19 +31,16 @@ def _http_error(name: str, *, fallback: str | None = None) -> Exception:
     try:
         return cls(name, response = response)
     except TypeError:
-        # The plain-Exception base takes a message and nothing else.
         return cls(name)
 
 
 _BACKEND = Path(__file__).resolve().parents[1]
 
-# Optional-file readers and the guard each must call before downloading. The template reader
-# reuses its existing path lookup instead of adding another request.
 _GUARDED = {
     "core/inference/llama_cpp.py": {"_fetch_swa_entry_from_hf": "hf_file_definitely_absent"},
     "picker/service.py": {"read_default_chat_template": "get_paths_info"},
     "utils/models/model_config.py": {
-        "_raw_config_has_vision_config": "hf_file_definitely_absent",
+        "_read_raw_config_json": "hf_file_definitely_absent",
         "get_base_model_from_lora_identifier": "hf_file_definitely_absent",
     },
     "utils/security/consent.py": {"_load_remote_code_configs": "hf_file_definitely_absent"},
@@ -67,9 +61,6 @@ def _raise(exc):
 
 def _patch_metadata(monkeypatch, behavior):
     monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", behavior)
-
-
-# --- what counts as absent ---------------------------------------------------
 
 
 def test_the_real_remote_404_reads_as_absent(monkeypatch):
@@ -132,9 +123,6 @@ def test_an_unimportable_hub_is_not_an_answer(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", _fail)
 
     assert hf_file_definitely_absent("Org/Model", "config.json") is False
-
-
-# --- the cache is never touched ----------------------------------------------
 
 
 def test_the_probe_writes_nothing_to_the_cache(monkeypatch, tmp_path):
@@ -201,9 +189,6 @@ def test_the_chat_template_search_skips_paths_the_listing_does_not_name(monkeypa
     assert downloads == [], "a path the listing does not name must never reach the cache"
 
 
-# --- the guard cannot be dropped ---------------------------------------------
-
-
 def _functions(path: Path) -> dict:
     tree = ast.parse(path.read_text(encoding = "utf-8"))
     return {
@@ -214,7 +199,9 @@ def _functions(path: Path) -> dict:
 
 
 def _called_names(node: ast.AST) -> set[str]:
-    """Every function and method name called anywhere inside *node*, nested defs included."""
+    """Every function and method name called anywhere inside *node*, nested defs included. A
+    read handed to the rejected-token retry (``call_hub_with_anonymous_retry(hf_hub_download,
+    ...)``) is called by it, so it counts as called here."""
     names: set[str] = set()
     for child in ast.walk(node):
         if not isinstance(child, ast.Call):
@@ -223,6 +210,13 @@ def _called_names(node: ast.AST) -> set[str]:
             names.add(child.func.id)
         elif isinstance(child.func, ast.Attribute):
             names.add(child.func.attr)
+        callee = getattr(child.func, "id", None) or getattr(child.func, "attr", None)
+        if callee == "call_hub_with_anonymous_retry" and child.args:
+            wrapped = child.args[0]
+            if isinstance(wrapped, ast.Name):
+                names.add(wrapped.id)
+            elif isinstance(wrapped, ast.Attribute):
+                names.add(wrapped.attr)
     return names
 
 

@@ -1,31 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The line between a NAMING and an `unexplained_hot_frame`.
-
-A hot frame with a bridged name is not yet an explanation. `Zk` resolving to
-`cloneChildFibers` tells you what the code is called; it does not tell you why
-it ran 4,110 times, and without that the next step is guesswork.
-
-A NAMING requires the frame's EXACT invocation count, from precise coverage, to
-equal a STRUCTURAL quantity measured independently: blocks x renders,
-subscribers x notifies, siblings x updates. Independently means the structural
-quantity was counted from the DOM or from the app's own instrumentation, not
-derived from the same trace. When those two integers agree, the mechanism is
-identified, the fix is implied, and the prediction is falsifiable at the next
-rung.
-
-When nothing matches, the frame is emitted as `unexplained_hot_frame` carrying
-its bridged name, its exponent and its exact count. That is an honest partial
-result and it is enormously more than a residual: someone can read it, recognise
-the name, and know where to look. What it must never do is get quietly rounded
-into whichever oracle is closest.
-
-NEAR MISSES ARE REPORTED, NOT ACCEPTED. An exact 2x is the signature of React's
-StrictMode double invoke; an exact ratio of (n+1)/n is the signature of counting
-a root along with its children. Those are diagnoses in their own right, so the
-integer ratio is printed. It never promotes a match to a naming.
-"""
+"""A frame is named only when its exact count equals an independently measured structural quantity."""
 
 from __future__ import annotations
 
@@ -38,8 +14,7 @@ NEAR_MISS = "near_miss"
 UNEXPLAINED = "unexplained_hot_frame"
 NOT_MEASURED = "not_measured"
 
-# Integer ratios worth naming when a count is off by a clean factor. Each has a specific mechanical
-# meaning, so reporting the ratio hands over a hypothesis rather than a mystery.
+# Each ratio has a specific mechanical meaning, so naming it hands over a hypothesis.
 _KNOWN_RATIOS: dict[Fraction, str] = {
     Fraction(
         2, 1
@@ -53,12 +28,7 @@ _KNOWN_RATIOS: dict[Fraction, str] = {
 
 @dataclass(frozen = True)
 class StructuralQuantity:
-    """A count measured from the app, independently of the profile.
-
-    `source` must say where the number came from. An oracle whose structural
-    side was derived from the same trace as the frame count proves nothing and
-    the field exists to make that visible in the report.
-    """
+    """source records where the number came from, so an oracle derived from the same trace is visible."""
 
     name: str
     value: int
@@ -102,25 +72,7 @@ class OracleVerdict:
 
 
 def blocks_times_renders(blocks: int, renders: int, source: str) -> StructuralQuantity:
-    """M1's prediction: one work-in-progress fiber cloned per sibling per render.
-
-    `memo` stops a child RENDERING but not React REACHING it.
-    `bailoutOnAlreadyFinishedWork` returns null only when `childLanes` is clear,
-    so an update anywhere in the subtree still walks every sibling and clones
-    one fiber each. With a flat, unvirtualised message list that is
-    blocks x renders clones per chunk, and it is invisible to `<Profiler>`
-    because it is fiber bookkeeping and not component render.
-
-    NAME THE RIGHT FUNCTION. `cloneChildFibers` DOES NOT EXIST IN REACT 19.2.
-    Grepping `react-dom@19.2.4`'s development bundle finds zero occurrences of
-    it; it was inlined at some point before 19. The functions that do exist, and
-    that a symbol bridge built against a real 19.2.4 profiling bundle does
-    resolve, are `createWorkInProgress` (10 occurrences) and
-    `bailoutOnAlreadyFinishedWork` (10). Point this oracle at those. An oracle
-    aimed at a function that does not exist returns `not_measured` forever and
-    reads as "M1 is not happening", which is the wrong conclusion drawn from a
-    stale function name.
-    """
+    """One clone per sibling per render; React 19.2 has no cloneChildFibers; use createWorkInProgress."""
     return StructuralQuantity(
         name = "blocks_x_renders",
         value = blocks * renders,
@@ -140,12 +92,7 @@ def subscribers_times_notifies(subscribers: int, notifies: int, source: str) -> 
 
 
 def chars_times_deltas(chars: int, deltas: int, source: str) -> StructuralQuantity:
-    """M2's prediction: the cumulative buffer is re-parsed once per delta.
-
-    The count that matters for the re-parse is characters rescanned, so this is
-    a quantity to compare against a character counter rather than against a call
-    count; it is here so the M2 oracle has the same shape as the others.
-    """
+    """M2's count is characters rescanned, so compare it against a character counter, not a call count."""
     return StructuralQuantity(
         name = "chars_x_deltas",
         value = chars * deltas,
@@ -175,7 +122,6 @@ def _ratio_note(measured: int, predicted: int) -> str | None:
         return f"exactly {fr.numerator}x predicted"
     if fr.numerator == 1 and 1 < fr.denominator <= 16:
         return f"exactly 1/{fr.denominator} of predicted"
-    # Off by one structural unit, e.g. counting a root alongside its children.
     if abs(measured - predicted) <= 2:
         return f"off by {measured - predicted:+d}, within one structural unit"
     return None
@@ -184,13 +130,7 @@ def _ratio_note(measured: int, predicted: int) -> str | None:
 def check(
     frame: str, exact_call_count: int | None, quantities: Sequence[StructuralQuantity]
 ) -> OracleVerdict:
-    """Compare one frame's exact count against every candidate structural quantity.
-
-    EXACT equality is required for a naming. No tolerance, no rounding. The
-    whole value of an exact count is that it is exact; a count oracle with a 5%
-    tolerance is a correlation with extra steps, and it will match something
-    eventually.
-    """
+    """No tolerance: a naming needs exact integer equality, or a tolerant oracle matches eventually."""
     if exact_call_count is None:
         return OracleVerdict(
             frame = frame,
@@ -266,34 +206,17 @@ def check_all(
 def predicted_next_rung(
     quantity_fn: Callable[[int], StructuralQuantity], next_structural_input: int
 ) -> int:
-    """The count a naming PREDICTS at the next rung.
-
-    A naming that cannot predict forward is a coincidence that has not been
-    caught yet. Emitting the prediction before the next rung runs is what makes
-    it falsifiable.
-    """
+    """Predicts the next rung before it runs, so a naming that cannot predict forward is caught."""
     return quantity_fn(next_structural_input).value
 
 
-# M2 and M3: oracle shapes over PAGE-SIDE counters
-# M1 is settled with a call count from precise coverage, because the mechanism lives inside
-# react-dom where invocations can be counted. M2 and M3 do not work that way: their cost is in how
-# much text is rescanned and how much layout is forced, and those must be counted IN THE PAGE.
-# Layer 3 owns `instruments/layoutcost.js` and already counts `scrollHeight` reads, `scrollTop`
-# writes and MutationObserver callbacks. This section does NOT duplicate it: it fixes the KEY
-# NAMES that file should emit and supplies the oracles that consume them, so counting and
-# interpretation are owned separately.
-# ONE HONEST DIFFERENCE: the M1 oracle is an EXACT INTEGER MATCH that either holds or does not,
-# while the M2 oracle is a REGIME TEST, since SSE deltas do not arrive in equal sizes, so the
-# quadratic prediction is exact only for a uniform stream and must be compared as a ratio with a
-# refusal band. That is weaker evidence and is labelled as such everywhere it is emitted.
+# M2 and M3: oracles over page-side counters emitted by `instruments/layoutcost.js`. Unlike M1's
+# exact integer match, M2 is a regime test: SSE deltas are uneven, so it is weaker evidence.
 
 REGIME_QUADRATIC = "cumulative_reparse_quadratic"
 REGIME_LINEAR = "incremental_parse_linear"
 REGIME_UNDECIDED = "undecided"
 
-# The counters Layer 3's page-side instrument should emit, per streamed reply. Every one is an
-# integer; none is a duration.
 PAGE_COUNTER_CONTRACT: dict[str, dict[str, str]] = {
     "m2_reparse": {
         "parse_calls": "invocations of parseAssistantContent during the reply",
@@ -315,16 +238,7 @@ PAGE_COUNTER_CONTRACT: dict[str, dict[str, str]] = {
 def cumulative_reparse_chars(
     final_content_chars: int, deltas: int, source: str
 ) -> StructuralQuantity:
-    """M2 under the CUMULATIVE hypothesis: the whole buffer is re-parsed per delta.
-
-    If `parseAssistantContent(cumulativeText)` runs on every delta, the i-th
-    delta rescans roughly `i * final/deltas` characters, so the total is
-
-        final * (deltas + 1) / 2
-
-    which is quadratic in reply length at fixed delta size. Exact only for a
-    uniform stream; see the module note about this being a regime test.
-    """
+    """Chars rescanned if the whole buffer is re-parsed per delta; exact only for uniform delta streams."""
     value = int(final_content_chars * (deltas + 1) / 2) if deltas > 0 else 0
     return StructuralQuantity(
         name = "cumulative_reparse_chars",
@@ -351,15 +265,7 @@ def reparse_regime(
     *,
     refusal_band: float = 2.0,
 ) -> dict[str, Any]:
-    """Which regime is the measured rescan count in?
-
-    Compares the measurement against the linear and quadratic predictions in log
-    space and refuses to call it when the two predictions are within
-    `refusal_band` of each other, which happens on short replies where a handful
-    of deltas makes the quadratic prediction indistinguishable from the linear
-    one. Refusing on a short reply is correct: the mechanism is real or not
-    regardless, but that reply cannot show it.
-    """
+    """Refuses to name a regime when linear and quadratic predictions lie within refusal_band."""
     quad = cumulative_reparse_chars(final_content_chars, deltas, "prediction").value
     lin = incremental_parse_chars(final_content_chars, "prediction").value
     out: dict[str, Any] = {
@@ -383,7 +289,6 @@ def reparse_regime(
             "refusal band. This reply is too short to distinguish the regimes; use a longer rung."
         )
         return out
-    # Closer in log space wins; the ratio is reported either way so a reader can see how decisive the call was.
     r_lin = chars_rescanned / lin
     r_quad = chars_rescanned / quad
     out["ratio_to_linear"] = round(r_lin, 3)
@@ -408,15 +313,7 @@ def reparse_regime(
 def forced_layout_per_callback(
     observer_callbacks: int, forced_layouts: int, source: str
 ) -> OracleVerdict:
-    """M3's exact oracle: one forced layout per observer callback.
-
-    This one IS an exact integer match, unlike M2. `stabilize()` reads
-    `scrollHeight` synchronously inside the MutationObserver callback, so if the
-    mechanism is live the two counters are equal. A forced-layout count BELOW
-    the callback count means the read is being skipped or batched on some
-    callbacks, which is a different and much cheaper story; ABOVE means
-    something else is also forcing layout and M3 is not the whole cost.
-    """
+    """Exact match expected: stabilize() forces a layout per callback by reading scrollHeight."""
     return check(
         "autoscroll MutationObserver forced layout",
         forced_layouts,
@@ -434,13 +331,7 @@ def forced_layout_per_callback(
 def forced_layout_cost_quantity(
     forced_layouts: int, thread_nodes: int, source: str
 ) -> StructuralQuantity:
-    """M3's cost shape: each forced layout is proportional to the whole thread.
-
-    The mechanism is invisible to a React Profiler, to markdown timing and to a
-    DOM census, and it grows with THREAD SIZE rather than with reply length,
-    which is what distinguishes it from M2. Compare against the growth exponent
-    of layout time, not against a call count.
-    """
+    """Scales with thread size, not reply length: compare against the layout-time growth exponent."""
     return StructuralQuantity(
         name = "forced_layouts_x_thread_nodes",
         value = forced_layouts * thread_nodes,
@@ -450,13 +341,7 @@ def forced_layout_cost_quantity(
 
 
 def evaluate_page_counters(counters: dict[str, Any]) -> dict[str, Any]:
-    """Run the M2 and M3 oracles over one window's page-side counter block.
-
-    `counters` is the dict Layer 3's page instrument emits, keyed as in
-    `PAGE_COUNTER_CONTRACT`. Missing groups produce an explicit skip with a
-    reason, never a silent absence, because "M3 did not fire" and "nobody
-    counted" must not look the same in a report.
-    """
+    """Missing groups are skipped with a reason, so 'did not fire' differs from 'nobody counted'."""
     out: dict[str, Any] = {}
 
     m2 = counters.get("m2_reparse")

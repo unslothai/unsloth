@@ -1,24 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Parity check between en.ts and every non-English locale:
-// - Locale files may be partial; required release surfaces must be translated.
-// - All non-English keys must exist in en (no extras).
-// - Placeholder set must match per leaf between en and the overlay.
-// --strict also fails on missing keys, naming them (see studio-frontend-ci.yml).
-// Run: npm run i18n:check   (or: npx tsx src/i18n/check-parity.ts [--strict])
+// Locales may be partial outside requiredOverlayPrefixes; non-English keys must exist in en; placeholders must match per leaf.
+// --strict also fails on missing keys. Run: npm run i18n:check
 
 import { ar } from "./locales/ar.ts";
 import { de } from "./locales/de.ts";
 import { en } from "./locales/en.ts";
 import { es } from "./locales/es.ts";
 import { fr } from "./locales/fr.ts";
+import { he } from "./locales/he.ts";
 import { hi } from "./locales/hi.ts";
 import { it } from "./locales/it.ts";
 import { ja } from "./locales/ja.ts";
 import { ko } from "./locales/ko.ts";
 import { ptBR } from "./locales/pt-br.ts";
 import { ru } from "./locales/ru.ts";
+import { sv } from "./locales/sv.ts";
 import { zhCN } from "./locales/zh-CN.ts";
 
 type Tree = { readonly [k: string]: string | Tree };
@@ -112,8 +110,10 @@ const overlays: Record<string, Tree> = {
   es: es as unknown as Tree,
   hi: hi as unknown as Tree,
   ar: ar as unknown as Tree,
+  he: he as unknown as Tree,
   fr: fr as unknown as Tree,
   ru: ru as unknown as Tree,
+  sv: sv as unknown as Tree,
   de: de as unknown as Tree,
   ko: ko as unknown as Tree,
   it: it as unknown as Tree,
@@ -144,7 +144,6 @@ for (const [locale, overlay] of Object.entries(overlays)) {
   console.log(`Missing keys (will fall back to en): ${missing.length}`);
   if (missing.length > 0) {
     anyMissing = true;
-    // Name them either way: the count alone does not say what to translate.
     for (const k of missing) {
       console.log(`  - ${k}`);
     }

@@ -1,27 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The dtype handed to `resolve_attention_implementation` is the *attention* dtype.
-
-The resolver turns Flash Attention off for float32 because the kernels only accept fp16/bf16,
-so it must be told the dtype the attention projections end up in, not the checkpoint load
-dtype. Two loader paths load wide and narrow again afterwards:
-
-  UNSLOTH_FORCE_FLOAT32   loads bfloat16 (loader.py sets dtype = torch.bfloat16) with a
-                          float16 bnb compute dtype.
-
-  UNSLOTH_FORCE_CUSTOM_DTYPE  csm, falcon_h1 and nemotron_h load float32 so the Mamba /
-                          Triton kernels keep ieee precision, then cast every projection to
-                          `correct_dtype` (float16) after the load. Attention never sees
-                          float32, so flash is usable and must not be turned off.
-
-Falcon-H1 at dtype = torch.float16 takes that second path, and reporting the transient
-float32 downgraded a working flash_attention_2 to sdpa.
-
-This checks the selection expression itself rather than a whole model load: the statements
-between `model_class = resolve_model_class(...)` and the resolver call are lifted out of
-vision.py and evaluated against each combination.
-"""
+"""The resolver needs the attention dtype: a transient float32 load must not disable flash."""
 
 import ast
 import sys
@@ -38,10 +18,7 @@ SRC = VISION.read_text(encoding = "utf-8")
 
 
 def _attention_dtype_expression():
-    """The statements building the resolver's `dtype`, plus that keyword's expression.
-
-    Found structurally, so inserting code above it cannot retarget this at another call.
-    """
+    """Finds the resolver's dtype keyword by AST, so code inserted above cannot retarget the check."""
     for node in ast.walk(ast.parse(SRC)):
         if not isinstance(node, ast.FunctionDef) or node.name != "from_pretrained":
             continue
@@ -57,7 +34,6 @@ def _attention_dtype_expression():
                 pytest.fail(
                     "vision.py no longer passes dtype = to resolve_attention_implementation"
                 )
-            # Everything between `model_class = resolve_model_class(...)` and the call.
             for start in range(index - 1, -1, -1):
                 previous = body[start]
                 if (
@@ -82,6 +58,11 @@ def _selected(dtype, do_forced_float32, correct_dtype):
         "auto_model": None,
         "model_name": "",
         "resolve_model_class": lambda *args, **kwargs: None,
+        "model_class": None,
+        "attention_class_for_load": lambda *args, **kwargs: (None, True),
+        "_builds_remote_class": False,
+        "_remote_class": None,
+        "supports_sdpa": True,
     }
     module = ast.Module(body = list(PREAMBLE), type_ignores = [])
     ast.fix_missing_locations(module)
@@ -94,15 +75,13 @@ def _selected(dtype, do_forced_float32, correct_dtype):
 @pytest.mark.parametrize(
     "dtype, do_forced_float32, correct_dtype, expected",
     [
-        # Plain loads: the load dtype is the attention dtype.
         (torch.float32, False, None, torch.float32),
         (torch.bfloat16, False, None, torch.bfloat16),
         (torch.float16, False, None, torch.float16),
         # UNSLOTH_FORCE_FLOAT32: loaded bfloat16 despite the name, so flash stays on.
         (torch.bfloat16, True, None, torch.bfloat16),
         (torch.float32, True, None, torch.bfloat16),
-        # UNSLOTH_FORCE_CUSTOM_DTYPE: csm / falcon_h1 / nemotron_h load float32 and cast the projections back to
-        # correct_dtype, so attention runs in float16.
+        # UNSLOTH_FORCE_CUSTOM_DTYPE models load float32 but cast projections back, so attention is fp16.
         (torch.float32, False, torch.float16, torch.float16),
     ],
 )
@@ -117,6 +96,7 @@ def test_custom_datatype_load_does_not_disable_flash_attention():
 
     class SupportsFlashAndSdpa:
         _supports_flash_attn_2 = True
+        _supports_flash_attn = True  # the flag transformers >= 4.53 dispatches on
         _supports_flex_attn = False
         _supports_sdpa = True
 

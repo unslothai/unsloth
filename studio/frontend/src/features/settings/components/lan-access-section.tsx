@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -22,34 +23,41 @@ import {
 import { Switch } from "@/components/ui/switch";
 import {
   loadLanAccess,
+  publishLanUrls,
   startLanAccess,
   stopLanAccess,
+  updateLanAccessAddresses,
   updateLanAccessAutoStart,
   updateLanAccessPort,
 } from "@/features/settings/api/lan-access";
 import {
   LAN_ACCESS_POLL_MS,
   type LanAccessStatus,
+  defaultLanAccessAddressSelection,
   keylessLanAccessDescription,
+  lanAccessAddressChoices,
+  lanAccessAddressesReadOnly,
   lanAccessAutoStartReadOnly,
   lanAccessBlockMessage,
   lanAccessErrorMessage,
   lanAccessPortReadOnly,
   lanAccessStopDisconnectsOrigin,
+  sameLanAccessAddresses,
+  staleLanUrls,
   validLanAccessPort,
 } from "@/features/settings/api/lan-access-state";
 import { isTauri } from "@/lib/api-base";
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
-import { Copy01Icon, QrCodeIcon, Wifi01Icon } from "@hugeicons/core-free-icons";
+import { QrCode01Icon, Wifi01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import QRCode from "react-qr-code";
 import { SettingsRow } from "./settings-row";
+import { UrlPill } from "./url-pill";
 
-type LanAccessOperation = "start" | "stop" | "auto" | "port";
+type LanAccessOperation = "start" | "stop" | "auto" | "port" | "addresses";
 type PortMode = "automatic" | "custom";
+type AddressMode = "automatic" | "chosen";
 
 const STATE_LABEL: Record<LanAccessStatus["state"], string> = {
   off: "Off",
@@ -88,41 +96,32 @@ function AccessStatus({ status }: { status: LanAccessStatus | null }) {
   );
 }
 
-function CopyLanUrlButton({ url, label }: { url: string; label: string }) {
-  const [copied, setCopied] = useState(false);
-  const text = copied ? "Copied" : label;
-  const copyTimer = useRef<number | null>(null);
-  useEffect(() => {
-    return () => {
-      if (copyTimer.current !== null) {
-        window.clearTimeout(copyTimer.current);
-      }
-    };
-  }, []);
+function KeylessScopeBadge({
+  scope,
+}: {
+  scope?: LanAccessStatus["keylessScope"];
+}) {
+  const on = scope === "inference" || scope === "full";
   return (
-    <Button
-      type="button"
-      size="sm"
-      variant="outline"
-      className="gap-1.5"
-      aria-label={`${text} ${url}`}
-      onClick={async () => {
-        if (!(await copyToClipboard(url))) {
-          return;
-        }
-        setCopied(true);
-        if (copyTimer.current !== null) {
-          window.clearTimeout(copyTimer.current);
-        }
-        copyTimer.current = window.setTimeout(() => setCopied(false), 1800);
-      }}
+    <span
+      role="status"
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-xs font-medium",
+        on ? "text-foreground" : "text-muted-foreground",
+      )}
     >
-      <HugeiconsIcon
-        icon={copied ? Tick02Icon : Copy01Icon}
-        className="size-3.5"
+      <span
+        className={cn(
+          "size-1.5 rounded-full",
+          on ? "bg-emerald-500" : "bg-muted-foreground/60",
+        )}
       />
-      {text}
-    </Button>
+      {scope === "inference"
+        ? "Inference"
+        : scope === "full"
+          ? "Local full"
+          : "Off"}
+    </span>
   );
 }
 
@@ -137,7 +136,7 @@ function LanUrlQrButton({ url }: { url: string }) {
           className="gap-1.5"
           aria-label={`Show QR code for ${url}`}
         >
-          <HugeiconsIcon icon={QrCodeIcon} className="size-3.5" />
+          <HugeiconsIcon icon={QrCode01Icon} className="size-3.5" />
           QR
         </Button>
       </DialogTrigger>
@@ -148,7 +147,7 @@ function LanUrlQrButton({ url }: { url: string }) {
             Scan from a device on the same network to open this address.
           </DialogDescription>
         </DialogHeader>
-        <div className="mx-auto mt-2 rounded-md bg-white p-3">
+        <div className="mx-auto mt-2 rounded-lg bg-white p-3">
           <QRCode value={url} size={192} />
         </div>
         <code className="block break-all text-center font-mono text-xs text-muted-foreground">
@@ -181,63 +180,76 @@ function StatusMessage({
   );
 }
 
-function LanUrlActions({ url, copyLabel }: { url: string; copyLabel: string }) {
-  return (
-    <div className="flex shrink-0 items-center gap-2">
-      <LanUrlQrButton url={url} />
-      <CopyLanUrlButton url={url} label={copyLabel} />
-    </div>
-  );
-}
-
 function LanUrlPanel({ status }: { status: LanAccessStatus | null }) {
   if (!status || status.urls.length === 0) {
     return null;
   }
   const single = status.urls.length === 1;
+  const stale = new Set(staleLanUrls(status));
+  const keylessInference =
+    // "full" stays localhost-only, so only "inference" reaches LAN callers.
+    status.keylessScope === "inference" && status.keylessLanEligible;
+  const keylessNote = keylessInference
+    ? "Anyone on this network can use the inference API without a key. "
+    : "";
   return (
     <div className="flex flex-col gap-1.5 border-t border-border/60 p-4">
       <div className="flex items-center justify-between gap-3">
         <span className="text-sm font-medium text-foreground">
           {single ? "Network address" : "Network addresses"}
         </span>
-        {single ? (
-          <LanUrlActions url={status.urls[0]} copyLabel="Copy URL" />
-        ) : null}
+        {single ? <LanUrlQrButton url={status.urls[0]} /> : null}
       </div>
       {status.urls.map((url) => (
-        <div key={url} className="flex items-center gap-2">
-          <code className="block w-full min-w-0 break-all rounded-md border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">
-            {url}
-          </code>
-          {single ? null : <LanUrlActions url={url} copyLabel="Copy" />}
+        <div key={url} className="flex flex-col gap-1">
+          <div className="flex items-center gap-2">
+            <UrlPill url={url} className="w-full" />
+            {single ? null : <LanUrlQrButton url={url} />}
+          </div>
+          {stale.has(url) ? (
+            <span className="text-xs text-destructive leading-snug">
+              This address is no longer on this computer, so nothing reaches it.
+              Stop and start LAN access to use the current one.
+            </span>
+          ) : null}
         </div>
       ))}
       {status.publicUrls.length > 0 ? (
         <span className="text-xs text-destructive leading-snug">
+          {keylessNote}
           {status.publicUrls[0]} is a public internet address, so this reaches
           beyond your local network. Anyone who has the password or an API key
           can sign in and run code on this machine.
         </span>
       ) : (
         <span className="text-xs text-muted-foreground leading-snug">
+          {keylessNote}
           {status.servesWebUi
             ? "Anyone on this network who has the password or an API key can sign in and run code on this machine."
             : "This launch serves the API only, so devices on the network can call the API but not open the web UI."}
         </span>
       )}
+      <span className="text-xs text-muted-foreground leading-snug">
+        Can't connect from another device? Allow Unsloth through this computer's
+        firewall, and check both devices are on the same network (guest Wi-Fi
+        often keeps devices apart).
+      </span>
     </div>
   );
 }
 
 export function LanAccessSection() {
   const portErrorId = useId();
+  const addressErrorId = useId();
   const [status, setStatus] = useState<LanAccessStatus | null>(null);
   const [busy, setBusy] = useState<LanAccessOperation | null>(null);
 
   const [portMode, setPortMode] = useState<PortMode>("automatic");
   const [portDraft, setPortDraft] = useState("8888");
   const [portError, setPortError] = useState<string | null>(null);
+  const [addressMode, setAddressMode] = useState<AddressMode>("automatic");
+  const [addressDraft, setAddressDraft] = useState<string[]>([]);
+  const [addressError, setAddressError] = useState<string | null>(null);
   const [pollRevision, setPollRevision] = useState(0);
   const [pollEnabled, setPollEnabled] = useState(true);
   const mutationEpoch = useRef(0);
@@ -246,6 +258,7 @@ export function LanAccessSection() {
 
   const applyStatus = useCallback((next: LanAccessStatus) => {
     setStatus(next);
+    publishLanUrls(next);
   }, []);
 
   useEffect(() => {
@@ -254,6 +267,16 @@ export function LanAccessSection() {
     setPortDraft(String(configured ?? 8888));
     setPortError(null);
   }, [status?.configuredPort]);
+
+  // keyed on the saved value, not the array: every poll returns a fresh one, which would wipe the draft
+  const configuredAddressesKey = status?.configuredAddresses?.join(",") ?? null;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: configuredAddressesKey stands in for status.configuredAddresses
+  useEffect(() => {
+    const configured = status?.configuredAddresses ?? null;
+    setAddressMode(configured === null ? "automatic" : "chosen");
+    setAddressDraft(configured ?? []);
+    setAddressError(null);
+  }, [configuredAddressesKey]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: pollRevision intentionally restarts polling after a mutation
   useEffect(() => {
@@ -269,6 +292,10 @@ export function LanAccessSection() {
     };
     const poll = () => {
       if (pollSuppressed.current) {
+        return;
+      }
+      if (document.hidden) {
+        schedule();
         return;
       }
       const epoch = mutationEpoch.current;
@@ -288,7 +315,7 @@ export function LanAccessSection() {
           if (mutationEpoch.current !== epoch) {
             return;
           }
-          // a stop from a LAN address kills this page's own origin, so stop polling
+          // a stop from a LAN address kills this page's own origin
           if (selfStopDisconnectExpected.current) {
             setPollEnabled(false);
             return;
@@ -321,6 +348,9 @@ export function LanAccessSection() {
     } catch {
       if (operation === "port") {
         setPortError("Could not save the LAN port.");
+      }
+      if (operation === "addresses") {
+        setAddressError("Could not save the LAN addresses.");
       }
       // polling resumes below and reconciles the visible state
     } finally {
@@ -355,14 +385,40 @@ export function LanAccessSection() {
     void perform("port", () => updateLanAccessPort(selectedPort));
   };
 
+  const addressesReadOnly = busy !== null || lanAccessAddressesReadOnly(status);
+  const addressChoices = lanAccessAddressChoices(status, addressDraft);
+  const addressesEmpty = addressMode === "chosen" && addressDraft.length === 0;
+  const addressErrorVisible = addressesEmpty || addressError !== null;
+  const selectedAddresses = addressMode === "chosen" ? addressDraft : null;
+  const addressesDirty =
+    status !== null &&
+    !sameLanAccessAddresses(selectedAddresses, status.configuredAddresses);
+  const toggleAddress = (address: string, checked: boolean) => {
+    setAddressDraft((draft) =>
+      checked
+        ? [...draft.filter((entry) => entry !== address), address]
+        : draft.filter((entry) => entry !== address),
+    );
+    setAddressError(null);
+  };
+  const saveAddresses = () => {
+    if (addressesEmpty || !addressesDirty) return;
+    setAddressError(null);
+    void perform("addresses", () =>
+      updateLanAccessAddresses(selectedAddresses),
+    );
+  };
+
   const blockMessage = lanAccessBlockMessage(status, isTauri);
   const errorMessage = lanAccessErrorMessage(
     status?.error ?? null,
     status?.configuredPort ?? null,
   );
   const stopAction = status?.state === "online";
+  // Start and auto-start bind the saved choice, never an unsaved one
   const actionDisabled =
-    busy !== null || (stopAction ? !status?.canStop : !status?.canStart);
+    busy !== null ||
+    (stopAction ? !status?.canStop : !status?.canStart || addressesDirty);
   const actionLabel =
     busy === "start"
       ? "Starting…"
@@ -375,11 +431,11 @@ export function LanAccessSection() {
   return (
     <section
       data-settings-label="LAN access"
-      className="overflow-hidden rounded-lg border border-border/70"
+      className="overflow-hidden rounded-xl border border-border/70"
     >
-      <div className="flex items-center justify-between gap-4 bg-muted/30 p-4">
+      <div className="flex items-start justify-between gap-4 bg-muted/30 p-4">
         <div className="flex min-w-0 items-start gap-3">
-          <div className="flex size-8 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/40">
+          <div className="flex size-8 shrink-0 items-center justify-center icon-disc">
             <HugeiconsIcon
               icon={Wifi01Icon}
               className="size-4 text-foreground"
@@ -387,13 +443,13 @@ export function LanAccessSection() {
           </div>
           <div className="flex min-w-0 flex-col gap-0.5">
             <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-base font-semibold font-heading text-foreground">
+              <h2 className="settings-heading text-base font-semibold font-heading">
                 LAN access
               </h2>
               <AccessStatus status={status} />
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">
-              Use Unsloth and its APIs from other devices on your Wi-Fi or wired
+              Use Unsloth and its APIs from devices on your Wi-Fi or wired
               network.
             </p>
           </div>
@@ -401,8 +457,9 @@ export function LanAccessSection() {
         <Button
           type="button"
           size="sm"
-          variant={stopAction ? "outline" : "default"}
-          className="min-w-20 shrink-0"
+          variant={stopAction ? "outline" : "dark"}
+          // Top edge on the h2's cap top (text-base at leading 1.5; Hellix: 0.372em).
+          className="mt-[calc(var(--text-base)*0.372)] shrink-0"
           onClick={stopAction ? stop : start}
           disabled={actionDisabled}
         >
@@ -420,61 +477,10 @@ export function LanAccessSection() {
         {status?.portConfigurationSupported ? (
           <SettingsRow
             label="Port"
-            description="Automatic tries 8888, then 8889–8908. Custom uses only the selected port. Stop LAN access before changing it."
-          >
-            <div className="flex flex-col items-end gap-1.5">
-              <div className="flex items-center gap-2">
-                <Select
-                  value={portMode}
-                  disabled={busy !== null || lanAccessPortReadOnly(status)}
-                  onValueChange={(value) => {
-                    setPortMode(value as PortMode);
-                    setPortError(null);
-                  }}
-                >
-                  <SelectTrigger
-                    size="sm"
-                    className="w-28"
-                    aria-label="LAN port mode"
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="automatic">Automatic</SelectItem>
-                    <SelectItem value="custom">Custom</SelectItem>
-                  </SelectContent>
-                </Select>
-                {portMode === "custom" ? (
-                  <Input
-                    type="number"
-                    min={1}
-                    max={65535}
-                    value={portDraft}
-                    disabled={busy !== null || lanAccessPortReadOnly(status)}
-                    aria-label="Custom LAN port"
-                    aria-invalid={portInvalid}
-                    aria-describedby={portErrorVisible ? portErrorId : undefined}
-                    className="h-8 w-24"
-                    onChange={(event) => {
-                      setPortDraft(event.target.value);
-                      setPortError(null);
-                    }}
-                  />
-                ) : null}
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={savePort}
-                  disabled={
-                    busy !== null ||
-                    lanAccessPortReadOnly(status) ||
-                    portInvalid ||
-                    !portDirty
-                  }
-                >
-                  Save
-                </Button>
-              </div>
+            description="Automatic tries 8888, then 8889–8908. Custom uses only that port. Stop LAN access to change it."
+            // Always mounted, even when empty: a live region has to exist before its
+            // text changes for the change to be announced.
+            below={
               <span
                 id={portErrorId}
                 role="status"
@@ -487,28 +493,184 @@ export function LanAccessSection() {
                     : portError
                   : null}
               </span>
+            }
+          >
+            <div className="flex items-center gap-2">
+              <Select
+                value={portMode}
+                disabled={busy !== null || lanAccessPortReadOnly(status)}
+                onValueChange={(value) => {
+                  setPortMode(value as PortMode);
+                  setPortError(null);
+                }}
+              >
+                <SelectTrigger
+                  className="w-32 data-[size=default]:h-control"
+                  aria-label="LAN port mode"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="automatic">Automatic</SelectItem>
+                  <SelectItem value="custom">Custom</SelectItem>
+                </SelectContent>
+              </Select>
+              {portMode === "custom" ? (
+                <Input
+                  type="number"
+                  min={1}
+                  max={65535}
+                  value={portDraft}
+                  disabled={busy !== null || lanAccessPortReadOnly(status)}
+                  aria-label="Custom LAN port"
+                  aria-invalid={portInvalid}
+                  aria-describedby={portErrorVisible ? portErrorId : undefined}
+                  className="h-control w-24"
+                  onChange={(event) => {
+                    setPortDraft(event.target.value);
+                    setPortError(null);
+                  }}
+                />
+              ) : null}
+              <Button
+                type="button"
+                size="sm"
+                onClick={savePort}
+                disabled={
+                  busy !== null ||
+                  lanAccessPortReadOnly(status) ||
+                  portInvalid ||
+                  !portDirty
+                }
+              >
+                Save
+              </Button>
             </div>
           </SettingsRow>
+        ) : null}
+        {status?.addressConfigurationSupported ? (
+          <>
+            <SettingsRow
+              label="Addresses"
+              description="Automatic uses every address this machine has, public ones included. Choose limits it to the ones you tick, like a Tailscale address. Stop LAN access to change it; save before starting."
+              below={
+                <span
+                  id={addressErrorId}
+                  role="status"
+                  aria-live="polite"
+                  className="text-xs text-destructive"
+                >
+                  {addressErrorVisible
+                    ? addressesEmpty
+                      ? "Tick at least one address, or use Automatic."
+                      : addressError
+                    : null}
+                </span>
+              }
+            >
+              <div className="flex items-center gap-2">
+                <Select
+                  value={addressMode}
+                  disabled={addressesReadOnly}
+                  onValueChange={(value) => {
+                    const mode = value as AddressMode;
+                    setAddressMode(mode);
+                    if (mode === "chosen" && addressDraft.length === 0) {
+                      setAddressDraft(defaultLanAccessAddressSelection(status));
+                    }
+                    setAddressError(null);
+                  }}
+                >
+                  <SelectTrigger
+                    className="w-32 data-[size=default]:h-control"
+                    aria-label="LAN address mode"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="automatic">Automatic</SelectItem>
+                    <SelectItem value="chosen">Choose</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={saveAddresses}
+                  disabled={
+                    addressesReadOnly || addressesEmpty || !addressesDirty
+                  }
+                >
+                  Save
+                </Button>
+              </div>
+            </SettingsRow>
+            {addressMode === "chosen" ? (
+              <fieldset
+                className="flex flex-col gap-2 pb-3"
+                aria-describedby={
+                  addressErrorVisible ? addressErrorId : undefined
+                }
+              >
+                <legend className="sr-only">LAN addresses to use</legend>
+                {addressChoices.length === 0 ? (
+                  <span className="text-xs text-muted-foreground">
+                    No network address found on this machine.
+                  </span>
+                ) : null}
+                {addressChoices.map((choice) => (
+                  <div
+                    key={choice.address}
+                    className="flex items-center gap-2.5"
+                  >
+                    <Checkbox
+                      id={`${addressErrorId}-${choice.address}`}
+                      checked={addressDraft.includes(choice.address)}
+                      disabled={addressesReadOnly}
+                      onCheckedChange={(checked) =>
+                        toggleAddress(choice.address, checked === true)
+                      }
+                    />
+                    <label
+                      htmlFor={`${addressErrorId}-${choice.address}`}
+                      className="flex cursor-pointer flex-wrap items-center gap-x-2.5 text-sm"
+                    >
+                      <code className="font-mono text-xs text-foreground">
+                        {choice.address}
+                      </code>
+                      {choice.public ? (
+                        <span className="text-xs text-destructive">
+                          Public internet address
+                        </span>
+                      ) : null}
+                      {choice.detected ? null : (
+                        <span className="text-xs text-muted-foreground">
+                          Not on this machine right now
+                        </span>
+                      )}
+                    </label>
+                  </div>
+                ))}
+              </fieldset>
+            ) : null}
+          </>
         ) : null}
         <SettingsRow
           label="Keyless API status"
           description={keylessLanAccessDescription(status)}
         >
-          <span className="text-xs font-medium text-muted-foreground">
-            {status?.keylessScope === "inference"
-              ? "Inference"
-              : status?.keylessScope === "full"
-                ? "Local full"
-                : "Off"}
-          </span>
+          <KeylessScopeBadge scope={status?.keylessScope} />
         </SettingsRow>
         <SettingsRow
           label="Start automatically"
-          description="Put Unsloth on the network each time it starts. Stopping LAN access now won’t turn this off."
+          description="Put Unsloth on the network each time it starts. Stopping now won’t turn this off."
         >
           <Switch
             checked={status?.autoStart ?? false}
-            disabled={busy !== null || lanAccessAutoStartReadOnly(status)}
+            disabled={
+              busy !== null ||
+              lanAccessAutoStartReadOnly(status) ||
+              (addressesDirty && !status?.autoStart)
+            }
             onCheckedChange={setAutoStart}
             aria-label="Start automatically"
           />

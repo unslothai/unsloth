@@ -20,10 +20,12 @@ import {
 import { useT } from "@/i18n";
 import { FileAttachmentIcon, ViewIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useMemo } from "react";
+import { TextSelectIcon } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { formatUpdatedDate } from "./dataset-panel-helpers";
 import { EvaluationDatasetUpload } from "./dataset-upload";
+import { TokenPreviewDialog } from "./token-preview-dialog";
 import type { DatasetUploads } from "./use-dataset-uploads";
 
 function DatasetSubsetConfiguration({
@@ -153,6 +155,20 @@ function DatasetConfiguration({
   return <LocalDatasetMetadata dataset={selectedLocalDataset} />;
 }
 
+/** Text SFT runs only: embedding and decision models train no tokens a chat mask would pick. */
+function canPreviewTokens(state: {
+  selectedModel: string | null;
+  modelType: string | null;
+  isEmbeddingModel: boolean;
+}): boolean {
+  return (
+    !!state.selectedModel &&
+    !state.isEmbeddingModel &&
+    state.modelType !== "embeddings" &&
+    state.modelType !== "decision"
+  );
+}
+
 function SelectedDatasetCard({
   selectedLocalDataset,
 }: {
@@ -162,8 +178,11 @@ function SelectedDatasetCard({
   const openPreview = useDatasetPreviewDialogStore(
     (state) => state.openPreview,
   );
+  const [tokenPreviewOpen, setTokenPreviewOpen] = useState(false);
   const settings = useTrainingConfigStore(
     useShallow((state) => ({
+      canPreviewTokens: canPreviewTokens(state),
+      isCheckingDataset: state.isCheckingDataset,
       dataset: state.dataset,
       datasetSource: state.datasetSource,
       datasetSplit: state.datasetSplit,
@@ -192,7 +211,7 @@ function SelectedDatasetCard({
   return (
     <div className="flex flex-col items-stretch gap-3 rounded-lg border bg-muted/40 px-3.5 py-3 @md/train-section:flex-row @md/train-section:items-center">
       <div className="flex min-w-0 items-center gap-3">
-        <div className="shrink-0 rounded-md bg-indigo-500/10 p-1.5">
+        <div className="shrink-0 rounded-sm bg-indigo-500/10 p-1.5">
           <HugeiconsIcon
             icon={FileAttachmentIcon}
             className="size-4 text-indigo-500"
@@ -235,6 +254,19 @@ function SelectedDatasetCard({
           <HugeiconsIcon icon={ViewIcon} className="size-3.5" />
           {t("studio.dataset.viewDataset")}
         </Button>
+        {settings.canPreviewTokens ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="shrink-0 text-xs"
+            // The dialog reads the dataset's modality once, so wait until the check has it.
+            disabled={settings.isCheckingDataset}
+            onClick={() => setTokenPreviewOpen(true)}
+          >
+            <TextSelectIcon className="size-3.5" />
+            {t("studio.dataset.previewTokens")}
+          </Button>
+        ) : null}
         <Button
           variant="ghost"
           size="sm"
@@ -244,6 +276,9 @@ function SelectedDatasetCard({
           {t("studio.dataset.clear")}
         </Button>
       </div>
+      {tokenPreviewOpen ? (
+        <TokenPreviewDialog open={true} onOpenChange={setTokenPreviewOpen} />
+      ) : null}
     </div>
   );
 }

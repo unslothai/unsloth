@@ -1,29 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""`unsloth run`: the headless model server, and what a banner does not prove.
-
-`unsloth run` is a different launch from `unsloth studio`, and nothing in CI
-covered it. It starts the backend, waits for health, mints an API key
-IN-PROCESS, and only then loads the model over HTTP. Any of those four steps
-can fail while the command still prints a banner, so the rules here are about
-what came back rather than what was printed.
-
-The two that carry the most weight, because each closes a hole the other
-leaves:
-
-**GPU residency across the launch.** A GGUF server that fell back to the CPU
-serves text perfectly well, so "it answered" is not evidence it reached the
-card. The measurement is PER-PROCESS rather than a device total: under
---studio-concurrent a training leg shares the card, and on kernel
-unsloth-probe-full-concurrent-417238 the device delta read -182.0 MiB while
-the same report showed this launch holding 2628 MiB. A shared counter cannot
-attribute. `cli_run_gpu_failure` is a pure function precisely so the rules
-below can DRIVE it with those numbers rather than describe it.
-
-**A corrupted key must be REFUSED.** Without it, a server that ignores the
-Authorization header entirely satisfies "the minted key authenticated".
-"""
+"""Residency is judged per process, since a shared device total cannot attribute co-tenant frees."""
 
 from __future__ import annotations
 
@@ -55,10 +33,7 @@ def test_the_assertion_exists_and_is_driven_from_the_run():
 
 
 def test_it_runs_after_the_ui_phase_has_stopped_the_server():
-    """Not a preference. `unsloth run` starts a SECOND backend against the same
-    studio home, and two backends sharing one home's state is a configuration
-    nobody ships. It also makes the VRAM delta meaningless: a card still
-    holding the first server's model cannot show this launch's growth."""
+    """The CLI launch must follow the UI phase, because two backends on one studio home is unsupported."""
     body = _body("execute")
     ui_at = body.index("self.assert_chat_ui()")
     cli_at = body.index("self.assert_cli_run()")
@@ -94,7 +69,6 @@ def test_the_key_is_registered_as_a_secret_before_anything_reads_the_log():
     parse_at = src.index('text.split("UNSLOTH_START_API_KEY:"')
     add_at = src.index("self.secrets.add(api_key)")
     assert parse_at < add_at, "the key must be registered where it is parsed"
-    # And the log must actually be in the bundle, or nothing redacts it.
     assert '"unsloth_run.log",' in _body("emit_evidence")
 
 
@@ -105,10 +79,7 @@ def test_gpu_use_is_measured_and_an_unmeasurable_reading_is_a_failure():
     body = _body()
     assert "baseline = nvidia_used_mib()" in body
     assert "settled = nvidia_used_mib()" in body
-    # The verdict itself moved into `cli_run_gpu_failure` when the device delta
-    # stopped being a valid ruler under --studio-concurrent, so it is DRIVEN
-    # rather than grepped -- see the rules at the end of this file. What stays
-    # here is that the assertion consults it and reports what it says.
+    # The verdict lives in cli_run_gpu_failure and is driven by the rules at the end of this file.
     assert "cli_run_gpu_failure(" in body
     assert "failures.append(failure)" in body
     verdict = _verdict()
@@ -141,15 +112,7 @@ def test_the_child_is_always_torn_down():
 
 
 def test_the_vram_sample_comes_AFTER_a_served_completion():
-    """`unsloth run` prints its API key while it is still starting.
-
-    Sampling there read 0.0 MiB of growth on kernel
-    unsloth-probe-studio-full2-815a0c, on a launch whose own log says
-    `Starting llama-server: ... -ngl -1 --fit off` -- Studio asking for every
-    layer on the card. A completion that came back is the cheap proof the
-    weights are resident, so the ruler has to go after it or the check measures
-    a race.
-    """
+    """A completion proves the weights are resident, so VRAM is sampled after it, not while starting."""
     func = _func("assert_cli_run")
     src = ast.get_source_segment(SRC, func) or ""
     sample_at = src.index('detail["vram_after_mib"]')
@@ -171,19 +134,11 @@ def _verdict():
 
 
 def test_a_co_tenant_freeing_memory_does_not_read_as_a_CPU_fallback():
-    """The exact numbers from unsloth-probe-full-concurrent-417238.
-
-    Device VRAM 2816 -> 2634, a delta of -182.0, while `nvidia-smi` shows this
-    launch's own pid holding 2628 MiB. Under the old device-delta rule that was
-    a failure saying `unsloth run` served from the CPU; the model was on the
-    card the whole time and a training leg on the same card freed memory inside
-    the window. This is the regression guard for that reading.
-    """
+    """A co-tenant freeing memory must not read as CPU fallback while this launch's pid holds the VRAM."""
     failure, detail = _verdict()({}, {6841: 2628}, 2816.0, 2634.0)
     assert failure is None, failure
     assert detail["process_vram_mib"] == 2628
-    # The device delta is still RECORDED -- it is evidence, it is just not the
-    # verdict -- and it is still the number that misled.
+    # The device delta is still recorded as evidence, just not the verdict.
     assert detail["vram_delta_mib"] == -182.0
 
 
@@ -203,10 +158,7 @@ def test_a_real_cpu_fallback_still_fails():
 
 
 def test_a_unified_memory_part_that_cannot_attribute_is_judged_on_the_device_delta():
-    """Measured on a GB10 (Windows, unified memory): nvidia-smi lists the server with
-    [N/A], the device counter reads 132 MiB idle, 272 MiB with a bare CUDA context
-    (-ngl 0) and 560 MiB with the 270M model offloaded. The verdict must pass the
-    second and fail the first, with nothing to attribute per process."""
+    """On unified-memory parts with no per-process attribution, judge the run on the device VRAM delta."""
     failure, detail = _verdict()(None, None, 132.0, 560.0)
     assert failure is None, failure
     assert detail["vram_delta_mib"] == 428.0
@@ -231,8 +183,7 @@ def test_the_before_sample_is_taken_before_the_launch():
     """An `apps_before` read after the server started would contain the server,
     so nothing would ever have `appeared` and every run would fail."""
     body = _body()
-    # Anchored on the sample, not one spelling of it: one nvidia_compute_apps_listing() call, so
-    # the attributed mapping and the listed pids describe the same moment.
+    # One listing call, so the attributed mapping and the listed pids describe the same moment.
     assert body.index("_listing_before = nvidia_compute_apps_listing()") < body.index(
         "subprocess.Popen"
     )

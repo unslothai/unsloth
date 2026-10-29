@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Transport that drives the shared Unsloth tool loop over any external provider.
-
-``ExternalProviderClient.stream_chat_completion`` is the single point every
-external provider passes through: the OpenAI-compatible route yields its lines
-directly, and the Anthropic, Gemini, Responses and Kimi sub-streams are each
-translated into OpenAI chunk shape and re-yielded through it. Wrapping that one
-generator therefore covers self-hosted llama.cpp / vLLM / Ollama / custom
-endpoints and the hosted APIs alike.
-"""
+"""Tool loop over ExternalProviderClient.stream_chat_completion, which every external provider uses"""
 
 from __future__ import annotations
 
@@ -17,14 +9,13 @@ import asyncio
 import contextlib
 import threading
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
-from core.inference.external_provider import ExternalProviderClient
+from core.inference.external_provider import ExternalProviderClient, _is_kimi_k3
 
 
-# /inference/cancel and the model-load path only set a threading.Event, so an asyncio consumer has to poll it. Same
-# interval as the Codex client's watcher.
+# The cancel paths only set a threading.Event, so poll it (same interval as the Codex client).
 _CANCEL_POLL_S = 0.05
 
 
@@ -44,10 +35,7 @@ class OAICompatTransport:
     """
 
     heals_text_tool_calls = True
-    # the client sanitizes raw upstream lines on arrival
-    # ExternalProviderClient sanitizes every raw upstream line at the point it arrives, before any translation. What it
-    # yields on top of that is this server's own synthesized frames (a provider-hosted image or web-search result),
-    # which a second pass in the loop could no longer tell apart.
+    # The client already sanitized upstream lines; what remains here is our own synthesized frames.
     sanitizes_provider_frames = True
 
     def __init__(
@@ -56,12 +44,26 @@ class OAICompatTransport:
         *,
         model: str,
         continue_final_message: bool | None = None,
+        message_fitter: Callable[
+            [list[dict[str, Any]]],
+            Awaitable[tuple[list[dict[str, Any]], int | None, str | None]],
+        ]
+        | None = None,
         **request_kwargs: Any,
     ) -> None:
         self._client = client
         self._model = model
         self._continue_final_message = continue_final_message
+        self._message_fitter = message_fitter
         self._request_kwargs = request_kwargs
+        # Anthropic can leave a hosted call pending beside a client call; its continuation accepts only tool results.
+        self.tool_result_only_continuation = client.provider_type == "anthropic"
+        self._initial_message_count: int | None = None
+        self._last_tools: list[dict[str, Any]] | None = None
+        # Always, as the local GGUF loop does: preserve_thinking hides earlier turns, never this turn's tool rounds.
+        self.preserves_reasoning = client.provider_type in ("llama_cpp", "vllm") or _is_kimi_k3(
+            client.provider_type, model
+        )
 
     def stream(
         self,
@@ -71,43 +73,74 @@ class OAICompatTransport:
         tool_choice: Any,
         cancel_event: threading.Event,
     ) -> AsyncIterator[str]:
-        # "Resume the trailing assistant turn", so it is only ever true of the first request. Once a tool runs the
-        # conversation ends with a role="tool" result (or a role="user" no-op note), and vLLM / llama.cpp would splice
-        # the generation prompt off the end of *that* message: the model continues the tool output instead of answering
-        # it, or the chat template raises and the server 400s. Re-read the tail every turn rather than replaying the
-        # flag the transport was constructed with.
+        if tools:
+            self._last_tools = tools
+        elif self.tool_result_only_continuation and self._last_tools:
+            tools, tool_choice = self._last_tools, "none"
+        if self._initial_message_count is not None and self.tool_result_only_continuation:
+            # Promoted MCP images join the tool result: a new user turn would end a pending server-tool turn.
+            normalized = list(messages[: self._initial_message_count])
+            for message in messages[self._initial_message_count :]:
+                if (
+                    message.get("role") == "user"
+                    and normalized
+                    and normalized[-1].get("role") == "tool"
+                ):
+                    parts = []
+                    for source in (normalized[-1], message):
+                        content = source.get("content")
+                        if isinstance(content, list):
+                            parts.extend(content)
+                        elif isinstance(content, str) and content:
+                            parts.append({"type": "text", "text": content})
+                    normalized[-1] = {**normalized[-1], "content": parts}
+                else:
+                    normalized.append(message)
+            messages = normalized
+        elif self._initial_message_count is None:
+            self._initial_message_count = len(messages)
+        return self._cancellable(
+            self._stream_provider(messages, tools, tool_choice),
+            cancel_event,
+        )
+
+    async def _stream_provider(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None, tool_choice: Any
+    ) -> AsyncIterator[str]:
+        request_kwargs = dict(self._request_kwargs)
+        if self._message_fitter is not None:
+            messages, max_tokens, truncation_line = await self._message_fitter(messages)
+            request_kwargs["max_tokens"] = max_tokens
+            if truncation_line:
+                yield truncation_line
+
+        # Re-derived each turn: a tool or user message at the end must not be resumed as an
+        # assistant turn.
         continue_final_message = bool(self._continue_final_message) and bool(
             messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "assistant"
         )
-        return self._cancellable(
-            self._client.stream_chat_completion(
-                messages = messages,
-                model = self._model,
-                tools = tools,
-                tool_choice = tool_choice,
-                continue_final_message = continue_final_message,
-                **self._request_kwargs,
-            ),
-            cancel_event,
+        upstream = self._client.stream_chat_completion(
+            messages = messages,
+            model = self._model,
+            tools = tools,
+            tool_choice = tool_choice,
+            continue_final_message = continue_final_message,
+            **request_kwargs,
         )
+        try:
+            async for line in upstream:
+                yield line
+        finally:
+            aclose = getattr(upstream, "aclose", None)
+            if aclose is not None:
+                with contextlib.suppress(RuntimeError, GeneratorExit, StopAsyncIteration):
+                    await aclose()
 
     @staticmethod
     async def _cancellable(
         upstream: AsyncIterator[str], cancel_event: threading.Event
     ) -> AsyncIterator[str]:
-        """Relay ``upstream``, ending as soon as ``cancel_event`` is set.
-
-        ``stream_chat_completion`` takes no cancel_event, and /inference/cancel
-        and the model-load path only set the flag: nothing else can reach the
-        provider socket. Relying on the route closing this generator does not
-        cover them, because a closed generator is only noticed at the next yield
-        and Stop arrives while the read is parked. Without this race the read
-        stays parked until the provider emits again, so Stop keeps consuming
-        billed tokens and a model load waits behind a stalled upstream.
-        Cancelling the pending read raises inside the upstream generator at its
-        own await, which runs the ``finally`` that closes the httpx response;
-        calling aclose() here instead would hit "generator already executing".
-        """
+        """Races each read against cancel_event; do not aclose() here, it raises generator already executing."""
         iterator = upstream.__aiter__()
         watcher = asyncio.ensure_future(_await_cancel(cancel_event))
         try:
@@ -130,8 +163,7 @@ class OAICompatTransport:
                 yield line
         finally:
             watcher.cancel()
-            # The pre-existing teardown: the route or the loop closing this generator still reaches the provider stream
-            # through here.
+            # Teardown path: the route or loop closing this generator still reaches the provider stream here.
             aclose = getattr(upstream, "aclose", None)
             if aclose is not None:
                 with contextlib.suppress(RuntimeError, GeneratorExit, StopAsyncIteration):

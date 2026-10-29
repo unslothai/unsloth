@@ -12,10 +12,13 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import { AlertTriangle } from "lucide-react";
 import { useHfTokenWarningStore } from "./store";
+import { useHfTokenRejectedToast } from "./use-hf-token-rejected-toast";
+import { Alert02Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 
 export function HfTokenWarningDialog() {
+  useHfTokenRejectedToast();
   const open = useHfTokenWarningStore((state) => state.open);
   const allowAnonymous = useHfTokenWarningStore(
     (state) => state.allowAnonymous,
@@ -33,7 +36,7 @@ export function HfTokenWarningDialog() {
         <AlertDialogHeader>
           <div className="flex items-start gap-3">
             <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400">
-              <AlertTriangle className="size-5" />
+              <HugeiconsIcon icon={Alert02Icon} className="size-5" />
             </div>
             <div className="space-y-1 text-left">
               <AlertDialogTitle>Hugging Face token is invalid</AlertDialogTitle>

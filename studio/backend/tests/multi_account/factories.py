@@ -105,7 +105,6 @@ SKILL_NAME = "matrix-skill"
 
 @seeder("skill")
 def seed_skill(account) -> dict[str, str]:
-    # Skills of a managed account live in its own workspace; the owner reads the home folders.
     from core.inference import skills as skills_module
 
     if account.is_owner:
@@ -113,7 +112,7 @@ def seed_skill(account) -> dict[str, str]:
     else:
         root = run_as(account, workspace_root) / "skills" / SKILL_NAME
     root.mkdir(parents = True, exist_ok = True)
-    # Quoted: the sentinel carries a colon, which a plain YAML scalar cannot.
+    # Quoted: the sentinel carries a colon.
     (root / "SKILL.md").write_text(
         f"---\nname: {SKILL_NAME}\ndescription: {json.dumps(SENTINEL, ensure_ascii = False)}\n"
         "---\nInstructions\n",
@@ -144,6 +143,19 @@ CORE_FACTORIES = {
     "routes.chat_history:PATCH:/projects/{project_id}": Factory(
         "project", {"name": EDITED}, fragment = EDITED
     ),
+    "routes.chat_history:DELETE:/projects/{project_id}/working-folder": Factory(
+        "project", fragment = SENTINEL
+    ),
+    # Host folders are owner-only: a managed account is refused before its project is looked up.
+    "routes.chat_history:PUT:/projects/{project_id}/working-folder": Factory(
+        "project",
+        {"nativePathLease": "matrix"},
+        right = (403,),
+        wrong = (403,),
+        # No desktop grant can be minted here, so the owner's own project stops at the grant check.
+        self_expected = (400,),
+        reason = "owner-only route: a managed account gets 403 whether or not the project is its own",
+    ),
     "routes.training_history:GET:/runs/{run_id}": Factory("training", fragment = SENTINEL),
     "routes.training_history:PATCH:/runs/{run_id}": Factory(
         "training", {"display_name": EDITED}, fragment = EDITED
@@ -153,27 +165,47 @@ CORE_FACTORIES = {
         "mcp", {"display_name": EDITED}, fragment = EDITED
     ),
     "routes.mcp_servers:DELETE:/{server_id}": Factory("mcp", success = 204),
+    "routes.mcp_servers:GET:/{server_id}/ui-resource": Factory(
+        "mcp", success = 400, query = {"uri": "ui://matrix/app.html"}
+    ),
+    "routes.mcp_servers:POST:/{server_id}/ui-tool-call": Factory(
+        "mcp", {"tool_name": "refresh"}, success = 400
+    ),
+    "routes.mcp_servers:GET:/{server_id}/tools": Factory("mcp", success = 409),
     "routes.skills:PUT:/{name}/enabled": Factory(
         "skill", {"enabled": False}, fragment = SKILL_NAME, absent = SENTINEL
     ),
+    "routes.skills:GET:/{name}": Factory("skill", fragment = SENTINEL, absent = SENTINEL),
+    "routes.skills:GET:/{name}/export": Factory("skill", fragment = SKILL_NAME),
+    "routes.skills:PUT:/{name}": Factory(
+        "skill",
+        {"description": EDITED, "instructions": "Instructions"},
+        fragment = EDITED,
+        absent = SENTINEL,
+    ),
+    "routes.skills:DELETE:/{name}": Factory("skill", success = 204, absent = SENTINEL),
 }
 
 
 from . import (  # noqa: E402  domain tables import Factory and register their seeders first
     factories_chat,
+    factories_library,
     factories_media,
     factories_providers,
     factories_rag,
     factories_runs,
+    factories_scheduled_tasks,
     factories_training,
 )
 
 DOMAINS = (
     factories_chat,
+    factories_library,
     factories_media,
     factories_providers,
     factories_rag,
     factories_runs,
+    factories_scheduled_tasks,
     factories_training,
 )
 

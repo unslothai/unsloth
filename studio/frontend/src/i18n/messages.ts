@@ -16,8 +16,10 @@ export const LOCALES = {
   de: { label: "German", nativeLabel: "Deutsch" },
   it: { label: "Italian", nativeLabel: "Italiano" },
   ru: { label: "Russian", nativeLabel: "Русский" },
+  sv: { label: "Swedish", nativeLabel: "Svenska" },
   hi: { label: "Hindi", nativeLabel: "हिन्दी" },
   ar: { label: "Arabic", nativeLabel: "العربية" },
+  he: { label: "Hebrew", nativeLabel: "עברית" },
 } as const;
 
 export type Locale = keyof typeof LOCALES;
@@ -42,11 +44,12 @@ const localeLoaders: Record<LazyLocale, () => Promise<unknown>> = {
   de: () => import("./locales/de"),
   it: () => import("./locales/it"),
   ru: () => import("./locales/ru"),
+  sv: () => import("./locales/sv"),
   hi: () => import("./locales/hi"),
   ar: () => import("./locales/ar"),
+  he: () => import("./locales/he"),
 };
 
-/** A catalog exports its own tag with the separator dropped: zh-CN -> zhCN. */
 function readCatalog(module: unknown, locale: LazyLocale): MessageTree {
   const name = locale.replace("-", "");
   const catalog = (module as Record<string, unknown> | null)?.[name];
@@ -63,20 +66,8 @@ const CHUNK_URL_PATTERN = /\bhttps?:\/\/[^\s"'`)]+/;
 let catalogRetryCount = 0;
 
 /**
- * The URL to re-request a failed catalog from, or null when none can be read.
- *
- * Chrome, Edge and Firefox before 155 keep a failed module in the module map
- * keyed by URL, so re-running the same import resolves to the stored failure
- * without touching the network: dropping our own promise is not enough to make
- * a retry a retry. A one-off query gives the request its own module map key and
- * its own HTTP cache key, while the hashed filename it is appended to is
- * unchanged, so the first load of every catalog keeps its normal long-lived
- * caching and nothing about it moves until something has actually failed.
- *
- * The URL comes out of the browser's own message ("Failed to fetch dynamically
- * imported module: <url>"), which is the only place the built chunk's URL is
- * exposed to us; Safari reports no URL there, and it is also the one engine
- * that already re-requests on its own.
+ * Chrome, Edge and Firefox < 155 cache a failed module by URL, so retry with a one-off query.
+ * The URL comes from the browser's error message; Safari gives none but re-requests itself.
  */
 export function catalogRetryUrl(
   error: unknown,
@@ -138,26 +129,14 @@ export function loadLocaleMessages(
       },
     )
     .finally(() => {
-      // Only if it is still ours: a load evicted by its caller's timeout may
-      // already have been replaced by the retry it made room for.
+      // Only if still ours: a timed-out load may already have been replaced by its retry.
       if (localeLoads.get(locale) === load) localeLoads.delete(locale);
     });
   localeLoads.set(locale, load);
   return load;
 }
 
-/**
- * Stop deduplicating onto a catalog load, so the next request starts its own.
- *
- * A load that never settles never reaches the `.finally()` above, so its entry
- * would hand every later pick of that language the same permanently pending
- * promise and the choice could not be retried without reloading the app.
- * Whoever bounded the wait evicts the load it gave up on; the promise itself is
- * left running, so a late arrival still populates the catalog.
- *
- * `load` identifies the attempt being forgotten, so a newer one for the same
- * locale is never evicted by an older caller's timeout.
- */
+/** Drops a stalled load so the next pick retries; a newer attempt for this locale is never evicted. */
 export function forgetLocaleLoad(locale: Locale, load?: Promise<void>): void {
   if (load !== undefined && localeLoads.get(locale) !== load) return;
   localeLoads.delete(locale);

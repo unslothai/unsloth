@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from typing import Any, Optional
 
@@ -44,6 +45,25 @@ def _token_for_url(path: str, token_per_repo_id: Optional[dict]) -> Any:
     return token_per_repo_id.get(fields["repo_id"])
 
 
+def _av_open(av, source):
+    """Open ``source`` for reading with undecodable metadata ignored. PyAV 19 removed ``metadata_errors`` from ``av.open``, so passing it there raises TypeError before anything is read; retry without it."""
+    # A probed concat or HLS playlist opens what it names: a path may read files only, a buffer nothing.
+    from utils.media_playlist import refuse_playlist
+
+    # `file` stays allowed for a path, so a playlist that names local files is refused here.
+    refuse_playlist(source)
+    local = isinstance(source, (str, os.PathLike))
+    options = {"protocol_whitelist": "file" if local else "none"}
+    try:
+        return av.open(source, mode = "r", metadata_errors = "ignore", options = options)
+    except TypeError as exc:
+        if "metadata_errors" not in str(exc):
+            raise
+        # format = None is PyAV's own default (probe the container); spelling it keeps this call
+        # distinguishable from Path.open for the text-encoding lint.
+        return av.open(source, mode = "r", format = None, options = options)
+
+
 def _decode_with_av(source: Any, stream_index: Optional[int] = None) -> "tuple[Any, int]":
     """Mono float32 at the native rate through PyAV's bundled FFmpeg: every container torchcodec would have read (m4a, aac, webm, wma, amr) without a system FFmpeg. Same shape as routes/inference.py's upload decoder, minus its upload ceilings: a dataset row is not an upload."""
     import av
@@ -52,7 +72,7 @@ def _decode_with_av(source: Any, stream_index: Optional[int] = None) -> "tuple[A
     chunks = []
     rate = 0
     resampler = None
-    with av.open(source, mode = "r", metadata_errors = "ignore") as container:
+    with _av_open(av, source) as container:
         if not container.streams.audio:
             raise ValueError("audio container has no audio stream")
         # datasets.Audio(stream_index=...) is the container's absolute stream index, as torchcodec reads it; None is the best audio stream.
@@ -223,7 +243,10 @@ def ensure_audio_decoding() -> bool:
         if _installed:
             return True
         _ORIGINAL_ENCODE = Audio.encode_example
-        Audio.decode_example = _decode_with_soundfile
+        # Behind the same account check as the decoder it replaces.
+        from utils.security.dataset_media import guard_decoder
+
+        Audio.decode_example = guard_decoder(_decode_with_soundfile)
         Audio.encode_example = _encode_with_soundfile
         _installed = True
     logger.info("torchcodec is unusable; decoding dataset audio with soundfile and PyAV")

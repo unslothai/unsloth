@@ -6,7 +6,6 @@ import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
 
-/** Minimal <html> stand-in: the applier only needs style, attributes, classes. */
 function stubDocument() {
   const vars = new Map<string, string>();
   const attributes = new Set<string>();
@@ -49,8 +48,6 @@ const withAccent = (accent: string | null) => ({
 test("a custom accent recolors the brand variable, not just the control one", () => {
   applyCustomizationToDocument(withAccent("#7c3aed"), "light");
 
-  // --primary drives primary buttons, active composer pills and the meter
-  // percentages; leaving it out is what stranded them on the palette green.
   assert.equal(vars.get("--primary"), "#7c3aed");
   assert.equal(vars.get("--control-accent"), "#7c3aed");
   assert.equal(vars.get("--chart-1"), "#7c3aed");
@@ -65,7 +62,6 @@ test("both foregrounds follow the accent so button labels stay readable", () => 
   assert.notEqual(vars.get("--primary-foreground"), onDark);
 });
 
-/** WCAG relative luminance, independent of the implementation under test. */
 function luminance(hex: string): number {
   const channel = (index: number) => {
     const value = Number.parseInt(hex.slice(index, index + 2), 16) / 255;
@@ -91,7 +87,6 @@ function mix(foreground: string, background: string, opacity: number): string {
 }
 
 test("the foreground is the higher-contrast of the two, not a luminance guess", () => {
-  // Mid-tone accents are the ones a fixed 0.45 cutoff got wrong.
   for (const accent of [
     "#22c55e",
     "#17b88b",
@@ -149,7 +144,6 @@ test("no accent leaves every palette variable alone", () => {
 test("focus rings are never touched, so highlight borders stay neutral", () => {
   applyCustomizationToDocument(withAccent("#7c3aed"), "light");
   assert.equal(vars.has("--ring"), false);
-  // Status green is a signal, not a theme color.
   assert.equal(vars.has("--verified"), false);
 });
 
@@ -182,7 +176,6 @@ test("an accent too pale to read as text is pulled into range", () => {
     ratio(corrected, wash) >= 2.5,
     `${corrected} is only ${ratio(corrected, wash).toFixed(2)}:1 on ${wash}`,
   );
-  // Darkened, not discarded: still a yellow, red channel still leads.
   const [r, g, b] = [1, 3, 5].map((i) =>
     Number.parseInt(corrected.slice(i, i + 2), 16),
   ) as [number, number, number];
@@ -194,7 +187,6 @@ test("a near-black accent is lifted in dark mode instead", () => {
   const corrected = vars.get("--primary") ?? "";
   assert.notEqual(corrected, "#101010");
   assert.ok(ratio(corrected, "#181818") >= 2.5);
-  // Lightened, so it reads against the dark page.
   assert.ok(
     Number.parseInt(corrected.slice(1, 3), 16) > 0x10,
     `${corrected} was not lightened`,

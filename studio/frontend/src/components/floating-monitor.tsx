@@ -1,16 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { FLOATING_PANEL_POSITION_KEYS } from "@/hooks/floating-panel-position";
+import { useFloatingPanelLayout } from "@/hooks/use-floating-panel-layout";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page/lib/find-attributes";
 
-import {
-  useMonitorFrameStore,
-  useMonitorOverlayStore,
-} from "@/features/settings";
+import { useMonitorOverlayStore } from "@/features/settings";
+import { useCornerCardFrameStore } from "@/features/settings/stores/monitor-frame-store";
 import { gpuMemoryDisplay } from "@/hooks/gpu-memory-display";
 import { gpuMemoryTotalsGb, resolveGpuVramUsedGb } from "@/hooks/gpu-vram";
+import { useChatSettingsWidth } from "@/hooks/use-chat-settings-width";
+import { useIsMobile } from "@/hooks/use-mobile";
+import { useSidebarPin } from "@/hooks/use-sidebar-pin";
+import { useSidebarWidth } from "@/hooks/use-sidebar-width";
 import { aggregateGpuMemoryTotalGb, useSystemInfo } from "@/hooks/use-system";
 import { useT } from "@/i18n";
 import {
@@ -18,375 +23,29 @@ import {
   useFloatingPanelZIndex,
 } from "@/lib/floating-panel-order";
 import { cn } from "@/lib/utils";
-import { CpuIcon, GripVerticalIcon, XIcon } from "lucide-react";
+import { useRouterState } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+
 import {
-  type PointerEvent,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
-
-interface MonitorLayout {
-  left: number;
-  top: number;
-  minWidth: number;
-  minHeight: number;
-  maxWidth: number;
-  maxHeight: number;
-}
-
-interface DragSession {
-  pointerId: number;
-  startX: number;
-  startY: number;
-  left: number;
-  top: number;
-  maxLeft: number;
-  maxTop: number;
-  constraintsWidth: number;
-  constraintsHeight: number;
-  /** The committed left/top the drag's transform offsets from. */
-  baseLeft: number;
-  baseTop: number;
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}
-
-// Anchored to the far edge until the user drags, then clamped where they left it.
-function place(dragged: boolean, current: number, max: number): number {
-  return dragged ? clamp(current, 0, max) : max;
-}
-
-function sameLayout(a: MonitorLayout, b: MonitorLayout): boolean {
-  return (
-    a.left === b.left &&
-    a.top === b.top &&
-    a.minWidth === b.minWidth &&
-    a.minHeight === b.minHeight &&
-    a.maxWidth === b.maxWidth &&
-    a.maxHeight === b.maxHeight
-  );
-}
-
-// Height the panel wants. Reading the rendered box instead hides growth once
-// maxHeight caps it, so the observer never fires and the cap is never lifted.
-function desiredPanelHeight(
-  renderedHeight: number,
-  scroll: HTMLDivElement | null,
-  content: HTMLDivElement | null,
-): number {
-  if (!(scroll && content)) {
-    return renderedHeight;
-  }
-  // The scroll region is the only flexible child, so the rest is fixed chrome.
-  const chrome = renderedHeight - scroll.getBoundingClientRect().height;
-  return chrome + content.getBoundingClientRect().height;
-}
-
-// Width the panel wants. While anchored, maxWidth equals the current width, so
-// the cap is also a floor: a monitor opened in a narrow window never widens
-// again. Lift the cap for one measurement to break that.
-function naturalWidth(monitor: HTMLDivElement): number {
-  const capped = monitor.style.maxWidth;
-  // "none", not "", so the class-level max-w-full lifts too.
-  monitor.style.maxWidth = "none";
-  const width = monitor.getBoundingClientRect().width;
-  monitor.style.maxWidth = capped;
-  return width;
-}
-
-function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
-  // This panel's claim on the shared frame. Reopening the monitor mid-exit
-  // mounts the replacement while the old panel is still animating out, and the
-  // old one unmounts last, so its cleanup must only clear its own frame.
-  const publisher = useMemo(() => ({}), []);
-  const monitorRef = useRef<HTMLDivElement>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const contentRef = useRef<HTMLDivElement>(null);
-  const dragSessionRef = useRef<DragSession | null>(null);
-  const dragFrameRef = useRef(0);
-  const hasDraggedRef = useRef(false);
-  const preferredWidthRef = useRef<number | null>(null);
-  const preferredHeightRef = useRef<number | null>(null);
-  const surfaceWidthRef = useRef(0);
-  const remeasureRef = useRef(0);
-  const [layout, setLayout] = useState<MonitorLayout | null>(null);
-
-  useLayoutEffect(() => {
-    const monitor = monitorRef.current;
-    const constraints = constraintsElement;
-    if (!(monitor && constraints)) {
-      return;
-    }
-    // Deferred to the next frame: writing a style while ResizeObserver entries
-    // are delivered makes Firefox report an observer loop. A hand-resized panel
-    // keeps the user's width instead of re-measuring.
-    const scheduleWidthRemeasure = (surfaceWidth: number) => {
-      if (surfaceWidth === surfaceWidthRef.current) {
-        return;
-      }
-      surfaceWidthRef.current = surfaceWidth;
-      if (monitor.style.width || remeasureRef.current) {
-        return;
-      }
-      remeasureRef.current = requestAnimationFrame(() => {
-        remeasureRef.current = 0;
-        preferredWidthRef.current = naturalWidth(monitor);
-        reconcileGeometry();
-      });
-    };
-
-    const reconcileGeometry = () => {
-      const constraintsBox = constraints.getBoundingClientRect();
-      const monitorBox = monitor.getBoundingClientRect();
-      const desiredHeight = desiredPanelHeight(
-        monitorBox.height,
-        scrollRef.current,
-        contentRef.current,
-      );
-
-      scheduleWidthRemeasure(constraintsBox.width);
-      const desiredWidth = Math.max(
-        monitorBox.width,
-        preferredWidthRef.current ?? monitorBox.width,
-      );
-
-      // Content height is the floor, as a resolved number: intrinsic
-      // min-content outranks max-height, a number clamped to it cannot.
-      if (!monitor.style.height) {
-        preferredHeightRef.current = desiredHeight;
-      }
-
-      const width = Math.min(desiredWidth, constraintsBox.width);
-      // Clamp position against the height actually rendered. A hand-resized panel keeps its own
-      // height and scrolls, so growing content must not drag it upwards and leave a gap below.
-      const height = Math.min(
-        monitor.style.height ? monitorBox.height : desiredHeight,
-        constraintsBox.height,
-      );
-      const maxLeft = Math.max(0, constraintsBox.width - width);
-      const maxTop = Math.max(0, constraintsBox.height - height);
-      const currentLeft = monitorBox.left - constraintsBox.left;
-      const currentTop = monitorBox.top - constraintsBox.top;
-      const left = place(hasDraggedRef.current, currentLeft, maxLeft);
-      const top = place(hasDraggedRef.current, currentTop, maxTop);
-
-      const session = dragSessionRef.current;
-      if (session) {
-        session.left = left;
-        session.top = top;
-        session.maxLeft = maxLeft;
-        session.maxTop = maxTop;
-        session.constraintsWidth = constraintsBox.width;
-        session.constraintsHeight = constraintsBox.height;
-      }
-
-      // Publish the real box so the overlay stack can keep clear of it.
-      useMonitorFrameStore.getState().setFrame(publisher, {
-        left: monitorBox.left,
-        top: monitorBox.top,
-        right: monitorBox.right,
-        bottom: monitorBox.bottom,
-      });
-
-      setLayout((current) => {
-        // Mid-drag the offset lives in a transform, and the measured box already includes it, so
-        // committing left/top here would apply it twice. finishDrag lands the position instead.
-        const held = session && current ? current : null;
-        const restLeft = held?.left ?? left;
-        const restTop = held?.top ?? top;
-        const next = {
-          left: restLeft,
-          top: restTop,
-          minWidth: preferredWidthRef.current ?? monitorBox.width,
-          minHeight: preferredHeightRef.current ?? monitorBox.height,
-          maxWidth: constraintsBox.width - restLeft,
-          maxHeight: constraintsBox.height - restTop,
-        };
-        return current && sameLayout(current, next) ? current : next;
-      });
-    };
-
-    reconcileGeometry();
-    const observer = new ResizeObserver(reconcileGeometry);
-    observer.observe(constraints);
-    observer.observe(monitor);
-    // The unclamped content wrapper is what makes late GPU rows reposition the
-    // panel instead of being cut off.
-    if (contentRef.current) {
-      observer.observe(contentRef.current);
-    }
-    return () => {
-      observer.disconnect();
-      useMonitorFrameStore.getState().clearFrame(publisher);
-      if (remeasureRef.current) {
-        cancelAnimationFrame(remeasureRef.current);
-        remeasureRef.current = 0;
-      }
-      if (dragFrameRef.current) {
-        cancelAnimationFrame(dragFrameRef.current);
-        dragFrameRef.current = 0;
-      }
-    };
-  }, [constraintsElement, publisher]);
-
-  // ResizeObserver never fires for a position-only change, so dragging alone would leave the
-  // published frame at the monitor's old corner and the overlay stack dodging where it used to be.
-  // Re-publish once each layout is committed, which after a drag is on release: the frames in
-  // between are a transform, and republishing through them would re-render every overlay in the
-  // stack for each one, which is most of what made dragging feel heavy.
-  useLayoutEffect(() => {
-    void layout;
-    const monitor = monitorRef.current;
-    if (!(monitor && constraintsElement)) {
-      return;
-    }
-    const box = monitor.getBoundingClientRect();
-    useMonitorFrameStore.getState().setFrame(publisher, {
-      left: box.left,
-      top: box.top,
-      right: box.right,
-      bottom: box.bottom,
-    });
-  }, [layout, constraintsElement, publisher]);
-
-  function startDrag(event: PointerEvent<HTMLDivElement>) {
-    const monitor = monitorRef.current;
-    if (event.button !== 0 || !(monitor && constraintsElement)) {
-      return;
-    }
-
-    event.preventDefault();
-    const constraintsBox = constraintsElement.getBoundingClientRect();
-    const monitorBox = monitor.getBoundingClientRect();
-    const left = monitorBox.left - constraintsBox.left;
-    const top = monitorBox.top - constraintsBox.top;
-    hasDraggedRef.current = true;
-
-    // Native resize records attempted inline dimensions even when max-width
-    // or max-height hides them. Normalize only hidden dimensions so an
-    // auto-sized monitor can still grow when system rows arrive later.
-    const inlineWidth = Number.parseFloat(monitor.style.width);
-    const inlineHeight = Number.parseFloat(monitor.style.height);
-    if (
-      Number.isFinite(inlineWidth) &&
-      Math.abs(inlineWidth - monitorBox.width) > 0.5
-    ) {
-      monitor.style.width = `${monitorBox.width}px`;
-    }
-    if (
-      Number.isFinite(inlineHeight) &&
-      Math.abs(inlineHeight - monitorBox.height) > 0.5
-    ) {
-      monitor.style.height = `${monitorBox.height}px`;
-    }
-
-    dragSessionRef.current = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      left,
-      top,
-      maxLeft: Math.max(0, constraintsBox.width - monitorBox.width),
-      maxTop: Math.max(0, constraintsBox.height - monitorBox.height),
-      constraintsWidth: constraintsBox.width,
-      constraintsHeight: constraintsBox.height,
-      baseLeft: left,
-      baseTop: top,
-    };
-    event.currentTarget.setPointerCapture(event.pointerId);
-  }
-
-  // One paint per frame, and through a transform rather than left/top. The panel is
-  // backdrop-blurred, so every layout-driven move re-sampled what is behind it; a trackpad also
-  // reports moves faster than the display refreshes, so most of those renders were never shown.
-  function paintDrag() {
-    dragFrameRef.current = 0;
-    const session = dragSessionRef.current;
-    const monitor = monitorRef.current;
-    if (!(session && monitor)) {
-      return;
-    }
-    monitor.style.transform = `translate3d(${session.left - session.baseLeft}px, ${
-      session.top - session.baseTop
-    }px, 0)`;
-  }
-
-  function updateDrag(event: PointerEvent<HTMLDivElement>) {
-    const session = dragSessionRef.current;
-    if (!session || session.pointerId !== event.pointerId) {
-      return;
-    }
-
-    const left = clamp(
-      session.left + event.clientX - session.startX,
-      0,
-      session.maxLeft,
-    );
-    const top = clamp(
-      session.top + event.clientY - session.startY,
-      0,
-      session.maxTop,
-    );
-    session.startX = event.clientX;
-    session.startY = event.clientY;
-    session.left = left;
-    session.top = top;
-    if (!dragFrameRef.current) {
-      dragFrameRef.current = requestAnimationFrame(paintDrag);
-    }
-  }
-
-  function finishDrag(event: PointerEvent<HTMLDivElement>) {
-    const session = dragSessionRef.current;
-    if (session?.pointerId !== event.pointerId) {
-      return;
-    }
-    if (dragFrameRef.current) {
-      cancelAnimationFrame(dragFrameRef.current);
-      dragFrameRef.current = 0;
-    }
-    const { left, top, constraintsWidth, constraintsHeight } = session;
-    dragSessionRef.current = null;
-    // Written to the node as well as to state, in this order, so handing the
-    // offset back to left/top cannot show a frame at the spot it started from.
-    const monitor = monitorRef.current;
-    if (monitor) {
-      monitor.style.left = `${left}px`;
-      monitor.style.top = `${top}px`;
-      monitor.style.transform = "";
-    }
-    setLayout((current) =>
-      !current || (current.left === left && current.top === top)
-        ? current
-        : {
-            ...current,
-            left,
-            top,
-            maxWidth: constraintsWidth - left,
-            maxHeight: constraintsHeight - top,
-          },
-    );
-  }
-
-  return {
-    monitorRef,
-    scrollRef,
-    contentRef,
-    layout,
-    startDrag,
-    updateDrag,
-    finishDrag,
-  };
-}
+  formatPower,
+  formatTemperature,
+  gpuTelemetryRows,
+  selectedDetailMetrics,
+  temperatureLevel,
+} from "./monitor-details";
+import {
+  FLOATING_MONITOR_WIDTH,
+  floatingMonitorConstraintStyle,
+  getFloatingMonitorLayout,
+} from "./floating-monitor-layout";
+import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
+import { Cancel01Icon, DragDropVerticalIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { ChipIcon } from "@/lib/hugeicons-derived";
 
 function clampPercent(value: number): number {
-  return clamp(value, 0, 100);
+  return Math.max(0, Math.min(100, value));
 }
 
 function usageIndicatorClass(percent: number): string {
@@ -409,25 +68,76 @@ function usageTextClass(percent: number): string {
   return "text-primary";
 }
 
+const LEVEL_INDICATOR_CLASS = {
+  ok: "bg-control-accent",
+  warm: "bg-amber-500",
+  hot: "bg-destructive",
+} as const;
+
+const LEVEL_TEXT_CLASS = {
+  ok: "text-primary",
+  warm: "text-amber-600 dark:text-amber-400",
+  hot: "text-destructive",
+} as const;
+
+function DetailBar({
+  label,
+  value,
+  percent,
+  indicatorClassName,
+  textClassName,
+}: {
+  label: string;
+  value: string;
+  percent: number;
+  indicatorClassName: string;
+  textClassName: string;
+}) {
+  return (
+    <div className="space-y-0.5">
+      <div className="flex justify-between gap-2 text-xs font-mono text-muted-foreground">
+        <span className="truncate">{label}</span>
+        <span className={cn("shrink-0 tabular-nums", textClassName)}>
+          {value}
+        </span>
+      </div>
+      <Progress
+        value={clampPercent(percent)}
+        className="h-1 rounded-full bg-muted"
+        indicatorClassName={indicatorClassName}
+      />
+    </div>
+  );
+}
+
 function formatGiB(value: number): string {
-  // RAM/VRAM come from the backend in binary units (bytes / 1024**3), matching
-  // nvidia-smi and PyTorch, so label the readout GiB rather than GB.
+  // Backend reports binary units (bytes / 1024**3), so label GiB.
   const digits = value >= 10 ? 1 : 2;
   return `${value.toFixed(digits)} GiB`;
 }
 
 interface FloatingMonitorPanelProps {
+  dockedBesideRunSettings: boolean;
   onClose: () => void;
+  settingsWidth: number;
+  onRenderedWidth: (width: number) => void;
+  suppressed: boolean;
   systemInfo: ReturnType<typeof useSystemInfo>;
+  uiSpaceScale: number;
 }
-
 function FloatingMonitorPanel({
+  dockedBesideRunSettings,
   onClose,
+  onRenderedWidth,
+  settingsWidth,
+  suppressed,
   systemInfo,
+  uiSpaceScale,
 }: FloatingMonitorPanelProps) {
   const t = useT();
   const [constraintsElement, setConstraintsElement] =
     useState<HTMLDivElement | null>(null);
+  const cornerCard = useCornerCardFrameStore((state) => state.frame);
   const {
     monitorRef,
     scrollRef,
@@ -436,13 +146,33 @@ function FloatingMonitorPanel({
     startDrag,
     updateDrag,
     finishDrag,
-  } = useMonitorLayout(constraintsElement);
+    resetPosition,
+    nudge,
+  } = useFloatingPanelLayout(
+    constraintsElement,
+    dockedBesideRunSettings || suppressed,
+    suppressed,
+    undefined,
+    FLOATING_PANEL_POSITION_KEYS.liveMonitor,
+    cornerCard,
+  );
+
+  // offsetWidth, not the bounding rect: a drag's transform skews the rect.
+  useEffect(() => {
+    const monitor = monitorRef.current;
+    if (!monitor) {
+      return;
+    }
+    const measure = () => onRenderedWidth(monitor.offsetWidth);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(monitor);
+    return () => observer.disconnect();
+  }, [monitorRef, onRenderedWidth]);
 
   const zIndex = useFloatingPanelZIndex("resource-monitor");
   const raisePanel = useFloatingPanelOrderStore((state) => state.raise);
 
-  // Opening the monitor puts it in front of the API monitor panel; touching
-  // either afterwards brings that one forward instead.
   useEffect(() => {
     raisePanel("resource-monitor");
   }, [raisePanel]);
@@ -451,6 +181,9 @@ function FloatingMonitorPanel({
   const ramAvailable = systemInfo.memory?.available_gb ?? 0;
   const ramUsed = Math.max(0, ramTotal - ramAvailable);
   const ramPercent = clampPercent(systemInfo.memory?.percent_used ?? 0);
+  // The placeholder's zeros are not a reading: loading or a failed first request shows "--".
+  const ramKnown = systemInfo.status === "ready";
+  const stale = systemInfo.stale === true;
 
   const displayedGpu = systemInfo.gpu?.available
     ? systemInfo.gpu
@@ -470,6 +203,8 @@ function FloatingMonitorPanel({
   const memoryTotals = gpuMemoryTotalsGb(devices);
   const vramTotal = memoryTotals.total;
   const hasSharedPool = memoryTotals.shared > 0;
+  // No dedicated pool (Apple unified memory): the shared total alone is the capacity.
+  const unifiedPool = hasSharedPool && memoryTotals.dedicated === 0;
   // null usage = unknown (e.g. Windows ROCm perf counter); 0 would fabricate a
   // readout. The host figure can still be known when no device's is (#7452).
   const resolvedVramUsed = resolveGpuVramUsedGb(memoryDisplay.usageGpu);
@@ -480,21 +215,46 @@ function FloatingMonitorPanel({
   );
   const unknownLabel = t("settings.resources.environment.unknown");
 
+  const showDetails = useMonitorOverlayStore((state) => state.showDetails);
+  const storedDetailMetrics = useMonitorOverlayStore(
+    (state) => state.detailMetrics,
+  );
+  const detailMetrics = selectedDetailMetrics(storedDetailMetrics);
+  const cpuPercent =
+    showDetails && detailMetrics.has("cpuLoad") && systemInfo.status === "ready"
+      ? clampPercent(systemInfo.cpu?.usage_percent ?? 0)
+      : null;
+  const telemetryRows =
+    showDetails && displayedGpu?.available
+      ? gpuTelemetryRows(displayedGpu.devices, detailMetrics)
+      : [];
+
   const hasGpu =
     (displayedGpu?.available ?? false) &&
     (displayedGpu?.devices.length ?? 0) > 0;
 
   // The container sits on the floating panel layer, above the bottom-right overlay stack. The stack
-  // is anchored to that same corner and does not move for this monitor, so the two can overlap. The
-  // stack is passive status; this is a window being dragged, resized and closed, so it wins. Still
-  // below the startup screen and tooltips. See lib/z-layers. The API monitor panel shares this
-  // layer rather than sitting under it, and whichever of the two the user touched last is the one
-  // in front.
+  // is anchored to that same corner and does not move for this monitor; at its default corner the
+  // monitor rests above the Loaded models card instead (useCornerCardFrameStore), and anywhere it
+  // overlaps it wins, since this is a window being dragged, resized and closed. Still below the
+  // startup screen and tooltips. See lib/z-layers. The API monitor panel shares this layer rather
+  // than sitting under it, and whichever of the two the user touched last is the one in front.
   return (
     <div
       ref={setConstraintsElement}
-      className="pointer-events-none fixed inset-4"
-      style={{ zIndex }}
+      // Stays mounted while suppressed so the user's position and resize dimensions survive.
+      aria-hidden={suppressed || undefined}
+      className={cn(
+        "pointer-events-none fixed inset-y-4 left-4",
+        suppressed && "invisible",
+        dockedBesideRunSettings ? undefined : "right-4",
+      )}
+      style={floatingMonitorConstraintStyle({
+        zIndex,
+        dockedBesideRunSettings,
+        settingsWidth,
+        uiSpaceScale,
+      })}
     >
       <motion.div
         {...{ [FIND_PORTAL_ATTRIBUTE]: "" }}
@@ -504,10 +264,20 @@ function FloatingMonitorPanel({
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         className={cn(
-          "settings-surface pointer-events-auto absolute flex max-h-full w-64 max-w-full cursor-default select-none flex-col overflow-hidden rounded-xl border border-border/70 p-3 shadow-border ring-0 backdrop-blur-sm",
+          "settings-surface bg-background pointer-events-auto absolute flex max-h-full w-64 max-w-full cursor-default select-none flex-col overflow-hidden rounded-2xl border border-border/70 p-3 shadow-border ring-0",
           layout ? "top-0 left-0 resize" : "right-0 bottom-0",
         )}
         data-testid="floating-monitor"
+        // Takes its own clicks over a macOS browser page (native-view.ts).
+        data-native-clickable=""
+        // biome-ignore lint/a11y/useSemanticElements: a floating panel landmark on the shared layout hook's div.
+        role="region"
+        aria-label={t("settings.resources.liveMonitor.title")}
+        onKeyDown={(event) => {
+          if (event.key !== "Escape" || event.defaultPrevented) return;
+          event.preventDefault();
+          onClose();
+        }}
         style={
           layout
             ? {
@@ -523,22 +293,38 @@ function FloatingMonitorPanel({
       >
         <div className="mb-2 flex items-center justify-between gap-2 border-b border-border/60 pb-2">
           <div className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-xs font-semibold text-foreground">
-            <CpuIcon className="size-3.5 shrink-0 text-primary" />
+            <HugeiconsIcon icon={ChipIcon} strokeWidth={2} className="size-3.5 shrink-0 text-primary" />
             <span className="truncate">
               {t("settings.resources.liveMonitor.title")}
             </span>
+            {stale && (
+              <span
+                className="truncate font-normal text-muted-foreground"
+                aria-live="polite"
+                data-testid="floating-monitor-stale"
+              >
+                {t("floatingPanels.monitor.reconnecting")}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-1 shrink-0">
             <div
               data-testid="floating-monitor-drag-handle"
+              // biome-ignore lint/a11y/useSemanticElements: a pointer-captured drag grip, not a pressable control.
+              role="button"
+              tabIndex={0}
+              aria-label={t("floatingPanels.monitor.dragHandleLabel")}
+              title={t("floatingPanels.monitor.dragHandleLabel")}
               onPointerDown={startDrag}
               onPointerMove={updateDrag}
               onPointerUp={finishDrag}
               onPointerCancel={finishDrag}
               onLostPointerCapture={finishDrag}
-              className="touch-none cursor-grab rounded-md px-1 text-muted-foreground/60 transition-colors hover:bg-muted/60 hover:text-muted-foreground active:cursor-grabbing"
+              onDoubleClick={resetPosition}
+              onKeyDown={(event) => void nudge(event)}
+              className="touch-none cursor-grab rounded-full px-1 text-muted-foreground/60 transition-colors hover:bg-muted/60 hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing"
             >
-              <GripVerticalIcon className="size-3.5" />
+              <HugeiconsIcon icon={DragDropVerticalIcon} strokeWidth={1.75} className="size-3.5" />
             </div>
 
             <Button
@@ -549,7 +335,7 @@ function FloatingMonitorPanel({
               title={t("common.close")}
               aria-label={t("common.close")}
             >
-              <XIcon className="size-3" />
+              <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
             </Button>
           </div>
         </div>
@@ -558,22 +344,29 @@ function FloatingMonitorPanel({
           <div
             ref={contentRef}
             data-testid="floating-monitor-content"
-            className="space-y-3"
+            className={cn("space-y-3 transition-opacity", stale && "opacity-50")}
           >
             <div className="space-y-1">
               <div className="flex justify-between text-ui-11 font-medium font-mono">
                 <span>{t("settings.resources.liveMonitor.ram")}</span>
                 <span
-                  className={cn("tabular-nums", usageTextClass(ramPercent))}
+                  className={cn(
+                    "tabular-nums",
+                    ramKnown
+                      ? usageTextClass(ramPercent)
+                      : "text-muted-foreground",
+                  )}
                 >
-                  {Math.round(ramPercent)}%
+                  {ramKnown ? `${Math.round(ramPercent)}%` : "--"}
                 </span>
               </div>
               <div className="text-xs text-muted-foreground font-mono tabular-nums">
-                {formatGiB(ramUsed)} / {formatGiB(ramTotal)}
+                {ramKnown
+                  ? `${formatGiB(ramUsed)} / ${formatGiB(ramTotal)}`
+                  : "-- / --"}
               </div>
               <Progress
-                value={ramPercent}
+                value={ramKnown ? ramPercent : 0}
                 className="mt-1 h-1.5 rounded-full bg-muted"
                 indicatorClassName={usageIndicatorClass(ramPercent)}
               />
@@ -601,13 +394,25 @@ function FloatingMonitorPanel({
                 </div>
                 <div className="text-xs text-muted-foreground font-mono tabular-nums">
                   {vramUsageKnown ? formatGiB(vramUsed) : unknownLabel} /{" "}
-                  {hasSharedPool
+                  {hasSharedPool && !unifiedPool
                     ? t("settings.resources.environment.vramWithShared", {
                         vram: formatGiB(memoryTotals.dedicated),
                         shared: formatGiB(memoryTotals.shared),
                       })
                     : formatGiB(vramTotal)}
                 </div>
+                {unifiedPool && memoryDisplay.sharedDevices.length === 0 && (
+                  <div className="text-xs font-mono text-muted-foreground">
+                    {t("settings.resources.gpu.sharedWithSystemRam")}
+                    {memoryDisplay.unifiedAvailableGb !== null && (
+                      <span className="block">
+                        {t("settings.resources.gpu.estimatedAvailable", {
+                          value: formatGiB(memoryDisplay.unifiedAvailableGb),
+                        })}
+                      </span>
+                    )}
+                  </div>
+                )}
                 <Progress
                   value={vramUsageKnown ? vramPercent : 0}
                   className="mt-1 h-1.5 rounded-full bg-muted"
@@ -663,6 +468,72 @@ function FloatingMonitorPanel({
                 </span>
               </div>
             )}
+            {cpuPercent !== null && (
+              <div
+                className="border-t border-border/60 pt-2"
+                data-testid="floating-monitor-cpu"
+              >
+                <DetailBar
+                  label={t("settings.resources.liveMonitor.cpuLoad")}
+                  value={`${Math.round(cpuPercent)}%`}
+                  percent={cpuPercent}
+                  indicatorClassName={usageIndicatorClass(cpuPercent)}
+                  textClassName={usageTextClass(cpuPercent)}
+                />
+              </div>
+            )}
+            {telemetryRows.map((row) => (
+              <div
+                key={row.key}
+                className="space-y-1.5 border-t border-border/60 pt-2"
+                data-testid="floating-monitor-gpu-details"
+              >
+                <div className="truncate text-ui-11 font-medium font-mono">
+                  {row.name}
+                </div>
+                {row.loadPct !== null && (
+                  <DetailBar
+                    label={t("settings.resources.liveMonitor.gpuLoad")}
+                    value={`${Math.round(row.loadPct)}%`}
+                    percent={row.loadPct}
+                    indicatorClassName={usageIndicatorClass(row.loadPct)}
+                    textClassName={usageTextClass(row.loadPct)}
+                  />
+                )}
+                {row.temperatureC !== null && (
+                  <DetailBar
+                    label={t("settings.resources.liveMonitor.temperature")}
+                    value={formatTemperature(row.temperatureC)}
+                    percent={row.temperatureC}
+                    indicatorClassName={
+                      LEVEL_INDICATOR_CLASS[temperatureLevel(row.temperatureC)]
+                    }
+                    textClassName={
+                      LEVEL_TEXT_CLASS[temperatureLevel(row.temperatureC)]
+                    }
+                  />
+                )}
+                {row.powerDrawW !== null &&
+                  (row.powerPct !== null ? (
+                    <DetailBar
+                      label={t("settings.resources.liveMonitor.power")}
+                      value={formatPower(row.powerDrawW, row.powerLimitW)}
+                      percent={row.powerPct}
+                      indicatorClassName={usageIndicatorClass(row.powerPct)}
+                      textClassName={usageTextClass(row.powerPct)}
+                    />
+                  ) : (
+                    <div className="flex justify-between gap-2 text-xs font-mono text-muted-foreground">
+                      <span className="truncate">
+                        {t("settings.resources.liveMonitor.power")}
+                      </span>
+                      <span className="shrink-0 tabular-nums text-primary">
+                        {formatPower(row.powerDrawW, null)}
+                      </span>
+                    </div>
+                  ))}
+              </div>
+            ))}
           </div>
         </div>
       </motion.div>
@@ -671,13 +542,99 @@ function FloatingMonitorPanel({
 }
 
 export function FloatingMonitor() {
+  const uiSpaceScale = useUiSpaceScale();
   const { isOpen, setIsOpen } = useMonitorOverlayStore();
-  const systemInfo = useSystemInfo({ enabled: isOpen, pollMs: 5000 });
+  const settingsPanelOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const isMobile = useIsMobile();
+  const { width: committedSettingsWidth } = useChatSettingsWidth();
+  const { pinned } = useSidebarPin();
+  const { width: committedSidebarWidth } = useSidebarWidth();
+  const isChatRoute = pathname === "/chat";
+
+  // Dragging paints `--chat-settings-width` and commits only on pointer up; follow the painted width.
+  const [paintedSettingsWidth, setPaintedSettingsWidth] = useState(0);
+  useEffect(() => {
+    if (!(isOpen && isChatRoute && settingsPanelOpen)) {
+      setPaintedSettingsWidth(0);
+      return;
+    }
+    const panel = document.querySelector('[data-slot="chat-settings-panel"]');
+    if (!panel) {
+      setPaintedSettingsWidth(0);
+      return;
+    }
+    const measure = () => {
+      if (panel.isConnected) {
+        setPaintedSettingsWidth(panel.getBoundingClientRect().width);
+      }
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(panel);
+    return () => observer.disconnect();
+  }, [isOpen, isChatRoute, settingsPanelOpen, isMobile]);
+
+  // The sidebar paints per frame and commits on release, so track painted width for docking.
+  const [paintedSidebarWidth, setPaintedSidebarWidth] = useState(0);
+  // The web shell's collapsed icon rail still holds a column when unpinned.
+  const [sidebarHoldsRail, setSidebarHoldsRail] = useState(false);
+  useEffect(() => {
+    const sidebar = isOpen ? document.querySelector('[data-slot="sidebar"]') : null;
+    if (!sidebar) {
+      setPaintedSidebarWidth(0);
+      setSidebarHoldsRail(false);
+      return;
+    }
+    const measure = () => {
+      if (sidebar.isConnected) {
+        setPaintedSidebarWidth(sidebar.getBoundingClientRect().width);
+        setSidebarHoldsRail(
+          sidebar.getAttribute("data-collapsible") === "icon",
+        );
+      }
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(sidebar);
+    return () => observer.disconnect();
+  }, [isOpen, isMobile]);
+
+  // useIsMobile and the width stores do not notify on every resize, so subscribe directly.
+  const viewportWidth = useSyncExternalStore(
+    (onChange) => {
+      window.addEventListener("resize", onChange);
+      return () => window.removeEventListener("resize", onChange);
+    },
+    () => window.innerWidth,
+    () => 0,
+  );
+
+  const settingsWidth =
+    paintedSettingsWidth > 0 ? paintedSettingsWidth : committedSettingsWidth;
+  const pinnedSidebarWidth =
+    paintedSidebarWidth > 0 ? paintedSidebarWidth : committedSidebarWidth;
+  const unpinnedSidebarWidth = sidebarHoldsRail ? paintedSidebarWidth : 0;
+  const sidebarWidth = pinned ? pinnedSidebarWidth : unpinnedSidebarWidth;
+  // The panel is resizable, so dock using its measured width; the constant is the floor.
+  const [monitorWidth, setMonitorWidth] = useState(FLOATING_MONITOR_WIDTH);
+  const { visible, suppressed, dockedBesideRunSettings } =
+    getFloatingMonitorLayout({
+      isOpen,
+      isMobile,
+      isChatRoute,
+      settingsPanelOpen,
+      settingsWidth,
+      sidebarWidth,
+      viewportWidth,
+      monitorWidth,
+      uiSpaceScale,
+    });
+  const systemInfo = useSystemInfo({ enabled: visible, pollMs: 5000 });
   const [panelKey, setPanelKey] = useState(0);
   const wasOpenRef = useRef(isOpen);
 
-  // Each visible panel owns native inline resize state. Advance the key on
-  // close so reopening during the exit animation still mounts fresh geometry.
+  // Advance the key on close so reopening mid-exit mounts fresh native resize geometry.
   useEffect(() => {
     if (wasOpenRef.current && !isOpen) {
       setPanelKey((current) => current + 1);
@@ -687,9 +644,15 @@ export function FloatingMonitor() {
 
   return (
     <AnimatePresence>
-      {isOpen && (
+      {(visible || suppressed) && (
         <FloatingMonitorPanel
           key={panelKey}
+          // The mobile sheet covers, not closes, the panel, so position and size survive.
+          suppressed={suppressed}
+          dockedBesideRunSettings={dockedBesideRunSettings}
+          settingsWidth={settingsWidth}
+          uiSpaceScale={uiSpaceScale}
+          onRenderedWidth={setMonitorWidth}
           systemInfo={systemInfo}
           onClose={() => setIsOpen(false)}
         />

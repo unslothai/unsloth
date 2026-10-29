@@ -1,30 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Process-level server-side tool policy.
-
-Two slots, both set at startup and consulted by the inference route gates.
-
-The OVERRIDE (`set_tool_policy`) comes from an explicit `--enable-tools`/
-`--disable-tools` and beats the request:
-
-  None  -> no CLI override (default). Per-request `enable_tools` is honored.
-  True  -> CLI forced tools on for every request. Not on /v1/messages: that channel
-           cannot present a confirmation prompt, so it takes the on direction from the
-           request itself (see _anthropic_selects_server_tools).
-  False -> CLI forced tools off for every request, /v1/messages included.
-
-The DEFAULT (`set_tool_policy_default`) is what an omitted `enable_tools` falls
-back to. `unsloth studio run` installs True for every bind, `--secure` included,
-so a plain request to a tool-capable model can use tools. It is only a default:
-a request that says `enable_tools: false` (what the Unsloth UI sends with its tool
-pills off) turns them off, which the override deliberately would not.
-
-No other launcher installs it. `unsloth studio`, the desktop app and Colab leave
-it unset, so an omitted `enable_tools` still means no tools there, which is what
-paths like `n > 1`, `max_tool_calls_per_message: 0` and the pre-switch
-passthrough guard are built around.
-"""
+"""CLI override (--enable-tools/--disable-tools) beats the request, except True on /v1/messages
+where the request decides; default applies only when enable_tools is omitted, set only by unsloth
+studio run; other launchers leave it unset, so no tools"""
 
 import contextvars
 from contextlib import contextmanager
@@ -45,16 +24,34 @@ def require_tool_access(
     *,
     bypass_permissions: bool = False,
     disable_sandbox: bool = False,
+    sandbox_level: Optional[str] = None,
 ) -> None:
     if permission_mode != "full" and not bypass_permissions and not disable_sandbox:
+        if sandbox_level == "low":
+            from auth.policy import api_full_access_refused
+            if api_full_access_refused():
+                from fastapi import HTTPException
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Sandbox Low (sandbox_level 'low') is off for API keys: Python and Terminal "
+                    "run in the OS sandbox. Use sandbox_level 'high', or set "
+                    "UNSLOTH_STUDIO_ALLOW_API_FULL_ACCESS=1 on the server to allow it.",
+                )
         return
-    from auth.policy import full_access_permitted
+    from auth.policy import api_full_access_refused, full_access_permitted
     from fastapi import HTTPException
 
     if not full_access_permitted():
         raise HTTPException(
             status_code = 400,
-            detail = "Full access is unavailable while more than one account exists.",
+            detail = "Full access is only available to the installation owner.",
+        )
+    if api_full_access_refused():
+        raise HTTPException(
+            status_code = 400,
+            detail = "Full access (bypass_permissions, permission_mode 'full', disable_sandbox) is off for "
+            "API keys: tools run in the sandbox. Use permission_mode 'auto', 'ask' or 'off', or set "
+            "UNSLOTH_STUDIO_ALLOW_API_FULL_ACCESS=1 on the server to allow it.",
         )
 
 
@@ -71,10 +68,128 @@ def normalize_tool_permissions(
     return permission_mode, False
 
 
-def account_tool_stream(stream):
-    from utils.account_context import current_account, is_owner_context, run_as
+OS_SANDBOXED_TOOLS = frozenset({"python", "terminal"})
 
-    if is_owner_context():
+
+SANDBOX_LEVELS = ("high", "low")
+
+
+def normalize_sandbox_level(value: Optional[str]) -> str:
+    """Absent reads as "high"; anything else is a caller bug, so it never silently loosens to "low"."""
+    if value is None:
+        return "high"
+    level = str(value).strip().lower()
+    if level not in SANDBOX_LEVELS:
+        raise ValueError(f"sandbox_level must be 'high' or 'low', not {value!r}")
+    return level
+
+
+def runs_without_os_sandbox(name: str, sandbox_level: Optional[str]) -> bool:
+    """Low: Python and Terminal run on software safeguards only, so they never claim OS isolation."""
+    return name in OS_SANDBOXED_TOOLS and sandbox_level == "low"
+
+
+def off_mode_still_gates(
+    name: str,
+    sandbox_level: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> bool:
+    """Whether "off" must still ask for this tool. Cached only; unknown counts as not isolated."""
+    if name not in OS_SANDBOXED_TOOLS:
+        return False
+    if runs_without_os_sandbox(name, sandbox_level):
+        return True
+    from core.inference.os_sandbox import cached_tool_isolation
+    from core.inference.tools import workdir_scan_overran
+
+    return cached_tool_isolation(name) is not True or workdir_scan_overran(session_id)
+
+
+def tool_call_may_prompt(
+    *,
+    confirm_tool_calls: bool,
+    bypass_permissions: bool,
+    permission_mode: Optional[str],
+    name: str,
+    sandbox_level: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> bool:
+    """Before the arguments are known: whether a call to ``name`` could stop and ask."""
+    if not confirm_tool_calls or bypass_permissions:
+        return False
+    if permission_mode == "off":
+        return off_mode_still_gates(name, sandbox_level, session_id)
+    if permission_mode == "auto":
+        from core.inference.tools import is_always_safe_tool
+        return not is_always_safe_tool(name)
+    return True
+
+
+def needs_tool_confirmation(
+    *,
+    confirm_tool_calls: bool,
+    bypass_permissions: bool,
+    permission_mode: Optional[str],
+    name: str,
+    arguments,
+    is_high_risk = None,
+    never_needs = None,
+    sandbox_level: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> bool:
+    if is_high_risk is None or never_needs is None:
+        from core.inference import tools
+        is_high_risk = is_high_risk or tools.is_high_risk_tool_call
+        never_needs = never_needs or tools.never_needs_approval
+    if not confirm_tool_calls or bypass_permissions or never_needs(name):
+        return False
+    if permission_mode == "off":
+        return off_mode_still_gates(name, sandbox_level, session_id) and _classify(
+            is_high_risk, name, arguments, sandbox_level
+        )
+    if permission_mode == "auto":
+        return _classify(is_high_risk, name, arguments, sandbox_level)
+    return True
+
+
+def _classify(is_high_risk, name: str, arguments, sandbox_level: Optional[str]) -> bool:
+    """The risk check, told the level: under Low the Terminal's shell is the host's."""
+    from core.inference.tools import classifying_under
+    with classifying_under(sandbox_level):
+        return bool(is_high_risk(name, arguments))
+
+
+def requires_os_isolation(
+    *,
+    confirm_tool_calls: bool,
+    bypass_permissions: bool,
+    permission_mode: Optional[str],
+    name: str,
+    arguments,
+    prompted: bool,
+    is_high_risk = None,
+    sandbox_level: Optional[str] = None,
+) -> bool:
+    """Whether the call must launch with tool_execution_mode required (no software fallback); prompted is passed in to avoid a cache race."""
+    if prompted or not confirm_tool_calls or bypass_permissions or permission_mode != "off":
+        return False
+    if name not in OS_SANDBOXED_TOOLS or runs_without_os_sandbox(name, sandbox_level):
+        return False
+    if is_high_risk is None:
+        from core.inference.tools import is_high_risk_tool_call as is_high_risk
+    return _classify(is_high_risk, name, arguments, sandbox_level)
+
+
+def account_tool_stream(stream):
+    from utils.account_context import (
+        current_account,
+        is_owner_context,
+        run_as,
+        via_api_key_context,
+    )
+
+    # An owner API-key request is rebound too: the tool thread must still know it came from an API key.
+    if is_owner_context() and not via_api_key_context():
         return stream
     account = current_account()
 
@@ -98,6 +213,11 @@ def get_tool_policy_default() -> Optional[bool]:
     if _force_disabled.get():
         return False
     return _tool_policy_default
+
+
+def conversation_recall_allowed() -> bool:
+    """Recall reads only this thread's archive: `--disable-tools` keeps it, `tools_force_disabled` does not."""
+    return not _force_disabled.get()
 
 
 @contextmanager

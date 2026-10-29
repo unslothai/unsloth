@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Its own file because hydratePersistedSettings memoizes its promise for the
-// life of the module, so a second call in an already-hydrated module returns
-// without reading anything and would assert nothing.
+// Own file: hydratePersistedSettings memoizes its promise for the module's life.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
@@ -25,9 +23,7 @@ const EXTERNAL_QWEN = `external::openrouter::${encodeURIComponent(
 )}`;
 
 test("an external model picked during hydration does not claim the global", async () => {
-  // setCheckpoint moves the checkpoint at once and records no adoption marker,
-  // so ownership must not fall out of the absence of load markers. The global
-  // here belongs to whatever another browser last used.
+  // setCheckpoint records no adoption marker, so ownership must not follow absent load markers.
   settingsHttp.settings = {
     activePreset: "Default",
     activePresetSource: "builtin-default",

@@ -6,12 +6,14 @@ import {
   ProfileStatsPanel,
 } from "@/features/profile";
 import { useT } from "@/i18n";
+import { AccountPasswordDialog } from "../components/change-password-dialog";
+import { SettingsRow } from "../components/settings-row";
 
 export function ProfileTab() {
   const t = useT();
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="settings-page">
       <header className="flex flex-col gap-1">
         <h1
           data-settings-label={t("settings.profile.title")}
@@ -28,6 +30,12 @@ export function ProfileTab() {
       </header>
 
       <ProfilePersonalizationPanel />
+      <SettingsRow
+        label={t("settings.general.password")}
+        description={t("settings.general.passwordDescription")}
+      >
+        <AccountPasswordDialog />
+      </SettingsRow>
       <ProfileStatsPanel />
     </div>
   );

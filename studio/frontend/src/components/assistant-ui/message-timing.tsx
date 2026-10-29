@@ -19,17 +19,32 @@ const formatNumber = (n: number): string => {
   return n.toLocaleString();
 };
 
+/** A user stop wins over the stream's last finish_reason. */
+function stopReasonLabel(
+  finishReason: unknown,
+  incompleteReason?: unknown,
+): string | null {
+  if (incompleteReason === "cancelled") return "Stopped by you";
+  switch (finishReason) {
+    case "stop":
+      return "End of turn";
+    case "length":
+      return "Length limit";
+    case "tool_calls":
+    case "function_call":
+      return "Tool call";
+    case "content_filter":
+      return "Content filter";
+    default:
+      return typeof finishReason === "string" && finishReason ? finishReason : null;
+  }
+}
+
 const formatRate = (r: number | undefined): string => {
   if (r === undefined || !Number.isFinite(r)) return "—";
   return `${Math.round(r).toLocaleString()} tok/s`;
 };
 
-/**
- * Shows streaming stats as a badge with hover tooltip.
- * When server timings are available (GGUF, MLX, safetensors), shows prompt eval,
- * prompt speed, generation, speed, tokens, and cache hits. Falls back to
- * client-side metrics otherwise.
- */
 export const MessageTiming: FC<{
   className?: string;
   side?: "top" | "right" | "bottom" | "left";
@@ -48,23 +63,26 @@ export const MessageTiming: FC<{
           cachedTokens?: number;
           cacheWriteTokens?: number;
         };
+        stopReason?: unknown;
+        incomplete?: { reason?: unknown };
       }
     | undefined;
   const st = custom?.serverTimings;
+  const stopReason = stopReasonLabel(custom?.stopReason, custom?.incomplete?.reason);
+  const draftN = st?.draft_n ?? 0;
+  const draftAccepted = st?.draft_n_accepted;
+  const draftText =
+    draftN > 0 && typeof draftAccepted === "number" && Number.isFinite(draftAccepted)
+      ? `${formatNumber(draftAccepted)} / ${formatNumber(draftN)} (${Math.round((draftAccepted / draftN) * 100)}%)`
+      : null;
   // `??` (not `||`) so an explicit cache_n=0 isn't replaced by a stale
   // contextUsage.cachedTokens from a prior turn.
   const cacheHits =
     st?.cache_n ?? custom?.contextUsage?.cachedTokens ?? 0;
-  // Anthropic-only cache-write count.
   const cacheWrites = custom?.contextUsage?.cacheWriteTokens ?? 0;
-  // DiffusionGemma reports separately-labelled throughput (no prefill, so no "prompt
-  // speed"), matching the CLI: in-step parallel, effective (canvas*blocks/wall), and
-  // output (answer tokens/wall).
   const isDiffusion = (st as { diffusion?: boolean } | undefined)?.diffusion === true;
 
-  // Guard unphysical tok/s: llama.cpp emits predicted_ms=0 on no-op turns,
-  // blowing the rate up to Infinity. Require >=1 token, a non-zero decode
-  // window, and a finite rate. Fast cached sub-10ms responses are legit.
+  // llama.cpp emits predicted_ms=0 on no-op turns; guard against an Infinity rate.
   const hasPredicted =
     (st?.predicted_n ?? 0) >= 1 && (st?.predicted_ms ?? 0) > 0;
   const predictedRate =
@@ -74,7 +92,6 @@ export const MessageTiming: FC<{
       ? st.predicted_per_second
       : undefined;
 
-  // Badge text: show tok/s if available, otherwise total time
   const badgeText = predictedRate != null
     ? `${predictedRate.toFixed(1)} tok/s`
     : formatTimingMs(timing.totalStreamTime);
@@ -105,7 +122,6 @@ export const MessageTiming: FC<{
           {st ? (
             isDiffusion ? (
             <>
-              {/* DiffusionGemma: honest throughput (no autoregressive prompt speed) */}
               {timing.firstTokenTime !== undefined && (
                 <div className="flex items-center justify-between gap-4">
                   <span className="text-muted-foreground">First token</span>
@@ -197,7 +213,6 @@ export const MessageTiming: FC<{
             </>
             ) : (
             <>
-              {/* Server-side metrics (GGUF, MLX, safetensors) */}
               {st?.prompt_ms != null && (
                 <div className="flex items-center justify-between gap-4">
                   <span className="text-muted-foreground">Prompt eval</span>
@@ -238,6 +253,12 @@ export const MessageTiming: FC<{
                   <span className="font-mono tabular-nums">
                     {formatNumber(timing.tokenCount)}
                   </span>
+                </div>
+              )}
+              {draftText !== null && (
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-muted-foreground">Draft accepted</span>
+                  <span className="font-mono tabular-nums">{draftText}</span>
                 </div>
               )}
               {timing.firstTokenTime !== undefined && (
@@ -293,11 +314,16 @@ export const MessageTiming: FC<{
                   {timing.totalChunks}
                 </span>
               </div>
+              {stopReason !== null && (
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-muted-foreground">Stop reason</span>
+                  <span>{stopReason}</span>
+                </div>
+              )}
             </>
             )
           ) : (
             <>
-              {/* Client-side metrics (external provider fallback) */}
               {timing.firstTokenTime !== undefined && (
                 <div className="flex items-center justify-between gap-4">
                   <span className="text-muted-foreground">First token</span>
@@ -334,6 +360,12 @@ export const MessageTiming: FC<{
                   {timing.totalChunks}
                 </span>
               </div>
+              {stopReason !== null && (
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-muted-foreground">Stop reason</span>
+                  <span>{stopReason}</span>
+                </div>
+              )}
             </>
           )}
         </div>

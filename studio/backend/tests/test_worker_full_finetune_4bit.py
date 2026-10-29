@@ -56,20 +56,14 @@ def test_quantized_or_foreign_models_keep_4bit(outputs, tmp_path):
 
 
 def test_symlink_loop_under_outputs_keeps_4bit(outputs, monkeypatch):
-    """A looped link under outputs/ must read as "not a full fine-tune", not fault the load.
-
-    Before 3.13, resolve() reports a symlink loop as RuntimeError whatever `strict` is,
-    and RuntimeError is neither OSError nor ValueError. The call sites in this module and
-    in routes/inference.py sit outside any handler, so an escape would surface as a 500.
-    """
+    """A symlink loop under outputs/ must read as not a full fine-tune, not fault the load"""
     outputs.mkdir(parents = True, exist_ok = True)
     looped, partner = outputs / "loop_a", outputs / "loop_b"
     looped.symlink_to(partner)
     partner.symlink_to(looped)
     assert worker._resolve_lora_4bit(_mc(str(looped)), True) is True
 
-    # Pin that spelling on every interpreter; on 3.13+ resolve() no longer raises, so
-    # without this the test is vacuous there.
+    # On 3.13+ resolve() no longer raises, so pin it or the test is vacuous.
     real_resolve = Path.resolve
 
     def loop_raises(self, *args, **kwargs):

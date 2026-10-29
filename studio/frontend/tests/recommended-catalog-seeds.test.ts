@@ -7,13 +7,19 @@ import test from "node:test";
 import {
   IMAGE_CATALOG,
   VIDEO_CATALOG,
+  artifactForRepoId,
   curatedSizeBytesFor,
+  groupForRepoId,
+  loadSpecFor,
 } from "../src/features/model-picker/components/model-selector/model-catalog.ts";
 import { classifyGgufFit } from "../src/lib/gguf-fit.ts";
 import {
+  coerceFormatFilter,
+  formatFilterValues,
   hfModelFitsDevice,
   loadScopedGpu,
   orderRecommendedRows,
+  recommendedEmptyState,
   searchRowFitsDevice,
 } from "../src/features/model-picker/components/model-selector/recommended-fit.ts";
 
@@ -25,19 +31,16 @@ interface Row {
   pipelineTag?: string;
 }
 
-// Two Video catalog seeds, in catalog order.
 const LTX = "unsloth/LTX-2.3-GGUF";
 const KLEIN = "unsloth/FLUX.2-klein-9B-GGUF";
 const SEEDS: Row[] = [
   { id: LTX, isGguf: true },
   { id: KLEIN, isGguf: true },
 ];
-// What the listing reports for those repos (HF `expand=gguf` totals).
 const LTX_PARAMS = 21_005_004_544;
 const KLEIN_PARAMS = 9_078_581_248;
 const OTHER = "unsloth/Wan2.2-T2V-A14B-GGUF";
 
-// The Video picker's task gate: no usable pipeline tag means dropped.
 const VIDEO_TASKS = ["text-to-video", "image-to-video"];
 const keepVideo = (r: Row) =>
   r.pipelineTag != null && VIDEO_TASKS.includes(r.pipelineTag);
@@ -80,7 +83,6 @@ test("a listing row that passes the filters takes over its seed, in catalog orde
     fits: () => true,
   });
   assert.deepEqual(ids(out), [LTX, KLEIN, OTHER]);
-  // The listing's row, not the bare seed.
   assert.equal(out[0], listedLtx);
 });
 
@@ -139,8 +141,7 @@ test("an unlisted seed is sized from its id, and hidden when it cannot be", () =
     systemRamAvailableGb: 0,
     budgetKnown: true,
   };
-  // "LTX-2.3" has no "<n>B" token, so requireKnown hides it; "klein-9B" reads
-  // as 9B -> 3.6 GB, inside the 4.2 GB budget.
+  // "LTX-2.3" has no "<n>B" token, so requireKnown hides it; klein-9B fits at 3.6 GB.
   assert.equal(hfModelFitsDevice(SEEDS[0], small), false);
   assert.equal(hfModelFitsDevice(SEEDS[1], small), true);
   assert.deepEqual(
@@ -157,11 +158,9 @@ test("an unlisted seed is sized from its id, and hidden when it cannot be", () =
   );
 });
 
-// Neither is unsloth-owned, and Recommended lists `owner: unsloth` only, so
-// their seed is the only row they ever get.
+// Recommended lists owner unsloth only, so the seed is the only row these get.
 const SDXL = "stabilityai/sdxl-turbo";
 const WAN = "Wan-AI/Wan2.2-TI2V-5B-Diffusers";
-// A seed row as the picker builds it: catalog size, no listing metadata.
 const seed = (id: string, catalog = IMAGE_CATALOG): Row => ({
   id,
   isGguf: false,
@@ -177,8 +176,6 @@ test("a catalog-sized seed is judged on the catalog size, not on its id", () => 
   };
   const sdxl = seed(SDXL);
   const wan = seed(WAN, VIDEO_CATALOG);
-  // SDXL Turbo is 8 GB but its id has no "<n>B" token to guess from; Wan 2.2
-  // TI2V is 30 GB, and its "5B" reads as 2 GB.
   assert.equal(sdxl.curatedSizeBytes, 8 * 1024 ** 3);
   assert.equal(wan.curatedSizeBytes, 30 * 1024 ** 3);
   assert.equal(hfModelFitsDevice(sdxl, card), true);
@@ -206,8 +203,6 @@ test("a listing row still overrides the catalog size it seeded with", () => {
   // GGUF groups carry no catalog size, so an unsized GGUF seed stays hidden.
   assert.equal(curatedSizeBytesFor(LTX, VIDEO_CATALOG), undefined);
   assert.equal(hfModelFitsDevice({ id: LTX, isGguf: true }, card), false);
-  // Where a row arrives it is the one measured: klein-9B seeds as a fit, then
-  // its listing row cuts it on real metadata.
   const listedKlein: Row = {
     id: KLEIN,
     isGguf: true,
@@ -228,7 +223,6 @@ test("a listing row still overrides the catalog size it seeded with", () => {
   );
 });
 
-// unsloth owns this one, so the listing DOES report it, and the seed hands off.
 const BNB = "unsloth/Z-Image-Turbo-unsloth-bnb-4bit";
 
 test("a listing row inherits the curated size of the seed it takes over", () => {
@@ -236,9 +230,7 @@ test("a listing row inherits the curated size of the seed it takes over", () => 
   const card = { memoryTotalGb: 8, systemRamAvailableGb: 0, budgetKnown: true };
   const bnbSeed = seed(BNB);
   assert.equal(bnbSeed.curatedSizeBytes, 8 * 1024 ** 3);
-  // The Hub row carries params only, and the quant guess assumes a quant still to
-  // come: 6B -> 2.4 GB for a repo already 4-bit and 8 GB resident, so without the
-  // handoff it would flip to fitting.
+  // The quant guess assumes a future quant, so an already 4-bit repo would wrongly fit.
   const listed: Row = { id: BNB, isGguf: false, totalParams: 6e9 };
   assert.equal(hfModelFitsDevice(listed, card), true);
   assert.equal(hfModelFitsDevice(bnbSeed, card), false);
@@ -268,20 +260,15 @@ test("a task row is sized against the device the load lands on", () => {
   // Chat may split across both cards; an image/video pipeline lands on one.
   assert.equal(loadScopedGpu(twoCards, false).memoryTotalGb, 16);
   assert.equal(loadScopedGpu(twoCards, true).memoryTotalGb, 8);
-  // SDXL Turbo is 8 GB: inside the 11.2 GB aggregate budget, past the 5.6 GB
-  // one card offers, so only the load-scoped budget hides the OOM.
   const sdxl = seed(SDXL);
   assert.equal(hfModelFitsDevice(sdxl, twoCards), true);
   assert.equal(hfModelFitsDevice(sdxl, loadScopedGpu(twoCards, true)), false);
-  // The device COUNT narrows with the capacity. classifyGgufFit charges the loader's per-card VRAM
-  // reserve once per card, so leaving the host count of 2 on a one-card budget held back two
-  // floors against a single device and under-budgeted every scoped quant.
+  // classifyGgufFit charges a per-card VRAM reserve, so the count must narrow with capacity.
   assert.equal(loadScopedGpu(twoCards, false).deviceCount, undefined);
   assert.equal(loadScopedGpu(twoCards, true).deviceCount, 1);
   const twoOfThree = { ...twoCards, deviceCount: 3 };
   assert.equal(loadScopedGpu(twoOfThree, false).deviceCount, 3);
   assert.equal(loadScopedGpu(twoOfThree, true).deviceCount, 1);
-  // An unscoped load keeps the host count, so chat still charges one floor per card.
   assert.equal(loadScopedGpu(twoOfThree, true).memoryTotalGb, 8);
 });
 
@@ -306,9 +293,7 @@ test("a dedicated task device keeps RAM reserved by a shared GPU", () => {
   assert.equal(loadScopedGpu(sharedLoadDevice, true).systemRamAvailableGb, 8);
   assert.equal(loadScopedGpu(mixedHost, false), mixedHost);
 
-  // A Linux ROCm APU reports unified_memory without shared_memory, so it used to take the
-  // raw-host branch above and undo the very subtraction that keeps its GTT window out of the RAM
-  // tier. The folded flag is what the reservation question actually turns on.
+  // A Linux ROCm APU reports unified_memory without shared_memory; the folded flag decides.
   const linuxApu = {
     ...mixedHost,
     loadDeviceMemoryGb: 32,
@@ -316,7 +301,6 @@ test("a dedicated task device keeps RAM reserved by a shared GPU", () => {
     loadDeviceSharesHostMemory: true,
   };
   assert.equal(loadScopedGpu(linuxApu, true).systemRamAvailableGb, 8);
-  // The dedicated card still claims it back: this gate narrowed, it did not close.
   assert.equal(
     loadScopedGpu({ ...linuxApu, loadDeviceSharesHostMemory: false }, true)
       .systemRamAvailableGb,
@@ -325,10 +309,7 @@ test("a dedicated task device keeps RAM reserved by a shared GPU", () => {
 });
 
 test("a unified GPU window is not also offered as system RAM", () => {
-  // 48 GiB host, a 32 GiB GTT window. gpuMemoryTotalsGb counts that window as DEDICATED when
-  // shared_memory is false, so systemRamAvailableGb kept the whole 48 and classifyGgufFit added
-  // half of it to the window a second time: a ~43 GiB file needing ~50 scored `partial` against
-  // an invented ~55 GiB budget, promising an offload into memory the machine does not have.
+  // A GTT window counted as dedicated was added to the RAM budget twice, inventing offload room.
   const apu = {
     available: true,
     budgetKnown: true,
@@ -348,9 +329,7 @@ test("a unified GPU window is not also offered as system RAM", () => {
       systemRamGb: g.systemRamAvailableGb,
       gpuCount: g.deviceCount,
     });
-  // Unsubtracted, the way a Linux APU used to arrive.
   assert.equal(verdict(scoped(48)), "partial");
-  // Subtracted once, the way Windows and Apple Silicon always were.
   assert.equal(verdict(scoped(48 - 32)), "oom");
 });
 
@@ -370,17 +349,13 @@ test("both search lists judge a curated id the same way", () => {
     inferenceGpu: oneCard,
     taskScoped: true,
   };
-  // The curated list has the id alone, the Hub list the row with its 6B params.
-  // Both size to the catalog's 8 GB, past the 5.6 GB budget, so an id one drops
-  // cannot return through the other.
+  // Both lists size to the catalog's 8 GB, so an id one drops cannot return through the other.
   assert.equal(searchRowFitsDevice({ id: BNB }, opts), false);
   assert.equal(searchRowFitsDevice({ id: BNB, totalParams: 6e9 }, opts), false);
 });
 
 test("the Hub fit gate judges a media GGUF by the planner that places it", () => {
-  // The reported case: 52 GiB of video GGUF on a 64 GiB Mac. llama.cpp allows 52 * 1.15 + 1 =
-  // 60.8 against a 63.5 GiB budget, so the "Fits on device" filter kept it; the diffusion planner
-  // allows 44.8 and cannot offload on a host pool, so it never places.
+  // The diffusion planner's budget is below llama.cpp's and cannot offload on a host pool.
   const mac = {
     available: true,
     budgetKnown: true,
@@ -411,10 +386,7 @@ test("the Hub fit gate judges a media GGUF by the planner that places it", () =>
 });
 
 test("a media GGUF is sized against torch, not the GGUF backend", () => {
-  // A Vulkan llama.cpp build sees cards torch cannot, so inferenceGpu is a different inventory
-  // (use-gpu-info.ts keeps the torch view for diffusion for exactly this reason). Picking the
-  // budget by FILE FORMAT sent an Images GGUF to the Vulkan card's capacity, which the diffusion
-  // loader never gets to use.
+  // A Vulkan llama.cpp build sees cards torch cannot, so media rows use the torch inventory.
   const vulkanCard = {
     available: true,
     budgetKnown: true,
@@ -434,7 +406,6 @@ test("a media GGUF is sized against torch, not the GGUF backend", () => {
     diffusionLoad: true,
   };
   assert.equal(searchRowFitsDevice(row, opts), false);
-  // Chat is the case the GGUF backend's own inventory is right for, and it still gets it.
   assert.equal(
     searchRowFitsDevice(row, {
       ...opts,
@@ -460,8 +431,6 @@ test("a search row is sized against the device a task load lands on", () => {
     gpu: twoCards,
     inferenceGpu: twoCards,
   };
-  // 8 GB fits the 11.2 GB aggregate a chat load may split across, but not the
-  // 5.6 GB of the single card an image pipeline lands on.
   assert.equal(
     searchRowFitsDevice({ id: SDXL }, { ...opts, taskScoped: false }),
     true,
@@ -485,15 +454,12 @@ test("a GPU-less host keeps its unified-memory budget", () => {
 });
 
 test("a media row is judged by the rule its quant rows use", () => {
-  // Images / Video place a GGUF through the diffusion backend, whose budget on a 64 GiB unified
-  // host is (total - 20% reserve) * 0.85 = 43.5 GiB (diffusion_memory.py). llama.cpp allows 62.1.
-  // Judging the parent row by one and its quants by the other let a row read as fitting while
-  // everything inside it read as oom.
+  // Diffusion budget on unified 64 GiB is 43.5 GiB (diffusion_memory.py); llama.cpp allows 62.1.
   const mac = { memoryTotalGb: 64, systemRamAvailableGb: 0, budgetKnown: true };
   const row = {
     id: "unsloth/Some-Image-Model-GGUF",
     isGguf: true,
-    // 50 GiB, which the two rules disagree about: 50 > 44.8, but 50 * 1.15 + 1 = 58.5 <= 62.1.
+    // 50 > 44.8 for the media rule, but 50 * 1.15 + 1 = 58.5 <= 62.1 for llama.cpp.
     curatedSizeBytes: 50 * 1024 ** 3,
   };
   assert.equal(
@@ -506,9 +472,250 @@ test("a media row is judged by the rule its quant rows use", () => {
     false,
     "a media row does not",
   );
-  // Every format on a task page, not just GGUF: this rule is the budget all of them had before the
-  // classifiers were merged, and restricting it to GGUF left the list gate and the search gate
-  // answering differently for one row.
+  // Applies to every format so the list gate and search gate agree on one row.
   const safetensors = { ...row, id: "unsloth/Some-Image-Model", isGguf: false };
   assert.equal(hfModelFitsDevice(safetensors, mac, { mediaLoad: true }), false);
+});
+
+test("with familyOf, curated families follow the listing's sort, artifacts kept together", () => {
+  const family = (id: string) =>
+    id.toLowerCase().includes("klein") ? "klein" : id.toLowerCase().includes("ltx") ? "ltx" : undefined;
+  const kleinBf16: Row = { id: "unsloth/FLUX.2-klein-9B", pipelineTag: "text-to-video" };
+  const seeds: Row[] = [...SEEDS, kleinBf16];
+  const results: Row[] = [
+    { id: KLEIN, isGguf: true, pipelineTag: "text-to-video" },
+    { id: OTHER, isGguf: true, pipelineTag: "text-to-video" },
+    { id: LTX, isGguf: true, pipelineTag: "image-to-video" },
+  ];
+  const order = (familyOf?: (id: string) => string | undefined) =>
+    ids(
+      orderRecommendedRows({
+        seeds,
+        results,
+        keep: keepVideo,
+        deviceFiltered: false,
+        fits: () => true,
+        familyOf,
+      }),
+    );
+  assert.deepEqual(order(), [LTX, KLEIN, kleinBf16.id, OTHER]);
+  assert.deepEqual(order(family), [KLEIN, kleinBf16.id, OTHER, LTX]);
+  const unlisted = ids(
+    orderRecommendedRows({
+      seeds,
+      results: results.slice(0, 2),
+      keep: keepVideo,
+      deviceFiltered: false,
+      fits: () => true,
+      familyOf: family,
+    }),
+  );
+  assert.deepEqual(unlisted, [KLEIN, kleinBf16.id, OTHER, LTX]);
+});
+
+test("with familyOf, unsloth rows lead even when a vendor family trends higher", () => {
+  const family = (id: string) => (id.toLowerCase().includes("hot") ? "hot" : "cold");
+  const vendorHot: Row = { id: "Vendor/Hot-Model", pipelineTag: "text-to-video" };
+  const seeds: Row[] = [vendorHot, { id: "unsloth/Hot-Model-GGUF", isGguf: true }];
+  const results: Row[] = [
+    { id: "unsloth/Hot-Model-GGUF", isGguf: true, pipelineTag: "text-to-video" },
+    { id: "unsloth/Cold-Model-GGUF", isGguf: true, pipelineTag: "text-to-video" },
+  ];
+  assert.deepEqual(
+    ids(
+      orderRecommendedRows({
+        seeds,
+        results,
+        keep: keepVideo,
+        deviceFiltered: false,
+        fits: () => true,
+        familyOf: family,
+      }),
+    ),
+    ["unsloth/Hot-Model-GGUF", "unsloth/Cold-Model-GGUF", "Vendor/Hot-Model"],
+  );
+});
+
+test("a vendor id resolves to the unsloth mirror that replaced it", () => {
+  for (const [vendor, mirror] of [
+    ["Qwen/Qwen-Image-2512", "unsloth/Qwen-Image-2512"],
+    ["black-forest-labs/FLUX.1-dev", "unsloth/FLUX.1-dev"],
+    ["Tongyi-MAI/Z-Image-Turbo", "unsloth/Z-Image-Turbo"],
+    ["Qwen/Qwen-Image-2.1", "unsloth/Qwen-Image-2.1"],
+  ]) {
+    const hit = artifactForRepoId(vendor, IMAGE_CATALOG);
+    assert.equal(hit?.artifact.repoId, mirror, vendor);
+    assert.equal(hit?.artifact.gated, undefined, vendor);
+    assert.equal(loadSpecFor(vendor, IMAGE_CATALOG)?.kind, "pipeline", vendor);
+    assert.equal(groupForRepoId(vendor, IMAGE_CATALOG), groupForRepoId(mirror, IMAGE_CATALOG));
+  }
+});
+
+test("with familyOf, an unslothai family the unsloth listing cannot rank keeps its curated slot", () => {
+  const family = (id: string) => id.toLowerCase().replace(/-gguf$/, "");
+  const ASR = "unslothai/Qwen3-ASR-0.6B-GGUF";
+  const TURBO = "unsloth/whisper-large-v3-turbo";
+  const TINY = "unsloth/whisper-tiny";
+  const seeds: Row[] = [{ id: ASR, isGguf: true }, { id: TURBO }, { id: TINY }];
+  const order = (results: Row[]) =>
+    ids(
+      orderRecommendedRows({
+        seeds,
+        results,
+        keep: () => true,
+        deviceFiltered: false,
+        fits: () => true,
+        familyOf: family,
+      }),
+    );
+  assert.deepEqual(order([]), [ASR, TURBO, TINY]);
+  assert.deepEqual(order([{ id: TINY }, { id: TURBO }]), [ASR, TINY, TURBO]);
+});
+
+test("pinned families lead Recommended whatever the listing sort, lead rows first", () => {
+  const family = (id: string) => groupForRepoId(id, IMAGE_CATALOG)?.canonicalId.toLowerCase();
+  const pinnedFamilies = IMAGE_CATALOG.filter((g) => g.pinToTop).map((g) =>
+    g.canonicalId.toLowerCase(),
+  );
+  assert.deepEqual(pinnedFamilies, [
+    "black-forest-labs/flux-3-image-klein",
+    "unsloth/qwen-image-2.1",
+    "qwen/qwen-image-2.1-turbo",
+  ]);
+  const pinnedTogether = IMAGE_CATALOG.filter((g) => g.pinToTop && g.pinRowsTogether).map((g) =>
+    g.canonicalId.toLowerCase(),
+  );
+  assert.deepEqual(pinnedTogether, ["black-forest-labs/flux-3-image-klein"]);
+  const flux3 = "black-forest-labs/flux-3-image-klein";
+  const flux3Gguf = "unsloth/flux-3-image-klein-GGUF";
+  const flux3Base = "black-forest-labs/flux-3-image-klein-base";
+  const qwen21 = "unsloth/Qwen-Image-2.1";
+  const qwen21Gguf = "unsloth/Qwen-Image-2.1-GGUF";
+  const turbo = "Qwen/Qwen-Image-2.1-Turbo";
+  const turboGguf = "unsloth/Qwen-Image-2.1-Turbo-GGUF";
+  const zImageTurbo = "unsloth/Z-Image-Turbo-GGUF";
+  const qwen2512 = "unsloth/Qwen-Image-2512-GGUF";
+  const seeds: Row[] = [
+    { id: zImageTurbo, isGguf: true },
+    { id: flux3 },
+    { id: flux3Gguf, isGguf: true },
+    { id: flux3Base },
+    { id: qwen21 },
+    { id: qwen21Gguf, isGguf: true },
+    { id: turbo },
+    { id: turboGguf, isGguf: true },
+    { id: qwen2512, isGguf: true },
+  ];
+  // FLUX.3 Klein, Qwen-Image 2.1 and its Turbo trend last, so only the pin lifts them.
+  const results: Row[] = [
+    { id: qwen2512, isGguf: true },
+    { id: zImageTurbo, isGguf: true },
+    { id: turboGguf, isGguf: true },
+    { id: qwen21Gguf, isGguf: true },
+    { id: flux3Gguf, isGguf: true },
+  ];
+  const order = (
+    pinned?: readonly string[],
+    fits: (r: Row) => boolean = () => true,
+    together?: readonly string[],
+  ) =>
+    ids(
+      orderRecommendedRows({
+        seeds,
+        results,
+        keep: () => true,
+        deviceFiltered: true,
+        fits,
+        familyOf: family,
+        pinnedFamilies: pinned,
+        pinnedTogether: together,
+      }),
+    );
+  // Unpinned, the listing sorts them and the vendor-hosted pipelines trail the first-party rows.
+  assert.deepEqual(order(), [
+    qwen2512,
+    zImageTurbo,
+    turboGguf,
+    qwen21,
+    qwen21Gguf,
+    flux3Gguf,
+    turbo,
+    flux3,
+    flux3Base,
+  ]);
+  // Interleaved pins: every lead row ("Fast FP8") first, then every GGUF row.
+  assert.deepEqual(order(pinnedFamilies), [
+    flux3,
+    qwen21,
+    turbo,
+    flux3Gguf,
+    qwen21Gguf,
+    turboGguf,
+    qwen2512,
+    zImageTurbo,
+    flux3Base,
+  ]);
+  // A device the pipelines do not fit: the GGUF rows lead, still FLUX.3 first.
+  assert.deepEqual(
+    order(pinnedFamilies, (r) => Boolean(r.isGguf)),
+    [flux3Gguf, qwen21Gguf, turboGguf, qwen2512, zImageTurbo],
+  );
+  // As shipped: "FLUX.3 Image Klein (Fast FP8)" on top with its GGUF right under it, then "Qwen-Image 2.1
+  // (Fast FP8)" and "Qwen-Image 2.1 Turbo (Fast FP8)", then their GGUF rows. The unpinned Base keeps its
+  // place among the other models.
+  assert.deepEqual(order(pinnedFamilies, () => true, pinnedTogether), [
+    flux3,
+    flux3Gguf,
+    qwen21,
+    turbo,
+    qwen21Gguf,
+    turboGguf,
+    qwen2512,
+    zImageTurbo,
+    flux3Base,
+  ]);
+  assert.deepEqual(
+    order(pinnedFamilies, (r) => Boolean(r.isGguf), pinnedTogether),
+    [flux3Gguf, qwen21Gguf, turboGguf, qwen2512, zImageTurbo],
+  );
+  // A family listed as together but not pinned is not lifted.
+  assert.deepEqual(order(undefined, () => true, pinnedTogether), order());
+});
+
+test("an empty Recommended list names a failed search or unreachable hub, not an empty catalog", () => {
+  const state = (isLoading: boolean, error: string | null, hubPhase: "available" | "probing" | "unavailable") =>
+    recommendedEmptyState({ isLoading, error, hubPhase });
+  assert.deepEqual(
+    [state(false, null, "available"), state(false, "Failed to fetch", "available"), state(false, null, "unavailable"), state(false, null, "probing"), state(true, "Failed to fetch", "unavailable")],
+    ["empty", "failed", "failed", "failed", "loading"],
+  );
+});
+
+test("the format menu offers MLX and NPU only where they can run", () => {
+  assert.deepEqual(formatFilterValues({ npu: true, mlx: true }), [
+    "all",
+    "gguf",
+    "mlx",
+    "safetensors",
+    "npu",
+  ]);
+  assert.deepEqual(formatFilterValues({ npu: false, mlx: false }), [
+    "all",
+    "gguf",
+    "safetensors",
+  ]);
+  assert.deepEqual(formatFilterValues({ npu: true, mlx: false }), [
+    "all",
+    "gguf",
+    "safetensors",
+    "npu",
+  ]);
+});
+
+test("a remembered filter the menu no longer offers falls back to All", () => {
+  const linux = formatFilterValues({ npu: false, mlx: false });
+  assert.equal(coerceFormatFilter("mlx", linux), "all");
+  assert.equal(coerceFormatFilter("npu", linux), "all");
+  assert.equal(coerceFormatFilter("gguf", linux), "gguf");
+  assert.equal(coerceFormatFilter("mlx", formatFilterValues({ npu: false, mlx: true })), "mlx");
 });

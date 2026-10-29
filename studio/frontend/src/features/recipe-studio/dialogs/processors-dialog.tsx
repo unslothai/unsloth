@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogFooter, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogFooter, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
@@ -12,6 +12,7 @@ import type { RecipeProcessorConfig } from "../types";
 import { buildDefaultSchemaTransform } from "../utils/processors";
 import { AvailableVariables } from "./shared/available-variables";
 import { FieldLabel } from "./shared/field-label";
+import { RecipeDialogContent } from "./shared/recipe-dialog-content";
 type ProcessorsDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -66,18 +67,15 @@ export function ProcessorsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
+      <RecipeDialogContent
         container={container}
-        position="absolute"
-        overlayPosition="absolute"
-        overlayClassName="bg-transparent"
-        className="corner-squircle max-h-[650px] overflow-auto sm:max-w-2xl shadow-border"
+        viewportClassName="overflow-auto"
       >
         <VisuallyHidden.Root>
           <DialogTitle>Processors</DialogTitle>
         </VisuallyHidden.Root>
         <div className="space-y-4">
-          <div className="flex items-center justify-between gap-3 corner-squircle rounded-2xl border border-border/60 px-3 py-2">
+          <div className="flex items-start justify-between gap-3 corner-squircle rounded-lg border border-border/60 px-3 py-2">
             <div>
               <p className="text-sm font-semibold">Schema transform</p>
               <p className="text-xs text-muted-foreground">
@@ -85,6 +83,7 @@ export function ProcessorsDialog({
               </p>
             </div>
             <Switch
+              className="mt-[var(--ui-title-cap-inset)]"
               checked={Boolean(schemaProcessor)}
               onCheckedChange={setSchemaEnabled}
             />
@@ -114,7 +113,7 @@ export function ProcessorsDialog({
                 />
                 <Textarea
                   id={templateId}
-                  className="corner-squircle nodrag min-h-[220px]"
+                  className="corner-squircle nodrag min-h-[calc(220px*var(--ui-space-scale,1))]"
                   value={schemaProcessor.template}
                   onChange={(event) =>
                     updateSchema({ template: event.target.value })
@@ -136,7 +135,7 @@ export function ProcessorsDialog({
             Done
           </Button>
         </DialogFooter>
-      </DialogContent>
+      </RecipeDialogContent>
     </Dialog>
   );
 }

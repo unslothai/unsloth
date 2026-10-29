@@ -3,8 +3,7 @@
 from datasets import Dataset
 
 
-# ChatML (messages, role/content).
-# pyarrow needs uniform column types, so messages=None / non-list (P1) rows live in a SEPARATE dataset.
+# pyarrow needs uniform column types, so None / non-list rows live in a separate set.
 _CHATML_ROWS = [
     {
         "messages": [
@@ -109,14 +108,12 @@ _CHATML_ROWS = [
             {"role": "assistant", "content": "  \t  "},
         ]
     },
-    {"messages": [None, {"role": "assistant", "content": "Reply"}]},  # None turn element
+    {"messages": [None, {"role": "assistant", "content": "Reply"}]},
 ]
 
-# P1 rows: messages is None or non-list. Plain dicts (not an HF Dataset) since
-# pyarrow can't mix list/non-list in one column; the runner mocks find_none_chatml.
 _CHATML_P1_ROWS = [
-    {"messages": None},  # whole column None
-    {"messages": "not a list"},  # wrong type
+    {"messages": None},
+    {"messages": "not a list"},
 ]
 
 
@@ -174,7 +171,7 @@ _SHAREGPT_ROWS = [
             {"from": "gpt", "value": None},
         ]
     },
-    {"conversations": None},  # P1: whole column is None
+    {"conversations": None},
     {"conversations": [None, {"from": "gpt", "value": "Hi"}]},
 ]
 

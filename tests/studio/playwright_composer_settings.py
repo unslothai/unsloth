@@ -1,26 +1,45 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Production settings/preview and assistant-ui input smoke test; no inference required.
-Run: python tests/studio/playwright_composer_settings.py
-PW_ENGINE=webkit selects WebKit. PW_OUTPUT optionally saves screenshots.
-"""
+"""Settings and preview smoke test with no inference; PW_ENGINE picks the browser engine."""
 
 import json
 import os
 import re
+import time
 from pathlib import Path
 from playwright.sync_api import expect, sync_playwright
+from _en_catalog import en_string
 from _playwright_robust import start_vite, stop_process, wait_for_smoke_page
 
 PAGE = "/smoke-composer-settings.html"
 ENTRY = "/smoke-composer-settings-main.tsx"
 
 
+def expect_submissions(
+    submitted,
+    count,
+    timeout = 5.0,
+):
+    """The harness renders submissions from React state after the key press returns, so a
+    one-shot read can still show the previous list (a macOS chrome run read the earlier
+    "steer" entry where "queue" was due). Poll until exactly `count` are rendered."""
+    deadline = time.monotonic() + timeout
+    while True:
+        value = json.loads(submitted.text_content())
+        if len(value) == count:
+            return value
+        if time.monotonic() > deadline:
+            raise AssertionError(f"expected {count} submitted messages, saw {value!r}")
+        time.sleep(0.05)
+
+
 def check_settings(page):
-    plain = page.get_by_role("switch", name = "Plain text composer", exact = True)
-    context = page.get_by_role("switch", name = "Show context window usage", exact = True)
-    select = page.get_by_role("combobox", name = "Send shortcut", exact = True)
+    plain = page.get_by_role("switch", name = en_string("composerSettings.plainText"), exact = True)
+    context = page.get_by_role("switch", name = en_string("composerSettings.showContext"), exact = True)
+    select = page.get_by_role(
+        "combobox", name = en_string("composerSettings.sendShortcut"), exact = True
+    )
     editor = page.get_by_role("textbox", name = "Message", exact = True)
     preview = page.get_by_role("region", name = "Formatted preview", exact = True)
     submitted = page.get_by_label("Submitted messages")
@@ -48,7 +67,7 @@ def check_settings(page):
     context.click()
     page.get_by_role("button", name = "Steer", exact = True).click()
     select.click()
-    option = page.get_by_role("option", name = re.compile(r"^(⌘|Ctrl\+)Enter$"))
+    option = page.get_by_role("option", name = re.compile(r"^(⌘|Ctrl) \+ Enter always$"))
     modified_label = option.inner_text()
     option.click()
     editor.fill("First line")
@@ -59,12 +78,12 @@ def check_settings(page):
     expect(submitted).to_have_text("[]")
     editor.press("Meta+Enter")
     expect(editor).to_have_value("")
-    assert json.loads(submitted.text_content()) == [
+    assert expect_submissions(submitted, 1) == [
         {"text": "First line\nSecond line", "behavior": "steer"}
     ]
     editor.fill("Queue this once")
     editor.press("Meta+Shift+Enter")
-    assert json.loads(submitted.text_content())[-1]["behavior"] == "queue"
+    assert expect_submissions(submitted, 2)[-1]["behavior"] == "queue"
     page.reload()
     expect(plain).not_to_be_checked()
     expect(context).not_to_be_checked()
@@ -80,10 +99,10 @@ def check_settings(page):
     editor.type("Line two")
     expect(editor).to_have_value("Line one\nLine two")
     editor.press("Enter")
-    assert json.loads(submitted.text_content())[-1]["behavior"] == "steer"
+    assert expect_submissions(submitted, 1)[-1]["behavior"] == "steer"
     editor.fill("Queue override")
     editor.press("Control+Enter")
-    assert json.loads(submitted.text_content())[-1]["behavior"] == "queue"
+    assert expect_submissions(submitted, 2)[-1]["behavior"] == "queue"
     editor.fill("Compose without sending")
     editor.dispatch_event(
         "keydown", {"key": "Enter", "code": "Enter", "isComposing": True, "keyCode": 229}
@@ -103,7 +122,7 @@ def check_settings(page):
         dest.mkdir(parents = True, exist_ok = True)
         page.screenshot(path = str(dest / "composer-settings-light.png"), full_page = True)
         page.evaluate("document.documentElement.classList.add('dark')")
-        page.wait_for_timeout(250)  # Let the existing theme color transitions settle.
+        page.wait_for_timeout(250)
         page.screenshot(path = str(dest / "composer-settings-dark.png"), full_page = True)
     page.set_viewport_size({"width": 320, "height": 812})
     expect(plain).to_be_visible()
@@ -143,9 +162,9 @@ def main():
                 errors = []
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 page.goto(base + PAGE)
-                page.get_by_role("switch", name = "Plain text composer", exact = True).wait_for(
-                    state = "visible", timeout = 60_000
-                )
+                page.get_by_role(
+                    "switch", name = en_string("composerSettings.plainText"), exact = True
+                ).wait_for(state = "visible", timeout = 60_000)
                 check_settings(page)
                 assert not errors, errors
             finally:

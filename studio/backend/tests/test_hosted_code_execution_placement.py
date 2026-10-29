@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Which side runs the code when a turn mixes the Code pill with an Unsloth tool.
+"""Which side runs the code when a turn mixes the Tools pill with an Unsloth tool.
 
 ``code_execution`` runs in the provider's sandbox; ``python`` / ``terminal`` run
 on the machine Unsloth is installed on. They are two trust boundaries, not two
@@ -30,7 +30,7 @@ def test_studio_really_has_no_local_code_execution():
 
 @pytest.mark.parametrize("provider_type", ["openai", "anthropic", "gemini"])
 def test_hosted_code_execution_rides_along_with_a_studio_tool(provider_type):
-    """RAG or MCP selects the Unsloth loop; the Code pill must still reach the
+    """RAG or MCP selects the Unsloth loop; the Tools pill must still reach the
     provider's sandbox rather than being dropped on the way."""
     assert hosted_only_tools(provider_type, ["search_knowledge_base", "code_execution"]) == [
         "code_execution"

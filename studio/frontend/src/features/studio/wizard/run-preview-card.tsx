@@ -60,10 +60,14 @@ function MetaRow({
   label,
   value,
   mono,
+  title,
+  wrap,
 }: {
   label: string;
   value: ReactNode;
   mono?: boolean;
+  title?: string;
+  wrap?: boolean;
 }): ReactElement {
   return (
     <div className="flex items-baseline justify-between gap-3">
@@ -72,9 +76,11 @@ function MetaRow({
       </span>
       <span
         className={cn(
-          "min-w-0 truncate text-ui-12p5 text-foreground/90",
+          "min-w-0 text-ui-12p5 text-foreground/90",
+          wrap ? "break-words text-right" : "truncate",
           mono && "font-mono text-ui-12",
         )}
+        title={title}
       >
         {value}
       </span>
@@ -105,7 +111,7 @@ function ResourceNoticeRow({
               <HugeiconsIcon icon={InformationCircleIcon} className="size-3" />
             </button>
           </TooltipTrigger>
-          <TooltipContent side="top" className="max-w-[260px] leading-relaxed">
+          <TooltipContent side="top" className="max-w-[calc(260px*var(--ui-space-scale,1))] leading-relaxed">
             {description}
           </TooltipContent>
         </Tooltip>
@@ -144,7 +150,7 @@ function ResourceNoticeList({
   }
   return (
     <section className="flex flex-col gap-2">
-      <p className="text-ui-10p5 font-medium uppercase tracking-[0.05em] text-muted-foreground/60">
+      <p className="text-ui-11 font-medium tracking-nav text-muted-foreground">
         {t("studio.preview.files")}
       </p>
       {notices.map((notice) => (
@@ -163,13 +169,8 @@ function ResourceNoticeList({
   );
 }
 
-/** What the run will really do about transformers and precision.
- *
- * The method row above is what the user picked, not what the backend will run: a model
- * routed to the latest-transformers sidecar always loads 16-bit, so "QLoRA · 4-bit" for
- * one of those is a VRAM promise the run cannot keep. Stated here, before Start. When
- * the model also ships its own code the dialog offers both ways in and only one keeps
- * 4-bit, so the precision line names the action rather than asserting one answer. */
+/** The method row is what the user picked: a model routed to the latest-transformers sidecar
+ * always loads 16-bit, and with custom code only one dialog path keeps 4-bit. */
 function TransformersUpgradeNotice(): ReactElement | null {
   const t = useT();
   const { installVersion, fourBitUnavailable, installSwitchesTo16Bit } =
@@ -244,7 +245,7 @@ function PreviewResource({
   return (
     <div className="flex flex-col gap-1">
       {owner && (
-        <p className="font-mono text-ui-10p5 uppercase tracking-[0.04em] text-muted-foreground/70">
+        <p className="font-mono text-ui-10p5 text-muted-foreground/70">
           {owner}
         </p>
       )}
@@ -350,6 +351,7 @@ export function RunPreviewCard({
     gradientAccumulation,
     learningRate,
     contextLength,
+    isDecision,
   } = useTrainingConfigStore(
     useShallow((s) => ({
       selectedModel: s.selectedModel,
@@ -368,6 +370,7 @@ export function RunPreviewCard({
       gradientAccumulation: s.gradientAccumulation,
       learningRate: s.learningRate,
       contextLength: s.contextLength,
+      isDecision: s.modelType === "decision",
     })),
   );
 
@@ -484,11 +487,13 @@ export function RunPreviewCard({
             />
           }
         />
-        <MetaRow
-          label={t("studio.preview.context")}
-          value={numberFormatter.format(contextLength)}
-          mono={true}
-        />
+        {!isDecision && (
+          <MetaRow
+            label={t("studio.preview.context")}
+            value={numberFormatter.format(contextLength)}
+            mono={true}
+          />
+        )}
         <MetaRow
           label={t("studio.preview.lr")}
           value={formatLearningRate(learningRate)}
@@ -511,12 +516,16 @@ export function RunPreviewCard({
       <section className="flex flex-col gap-3">
         <MetaRow
           label={t("studio.preview.hardware")}
-          value={
-            gpu.available
-              ? `${gpu.name} · ${gpu.memoryTotalGb} GiB`
-              : t("studio.preview.noGpu")
-          }
+          wrap
+          value={gpu.available ? gpu.name : t("studio.preview.noGpu")}
         />
+        {gpu.available && (
+          <MetaRow
+            label={t("studio.preview.vram")}
+            title={`${gpu.memoryTotalGb} GiB`}
+            value={`${Math.round(gpu.memoryTotalGb)} GiB`}
+          />
+        )}
         <MetaRow
           label={t("studio.preview.hfToken")}
           value={

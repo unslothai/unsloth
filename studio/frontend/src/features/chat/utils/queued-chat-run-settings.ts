@@ -19,14 +19,16 @@ const QUEUED_SETTING_KEYS = [
   "codeToolsEnabled",
   "codeToolsDeclinedUnderFullAccess",
   "imageToolsEnabled",
-  "artifactsEnabled",
   "mcpEnabledForChat",
   "confirmToolCalls",
   "bypassPermissions",
   "permissionMode",
+  "chatFullAccessPreviousMode",
+  "sandboxLevel",
   "webFetchToolsEnabled",
   "deepResearchEnabled",
   "researchWebsitePolicy",
+  "researchMcpSources",
   "researchModelTimeoutSeconds",
   "ragEnabled",
   "ragSource",
@@ -35,16 +37,18 @@ const QUEUED_SETTING_KEYS = [
   "ragAutoInject",
   "ragAutoInjectMinScore",
   "loadedContextLength",
-  // Beside the window it describes: selecting an external model clears the live residency
-  // fields without unloading, and a queued local turn is still served by the model it was
-  // queued against. Without this an Ollama or native-path GGUF, which reports no quant and
-  // no .gguf suffix, reads as non-GGUF and loses its compaction policy.
+  // A queued local turn is served by the model it was queued against; keeps GGUF compaction policy.
   "loadedIsGguf",
+  "loadedIsMlx",
+  "loadedEngine",
   "autoHealToolCalls",
   "nudgeToolCalls",
+  "deduplicateToolCalls",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
   "autoCompactEnabled",
+  // A queued send keeps the tab-close choice it was sent with, like every setting above.
+  "keepRunningWhenTabClosed",
 ] as const;
 
 type ChatRuntimeState = ReturnType<typeof useChatRuntimeStore.getState>;
@@ -82,11 +86,41 @@ export function snapshotQueuedChatRunSettings(
   return snapshot;
 }
 
-/** A queued send may only fill in the model of a row that was written without one. */
-export function shouldPersistResolvedQueuedModel(
-  storedThread: { modelId?: string | null } | null | undefined,
+export function resolveDeferredQueuedModelSettings(
+  settings: QueuedChatRunSettings,
+  resolved: Pick<ChatRuntimeState, "params" | "supportsTools">,
+): QueuedChatRunSettings {
+  return {
+    ...settings,
+    params: {
+      ...settings.params,
+      checkpoint: resolved.params.checkpoint,
+    },
+    supportsTools: resolved.supportsTools,
+  };
+}
+
+/** A chat remembers the model it last sent to, so reopening it offers that one back. Compare panes
+ *  keep the model they were opened with: their labels and pairing read it. An unknown variant
+ *  never clears a saved one for the same model. */
+export function shouldPersistRunModel(
+  storedThread:
+    | {
+        modelId?: string | null;
+        modelGgufVariant?: string | null;
+        pairId?: string | null;
+      }
+    | null
+    | undefined,
+  modelId: string,
+  modelGgufVariant: string | null,
 ): boolean {
-  return Boolean(storedThread && !storedThread.modelId);
+  if (!storedThread || !modelId || storedThread.pairId) return false;
+  if (storedThread.modelId !== modelId) return true;
+  return (
+    modelGgufVariant != null &&
+    modelGgufVariant !== (storedThread.modelGgufVariant ?? null)
+  );
 }
 
 export function registerQueuedChatRunSettings(
@@ -149,13 +183,10 @@ export function consumeQueuedChatRunSettings(
   const index = threadId
     ? pendingSettings.findIndex((entry) => entry.threadIds.has(threadId))
     : -1;
-  // Never consume another chat's snapshot as a fallback. Multiple queued chats can start
-  // concurrently, so a "sole pending entry" is not proof that it belongs to this adapter run.
+  // Never consume another chat's snapshot: queued chats can start concurrently.
   if (index < 0) {
     return null;
   }
-  // Tool calls can invoke the adapter multiple times for one assistant run. Keep the snapshot
-  // available until the owning prompt queue observes that the whole run is idle, then discard it
-  // through its registration id.
+  // Tool calls invoke the adapter repeatedly per run; the owning queue discards it when idle.
   return pendingSettings[index].settings;
 }

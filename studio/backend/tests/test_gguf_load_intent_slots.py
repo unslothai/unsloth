@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""``GgufLoadIntent`` stays reflectable, and the signal exceptions stay slotted.
-
-``@dataclass(slots=True)`` was tried on the intent and reverted: it removes the instance
-``__dict__``, so ``vars(intent)`` raises ``TypeError`` and every GGUF load through
-``_gguf_request_intent`` (plus the MTP recovery assertions in ``test_tensor_parallel.py``)
-broke. Both halves of that conclusion are pinned here.
-"""
+"""GgufLoadIntent must not use slots=True: it removes the instance dict that vars() reads."""
 
 import copy
 import dataclasses
@@ -31,7 +25,7 @@ from core.inference.llama_cpp import (  # noqa: E402
 
 @pytest.fixture
 def intent():
-    # Lists in: __post_init__ freezes them to tuples so the intent stays hashable.
+    # __post_init__ freezes lists to tuples so the intent stays hashable.
     return GgufLoadIntent(
         model_identifier = "unsloth/gemma-4-E2B-it-GGUF",
         gpu_ids = [0, 1],
@@ -96,11 +90,7 @@ def test_fields_and_asdict_are_unaffected(intent):
     "exception", [CountAborted, LlamaServerNotFoundError, _LlamaStreamCancelled]
 )
 def test_signal_exceptions_carry_empty_slots(exception):
-    """These only ever signal, and the empty ``__slots__`` records that.
-
-    It does not remove the instance dict (``BaseException`` declares one itself); what it
-    buys is the intent plus the guarantee that the class carries no slot of its own.
-    """
+    """Signal exceptions declare empty __slots__ only to record they carry no slot of their own."""
     assert exception.__slots__ == ()
     assert "__dict__" in vars(BaseException)
 
@@ -114,9 +104,5 @@ def test_llama_server_not_found_is_still_a_runtime_error():
 
 
 def test_field_names_are_enumerable_without_reflection(intent):
-    """``dataclasses.fields`` answers the same question ``vars()`` does.
-
-    What ``_gguf_request_intent`` uses now: equivalent on this class, and independent of
-    the instance ``__dict__`` that slots would have removed.
-    """
+    """dataclasses.fields enumerates intent fields without relying on the instance __dict__."""
     assert [f.name for f in dataclasses.fields(intent)] == list(vars(intent))

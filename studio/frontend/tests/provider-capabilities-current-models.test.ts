@@ -15,19 +15,30 @@ const {
   clampReasoningEffortToLevels,
   getExternalMaxOutputTokens,
   getExternalReasoningCapabilities,
+  getProviderCapabilities,
+  kimiSearchExcludesThinking,
+  providerHostsCodeExecution,
+  providerModelReplaysReasoning,
   providerSupportsBuiltinCodeExecution,
+  providerSupportsBuiltinImageGeneration,
 
   providerSupportsBuiltinWebSearch,
   providerSupportsFastMode,
+  providerSupportsPreserveThinking,
+  resolveExternalReasoningEffort,
 } = await import("../src/features/chat/provider-capabilities.ts");
 
-const { providerModelSupportsVision, setProviderModelCapabilities } = await import(
-  "../src/features/chat/external-providers.ts"
+const {
+  providerModelSupportsStudioTools,
+  providerModelSupportsVision,
+  setProviderModelCapabilities,
+} = await import("../src/features/chat/external-providers.ts");
+
+const { codeToolCanRun, selectCodeToolNames } = await import(
+  "../src/features/chat/api/code-tool-placement.ts"
 );
 
-// Every capability table is prefix-based, so an un-widened prefix silently drops a
-// control instead of failing loudly: a model with no reasoning entry loses its
-// Thinking picker entirely.
+// Capability tables are prefix-based, so an un-widened prefix silently drops a control.
 
 test("Claude 5 and Opus 4.8 expose the adaptive effort ladder", () => {
   for (const model of [
@@ -48,18 +59,27 @@ test("Claude 5 and Opus 4.8 expose the adaptive effort ladder", () => {
 });
 
 test("Fable 5 thinks always, so no off switch is offered", () => {
-  // `thinking.type: "disabled"` 400s on Fable/Mythos 5
+  // Fable/Mythos 5 reject `thinking.type: "disabled"` with HTTP 400
   const caps = getExternalReasoningCapabilities("anthropic", "claude-fable-5");
   assert.equal(caps.supportsReasoning, true);
   assert.equal(caps.supportsReasoningOff, false);
   assert.ok(![...caps.reasoningEffortLevels].includes("none"));
 });
 
+test("Opus 5.5 cannot turn thinking off, Sonnet 5.5 can", () => {
+  const opus = getExternalReasoningCapabilities("anthropic", "claude-opus-5-5");
+  assert.equal(opus.supportsReasoning, true);
+  assert.equal(opus.supportsReasoningOff, false);
+  assert.ok(![...opus.reasoningEffortLevels].includes("none"));
+  const sonnet = getExternalReasoningCapabilities("anthropic", "claude-sonnet-5-5");
+  assert.equal(sonnet.supportsReasoningOff, true);
+});
+
 test("fast mode is offered on Opus 5 / 4.8 and nowhere else", () => {
   for (const model of ["claude-opus-5", "claude-opus-4-8-2026-02-01"]) {
     assert.equal(providerSupportsFastMode("anthropic", model), true, model);
   }
-  // 4.7 errors on `speed`; 4.6 accepts it but answers at standard speed
+  // 4.7 rejects `speed`; 4.6 accepts it without changing response speed
   for (const model of ["claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-5"]) {
     assert.equal(providerSupportsFastMode("anthropic", model), false, model);
   }
@@ -95,7 +115,6 @@ test("Astra exposes mandatory reasoning with its full effort ladder", () => {
   assert.equal(clampReasoningEffortToLevels("max", caps.reasoningEffortLevels), "max");
 });
 
-// A local GGUF's ladder is whatever its template branches on, so it can skip scale rungs.
 test("a narrower local ladder clamps to the nearest rung, not to the weakest", () => {
   const qwen38 = ["low", "medium", "xhigh"] as const;
 
@@ -104,7 +123,6 @@ test("a narrower local ladder clamps to the nearest rung, not to the weakest", (
   for (const effort of qwen38) {
     assert.equal(clampReasoningEffortToLevels(effort, qwen38), effort);
   }
-  // No lower neighbour, so the weakest rung is right.
   assert.equal(clampReasoningEffortToLevels("none", qwen38), "low");
   assert.equal(clampReasoningEffortToLevels("minimal", qwen38), "low");
 });
@@ -130,7 +148,6 @@ test("clamping down never lands on thinking-off", () => {
 });
 
 test("the ladder order a caller passes does not change the clamp", () => {
-  // A local ladder comes from a chat-template scan, so nothing keeps it ascending.
   const ascending = ["low", "medium", "xhigh"] as const;
   const descending = ["xhigh", "medium", "low"] as const;
   for (const effort of ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const) {
@@ -143,8 +160,7 @@ test("the ladder order a caller passes does not change the clamp", () => {
 });
 
 test("every shipped effort ladder is ordered weakest first", () => {
-  // The Think menu renders table order, and `fallbackExternalEffort` in chat-adapter reads
-  // `reasoningEffortLevels[0]` as the weakest rung; out-of-order tables break both.
+  // The Think menu renders table order and fallbackExternalEffort reads levels[0] as weakest.
   const models: Array<[string, string]> = [
     ["anthropic", "claude-opus-5"],
     ["anthropic", "claude-opus-4-6"],
@@ -183,8 +199,7 @@ test("every shipped effort ladder is ordered weakest first", () => {
 });
 
 test("the effort scale matches the backend's _REASONING_EFFORT_SCALE", () => {
-  // The clamp ranks against the frontend copy while detect_reasoning_flags builds local
-  // ladders from the backend one, so drift hands the clamp a level it cannot rank.
+  // Frontend and backend ladders must stay in sync, or the clamp gets a level it cannot rank.
   const here = path.dirname(fileURLToPath(import.meta.url));
   const frontend = readFileSync(
     path.join(here, "../src/features/chat/model-catalog.ts"),
@@ -214,8 +229,7 @@ test("Astra reasoning does not enable unrelated model families", () => {
 });
 
 test("the gpt-5.1 and gpt-5.2 ladders drop minimal for none", () => {
-  // "minimal" was replaced by "none" from 5.1 on, and offering it fails the
-  // turn with "does not support 'minimal' with this model".
+  // From 5.1 on, offering "minimal" fails the turn.
   const ladders: Array<[string, readonly string[]]> = [
     ["gpt-5.2", ["none", "low", "medium", "high", "xhigh"]],
     ["gpt-5.1", ["none", "low", "medium", "high"]],
@@ -225,8 +239,7 @@ test("the gpt-5.1 and gpt-5.2 ladders drop minimal for none", () => {
     assert.equal(caps.supportsReasoningOff, true, model);
     assert.deepEqual([...caps.reasoningEffortLevels], levels, model);
   }
-  // The Codex tunings keep reasoning mandatory: no minimal, and no none on
-  // the 5.1 line. Only codex-max has xhigh, so it sorts first.
+  // Codex tunings keep reasoning mandatory; only codex-max has xhigh, so it sorts first.
   const codexLadders: Array<[string, readonly string[]]> = [
     ["gpt-5-codex", ["low", "medium", "high"]],
     ["gpt-5.1-codex", ["low", "medium", "high"]],
@@ -248,11 +261,7 @@ test("the gpt-5.1 and gpt-5.2 ladders drop minimal for none", () => {
 });
 
 test("the chat-latest aliases advertise no reasoning at all", () => {
-  // They are non-reasoning, and the family prefixes would otherwise swallow
-  // them: `gpt-5.1-chat-latest` starts with `gpt-5.1`. Advertising reasoning
-  // makes the adapter send `reasoning_effort` on every turn, which the
-  // Responses API rejects with "Unsupported parameter: 'reasoning.effort' is
-  // not supported with this model" -- so the model never answers at all.
+  // Chat aliases are non-reasoning; advertising reasoning makes the Responses API reject every turn.
   for (const model of [
     "gpt-5-chat-latest",
     "gpt-5.1-chat-latest",
@@ -264,7 +273,6 @@ test("the chat-latest aliases advertise no reasoning at all", () => {
     const caps = getExternalReasoningCapabilities("openai", model);
     assert.equal(caps.supportsReasoning, false, model);
   }
-  // The reasoning families themselves must keep theirs.
   for (const model of ["gpt-5.1", "gpt-5.2", "gpt-5", "gpt-5.3-codex"]) {
     assert.equal(
       getExternalReasoningCapabilities("openai", model).supportsReasoning,
@@ -272,7 +280,6 @@ test("the chat-latest aliases advertise no reasoning at all", () => {
       model,
     );
   }
-  // `chatgpt-4o-latest` is a different shape and was already non-reasoning.
   assert.equal(
     getExternalReasoningCapabilities("openai", "chatgpt-4o-latest")
       .supportsReasoning,
@@ -280,7 +287,24 @@ test("the chat-latest aliases advertise no reasoning at all", () => {
   );
 });
 
-test("ChatGPT subscription models expose Unsloth-owned search and code tools", () => {
+test("GPT-6 Sol and Luna subscription models use local Tools", () => {
+  setProviderModelCapabilities("openai_codex", {
+    "gpt-6-sol": { vision: true, studio_tools: true },
+    "gpt-6-luna": { vision: true, studio_tools: true },
+  });
+  for (const model of ["gpt-6-sol", "gpt-6-luna"]) {
+    assert.equal(providerModelSupportsStudioTools("openai_codex", model), true);
+    assert.equal(providerModelSupportsVision("openai_codex", model), true);
+    assert.deepEqual(selectCodeToolNames({
+      codeToolsEnabled: true,
+      hostedCodeExecutionForThisTurn: providerSupportsBuiltinCodeExecution("openai_codex", model),
+      providerHostsCodeExecution: providerHostsCodeExecution("openai_codex"),
+    }), { local: ["python", "terminal", "edit_file", "view_image"], hosted: [] });
+  }
+});
+
+
+test("ChatGPT subscription models expose Unsloth-owned search and local code tools", () => {
 
   setProviderModelCapabilities("openai_codex", {
     "gpt-5.3-codex-spark": { vision: false, studio_tools: true },
@@ -294,7 +318,29 @@ test("ChatGPT subscription models expose Unsloth-owned search and code tools", (
     assert.equal(caps.reasoningStyle, "reasoning_effort", model);
     assert.equal(getExternalMaxOutputTokens("openai_codex", model), 128000, model);
     assert.equal(providerSupportsBuiltinWebSearch("openai_codex", model), true, model);
-    assert.equal(providerSupportsBuiltinCodeExecution("openai_codex", model), true, model);
+    const hostedCodeExecutionForThisTurn = providerSupportsBuiltinCodeExecution(
+      "openai_codex",
+      model,
+    );
+    const sandbox = providerHostsCodeExecution("openai_codex");
+    assert.deepEqual(
+      selectCodeToolNames({
+        codeToolsEnabled: true,
+        hostedCodeExecutionForThisTurn,
+        providerHostsCodeExecution: sandbox,
+      }),
+      { local: ["python", "terminal", "edit_file", "view_image"], hosted: [] },
+      model,
+    );
+    assert.equal(
+      codeToolCanRun({
+        hostedCodeExecutionForThisTurn,
+        providerHostsCodeExecution: sandbox,
+        supportsStudioTools: providerModelSupportsStudioTools("openai_codex", model) === true,
+      }),
+      true,
+      model,
+    );
   }
 });
 
@@ -339,9 +385,20 @@ test("new Anthropic and OpenAI ids keep their max-output cap and code pill", () 
   );
 });
 
+test("custom Responses exposes OpenAI hosted tools only on managed cloud hosts", () => {
+  const model = "gpt-5.5";
+  for (const [baseUrl, apiType, expected] of [
+    ["https://api.openai.com/v1", "responses", true],
+    ["https://team.openai.azure.com/openai/v1", "responses", true],
+    ["https://api.openai.com.attacker.example/v1", "responses", false],
+    ["https://api.openai.com/v1", "chat_completions", false],
+  ] as const) {
+    assert.equal(providerSupportsBuiltinCodeExecution("custom", model, baseUrl, apiType), expected);
+    assert.equal(providerSupportsBuiltinImageGeneration("custom", model, baseUrl, apiType), expected);
+  }
+});
+
 test("generic Custom connections use only their explicit max-output override", () => {
-  // no capability row targets `custom`, so a model id resembling a hosted family
-  // never enters the decision
   assert.equal(getExternalMaxOutputTokens("custom", "gpt-5.6-sol"), 32768);
   assert.equal(getExternalMaxOutputTokens("custom", "claude-opus-5"), 32768);
 
@@ -351,7 +408,6 @@ test("generic Custom connections use only their explicit max-output override", (
   );
   assert.equal(getExternalMaxOutputTokens("custom", null, 65536), 65536);
 
-  // invalid persisted values fail closed to the conservative default
   assert.equal(getExternalMaxOutputTokens("custom", "model", 63), 32768);
   assert.equal(getExternalMaxOutputTokens("custom", "model", 65536.5), 32768);
   assert.equal(
@@ -359,8 +415,7 @@ test("generic Custom connections use only their explicit max-output override", (
     32768,
   );
 
-  // the override is provider-owned, so values above Unsloth's context-length convention
-  // stay valid as long as they round-trip safely through JSON
+  // The override is provider-owned, so values above the context convention stay valid.
   assert.equal(getExternalMaxOutputTokens("custom", "model", 1048577), 1048577);
   assert.equal(
     getExternalMaxOutputTokens("custom", "model", Number.MAX_SAFE_INTEGER),
@@ -371,16 +426,13 @@ test("generic Custom connections use only their explicit max-output override", (
 test("a connection override cannot raise a documented per-model cap", () => {
   assert.equal(getExternalMaxOutputTokens("openai", "gpt-5.6-sol", 999999), 128000);
   assert.equal(getExternalMaxOutputTokens("anthropic", "claude-opus-5", 999999), 128000);
-  // it lowers one, though: a gateway or spend policy below the published cap is real
   assert.equal(getExternalMaxOutputTokens("openai", "gpt-5.6-sol", 8192), 8192);
   // a vLLM server hosting an id borrowed from OpenAI has no documented cap of its own
   assert.equal(getExternalMaxOutputTokens("vllm", "gpt-5.6-sol", 131072), 131072);
 });
 
 test("earlier Claude 4 and 3.7 Sonnet keep a Thinking control the backend can serve", () => {
-  // The backend sends these ids manual budget_tokens, but models.dev has no entry for them,
-  // so leaving them to the catalog left the picker with no control at all and the backend
-  // path unreachable. The 4-1 prefix must not claim a two-digit minor either.
+  // models.dev has no entry for these, so the catalog alone left the picker with no control.
   for (const id of [
     "claude-opus-4-1-20250805",
     "claude-opus-4-20250514",
@@ -400,4 +452,126 @@ test("earlier Claude 4 and 3.7 Sonnet keep a Thinking control the backend can se
     [...getExternalReasoningCapabilities("anthropic", "claude-sonnet-4-6-20260219").reasoningEffortLevels],
     ["none", "low", "medium", "high", "max"],
   );
+});
+
+test("the Claude sampling panel offers only what the backend sends Anthropic", () => {
+  for (const id of [
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5-20251001",
+    "claude-3-5-sonnet-20241022",
+    "claude-opus-4-20250514",
+  ]) {
+    const caps = getProviderCapabilities("anthropic", undefined, id);
+    assert.equal(caps?.topP, false, id);
+    assert.equal(caps?.temperature, true, id);
+    assert.equal(caps?.topK, true, id);
+  }
+  for (const id of [
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-sonnet-5",
+    "claude-fable-5",
+    "claude-mythos-preview",
+    " Claude-Opus-4.7-20260414 ",
+  ]) {
+    const caps = getProviderCapabilities("anthropic", undefined, id);
+    assert.equal(caps?.temperature, false, id);
+    assert.equal(caps?.topP, false, id);
+    assert.equal(caps?.topK, false, id);
+  }
+  assert.equal(
+    getProviderCapabilities("custom", "chat_completions", "claude-opus-4-7")?.temperature,
+    true,
+  );
+});
+
+// Claiming a sandbox the backend lacks sends code_execution to a connection that runs nothing.
+test("hosted Code is only claimed where the backend registry hosts code_execution", () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const source = readFileSync(
+    path.join(here, "../../backend/core/inference/providers.py"),
+    "utf8",
+  );
+  const start = source.indexOf("PROVIDER_REGISTRY");
+  const registry = source.slice(start, source.indexOf("\n}\n", start));
+  const entries = [...registry.matchAll(/^ {4}"([a-z0-9_]+)": \{/gm)];
+  assert.ok(entries.length > 5, "PROVIDER_REGISTRY moved");
+  const backendSandboxes = new Set<string>();
+  for (const [i, entry] of entries.entries()) {
+    const body = registry.slice(entry.index, entries[i + 1]?.index);
+    const hosted = /"hosted_tools":\s*\(([^)]*)\)/.exec(body)?.[1] ?? "";
+    if (/"code_execution"/.test(hosted)) backendSandboxes.add(entry[1]);
+  }
+  assert.ok(backendSandboxes.size > 0, "no provider hosts code_execution");
+
+  const models = [
+    "gpt-6-astra",
+    "gpt-5.6-sol",
+    "gpt-5.5-pro",
+    "gpt-5.5",
+    "gpt-5.4",
+    "claude-opus-4-8",
+    "gemini-3-pro",
+  ];
+  for (const [, providerType] of entries) {
+    setProviderModelCapabilities(
+      providerType,
+      Object.fromEntries(models.map((m) => [m, { studio_tools: true }])),
+    );
+    assert.equal(
+      providerHostsCodeExecution(providerType),
+      backendSandboxes.has(providerType),
+      providerType,
+    );
+    for (const model of models) {
+      if (providerSupportsBuiltinCodeExecution(providerType, model)) {
+        assert.ok(backendSandboxes.has(providerType), `${providerType} ${model}`);
+      }
+    }
+  }
+});
+
+
+test("preserve thinking is available only for explicit llama.cpp and vLLM connections", () => {
+  assert.equal(providerSupportsPreserveThinking("llama_cpp"), true);
+  assert.equal(providerSupportsPreserveThinking("vllm"), true);
+  for (const provider of [undefined, null, "custom", "ollama", "openai", "anthropic", "openrouter"]) {
+    assert.equal(providerSupportsPreserveThinking(provider), false);
+  }
+});
+
+test("Kimi K3 always thinks at a low/high/max effort and leaves k2.x as they were (#8735)", () => {
+  const k3 = getExternalReasoningCapabilities("kimi", "kimi-k3");
+  assert.equal(k3.supportsReasoning, true);
+  assert.equal(k3.reasoningStyle, "reasoning_effort");
+  assert.equal(k3.supportsReasoningOff, false);
+  assert.deepEqual([...k3.reasoningEffortLevels], ["low", "high", "max"]);
+  assert.equal(clampReasoningEffortToLevels("xhigh", k3.reasoningEffortLevels), "max");
+  assert.equal(getExternalMaxOutputTokens("kimi", "kimi-k3"), 1048576);
+  assert.equal(getProviderCapabilities("kimi", undefined, "kimi-k3")?.presencePenalty, false);
+  assert.equal(kimiSearchExcludesThinking("kimi", "kimi-k3"), false);
+  // A fresh chat's medium would clamp down to low; K3's own default is max.
+  assert.equal(
+    resolveExternalReasoningEffort({ caps: k3, providerType: "kimi", current: "medium" }),
+    "max",
+  );
+  assert.equal(providerModelReplaysReasoning("kimi", "kimi-k3"), true);
+
+  const k26 = getExternalReasoningCapabilities("kimi", "kimi-k2.6");
+  assert.equal(k26.reasoningStyle, "enable_thinking");
+  assert.equal(k26.supportsReasoningOff, true);
+  assert.equal(getProviderCapabilities("kimi", undefined, "kimi-k2.6")?.presencePenalty, true);
+  assert.equal(getExternalMaxOutputTokens("kimi", "kimi-k2.6"), 32768);
+  assert.equal(kimiSearchExcludesThinking("kimi", "kimi-k2.6"), true);
+  assert.equal(kimiSearchExcludesThinking("openai", "kimi-k3"), false);
+  assert.equal(providerModelReplaysReasoning("kimi", "kimi-k2.6"), false);
+});
+
+test("a saved Search choice survives selecting or reloading Kimi K3", () => {
+  const page = readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), "../src/features/chat/chat-page.tsx"),
+    "utf8",
+  );
+  assert.doesNotMatch(page, /const isKimi = \w+\?\.providerType === "kimi"/);
+  assert.equal(page.match(/const isKimi = kimiSearchExcludesThinking\(/g)?.length, 2);
 });

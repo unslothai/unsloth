@@ -45,8 +45,6 @@ def config_env(auth_env, monkeypatch):
             raise exc
         return SimpleNamespace(private = True, gated = False)
 
-    # Stand in only for Hub metadata and model introspection; real HTTP auth,
-    # account policy, grants, and authorization checks remain in use.
     monkeypatch.setattr(access, "HfApi", lambda: SimpleNamespace(repo_info = repo_info))
     monkeypatch.setattr(llama_cpp, "_hf_offline_if_unreachable_for", lambda _: nullcontext())
     monkeypatch.setattr(models, "resolve_cached_repo_id_case", lambda name: name)

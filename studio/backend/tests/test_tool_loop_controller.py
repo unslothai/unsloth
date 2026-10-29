@@ -24,6 +24,7 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 from core.inference.tool_loop_controller import (
+    UNPARSED_ARGUMENTS_KEY,
     ToolLoopController,
     append_deferred_nudges,
     canonical_tool_call_key,
@@ -36,20 +37,28 @@ from core.inference.tool_loop_controller import (
     tool_event_provenance,
 )
 from core.inference.tool_call_parser import TOOL_ERROR_NUDGE, parse_tool_calls_from_text
-from core.inference.tools import ALL_TOOLS, _mcp_specs_for_server
+from core.inference.tools import (
+    ALL_TOOLS,
+    MAX_TOOL_TEXT_CHARS,
+    _mcp_specs_for_server,
+    _tool_text_notice_head,
+    cap_tool_text,
+    execute_tool,
+)
+
+
+_NOTICE = _tool_text_notice_head() + " the full output is not retained in model context.)"
 
 
 def test_append_deferred_nudges_merges_deduped_into_one_message():
     conversation = [{"role": "assistant", "tool_calls": [1]}, {"role": "tool", "content": "r"}]
     nudges = [
         {"role": "user", "content": "duplicate"},
-        {"role": "user", "content": "duplicate"},  # dropped: same content
+        {"role": "user", "content": "duplicate"},
         {"role": "user", "content": "disabled foo"},
     ]
     append_deferred_nudges(conversation, nudges)
-    # One user message, after the results, with distinct contents joined.
     assert conversation[2:] == [{"role": "user", "content": "duplicate\n\ndisabled foo"}]
-    # Empty is a no-op.
     before = list(conversation)
     append_deferred_nudges(conversation, [])
     assert conversation == before
@@ -119,7 +128,6 @@ def test_status_and_provenance_match_local_event_conventions():
         ("//google.com", "Reading: google.com"),
         ("example.com:8443/path", "Reading: example.com"),
         ("github.com/unslothai/unsloth", "Reading: github.com"),
-        # still generic for what the fetch layer refuses
         ("/login", "Reading page..."),
         ("javascript:alert(1)", "Reading page..."),
         # urlparse raises on these, outside the fetch's handler: degrade, not raise
@@ -179,6 +187,80 @@ def test_successful_duplicate_is_internal_noop_and_keeps_remaining_tools():
     _shared_setup_1(controller)
 
 
+def test_reprepare_uses_normalized_arguments_for_replay_and_dedup():
+    tool_name = "mcp__srv1__lookup"
+    controller = ToolLoopController(tools = [_tool(tool_name)])
+    call = _call(tool_name, {}, "call_a")
+    call["card_id"] = "painted_a"
+    first = controller.prepare_call(call)
+    first.arguments["image"] = "attached_image"
+    first = controller.reprepare_call(first)
+
+    assert first.card_id == "painted_a"
+    assert first.as_assistant_tool_call()["function"]["arguments"] == ('{"image":"attached_image"}')
+    assert first.key == canonical_tool_call_key(tool_name, {"image": "attached_image"})
+    controller.record_result(first, "ok")
+
+    repeated = controller.prepare_call(_call(tool_name, {}, "call_b"))
+    repeated.arguments["image"] = "attached_image"
+    repeated = controller.reprepare_call(repeated)
+    assert repeated.action == "duplicate"
+    assert repeated.key == first.key
+
+
+def test_web_search_alias_args_share_the_duplicate_key():
+    controller = ToolLoopController(tools = [_tool("web_search")])
+    first = controller.prepare_call(_call("web_search", {"q": "unsloth"}, "call_a"))
+    assert first.should_execute
+    assert first.arguments == {"query": "unsloth"}
+    assert first.status_text == "Searching: unsloth"
+    controller.record_result(first, "ok")
+
+    duplicate = controller.prepare_call(_call("web_search", {"query": "unsloth"}, "call_b"))
+    assert duplicate.action == "duplicate"
+    assert duplicate.key == first.key
+    assert not duplicate.should_execute
+
+
+def test_truncated_web_search_args_keep_the_unparsed_sentinel():
+    controller = ToolLoopController(tools = [_tool("web_search")])
+    decision = controller.prepare_call(_call("web_search", '{"query":"weather in S'))
+    assert decision.arguments == {UNPARSED_ARGUMENTS_KEY: '{"query":"weather in S'}
+    assert "cut off" in execute_tool("web_search", decision.arguments)
+
+
+def test_web_search_url_mode_ignores_unused_args_for_duplicate_key():
+    controller = ToolLoopController(tools = [_tool("web_search")])
+    first = controller.prepare_call(
+        _call(
+            "web_search",
+            {
+                "url": "https://example.com/page",
+                "query": "unused",
+                "image_queries": ["unused"],
+            },
+            "call_a",
+        )
+    )
+    assert first.arguments == {"url": "https://example.com/page"}
+    controller.record_result(first, "page")
+
+    duplicate = controller.prepare_call(
+        _call(
+            "web_search",
+            {
+                "href": "https://example.com/page",
+                "query": "different",
+                "image_queries": ["different"],
+            },
+            "call_b",
+        )
+    )
+    assert duplicate.action == "duplicate"
+    assert duplicate.arguments == first.arguments
+    assert duplicate.key == first.key
+
+
 def test_repeated_successful_duplicate_becomes_terminal_after_one_recovery_nudge():
     controller = ToolLoopController(tools = [_tool("web_search"), _tool("python")])
     first = controller.prepare_call(_call("web_search", {"query": "gpu prices"}, "call_a"))
@@ -198,6 +280,22 @@ def test_repeated_successful_duplicate_becomes_terminal_after_one_recovery_nudge
     assert "already completed successfully" in completion_two.model_message()["content"]
     assert controller.force_final_answer
     assert controller.active_tools() == []
+
+
+def test_deduplication_can_be_disabled():
+    controller = ToolLoopController(
+        tools = [_tool("web_search"), _tool("python")],
+        deduplicate_tool_calls = False,
+    )
+    first = controller.prepare_call(_call("web_search", {"query": "gpu prices"}, "call_a"))
+    controller.record_result(first, "ok")
+
+    repeat = controller.prepare_call(_call("web_search", {"query": "gpu prices"}, "call_b"))
+    assert repeat.action == "execute"
+    assert repeat.should_execute
+    controller.record_result(repeat, "ok")
+    assert not controller.force_final_answer
+    _shared_setup_1(controller)
 
 
 def test_command_can_run_again_after_a_file_edit():
@@ -222,9 +320,8 @@ def test_command_can_run_again_after_a_file_edit():
 
     controller.record_noop(controller.prepare_call(run))
     assert not controller.force_final_answer
-    # The edit does NOT come back. Nothing new has run since it did -- only `run`, which was
-    # already spent -- so re-applying the identical edit is a repeating block replaying
-    # itself, and a non-idempotent one (an appending python/terminal call) would land twice.
+    # Replaying the identical edit is a block repeating itself; a non-idempotent call
+    # would land twice.
     assert controller.prepare_call(edit).action == "duplicate"
     assert controller.prepare_call(search).action == "duplicate"
 
@@ -261,6 +358,23 @@ def test_a_repeating_workspace_block_stops_replaying_itself():
     assert reread.action == "execute"
     controller.record_result(reread, "version two")
     assert controller.prepare_call(edit).action == "duplicate"
+
+
+def test_mcp_call_can_run_again_after_another_mcp_call_changed_state():
+    """#10348: `list, create, list` on an MCP server must re-list, not answer from a stale duplicate."""
+    name = "mcp__docs__unified_document_manager"
+    controller = ToolLoopController(tools = [_tool(name)])
+    listing = _call(name, {"action": "list"})
+    create = _call(name, {"action": "create", "name": "a.md"})
+
+    controller.record_result(controller.prepare_call(listing), "[]")
+    assert controller.prepare_call(listing).action == "duplicate"
+    controller.record_result(controller.prepare_call(create), "created a.md")
+    relist = controller.prepare_call(listing)
+    assert relist.action == "execute"
+    controller.record_result(relist, '["a.md"]')
+    assert controller.prepare_call(listing).action == "duplicate"
+    assert controller.prepare_call(create).action == "duplicate"
 
 
 def test_failed_call_does_not_block_retry():
@@ -388,15 +502,7 @@ def test_two_plots_in_one_code_execution_turn_replay_no_base64():
 
 
 def test_a_flood_of_stacked_image_markers_stays_linear():
-    """A hosted result's length is the provider's to choose and this runs on the request
-    thread, so the cost has to follow it. Re-partitioning the shortened string once per
-    marker copies it again every time: quadruple the markers and the work grows about
-    sixteenfold instead of fourfold.
-
-    Measured as CPU time, and as the best of several runs. A shared runner can deschedule
-    the process mid-call, which adds wall clock but no CPU, and taking the minimum drops
-    the samples where it happened -- interference can only ever make a run look slower.
-    """
+    """Stacked image markers must cost linear time; repartitioning the string per marker is quadratic."""
 
     def cost(markers: int) -> float:
         flood = '\n__IMAGES__:["x"]' * markers
@@ -414,10 +520,7 @@ def test_a_flood_of_stacked_image_markers_stays_linear():
 
 
 def test_a_large_source_map_is_still_taken_off_the_result():
-    """No length bound here either. Every source record repeats its whole chunk and
-    `search_knowledge_base` honours the model's `top_k` without a ceiling, so a real map
-    can be megabytes; one refused for being big would be left for `_fit_result_to_room`
-    to cut into malformed JSON in front of the model."""
+    """A big source map must still be stripped, or _fit_result_to_room cuts it into malformed JSON."""
     import json as _json
 
     chunk = "retrieved text. " * 400
@@ -448,10 +551,7 @@ def test_a_large_plot_is_still_taken_off_the_result():
 
 
 def test_only_the_tools_that_emit_an_envelope_have_one_taken_off():
-    """`_strip_files_sentinel` is already scoped this way. A document an MCP tool read,
-    or a page that was fetched, can end in a well-formed line of either kind, and it is
-    content: the card keeps it, so cutting it leaves the model with less than the user
-    is looking at."""
+    """Only envelope-emitting tools lose it; a document an MCP tool read or a fetched page is content."""
     manifest = 'icons/\n__IMAGES__:["icon.png"]'
     citation = 'notes\n__RAG_SOURCES__:[{"filename": "a.pdf"}]'
 
@@ -459,13 +559,11 @@ def test_only_the_tools_that_emit_an_envelope_have_one_taken_off():
         assert strip_result_for_model(manifest, reader) == manifest
         assert strip_result_for_model(citation, reader) == citation
 
-    # The tools that do emit them are unaffected.
     for emitter in ("python", "terminal", "code_execution"):
         assert strip_result_for_model(manifest, emitter) == "icons/"
     for emitter in ("search_knowledge_base", "search_conversation"):
         assert strip_result_for_model(citation, emitter) == "notes"
 
-    # An unnamed caller still gets everything stripped, as it did before.
     assert strip_result_for_model(manifest) == "icons/"
     assert strip_result_for_model(citation) == "notes"
 
@@ -494,8 +592,6 @@ def test_an_unreadable_fragment_is_carried_as_the_text_the_card_shows():
     assert json.loads(payload["arguments_text"]) == {"raw": truncated}
     assert payload["arguments_text"] != decision.as_assistant_tool_call()["function"]["arguments"]
 
-
-# --- schema-aware argument typing -------------------------------------------------------
 
 _MCP_SERVER = {"id": "notes", "display_name": "Notes"}
 _MCP_TOOL = {
@@ -551,7 +647,6 @@ def test_a_value_reads_as_the_type_its_schema_declares(key, text, expected):
 @pytest.mark.parametrize(
     "spec",
     [
-        # The walk stops on any keyword it does not follow, whichever one it is.
         {"type": "boolean", "$ref": "#/$defs/Flag"},
         # Collapsing a union discards the rest, so it is read only where it is all there is.
         {"anyOf": [{"type": "boolean"}], "properties": {"x": {"type": "boolean"}}},
@@ -607,7 +702,6 @@ def test_an_mcp_tool_call_parsed_from_xml_arrives_typed():
         "tags": ["a", "b"],
         "depth": None,
     }
-    # The turn replayed to the model carries the typed values too, not the strings.
     assert decision.as_assistant_tool_call()["function"]["arguments"] == (
         '{"query":"ship dates","limit":25,"fuzzy":false,"tags":["a","b"],"depth":null}'
     )
@@ -641,10 +735,7 @@ def test_replayed_arguments_keep_the_order_the_model_generated():
 
 
 def test_two_xml_calls_written_in_different_orders_replay_in_their_own():
-    """Each call's own order, not one fixed order that happens to look unsorted.
-
-    No fixed order satisfies both, so on the sorted encoder both replay as the same string.
-    """
+    """Each XML call replays in its own parameter order; a sorted encoder would replay both the same."""
 
     def replay(*parameters):
         content = (
@@ -679,7 +770,6 @@ def test_a_declared_type_nested_in_a_container_is_read_too():
     ]
     call = {"path": "app.py", "edits": edits}
     assert coerce_arguments_by_schema(call, props) == {"path": "app.py", "edits": typed}
-    # An already-typed container is descended into too: its elements can still be text.
     call = {"path": "app.py", "edits": json.loads(edits)}
     assert coerce_arguments_by_schema(call, props) == {"path": "app.py", "edits": typed}
 
@@ -728,3 +818,190 @@ def test_tool_call_limit_nudge_keeps_long_arguments_whole():
         [{"function": {"name": "python", "arguments": json.dumps({"code": code})}}], 8
     )
     assert json.dumps({"code": code}) in notice["content"]
+
+
+def test_cap_tool_text_passes_results_at_or_under_the_floor_through_unchanged():
+    assert cap_tool_text("short result") == "short result"
+    exact = "x" * MAX_TOOL_TEXT_CHARS
+    assert cap_tool_text(exact) is exact
+
+
+def test_cap_tool_text_cuts_oversized_text_at_a_nearby_line_break_and_appends_notice():
+    line = "x" * 100 + "\n"
+    big = line * (MAX_TOOL_TEXT_CHARS // len(line) + 100)
+    out = cap_tool_text(big)
+
+    assert out.endswith(_NOTICE)
+    body = out[: -len(_NOTICE)]
+    assert big.startswith(body)
+    assert len(body) < MAX_TOOL_TEXT_CHARS
+    assert big[len(body)] == "\n"
+    assert len(out) <= MAX_TOOL_TEXT_CHARS + len(_NOTICE)
+
+
+def test_cap_tool_text_cuts_a_single_line_mid_line_when_no_break_is_near():
+    big = "y" * (MAX_TOOL_TEXT_CHARS + 500)
+    out = cap_tool_text(big)
+
+    assert out.endswith(_NOTICE)
+    body = out[: -len(_NOTICE)]
+    assert body == big[:MAX_TOOL_TEXT_CHARS]
+
+
+def test_text_that_merely_quotes_the_notice_is_still_capped():
+    big = "x" * (MAX_TOOL_TEXT_CHARS + 50_000) + _NOTICE
+    assert cap_tool_text(big) == "x" * MAX_TOOL_TEXT_CHARS + _NOTICE
+
+
+def test_an_oversized_result_is_capped_for_the_card_and_the_model_alike():
+    controller = ToolLoopController(tools = [_tool("terminal")])
+    decision = controller.prepare_call(_call("terminal", {"command": "cat big.log"}))
+    huge = "line of output\n" * 400_000
+    completion = controller.record_result(decision, huge)
+
+    content = completion.tool_message()["content"]
+    assert completion.tool_end_payload()["result"] == content
+    assert content.endswith(_NOTICE)
+    body = content[: -len(_NOTICE)]
+    assert len(body) <= MAX_TOOL_TEXT_CHARS
+    assert huge.startswith(body)
+    assert huge[len(body)] == "\n"
+
+
+def test_the_cap_keeps_the_card_envelope_whole_and_off_the_model():
+    envelope = '\n__WEB_IMAGES__:[{"id": "a1b2c3d4e5f6", "title": "A chart", "domain": "example.com", "source": "https://example.com/a.png"}]'
+    huge = ("z" * (MAX_TOOL_TEXT_CHARS + 2000)) + envelope
+    controller = ToolLoopController(tools = [_tool("web_search")])
+    completion = controller.record_result(
+        controller.prepare_call(_call("web_search", {"url": "https://example.com/a"})), huge
+    )
+
+    capped = "z" * MAX_TOOL_TEXT_CHARS + _NOTICE
+    assert completion.tool_end_payload()["result"] == capped + envelope
+    assert completion.tool_message()["content"] == capped
+
+
+@pytest.fixture
+def _sandbox(tmp_path, monkeypatch):
+    import core.inference.tools as tools
+
+    records = tmp_path / "records"
+    records.mkdir()
+    workdir = tmp_path / "sandbox"
+    workdir.mkdir()
+    monkeypatch.setattr(tools, "_spill_records_dir", lambda: str(records))
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    return workdir
+
+
+def _spilled(
+    names,
+    result,
+    session_id = "chat-1",
+):
+    controller = ToolLoopController(
+        tools = [_tool(name) for name in names], session_id = session_id, thread_id = "t1"
+    )
+    return controller.record_result(
+        controller.prepare_call(_call(names[0], {"server": "x", "q": "y"})), result
+    )
+
+
+def test_an_oversized_result_is_spilled_and_the_model_is_told_how_to_search_it(_sandbox):
+    huge = "".join(f"row {i}\n" for i in range(60_000))
+    content = _spilled(["mcp__docs__dump", "terminal"], huge).tool_message()["content"]
+
+    notice = content[content.index(_tool_text_notice_head()) :]
+    path = notice.split("saved to ")[1].split(" ")[0]
+    assert (_sandbox / path).read_text() == huge
+    assert f"grep -n 'pattern' {path}" in notice
+    assert f"sed -n '1,200p' {path}" in notice
+    assert "open(" not in notice
+
+
+def test_the_hint_names_only_the_reader_the_model_has(_sandbox):
+    huge = "q" * (MAX_TOOL_TEXT_CHARS + 1)
+    content = _spilled(["mcp__docs__dump", "python"], huge).tool_message()["content"]
+    assert "open('.unsloth_tool_output/" in content
+    assert "grep" not in content
+
+
+def test_a_cmd_only_windows_host_gets_findstr_with_a_backslash_path(_sandbox, monkeypatch):
+    import core.inference.tools as tools
+
+    monkeypatch.setattr(tools, "_posix_tools_available", lambda: False)
+    huge = "q" * (MAX_TOOL_TEXT_CHARS + 1)
+    content = _spilled(["mcp__docs__dump", "terminal"], huge).tool_message()["content"]
+    assert 'findstr /n "pattern" .unsloth_tool_output\\' in content
+    assert "grep" not in content
+
+
+def test_no_reader_tool_or_a_shared_sandbox_gets_the_plain_notice(_sandbox):
+    huge = "q" * (MAX_TOOL_TEXT_CHARS + 1)
+    plain = "q" * MAX_TOOL_TEXT_CHARS + _NOTICE
+    assert _spilled(["mcp__docs__dump"], huge).tool_message()["content"] == plain
+    assert (
+        _spilled(["mcp__docs__dump", "terminal"], huge, session_id = None).tool_message()["content"]
+        == plain
+    )
+    assert not (_sandbox / ".unsloth_tool_output").exists()
+
+
+def test_model_message_leaves_an_already_capped_result_alone():
+    big = "a" * (MAX_TOOL_TEXT_CHARS + 10_000)
+    already = cap_tool_text(big)
+    controller = ToolLoopController(tools = [_tool("terminal")])
+    completion = controller.record_result(
+        controller.prepare_call(_call("terminal", {"command": "ls"})), already
+    )
+
+    assert completion.tool_message()["content"] == already
+
+
+def test_model_message_keeps_the_error_nudge_on_an_oversized_error_result():
+    huge = "Error: " + "e" * (MAX_TOOL_TEXT_CHARS + 10_000)
+    controller = ToolLoopController(tools = [_tool("terminal")])
+    completion = controller.record_result(
+        controller.prepare_call(_call("terminal", {"command": "ls"})), huge
+    )
+
+    assert completion.is_error
+    assert completion.tool_message()["content"] == cap_tool_text(huge) + TOOL_ERROR_NUDGE
+
+
+def test_the_hard_cap_is_tunable(monkeypatch):
+    import core.inference.tools as tools
+
+    monkeypatch.setenv("UNSLOTH_TOOL_RESULT_HARD_CAP_CHARS", "1000")
+    assert tools._env_int("UNSLOTH_TOOL_RESULT_HARD_CAP_CHARS", 256_000) == 1000
+    monkeypatch.setattr(tools, "MAX_TOOL_TEXT_CHARS", 50_000)
+    completion = _spilled(["mcp__docs__dump"], "w" * 60_000)
+    content = completion.tool_message()["content"]
+    assert content == "w" * 50_000 + _tool_text_notice_head() + (
+        " the full output is not retained in model context.)"
+    )
+    assert "truncated to 50,000 chars" in content
+
+
+def test_the_spill_masks_studio_credentials_like_the_model_copy(_sandbox):
+    key = "sk-unsloth-" + "ab12" * 8
+    huge = f"token {key}\n" + "r\n" * (MAX_TOOL_TEXT_CHARS // 2 + 10)
+    content = _spilled(["mcp__docs__dump", "terminal"], huge).tool_message()["content"]
+
+    path = content.split("saved to ")[1].split(" ")[0]
+    spilled = (_sandbox / path).read_text()
+    assert key not in spilled and key not in content
+    assert spilled.startswith("token [redacted]")
+
+
+def test_a_hard_cap_below_the_window_cap_leaves_truncated_terminal_output_alone(monkeypatch):
+    import core.inference.tools as tools
+
+    monkeypatch.setattr(tools, "MAX_TOOL_TEXT_CHARS", 1000)
+    already = tools._truncate("t\n" * 50_000, workdir = None)
+    assert len(already) > 1000
+    controller = ToolLoopController(tools = [_tool("terminal")])
+    completion = controller.record_result(
+        controller.prepare_call(_call("terminal", {"command": "yes t"})), already
+    )
+    assert completion.tool_message()["content"] == already

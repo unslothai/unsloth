@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An unset generation limit (``None``) resolves to the context the prompt leaves free.
-
-unsloth_fast_generate raises once ``input_length + max_new_tokens`` passes the window, so no
-flat default fits every prompt. An explicit limit is never reduced.
-"""
+"""Unset generation limit resolves to the context left free; no flat default fits all prompts."""
 
 import sys
 import threading
@@ -36,7 +32,6 @@ def test_an_unset_budget_becomes_the_free_context():
 
 
 def test_an_explicit_budget_is_never_reduced():
-    # A request that does not fit must raise, not come back shortened.
     assert generation_budget_within_context(_model(), _PROMPT_LEN, 512) == 512
     assert generation_budget_within_context(_model(), _PROMPT_LEN, _WINDOW) == _WINDOW
     wide = SimpleNamespace(
@@ -46,7 +41,6 @@ def test_an_explicit_budget_is_never_reduced():
 
 
 def test_a_prompt_with_no_room_left_gets_the_default_not_a_token():
-    # A floor of 1 clears a native 32768 guard on a 1024 load and returns one token.
     assert generation_budget_within_context(_model(window = 32), 64, None) == UNSET_GENERATION_BUDGET
     narrow = SimpleNamespace(
         max_seq_length = 1024, config = SimpleNamespace(max_position_embeddings = 32768)
@@ -56,8 +50,7 @@ def test_a_prompt_with_no_room_left_gets_the_default_not_a_token():
 
 
 def test_the_selected_window_wins_over_a_wider_checkpoint():
-    # from_pretrained keeps config.max_position_embeddings at max(requested, native), so the
-    # config alone would serve a --max-seq-length 1024 load the whole 32768.
+    # from_pretrained sets max_position_embeddings to max(requested, native), so config overstates it.
     model = SimpleNamespace(
         max_seq_length = 1024,
         config = SimpleNamespace(max_position_embeddings = 32768),
@@ -82,7 +75,7 @@ def test_a_zero_budget_is_a_value_not_an_absence():
     assert generation_budget_within_context(_model(), _PROMPT_LEN, 0) == 0
 
 
-# The call-site tests below import the backend, which pulls unsloth/unsloth_zoo: absent on CPU CI.
+# Call-site tests import unsloth/unsloth_zoo, absent on CPU CI.
 
 
 class _FakeTensor:
@@ -115,14 +108,36 @@ class _FakeTokenizer:
         return _FakeEncoding(input_ids = _FakeTensor(_PROMPT_LEN))
 
 
+class _FastDecoder:
+    def forward(self):
+        pass
+
+
+_FastDecoder.forward.__name__ = "LlamaModel_fast_forward"
+
+
+class _StockDecoder:
+    def forward(self):
+        pass
+
+
 class _FakeModel:
     """Carries the one guard unsloth_fast_generate applies before generating."""
 
-    def __init__(self, window):
+    def __init__(
+        self,
+        window,
+        decoder = _FastDecoder,
+        native = None,
+    ):
         self.max_seq_length = window
-        self.config = SimpleNamespace(max_position_embeddings = window)
+        self.config = SimpleNamespace(max_position_embeddings = native or window)
         self.device = "cpu"
         self.calls = []
+        self._decoder = decoder()
+
+    def modules(self):
+        return iter((self, self._decoder))
 
     def generate(self, **kwargs):
         ids, budget = kwargs.get("input_ids"), kwargs.get("max_new_tokens")
@@ -148,19 +163,22 @@ class _EmptyStreamer:
         pass
 
 
-def _streaming_backend(monkeypatch, window = _WINDOW):
+def _streaming_backend(
+    monkeypatch,
+    window = _WINDOW,
+    **model_kwargs,
+):
     try:
         from core.inference.inference import InferenceBackend
     except (ImportError, RuntimeError) as exc:  # pragma: no cover - env-dependent
-        # Skips because the CPU job installs no unsloth; the helper tests above cover
-        # the same bound, so the budget itself is never left unasserted.
+        # CPU job has no unsloth; the helper tests above still cover the bound.
         pytest.skip(f"full inference backend unavailable ({type(exc).__name__}: {exc})")
 
     backend = InferenceBackend.__new__(InferenceBackend)
     backend.active_model_name = "unsloth/tinyllama-chat-bnb-4bit"
     backend.last_generation_stats = None
     backend._generation_lock = threading.Lock()
-    model = _FakeModel(window)
+    model = _FakeModel(window, **model_kwargs)
     backend.models = {
         backend.active_model_name: {
             "model": model,
@@ -201,6 +219,31 @@ def test_generate_stream_passes_a_fitting_budget_through(monkeypatch):
     _run(backend, 512)
 
     assert model.calls[0]["max_new_tokens"] == 512
+
+
+def test_generate_stream_refuses_a_prompt_longer_than_the_window(monkeypatch):
+    from core.inference.context_refusal import ContextBudgetExceeded
+
+    backend, model = _streaming_backend(monkeypatch, window = _PROMPT_LEN - 1)
+
+    with pytest.raises(ContextBudgetExceeded) as refused:
+        _run(backend, 64)
+
+    assert (refused.value.request_tokens, refused.value.context_tokens) == (
+        _PROMPT_LEN,
+        _PROMPT_LEN - 1,
+    )
+    assert not model.calls
+
+
+def test_generate_stream_lets_a_stock_forward_model_run_past_the_window(monkeypatch):
+    backend, model = _streaming_backend(
+        monkeypatch, window = _PROMPT_LEN - 1, decoder = _StockDecoder, native = 8192
+    )
+
+    _run(backend, 64)
+
+    assert model.calls[0]["max_new_tokens"] == 64
 
 
 def _vision_backend(monkeypatch, window = _WINDOW):
@@ -313,7 +356,11 @@ def test_the_audio_input_path_resolves_an_unset_budget(monkeypatch):
     assert model.calls[0]["max_new_tokens"] == _WINDOW - _PROMPT_LEN
 
 
-def _audio_turns(monkeypatch, messages):
+def _rendered_audio_messages(
+    monkeypatch,
+    messages,
+    audio = None,
+):
     backend, _model = _audio_backend(monkeypatch)
     processor = backend.models[backend.active_model_name]["processor"]
     render = processor.apply_chat_template
@@ -326,16 +373,42 @@ def _audio_turns(monkeypatch, messages):
     monkeypatch.setattr(processor, "apply_chat_template", _capture, raising = False)
     list(
         backend.generate_audio_input_response(
-            messages, "be brief", object(), 0.0, 1.0, 0, 0.0, 8, 1.0
+            messages, "be brief", audio or object(), 0.0, 1.0, 0, 0.0, 8, 1.0
         )
     )
-    return [(m["role"], m.get("name")) for m in seen["messages"]]
+    return seen["messages"]
+
+
+def _audio_turns(monkeypatch, messages):
+    return [(m["role"], m.get("name")) for m in _rendered_audio_messages(monkeypatch, messages)]
 
 
 def test_the_audio_input_turns_keep_participant_names(monkeypatch):
     assert _audio_turns(monkeypatch, [{"role": "user", "name": "alice", "content": "hi"}]) == [
         ("system", None),
         ("user", "alice"),
+    ]
+
+
+def test_the_audio_turn_keeps_its_text_and_ends_the_prompt(monkeypatch):
+    audio = object()
+    rendered = _rendered_audio_messages(
+        monkeypatch,
+        [
+            {"role": "user", "content": "Summarize this"},
+            {"role": "assistant", "content": "partial"},
+        ],
+        audio,
+    )
+
+    assert rendered[1:] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "audio", "audio": audio},
+                {"type": "text", "text": "Summarize this"},
+            ],
+        }
     ]
 
 
@@ -347,7 +420,109 @@ def test_the_audio_turn_is_named_for_whoever_recorded_it(monkeypatch):
             {"role": "assistant", "content": "hello"},
             {"role": "user", "name": "bob", "content": ""},
         ],
-    ) == [("system", None), ("user", "bob")]
+    ) == [("system", None), ("user", "alice"), ("assistant", None), ("user", "bob")]
+
+
+def test_an_audio_only_turn_keeps_the_conversation_before_it(monkeypatch):
+    audio = object()
+    rendered = _rendered_audio_messages(
+        monkeypatch,
+        [
+            {"role": "user", "content": "Write a haiku about the sea"},
+            {"role": "assistant", "content": "Waves fold into foam"},
+            {"role": "user", "content": ""},
+        ],
+        audio,
+    )
+
+    assert rendered[1:] == [
+        {"role": "user", "content": [{"type": "text", "text": "Write a haiku about the sea"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "Waves fold into foam"}]},
+        {
+            "role": "user",
+            "content": [
+                {"type": "audio", "audio": audio},
+                {"type": "text", "text": "Please transcribe this audio."},
+            ],
+        },
+    ]
+
+
+def test_an_earlier_audio_turn_keeps_its_reply(monkeypatch):
+    audio = object()
+    rendered = _rendered_audio_messages(
+        monkeypatch,
+        [
+            {"role": "user", "content": "Write a haiku about the sea"},
+            {"role": "assistant", "content": "Waves fold into foam"},
+            {"role": "user", "content": ""},
+            {"role": "assistant", "content": "Please count from one to five."},
+            {"role": "user", "content": ""},
+        ],
+        audio,
+    )
+
+    assert rendered[1:] == [
+        {"role": "user", "content": [{"type": "text", "text": "Write a haiku about the sea"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "Waves fold into foam"}]},
+        {"role": "user", "content": []},
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Please count from one to five."}],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "audio", "audio": audio},
+                {"type": "text", "text": "Please transcribe this audio."},
+            ],
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    "history, roles",
+    [
+        ([{"role": "user", "content": "My name is Nilay"}], ["system", "user"]),
+        ([{"role": "assistant", "content": "Hi, how can I help?"}], ["system", "user"]),
+        (
+            [{"role": "user", "content": "My name is Nilay"}, {"role": "assistant", "content": ""}],
+            ["system", "user"],
+        ),
+        (
+            [
+                {"role": "user", "content": "Weather in Paris?"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "c1",
+                            "type": "function",
+                            "function": {"name": "weather", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "c1", "content": "sunny"},
+                {"role": "assistant", "content": "It is sunny."},
+            ],
+            ["system", "user", "assistant", "user"],
+        ),
+    ],
+)
+def test_an_audio_turn_after_an_unanswered_or_tool_turn_still_alternates(
+    monkeypatch, history, roles
+):
+    audio = object()
+    rendered = _rendered_audio_messages(
+        monkeypatch, [*history, {"role": "user", "content": ""}], audio
+    )
+
+    assert [m["role"] for m in rendered] == roles
+    assert rendered[-1]["content"] == [
+        {"type": "audio", "audio": audio},
+        {"type": "text", "text": "Please transcribe this audio."},
+    ]
 
 
 def test_an_explicit_audio_budget_is_untouched(monkeypatch):

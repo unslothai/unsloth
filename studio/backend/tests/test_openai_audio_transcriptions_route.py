@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FastAPI round-trip tests for the OpenAI-compatible POST /v1/audio/transcriptions.
-
-The sidecar call (_transcribe_audio_result) is faked, so these cover multipart wiring,
-model-id mapping, response formats and error propagation without whisper or a GPU."""
+"""Round-trip tests for POST /v1/audio/transcriptions with _transcribe_audio_result faked; no GPU."""
 
 from __future__ import annotations
 
@@ -32,6 +29,7 @@ def _make_client(monkeypatch, transcribe = None):
         engine = None,
         request = None,
         device = None,
+        **kwargs,
     ):
         calls.append(
             {
@@ -41,6 +39,7 @@ def _make_client(monkeypatch, transcribe = None):
                 "fast": fast,
                 "engine": engine,
                 "request": request,
+                **kwargs,
             }
         )
         if transcribe is not None:
@@ -71,7 +70,6 @@ def _post(
 
 
 def test_json_response_is_text_only(monkeypatch):
-    # OpenAI's json shape carries only the text; the sidecar's extra fields stay internal.
     cli, calls = _make_client(monkeypatch)
     resp = _post(cli)
     assert resp.status_code == 200
@@ -113,7 +111,6 @@ def test_unknown_response_format_is_400(monkeypatch):
 
 
 def test_missing_file_is_rejected(monkeypatch):
-    # install_api_error_handlers maps validation errors to a 400 OpenAI envelope on /v1.
     cli, calls = _make_client(monkeypatch)
     resp = cli.post("/v1/audio/transcriptions", data = {"model": "whisper-1"})
     assert resp.status_code == 400
@@ -121,8 +118,7 @@ def test_missing_file_is_rejected(monkeypatch):
 
 
 def test_sidecar_errors_keep_their_status(monkeypatch):
-    # The shared error mapping (SttModelIdError -> 422, empty audio -> 400, ...) sits inside
-    # _transcribe_audio_result; the route must not swallow or rewrap what it raises.
+    # Error mapping lives in _transcribe_audio_result; the route must not swallow or rewrap it.
     async def _bad_model(raw):
         raise HTTPException(status_code = 422, detail = "Unknown STT model id.")
 
@@ -133,11 +129,7 @@ def test_sidecar_errors_keep_their_status(monkeypatch):
 
 
 def test_an_mtmd_only_model_forces_its_engine():
-    """Qwen3-ASR only runs on the mtmd sidecar.
-
-    The route passed no engine, so _resolve_stt_engine defaulted to Transformers and the
-    Whisper sidecar rejected the model.
-    """
+    """Qwen3-ASR runs only on the mtmd sidecar, so its engine is forced, not defaulted to Transformers."""
     from routes.inference import _stt_engine_for_model
 
     assert _stt_engine_for_model("qwen3-asr-0.6b") == "mtmd"
@@ -189,11 +181,7 @@ def test_verbose_json_carries_language_and_duration(monkeypatch):
 
 
 def test_verbose_json_without_a_language_is_refused_before_any_work(monkeypatch):
-    """OpenAI types language as a required string and the sidecar only echoes back the
-    language it was given, so an auto-detect request has nothing truthful to report.
-
-    Naming a language nobody detected would label a Japanese clip "en", so this refuses.
-    It refuses before the sidecar runs, so no GPU is burnt and no row is opened."""
+    """Refuse verbose_json without a language: naming one nobody detected would mislabel the clip."""
     cli, calls = _make_client(monkeypatch)
     api_monitor.clear()
     resp = _post(cli, data = {"response_format": "verbose_json"})
@@ -204,7 +192,6 @@ def test_verbose_json_without_a_language_is_refused_before_any_work(monkeypatch)
 
 
 def test_verbose_json_works_when_the_caller_supplies_a_language(monkeypatch):
-    # Echoing a language the caller named is correct, so this half of verbose_json works.
     cli, calls = _make_client(monkeypatch)
     resp = _post(cli, data = {"response_format": "verbose_json", "language": "en"})
     assert resp.status_code == 200
@@ -225,7 +212,6 @@ def test_verbose_json_never_emits_a_null_duration(monkeypatch):
 
 
 def test_timestamp_granularities_are_refused_not_dropped(monkeypatch):
-    # Returning 200 with neither words nor segments looks like the audio simply had none.
     cli, calls = _make_client(monkeypatch)
     resp = _post(
         cli,
@@ -262,7 +248,6 @@ def test_verbose_json_validates_against_the_openai_client_model(monkeypatch, res
 
 
 def test_subtitle_formats_are_still_400(monkeypatch):
-    # srt/vtt need per-segment timing the sidecar does not report yet.
     cli, calls = _make_client(monkeypatch)
     for fmt in ("srt", "vtt"):
         assert _post(cli, data = {"response_format": fmt}).status_code == 400
@@ -354,7 +339,6 @@ def test_a_baseexception_still_closes_the_row(monkeypatch, exc):
 
 
 def test_a_real_cancellederror_records_a_cancelled_row(monkeypatch):
-    # The 499 arm covers the disconnect watchers; this is the plain asyncio cancel.
     async def _cancelled(raw):
         raise asyncio.CancelledError()
 
@@ -368,7 +352,6 @@ def test_a_real_cancellederror_records_a_cancelled_row(monkeypatch):
 
 
 def test_a_non_http_failure_records_a_friendly_error_row(monkeypatch):
-    # Every other error test raises HTTPException; this is the catch-all arm.
     async def _boom(raw):
         raise RuntimeError("sidecar exploded")
 
@@ -383,7 +366,6 @@ def test_a_non_http_failure_records_a_friendly_error_row(monkeypatch):
 
 
 def test_the_monitor_label_never_carries_a_local_path(monkeypatch):
-    # Sidecar ids are curated or owner/model today; the row still goes over the tunnel.
     async def _pathy(raw):
         return {
             "text": "t",
@@ -749,7 +731,6 @@ def test_verbose_json_is_forwarded_to_the_provider_verbatim(monkeypatch):
     )
     assert resp.status_code == 200
     assert sidecar_calls[-1]["response_format"] == "verbose_json"
-    # The monitor preview reads the body without consuming it.
     assert resp.json()["segments"] == [{"id": 0, "text": "remote words"}]
     assert api_monitor.snapshot(include_details = False)[0]["reply_preview"] == "remote words"
 
@@ -790,7 +771,6 @@ def test_external_transcription_reply_preview_for_plain_text(monkeypatch):
 
 
 def test_external_transcription_failure_records_an_error_row(monkeypatch):
-    # A disabled connection is rejected before the proxy call; the row still closes.
     cli, sidecar_calls = _make_client(monkeypatch)
     _install_external(monkeypatch, enabled = False)
     api_monitor.clear()
@@ -806,8 +786,6 @@ def test_external_transcription_failure_records_an_error_row(monkeypatch):
 
 
 def test_external_reply_preview_handles_an_uppercase_json_media_type(monkeypatch):
-    # Content-Type is case-insensitive, so Application/JSON is still a JSON envelope and
-    # the row should show the transcript, not the whole {"text": ...} wrapper.
     cli, sidecar_calls = _make_client(monkeypatch)
     _install_external(monkeypatch, media_type = "Application/JSON")
     api_monitor.clear()
@@ -820,8 +798,7 @@ def test_external_reply_preview_handles_an_uppercase_json_media_type(monkeypatch
 
 
 def test_timestamp_granularities_reach_a_capable_provider(monkeypatch):
-    # The sidecar cannot produce timings, but a saved connection may, so the proxied arm
-    # forwards the parameter instead of dropping it.
+    # A saved connection may produce timings, so the proxied arm forwards the parameter.
     cli, sidecar_calls = _make_client(monkeypatch)
     _client_args, transcription_calls, _creds = _install_external(monkeypatch)
     resp = _post(
@@ -895,7 +872,6 @@ def test_a_sidecar_failure_does_not_leak_the_requested_path(monkeypatch, request
     assert row["status"] == "error"
     assert row["model"] == expected
     assert "/" not in row["model"] and "\\" not in row["model"]
-    # The redaction is for the monitor label only; the engine still gets what was asked for.
     assert calls[0]["model"] == requested
 
 
@@ -909,5 +885,147 @@ def test_the_proxied_row_never_carries_a_local_path(monkeypatch):
     assert resp.status_code == 200
     row = api_monitor.snapshot(include_details = False)[0]
     assert row["model"] == "whisper-v3"
-    # Only the label is redacted; the provider is still asked for what the client sent.
     assert transcription_calls[-1]["model"] == "/home/ana/models/whisper-v3"
+
+
+_TIMED = {
+    "text": "Hi there. Bye.",
+    "language": "English",
+    "duration": 2.5,
+    "model": "audio-cpp/audio.cpp-gguf/VibeVoice-ASR-GGUF",
+    "segments": [
+        {"start": 0.0, "end": 1.0, "text": "Hi there.", "speaker": "0"},
+        {"start": 1.2, "end": 2.5, "text": "Bye.", "speaker": "1"},
+    ],
+    "words": [
+        {"start": 0.0, "end": 0.4, "word": "Hi"},
+        {"start": 0.4, "end": 1.0, "word": "there."},
+    ],
+    "speakers": [{"id": "0", "label": "Speaker 1"}, {"id": "1", "label": "Speaker 2"}],
+}
+
+
+def _audio_cpp(
+    monkeypatch,
+    tmp_path,
+    result = _TIMED,
+    **caps,
+):
+    """An audio.cpp ASR model; the upload's prepared copy is a file the route must remove."""
+    from core.inference import stt_capabilities
+
+    async def _result(raw):
+        return dict(result)
+
+    cli, calls = _make_client(monkeypatch, transcribe = _result)
+    monkeypatch.setattr(routes_module, "_stt_engine_for_model", lambda model: "audiocpp")
+    monkeypatch.setattr(routes_module, "_resolve_serving_stt_engine", lambda engine: engine)
+    caps = {"family": "vibevoice_asr", "timestamps": "always", "speakers": True, **caps}
+    monkeypatch.setattr(stt_capabilities, "capabilities_for", lambda model, engine: caps)
+    prepared = []
+
+    def _prepare(raw, rate):
+        path = tmp_path / f"upload.{rate}.wav"
+        path.write_bytes(raw)
+        prepared.append(path)
+        return path
+
+    monkeypatch.setattr(routes_module, "_prepared_upload", _prepare)
+    return cli, calls, prepared
+
+
+def test_audio_cpp_verbose_json_has_openai_segments_and_words(monkeypatch, tmp_path):
+    openai_types = pytest.importorskip("openai.types.audio.transcription_verbose")
+    cli, calls, prepared = _audio_cpp(monkeypatch, tmp_path)
+    data = {"response_format": "verbose_json", "timestamp_granularities[]": ["segment", "word"]}
+    resp = _post(cli, data = data)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    openai_types.TranscriptionVerbose.model_validate(body)
+    assert body["language"] == "English"
+    assert [(s["id"], s["start"], s["end"], s["text"]) for s in body["segments"]] == [
+        (0, 0.0, 1.0, "Hi there."),
+        (1, 1.2, 2.5, "Bye."),
+    ]
+    assert body["words"] == [
+        {"word": "Hi", "start": 0.0, "end": 0.4},
+        {"word": "there.", "start": 0.4, "end": 1.0},
+    ]
+    # VibeVoice times its spans at 24 kHz, so the upload is prepared at that rate and removed.
+    (path,) = prepared
+    assert path.name == "upload.24000.wav" and not path.exists()
+    assert calls[0]["source_path"] == path and calls[0]["timestamps"] is True
+
+
+def test_audio_cpp_diarized_json_names_speakers(monkeypatch, tmp_path):
+    cli, calls, prepared = _audio_cpp(monkeypatch, tmp_path)
+    resp = _post(cli, data = {"response_format": "diarized_json"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert (body["task"], body["duration"], body["text"]) == ("transcribe", 2.5, "Hi there. Bye.")
+    assert body["segments"] == [
+        {
+            "type": "transcript.text.segment",
+            "id": "seg_0",
+            "start": 0.0,
+            "end": 1.0,
+            "text": "Hi there.",
+            "speaker": "Speaker 1",
+        },
+        {
+            "type": "transcript.text.segment",
+            "id": "seg_1",
+            "start": 1.2,
+            "end": 2.5,
+            "text": "Bye.",
+            "speaker": "Speaker 2",
+        },
+    ]
+    assert calls[0]["timestamps"] is False
+
+
+@pytest.mark.parametrize(
+    "caps, data, detail",
+    [
+        ({"speakers": False}, {"response_format": "diarized_json"}, "cannot tell speakers apart"),
+        (
+            {"timestamps": "unsupported"},
+            {"response_format": "verbose_json", "timestamp_granularities[]": "word"},
+            "cannot add timestamps",
+        ),
+    ],
+)
+def test_audio_cpp_refuses_what_the_model_cannot_add(monkeypatch, tmp_path, caps, data, detail):
+    cli, calls, prepared = _audio_cpp(monkeypatch, tmp_path, **caps)
+    resp = _post(cli, data = data)
+    assert resp.status_code == 422
+    assert detail in resp.json()["error"]["message"]
+    assert calls == [] and prepared == []
+
+
+@pytest.mark.parametrize("fmt", ["json", "text", "diarized_json"])
+def test_audio_cpp_granularities_need_verbose_json(monkeypatch, tmp_path, fmt):
+    cli, calls, prepared = _audio_cpp(monkeypatch, tmp_path)
+    resp = _post(cli, data = {"response_format": fmt, "timestamp_granularities[]": "word"})
+    assert (resp.status_code, resp.json()["error"]["param"]) == (400, "timestamp_granularities")
+    assert calls == [] and prepared == []
+
+
+def test_diarized_json_on_whisper_is_refused_before_any_work(monkeypatch):
+    cli, calls = _make_client(monkeypatch)
+    resp = _post(cli, data = {"response_format": "diarized_json"})
+    assert resp.status_code == 422
+    assert calls == []
+
+
+@pytest.mark.parametrize("reported, status", [("English", 200), (None, 501)])
+def test_audio_cpp_verbose_json_needs_no_language_when_the_model_reports_one(
+    monkeypatch, tmp_path, reported, status
+):
+    cli, calls, prepared = _audio_cpp(
+        monkeypatch, tmp_path, result = {**_TIMED, "language": reported}
+    )
+    resp = _post(cli, data = {"response_format": "verbose_json"})
+    assert resp.status_code == status, resp.text
+    if status == 200:
+        assert resp.json()["language"] == "English"

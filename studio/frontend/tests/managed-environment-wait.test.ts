@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A reload during an install or update must wait it out: repairing instead is what
-// produced "Update failed: Repair is already running.". The hook cannot be rendered,
-// so its functions are lifted by regex, as in forced-repair-retry.test.ts.
+// Repairing during an install fails, so a reload must wait it out. Functions lifted by regex.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -56,13 +54,16 @@ interface Preflight {
 
 const BUSY: Preflight = {
   disposition: "managed_stale",
-  // The busy branch must win over it: the busy environment refuses that repair.
   can_auto_repair: true,
   reason: MANAGED_ENVIRONMENT_BUSY,
   port: null,
 };
 
-function harness(preflight: Preflight, authFailure: string | null = null) {
+function harness(
+  preflight: Preflight,
+  authFailure: string | null = null,
+  runtimeRepairedRecently = false,
+) {
   const errors: string[] = [];
   const statuses: string[] = [];
   const messages: string[] = [];
@@ -71,6 +72,7 @@ function harness(preflight: Preflight, authFailure: string | null = null) {
   let armed: (() => void) | null = null;
   let armedCount = 0;
   const environmentWaitPollsRef = { current: 0 };
+  const allowHeldRuntimeRepairRef = { current: false };
   const noop = () => {};
 
   const scope: Record<string, unknown> = {
@@ -81,13 +83,13 @@ function harness(preflight: Preflight, authFailure: string | null = null) {
     MANAGED_ENVIRONMENT_WAIT_POLLS: POLL_LIMIT,
     SERVER_STARTUP_MESSAGE: "Nearly done...",
     authFailureRef: { current: authFailure },
-    // Fresh per harness: left true, the hook's single-flight guard returns before the probe.
+    // Left true, the single-flight guard returns before the probe.
     preflightInFlightRef: { current: false },
     environmentWaitRef: { current: null as unknown },
     environmentWaitPollsRef,
     statusRef: { current: "checking" },
     portRef: { current: null as number | null },
-    // The bare specifier does not resolve inside `new Function`.
+    // The bare specifier does not resolve inside new Function.
     importTauriCore: () =>
       Promise.resolve({
         invoke: (command: string) => {
@@ -112,6 +114,7 @@ function harness(preflight: Preflight, authFailure: string | null = null) {
     setStatus: (status: string) => statuses.push(status),
     syncTrayStatus: noop,
     setError: (error: string) => errors.push(error),
+    setInstallDiskFull: noop,
     setApiBase: noop,
     setIsExternalServer: noop,
     stopExternalServerPoll: noop,
@@ -126,6 +129,9 @@ function harness(preflight: Preflight, authFailure: string | null = null) {
       return Promise.resolve();
     },
     preflightStaleMessage: (_d: string, reason: string | null) => `stale:${reason}`,
+    allowHeldRuntimeRepairRef,
+    wasRuntimeRepairedRecently: () => runtimeRepairedRecently,
+    runtimeRepairRecurrenceMessage: () => "runtime damaged again",
     externalConflictMessage: () => "conflict",
   };
 
@@ -162,12 +168,15 @@ ${checkBody
       return armed !== null;
     },
     polls: () => environmentWaitPollsRef.current,
+    allowHeldRepair() {
+      allowHeldRuntimeRepairRef.current = true;
+    },
+    heldRepairAllowed: () => allowHeldRuntimeRepairRef.current,
     async fireWait() {
       const next = armed;
       assert.ok(next, "no wait was armed");
       armed = null;
       next();
-      // The timer dispatches checkInstallAndStart as a floating promise.
       for (let i = 0; i < 8; i += 1) await Promise.resolve();
     },
   };
@@ -209,6 +218,40 @@ test("a stale install that is not busy still repairs", async () => {
 
   assert.equal(run.repairs, 1, "only the busy reason may skip the repair");
   assert.equal(run.waiting, false);
+});
+
+test("a runtime damaged again soon after a repair explains instead of repairing", async () => {
+  const run = harness({ ...BUSY, reason: "llama_runtime_binaries_missing" }, null, true);
+  await run.check();
+
+  assert.equal(run.repairs, 0);
+  assert.equal(run.errors.at(-1), "runtime damaged again");
+});
+
+test("after Retry, the preflight repairs a recently repaired runtime, once", async () => {
+  const run = harness({ ...BUSY, reason: "llama_runtime_binaries_missing" }, null, true);
+  run.allowHeldRepair();
+  await run.check();
+  assert.equal(run.repairs, 1, "the click asked for the repair the message offered");
+  assert.equal(run.heldRepairAllowed(), false, "consumed by that preflight");
+
+  await run.check();
+  assert.equal(run.repairs, 1, "the next automatic preflight holds it back again");
+  assert.equal(run.errors.at(-1), "runtime damaged again");
+});
+
+test("a Retry that lands on a busy environment still repairs once the wait ends", async () => {
+  const preflight = { ...BUSY };
+  const run = harness(preflight, null, true);
+  run.allowHeldRepair();
+  await run.check();
+  assert.equal(run.waiting, true);
+  assert.equal(run.repairs, 0);
+
+  preflight.reason = "llama_runtime_binaries_missing";
+  await run.fireWait();
+  assert.equal(run.repairs, 1, "the click carried through the wait");
+  assert.equal(run.heldRepairAllowed(), false);
 });
 
 test("the wait is bounded, so a gate nobody releases still reaches Retry", async () => {

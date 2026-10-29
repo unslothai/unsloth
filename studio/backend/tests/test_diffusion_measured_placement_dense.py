@@ -1,0 +1,416 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Dense-denoiser placement planner tests from a FLUX.2-klein-4B 15 GB T4 load; CPU only."""
+
+from __future__ import annotations
+
+import types
+
+import pytest
+
+import core.inference.diffusion_memory as dm
+
+KLEIN_LOADED = {
+    "transformer": (7393, "dit"),
+    "text_encoder": (7673, "text_encoder"),
+    "vae": (160, "other"),
+}
+KLEIN_FLAT = dict(model_dense_mib = 15258, companion_dense_mib = 7820, text_encoder_dense_mib = 7629)
+T4_TOTAL = 15095
+KLEIN_HEADROOM = 3072  # 2455 x 1.15, rounded up to 256 MiB
+ENVS = (
+    "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION",
+    "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_DENSE",
+    "UNSLOTH_DIFFUSION_PARTIAL_RESIDENT",
+)
+
+
+def _memory(budget_mib: int, total_mib: int) -> "dm.DeviceMemory":
+    reserve = dm._reserve_mib("discrete_vram", total_mib)
+    return dm.DeviceMemory("cuda", "cuda", "discrete_vram", budget_mib + reserve, total_mib)
+
+
+def _flat_plan(
+    budget_mib: int,
+    total_mib: int = T4_TOTAL,
+    mode = None,
+):
+    return dm.plan_diffusion_memory(
+        target = types.SimpleNamespace(supports_model_cpu_offload = True),
+        device_memory = _memory(budget_mib, total_mib),
+        runtime_headroom_mib = dm.estimate_image_runtime_mib(
+            width = None, height = None, family = "flux.2-klein"
+        ),
+        requested_mode = mode,
+        **KLEIN_FLAT,
+    )
+
+
+@pytest.fixture
+def klein_pipe(monkeypatch):
+    for name in ENVS:
+        monkeypatch.delenv(name, raising = False)
+    monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: dict(KLEIN_LOADED))
+    monkeypatch.setattr(dm, "_pipe_denoisers_hold_torchao", lambda pipe: False)
+    import torch
+
+    # fp16 on the T4: the compute dtype the dense eager table was measured at.
+    return types.SimpleNamespace(transformer = types.SimpleNamespace(dtype = torch.float16))
+
+
+def _refine(
+    pipe,
+    plan,
+    family = "flux.2-klein",
+    speed = "off",
+):
+    return dm.refine_plan_from_loaded_weights(pipe, plan, family = family, speed_mode = speed)
+
+
+def test_dense_headroom_values(klein_pipe, monkeypatch):
+    m = dm.measured_image_runtime_mib
+    assert m("flux.2-klein", "off", dense_transformer_mib = 7393) == KLEIN_HEADROOM
+    assert m("flux.1", "off", dense_transformer_mib = 22680) == 2816
+    assert m("qwen-image", "off", dense_transformer_mib = 38968) == 5120
+    assert m("flux.2-klein", "off", dense_transformer_mib = 7393, width = 2048, height = 2048) == 11520
+    # the compiled tiers take the family's worst measured phase on that tier (2645 / 2677 MiB, the untiled decode);
+    # unmeasured families and a larger DiT of the same family (klein-9B) keep the flat estimate
+    assert m("flux.2-klein", "default", dense_transformer_mib = 7393, dense_tier_seeds = True) == 3072
+    assert m("flux.2-klein", "max", dense_transformer_mib = 7393, dense_tier_seeds = True) == 3328
+    # not on the target the phase table was measured on (math-only attention, ROCm): flat
+    assert m("flux.2-klein", "default", dense_transformer_mib = 7393) is None
+    assert m("flux.2-klein", "default", dense_transformer_mib = 17300) is None
+    assert m("sdxl", "off", dense_transformer_mib = 4900) is None
+    assert m("flux.2-klein", "off", dense_transformer_mib = 17300) is None
+    assert m("flux.2-klein", "off") is None
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_DENSE", "0")
+    assert m("flux.2-klein", "off", dense_transformer_mib = 7393) is None
+    assert m("qwen-image-2.1", "default") == 2304
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_DENSE")
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_MEASURED_ACTIVATION", "0")
+    assert m("flux.2-klein", "off", dense_transformer_mib = 7393) is None
+
+
+def test_t4_klein_transformer_resident(klein_pipe):
+    plan = _flat_plan(12758)
+    assert plan.estimates["resident_transformer_floor_mib"] == 17869
+    assert plan.offload_policy == dm.OFFLOAD_GROUP
+    assert plan.stream_transformer and plan.stream_text_encoders
+    new = _refine(klein_pipe, plan)
+    assert (new.offload_policy, new.stream_transformer, new.stream_text_encoders) == (
+        dm.OFFLOAD_GROUP,
+        True,
+        True,
+    )
+    assert new.resident_transformer_mib == 7393
+    assert new.estimates["measured_runtime_headroom_mib"] == KLEIN_HEADROOM
+    assert new.estimates["measured_dense_transformer_mib"] == 7393
+    assert 7393 + 160 + KLEIN_HEADROOM + dm.DEFAULT_BASE_OVERHEAD_MIB <= 12758
+
+
+@pytest.mark.parametrize("env", ENVS[:2])
+def test_kill_switches_restore_flat_plan(klein_pipe, monkeypatch, env):
+    plan = _flat_plan(12758)
+    monkeypatch.setenv(env, "0")
+    assert _refine(klein_pipe, plan) is plan
+
+
+def test_large_card_and_other_tiers_untouched(klein_pipe):
+    resident = _flat_plan(160000, 183359)
+    assert resident.offload_policy == dm.OFFLOAD_NONE
+    assert _refine(klein_pipe, resident) is resident
+    plan = _flat_plan(12758)
+    assert _refine(klein_pipe, plan, speed = "unknown") is plan
+    assert _refine(klein_pipe, plan, family = "sdxl") is plan
+    balanced = _flat_plan(12758, mode = "balanced")
+    assert _refine(klein_pipe, balanced) is balanced
+
+
+def test_bigger_dense_dit_untouched(klein_pipe, monkeypatch):
+    monkeypatch.setattr(
+        dm,
+        "_loaded_component_mib",
+        lambda pipe: {**KLEIN_LOADED, "transformer": (17300, "dit")},
+    )
+    plan = _flat_plan(12758)
+    assert _refine(klein_pipe, plan) is plan
+
+
+@pytest.mark.parametrize("budget", list(range(3000, 30001, 250)))
+def test_every_budget_fits_measured_need(klein_pipe, budget):
+    """Only resident room is ever added, and kept bytes + measured peak x margin + base overhead fit the budget."""
+    plan = _flat_plan(budget, max(8188, budget + 2400))
+    new = _refine(klein_pipe, plan)
+    if new is plan:
+        return
+    assert (new.offload_policy, new.stream_transformer, new.stream_text_encoders) == (
+        plan.offload_policy,
+        plan.stream_transformer,
+        plan.stream_text_encoders,
+    )
+    kept = (
+        160
+        + (7393 if not new.stream_transformer else int(new.resident_transformer_mib or 0))
+        + int(new.resident_text_encoder_mib or 0)
+        + (0 if new.stream_text_encoders else 7673)
+    )
+    assert int(new.resident_transformer_mib or 0) <= 7393
+    assert kept + KLEIN_HEADROOM + dm.DEFAULT_BASE_OVERHEAD_MIB <= budget
+
+
+def test_dense_dit_never_takes_the_whole_resident_tier(klein_pipe):
+    """The whole-resident tier's slack was measured on the int8 route; a dense DiT keeps the partial room."""
+    new = _refine(klein_pipe, _flat_plan(11000, 13400))
+    assert "resident_dit_slack_mib" not in new.estimates
+    assert "encode_resident_transformer_mib" not in new.estimates
+    assert int(new.resident_transformer_mib or 0) < 7393
+
+
+def test_dense_request_extra_releases_for_oversized(monkeypatch):
+    for name in ENVS:
+        monkeypatch.delenv(name, raising = False)
+    pipe = types.SimpleNamespace(
+        _unsloth_measured_reserve = (KLEIN_HEADROOM, "flux.2-klein", "off", 7393)
+    )
+    assert dm.measured_request_extra_mib(pipe, width = 1024, height = 1024) == 0
+    assert dm.measured_request_extra_mib(pipe, width = 2048, height = 2048) == 11520 - KLEIN_HEADROOM
+    assert dm.measured_request_extra_mib(pipe, width = 1024, height = 1024, batch_size = 2) > 0
+    q21 = types.SimpleNamespace(_unsloth_measured_reserve = (2304, "qwen-image-2.1", "default"))
+    assert dm.measured_request_extra_mib(q21, width = 2048, height = 2048) == 8704 - 2304
+
+
+def test_gguf_denoiser_keeps_the_flat_plan(klein_pipe):
+    import torch
+
+    class GGUFParameter(torch.nn.Parameter):
+        pass
+
+    dit = torch.nn.Linear(4, 4)
+    dit.weight = GGUFParameter(dit.weight.data, requires_grad = False)
+    klein_pipe.transformer = types.SimpleNamespace(dtype = torch.float16, parameters = dit.parameters)
+    # GGUF dequantizes a whole Linear per forward: a transient the dense table never measured.
+    plan = _flat_plan(12758)
+    assert _refine(klein_pipe, plan) is plan
+
+
+def test_small_host_int8_denoiser_keeps_the_flat_plan(klein_pipe):
+    import torch
+
+    import core.inference.diffusion_small_host as sh
+
+    dit = torch.nn.Sequential(torch.nn.Linear(2048, 2048)).to(torch.bfloat16)
+    sh.quantize_int8_weight_(dit, compute_dtype = torch.float16, work_device = "cpu")
+    klein_pipe.transformer = types.SimpleNamespace(dtype = torch.float16, parameters = dit.parameters)
+    plan = _flat_plan(12758)
+    assert _refine(klein_pipe, plan) is plan
+
+
+KLEIN_SMALL_HOST_LOADED = {
+    "transformer": (3700, "dit"),
+    "text_encoder": (5940, "text_encoder"),
+    "vae": (160, "other"),
+}
+KLEIN_SMALL_HOST_HEADROOM = 3328  # 2805 x 1.15, rounded up to 256 MiB
+SMALL_HOST_SEED_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_SMALL_HOST"
+
+
+def _small_host_int8_pipe(klein_pipe, monkeypatch):
+    import torch
+
+    import core.inference.diffusion_small_host as sh
+
+    dit = torch.nn.Sequential(torch.nn.Linear(2048, 2048)).to(torch.bfloat16)
+    sh.quantize_int8_weight_(dit, compute_dtype = torch.float16, work_device = "cpu")
+    klein_pipe.transformer = types.SimpleNamespace(dtype = torch.float16, parameters = dit.parameters)
+    sh.mark(
+        klein_pipe,
+        {
+            "components": {
+                "text_encoder": "memory-mapped, layerwise cast (6930 MiB)",
+                "transformer": "int8 weights (3694 MiB, 106 linears)",
+            }
+        },
+    )
+    monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: dict(KLEIN_SMALL_HOST_LOADED))
+    monkeypatch.delenv(SMALL_HOST_SEED_ENV, raising = False)
+    return klein_pipe
+
+
+def test_small_host_int8_klein_places_from_its_measured_seed(klein_pipe, monkeypatch):
+    pipe = _small_host_int8_pipe(klein_pipe, monkeypatch)
+    plan = _flat_plan(12758)
+    new = _refine(pipe, plan)
+    assert new is not plan
+    assert new.estimates["measured_runtime_headroom_mib"] == KLEIN_SMALL_HOST_HEADROOM
+    assert new.estimates["measured_small_host_int8"] is True
+    assert new.resident_transformer_mib == 3700
+    assert (new.resident_text_encoder_mib or 0) > 0
+    resident = 3700 + (new.resident_text_encoder_mib or 0) + 160
+    assert resident + KLEIN_SMALL_HOST_HEADROOM + dm.DEFAULT_BASE_OVERHEAD_MIB <= 12758
+
+
+KLEIN9_SMALL_HOST_LOADED = {
+    "transformer": (8664, "dit"),
+    "text_encoder": (11124, "text_encoder"),
+    "vae": (160, "other"),
+}
+
+
+def test_small_host_int8_klein9_places_from_the_shared_seed(klein_pipe, monkeypatch):
+    # unseeded on a 12.7 GB T4: 2212 of 8664 MiB resident, the rest re-read from the spill every step
+    pipe = _small_host_int8_pipe(klein_pipe, monkeypatch)
+    monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: dict(KLEIN9_SMALL_HOST_LOADED))
+    plan = _flat_plan(12758)
+    new = _refine(pipe, plan)
+    assert new is not plan
+    assert new.estimates["measured_runtime_headroom_mib"] == KLEIN_SMALL_HOST_HEADROOM
+    assert new.estimates["measured_small_host_int8"] is True
+    assert 6000 <= (new.resident_transformer_mib or 0) < 8664
+    resident = new.resident_transformer_mib + (new.resident_text_encoder_mib or 0) + 160
+    assert resident + KLEIN_SMALL_HOST_HEADROOM + dm.DEFAULT_BASE_OVERHEAD_MIB <= 12758
+
+
+def test_small_host_int8_seed_kill_switch_and_scope(klein_pipe, monkeypatch):
+    pipe = _small_host_int8_pipe(klein_pipe, monkeypatch)
+    plan = _flat_plan(12758)
+    monkeypatch.setenv(SMALL_HOST_SEED_ENV, "0")
+    assert _refine(pipe, plan) is plan
+    monkeypatch.delenv(SMALL_HOST_SEED_ENV)
+    assert _refine(pipe, plan, family = "flux.1") is plan
+    assert dm._small_host_int8_seed_mib("flux.2-klein", "default", 3700, 2) is None
+    assert dm._small_host_int8_seed_mib("flux.2-klein", "off", 8664, 2) == 2805
+    assert dm._small_host_int8_seed_mib("flux.2-klein", "off", 9000, 2) is None
+    assert dm._small_host_int8_seed_mib("flux.2-klein", "off", 3700, 4) == 5610
+    pipe._unsloth_measured_reserve = (
+        KLEIN_SMALL_HOST_HEADROOM,
+        "flux.2-klein",
+        "off",
+        3700,
+        2,
+        None,
+        None,
+        None,
+        False,
+        False,
+        False,
+        True,
+    )
+    assert dm.measured_request_extra_mib(pipe, width = 1024, height = 1024) == 0
+    assert dm.measured_request_extra_mib(pipe, width = 2048, height = 2048) > 0
+    # eager-only seed: a moved tier falls back to the flat estimate
+    setattr(pipe, dm.TIER_MOVED_ATTR, True)
+    assert dm.measured_request_extra_mib(pipe, width = 1024, height = 1024) > 0
+
+
+# ------------------------------------------------------------------- learned-only placement (bf16 / packed denoisers)
+# The dense eager table was measured on fp16 / fp32 unpacked weights, so a bf16 denoiser (every Ampere+ card) and a
+# GGUF / int8 packed one used to return before the learned-peak lookup: their renders recorded peaks no load ever read.
+# They now place from the learned peak alone (no static seed); without one the flat plan stands.
+
+
+@pytest.fixture
+def learned_store(tmp_path, monkeypatch):
+    import core.inference.diffusion_measured_peaks as mp
+
+    monkeypatch.setenv(mp.LEARNED_PEAKS_FILE_ENV, str(tmp_path / "peaks.json"))
+    monkeypatch.delenv(mp.LEARNED_PEAKS_ENV, raising = False)
+    mp._cache.update(path = None, mtime = None, data = None)
+    monkeypatch.setattr(mp, "current_device_name", lambda: "NVIDIA L4", raising = False)
+    return mp
+
+
+def _gguf_dit():
+    import torch
+
+    class GGUFParameter(torch.nn.Parameter):
+        pass
+
+    dit = torch.nn.Linear(4, 4)
+    dit.weight = GGUFParameter(dit.weight.data, requires_grad = False)
+    return dit
+
+
+@pytest.mark.parametrize("build", ["bf16", "gguf"])
+def test_unseeded_dense_denoiser_places_from_its_learned_peak(
+    klein_pipe, learned_store, monkeypatch, build
+):
+    import torch
+
+    label = "dense:bfloat16" if build == "bf16" else "gguf"
+    monkeypatch.setattr(dm, "denoiser_quant_label", lambda pipe: label)
+    if build == "bf16":
+        klein_pipe.transformer = types.SimpleNamespace(dtype = torch.bfloat16)
+    else:
+        klein_pipe.transformer = types.SimpleNamespace(
+            dtype = torch.float16, parameters = _gguf_dit().parameters
+        )
+    plan = _flat_plan(12758)
+    # nothing learned yet: the flat plan (no fp16 table seed for a build it never measured)
+    assert _refine(klein_pipe, plan) is plan
+    learned_store.record(
+        family = "flux.2-klein", quant = label, speed_mode = "off", width = 1024, height = 1024, peak_mib = 2000
+    )
+    new = _refine(klein_pipe, plan)
+    assert new is not plan
+    # 2000 x 1.15 = 2300 -> 2304 (the learned peak alone, not the 3072 fp16 table seed)
+    assert new.estimates["measured_runtime_headroom_mib"] == 2304
+    assert new.estimates["measured_static_seed"] is False
+    assert new.resident_transformer_mib and new.resident_transformer_mib > 0
+    # every kill switch still restores the flat plan
+    for env in ("UNSLOTH_DIFFUSION_LEARNED_PEAKS", *ENVS):
+        monkeypatch.setenv(env, "0")
+        assert _refine(klein_pipe, plan) is plan, env
+        monkeypatch.delenv(env)
+
+
+def test_fp16_dense_keeps_its_static_seed_over_a_lower_learned_peak(
+    klein_pipe, learned_store, monkeypatch
+):
+    monkeypatch.setattr(dm, "denoiser_quant_label", lambda pipe: "dense:float16")
+    learned_store.record(
+        family = "flux.2-klein",
+        quant = "dense:float16",
+        speed_mode = "off",
+        width = 1024,
+        height = 1024,
+        peak_mib = 1000,
+    )
+    new = _refine(klein_pipe, _flat_plan(12758))
+    # learned only raises a seed: the fp16 table's 3072 stands
+    assert new.estimates["measured_runtime_headroom_mib"] == KLEIN_HEADROOM
+    assert new.estimates["measured_static_seed"] is True
+
+
+def test_request_guard_of_a_learned_only_load_never_reads_the_fp16_table(learned_store):
+    # a bf16 klein load placed from a 1000 MiB learned peak (1000 x 1.15 -> 1280 reserved)
+    pipe = types.SimpleNamespace(
+        _unsloth_peak_identity = ("flux.2-klein", "dense:bfloat16", "off"),
+        _unsloth_measured_reserve = (
+            1280,
+            "flux.2-klein",
+            "off",
+            7393,
+            None,
+            1000,
+            1024 * 1024,
+            False,
+            False,
+        ),
+    )
+    assert dm.measured_request_extra_mib(pipe, width = 1024, height = 1024) == 0
+    # 4 MP: the learned peak scales linearly (4 x 1000 x 1.15 = 4600 -> 4608)
+    assert dm.measured_request_extra_mib(pipe, width = 2048, height = 2048) == 4608 - 1280
+    # an older 8-field reserve keeps reading the static table as before
+    old = types.SimpleNamespace(
+        _unsloth_peak_identity = ("flux.2-klein", "dense:float16", "off"),
+        _unsloth_measured_reserve = (KLEIN_HEADROOM, "flux.2-klein", "off", 7393, 2),
+    )
+    assert dm.measured_request_extra_mib(old, width = 1024, height = 1024) == 0
+
+
+def test_load_stores_the_static_seed_flag_in_the_reserve():
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
+        encoding = "utf-8"
+    )
+    assert 'plan.estimates.get("measured_static_seed", True),' in src

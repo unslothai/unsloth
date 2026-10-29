@@ -2,33 +2,38 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { TranslationKey } from "@/i18n";
+import type { HubSource } from "@/lib/hf-endpoint";
 import type { SettingsTab } from "./stores/settings-dialog-store";
 
-/**
- * Searchable entries per tab: the label/title keys rendered by each tab.
- * Tab names themselves always match, so tabs without translatable rows
- * (profile, connections) are still reachable from search.
- */
+/** Tab names always match, so tabs without translatable rows stay reachable. */
 export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
-  accounts: ["settings.accounts.title", "settings.accounts.create"],
+  accounts: [
+    "settings.accounts.title",
+    "settings.accounts.create",
+    "settings.general.managedProviderUrls.sectionTitle",
+    "settings.general.managedProviderUrls.enableLabel",
+  ],
   general: [
     "settings.general.account",
     "settings.general.password",
     "settings.general.huggingFaceToken",
     "settings.appearance.language.title",
     "settings.appearance.language.label",
+    "settings.appearance.language.spellCheck",
     "settings.general.notifications.sectionTitle",
-    "settings.general.notifications.showLlamaUpdates",
-    "settings.general.notifications.showWhisperUpdates",
+    "settings.general.notifications.showLoadedModels",
+    "settings.general.notifications.updateReminders",
     "settings.general.previewSharing.sectionTitle",
     "settings.general.previewSharing.enableLabel",
     "settings.general.previewSharing.revokeLabel",
-    "settings.general.managedProviderUrls.sectionTitle",
-    "settings.general.managedProviderUrls.enableLabel",
     "settings.general.rag.sectionTitle",
     "settings.general.rag.embeddingModel",
     "settings.general.helperLlm.sectionTitle",
     "settings.general.helperLlm.preloadOnStartup",
+    "settings.general.hub.sectionTitle",
+    "settings.general.hub.source",
+    "settings.general.hub.endpoint",
+    "settings.general.hub.datasetsServer",
     "settings.general.downloads.sectionTitle",
     "settings.general.downloads.transport",
     "settings.general.downloads.https",
@@ -44,9 +49,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.profile.description",
     "settings.profile.displayName",
     "settings.profile.nickname",
-    // avatarShape lives inside the avatar edit popover, so it has no always-rendered label for
-    // search to scroll to. The stats heading and highlight tiles render for every profile; the
-    // insight and training cards are conditional, so they stay out.
+    // Only always-rendered labels: the avatarShape popover and conditional cards have no anchor.
     "settings.profile.stats.title",
     "settings.profile.stats.lifetimeTokens",
     "settings.profile.stats.peakTokens",
@@ -57,6 +60,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
   appearance: [
     "settings.appearance.theme.label",
     "settings.appearance.palette.label",
+    "settings.appearance.trickOrTreat.label",
     "settings.appearance.custom.colors.accent",
     "settings.appearance.custom.colors.background",
     "settings.appearance.custom.colors.foreground",
@@ -64,11 +68,13 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.appearance.custom.headingFont.label",
     "settings.appearance.custom.chatFont.label",
     "settings.appearance.custom.chatWidth.label",
+    "settings.appearance.custom.sentAttachments.label",
     "settings.appearance.custom.codeFont.label",
     "settings.appearance.custom.contrast.label",
     "settings.appearance.custom.pointerCursors.label",
     "settings.appearance.custom.reduceMotion.label",
     "settings.appearance.custom.uiFontSize.label",
+    "settings.appearance.custom.interfaceScale.label",
     "settings.appearance.custom.codeFontSize.label",
     "settings.appearance.custom.fontSmoothing.label",
     "settings.appearance.layout.compactSidebar",
@@ -86,6 +92,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.resources.modelMemory.title",
     "settings.resources.modelMemory.keepResident",
     "settings.resources.modelMemory.noRamReserve",
+    "settings.resources.modelMemory.multiModel",
+    "settings.general.modelAutoSwitch.mediaIdleUnload",
     "settings.resources.storage.title",
     "settings.resources.storage.modelsFolder",
     "settings.resources.storage.futureDownloads",
@@ -97,6 +105,9 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.resources.environment.torch",
     "settings.resources.environment.transformers",
     "settings.resources.liveUpdates",
+    "settings.about.engines.title",
+    "settings.general.developerMode.sectionTitle",
+    "settings.general.developerMode.videoCpu",
   ],
   chat: [
     "settings.general.chatDefaults",
@@ -106,27 +117,95 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "composerSettings.showContext",
     "settings.chat.pastedTextThreshold",
     "settings.chat.groups.conversations.title",
+    "settings.chat.library.label",
     "settings.chat.groups.display.title",
     "settings.chat.modelSelection.title",
+    "settings.chat.modelSelection.fitOnDeviceOnly",
     "settings.chat.currentDate.label",
+    "settings.chat.memory.title",
+    "settings.chat.memory.enable",
     "settings.general.autoTitleNewChats",
     "settings.chat.projectAttachments",
     "settings.chat.rememberParamsPerModel",
     "settings.chat.autoCompact",
+    "settings.chat.keepRunningWhenTabClosed",
+    "settings.chat.toolResultLimit",
+    "settings.chat.firstTokenLabel",
+    "settings.chat.autoScroll",
+    "settings.chat.replyNotification",
     "settings.profile.greetingSloth",
+    "settings.chat.composerAtBottom",
     "settings.chat.thinking.visibility",
     "settings.chat.tools.visibility",
     "settings.chat.tools.foldIntoThinking",
+    "settings.chat.webSearch.images",
+    "settings.chat.inlineEditResponse",
+    "settings.chat.showReplyTimes",
+    "settings.chat.showGenerationDetails",
+    "settings.chat.groups.menu.title",
+  ],
+  browser: [
+    "browser.agentSettings.title",
+    "browser.agentSettings.enable",
+    "browser.agentSettings.history",
+    "browser.agentSettings.scripts",
+    "browser.agentSettings.cursor",
+    "browser.agentSettings.permissionsTitle",
+    "browser.linksTitle",
+    "browser.openLinksSetting",
+    "browser.openFilesSetting",
     "settings.chat.artifacts.title",
     "settings.chat.artifacts.collapseHtmlBlocks",
     "settings.chat.artifacts.allowNetworkAccess",
-    "settings.chat.webSearch.images",
-    "settings.chat.modelDisclaimer",
-    "settings.chat.projectsSection",
-    "settings.chat.groups.menu.title",
+    "browser.tabsTitle",
+    "browser.switchToNewTabsSetting",
+    "browser.defaultZoomSetting",
+    "browser.addressBarTitle",
+    "browser.searchEngineSetting",
+    "browser.showFullUrlSetting",
+    "browser.newTabPageTitle",
+    "browser.showSuggestedSetting",
+    "browser.showRecentsSetting",
+    "browser.hiddenSuggestionsSetting",
+    "browser.bookmarksTitle",
+    "browser.bookmarksToolbarSetting",
+    "browser.bookmarks.showEditor",
+    "browser.importBookmarksSetting",
+    "browser.downloadsTitle",
+    "browser.askWhereToSaveSetting",
+    "browser.askBeforeDownloadingSetting",
+    "browser.downloadSitesSetting",
+    "browser.saveDownloadHistorySetting",
+    "browser.browsingDataTitle",
+    "browser.saveHistorySetting",
+    "browser.historyRetentionSetting",
+    "browser.historySetting",
+    "browser.downloadsSetting",
+    "browser.clearDataSetting",
+    "browser.annotationsTitle",
+    "browser.annotationScreenshotsSetting",
   ],
-  // Chat data management moved to the Data tab; keep these rows findable there.
+  library: [
+    "settings.library.storageSection",
+    "settings.library.locationsSection",
+    "settings.library.cardSize",
+    "settings.library.imageLayout",
+    "settings.library.showCardDates",
+    "settings.library.imageInfoStamp",
+    "settings.library.startTab",
+    "settings.library.sort",
+    "settings.library.suggestedLimit",
+    "settings.library.tabsSection",
+    "settings.library.contentSection",
+    "settings.library.showChatAttachments",
+    "settings.library.showChatToolFiles",
+    "settings.library.showGeneratedMedia",
+    "settings.library.categoryFineTunes",
+    "settings.library.confirmDelete",
+    "settings.library.reset",
+  ],
   data: [
+    "settings.data.manageFiles.label",
     "settings.data.fineTuneExport",
     "settings.data.archivedChats",
     "settings.data.archiveAllChats",
@@ -138,6 +217,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.data.archivedVideos",
     "settings.data.archivedAudio",
     "settings.data.uploadedFiles",
+    "settings.library.dataStorage",
     "settings.chat.exportHistory",
     "settings.chat.exportConversations",
     "settings.chat.importChats",
@@ -147,20 +227,22 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.apiKeys.title",
     "settings.apiKeys.description",
     "settings.apiKeys.accessTokens",
+    "settings.apiKeys.audioApi.title",
+    "settings.apiKeys.decisionApi.title",
+    "settings.apiKeys.mcp.title",
+    "settings.general.modelAutoSwitch.keepKv",
   ],
-  // The two cards label themselves in English in every locale, so keys naming them
-  // would never match their own anchor. The header carries both entries instead.
+  // the English card labels cannot match localized keys, so the header carries both entries.
   "remote-lan": ["settings.remoteLan.title", "settings.remoteLan.description"],
   agents: [
-    // Every key needs a rendered data-settings-label, or a hit has nothing to scroll to.
+    // every key needs a rendered data-settings-label as its scroll target.
     "settings.agents.title",
     "settings.agents.description",
     "settings.agents.intro",
     "settings.agents.agent",
     "settings.agents.model",
     "settings.agents.quantization",
-    // subagent.title is deliberately absent: its label only mounts for the agents
-    // that support subagents, so a hit would have nothing to scroll to otherwise.
+    // subagent.title has no stable scroll target because its label mounts conditionally.
     "settings.agents.options.title",
     "settings.agents.remote.title",
     "settings.agents.passthrough.title",
@@ -175,6 +257,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.voice.recents.sectionTitle",
     "settings.voice.readAloud.sectionTitle",
     "settings.voice.readAloud.buttonLabel",
+    "settings.voice.readAloud.autoLabel",
     "settings.voice.readAloud.engineLabel",
     "settings.voice.readAloud.voiceLabel",
     "settings.voice.readAloud.speedLabel",
@@ -183,8 +266,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.voice.readAloud.previewLabel",
   ],
   "keyboard-shortcuts": [
-    // The tab title and every action label, so searching "sidebar" or
-    // "new chat" from the settings search lands on the row itself.
     "settings.keyboardShortcuts.title",
     "settings.keyboardShortcuts.actions.newChat.label",
     "settings.keyboardShortcuts.actions.newTemporaryChat.label",
@@ -216,6 +297,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.keyboardShortcuts.actions.switchToAudio.label",
     "settings.keyboardShortcuts.actions.switchToExport.label",
     "settings.keyboardShortcuts.actions.findInPage.label",
+    "settings.keyboardShortcuts.actions.newBrowserTab.label",
+    "settings.keyboardShortcuts.actions.toggleBrowserFullView.label",
     "settings.keyboardShortcuts.actions.toggleApiMonitor.label",
     "settings.keyboardShortcuts.actions.toggleSidebar.label",
     "settings.keyboardShortcuts.actions.openMcpServers.label",
@@ -225,6 +308,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.keyboardShortcuts.actions.approveToolRequest.label",
     "settings.keyboardShortcuts.actions.declineToolRequest.label",
     "settings.keyboardShortcuts.actions.attachFiles.label",
+    "settings.keyboardShortcuts.actions.openComposerMenu.label",
     "settings.keyboardShortcuts.actions.cycleReasoningEffort.label",
     "settings.keyboardShortcuts.actions.decreaseReasoningEffort.label",
     "settings.keyboardShortcuts.actions.increaseReasoningEffort.label",
@@ -234,13 +318,23 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.keyboardShortcuts.actions.sendMessage.label",
     "settings.keyboardShortcuts.actions.queueMessage.label",
     "settings.keyboardShortcuts.actions.steerMessage.label",
-    "settings.keyboardShortcuts.actions.toggleFastMode.label",
+    "settings.keyboardShortcuts.actions.stopGeneration.label",
     "settings.keyboardShortcuts.actions.copyChatAsMarkdown.label",
     "settings.keyboardShortcuts.actions.copySessionId.label",
     "settings.keyboardShortcuts.actions.forkChat.label",
+    "settings.keyboardShortcuts.actions.openCommandPalette.label",
     "settings.keyboardShortcuts.actions.searchChats.label",
     "settings.keyboardShortcuts.actions.renameChat.label",
     "settings.keyboardShortcuts.actions.openKeyboardShortcuts.label",
+  ],
+  // The Windows rows render only on Windows, so they are not indexed.
+  sandbox: [
+    "settings.general.permissions.sectionTitle",
+    "settings.sandbox.levelLabel",
+    "settings.sandbox.levelRowLabel",
+    "settings.sandbox.toolsSection",
+    "settings.sandbox.python",
+    "settings.sandbox.terminal",
   ],
   debugging: [
     "settings.debugging.logSection",
@@ -265,9 +359,11 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
 export function createSettingsSearchIndex({
   desktop,
   closeToTray,
+  menuBarIcon,
 }: {
   desktop: boolean;
   closeToTray: boolean;
+  menuBarIcon: boolean;
 }): Record<SettingsTab, TranslationKey[]> {
   if (!desktop) {
     return SETTINGS_SEARCH_INDEX;
@@ -280,48 +376,99 @@ export function createSettingsSearchIndex({
       "settings.general.startup.sectionTitle",
       "settings.general.startup.launchAtLogin",
       ...(closeToTray ? (["settings.general.startup.closeToTray"] as const) : []),
+      ...(menuBarIcon ? (["settings.general.startup.menuBarIcon"] as const) : []),
       // Desktop only, like the row itself: DesktopRepairControl renders nothing without a
       // Tauri repair controller, so indexing it on the web build would scroll to a row
       // that is not there. Worth indexing at all because the capability message for a host
       // whose PyTorch cannot use its GPUs says to "use Repair installation in Settings",
       // and searching Settings for "repair" answered "No settings found."
       "settings.general.repairInstall.label",
+      "settings.general.fullInstall.label",
     ],
-    appearance: [
-      ...SETTINGS_SEARCH_INDEX.appearance,
-      "settings.appearance.custom.interfaceScale.label",
-    ],
+    browser: [...SETTINGS_SEARCH_INDEX.browser, "browser.downloadLocationSetting"],
     about: SETTINGS_SEARCH_INDEX.about.filter(
       (key) => key !== "settings.about.updates",
     ),
   };
 }
 
-/**
- * Extra terms a row matches on, beyond its own label. The value is a
- * translation key holding space-separated synonyms; it is never rendered.
- * Search matched labels only, so "models folder" or "directory" found nothing.
- */
+const HUGGING_FACE_ONLY_ENTRIES: ReadonlySet<TranslationKey> = new Set([
+  "settings.general.hub.endpoint",
+  "settings.general.hub.datasetsServer",
+]);
+
+const FULL_INSTALL_ENTRY: TranslationKey = "settings.general.fullInstall.label";
+
+// owner-only rows on tabs visible to every account.
+const OWNER_ONLY_ENTRIES: ReadonlySet<TranslationKey> = new Set([
+  "settings.sandbox.toolsSection",
+  "settings.sandbox.python",
+  "settings.sandbox.terminal",
+  "settings.apiKeys.mcp.title",
+  "settings.general.modelAutoSwitch.keepKv",
+  "settings.chat.toolResultLimit",
+  "settings.chat.firstTokenLabel",
+]);
+
+export function renderedSearchEntries(
+  index: Record<SettingsTab, TranslationKey[]>,
+  tab: SettingsTab,
+  hubSource: HubSource,
+  isOwner = true,
+  canUpgradeToFullInstall = false,
+): TranslationKey[] {
+  return index[tab].filter(
+    (key) =>
+      !(hubSource === "modelscope" && HUGGING_FACE_ONLY_ENTRIES.has(key)) &&
+      (isOwner || !OWNER_ONLY_ENTRIES.has(key)) &&
+      (canUpgradeToFullInstall || key !== FULL_INSTALL_ENTRY),
+  );
+}
+
+/** Value is a translation key of space-separated synonyms; it is never rendered. */
 export const SETTINGS_SEARCH_KEYWORDS: Partial<
   Record<TranslationKey, TranslationKey>
 > = {
   "settings.resources.storage.modelsFolder":
     "settings.resources.storage.modelsFolderKeywords",
+  "settings.sandbox.toolsSection": "settings.sandbox.setupKeywords",
+  // A Chat only user searches for what is missing ("train", "pytorch", "video"), not "Install type".
+  "settings.general.fullInstall.label": "settings.general.fullInstall.keywords",
   // "purge", "prune" and the tool names are in none of the labels, so the row
   // the feature is named after was unreachable by search.
   "settings.resources.storage.caches.label":
     "settings.resources.storage.caches.keywords",
-  // mlock, vram, ulimit and pin are in none of these labels, so search
-  // missed the rows the feature is named after.
+  // match mlock, vram, ulimit, and pin even though the labels omit them.
   "settings.resources.modelMemory.title":
     "settings.resources.modelMemory.modelMemoryKeywords",
   "settings.resources.modelMemory.keepResident":
     "settings.resources.modelMemory.modelMemoryKeywords",
   "settings.resources.modelMemory.noRamReserve":
     "settings.resources.modelMemory.modelMemoryKeywords",
+  // match swap, fit, evict and the model kinds the multi-model labels omit.
+  "settings.resources.modelMemory.multiModel":
+    "settings.resources.modelMemory.multiModelKeywords",
+  "settings.general.modelAutoSwitch.mediaIdleUnload":
+    "settings.resources.modelMemory.mediaIdleUnloadKeywords",
+  "settings.general.modelAutoSwitch.keepKv":
+    "settings.general.modelAutoSwitch.keepKvKeywords",
+  "settings.chat.memory.title": "settings.chat.memory.keywords",
+  "settings.chat.memory.enable": "settings.chat.memory.keywords",
   "settings.chat.autoCompact": "settings.chat.autoCompactKeywords",
-  // These rows are labelled with what they are, so the verbs people search for live here.
+  "settings.chat.keepRunningWhenTabClosed":
+    "settings.chat.keepRunningWhenTabClosedKeywords",
+  "settings.chat.firstTokenLabel": "settings.chat.firstTokenKeywords",
+  "settings.chat.toolResultLimit": "settings.chat.toolResultLimitKeywords",
+  // match action verbs omitted from these descriptive labels.
   "settings.chat.thinking.visibility": "settings.chat.visibilityKeywords",
   "settings.chat.tools.visibility": "settings.chat.visibilityKeywords",
   "settings.chat.tools.foldIntoThinking": "settings.chat.visibilityKeywords",
+  "settings.chat.autoScroll": "settings.chat.autoScrollKeywords",
+  "settings.chat.replyNotification": "settings.chat.replyNotificationKeywords",
+  "settings.chat.showReplyTimes": "settings.chat.showReplyTimesKeywords",
+  "settings.chat.showGenerationDetails": "settings.chat.showGenerationDetailsKeywords",
+  // match protocol and agent names omitted from the title.
+  "settings.apiKeys.mcp.title": "settings.apiKeys.mcp.keywords",
+  // the intro names only some agents; every listed one has to find this page.
+  "settings.agents.agent": "settings.agents.agentKeywords",
 };

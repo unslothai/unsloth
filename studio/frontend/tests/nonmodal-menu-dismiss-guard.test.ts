@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Verify that every explicit non-modal menu is guarded or documented as exempt.
-
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
@@ -14,7 +12,6 @@ const SRC = fileURLToPath(new URL("../src/", import.meta.url));
 const TAG_NAME = /^<([A-Za-z0-9_.]+)/;
 const GUARD = /<MenuDismissGuard\b(?=[^>]*\btriggerRef=\{)[^>]*\/>/;
 
-/** Explicit non-modal menus that intentionally remain unguarded. */
 const UNGUARDED = new Map<string, string>([
   [
     "components/app-sidebar.tsx <DropdownMenu>",
@@ -23,9 +20,14 @@ const UNGUARDED = new Map<string, string>([
       "heading for. A press pins it open too, and that path could take one, but the flyout has " +
       "been non-modal since #6763 rather than since #8992, so it is a defect of its own.",
   ],
+  [
+    "features/browser/browser-toggle.tsx <DropdownMenu>",
+    "the chat header's new tab menu opens on POINTER ENTER and closes 200ms after the pointer " +
+      "leaves, so a swallow would eat the click the pointer was heading for. A press on its " +
+      "button opens a tab rather than the menu, so no press ever opens it.",
+  ],
 ]);
 
-/** Find all TSX sources. */
 function sources(dir: string, found: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
     const full = path.join(dir, entry);
@@ -38,7 +40,6 @@ function sources(dir: string, found: string[] = []): string[] {
   return found;
 }
 
-/** Find an opening tag with an exact name. */
 function openingTagAt(source: string, tag: string, from: number): number {
   let at = source.indexOf(`<${tag}`, from);
   while (at !== -1) {
@@ -49,7 +50,6 @@ function openingTagAt(source: string, tag: string, from: number): number {
   return -1;
 }
 
-/** Return the element carrying `modal={false}`. */
 function element(source: string, at: number): { tag: string; body: string } {
   const open = source.lastIndexOf("<", at);
   if (open === -1) {
@@ -81,11 +81,9 @@ function element(source: string, at: number): { tag: string; body: string } {
   throw new Error(`unbalanced <${tag}> around the menu at offset ${at}`);
 }
 
-/** Normalize separators for stable exemption keys. */
 const relativeId = (file: string): string =>
   path.relative(SRC, file).split(path.sep).join("/");
 
-/** Collect each explicit non-modal menu and its body. */
 function nonModalMenus(): { id: string; body: string }[] {
   const menus: { id: string; body: string }[] = [];
   for (const file of sources(SRC)) {
@@ -128,7 +126,6 @@ test("the exception list does not outlive the menus it excuses", () => {
 });
 
 test("the element scan does not confuse a tag with one that merely starts the same", () => {
-  // Exact tag matching prevents trigger prefixes from unbalancing the scan.
   const source = [
     "<DropdownMenu modal={false}>",
     "  <DropdownMenuTrigger />",
@@ -144,7 +141,6 @@ test("the element scan does not confuse a tag with one that merely starts the sa
 });
 
 test("menu ids are separator-independent", () => {
-  // Normalize Windows paths before matching exemptions.
   for (const { id } of nonModalMenus()) {
     assert.ok(!id.includes("\\"), `${id} carries a host separator`);
   }

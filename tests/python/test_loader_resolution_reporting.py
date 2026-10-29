@@ -28,8 +28,6 @@ def test_reports_actual_repo_after_mapping_and_capability_normalization(cls, exa
     start = next(
         i for i, n in enumerate(function.body) if ast.unparse(n) == "old_model_name = model_name"
     )
-    # Stop before provider downloads/config probes. This executes the production
-    # mapping and reporting statements, not a second implementation of the mapper.
     end = next(
         i
         for i in range(start, len(function.body))
@@ -54,9 +52,11 @@ def test_reports_actual_repo_after_mapping_and_capability_normalization(cls, exa
         get_model_name = mapper,
         ALLOW_PREQUANTIZED_MODELS = prequant,
         _strip_unsloth_bnb_4bit_suffix = lambda name: name.removesuffix("-unsloth-bnb-4bit"),
+        _prefer_legacy_lowercase_cache = lambda name, *a: name,
         on_model_resolved = reports.append,
         os = os,
         kwargs = {},
+        revision = None,
         quantization_config = None,
     )
     module = ast.Module(body = function.body[start:end], type_ignores = [])
@@ -79,8 +79,6 @@ def test_adapter_base_resolution_updates_report_before_base_config_load(cls):
     block = next(
         n for n in function.body if isinstance(n, ast.If) and ast.unparse(n.test) == "is_peft"
     )
-    # The first three statements select, map and normalize the adapter's base.
-    # Include the notification that must follow, stopping before precision setup.
     end = next(
         i
         for i, n in enumerate(block.body)
@@ -96,7 +94,9 @@ def test_adapter_base_resolution_updates_report_before_base_config_load(cls):
         trust_remote_code = False,
         ALLOW_PREQUANTIZED_MODELS = True,
         get_model_name = lambda *a, **k: "org/base-unsloth-bnb-4bit",
+        _prefer_legacy_lowercase_cache = lambda name, *a: name,
         on_model_resolved = reports.append,
+        kwargs = {},
     )
     module = ast.Module(body = block.body[:end], type_ignores = [])
     exec(compile(ast.fix_missing_locations(module), str(LOADER), "exec"), scope)
@@ -135,9 +135,45 @@ def test_training_forwards_observer_through_each_loader_and_retry():
             "self.load_model",
         )
     ]
-    assert len(calls) == 9
+    assert len(calls) == 10
     for call in calls:
         assert any(
             k.arg == "on_model_resolved" and ast.unparse(k.value) == "on_model_resolved"
             for k in call.keywords
         )
+
+
+@pytest.mark.parametrize("cls", ["FastLanguageModel", "FastModel"])
+def test_stripped_prequant_base_can_use_the_legacy_lowercase_cache(cls):
+    function = _loader(cls)
+    start = next(
+        i for i, n in enumerate(function.body) if ast.unparse(n) == "old_model_name = model_name"
+    )
+    end = next(
+        i
+        for i in range(start, len(function.body))
+        if "USE_MODELSCOPE" in ast.unparse(function.body[i])
+    )
+    reports = []
+    scope = dict(
+        model_name = "Org/Requested",
+        use_exact_model_name = False,
+        load_in_4bit = True,
+        load_in_8bit = False,
+        load_in_16bit = False,
+        load_in_fp8 = False,
+        token = None,
+        trust_remote_code = False,
+        get_model_name = lambda name, **k: "Org/Resolved-unsloth-bnb-4bit",
+        ALLOW_PREQUANTIZED_MODELS = False,
+        _strip_unsloth_bnb_4bit_suffix = lambda name: name.removesuffix("-unsloth-bnb-4bit"),
+        _prefer_legacy_lowercase_cache = lambda name, *a: name.lower(),
+        on_model_resolved = reports.append,
+        os = os,
+        kwargs = {"local_files_only": True},
+        revision = None,
+        quantization_config = None,
+    )
+    module = ast.Module(body = function.body[start:end], type_ignores = [])
+    exec(compile(ast.fix_missing_locations(module), str(LOADER), "exec"), scope)
+    assert reports == ["org/resolved"]

@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for the compiled GGUF dequant accelerator (``diffusion_gguf_compile.py``).
-
-Covers install/uninstall idempotency + exact reversibility, the kill-switch, and the
-on-by-default behaviour. Runs on CPU -- patching the module attribute is lazy
-(torch.compile only traces on the first real call).
-"""
+"""Compiled GGUF dequant accelerator: install, reversibility and kill-switch, run on CPU."""
 
 from __future__ import annotations
 
@@ -34,18 +29,14 @@ def test_compiled_dequant_install_uninstall_reversible():
 
     assert gc.install_compiled_dequant() is True
     assert gc.is_compiled_dequant_installed() is True
-    # The module attribute is now a different (compiled) callable...
     assert gguf_utils.dequantize_gguf_tensor is not orig
-    # ...idempotent: a second install is a no-op, attribute unchanged.
     patched = gguf_utils.dequantize_gguf_tensor
     assert gc.install_compiled_dequant() is True
     assert gguf_utils.dequantize_gguf_tensor is patched
 
     gc.uninstall_compiled_dequant()
     assert gc.is_compiled_dequant_installed() is False
-    # Exact original restored.
     assert gguf_utils.dequantize_gguf_tensor is orig
-    # Uninstall is idempotent.
     gc.uninstall_compiled_dequant()
     assert gguf_utils.dequantize_gguf_tensor is orig
 
@@ -59,7 +50,6 @@ def test_compiled_dequant_kill_switch(monkeypatch):
 
 
 def test_compiled_dequant_on_by_default(monkeypatch):
-    # The compiled dequant is the real win, so it is ON without any env opt-in.
     monkeypatch.delenv("UNSLOTH_DIFFUSION_GGUF_COMPILE_DEQUANT", raising = False)
     assert gc.install_compiled_dequant() is True
     assert gc.is_compiled_dequant_installed() is True
@@ -74,12 +64,96 @@ def test_uninstall_all(monkeypatch):
     assert gguf_utils.dequantize_gguf_tensor is orig
 
 
+def _inductor_error():
+    from torch._inductor.exc import InductorError
+
+    # What #9897 raised: Triton's driver build (clang-cl on hip_utils.c) failed inside inductor's codegen.
+    import subprocess
+    return InductorError(subprocess.CalledProcessError(1, ["clang-cl.exe", "hip_utils.c"]), None)
+
+
+def test_compile_failure_falls_back_to_eager():
+    calls: list = []
+
+    def compiled(t):
+        calls.append("compiled")
+        raise _inductor_error()
+
+    def eager(t):
+        calls.append("eager")
+        return t * 2
+
+    guarded = gc._guard(compiled, eager, logging.getLogger("t"))
+    x = torch.ones(3)
+    assert torch.equal(guarded(x), x * 2)
+    assert gc._compile_error.startswith("InductorError")
+    assert torch.equal(guarded(x), x * 2)
+    assert calls == ["compiled", "eager", "eager"]
+
+
+def test_the_lazy_compile_sees_the_recorded_compile_config():
+    import threading
+
+    from core.inference import diffusion_compile_config as cc
+
+    cc._reset_for_tests()
+    seen = {}
+
+    def compiled(t):
+        seen["memory_planning"] = torch._inductor.config.memory_planning
+        return t
+
+    try:
+        assert cc.set_knob("torch._inductor.config", "memory_planning", False)
+        guarded = gc._guard(compiled, lambda t: t, None)
+
+        def render():
+            # A render context still carrying the training config (torch 2.12+ keeps config writes per context).
+            torch._inductor.config.memory_planning = True
+            guarded(torch.ones(1))
+
+        worker = threading.Thread(target = render)
+        worker.start()
+        worker.join()
+        assert seen["memory_planning"] is False
+    finally:
+        cc._reset_for_tests()
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [RuntimeError("bad weight"), torch.OutOfMemoryError("CUDA out of memory")],
+    ids = ["kernel_error", "oom"],
+)
+def test_non_compile_errors_still_raise(exc):
+    def compiled(t):
+        raise exc
+
+    guarded = gc._guard(compiled, lambda t: t, None)
+    with pytest.raises(type(exc)):
+        guarded(torch.ones(1))
+
+
+def test_installed_dequant_survives_a_failing_compile(monkeypatch):
+    def failing_compile(fn, **kwargs):
+        def compiled(*a, **k):
+            raise _inductor_error()
+
+        return compiled
+
+    monkeypatch.setattr(torch, "compile", failing_compile)
+    orig = gguf_utils.dequantize_gguf_tensor
+    assert gc.install_compiled_dequant() is True
+    plain = torch.arange(4, dtype = torch.float32)
+    # A non-GGUF tensor goes through the stock function unchanged, so this compares to the original exactly.
+    assert torch.equal(gguf_utils.dequantize_gguf_tensor(plain), orig(plain))
+    assert gc.compile_error().startswith("InductorError")
+    gc.uninstall_all()
+    assert gc.compile_error() is None
+
+
 class TestGgufTrimmedDimsAreRestored:
-    """GGUF stores no leading size-1 axes, so ``nn.Parameter(torch.zeros((1, dim)))`` comes back as
-    ``(dim,)`` and diffusers' exact shape check refuses the load. Z-Image is the live case: a GGUF
-    pick with Precision = Off died with ``cap_pad_token expected shape torch.Size([1, 3840]), but
-    got torch.Size([3840])``.
-    """
+    """GGUF drops size-1 axes, so trimmed dims must be restored or diffusers refuses the shape check."""
 
     @staticmethod
     def _model():
@@ -101,7 +175,6 @@ class TestGgufTrimmedDimsAreRestored:
         sd = {"cap_pad_token": torch.arange(8, dtype = torch.float32)}
         out = _restore_gguf_trimmed_dims(model, sd)
         assert tuple(out["cap_pad_token"].shape) == (1, 8)
-        # The values must survive the reshape in order, or the pad token is silently scrambled.
         assert torch.equal(out["cap_pad_token"].flatten(), torch.arange(8, dtype = torch.float32))
 
     def test_a_tensor_of_the_wrong_size_is_left_alone(self):

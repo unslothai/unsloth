@@ -11,8 +11,9 @@
 
 from .llama import *
 import os
+from .._gc_passes import collect_garbage
 from ._utils import __version__
-from ._utils import move_to_device, per_layer_device
+from ._utils import move_to_device, per_layer_device, refresh_moved_layer_devices
 from unsloth_zoo.utils import _get_dtype, Version
 from unsloth_zoo.hf_utils import dtype_from_config
 from ..utils.packing import get_packed_info_from_kwargs
@@ -25,15 +26,17 @@ from ..utils.attention_dispatch import (
     SDPA,
 )
 from .llama import (
+    _decode_rotary_seq_len,
     LlamaRotaryEmbedding,
     LlamaLinearScalingRotaryEmbedding,
+    _gqa_decode_scores,
+    _gqa_decode_values,
     original_apply_qkv,
     original_apply_o,
 )
 from .mistral import *
 
-# Without bnb, peft stops exporting its 4bit LoRA layer too. Both names only feed isinstance checks,
-# so placeholders nothing can match are exact stand-ins.
+# Without bnb, peft lacks its Linear4bit too. Both only feed isinstance checks, so placeholders suffice.
 try:
     from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
     from peft.tuners.lora import Linear4bit as Peft_Linear4bit
@@ -103,9 +106,9 @@ def GraniteAttention_fast_forward(
 
     bsz, q_len, _ = hidden_states.size()
 
-    n_heads = self.config.num_attention_heads
+    n_heads = self.__dict__.get("_unsloth_tp_heads", self.config.num_attention_heads)
     n_groups = self.num_key_value_groups
-    n_kv_heads = self.config.num_key_value_heads
+    n_kv_heads = self.__dict__.get("_unsloth_tp_kv_heads", self.config.num_key_value_heads)
     head_dim = self.head_dim
     dropout_p = self.config.attention_dropout if self.training else 0
     assert n_kv_heads * n_groups == n_heads
@@ -132,11 +135,15 @@ def GraniteAttention_fast_forward(
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
         V = torch.cat([past_key_value[1], V], dim = 2)
+    # Incoming cache; past_key_value is reassigned below (eval keeps use_cache on).
+    had_cache = past_key_value is not None
     past_key_value = (K, V) if use_cache else None
 
-    use_varlen = attention_mask is None and seq_info is not None and past_key_value is None
+    use_varlen = attention_mask is None and seq_info is not None and not had_cache
 
-    backend = SDPA if attention_mask is not None else select_attention_backend(use_varlen)
+    backend = (
+        SDPA if attention_mask is not None else select_attention_backend(use_varlen, dropout_p)
+    )
 
     window = (kv_seq_len, kv_seq_len)
     softmax_scale = getattr(self, "scaling", None)
@@ -170,8 +177,7 @@ def GraniteAttention_fast_forward(
         },
     )
 
-    # PrefixGrouper seg table rides in **kwargs from the GRPO logprob forward; misuse (KV cache /
-    # padding mask) raises. None means the byte-identical default.
+    # PrefixGrouper seg table rides in kwargs; None is the default path, and KV cache or padding mask misuse raises
     _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
     context = AttentionContext(
         bsz = bsz,
@@ -181,6 +187,7 @@ def GraniteAttention_fast_forward(
         head_dim = head_dim,
         requires_grad = hidden_states.requires_grad,
         seq_info = seq_info,
+        training = self.training,
         attention_mask = attention_mask,
         causal_mask = causal_mask,
         prefix_seg_info = _pg_seg,
@@ -238,7 +245,7 @@ def GraniteDecoderLayer_fast_forward(
         hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
     else:
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
+        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states, reuse_grad = True)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states = hidden_states,
             causal_mask = causal_mask,
@@ -254,7 +261,9 @@ def GraniteDecoderLayer_fast_forward(
         hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
 
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
+        hidden_states = fast_rms_layernorm(
+            self.post_attention_layernorm, hidden_states, reuse_grad = True
+        )
         hidden_states = self.mlp(hidden_states)
         hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
 
@@ -319,7 +328,9 @@ def GraniteAttention_fast_forward_inference(
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = device)
         self.temp_O = torch.empty((bsz, 1, hidden_size), dtype = dtype, device = device)
         self.attention = torch.empty(
-            (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len), dtype = dtype, device = device
+            (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len + (-seq_len) % 8),
+            dtype = dtype,
+            device = device,
         )
 
         self.half_head_dim = head_dim // 2
@@ -370,9 +381,9 @@ def GraniteAttention_fast_forward_inference(
     Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
     Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
 
-    # Grouped query attention.
+    # Grouped query attention; bsz == 1 reads the KV heads in place below.
     _, _, cached_len, _ = Kn.shape
-    if bsz == 1 or ((not SDPA_HAS_GQA) and n_groups != 1):
+    if bsz != 1 and (not SDPA_HAS_GQA) and n_groups != 1:
         Kn = Kn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Vn = Vn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Kn = Kn.reshape(bsz, n_heads, cached_len, head_dim)
@@ -380,9 +391,9 @@ def GraniteAttention_fast_forward_inference(
 
     if bsz == 1:
         Qn *= self.scaling
-        A = torch_matmul(Qn, Kn.transpose(2, 3), out = self.attention[:, :, :, :cached_len])
+        A = _gqa_decode_scores(Qn, Kn, self.attention[:, :, :, :cached_len])
         A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)
-        A = torch_matmul(A, Vn, out = Qn)
+        A = _gqa_decode_values(A, Vn, Qn)
     else:
         if (
             attention_mask is not None
@@ -420,6 +431,7 @@ def GraniteModel_fast_forward_inference(
     past_key_values,
     position_ids,
     attention_mask = None,
+    **kwargs,
 ):
     input_ids = input_ids[:, : self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
@@ -446,16 +458,26 @@ def GraniteModel_fast_forward_inference(
     else:
         attention_mask = None
 
+    # Decode positions run past max_seq_length; the cache is only built for the rows asked for.
+    # Explicit positions can run past both: one host sync at most, here and not per layer.
+    rotary_seq_len = _decode_rotary_seq_len(self.model.rotary_emb, seq_len + q_len, position_ids)
+    if rotary_seq_len > max(self.max_seq_length, seq_len + q_len):
+        self.model.rotary_emb.extend_rope_embedding(hidden_states, rotary_seq_len + 1)
     position_embeddings = self.model.rotary_emb.get_cached(
-        self.max_seq_length, hidden_states.device.index
+        max(self.max_seq_length, seq_len + q_len, rotary_seq_len), hidden_states.device.index
     )
 
     next_decoder_cache = []
+    block_swap = getattr(self.model.layers, "_unsloth_block_swap", None)
+    refresh_moved_layer_devices(self.model.layers, block_swap)
     for idx, decoder_layer in enumerate(self.model.layers):
+        if block_swap is not None:
+            block_swap.enter(idx)
         layer_device, _ = per_layer_device(decoder_layer)
         hidden_states, position_ids = move_to_device(layer_device, hidden_states, position_ids)
 
-        residual = hidden_states
+        # fast_rms_layernorm_inference normalizes in place, so keep a copy for the residual.
+        residual = hidden_states.clone()
         hidden_states = fast_rms_layernorm_inference(decoder_layer.input_layernorm, hidden_states)
         hidden_states, present_key_value = GraniteAttention_fast_forward_inference(
             decoder_layer.self_attn,
@@ -469,12 +491,14 @@ def GraniteModel_fast_forward_inference(
 
         hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
 
-        residual = hidden_states
+        residual = hidden_states.clone()
         hidden_states = fast_rms_layernorm_inference(
             decoder_layer.post_attention_layernorm, hidden_states
         )
         hidden_states = fast_swiglu_inference(decoder_layer.mlp, hidden_states)
         hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
+        if block_swap is not None:
+            block_swap.leave(idx)
 
         next_decoder_cache.append(present_key_value)
     hidden_states = fast_rms_layernorm_inference(self.model.norm, hidden_states)
@@ -494,8 +518,7 @@ class GraniteRotaryEmbedding(LlamaRotaryEmbedding):
 
 def patched_init(original_init):
     def new_init(self, *args, **kwargs):
-        # GraniteModel_fast_forward_inference cannot reach residual_multiplier/config, so stash the whole
-        # config here to pass it around. See transformers models/granite/modeling_granite.py#L243
+        # The inference forward cannot reach config, so stash it here.
         config = kwargs.get("config", args[0] if args else None)
         if config is not None:
             self.config = config
@@ -538,8 +561,7 @@ class FastGraniteModel(FastLlamaModel):
         tokenizer,
         correct_dtype = None,
     ):
-        # Torch.compile fails on the embedding matrix; this workaround randomly fixes it for torch < 2.2,
-        # and the same is done for lm_head.
+        # torch.compile fails on the embedding matrix; this rebuild only randomly fixes it on torch < 2.2.
         model.model.embed_tokens = torch.nn.Embedding.from_pretrained(
             model.model.embed_tokens.weight
         )
@@ -562,8 +584,7 @@ class FastGraniteModel(FastLlamaModel):
             lm_head.out_features = lm_head.weight.shape[0]
             model.lm_head = lm_head
 
-        # BnB does not allocate the correct type: its default dtype is float16, so patch all dtypes. See
-        # TimDettmers/bitsandbytes#763.
+        # BnB does not allocate the correct type (its default is float16), so patch all dtypes; see bitsandbytes 763
         correct_dtype = lm_head.weight.dtype
 
         for name, module in model.named_modules():
@@ -589,9 +610,5 @@ class FastGraniteModel(FastLlamaModel):
                     module.short_cos_cached = module.short_cos_cached.to(correct_dtype)
                     module.short_sin_cached = module.short_sin_cached.to(correct_dtype)
 
-        import gc
-
-        for _ in range(3):
-            gc.collect()
-            clean_gpu_cache()
+        collect_garbage(after = clean_gpu_cache)
         return model, tokenizer

@@ -1,23 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""No test function is defined twice in one scope.
-
-Python keeps the last definition. A test that shares a name with a later one in the same
-module or class is simply overwritten before pytest ever collects it: it appears in the
-file, it is maintained, it is reviewed, and it never runs. Nothing reports this. It is
-not a failure, not a skip, and not an error -- the test is absent, and absence is what
-green looks like.
-
-Found by sweeping all 23,895 test bodies in the repo for duplicates, which turned up
-exactly one: TestParser.test_xml_param_preserves_leading_indentation in
-test_safetensors_tool_loop.py, defined at lines 120 and 156, where the first was dead.
-One in the whole tree is a good result, and it is cheap to keep it at one.
-
-Scoped to module level and class level, which is where pytest collects from. A function
-nested inside another function is not collected either way, so it is not this test's
-business.
-"""
+"""A test name defined twice at module or class level silently never runs; Python keeps the last."""
 
 import ast
 import collections
@@ -40,7 +24,7 @@ def _shadowed() -> list[str]:
             try:
                 tree = ast.parse(path.read_text(encoding = "utf-8", errors = "replace"))
             except SyntaxError:
-                continue  # a file that does not parse is a different problem, loudly
+                continue
             scopes = [("module", tree.body)]
             scopes += [(n.name, n.body) for n in tree.body if isinstance(n, ast.ClassDef)]
             for scope, body in scopes:

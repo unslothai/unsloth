@@ -129,7 +129,7 @@ function FindingCard({ finding }: { finding: RemoteCodeFinding }) {
   const fileLabel = finding.line ? `${finding.file}:${finding.line}` : finding.file;
   const snippet = finding.snippet ?? [];
   return (
-    <div className="min-w-0 overflow-hidden rounded-lg border">
+    <div className="min-w-0 overflow-hidden rounded-xl border">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b bg-muted/40 px-3 py-2">
         <Badge
           variant="outline"
@@ -161,13 +161,11 @@ function FindingCard({ finding }: { finding: RemoteCodeFinding }) {
   );
 }
 
-/** Last path segment of the model id, for display. */
 function modelDisplayName(modelName?: string): string {
   if (!modelName) return "This model";
   return modelName.split("/").pop() || modelName;
 }
 
-/** ` from "<provider>"` clause, rendered only when a provider was resolved. */
 function ProviderSuffix({ provider }: { provider: string | null }) {
   if (!provider) return null;
   return (
@@ -179,8 +177,7 @@ function ProviderSuffix({ provider }: { provider: string | null }) {
   );
 }
 
-/** App-wide consent dialog for trust_remote_code loads: shows scan findings with the
- *  flagged code in context; CRITICAL is a hard block. Mounted once in the root layout. */
+/** Consent dialog for trust_remote_code loads; CRITICAL is a hard block. Mounted once. */
 export function RemoteCodeConsentDialog() {
   const open = useRemoteCodeConsentDialogStore((s) => s.open);
   const scan = useRemoteCodeConsentDialogStore((s) => s.scan);
@@ -191,7 +188,6 @@ export function RemoteCodeConsentDialog() {
   const blocked = scan ? !scan.approvable : false;
   const findings = scan?.findings ?? [];
   const unsafeFiles = scan?.unsafeFiles ?? [];
-  // Malware (an HF-flagged unsafe serialized file) is a hard block with its own copy.
   const malware = unsafeFiles.length > 0;
 
   return (
@@ -266,7 +262,7 @@ export function RemoteCodeConsentDialog() {
                   <p className="text-xs font-medium text-muted-foreground">
                     Our automatic scanner flagged issues including:
                   </p>
-                  <div className="max-h-[14rem] min-w-0 space-y-2 overflow-y-auto pr-1">
+                  <div className="max-h-[calc(14rem*var(--ui-space-scale,1))] min-w-0 space-y-2 overflow-y-auto pr-1">
                     {unsafeFiles.map((f, i) => (
                       <UnsafeFileCard key={`${f.path}-${i}`} file={f} />
                     ))}
@@ -279,7 +275,7 @@ export function RemoteCodeConsentDialog() {
                   <p className="text-xs font-medium text-muted-foreground">
                     Our automatic scanner flagged issues including:
                   </p>
-                  <div className="max-h-[22rem] min-w-0 space-y-3 overflow-y-auto pr-1">
+                  <div className="max-h-[calc(22rem*var(--ui-space-scale,1))] min-w-0 space-y-3 overflow-y-auto pr-1">
                     {findings.map((f, i) => (
                       <FindingCard key={i} finding={f} />
                     ))}
@@ -300,7 +296,7 @@ export function RemoteCodeConsentDialog() {
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           {blocked ? null : (
-            <AlertDialogAction onClick={() => resolve(true)}>
+            <AlertDialogAction variant="dark" onClick={() => resolve(true)}>
               Enable and continue
             </AlertDialogAction>
           )}

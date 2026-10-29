@@ -23,19 +23,22 @@ import {
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 
 import { cn } from "@/lib/utils";
-import { Download01Icon, Search01Icon } from "@hugeicons/core-free-icons";
+import {
+  Bookmark02Icon,
+  Delete02Icon,
+  Download01Icon,
+  Search01Icon,
+  Cancel01Icon,
+  Edit03Icon,
+  PlusSignIcon,
+  UndoIcon,
+  Upload01Icon,
+  ViewIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
-  BookmarkIcon,
-  EyeIcon,
   LayoutListIcon,
-  PencilIcon,
   PlayIcon,
-  PlusIcon,
-  RotateCcwIcon,
-  Trash2Icon,
-  UploadIcon,
-  XIcon,
 } from "lucide-react";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { SortablePromptItems } from "./sortable-prompt-items";
@@ -69,21 +72,29 @@ import {
   savePromptList,
 } from "../api/prompts-api";
 import {
+  getStoredChatThread,
   listStoredChatMessages,
   listStoredChatThreads,
   saveStoredChatThread,
   syncStoredChatMessages,
 } from "../utils/chat-history-storage";
 import { notifyChatHistoryUpdated } from "../api/chat-api";
-import { toolResultModelText } from "../api/chat-adapter";
+import { resolveChatInstructions, toolResultModelText } from "../api/chat-adapter";
 import { toolCallReplayArguments } from "../tool-call-arguments";
+import { codexLocalToolRoundId, startsNewCodexToolRound } from "../codex-reasoning";
+import {
+  settleThreadScopedSettingsForCopy,
+  threadScopedDefault,
+} from "../stores/chat-runtime-store";
 import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
 import type { ThreadRecord, MessageRecord } from "../types";
 import {
   buildNamedConversationsMarkdown,
+  conversationExportBasename,
   createConversationMarkdownBuilder,
   createConversationMarkdownExporter,
 } from "../utils/conversation-markdown-export";
+import { csvDocument, csvEscape, CSV_MIME } from "../utils/csv-export";
 import { parseCsv } from "../utils/csv-parse";
 import {
   canMergeConversationExport,
@@ -92,10 +103,12 @@ import {
   ndjsonBody,
   type ConversationJsonlLayout,
 } from "../utils/ndjson";
+import { savedBranchHead } from "../utils/branch-head";
 import { orderByParentChain } from "../utils/message-order";
 import { liveThreadBranch } from "../utils/live-thread-head";
 import { unwrapPastedTextContent } from "../utils/pasted-text.ts";
 import {
+  CONVERSATION_MARKDOWN_MIME_TYPE,
   buildConversationMarkdown,
   contentBlocksToMarkdownBlocks,
   renderConversationBlocks,
@@ -121,11 +134,7 @@ async function downloadBlob(
   filename: string,
   mimeType: string,
 ): Promise<void> {
-  return downloadFile(content, filename, mimeType);
-}
-
-function csvEscape(val: string): string {
-  return `"${val.replace(/"/g, '""')}"`;
+  await downloadFile(content, filename, mimeType);
 }
 
 function exportPromptJsonl(entry: PromptEntry): Promise<void> {
@@ -138,9 +147,9 @@ function exportPromptJsonl(entry: PromptEntry): Promise<void> {
 
 function exportPromptCsv(entry: PromptEntry): Promise<void> {
   return downloadBlob(
-    `name,text\n${csvEscape(entry.name)},${csvEscape(entry.text)}`,
+    csvDocument(["name,text", `${csvEscape(entry.name)},${csvEscape(entry.text)}`]),
     `${sanitizeFilename(entry.name)}.csv`,
-    "text/csv",
+    CSV_MIME,
   );
 }
 
@@ -151,7 +160,7 @@ function exportAllPromptsJsonl(entries: PromptEntry[]): Promise<void> {
 
 function exportAllPromptsCsv(entries: PromptEntry[]): Promise<void> {
   const rows = entries.map((e) => `${csvEscape(e.name)},${csvEscape(e.text)}`).join("\n");
-  return downloadBlob(`name,text\n${rows}`, "prompts.csv", "text/csv");
+  return downloadBlob(csvDocument(["name,text", rows]), "prompts.csv", CSV_MIME);
 }
 
 function exportListJsonl(entry: PromptListEntry): Promise<void> {
@@ -172,9 +181,9 @@ function exportListCsv(entry: PromptListEntry): Promise<void> {
     .map((text, i) => `${csvEscape(entry.name)},${i + 1},${csvEscape(text)}`)
     .join("\n");
   return downloadBlob(
-    `list_name,order,prompt_text\n${rows}`,
+    csvDocument(["list_name,order,prompt_text", rows]),
     `${sanitizeFilename(entry.name)}.csv`,
-    "text/csv",
+    CSV_MIME,
   );
 }
 
@@ -182,7 +191,7 @@ function exportAllListsCsv(entries: PromptListEntry[]): Promise<void> {
   const rows = entries
     .flatMap((e) => e.items.map((text, i) => `${csvEscape(e.name)},${i + 1},${csvEscape(text)}`))
     .join("\n");
-  return downloadBlob(`list_name,order,prompt_text\n${rows}`, "prompt-lists.csv", "text/csv");
+  return downloadBlob(csvDocument(["list_name,order,prompt_text", rows]), "prompt-lists.csv", CSV_MIME);
 }
 
 function contentBlocksToText(content: unknown): string {
@@ -205,7 +214,7 @@ function contentBlocksToText(content: unknown): string {
           parts.push("[thinking]\n" + thinkText + "\n[/thinking]");
         }
       } else if (p.type === "tool-call") {
-        // Keep base64 image payloads and sandbox card metadata out of every export format: use the model-visible text, matching chat replay.
+        // Export model-visible text so base64 images and card metadata stay out.
         const result = toolResultModelText(
           p.result,
           typeof p.toolName === "string" ? p.toolName : undefined,
@@ -231,36 +240,81 @@ async function loadConversationMessages(
   options: {
     emptyMessage?: string;
     includeSiblings?: boolean;
+    includeInstructions?: boolean;
   } = {},
 ) {
   const {
     emptyMessage = "No messages in this conversation to export.",
     includeSiblings = true,
+    includeInstructions = true,
   } = options;
-  // Read before the storage await: switching chats meanwhile would point the lookup at another thread.
+  // read before awaiting storage so a chat switch cannot redirect the lookup
   const liveBranch = liveThreadBranch(threadId);
-  const raw = await listStoredChatMessages(threadId);
+  const [raw, instructions] = await Promise.all([
+    listStoredChatMessages(threadId),
+    includeInstructions ? chatInstructionsTurn(threadId) : [],
+  ]);
   if (raw.length === 0) {
     toast.info(emptyMessage);
     return null;
   }
-  // No parentId = legacy flat thread (already DB createdAt-sorted); walking the chain would invert order.
+  // preserve DB order for legacy flat threads because parent-chain traversal would reverse it
   const hasParentIds = raw.some((m) => (m as { parentId?: unknown }).parentId != null);
-  if (!hasParentIds) return raw;
-  // Newest saved turn of the branch on screen: a reply still generating is not stored yet, and falling back to the newest leaf would export the reply it replaces.
+  if (!hasParentIds) return [...instructions, ...raw];
+  const headId = branchHeadId(threadId, liveBranch, raw);
+  return [
+    ...instructions,
+    ...orderByParentChain(raw, { includeSiblings, headId }),
+  ] as typeof raw;
+}
+
+async function chatInstructionsTurn(threadId: string): Promise<MessageRecord[]> {
+  // pending instruction edits are absent from storage even though the next reply already uses them
+  await settleThreadScopedSettingsForCopy(threadId);
+  const thread = await getStoredChatThread(threadId);
+  if (!thread) return [];
+  const text = await resolveChatInstructions(
+    threadId,
+    thread.settings?.systemPrompt ?? threadScopedDefault("systemPrompt"),
+    thread.settings?.systemVariables ?? threadScopedDefault("systemVariables"),
+    async () => thread,
+  );
+  if (!text) return [];
+  return [
+    {
+      id: `${threadId}-instructions`,
+      threadId,
+      role: "system",
+      content: [{ type: "text", text }],
+      createdAt: thread.createdAt,
+    },
+  ];
+}
+
+// use the visible stored turn because a generating reply is absent and the newest leaf may replace it
+function branchHeadId(
+  threadId: string,
+  liveBranch: string[] | null,
+  raw: Array<{ id: string }>,
+): string | null | undefined {
+  // an empty live branch means history has not refilled after a chat switch
+  // off-screen chats export the branch that reopening them would show
+  if (!liveBranch?.length) return savedBranchHead(threadId, raw);
   const storedIds = new Set(raw.map((m) => m.id));
-  // An empty list is no opinion, not an empty branch: switching chats sets remoteId before the history load refills the view.
-  const headId = liveBranch?.length
-    ? ([...liveBranch].reverse().find((id) => storedIds.has(id)) ?? null)
-    : undefined;
-  return orderByParentChain(raw, { includeSiblings, headId }) as typeof raw;
+  return [...liveBranch].reverse().find((id) => storedIds.has(id)) ?? null;
 }
 
 function exportTs(): string {
   return new Date().toISOString().slice(0, 19).replace(/:/g, "-");
 }
 
-// Attachments live in msg.attachments[].content, not msg.content, so flatten both here or they'd be dropped on export.
+async function conversationBasename(threadId: string): Promise<string> {
+  // Best effort: the content is already loaded, so a failed name lookup must not fail the export.
+  const thread = await getStoredChatThread(threadId).catch(() => undefined);
+  return conversationExportBasename(thread, new Date());
+}
+
+// attachment content is separate from message content and must be flattened for export
 function messageToText(msg: { content: unknown; attachments?: unknown }): string {
   const parts: string[] = [];
   const main = contentBlocksToText(msg.content);
@@ -268,7 +322,6 @@ function messageToText(msg: { content: unknown; attachments?: unknown }): string
   if (Array.isArray(msg.attachments)) {
     for (const attachment of msg.attachments as Array<{ content?: unknown }>) {
       if (!attachment?.content) continue;
-      // A paste carries a wrapper the same text never had when it fitted inline, so strip it rather than exporting the marker.
       const attText = unwrapPastedTextContent(
         contentBlocksToText(attachment.content),
       );
@@ -278,7 +331,6 @@ function messageToText(msg: { content: unknown; attachments?: unknown }): string
   return parts.join("\n\n");
 }
 
-// Markdown counterpart to messageToText: same content and attachments, but each part keeps its shape so the renderer can fence tool calls and collapse thinking.
 function messageToMarkdown(msg: { content: unknown; attachments?: unknown }): string {
   const normalizeToolResult = toolResultModelText;
   const blocks = contentBlocksToMarkdownBlocks(msg.content, normalizeToolResult);
@@ -300,7 +352,7 @@ function messageToMarkdown(msg: { content: unknown; attachments?: unknown }): st
   return renderConversationBlocks(blocks);
 }
 
-// OpenAI messages array (tool-calling + multimodal fine-tuning): tool calls to "tool_calls" plus separate "role":"tool" messages; images to "image_url" parts; audio dropped; thinking kept as a text part.
+// OpenAI messages format: tool_calls + role tool, images as image_url, audio dropped.
 
 type OAIContentPart =
   | { type: "text"; text: string }
@@ -327,7 +379,6 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
     ...attachments.flatMap((a) => {
       const att = a as { content?: unknown };
       if (!Array.isArray(att.content)) return [];
-      // Attachment text only: a message body is verbatim, and the paste wrapper is not something the user wrote.
       return (att.content as Record<string, unknown>[]).map((part) =>
         part?.type === "text" && typeof part.text === "string"
           ? { ...part, text: unwrapPastedTextContent(part.text) }
@@ -337,20 +388,53 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
   ];
 
   if (role === "assistant") {
-    const textParts: string[] = [];
-    const toolCalls: OAIToolCall[] = [];
-    const toolResults: OAIMessage[] = [];
+    const out: OAIMessage[] = [];
+    let textParts: string[] = [];
+    let toolCalls: OAIToolCall[] = [];
+    let toolResults: OAIMessage[] = [];
+    let callCount = 0;
+    let roundId: number | null = null;
+
+    const flush = () => {
+      const content = textParts.join("\n\n") || null;
+      out.push(
+        toolCalls.length > 0
+          ? { role: "assistant", content, tool_calls: toolCalls }
+          : { role: "assistant", content: content ?? "" },
+        ...toolResults,
+      );
+      textParts = [];
+      toolCalls = [];
+      toolResults = [];
+      roundId = null;
+    };
+    const pushText = (text: string) => {
+      if (!text.trim()) return;
+      // A call with no result stays with its text, or tool_calls would be unanswered.
+      if (toolResults.length > 0) flush();
+      textParts.push(text);
+    };
 
     for (const p of allParts) {
       if (p.type === "text" && typeof p.text === "string") {
-        textParts.push(p.text);
+        pushText(p.text);
       } else if (p.type === "reasoning" || p.type === "thinking") {
         const t = typeof p.thinking === "string" ? p.thinking : typeof p.text === "string" ? p.text : "";
-        if (t) textParts.push(`<thinking>\n${t}\n</thinking>`);
+        if (t) pushText(`<thinking>\n${t}\n</thinking>`);
       } else if (p.type === "image" && typeof p.image === "string" && p.image) {
-        textParts.push("[image attachment]");
+        pushText("[image attachment]");
       } else if (p.type === "tool-call") {
-        const id = typeof p.toolCallId === "string" ? p.toolCallId : `call_${toolCalls.length}`;
+        const callRoundId = codexLocalToolRoundId(p.provenance);
+        // A completed local call with no round (a forced recall) is its own exchange, as in the chat adapter.
+        const ownPair =
+          callRoundId === null &&
+          (p.provenance as { source?: unknown } | undefined)?.source === "local" &&
+          p.result !== undefined &&
+          p.result !== null;
+        if (toolCalls.length > 0 && (ownPair || startsNewCodexToolRound(roundId, callRoundId))) flush();
+        if (callRoundId !== null) roundId = callRoundId;
+        const id = typeof p.toolCallId === "string" ? p.toolCallId : `call_${callCount}`;
+        callCount++;
         const name = typeof p.toolName === "string" ? p.toolName : "unknown";
         const argsStr = toolCallReplayArguments(
           typeof p.argsText === "string" ? p.argsText : undefined,
@@ -358,23 +442,17 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
         );
         toolCalls.push({ id, type: "function", function: { name, arguments: argsStr } });
         if (p.result !== undefined && p.result !== null) {
-          // Keep base64 image payloads out of exports: MCP image results carry their model-visible text alongside the data, so serialize the text instead of the full object.
           const modelText = toolResultModelText(p.result, name);
           const resultStr =
             typeof modelText === "string" ? modelText : JSON.stringify(modelText);
           toolResults.push({ role: "tool", tool_call_id: id, name, content: resultStr });
+          if (ownPair) flush();
         }
       }
     }
 
-    const content = textParts.join("\n\n") || null;
-    const assistantMsg: OAIMessage = toolCalls.length > 0
-      ? { role: "assistant", content, tool_calls: toolCalls }
-      : { role: "assistant", content: content ?? "" };
-
-    return toolResults.length > 0
-      ? [assistantMsg, ...toolResults]
-      : [assistantMsg];
+    if (out.length === 0 || textParts.length > 0 || toolCalls.length > 0) flush();
+    return out;
   }
 
   const contentParts: OAIContentPart[] = [];
@@ -414,7 +492,7 @@ export async function exportConversationShareGPT(threadId: string): Promise<void
   if (conversations.length === 0) { toast.info("No exportable content."); return; }
   await downloadBlob(
     ndjsonBody([JSON.stringify({ conversations })]),
-    "conversation-" + exportTs() + ".jsonl",
+    `${await conversationBasename(threadId)}.jsonl`,
     "application/x-ndjson",
   );
 }
@@ -443,7 +521,7 @@ async function exportConversationJsonl(
   if (oaiMsgs.length === 0) { toast.info("No exportable content."); return; }
   await downloadBlob(
     ndjsonBody([conversationJsonlBody(oaiMsgs, layout)]),
-    `conversation${layout === "messages" ? "-messages" : ""}-${exportTs()}.jsonl`,
+    `${await conversationBasename(threadId)}${layout === "messages" ? " messages" : ""}.jsonl`,
     "application/x-ndjson",
   );
 }
@@ -461,19 +539,17 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
 
   if (rows.length <= 1) { toast.info("No exportable content."); return; }
   await downloadBlob(
-    rows.join("\n"),
-    "conversation-" + exportTs() + ".csv",
-    "text/csv",
+    csvDocument(rows),
+    `${await conversationBasename(threadId)}.csv`,
+    CSV_MIME,
   );
 }
 
-// One place decides that markdown carries the branch on screen; callers keep their own empty-state wording.
 const loadDisplayedBranchMessages = (
   threadId: string,
-  options: { emptyMessage?: string } = {},
+  options: { emptyMessage?: string; includeInstructions?: boolean } = {},
 ) => loadConversationMessages(threadId, { ...options, includeSiblings: false });
 
-/** Same markdown the download produces, for the "Copy as Markdown" shortcut. */
 export const buildConversationMarkdownForThread =
   createConversationMarkdownBuilder({
     loadMessages: loadDisplayedBranchMessages,
@@ -484,11 +560,11 @@ export const exportConversationMarkdown = createConversationMarkdownExporter({
   loadMessages: loadDisplayedBranchMessages,
   renderMessage: messageToMarkdown,
   download: downloadBlob,
-  exportTimestamp: exportTs,
+  exportBasename: conversationBasename,
   notifyNoContent: () => toast.info("No exportable content."),
 });
 
-// "skipped" is an empty conversation, which has already said so and must not stop the rest of a pair; "failed" has toasted a reason, so stop there rather than stack a second one.
+// "skipped" must not stop a pair; "failed" already toasted, so stop.
 type SaveSourceOutcome = "saved" | "skipped" | "failed";
 
 async function saveConversationAsProjectSource(
@@ -498,12 +574,13 @@ async function saveConversationAsProjectSource(
 ): Promise<SaveSourceOutcome> {
   const messages = await loadDisplayedBranchMessages(threadId, {
     emptyMessage: "No messages in this conversation to save.",
+    includeInstructions: false,
   });
   if (!messages) return "skipped";
   const markdown = buildConversationMarkdown(
     messages.map((msg) => ({
       role: String(msg.role ?? ""),
-      // As the markdown exporter does: a project source is retrieved back into context, so the renderer's tokens must not be saved as prose.
+      // Project sources are retrieved into context, so strip renderer tokens.
       content: stripSearchImageTokens(messageToMarkdown(msg)),
     })),
   );
@@ -535,14 +612,13 @@ export async function saveChatItemAsProjectSource(
     if (outcome === "failed") break;
     if (outcome === "saved") saved += 1;
   }
-  // One toast per click, not one per thread in the pair.
   if (saved === 1) toast.success("Saved to project sources.");
   else if (saved > 1) {
     toast.success(`Saved ${saved} chats to project sources.`);
   }
 }
 
-/** A sidebar row as one markdown document. The halves of a compare pair are named after their models, as saving to project sources does: the two arrive in whichever order they last answered in, so position alone would label them wrong. */
+/** A sidebar row as one markdown document. Compare halves are named by model, since their order is not stable. */
 export async function buildChatItemMarkdown(item: {
   id: string;
   title: string;
@@ -558,13 +634,19 @@ export async function buildChatItemMarkdown(item: {
   );
 }
 
-export type ConvExportFormat = "jsonl-raw" | "jsonl-messages" | "csv" | "sharegpt";
+export type ConvExportFormat =
+  | "jsonl-raw"
+  | "jsonl-messages"
+  | "csv"
+  | "sharegpt"
+  | "markdown";
 
 const EXPORT_FORMAT_LABELS: Record<ConvExportFormat, string> = {
   "jsonl-raw": "Training JSONL",
   "jsonl-messages": "Message JSONL",
   csv: "CSV",
   sharegpt: "ShareGPT JSONL",
+  markdown: "Markdown",
 };
 
 export const EXPORT_FORMATS_LIST = (
@@ -604,6 +686,10 @@ async function buildThreadContent(
     return JSON.stringify({ conversations });
   }
 
+  if (format === "markdown") {
+    return await buildConversationMarkdownForThread(threadId);
+  }
+
   const rows: string[] = [];
   for (const msg of messages) {
     const content = messageToText(msg);
@@ -618,11 +704,15 @@ function csvHeader(format: ConvExportFormat): string {
 }
 
 function exportExt(format: ConvExportFormat): string {
-  return format === "csv" ? "csv" : "jsonl";
+  if (format === "csv") return "csv";
+  if (format === "markdown") return "md";
+  return "jsonl";
 }
 
 function exportMime(format: ConvExportFormat): string {
-  return format === "csv" ? "text/csv" : "application/x-ndjson";
+  if (format === "csv") return CSV_MIME;
+  if (format === "markdown") return CONVERSATION_MARKDOWN_MIME_TYPE;
+  return "application/x-ndjson";
 }
 
 export async function exportBulkConversationsMerged(
@@ -633,6 +723,43 @@ export async function exportBulkConversationsMerged(
   if (threadIds.length === 0) { toast.info("No conversations to export."); return; }
   if (!canMergeConversationExport(format) && threadIds.length > 1) {
     toast.info("Message JSONL is available per chat.");
+    return;
+  }
+
+  if (format === "markdown" && threadIds.length > 1) {
+    const conversations: Array<{ id: string; title: string }> = [];
+    const pairs = new Map<string, ThreadRecord[]>();
+    for (const id of threadIds) {
+      const thread = await getStoredChatThread(id);
+      conversations.push({ id, title: thread?.title?.trim() || id });
+      if (thread?.pairId) {
+        const halves = pairs.get(thread.pairId) ?? [];
+        halves.push(thread);
+        pairs.set(thread.pairId, halves);
+      }
+    }
+    const pairedTitles = new Map<string, string>();
+    for (const [pairId, halves] of pairs) {
+      if (halves.length < 2) continue;
+      const plans = planChatItemSources(
+        { id: pairId, title: halves[0].title?.trim() || pairId, type: "pair" },
+        halves,
+      );
+      for (const plan of plans) pairedTitles.set(plan.id, plan.title);
+    }
+    for (const conversation of conversations) {
+      conversation.title = pairedTitles.get(conversation.id) ?? conversation.title;
+    }
+    const body = await buildNamedConversationsMarkdown(
+      conversations,
+      buildConversationMarkdownForThread,
+    );
+    if (!body) { toast.info("No exportable content."); return; }
+    await downloadBlob(
+      body,
+      `${basename}.md`,
+      CONVERSATION_MARKDOWN_MIME_TYPE,
+    );
     return;
   }
 
@@ -647,8 +774,10 @@ export async function exportBulkConversationsMerged(
   if (parts.length === 0) { toast.info("No exportable content."); return; }
 
   const body = header
-    ? header + "\n" + parts.join("\n")
-    : ndjsonBody(parts);
+    ? csvDocument([header, ...parts])
+    : format === "markdown"
+      ? parts[0] ?? ""
+      : ndjsonBody(parts);
 
   await downloadBlob(
     body,
@@ -672,7 +801,7 @@ export async function exportBulkConversationsSeparate(
   for (const id of threadIds) {
     const content = await buildThreadContent(id, format);
     if (!content) continue;
-    const body = header ? header + "\n" + content : ndjsonBody([content]);
+    const body = header ? csvDocument([header, content]) : ndjsonBody([content]);
     files[`${id}.${ext}`] = strToU8(body);
   }
 
@@ -682,7 +811,7 @@ export async function exportBulkConversationsSeparate(
   await downloadBlob(zipped, `${basename}.zip`, "application/zip");
 }
 
-// Scope-level bulk export shared by the sidebar Recents menu and Settings > Chat > Data. "recents" = chats outside projects; "all" adds project chats.
+// "recents" = chats outside projects; "all" adds project chats.
 export async function bulkExportConversationsByScope(
   scope: "recents" | "all",
   format: ConvExportFormat,
@@ -734,13 +863,12 @@ export type FineTuneMessage = {
 
 const FINE_TUNE_ROLES = new Set(["system", "user", "assistant"]);
 
-/** Plain text of a message: text blocks plus text-type attachment parts. */
 function messageToPlainText(msg: {
   content: unknown;
   attachments?: unknown;
 }): string {
   const parts: string[] = [];
-  // Only attachment text is unwrapped: a message body is verbatim, and may legitimately quote the wrapper syntax in a code sample.
+  // Only attachment text is unwrapped; message bodies may quote the wrapper.
   const collect = (blocks: unknown, fromAttachment = false) => {
     const normalize = fromAttachment
       ? unwrapPastedTextContent
@@ -769,7 +897,6 @@ function messageToPlainText(msg: {
   return parts.join("\n\n").trim();
 }
 
-/** Merge consecutive same-role turns so chat templates format cleanly. */
 function mergeSameRoleTurns(turns: FineTuneMessage[]): FineTuneMessage[] {
   const merged: FineTuneMessage[] = [];
   for (const turn of turns) {
@@ -783,7 +910,7 @@ function mergeSameRoleTurns(turns: FineTuneMessage[]): FineTuneMessage[] {
   return merged;
 }
 
-/** Conversation turns for fine-tuning, or null when the thread has no usable user + assistant exchange. Consecutive same-role turns merge, assistant turns before the first user turn drop (a target with no prompt teaches nothing), and trailing non-assistant turns drop. */
+/** Merges same-role turns and drops leading assistant and trailing non-assistant turns. */
 function messagesToFineTuneTurns(
   messages: Array<{ role: unknown; content: unknown; attachments?: unknown }>,
 ): FineTuneMessage[] | null {
@@ -814,7 +941,6 @@ export type FineTuneExportResult = {
   skipped: number;
 };
 
-/** Dataset shapes the Train tab detects without column mapping. */
 export type FineTuneFormat = "openai" | "sharegpt" | "alpaca";
 
 const SHAREGPT_FROM: Record<FineTuneMessage["role"], string> = {
@@ -823,7 +949,7 @@ const SHAREGPT_FROM: Record<FineTuneMessage["role"], string> = {
   assistant: "gpt",
 };
 
-/** JSONL lines for one conversation in the chosen format. Alpaca is single-turn, so each user to assistant pair becomes its own record with the system prompt and earlier exchange in the input field. */
+/** Alpaca is single-turn: each user/assistant pair becomes its own record. */
 function turnsToFineTuneLines(
   turns: FineTuneMessage[],
   format: FineTuneFormat,
@@ -871,7 +997,6 @@ function turnsToFineTuneLines(
   return [JSON.stringify({ messages: turns })];
 }
 
-/** Every non-archived chat (Recents and Projects) as training-ready JSONL. */
 export async function buildFineTuneJsonl(
   format: FineTuneFormat = "openai",
 ): Promise<FineTuneExportResult> {
@@ -881,15 +1006,22 @@ export async function buildFineTuneJsonl(
   let conversations = 0;
   let skipped = 0;
   for (const id of ids) {
-    const raw = await listStoredChatMessages(id);
+    const liveBranch = liveThreadBranch(id);
+    const [raw, instructions] = await Promise.all([
+      listStoredChatMessages(id),
+      chatInstructionsTurn(id),
+    ]);
     const hasParentIds = raw.some(
       (m) => (m as { parentId?: unknown }).parentId != null,
     );
-    // Chain only: retries/regenerations leave sibling branches, and mixing alternate replies into one conversation corrupts the training targets.
+    // exclude sibling retries because alternate replies would corrupt training targets
     const ordered = hasParentIds
-      ? (orderByParentChain(raw, { includeSiblings: false }) as typeof raw)
+      ? (orderByParentChain(raw, {
+          includeSiblings: false,
+          headId: branchHeadId(id, liveBranch, raw),
+        }) as typeof raw)
       : raw;
-    const turns = messagesToFineTuneTurns(ordered);
+    const turns = messagesToFineTuneTurns([...instructions, ...ordered]);
     const converted = turns ? turnsToFineTuneLines(turns, format) : [];
     if (converted.length === 0) {
       skipped += 1;
@@ -924,7 +1056,6 @@ export async function exportFineTuneJsonl(
   return conversations;
 }
 
-// ShareGPT training exports: prompt to one record (human turn + empty gpt slot); list to one multi-turn record, each item a human turn.
 function exportPromptTrainingJsonl(entry: PromptEntry): Promise<void> {
   const record = {
     conversations: [
@@ -1203,25 +1334,21 @@ function ExportModal({
 
   return (
     <Dialog open onOpenChange={onClose}>
-      {/* */}
-      <DialogContent className="sm:max-w-[520px] gap-0 p-0 overflow-hidden">
+      <DialogContent className="sm:max-w-[calc(520px*var(--ui-space-scale,1))] gap-0 p-0 overflow-hidden">
         <div className="flex flex-col gap-5 p-6">
-          {/* */}
           <DialogTitle className="text-base font-semibold tracking-tight">Export</DialogTitle>
           <DialogDescription className="sr-only">Choose export type and format.</DialogDescription>
 
-          {/* */}
           <div className="flex flex-col gap-2">
             <p className="text-ui-11 font-semibold uppercase tracking-wider text-muted-foreground/60">
               Export as
             </p>
             <div className="flex flex-col gap-2">
-              {/* */}
               <label
                 className={cn(
                   "flex w-full cursor-pointer items-center gap-3 rounded-lg border px-4 py-3 transition-all",
                   scope === "single"
-                    ? "border-ring-strong bg-primary/5"
+                    ? "border-ring-strong bg-wash-5"
                     : "border-border/60 hover:border-border hover:bg-muted/30",
                 )}
               >
@@ -1239,12 +1366,11 @@ function ExportModal({
                 </div>
               </label>
 
-              {/* */}
               <label
                 className={cn(
                   "flex w-full cursor-pointer items-start gap-3 rounded-lg border px-4 py-3 transition-all",
                   scope === "training"
-                    ? "border-ring-strong bg-primary/5"
+                    ? "border-ring-strong bg-wash-5"
                     : "border-border/60 hover:border-border hover:bg-muted/30",
                 )}
               >
@@ -1261,7 +1387,7 @@ function ExportModal({
                   <p className="mt-1 text-xs text-muted-foreground">
                     ShareGPT format for Unsloth fine-tuning
                   </p>
-                  <code className="mt-2 block w-full truncate rounded-md bg-muted px-2 py-1 font-mono text-ui-10 text-muted-foreground/60">
+                  <code className="mt-2 block w-full truncate rounded-full bg-muted px-2 py-1 font-mono text-ui-10 text-muted-foreground/60">
                     {`{"conversations":[{"from":"human","value":"..."},{"from":"gpt","value":""}]}`}
                   </code>
                 </div>
@@ -1269,19 +1395,18 @@ function ExportModal({
             </div>
           </div>
 
-          {/* */}
           <div className="flex flex-col gap-2">
             <p className="text-ui-11 font-semibold uppercase tracking-wider text-muted-foreground/60">
               Format
             </p>
-            <div className="flex items-center gap-1 self-start rounded-lg bg-muted/60 p-1">
+            <div className="flex items-center gap-1 self-start rounded-full bg-muted/60 p-1">
               {(["jsonl", "csv"] as ExportFormat[]).map((f) => {
                 const disabled = f === "csv" && !csvAvailable;
                 return (
                   <label
                     key={f}
                     className={cn(
-                      "select-none rounded-md px-6 py-1.5 text-xs font-semibold uppercase tracking-wide transition-all",
+                      "select-none rounded-full px-6 py-1.5 text-xs font-semibold uppercase tracking-wide transition-all",
                       disabled
                         ? "cursor-not-allowed opacity-40 text-muted-foreground"
                         : "cursor-pointer",
@@ -1312,7 +1437,6 @@ function ExportModal({
           </div>
         </div>
 
-        {/* */}
         <div className="flex items-center justify-end gap-2 border-t border-border/50 px-6 py-4">
           <Button variant="ghost" size="sm" onClick={onClose}>
             Cancel
@@ -1327,15 +1451,15 @@ function ExportModal({
   );
 }
 
-// Unsaved edits live in the parent keyed by entry id, so switching rows in the rail never silently throws away what you typed.
+// Drafts live in the parent so switching rows never drops typed text.
 type PromptDraft = { name: string; text: string };
 type ListDraft = { name: string; items: string[] };
 
-// Factories, not shared constants: every reset would otherwise hand back the same `items` array, one in-place edit from corrupting it for good.
+// Factories, not constants, so resets never share a mutable `items` array.
 const emptyPromptDraft = (): PromptDraft => ({ name: "", text: "" });
 const emptyListDraft = (): ListDraft => ({ name: "", items: ["", ""] });
 
-// Selecting the Lists tab auto-selects its first row, and one controlled textarea per item makes that cost grow faster than the item count: in Chromium 100 items settle in 247ms, 500 in 2.5s and 2000 in 36s, against a flat 80ms on the collapsed card this replaced. The backend accepts 10000 items in one list (routes/prompts.py), so past this many the editor waits to be asked for; save, run and export still read the full items.
+// One textarea per item scales badly (2000 items took 36s), so large lists defer the editor.
 const EDITOR_ROW_LIMIT = 100;
 
 function relativeTime(ts: number): string {
@@ -1350,7 +1474,7 @@ function relativeTime(ts: number): string {
   return new Date(ts).toLocaleDateString();
 }
 
-// `current` drives the roving tabindex and stays true while a New form covers the pane: without it every row is tabbable, so reaching the editor means tabbing through the library.
+// `current` drives the roving tabindex, keeping the rail one tab stop.
 function RailRow({
   title,
   preview,
@@ -1378,7 +1502,7 @@ function RailRow({
       aria-current={selected ? "true" : undefined}
       onClick={onSelect}
       className={cn(
-        "w-full rounded-lg px-2.5 py-2 text-left transition-colors border",
+        "w-full rounded-md px-2.5 py-2 text-left transition-colors border",
         "focus-visible:ring-1 focus-visible:ring-ring outline-none",
         selected
           ? "bg-muted/70 border-border"
@@ -1415,7 +1539,7 @@ function EmptyDetail({
 }): ReactElement {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
-      <div className="flex size-12 items-center justify-center rounded-2xl bg-muted/60">{icon}</div>
+      <div className="flex size-12 items-center justify-center rounded-lg bg-muted/60">{icon}</div>
       <div className="flex flex-col gap-1">
         <p className="text-sm font-medium text-muted-foreground">{title}</p>
         {hint && <p className="text-xs text-muted-foreground/60">{hint}</p>}
@@ -1429,7 +1553,6 @@ function EmptyDetail({
   );
 }
 
-// Deleting a dirty entry destroys the stored copy and the only copy of the unsaved draft at once, so that case asks first.
 function UnsavedDeleteConfirm({
   open,
   onOpenChange,
@@ -1509,11 +1632,10 @@ function PromptDetail({
     [name, text, entry.name, entry.text, onDraftChange],
   );
 
-  // One mutation at a time, and the lock lives in the parent: this pane is keyed by row id, so selecting another row unmounts it and a local lock would come back false. PUT is an unconditional upsert, so a Save still in flight can land after a DELETE.
+  // Lock lives in the parent: this pane unmounts on row switch and PUT can land after DELETE.
   const handleSave = useCallback(async () => {
     const trimText = text.trim();
     if (!trimText) return;
-    // Snapshot what is going to the server: the editor stays usable while the request is in flight, so the draft can move on before it resolves.
     const submitted: PromptDraft = { name, text };
     await runMutation(lockKey("prompt", entry.id), async () => {
       try {
@@ -1523,7 +1645,7 @@ function PromptDetail({
           text: trimText,
           updatedAt: now(),
         });
-        // Refresh before dropping the draft, or the pre-save copy this pane still holds flashes the old text until the fetch lands.
+        // Refresh before dropping the draft, or the old text flashes.
         await onRefresh();
         onSaved(submitted);
       } catch (err) {
@@ -1545,14 +1667,14 @@ function PromptDetail({
         return;
       }
       onDraftChange(undefined);
-      // Refresh before clearing, or the keep-a-row-selected pass runs against a list that still holds this row and can select the deleted entry back.
+      // Refresh first, or the selection pass can reselect the deleted row.
       await onRefresh();
-      // Id goes up so the parent only clears if this row is still selected: the delete is awaited, and a click elsewhere meanwhile would be undone.
+      // Parent clears only if this row is still selected.
       onDeleted(entry.id);
     });
   }, [entry.id, onDraftChange, onDeleted, onRefresh, runMutation]);
 
-  // Export what the pane shows, normalised as saving would, or a dirty entry writes a file that does not match the screen.
+  // Export what the pane shows, normalised as saving would.
   const exportValue: PromptEntry = dirty
     ? { ...entry, name: name.trim() || "Untitled Prompt", text: text.trim() }
     : entry;
@@ -1564,19 +1686,19 @@ function PromptDetail({
         value={name}
         onChange={(e) => update({ name: e.target.value })}
         placeholder="Prompt name..."
-        className="w-full shrink-0 rounded-lg border-0 bg-background/80 px-3 py-2 text-sm font-medium ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
+        className="w-full shrink-0 rounded-full border-0 bg-background/80 px-3 py-2 text-sm font-medium ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
       />
       {preview ? (
         <MarkdownPreview
           markdown={text}
-          className="min-h-0 max-h-none flex-1 rounded-lg border-border/60 bg-background/40 p-3 text-sm"
+          className="min-h-0 max-h-none flex-1 rounded-xl border-border/60 bg-background/40 p-3 text-sm"
         />
       ) : (
         <textarea
           value={text}
           onChange={(e) => update({ text: e.target.value })}
           placeholder="Prompt text..."
-          className="min-h-0 flex-1 w-full resize-none rounded-lg border-0 bg-background/80 px-3 py-2.5 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow leading-relaxed"
+          className="min-h-0 flex-1 w-full resize-none rounded-xl border-0 bg-background/80 px-3 py-2.5 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow leading-relaxed"
         />
       )}
       <div className="flex shrink-0 items-center gap-2 text-ui-11 text-muted-foreground/70">
@@ -1595,19 +1717,19 @@ function PromptDetail({
           type="button"
           onClick={() => togglePinnedPrompt(entry.id)}
           className={cn(
-            "flex h-8 w-8 items-center justify-center rounded-lg transition-colors",
+            "flex h-8 w-8 items-center justify-center rounded-full transition-colors",
             isPinned
-              ? "text-primary hover:bg-primary/10"
+              ? "text-foreground hover:bg-wash-10"
               : "text-muted-foreground hover:bg-muted hover:text-foreground",
           )}
           title={isPinned ? "Unpin from + menu" : "Pin to + menu"}
         >
-          <BookmarkIcon className={cn("size-4", isPinned && "fill-primary")} />
+          <HugeiconsIcon icon={Bookmark02Icon} className={cn("size-4", isPinned && "fill-primary")} />
         </button>
         <button
           type="button"
           onClick={() => onExport(exportValue)}
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           title="Export"
         >
           <HugeiconsIcon icon={Download01Icon} className="size-4" />
@@ -1616,22 +1738,22 @@ function PromptDetail({
           type="button"
           disabled={pending}
           onClick={() => (dirty ? setConfirmingDelete(true) : void handleDelete())}
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           title="Delete"
         >
-          <Trash2Icon className="size-4" />
+          <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
         </button>
         <div className="flex-1" />
         {dirty && (
           <Button size="sm" variant="ghost" onClick={() => onDraftChange(undefined)}>
-            <RotateCcwIcon className="size-3.5 mr-1" />Revert
+            <HugeiconsIcon icon={UndoIcon} className="size-3.5 mr-1" />Revert
           </Button>
         )}
         <Button size="sm" variant="outline" onClick={() => setPreview((v) => !v)}>
           {preview ? (
-            <><PencilIcon className="size-3.5 mr-1" />Edit</>
+            <><HugeiconsIcon icon={Edit03Icon} className="size-3.5 mr-1" />Edit</>
           ) : (
-            <><EyeIcon className="size-3.5 mr-1" />Preview</>
+            <><HugeiconsIcon icon={ViewIcon} className="size-3.5 mr-1" />Preview</>
           )}
         </Button>
         <Button size="sm" variant="outline" disabled={pending || !dirty || !text.trim()} onClick={handleSave}>
@@ -1656,7 +1778,7 @@ function PromptDetail({
   );
 }
 
-// A create has no row id yet, so it cannot use the by-id mutation lock above. The ref is the authority because React state is not readable straight after scheduling it. Call this above the New forms, never inside one: selecting a rail row unmounts the form, and a guard that dies with it comes back false while its request is still out.
+// Creates have no id for the lock; the ref is the authority. Call above the New forms.
 function useCreateGuard(): {
   creating: boolean;
   create: (fn: () => Promise<void>) => Promise<void>;
@@ -1677,7 +1799,6 @@ function useCreateGuard(): {
   return { creating, create };
 }
 
-// Draft lives in the parent, like the edit drafts: selecting a row hides this form, and local state would be discarded with it.
 function NewPromptForm({
   draft,
   onDraftChange,
@@ -1698,7 +1819,7 @@ function NewPromptForm({
   const { name, text } = draft;
   const setName = (value: string) => onDraftChange({ ...draft, name: value });
   const setText = (value: string) => onDraftChange({ ...draft, text: value });
-  // A create outlives the form that started it, so this answers "is the form the user is looking at still mine". Set in setup, not just at the ref: StrictMode replays setup, cleanup, setup, and the flag would stay false from that first cleanup for the pane's whole life.
+  // Set in setup, not just at the ref: StrictMode replays setup/cleanup.
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -1714,7 +1835,6 @@ function NewPromptForm({
         if (!trimText) return;
         const ts = now();
         const id = newId();
-        // What the request carries: the fields stay editable while it is out, so the draft can move on before it resolves.
         const submitted: PromptDraft = { name, text };
         try {
           await savePromptEntry({
@@ -1725,15 +1845,13 @@ function NewPromptForm({
             updatedAt: ts,
           });
         } catch (err) {
-          // Without this the rejection is unhandled and the form just sits there, so the prompt looks saved until the dialog is reopened.
           toast.error("Could not create prompt", {
             description: err instanceof Error ? err.message : "Please try again.",
           });
           return;
         }
-        // Await the refresh first, or the keep-a-row-selected effect runs against a list without the new id and bounces the selection off it.
+        // Await the refresh first, or selection bounces off the new id.
         await onRefresh();
-        // The parent resets the draft if it still holds what was sent, and moves the view to the new row only while this form is still on screen.
         onCreated(id, submitted, mounted.current);
       }),
     [name, text, create, onRefresh, onCreated],
@@ -1747,17 +1865,17 @@ function NewPromptForm({
         onChange={(e) => setName(e.target.value)}
         placeholder="Prompt name (optional)..."
         autoFocus
-        className="w-full shrink-0 rounded-lg border-0 bg-background/80 px-3 py-2 text-sm font-medium ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
+        className="w-full shrink-0 rounded-full border-0 bg-background/80 px-3 py-2 text-sm font-medium ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
       />
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
         placeholder="Write your prompt here..."
-        className="min-h-0 flex-1 w-full resize-none rounded-lg border-0 bg-background/80 px-3 py-2.5 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow leading-relaxed"
+        className="min-h-0 flex-1 w-full resize-none rounded-xl border-0 bg-background/80 px-3 py-2.5 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow leading-relaxed"
       />
       <div className="flex shrink-0 flex-wrap gap-2 justify-end border-t border-border/50 pt-3">
         <Button size="sm" variant="ghost" onClick={onClose}>
-          <XIcon className="size-3.5 mr-1" />Cancel
+          <HugeiconsIcon icon={Cancel01Icon} className="size-3.5 mr-1" />Cancel
         </Button>
         <Button size="sm" onClick={handleSave} disabled={creating || !text.trim()}>
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3.5 mr-1" />Save Prompt
@@ -1790,12 +1908,15 @@ function PromptListDetail({
   pending: boolean;
   runMutation: (id: string, fn: () => Promise<void>) => Promise<void>;
 }): ReactElement {
+  const pinnedListIds = usePlusMenuPrefsStore((s) => s.pinnedListIds);
+  const togglePinnedList = usePlusMenuPrefsStore((s) => s.togglePinnedList);
+  const isPinned = pinnedListIds.includes(entry.id);
   const [preview, setPreview] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const name = draft?.name ?? entry.name;
   const items = draft?.items ?? entry.items;
-  // Decided once per list and latched: this pane is keyed by row id, so selecting another list re-decides it, but Add prompt taking a 100-item list to 101 must not unmount the editor.
+  // Latched per list so growing past the limit does not unmount the editor.
   const [editorMounted, setEditorMounted] = useState(
     () => items.length <= EDITOR_ROW_LIMIT,
   );
@@ -1815,7 +1936,6 @@ function PromptListDetail({
     [name, items, entry.name, entry.items, onDraftChange],
   );
 
-  // See PromptDetail: a Save landing after a DELETE would upsert the row back, and the lock is the parent's because this pane unmounts on a row switch.
   const handleSave = useCallback(async () => {
     const filtered = items.filter((t) => t.trim());
     if (filtered.length === 0) return;
@@ -1854,10 +1974,9 @@ function PromptListDetail({
     });
   }, [entry.id, onDraftChange, onDeleted, onRefresh, runMutation]);
 
-  // Run what the editor shows. Off entry.items, deleting every draft item left the button enabled on the stored length and ran the old list.
+  // Run what the editor shows, not stored items.
   const runnableItems = items.filter((t) => t.trim());
 
-  // See PromptDetail: export the visible draft, not the last saved copy.
   const exportValue: PromptListEntry = dirty
     ? {
         ...entry,
@@ -1873,7 +1992,7 @@ function PromptListDetail({
         value={name}
         onChange={(e) => update({ name: e.target.value })}
         placeholder="List name..."
-        className="w-full shrink-0 rounded-lg border-0 bg-background/80 px-3 py-2 text-sm font-medium ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
+        className="w-full shrink-0 rounded-full border-0 bg-background/80 px-3 py-2 text-sm font-medium ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
       />
       <p className="shrink-0 text-xs font-semibold text-muted-foreground">
         Prompts, loaded into the composer one at a time
@@ -1890,9 +2009,9 @@ function PromptListDetail({
               <button
                 type="button"
                 onClick={() => update({ items: [...items, ""] })}
-                className="flex items-center gap-1.5 self-start text-xs font-medium text-primary hover:text-primary/80 transition-colors"
+                className="flex items-center gap-1.5 self-start text-xs font-medium text-foreground hover:text-foreground/80 transition-colors"
               >
-                <PlusIcon className="size-3.5" />Add prompt
+                <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />Add prompt
               </button>
             )}
           </>
@@ -1913,9 +2032,9 @@ function PromptListDetail({
             <button
               type="button"
               onClick={() => setEditorMounted(true)}
-              className="flex items-center gap-1.5 self-start text-xs font-medium text-primary hover:text-primary/80 transition-colors"
+              className="flex items-center gap-1.5 self-start text-xs font-medium text-foreground hover:text-foreground/80 transition-colors"
             >
-              <PencilIcon className="size-3.5" />Edit all {items.length} prompts
+              <HugeiconsIcon icon={Edit03Icon} className="size-3.5" />Edit all {items.length} prompts
             </button>
           </>
         )}
@@ -1934,8 +2053,21 @@ function PromptListDetail({
       <div className="flex shrink-0 flex-wrap items-center gap-1 border-t border-border/50 pt-3">
         <button
           type="button"
+          onClick={() => togglePinnedList(entry.id)}
+          className={cn(
+            "flex h-8 w-8 items-center justify-center rounded-full transition-colors",
+            isPinned
+              ? "text-foreground hover:bg-wash-10"
+              : "text-muted-foreground hover:bg-muted hover:text-foreground",
+          )}
+          title={isPinned ? "Unpin from + menu" : "Pin to + menu"}
+        >
+          <HugeiconsIcon icon={Bookmark02Icon} className={cn("size-4", isPinned && "fill-primary")} />
+        </button>
+        <button
+          type="button"
           onClick={() => onExport(exportValue)}
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           title="Export"
         >
           <HugeiconsIcon icon={Download01Icon} className="size-4" />
@@ -1944,24 +2076,23 @@ function PromptListDetail({
           type="button"
           disabled={pending}
           onClick={() => (dirty ? setConfirmingDelete(true) : void handleDelete())}
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           title="Delete"
         >
-          <Trash2Icon className="size-4" />
+          <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
         </button>
         <div className="flex-1" />
         {dirty && (
           <Button size="sm" variant="ghost" onClick={() => onDraftChange(undefined)}>
-            <RotateCcwIcon className="size-3.5 mr-1" />Revert
+            <HugeiconsIcon icon={UndoIcon} className="size-3.5 mr-1" />Revert
           </Button>
         )}
-        {/* The deferred summary renders neither editor nor preview, so the toggle would only relabel itself. */}
         {editorMounted && (
           <Button size="sm" variant="outline" onClick={() => setPreview((v) => !v)}>
             {preview ? (
-              <><PencilIcon className="size-3.5 mr-1" />Edit</>
+              <><HugeiconsIcon icon={Edit03Icon} className="size-3.5 mr-1" />Edit</>
             ) : (
-              <><EyeIcon className="size-3.5 mr-1" />Preview</>
+              <><HugeiconsIcon icon={ViewIcon} className="size-3.5 mr-1" />Preview</>
             )}
           </Button>
         )}
@@ -1989,7 +2120,6 @@ function PromptListDetail({
   );
 }
 
-// See NewPromptForm: the in-progress list lives in the parent so clicking a row in the rail cannot silently discard a partially authored list.
 function NewPromptListForm({
   draft,
   onDraftChange,
@@ -2056,7 +2186,7 @@ function NewPromptListForm({
         onChange={(e) => setName(e.target.value)}
         placeholder="List name..."
         autoFocus
-        className="w-full shrink-0 rounded-lg border-0 bg-background/80 px-3 py-2 text-sm font-medium ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
+        className="w-full shrink-0 rounded-full border-0 bg-background/80 px-3 py-2 text-sm font-medium ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
       />
       <p className="shrink-0 text-xs font-semibold text-muted-foreground">
         Prompts, loaded into the composer one at a time
@@ -2066,14 +2196,14 @@ function NewPromptListForm({
         <button
           type="button"
           onClick={addItem}
-          className="flex items-center gap-1.5 self-start text-xs font-medium text-primary hover:text-primary/80 transition-colors"
+          className="flex items-center gap-1.5 self-start text-xs font-medium text-foreground hover:text-foreground/80 transition-colors"
         >
-          <PlusIcon className="size-3.5" />Add another prompt
+          <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />Add another prompt
         </button>
       </div>
       <div className="flex shrink-0 flex-wrap gap-2 justify-end border-t border-border/50 pt-3">
         <Button size="sm" variant="ghost" onClick={onClose}>
-          <XIcon className="size-3.5 mr-1" />Cancel
+          <HugeiconsIcon icon={Cancel01Icon} className="size-3.5 mr-1" />Cancel
         </Button>
         <Button
           size="sm"
@@ -2108,12 +2238,13 @@ export function PromptStorageDialog({
   const [exportCtx, setExportCtx] = useState<ExportModalCtx | null>(null);
   const importRef = useRef<HTMLInputElement>(null);
   const pinnedPromptIds = usePlusMenuPrefsStore((s) => s.pinnedPromptIds);
+  const pinnedListIds = usePlusMenuPrefsStore((s) => s.pinnedListIds);
 
   const [promptEntries, setPromptEntries] = useState<PromptEntry[]>([]);
   const [promptLists, setPromptLists] = useState<PromptListEntry[]>([]);
   const [selectedPromptId, setSelectedPromptId] = useState<string | null>(null);
   const [selectedListId, setSelectedListId] = useState<string | null>(null);
-  // Maps, not plain objects: ids are arbitrary strings, so one named "constructor" would resolve to an inherited prototype member.
+  // Maps, not objects: an id like "constructor" would hit the prototype.
   const [promptDrafts, setPromptDrafts] = useState<Map<string, PromptDraft>>(
     () => new Map(),
   );
@@ -2121,7 +2252,6 @@ export function PromptStorageDialog({
     () => new Map(),
   );
 
-  // In-progress new entries, held here rather than inside the forms so hiding a form does not destroy the work.
   const [newPromptDraft, setNewPromptDraft] = useState<PromptDraft>(emptyPromptDraft);
   const [newListDraft, setNewListDraft] = useState<ListDraft>(emptyListDraft);
   const newPromptStarted =
@@ -2153,16 +2283,15 @@ export function PromptStorageDialog({
     });
   }, []);
 
-  // Mutation locks live here rather than in the detail panes, which are keyed by row id and unmount the moment another row is selected. Held by id until the request settles, or a Save in flight during a row switch comes back unlocked and its PUT can land after a DELETE.
+  // Locks live here because detail panes unmount on row switch; held until the request settles.
   const [mutatingIds, setMutatingIds] = useState<ReadonlySet<string>>(
     () => new Set<string>(),
   );
-  // The ref is the authority, not the state: a functional updater is not guaranteed to run during setState, so reading the outcome straight after scheduling one can see a stale answer, skip the request, and still acquire the id later during render with nothing to release it.
+  // The ref is the authority: a functional updater may not run synchronously.
   const mutatingRef = useRef<ReadonlySet<string>>(new Set<string>());
   const runMutation = useCallback(
     async (id: string, fn: () => Promise<void>) => {
       const [held, started] = acquire(mutatingRef.current, id);
-      // The buttons are disabled while locked, but a second caller reaching here anyway must not run and must not clear the first one's lock.
       if (!started) return;
       mutatingRef.current = held;
       setMutatingIds(held);
@@ -2176,11 +2305,10 @@ export function PromptStorageDialog({
     [],
   );
 
-  // Above the New forms, not inside them: selecting a rail row unmounts the form while its create is still out, and a guard mounted with it would let reopening New mint a second id.
+  // Above the New forms, or reopening New while a create is out mints a second id.
   const promptCreate = useCreateGuard();
   const listCreate = useCreateGuard();
 
-  // Only drop the draft if it still holds what the request carried: anything typed while the save was in flight is the user's most recent intent.
   const clearPromptDraftIfSaved = useCallback(
     (id: string, submitted: PromptDraft) => {
       setPromptDrafts((prev) => {
@@ -2220,7 +2348,7 @@ export function PromptStorageDialog({
     }
   }, [open, refreshEntries, refreshLists]);
 
-  // In the handler, not an effect keyed to activeTab: an effect leaves one render of the new tab still holding the old query, and the keep-a-row-selected pass runs in it and drops that tab's row.
+  // In the handler, not an effect, so no render pairs the new tab with the old query.
   const selectTab = useCallback((tab: Tab) => {
     setActiveTab(tab);
     setSearchQuery("");
@@ -2229,13 +2357,11 @@ export function PromptStorageDialog({
     setShowNewList(false);
   }, []);
 
-  // Clear the search too: an active one the new entry does not match keeps it out of the filtered rail. The draft resets only when it still holds what was sent, since the fields stay editable while the create is out.
   const selectCreatedPrompt = useCallback(
     (id: string, submitted: PromptDraft, fromOpenForm: boolean) => {
       setNewPromptDraft((prev) =>
         samePromptDraft(prev, submitted) ? emptyPromptDraft() : prev,
       );
-      // The user left the form while the request was out, so they are looking at something else on purpose. Take the refresh, leave the view alone.
       if (!fromOpenForm) return;
       setSearchQuery("");
       setSelectedPromptId(id);
@@ -2273,7 +2399,7 @@ export function PromptStorageDialog({
     return all.filter((e) => e.name.toLowerCase().includes(q));
   }, [promptLists, searchQuery]);
 
-  // Keep a row selected whenever the filtered rail is non-empty. During render, not in an effect: an effect paints the blank pane once before correcting it. The visible tab only, since searchQuery is shared and correcting against the hidden one dropped the row selected there.
+  // During render, not an effect, to avoid painting a blank pane; visible tab only.
   if (activeTab === "prompts") {
     if (filteredPrompts.length === 0) {
       if (selectedPromptId !== null) setSelectedPromptId(null);
@@ -2314,7 +2440,6 @@ export function PromptStorageDialog({
     [onUse, onOpenChange],
   );
 
-  // The rail is one tab stop; arrows move within it. Clicking rather than setting the id keeps the two tabs on one handler.
   const handleRailKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
     const rows = Array.from(
@@ -2336,7 +2461,6 @@ export function PromptStorageDialog({
       const text = await file.text();
       const isCsv = file.name.toLowerCase().endsWith(".csv");
       try {
-        // Collection JSONL: first line carries a "type" field.
         if (!isCsv) {
           const firstLine = text.split("\n").find((l) => l.trim());
           if (firstLine) {
@@ -2409,7 +2533,6 @@ export function PromptStorageDialog({
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent showCloseButton={false} className="sm:max-w-[min(1100px,88vw)] max-h-[94dvh] flex flex-col gap-0 p-0 overflow-hidden">
-          {/* */}
           <DialogHeader className="px-6 pt-5 pb-4 shrink-0 border-b border-border/50">
             <div className="flex items-center gap-3">
               <div className="flex-1 min-w-0">
@@ -2432,10 +2555,10 @@ export function PromptStorageDialog({
                   variant="outline"
                   size="sm"
                   onClick={() => importRef.current?.click()}
-                  className="h-8 gap-1.5 text-xs"
+                  className="gap-1.5 text-xs"
                   title="Import from JSONL, CSV, or collection JSONL"
                 >
-                  <UploadIcon className="size-3.5" />
+                  <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />
                   Import
                 </Button>
                 <Button
@@ -2443,7 +2566,7 @@ export function PromptStorageDialog({
                   size="sm"
                   disabled={bulkExportDisabled}
                   onClick={openBulkExport}
-                  className="h-8 gap-1.5 text-xs"
+                  className="gap-1.5 text-xs"
                 >
                   <HugeiconsIcon icon={Download01Icon} className="size-3.5" />
                   Export
@@ -2451,7 +2574,7 @@ export function PromptStorageDialog({
                 <div className="ml-1 h-5 w-px bg-border/60 shrink-0" />
                 <DialogClose asChild>
                   <Button variant="ghost" size="icon-sm">
-                    <XIcon className="size-4" />
+                    <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
                     <span className="sr-only">Close</span>
                   </Button>
                 </DialogClose>
@@ -2462,17 +2585,16 @@ export function PromptStorageDialog({
             </DialogDescription>
           </DialogHeader>
 
-          {/* */}
           <div className="px-6 pt-4 pb-3 shrink-0 flex flex-col gap-3">
             {/* */}
-            <div className="flex items-center gap-1 self-start rounded-lg bg-muted/60 p-1">
+            <div className="flex items-center gap-1 self-start rounded-full bg-muted/60 p-1">
               {(["prompts", "lists"] as Tab[]).map((tab) => (
                 <button
                   key={tab}
                   type="button"
                   onClick={() => selectTab(tab)}
                   className={cn(
-                    "rounded-md px-4 py-1.5 text-xs font-medium transition-all",
+                    "rounded-full px-4 py-1.5 text-xs font-medium transition-all",
                     activeTab === tab
                       ? "bg-background text-foreground shadow-sm ring-1 ring-border/40"
                       : "text-muted-foreground hover:text-foreground",
@@ -2483,7 +2605,6 @@ export function PromptStorageDialog({
               ))}
             </div>
 
-            {/* */}
             <div className="relative">
               <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground/60" />
               <input
@@ -2492,10 +2613,10 @@ export function PromptStorageDialog({
                 onFocus={() => setShowSuggestions(true)}
                 onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
                 placeholder={`Search ${activeTab === "prompts" ? "prompts by name or text" : "prompt lists by name"}…`}
-                className="w-full rounded-lg border-0 bg-muted/50 pl-9 pr-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/60 transition-shadow"
+                className="w-full rounded-full border-0 bg-muted/50 pl-9 pr-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/60 transition-shadow"
               />
               {showSuggestions && searchQuery.trim() !== "" && suggestions.length > 0 && (
-                <div className="absolute top-full left-0 right-0 z-50 mt-1 rounded-xl border border-border/60 bg-popover shadow-lg overflow-hidden">
+                <div className="dropdown-surface absolute top-full left-0 right-0 z-50 mt-1 rounded-xl border border-border/60 bg-popover shadow-lg overflow-hidden">
                   {suggestions.map((name) => (
                     <button
                       key={name}
@@ -2513,22 +2634,17 @@ export function PromptStorageDialog({
             </div>
           </div>
 
-          {/* */}
-          {/* min-h-0, not a floor: the grid rows below already carry the minimum each pane's chrome needs,
-              and a floor here has to guess the height of the header and search above it, whose text
-              wraps on a narrow dialog. */}
           <div className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-6 pb-4 sm:pb-6 grid gap-2 sm:gap-4 grid-cols-1 grid-rows-[minmax(132px,30%)_minmax(272px,1fr)] sm:grid-cols-[200px_minmax(0,1fr)] sm:grid-rows-1 lg:grid-cols-[248px_minmax(0,1fr)]">
-            {/* */}
-            <div className="flex min-h-[132px] flex-col gap-2 rounded-xl border border-border/50 bg-muted/20 p-2">
+            <div className="flex min-h-[calc(132px*var(--ui-space-scale,1))] flex-col gap-2 rounded-xl border border-border/50 bg-muted/20 p-2">
               <button
                 type="button"
                 onClick={() => {
                   if (activeTab === "prompts") setShowNewPrompt(true);
                   else setShowNewList(true);
                 }}
-                className="flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-dashed border-border/60 px-3 py-2 text-xs font-medium text-muted-foreground hover:border-border hover:bg-muted/50 hover:text-foreground transition-all"
+                className="btn-fill flex shrink-0 items-center justify-center gap-1.5 rounded-full border border-transparent px-3 py-2 text-xs font-medium text-muted-foreground hover:text-foreground transition-all"
               >
-                <PlusIcon className="size-3.5" />
+                <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
                 {activeTab === "prompts" ? "New prompt" : "New prompt list"}
                 {(activeTab === "prompts" ? newPromptStarted : newListStarted) && (
                   <span
@@ -2555,7 +2671,7 @@ export function PromptStorageDialog({
                       dirty={promptDrafts.has(entry.id)}
                       leading={
                         pinnedPromptIds.includes(entry.id) ? (
-                          <BookmarkIcon className="size-3 shrink-0 fill-primary text-primary" />
+                          <HugeiconsIcon icon={Bookmark02Icon} className="size-3 shrink-0 fill-primary text-primary" />
                         ) : null
                       }
                       onSelect={() => {
@@ -2575,6 +2691,11 @@ export function PromptStorageDialog({
                       selected={!showNewList && entry.id === selectedListId}
                       current={entry.id === selectedListId}
                       dirty={listDrafts.has(entry.id)}
+                      leading={
+                        pinnedListIds.includes(entry.id) ? (
+                          <HugeiconsIcon icon={Bookmark02Icon} className="size-3 shrink-0 fill-primary text-primary" />
+                        ) : null
+                      }
                       onSelect={() => {
                         setShowNewList(false);
                         setSelectedListId(entry.id);
@@ -2601,8 +2722,7 @@ export function PromptStorageDialog({
               </p>
             </div>
 
-            {/* */}
-            <div className="min-h-[272px] rounded-xl border border-border/60 bg-card p-4">
+            <div className="min-h-[calc(272px*var(--ui-space-scale,1))] rounded-xl border border-border/60 bg-card p-4">
               {activeTab === "prompts" &&
                 (showNewPrompt ? (
                   <NewPromptForm
@@ -2637,7 +2757,7 @@ export function PromptStorageDialog({
                   />
                 ) : (
                   <EmptyDetail
-                    icon={<BookmarkIcon className="size-5 text-muted-foreground/40" />}
+                    icon={<HugeiconsIcon icon={Bookmark02Icon} className="size-5 text-muted-foreground/40" />}
                     title={searchQuery.trim() ? `No prompts match “${searchQuery}”` : "No saved prompts yet"}
                     hint={searchQuery.trim() ? undefined : "Save prompts you use often for quick reuse"}
                     onClearSearch={searchQuery.trim() ? () => setSearchQuery("") : undefined}

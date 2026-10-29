@@ -1,24 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Images and video keep the old pipeline resident while a replacement
-// downloads, so the indicator shows the resident row (ejectable) next to the
-// incoming one (a spinner). Ejecting the resident row makes the backend cancel
-// that replacement, and the page's own listener then tears down its tracking --
-// including the load-progress poll, which is the ONLY thing that clears `busy`.
-//
-// Left set, `busy` locks the page: the picker ignores every choice, Generate
-// and Reapply are disabled, and Unload is not even rendered once the status
-// read comes back empty. Both pages are mounted for the whole app session, so
-// navigating away and back does not reset it either -- only a reload did.
+// Ejecting the resident row tears down the load poll, which is the only thing clearing busy.
 
 import assert from "node:assert/strict";
 import test from "node:test";
 
 import { readText } from "./helpers/kit.ts";
 
-// The runtime name is singular ("image"), the page is not: keep them apart, or
-// the listener lookup silently finds nothing and every check passes vacuously.
+// The runtime name is singular, the page is not; a mismatch passes vacuously.
 const PAGES = [
   ["Images", "image", "../src/features/images/images-page.tsx"],
   ["Video", "video", "../src/features/video/video-page.tsx"],
@@ -28,7 +18,7 @@ for (const [page, runtime, path] of PAGES) {
   const SOURCE = readText(path);
   const listener = SOURCE.slice(
     SOURCE.indexOf(`subscribeModelEjected("${runtime}"`),
-    // Wide enough for the pending-start fence the listener grew around that clear.
+    // Wide enough for the pending-start fence around the clear.
     SOURCE.indexOf(`subscribeModelEjected("${runtime}"`) + 1800,
   );
 
@@ -42,13 +32,9 @@ for (const [page, runtime, path] of PAGES) {
   });
 
   test(`the ${page} page still stops the poll it is replacing`, () => {
-    // The clear only matters because dropResidentState kills the poll; if that
-    // ever stops being true the two lines should be revisited together.
     assert.match(listener, /dropResidentState\(\)/);
     const drop = SOURCE.slice(
       SOURCE.indexOf("const dropResidentState = useCallback("),
-      // To the end of the callback, not a fixed window: the body grew a cancel fence.
-      // Anchored from the opening, so the deps can grow without silently widening this slice.
       SOURCE.indexOf(
         "}, [dismissLoadToast,",
         SOURCE.indexOf("const dropResidentState = useCallback("),
@@ -63,9 +49,7 @@ for (const [page, runtime, path] of PAGES) {
   });
 
   test(`the ${page} page leaves a generation alone`, () => {
-    // An unconditional clear would also drop "generating". The backend unload
-    // blocks on the generate lock so that is near unreachable, but narrowing it
-    // costs nothing.
+    // An unconditional clear would also drop generating.
     assert.doesNotMatch(listener, /setBusy\(null\)/);
   });
 }

@@ -10,6 +10,7 @@
 # limitations under the License.
 
 import importlib
+import os
 import triton
 import ctypes
 
@@ -27,8 +28,9 @@ from ..device_type import (
     ALLOW_PREQUANTIZED_MODELS,
 )
 from ..bnb_availability import native_kernels_ready
-from .fp8 import weight_dequant, fp8_linear
-import functools
+from .indexing import long_indexing
+from .fp8 import weight_dequant, fp8_linear, can_use_fp8_rowwise_gemv, fp8_rowwise_gemv
+from .nvfp4 import NVFP4QuantState, nvfp4_dequantize, nvfp4_linear
 
 # torch.cuda.amp.custom_fwd is deprecated from 2.4.
 import torch
@@ -63,7 +65,6 @@ elif DEVICE_TYPE == "npu":
 
 
 # tl.math.tanh is now libdevice.tanh.
-import triton
 import triton.language as tl
 
 if Version(triton.__version__) >= Version("3.0.0"):
@@ -141,6 +142,38 @@ def calculate_settings(
     return BLOCK_SIZE, num_warps
 
 
+# UNSLOTH_NORM_ARCH_WARPS=0 keeps calculate_settings' warps in the LayerNorm / RMSNorm kernels.
+_NORM_ARCH_WARPS = os.environ.get("UNSLOTH_NORM_ARCH_WARPS", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
+
+
+@functools.lru_cache(maxsize = None)
+def _cuda_capability(index):
+    return tuple(torch.cuda.get_device_capability(index))
+
+
+def norm_num_warps(table, n_cols, num_warps, device):
+    """num_warps from table[(capability, n_cols)] for CUDA devices, else the default."""
+    if not _NORM_ARCH_WARPS or device is None or device.type != "cuda" or torch.version.hip:
+        return num_warps
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    if torch.compiler.is_compiling():
+        capability = tuple(torch.cuda.get_device_capability(index))
+    else:
+        capability = _cuda_capability(index)
+    if type(n_cols) is not int:
+        # A traced op's fake run passes a symbolic width, which cannot be hashed: match by equality.
+        for (table_capability, width), warps in table.items():
+            if table_capability == capability and width == n_cols:
+                return warps
+        return num_warps
+    return table.get((capability, n_cols), num_warps)
+
+
 HAS_CUDA_STREAM = False
 try:
     import bitsandbytes as bnb
@@ -197,8 +230,7 @@ elif DEVICE_TYPE == "mlx":
 elif hasattr(torch._C, "_cuda_getCurrentRawStream"):
     _gpu_getCurrentRawStream = torch._C._cuda_getCurrentRawStream
 else:
-    # CPU-only torch wheel (no compiled CUDA backend). _get_tensor_stream is only invoked during real
-    # GPU work, so a no-op binding is safe.
+    # CPU-only torch wheel: _get_tensor_stream only runs during real GPU work, so a no-op is safe.
     def _gpu_getCurrentRawStream(_index = 0):
         return 0
 
@@ -210,6 +242,8 @@ def _get_tensor_stream(tensor: torch_Tensor) -> c_void_p:
     return c_void_p(_gpu_getCurrentRawStream(tensor.device.index))
 
 
+# Import-time stream snapshots and the old scratch pair. The kernels now read the live stream, but
+# these stay defined for external readers (e.g. tests/kaggle/t4_smoke/run_t4_smoke.py).
 global CUDA_STREAMS
 global XPU_STREAMS
 global WEIGHT_BUFFERS
@@ -270,12 +304,14 @@ if bnb is None or not native_kernels_ready(bnb, DEVICE_TYPE):
     cdequantize_blockwise_fp32 = _bnb_required
     cdequantize_blockwise_fp16_nf4 = _bnb_required
     cdequantize_blockwise_bf16_nf4 = _bnb_required
+    cdequantize_blockwise_fp32_nf4 = _bnb_required
     cgemm_4bit_inference_naive_fp16 = _bnb_required
     cgemm_4bit_inference_naive_bf16 = _bnb_required
 else:
     cdequantize_blockwise_fp32 = bnb_functional.lib.cdequantize_blockwise_fp32
     cdequantize_blockwise_fp16_nf4 = bnb_functional.lib.cdequantize_blockwise_fp16_nf4
     cdequantize_blockwise_bf16_nf4 = bnb_functional.lib.cdequantize_blockwise_bf16_nf4
+    cdequantize_blockwise_fp32_nf4 = bnb_functional.lib.cdequantize_blockwise_fp32_nf4
 
     if DEVICE_TYPE == "xpu":
         # xpu inference gemv, per bitsandbytes backends/xpu/ops.py#L115.
@@ -322,6 +358,31 @@ def QUANT_STATE(W):
     return getattr(W, "quant_state", None)
 
 
+# Only an FSDP2 all-gathered 4-bit weight loses quant_state, and its packed bytes are (N, 1): the getters
+# gate _base_quant_state on that shape, per weight. Never on a process-global flag: dynamo guards on a
+# global it reads, so preparing one FSDP2 QLoRA model recompiled every compiled dense LoRA forward (#13880).
+
+
+def _base_quant_state(base_layer, W):
+    """W's quant state, else its bitsandbytes Linear4bit's own copy of it. FSDP2 all-gathers the packed
+    bytes into a plain Parameter that drops `quant_state`; read without it, the packed (N, 1) buffer
+    would be taken for a dense weight."""
+    W_quant = getattr(W, "quant_state", None)
+    if W_quant is not None:
+        return W_quant
+    # Linear4bit keeps its copy as a plain attribute. getattr would go through nn.Module.__getattr__,
+    # which raises and catches for every dense weight: 10x this function's cost on each LoRA forward.
+    W_quant = base_layer.__dict__.get("quant_state", None)
+    if (
+        W_quant is None
+        or getattr(W, "ndim", 0) != 2
+        or W.shape[1] != 1
+        or not any(cls.__name__ == "Linear4bit" for cls in type(base_layer).__mro__)
+    ):
+        return None
+    return W_quant
+
+
 # fp8 weight dtypes: a weight_scale / weight_scale_inv is only a quant state while the weight
 # itself is still fp8. compressed-tensors layers expose an already-dequantized bf16 weight at
 # forward time while keeping a weight_scale, and reading that as a quant state routes it into
@@ -336,13 +397,94 @@ _FP8_WEIGHT_DTYPES = tuple(
 )
 
 
+def _has_multiple_active_adapters(proj):
+    # Adapter activation can change after the single-adapter fast paths are installed.
+    adapters = getattr(proj, "active_adapters", None)
+    if adapters is None:
+        adapters = getattr(proj, "active_adapter", ())
+    return not isinstance(adapters, str) and len(adapters) > 1
+
+
+def _has_active_dora_adapter(proj):
+    # DoRA rescales the output by lora_magnitude_vector, which the fast LoRA path never applies.
+    magnitude = getattr(proj, "lora_magnitude_vector", None)
+    if not magnitude or getattr(proj, "disable_adapters", True) or getattr(proj, "merged", False):
+        return False
+    adapters = getattr(proj, "active_adapters", None)
+    if adapters is None:
+        adapters = getattr(proj, "active_adapter", ())
+    if isinstance(adapters, str):
+        adapters = (adapters,)
+    return any(adapter in magnitude for adapter in adapters)
+
+
+def _has_non_lora_adapter(proj):
+    # VeRA, LoHa, LoKr, IA3, OFT and AdaLoRA layers from peft.get_peft_model hold no lora_A Linears (#1385).
+    modules = proj._modules
+    return "base_layer" in modules and not isinstance(modules.get("lora_A"), torch.nn.ModuleDict)
+
+
+def _has_active_lora_bias(proj):
+    # PEFT lora_bias=True gives lora_B a bias, which the fast LoRA paths never add.
+    lora_B = getattr(proj, "lora_B", None)
+    if not lora_B or getattr(proj, "disable_adapters", True) or getattr(proj, "merged", False):
+        return False
+    adapters = getattr(proj, "active_adapters", None)
+    if adapters is None:
+        adapters = getattr(proj, "active_adapter", ())
+    if isinstance(adapters, str):
+        adapters = (adapters,)
+    return any(adapter in lora_B and lora_B[adapter].bias is not None for adapter in adapters)
+
+
+def has_mxfp4_base(*projs):
+    """A packed MXFP4 base that cannot hand its bytes to the fused LoRA kernels (they would then hold a 16-bit
+    weight until backward): use PEFT. Bases with ``mxfp4_quant_state`` pass ``weight_packed`` + that state instead."""
+    return any(
+        getattr(type(base), "_unsloth_mxfp4_packed_linear", False)
+        and getattr(type(base), "mxfp4_quant_state", None) is None
+        for base in (getattr(p, "base_layer", p) for p in projs)
+    )
+
+
+def _packed_base(base_layer):
+    """(weight_packed, quant state) of a packed MXFP4 base, else None; QAT fake-quantizes the decoded weight instead."""
+    cls = type(base_layer)
+    if (
+        not getattr(cls, "_unsloth_mxfp4_packed_linear", False)
+        or getattr(cls, "mxfp4_quant_state", None) is None
+    ):
+        return None
+    if getattr(base_layer, "weight_fake_quantizer", None) is not None:
+        return None
+    return base_layer.weight_packed, base_layer.mxfp4_quant_state()
+
+
+def _has_packed_qweight(proj):
+    # GPTQ / AWQ keep a packed qweight and no dense .weight tensor: only their own forward can run them.
+    base_layer = proj._modules.get("base_layer", proj)
+    return (
+        not isinstance(getattr(base_layer, "weight", None), torch_Tensor)
+        and _packed_base(base_layer) is None
+    )
+
+
+def _is_packed_state(quant_state):
+    return getattr(type(quant_state), "_unsloth_packed_weight_state", False)
+
+
 def get_lora_parameters(proj):
     """Return (weight, weight quant_state, lora A, lora B, lora scale).
     With QAT enabled, also fake-quantizes the base layer and lora weights.
+    Tensor parallel projections (models/tp_native.py) return local shards of their DTensors.
     """
+    localize = proj.__dict__.get("_unsloth_tp_local")
+    if localize is not None:
+        return localize(proj)
     # For DPO or disabled adapters.
     base_layer = getattr(proj, "base_layer", proj)
-    W = base_layer.weight
+    packed = _packed_base(base_layer)
+    W = base_layer.weight if packed is None else packed[0]
 
     # Optionally apply fake quantization to base layer weights for QAT.
     if hasattr(base_layer, "weight_fake_quantizer"):
@@ -350,13 +492,16 @@ def get_lora_parameters(proj):
         if weight_fake_quantizer is not None:
             W = weight_fake_quantizer(W)
 
-    # Only fall back to a weight_scale(_inv) when the weight is still fp8; a bf16 weight (a decompressed
-    # compressed-tensors layer) must not carry a scale as its quant state or fast_gemv crashes.
     W_quant = getattr(W, "quant_state", None)
-    if W_quant is None and W.dtype in _FP8_WEIGHT_DTYPES:
-        W_quant = getattr(base_layer, "weight_scale_inv", None)
-        if W_quant is None:
-            W_quant = getattr(base_layer, "weight_scale", None)
+    if W_quant is None:
+        if getattr(W, "ndim", 0) == 2 and W.shape[1] == 1:
+            W_quant = _base_quant_state(base_layer, W)
+        # Only fall back to a weight_scale(_inv) when the weight is still fp8; a bf16 weight (a decompressed
+        # compressed-tensors layer) must not carry a scale as its quant state or fast_gemv crashes.
+        if W_quant is None and W.dtype in _FP8_WEIGHT_DTYPES:
+            W_quant = getattr(base_layer, "weight_scale_inv", None)
+            if W_quant is None:
+                W_quant = getattr(base_layer, "weight_scale", None)
 
     if getattr(base_layer, "quant_method", None) == "fp8":
         W.block_size = getattr(base_layer, "block_size", [128, 128])
@@ -365,13 +510,19 @@ def get_lora_parameters(proj):
         if W_quant is not None:
             W_quant.block_size = W.block_size
 
+    if packed is not None:
+        W_quant = packed[1]
+
     if getattr(proj, "disable_adapters", True) or proj.merged:
         return W, W_quant, None, None, None
 
     adapter = getattr(proj, "active_adapters", None)
     if adapter is None:
         adapter = getattr(proj, "active_adapter", ("default"))
-    adapter = adapter[0]
+    if not isinstance(adapter, str):
+        if len(adapter) > 1:
+            raise ValueError("Unsloth: LoRA parameter extraction requires a single active adapter.")
+        adapter = adapter[0]
 
     # Optionally apply fake quantization to lora weights for QAT.
     lora_A_linear = proj.lora_A[adapter]
@@ -397,24 +548,33 @@ def get_lora_parameters(proj):
 
 
 def get_lora_parameters_bias(proj):
+    localize = proj.__dict__.get("_unsloth_tp_local")
+    if localize is not None:
+        return localize(proj, bias = True)
     # For DPO or disabled adapters.
     base_layer = getattr(proj, "base_layer", proj)
-    W = base_layer.weight
+    packed = _packed_base(base_layer)
+    W = base_layer.weight if packed is None else packed[0]
 
-    # Only fall back to a weight_scale(_inv) when the weight is still fp8; a bf16 weight (a decompressed
-    # compressed-tensors layer) must not carry a scale as its quant state or fast_gemv crashes.
     W_quant = getattr(W, "quant_state", None)
-    if W_quant is None and W.dtype in _FP8_WEIGHT_DTYPES:
-        W_quant = getattr(base_layer, "weight_scale_inv", None)
-        if W_quant is None:
-            W_quant = getattr(base_layer, "weight_scale", None)
+    if W_quant is None:
+        if getattr(W, "ndim", 0) == 2 and W.shape[1] == 1:
+            W_quant = _base_quant_state(base_layer, W)
+        # Only fall back to a weight_scale(_inv) when the weight is still fp8; a bf16 weight (a decompressed
+        # compressed-tensors layer) must not carry a scale as its quant state or fast_gemv crashes.
+        if W_quant is None and W.dtype in _FP8_WEIGHT_DTYPES:
+            W_quant = getattr(base_layer, "weight_scale_inv", None)
+            if W_quant is None:
+                W_quant = getattr(base_layer, "weight_scale", None)
 
     if getattr(base_layer, "quant_method", None) == "fp8":
         W.block_size = getattr(base_layer, "block_size", [128, 128])
-        # A decompressed compressed-tensors layer keeps quant_method == "fp8" while its weight is back to
-        # bf16, so it has no quant state to carry the block size.
+        # A decompressed compressed-tensors layer keeps quant_method fp8 but has no quant state.
         if W_quant is not None:
             W_quant.block_size = W.block_size
+
+    if packed is not None:
+        W_quant = packed[1]
 
     if getattr(proj, "disable_adapters", True) or proj.merged:
         return W, W_quant, None, None, None, base_layer.bias
@@ -422,7 +582,10 @@ def get_lora_parameters_bias(proj):
     adapter = getattr(proj, "active_adapters", None)
     if adapter is None:
         adapter = getattr(proj, "active_adapter", ("default"))
-    adapter = adapter[0]
+    if not isinstance(adapter, str):
+        if len(adapter) > 1:
+            raise ValueError("Unsloth: LoRA parameter extraction requires a single active adapter.")
+        adapter = adapter[0]
 
     return (
         W,
@@ -434,15 +597,149 @@ def get_lora_parameters_bias(proj):
     )
 
 
-def _maybe_fake_quantize_activations(X: torch.Tensor, proj: torch.nn.Module) -> torch.Tensor:
-    """Fake-quantize input activations if QAT is enabled, else return as-is.
-    Weights are fake-quantized separately in `get_lora_parameters`.
-    """
-    base_layer = getattr(proj, "base_layer", proj)
-    activation_fake_quantizer = getattr(base_layer, "activation_fake_quantizer", None)
-    if activation_fake_quantizer is not None:
-        X = activation_fake_quantizer(X)
-    return X
+def _unpack_quant_state(quant_state):
+    """(absmax, shape, dtype, blocksize, code, code2, absmax2, offset, blocksize2) from a bnb
+    4bit quant state, class or legacy list form. The nested fields are None (and blocksize2 0)
+    when the absmax is not double quantized."""
+    if type(quant_state) is not list:
+        # New quant_state as a class, per TimDettmers/bitsandbytes#763.
+        absmax = quant_state.absmax
+        shape = quant_state.shape
+        dtype = quant_state.dtype
+        blocksize = quant_state.blocksize
+        code = quant_state.code
+        offset = quant_state.offset
+        state2 = quant_state.state2
+    else:
+        # Old quant_state as a list of lists
+        absmax, shape, dtype, blocksize, compressed_stats, _, code = quant_state
+        offset, state2 = compressed_stats if compressed_stats is not None else (None, None)
+    if state2 is None:
+        return absmax, shape, dtype, blocksize, code, None, None, None, 0
+    if type(state2) is list:
+        absmax2, code2, blocksize2 = state2[0], state2[1], state2[2]
+    else:
+        absmax2, code2, blocksize2 = state2.absmax, state2.code, state2.blocksize
+    if not isinstance(offset, torch_Tensor):
+        offset = torch.tensor(offset, dtype = torch_float32, device = absmax.device)
+    return absmax, shape, dtype, blocksize, code, code2, absmax2, offset, blocksize2
+
+
+def _quant_type(quant_state):
+    if type(quant_state) is list:
+        return quant_state[5]
+    return getattr(quant_state, "quant_type", "nf4")
+
+
+# Eager use_global_buffer scratch per (kind, device), default stream only (other streams, compiling
+# and graph capture get fresh outputs); allocated outside inference mode so training can write it.
+_SCRATCH = {}
+_DEFAULT_STREAMS = {}
+
+
+def _can_use_scratch(device):
+    if torch.compiler.is_compiling() or torch.cuda.is_current_stream_capturing():
+        return False
+    default = _DEFAULT_STREAMS.get(device.index)
+    if default is None:
+        default = _DEFAULT_STREAMS[device.index] = torch.cuda.default_stream(device).cuda_stream
+    return _gpu_getCurrentRawStream(device.index) == default
+
+
+def _scratch(kind, device, numel, dtype):
+    key = (kind, device.index)
+    buffer = _SCRATCH.get(key)
+    if buffer is None or buffer.dtype != dtype or buffer.numel() < numel:
+        with torch.inference_mode(False):
+            buffer = torch_empty(numel, dtype = dtype, device = device, requires_grad = False)
+        _SCRATCH[key] = buffer
+    return buffer[:numel]
+
+
+def _nf4_kernels_supported():
+    # ptxas rejects their ld eviction hints below sm_70 (Maxwell, Pascal).
+    if DEVICE_TYPE == "hip":
+        return True
+    return all(torch.cuda.get_device_capability(i)[0] >= 7 for i in range(DEVICE_COUNT))
+
+
+# Fused NF4 kernels, traceable by torch.compile and on the live stream by construction.
+# UNSLOTH_BNB_TRITON=0 keeps the bitsandbytes ctypes path.
+_USE_NF4_KERNELS = False
+_TRITON_GEMV_EAGER = False
+_GEMV_MAX_ROWS = 1
+_is_compiling = torch.compiler.is_compiling
+_current_device = torch.cuda.current_device
+if (
+    DEVICE_TYPE in ("cuda", "hip")
+    and HAS_CUDA_STREAM
+    and os.environ.get("UNSLOTH_BNB_TRITON", "1") != "0"
+    and _nf4_kernels_supported()
+):
+    try:
+        import triton
+        from .nf4 import dequantize_nf4, dequantize_nf4_planned
+        from .nf4_gemv import GEMV_MAX_ROWS as _GEMV_MAX_ROWS
+        from .nf4_gemv import (
+            gemv_nf4,
+            gemv_nf4_planned,
+            gemv_nf4_rows,
+            gemv_nf4_rows_planned,
+            triton_gemv_eager,
+        )
+
+        _USE_NF4_KERNELS = True
+        # Eager decode uses the Triton GEMV where it is faster; compiled code always does.
+        _TRITON_GEMV_EAGER = triton_gemv_eager()
+    except Exception:
+        pass
+
+
+def _no_plan():
+    return None
+
+
+class _NF4Plan(list):
+    # One weight's decode launch (see fast_dequantize). It holds a closure and the scratch buffer,
+    # so copies and pickles of the model drop it and rebuild on first use.
+    def __reduce__(self):
+        return (_no_plan, ())
+
+
+# Set by unsloth.models.fsdp2_qlora on an FSDP2 all-gathered 4-bit weight.
+_FSDP2_GATHERED = "_unsloth_fsdp2_gathered"
+
+
+def _gathered_plan_hit(plan, W):
+    """FSDP2 frees an all-gathered weight's storage after use and re-allocates it for the next
+    all-gather: the same tensor at a new address, so a plan keyed on the address it was built at
+    never hits again. The planned launch reads the address of the tensor it was built with at
+    launch time, so it still applies while that tensor and W (the weight, or a view of it such as
+    the backward's `W.t()`) are at the same address with the 16 byte alignment it was specialized
+    on. A tensor given a new storage object instead of a resized one has another address: rebuilt."""
+    address = W.data_ptr()
+    if plan[6].data_ptr() != address or (address & 15) != (plan[0] & 15):
+        return False
+    gathered = W if W._base is None else W._base
+    return getattr(gathered, _FSDP2_GATHERED, False)
+
+
+def _nf4_kernels_failed(error):
+    """A Triton compile failure on an untested GPU switches to the bitsandbytes kernels for good.
+    False (re-raise) while tracing, for Dynamo's own exceptions (a graph break is not a kernel
+    failure) and for out-of-memory, which the fallback would not fix."""
+    global _USE_NF4_KERNELS
+    if (
+        torch.compiler.is_compiling()
+        or isinstance(error, torch.cuda.OutOfMemoryError)
+        or type(error).__module__.startswith("torch._dynamo")
+    ):
+        return False
+    _USE_NF4_KERNELS = False
+    print(
+        f"Unsloth: fused NF4 kernels failed ({type(error).__name__}: {error}), using bitsandbytes."
+    )
+    return True
 
 
 if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
@@ -453,6 +750,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
         quant_state = None,
         out = None,
         use_global_buffer = False,
+        dtype = None,
     ):
         # TODO: After adding XPU BNB support, check this function
         if isinstance(W, Float8Tensor):
@@ -460,27 +758,20 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
         if quant_state is None:
             return W
         if W.dtype == torch.float8_e4m3fn:
-            return weight_dequant(W, quant_state)
-        if type(quant_state) is not list:
-            # New quant_state as a class, per TimDettmers/bitsandbytes#763.
-            absmax = quant_state.absmax
-            shape = quant_state.shape
-            dtype = quant_state.dtype
-            blocksize = quant_state.blocksize
-            offset = quant_state.offset
-            state2 = quant_state.state2
-            absmax2 = state2.absmax
-            code2 = state2.code
-            blocksize2 = state2.blocksize
-        else:
-            # Old quant_state as a list of lists
-            absmax, shape, dtype, blocksize, compressed_stats, _, _ = quant_state
-            offset, state2 = compressed_stats
-            absmax2, code2, blocksize2, _, _, _, _ = state2
-        global XPU_STREAMS
+            return weight_dequant(W, quant_state, dtype or torch.bfloat16)
+        if type(quant_state) is NVFP4QuantState:
+            return nvfp4_dequantize(
+                W, quant_state.scale, quant_state.global_scale, quant_state.dtype
+            )
+        absmax, shape, dtype, blocksize, _, code2, absmax2, offset, blocksize2 = (
+            _unpack_quant_state(quant_state)
+        )
+        if code2 is None:
+            return bnb_functional.dequantize_4bit(W, quant_state, out = out)
         device = W.device
         device_index = device.index
-        XPU_STREAM = XPU_STREAMS[device_index]
+        # Live stream, as bitsandbytes' xpu ops read it; a snapshot ignores torch.xpu.stream().
+        XPU_STREAM = _get_tensor_stream(W)
 
         n_elements_absmax = absmax.numel()
         if use_global_buffer:
@@ -534,9 +825,12 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             )
             out_absmax += offset
 
+            # Kernel must match `out`'s dtype: bf16 bits in an fp32 buffer corrupt silently.
             fx = (
                 cdequantize_blockwise_fp16_nf4
                 if dtype == torch_float16
+                else cdequantize_blockwise_fp32_nf4
+                if dtype == torch_float32
                 else cdequantize_blockwise_bf16_nf4
             )
             fx(
@@ -554,80 +848,36 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
 
 elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
 
-    @torch.inference_mode
-    def fast_dequantize(
+    def _fast_dequantize_ctypes(
         W,
-        quant_state = None,
+        quant_state,
         out = None,
         use_global_buffer = False,
     ):
-        if isinstance(W, Float8Tensor):
-            return W.dequantize()
-        if quant_state is None:
-            return W
-        if W.dtype == torch.float8_e4m3fn:
-            return weight_dequant(W, quant_state)
-        if type(quant_state) is not list:
-            # New quant_state as a class, per TimDettmers/bitsandbytes#763.
-            absmax = quant_state.absmax
-            shape = quant_state.shape
-            dtype = quant_state.dtype
-            blocksize = quant_state.blocksize
-            offset = quant_state.offset
-            state2 = quant_state.state2
-            absmax2 = state2.absmax
-            code2 = state2.code
-            blocksize2 = state2.blocksize
-        else:
-            # Old quant_state as a list of lists
-            absmax, shape, dtype, blocksize, compressed_stats, _, _ = quant_state
-            offset, state2 = compressed_stats
-            absmax2, code2, blocksize2, _, _, _, _ = state2
-        pass
-        global CUDA_STREAMS
+        # bitsandbytes ctypes kernels, used when the NF4 kernels are unavailable or disabled.
+        absmax, shape, dtype, blocksize, _, code2, absmax2, offset, blocksize2 = (
+            _unpack_quant_state(quant_state)
+        )
+        if code2 is None or dtype not in (torch_float16, torch_bfloat16):
+            return bnb_functional.dequantize_4bit(W, quant_state, out = out)
         device = W.device
-        device_index = device.index
-        CUDA_STREAM = CUDA_STREAMS[device_index]
+        # Each launch reads the live stream, so out_absmax += offset stays ordered between them.
+        CUDA_STREAM = _get_tensor_stream(W)
 
         n_elements_absmax = absmax.numel()
-
-        if use_global_buffer:
-            size = shape[0] * shape[1]
-            global WEIGHT_BUFFERS
-            global ABSMAX_BUFFERS
-            WEIGHT_BUFFER = WEIGHT_BUFFERS[device_index]
-            ABSMAX_BUFFER = ABSMAX_BUFFERS[device_index]
-            if WEIGHT_BUFFER is None or WEIGHT_BUFFER.dtype != dtype:
-                WEIGHT_BUFFERS[device_index] = WEIGHT_BUFFER = torch_empty(
-                    size, dtype = dtype, device = device, requires_grad = False
-                )
-                ABSMAX_BUFFERS[device_index] = ABSMAX_BUFFER = torch_empty(
-                    n_elements_absmax,
-                    dtype = torch_float32,
-                    device = device,
-                    requires_grad = False,
-                )
-
-            if size > WEIGHT_BUFFER.numel():
-                WEIGHT_BUFFER.resize_(size)
-            if n_elements_absmax > ABSMAX_BUFFER.numel():
-                ABSMAX_BUFFER.resize_(n_elements_absmax)
-
-            out = WEIGHT_BUFFER[:size].view(shape)
-            out_absmax = ABSMAX_BUFFER[:n_elements_absmax]
+        if out is not None:
+            assert out.shape == shape
+            assert out.dtype == dtype
+        elif use_global_buffer and _can_use_scratch(device):
+            out = _scratch("weight", device, shape[0] * shape[1], dtype).view(shape)
         else:
-            if out is None:
-                out = torch_empty(shape, dtype = dtype, device = device, requires_grad = False)
-            else:
-                assert out.shape == shape
-                assert out.dtype == dtype
+            out = torch_empty(shape, dtype = dtype, device = device, requires_grad = False)
+        if use_global_buffer and _can_use_scratch(device):
+            out_absmax = _scratch("absmax", device, n_elements_absmax, torch_float32)
+        else:
             out_absmax = torch_empty(
-                n_elements_absmax,
-                dtype = torch_float32,
-                device = device,
-                requires_grad = False,
+                n_elements_absmax, dtype = torch_float32, device = device, requires_grad = False
             )
-        pass
 
         ptr_out_absmax = get_ptr(out_absmax)
         with torch_gpu_device(device):
@@ -645,6 +895,8 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
             fx = (
                 cdequantize_blockwise_fp16_nf4
                 if dtype == torch_float16
+                else cdequantize_blockwise_fp32_nf4
+                if dtype == torch_float32
                 else cdequantize_blockwise_bf16_nf4
             )
             fx(
@@ -656,12 +908,116 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
                 ctypes_c_int(out.numel()),
                 CUDA_STREAM,
             )
-        pass
         # Careful returning transposed data.
         is_transposed = True if W.shape[0] == 1 else False
         return out.t() if is_transposed else out
 
-    pass
+    def fast_dequantize(
+        W,
+        quant_state = None,
+        out = None,
+        use_global_buffer = False,
+        dtype = None,
+    ):
+        if isinstance(W, Float8Tensor):
+            return W.dequantize()
+        if quant_state is None:
+            return W
+        if W.dtype == torch.float8_e4m3fn:
+            return weight_dequant(W, quant_state, dtype or torch.bfloat16)
+        if type(quant_state) is NVFP4QuantState:
+            return nvfp4_dequantize(
+                W, quant_state.scale, quant_state.global_scale, quant_state.dtype
+            )
+        if _quant_type(quant_state) != "nf4":
+            # The NF4 kernels would decode an FP4 weight with the wrong codebook.
+            return bnb_functional.dequantize_4bit(W, quant_state, out = out)
+        if not _USE_NF4_KERNELS:
+            return _fast_dequantize_ctypes(W, quant_state, out, use_global_buffer)
+        device = W.device
+        # Decode dequantizes each weight into the scratch buffer once per token: repeat the first
+        # launch for this weight directly (see dequantize_nf4_planned).
+        scratch = (
+            out is None
+            and use_global_buffer
+            and _can_use_scratch(device)
+            and device.index == _current_device()
+        )
+        if scratch and type(quant_state) is not list:
+            plan = getattr(quant_state, "_unsloth_nf4_plan", None)
+            if (
+                plan is not None
+                and (plan[0] == W.data_ptr() or _gathered_plan_hit(plan, W))
+                and plan[1] is quant_state.absmax
+                and plan[2] is quant_state.dtype
+            ):
+                if _SCRATCH.get(("weight", device.index)) is plan[4]:
+                    out = plan[5]
+                else:
+                    shape = quant_state.shape
+                    out = _scratch("weight", device, shape[0] * shape[1], plan[2]).view(shape)
+                    plan[4], plan[5] = _SCRATCH[("weight", device.index)], out
+                try:
+                    done = plan[3](out)
+                except Exception:
+                    done = False
+                if done:
+                    return out.t() if W.shape[0] == 1 else out
+                quant_state._unsloth_nf4_plan = None
+                out = None
+        absmax, shape, dtype, blocksize, code, code2, absmax2, offset, blocksize2 = (
+            _unpack_quant_state(quant_state)
+        )
+        if out is not None:
+            assert out.shape == shape
+            assert out.dtype == dtype
+        elif use_global_buffer and _can_use_scratch(device):
+            out = _scratch("weight", device, shape[0] * shape[1], dtype).view(shape)
+        try:
+            if (
+                scratch
+                and dtype in (torch_float16, torch_bfloat16, torch_float32)
+                and blocksize & (blocksize - 1) == 0
+                and (code2 is None or blocksize2 & (blocksize2 - 1) == 0)
+            ):
+                # Launches once; the scratch buffer always starts 16 byte aligned, as reruns need.
+                rerun = dequantize_nf4_planned(
+                    W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, out
+                )
+                if rerun is not None and type(quant_state) is not list:
+                    quant_state._unsloth_nf4_plan = _NF4Plan(
+                        [
+                            W.data_ptr(),
+                            absmax,
+                            dtype,
+                            rerun,
+                            _SCRATCH.get(("weight", device.index)),
+                            out,
+                            W,
+                        ]
+                    )
+            else:
+                out = dequantize_nf4(
+                    W,
+                    absmax,
+                    code2,
+                    absmax2,
+                    offset,
+                    code,
+                    blocksize,
+                    blocksize2,
+                    shape,
+                    dtype,
+                    out = out,
+                )
+        except Exception as error:
+            if not _nf4_kernels_failed(error):
+                raise
+            return _fast_dequantize_ctypes(W, quant_state, out, use_global_buffer)
+        # Careful returning transposed data.
+        is_transposed = True if W.shape[0] == 1 else False
+        return out.t() if is_transposed else out
+
 else:
 
     @torch.inference_mode
@@ -670,16 +1026,20 @@ else:
         quant_state = None,
         out = None,
         use_global_buffer = False,
+        dtype = None,
     ):
         if isinstance(W, Float8Tensor):
             return W.dequantize()
         if quant_state is None:
             return W
         if W.dtype == torch.float8_e4m3fn:
-            return weight_dequant(W, quant_state)
+            return weight_dequant(W, quant_state, dtype or torch.bfloat16)
+        if type(quant_state) is NVFP4QuantState:
+            return nvfp4_dequantize(
+                W, quant_state.scale, quant_state.global_scale, quant_state.dtype
+            )
         if type(quant_state) is not list:
-            # New quant_state as a class, per TimDettmers/bitsandbytes#763.
-            # https://github.com/TimDettmers/bitsandbytes/pull/763/files
+            # New quant_state as a class, per https://github.com/TimDettmers/bitsandbytes/pull/763
             absmax = quant_state.absmax
             shape = quant_state.shape
             dtype = quant_state.dtype
@@ -721,6 +1081,8 @@ else:
         fx = (
             cdequantize_blockwise_fp16_nf4
             if dtype == torch_float16
+            else cdequantize_blockwise_fp32_nf4
+            if dtype == torch_float32
             else cdequantize_blockwise_bf16_nf4
         )
         fx(
@@ -751,26 +1113,14 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             return torch_matmul(X, W, out = out)
         # Fast X @ W where seq_len == 1, from bitsandbytes functional.py#L1469 and TimDettmers/bitsandbytes#763.
         _, q_len, hd = X.shape
-
-        if type(quant_state) is not list:
-            absmax = quant_state.absmax
-            shape = quant_state.shape
-            dtype = quant_state.dtype
-            blocksize = quant_state.blocksize
-            stats = quant_state.code
-            offset = quant_state.offset
-            state2 = quant_state.state2
-            absmax2 = state2.absmax
-            code2 = state2.code
-            blocksize2 = state2.blocksize
-        else:
-            absmax, shape, dtype, blocksize, compressed_stats, quant_type, stats = quant_state
-            offset, state2 = compressed_stats
-            absmax2, code2, blocksize2, _, _, _, _ = state2
-        global XPU_STREAMS
+        absmax, shape, dtype, blocksize, stats, code2, absmax2, offset, blocksize2 = (
+            _unpack_quant_state(quant_state)
+        )
+        if shape[1] % blocksize != 0:
+            # The gemv kernel needs each weight row to start a new block (bitsandbytes' xpu gemm_4bit checks too).
+            return torch_matmul(X, fast_dequantize(W, quant_state, dtype = X.dtype).t(), out = out)
         device = W.device
-        device_index = device.index
-        XPU_STREAM = XPU_STREAMS[device_index]
+        XPU_STREAM = _get_tensor_stream(W)
 
         bout = shape[0]
 
@@ -785,12 +1135,9 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
                 device = device,
             )
 
-        if DEVICE_TYPE == "xpu":
-            m = 1
-            n = shape[0]
-        else:
-            n = 1
-            m = shape[0]
+        # The xpu gemv takes m = 1, n = rows (the CUDA one is transposed).
+        m = 1
+        n = shape[0]
         k = shape[1]
         lda = shape[0]
         ldc = shape[0]
@@ -802,19 +1149,20 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
         ldb = ctypes_c_int32(ldb)
         ldc = ctypes_c_int32(ldc)
 
-        df = torch_empty(absmax.shape, dtype = torch_float32, device = device)
         with torch_gpu_device(device):
-            cdequantize_blockwise_fp32(
-                get_ptr(code2),
-                get_ptr(absmax),
-                get_ptr(absmax2),
-                get_ptr(df),
-                ctypes_c_int(blocksize2),
-                ctypes_c_int(df.numel()),
-                XPU_STREAM,
-            )
-            df += offset
-            absmax = df
+            if code2 is not None:
+                df = torch_empty(absmax.shape, dtype = torch_float32, device = device)
+                cdequantize_blockwise_fp32(
+                    get_ptr(code2),
+                    get_ptr(absmax),
+                    get_ptr(absmax2),
+                    get_ptr(df),
+                    ctypes_c_int(blocksize2),
+                    ctypes_c_int(df.numel()),
+                    XPU_STREAM,
+                )
+                df += offset
+                absmax = df
 
             fx = (
                 cgemm_4bit_inference_naive_fp16
@@ -843,37 +1191,22 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
 
 elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
 
-    def fast_gemv(
+    def _fast_gemv_ctypes(
         X,
         W,
         quant_state,
         out = None,
     ):
-        if quant_state is None:
-            return torch_matmul(X, W, out = out)
         # Fast X @ W where seq_len == 1, from bitsandbytes functional.py#L1469 and TimDettmers/bitsandbytes#763.
         _, q_len, hd = X.shape
-
-        if type(quant_state) is not list:
-            absmax = quant_state.absmax
-            shape = quant_state.shape
-            dtype = quant_state.dtype
-            blocksize = quant_state.blocksize
-            stats = quant_state.code
-            offset = quant_state.offset
-            state2 = quant_state.state2
-            absmax2 = state2.absmax
-            code2 = state2.code
-            blocksize2 = state2.blocksize
-        else:
-            absmax, shape, dtype, blocksize, compressed_stats, quant_type, stats = quant_state
-            offset, state2 = compressed_stats
-            absmax2, code2, blocksize2, _, _, _, _ = state2
-        pass
-        global CUDA_STREAMS
+        absmax, shape, dtype, blocksize, stats, code2, absmax2, offset, blocksize2 = (
+            _unpack_quant_state(quant_state)
+        )
+        if shape[1] % blocksize != 0:
+            # The gemv kernels assume each weight row starts a new quantization block.
+            return torch_matmul(X, fast_dequantize(W, quant_state, dtype = X.dtype).t(), out = out)
         device = W.device
-        device_index = device.index
-        CUDA_STREAM = CUDA_STREAMS[device_index]
+        CUDA_STREAM = c_void_p(_gpu_getCurrentRawStream(device.index))
 
         bout = shape[0]
 
@@ -901,19 +1234,20 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
         ldb = ctypes_c_int32(ldb)
         ldc = ctypes_c_int32(ldc)
 
-        df = torch_empty(absmax.shape, dtype = torch_float32, device = device)
         with torch_gpu_device(device):
-            cdequantize_blockwise_fp32(
-                get_ptr(code2),
-                get_ptr(absmax),
-                get_ptr(absmax2),
-                get_ptr(df),
-                ctypes_c_int(blocksize2),
-                ctypes_c_int(df.numel()),
-                CUDA_STREAM,
-            )
-            df += offset
-            absmax = df
+            if code2 is not None:
+                df = torch_empty(absmax.shape, dtype = torch_float32, device = device)
+                cdequantize_blockwise_fp32(
+                    get_ptr(code2),
+                    get_ptr(absmax),
+                    get_ptr(absmax2),
+                    get_ptr(df),
+                    ctypes_c_int(blocksize2),
+                    ctypes_c_int(df.numel()),
+                    CUDA_STREAM,
+                )
+                df += offset
+                absmax = df
 
             fx = (
                 cgemm_4bit_inference_naive_fp16
@@ -937,11 +1271,90 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
                 blocksize,
                 CUDA_STREAM,
             )
-        pass
 
         return out
 
-    pass
+    def fast_gemv(
+        X,
+        W,
+        quant_state,
+        out = None,
+    ):
+        if quant_state is None:
+            return torch_matmul(X, W, out = out)
+        if not _USE_NF4_KERNELS or not (_TRITON_GEMV_EAGER or _is_compiling()):
+            return _fast_gemv_ctypes(X, W, quant_state, out)
+        # Eager decode runs every weight once per token: repeat the first launch for this weight
+        # directly (see gemv_nf4_planned).
+        eager = (
+            not _is_compiling()
+            and type(quant_state) is not list
+            and X.is_contiguous()
+            and X.device.index == _current_device()
+        )
+        if eager:
+            plan = getattr(quant_state, "_unsloth_gemv_plan", None)
+            if (
+                plan is not None
+                and plan[0] == W.data_ptr()
+                and plan[1] is quant_state.absmax
+                and plan[2] is X.dtype
+                and X.data_ptr() & 15 == plan[3]
+                and (out is None or (out.dtype is X.dtype and out.data_ptr() & 15 == 0))
+            ):
+                if out is None:
+                    out = torch_empty((1, 1, plan[4]), dtype = X.dtype, device = X.device)
+                try:
+                    done = plan[5](X, out)
+                except Exception:
+                    done = False
+                if done:
+                    return out
+                quant_state._unsloth_gemv_plan = None
+        absmax, shape, dtype, blocksize, code, code2, absmax2, offset, blocksize2 = (
+            _unpack_quant_state(quant_state)
+        )
+        if shape[1] % blocksize != 0:
+            # The gemv kernels assume each weight row starts a new quantization block.
+            return torch_matmul(X, fast_dequantize(W, quant_state, dtype = X.dtype).t(), out = out)
+        try:
+            if (
+                eager
+                and X.dim() == 3
+                and X.shape[0] == 1
+                and X.shape[1] == 1
+                and (out is None or (out.dtype is X.dtype and out.data_ptr() & 15 == 0))
+            ):
+                if out is None:
+                    out = torch_empty((1, 1, int(shape[0])), dtype = X.dtype, device = X.device)
+                # Launches once.
+                rerun = gemv_nf4_planned(
+                    X, W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape, out
+                )
+                if rerun is not None:
+                    quant_state._unsloth_gemv_plan = _NF4Plan(
+                        [W.data_ptr(), absmax, X.dtype, X.data_ptr() & 15, int(shape[0]), rerun]
+                    )
+                return out
+            return gemv_nf4(
+                X,
+                W,
+                absmax,
+                code2,
+                absmax2,
+                offset,
+                code,
+                blocksize,
+                blocksize2,
+                shape,
+                dtype,
+                out = out,
+            )
+        except Exception as error:
+            if not _nf4_kernels_failed(error):
+                raise
+            return _fast_gemv_ctypes(X, W, quant_state, out)
+
 else:
 
     def fast_gemv(
@@ -1037,12 +1450,298 @@ else:
     pass
 
 
+from .int4_packed import (
+    Int4QuantState,
+    int4_dequantize_weight as _int4_dequantize_weight,
+    int4_matmul as _int4_matmul,
+)
+
+_fast_dequantize_bnb = fast_dequantize
+_fast_gemv_bnb = fast_gemv
+
+
+def fast_dequantize(
+    W,
+    quant_state = None,
+    out = None,
+    use_global_buffer = False,
+    dtype = None,
+):
+    # dtype only steers the FP8 dequant (default bf16); every other format keeps its own dtype.
+    quant_type = type(quant_state)
+    if quant_type is Int4QuantState:
+        return _int4_dequantize_weight(W, quant_state)
+    # A packed MXFP4 base hands in weight_packed (or its .t()) with a decoder as the quant state.
+    if getattr(quant_type, "_unsloth_packed_weight_state", False):
+        return quant_state.dequantize(W)
+    return _fast_dequantize_bnb(
+        W, quant_state, out = out, use_global_buffer = use_global_buffer, dtype = dtype
+    )
+
+
+def fast_gemv(
+    X,
+    W,
+    quant_state,
+    out = None,
+):
+    if type(quant_state) is Int4QuantState:
+        return _int4_matmul(X, W, quant_state, out = out)
+    return _fast_gemv_bnb(X, W, quant_state, out = out)
+
+
+def _quant_state_dtype(quant_state):
+    if type(quant_state) is list:
+        return quant_state[2]
+    return getattr(quant_state, "dtype", None)
+
+
+# Max GEMV decode rows per compute capability, from end-to-end decode A/Bs (#2798). Fixed, not timed, so
+# decoding is reproducible; others dequantize. UNSLOTH_GEMV_MAX_ROWS overrides where the Triton GEMV runs.
+_GEMV_ROWS_BY_ARCH = {(7, 5): 4, (8, 0): 2, (8, 9): 4, (12, 0): 4}
+_GEMV_ROWS_CAP = {}
+
+
+def _gemv_rows_cap(device):
+    index = device.index
+    cap = _GEMV_ROWS_CAP.get(index)
+    if cap is None:
+        if "UNSLOTH_GEMV_MAX_ROWS" in os.environ:
+            cap = _GEMV_MAX_ROWS
+        else:
+            try:
+                # ROCm reports gfx versions here (gfx1200 is (12, 0)), so the table is CUDA only.
+                arch = None if torch.version.hip else torch.cuda.get_device_capability(device)
+            except Exception:
+                arch = None
+            cap = min(_GEMV_MAX_ROWS, _GEMV_ROWS_BY_ARCH.get(arch, 1))
+        _GEMV_ROWS_CAP[index] = cap
+    return cap
+
+
+# bitsandbytes >= 0.50 fused 4-bit GEMM above the GEMV cap: faster end to end only where the GPU, not the
+# launch loop, bounds decode (T4; slower on A100). UNSLOTH_BNB_GEMM_4BIT=0 off, =1 any arch and dtype.
+_BNB_GEMM_4BIT_MAX_ROWS = 16
+_BNB_GEMM_4BIT_ARCHS = {(7, 5)}
+# sm75 has fp16 MMA only: bitsandbytes itself dequantizes bf16 batches of 8+ there.
+_BNB_GEMM_4BIT_DTYPES = (torch.float16,)
+# None = undecided; False lets fast_linear_forward skip the check.
+_BNB_GEMM_4BIT = None
+_BNB_GEMM_4BIT_DEVICE = {}
+
+
+def _bnb_gemm_4bit_arch_ok(device):
+    return (
+        os.environ.get("UNSLOTH_BNB_GEMM_4BIT") == "1"
+        or torch.cuda.get_device_capability(device) in _BNB_GEMM_4BIT_ARCHS
+    )
+
+
+def _bnb_gemm_4bit_device_ok(device):
+    index = device.index
+    ok = _BNB_GEMM_4BIT_DEVICE.get(index)
+    if ok is None:
+        try:
+            ok = _bnb_gemm_4bit_arch_ok(device)
+        except Exception:
+            ok = False
+        _BNB_GEMM_4BIT_DEVICE[index] = ok
+    return ok
+
+
+def _bnb_gemm_4bit_ok(X, W, quant_state):
+    global _BNB_GEMM_4BIT, _BNB_GEMM_4BIT_DTYPES
+    # Before the lazy setup: dynamo cannot trace torch.cuda.device_count().
+    if _is_compiling() or torch.is_grad_enabled():
+        return False
+    if _BNB_GEMM_4BIT is None:
+        if os.environ.get("UNSLOTH_BNB_GEMM_4BIT") == "1":
+            _BNB_GEMM_4BIT_DTYPES = (torch.float16, torch.bfloat16)
+        try:
+            _BNB_GEMM_4BIT = (
+                bnb is not None
+                and torch.version.hip is None
+                and os.environ.get("UNSLOTH_BNB_GEMM_4BIT") != "0"
+                and hasattr(torch.ops.bitsandbytes, "gemm_4bit")
+                and any(_bnb_gemm_4bit_arch_ok(i) for i in range(torch.cuda.device_count()))
+            )
+        except Exception:
+            _BNB_GEMM_4BIT = False
+    return (
+        _BNB_GEMM_4BIT
+        and X.dtype in _BNB_GEMM_4BIT_DTYPES
+        and X.is_cuda
+        and _bnb_gemm_4bit_device_ok(X.device)
+        # bitsandbytes passes raw pointers to the kernel on X's device.
+        and W.device == X.device
+        and type(quant_state) is not list
+        and quant_state.absmax.device == X.device
+        and getattr(quant_state, "quant_type", None) in ("nf4", "fp4")
+        # bitsandbytes dequantizes (and warns) itself when K is not a multiple of the blocksize.
+        and quant_state.shape[-1] % quant_state.blocksize == 0
+        # matmul_4bit raises for any other nested blocksize.
+        and (not quant_state.nested or quant_state.state2.blocksize == 256)
+    )
+
+
+def _gemv_rows(X, W, quant_state, out):
+    """One gemv_nf4_rows launch for 2.._GEMV_MAX_ROWS decode rows (#2798); None = dequantize."""
+    M = X.shape[0]
+    # First, so rows above the cap cost the dequantize path nothing.
+    if not 2 <= M <= _gemv_rows_cap(X.device) or W.device != X.device:
+        return None
+    eager = (
+        not _is_compiling()
+        and type(quant_state) is not list
+        and X.is_contiguous()
+        and X.device.index == _current_device()
+    )
+    if eager:
+        plans = getattr(quant_state, "_unsloth_gemv_rows", None)
+        plan = plans.get(M) if plans is not None else None
+        if (
+            plan
+            and plan[0] == W.data_ptr()
+            and plan[1] is quant_state.absmax
+            and plan[2] is X.dtype
+            and X.data_ptr() & 15 == plan[3]
+            and X.numel() == M * plan[7]
+            and (
+                plan[4] == plan[6]
+                if out is None
+                else (
+                    out.dtype is X.dtype
+                    and out.data_ptr() & 15 == 0
+                    and out.stride(0) == plan[4]
+                    and out.stride(-1) == 1
+                    and out.shape == (M, 1, plan[6])
+                    and out.device == X.device
+                )
+            )
+        ):
+            if out is None:
+                out = torch_empty((M, 1, plan[6]), dtype = X.dtype, device = X.device)
+            try:
+                if plan[5](X, out):
+                    return out
+            except Exception:
+                pass
+            plans.pop(M, None)
+    absmax, shape, dtype, blocksize, code, code2, absmax2, offset, blocksize2 = _unpack_quant_state(
+        quant_state
+    )
+    if (
+        shape[1] % blocksize != 0
+        or X.dtype not in (torch.float16, torch.bfloat16)
+        or X.numel() != M * shape[1]
+        or any(t is not None and t.device != X.device for t in (absmax, code, code2, absmax2))
+    ):
+        return None
+    if out is not None and (
+        out.device != X.device
+        or out.dtype != X.dtype
+        or out.stride(-1) != 1
+        or out.shape != (M, 1, shape[0])
+        or out.stride(0) < shape[0]
+    ):
+        return None
+    if not X.is_contiguous():
+        X = X.contiguous()
+    args = (absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape)
+    try:
+        if out is None:
+            out = torch_empty((M, 1, shape[0]), dtype = X.dtype, device = X.device)
+        if not eager or out.data_ptr() & 15:
+            return gemv_nf4_rows(X, W, *args, out)
+        rerun = gemv_nf4_rows_planned(X, W, *args, out)
+        if rerun is not None:
+            _rows_plans(quant_state)[M] = _NF4Plan(
+                [
+                    W.data_ptr(),
+                    quant_state.absmax,
+                    X.dtype,
+                    X.data_ptr() & 15,
+                    out.stride(0),
+                    rerun,
+                    int(shape[0]),
+                    int(shape[1]),
+                ]
+            )
+        return out
+    except Exception as error:
+        if not _nf4_kernels_failed(error):
+            raise
+        return None
+
+
+class _NF4Plans(dict):
+    # Rows -> _NF4Plan; dropped by copies and pickles.
+    def __reduce__(self):
+        return (_no_plan, ())
+
+
+def _rows_plans(quant_state):
+    plans = getattr(quant_state, "_unsloth_gemv_rows", None)
+    if plans is None:
+        plans = quant_state._unsloth_gemv_rows = _NF4Plans()
+    return plans
+
+
+_OPTIMIZER_STEPS = 0
+
+
+def _count_optimizer_step(optimizer, args, kwargs):
+    global _OPTIMIZER_STEPS
+    _OPTIMIZER_STEPS += 1
+
+
+try:
+    # Fused optimizers (AdamW(fused = True), the transformers default on torch >= 2.8) update
+    # parameters without bumping _version, so the LoRA cast cache also keys on optimizer steps.
+    from torch.optim.optimizer import register_optimizer_step_post_hook
+    register_optimizer_step_post_hook(_count_optimizer_step)
+except Exception:
+    pass
+
+
+def _fast_lora_weights(lora_A, lora_B, dtype):
+    if lora_A.dtype == dtype and lora_B.dtype == dtype:
+        return lora_A, lora_B
+    # Keyed on _version: adapters keep training between decodes (GRPO). Inference tensors have no
+    # version counter (and cannot change outside inference mode), so they key on storage alone.
+    if lora_A.is_inference() or lora_B.is_inference():
+        key = (None, None, lora_A.data_ptr(), lora_B.data_ptr(), dtype)
+    else:
+        key = (
+            _OPTIMIZER_STEPS,
+            lora_A._version,
+            lora_B._version,
+            lora_A.data_ptr(),
+            lora_B.data_ptr(),
+            dtype,
+        )
+    cache = getattr(lora_A, "_fast_lora", None)
+    if cache is None or cache[0] != key:
+        cache = (key, lora_A.to(dtype), lora_B.to(dtype))
+        lora_A._fast_lora = cache
+    return cache[1], cache[2]
+
+
 def fast_linear_forward(
     proj,
     X,
     temp_lora = None,
     out = None,
 ):
+    if (
+        _has_non_lora_adapter(proj)
+        or _has_multiple_active_adapters(proj)
+        or _has_active_dora_adapter(proj)
+        or _has_active_lora_bias(proj)
+        or _has_packed_qweight(proj)
+    ):
+        result = proj(X)
+        return result if out is None else out.copy_(result)
     W, W_quant, lora_A, lora_B, lora_S, bias = get_lora_parameters_bias(proj)
     bsz, q_len, in_dim = X.shape
     if q_len != 1:
@@ -1050,36 +1749,107 @@ def fast_linear_forward(
 
     if W_quant is None:
         out = torch_matmul(X, W.t(), out = out)
+    elif type(W_quant) is NVFP4QuantState:
+        # Bias is added once below.
+        out = nvfp4_linear(X, W, W_quant.scale, W_quant.global_scale)
+        # Autocast returns its dtype; in-place LoRA / out= decode buffers need X.dtype.
+        if out.dtype != X.dtype:
+            out = out.to(X.dtype)
+    elif _is_packed_state(W_quant):
+        out = W_quant.matmul(X, W, out = out)
     elif W.dtype == torch.float8_e4m3fn:
-        out = fp8_linear(X, W, W_quant, bias)
-    elif bsz == 1 and q_len == 1:
+        # The bias is added once below; the per-channel fp8_linear path would add it a second time.
+        if can_use_fp8_rowwise_gemv(X, W, W_quant):
+            out = fp8_rowwise_gemv(X, W, W_quant)
+        else:
+            out = fp8_linear(X, W, W_quant)
+    elif type(W_quant) is Int4QuantState:
+        out = _int4_matmul(X, W, W_quant, out = out)
+    elif bsz == 1 and q_len == 1 and _quant_state_dtype(W_quant) != torch_float32:
+        # The 4bit gemv kernels are fp16/bf16 only.
         out = fast_gemv(X, W, W_quant, out = out)
+    elif (
+        2 <= bsz <= _GEMV_MAX_ROWS
+        and _USE_NF4_KERNELS
+        and _TRITON_GEMV_EAGER
+        and _quant_state_dtype(W_quant) != torch_float32
+        and (rows := _gemv_rows(X, W, W_quant, out)) is not None
+    ):
+        out = rows
+    elif (
+        # _is_compiling() first: reading the lazy global while tracing guards on it and recompiles later.
+        not _is_compiling()
+        and _BNB_GEMM_4BIT is not False
+        and bsz <= _BNB_GEMM_4BIT_MAX_ROWS
+        and _bnb_gemm_4bit_ok(X, W, W_quant)
+    ):
+        out = bnb.matmul_4bit(X, W.t(), quant_state = W_quant, out = out)
     else:
-        W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
+        W = fast_dequantize(W.t(), W_quant, use_global_buffer = True, dtype = X.dtype)
         out = torch_matmul(X, W, out = out)
+
+    if out.dtype != X.dtype:
+        # torch.matmul under a different autocast dtype returns that dtype; the LoRA update, decode
+        # buffers and every other branch here work in X.dtype.
+        out = out.to(X.dtype)
 
     if lora_A is not None:
         out_dim = out.shape[2]
         dtype = X.dtype
 
-        if not hasattr(lora_A, "_fast_lora"):
-            lora_A._fast_lora = lora_A.to(dtype)
-            lora_B._fast_lora = lora_B.to(dtype)
+        if _is_compiling():
+            A, B = lora_A.to(dtype), lora_B.to(dtype)
+        else:
+            A, B = _fast_lora_weights(lora_A, lora_B, dtype)
 
         if bsz == 1:
             out = out.view(out_dim)
-            temp_lora = torch_mv(lora_A._fast_lora, X.ravel(), out = temp_lora)
-            out.addmv_(lora_B._fast_lora, temp_lora, alpha = lora_S)
+            temp_lora = torch_mv(A, X.ravel(), out = temp_lora)
+            # Without out=, mv / mm follow a different autocast dtype; the in-place update does not.
+            if temp_lora.dtype != dtype:
+                temp_lora = temp_lora.to(dtype)
+            out.addmv_(B, temp_lora, alpha = lora_S)
         else:
             out = out.view(bsz, out_dim)
-            temp_lora = torch_mm(X.view(bsz, in_dim), lora_A._fast_lora.t(), out = temp_lora)
-            out.addmm_(temp_lora, lora_B._fast_lora.t(), alpha = lora_S)
+            temp_lora = torch_mm(X.view(bsz, in_dim), A.t(), out = temp_lora)
+            if temp_lora.dtype != dtype:
+                temp_lora = temp_lora.to(dtype)
+            out.addmm_(temp_lora, B.t(), alpha = lora_S)
         out = out.view(bsz, 1, out_dim)
 
     if bias is not None:
         out += bias
 
     return out
+
+
+# Traced, x.addmm_ copies x first; this op stays in place. No derivative: grad off only.
+_HAS_ADDMM_OP = hasattr(torch.library, "custom_op")
+if _HAS_ADDMM_OP:
+
+    @torch.library.custom_op("unsloth::addmm_", mutates_args = ["out"])
+    def _addmm_op(
+        out: torch.Tensor, A: torch.Tensor, B: torch.Tensor, alpha: float, beta: float
+    ) -> None:
+        out.addmm_(A, B, alpha = alpha, beta = beta)
+
+
+def addmm_(
+    out,
+    A,
+    B,
+    alpha = 1.0,
+    beta = 1.0,
+):
+    if (
+        _HAS_ADDMM_OP
+        and torch.compiler.is_compiling()
+        and not torch.is_grad_enabled()
+        and type(alpha) in (int, float)
+    ):
+        torch.ops.unsloth.addmm_(out, A, B, alpha, beta)
+        return out
+    return out.addmm_(A, B, alpha = alpha, beta = beta)
 
 
 def matmul_lora(
@@ -1090,6 +1860,7 @@ def matmul_lora(
     B,
     s,
     out = None,
+    use_global_buffer = True,
 ):
     dtype = X.dtype
 
@@ -1110,8 +1881,13 @@ def matmul_lora(
         out = torch_matmul(X, W.t(), out = out)
     elif W.dtype == torch.float8_e4m3fn:
         out = fp8_linear(X, W, W_quant)
+    elif type(W_quant) is Int4QuantState and W.stride(-1) == 1:
+        # Forward orientation: few rows use the fused kernel, the rest decode once + cuBLAS.
+        out = _int4_matmul(X, W, W_quant, out = out)
+    elif _is_packed_state(W_quant):
+        out = W_quant.matmul(X, W, out = out)
     else:
-        W = fast_dequantize(W, W_quant, use_global_buffer = True)
+        W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
         out = torch_matmul(X, W.t(), out = out)
     if W_quant is not None:
         del W
@@ -1119,6 +1895,6 @@ def matmul_lora(
     if A is not None:
         A, B = A.t(), B.t()
         XA = torch_matmul(X, A.to(dtype))
-        out.addmm_(XA, B.to(dtype), alpha = s)
+        addmm_(out, XA, B.to(dtype), alpha = s)
 
     return out.view(batch, seq_len, -1) if reshape else out

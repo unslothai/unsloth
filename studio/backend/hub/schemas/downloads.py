@@ -45,6 +45,13 @@ class DownloadModelRequest(BaseModel):
         default_factory = list,
         description = "Exact files to fetch. Required with scope_id, ignored without it.",
     )
+    download_dir: Optional[str] = Field(
+        None,
+        max_length = 4096,
+        description = "Folder to download into instead of the Models folder. It is used like a "
+        "Models folder (files land under its hub/ subfolder) and is added to Custom Folders. "
+        "Omitted -> the Models folder.",
+    )
 
 
 class CancelDownloadRequest(BaseModel):
@@ -71,6 +78,10 @@ class DownloadJobStatus(BaseModel):
         0,
         description = "Current run generation; an adopting client stores it so a later cancel is scoped to this exact run.",
     )
+    attempt: int = Field(
+        1,
+        description = "Worker attempt within this generation; a retry that restarts the file bumps it so a client drops the old run's progress.",
+    )
 
 
 class DownloadStartResponse(BaseModel):
@@ -82,10 +93,7 @@ class DownloadStartResponse(BaseModel):
     generation: int
     # The transport the job is really on, which can differ from the one the client asked for.
     transport: Optional[str] = None
-    # Set only when an adopted job had fallen back from Xet to HTTP: stopping it still writes the
-    # original marker, so it is a restart, not a resume.
-    # Set only on a job that fell back from Xet to HTTP mid-flight: cancelling it still writes the original
-    # transport's marker, so the partial is restart-only even though the worker is on resumable HTTP.
+    # Set when a job fell back from Xet to HTTP: cancelling leaves a restart-only partial.
     cancel_transport: Optional[str] = None
 
 
@@ -101,6 +109,8 @@ class ActiveDownload(BaseModel):
     variant: Optional[str] = None
     transport: Optional[str] = None
     cancel_transport: Optional[str] = None
+    owner: Optional[str] = None
+    load_attached: Optional[bool] = None
     state: str
     files: Optional[List[str]] = Field(
         None,
@@ -131,8 +141,7 @@ class TransportCapabilities(BaseModel):
     xet: TransportCapability
     auto_resolves_to: Literal["xet", "http"] = "xet"
     auto_reason: Optional[str] = None
-    # False when the installed huggingface_hub refetches an interrupted file from zero, so no transport
-    # can offer a byte-resume and the UI must not label one.
+    # False when huggingface_hub refetches interrupted files from zero; no transport can byte-resume, so the UI must not label one.
     partials_resumable: bool = True
 
 
@@ -143,9 +152,9 @@ class TransportStatusResponse(BaseModel):
 
 
 class DownloadProgressResponse(BaseModel):
+    progress_scope: Optional[Literal["active_files"]] = None
     downloaded_bytes: int
-    # Finalized-blob bytes only: registry-loss completion fallbacks key off this, so a partial is not
-    # mistaken for a finished download.
+    # Finalized-blob bytes only, so a partial is not mistaken for finished.
     completed_bytes: int = 0
     complete_on_disk: bool = Field(
         False,
@@ -156,8 +165,7 @@ class DownloadProgressResponse(BaseModel):
     expected_bytes: int
     progress: float
     cache_path: Optional[str] = None
-    # Opaque stand-in for ``cache_path``. A redacted reading is an empty string, never null,
-    # so the discriminator above survives.
+    # Redacted reading is "", never null, so the discriminator survives.
     cache_ref: Optional[str] = None
     cache_measured: bool = Field(
         True,
@@ -212,6 +220,10 @@ class DatasetDownloadJobStatus(BaseModel):
     generation: int = Field(
         0,
         description = "Current run generation; an adopting client stores it so a later cancel is scoped to this exact run.",
+    )
+    attempt: int = Field(
+        1,
+        description = "Worker attempt within this generation; a retry that restarts the file bumps it so a client drops the old run's progress.",
     )
 
 

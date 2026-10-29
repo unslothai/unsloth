@@ -36,8 +36,7 @@ class FakeServer:
         error = None,
     ):
         self.requests.append((method, url))
-        # Both spellings: the CLI asks for the resident listing and falls back to
-        # /v1/models against a server too old to serve it.
+        # The CLI falls back to /v1/models against a server too old for loaded-models.
         if url.endswith(("/api/inference/loaded-models", "/v1/models")):
             return {"data": [dict(m) for m in self.models]}
         if url.endswith("/api/inference/status"):
@@ -451,7 +450,6 @@ class TestExplicitFlagsThroughTheRealCli:
         finally:
             start_cli._connect = real_connect
         if "load" not in captured:
-            # Without the exit code, a parser incompatibility reads as a dropped flag.
             pytest.fail(
                 f"{argv} never reached _connect (exit {result.exit_code}): "
                 f"{result.exception!r}\n{result.output}"
@@ -492,7 +490,6 @@ class TestExplicitFlagsThroughTheRealCli:
     def test_every_agent_command_tracks_flags_identically(self, command):
         load = self._load_for([command, "--no-launch", "--context-length", "0"])
         assert "max_seq_length" in load.supplied
-        # overrides() is what _resolve_model reads; supplied alone never reaches the load.
         assert "max_seq_length" in load.overrides()
 
 
@@ -924,6 +921,53 @@ def test_the_requested_mlx_kv_width_survives_a_reload(monkeypatch):
     start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
 
     assert server.loads[0]["mlx_kv_bits"] == 4
+
+
+def test_a_turboquant_resident_reloads_as_turboquant(monkeypatch):
+    """tq-4 and mx.quantize 4 share a width, so only mlx_kv_quant keeps the scheme."""
+    server = FakeServer(
+        [dict(RESIDENT)],
+        {
+            "is_gguf": False,
+            "active_model": RESIDENT["id"],
+            "model_identifier": RESIDENT["id"],
+            "requested_context_length": 4096,
+            "load_in_4bit": True,
+            "mlx_kv_quant": "tq-4",
+            "mlx_kv_quant_requested": "tq-4",
+            "mlx_kv_bits": 4,
+            "mlx_kv_bits_requested": 4,
+        },
+    ).install(monkeypatch)
+
+    start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
+
+    assert server.loads[0]["mlx_kv_quant"] == "tq-4"
+
+
+def test_a_resident_keeps_its_mlx_offload_on_reload(monkeypatch):
+    server = FakeServer(
+        [dict(RESIDENT)],
+        {
+            "is_gguf": False,
+            "active_model": RESIDENT["id"],
+            "model_identifier": RESIDENT["id"],
+            "requested_context_length": 4096,
+            "load_in_4bit": True,
+            "mlx_offload": {
+                "ple": {"requested": "off", "applied": None},
+                # applied, which a reload must not send back as the request
+                "experts": {"requested": 0.75, "applied": None},
+            },
+        },
+    ).install(monkeypatch)
+
+    start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
+
+    assert (server.loads[0]["mlx_ple_offload"], server.loads[0]["mlx_expert_offload"]) == (
+        "off",
+        0.75,
+    )
 
 
 def test_a_proven_no_op_skips_the_preload_gate(monkeypatch):

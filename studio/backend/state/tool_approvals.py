@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Per-call tool-call confirmation gate.
-
-When a chat request sets ``confirm_tool_calls``, the agentic loop pauses before executing each tool and waits here for the user's decision, which arrives via ``POST /api/inference/tool-confirm`` on a separate connection.
-
-Each gated call is identified by a unique ``approval_id`` (minted with ``new_approval_id``) that the loop registers here and echoes in the ``tool_start`` stream event. The frontend sends that exact id back, so a stale or duplicate confirmation, or a second tool awaiting a decision in the same session, can never resolve the wrong call; ``session_id`` is kept alongside purely as a scope check.
-
-The slot is registered with ``begin_tool_decision`` *before* the loop yields ``tool_start``, closing the race where a fast confirmation (or an auto "Always allow") could arrive before the waiter exists. ``wait_tool_decision`` then blocks and cleans up its own slot.
-"""
+"""Per-call approval gate keyed by approval_id; begin_tool_decision registers before tool_start"""
 
 import os
 import secrets
@@ -20,21 +13,12 @@ from state import run_subscribers
 # Generous ceiling so a user can deliberate; the stop button or a disconnect still breaks the wait early via cancel_event.
 _DECISION_TIMEOUT = 3600.0
 
-# How long a durable (parked) approval waits for a human before denying and letting the agent continue.
-# Default is generous enough for "grab your phone" but short enough that an unattended agentic loop
-# doesn't stall for the full lease window. 0 denies at the first poll, so a decision that lands inside
-# that first 500ms still wins; it is "autonomous", not "instant".
+# Durable approval wait before auto-deny. 0 denies at the first 500ms poll, not instantly.
 _PARK_TIMEOUT_DEFAULT_S = 300.0
 
 
 def _park_timeout_from_env() -> float:
-    """Read the park ceiling once, at import, tolerating a value nobody can parse.
-
-    Read here rather than per wait so one run cannot change ceiling mid-flight. A typo must not be
-    fatal: this module is imported on the chat path, so raising would take the backend down at
-    startup over an environment variable, and a stuck approval is the lesser failure. A negative or
-    non-finite value would disable the ceiling silently, so both fall back too.
-    """
+    """Read once at import so a run cannot change it mid-flight; a bad value falls back, never raises."""
     raw = os.environ.get("UNSLOTH_STUDIO_TOOL_APPROVAL_TIMEOUT_S")
     if raw is None or not raw.strip():
         return _PARK_TIMEOUT_DEFAULT_S
@@ -63,28 +47,20 @@ _LEASE_RENEW_EVERY_S = 30.0
 # Fed to the model as the tool result when the user denies a call, so it can adapt instead of the turn ending abruptly.
 TOOL_REJECTED_MESSAGE = "The user declined to run this tool call."
 
-# The same, for a call that hit its park ceiling unanswered. Distinct from TOOL_REJECTED_MESSAGE
-# because the model and the card read the result verbatim, and by then it is the only account of the
-# call the returning user gets: telling them they declined something they never saw is false.
+# Distinct from TOOL_REJECTED_MESSAGE: the user never declined it.
 TOOL_APPROVAL_EXPIRED_MESSAGE = (
     "This tool call was not run: nobody answered the approval request in time."
 )
 
-# Why wait_tool_decision returned, on the slot rather than in the return value, so the verdict stays
-# a bare "allow"/"deny": the three tool loops patch it by name in tests
-# (core.inference.llama_cpp.wait_tool_decision and friends), and a fake that knows nothing about
-# reasons leaves slot["reason"] untouched, which reads as the old behaviour.
+# On the slot, not the return value: tests patch wait_tool_decision with fakes returning bare
+# "allow"/"deny".
 DECISION_ANSWERED = "answered"
 DECISION_CANCELLED = "cancelled"
 DECISION_EXPIRED = "expired"
 
 
 def decision_reason(slot) -> Optional[str]:
-    """Why ``wait_tool_decision`` returned for ``slot``, or None if it did not say.
-
-    None on purpose for a slot a stubbed waiter never touched: the caller then falls back to
-    TOOL_REJECTED_MESSAGE, which is exactly what it did before reasons existed.
-    """
+    """None means no reason was recorded, so the caller falls back to TOOL_REJECTED_MESSAGE."""
     if not isinstance(slot, dict):
         return None
     return slot.get("reason")
@@ -95,6 +71,42 @@ _lock = threading.Lock()
 _pending: dict[str, dict] = {}
 
 
+class LiveToolPermissions:
+    """One live tool loop's upgrade, never a process/session-wide permission grant."""
+
+    def __init__(
+        self,
+        session_id,
+        cancel_event = None,
+    ):
+        from utils.account_context import current_account
+
+        self.session_id = session_id or ""
+        self.account = current_account()
+        self.account_id = self.account.account_id
+        self.cancel_event = cancel_event
+        self._full = threading.Event()
+
+    def apply(self, permission_mode, bypass_permissions):
+        if self._full.is_set():
+            return "full", True
+        return permission_mode, bypass_permissions
+
+
+def bind_permission_upgrade(
+    slot,
+    permissions,
+    *,
+    eligible = True,
+):
+    """Bind before yielding the approval card; image disclosure alone never grants full access."""
+    if not isinstance(slot, dict) or not eligible or permissions is None:
+        return
+    with _lock:
+        if slot.get("session") == permissions.session_id and permissions.session_id:
+            slot["permission_upgrade"] = permissions
+
+
 def new_approval_id() -> str:
     """Mint an unguessable id for one pending tool-call confirmation."""
     return secrets.token_urlsafe(16)
@@ -102,8 +114,11 @@ def new_approval_id() -> str:
 
 def begin_tool_decision(session_id, approval_id) -> dict:
     """Register a pending decision slot and return it. Call this *before* yielding the ``tool_start`` event so the waiter always exists by the time the user's confirmation can arrive."""
+    from utils.account_context import current_account_id
+
     slot = {
         "event": threading.Event(),
+        "account_id": current_account_id(),
         "decision": None,
         "session": session_id or "",
         # Filled in by wait_tool_decision; read back with decision_reason().
@@ -114,31 +129,60 @@ def begin_tool_decision(session_id, approval_id) -> dict:
     return slot
 
 
+def note_host_access(approval_id, tool_name, arguments) -> None:
+    """Flag a registered call whose approval would reach host paths, so ``/tool-confirm`` can refuse it to an API key."""
+    if not approval_id:
+        return
+    from core.inference.tools import approval_grants_host_access
+
+    try:
+        grants = approval_grants_host_access(tool_name, arguments)
+    except Exception:  # noqa: BLE001 - unclassifiable counts as host access here
+        grants = True
+    with _lock:
+        slot = _pending.get(approval_id)
+        if slot is not None:
+            slot["host_access"] = bool(grants)
+
+
+def tool_decision_grants_host_access(approval_id, session_id = None) -> bool:
+    """True when allowing this pending call would let it reach host paths (``note_host_access``)."""
+    if not approval_id:
+        return False
+    with _lock:
+        slot = _pending.get(approval_id)
+        if not slot:
+            return False
+        if session_id is not None and slot["session"] != (session_id or ""):
+            return False
+        return bool(slot.get("host_access"))
+
+
 def wait_tool_decision(
     slot,
     approval_id,
     cancel_event = None,
     timeout = _DECISION_TIMEOUT,
 ):
-    """Block on a slot from ``begin_tool_decision`` until the user decides. Returns ``"allow"`` or ``"deny"``, falling back to ``"deny"`` if the wait times out or generation is cancelled first. Records WHY in ``slot["reason"]`` (see ``decision_reason``), because a bare ``"deny"`` cannot tell a user who refused from an approval nobody answered, and the loops report one of those to the user as their own decision. Always removes its own slot on exit.
-
-    The park ceiling measures time with NOBODY WATCHING, not time since the call parked. A durable run outlives its tab by design, so its cancel_event says nothing about whether a human is there; ``run_subscribers`` is what knows. While a follower is attached the deadline keeps re-arming and the wait is bounded by ``_DECISION_TIMEOUT`` exactly as a browser-owned run always was, so a user still reading what the tool wants to do does not lose the decision out from under them. Reaching that bound takes renewing the RUN's lease as well (``cancel_event.renew_lease``), since parking makes no progress and the sweeper would otherwise settle the run at its lease timeout, around 20 minutes, and cancel the wait. Once the followers go the ceiling runs (default 300s, ``UNSLOTH_STUDIO_TOOL_APPROVAL_TIMEOUT_S``) and an unattended agent adapts and continues. An explicit Stop still denies immediately.
-    """
+    """Blocks until the user decides, recording why in slot reason; unattended parks expire at UNSLOTH_STUDIO_TOOL_APPROVAL_TIMEOUT_S; Stop denies at once."""
     park = bool(getattr(cancel_event, "durable", False))
     run_id = getattr(cancel_event, "durable_run_id", "") or ""
-    # Run ids are account-local (per-account studio.db, client-chosen id), so attendance has to be
-    # asked for under the same account or one tenant's follower answers for another's run.
+    # Run ids are account-local, so ask attendance under the same account, or one tenant follower answers for another tenant run.
     account_id = getattr(cancel_event, "durable_account_id", "") or ""
     renew_lease = getattr(cancel_event, "renew_lease", None)
 
     def _settle(verdict, reason):
-        if isinstance(slot, dict):
+        if not isinstance(slot, dict):
+            return verdict
+        # Under the resolver's lock: an Allow committed first wins, else the resolver sees the reason and refuses.
+        with _lock:
+            if slot["event"].is_set():
+                verdict, reason = slot["decision"] or "deny", DECISION_ANSWERED
             slot["reason"] = reason
         return verdict
 
     try:
-        # `waited` is time with nobody watching and resets when a follower is seen; `total` is the
-        # whole wait and never resets. A park is bounded by both.
+        # `waited` resets when a follower is seen; `total` never does. Both bound a park.
         waited = 0.0
         total = 0.0
         last_renew: Optional[float] = None
@@ -152,16 +196,13 @@ def wait_tool_decision(
                 if total >= timeout:
                     return _settle("deny", DECISION_EXPIRED)
                 continue
-            # A durable park ignores the caller's timeout by design, so the attended backstop is this
-            # module's own ceiling, the same hour a browser-owned run gets.
+            # Durable parks ignore the caller's timeout; this is the attended backstop.
             if total >= _DECISION_TIMEOUT:
                 return _settle("deny", DECISION_EXPIRED)
             if run_subscribers.is_attended(run_id, account_id):
                 # Someone is watching, so this is deliberation, not abandonment.
                 waited = 0.0
-                # The RUN's lease too, not just this counter: parking makes no progress, so the
-                # sweeper would otherwise settle the run at its lease timeout (1200s) and cancel the
-                # wait, capping an attended deliberation near 20 minutes rather than the ceiling.
+                # Renew the RUN lease too, or the sweeper settles it at 1200s and cancels the wait.
                 if renew_lease is not None and (
                     last_renew is None or total - last_renew >= _LEASE_RENEW_EVERY_S
                 ):
@@ -169,8 +210,7 @@ def wait_tool_decision(
                     try:
                         renew_lease()
                     except Exception:
-                        # A lease we could not renew is the sweeper's problem, not a reason to drop
-                        # the decision this wait exists to collect.
+                        # A failed renewal is the sweeper's problem; keep collecting the decision.
                         pass
             elif waited >= _PARK_TIMEOUT_S:
                 return _settle("deny", DECISION_EXPIRED)
@@ -182,16 +222,7 @@ def wait_tool_decision(
 
 
 def tool_decision_is_pending(approval_id, session_id = None) -> bool:
-    """True while `approval_id` is still waiting on a human.
-
-    A reopened tab cannot otherwise tell a parked call from one the user already answered: both are
-    saved as a card with no result and an approval id, because the result only lands with tool_end.
-    Re-arming the answered one puts Approve/Deny over a call that is already executing, and every
-    press 404s. So the state is asked for rather than inferred.
-
-    Scoped like resolve_tool_decision, and a set event counts as decided rather than pending, so the
-    window between the decision and the waiter popping its own slot does not read as still-parked.
-    """
+    """True while approval_id still awaits a human; asked of the state, since a reopened tab cannot tell parked calls from answered ones."""
     if not approval_id:
         return False
     with _lock:
@@ -225,6 +256,8 @@ def resolve_tool_decision(
     approval_id,
     decision,
     session_id = None,
+    *,
+    full_access = False,
 ) -> bool:
     """Record the user's "allow"/"deny" decision and unblock the loop. Returns ``True`` if a pending call matched, ``False`` otherwise (a stale or duplicate confirmation, or a session-scope mismatch). The first decision wins: once a slot's event is set, a later confirmation for the same id is rejected without mutating the recorded decision, so an Allow can never be flipped to Deny in the window before the waiter reads ``slot["decision"]`` and pops the slot."""
     if not approval_id:
@@ -235,8 +268,32 @@ def resolve_tool_decision(
             return False
         if session_id is not None and slot["session"] != (session_id or ""):
             return False
-        if slot["event"].is_set():
+        from utils.account_context import current_account_id
+
+        if (
+            slot.get("account_id") != current_account_id()
+            or slot["event"].is_set()
+            or slot.get("reason") is not None
+        ):
             return False
+        if full_access:
+            permissions = slot.get("permission_upgrade")
+            if (
+                decision != "allow"
+                or not session_id
+                or permissions is None
+                or permissions.account_id != current_account_id()
+                or permissions.session_id != session_id
+                or (permissions.cancel_event is not None and permissions.cancel_event.is_set())
+            ):
+                return False
+            from state.tool_policy import require_tool_access
+            from utils.account_context import run_as
+
+            require_tool_access("full")
+            # The tool worker keeps the run's API/UI identity: never acknowledge a grant it would refuse.
+            run_as(permissions.account, require_tool_access, "full")
+            permissions._full.set()
         slot["decision"] = decision
         slot["event"].set()
     return True

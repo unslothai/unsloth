@@ -1,0 +1,277 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Third-party actions must be pinned by commit SHA: a moved tag would run new code with our secrets."""
+
+import re
+from pathlib import Path
+
+import pytest
+import yaml
+
+REPO = Path(__file__).resolve().parents[2]
+GITHUB = REPO / ".github"
+
+_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+# A SHA-pinned reference to a gone or renamed repo cannot change, so it is out of scope.
+DELIBERATELY_UNPINNED = {
+    # Each entry needs its reason here; the goal is empty.
+}
+
+
+# Actions deliberately held at two commits, keyed on `owner/repo`, with the reason.
+DELIBERATELY_SPLIT: dict[str, str] = {
+    # A split is nearly always a half-finished upgrade; an entry needs a real reason.
+}
+
+
+def _owner_repo(ref_repo: str) -> str:
+    """Sub-actions share their parent repository's SHA, so group by owner and repo, not the full path."""
+    parts = ref_repo.split("/")
+    return "/".join(parts[:2]) if len(parts) > 2 else ref_repo
+
+
+def _sources():
+    """Every workflow and action definition under .github, as (path, text)."""
+    for path in sorted(GITHUB.rglob("*.y*ml")):
+        yield path, path.read_text(encoding = "utf-8", errors = "ignore")
+
+
+# Split on the last `@`: git refs may contain `+` and other characters, and the SHA test decides.
+_REPO_PART = re.compile(r"""^[A-Za-z0-9][\w.-]*/[\w.-]+(?:/[\w.\-/]+)?$""")
+
+
+def _split_ref(value: str):
+    r"""(repo, rev) for a `uses:` value, split at the FIRST `@`.
+
+    The first, not the last. A repository name cannot contain `@`, so the first one is
+    always the delimiter, and everything after it is the revision however many more it
+    holds. The previous version said "last delimiter" in its comment and then spelled
+    `[^@\s]+` for the revision, which forbids the very character it claimed to split on;
+    `git check-ref-format refs/tags/v@1` succeeds, so `owner/action@v@1` is a valid
+    mutable tag that produced no match at all and was dropped from every pinning check.
+    Splitting last would not have fixed it either, since that reads the repository as
+    `owner/action@v`. The failure mode is the one the comment was written about: a guard
+    that silently skips what it cannot parse.
+    """
+    if "@" not in value:
+        return None
+    repo, _, rev = value.partition("@")
+    if not rev or not rev.strip() or any(c.isspace() for c in rev):
+        return None
+    if not _REPO_PART.match(repo):
+        return None
+    return repo, rev
+
+
+def _uses_values(node):
+    """Walks the parsed document, since enumerating spellings of the `uses` key does not converge."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if str(key).strip() == "uses" and isinstance(value, str):
+                yield value.strip()
+            else:
+                yield from _uses_values(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _uses_values(item)
+
+
+def _references():
+    """(path, lineno, ref, repo, rev) for every third-party `uses:` in the tree."""
+    for path, text in _sources():
+        try:
+            doc = yaml.safe_load(text)
+        except yaml.YAMLError:
+            continue
+        for ref in _uses_values(doc):
+            # Local `./` actions and `docker://` images are not mutable third-party pointers.
+            if ref.startswith(".") or ref.startswith("docker://"):
+                continue
+            parts = _split_ref(ref)
+            if parts is None:
+                continue
+            # Line lookup is cosmetic; an unlocatable reference is still reported, at line 0.
+            index = text.find(ref)
+            lineno = text.count("\n", 0, index) + 1 if index >= 0 else 0
+            yield path, lineno, ref, parts[0], parts[1]
+
+
+def test_the_scan_finds_the_references_it_claims_to():
+    """A regex that matched nothing would pass every check below on an empty set."""
+    refs = list(_references())
+    assert len(refs) >= 200, (
+        f"only found {len(refs)} third-party `uses:` references; the scan is wrong. This "
+        f"tree has hundreds across .github/workflows and .github/actions."
+    )
+    repos = {repo for _, _, _, repo, _ in refs}
+    for expected in ("actions/checkout", "step-security/harden-runner"):
+        assert expected in repos, f"{expected} is used here but the scan missed it"
+
+
+def test_the_sha_predicate_reads_the_revision():
+    """The guard is only as good as this predicate, so the predicate is tested too."""
+    forty = "3d3c42e5aac5ba805825da76410c181273ba90b1"
+    cases = [
+        (forty, True),
+        (forty.upper(), False),  # git object names are lowercase hex
+        (forty[:39], False),  # short SHAs are ambiguous and not pins
+        (forty + "a", False),
+        ("v7", False),
+        ("v7.0.1", False),
+        ("main", False),
+        ("master", False),
+        ("", False),
+    ]
+    for rev, expected in cases:
+        assert bool(_SHA.match(rev)) is expected, f"_SHA.match({rev!r})"
+
+
+def test_the_scan_reads_every_spelling_of_a_step_mapping():
+    """Each spelling of a step's `uses` key must be read; enumerating spellings does not converge."""
+    spellings = [
+        "steps:\n  - uses: actions/checkout@v4\n",
+        'steps:\n  - "uses": actions/checkout@v4\n',
+        "steps:\n  - 'uses': actions/checkout@v4\n",
+        "steps:\n  - uses : actions/checkout@v4\n",
+        "steps:\n  - {uses: actions/checkout@v4}\n",
+        "steps: [{uses: actions/checkout@v4}]\n",
+        'steps:\n  - uses: "actions/checkout@v4"\n',
+        "runs:\n  using: composite\n  steps:\n    - uses: actions/checkout@v4\n",
+    ]
+    for source in spellings:
+        found = list(_uses_values(yaml.safe_load(source)))
+        assert found == ["actions/checkout@v4"], f"{source!r} produced {found!r}"
+
+    assert list(_uses_values(yaml.safe_load("steps:\n  - uses: ./.github/actions/x\n"))) == [
+        "./.github/actions/x"
+    ]
+    assert list(_uses_values(yaml.safe_load("steps:\n  - name: uses a cache\n"))) == []
+
+
+def test_the_reference_predicate_reads_owner_repo_at_ref():
+    """`_split_ref` decides what counts as a third-party reference at all."""
+    cases = [
+        ("actions/checkout@v4", True),
+        ("actions/cache/restore@v4", True),
+        ("owner/repo@0123456789abcdef0123456789abcdef01234567", True),
+        ("./.github/actions/x", False),
+        ("docker://alpine:3", False),
+        ("actions/checkout", False),
+        ("notapath@v4", False),
+        ("", False),
+    ]
+    for ref, expected in cases:
+        assert bool(_split_ref(ref)) is expected, f"_split_ref({ref!r})"
+
+
+def test_every_third_party_action_is_pinned_to_a_commit_sha():
+    offenders = []
+    for path, lineno, ref, _repo, rev in _references():
+        if _SHA.match(rev):
+            continue
+        if ref in DELIBERATELY_UNPINNED:
+            continue
+        offenders.append(f"{path.relative_to(GITHUB).as_posix()}:{lineno}: {ref}")
+
+    assert not offenders, (
+        f"these `uses:` references name a mutable tag or branch instead of a commit:\n  "
+        + "\n  ".join(sorted(offenders))
+        + "\n\nA tag is a pointer the upstream owner can move, so each of these runs "
+        "whatever that repository contains on the day CI runs, inside a job holding this "
+        "repo's secrets and token permissions. That is the tj-actions/changed-files "
+        "compromise (GHSA-mrrh-fwg8-l2gq), which needed nothing but a moved tag.\n\n"
+        "Pin to the 40-character commit the tag currently points at and keep the version "
+        "in a trailing comment, which is what the rest of this tree does:\n"
+        "  uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1\n\n"
+        "`gh api repos/<owner>/<repo>/commits/<tag> --jq .sha` resolves it. If a reference "
+        "genuinely cannot be pinned, add it to DELIBERATELY_UNPINNED with the reason."
+    )
+
+
+def test_every_exemption_still_exists_and_still_needs_one():
+    """A stale exemption is a hole nobody is asking for any more."""
+    live = {ref for _, _, ref, _, _ in _references()}
+    for ref in DELIBERATELY_UNPINNED:
+        assert ref in live, (
+            f"{ref} is exempted here but no longer referenced anywhere under .github, so "
+            f"the exemption describes nothing. Remove it from DELIBERATELY_UNPINNED."
+        )
+
+
+@pytest.mark.parametrize(
+    "repo",
+    sorted({_owner_repo(r) for _, _, _, r, _ in _references()}),
+)
+def test_an_action_is_pinned_to_one_sha_everywhere_it_is_used(repo):
+    """Two SHAs for one action means two versions run, usually a half-finished upgrade, so it is flagged."""
+    revs = {rev for _, _, _, r, rev in _references() if _owner_repo(r) == repo and _SHA.match(rev)}
+    if len(revs) <= 1:
+        return
+    if repo in DELIBERATELY_SPLIT:
+        return
+    sites = sorted(
+        f"{p.relative_to(GITHUB).as_posix()}:{ln}: {rev[:12]}"
+        for p, ln, _, r, rev in _references()
+        if _owner_repo(r) == repo and _SHA.match(rev)
+    )
+    pytest.fail(
+        f"{repo} is pinned to {len(revs)} different commits, so different jobs run "
+        f"different versions of it:\n  " + "\n  ".join(sites) + "\n\n"
+        f"Settle on one commit, usually the newest reviewed one. If the split really is "
+        f"deliberate, add {repo!r} to DELIBERATELY_SPLIT in this file with the reason a "
+        f"single commit will not do."
+    )
+
+
+def test_every_split_exemption_still_exists_and_still_needs_one():
+    """A stale exemption hides a split that has since been resolved."""
+    live = {r for _, _, _, r, _ in _references()}
+    for repo, reason in DELIBERATELY_SPLIT.items():
+        assert reason.strip(), f"{repo} is exempted with no reason written; add one"
+        assert repo in live, (
+            f"{repo} is exempted from the one-commit rule but is no longer used anywhere "
+            f"under .github, so the exemption describes nothing. Remove it."
+        )
+        revs = {rev for _, _, _, r, rev in _references() if r == repo and _SHA.match(rev)}
+        assert len(revs) > 1, (
+            f"{repo} is exempted from the one-commit rule but is now pinned to a single "
+            f"commit, so the exemption is stale. Remove it from DELIBERATELY_SPLIT."
+        )
+
+
+def test_the_reference_predicate_accepts_valid_git_ref_punctuation():
+    """A ref the scan cannot parse is a ref the guard silently skips.
+
+    Git ref names accept characters an enumerated character class leaves out: `+` among
+    them, and `git check-ref-format refs/tags/v1+build` agrees. `owner/action@v1+build`
+    produced no match and was omitted from every pinning check while still being a
+    mutable tag.
+    """
+    # `v@1` is a valid tag (`git check-ref-format` accepts it), so `@` must be allowed in the ref.
+    for ref in (
+        "owner/action@v1+build",
+        "owner/action@release~1",
+        "owner/action@v1.2.3",
+        "owner/action@v@1",
+    ):
+        parts = _split_ref(ref)
+        assert parts is not None, f"{ref} is a valid mutable reference and must be seen"
+        assert parts[0] == "owner/action", ref
+        assert not _SHA.match(parts[1]), f"{ref} is not a pin"
+
+    for ref in ("./.github/actions/x", "docker://alpine:3", "actions/checkout", ""):
+        assert _split_ref(ref) is None, ref
+
+
+def test_a_sub_action_is_pinned_with_its_repository():
+    """A sub-action path such as actions/cache/save is pinned with its parent repository, not on its own."""
+    assert _owner_repo("actions/cache/save") == "actions/cache"
+    assert _owner_repo("actions/cache/restore") == "actions/cache"
+    assert _owner_repo("actions/cache") == "actions/cache"
+    assert _owner_repo("actions/checkout") == "actions/checkout"
+    assert _owner_repo("owner/repo/a/b/c") == "owner/repo"
+    # The rule must be parametrized over this grouping.
+    groups = {_owner_repo(r) for _, _, _, r, _ in _references()}
+    assert "actions/cache/save" not in groups

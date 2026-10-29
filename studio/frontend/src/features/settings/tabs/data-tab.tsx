@@ -47,49 +47,62 @@ import {
   nativeImportSource,
   fileImportSource,
   type ImportSource,
+  notifyChatProjectsUpdated,
   offerToDeleteKeptSandboxes,
   useChatPreferencesStore,
   useChatRuntimeStore,
   useChatSidebarItems,
 } from "@/features/chat";
 import {
+  LibraryStorageBar,
+  STORAGE_LABELS,
+  formatSize,
+  refreshLibraryStorage,
+  useLibraryStorage,
+  useLibraryVisitStore,
+} from "@/features/library";
+import {
   LinkedFoldersManager,
   listKnowledgeBases,
   useRagAvailabilityStore,
 } from "@/features/rag";
-import { useT } from "@/i18n";
+import { useLocale, useT } from "@/i18n";
 
 import { isTauri } from "@/lib/api-base";
 import {
   ChevronDownStandardIcon,
+  ChevronLeftStandardIcon,
   ChevronRightStandardIcon,
 } from "@/lib/chevron-icons";
 import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
-  Archive02Icon,
-  AudioWave01Icon,
+  Archive03Icon,
   Delete02Icon,
   Download01Icon,
   FlimSlateIcon,
   Image03Icon,
-  Tick02Icon,
-  Upload01Icon,
+  LibrariesIcon,
 } from "@hugeicons/core-free-icons";
-import {
-  ChevronLeftIcon,
-} from "lucide-react";
-import { MessageCircleIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
+import {
+  EXTERNAL_IMPORT_LABELS,
+  EXTERNAL_IMPORT_SOURCES,
+  type ExternalImportSource,
+  type ExternalImportStatus,
+  importExternalChats,
+  loadExternalImportStatus,
+} from "../api/external-import";
 import { ArchivedChatsView } from "../components/archived-chats-dialog";
 import {
   type ArchivedMediaKind,
   ArchivedMediaView,
 } from "../components/archived-media-dialog";
-import { ManageChatsView } from "../components/manage-chats-view";
 import { DocumentsRagSection } from "../components/documents-rag-section";
+import { ReembedDocumentsRow } from "../components/reembed-documents-row";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { UploadedFilesView } from "../components/uploaded-files-dialog";
@@ -98,11 +111,64 @@ import {
   type FineTuneAction,
   useSettingsPanelPrefsStore,
 } from "../stores/settings-panel-prefs-store";
+import { Tick02Icon } from "@/lib/tick-icon";
 
-// display order, and the guard against a persisted action this build dropped.
+// Display order, and the guard against a persisted action this build dropped.
 const FINE_TUNE_ACTIONS: FineTuneAction[] = ["export", "train", "recipes"];
 
-// Which subpage an "open the archive" request lands on.
+function LibraryDataSection() {
+  const t = useT();
+  const locale = useLocale();
+  const openDialog = useSettingsDialogStore((s) => s.openDialog);
+  const storage = useLibraryStorage();
+  const count = storage.categories.reduce((sum, entry) => sum + entry.count, 0);
+  const size = (bytes: number) => formatSize(bytes, locale, t) ?? "";
+  const largest = storage.categories
+    .slice(0, 3)
+    .map((entry) => `${t(STORAGE_LABELS[entry.category])} ${size(entry.bytes)}`)
+    .join(" · ");
+
+  let summary: string;
+  if (storage.status === "loading") summary = "";
+  else if (storage.status === "error") summary = t("settings.library.storageError");
+  else if (storage.totalBytes === 0 && count === 0) summary = t("settings.library.storageEmpty");
+  else {
+    summary = [
+      t("settings.library.storageUsed", { size: size(storage.totalBytes) }),
+      count === 1
+        ? t("settings.library.itemCountOne")
+        : count > 0 && t("settings.library.itemCount", { count: count.toLocaleString() }),
+      storage.hiddenBytes > 0 && t("settings.library.storageHidden", { size: size(storage.hiddenBytes) }),
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  }
+
+  return (
+    <SettingsSection title={t("shell.navigation.library")}>
+      <SettingsRow
+        label={t("settings.library.dataStorage")}
+        description={summary || "\u00a0"}
+      >
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => openDialog("library", { scrollTarget: "library-storage" })}
+        >
+          {t("settings.library.manageStorage")}
+          <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3.5" />
+        </Button>
+      </SettingsRow>
+      {storage.status === "ready" && (count > 0 || storage.totalBytes > 0) && (
+        <div className="flex flex-col gap-2 pb-3">
+          <LibraryStorageBar libraryBytes={storage.diskBytes} disk={storage.disk} />
+          {largest && <p className="text-xs text-muted-foreground">{largest}</p>}
+        </div>
+      )}
+    </SettingsSection>
+  );
+}
+
 const SUBPAGE_FOR_SHELF = {
   chats: "archived",
   images: "archived-images",
@@ -119,14 +185,11 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
     (s) => s.consumeArchivedChatsRequest,
   );
   const [confirmOpen, setConfirmOpen] = useState(false);
-  // Preselected from the preference, so the dialog shows what is about to
-  // happen and can still be turned off for this one clear.
+  // Preselected from the preference but can be turned off for this one clear.
   const [deleteFilesOnClear, setDeleteFilesOnClear] = useState(false);
   const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
-  // Subpages swap the Data tab body instead of opening nested dialogs.
   const [subpage, setSubpage] = useState<
     | "main"
-    | "manage"
     | "archived"
     | "archived-images"
     | "archived-videos"
@@ -140,18 +203,22 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
   const [count, setCount] = useState<number | null>(null);
   const [exporting, setExporting] = useState(false);
   const [archivedExporting, setArchivedExporting] = useState(false);
-  // Gates the archived subpage Export button.
   const { archivedItems } = useChatSidebarItems({
     requireMessages: false,
     enabled: subpage === "archived",
   });
   const [clearing, setClearing] = useState(false);
   const [archiving, setArchiving] = useState(false);
+  // A source's row appears only once its probe reports conversations.
+  const [externalStatus, setExternalStatus] = useState<
+    Partial<Record<ExternalImportSource, ExternalImportStatus>>
+  >({});
+  const [externalImporting, setExternalImporting] =
+    useState<ExternalImportSource | null>(null);
   const [fineTuneExporting, setFineTuneExporting] = useState(false);
   const [openingRecipe, setOpeningRecipe] = useState(false);
   const [loadingTraining, setLoadingTraining] = useState(false);
-  // Chat-only hosts redirect /studio back to /chat, so loading a dataset in the Train tab would
-  // upload it and then strand the user; gate the action the same way the sidebar gates Train.
+  // Chat-only hosts redirect /studio, so a Train-tab load would strand the user.
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
   const ragAvailabilityUnknown = useRagAvailabilityStore((s) =>
@@ -169,9 +236,8 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
   // derived, not corrected: a stored "train" returns when chat-only flips off.
   const fineTuneAction =
     chatOnly && restoredAction === "train" ? "export" : restoredAction;
-  // Chat Completions (OpenAI messages) is the only export format we ship.
   const fineTuneFormat: FineTuneFormat = "openai";
-  // Search needs the main-page anchors even when a subpage is already open.
+  // Search needs the main-page anchors even when a subpage is open.
   useEffect(() => {
     const next = searchEntry
       ? "main"
@@ -229,8 +295,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
   );
 
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
-  // Open chat id from the route (single thread or compare pair), mirroring
-  // ArchivedChatsView: compare panes only live in the search params.
+  // Compare panes only live in the search params, as in ArchivedChatsView.
   const openChatId = useRouterState({
     select: (s) => {
       if (!s.location.pathname.startsWith("/chat")) return undefined;
@@ -257,6 +322,22 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
       cancelled = true;
     };
   }, [subpage, t]);
+
+  const refreshExternalStatus = (source: ExternalImportSource) =>
+    loadExternalImportStatus(source)
+      .catch(() => null)
+      .then((status) =>
+        setExternalStatus((prev) => ({
+          ...prev,
+          [source]: status?.available ? status : undefined,
+        })),
+      );
+
+  useEffect(() => {
+    for (const source of EXTERNAL_IMPORT_SOURCES) {
+      void refreshExternalStatus(source);
+    }
+  }, []);
 
   const handleExport = async () => {
     setExporting(true);
@@ -299,16 +380,13 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
   const [importing, setImporting] = useState(false);
   const handleImport = async (source: ImportSource) => {
     setImporting(true);
-    // A years-long export is minutes of writes, so the toast counts up rather
-    // than leaving the window looking hung.
     const toastId = toast.loading(
       t("settings.chat.importingChats", { count: 0, percent: 0 }),
     );
     try {
       const { imported, failed } = await importConversationsFromSource(
         source,
-        // This tab has no destination picker, so it chooses nothing and a backup keeps its
-        // own projects. The projects page does pick, and passes null for Recents.
+        // No destination picker here, so a backup keeps its own projects.
         undefined,
         {
           onProgress: ({ imported: done, bytesRead, totalBytes }) => {
@@ -327,7 +405,6 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
         return;
       }
       if (imported === 0) {
-        // Nothing was created, so however the count is phrased this is a failure.
         toast.error(t("settings.chat.importFailed"), {
           id: toastId,
           description: t("settings.chat.importedChatCountPartial", { count: 0, failed }),
@@ -372,6 +449,43 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
     }
   };
 
+  const handleExternalImport = async (source: ExternalImportSource) => {
+    setExternalImporting(source);
+    try {
+      const result = await importExternalChats(source);
+      notifyChatProjectsUpdated();
+      setCount(await countAllChats().catch(() => count));
+      await refreshExternalStatus(source);
+      const vars = { source: EXTERNAL_IMPORT_LABELS[source] };
+      if (result.warnings.length > 0) {
+        toast.warning(t("settings.chat.importedSourcePartial", vars), {
+          description: result.warnings.join("\n"),
+        });
+      } else if (result.newChats === 0) {
+        toast.success(
+          result.messages > 0
+            ? t("settings.chat.sourceUpdated", { ...vars, count: result.messages })
+            : t("settings.chat.sourceUpToDate", vars),
+        );
+      } else {
+        toast.success(
+          result.newChats === 1
+            ? t("settings.chat.importedSourceOneChat", vars)
+            : t("settings.chat.importedSourceChatCount", {
+                ...vars,
+                count: result.newChats,
+              }),
+        );
+      }
+    } catch (error) {
+      toast.error(t("settings.chat.importFailed"), {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setExternalImporting(null);
+    }
+  };
+
   const handleArchiveAll = async () => {
     setArchiving(true);
     try {
@@ -413,7 +527,6 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
   const handleOpenInRecipes = async () => {
     setOpeningRecipe(true);
     try {
-      // Recipe Studio and its database are not needed unless this action runs.
       const { createFineTuneRecipeFromChats } = await import(
         "../components/finetune-recipe"
       );
@@ -433,9 +546,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
   const handleUseInTraining = async () => {
     setLoadingTraining(true);
     try {
-      // Same deferred module as above. The training store and datasets-api it also pulls stay eager
-      // either way, since __root.tsx imports the @/features/training barrel that re-exports both;
-      // Recipe Studio is what actually leaves the startup bundle.
+      // Deferred so Recipe Studio stays out of the startup bundle; the training store is eager anyway.
       const { loadFineTuneDatasetInTrainTab } = await import(
         "../components/finetune-recipe"
       );
@@ -477,9 +588,9 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
       const result = await clearAllChats({
         deleteFiles: deleteFilesOnClear,
       });
+      refreshLibraryStorage();
       const clearedCount = result.deletedThreadIds.length;
-      // A sandbox the backend could not remove, asked for or not.
-      // After a clear there is no row left to reach it from.
+      // After a clear there is no row left to reach a kept sandbox from.
       offerToDeleteKeptSandboxes(result.sandboxesKept);
       const hasFailedStore =
         result.backend === "failed" || result.legacy === "failed";
@@ -533,38 +644,9 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
     }
   };
 
-  if (subpage === "manage") {
-    return (
-      <div className="flex flex-col gap-6">
-        <header className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setSubpage("main")}
-            aria-label={t("settings.data.backToData")}
-            className="settings-back-button inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-          >
-            <ChevronLeftIcon className="size-4 rtl:rotate-180" />
-          </button>
-          <h1 className="text-xl font-semibold font-heading">
-            {t("settings.data.title")}
-          </h1>
-        </header>
-        <div className="flex flex-col gap-1">
-          <h2 className="text-sm font-semibold">
-            {t("settings.data.manageChats")}
-          </h2>
-          <p className="text-xs text-muted-foreground">
-            {t("settings.data.manageChatsDescription")}
-          </p>
-        </div>
-        <ManageChatsView />
-      </div>
-    );
-  }
-
   if (subpage === "archived") {
     return (
-      <div className="flex flex-col gap-6">
+      <div className="settings-page">
         <header className="flex items-center gap-2">
           <button
             type="button"
@@ -572,7 +654,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             aria-label={t("settings.data.backToData")}
             className="settings-back-button inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
-            <ChevronLeftIcon className="size-4 rtl:rotate-180" />
+            <HugeiconsIcon icon={ChevronLeftStandardIcon} className="size-4 rtl:rotate-180" />
           </button>
           <h1 className="text-xl font-semibold font-heading">
             {t("settings.data.title")}
@@ -580,7 +662,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
         </header>
         <div className="flex items-start justify-between gap-4">
           <div className="flex flex-col gap-1">
-            <h2 className="text-sm font-semibold">
+            <h2 className="settings-heading text-sm font-semibold">
               {t("settings.data.archivedChats")}
             </h2>
             <p className="text-xs text-muted-foreground">
@@ -591,7 +673,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             <Button
               variant="outline"
               size="sm"
-              className="shrink-0"
+              className="mt-[var(--ui-title-cap-inset)] shrink-0"
               onClick={handleExportArchived}
               disabled={archivedExporting}
             >
@@ -637,7 +719,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
       audio: t("settings.data.archivedAudioDescription"),
     }[kind];
     return (
-      <div className="flex flex-col gap-6">
+      <div className="settings-page">
         <header className="flex items-center gap-2">
           <button
             type="button"
@@ -645,14 +727,14 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             aria-label={t("settings.data.backToData")}
             className="settings-back-button inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
-            <ChevronLeftIcon className="size-4 rtl:rotate-180" />
+            <HugeiconsIcon icon={ChevronLeftStandardIcon} className="size-4 rtl:rotate-180" />
           </button>
           <h1 className="text-xl font-semibold font-heading">
             {t("settings.data.title")}
           </h1>
         </header>
         <div className="flex flex-col gap-1">
-          <h2 className="text-sm font-semibold">{heading}</h2>
+          <h2 className="settings-heading text-sm font-semibold">{heading}</h2>
           <p className="text-xs text-muted-foreground">{description}</p>
         </div>
         {/* Keyed by kind: switching shelves on an already-mounted tab otherwise keeps the
@@ -665,7 +747,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
 
   if (subpage === "files") {
     return (
-      <div className="flex flex-col gap-6">
+      <div className="settings-page">
         <header className="flex items-center gap-2">
           <button
             type="button"
@@ -673,14 +755,14 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             aria-label={t("settings.data.backToData")}
             className="settings-back-button inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
-            <ChevronLeftIcon className="size-4 rtl:rotate-180" />
+            <HugeiconsIcon icon={ChevronLeftStandardIcon} className="size-4 rtl:rotate-180" />
           </button>
           <h1 className="text-xl font-semibold font-heading">
             {t("settings.data.title")}
           </h1>
         </header>
         <div className="flex flex-col gap-1">
-          <h2 className="text-sm font-semibold">
+          <h2 className="settings-heading text-sm font-semibold">
             {t("settings.data.uploadedFiles")}
           </h2>
           <p className="text-xs text-muted-foreground">
@@ -693,7 +775,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="settings-page">
       <header className="flex flex-col gap-1">
         <h1 className="text-xl font-semibold font-heading">
           {t("settings.data.title")}
@@ -703,19 +785,27 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
         </p>
       </header>
 
-      <SettingsSection title={t("settings.data.chatsSection")}>
+      <SettingsSection title={t("settings.data.manageFiles.label")} hideHeading>
         <SettingsRow
-          label={t("settings.data.manageChats")}
-          description={t("settings.data.manageChatsDescription")}
+          label={t("settings.data.manageFiles.label")}
+          description={t("settings.data.manageFiles.description")}
         >
           <Button
             variant="outline"
-            size="sm"
-            onClick={() => setSubpage("manage")}
+            onClick={() => {
+              useSettingsDialogStore.getState().closeDialog();
+              // Already on All, the view would keep its search and filters.
+              useLibraryVisitStore.getState().restart();
+              void navigate({ to: "/library", search: { show: "all" } });
+            }}
           >
-            {t("settings.data.manageAction")}
+            <HugeiconsIcon icon={LibrariesIcon} strokeWidth={1.75} className="size-4" />
+            {t("settings.data.manageFiles.action")}
           </Button>
         </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.data.chatsSection")}>
         <div
           data-settings-label={t("settings.data.archives")}
           className="py-3"
@@ -742,7 +832,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
                 "archived-audio",
                 "archivedAudio",
                 "shell.navigation.audio",
-                AudioWave01Icon,
+                AiSpeechIcon,
               ],
             ] as const).map(([page, label, shortLabel, icon]) => (
               <button
@@ -751,7 +841,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
                 data-settings-label={t(`settings.data.${label}`)}
                 aria-label={t(`settings.data.${label}`)}
                 onClick={() => setSubpage(page)}
-                className="flex min-w-0 items-center justify-between gap-2 rounded-xl border border-border/60 px-3 py-2.5 text-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="btn-fill flex min-w-0 items-center justify-between gap-2 rounded-full px-3 py-2 text-sm transition-colors [&_svg]:-my-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <span className="flex min-w-0 items-center gap-2">
                   <HugeiconsIcon
@@ -780,7 +870,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             size="sm"
             onClick={() => setArchiveConfirmOpen(true)}
           >
-            <HugeiconsIcon icon={Archive02Icon} className="size-3.5 mr-1.5" />
+            <HugeiconsIcon icon={Archive03Icon} data-icon="inline-start" />
             {t("settings.data.archiveAllAction")}
           </Button>
         </SettingsRow>
@@ -795,21 +885,16 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             variant="outline"
             size="sm"
             onClick={() => void handleImportClick()}
-            // A second pick mid-import would interleave two streams into one
-            // history, and on desktop it retires the running import's handle.
+            // A second import would interleave streams and, on desktop, retire the running handle.
             disabled={importing}
           >
-            {importing ? (
-              <Spinner className="size-3.5 mr-1.5" />
-            ) : (
-              <HugeiconsIcon icon={Upload01Icon} className="size-3.5 mr-1.5" />
-            )}
+            {importing && <Spinner className="size-3.5 mr-1.5" />}
             {t("settings.chat.importChatsAction")}
           </Button>
           <input
             ref={importInputRef}
             type="file"
-            accept=".json,.jsonl,.ndjson,.csv"
+            accept=".json,.jsonl,.ndjson,.csv,.md,.markdown"
             className="hidden"
             onChange={(e) => {
               const file = e.target.files?.[0];
@@ -818,6 +903,33 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             }}
           />
         </SettingsRow>
+        {EXTERNAL_IMPORT_SOURCES.map((source) =>
+          externalStatus[source] ? (
+            <SettingsRow
+              key={source}
+              label={t("settings.chat.importFromSource", {
+                source: EXTERNAL_IMPORT_LABELS[source],
+              })}
+              description={t("settings.chat.importFromSourceDescription", {
+                source: EXTERNAL_IMPORT_LABELS[source],
+              })}
+            >
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void handleExternalImport(source)}
+                disabled={externalImporting !== null}
+              >
+                {externalImporting === source && (
+                  <Spinner className="size-3.5 mr-1.5" />
+                )}
+                {externalImporting === source
+                  ? t("settings.chat.importingAction")
+                  : t("settings.chat.importChatsAction")}
+              </Button>
+            </SettingsRow>
+          ) : null,
+        )}
         <SettingsRow
           label={t("settings.chat.exportHistory")}
           description={t("settings.chat.exportHistoryDescription")}
@@ -828,7 +940,6 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             onClick={handleExport}
             disabled={exporting || count === 0}
           >
-            <HugeiconsIcon icon={Download01Icon} className="size-3.5 mr-1.5" />
             {exporting
               ? t("settings.chat.exportingAction")
               : t("settings.chat.exportAction")}
@@ -842,10 +953,6 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
           <DropdownMenu>
             <DropdownMenuTrigger asChild={true}>
               <Button variant="outline" size="sm" disabled={count === 0}>
-                <HugeiconsIcon
-                  icon={Download01Icon}
-                  className="size-3.5 mr-1.5"
-                />
                 {t("settings.chat.exportConversationsAction")}
               </Button>
             </DropdownMenuTrigger>
@@ -900,9 +1007,8 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
           <div className="flex items-center gap-2">
             <DropdownMenu>
               <DropdownMenuTrigger asChild={true}>
-                {/* Fixed width so switching actions never resizes the row. */}
                 <Button
-                  variant="outline"
+                  variant="picker"
                   size="sm"
                   disabled={count === 0}
                   className="w-44 justify-between"
@@ -1009,7 +1115,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             <DropdownMenu>
               <DropdownMenuTrigger asChild={true}>
                 <Button
-                  variant="outline"
+                  variant="destructive"
                   size="sm"
                   disabled={count === null || count === 0 || clearing}
                   className="text-destructive hover:text-destructive aria-expanded:text-destructive hover:border-destructive/60"
@@ -1038,6 +1144,8 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
         </div>
       </SettingsSection>
 
+      <LibraryDataSection />
+
       <SettingsSection title={t("settings.data.filesSection")}>
         <SettingsRow
           label={t("settings.data.uploadedFiles")}
@@ -1056,9 +1164,10 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             <LinkedFoldersManager />
           </div>
         ) : null}
+        {/* The owner sees it beside the embedding model below. */}
+        {!isOwner ? <ReembedDocumentsRow /> : null}
       </SettingsSection>
 
-      {/* Embedding model settings are installation-wide (owner-only routes). */}
       {isOwner ? <DocumentsRagSection /> : null}
 
       <Dialog open={archiveConfirmOpen} onOpenChange={setArchiveConfirmOpen}>
@@ -1120,9 +1229,9 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
               {t("common.cancel")}
             </Button>
             <Button
+              variant="destructive"
               onClick={handleClear}
               disabled={clearing}
-              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
             >
               {clearing
                 ? t("settings.chat.clearingAction")

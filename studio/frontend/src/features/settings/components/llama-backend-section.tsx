@@ -117,9 +117,35 @@ function LlamaCppPathRow({ onChanged }: { onChanged: () => void }) {
           "settings.resources.llamaBackend.customPath.description",
         )}
         hint={t("settings.resources.llamaBackend.customPath.hint")}
+        wideControl={true}
         className="max-[840px]:flex-col max-[840px]:items-stretch max-[840px]:gap-2"
+        below={
+          detail || settings?.source === "studio" ? (
+            <div className="w-[calc(392px*var(--ui-space-scale,1))] min-w-0 max-[840px]:w-full">
+              <div className="flex min-w-0 items-center justify-between gap-2 pl-3.5 pr-1 text-xs text-muted-foreground">
+                {detail ? (
+                  <span title={detail} className="min-w-0 truncate">
+                    {detail}
+                  </span>
+                ) : null}
+                {settings?.source === "studio" ? (
+                  <Button
+                    variant="link"
+                    size="xs"
+                    className="h-auto shrink-0 px-0 text-xs"
+                    disabled={saving}
+                    onClick={() => void save(null)}
+                    data-testid="llama-cpp-path-reset"
+                  >
+                    {t("settings.resources.llamaBackend.customPath.useBundled")}
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+          ) : null
+        }
       >
-        <div className="grid w-[392px] min-w-0 grid-cols-[minmax(0,1fr)_auto_auto] gap-x-2 gap-y-1.5 max-[840px]:w-full">
+        <div className="grid w-[calc(392px*var(--ui-space-scale,1))] min-w-0 grid-cols-[minmax(0,1fr)_auto_auto] gap-x-2 max-[840px]:w-full">
           <Input
             readOnly={!settings?.editable}
             aria-label={t("settings.resources.llamaBackend.customPath.label")}
@@ -136,13 +162,12 @@ function LlamaCppPathRow({ onChanged }: { onChanged: () => void }) {
               }
             }}
             title={settings?.resolvedBinary ?? settings?.path ?? undefined}
-            className="h-8 min-w-0 font-mono text-xs"
+            className="h-control min-w-0 font-mono text-xs"
             data-testid="llama-cpp-path-input"
           />
           <Button
             variant="outline"
             size="sm"
-            className="h-8"
             disabled={!pathDirty || saving}
             onClick={() => void save(draftPath.trim() || null)}
             data-testid="llama-cpp-path-save"
@@ -152,7 +177,6 @@ function LlamaCppPathRow({ onChanged }: { onChanged: () => void }) {
           <Button
             variant="outline"
             size="sm"
-            className="h-8"
             disabled={!settings?.editable || saving}
             onClick={() => setBrowserOpen(true)}
             data-testid="llama-cpp-path-change"
@@ -161,27 +185,6 @@ function LlamaCppPathRow({ onChanged }: { onChanged: () => void }) {
               ? t("settings.resources.llamaBackend.customPath.saving")
               : t("settings.resources.llamaBackend.customPath.change")}
           </Button>
-          {detail || settings?.source === "studio" ? (
-            <div className="col-span-3 flex min-w-0 items-center justify-between gap-2 pl-3.5 pr-1 text-xs text-muted-foreground">
-              {detail ? (
-                <span title={detail} className="min-w-0 truncate">
-                  {detail}
-                </span>
-              ) : null}
-              {settings?.source === "studio" ? (
-                <Button
-                  variant="link"
-                  size="xs"
-                  className="h-auto shrink-0 px-0 text-xs"
-                  disabled={saving}
-                  onClick={() => void save(null)}
-                  data-testid="llama-cpp-path-reset"
-                >
-                  {t("settings.resources.llamaBackend.customPath.useBundled")}
-                </Button>
-              ) : null}
-            </div>
-          ) : null}
         </div>
       </SettingsRow>
 
@@ -221,8 +224,6 @@ export function LlamaBackendSection() {
     if (option.backend !== "auto") {
       return backendDisplayName(option.backend, t);
     }
-    // "Automatic" alone hides the decision; naming what it picks is the
-    // difference between an informed choice and a shot in the dark.
     return option.resolvedBackend
       ? t("settings.resources.llamaBackend.autoWith", {
           backend: backendDisplayName(option.resolvedBackend, t),
@@ -232,10 +233,15 @@ export function LlamaBackendSection() {
 
   const job = status?.job;
   const envLocked = status?.envBackend != null;
-  // Null means the marker holds a choice a newer Unsloth wrote. Show it as
-  // unknown rather than as Automatic, and let it be replaced deliberately.
+  // Null means a newer Unsloth wrote the choice; show it as unknown, not Automatic.
   const unknownRecorded = status?.backendRequest === null;
-  const value = selected ?? status?.backendRequest ?? "unknown";
+  // A value with no item renders a blank Select that reads as "no backends at all".
+  const statusPending = !status && !loadError;
+  const value = status
+    ? (selected ?? status.backendRequest ?? "unknown")
+    : statusPending
+      ? "loading"
+      : "unknown";
   const options = visibleLlamaBackendOptions(
     status,
     selected ?? status?.backendRequest ?? null,
@@ -273,14 +279,18 @@ export function LlamaBackendSection() {
           >
             <SelectTrigger
               aria-label={t("settings.resources.llamaBackend.label")}
-              className="w-52"
-              size="sm"
+              className="w-52 data-[size=default]:h-control"
               data-testid="llama-backend-select"
             >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {unknownRecorded ? (
+              {statusPending ? (
+                <SelectItem value="loading" disabled>
+                  {t("common.loading")}
+                </SelectItem>
+              ) : null}
+              {unknownRecorded || (!status && loadError) ? (
                 <SelectItem value="unknown">
                   {t("settings.resources.environment.unknown")}
                 </SelectItem>
@@ -295,11 +305,8 @@ export function LlamaBackendSection() {
           <Button
             size="sm"
             onClick={apply}
-            // The same hard blockers as the Select above, not just dirtiness. An
-            // environment pin with an automatic choice that has since drifted leaves
-            // selectionApplied false, so the row is dirty while the Select is disabled:
-            // Apply would then be the only live control, and the server rightly refuses
-            // it with environment_override. Do not offer an action that cannot succeed.
+            // Same blockers as the Select: an env pin can leave the row dirty while the server
+            // would refuse it.
             disabled={!dirty || !status?.supported || envLocked}
             data-testid="llama-backend-apply"
           >
@@ -331,8 +338,6 @@ export function LlamaBackendSection() {
       ) : null}
 
       {dirty ? (
-        // The two things a switch costs, said before it is paid: a download, and
-        // the loaded model going away with the server it runs in.
         <p className="pb-3 text-xs text-muted-foreground">
           {pending?.downloadSizeBytes
             ? t("settings.resources.llamaBackend.applyHintWithSize", {

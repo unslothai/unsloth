@@ -1,31 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Guards `_attn_mask_compat.py` against drifting from the upstream it vendors.
-
-`unsloth/models/_attn_mask_compat.py` is a copy of Transformers'
-`modeling_attn_mask_utils.py`, kept because that module is deprecated and will be
-deleted. A hand-copied file drifts silently: two defects during review of #6880
-were both invisible in the diff and only surfaced under differential testing.
-
-So compare the two ASTs directly, after erasing differences that are stylistic
-rather than semantic:
-
-  * docstrings, type-annotation text, and the deprecation `warnings.warn` calls
-    the vendored copy exists to drop;
-  * `is_tracing`, which 4.x computes inline as a 3-way `or` and 5.x exposes as a
-    helper the vendored copy imports (with a fallback);
-  * single-use temporaries and a dead `else` after a `return`.
-
-Two further differences are deliberate: the vendored copy carries forward-ports
-that older Transformers lacks. Those are relaxed **only** below the version that
-introduced them, so on newer installs they are still compared exactly:
-
-  * the `xpu` device gate, added in 5.x;
-  * the 0-dim inversion tensor, added in 4.53.0 (huggingface/transformers#38637).
-
-Skips when the upstream module is gone, which is the end state this file is for.
-"""
+"""Compares _attn_mask_compat.py's AST to upstream; forward-ports relax only below their version."""
 
 import ast
 import importlib
@@ -127,7 +103,6 @@ class _Canonicalise(ast.NodeTransformer):
         )
 
     def visit_Name(self, node):
-        # `is_tracing_` only avoids shadowing the imported helper.
         if node.id == "is_tracing_":
             return ast.Name(id = "is_tracing", ctx = node.ctx)
         return node
@@ -277,7 +252,6 @@ def test_vendored_module_exports_everything_unsloth_imports():
     upstream = _symbols(upstream_src, False, False)
     vendored = _symbols(_COMPAT_PATH.read_text(encoding = "utf-8"), False, False)
 
-    # Anything vendored must actually exist upstream; inventing symbols under an upstream module's name would be a
-    # silent behavioural fork.
+    # Inventing symbols under an upstream module's name would be a silent fork.
     invented = sorted(set(vendored) - set(upstream))
     assert invented == [], f"vendored symbols with no upstream counterpart: {invented}"

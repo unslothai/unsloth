@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
+import __future__
 import ast
+import inspect
 import fnmatch
 import os
 import sys
@@ -15,6 +17,63 @@ class DispatchReached(Exception):
     pass
 
 
+def _mistral_format_names(tree):
+    """Names loader.py imports from .mistral_format, and its own *mistral_format* helpers."""
+    names = set()
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and node.module == "mistral_format":
+            names.update(alias.asname or alias.name for alias in node.names)
+        elif isinstance(node, ast.FunctionDef) and "mistral_format" in node.name:
+            names.add(node.name)
+    return names
+
+
+def _loader_utils_functions(tree, path, method):
+    """Real definitions of the .loader_utils functions loader.py imports and `method` calls."""
+    imported = {
+        alias.asname or alias.name: alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom) and node.module == "loader_utils"
+        for alias in node.names
+    }
+    used = {n.id for n in ast.walk(method) if isinstance(n, ast.Name)}
+    source = ast.parse((path.parent / "loader_utils.py").read_text(encoding = "utf-8"))
+    defs = {n.name: n for n in source.body if isinstance(n, ast.FunctionDef)}
+    return [
+        defs[imported[name]] for name in sorted(used & imported.keys()) if imported[name] in defs
+    ]
+
+
+def _module_definitions(tree):
+    """loader.py's own top-level functions and literal constants, by name."""
+    defined = {}
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef):
+            defined[node.name] = node
+        elif (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        ):
+            try:
+                ast.literal_eval(node.value)
+            except ValueError:
+                continue
+            defined[node.targets[0].id] = node
+    return defined
+
+
+def _closure(roots, defined):
+    """Every definition in `defined` the roots reach by name, transitively, in source order."""
+    wanted, pending = set(), list(roots)
+    while pending:
+        for node in ast.walk(pending.pop()):
+            if isinstance(node, ast.Name) and node.id in defined and node.id not in wanted:
+                wanted.add(node.id)
+                pending.append(defined[node.id])
+    return [node for name, node in defined.items() if name in wanted]
+
+
 @pytest.fixture
 def loader():
     path = Path(__file__).resolve().parents[1] / "unsloth/models/loader.py"
@@ -26,11 +85,6 @@ def loader():
         n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained"
     )
     method.decorator_list = []
-    helper = next(
-        n
-        for n in tree.body
-        if isinstance(n, ast.FunctionDef) and n.name == "_precision_flags_conflict"
-    )
     captured = {"config_calls": 0}
 
     def dispatch(**kwargs):
@@ -54,11 +108,13 @@ def loader():
         _requested_float32 = lambda dtype: False,
         hf_login = lambda token: token,
         requested_device_map = lambda device: device,
+        deepspeed_zero3_device_map = lambda device: device,
         is_automatic_device_map = lambda device: isinstance(device, str),
         prepare_device_map = lambda: ("sequential", False),
         ALLOW_BITSANDBYTES = True,
         ALLOW_PREQUANTIZED_MODELS = True,
         USE_MODELSCOPE = False,
+        logger = SimpleNamespace(warning_once = lambda *args, **kwargs: None),
         SUPPORTS_LLAMA32 = True,
         get_model_name = lambda name, **kwargs: name,
         _revision_for_resolved_repo = lambda revision, *args: revision,
@@ -71,8 +127,26 @@ def loader():
         patch_compiling_bitsandbytes = lambda: None,
         _get_dtype = lambda dtype: dtype,
         _revision_for_tokenizer_repo = lambda *args: None,
+        _raise_if_modeling_ignores_config = lambda *args: None,
+        raise_if_fast_inference_under_fsdp2 = lambda fast_inference: None,
     )
-    exec(compile(ast.Module(body = [helper, method], type_ignores = []), str(path), "exec"), env)
+    # No fixture is Mistral-format: stub each loader.py helper deciding that, new ones included.
+    for name in _mistral_format_names(tree):
+        env.setdefault(name, RuntimeError if name[0].isupper() else (lambda *args, **kwargs: False))
+    # Real loader_utils helpers (e.g. the fp8 dequantize check from #14516) where no stub is given.
+    env.setdefault("inspect", inspect)
+    real = [n for n in _loader_utils_functions(tree, path, method) if n.name not in env]
+    flags = __future__.annotations.compiler_flag  # annotations such as Union stay unevaluated
+    source = str(path.parent / "loader_utils.py")
+    exec(compile(ast.Module(body = real, type_ignores = []), source, "exec", flags = flags), env)
+    # Every loader.py helper from_pretrained reaches and no stub above replaces, new ones included
+    # (a fixed list missed _agree_fast_inference_across_ranks from #15390).
+    defined = {name: node for name, node in _module_definitions(tree).items() if name not in env}
+    helpers = _closure([method], defined)
+    for node in helpers:
+        if isinstance(node, ast.FunctionDef):
+            node.decorator_list = []
+    exec(compile(ast.Module(body = [*helpers, method], type_ignores = []), str(path), "exec"), env)
     return env, captured
 
 
@@ -145,6 +219,10 @@ def modelscope_snapshot(monkeypatch, tmp_path):
 
     def snapshot_download(name, allow_file_pattern = None):
         calls.append((name, allow_file_pattern))
+        if name.startswith("hf-only/"):
+            raise ValueError(f"{name} is not on ModelScope")
+        snapshot = cache / name.replace("/", "--")
+        snapshot.mkdir(exist_ok = True)
         for filename in (
             "config.json",
             "adapter_config.json",
@@ -154,9 +232,9 @@ def modelscope_snapshot(monkeypatch, tmp_path):
             if allow_file_pattern is None or any(
                 fnmatch.fnmatch(filename, pattern) for pattern in allow_file_pattern
             ):
-                (cache / filename).write_text("test fixture")
+                (snapshot / filename).write_text("test fixture")
                 downloaded.append(filename)
-        return str(cache)
+        return str(snapshot)
 
     monkeypatch.setitem(
         sys.modules, "modelscope", SimpleNamespace(snapshot_download = snapshot_download)
@@ -166,7 +244,7 @@ def modelscope_snapshot(monkeypatch, tmp_path):
 
 def use_modelscope_adapter(env, cache, base_name):
     def config(name, **kwargs):
-        if name == str(cache):
+        if name == str(cache / "owner--model"):
             raise ValueError("Adapter has no model config")
         return SimpleNamespace(model_type = "llama", rope_scaling = None)
 
@@ -226,6 +304,23 @@ def test_modelscope_valid_loads_download_weights(
         env["from_pretrained"](model_name = "owner/model", **kwargs)
 
     assert "model.safetensors" in downloaded
-    assert captured["dispatch"]["model_name"] == (adapter_base or str(cache))
+    # An adapter's base is fetched from ModelScope as well (#3726).
+    loaded = adapter_base or "owner/model"
+    assert captured["dispatch"]["model_name"] == str(cache / loaded.replace("/", "--"))
     assert captured["dispatch"]["load_in_4bit"] is expected_4bit
     assert calls[-1] == ("owner/model", None)
+    assert (loaded, None) in calls
+
+
+def test_modelscope_adapter_base_missing_there_loads_from_the_hub(loader, modelscope_snapshot):
+    """#3726: an adapter on ModelScope whose base is only on the Hub still loads that base by repo id."""
+    env, captured = loader
+    cache, downloaded, calls = modelscope_snapshot
+    env["USE_MODELSCOPE"] = True
+    use_modelscope_adapter(env, cache, "hf-only/base")
+
+    with pytest.raises(DispatchReached):
+        env["from_pretrained"](model_name = "owner/model", load_in_4bit = False, load_in_16bit = True)
+
+    assert captured["dispatch"]["model_name"] == "hf-only/base"
+    assert ("hf-only/base", None) in calls

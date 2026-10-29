@@ -1,16 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Client-tools passthrough healing for the safetensors/MLX backend.
-
-Parity for #6801: when a NON-GGUF model is loaded and the request declares its
-own ``tools`` with server-side tools OFF, text-form tool calls are promoted back
-into structured ``tool_calls`` (declared tools only) via the shared healer. MLX
-rides the same orchestrator path, so a single scripted backend covers both.
-"""
+"""Non-GGUF models promote text-form tool calls to structured tool_calls, declared tools only."""
 
 import asyncio
 import json
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +13,15 @@ import pytest
 from models.inference import ChatCompletionRequest, ChatMessage
 from routes.inference import openai_chat_completions
 from core.inference.api_monitor import ApiMonitor
+
+
+# #12382: with the date setting on and no system prompt, the chat's first message opens with
+# this note. It is the only rewrite of the user's text these assertions allow.
+_DATE_NOTE = re.compile(r"\A\[Current date: \d{4}-\d{2}-\d{2}\]\n\n")
+
+
+def _without_date_note(text):
+    return _DATE_NOTE.sub("", text, count = 1) if isinstance(text, str) else text
 
 
 LOOKUP_TOOL = {
@@ -53,7 +57,6 @@ class _Request:
     url = SimpleNamespace(path = "/v1/chat/completions")
     method = "POST"
     scope: dict = {}
-    # These cases drive the tool loop, whose confirm gate asks over these frames.
     headers = {"X-Unsloth-Events": "1"}
 
     async def is_disconnected(self):
@@ -82,6 +85,7 @@ class _ScriptedBackend:
         self._responder = responder
         self._stats = stats
         self.calls: list = []
+        self.batch_calls: list = []
         self.reset_count = 0
 
     def generate_chat_response(
@@ -94,8 +98,6 @@ class _ScriptedBackend:
     ):
         self.calls.append({"messages": messages, "tools": tools, **kwargs})
         snapshots = self._responder(messages, tools)
-        # A list scripts stats per call, where None is a generation that ended
-        # without publishing any -- a cancelled one, say.
         _stats = self._stats
         if isinstance(_stats, list):
             _stats = _stats[min(len(self.calls), len(_stats)) - 1]
@@ -103,6 +105,25 @@ class _ScriptedBackend:
             stats_holder["stats"] = _stats
         for snap in snapshots:
             yield snap
+
+    def generate_chat_batch(
+        self,
+        rows,
+        *,
+        stats_holder = None,
+        **kwargs,
+    ):
+        """Every choice's first reply in one command, as the real bridge does."""
+        self.batch_calls.append({"rows": rows, "shared": kwargs})
+        reported: list = []
+        for index, row in enumerate(rows):
+            holder: dict = {}
+            for snapshot in self.generate_chat_response(stats_holder = holder, **{**kwargs, **row}):
+                yield index, snapshot
+            reported.append(holder.get("stats"))
+            yield index, None
+        if stats_holder is not None:
+            stats_holder["stats"] = reported
 
     def reset_generation_state(self, caller_cancel_event = None):
         self.reset_count += 1
@@ -130,6 +151,7 @@ def _install(
     backend,
     *,
     supports_tools = True,
+    supports_reasoning = False,
 ):
     import routes.inference as inf
     from state.tool_policy import reset_tool_policy
@@ -142,7 +164,10 @@ def _install(
     monkeypatch.setattr(
         inf,
         "_detect_safetensors_features",
-        lambda *a, **k: {"supports_tools": supports_tools},
+        lambda *a, **k: {
+            "supports_tools": supports_tools,
+            "supports_reasoning": supports_reasoning,
+        },
     )
     return monitor
 
@@ -266,9 +291,6 @@ def _sse_objects(chunks):
     return out
 
 
-# ── Non-streaming ─────────────────────────────────────────────────
-
-
 def test_non_reasoning_backend_keeps_literal_think_tags(monkeypatch):
     backend = _ScriptedBackend(_fixed("show <think>example</think> tags"))
     response = _call(_request(stream = False), monkeypatch, backend, supports_tools = False)
@@ -289,7 +311,6 @@ def test_xml_healed_to_tool_calls_non_streaming(monkeypatch):
     assert len(calls) == 1
     assert calls[0]["function"]["name"] == "lookup"
     assert json.loads(calls[0]["function"]["arguments"]) == {"q": "cats"}
-    # The client tools reached the generator (template injection).
     assert backend.calls[0]["tools"] == [LOOKUP_TOOL]
 
 
@@ -331,7 +352,6 @@ def test_no_tools_request_untouched(monkeypatch):
     backend = _ScriptedBackend(_fixed("just a plain answer"))
     payload = _request(stream = False)
     body = _json_body(_call(payload, monkeypatch, backend))
-    # No tools and no tool messages -> plain path, normal ChatCompletion.
     choice = body["choices"][0]
     assert choice["finish_reason"] == "stop"
     assert choice["message"]["content"] == "just a plain answer"
@@ -422,7 +442,6 @@ def test_tool_role_follow_up_turn_preserves_history(monkeypatch):
     )
     body = _json_body(_call(payload, monkeypatch, backend))
     assert body["choices"][0]["message"]["content"] == "The weather is sunny."
-    # The tool history reached the generator intact (role=tool + assistant.tool_calls).
     sent = backend.calls[0]["messages"]
     roles = [m["role"] for m in sent]
     assert "tool" in roles
@@ -431,7 +450,6 @@ def test_tool_role_follow_up_turn_preserves_history(monkeypatch):
 
 
 def test_dict_arguments_history_does_not_crash(monkeypatch):
-    # Non-spec client: assistant tool_calls[].function.arguments as a dict.
     backend = _ScriptedBackend(_fixed("ok"))
     payload = _request(
         tools = [LOOKUP_TOOL],
@@ -457,7 +475,6 @@ def test_dict_arguments_history_does_not_crash(monkeypatch):
 
 
 def test_forced_tool_choice_narrows_promotion(monkeypatch):
-    # tool_choice forces `search`; a `lookup` text call must NOT promote.
     backend = _ScriptedBackend(_fixed(_CALL_XML))
     payload = _request(
         tools = [LOOKUP_TOOL, SEARCH_TOOL],
@@ -512,6 +529,18 @@ class _ToolLoopBackend(_ScriptedBackend):
 
 
 @pytest.mark.parametrize(
+    "policy", [None, {"allowedDomains": ["docs.python.org"], "blockedDomains": []}]
+)
+def test_web_search_domain_limits_reach_the_tool_loop(monkeypatch, policy):
+    backend = _ToolLoopBackend(_fixed("done"))
+    payload = _request(stream = False, enable_tools = True)
+    payload._website_policy = policy
+    _call(payload, monkeypatch, backend)
+    [kwargs] = backend.calls
+    assert kwargs.get("website_policy") == policy and ("website_policy" in kwargs) == bool(policy)
+
+
+@pytest.mark.parametrize(
     "kind, stream, expected",
     [
         ("plain", True, "stop"),
@@ -546,11 +575,7 @@ def test_stop_reason_recorded_without_backend_stats(monkeypatch, kind, stream, e
     assert entry["stop_reason"] == expected
 
 
-# ── Nudge ─────────────────────────────────────────────────────────
-
-
 def test_nudge_default_off_single_generation(monkeypatch):
-    # Signal present but unparseable; without opt-in, no retry.
     truncated = '<tool_call>{"name": "lookup"'
     backend = _ScriptedBackend(_fixed(truncated))
     payload = _request(tools = [LOOKUP_TOOL], stream = False)
@@ -583,17 +608,13 @@ def test_nudge_double_failure_relays_original(monkeypatch):
     backend = _ScriptedBackend(_fixed(truncated))
     payload = _request(tools = [LOOKUP_TOOL], stream = False, nudge_tool_calls = True)
     body = _json_body(_call(payload, monkeypatch, backend))
-    assert len(backend.calls) == 2  # exactly one retry
+    assert len(backend.calls) == 2
     choice = body["choices"][0]
     assert choice["finish_reason"] == "stop"
     assert choice["message"]["content"] == truncated
 
 
-# ── Streaming ─────────────────────────────────────────────────────
-
-
 def test_streaming_heals_split_call_into_one_delta(monkeypatch):
-    # Cumulative snapshots that build the call across many increments.
     pieces = ["<tool", '<tool_call>{"name": "loo', '<tool_call>{"name": "lookup", "argum']
     cumulative = pieces + [_CALL_XML]
     backend = _ScriptedBackend(_fixed(*cumulative))
@@ -616,33 +637,12 @@ def test_streaming_heals_split_call_into_one_delta(monkeypatch):
 
 
 def test_what_this_backend_can_serve_reaches_it_rather_than_being_refused(monkeypatch):
-    """An empty stop sequence is dropped rather than forwarded: it would match at
-    position 0 and end every turn before its first token. ``{"type": "text"}``
-    constrains nothing, so refusing it for want of a grammar engine would turn a
-    request this backend serves into a 400."""
+    """An empty stop sequence is dropped, since it would match at position 0 and end every turn."""
     backend = _ScriptedBackend(_fixed("hi"), stats = {"usage": {"prompt_tokens": 7}})
     payload = _request(stop = ["END", ""], response_format = {"type": "text"})
     body = _json_body(_call(payload, monkeypatch, backend, supports_tools = False))
     assert backend.calls[0]["stop"] == ["END"]
     assert body["choices"][0]["message"]["content"] == "hi"
-
-
-def test_n_serves_one_full_generation_per_choice(monkeypatch):
-    """Each choice is its own sampling run, as on the llama-server path: the
-    backend is asked once per choice rather than one reply being copied, and the
-    prompt they share is not re-counted. Two runs may sample the same text; what
-    is guaranteed is that each was generated."""
-    turns = iter(["first", "second"])
-    backend = _ScriptedBackend(
-        lambda messages, tools: [next(turns)],
-        stats = {"usage": {"prompt_tokens": 7, "completion_tokens": 3}},
-    )
-    body = _json_body(_call(_request(n = 2), monkeypatch, backend, supports_tools = False))
-    assert [c["index"] for c in body["choices"]] == [0, 1]
-    assert [c["message"]["content"] for c in body["choices"]] == ["first", "second"]
-    assert len(backend.calls) == 2  # a generation per choice, not one reused
-    # The shared prompt is counted once; only generated tokens accumulate.
-    assert _totals(body) == {"prompt_tokens": 7, "completion_tokens": 6, "total_tokens": 13}
 
 
 def _totals(body):
@@ -691,20 +691,16 @@ def test_one_monitor_row_describes_the_whole_turn(monkeypatch):
     )
     entry, _ = _monitor_entry(_request(n = 2), monkeypatch, backend, supports_tools = False)
     assert "first" in entry["reply"] and "second" in entry["reply"]
-    assert entry["prompt_tokens"] == 7  # the shared prompt, not 7 per choice
-    assert entry["completion_tokens"] == 3  # only the choice that published
-    # Per-choice reasons can differ, so the turn claims none of them.
+    assert entry["prompt_tokens"] == 7
+    assert entry["completion_tokens"] == 3
     assert entry.get("stop_reason") is None
 
 
 def test_streaming_cancel_does_not_finalize_tool_call(monkeypatch):
-    # A stream cancelled via the registry ("Stop") must NOT promote the
-    # buffered-but-unclosed tool markup at finalize, else it executes a tool
-    # the user just cancelled. Guarded on cancel_event at the finalize step.
+    # A cancelled stream must not promote buffered unclosed tool markup at finalize.
     import routes.inference as inf
 
     cancel_id = "cancel-me-6870"
-    # Balanced JSON but no closing </tool_call> -> healer HOLDS it until finalize.
     held = '<tool_call>{"name": "lookup", "arguments": {"q": "cats"}}'
 
     class _CancelMidStream(_ScriptedBackend):
@@ -720,8 +716,8 @@ def test_streaming_cancel_does_not_finalize_tool_call(monkeypatch):
             **kwargs,
         ):
             self.calls.append({"messages": messages, "tools": tools, **kwargs})
-            yield held  # healer holds the unclosed call
-            inf._cancel_by_cancel_id_or_stash(cancel_id)  # user hits Stop before EOF
+            yield held
+            inf._cancel_by_cancel_id_or_stash(cancel_id)
 
     backend = _CancelMidStream()
     payload = _request(tools = [LOOKUP_TOOL], stream = True, cancel_id = cancel_id)
@@ -732,13 +728,13 @@ def test_streaming_cancel_does_not_finalize_tool_call(monkeypatch):
         for o in objs
         for tc in (o.get("choices", [{}])[0].get("delta", {}) or {}).get("tool_calls", []) or []
     ]
-    assert tool_deltas == []  # no tool promoted after cancel
+    assert tool_deltas == []
     finishes = [
         o["choices"][0]["finish_reason"]
         for o in objs
         if o["choices"] and o["choices"][0].get("finish_reason")
     ]
-    assert "tool_calls" not in finishes  # ends with finish_reason=stop, not tool_calls
+    assert "tool_calls" not in finishes
 
 
 def test_streaming_no_tools_verbatim(monkeypatch):
@@ -806,8 +802,24 @@ def test_server_tool_streaming_invalid_event_is_error(monkeypatch):
     assert errors == ["An internal error occurred."]
 
 
+def test_server_tool_heartbeat_is_not_sent_as_a_stall_keepalive(monkeypatch):
+    import routes.inference as inf
+
+    class _SilentToolBackend(_ScriptedBackend):
+        def __init__(self):
+            super().__init__(_fixed())
+
+        def generate_chat_completion_with_tools(self, **_kwargs):
+            yield {"type": "heartbeat"}
+            yield {"type": "content", "text": "done"}
+
+    payload = _request(tools = [LOOKUP_TOOL], enable_tools = True, stream = True)
+    chunks = _collect_sse(_call(payload, monkeypatch, _SilentToolBackend()))
+    assert inf._OPENAI_TOOL_HEARTBEAT_SSE in chunks
+    assert inf._OPENAI_PASSTHROUGH_SSE_KEEPALIVE not in chunks
+
+
 def test_streaming_repeated_snapshot_no_duplicate_call(monkeypatch):
-    # Repeated then shrunk cumulative snapshots must not double-heal.
     backend = _ScriptedBackend(_fixed(_CALL_XML, _CALL_XML, _CALL_XML[:5], _CALL_XML))
     payload = _request(tools = [LOOKUP_TOOL], stream = True)
     response = _call(payload, monkeypatch, backend)
@@ -868,7 +880,6 @@ def test_streaming_disconnect_resets_once(monkeypatch):
 
 
 def test_mlx_uses_same_path(monkeypatch):
-    # MLX and safetensors share get_inference_backend(); one scripted backend covers both.
     backend = _ScriptedBackend(_fixed(_CALL_XML))
     payload = _request(tools = [LOOKUP_TOOL], stream = False)
     body = _json_body(_call(payload, monkeypatch, backend))
@@ -876,7 +887,6 @@ def test_mlx_uses_same_path(monkeypatch):
 
 
 def test_tool_choice_none_does_not_advertise_tools(monkeypatch):
-    # tool_choice="none": no tools rendered into the template; history templating still applies.
     backend = _ScriptedBackend(_fixed("plain answer"))
     payload = _request(tools = [LOOKUP_TOOL], tool_choice = "none", stream = False)
     body = _json_body(_call(payload, monkeypatch, backend))
@@ -884,8 +894,66 @@ def test_tool_choice_none_does_not_advertise_tools(monkeypatch):
     assert backend.calls[0]["tools"] is None
 
 
+_CLIENT_TOOL_HISTORY = [
+    {"role": "user", "content": "look up cats"},
+    {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": '{"q": "cats"}'},
+            }
+        ],
+    },
+    {"role": "tool", "tool_call_id": "call_1", "content": "cats are mammals"},
+]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        dict(tools = [LOOKUP_TOOL], tool_choice = "required"),
+        dict(tools = [LOOKUP_TOOL]),
+        dict(tools = [LOOKUP_TOOL], messages = _CLIENT_TOOL_HISTORY),
+        dict(tools = [LOOKUP_TOOL], enable_tools = True),
+    ],
+)
+@pytest.mark.parametrize("gptoss", [False, True])
+def test_client_tools_the_model_cannot_take_are_refused(monkeypatch, kwargs, gptoss):
+    backend = _ScriptedBackend(_fixed("prose instead of a call"))
+    if gptoss:
+        backend._is_gpt_oss_model = lambda: True
+    payload = _request(stream = False, **kwargs)
+    entry, error = _monitor_entry(payload, monkeypatch, backend, supports_tools = gptoss)
+
+    assert error is not None and error.status_code == 400
+    assert error.detail["error"]["code"] == "unsupported_parameter"
+    assert error.detail["error"]["param"] == "tools"
+    assert ("gpt-oss" in error.detail["error"]["message"]) is gptoss
+    assert backend.calls == []
+    assert entry["status"] == "error"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        dict(tools = [LOOKUP_TOOL], tool_choice = "none"),
+        dict(tools = [LOOKUP_TOOL], tool_choice = "none", messages = _CLIENT_TOOL_HISTORY),
+        dict(messages = _CLIENT_TOOL_HISTORY),
+        dict(enable_tools = True),
+    ],
+)
+def test_requests_without_an_active_client_catalog_still_answer(monkeypatch, kwargs):
+    backend = _ScriptedBackend(_fixed("plain answer"))
+    payload = _request(stream = False, **kwargs)
+    body = _json_body(_call(payload, monkeypatch, backend, supports_tools = False))
+    assert body["choices"][0]["message"]["content"] == "plain answer"
+    assert backend.calls[0]["tools"] is None
+
+
 def test_developer_message_folded_into_system_prompt(monkeypatch):
-    # The "developer" role folds into one leading system message (local templates reject it).
     backend = _ScriptedBackend(_fixed("ok"))
     payload = _request(
         messages = [
@@ -903,13 +971,12 @@ def test_developer_message_folded_into_system_prompt(monkeypatch):
 
 
 def test_failed_nudge_retry_keeps_original_response(monkeypatch):
-    # A raising retry must not 500; the first response is returned.
     state = {"n": 0}
 
     def responder(messages, tools):
         state["n"] += 1
         if state["n"] == 1:
-            return ['<tool_call>{"name":"lookup"']  # unhealable signal
+            return ['<tool_call>{"name":"lookup"']
         raise RuntimeError("retry blew up")
 
     backend = _ScriptedBackend(responder)
@@ -921,16 +988,12 @@ def test_failed_nudge_retry_keeps_original_response(monkeypatch):
 
 
 def test_a_discarded_nudge_retry_still_bills_the_tokens_it_spent(monkeypatch):
-    # Double-failure nudge: the first response is delivered, but the retry's
-    # generate() overwrites stats_holder. The prompt reported is the delivered
-    # attempt's, never the discarded retry's -- but both attempts ran, so their
-    # completions are summed rather than one being dropped.
+    # Double-failure nudge: report the delivered attempt's prompt, but sum both completions.
     first_stats = {"usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}}
     retry_stats = {"usage": {"prompt_tokens": 99, "completion_tokens": 99, "total_tokens": 198}}
 
     class _PerCallStatsBackend(_ScriptedBackend):
         def __init__(self):
-            # Unhealable truncated markup on both attempts -> retry is discarded.
             super().__init__(lambda m, t: ['<tool_call>{"name":"lookup"'])
             self._stats_seq = [first_stats, retry_stats]
 
@@ -957,17 +1020,14 @@ def test_a_discarded_nudge_retry_still_bills_the_tokens_it_spent(monkeypatch):
         return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
 
     asyncio.run(_run())
-    assert len(backend.calls) == 2  # first attempt + one discarded retry
+    assert len(backend.calls) == 2
     [entry] = monitor.snapshot()
-    # The delivered response is the first attempt, so its prompt is the one
-    # reported; the retry's 99 completion tokens were still generated.
     assert entry["prompt_tokens"] == 7
     assert entry["completion_tokens"] == 3 + 99
 
 
 def test_a_nudge_retry_that_never_reported_is_not_billed_twice(monkeypatch):
-    # The retry raises before publishing, so stats_holder still holds the first
-    # attempt's report. Folding that into itself would double its completion count.
+    # The retry raises before publishing, so folding stats_holder into itself would double-count.
     first_stats = {"usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}}
 
     class _RetryRaisesBackend(_ScriptedBackend):
@@ -1043,9 +1103,7 @@ def test_cached_tokens_never_exceed_the_prompt_they_describe(monkeypatch):
 
 
 def test_a_successful_nudge_retry_bills_both_attempts(monkeypatch):
-    # The retry heals, so its reply is delivered and its prompt is reported --
-    # but the first attempt generated tokens on the way there, and reporting the
-    # retry alone hides them from the caller's usage.
+    # The healed retry is delivered, but the first attempt's tokens still count.
     first_stats = {"usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}}
     retry_stats = {"usage": {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25}}
 
@@ -1080,7 +1138,7 @@ def test_a_successful_nudge_retry_bills_both_attempts(monkeypatch):
         return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
 
     body = _json_body(asyncio.run(_run()))
-    assert len(backend.calls) == 2  # first attempt + the retry that healed
+    assert len(backend.calls) == 2
     assert body["choices"][0]["message"]["tool_calls"]
     assert body["usage"]["prompt_tokens"] == 20
     assert body["usage"]["completion_tokens"] == 3 + 5
@@ -1103,7 +1161,6 @@ def test_monitor_records_healed_call_not_raw_xml(monkeypatch):
 
 
 def test_streaming_monitor_records_healed_call_not_raw_xml(monkeypatch):
-    # Monitor mirrors what the client received, never the healed-away raw markup.
     backend = _ScriptedBackend(
         _fixed("Sure. ", 'Sure. <tool_call>{"name": "loo', "Sure. " + _CALL_XML)
     )
@@ -1122,7 +1179,6 @@ def test_streaming_monitor_records_healed_call_not_raw_xml(monkeypatch):
 
 
 def test_forced_tool_choice_narrows_templated_tools(monkeypatch):
-    # A forced function is the only schema rendered into the template.
     backend = _ScriptedBackend(_fixed(_SEARCH_XML))
     payload = _request(
         tools = [LOOKUP_TOOL, SEARCH_TOOL],
@@ -1138,8 +1194,6 @@ def test_forced_tool_choice_narrows_templated_tools(monkeypatch):
 
 
 def test_multimodal_content_parts_flattened_for_local_template(monkeypatch):
-    # Remote image URLs leave image=None, so content arrives as a part LIST:
-    # text parts are kept, the image part dropped.
     backend = _ScriptedBackend(_fixed(_CALL_XML))
     payload = _request(
         messages = [
@@ -1149,7 +1203,7 @@ def test_multimodal_content_parts_flattened_for_local_template(monkeypatch):
                     {"type": "text", "text": "what is this?"},
                     {
                         "type": "image_url",
-                        "image_url": {"url": "https://example.com/cat.png"},
+                        "image_url": {"url": "data:image/png;base64,"},
                     },
                 ],
             )
@@ -1160,13 +1214,11 @@ def test_multimodal_content_parts_flattened_for_local_template(monkeypatch):
     body = _json_body(_call(payload, monkeypatch, backend))
     templated = backend.calls[0]["messages"]
     assert all(isinstance(m.get("content"), str) for m in templated)
-    assert any(m["content"] == "what is this?" for m in templated)
+    assert any(_without_date_note(m["content"]) == "what is this?" for m in templated)
     assert body["choices"][0]["finish_reason"] == "tool_calls"
 
 
 def test_string_arguments_history_deserialized_for_template(monkeypatch):
-    # JSON-string tool_calls arguments become dicts in the templated copy;
-    # the HTTP response stays OpenAI-shaped.
     backend = _ScriptedBackend(_fixed("done"))
     payload = _request(
         tools = [LOOKUP_TOOL],
@@ -1220,8 +1272,6 @@ def test_unparseable_arguments_string_left_untouched(monkeypatch):
 
 
 def test_mcp_enabled_without_server_tools_uses_passthrough(monkeypatch):
-    # mcp_enabled=true with an empty registry must not silently drop the
-    # declared tools; the gate keys on the server-side path claiming the request.
     backend = _ScriptedBackend(_fixed(_CALL_XML))
     payload = _request(tools = [LOOKUP_TOOL], stream = False, mcp_enabled = True)
     body = _json_body(_call(payload, monkeypatch, backend))
@@ -1266,7 +1316,12 @@ def test_every_tool_loop_turn_is_billed_not_just_the_last():
     earlier results."""
     folded = _fold(_turn(100, 20), _turn(160, 30), _turn(220, 5))
 
-    assert folded["usage"] == {"prompt_tokens": 220, "completion_tokens": 55, "total_tokens": 275}
+    assert folded["usage"] == {
+        "prompt_tokens": 220,
+        "completion_tokens": 55,
+        "total_tokens": 275,
+        "context_tokens": 225,
+    }
     # Rates describe the summed counts, not the last turn that arrived.
     assert folded["timings"]["predicted_n"] == 55
     assert folded["timings"]["predicted_ms"] == pytest.approx(550.0)
@@ -1276,16 +1331,24 @@ def test_every_tool_loop_turn_is_billed_not_just_the_last():
 def test_a_turn_that_ends_before_reporting_does_not_erase_the_loop():
     """A cancelled or errored final turn has no counts of its own. Seeding the
     fold from it would drop everything the loop already spent."""
-    # No report at all, in every position.
     assert _fold(_turn(100, 20), None, _turn(160, 30))["usage"]["completion_tokens"] == 50
     assert _fold(_turn(100, 20), _turn(160, 30), None)["usage"]["completion_tokens"] == 50
 
-    # Reported usage but no timings: the loop's totals must survive it.
     partial = _fold(_turn(100, 20), _turn(160, 30, timings = False))
     assert partial["timings"]["predicted_n"] == 20
-    # Reported timings but no usage: the prompt is still the loop's.
     errored = _fold(_turn(100, 20), {"timings": {"predicted_ms": 1.0, "predicted_n": 1}})
     assert errored["usage"] == {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}
+
+
+def test_the_context_meter_counts_earlier_turns_once():
+    folded = _fold(_turn(18000, 60), _turn(21500, 80), _turn(25000, 700))
+
+    assert folded["usage"]["total_tokens"] == 25840
+    assert folded["usage"]["context_tokens"] == 25700
+    assert "context_tokens" not in _fold(_turn(18000, 60))["usage"]
+    # A last report with no prompt count keeps the earlier context.
+    unreported = _fold(_turn(18000, 60), _turn(21500, 80), {"finish_reason": "stop"})
+    assert unreported["usage"]["context_tokens"] == 21580
 
 
 def test_completion_details_are_summed_with_the_completion_they_describe():
@@ -1350,6 +1413,519 @@ def test_legacy_image_field_keeps_the_client_tool_catalog(monkeypatch):
 
     assert backend.calls[0]["tools"] == [LOOKUP_TOOL]
     assert backend.calls[0]["image"] is not None
+
+
+def test_a_turn_asking_for_several_replies_sends_them_as_one_batch(monkeypatch):
+    """One command carries every choice, each with its own seed."""
+    from routes.inference import _choice_seed
+
+    backend = _ScriptedBackend(_fixed("hi"))
+    body = _json_body(_call(_request(stream = False, n = 3, seed = 11), monkeypatch, backend))
+
+    assert len(body["choices"]) == 3
+    assert len(backend.batch_calls) == 1, "the choices did not go out together"
+    call = backend.batch_calls[0]
+    effective = [row.get("seed", call["shared"].get("seed")) for row in call["rows"]]
+    assert effective == [11, _choice_seed(11, 1), _choice_seed(11, 2)], effective
+
+
+class _StoppedAfterFirstRowBackend(_ScriptedBackend):
+    """A backend that cannot batch: rows run apart and a Stop skips the rest."""
+
+    def generate_chat_batch(
+        self,
+        rows,
+        *,
+        stats_holder = None,
+        cancel_event = None,
+        **kwargs,
+    ):
+        self.batch_calls.append({"rows": rows, "shared": kwargs})
+        yield 0, "partial"
+        cancel_event.set()
+        yield 0, None
+        for row in range(1, len(rows)):
+            yield row, None
+        if stats_holder is not None:
+            stats_holder["stats"] = [{"completion_tokens": 1}] + [None] * (len(rows) - 1)
+
+
+def test_a_stop_during_the_first_choice_returns_no_empty_choices(monkeypatch):
+    backend = _StoppedAfterFirstRowBackend(_fixed("unused"))
+    body = _json_body(_call(_request(stream = False, n = 3), monkeypatch, backend))
+
+    assert len(backend.batch_calls) == 1
+    assert [c["message"]["content"] for c in body["choices"]] == ["partial"], body["choices"]
+
+
+_RF_SCHEMA = {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}
+_RF_FORMAT = {"type": "json_schema", "json_schema": {"name": "c", "schema": _RF_SCHEMA}}
+_MARKUP_DOC = '{"city":"<think>Paris</think>"}'
+
+
+@pytest.mark.parametrize("chunked", [False, True], ids = ["whole", "streamed"])
+@pytest.mark.parametrize(
+    "prefix, prefilled, reasoning",
+    [
+        ("", False, ""),
+        ("<think>weighing</think>", False, "weighing"),
+        ("<think>weighing</think>", True, "weighing"),
+        ("", True, ""),
+    ],
+)
+def test_markers_inside_a_constrained_document_stay_in_it(chunked, prefix, prefilled, reasoning):
+    from routes.inference import _ResponsesReasoningExtractor
+
+    extractor = _ResponsesReasoningExtractor(
+        parse_think_markers = True, reasoning_prefilled = prefilled, single_block = True
+    )
+    text = prefix + _MARKUP_DOC
+    got_reasoning = got_content = ""
+    for piece in text if chunked else [text]:
+        delta_reasoning, delta_content = extractor.feed(piece)
+        got_reasoning += delta_reasoning
+        got_content += delta_content
+    delta_reasoning, delta_content = extractor.finish()
+
+    assert got_content + delta_content == _MARKUP_DOC
+    assert got_reasoning + delta_reasoning == reasoning
+    assert json.loads(_MARKUP_DOC)["city"] == "<think>Paris</think>"
+
+
+@pytest.mark.parametrize("reasoning", [False, True], ids = ["plain", "reasoning"])
+def test_the_contract_reaches_the_backend_and_its_reply_comes_back_whole(monkeypatch, reasoning):
+    pytest.importorskip("llguidance.mlx")
+    backend = _ScriptedBackend(_fixed(_MARKUP_DOC))
+    backend.models["sf-model"]["is_mlx"] = True
+    caps = {"supports_tools": False, "supports_reasoning": reasoning}
+    reply = _call(_request(response_format = _RF_FORMAT), monkeypatch, backend, **caps)
+    body = _json_body(reply)
+    assert backend.calls[0]["response_format"] == _RF_FORMAT
+    assert backend.calls[0]["reasoning_is_extracted"] is reasoning
+    message = body["choices"][0]["message"]
+    assert message["content"] == _MARKUP_DOC
+    assert not message.get("reasoning_content")
+
+
+def _mlx_format_call(
+    monkeypatch,
+    backend,
+    caps = None,
+    **fields,
+):
+    import routes.inference as inf
+
+    monkeypatch.setattr(inf, "_reject_unhonorable_response_format", lambda payload: None)
+    backend.models["sf-model"]["is_mlx"] = True
+    return _call(
+        _request(**{"tools": [LOOKUP_TOOL], **fields}), monkeypatch, backend, **(caps or {})
+    )
+
+
+@pytest.mark.parametrize("response_format", [_RF_FORMAT, {"type": "json_object"}])
+@pytest.mark.parametrize(
+    "tool_choice",
+    [None, "auto", "required", {"type": "function", "function": {"name": "lookup"}}],
+)
+def test_a_response_format_does_not_lock_out_callable_tools(
+    monkeypatch, response_format, tool_choice
+):
+    backend = _ScriptedBackend(_fixed(_CALL_XML))
+    reply = _mlx_format_call(
+        monkeypatch,
+        backend,
+        tool_choice = tool_choice,
+        response_format = response_format,
+        stream = False,
+    )
+    choice = _json_body(reply)["choices"][0]
+    assert backend.calls[0]["tools"] == [LOOKUP_TOOL]
+    assert backend.calls[0]["response_format"] is None
+    assert choice["finish_reason"] == "tool_calls"
+    assert choice["message"]["tool_calls"][0]["function"]["name"] == "lookup"
+
+
+def test_a_streamed_response_format_does_not_lock_out_callable_tools(monkeypatch):
+    backend = _ScriptedBackend(_fixed(_CALL_XML))
+    reply = _mlx_format_call(monkeypatch, backend, response_format = _RF_FORMAT, stream = True)
+    finishes = [
+        c.get("finish_reason") for o in _sse_objects(_collect_sse(reply)) for c in o["choices"]
+    ]
+    assert backend.calls[0]["response_format"] is None
+    assert "tool_calls" in finishes
+
+
+def test_a_set_aside_response_format_keeps_reasoning_out_of_the_call(monkeypatch):
+    import routes.inference as inf
+
+    monkeypatch.setattr(inf, "_sf_reasoning_prefill_mode", lambda *a, **k: True)
+    backend = _ScriptedBackend(_fixed("weighing</think>" + _CALL_XML))
+    reply = _mlx_format_call(
+        monkeypatch,
+        backend,
+        caps = {"supports_reasoning": True},
+        response_format = _RF_FORMAT,
+        stream = False,
+    )
+    message = _json_body(reply)["choices"][0]["message"]
+    assert message["reasoning_content"] == "weighing"
+    assert not message["content"]
+    assert message["tool_calls"][0]["function"]["name"] == "lookup"
+
+
+def test_a_set_aside_response_format_still_allows_the_nudge(monkeypatch):
+    truncated = '<tool_call>{"name": "lookup"'
+    backend = _ScriptedBackend(
+        lambda messages, tools: [_CALL_XML]
+        if any("native tool-call format" in (m.get("content") or "") for m in messages)
+        else [truncated]
+    )
+    reply = _mlx_format_call(
+        monkeypatch, backend, response_format = _RF_FORMAT, nudge_tool_calls = True, stream = False
+    )
+    assert len(backend.calls) == 2
+    assert _json_body(reply)["choices"][0]["finish_reason"] == "tool_calls"
+
+
+_RF_TOOL_HISTORY = [
+    ChatMessage(role = "user", content = "hi"),
+    ChatMessage(
+        role = "assistant",
+        content = None,
+        tool_calls = [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": '{"q": "cats"}'},
+            }
+        ],
+    ),
+    ChatMessage(role = "tool", tool_call_id = "call_1", content = "Paris"),
+]
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [{"tool_choice": "none"}, {"tools": None, "messages": _RF_TOOL_HISTORY}],
+    ids = ["tool_choice_none", "history_without_tools"],
+)
+def test_a_response_format_still_applies_when_tools_cannot_be_called(monkeypatch, fields):
+    backend = _ScriptedBackend(_fixed('{"city":"Paris"}'))
+    reply = _mlx_format_call(
+        monkeypatch, backend, response_format = _RF_FORMAT, stream = False, **fields
+    )
+    assert backend.calls[0]["response_format"] == _RF_FORMAT
+    assert _json_body(reply)["choices"][0]["message"]["content"] == '{"city":"Paris"}'
+
+
+@pytest.mark.parametrize(
+    "tool_choice", ["required", {"type": "function", "function": {"name": "x"}}]
+)
+def test_a_forced_tool_choice_beside_a_response_format_needs_tools(monkeypatch, tool_choice):
+    from fastapi import HTTPException
+
+    backend = _ScriptedBackend(_fixed('{"city":"Paris"}'))
+    with pytest.raises(HTTPException) as exc:
+        _mlx_format_call(
+            monkeypatch,
+            backend,
+            tools = None,
+            tool_choice = tool_choice,
+            response_format = _RF_FORMAT,
+            stream = False,
+        )
+    assert exc.value.status_code == 400
+    assert not backend.calls
+
+
+@pytest.mark.parametrize("is_mlx", [False, True])
+def test_a_requested_tool_loop_keeps_the_format_refusals(monkeypatch, is_mlx):
+    from fastapi import HTTPException
+
+    backend = _ScriptedBackend(_fixed(_CALL_XML))
+    backend.models["sf-model"]["is_mlx"] = is_mlx
+    payload = _request(
+        tools = [LOOKUP_TOOL],
+        enable_tools = True,
+        max_tool_calls_per_message = 0,
+        response_format = {"type": "json_schema"},
+        stream = False,
+    )
+    with pytest.raises(HTTPException) as exc:
+        _call(payload, monkeypatch, backend)
+    assert exc.value.status_code == 400
+    assert not backend.calls
+
+
+@pytest.mark.parametrize(
+    "is_mlx, fields",
+    [
+        (False, {"response_format": _RF_FORMAT}),
+        (True, {"response_format": {"type": "json_schema"}}),
+        (
+            True,
+            {
+                "response_format": _RF_FORMAT,
+                "continue_final_message": True,
+                "messages": [
+                    ChatMessage(role = "user", content = "hi"),
+                    ChatMessage(role = "assistant", content = "<tool_call>"),
+                ],
+            },
+        ),
+    ],
+    ids = ["transformers", "unhonorable_schema", "continuation"],
+)
+def test_callable_tools_lift_the_refusals_of_a_format_they_set_aside(monkeypatch, is_mlx, fields):
+    backend = _ScriptedBackend(_fixed(_CALL_XML))
+    backend.models["sf-model"]["is_mlx"] = is_mlx
+    reply = _call(_request(tools = [LOOKUP_TOOL], stream = False, **fields), monkeypatch, backend)
+    assert backend.calls[0]["response_format"] is None
+    assert _json_body(reply)["choices"][0]["finish_reason"] == "tool_calls"
+
+
+class _FittedToolLoopBackend(_ToolLoopBackend):
+    def __init__(self, responder, **kwargs):
+        super().__init__(responder, **kwargs)
+        self.fits: list = []
+
+    def compact_chat_context(
+        self,
+        messages,
+        *,
+        system_prompt = "",
+        **kwargs,
+    ):
+        self.fits.append(kwargs)
+        return {"messages": messages, "system_prompt": system_prompt}
+
+
+def _serve(
+    monkeypatch,
+    *,
+    frames = True,
+    **fields,
+):
+    """Send to an installed backend; ``frames`` off drops the control-frame header."""
+    if fields.get("response_format"):
+        pytest.importorskip("llguidance.mlx")
+    if not frames:
+        monkeypatch.setattr(_Request, "headers", {})
+    payload = _request(**fields)
+    response = asyncio.run(
+        openai_chat_completions(payload, request = _Request(), current_subject = "u")
+    )
+    return _collect_sse(response) if payload.stream else response
+
+
+@pytest.mark.parametrize(
+    "is_mlx, checkpointed, extra, offered",
+    [
+        (True, True, {}, ["search_conversation"]),
+        (False, True, {}, None),
+        (True, False, {}, None),
+        (True, True, {"context_policy": "rolling"}, None),
+        (True, True, {"context_overflow": None}, None),
+        (True, True, {"tool_choice": "none"}, None),
+        (True, True, {"max_tool_calls_per_message": 0}, None),
+        (True, True, {"n": 2}, None),
+        (True, True, {"permission_mode": "ask"}, None),
+        (True, True, {"stream": True, "frames": False, "permission_mode": "ask"}, None),
+        (True, True, {"response_format": _RF_FORMAT}, None),
+        (True, True, {"tools": [LOOKUP_TOOL]}, ["lookup"]),
+    ],
+)
+def test_a_compacted_mlx_thread_keeps_archive_search_with_tools_off(
+    monkeypatch, is_mlx, checkpointed, extra, offered
+):
+    import routes.inference as inf
+
+    monkeypatch.setattr(inf, "_thread_has_conversation_archive", lambda thread_id: True)
+    monkeypatch.setattr(
+        inf, "_thread_has_checkpoint", lambda thread_id, messages = None: checkpointed
+    )
+    backend = _FittedToolLoopBackend(_fixed("done"))
+    backend.models["sf-model"]["is_mlx"] = is_mlx
+    fields = {
+        "stream": False,
+        "enable_tools": False,
+        "thread_id": "saved",
+        "context_overflow": "truncate_oldest",
+        "context_policy": "checkpoint",
+        **extra,
+    }
+    probed = []
+
+    def _features(*_args, **kwargs):
+        probed.append(bool(kwargs.get("tools")))
+        return {"supports_tools": True, "supports_reasoning": False}
+
+    _install(monkeypatch, backend)
+    monkeypatch.setattr(inf, "_detect_safetensors_features", _features)
+    _serve(monkeypatch, **fields)
+    tools = backend.calls[0]["tools"]
+    assert (tools and [tool["function"]["name"] for tool in tools]) == offered
+    # The template branch that is classified is the one the request renders.
+    assert probed[0] is bool(offered)
+
+
+@pytest.mark.parametrize("engine", ["sglang", "vllm"])
+def test_a_compacted_managed_engine_thread_answers_without_the_local_tool_loop(monkeypatch, engine):
+    import routes.inference as inf
+
+    monkeypatch.setattr(inf, "_thread_has_conversation_archive", lambda thread_id: True)
+    monkeypatch.setattr(inf, "_thread_has_checkpoint", lambda thread_id, messages = None: True)
+    backend = _FittedToolLoopBackend(_fixed("done"))
+    backend.models["sf-model"]["engine"] = engine
+    _install(monkeypatch, backend)
+    fields = {"thread_id": "saved", "context_overflow": "truncate_oldest"}
+    _serve(monkeypatch, stream = False, enable_tools = False, context_policy = "checkpoint", **fields)
+
+    assert backend.calls[0]["tools"] is None
+    assert [fit["recall_reachable"] for fit in backend.fits] == [False]
+
+
+@pytest.mark.parametrize("asked", [{"enable_tools": True}, {"mcp_enabled": True}])
+def test_tool_choice_none_keeps_a_compacted_mlx_thread_tool_free(monkeypatch, asked):
+    import routes.inference as inf
+
+    monkeypatch.setattr(inf, "_thread_has_conversation_archive", lambda thread_id: True)
+    monkeypatch.setattr(inf, "_thread_has_checkpoint", lambda thread_id, messages = None: True)
+    backend = _FittedToolLoopBackend(_fixed("done"))
+    backend.models["sf-model"]["is_mlx"] = True
+    _install(monkeypatch, backend)
+    # A GGUF model that is still loading already reports its tool support.
+    loading = SimpleNamespace(**{**vars(_llama_stub()), "supports_tools": True})
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: loading)
+    fields = {"thread_id": "saved", "context_overflow": "truncate_oldest", "tool_choice": "none"}
+    _serve(monkeypatch, stream = False, context_policy = "checkpoint", **fields, **asked)
+
+    assert backend.calls[0]["tools"] is None
+    assert [fit["recall_reachable"] for fit in backend.fits] == [False]
+
+
+_TURNS = "{% for m in messages %}<|im_start|>{{ m.role }}\n{{ m.content }}<|im_end|>\n{% endfor %}"
+_WITH_TOOLS = "{% if tools %}<tool_call>{{ tools }}</tool_call>{% endif %}" + _TURNS
+# Named templates: only the branch a turn carrying tools renders decides, either way round.
+_TOOL_BRANCH = {"default": _TURNS, "tool_use": _WITH_TOOLS}
+_DEFAULT_BRANCH = {"default": _WITH_TOOLS, "tool_use": _TURNS}
+
+
+@pytest.mark.parametrize(
+    "extra, supports_tools, gpt_oss, reachable",
+    [
+        ({}, True, False, True),
+        ({}, False, False, False),
+        ({}, _TOOL_BRANCH, False, True),
+        ({}, _DEFAULT_BRANCH, False, False),
+        ({}, True, True, False),
+        ({"tool_choice": "none"}, True, False, False),
+        ({"stream": True, "permission_mode": "ask"}, True, False, True),
+        ({"stream": True, "frames": False}, True, False, True),
+        ({"stream": True, "frames": False, "permission_mode": "ask"}, True, False, False),
+        ({"response_format": _RF_FORMAT}, True, False, False),
+        ({"tools": [LOOKUP_TOOL]}, True, False, False),
+    ],
+)
+def test_a_plain_mlx_fit_may_reset_only_where_the_loop_can_reopen(
+    monkeypatch, extra, supports_tools, gpt_oss, reachable
+):
+    backend = _FittedToolLoopBackend(_fixed("done"))
+    backend.models["sf-model"]["is_mlx"] = True
+    backend._is_gpt_oss_model = lambda: gpt_oss
+    import routes.inference as inf
+
+    classify = inf._detect_safetensors_features
+    _install(monkeypatch, backend, supports_tools = supports_tools is True)
+    if isinstance(supports_tools, dict):
+        # The real classifier, so the branch it selects is the one under test.
+        backend.models["sf-model"]["chat_template_info"] = {"template": supports_tools}
+        monkeypatch.setattr(inf, "_detect_safetensors_features", classify)
+    base = {"stream": False, "enable_tools": False, "context_overflow": "truncate_oldest"}
+    _serve(monkeypatch, **{**base, **extra})
+    assert [fit["recall_reachable"] for fit in backend.fits] == [reachable]
+
+
+@pytest.mark.parametrize(
+    "tokenizer_body, processor_body, reachable",
+    [(_WITH_TOOLS, _TURNS, False), (_TURNS, _WITH_TOOLS, True)],
+    ids = ["processor_drops_tools", "processor_renders_tools"],
+)
+def test_a_vision_model_is_asked_about_the_body_its_text_turn_renders(
+    monkeypatch, tokenizer_body, processor_body, reachable
+):
+    import routes.inference as inf
+
+    backend = _FittedToolLoopBackend(_fixed("done"))
+    backend.models["sf-model"]["is_mlx"] = True
+    classify = inf._detect_safetensors_features
+    _install(monkeypatch, backend)
+    backend.models["sf-model"]["chat_template_info"] = {
+        "template": tokenizer_body,
+        "processor_template": processor_body,
+    }
+    monkeypatch.setattr(inf, "_detect_safetensors_features", classify)
+    _serve(monkeypatch, stream = False, enable_tools = False, context_overflow = "truncate_oldest")
+    assert [fit["recall_reachable"] for fit in backend.fits] == [reachable]
+
+
+class _TrimmingBackend(_FittedToolLoopBackend):
+    """Fits by keeping only the newest message."""
+
+    def compact_chat_context(self, messages, **kwargs):
+        self.fits.append(kwargs)
+        event = {"type": "context_truncated", "dropped_messages": len(messages) - 1, "fits": True}
+        return {"messages": messages[-1:], "system_prompt": "fitted", "events": [event]}
+
+
+def _texts(messages):
+    return [message["content"] for message in messages]
+
+
+def _overflowing(**kwargs):
+    turns = [("user", "old"), ("assistant", "ok"), ("user", "new")]
+    return _request(
+        messages = [ChatMessage(role = role, content = text) for role, text in turns],
+        stream = False,
+        context_overflow = "truncate_oldest",
+        **kwargs,
+    )
+
+
+@pytest.mark.parametrize("slots", [4, 1], ids = ["batched", "one_by_one"])
+def test_every_choice_of_an_mlx_request_starts_from_one_fit(monkeypatch, slots):
+    from routes.inference import _choice_seed
+
+    backend = _TrimmingBackend(_fixed("done"))
+    backend.models["sf-model"]["is_mlx"] = True
+    backend.effective_parallel_slots = slots
+    body = _json_body(_call(_overflowing(n = 3, seed = 11), monkeypatch, backend))
+
+    assert len(backend.fits) == 1
+    assert len(backend.batch_calls) == (slots > 1)
+    sent = [(_texts(c["messages"]), c["system_prompt"], c["seed"]) for c in backend.calls]
+    seeds = (11, _choice_seed(11, 1), _choice_seed(11, 2))
+    assert sent == [(["new"], "fitted", seed) for seed in seeds]
+    assert body["context_truncated"]["dropped_messages"] == 2
+
+
+def test_an_mlx_prompt_carrying_a_picture_is_sent_unfitted(monkeypatch):
+    backend = _TrimmingBackend(_fixed("done"))
+    backend.models["sf-model"].update(is_mlx = True, is_vision = True)
+    _call(_overflowing(image_base64 = _PNG_1x1), monkeypatch, backend)
+
+    assert backend.fits == [] and len(backend.calls[0]["messages"]) == 3
+
+
+def test_a_nudge_retry_extends_the_fitted_prompt_and_is_not_refitted(monkeypatch):
+    backend = _TrimmingBackend(_fixed('<tool_call>{"name": "lookup"'))
+    backend.models["sf-model"]["is_mlx"] = True
+    payload = _overflowing(tools = [LOOKUP_TOOL], nudge_tool_calls = True)
+    _call(payload, monkeypatch, backend)
+
+    first, retry = (_texts(call["messages"]) for call in backend.calls)
+    assert len(backend.fits) == 1 and first == ["new"]
+    assert retry[:1] == first and len(retry) > 1
 
 
 class _VisionToolLoopBackend(_ToolLoopBackend):
@@ -1482,15 +2058,11 @@ def test_a_client_catalog_keeps_an_image_out_of_the_server_loop(monkeypatch):
 
     assert backend.calls, "generation never ran"
     assert backend.calls[0]["tools"] == [LOOKUP_TOOL]
-    # The passthrough renders one turn; the loop would have run the built-ins instead.
     assert "images" not in backend.calls[0] or not backend.calls[0].get("images")
 
 
 def test_a_replayed_picture_sits_beside_the_result_that_produced_it(monkeypatch):
-    """The passthrough flatten costs the markers their positions. Promoting after it
-    puts each batch's turn straight after its result, so "the tool call above" names
-    the right call -- one detached block of every payload, placed wherever the
-    attachment's turn happened to be, did not."""
+    """Promote replayed pictures after the passthrough flatten so each picture sits beside its result."""
     import base64
     import io
     import json
@@ -1607,10 +2179,7 @@ def test_a_replay_only_image_turn_also_keeps_the_client_catalog(monkeypatch):
 
 
 def test_the_plain_route_leaves_the_attachment_marker_to_the_backend(monkeypatch):
-    """The backends snapshot the conversation's existing markers as history's before
-    topping up, so a marker the ROUTE pre-added is counted as a replayed picture's.
-    With the attachment on an earlier turn than a tool's picture the two pixels then
-    bind to each other's turns, and the model reads the screenshot as the diagram."""
+    """The route must not pre-add an attachment marker: backends would count it as a replayed picture."""
     import base64
     import io
     import json
@@ -1633,7 +2202,6 @@ def test_the_plain_route_leaves_the_attachment_marker_to_the_backend(monkeypatch
     }
     payload = _request(
         messages = [
-            # The attachment rides on an EARLIER turn than the tool's picture.
             ChatMessage(
                 role = "user",
                 content = [
@@ -1666,9 +2234,7 @@ def test_the_plain_route_leaves_the_attachment_marker_to_the_backend(monkeypatch
         stream = False,
     )
 
-    # supports_tools=False is what makes this the PLAIN path: the replayed picture
-    # arrives with tool history, and a template that renders tools would send the
-    # request to the client-tool passthrough, which orders the pixels itself.
+    # supports_tools=False makes this the plain path; a tools template would route to the passthrough.
     _call(payload, monkeypatch, backend, supports_tools = False)
 
     [call] = backend.calls
@@ -1676,9 +2242,6 @@ def test_the_plain_route_leaves_the_attachment_marker_to_the_backend(monkeypatch
     assert call["image"] is not None, "the attachment reached the backend"
     assert len(replayed) == 1, "so did the replayed picture"
 
-    # Exactly what the backends do next. Given a conversation the route did not
-    # pre-mark, the top-up places the attachment's marker at its own ordinal and
-    # the history/attachment split survives.
     prior = mcp_images.image_marker_parts(sent)
     topped = mcp_images.top_up_image_markers(sent, len(replayed) + 1, ordinal = call["image_ordinal"])
     ordered = mcp_images.pixels_in_marker_order(topped, prior, ["MCP"], "ATTACHMENT")

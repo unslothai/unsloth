@@ -8,6 +8,7 @@ import {
   GENERATION_CANCELLED_SENTINEL,
   shouldContinueGenerating,
   shouldReportGenerateError,
+  stopButtonLabel,
 } from "../src/features/images/lib/generation-stop.ts";
 
 test("a mounted page with no stop keeps generating", () => {
@@ -18,8 +19,7 @@ test("a mounted page with no stop keeps generating", () => {
 });
 
 test("Stop breaks the run loop, so a count > 1 request does not start its next run", () => {
-  // The backend cancel only reaches the denoise in flight; without this the page would
-  // immediately POST run 2 of 4 and the machine would keep generating after Stop.
+  // The backend cancel only reaches the denoise in flight; the page must not POST the next run.
   assert.equal(
     shouldContinueGenerating({ mounted: true, stopRequested: true }),
     false,
@@ -48,8 +48,6 @@ test("the cancelled sentinel is not reported as an error", () => {
 });
 
 test("a stopped run reports nothing even when the message is not the sentinel", () => {
-  // A proxy can rewrite the 409 body, and the run can unwind some other way; the latch is what
-  // makes the user's own Stop silent rather than a spurious red toast.
   assert.equal(
     shouldReportGenerateError({ message: "Bad Gateway", stopRequested: true }),
     false,
@@ -68,10 +66,7 @@ test("a real failure is still reported", () => {
 });
 
 test("a Stop the backend did not act on does not explain away a real failure", () => {
-  // handleCancelGenerate passes stopRequested only once the backend answered {cancelled: true}.
-  // A POST that threw, or a {cancelled: false} because the run was already past its last
-  // cancellation check while the route was still persisting, means nothing was stopped, so an
-  // error raised afterwards is real and the user has to see it.
+  // stopRequested is only passed once the backend answered {cancelled: true}.
   const stopRequested = true;
   for (const cancelAcked of [false]) {
     assert.equal(
@@ -85,10 +80,16 @@ test("a Stop the backend did not act on does not explain away a real failure", (
 });
 
 test("a Stop the backend confirmed still silences the run it stopped", () => {
-  // The other side: an acknowledged cancel is the user's own Stop coming back, whatever shape the
-  // run unwinds in, so it must not raise a red toast.
   assert.equal(
     shouldReportGenerateError({ message: "Bad Gateway", stopRequested: true && true }),
     false,
   );
+});
+
+test("Stop shows Stopping… once clicked, so a cancel waiting on a long step does not look ignored", () => {
+  assert.equal(stopButtonLabel({ stopping: false, done: null, count: 1 }), "Stop");
+  assert.equal(stopButtonLabel({ stopping: false, done: 1, count: 4 }), "Stop (1/4)");
+  assert.equal(stopButtonLabel({ stopping: true, done: 1, count: 4 }), "Stopping…");
+  assert.equal(stopButtonLabel({ stopping: false, done: null, count: 1, idle: "Cancel" }), "Cancel");
+  assert.equal(stopButtonLabel({ stopping: true, done: null, count: 1, idle: "Cancel" }), "Stopping…");
 });

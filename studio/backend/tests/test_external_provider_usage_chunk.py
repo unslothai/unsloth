@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for the prompt-cache accounting chunk from the external-provider proxy.
-
-The streaming Anthropic + OpenAI Responses paths emit one extra include_usage
-SSE chunk (``choices: []`` with a ``usage`` block) before ``[DONE]`` so clients
-see cache savings. Covers the helper directly plus the Anthropic stream and the
-OpenAI Responses completed/incomplete streams.
-"""
+"""Usage-only chunk (choices empty) before [DONE] carries prompt-cache savings to clients."""
 
 import asyncio
 import json
@@ -20,9 +14,6 @@ from core.inference.external_provider import (
     ExternalProviderClient,
     _build_usage_chunk,
 )
-
-
-# ── _build_usage_chunk unit tests ───────────────────────────────────
 
 
 def test_build_usage_chunk_anthropic_shape():
@@ -43,16 +34,61 @@ def test_build_usage_chunk_anthropic_shape():
     assert payload["object"] == "chat.completion.chunk"
     assert payload["choices"] == []
     usage = payload["usage"]
-    # Anthropic's input_tokens excludes cache buckets; prompt_tokens must
-    # sum all three input components so downstream context/cost displays
-    # see the real prompt size.
+    # Anthropic's input_tokens excludes cache buckets, so sum all three
     assert usage["prompt_tokens"] == 8 + 1367 + 18901
     assert usage["completion_tokens"] == 862
     assert usage["total_tokens"] == 8 + 1367 + 18901 + 862
     assert usage["cache_creation_input_tokens"] == 1367
     assert usage["cache_read_input_tokens"] == 18901
-    # OpenAI-style mirror for clients that key off prompt_tokens_details.
     assert usage["prompt_tokens_details"]["cached_tokens"] == 18901
+    assert usage["context_tokens"] == 8 + 1367 + 18901 + 862
+
+
+def test_build_usage_chunk_anthropic_includes_compaction_iteration_tokens():
+    line = _build_usage_chunk(
+        "chatcmpl-compaction",
+        "anthropic",
+        {
+            "input_tokens": 23_000,
+            "output_tokens": 1_000,
+            "compaction_input_tokens": 180_000,
+            "compaction_output_tokens": 3_500,
+        },
+    )
+    assert line is not None
+    usage = json.loads(line[len("data: ") :])["usage"]
+    assert usage["prompt_tokens"] == 203_000
+    assert usage["completion_tokens"] == 4_500
+    assert usage["total_tokens"] == 207_500
+    assert usage["compaction_input_tokens"] == 180_000
+    assert usage["compaction_output_tokens"] == 3_500
+    assert usage["context_tokens"] == 24_000
+
+
+def test_build_usage_chunk_anthropic_context_is_the_last_message_iteration():
+    line = _build_usage_chunk(
+        "chatcmpl-iterations",
+        "anthropic",
+        {
+            "input_tokens": 4_400,
+            "output_tokens": 400,
+            "iterations": [
+                {"type": "message", "input_tokens": 2_000, "output_tokens": 100},
+                {"type": "compaction", "input_tokens": 9_000, "output_tokens": 300},
+                {
+                    "type": "message",
+                    "input_tokens": 2_400,
+                    "cache_read_input_tokens": 0,
+                    "output_tokens": 300,
+                },
+                {"type": "advisor_message", "input_tokens": 50_000, "output_tokens": 10},
+            ],
+        },
+    )
+    usage = json.loads(line[len("data: ") :])["usage"]
+    assert usage["prompt_tokens"] == 4_400
+    assert usage["completion_tokens"] == 400
+    assert usage["context_tokens"] == 2_700
 
 
 def test_build_usage_chunk_openai_shape():
@@ -62,7 +98,11 @@ def test_build_usage_chunk_openai_shape():
         {
             "input_tokens": 5507,
             "output_tokens": 252,
-            "input_tokens_details": {"cached_tokens": 4736},
+            "input_tokens_details": {"cached_tokens": 4736, "cache_write_tokens": 64},
+            "output_tokens_details": {
+                "reasoning_tokens": 12,
+                "accepted_prediction_tokens": 9,
+            },
         },
     )
     assert line is not None
@@ -72,14 +112,17 @@ def test_build_usage_chunk_openai_shape():
     assert usage["completion_tokens"] == 252
     assert usage["total_tokens"] == 5759
     assert usage["prompt_tokens_details"]["cached_tokens"] == 4736
-    # Anthropic-only keys must not leak onto the OpenAI shape.
+    assert usage["prompt_tokens_details"]["cache_write_tokens"] == 64
+    assert usage["completion_tokens_details"] == {
+        "reasoning_tokens": 12,
+        "accepted_prediction_tokens": 9,
+    }
     assert "cache_creation_input_tokens" not in usage
     assert "cache_read_input_tokens" not in usage
 
 
 def test_build_usage_chunk_missing_fields_default_to_zero():
-    # OpenAI Responses can omit input_tokens_details when prompt caching is
-    # unused; the helper should still emit a chunk with cached_tokens=0.
+    # OpenAI Responses can omit input_tokens_details when caching is unused
     line = _build_usage_chunk(
         "chatcmpl-z",
         "openai",
@@ -91,8 +134,7 @@ def test_build_usage_chunk_missing_fields_default_to_zero():
 
 
 def test_build_usage_chunk_returns_none_when_all_zero():
-    # If upstream errored before any usage event, suppress the chunk to
-    # avoid a misleading "0 tokens" line.
+    # no usage before an upstream error: suppress rather than show "0 tokens"
     assert _build_usage_chunk("id", "anthropic", {}) is None
     assert _build_usage_chunk("id", "anthropic", None) is None
     assert _build_usage_chunk("id", "openai", {}) is None
@@ -108,9 +150,6 @@ def test_build_usage_chunk_returns_none_when_all_zero():
         )
         is None
     )
-
-
-# ── streaming integration tests ─────────────────────────────────────
 
 
 def _drive(coro):
@@ -163,7 +202,6 @@ def _anthropic_sse(events: list[dict]) -> bytes:
 
 
 def _openai_sse(events: list[dict]) -> bytes:
-    # Responses API ships one `event:` line per object plus the data line.
     chunks: list[str] = []
     for event in events:
         chunks.append(f"event: {event['type']}")
@@ -190,15 +228,7 @@ def _usage_chunks(lines: list[str]) -> list[dict]:
 
 
 def test_custom_provider_registry_is_hidden():
-    """Hidden entries stay filtered by default and are opt-in via include_hidden.
-
-    They used to be dropped from /registry unconditionally, which is why the UI
-    could never learn that the self-hosted presets run Unsloth tools. Exposing
-    them by default would instead make a cached pre-change bundle render them as
-    duplicate dropdown rows, since that bundle filters on a hardcoded name set
-    rather than on ``hidden``. So the default is unchanged and the current UI
-    asks for them, then filters the dropdown on the flag.
-    """
+    """Hidden providers are opt-in via include_hidden, so old cached bundles avoid duplicate rows."""
     from core.inference.providers import get_provider_info, list_available_providers
 
     info = get_provider_info("custom")
@@ -291,7 +321,7 @@ def test_custom_provider_test_endpoint_probes_models_before_chat(monkeypatch):
             providers_route.ProviderTestRequest(
                 provider_type = "custom",
                 base_url = "http://custom.example/v1",
-                model_id = "Qwen/Qwen3-0.6B",
+                model_id = "kokoro",
             ),
             _current_subject = "unsloth",
             via_api_key = False,
@@ -476,6 +506,61 @@ def test_custom_provider_test_endpoint_requires_model_id(monkeypatch):
     assert "model ID" in result.message
 
 
+def test_anthropic_stream_keeps_input_counts_a_delta_reports_as_null(monkeypatch):
+    sse_events = [
+        {
+            "type": "message_start",
+            "message": {
+                "usage": {
+                    "input_tokens": 500,
+                    "output_tokens": 0,
+                    "cache_creation_input_tokens": 100,
+                    "cache_read_input_tokens": 4000,
+                }
+            },
+        },
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn"},
+            "usage": {
+                "input_tokens": None,
+                "cache_creation_input_tokens": None,
+                "cache_read_input_tokens": None,
+                "output_tokens": 70,
+            },
+        },
+        {"type": "message_stop"},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content = _anthropic_sse(sse_events),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_anthropic_client()
+        return await _collect(
+            client._stream_anthropic(
+                messages = [{"role": "user", "content": "ping"}],
+                model = "claude-opus-4-7",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = 64,
+            )
+        )
+
+    usages = _usage_chunks(_drive(run()))
+    assert len(usages) == 1
+    assert usages[0]["prompt_tokens"] == 4600
+    assert usages[0]["completion_tokens"] == 70
+    assert usages[0]["context_tokens"] == 4670
+    assert usages[0]["cache_read_input_tokens"] == 4000
+
+
 def test_anthropic_stream_emits_usage_chunk_before_done(monkeypatch):
     sse_events = [
         {
@@ -522,15 +607,14 @@ def test_anthropic_stream_emits_usage_chunk_before_done(monkeypatch):
     usages = _usage_chunks(lines)
     assert len(usages) == 1, f"expected one usage chunk, got {len(usages)}: {usages}"
     u = usages[0]
-    # Real prompt size = uncached input + cache writes + cache reads.
     assert u["prompt_tokens"] == 7 + 6253 + 5713
     assert u["completion_tokens"] == 1066
     assert u["total_tokens"] == 7 + 6253 + 5713 + 1066
     assert u["cache_creation_input_tokens"] == 6253
     assert u["cache_read_input_tokens"] == 5713
     assert u["prompt_tokens_details"]["cached_tokens"] == 5713
+    assert u["context_tokens"] == 7 + 6253 + 5713 + 1066
 
-    # Usage chunk must come before [DONE].
     data_lines = [ln for ln in lines if ln.startswith("data:")]
     done_idx = next(i for i, ln in enumerate(data_lines) if ln.strip().endswith("[DONE]"))
     usage_idx = next(
@@ -585,7 +669,6 @@ def test_openai_responses_stream_emits_usage_chunk_on_completed(monkeypatch):
     assert u["prompt_tokens"] == 5507
     assert u["completion_tokens"] == 252
     assert u["prompt_tokens_details"]["cached_tokens"] == 4736
-    # OpenAI shape must NOT carry Anthropic-only keys.
     assert "cache_creation_input_tokens" not in u
     assert "cache_read_input_tokens" not in u
 
@@ -677,16 +760,15 @@ def test_self_hosted_providers_get_the_continuation_flags(monkeypatch):
     for provider_type in ("llama_cpp", "vllm"):
         body = _continuation_body(monkeypatch, provider_type, "http://local.example/v1")
         assert body["continue_final_message"] is True, provider_type
-        # A server rejects both being asked for at once.
+        # a server rejects both being asked for at once
         assert body["add_generation_prompt"] is False, provider_type
 
 
 @pytest.mark.parametrize(
     ("provider_type", "base_url"),
     [
-        # Prompt assembly is theirs, so the flag would just be an unknown field.
+        # prompt assembly is theirs, so the flag would be an unknown field
         ("openai", "https://api.openai.com/v1"),
-        # Any user-supplied base_url, including a strict endpoint that would 400.
         ("custom", "http://custom.example/v1"),
         ("ollama", "http://localhost:11434/v1"),
     ],
@@ -703,16 +785,16 @@ def test_other_providers_do_not_get_the_continuation_flags(monkeypatch, provider
         ("vllm", True),
         ("openrouter", True),
         ("kimi", True),
-        # Any user-supplied base_url: a strict endpoint 400s on an unknown field.
+        ("llama_cpp", True),
+        ("ollama", True),
+        ("qwen", True),
+        # user-supplied base_url endpoints may reject the unknown field with a 400.
         ("custom", False),
-        ("ollama", False),
-        # "openai" is absent: it routes to /v1/responses, which reports usage itself.
+        # "openai" is absent because /v1/responses reports usage.
     ],
 )
 def test_streamed_usage_is_requested_only_where_documented(monkeypatch, provider_type, expected):
-    # An OAI-compatible stream omits usage without stream_options.include_usage, and
-    # these providers report no llama.cpp timings, so the monitor has no token count to
-    # derive a speed from and the row shows a blank Speed for every completed request.
+    # include_usage supplies token counts when compatible providers expose no llama.cpp timings.
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -751,14 +833,12 @@ def test_streamed_usage_is_requested_only_where_documented(monkeypatch, provider
 
 
 def test_kimi_no_search_fallback_requests_usage(monkeypatch):
-    # The web-search path returns before the common body injection, and Kimi reports no
-    # engine timings, so this fallback would leave tokens and speed blank.
+    # the web-search path returns before the common body injection
     bodies: list = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content.decode("utf-8"))
         bodies.append(body)
-        # First call: the model declines to invoke $web_search.
         return httpx.Response(
             200,
             content = b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n',

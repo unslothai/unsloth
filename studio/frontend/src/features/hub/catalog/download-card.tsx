@@ -20,10 +20,9 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
-  ArrowReloadHorizontalIcon,
+  Refresh01Icon,
   Delete02Icon,
   Download01Icon,
-  PlayIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -40,30 +39,26 @@ import {
   downloadActionAriaLabel,
   downloadActionLabel,
 } from "./use-download-card-state";
+import { PlayIcon } from "lucide-react";
 
-/**
- * Shared shell for every download surface (safetensors, GGUF, dataset): card
- * frame, progress bar, transport-conflict dialog, plus card-specific `dialogs`
- * and children.
- */
 export function DownloadCard({
   job,
   progress,
   children,
   dialogs,
+  footer,
 }: {
   job: DownloadJob;
   progress: DownloadJobProgress | null;
   children: ReactNode;
   dialogs?: ReactNode;
+  footer?: ReactNode;
 }) {
   return (
     <>
       <div className="hub-download-card">
         <div className="group/dl flex items-center">{children}</div>
         {progress && (
-          // Match the row's inner text bounds: the trigger and the action button both inset 12px,
-          // so the bar lines up with the quant label on the left and the percentage on the right.
           <div className="px-3">
             <DownloadProgressBar
               progress={progress}
@@ -73,6 +68,7 @@ export function DownloadCard({
             />
           </div>
         )}
+        {footer}
       </div>
       <TransportConflictDialog
         conflict={job.transportConflict}
@@ -85,7 +81,6 @@ export function DownloadCard({
   );
 }
 
-/** Vertical hairline that fades out on row hover, separating info from actions. */
 export function CardDivider() {
   return (
     <div
@@ -111,7 +106,7 @@ export function ModelRunActionButton({
       aria-busy={loading}
       disabled={loading}
       onClick={onClick}
-      className="hub-run-action-btn w-28"
+      className="hub-run-action-btn"
     >
       {loading ? (
         <>
@@ -120,8 +115,8 @@ export function ModelRunActionButton({
         </>
       ) : (
         <>
-          <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} />
-          Run
+          <PlayIcon strokeWidth={2} className="[&_path]:fill-current" />
+          <span className="hub-run-action-label">Run</span>
         </>
       )}
     </button>
@@ -168,11 +163,7 @@ export function CardUpdateButton({
 }: {
   label: string;
   onClick: () => void;
-  /** When true (a newer revision is available) the control becomes a prominent
-   *  labeled amber pill instead of the quiet hover-revealed icon — the
-   *  "update available" cue. Amber is the established status tone in this surface
-   *  (the older-cache hint banner), kept tinted (never solid) per the design
-   *  system's feedback-color convention, so the one emerald accent stays scarce. */
+  /** Shows a tinted amber "update available" pill instead of the quiet icon. */
   emphasized?: boolean;
 }) {
   if (emphasized) {
@@ -189,7 +180,7 @@ export function CardUpdateButton({
             className="inline-flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-full bg-amber-500/[0.07] pl-2 pr-2.5 text-ui-12 font-medium text-amber-800/90 transition-colors duration-150 hover:bg-amber-500/[0.12] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-500/25 dark:bg-amber-400/[0.08] dark:text-amber-200/85 dark:hover:bg-amber-400/[0.16]"
           >
             <HugeiconsIcon
-              icon={ArrowReloadHorizontalIcon}
+              icon={Refresh01Icon}
               strokeWidth={2}
               className="size-3.5"
             />
@@ -215,7 +206,7 @@ export function CardUpdateButton({
           className="inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 transition-[opacity,background-color,color] duration-150 hover:bg-amber-500/10 hover:text-amber-600 focus-visible:opacity-100 group-hover/dl:opacity-100 dark:hover:bg-amber-500/15 dark:hover:text-amber-400"
         >
           <HugeiconsIcon
-            icon={ArrowReloadHorizontalIcon}
+            icon={Refresh01Icon}
             strokeWidth={1.75}
             className="size-4"
           />
@@ -228,7 +219,6 @@ export function CardUpdateButton({
   );
 }
 
-/** Download / Cancel / Resume button for the safetensors and dataset cards. */
 export function DownloadActionButton({
   downloading,
   cancelling,
@@ -245,9 +235,7 @@ export function DownloadActionButton({
   cancelling: boolean;
   loading?: boolean;
   isPartial?: boolean;
-  /** This row's partial can be continued byte for byte (backend verdict). */
   partialResumable?: boolean;
-  /** What stopping the running job costs; see downloadStopMode. */
   stopMode?: DownloadStopMode;
   progressPercent?: number | null;
   disabled: boolean;
@@ -294,7 +282,6 @@ export function DownloadActionButton({
   );
 }
 
-/** Confirmation dialog shared by the model, quantization, and dataset delete flows. */
 export function DeleteConfirmDialog({
   open,
   onOpenChange,
@@ -338,7 +325,6 @@ export function DeleteConfirmDialog({
   );
 }
 
-/** Confirmation dialog shared by the model and quantization update flows. */
 export function UpdateConfirmDialog({
   open,
   onOpenChange,

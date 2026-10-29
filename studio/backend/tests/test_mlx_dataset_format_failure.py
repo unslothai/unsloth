@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The MLX text path must react to a dataset format failure the way the GPU trainer does.
-
-format_and_template_dataset returns success=False when the chat template raised on every
-row. Ignoring that leaves the raw, untemplated dataset in place and trains on it.
-"""
+"""Ignoring format_and_template_dataset's success=False would train on the raw, untemplated dataset."""
 
 import ast
 import inspect
@@ -34,12 +30,9 @@ def _run(
     train_warning = None,
     eval_success = True,
     eval_warning = None,
+    formatted_eval = "FORMATTED_EVAL",
 ):
-    """Execute the real block from _run_mlx_training and report what it did.
-
-    _run_mlx_training only runs on Apple Silicon, so the block is lifted out and executed
-    directly, the same technique test_mlx_training_worker_config.py uses.
-    """
+    """Runs the real block lifted from _run_mlx_training, which runs only on Apple Silicon."""
     block = compile(ast.Module(body = _format_block().body, type_ignores = []), "<fmt>", "exec")
     events = []
     calls = {"n": 0}
@@ -49,7 +42,7 @@ def _run(
         first = calls["n"] == 1
         return {
             "success": train_success if first else eval_success,
-            "dataset": "FORMATTED_TRAIN" if first else "FORMATTED_EVAL",
+            "dataset": "FORMATTED_TRAIN" if first else formatted_eval,
             "final_format": "chatml_messages",
             "dropped_rows_warning": train_warning if first else eval_warning,
         }
@@ -64,6 +57,7 @@ def _run(
             "tokenizer": object(),
             "hf_dataset": "local",
             "custom_format_mapping": None,
+            "eval_enabled": True,
             "_fmt_progress": lambda **_kw: None,
             "_send": lambda kind, **kw: events.append((kind, kw)),
             "format_and_template_dataset": _fake_format,
@@ -77,6 +71,7 @@ def _run(
         error = str(exc)
 
     return {
+        "eval_enabled": namespace.get("eval_enabled"),
         "dataset": namespace.get("dataset"),
         "eval_dataset": namespace.get("eval_dataset"),
         "warnings": [kw["message"] for kind, kw in events if kind == "warning"],
@@ -120,3 +115,14 @@ def test_a_clean_run_is_unchanged():
     assert result["dataset"] == "FORMATTED_TRAIN"
     assert result["eval_dataset"] == "FORMATTED_EVAL"
     assert result["warnings"] == []
+
+
+def test_an_eval_split_formatted_to_nothing_disables_evaluation():
+    result = _run(formatted_eval = [])
+
+    assert result["error"] is None
+    assert result["eval_dataset"] is None
+    assert result["eval_enabled"] is False, "must not carve an eval split out of train"
+    assert result["warnings"] == [
+        "The eval dataset is empty after preprocessing, so this run has no evaluation."
+    ]

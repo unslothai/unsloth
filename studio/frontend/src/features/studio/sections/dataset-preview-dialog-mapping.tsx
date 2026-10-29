@@ -49,7 +49,7 @@ export function HeaderRolePicker({
       value={currentRole ?? "_none"}
       onValueChange={(v) => onRoleChange(v === "_none" ? undefined : v)}
     >
-      <SelectTrigger className="h-6 w-[90px] text-ui-10 px-2 py-0 border-dashed cursor-pointer">
+      <SelectTrigger className="h-6 w-[calc(90px*var(--ui-space-scale,1))] max-md:h-8 max-md:w-[calc(104px*var(--ui-space-scale,1))] text-ui-10 px-2 py-0 border-dashed cursor-pointer">
         <SelectValue placeholder="Role..." />
       </SelectTrigger>
       <SelectContent>
@@ -106,7 +106,7 @@ export function DatasetMappingCard({
   return (
     <div
       className={cn(
-        "rounded-xl corner-squircle ring-1 px-5 py-4 mb-4",
+        "rounded-lg corner-squircle ring-1 px-5 py-4 mb-4",
         mappingOk
           ? "ring-emerald-200/70 bg-emerald-50/70 text-emerald-950 dark:ring-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-50"
           : "ring-amber-200/70 bg-amber-50/70 text-amber-950 dark:ring-amber-900/50 dark:bg-amber-950/30 dark:text-amber-50",
@@ -115,7 +115,7 @@ export function DatasetMappingCard({
       <div className="flex items-start gap-3">
         <div
           className={cn(
-            "rounded-xl corner-squircle p-2 shrink-0",
+            "rounded-md corner-squircle p-2 shrink-0",
             mappingOk ? "bg-emerald-500/15" : "bg-amber-500/15",
           )}
         >
@@ -180,7 +180,7 @@ export function DatasetMappingCard({
                 size="sm"
                 onClick={onAiAssist}
                 disabled={isAiLoading}
-                className="cursor-pointer bg-white/60 dark:bg-transparent"
+                className="cursor-pointer"
               >
                 {isAiLoading ? (
                   <>

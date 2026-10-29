@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The launch-time thinking default goes out as --reasoning where the build has it.
-
-llama-server deprecates enable_thinking via --chat-template-kwargs (#7526), per KEY, so
-only that key moves. The gate is the `llama-server --help` flag catalogue and is closed
-on anything short of a positive answer: a build predating --reasoning exits with
-"error: invalid argument: --reasoning" rather than starting without it. The help text
-below is verbatim from two real binaries, b10909 and b6277.
-"""
+"""Emit --reasoning only when help lists it; older builds exit on it, so the gate fails closed."""
 
 from __future__ import annotations
 
@@ -33,7 +26,7 @@ from core.inference.llama_cpp import (  # noqa: E402
 )
 from core.inference.llama_server_args import strip_shadowing_flags  # noqa: E402
 
-# b10909. The name-alikes are the point: a substring match would report the flag wrongly.
+# b10909. The name-alike flags are deliberate: a substring match would misreport them.
 MODERN_HELP = """usage: llama-server [options]
 
 -m,    --model FNAME                    model path
@@ -202,28 +195,15 @@ class TestOnlyTheDeprecatedKeyMoves:
         "caps", [MODERN_CAPS, OLD_CAPS, {}], ids = ["modern", "old-build", "nothing-known"]
     )
     def test_an_empty_dict_still_goes_out_as_main_sends_it(self, caps):
-        """Nothing moved, so the argument main appends has to be appended.
-
-        Unreachable from the launcher today; held so the untouched path is identical
-        to main by construction rather than by luck.
-        """
+        """With nothing moved, the empty kwargs argument must still be appended, as main does."""
         assert _build_launch_reasoning_args(caps, {}) == ["--chat-template-kwargs", "{}"]
 
-    def test_an_empty_remainder_after_the_flag_appends_nothing(self):
-        """The other side of it: that argument did not exist on main either."""
-        assert _build_launch_reasoning_args(MODERN_CAPS, {"enable_thinking": True}) == [
-            "--reasoning",
-            "on",
-        ]
 
-
-# enable_thinking style, with preserve_thinking so both channels are exercised at once.
 THINKING_TEMPLATE = (
     "{% if enable_thinking %}<think>\n{% endif %}"
     "{% if preserve_thinking %}{{ messages[0].reasoning_content }}{% endif %}"
     "{{ messages[0].content }}"
 )
-# gpt-oss style: a ladder, no on/off gate, nothing deprecated.
 EFFORT_TEMPLATE = "{{ reasoning_effort }}{% if reasoning_effort == 'high' %}<think>{% endif %}"
 
 OSES = {
@@ -249,8 +229,20 @@ def _fake_torch(*, rocm: bool, device_count: int) -> types.ModuleType:
     return torch
 
 
-def _argv_for(tmp_path, monkeypatch, *, os_label, vendor, modern, template):
-    """The argv the real ``load_model`` builds on one host, for one vintage."""
+def _launched(
+    tmp_path,
+    monkeypatch,
+    *,
+    os_label,
+    vendor,
+    modern,
+    template,
+    model_identifier = "test",
+    architecture = None,
+    gguf_template = None,
+    extra_args = None,
+):
+    """The backend and argv the real ``load_model`` builds on one host, for one vintage."""
     platform, is_wsl = OSES[os_label]
     monkeypatch.setattr(llama_cpp.sys, "platform", platform, raising = False)
     monkeypatch.setattr(llama_cpp, "_is_wsl", lambda: is_wsl, raising = False)
@@ -261,6 +253,11 @@ def _argv_for(tmp_path, monkeypatch, *, os_label, vendor, modern, template):
     )
     memory = [] if vendor == "cpu" else [(0, 24_000, 24_000)]
     backend, gguf = _backend(tmp_path, vulkan = False, memory = memory)
+    backend._architecture = architecture
+    if gguf_template is not None:
+        backend._read_gguf_metadata = lambda _path: _embed_template(
+            backend, gguf_template, model_identifier
+        )
     monkeypatch.setattr(
         LlamaCppBackend,
         "probe_server_capabilities",
@@ -269,10 +266,34 @@ def _argv_for(tmp_path, monkeypatch, *, os_label, vendor, modern, template):
     captured = _launch(
         backend,
         gguf,
+        model_identifier = model_identifier,
         n_ctx = 4096,
         chat_template_override = template,
+        extra_args = tuple(extra_args) if extra_args else None,
     )
-    return captured["cmd"]
+    return backend, captured["cmd"]
+
+
+def _embed_template(backend, template, model_identifier):
+    """What the real header read leaves behind for a GGUF that embeds ``template``."""
+    backend._chat_template = template
+    flags = llama_cpp.detect_reasoning_flags(template, model_identifier)
+    backend._supports_reasoning = flags["supports_reasoning"]
+    backend._reasoning_style = flags["reasoning_style"]
+    backend._reasoning_always_on = flags["reasoning_always_on"]
+    backend._supports_preserve_thinking = flags["supports_preserve_thinking"]
+    backend._preserve_thinking_default = flags["preserve_thinking_default"]
+
+
+def _argv_for(tmp_path, monkeypatch, **kwargs):
+    return _launched(tmp_path, monkeypatch, **kwargs)[1]
+
+
+@pytest.fixture(autouse = True)
+def _no_inherited_reasoning(monkeypatch):
+    monkeypatch.delenv("LLAMA_ARG_REASONING", raising = False)
+    monkeypatch.delenv("LLAMA_ARG_REASONING_EFFORT", raising = False)
+    monkeypatch.delenv("LLAMA_ARG_REASONING_PRESERVE", raising = False)
 
 
 def _reasoning_slice(cmd: list[str]) -> list[str]:
@@ -292,10 +313,7 @@ _HOSTS = [(o, v) for o in OSES for v in VENDORS]
 
 
 class TestTheRealLaunchOnEveryHost:
-    """The reasoning arguments are invariant under OS and device.
-
-    Drives the real ``load_model``, since placement appends into the same command.
-    """
+    """Reasoning args must not vary by OS or device, so this drives the real load_model command."""
 
     @pytest.mark.parametrize("os_label,vendor", _HOSTS)
     def test_a_modern_build_gets_the_flag_and_keeps_the_preserve_kwarg(
@@ -350,12 +368,221 @@ class TestTheRealLaunchOnEveryHost:
         assert "reasoning_effort" in _reasoning_slice(cmd)[1]
 
 
-class TestInheritedExtrasTreatBothSpellingsAlike:
-    """Applying a chat template override recomputes the reasoning default.
+class TestAnInheritedReasoningModeIsHonoured:
+    """The inherited reasoning env becomes the launch default, since argv would otherwise override it."""
 
-    An inherited copy is appended after ours and would last-wins-override it, so both
-    spellings have to be stripped.
-    """
+    @pytest.mark.parametrize("modern", [True, False], ids = ["flag", "kwargs"])
+    @pytest.mark.parametrize(
+        "model_identifier,value,expected",
+        [
+            ("unsloth/Qwen3.6-35B-A3B-GGUF", "off", False),
+            ("unsloth/Qwen3.6-35B-A3B-GGUF", "disabled", False),
+            ("unsloth/Qwen3.5-9B-GGUF", "on", True),
+            ("unsloth/Qwen3.5-9B-GGUF", "1", True),
+            ("test", "false", False),
+        ],
+    )
+    def test_on_or_off_overrides_the_default(
+        self, tmp_path, monkeypatch, modern, model_identifier, value, expected
+    ):
+        monkeypatch.setenv("LLAMA_ARG_REASONING", value)
+        backend, cmd = _launched(
+            tmp_path,
+            monkeypatch,
+            os_label = "linux",
+            vendor = "nvidia",
+            modern = modern,
+            template = THINKING_TEMPLATE,
+            model_identifier = model_identifier,
+        )
+        if modern:
+            assert _reasoning_slice(cmd)[:2] == ["--reasoning", "on" if expected else "off"]
+        else:
+            kwargs = json.loads(_reasoning_slice(cmd)[1])
+            assert kwargs["enable_thinking"] is expected
+        assert backend.reasoning_default is expected
+
+    @pytest.mark.parametrize("modern", [True, False], ids = ["flag", "kwargs"])
+    @pytest.mark.parametrize("value", [None, "auto", "-1"])
+    @pytest.mark.parametrize(
+        "model_identifier,expected",
+        [("unsloth/Qwen3.6-35B-A3B-GGUF", True), ("unsloth/Qwen3.5-9B-GGUF", False)],
+    )
+    def test_auto_or_unset_keeps_the_model_default(
+        self, tmp_path, monkeypatch, modern, value, model_identifier, expected
+    ):
+        if value is not None:
+            monkeypatch.setenv("LLAMA_ARG_REASONING", value)
+        backend, cmd = _launched(
+            tmp_path,
+            monkeypatch,
+            os_label = "linux",
+            vendor = "nvidia",
+            modern = modern,
+            template = THINKING_TEMPLATE,
+            model_identifier = model_identifier,
+        )
+        thinking = "true" if expected else "false"
+        if modern:
+            assert _reasoning_slice(cmd) == [
+                "--reasoning",
+                "on" if expected else "off",
+                "--chat-template-kwargs",
+                '{"preserve_thinking": false}',
+            ]
+        else:
+            assert _reasoning_slice(cmd) == [
+                "--chat-template-kwargs",
+                f'{{"enable_thinking": {thinking}, "preserve_thinking": false}}',
+            ]
+        assert backend.reasoning_default is expected
+
+    @pytest.mark.parametrize(
+        "reasoning,effort_env,effort,thinks",
+        [
+            ("on", None, "high", True),
+            ("off", None, "low", True),
+            ("off", "default", "low", True),
+            ("auto", "medium", "medium", True),
+            ("off", "medium", "medium", True),
+            ("on", "none", "none", False),
+        ],
+    )
+    def test_an_effort_ladder_takes_the_pinned_effort(
+        self, tmp_path, monkeypatch, reasoning, effort_env, effort, thinks
+    ):
+        """Off maps to low like the chat toggle, which still thinks; a pinned effort wins."""
+        monkeypatch.setenv("LLAMA_ARG_REASONING", reasoning)
+        if effort_env is not None:
+            monkeypatch.setenv("LLAMA_ARG_REASONING_EFFORT", effort_env)
+        backend, cmd = _launched(
+            tmp_path,
+            monkeypatch,
+            os_label = "linux",
+            vendor = "nvidia",
+            modern = True,
+            template = EFFORT_TEMPLATE,
+        )
+        assert "--reasoning" not in cmd
+        assert json.loads(_reasoning_slice(cmd)[1]) == {"reasoning_effort": effort}
+        assert backend.reasoning_default is thinks
+
+    @pytest.mark.parametrize(
+        "effort_env,effort,thinks", [("medium", 0.7, True), ("none", 0.0, False)]
+    )
+    def test_an_inkling_ladder_coerces_the_pinned_effort(
+        self, tmp_path, monkeypatch, effort_env, effort, thinks
+    ):
+        monkeypatch.setenv("LLAMA_ARG_REASONING_EFFORT", effort_env)
+        backend, cmd = _launched(
+            tmp_path,
+            monkeypatch,
+            os_label = "linux",
+            vendor = "nvidia",
+            modern = True,
+            template = EFFORT_TEMPLATE,
+            architecture = "inkling",
+        )
+        assert json.loads(_reasoning_slice(cmd)[1]) == {"reasoning_effort": effort}
+        assert backend.reasoning_default is thinks
+
+
+QWEN38 = "unsloth/Qwen3.8-27B-GGUF"
+# Replays history reasoning per its own preserve_thinking default, as Qwen3.8's template does.
+_HISTORY_TEMPLATE = (
+    "{% if enable_thinking %}<think>{% endif %}{% for m in messages %}"
+    "{% if PRESERVE %}{{ m.reasoning_content }}{% endif %}{{ m.content }}{% endfor %}"
+)
+KEEPS_TEMPLATE = _HISTORY_TEMPLATE.replace(
+    "PRESERVE", "preserve_thinking is undefined or preserve_thinking is true"
+)
+DROPS_TEMPLATE = _HISTORY_TEMPLATE.replace("PRESERVE", "preserve_thinking|default(false)")
+
+
+class TestThePreserveThinkingLaunchDefault:
+    """The launch-time preserve_thinking kwarg beats --[no-]reasoning-preserve inside
+    llama-server, so the kwarg itself must follow the user's flag and template (#15115)."""
+
+    def _preserve(self, tmp_path, monkeypatch, **kwargs):
+        kwargs.setdefault("model_identifier", QWEN38)
+        backend, cmd = _launched(
+            tmp_path, monkeypatch, os_label = "linux", vendor = "nvidia", modern = True, **kwargs
+        )
+        kwargs_json = json.loads(_reasoning_slice(cmd)[3])
+        assert kwargs_json["preserve_thinking"] is backend.preserve_thinking_default
+        return backend.preserve_thinking_default
+
+    def test_qwen38_keeps_its_on_default_with_its_own_template(self, tmp_path, monkeypatch):
+        assert self._preserve(tmp_path, monkeypatch, template = None, gguf_template = THINKING_TEMPLATE)
+
+    def test_an_override_defaulting_off_turns_the_qwen38_default_off(self, tmp_path, monkeypatch):
+        assert not self._preserve(tmp_path, monkeypatch, template = DROPS_TEMPLATE)
+
+    @pytest.mark.parametrize("model_identifier", [QWEN38, "test"])
+    def test_an_override_defaulting_on_keeps_it_on(self, tmp_path, monkeypatch, model_identifier):
+        assert self._preserve(
+            tmp_path, monkeypatch, template = KEEPS_TEMPLATE, model_identifier = model_identifier
+        )
+
+    def test_an_unrenderable_override_gets_the_off_default(self, tmp_path, monkeypatch):
+        assert not self._preserve(
+            tmp_path, monkeypatch, template = THINKING_TEMPLATE + "{{ raise_exception('x') }}"
+        )
+
+    @pytest.mark.parametrize("flag", ["--no-reasoning-preserve", "--no_reasoning_preserve"])
+    def test_no_reasoning_preserve_turns_the_qwen38_default_off(self, tmp_path, monkeypatch, flag):
+        assert not self._preserve(
+            tmp_path,
+            monkeypatch,
+            template = None,
+            gguf_template = THINKING_TEMPLATE,
+            extra_args = [flag],
+        )
+
+    def test_reasoning_preserve_turns_it_on_for_an_override(self, tmp_path, monkeypatch):
+        assert self._preserve(
+            tmp_path,
+            monkeypatch,
+            template = THINKING_TEMPLATE,
+            model_identifier = "test",
+            extra_args = ["--reasoning-preserve"],
+        )
+
+    def test_the_last_flag_wins(self, tmp_path, monkeypatch):
+        assert not self._preserve(
+            tmp_path,
+            monkeypatch,
+            template = None,
+            gguf_template = THINKING_TEMPLATE,
+            extra_args = ["--reasoning-preserve", "--no-reasoning-preserve"],
+        )
+
+    @pytest.mark.parametrize("value,expected", [("0", False), ("off", False), ("1", True)])
+    def test_the_inherited_env_is_honoured(self, tmp_path, monkeypatch, value, expected):
+        monkeypatch.setenv("LLAMA_ARG_REASONING_PRESERVE", value)
+        assert (
+            self._preserve(
+                tmp_path,
+                monkeypatch,
+                template = THINKING_TEMPLATE,
+                model_identifier = "test",
+            )
+            is expected
+        )
+
+    def test_the_extras_beat_the_env(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("LLAMA_ARG_REASONING_PRESERVE", "0")
+        assert self._preserve(
+            tmp_path,
+            monkeypatch,
+            template = None,
+            gguf_template = THINKING_TEMPLATE,
+            extra_args = ["--reasoning-preserve"],
+        )
+
+
+class TestInheritedExtrasTreatBothSpellingsAlike:
+    """An inherited template override is appended last and would win, so both spellings must be stripped."""
 
     @pytest.mark.parametrize(
         "args",

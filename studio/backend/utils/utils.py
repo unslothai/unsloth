@@ -11,10 +11,11 @@ import time
 from loggers import get_logger
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 import shutil
 import tempfile
 from utils.paths.path_utils import is_appledouble_metadata
+from hub.utils.hf_errors import modelscope_missing
 from . import auth_safe
 
 AuthSafeRedirectHandler = auth_safe.AuthSafeRedirectHandler
@@ -25,7 +26,7 @@ logger = get_logger(__name__)
 
 
 # ── Offline / HF-cache helpers ──────────────────────────────────
-# An offline load must never touch the network (a DNS-dead session hangs on hub retries); these read the local HF cache.
+# Offline loads must never touch the network (DNS-dead sessions hang on hub retries).
 _HF_OFFLINE_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 
 
@@ -39,15 +40,24 @@ def hf_env_offline() -> bool:
     return False
 
 
-def anonymous_and_offline(hf_token, *, repo_id: Optional[str] = None) -> bool:
-    """The one condition under which a Hub-reaching request can only be answered by disk.
+def package_installs_offline() -> bool:
+    """True when an on-demand package install (a kernel wheel, a source build) must not reach the
+    network: the HF offline switches above, or UV_OFFLINE, the operator's no-network switch for
+    installs. Under UV_OFFLINE uv refuses the index, and install_wheel's pip fallback would then
+    reach it anyway, so such an install is skipped outright.
 
-    ``token=False`` denies authentication, not the cache: offline, huggingface_hub and datasets
-    both resolve a previously downloaded private repo without ever authorizing. Guarded at the
-    route entry, since each per-call-site fix only moved the boundary to the next reader. Given
-    a repo id the shared cached-read rule applies rather than a blanket refusal: a PUBLIC repo
-    was always readable, and one not on the disk has nothing to leak.
-    """
+    An HF offline that Studio set itself only because the Hub was unreachable (export's offline
+    window marks it, wheel_utils.hf_offline_auto_set) says nothing about GitHub / PyPI, so then
+    only UV_OFFLINE counts: an operator-set HF offline still blocks every install."""
+    from utils.wheel_utils import hf_offline_auto_set, uv_offline
+
+    if hf_offline_auto_set():
+        return uv_offline()
+    return hf_env_offline() or uv_offline()
+
+
+def anonymous_and_offline(hf_token, *, repo_id: Optional[str] = None) -> bool:
+    """token=False denies auth, not the cache: offline, a downloaded private repo resolves from disk. With repo_id, the cached-read rule applies, not a refusal."""
     from hub.utils.hf_tokens import cached_read_refused, is_anonymous
 
     if not is_anonymous(hf_token):
@@ -57,8 +67,7 @@ def anonymous_and_offline(hf_token, *, repo_id: Optional[str] = None) -> bool:
         return False
     if repo_id is None:
         return True
-    # is_cached is True because these routes read whatever the cache holds; only authorization
-    # is left, and offline that resolves against the disk.
+    # is_cached is True because these routes read whatever the cache holds; only authorization is left, which offline resolves against the disk.
     return cached_read_refused(
         hf_token,
         repo_id = repo_id,
@@ -680,10 +689,7 @@ def active_hf_cache_loadable_snapshot(repo_id: str) -> Optional[Path]:
 
 
 def active_hf_cache_repo_spelling(repo_id: str) -> Optional[str]:
-    """The spelling ``repo_id`` is actually cached under in the active cache, or None.
-
-    The Hub is case insensitive, the cache directories it creates are not, and huggingface_hub keys the directory on the id verbatim, so one checkpoint sits under whichever spelling first asked for it (huggingface/huggingface_hub#3838). Returning the spelling rather than a bool is what lets a caller LOAD the copy it found: asking for any other casing downloads it again.
-    """
+    """Hub is case-insensitive but cache dirs are not: return the cached spelling, since another casing re-downloads the checkpoint; None if not cached."""
     if active_hf_cache_loadable_snapshot(repo_id) is not None:
         return repo_id
     try:
@@ -695,8 +701,7 @@ def active_hf_cache_repo_spelling(repo_id: str) -> Optional[str]:
         for repo_dir in _expand_path(active_hf_hub_cache()).iterdir():
             if repo_dir.name.lower() != wanted or repo_dir.name == exact:
                 continue
-            # Repo ids cannot contain '--' (huggingface_hub.utils.validate_repo_id), so
-            # the directory name maps back to exactly one id.
+            # Repo ids cannot contain '--', so the dir name maps back to exactly one id.
             variant = repo_dir.name[prefix:].replace("--", "/")
             snapshot = _snapshot_in_repo_dir(repo_dir)
             if snapshot is not None and snapshot_is_loadable(snapshot, variant):
@@ -756,17 +761,42 @@ def snapshot_is_loadable(snapshot, model_name: str) -> bool:
 
 
 # ── Client-safe error helpers ───────────────────────────────────
+_METAL_QUEUE_DEAD_MARKERS = ("gpu timeout", "submissionsignored")
+
+
+def is_metal_queue_dead(error: Union[Exception, str]) -> bool:
+    """Watchdog kill or the refusal after it; not mlx's ``Command buffer execution failed:``
+    wrapper, which also carries a recoverable ``Insufficient Memory``."""
+    text = str(error).lower()
+    return any(marker in text for marker in _METAL_QUEUE_DEAD_MARKERS)
+
+
 # Never return raw exception text to clients; log server-side, return generic.
 def safe_error_detail(error: Exception, fallback: str = "An internal error occurred") -> str:
-    """Map an exception to a generic, client-safe message (never raw ``str(error)``, which can leak paths). Log the real exception server-side."""
-    # A mid-stream llama-server failure carries a message that was written to be shown; without this the non-streaming paths reduced it to the fallback while streaming clients got the cause. Imported lazily: utils is low level and must not depend on core.inference at import time.
+    """Mid-stream llama-server errors are user-facing, but non-streaming paths would reduce them to the fallback. Lazy import keeps utils free of core at import."""
     try:
         from core.inference.stream_errors import LlamaStreamError  # noqa: PLC0415
+
         if isinstance(error, LlamaStreamError) and error.friendly:
             return error.friendly
+        # Same reason: a context refusal is built for the user and names what to change.
+        from core.inference.context_refusal import ContextBudgetExceeded  # noqa: PLC0415
+
+        if isinstance(error, ContextBudgetExceeded):
+            return str(error)
     except Exception:  # noqa: BLE001 -- fall through to the generic mapping below
         pass
     text = str(error).lower()
+    # Before the connection test, which "GPU Timeout Error" would match.
+    if is_metal_queue_dead(error):
+        return "The GPU stopped responding. Reload the model to recover."
+    if (
+        "out of memory" in text
+        or "cuda error" in text
+        or "unable to allocate" in text
+        or "insufficient memory" in text
+    ):
+        return "Ran out of memory. Try a smaller model or shorter input."
     if (
         isinstance(error, (ConnectionError, TimeoutError))
         or "connection" in text
@@ -774,8 +804,6 @@ def safe_error_detail(error: Exception, fallback: str = "An internal error occur
         or "timeout" in text
     ):
         return "Could not reach an upstream service. Please try again."
-    if "out of memory" in text or "cuda error" in text:
-        return "Ran out of memory. Try a smaller model or shorter input."
     return fallback
 
 
@@ -796,10 +824,7 @@ def log_and_http_error(
     log = None,
     headers: Optional[dict] = None,
 ):
-    """Log ``error`` in full server-side and return an ``HTTPException`` whose ``detail`` is only ``public_message``, never the raw exception text.
-
-    Usage:  raise log_and_http_error(e, 500, "Failed to start training")
-    """
+    """Logs the full error server-side; HTTPException detail carries only public_message, never raw text."""
     from fastapi import HTTPException
 
     # A 4xx is a normal outcome the caller handles. One warning line and no traceback: at error with exc_info, one generation buried the log under 54 rejected saves. 5xx keeps the traceback, and exc_info works for structlog too.
@@ -813,14 +838,7 @@ def log_and_http_error(
 
 @contextmanager
 def without_hf_auth():
-    """
-    Temporarily disable HuggingFace authentication.
-
-    Usage:
-        with without_hf_auth():
-            # Code that should run without cached tokens
-            model_info(model_name, token=None)
-    """
+    """Temporarily disable HuggingFace authentication within a with block, so the code runs without cached tokens."""
     saved_env = {}
     env_vars = ["HF_TOKEN", "HUGGINGFACE_HUB_TOKEN", "HF_HOME"]
     for var in env_vars:
@@ -863,6 +881,23 @@ def without_hf_auth():
             os.environ.pop("HF_HUB_DISABLE_IMPLICIT_TOKEN", None)
 
 
+def _is_repo_level_401(error: BaseException, response) -> bool:
+    """A 401 the Hub gave for the repo, not the credential: anonymous reads of a private or
+    missing repo get one too. Refusals of the token itself name it in X-Error-Message."""
+    if type(error).__name__ != "RepositoryNotFoundError":
+        return False
+    from hub.utils.hf_tokens import hub_token_rejections
+
+    rejections = hub_token_rejections()
+    if rejections is not None and rejections.refused:
+        return False
+    try:
+        reason = str(response.headers.get("X-Error-Message") or "").lower()
+    except Exception:
+        reason = ""
+    return not any(marker in reason for marker in ("token", "credential"))
+
+
 def is_hf_authentication_error(error: Exception) -> bool:
     """Return whether an exception chain contains a definitive HF auth failure."""
     seen: set[int] = set()
@@ -872,7 +907,11 @@ def is_hf_authentication_error(error: Exception) -> bool:
         response = getattr(current, "response", None)
         status = getattr(response, "status_code", None)
         try:
-            if status is not None and int(status) == 401:
+            if (
+                status is not None
+                and int(status) == 401
+                and not _is_repo_level_401(current, response)
+            ):
                 return True
         except (TypeError, ValueError):
             pass
@@ -884,13 +923,11 @@ def is_hf_authentication_error(error: Exception) -> bool:
 
 
 def format_error_message(error: Exception, model_name: str) -> str:
-    """
-    Format a user-friendly error message for common load issues.
+    """Format a user-friendly error message for common load issues, such as a missing modelscope package."""
+    missing = modelscope_missing(error)
+    if missing:
+        return missing
 
-    Args:
-        error: The exception that occurred
-        model_name: Name of the model being loaded
-    """
     error_str = str(error).lower()
     model_short = model_name.split("/")[-1] if "/" in model_name else model_name
 

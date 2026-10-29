@@ -19,6 +19,78 @@ export interface Capability {
   label: string;
 }
 
+/** What the Hub's filter picks from. Image and video generation share the "diffusion" capability
+ *  everywhere else (loading, the Images and Video pages) but are different models to look for. */
+export type HubCapabilityFilter =
+  | "text"
+  | "reasoning"
+  | "vision"
+  | "audio"
+  | "embedding"
+  | "image-gen"
+  | "video-gen";
+
+export const HUB_CAPABILITY_FILTERS: readonly HubCapabilityFilter[] = [
+  "text",
+  "reasoning",
+  "vision",
+  "audio",
+  "embedding",
+  "image-gen",
+  "video-gen",
+];
+
+const VIDEO_GEN_TAGS = new Set([
+  "text-to-video",
+  "image-to-video",
+  "image-text-to-video",
+]);
+// Cosmos3 counts only as its Nano and Edge generators, not the Reasoner / Policy / Sim / Transfer / FP8 repos.
+const VIDEO_GEN_ID_RE =
+  /(?:^|[-_.])wan2|hunyuan[-_]?video|\bltx(?:[-_]?video|v|[-_]?\d)|minimax[-_]?h\d|cogvideo|mochi|skyreels|[-_]t2v\b|[-_]i2v\b|(?:^|[-_.])cosmos3[-_.](?:nano|edge)(?![a-z0-9]|[-_.](?:reasoner|policy|sim|transfer|fp8)(?![a-z0-9]))/;
+
+const NEITHER_GEN_TASKS = new Set([
+  "video-to-video",
+  "text-to-audio",
+  "audio-to-audio",
+  "text-to-speech",
+  "text-to-3d",
+  "image-to-3d",
+]);
+
+/** A video family in the repo name (not the owner), e.g. LTX-2.3 or Wan2.2. */
+export function isVideoFamilyName(modelId: string): boolean {
+  return VIDEO_GEN_ID_RE.test(modelId.toLowerCase().split("/").pop() ?? "");
+}
+
+/** Which generation an image/video model does, from its tags and name. A video signal wins: several
+ *  video repos carry an image tag for their first-frame path, and the picker reads them the same
+ *  way. Anything else is taken for an image model, as most are. */
+export function generationKinds(
+  tags: string[] | undefined,
+  pipelineTag: string | undefined,
+  modelId: string,
+): { image: boolean; video: boolean } {
+  const tagSet = lower(tags);
+  const pipeline = pipelineTag?.toLowerCase();
+  // The repo name only: "hunyuanvideo-community/HunyuanImage-2.1" is an image model.
+  const repo = modelId.toLowerCase().split("/").pop() ?? "";
+  // Neither: the Video page takes a prompt and reference images, never a video, and the audio
+  // tasks belong to the Audio pages.
+  if (
+    pipeline !== undefined
+      ? NEITHER_GEN_TASKS.has(pipeline)
+      : [...NEITHER_GEN_TASKS].some((task) => tagSet.has(task))
+  ) {
+    return { image: false, video: false };
+  }
+  const video =
+    [...VIDEO_GEN_TAGS].some((tag) => tagSet.has(tag)) ||
+    (pipeline !== undefined && VIDEO_GEN_TAGS.has(pipeline)) ||
+    VIDEO_GEN_ID_RE.test(repo);
+  return { image: !video, video };
+}
+
 const VISION_TAGS = new Set([
   "vision",
   "vision-language",
@@ -37,6 +109,8 @@ const VISION_TAGS = new Set([
 const AUDIO_TAGS = new Set([
   "audio",
   "audio-text-to-text",
+  "text-to-audio",
+  "audio-to-audio",
   "automatic-speech-recognition",
   "text-to-speech",
   "audio-classification",
@@ -63,7 +137,7 @@ const REASONING_TAGS = new Set([
   "step-by-step",
 ]);
 
-// Image generation / diffusion (surfaced as "Image generation" in filters).
+// Image and video generation (one "diffusion" capability; the Hub filter splits it, generationKinds).
 const DIFFUSION_TAGS = new Set([
   "diffusers",
   "diffusion",
@@ -74,8 +148,24 @@ const DIFFUSION_TAGS = new Set([
   "image-to-image",
   "text-to-video",
   "image-to-video",
+  "image-text-to-video",
+  "image-text-to-image",
   "unconditional-image-generation",
 ]);
+
+// Text-diffusion language models (LLaDA, Dream, SDAR, DiffusionGemma, ...) are text generators that
+// can carry a bare "diffusion" tag; only an image / video tag or family name makes them image gen.
+const TEXT_DIFFUSION_LM_TAGS = new Set([
+  "llada",
+  "llada2_moe",
+  "dream",
+  "sdar",
+  "nemotron_labs_diffusion",
+  "diffusion_gemma",
+  "diffusion_gemma4",
+]);
+const TEXT_DIFFUSION_LM_ID_RE =
+  /(?:^|[-_/])(?:llada|dream[-_]v\d|diffucoder|sdar[-_]\d|diffusiongemma|nemotron[-_]labs[-_]diffusion)/;
 
 const CODE_TAGS = new Set([
   "code",
@@ -212,13 +302,25 @@ export function detectCapabilities(
   ) {
     out.push({ key: "embedding", label: "Embeddings" });
   }
-  if (
-    hasAny(DIFFUSION_TAGS) ||
-    /stable[-_]?diffusion|\bsdxl\b|\bflux\b|qwen[-_]?image|hunyuan[-_]?(?:video|image)|wan2|latent[-_]?consistency|[-_]lcm\b|dreamshaper/.test(
+  const imageGenName =
+    /stable[-_]?diffusion|\bsdxl\b|\bflux\b|qwen[-_]?image|hunyuan[-_]?(?:video|image)|(?:^|[-_/.])wan2|latent[-_]?consistency|[-_]lcm\b|dreamshaper/.test(
       lowerId,
-    )
-  ) {
-    out.push({ key: "diffusion", label: "Image generation" });
+    );
+  const textDiffusionLm =
+    !imageGenName &&
+    (hasAny(TEXT_DIFFUSION_LM_TAGS) || TEXT_DIFFUSION_LM_ID_RE.test(lowerId));
+  const imageGenTagged = textDiffusionLm
+    ? [...DIFFUSION_TAGS].some(
+        (tag) => tag !== "diffusion" && (tagSet.has(tag) || pipeline === tag),
+      )
+    : hasAny(DIFFUSION_TAGS);
+  const kinds = generationKinds(tags, pipelineTag, modelId);
+  // A Diffusers audio or video-to-video pipeline makes neither, so it gets no generation pill.
+  if ((imageGenTagged || imageGenName) && (kinds.image || kinds.video)) {
+    out.push({
+      key: "diffusion",
+      label: kinds.video ? "Video gen" : "Image gen",
+    });
   }
   const languageCodes = new Set<string>();
   for (const tag of tags ?? []) {

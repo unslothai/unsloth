@@ -17,6 +17,7 @@ from core.data_recipe.service import (
     build_config_builder,
     create_data_designer,
     recipe_has_stdio_mcp,
+    require_ui_session_for_host_env_credentials,
     validate_recipe,
 )
 from loggers import get_logger
@@ -28,8 +29,7 @@ from .jobs import _resolve_seed_endpoint
 logger = get_logger(__name__)
 router = APIRouter()
 
-# A stdio provider is a command this host would run, so only a UI session may supply one. Annotated, not a
-# Depends default, so a direct call gets False.
+# Only UI sessions may supply stdio commands, since this host would run them; Annotated so direct calls get False.
 ViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
 
 _GITHUB_VALIDATE_NOTE = (
@@ -80,6 +80,20 @@ def _validate_github_seed_static(source: dict[str, Any]) -> list[ValidateError]:
     return errors
 
 
+def _all_blocks_dropped_message(columns: list[Any]) -> str:
+    # Reword only: Data Designer's profiler also fails when no generated column is kept (#10836).
+    names = [
+        column.name
+        for column in columns
+        if getattr(column, "drop", False) and column.name != "_internal_row_id"
+    ]
+    listed = f" ({', '.join(names)})" if names else ""
+    return (
+        f'Every block is set to "Keep out of final dataset"{listed}. Turn that off on at least '
+        "one block: source data fields cannot be the only columns in the output."
+    )
+
+
 def _collect_validation_errors(recipe: dict[str, Any]) -> list[ValidateError]:
     try:
         from data_designer.engine.compiler import (
@@ -118,7 +132,10 @@ def _collect_validation_errors(recipe: dict[str, Any]) -> list[ValidateError]:
             continue
         code = getattr(violation.type, "value", None)
         path = violation.column if violation.column else None
-        message = str(violation.message).strip() or "Validation failed."
+        if code == "all_columns_dropped":
+            message = _all_blocks_dropped_message(config.columns)
+        else:
+            message = str(violation.message).strip() or "Validation failed."
         errors.append(
             ValidateError(
                 message = message,
@@ -137,6 +154,11 @@ def _patch_local_providers(recipe: dict[str, Any]) -> None:
             continue
         if provider.pop("is_local", None) is True:
             provider["endpoint"] = "http://127.0.0.1"
+            # Same as _inject_local_providers: external-only auth must not ride along to loopback.
+            provider["api_key"] = None
+            provider.pop("api_key_env", None)
+            provider.pop("extra_headers", None)
+            provider.pop("extra_body", None)
 
 
 @router.post("/validate", response_model = ValidateResponse)
@@ -149,6 +171,7 @@ def validate(payload: RecipePayload, via_api_key: ViaApiKey = False) -> Validate
         )
     if recipe_has_stdio_mcp(recipe):
         require_ui_session_for_local_commands(via_api_key)
+    require_ui_session_for_host_env_credentials(recipe, via_api_key)
 
     _patch_local_providers(recipe)
     _resolve_seed_endpoint(recipe)
@@ -161,8 +184,7 @@ def validate(payload: RecipePayload, via_api_key: ViaApiKey = False) -> Validate
         try:
             build_config_builder(recipe)
         except ModuleNotFoundError as exc:
-            # data_designer is an optional runtime dep and full validation is deferred to run start, so only ITS
-            # ImportError is bypassed; others still fail.
+            # Only data_designer's own ImportError is bypassed (optional dep).
             if not (exc.name or "").startswith("data_designer"):
                 raise
             logger.debug(
@@ -203,8 +225,7 @@ def validate(payload: RecipePayload, via_api_key: ViaApiKey = False) -> Validate
         try:
             parsed_errors = _collect_validation_errors(recipe)
         except Exception:
-            # It re-reads the seed, so an unreadable one raises here too; escaping turns an
-            # answerable "this recipe is wrong" into a 500.
+            # The seed is re-read here; keep errors answerable instead of a 500.
             parsed_errors = []
         return ValidateResponse(
             valid = False,

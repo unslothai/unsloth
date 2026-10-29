@@ -1,12 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Edge-case suite for scripts/check_frontend_dep_removal.py.
-
-Each case patches a copy of package.json to remove/move a dependency,
-runs the checker against the real lockfile, and asserts the verdict.
-Run: `python tests/studio/test_frontend_dep_removal.py` (exit 0 iff all pass).
-"""
+"""Edge-case checks for scripts/check_frontend_dep_removal.py; run as a script, exit 0 iff all pass."""
 
 from __future__ import annotations
 
@@ -31,7 +26,7 @@ class Case:
     remove: list[str]
     expected_status: str
     expected_failures: list[str]
-    move_to_dev: list[str] | None = None  # rare: deps moved, not removed
+    move_to_dev: list[str] | None = None
 
 
 CASES: list[Case] = [
@@ -310,7 +305,6 @@ def run_case(case: Case, head_pkg: dict) -> tuple[bool, str]:
     )
 
 
-# Classifier unit tests: feed snippets into classify(), assert the kind.
 # Import classify() by file path so this test needs no installed package.
 import importlib.util as _ilu
 
@@ -330,7 +324,7 @@ class ClassifyCase:
     pkg: str
     file: str
     content: str
-    expected_kind: str | None  # None means "no detection"
+    expected_kind: str | None
 
 
 CLASSIFY_CASES: list[ClassifyCase] = [
@@ -631,7 +625,6 @@ CLASSIFY_CASES: list[ClassifyCase] = [
         "snippet = 'import x from \"next-themes\";'",
         None,
     ),
-    # File-type gating: JS classifiers must not fire on non-script files
     ClassifyCase(
         "U38",
         "JS import snippet inside a Markdown code fence is NOT a usage",
@@ -656,8 +649,6 @@ CLASSIFY_CASES: list[ClassifyCase] = [
         "run: echo 'import x from \"next-themes\";'",
         None,
     ),
-    # HTML script/link must respect package-name boundaries: a `/node_modules/foo-extra/...` reference does NOT use
-    # `foo`.
     ClassifyCase(
         "U41",
         "HTML <script src=...> with similar-prefix package is NOT a match",
@@ -682,7 +673,6 @@ CLASSIFY_CASES: list[ClassifyCase] = [
         '<script src="/node_modules/foo/dist/index.js"></script>',
         "html_script",
     ),
-    # CSS url() unquoted variant must classify the same as the quoted one.
     ClassifyCase(
         "U44",
         "CSS url() unquoted bare package path",
@@ -720,8 +710,6 @@ def run_classify_unit_tests() -> int:
     return 0 if passed == len(CLASSIFY_CASES) else 1
 
 
-# Adversarial end-to-end cases: drop a synthetic file into src/, run the
-# checker, clean up. Catches regressions in the full grep+classify pipeline.
 ADVERSARIAL_TMP_DIR = REPO / "studio/frontend/src/__dep_check_adversarial__"
 
 
@@ -777,7 +765,6 @@ ADV_CASES: list[AdvCase] = [
         "A05",
         "package with similar prefix should NOT trigger FAIL",
         "adv05.ts",
-        # Imports the *_extra* name; removing the shorter name is safe (zero usage).
         'import x from "__adv_only_pkg_e_extra__";\n',
         "__adv_only_pkg_e__",
         "PASS",
@@ -848,8 +835,7 @@ ADV_CASES: list[AdvCase] = [
         "FAIL",
         ["__adv_only_pkg_l__"],
     ),
-    # Prettier puts `import` ~22 lines from the `from "pkg"` clause; the old ±4-line classify fallback missed it.
-    # Exercises the widened (±25) window.
+    # Prettier can put `import` ~22 lines from the `from` clause; exercises the +-25 window.
     AdvCase(
         "A13",
         "Prettier-style 22-identifier multi-line import should FAIL "
@@ -865,8 +851,6 @@ ADV_CASES: list[AdvCase] = [
 ]
 
 
-# package.json field-reference cases: simulate prettier/eslintConfig/overrides/ peerDependenciesMeta etc., testing
-# package_json_extra_refs() coverage.
 @dataclass
 class PkgFieldCase:
     id: str
@@ -1042,7 +1026,6 @@ def run_pkg_field_cases() -> int:
         synth_head = json.loads(json.dumps(head_pkg))
         for k, v in pc.field_patch.items():
             synth_head[k] = v
-        # Base declares the target; head drops it from deps but references it via the extra field.
         synth_base = json.loads(json.dumps(head_pkg))
         synth_base.setdefault("dependencies", {})[pc.target_pkg] = "^1.0.0"
         with tempfile.NamedTemporaryFile("w", suffix = ".json", delete = False) as f:
@@ -1079,7 +1062,6 @@ def run_pkg_field_cases() -> int:
                 continue
             if in_summary and line.strip().startswith("- "):
                 fails.append(line.strip()[2:])
-        # Both status and failure set must match.
         ok = actual_status == pc.expected_status and set(fails) == set(pc.expected_failures)
         mark = "PASS" if ok else "FAIL"
         print(f"  [{mark}] {pc.id}: {pc.desc}")
@@ -1103,8 +1085,6 @@ def run_adversarial_cases() -> int:
         fpath = ADVERSARIAL_TMP_DIR / ac.filename
         try:
             fpath.write_text(ac.content, encoding = "utf-8")
-            # Base adds the target pkg; real head lacks it, so the script treats it as removed and scans the repo (now
-            # with our file).
             synth_base = json.loads(json.dumps(head_pkg))
             synth_base.setdefault("dependencies", {})[ac.target_pkg] = "^1.0.0"
             with tempfile.NamedTemporaryFile("w", suffix = ".json", delete = False) as f:
@@ -1168,7 +1148,7 @@ class EnumCase:
     add_deps: dict[str, str]
     add_dev_deps: dict[str, str]
     field_patch: dict
-    extra_file: tuple[str, str] | None  # (relative_path, content) or None
+    extra_file: tuple[str, str] | None
     expected_unused: set[str]
     expected_used: set[str]
     expected_orphan_types: set[str]
@@ -1331,14 +1311,12 @@ def run_enum_cases() -> int:
     return 0 if passed == len(ENUM_CASES) else 1
 
 
-# Script-wrapper cases: scripts_bin_refs / _next_real_bin must credit the real bin (`biome` -> @biomejs/biome), not the
-# wrapper. The old "first non-env token" heuristic missed cross-env / dotenv / etc.
 @dataclass
 class WrapperCase:
     id: str
     desc: str
     raw_cmd: str
-    expected_bin: str | None  # None means "no real bin (e.g. unwrappable)"
+    expected_bin: str | None
 
 
 WRAPPER_CASES: list[WrapperCase] = [
@@ -1427,8 +1405,6 @@ def run_wrapper_cases() -> int:
         if ok:
             passed += 1
 
-    # End-to-end: feed scripts_bin_refs a head_pkg whose scripts use a wrapper and confirm the wrapped bin's owner is
-    # credited (the find_command_usage path).
     int_total = 0
     int_passed = 0
     int_cases = [

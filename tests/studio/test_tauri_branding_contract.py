@@ -68,6 +68,9 @@ def test_desktop_package_transitions_preserve_legacy_installs() -> None:
     deb = config["bundle"]["linux"]["deb"]
     for field in ("provides", "conflicts", "replaces"):
         assert deb[field] == ["unsloth-studio-desktop"]
+    # Recommends, not Depends: Ubuntu ships it in universe, so a Depends blocks install where that is off.
+    assert deb["recommends"] == ["gstreamer1.0-plugins-bad"]
+    assert "depends" not in deb
 
     installer = read(TAURI / "windows/installer.nsi")
     assert '!define INSTALLIDENTITY "Unsloth Studio (Desktop)"' in installer
@@ -112,8 +115,7 @@ def test_dmg_install_window_matches_its_background_art() -> None:
     dmg = json.loads(read(TAURI / "tauri.macos.conf.json"))["bundle"]["macOS"]["dmg"]
     assert dmg["background"] == "./dmg/background.tiff"
 
-    # Finder lays the background out from the same origin it uses for icon coordinates, so the base page has to match
-    # the configured window size or the artwork drifts out from under the app and Applications icons.
+    # Finder lays the background out from the icon origin, so the page must match the window size.
     window = (dmg["windowSize"]["width"], dmg["windowSize"]["height"])
     assert window == (660, 400)
     assert tiff_first_image_size(TAURI / "dmg/background.tiff") == window
@@ -147,7 +149,7 @@ def test_dmg_background_art_is_what_its_renderer_produces() -> None:
     pages = [page.convert("RGB") for page in ImageSequence.Iterator(tiff)]
     assert [page.size for page in pages] == [page.size for page in expected]
 
-    # a tolerance, not equality, so no one Pillow build is baked in. a stale asset is far worse
+    # a tolerance, not equality, so no one Pillow build is baked in
     for page, reference in zip(pages, expected):
         drift = np.abs(np.asarray(page, dtype = np.int16) - np.asarray(reference, dtype = np.int16))
         assert drift.max() <= 2
@@ -160,7 +162,6 @@ def test_dmg_icon_label_stays_legible_over_the_halo() -> None:
 
     renderer = load_module(REPO / "scripts/make_dmg_background.py")
     scale = renderer.SCALE
-    # the band Finder puts the icon label in, just under the app icon
     label = (
         np.asarray(renderer.build().convert("RGB"), dtype = np.float32)[
             238 * scale : 260 * scale, 140 * scale : 220 * scale
@@ -207,11 +208,7 @@ def test_desktop_release_asset_names_are_human_readable() -> None:
 
 LOCALES = FRONTEND / "src/i18n/locales"
 
-# The only locale entries allowed to say "Unsloth Studio": prose that names the *remote server* a user points this app
-# at, which genuinely is an Unsloth Studio.
-# modelAutoSwitch.apiOnlyDescription does NOT belong here. It renders as a settings-row description and describes a
-# model you loaded from this UI, not from a remote server, so exempting it would let the display name back in on a
-# rendered surface.
+# Only prose naming the remote server a user points the app at may say "Unsloth Studio".
 LOCALE_REMOTE_SERVER_KEYS = frozenset(
     {
         "settings.agents.remote.title",
@@ -221,15 +218,9 @@ LOCALE_REMOTE_SERVER_KEYS = frozenset(
 
 LOCALE_KEY = re.compile(r"^(\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:")
 
-# The Rust half of the sweep walks the whole crate rather than a hand-kept file list. The list version held six files
-# and let two live violations through: native_file_dialogs.rs owned the log-export sentinel the settings tab renders,
-# and staged_update.rs told the user to "Quit Unsloth Studio" when the app they are looking at is called Unsloth.
-# Neither file was on the list, so neither was ever asked.
 RUST_SOURCES = TAURI / "src"
 
-# Lines allowed to carry the display name, matched whole and stripped so the exemption cannot widen by editing around
-# it. This is transcribed output, not copy: the AMSI provider really printed that line, and rewriting it would make the
-# fixture stop reproducing the error it was captured from (#8523).
+# Transcribed AMSI output, not copy: rewriting it would stop the fixture reproducing the error.
 RUST_VERBATIM_LINES = frozenset(
     {
         '"+ # Unsloth Studio Installer for Windows PowerShell",',
@@ -238,11 +229,7 @@ RUST_VERBATIM_LINES = frozenset(
 
 
 def locale_entries(text: str) -> list[tuple[str, str]]:
-    """Every leaf entry of a locale module as (dotted key path, value text).
-
-    The catalogs are plain nested object literals, and values routinely wrap onto their
-    own line, so an entry runs from its key to the next key or closing brace.
-    """
+    """Values may wrap across lines, so an entry runs from its key to the next key or closing brace."""
     stack: list[tuple[int, str]] = []
     out: list[tuple[str, str]] = []
     path: str | None = None
@@ -271,12 +258,7 @@ def locale_entries(text: str) -> list[tuple[str, str]]:
 
 
 def rust_branding_offenders() -> list[str]:
-    """Every crate line naming the display name, bar the transcribed ones.
-
-    Line granularity rather than file granularity so one verbatim fixture does not buy its
-    whole file an exemption: install.rs holds captured AMSI stderr, and the rest of install.rs
-    is still ordinary user-facing Rust that has to obey the contract.
-    """
+    """Exempts by line, not file, so one verbatim captured fixture does not exempt the whole file."""
     return [
         f"{path.relative_to(REPO)}:{number}"
         for path in sorted(RUST_SOURCES.rglob("*.rs"))
@@ -286,9 +268,7 @@ def rust_branding_offenders() -> list[str]:
 
 
 def test_desktop_surfaces_do_not_restore_studio_branding() -> None:
-    # The desktop app displays itself as "Unsloth", never "Unsloth Studio". The i18n catalogs are swept by key rather
-    # than by file: a handful of entries have to name the *remote server* a user points the app at, which genuinely is
-    # an Unsloth Studio and is not this app's display name, so those keys are spared and every other entry is not.
+    # The desktop app displays itself as "Unsloth", never "Unsloth Studio".
     display_sources = [
         TAURI / "Info.plist",
         TAURI / "capabilities/default.json",
@@ -306,12 +286,8 @@ def test_desktop_surfaces_do_not_restore_studio_branding() -> None:
         str(path.relative_to(REPO)) for path in display_sources if "Unsloth Studio" in read(path)
     ]
 
-    # The crate is swept whole. The four Rust files that used to be named here are still covered, and so is every
-    # other one: a user-facing sentence is not likelier to be right for having been added to a file nobody listed.
     offenders += rust_branding_offenders()
 
-    # The locale catalogs are swept too, just at key granularity rather than file granularity, so only the remote-server
-    # prose is spared.
     offenders += [
         f"{path.relative_to(REPO)}::{key}"
         for path in sorted(LOCALES.rglob("*.ts"))
@@ -326,23 +302,15 @@ def test_desktop_surfaces_do_not_restore_studio_branding() -> None:
 
 
 def test_the_branding_sweep_still_covers_the_crate() -> None:
-    """The Rust half has to keep walking a real tree, and the exemption has to stay verbatim.
-
-    The failure this guards is the one the hand-kept list actually produced: a sweep that looks
-    thorough while never reading the file the offending sentence lives in. Here that shape would
-    be an rglob that returns nothing after a crate reshuffle, which reports zero offenders and
-    passes.
-    """
+    """An empty sweep would report zero offenders and pass, so the crate tree must still be walked."""
     swept = sorted(RUST_SOURCES.rglob("*.rs"))
     assert RUST_SOURCES.is_dir(), f"the crate source root moved: {RUST_SOURCES}"
     assert len(swept) >= 25, f"the crate sweep collapsed to {len(swept)} files"
 
-    # The two that the old list omitted, named so a reshuffle that drops them is not silent.
     for name in ("native_file_dialogs.rs", "staged_update.rs", "process.rs", "main.rs"):
         assert any(path.name == name for path in swept), f"{name} left the sweep"
 
-    # An exemption for a line no longer in the tree is an exemption nobody re-read. It has to be
-    # spent, and spent on the fixture it was written for.
+    # An exemption for a line no longer in the tree must fail, so stale exemptions get removed.
     present = {
         line.strip()
         for path in swept
@@ -356,9 +324,7 @@ def test_the_branding_sweep_still_covers_the_crate() -> None:
         len(RUST_VERBATIM_LINES) < 5
     ), "the verbatim allowlist is for transcribed output, not copy"
 
-    # Nothing is dropped beyond the allowlist: every raw hit is either reported or exempt. A filter
-    # that quietly skipped a directory, a file extension or a line shape would show up here as a
-    # raw count the reported and exempt ones do not add back up to.
+    # Every raw hit must be reported or exempt, so a filter cannot silently skip anything.
     raw = [
         line.strip()
         for path in swept
@@ -370,12 +336,7 @@ def test_the_branding_sweep_still_covers_the_crate() -> None:
 
 
 def test_the_branding_sweep_still_covers_the_frontend() -> None:
-    """The locale exemption must stay narrow.
-
-    A sweep that matches nothing passes this contract while proving nothing. Both halves
-    can fail that way: move src and the rglob goes empty, or reformat the catalogs and the
-    key parser yields nothing, either one leaving the test green over an unchecked tree.
-    """
+    """An empty frontend sweep, or a key parser that reads nothing, would pass while checking nothing."""
     swept = [
         path
         for suffix in ("*.ts", "*.tsx")
@@ -388,7 +349,6 @@ def test_the_branding_sweep_still_covers_the_frontend() -> None:
     assert len(locales) >= 10, f"locales look wrong, found {len(locales)}"
     assert len(swept) > 20 * len(locales), f"sweep collapsed to {len(swept)} files"
 
-    # The catalogs are swept by key, so the parser has to actually resolve keys.
     for path in locales:
         entries = dict(locale_entries(read(path)))
         assert len(entries) > 500, f"{path.name} parsed to {len(entries)} entries"
@@ -400,8 +360,6 @@ def test_the_branding_sweep_still_covers_the_frontend() -> None:
         ):
             assert key in entries, f"{path.name} lost {key}, so the sweep no longer sees it"
 
-    # The allowlist is prose-level, not a blanket: it spares three of the ~1,500 entries a catalog holds, and every
-    # exempt key has to be one the catalogs actually define.
     english = dict(locale_entries(read(LOCALES / "en.ts")))
     assert LOCALE_REMOTE_SERVER_KEYS <= set(
         english

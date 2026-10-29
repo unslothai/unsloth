@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""SQLite storage for external LLM provider configurations.
-
-Same pattern as studio_db.py (module-level functions, raw sqlite3, WAL, per-function connections). API keys are
-NOT stored here: they live only in the browser (localStorage) and are sent encrypted per-request. Enabled model
-selections and discovered catalog IDs are stored server-side so remote Unsloth clients see the same connection
-state (#7281).
-"""
+"""SQLite for LLM providers; API keys stay in the browser and are sent encrypted per request"""
 
 from __future__ import annotations
 
@@ -20,14 +14,55 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Optional
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
+from models.providers import ProviderReasoningConfig, normalize_provider_reasoning_config
+from storage.studio_db import connect_studio_db
 from utils.paths import studio_db_path, ensure_dir
 
 _schema_lock = threading.Lock()
 _schema_ready: set[Path] = set()
 _UNSET = object()
+
+_LEGACY_CUSTOM_PRESET_TYPES = {
+    "custom": "custom",
+    "llama.cpp": "llama_cpp",
+    "vllm": "vllm",
+    "ollama": "ollama",
+}
+
+
+def _migrate_legacy_custom_provider_types(conn: sqlite3.Connection) -> None:
+    """Rows saved as openai change type only on an exact built-in label; a URL may be an OpenAI proxy."""
+    updates: list[tuple[str, str]] = []
+    rows = conn.execute(
+        "SELECT id, display_name, base_url FROM llm_providers WHERE provider_type = 'openai'"
+    ).fetchall()
+    for provider_id, display_name, base_url in rows:
+        label = str(display_name or "").strip().lower()
+        url = str(base_url or "").strip()
+        try:
+            parsed = urlparse(url)
+            host = (parsed.hostname or "").lower()
+        except ValueError:
+            host = ""
+
+        # Display name is user-editable; never let it turn an OpenAI endpoint into a custom one.
+        if host == "api.openai.com" or host.endswith(
+            (".openai.azure.com", ".services.ai.azure.com")
+        ):
+            continue
+
+        migrated_type = _LEGACY_CUSTOM_PRESET_TYPES.get(label)
+        if migrated_type is not None:
+            updates.append((migrated_type, str(provider_id)))
+
+    conn.executemany(
+        "UPDATE llm_providers SET provider_type = ? WHERE id = ?",
+        updates,
+    )
 
 
 def _encode_models_json(models: Optional[list[str]]) -> str:
@@ -46,6 +81,23 @@ def _decode_models_json(raw: Optional[str]) -> list[str]:
     if not isinstance(parsed, list):
         return []
     return [str(model).strip() for model in parsed if str(model).strip()]
+
+
+def _encode_reasoning_config(config) -> Optional[str]:
+    if config is None:
+        return None
+    if isinstance(config, ProviderReasoningConfig):
+        config = config.model_dump()
+    return ProviderReasoningConfig.model_validate(config).model_dump_json()
+
+
+def _decode_reasoning_config(raw) -> Optional[dict]:
+    if not raw:
+        return None
+    try:
+        return normalize_provider_reasoning_config(json.loads(raw))
+    except (json.JSONDecodeError, TypeError):
+        return None
 
 
 def _row_models(row: sqlite3.Row) -> tuple[list[str], list[str]]:
@@ -79,8 +131,20 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE llm_providers ADD COLUMN available_models_json TEXT NOT NULL DEFAULT '[]'"
         )
+    added_api_type = "api_type" not in existing_cols
+    if added_api_type:
+        conn.execute(
+            "ALTER TABLE llm_providers ADD COLUMN api_type TEXT NOT NULL DEFAULT 'chat_completions'"
+        )
+        _migrate_legacy_custom_provider_types(conn)
     if "max_output_tokens" not in existing_cols:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN max_output_tokens INTEGER")
+    if "reasoning_config_json" not in existing_cols:
+        conn.execute("ALTER TABLE llm_providers ADD COLUMN reasoning_config_json TEXT")
+    if "shared" not in existing_cols:
+        conn.execute("ALTER TABLE llm_providers ADD COLUMN shared INTEGER NOT NULL DEFAULT 0")
+    # ALTER TABLE persists independently in SQLite, but its one-time data migration does not.
+    conn.commit()
 
 
 def reset_schema_state_for_tests() -> None:
@@ -91,7 +155,7 @@ def reset_schema_state_for_tests() -> None:
 def get_connection() -> sqlite3.Connection:
     db_path = studio_db_path()
     ensure_dir(db_path.parent)
-    conn = sqlite3.connect(str(db_path))
+    conn = connect_studio_db(db_path)
     conn.row_factory = sqlite3.Row
     if db_path not in _schema_ready:
         with _schema_lock:
@@ -108,12 +172,8 @@ def get_connection() -> sqlite3.Connection:
 
 @contextmanager
 def provider_bundle_transaction() -> Iterator[sqlite3.Connection]:
-    """Atomically mutate a provider row and its saved credentials. Provider metadata and encrypted credentials
-    share ``studio.db``, so a single SQLite write transaction prevents other processes from observing a new
-    endpoint with the previous key (or the inverse) while a provider edit is in progress.
-    """
-    # Ensure both tables exist before opening the transaction. The credential module commits schema
-    # initialization on its own connection.
+    """One SQLite write transaction, so no other process sees a new endpoint paired with the old key."""
+    # Both tables must exist before the transaction; credential_secrets commits its own schema.
     from storage import credential_secrets
 
     credential_secrets.ensure_schema()
@@ -139,8 +199,12 @@ def create_provider(
     models: Optional[list[str]] = None,
     available_models: Optional[list[str]] = None,
     max_output_tokens: Optional[int] = None,
+    api_type: str = "chat_completions",
+    reasoning_config: Optional[dict] = None,
+    shared: bool = False,
 ) -> None:
     """Insert a new provider configuration."""
+    reasoning_json = _encode_reasoning_config(reasoning_config)
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
     try:
@@ -148,10 +212,10 @@ def create_provider(
             """
             INSERT INTO llm_providers (
                 id, provider_type, display_name, base_url,
-                models_json, available_models_json, max_output_tokens,
-                created_at, updated_at
+                models_json, available_models_json, max_output_tokens, api_type,
+                reasoning_config_json, shared, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 id,
@@ -161,6 +225,9 @@ def create_provider(
                 _encode_models_json(models),
                 _encode_models_json(available_models),
                 max_output_tokens,
+                api_type,
+                reasoning_json,
+                1 if shared else 0,
                 now,
                 now,
             ),
@@ -180,6 +247,9 @@ def update_provider(
     max_output_tokens: int | None | object = _UNSET,
     *,
     connection: sqlite3.Connection | None = None,
+    api_type: str | None = None,
+    reasoning_config: dict | None | object = _UNSET,
+    shared: bool | None = None,
 ) -> bool:
     """Update fields on an existing provider. Returns True if a row was updated."""
     updates = []
@@ -190,6 +260,9 @@ def update_provider(
     if base_url is not None:
         updates.append("base_url = ?")
         params.append(base_url)
+    if api_type is not None:
+        updates.append("api_type = ?")
+        params.append(api_type)
     if is_enabled is not None:
         updates.append("is_enabled = ?")
         params.append(1 if is_enabled else 0)
@@ -202,6 +275,12 @@ def update_provider(
     if max_output_tokens is not _UNSET:
         updates.append("max_output_tokens = ?")
         params.append(max_output_tokens)
+    if reasoning_config is not _UNSET:
+        updates.append("reasoning_config_json = ?")
+        params.append(_encode_reasoning_config(reasoning_config))
+    if shared is not None:
+        updates.append("shared = ?")
+        params.append(1 if shared else 0)
     if not updates:
         return False
     updates.append("updated_at = ?")
@@ -234,34 +313,83 @@ def delete_provider(id: str) -> bool:
         conn.close()
 
 
-def get_provider(id: str) -> Optional[dict]:
-    """Fetch a single provider by ID."""
+def _row_to_provider(row: sqlite3.Row) -> dict:
+    data = dict(row)
+    data["reasoning_config"] = _decode_reasoning_config(data.pop("reasoning_config_json", None))
+    models, available_models = _row_models(row)
+    data["models"] = models
+    data["available_models"] = available_models
+    data["shared"] = bool(data.get("shared"))
+    return data
+
+
+def _own_rows(where: str = "", params: tuple = ()) -> list[dict]:
     conn = get_connection()
     try:
-        row = conn.execute("SELECT * FROM llm_providers WHERE id = ?", (id,)).fetchone()
-        if not row:
-            return None
-        data = dict(row)
-        models, available_models = _row_models(row)
-        data["models"] = models
-        data["available_models"] = available_models
-        return data
+        rows = conn.execute(
+            f"SELECT * FROM llm_providers {where} ORDER BY created_at", params
+        ).fetchall()
+        return [_row_to_provider(row) for row in rows]
     finally:
         conn.close()
+
+
+def base_url_carries_credential(base_url: Optional[str]) -> bool:
+    try:
+        parts = urlparse(base_url or "")
+        return bool(parts.username or parts.password or parts.query)
+    except ValueError:
+        return True
+
+
+def _owner_shared_rows(provider_id: Optional[str] = None) -> list[dict]:
+    # A ChatGPT subscription is never shared: it is one person's sign-in, not an API key.
+    from utils.account_context import OWNER, is_owner_context, run_as
+
+    if is_owner_context():
+        return []
+    where = "WHERE shared = 1 AND provider_type != 'openai_codex'"
+    params: tuple = ()
+    if provider_id is not None:
+        where += " AND id = ?"
+        params = (provider_id,)
+
+    def _read() -> list[dict]:
+        # Reading must never create the owner's database.
+        if not studio_db_path().exists():
+            return []
+        return _own_rows(where, params)
+
+    try:
+        rows = run_as(OWNER, _read)
+    except Exception:  # noqa: BLE001 - an unreadable owner store shares nothing
+        logger.warning("Could not read the owner's shared connections", exc_info = True)
+        return []
+    from hub.services.models.account_access import shared_connection_view
+
+    # Re-checked on read: an older build can edit the URL of a row it does not know is shared.
+    rows = [row for row in rows if not base_url_carries_credential(row.get("base_url"))]
+    return [view for view in (shared_connection_view(row) for row in rows) if view is not None]
+
+
+def is_owner_shared_provider(id: str) -> bool:
+    return not _own_rows("WHERE id = ?", (id,)) and bool(_owner_shared_rows(id))
+
+
+def get_own_provider(id: str) -> Optional[dict]:
+    rows = _own_rows("WHERE id = ?", (id,))
+    return rows[0] if rows else None
+
+
+def get_provider(id: str) -> Optional[dict]:
+    own = get_own_provider(id)
+    if own is not None:
+        return own
+    shared = _owner_shared_rows(id)
+    return shared[0] if shared else None
 
 
 def list_providers() -> list[dict]:
-    """List all provider configurations, ordered by creation time."""
-    conn = get_connection()
-    try:
-        rows = conn.execute("SELECT * FROM llm_providers ORDER BY created_at").fetchall()
-        providers: list[dict] = []
-        for row in rows:
-            data = dict(row)
-            models, available_models = _row_models(row)
-            data["models"] = models
-            data["available_models"] = available_models
-            providers.append(data)
-        return providers
-    finally:
-        conn.close()
+    own = _own_rows()
+    own_ids = {row["id"] for row in own}
+    return own + [row for row in _owner_shared_rows() if row["id"] not in own_ids]

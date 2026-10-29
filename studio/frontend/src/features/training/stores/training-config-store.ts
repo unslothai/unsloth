@@ -3,6 +3,7 @@
 
 import {
   DEFAULT_HYPERPARAMS,
+  LR_DEFAULT_DECISION_FULL,
   LR_DEFAULT_FULL,
   LR_DEFAULT_LORA,
 } from "@/config/training";
@@ -10,13 +11,18 @@ import { getHfToken } from "@/features/hub";
 import { translate } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { isAdapterMethod } from "@/types/training";
-import type { ModelType } from "@/types/training";
+import type { ModelType, TrainingMethod } from "@/types/training";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { DatasetFormatError, checkDatasetFormat } from "../api/datasets-api";
-import { checkVisionModel, getModelConfig } from "../api/models-api";
-import type { BackendModelConfig } from "../api/models-api";
+import {
+  checkVisionModel,
+  decisionLayoutHasLlmBackbone,
+  getModelConfig,
+} from "../api/models-api";
+import type { BackendModelConfig, DecisionCheckpoint } from "../api/models-api";
 import { cacheReferenceMatchesSelection } from "../lib/cache-reference";
+import { drafterStateFrom } from "../lib/drafter-config";
 import {
   createDatasetCacheUsabilityIdentity,
   datasetCacheUsabilityIdentitiesEqual,
@@ -30,11 +36,16 @@ import { resolveDeletedLocalDatasetSelection } from "../lib/dataset-selection";
 import { requiresExplicitCachedDatasetSplit } from "../lib/dataset-split-policy";
 import { isMissingLocalDatasetCacheError } from "../lib/local-cache-errors";
 import { mapBackendModelConfigToTrainingPatch } from "../lib/model-defaults";
-import { trainingConfigPatchTouchesModelDefaults } from "../lib/model-defaults-edit-policy";
+import {
+  MODEL_DEFAULT_STATE_KEYS,
+  type ModelDefaultsPatch,
+  trainingConfigPatchTouchesModelDefaults,
+} from "../lib/model-defaults-edit-policy";
 import {
   inferTrainingModelTypeFromFlags,
   resolveTrainingModelType,
 } from "../lib/model-type-capabilities";
+import { runConfigDraftSelections } from "../lib/run-config-draft";
 import { isRawTextDatasetFormat } from "../lib/training-methods";
 import type {
   DatasetCacheReferenceOptions,
@@ -59,6 +70,8 @@ import {
   hasSeparateStreamingEvalSplit,
   initialTrainingConfigState,
   resolveDeferredTrainOnCompletionsDefault,
+  resolveTrainingToggleDefaults,
+  trainingToggleDefaults,
   streamingCompatiblePatch,
 } from "./training-config-policy";
 import { selectTrainingMethodForHardware } from "./training-method-hardware-policy";
@@ -69,15 +82,15 @@ import {
 
 export { hasSeparateStreamingEvalSplit } from "./training-config-policy";
 
-// AbortController for in-flight dataset multimodal checks.
 let _datasetCheckController: AbortController | null = null;
-
 
 // AbortController for in-flight model default loads.
 let _modelConfigController: AbortController | null = null;
 
-// Has the user manually toggled trainOnCompletions since the last auto-set?
 let _trainOnCompletionsManuallySet = false;
+// Model whose completions value the user set (toggle or import); CPT entry captures it even while
+// defaults are pending.
+let _trainOnCompletionsExplicitModel: string | null = null;
 
 let _trainingMethodEditGeneration = 0;
 let _modelDefaultsEditGeneration = 0;
@@ -100,6 +113,64 @@ function canReapplyModelDefaults(modelName: string): boolean {
     _modelDefaultsEditBaseline?.modelName === modelName &&
     _modelDefaultsEditBaseline.editGeneration === _modelDefaultsEditGeneration
   );
+}
+
+const DEFAULT_DECISION_CHECKPOINT = "laya-multilingual";
+
+// Saved runs and YAML files carry it, but it is not a model default: switching models keeps it.
+function earlyStoppingPatienceFrom(value: unknown): number {
+  const patience = Number(value);
+  return Number.isFinite(patience) && patience > 0 ? Math.floor(patience) : 0;
+}
+
+// evalSteps is left alone: it follows the chosen eval split, not the model.
+const GENERIC_MODEL_DEFAULTS = Object.fromEntries(
+  MODEL_DEFAULT_STATE_KEYS.filter((key) => key !== "evalSteps").map((key) => [
+    key,
+    DEFAULT_HYPERPARAMS[key],
+  ]),
+) as ModelDefaultsPatch;
+
+// No defaults could be loaded to replace the decision recipe, so fall back to the generic ones.
+function leaveDecisionWithoutDefaults(
+  state: TrainingConfigState,
+  method: TrainingMethod,
+): Partial<TrainingConfigState> {
+  const generic = {
+    ...state,
+    ...GENERIC_MODEL_DEFAULTS,
+    modelType: null,
+    trainingMethodProvenance: {
+      ...state.trainingMethodProvenance,
+      learningRateManuallySet: false,
+      modelAdapterLearningRate: null,
+    },
+  };
+  return {
+    ...GENERIC_MODEL_DEFAULTS,
+    ...buildTrainingMethodPatch(generic, method),
+    modelSubfolder: null,
+    decisionCheckpoints: null,
+    decisionLayout: null,
+    settingsBeforeDecision: null,
+  };
+}
+
+function resolveDecisionSubfolder(
+  checkpoints: DecisionCheckpoint[] | null,
+  current: string | null,
+  keepCurrent: boolean,
+): string | null {
+  if (!checkpoints || checkpoints.length === 0) {
+    return null;
+  }
+  if (keepCurrent && checkpoints.some((c) => c.subfolder === current)) {
+    return current;
+  }
+  const preferred =
+    checkpoints.find((c) => c.name === DEFAULT_DECISION_CHECKPOINT) ??
+    checkpoints[0];
+  return preferred.subfolder;
 }
 
 // streamingCompatiblePatch can silently flip streaming-coupled fields, so toast when it does,
@@ -136,8 +207,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           const patch = typeof update === "function" ? update(state) : update;
           const invariantPatch = datasetSourceInvariantPatch({
             datasetSource: patch.datasetSource ?? state.datasetSource,
-            datasetStreaming:
-              patch.datasetStreaming ?? state.datasetStreaming,
+            datasetStreaming: patch.datasetStreaming ?? state.datasetStreaming,
           });
           const normalizedPatch = { ...patch, ...invariantPatch };
           if (trainingConfigPatchTouchesModelDefaults(normalizedPatch)) {
@@ -152,7 +222,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
 
       const loadAndApplyModelDefaults = (
         modelName: string,
-        options?: { applyTrainingDefaults?: boolean },
+        options?: {
+          applyTrainingDefaults?: boolean;
+          keepModelSubfolder?: boolean;
+          fillMethodProvenance?: boolean;
+        },
       ) => {
         const applyTrainingDefaults = options?.applyTrainingDefaults ?? true;
         _modelConfigController?.abort();
@@ -170,9 +244,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             loraParamEditGenerations: { ..._loraParamEditGenerations },
           };
         }
-        // A cache restart re-requests the same model, so it must measure against the
-        // original selection's snapshot or it forgets the edits made since. False after
-        // a reload, where the provenance came off disk and nothing here has a claim on it.
+        // A cache restart measures against the original selection's snapshot; false after a reload.
         const requestedSelectionOwnsLoraSnapshot =
           _modelDefaultsEditBaseline?.modelName === modelName;
         const requestedLoraParamEditGenerations =
@@ -186,6 +258,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           requestState.selectedModel === modelName
             ? requestState.modelLocalPath
             : null;
+        const requestedAsDecision = requestState.trainAsDecision;
         const canApplyTrainingDefaults = () =>
           applyTrainingDefaults &&
           _modelDefaultsEditGeneration === requestedModelDefaultsEditGeneration;
@@ -213,13 +286,70 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           {
             preferLocalCache,
             localPath: preferLocalCache ? requestedLocalPath : null,
+            asDecision: requestedAsDecision,
           },
         )
           .then((modelDetails) => {
             if (controller.signal.aborted) return;
             if (!requestMatchesSelection()) return;
+            // Answered for the other side of the decision switch.
+            if (get().trainAsDecision !== requestedAsDecision) return;
 
-            const shouldApplyTrainingDefaults = canApplyTrainingDefaults();
+            const isDecision = modelDetails.model_type === "decision";
+            const settingsBeforeDecision = get().settingsBeforeDecision;
+            // Moving to or from a decision model replaces the whole recipe, even over edits made during the load.
+            const recipeChanged = isDecision
+              ? !(
+                  get().modelDefaultsAppliedFor === modelName &&
+                  get().modelType === "decision"
+                )
+              : settingsBeforeDecision !== null;
+            const shouldApplyTrainingDefaults =
+              recipeChanged || canApplyTrainingDefaults();
+            if (isDecision) {
+              const method = get().trainingMethod;
+              const methodWasEdited =
+                _trainingMethodEditGeneration !== trainingMethodEditGeneration;
+              // Clef and LLM decision models have an LLM backbone, so they take QLoRA; Laya is 16-bit only.
+              const takesQlora = decisionLayoutHasLlmBackbone(
+                modelDetails.decision_layout,
+              );
+              const keepMethod =
+                method === "lora" ||
+                (takesQlora && method === "qlora") ||
+                (method === "full" && (!recipeChanged || methodWasEdited));
+              set({
+                ...(keepMethod
+                  ? {}
+                  : buildTrainingMethodPatch(
+                      get(),
+                      takesQlora ? "qlora" : "lora",
+                    )),
+                settingsBeforeDecision: settingsBeforeDecision ?? {
+                  trainingMethod: method,
+                  datasetStreaming: get().datasetStreaming,
+                },
+              });
+            } else if (settingsBeforeDecision) {
+              const restoredMethod = settingsBeforeDecision.trainingMethod;
+              set({
+                ...(get().trainingMethod !== restoredMethod
+                  ? buildTrainingMethodPatch(
+                      {
+                        ...get(),
+                        modelType: null,
+                        trainingMethodProvenance: {
+                          ...get().trainingMethodProvenance,
+                          modelAdapterLearningRate: null,
+                        },
+                      },
+                      restoredMethod,
+                    )
+                  : {}),
+                settingsBeforeDecision: null,
+              });
+            }
+
             const shouldApplyCptTargetDefaults =
               applyTrainingDefaults &&
               !shouldApplyTrainingDefaults &&
@@ -228,11 +358,19 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 requestedTargetModulesEditGeneration;
             if (shouldApplyTrainingDefaults) {
               _trainOnCompletionsManuallySet = false;
+              _trainOnCompletionsExplicitModel = null;
             }
 
             if (modelDetails.is_lora) {
+              // LoRA / CPT can continue from a saved adapter; full finetune and decision
+              // adapters cannot (#13140).
+              const canContinue =
+                isAdapterMethod(get().trainingMethod) &&
+                !modelDetails.is_decision;
+              // Keep the modality the backend reported even when refusing, so switching the
+              // method afterwards still validates the adapter as what it is.
               set({
-                ...(shouldApplyTrainingDefaults
+                ...(!canContinue && shouldApplyTrainingDefaults
                   ? {
                       trainingMethodProvenance: {
                         ...get().trainingMethodProvenance,
@@ -241,65 +379,87 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                       },
                     }
                   : {}),
-                modelType: null,
+                modelType: resolveTrainingModelType({
+                  modelType: modelDetails.model_type,
+                  isEmbedding: !!modelDetails.is_embedding,
+                  isDecision: !!modelDetails.is_decision,
+                  isVision: modelDetails.is_vision,
+                  isAudio: modelDetails.is_audio,
+                }),
+                decisionLayout: null,
                 modelFormat: "adapter",
-                isVisionModel: false,
-                isEmbeddingModel: false,
-                isAudioModel: false,
-                audioCapabilityUnknown: false,
+                isVisionModel: modelDetails.is_vision,
+                isEmbeddingModel: !!modelDetails.is_embedding,
+                isAudioModel: !!modelDetails.is_audio,
+                audioCapabilityUnknown: modelDetails.audio_type_known === false,
                 isLoadingModelDefaults: false,
                 isCheckingVision: false,
                 modelDefaultsError: null,
                 modelDefaultsAppliedFor: modelName,
-                maxPositionEmbeddings: null,
+                maxPositionEmbeddings:
+                  modelDetails.max_position_embeddings ?? null,
               });
-              toast.error(translate("studio.modelPicker.cantUseModel"), {
-                description: translate("studio.modelPicker.reasonAdapter"),
-              });
+              if (!canContinue) {
+                toast.error(translate("studio.modelPicker.cantUseModel"), {
+                  description: translate("studio.modelPicker.reasonAdapter"),
+                });
+              }
               return;
             }
 
             const modelDefaultsPatch = mapBackendModelConfigToTrainingPatch(
               modelDetails.config,
             );
-            const patch = shouldApplyTrainingDefaults ? modelDefaultsPatch : {};
 
-            // Treat a model-config LR as authoritative so async auto-select won't overwrite it.
+            // A model-config LR is authoritative so async auto-select won't overwrite it.
             const modelConfigHasLR =
               modelDefaultsPatch.learningRate !== undefined;
             const modelAdapterLearningRate =
               modelDefaultsPatch.learningRate ?? null;
 
-            // YAML LRs are tuned for adapters (LoRA/QLoRA); full fine-tune uses its own default.
+            // YAML LRs are tuned for adapters; full fine-tune uses its own default.
             if (modelConfigHasLR && !isAdapterMethod(get().trainingMethod)) {
-              modelDefaultsPatch.learningRate = LR_DEFAULT_FULL;
-            }
-
-            // Vision model + known image dataset: force trainOnCompletions off.
-            if (modelDetails.is_vision && get().isDatasetImage === true) {
-              modelDefaultsPatch.trainOnCompletions = false;
+              modelDefaultsPatch.learningRate = isDecision
+                ? LR_DEFAULT_DECISION_FULL
+                : LR_DEFAULT_FULL;
             }
 
             const isAudio = !!modelDetails.is_audio;
-            // Pure audio model -> always uncheck trainOnCompletions.
-            if (isAudio && !modelDetails.is_vision) {
-              modelDefaultsPatch.trainOnCompletions = false;
-            }
-            // Audio-capable vision model (e.g. gemma3n) + audio dataset -> uncheck.
-            if (isAudio && modelDetails.is_vision && get().isDatasetAudio) {
-              modelDefaultsPatch.trainOnCompletions = false;
-            }
-
             const isEmbedding = !!modelDetails.is_embedding;
             const inferredModelType = resolveTrainingModelType({
               modelType: modelDetails.model_type,
               isEmbedding,
+              isDecision,
               isVision: modelDetails.is_vision,
               isAudio: modelDetails.is_audio,
             });
+            const toggleState = {
+              ...get(),
+              isVisionModel: modelDetails.is_vision,
+              isAudioModel: isAudio,
+              isEmbeddingModel: isEmbedding,
+              modelType: inferredModelType,
+            };
+            // Shipped model recipes are recommendations, not an explicit user opting out.
+            Object.assign(modelDefaultsPatch, trainingToggleDefaults({
+              ...toggleState, trainingMethod: "qlora", datasetFormat: "auto", datasetStreaming: false,
+            }));
+            const patch: ModelDefaultsPatch = shouldApplyTrainingDefaults ? {
+              ...modelDefaultsPatch,
+              ...resolveTrainingToggleDefaults(toggleState),
+            } : {};
+            const decisionCheckpoints = isDecision
+              ? (modelDetails.decision_checkpoints ?? null)
+              : null;
+            const modelSubfolder = resolveDecisionSubfolder(
+              decisionCheckpoints,
+              get().modelSubfolder,
+              !recipeChanged || options?.keepModelSubfolder === true,
+            );
 
             const modelSizeBytes = modelDetails.model_size_bytes;
             const autoSelectionPromise =
+              !isDecision &&
               shouldApplyTrainingDefaults &&
               typeof modelSizeBytes === "number" &&
               modelSizeBytes > 0 &&
@@ -322,12 +482,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             const cptTargetOverrides = shouldApplyCptTargetDefaults
               ? { targetModules: cptDefaultsPatch.targetModules }
               : {};
-            // Only trainOnCompletions: CPT's forced adapter values are not the model's.
-            // Targets are pinned to what cptDefaultsPatch resolved FROM, so the summary's
-            // resolveCptTargetModules(baseline) reproduces the live set even when the model
-            // config carries none and cptTargetModules falls back to live state.
+            // Pinned to what cptDefaultsPatch resolved from, so the summary reproduces the live set.
             const cptBaselineOverride = {
-              trainOnCompletions: cptDefaultsPatch.trainOnCompletions,
               targetModules: [...cptTargetModules],
             };
             const modelDefaultsBaseline = {
@@ -383,9 +539,17 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                     : {}),
                 }
               : {};
+            const cptCompletionProvenanceRefresh =
+              inCpt && modelDefaultsPatch.trainOnCompletions !== undefined
+                ? {
+                    trainOnCompletionsBeforeCpt:
+                      modelDefaultsPatch.trainOnCompletions,
+                  }
+                : {};
             const cptProvenanceRefresh = {
               ...cptTargetProvenanceRefresh,
               ...cptLoraProvenanceRefresh,
+              ...cptCompletionProvenanceRefresh,
             };
             const cptFallbackProvenanceRefresh = {
               ...(shouldApplyCptTargetDefaults
@@ -394,13 +558,58 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               ...(requestedSelectionOwnsLoraSnapshot
                 ? cptLoraProvenanceRefresh
                 : {}),
+              // Fill only: a value captured on entering CPT is the user's, not a default.
+              ...(requestedSelectionOwnsLoraSnapshot &&
+              !(
+                _trainOnCompletionsManuallySet &&
+                _trainOnCompletionsExplicitModel === modelName
+              ) &&
+              get().trainingMethodProvenance.trainOnCompletionsBeforeCpt ===
+                null
+                ? cptCompletionProvenanceRefresh
+                : {}),
             };
+
+            // Fill a copied CPT run's missing history, but preserve values captured by
+            // any method transition the user made while this request was pending.
+            const fallbackProvenanceRefresh = options?.fillMethodProvenance
+              ? {
+                  modelAdapterLearningRate,
+                  ...(requestState.trainingMethod === "cpt" &&
+                  _trainingMethodEditGeneration === trainingMethodEditGeneration
+                    ? cptProvenanceRefresh
+                    : {}),
+                }
+              : cptFallbackProvenanceRefresh;
+
+            const nextStreamingState = {
+              ...get(),
+              ...patch,
+              ...cptOverrides,
+              ...deferredCompletionDefault,
+              datasetStreaming: true,
+            };
+            const restoreStreaming =
+              !isDecision &&
+              settingsBeforeDecision?.datasetStreaming === true &&
+              nextStreamingState.datasetSource === "huggingface" &&
+              nextStreamingState.maxSteps > 0;
 
             set({
               ...patch,
               ...cptOverrides,
               ...cptTargetOverrides,
               ...deferredCompletionDefault,
+              ...(isDecision ? { datasetStreaming: false } : {}),
+              ...(restoreStreaming
+                ? {
+                    ...streamingCompatiblePatch(nextStreamingState),
+                    datasetStreaming: true,
+                    isDatasetImage: null,
+                    isDatasetAudio: false,
+                    datasetCheckFailed: false,
+                  }
+                : {}),
               ...(shouldApplyTrainingDefaults
                 ? {
                     trainingMethodProvenance: {
@@ -410,11 +619,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                       ...cptProvenanceRefresh,
                     },
                   }
-                : Object.keys(cptFallbackProvenanceRefresh).length > 0
+                : Object.keys(fallbackProvenanceRefresh).length > 0
                   ? {
                       trainingMethodProvenance: {
                         ...get().trainingMethodProvenance,
-                        ...cptFallbackProvenanceRefresh,
+                        ...fallbackProvenanceRefresh,
                       },
                     }
                   : {}),
@@ -427,6 +636,15 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                     }
                   : advancedSettingsBaseline,
               modelType: inferredModelType,
+              modelSubfolder,
+              decisionCheckpoints,
+              decisionLayout: isDecision
+                ? (modelDetails.decision_layout ?? "laya")
+                : null,
+              // Asked for a decision model the backend cannot make one of (audio, embeddings).
+              ...(requestedAsDecision && !isDecision
+                ? { trainAsDecision: false }
+                : {}),
               isVisionModel: modelDetails.is_vision,
               isEmbeddingModel: isEmbedding,
               isAudioModel: isAudio,
@@ -441,6 +659,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               maxPositionEmbeddings:
                 modelDetails.max_position_embeddings ?? null,
             });
+            if (restoreStreaming) {
+              trainingDatasetCacheRejections.reset(get().dataset);
+              recheckSelectedDatasetForStreamingMode(true);
+            }
 
             if (autoSelectionPromise) {
               void autoSelectionPromise.then((method) => {
@@ -479,6 +701,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             if (controller.signal.aborted) return;
             if (!requestMatchesSelection()) return;
 
+            const { settingsBeforeDecision } = get();
             set({
               isLoadingModelDefaults: false,
               modelDefaultsError:
@@ -488,6 +711,16 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               ...(canApplyTrainingDefaults()
                 ? { visionImageSize: DEFAULT_HYPERPARAMS.visionImageSize }
                 : {}),
+              ...(settingsBeforeDecision && get().modelType !== "decision"
+                ? leaveDecisionWithoutDefaults(
+                    get(),
+                    settingsBeforeDecision.trainingMethod,
+                  )
+                : {}),
+              // The decision switch only holds once the backend answered for it.
+              ...(requestedAsDecision && get().modelType !== "decision"
+                ? { trainAsDecision: false }
+                : {}),
             });
 
             if (preferLocalCache) {
@@ -495,7 +728,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               return;
             }
 
-            // Fallback vision check; pass the token so a gated/private VLM classifies right.
+            // Pass the token so a gated/private VLM classifies right.
             void checkVisionModel(modelName, getHfToken() || undefined)
               .then((isVision) => {
                 if (controller.signal.aborted || !requestMatchesSelection()) {
@@ -505,6 +738,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 set({
                   modelType: inferTrainingModelTypeFromFlags({
                     isEmbedding: state.isEmbeddingModel,
+                    isDecision: state.modelType === "decision",
                     isAudio: state.isAudioModel,
                     isVision,
                   }),
@@ -582,18 +816,17 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             };
             if (!_trainOnCompletionsManuallySet) {
               const { isVisionModel, isAudioModel } = current;
-              if (isVisionModel && isImage) {
-                updates.trainOnCompletions = false;
-              }
-              // Pure audio model → always uncheck regardless of dataset.
               if (isAudioModel && !isVisionModel) {
                 updates.trainOnCompletions = false;
               }
-              // Audio-capable vision model (e.g. gemma3n) + audio dataset → uncheck.
-              if (isAudioModel && isVisionModel && isAudio) {
-                updates.trainOnCompletions = false;
+              if (updates.trainOnCompletions === false) {
+                updates.trainingMethodProvenance = {
+                  ...current.trainingMethodProvenance,
+                  trainOnCompletionsBeforeCpt: false,
+                };
               }
             }
+            Object.assign(updates, resolveTrainingToggleDefaults({ ...current, ...updates }));
             set(updates);
             if (streamingDisabled) {
               toast.info(
@@ -654,7 +887,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                   });
                   return;
                 }
-                // Retry budget spent: resolve remotely rather than spin on a churning inventory cache.
+                // Retry budget spent: resolve remotely rather than spin on a churning cache.
                 set({
                   datasetKnownCached: false,
                   datasetLocalPath: null,
@@ -852,6 +1085,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           modelDefaultsAppliedFor?: string | null;
           advancedSettingsBaseline?: null;
           trainOnCompletionsDefaultPendingFor?: null;
+          trainingToggleChoices?: TrainingConfigState["trainingToggleChoices"];
+          packing?: boolean;
+          trainOnCompletions?: boolean;
+          trainingMethodProvenance?: TrainingConfigState["trainingMethodProvenance"];
         } = {
           selectedModel,
           modelDefaultsError: null,
@@ -865,6 +1102,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           patch.modelType = effectiveModelType;
         }
         if (selectionChanged) {
+          patch.trainingToggleChoices = selectedModel !== previousModel ? {} : currentState.trainingToggleChoices;
           patch.visionImageSize = DEFAULT_HYPERPARAMS.visionImageSize;
           patch.trustRemoteCode = false;
           patch.approvedRemoteCodeFingerprint = null;
@@ -878,7 +1116,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           patch.modelDefaultsAppliedFor = null;
           patch.advancedSettingsBaseline = null;
           patch.trainOnCompletionsDefaultPendingFor = null;
+          patch.trainingMethodProvenance = {
+            ...currentState.trainingMethodProvenance,
+            trainOnCompletionsBeforeCpt: null,
+          };
         }
+        if (selectionChanged) Object.assign(patch, resolveTrainingToggleDefaults({ ...currentState, ...patch }));
         setUserEdit(patch);
 
         if (!selectedModel) {
@@ -1018,11 +1261,29 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               canReapplyModelDefaults(state.selectedModel),
           });
         },
+        setModelSubfolder: (modelSubfolder) => setUserEdit({ modelSubfolder }),
+        setTrainAsDecision: (trainAsDecision) => {
+          if (get().trainAsDecision === trainAsDecision) return;
+          set({ trainAsDecision });
+          const { selectedModel } = get();
+          // Reloading the model's defaults switches the whole recipe, as picking a Laya model does.
+          if (selectedModel) void loadAndApplyModelDefaults(selectedModel);
+        },
         setProjectName: (projectName) => setUserEdit({ projectName }),
         setTrainingMethod: (trainingMethod) => {
           _trainingMethodEditGeneration += 1;
           const state = get();
           const patch = buildTrainingMethodPatch(state, trainingMethod);
+          if (
+            state.trainingMethod !== "cpt" &&
+            trainingMethod === "cpt" &&
+            state.selectedModel !== null &&
+            _trainOnCompletionsExplicitModel === state.selectedModel &&
+            patch.trainingMethodProvenance
+          ) {
+            patch.trainingMethodProvenance.trainOnCompletionsBeforeCpt =
+              state.trainOnCompletions;
+          }
           setUserEdit({
             ...patch,
             ...(patch.trainOnCompletions !== undefined
@@ -1062,7 +1323,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               datasetFormat,
               trainOnCompletions: isRawTextDatasetFormat(datasetFormat)
                 ? false
-                : state.trainOnCompletions,
+                : resolveTrainingToggleDefaults({ ...state, datasetFormat }).trainOnCompletions,
               ...(isRawTextDatasetFormat(datasetFormat)
                 ? { trainOnCompletionsDefaultPendingFor: null }
                 : {}),
@@ -1195,6 +1456,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             }
             setUserEdit({
               datasetStreaming: false,
+              ...resolveTrainingToggleDefaults({ ...state, datasetStreaming: false }),
               ...(changed
                 ? {
                     isDatasetImage: null,
@@ -1318,7 +1580,6 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setWarmupSteps: (warmupSteps) => setUserEdit({ warmupSteps }),
         setMaxSteps: (maxSteps) => {
           const state = get();
-          // streamingCompatiblePatch already turns streaming off when maxSteps<=0.
           const streamingPatch = streamingCompatiblePatch({
             ...state,
             maxSteps,
@@ -1342,17 +1603,48 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           });
           notifyStreamingCompat(streamingPatch);
         },
-        setPacking: (packing) => setUserEdit({ packing }),
+        setEarlyStoppingPatience: (earlyStoppingPatience) =>
+          setUserEdit({ earlyStoppingPatience }),
+        setDrafterEnabled: (drafterEnabled) => setUserEdit({ drafterEnabled }),
+        setDrafterStrategy: (drafterStrategy) =>
+          setUserEdit({ drafterStrategy }),
+        setDrafterDataSource: (drafterDataSource) =>
+          setUserEdit({ drafterDataSource }),
+        setDrafterMaxExamples: (drafterMaxExamples) =>
+          setUserEdit({ drafterMaxExamples }),
+        setDrafterEpochs: (drafterEpochs) => setUserEdit({ drafterEpochs }),
+        setDrafterLearningRate: (drafterLearningRate) =>
+          setUserEdit({ drafterLearningRate }),
+        setDrafterDraftSteps: (drafterDraftSteps) =>
+          setUserEdit({ drafterDraftSteps }),
+        setDrafterCapability: (drafterCapability) =>
+          set({ drafterCapability }),
+        setPacking: (packing) => setUserEdit((state) => ({
+          packing,
+          trainingToggleChoices: { ...state.trainingToggleChoices, packing },
+        })),
         setTrainOnCompletions: (trainOnCompletions) => {
           _trainOnCompletionsManuallySet = true;
+          _trainOnCompletionsExplicitModel = get().selectedModel;
           setUserEdit({
             trainOnCompletions,
+            trainingToggleChoices: { ...get().trainingToggleChoices, trainOnCompletions },
             trainOnCompletionsDefaultPendingFor: null,
             ...(trainOnCompletions ? { datasetStreaming: false } : {}),
           });
         },
         setGradientCheckpointing: (gradientCheckpointing) =>
           setUserEdit({ gradientCheckpointing }),
+        setOffloadLayers: (offloadLayers) => setUserEdit({ offloadLayers }),
+        setOffloadVramGb: (offloadVramGb) => setUserEdit({ offloadVramGb }),
+        setOffloadVramGbForDevice: (gpuIndex, value) =>
+          setUserEdit((state) => ({
+            offloadVramGbPerDevice: {
+              ...state.offloadVramGbPerDevice,
+              [String(gpuIndex)]: value,
+            },
+          })),
+        setPrefetchDepth: (prefetchDepth) => setUserEdit({ prefetchDepth }),
         setRandomSeed: (randomSeed) => setUserEdit({ randomSeed }),
         setEnableWandb: (enableWandb) => setUserEdit({ enableWandb }),
         setWandbToken: (wandbToken) => setUserEdit({ wandbToken }),
@@ -1374,9 +1666,41 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           setUserEdit({ targetModules });
         },
         setS3Config: (s3Config) => setUserEdit({ s3Config }),
+        restoreRunConfig: (config) => {
+          const selections = runConfigDraftSelections(config);
+          const hyperparameters = mapBackendModelConfigToTrainingPatch({
+            training: config,
+            lora: config,
+            logging: config,
+          });
+          _datasetCheckController?.abort();
+          get().reset();
+          _trainingMethodEditGeneration += 1;
+          _trainOnCompletionsManuallySet = true;
+          _trainOnCompletionsExplicitModel = selections.selectedModel;
+          setUserEdit({
+            ...hyperparameters,
+            trainingToggleChoices: {
+              ...(typeof config.packing === "boolean" ? { packing: config.packing } : {}),
+              ...(typeof config.train_on_completions === "boolean" ? { trainOnCompletions: config.train_on_completions } : {}),
+            },
+            ...selections,
+            earlyStoppingPatience: earlyStoppingPatienceFrom(
+              config.early_stopping_patience,
+            ),
+            ...drafterStateFrom(config.drafter),
+          });
+          // Fetch capabilities without replacing the saved recipe.
+          loadAndApplyModelDefaults(selections.selectedModel, {
+            applyTrainingDefaults: false,
+            keepModelSubfolder: true,
+            fillMethodProvenance: true,
+          });
+        },
         reset: () => {
           trainingDatasetCacheRejections.reset();
           _trainOnCompletionsManuallySet = false;
+          _trainOnCompletionsExplicitModel = null;
           _targetModulesEditGeneration += 1;
           for (const key of LORA_PARAM_KEYS) {
             _loraParamEditGenerations[key] += 1;
@@ -1390,9 +1714,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           setUserEdit({
             modelDefaultsAppliedFor: null,
             advancedSettingsBaseline: null,
+            trainingToggleChoices: {},
             visionImageSize: DEFAULT_HYPERPARAMS.visionImageSize,
           });
-          loadAndApplyModelDefaults(selectedModel);
+          loadAndApplyModelDefaults(selectedModel, {
+            keepModelSubfolder: true,
+          });
         },
         applyConfigPatch: (config: BackendModelConfig) => {
           const patch = mapBackendModelConfigToTrainingPatch(config);
@@ -1402,20 +1729,60 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           for (const key of LORA_PARAM_KEYS) {
             if (patch[key] !== undefined) _loraParamEditGenerations[key] += 1;
           }
-          setUserEdit((state) => ({
-            ...patch,
-            ...(patch.trainOnCompletions !== undefined
-              ? { trainOnCompletionsDefaultPendingFor: null }
-              : {}),
-            ...(patch.learningRate !== undefined
-              ? {
-                  trainingMethodProvenance: {
-                    ...state.trainingMethodProvenance,
-                    learningRateManuallySet: false,
-                  },
-                }
-              : {}),
-          }));
+          if (patch.trainOnCompletions !== undefined) {
+            _trainOnCompletionsExplicitModel = get().selectedModel;
+          }
+          const importsPatience = Object.hasOwn(
+            config.training ?? {},
+            "early_stopping_patience",
+          );
+          const importsDrafter = Object.hasOwn(config.training ?? {}, "drafter");
+          setUserEdit((state) => {
+            const importsCompletionsInCpt =
+              state.trainingMethod === "cpt" &&
+              patch.trainOnCompletions !== undefined;
+            return {
+              ...patch,
+              ...(patch.packing !== undefined || patch.trainOnCompletions !== undefined
+                ? {
+                    trainingToggleChoices: {
+                      ...state.trainingToggleChoices,
+                      ...(patch.packing !== undefined ? { packing: patch.packing } : {}),
+                      ...(patch.trainOnCompletions !== undefined ? { trainOnCompletions: patch.trainOnCompletions } : {}),
+                    },
+                  }
+                : {}),
+              ...(importsPatience
+                ? {
+                    earlyStoppingPatience: earlyStoppingPatienceFrom(
+                      config.training?.early_stopping_patience,
+                    ),
+                  }
+                : {}),
+              ...(importsDrafter
+                ? drafterStateFrom(config.training?.drafter)
+                : {}),
+              ...(patch.trainOnCompletions !== undefined
+                ? { trainOnCompletionsDefaultPendingFor: null }
+                : {}),
+              ...(patch.learningRate !== undefined || importsCompletionsInCpt
+                ? {
+                    trainingMethodProvenance: {
+                      ...state.trainingMethodProvenance,
+                      ...(patch.learningRate !== undefined
+                        ? { learningRateManuallySet: false }
+                        : {}),
+                      ...(importsCompletionsInCpt
+                        ? {
+                            trainOnCompletionsBeforeCpt:
+                              patch.trainOnCompletions,
+                          }
+                        : {}),
+                    },
+                  }
+                : {}),
+            };
+          });
         },
       };
     },
@@ -1433,8 +1800,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           ...sourcePatch,
         };
         if (Object.keys(patch).length > 0) {
-          // Sync localStorage hydration runs inside create(), before useTrainingConfigStore is assigned
-          // (TDZ). Defer to a microtask so the store exists when the persisted combo is reconciled.
+          // Hydration runs inside create() before the store is assigned (TDZ), so defer.
           queueMicrotask(() => useTrainingConfigStore.setState(patch));
         }
       },

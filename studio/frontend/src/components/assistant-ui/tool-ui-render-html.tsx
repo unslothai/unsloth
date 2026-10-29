@@ -3,11 +3,7 @@
 
 "use client";
 
-import {
-  ArtifactCard,
-  useChatArtifactsStore,
-  useSelectedChatArtifact,
-} from "@/features/chat";
+import { ArtifactCard } from "@/features/chat";
 import {
   type ToolCallMessagePartComponent,
   useAuiState,
@@ -15,11 +11,9 @@ import {
 } from "@assistant-ui/react";
 import { BrowserIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { memo, useEffect } from "react";
+import { memo } from "react";
 import { isToolCallRunning } from "./tool-arg-text";
 
-// Per Context7 assistant-ui docs: tool UIs read streaming args via
-// useToolArgsStatus, so render_html need not wait for tool completion.
 type RenderHtmlArgs = Record<string, unknown> & {
   code?: string;
   title?: string;
@@ -38,11 +32,10 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
   const code = typeof parsedArgs.code === "string" ? parsedArgs.code : "";
   const hasCode = code.trim().length > 0;
   const title =
-    typeof parsedArgs.title === "string" ? parsedArgs.title : "HTML canvas";
+    typeof parsedArgs.title === "string" ? parsedArgs.title : "HTML preview";
   const isRunning = isToolCallRunning(status);
   const codeIsStreaming = propStatus.code === "streaming";
 
-  // Surface the backend error when the tool call completed with invalid args.
   // Success results start with "Rendered HTML canvas"; errors with "Error:".
   const errorText =
     status?.type === "complete" &&
@@ -50,7 +43,6 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
     result.startsWith("Error:")
       ? result
       : null;
-  const messageId = useAuiState(({ message }) => message.id) ?? null;
   const isMessageRunning = useAuiState(
     ({ message }) => message.status?.type === "running",
   );
@@ -68,32 +60,6 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
   const shouldAutoOpenArtifact =
     (isLiveGeneratingArtifact && (hasCode || isRunning || codeIsStreaming)) ||
     (hasCode && messageCreatedThisSession);
-  const selectedArtifact = useSelectedChatArtifact();
-  const closeArtifactSurface = useChatArtifactsStore(
-    (state) => state.closeArtifactSurface,
-  );
-
-  useEffect(() => {
-    if (!errorText) {
-      return;
-    }
-    if (!(messageId && toolCallId)) {
-      return;
-    }
-    if (selectedArtifact?.sourceToolCallId !== toolCallId) {
-      return;
-    }
-    if (selectedArtifact?.sourceMessageId !== messageId) {
-      return;
-    }
-    closeArtifactSurface();
-  }, [
-    closeArtifactSurface,
-    errorText,
-    messageId,
-    selectedArtifact,
-    toolCallId,
-  ]);
 
   if (hasCode || (isLiveGeneratingArtifact && !errorText)) {
     return (
@@ -119,16 +85,16 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
         <span className="grid min-w-0 flex-1 gap-1">
           <span className="truncate text-sm font-medium leading-tight text-foreground">
             {errorText
-              ? "Canvas error"
+              ? "HTML preview error"
               : isStaleGeneratingArtifact
-                ? "Canvas interrupted"
-                : "Canvas unavailable"}
+                ? "HTML preview interrupted"
+                : "HTML preview unavailable"}
           </span>
           <span className="truncate text-ui-11 leading-none text-muted-foreground">
             {errorText ??
               (isStaleGeneratingArtifact
                 ? "Refresh stopped this preview"
-                : "HTML canvas")}
+                : "HTML preview")}
           </span>
         </span>
       </div>

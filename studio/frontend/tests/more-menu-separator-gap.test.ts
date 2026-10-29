@@ -6,9 +6,7 @@ import test from "node:test";
 
 import { readSrcAsync } from "./helpers/kit.ts";
 
-// The More flyout ends with a rule and the Customize sidebar row. The rule's
-// vertical margin has to equal the menu's own padding, or the gap above that
-// last row reads as bigger than the one below it.
+// The rule's margin must equal the menu padding so gaps around the last row match.
 const TAILWIND_UNIT = 4;
 
 function spacing(classes: string, prefix: string): number {
@@ -20,13 +18,30 @@ function spacing(classes: string, prefix: string): number {
 test("the More flyout's rule sits as far from its rows as the menu's own edge", async () => {
   const source = await readSrcAsync("components/app-sidebar.tsx");
 
-  const menu =
-    /<DropdownMenuContent\s+side="right"\s+align="start"\s+sideOffset=\{6\}\s+className="([^"]*)"/.exec(
-      source,
-    );
+  // Match placement props in any order; prop order has changed before.
+  let menu: { className: string; end: number } | null = null;
+  for (const open of source.matchAll(/<DropdownMenuContent\b/g)) {
+    // Handlers contain `=>`, so a bare `>` search would stop inside one.
+    const close = /\n\s*>\n/.exec(source.slice(open.index));
+    if (!close) continue;
+    const tag = source.slice(open.index, open.index + close.index + close[0].length);
+    const className = /\sclassName="([^"]*)"/.exec(tag);
+    if (
+      className &&
+      // The rail's media flyouts share these placement props; only More holds this ref.
+      /\sref=\{moreContentRef\}/.test(tag) &&
+      /\sside="right"/.test(tag) &&
+      /\salign="start"/.test(tag) &&
+      /\ssideOffset=\{6\}/.test(tag)
+    ) {
+      menu = { className: className[1], end: open.index + tag.length };
+      break;
+    }
+  }
   assert.ok(menu, "could not find the More flyout's DropdownMenuContent");
-  const rule = /<DropdownMenuSeparator className="(mx-1![^"]*)"/.exec(source);
+  const flyout = source.slice(menu.end, source.indexOf("</DropdownMenuContent>", menu.end));
+  const rule = /<DropdownMenuSeparator className="(mx-1![^"]*)"/.exec(flyout);
   assert.ok(rule, "could not find the More flyout's separator");
 
-  assert.equal(spacing(rule[1], "my"), spacing(menu[1], "p"));
+  assert.equal(spacing(rule[1], "my"), spacing(menu.className, "p"));
 });

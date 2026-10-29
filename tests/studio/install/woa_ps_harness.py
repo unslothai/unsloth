@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Shared plumbing for the Windows-on-ARM installer tests.
-
-install.ps1 and studio/setup.ps1 cannot dot-source each other and cannot be imported, so a
-behavioural test lifts a function body or a live block out of the script under test, pastes
-it into a bare pwsh session with the few stubs that block needs, and asserts on what it
-writes out. The sources, the lifting and the stub bundles are the same from one test to the
-next, so they live here rather than being restated in every module that wants them.
-"""
+"""Lifts code out of install.ps1 and setup.ps1 for pwsh tests, which cannot import each other."""
 
 from __future__ import annotations
 
@@ -29,8 +22,6 @@ STACK_PY = PACKAGE_ROOT / "studio" / "install_python_stack.py"
 STACK_LLAMA = PACKAGE_ROOT / "studio" / "install_llama_prebuilt.py"
 INSTALL_PS1 = PACKAGE_ROOT / "install.ps1"
 
-# Read once. Well over a hundred tests want one of these whole files, and none of them
-# mutate what they read.
 INSTALL_SRC = INSTALL_PS1.read_text(encoding = "utf-8")
 SETUP_SRC = SETUP_PS1.read_text(encoding = "utf-8")
 STACK_SRC = STACK_PY.read_text(encoding = "utf-8")
@@ -42,8 +33,6 @@ CONSTRAINTS_SRC = (
 PWSH = shutil.which("pwsh")
 requires_pwsh = pytest.mark.skipif(PWSH is None, reason = "pwsh not available")
 
-# The channels, mirrors and indexes these tests name over and over. Spelled once so a
-# parametrize row stays one readable line instead of six.
 NV_GA = "https://pypi.nvidia.com/nvtorch_oot"
 NV_NIGHTLY = "https://pypi.nvidia.com/nvtorch_oot_nightly"
 PYPI = "https://pypi.org/simple"
@@ -60,16 +49,8 @@ def _ps(
     timeout = 120,
     **kwargs,
 ):
-    """Run a PowerShell snippet and hand back the completed process.
-
-    Through `run_pwsh`, not `subprocess.run`: every module in this directory shares one
-    $XDG_CACHE_HOME/powershell startup cache with the other xdist workers otherwise, and a
-    startup that deserialises a half-written one dies before it reaches the snippet. That
-    lands as `Stack overflow.` + SIGABRT, or as a FileLoadException, on a test that never
-    ran. The runner gives each worker its own cache directory and retries only a run that
-    crashed WITHOUT answering, so a snippet that runs to completion and returns the wrong
-    answer still fails here with its own message.
-    """
+    """Use run_pwsh, not subprocess.run: xdist workers would share one PowerShell startup cache and
+    crash."""
     return run_pwsh(
         [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
@@ -91,11 +72,8 @@ def _ps_ok(
 
 
 def _ps_last(script, **kwargs) -> str:
-    """Run a snippet that must succeed and hand back its last line of output.
-
-    Every one of these scripts ends in a Write-Output the assertion is about, and a
-    PowerShell prelude can print before it, so the last line is the answer.
-    """
+    """Asserts success and returns the last output line: a PowerShell prelude can print before the
+    answer."""
     return _ps_ok(script, **kwargs).stdout.strip().splitlines()[-1]
 
 
@@ -121,11 +99,7 @@ def _function_source(text: str, name: str) -> str:
 
 
 def functions(text: str, *names: str) -> str:
-    """Several bodies in one lift, in the order given.
-
-    PowerShell does not hoist and a helper the prelude does not lift is a
-    command-not-found, not a false answer, so a body's helpers come with it.
-    """
+    """PowerShell does not hoist, so a body's helper functions are lifted along with it."""
     return "\n".join(_function_source(text, name) for name in names)
 
 
@@ -136,12 +110,7 @@ def _ps_function(path: pathlib.Path, name: str) -> str:
 
 
 def _ps_copies(name: str) -> tuple:
-    """install.ps1's and setup.ps1's copies of one function, bar comments and indentation.
-
-    Neither script can dot-source the other, so each is carried twice and the parity is
-    pinned instead. Returned as a pair rather than compared here so a mismatch fails with
-    pytest's own diff of the two bodies.
-    """
+    """install.ps1 and setup.ps1 cannot dot-source each other, so each keeps a copy that is pinned equal."""
 
     def normalized(source: str) -> str:
         lines = [
@@ -162,17 +131,11 @@ def slice_between(
     *,
     include_end = False,
 ) -> str:
-    """The live text from one marker to the next, sliced out of the script itself.
-
-    Restating a block in the test instead means a copy that passes forever after the
-    original stopped matching it, which is the failure these tests exist to catch.
-    """
+    """Slices the live script, so a copy in the test cannot keep passing after the original changes."""
     start = src.index(start_marker)
     end = src.index(end_marker, start)
     return src[start : end + len(end_marker)] if include_end else src[start:end]
 
-
-# ── Stub bundles ──────────────────────────────────────────────────────────────────────────
 
 SUBSTEP_NOOP = "function substep { param($m, $c) }"
 
@@ -185,8 +148,6 @@ def substep_collector(var: str = "Messages") -> str:
     )
 
 
-# The real one shortens a path to its 8.3 form; a passthrough is what every test that is
-# not about 8.3 wants, and it keeps the assertions readable.
 UV_SAFE_PATH = "function Get-UvSafePath { param([string]$Path) return $Path }"
 
 JOIN_URL_PATH = _script(
@@ -211,7 +172,6 @@ INVOKE_RESTMETHOD_OFFLINE = (
 )
 INVOKE_RESTMETHOD_NO_NETWORK = "function Invoke-RestMethod { throw 'no network in this test' }"
 
-# The resolver settings a lifted block must not inherit from the session running the tests.
 UV_INDEX_ENV = (
     "UV_NO_INDEX",
     "PIP_NO_INDEX",
@@ -240,8 +200,7 @@ def clear_env(names) -> str:
     return f'foreach ($n in {listed}) {{ Remove-Item "Env:$n" -ErrorAction SilentlyContinue }}'
 
 
-# The four marker helpers travel together: the path builder, the write guard, the writer and
-# the reader. Injecting one without the others is a command-not-found inside the body.
+# The four marker helpers must be injected together or the body hits command-not-found.
 MARKER_FUNCS = functions(
     SETUP_SRC,
     "Get-WoaTorchIndexMarkerPath",
@@ -250,7 +209,6 @@ MARKER_FUNCS = functions(
     "Get-WoaTorchIndexMarker",
 )
 
-# Tag matching, the version order it needs, the floor and the pyarrow gate built on both.
 PYARROW_FLOOR = '$script:WoaPyarrowFloor = "21.0.0"'
 WHEEL_TAG_FUNCS = functions(INSTALL_SRC, "Test-WoaWheelTags", "Test-WoaWheelTagsUsable")
 PYARROW_USABLE_FUNCS = _script(
@@ -271,11 +229,7 @@ def pyarrow_source_script(
     preamble: tuple = (),
     tail: tuple = ("Write-Output ('[' + (Get-WoaPyarrowSource -PythonMinor '3.13') + ']')",),
 ) -> str:
-    """Get-WoaPyarrowSource with its network branches stubbed out.
-
-    `wheelhouse` is the PowerShell expression for $script:WoaWheelhouse, `lifts` names any
-    extra install.ps1 helper the branch under test reaches for.
-    """
+    """Get-WoaPyarrowSource with network stubbed; wheelhouse is a PowerShell expression."""
     return _script(
         SUBSTEP_NOOP,
         JOIN_URL_RETURNS_BASE,
@@ -298,11 +252,7 @@ def native_probe_script(
     lifts: tuple = (),
     outputs: tuple = (),
 ) -> str:
-    """Initialize-WoaNativeCudaTorch run against a stubbed host.
-
-    `stubs` carries the index list and the wheel answers, which is all the callers differ
-    by; `outputs` names the extra script variables to read back between NATIVE and MSG.
-    """
+    """Stubbed-host run of Initialize-WoaNativeCudaTorch; outputs are read back between NATIVE and MSG."""
     return _script(
         "$SkipTorch = $false",
         substep_collector(),

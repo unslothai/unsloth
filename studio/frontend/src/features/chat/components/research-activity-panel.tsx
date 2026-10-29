@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { Button } from "@/components/ui/button";
 import {
   Collapsible,
@@ -24,27 +25,25 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { BulbIcon } from "@/lib/bulb-icon";
+import { InternetGlyph } from "@/lib/internet-icon";
 import { openLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { RefreshGlyph } from "@/lib/refresh-icon";
+import { FileGlyph } from "@/lib/file-icon";
 import {
   DashedLineCircleIcon as CircleDashedIcon,
+  Delete02Icon,
   Telescope02Icon,
+  LinkSquare02Icon,
+  Edit03Icon,
+  PlusSignIcon,
+  Cancel01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   ArrowDown,
-  ArrowUp,
-  Check,
-  ChevronDown,
-  ExternalLink,
-  FileText,
-  GlobeIcon,
-  Pencil,
-  Plus,
-  RotateCcw,
-  Trash2,
-  X,
+  ArrowUpIcon,
 } from "lucide-react";
 import {
   useCallback,
@@ -62,6 +61,7 @@ import {
   retryResearchRun,
   updateResearchPlan,
 } from "../api/research-api";
+import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import {
   type ResearchActivity,
   ensureResearchRunFollowed,
@@ -71,6 +71,7 @@ import {
   useResearchRunStore,
 } from "../stores/research-run-store";
 import type { ResearchRunStatus } from "../types/research";
+import { Tick02Icon } from "@/lib/tick-icon";
 
 const terminalStatuses = new Set<ResearchRunStatus>([
   "completed",
@@ -79,8 +80,7 @@ const terminalStatuses = new Set<ResearchRunStatus>([
 ]);
 const ACTIVITY_FOLLOW_SETTLE_MS = 450;
 const ACTIVITY_BOTTOM_THRESHOLD_PX = 24;
-// 2px, not 1, matching use-intent-aware-autoscroll: HiDPI subpixel rounding leaves a fractional
-// gap that a 1px threshold reads as unpinned, keeping the follow loop running forever.
+// 2px, matching use-intent-aware-autoscroll: HiDPI subpixel gaps break a 1px threshold.
 const ACTIVITY_PINNED_THRESHOLD_PX = 2;
 
 function useResearchActivityScroll(runId: string) {
@@ -100,7 +100,6 @@ function useResearchActivityScroll(runId: string) {
     let animationFrame: number | null = null;
     let settleTimer: number | null = null;
     let settleCheckDue = false;
-    // Layout signal since the last frame. True so the first frame after mount follows.
     let layoutChanged = true;
 
     const distanceFromBottom = () =>
@@ -113,16 +112,13 @@ function useResearchActivityScroll(runId: string) {
     const requestTick = () => {
       if (animationFrame === null) animationFrame = requestAnimationFrame(tick);
     };
-    // A reflow with no DOM mutation (a `font-display: swap` webfont landing, say) reaches neither
-    // observer, so the rest of the window is covered by one deferred check rather than every frame.
+    // Reflows without DOM mutation (webfont swap) reach no observer; one deferred check covers them.
     const scheduleSettleCheck = () => {
       if (settleTimer !== null) return;
       const remaining = followUntil - performance.now();
       if (remaining <= 0) return;
       settleTimer = window.setTimeout(() => {
         settleTimer = null;
-        // The timer lands on the deadline and its tick a frame later, so the window has closed by then;
-        // this grants that tick one last follow pass rather than dropping it to the reconcile.
         settleCheckDue = true;
         requestTick();
       }, remaining);
@@ -135,8 +131,7 @@ function useResearchActivityScroll(runId: string) {
         const pinned = distanceFromBottom() <= ACTIVITY_PINNED_THRESHOLD_PX;
         if (!pinned) element.scrollTop = element.scrollHeight;
         updateAtBottom(true);
-        // Chaining on the window alone forced a layout every frame for the whole run; growth that leaves
-        // the view unpinned is the signal, and a quiet frame defers to the settle check.
+        // Only chain while layout changed or unpinned; chaining every frame forced constant layout.
         if (layoutChanged || !pinned) {
           layoutChanged = false;
           requestTick();
@@ -156,10 +151,7 @@ function useResearchActivityScroll(runId: string) {
     const detach = () => {
       detached = true;
       followUntil = 0;
-      // Cancel every pending follow step, not just the settle check. A frame queued before the detach
-      // still runs, falls through to the reconcile below, and reads a flick shorter than the bottom
-      // threshold as still-at-bottom: "Latest" never appears and nothing corrects it.
-      // followLayout returns early from here on, so nothing corrects it.
+      // Cancel every pending follow step: a queued frame would misread a short flick as at-bottom.
       if (animationFrame !== null) {
         cancelAnimationFrame(animationFrame);
         animationFrame = null;
@@ -316,7 +308,7 @@ function ActivityIcon({
   const className = "size-3.5";
   if (activity.state === "running") return <Spinner className={className} />;
   if (activity.state === "failed")
-    return <X className={cn(className, "text-destructive")} />;
+    return <HugeiconsIcon icon={Cancel01Icon} className={cn(className, "text-destructive")} />;
   if (activity.state === "cancelled")
     return (
       <HugeiconsIcon
@@ -326,11 +318,11 @@ function ActivityIcon({
     );
   if (activity.kind === "reasoning")
     return <BulbIcon className={className} />;
-  if (activity.kind === "plan") return <FileText className={className} />;
-  if (activity.kind === "report") return <FileText className={className} />;
+  if (activity.kind === "plan") return <FileGlyph className={className} />;
+  if (activity.kind === "report") return <FileGlyph className={className} />;
   if (activity.action === "fetch" || activity.action === "search")
-    return <GlobeIcon className={className} />;
-  return <Check className={className} />;
+    return <InternetGlyph className={className} />;
+  return <HugeiconsIcon icon={Tick02Icon} className={className} />;
 }
 
 const ActivityRow = memo(function ActivityRow({
@@ -364,22 +356,22 @@ const ActivityRow = memo(function ActivityRow({
       {activity.input ? (
         <p
           className={cn(
-            "line-clamp-3 break-words rounded-xl bg-muted/45 px-3 py-2 text-foreground/80",
+            "line-clamp-3 break-words rounded-lg bg-muted/45 px-3 py-2 text-foreground/80",
             activity.kind === "step" &&
-              "bg-primary/[0.045] ring-1 ring-primary/10",
+              "bg-wash-5 ring-1 ring-wash-10",
           )}
         >
           {activity.input}
         </p>
       ) : null}
       {activity.previewLabels?.length ? (
-        <ul className="space-y-1 rounded-xl bg-muted/35 px-3 py-2">
+        <ul className="space-y-1 rounded-lg bg-muted/35 px-3 py-2">
           {activity.previewLabels.map((label, index) => (
             <li
               key={`${activity.id}-preview-${index}`}
               className="flex gap-2 leading-relaxed"
             >
-              <span aria-hidden className="text-primary/70">
+              <span aria-hidden className="text-foreground/70">
                 ·
               </span>
               <span className="min-w-0 break-words text-foreground/80">
@@ -390,14 +382,14 @@ const ActivityRow = memo(function ActivityRow({
         </ul>
       ) : null}
       {activity.reasoning ? (
-        <div className="max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded-xl bg-muted/35 px-3 py-2 leading-relaxed text-foreground/80">
+        <div className="max-h-64 overflow-y-auto whitespace-pre-wrap break-words scroll-rounded rounded-xl bg-muted/35 px-3 py-2 leading-relaxed text-foreground/80">
           {activity.state === "running" && activity.reasoning.length > 8000
             ? `…\n${activity.reasoning.slice(-8000)}`
             : activity.reasoning}
         </div>
       ) : null}
       {activity.plan ? (
-        <div className="space-y-2 rounded-xl bg-muted/35 px-3 py-2.5">
+        <div className="space-y-2 rounded-lg bg-muted/35 px-3 py-2.5">
           <p className="font-medium text-foreground/85">
             {activity.plan.title}
           </p>
@@ -426,7 +418,7 @@ const ActivityRow = memo(function ActivityRow({
           className={cn(
             activity.kind === "step" &&
               activity.state !== "failed" &&
-              "font-medium text-primary/75",
+              "font-medium text-foreground/75",
           )}
         >
           {activity.detail}
@@ -437,9 +429,9 @@ const ActivityRow = memo(function ActivityRow({
           key={`${activity.id}-${source.id ?? source.url}`}
           type="button"
           onClick={() => openLink(source.url)}
-          className="group/source flex w-full items-start gap-2 rounded-xl px-2 py-2 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="group/source flex w-full items-start gap-2 rounded-md px-2 py-2 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <GlobeIcon className="mt-0.5 size-3.5 shrink-0" />
+          <InternetGlyph className="mt-0.5 size-3.5 shrink-0" />
           <span className="min-w-0 flex-1">
             <span className="block line-clamp-2 break-words font-medium text-foreground/85">
               {source.title || source.url}
@@ -451,13 +443,13 @@ const ActivityRow = memo(function ActivityRow({
               </span>
             ) : null}
           </span>
-          <ExternalLink className="mt-0.5 size-3 opacity-0 transition-opacity group-hover/source:opacity-100" />
+          <HugeiconsIcon icon={LinkSquare02Icon} className="mt-0.5 size-3 opacity-0 transition-opacity group-hover/source:opacity-100" />
         </button>
       ))}
       {activity.evidenceSources?.map((source) => (
         <div
           key={`${activity.id}-${source.chunkId}`}
-          className="rounded-xl bg-muted/45 px-3 py-2"
+          className="rounded-lg bg-muted/45 px-3 py-2"
         >
           <p className="line-clamp-2 break-words font-medium text-foreground/85">
             {source.filename}
@@ -471,7 +463,7 @@ const ActivityRow = memo(function ActivityRow({
         </div>
       ))}
       {activity.excerpt ? (
-        <p className="line-clamp-5 whitespace-pre-wrap break-words rounded-xl bg-muted/45 px-3 py-2 leading-relaxed">
+        <p className="line-clamp-5 whitespace-pre-wrap break-words rounded-lg bg-muted/45 px-3 py-2 leading-relaxed">
           {activity.excerpt}
         </p>
       ) : null}
@@ -487,8 +479,8 @@ const ActivityRow = memo(function ActivityRow({
     >
       <div
         className={cn(
-          "relative pl-7 before:absolute before:left-[7px] before:top-6 before:h-[calc(100%-12px)] before:w-px before:bg-border last:before:hidden",
-          activity.kind === "step" && "before:bg-primary/20",
+          "relative pl-7 before:absolute before:left-[calc(7px*var(--ui-space-scale,1))] before:top-6 before:h-[calc(100%-12px)] before:w-px before:bg-border last:before:hidden",
+          activity.kind === "step" && "before:bg-wash-20",
         )}
       >
         <CollapsibleTrigger
@@ -497,7 +489,7 @@ const ActivityRow = memo(function ActivityRow({
         >
           <span
             className={cn(
-              "absolute -left-7 top-1/2 flex size-[15px] -translate-y-1/2 items-center justify-center rounded-full bg-background text-muted-foreground",
+              "absolute -left-7 top-1/2 flex size-[calc(15px*var(--ui-space-scale,1))] -translate-y-1/2 items-center justify-center rounded-full bg-background text-muted-foreground",
               activity.kind === "step" &&
                 activity.state !== "failed" &&
                 "bg-primary/10 text-primary",
@@ -516,7 +508,7 @@ const ActivityRow = memo(function ActivityRow({
             })}
           </time>
           {hasDetails ? (
-            <ChevronDown className="size-3.5 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/activity:rotate-180" />
+            <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/activity:rotate-180" />
           ) : null}
         </CollapsibleTrigger>
         {hasDetails ? <CollapsibleContent>{content}</CollapsibleContent> : null}
@@ -583,7 +575,7 @@ function PlanReview({ runId }: { runId: string }): ReactElement | null {
 
   return (
     <>
-      <section className="mx-4 mt-3 rounded-2xl border border-primary/20 bg-primary/[0.045] p-3">
+      <section className="mx-4 mt-3 rounded-2xl border border-wash-20 bg-wash-5 p-3">
         <p className="font-heading text-sm font-medium">Research plan ready</p>
         <p className="mt-1 line-clamp-2 break-words text-xs text-muted-foreground">
           {run.plan.title}
@@ -647,7 +639,7 @@ function PlanReview({ runId }: { runId: string }): ReactElement | null {
                         disabled={index === 0}
                         aria-label={`Move step ${index + 1} up`}
                       >
-                        <ArrowUp />
+                        <ArrowUpIcon />
                       </Button>
                       <Button
                         variant="ghost"
@@ -675,7 +667,7 @@ function PlanReview({ runId }: { runId: string }): ReactElement | null {
                         }}
                         aria-label={`Remove step ${index + 1}`}
                       >
-                        <Trash2 />
+                        <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} />
                       </Button>
                     </div>
                     <Textarea
@@ -720,7 +712,7 @@ function PlanReview({ runId }: { runId: string }): ReactElement | null {
                     });
                   }}
                 >
-                  <Plus /> Add step
+                  <HugeiconsIcon icon={PlusSignIcon} /> Add step
                 </Button>
               </div>
             ) : (
@@ -759,13 +751,14 @@ function PlanReview({ runId }: { runId: string }): ReactElement | null {
               variant="outline"
               onClick={() => setEditing(runId, !editing)}
             >
-              <Pencil /> {editing ? "Preview plan" : "Edit plan"}
+              <HugeiconsIcon icon={Edit03Icon} /> {editing ? "Preview plan" : "Edit plan"}
             </Button>
             <div className="flex flex-col-reverse gap-2 sm:flex-row">
               <Button variant="ghost" onClick={() => setOpen(runId, false)}>
                 Review later
               </Button>
               <Button
+                variant="dark"
                 disabled={
                   pending ||
                   !draft.title.trim() ||
@@ -799,7 +792,11 @@ function ResearchActions({ runId }: { runId: string }): ReactElement | null {
   const retry = async () => {
     setPending(true);
     try {
-      const retried = await retryResearchRun(run.id);
+      const settings = useChatRuntimeStore.getState();
+      const retried = await retryResearchRun(run.id, {
+        modelTimeoutSeconds: settings.researchModelTimeoutSeconds,
+        websitePolicy: settings.researchWebsitePolicy,
+      });
       ingestResearchUpdate(retried);
       useResearchRunStore.getState().setConnectionError(retried.id, null);
       ensureResearchRunFollowed(retried.id, retried);
@@ -819,7 +816,7 @@ function ResearchActions({ runId }: { runId: string }): ReactElement | null {
         disabled={pending}
         onClick={() => void retry()}
       >
-        {pending ? <Spinner /> : <RotateCcw />} Retry research
+        {pending ? <Spinner /> : <RefreshGlyph />} Retry research
       </Button>
     </div>
   );
@@ -889,22 +886,19 @@ export function ResearchActivityPanel({
       style={
         variant === "panel"
           ? {
-              // The chat-model notice is an opaque absolute bar spanning the whole chat content area, the
-              // panel column included, directly under the header. Clear it the same way the header itself is
-              // cleared, or its first 2.25rem is painted over and unclickable. 0px whenever no notice is on
-              // screen, so this is the geometry it always had.
+              // Keep the panel's controls below the absolute chat header.
               height:
-                "calc(100% - var(--studio-content-top-inset, 0px) - var(--studio-chat-header-height, 48px) - var(--studio-chat-notice-height, 0px))",
+                "calc(100% - var(--studio-content-top-inset, 0px) - var(--studio-chat-header-height, 48px))",
               marginTop:
-                "calc(var(--studio-content-top-inset, 0px) + var(--studio-chat-header-height, 48px) + var(--studio-chat-notice-height, 0px))",
+                "calc(var(--studio-content-top-inset, 0px) + var(--studio-chat-header-height, 48px))",
             }
           : undefined
       }
     >
       <header className="shrink-0 border-b border-border/70 px-4 py-3.5">
         <div className="flex items-start gap-3">
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-[13px] bg-primary/10 text-primary">
-            <HugeiconsIcon icon={Telescope02Icon} className="size-[18px]" />
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+            <HugeiconsIcon icon={Telescope02Icon} className="size-[calc(18px*var(--ui-space-scale,1))]" />
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
@@ -928,10 +922,10 @@ export function ResearchActivityPanel({
             </p>
             {websiteLimitLabel ? (
               <p
-                className="mt-1 flex items-center gap-1 text-ui-10p5 font-medium text-primary/75"
+                className="mt-1 flex items-center gap-1 text-ui-10p5 font-medium text-foreground/75"
                 title={websiteLimitTitle}
               >
-                <GlobeIcon className="size-3" />
+                <InternetGlyph className="size-3" />
                 <span className="truncate">{websiteLimitLabel}</span>
               </p>
             ) : null}
@@ -948,7 +942,7 @@ export function ResearchActivityPanel({
             onClick={onClose}
             aria-label="Close research activity"
           >
-            <X />
+            <HugeiconsIcon icon={Cancel01Icon} />
           </Button>
         </div>
         {session.connection === "reconnecting" ? (

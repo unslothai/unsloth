@@ -19,6 +19,7 @@ from typing import Optional
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from auth.storage import get_or_create_credential_encryption_key
+from storage.studio_db import connect_studio_db
 from utils.paths import ensure_dir, studio_db_path
 
 logger = logging.getLogger(__name__)
@@ -69,7 +70,7 @@ def reset_schema_state_for_tests() -> None:
 def get_connection() -> sqlite3.Connection:
     db_path = studio_db_path()
     ensure_dir(db_path.parent)
-    conn = sqlite3.connect(str(db_path), timeout = 5.0)
+    conn = connect_studio_db(db_path, timeout = 5.0)
     conn.row_factory = sqlite3.Row
     try:
         os.chmod(db_path.parent, 0o700)
@@ -166,12 +167,7 @@ def insert_secret_if_absent(credential_kind: str, scope_id: str, plaintext: str)
 
 
 def get_secret_with_presence(credential_kind: str, scope_id: str) -> "tuple[Optional[str], bool]":
-    """The decrypted credential, and whether a row is STORED at all, from ONE read.
-
-    Asking `get_secret` and then `secret_row_exists` is two connections for one question, and
-    the cache-read gate in hub/utils/hf_tokens.py asks it on every read of a cached repo. The
-    two answers must still be told apart: absent authorizes, unreadable must not.
-    """
+    """One read gives the secret and presence together; absent authorizes, but unreadable must not."""
     conn = get_connection()
     try:
         row = conn.execute(
@@ -268,14 +264,7 @@ def hf_token_row_exists() -> bool:
 
 
 def _note_a_credential_this_host_held() -> None:
-    """Record the identity of the token being replaced or removed, while it is still here.
-
-    The ledger of credentials this host has EVER held is what stops a tokenless caller
-    inheriting the downloads of one that has since been removed, and it used to be written only
-    where an authorization probe happened to read it. An operator who cleared the token first
-    left nothing behind. A row that exists but cannot be decrypted records the sentinel, since
-    an unreadable credential is still a credential this host held.
-    """
+    """Records the outgoing token identity while it is still there, so a tokenless caller cannot inherit its downloads; unreadable rows record a sentinel."""
     try:
         from hub.utils.hf_tokens import note_host_credential_identity
         note_host_credential_identity(get_hf_token(), a_credential_was_held = hf_token_row_exists())
@@ -301,7 +290,33 @@ def delete_hf_token() -> bool:
 
 
 def get_provider_api_key(provider_id: str) -> Optional[str]:
-    return get_secret(PROVIDER_API_KEY_KIND, provider_id)
+    key = get_secret(PROVIDER_API_KEY_KIND, provider_id)
+    if key is None and _owner_shared_provider(provider_id):
+        from utils.account_context import OWNER, run_as
+
+        # Server-side only: no route returns a saved key.
+        key = run_as(OWNER, get_secret, PROVIDER_API_KEY_KIND, provider_id)
+    return key
+
+
+def provider_api_key_saved(provider_id: str) -> bool:
+    if has_secret(PROVIDER_API_KEY_KIND, provider_id):
+        return True
+    if not _owner_shared_provider(provider_id):
+        return False
+    from utils.account_context import OWNER, run_as
+
+    return run_as(OWNER, has_secret, PROVIDER_API_KEY_KIND, provider_id)
+
+
+def _owner_shared_provider(provider_id: str) -> bool:
+    from utils.account_context import is_owner_context
+
+    if is_owner_context() or not provider_id:
+        return False
+    from storage import providers_db
+
+    return providers_db.is_owner_shared_provider(provider_id)
 
 
 def save_provider_api_key(

@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// What a sidebar row offers without opening its menu, and what the menu says when it is opened.
-// A row action that only some rows carry, or a label that repeats the row it is on, is the kind
-// of thing that reads as missing rather than as absent.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 import * as liveThreadHead from "../src/features/chat/utils/live-thread-head.ts";
+import { en } from "../src/i18n/locales/en.ts";
 import { readSrcAsync } from "./helpers/kit.ts";
 
 const APP_SIDEBAR = await readSrcAsync("components/app-sidebar.tsx");
@@ -23,7 +20,8 @@ test("row forks retain the visible branch across settings settlement", async () 
   for (const open of [true, false]) {
     let visible = open;
     const unregister = liveThreadHead.registerLiveThreadView({
-      threadListItem: () => ({ getState: () => ({ remoteId: visible ? "source" : "other" }) }),
+      threads: () => ({ getState: () => ({ mainThreadId: "main" }) }),
+      threadListItem: () => ({ getState: () => ({ id: "main", remoteId: visible ? "source" : "other" }) }),
       thread: () => ({ getState: () => ({ messages: [{ id: "root" }, { id: "older-reply" }] }) }),
     });
     const calls: string[] = [];
@@ -51,14 +49,11 @@ test("row forks retain the visible branch across settings settlement", async () 
   }
 });
 
-// The pin used to appear on a Recents row only once it was pinned, so the only way to pin one was
-// through the menu, while the project rows beside it had the one-click affordance all along.
 test("every chat row offers the pin without opening a menu", () => {
   assert.match(
     APP_SIDEBAR,
     /\{variant === "recent" && \(\n\s*<button\n\s*type="button"\n\s*onClick=\{\(e\) => \{\n\s*e\.stopPropagation\(\);\n\s*togglePinnedChat\(item\.id\);/,
   );
-  // It says which way it goes, in its glyph and to a screen reader.
   assert.ok(
     !APP_SIDEBAR.includes('{variant === "recent" && isPinned && ('),
     "the Recents pin is still gated on the row already being pinned",
@@ -83,18 +78,20 @@ test("every chat row offers the pin without opening a menu", () => {
   );
 });
 
-// Two actions overlay the right edge of every chat row now, so the room they need is the same on
-// every one of them rather than something the pinned rows alone reserved.
 test("a chat row reserves one gutter, whatever its state", () => {
   assert.match(
     APP_SIDEBAR,
-    /showWorkSpinner \? "pr-16" : hasUnreadActivity \? "pr-7" : undefined,/,
+    /showWorkSpinner \? "pr-16" : hasUnreadActivity \|\| showForkMark \? "pr-9" : showScheduledMark \? "pr-7" : undefined,/,
+  );
+  // The fork mark sits in the trailing column in grey, not inline after the title.
+  assert.match(
+    APP_SIDEBAR,
+    /aria-label="Forked chat"\s+className=\{cn\(\s+"pointer-events-none absolute right-4 [^"]*text-muted-foreground/,
   );
   assert.ok(
     !APP_SIDEBAR.includes("hasSecondaryRowAction"),
     "the gutter still branches on whether the row has a second action",
   );
-  // One hover gutter for Recents and Pinned, one for the project rows, and one for the folders.
   assert.equal(
     (APP_SIDEBAR.match(/group-hover\/recent-item:pr-16/g) ?? []).length,
     2,
@@ -102,16 +99,14 @@ test("a chat row reserves one gutter, whatever its state", () => {
   );
 });
 
-// Renaming from the menu is two clicks and a read; the title is right there.
-test("double-clicking a chat title renames it in place", () => {
+// Renaming from the menu is two clicks and a read; a double-click on the title is one gesture.
+test("double-clicking a chat title opens the Rename chat dialog", () => {
   assert.match(
     APP_SIDEBAR,
-    /onDoubleClick=\{\(event\) => \{\n\s*event\.preventDefault\(\);\n\s*event\.stopPropagation\(\);\n\s*openRenameChat\(item, true, list\?\.scope\);\n\s*\}\}/,
+    /onDoubleClick=\{\(event\) => \{\n\s*event\.preventDefault\(\);\n\s*event\.stopPropagation\(\);\n\s*openRenameChat\(item\);\n\s*\}\}/,
   );
 });
 
-// Marking one chat unread was only reachable by selecting it first and using the bulk menu, and
-// the dot could never be taken off again: the item was disabled on the rows that carried one.
 test("a chat row marks itself read or unread from its own menu", () => {
   assert.match(
     APP_SIDEBAR,
@@ -121,7 +116,6 @@ test("a chat row marks itself read or unread from its own menu", () => {
     !APP_SIDEBAR.includes("disabled={alreadyUnread}"),
     "the item is still disabled on a row that carries the dot",
   );
-  // The same strings the bulk menu uses, so the two cannot drift apart.
   for (const key of ["markUnread", "markRead"]) {
     assert.equal(
       (APP_SIDEBAR.match(new RegExp(`t\\("shell\\.selection\\.${key}"\\)`, "g")) ?? [])
@@ -130,12 +124,10 @@ test("a chat row marks itself read or unread from its own menu", () => {
       `the row and bulk menus no longer say the same thing for ${key}`,
     );
   }
-  // Both go by the dot the row already draws.
   assert.match(
     APP_SIDEBAR,
     /const alreadyUnread = threadIds\.some\(\(threadId\) =>\n\s*unreadThreadIds\.has\(threadId\),\n\s*\);/,
   );
-  // An eye that is open once the row is read, crossed out while it is not.
   assert.equal(
     (
       APP_SIDEBAR.match(
@@ -147,7 +139,6 @@ test("a chat row marks itself read or unread from its own menu", () => {
   );
 });
 
-// The bulk menu only ever added dots, so a selection of read rows had no way back.
 test("a selection of unread rows can be marked read", () => {
   assert.match(
     APP_SIDEBAR,
@@ -159,8 +150,6 @@ test("a selection of unread rows can be marked read", () => {
   );
 });
 
-// Two headers carrying the same pair of actions in opposite orders is the kind of thing the eye
-// catches without being able to name it.
 test("a section header puts its own action before the menu", () => {
   const projects = APP_SIDEBAR.indexOf('aria-label="New project"');
   const projectsMenu = APP_SIDEBAR.indexOf(
@@ -176,8 +165,6 @@ test("a section header puts its own action before the menu", () => {
   assert.ok(newChat < recentsMenu, "Recents still opens with its menu");
 });
 
-// A menu opened from a chat row is already about that chat: "Pin chat" there only repeats what
-// the pointer just pointed at.
 test("the pin item says Pin, not what it is pinning", () => {
   assert.match(APP_SIDEBAR, /<span>\{isPinned \? "Unpin" : "Pin"\}<\/span>/);
   assert.match(
@@ -192,67 +179,62 @@ test("the pin item says Pin, not what it is pinning", () => {
   }
 });
 
-// The disclosure is the section's, so the section is what reveals it: hunting for a chevron means
-// travelling to the header when the pointer is already in the list it collapses.
 test("a section's chevron appears on hovering anywhere in it", () => {
   assert.equal(
     (APP_SIDEBAR.match(/group\/sb-section/g) ?? []).length,
-    4,
+    5,
     "a collapsible section is not its own hover group",
   );
   assert.equal(
     (APP_SIDEBAR.match(/group-hover\/sb-section:opacity-100/g) ?? []).length,
-    4,
+    5,
     "a section chevron still waits for its header to be hovered",
   );
-  // Hovering the header itself still counts, and so does reaching it by keyboard.
   assert.match(
     APP_SIDEBAR,
     /group-hover\/sb-section:opacity-100 group-hover\/sb-collap:opacity-100 group-focus-visible\/sb-collap:opacity-100/,
   );
 });
 
-// "the card that created it" named nothing the user can point at.
 test("the chat-folder hint names what to click instead", async () => {
-  // The item is shared with the Projects page's chat rows, so the hint lives with it.
   const item = await readSrcAsync("features/chat/components/open-chat-folder-item.tsx");
+  const hint = en.library.chats.folder.chatHint;
   assert.ok(
-    !item.includes("card that created it"),
+    !hint.includes("card that created it"),
     "the hint still sends the user to a card it never identifies",
   );
   assert.ok(
-    item.includes("download a file from the tool result that wrote it"),
+    hint.includes("download a file from the tool result that wrote it"),
     "the hint no longer says where the files can be had",
   );
-  // Carried twice on purpose: the tooltip is for the pointer, the title for everything else.
-  assert.equal(
-    (item.match(/Only the desktop app can open a chat('|&apos;)s files folder/g) ??
-      []).length,
-    2,
-    "the hint is no longer stated for both the pointer and the screen reader",
-  );
+  assert.match(item, /hintOverride \?\? t\("library\.chats\.folder\.chatHint"\)/);
+  assert.match(item, /title=\{hint\}/);
+  assert.match(item, /<TooltipContent[^>]*>\s*\{hint\}\s*<\/TooltipContent>/);
 });
 
-// Forking was reachable only from a message in the open thread, so copying a chat meant opening
-// it first. The row menu does it from wherever the row is drawn.
 test("a chat row forks from its own menu", async () => {
   const ROW_MENU = await readSrcAsync(
     "features/chat/components/chat-row-menu.ts",
   );
-  // Below Mark as unread, and before the rule that sets off the rest.
   assert.match(
     APP_SIDEBAR,
-    /t\("shell\.selection\.markUnread"\)\}\n\s*<\/span>\n\s*<\/DropdownMenuItem>\n\s*<DropdownMenuItem\n\s*disabled=\{!canForkChatRow\(item\)/,
+    /t\("shell\.selection\.markUnread"\)\}\n\s*<\/span>\n\s*<\/P\.Item>\n\s*\{\/\*[^]*?\*\/\}\n\s*<P\.Separator \/>\n\s*<P\.Item\n\s*disabled=\{!canForkChatRow\(item\)/,
   );
-  assert.match(APP_SIDEBAR, /<span>Fork<\/span>\n\s*<\/DropdownMenuItem>\n\s*\{\/\*[^]*?\*\/\}\n\s*<DropdownMenuSeparator \/>/);
+  assert.match(
+    APP_SIDEBAR,
+    /<P\.Item\n\s*disabled=\{!canForkChatRow\(item\)[^]*?<span>\{t\("library\.chats\.menu\.fork"\)\}<\/span>\n\s*<\/P\.Item>\n\s*\{\/\* Projects and sections in one place[^]*?\*\/\}\n\s*<P\.Sub>/,
+  );
+  const rowMenu = APP_SIDEBAR.slice(
+    APP_SIDEBAR.indexOf("function renderChatRowMenuItems("),
+    APP_SIDEBAR.indexOf("function renderChatSidebarItem("),
+  );
+  assert.doesNotMatch(rowMenu, /<span>Export<\/span>|Export all chats/);
   // A comparison has two threads and no single tip to fork from.
   assert.match(ROW_MENU, /export function canForkChatRow[^]*?return item\.type === "single";/);
-  // The fork carries the settings on screen, not the ones the row was last written with.
   assert.match(
     ROW_MENU,
     /await settleThreadScopedSettingsForCopy\(item\.id\);\n\s*try \{/,
   );
-  // the visible branch is optional; closed chats use the server-selected tip.
   assert.ok(!ROW_MENU.includes("messages[messages.length - 1]"));
   assert.match(
     ROW_MENU,
@@ -264,28 +246,23 @@ test("a chat row forks from its own menu", async () => {
   );
 });
 
-// A streaming chat has no settled tip: its last stored message is the prompt, or a reply still
-// being written, so the fork would end mid-answer. The message-level Fork disables on isRunning
-// for the same reason.
+// A streaming chat has no settled tip, so forking would end mid-answer.
 test("a row being generated into cannot be forked", async () => {
   const THREAD = await readSrcAsync("components/assistant-ui/thread.tsx");
   assert.match(
     APP_SIDEBAR,
     /disabled=\{!canForkChatRow\(item\) \|\| isGenerating \|\| forkInFlight\}/,
   );
-  // One fork at a time, and the row menu shares the guard with the thread's own Fork rather
-  // than keeping a second one: two surfaces with a flag each would still post two.
+  // Shares the thread Fork's guard; two flags would still post two forks.
   assert.match(APP_SIDEBAR, /const inFlight = useForkInFlight\.getState\(\);\n\s*if \(inFlight\.forking\) return;\n\s*inFlight\.setForking\(true\);/);
   assert.match(APP_SIDEBAR, /\} finally \{\n\s*inFlight\.setForking\(false\);/);
   assert.match(APP_SIDEBAR, /const forkInFlight = useForkInFlight\(\(s\) => s\.forking\);/);
-  // The store moved out of thread.tsx so both callers read the one flag.
   assert.ok(!/const useForkInFlight = create</.test(THREAD));
   assert.match(THREAD, /^\s*useForkInFlight,$/m);
   const STORE = await readSrcAsync("features/chat/utils/fork-in-flight.ts");
   assert.match(STORE, /export const useForkInFlight = create</);
 });
 
-// closed chats resolve their tip under the server generation guard.
 test("closed-chat forks leave tip selection to the server", async () => {
   const ROW_MENU = await readSrcAsync(
     "features/chat/components/chat-row-menu.ts",
@@ -293,15 +270,15 @@ test("closed-chat forks leave tip selection to the server", async () => {
   const ROUTE = await readSrcAsync(
     "../../backend/routes/chat_history.py",
   );
-  // selecting the tip does not require a client-side storage snapshot.
   assert.ok(!ROW_MENU.includes("getActiveGenerations"));
   assert.ok(!ROW_MENU.includes("listStoredChatMessages(item.id)"));
-  // the transaction resolves the tip after checking durable runs.
   const fork = ROUTE.slice(ROUTE.indexOf("def fork_thread("));
   assert.match(fork, /branch_message_id = payload\.messageId/);
   assert.match(fork, /except ChatForkActiveGenerationError/);
   // Its 409 is a refusal, not a failure.
   assert.match(ROW_MENU, /if \(message\.includes\("still generating"\)\) throw forkRefused\(\);/);
   assert.match(ROW_MENU, /\{ unslothForkRefused: true \}/);
-  assert.match(APP_SIDEBAR, /\?\.unslothForkRefused\) \{\n\s*toast\.info\(/);
+  assert.match(APP_SIDEBAR, /\} catch \(error\) \{\n\s*showForkFailedToast\(error\);/);
+  const TOAST = await readSrcAsync("features/chat/utils/fork-toast.ts");
+  assert.match(TOAST, /\?\.unslothForkRefused \|\| message\.includes\("still generating"\)\) \{\n\s*toast\.info\(/);
 });

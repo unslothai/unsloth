@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "lemonade": {
+    "version": "2026.43.3",
+    "repo": "lemonade-sdk/lemonade",
+    "assets": {
+      "linux-x64": {
+        "name": "lemonade-embeddable-2026.43.3-ubuntu-x64.tar.gz",
+        "sha256": "d9a2fe01d7fd60ed9ec94822fea814a6d0e8aed46b39be8f126de74ba242b023",
+        "size": 7341867
+      },
+      "windows-x64": {
+        "name": "lemonade-embeddable-2026.43.3-windows-x64.zip",
+        "sha256": "665c697182f775e0a4a22b40d012e145591b67adec910bc38db59859982fc5a7",
+        "size": 5440848
+      }
+    }
+  },
+  "fastflowlm": {
+    "version": "v1.0.10",
+    "repo": "ROCm/FastFlowLM",
+    "assets": {
+      "linux-x64": {
+        "name": "fastflowlm_1.0.10_linux.tar.gz",
+        "sha256": "af583a1dc449a82a0961c9aabd34cf5548a4e0b0751f016a077204a281bcb77a"
+      },
+      "windows-x64": {
+        "name": "fastflowlm_1.0.10_windows_amd64.zip",
+        "sha256": "a7063890d7b91037a07f381a396a0d7787ebdb69e1b03280971faf0a80f35b73"
+      }
+    }
+  }
+}

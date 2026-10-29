@@ -22,14 +22,7 @@ from playwright.sync_api import sync_playwright
 from _playwright_robust import start_vite, stop_process, wait_for_smoke_page
 
 
-# `wait_for_smoke_page` proves vite ANSWERS, by fetching the raw HTML. The first navigation
-# is what makes it WORK: vite transforms the page's whole module graph on demand, and the
-# default `wait_until = "load"` waits out every one of those requests. On a cold Windows
-# runner that first goto ran past playwright's 30s default and took the job down with
-# `Page.goto: Timeout 30000ms exceeded`, twice, while the node tests either side of it
-# reported `# fail 0`. Every other driver in this directory that navigates a vite dev page
-# already carries an explicit budget; this one and playwright_queue_localization.py were
-# the two that did not.
+# The first navigation compiles the whole vite module graph and exceeded 30s on cold Windows runners.
 NAV_TIMEOUT_MS = 90_000
 
 MEASURE = """() => [...document.querySelectorAll('button[data-case]')].map(button => {
@@ -60,6 +53,52 @@ MEASURE = """() => [...document.querySelectorAll('button[data-case]')].map(butto
     };
 })"""
 
+# Applies one display case and measures it in the same evaluate, so a reload cannot reset the case
+# between the two and have the default layout recorded under the case's name.
+APPLY_AND_MEASURE = (
+    """async ({font, zoom, dark, direction}) => {
+    const root = document.documentElement;
+    root.style.setProperty('--ui-font-scale', String(font));
+    root.style.zoom = String(zoom);
+    root.classList.toggle('dark', dark);
+    root.dir = direction;
+    await new Promise(requestAnimationFrame);
+    return ("""
+    + MEASURE
+    + """)();
+}"""
+)
+
+CASE_ATTEMPTS = 3
+
+
+def measure_case(
+    page,
+    case: dict,
+    server = None,
+) -> list:
+    """Measures a case, re-running it on a fresh render when the page navigates away mid-case.
+
+    The vite dev page sometimes reloads itself on Windows runners after its buttons have rendered
+    (main job 119495424607, PR 14592 job 119703801606); the evaluate then loses its context."""
+    for attempt in range(1, CASE_ATTEMPTS + 1):
+        try:
+            return page.evaluate(APPLY_AND_MEASURE, case)
+        except Exception as exc:
+            if (
+                attempt == CASE_ATTEMPTS
+                or "execution context was destroyed" not in str(exc).lower()
+            ):
+                raise
+            tail = "\n".join(getattr(server, "vite_tail", []))
+            print(
+                f"page navigated during {case} (attempt {attempt}); re-measuring on the new render\n"
+                f"vite output:\n{tail}",
+                flush = True,
+            )
+            page.wait_for_load_state("domcontentloaded")
+            page.locator("button[data-case]").last.wait_for()
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description = __doc__)
@@ -85,9 +124,6 @@ def main() -> None:
                         context = browser.new_context(device_scale_factor = dpr)
                         try:
                             page = context.new_page()
-                            # The wait_for below is the other half of the same cold start:
-                            # domcontentloaded returns before the module graph has rendered
-                            # the buttons, so the locator inherits this budget too.
                             page.set_default_timeout(NAV_TIMEOUT_MS)
                             page.goto(
                                 f"http://127.0.0.1:{port}/smoke-composer-icons.html",
@@ -106,18 +142,7 @@ def main() -> None:
                                     dark = dark,
                                     direction = direction,
                                 )
-                                page.evaluate(
-                                    """async ({font, zoom, dark, direction}) => {
-                                    const root = document.documentElement;
-                                    root.style.setProperty('--ui-font-scale', String(font));
-                                    root.style.zoom = String(zoom);
-                                    root.classList.toggle('dark', dark);
-                                    root.dir = direction;
-                                    await new Promise(requestAnimationFrame);
-                                }""",
-                                    case,
-                                )
-                                measures = page.evaluate(MEASURE)
+                                measures = measure_case(page, case, server)
                                 assert len(measures) == 6, measures
                                 results.append(dict(case = case, measures = measures))
                                 for measure in measures:
@@ -125,7 +150,6 @@ def main() -> None:
                                         measure[key]
                                         for key in ("svgDx", "svgDy", "glyphDx", "glyphDy")
                                     ]
-                                    # Allow layout rounding, but reject the old pixel offsets.
                                     if (
                                         max(map(abs, offsets)) > 0.02
                                         or min(measure["width"], measure["height"]) <= 0

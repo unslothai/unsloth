@@ -146,6 +146,26 @@ def _save_or_push_model(model, tokenizer, args, is_mlx):
         model.push_to_hub_merged(args.hub_path, tokenizer, args.save_method, token = args.hub_token)
 
 
+def _save_or_push_model_with_mlx_ddp(model, tokenizer, args, is_mlx, trainer):
+    if not is_mlx or int(trainer.distributed_world_size) <= 1:
+        return _save_or_push_model(model, tokenizer, args, is_mlx)
+
+    raise_distributed_failure = getattr(trainer, "_raise_distributed_failure", None)
+    if not callable(raise_distributed_failure):
+        raise RuntimeError(
+            "Unsloth MLX DDP CLI requires MLXTrainer failure coordination. "
+            "Upgrade unsloth-zoo to a compatible version."
+        )
+
+    error = None
+    if bool(trainer.is_main_process):
+        try:
+            _save_or_push_model(model, tokenizer, args, is_mlx)
+        except BaseException as exc:
+            error = exc
+    raise_distributed_failure(error is not None, "legacy CLI final save", error)
+
+
 def _build_sft_config(SFTConfig, args, is_mlx, bf16_supported):
     config_kwargs = dict(
         per_device_train_batch_size = args.per_device_train_batch_size,
@@ -166,6 +186,16 @@ def _build_sft_config(SFTConfig, args, is_mlx, bf16_supported):
         dataset_num_proc = 2,
         packing = args.packing,
     )
+    if getattr(args, "context_parallel_size", 1) > 1:
+        config_kwargs["context_parallel_size"] = args.context_parallel_size
+        config_kwargs["context_parallel_backend"] = getattr(
+            args, "context_parallel_backend", "ring"
+        )
+        config_kwargs["context_parallel_rotate_method"] = getattr(
+            args, "context_parallel_rotate_method", "allgather"
+        )
+        # Required under CP; older transformers releases default it to False.
+        config_kwargs["average_tokens_across_devices"] = True
     if is_mlx:
         if args.per_device_eval_batch_size != 4:
             print("Warning: --per_device_eval_batch_size is ignored on MLX without eval data.")
@@ -283,7 +313,7 @@ def run(args):
 
     _train_with_legacy_save_control(trainer, is_mlx)
 
-    _save_or_push_model(model, tokenizer, args, is_mlx)
+    _save_or_push_model_with_mlx_ddp(model, tokenizer, args, is_mlx, trainer)
 
 
 if __name__ == "__main__":
@@ -442,6 +472,28 @@ if __name__ == "__main__":
         "--packing",
         action = "store_true",
         help = "Enable padding-free sample packing via TRL's bin packer.",
+    )
+    training_group.add_argument(
+        "--context_parallel_size",
+        type = int,
+        default = 1,
+        help = "Ranks per context parallel group (torchrun, PyTorch >= 2.7).",
+    )
+    training_group.add_argument(
+        "--context_parallel_backend",
+        type = str,
+        default = "ring",
+        choices = ["ring", "ulysses"],
+        help = "Context parallel attention backend: ring (SDPA ring attention) or ulysses "
+        "(all-to-all over heads; keeps packing and the usual attention kernels, needs heads "
+        "divisible by the size).",
+    )
+    training_group.add_argument(
+        "--context_parallel_rotate_method",
+        type = str,
+        default = "allgather",
+        choices = ["allgather", "alltoall"],
+        help = "How ring attention rotates KV shards between ranks.",
     )
 
     report_group = parser.add_argument_group("📊 Report Options")

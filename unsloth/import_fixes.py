@@ -27,10 +27,13 @@ import re
 import logging
 import textwrap
 import warnings
+import platform
 import sys
+import sysconfig
 import threading
 import functools
 import inspect
+import types
 
 # We cannot do from unsloth_zoo.log import logger since FBGEMM might cause seg faults.
 UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") in (
@@ -148,25 +151,19 @@ if not UNSLOTH_ENABLE_LOGGING:
 
     # Applied to stderr for FBGEMM (pytorch/FBGEMM utils.py#L43-L52) and CUTLASS SM90-vs-SM100 MMA / arch / TMA errors.
     sys.stderr = HidePrintMessage(sys.stderr)
-    # https://github.com/pytorch/FBGEMM/blob/d99cd96490ec4aabac2ee95b1e76ea4dcfcfa628/fbgemm_gpu/experimental/ge
-    # mm/triton_gemm/utils.py#L43-L52
+    # https://github.com/pytorch/FBGEMM/blob/d99cd96490ec4aabac2ee95b1e76ea4dcfcfa628/fbgemm_gpu/experimental/gemm/triton_gemm/utils.py#L43-L52
     sys.stderr.add_filter("TMA benchmarks will be running")
-    # CUTLASS/FBGEMM MMA instruction error on SM90 vs SM100 (Blackwell) GPUs
-    # https://github.com/NVIDIA/cutlass/blob/main/include/cutlass/gemm/kernel/sm90_gemm_tma_warpspecialized.hpp
+    # CUTLASS/FBGEMM MMA instruction error on SM90 vs SM100 (Blackwell) GPUs: https://github.com/NVIDIA/cutlass/blob/main/include/cutlass/gemm/kernel/sm90_gemm_tma_warpspecialized.hpp
     sys.stderr.add_filter("Arch conditional MMA instruction used without targeting")
     # CUTLASS arch conditional errors for various architectures
     sys.stderr.add_filter("CUTE_INVALID_CONTROL_PATH")
     # CUTLASS TMA-related errors when not targeting correct architecture
     sys.stderr.add_filter("Trying to use tma without CUTE_ARCH_TMA")
-    # torchao logs a cosmetic "Skipping import of cpp extensions" WARNING on torch < 2.11. The
-    # bnb-4bit / Unsloth paths do not use its cpp kernels, so drop that one record rather than
-    # raising the whole torchao logger to ERROR.
+    # Drop only torchao's cosmetic cpp-extension warning rather than raising its logger level.
     logging.getLogger("torchao").addFilter(
         HideLoggingMessage("Skipping import of cpp extensions due to incompatible torch version")
     )
-    # torch >= 2.11: torchao dlopens each prebuilt _C*.so and logs a failure on an ABI tag
-    # mismatch (a cp310 .so under cp312) or a missing arch kernel, then falls back to non-cpp
-    # paths Unsloth does not use.
+    # torch >= 2.11: torchao logs failed _C*.so loads (ABI tag/arch) then falls back; harmless.
     logging.getLogger("torchao").addFilter(HideLoggingMessage("Failed to load "))
     # SyntaxWarning: invalid escape sequence '\.'
     warnings.filterwarnings("ignore", message = "invalid escape sequence", category = SyntaxWarning)
@@ -261,6 +258,64 @@ if not UNSLOTH_ENABLE_LOGGING:
     )
 
 
+def fix_torch_compiler_disable_unless_decode():
+    """torch < 2.8 marks `fn` itself in `compiler.disable(fn, recursive = False)`, so zoo's
+    decode-aware disable disabled the function it runs: hand it a copy to disable."""
+    import functools
+    import types
+
+    try:
+        import torch
+        import unsloth_zoo.temporary_patches.utils as zoo_utils
+    except Exception:
+        return
+    current = getattr(zoo_utils, "torch_compiler_disable_unless_decode", None)
+    if current is None or getattr(current, "_unsloth_disable_copy", False):
+        return
+
+    def _probe(x):
+        return x
+
+    try:
+        if torch.compiler.disable(_probe, recursive = False) is not _probe:
+            return
+    except Exception:
+        return
+    real_disable = torch.compiler.disable
+
+    def _copy(fn):
+        clone = types.FunctionType(
+            fn.__code__.replace(), fn.__globals__, fn.__name__, fn.__defaults__, fn.__closure__
+        )
+        clone.__kwdefaults__ = fn.__kwdefaults__
+        clone.__dict__.update(fn.__dict__)
+        clone.__qualname__ = fn.__qualname__
+        clone.__module__ = fn.__module__
+        return clone
+
+    def disable_copy(
+        fn = None,
+        *args,
+        **kwargs,
+    ):
+        if isinstance(fn, types.FunctionType):
+            fn = _copy(fn)
+        return real_disable(fn, *args, **kwargs)
+
+    @functools.wraps(current)
+    def torch_compiler_disable_unless_decode(func = None, *, recursive = False):
+        if func is None:
+            return functools.partial(torch_compiler_disable_unless_decode, recursive = recursive)
+        torch.compiler.disable = disable_copy
+        try:
+            return current(func, recursive = recursive)
+        finally:
+            torch.compiler.disable = real_disable
+
+    torch_compiler_disable_unless_decode._unsloth_disable_copy = True
+    zoo_utils.torch_compiler_disable_unless_decode = torch_compiler_disable_unless_decode
+
+
 def fix_torch_check_is_size():
     """Shim torch._check_is_size if a future torch removes it (bitsandbytes 4-bit
     dequant calls it). The FutureWarning is silenced in suppress_cuda_printf."""
@@ -285,8 +340,7 @@ def fix_torch_check_is_size():
         return
 
 
-# Fix "AttributeError: 'MessageFactory' object has no attribute 'GetPrototype'" first, mainly
-# because tensorflow causes issues.
+# Fix MessageFactory.GetPrototype AttributeError (caused by tensorflow) first.
 def fix_message_factory_issue():
     try:
         import google.protobuf.message_factory
@@ -333,7 +387,11 @@ def fix_xformers_performance_issue():
     spec = importlib.util.find_spec("xformers")
     if spec is None:
         return
-    xformers_version = importlib_version("xformers")
+    try:
+        xformers_version = importlib_version("xformers")
+    except Exception:
+        # Studio's Windows ROCm xformers stub: in sys.modules, not installed.
+        return
     if Version(xformers_version) < Version("0.0.29"):
         xformers_location = spec.origin
         if xformers_location is None:
@@ -359,14 +417,8 @@ def fix_xformers_performance_issue():
             logger.info(f"Unsloth: Failed patching Xformers with error = {str(e)}")
 
 
-# flash-attn 4 ships flash_attn/cute/ with no __init__.py, so flash_attn is a namespace package
-# without flash_attn.flash_attn_interface. xformers gates on find_spec then imports that submodule
-# unguarded, so `import xformers.ops` raises, _utils.py swallows it into xformers = None,
-# HAS_XFORMERS goes False and every fast-path model drops to SDPA: measured on a B200 at seq_len
-# 8192, 547 ms/step and 2.69 GB peak against 2154 ms/step and 19.02 GB on SDPA. The repair imports
-# xformers ONCE with flash_attn hidden from find_spec, so it takes the next branch of its own elif
-# chain and the working module is cached in sys.modules. Nothing is written to any third-party
-# package.
+# flash-attn 4 makes flash_attn a namespace package without flash_attn_interface, which breaks
+# `import xformers.ops`; import xformers once with flash_attn hidden from find_spec.
 _FLASH_ATTN_INTERFACE_NAME = "flash_attn_interface"
 _FLASH_ATTN_INTERFACE_MODULE = "flash_attn." + _FLASH_ATTN_INTERFACE_NAME
 _FA4_NAMESPACE_WARNED = [False]
@@ -460,12 +512,10 @@ def fix_flash_attn_4_namespace_shadow():
     if _flash_attn_layout() != "flash_attn_4_only":
         return
     if importlib.util.find_spec("xformers") is None:
-        # Nothing to protect: no xformers means SDPA anyway, and is_flash_attn_2_available() is False
-        # here, since the distribution is flash-attn-4 and the flash_attn metadata lookup misses.
+        # No xformers means SDPA anyway; FA4's dist name means is_flash_attn_2_available() is False.
         return
     if "xformers.ops.fmha.flash" in sys.modules:
-        # Already imported successfully. A FAILED import leaves nothing in sys.modules, so this does
-        # not mask the case we are here to fix.
+        # A failed import leaves nothing in sys.modules, so this does not mask the bug.
         return
 
     real_find_spec = importlib.util.find_spec
@@ -475,9 +525,7 @@ def fix_flash_attn_4_namespace_shadow():
             return None
         return real_find_spec(name, package)
 
-    # Process-global swap, scoped to this one import and restored in `finally`. Another thread
-    # calling find_spec("flash_attn*") in the ~1.0s window is told it is absent, which is honest
-    # for the FA2 namespace xformers asks about.
+    # Process-global swap restored in finally; concurrent find_spec(flash_attn*) sees it absent.
     importlib.util.find_spec = _find_spec_without_flash_attn
     try:
         import xformers.ops  # noqa: F401
@@ -687,6 +735,1163 @@ def fix_transformers5_bare_annotation_configs():
         logger.info(f"Unsloth: Failed patching PretrainedConfig ({e})")
 
 
+# 4.51 defaulted attn_temperature_tuning to 4, only ever read for truthiness; 4.52 made it True.
+_LEGACY_TRUTHY_BOOL_FIELDS = {
+    "attn_temperature_tuning": frozenset({"llama4_text"}),
+}
+# Identity, not a marker attribute: functools.wraps copies attributes onto whatever wraps us.
+_legacy_config_wrappers = set()
+_legacy_config_ready = set()
+_LEGACY_CONFIG_NOT_COERCED = object()
+_legacy_config_field_types = {}
+_legacy_config_coercions_logged = set()
+
+
+def _legacy_config_accepted_types(annotation):
+    import typing
+    import types as _types
+
+    if annotation is typing.Any or isinstance(annotation, (str, typing.ForwardRef)):
+        return None
+    origin = typing.get_origin(annotation)
+    if origin is typing.Union or (
+        hasattr(_types, "UnionType") and origin is getattr(_types, "UnionType")
+    ):
+        accepted = set()
+        for argument in typing.get_args(annotation):
+            inner = _legacy_config_accepted_types(argument)
+            if inner is None:
+                return None
+            accepted |= inner
+        return frozenset(accepted)
+    if annotation is None or annotation is type(None):
+        return frozenset({type(None)})
+    if origin is typing.Literal:
+        return frozenset({typing.Literal})
+    if origin is not None:
+        return frozenset({origin})
+    if isinstance(annotation, type):
+        return frozenset({annotation})
+    return None
+
+
+def _legacy_config_fields(cls):
+    # Read from the class owning __validators__: non-strict dataclass subclasses validate nothing.
+    cached = _legacy_config_field_types.get(cls)
+    if cached is not None:
+        return cached
+    import dataclasses
+
+    table = {}
+    owner = next(
+        (
+            k
+            for k in getattr(cls, "__mro__", ())
+            if isinstance(k.__dict__.get("__validators__"), dict)
+        ),
+        None,
+    )
+    try:
+        if owner is not None:
+            validated = owner.__dict__["__validators__"]
+            for field in dataclasses.fields(owner):
+                if field.name not in validated:
+                    continue
+                accepted = _legacy_config_accepted_types(field.type)
+                if accepted is not None:
+                    table[field.name] = (field.type, accepted)
+    except TypeError:
+        pass
+    _legacy_config_field_types[cls] = table
+    return table
+
+
+def _legacy_truthy_bool_field(cls, name):
+    model_types = _LEGACY_TRUTHY_BOOL_FIELDS.get(name)
+    if not model_types:
+        return False
+    return any(
+        klass.__dict__.get("model_type") in model_types for klass in getattr(cls, "__mro__", ())
+    )
+
+
+def _legacy_config_coerced_value(cls, name, value, accepted):
+    import math
+
+    wants_bool = bool in accepted
+    wants_int = int in accepted
+    wants_float = float in accepted
+    kind = type(value)
+    if kind is int:
+        if wants_bool and not wants_int and not wants_float:
+            if value in (0, 1) or _legacy_truthy_bool_field(cls, name):
+                return bool(value)
+            return _LEGACY_CONFIG_NOT_COERCED
+        if wants_float and not wants_int:
+            converted = float(value)
+            if math.isfinite(converted) and converted == value:
+                return converted
+        return _LEGACY_CONFIG_NOT_COERCED
+    if kind is float:
+        if wants_bool and not wants_int and not wants_float and value in (0.0, 1.0):
+            return bool(value)
+        if wants_int and not wants_float and math.isfinite(value) and value.is_integer():
+            return int(value)
+        return _LEGACY_CONFIG_NOT_COERCED
+    if kind is list and tuple in accepted and list not in accepted:
+        return tuple(value)
+    return _LEGACY_CONFIG_NOT_COERCED
+
+
+def _coerce_legacy_config_kwargs(cls, kwargs):
+    """Convert only values the real validator rejects and accepts once converted."""
+    fields = _legacy_config_fields(cls)
+    if not fields:
+        return kwargs
+    try:
+        from huggingface_hub.dataclasses import type_validator
+    except Exception:
+        type_validator = None
+
+    def valid(name, value, annotation):
+        if type_validator is None:
+            return False
+        try:
+            type_validator(name, value, annotation)
+            return True
+        except TypeError:
+            return False
+        except Exception:
+            return True
+
+    updated = None
+    for name, value in kwargs.items():
+        entry = fields.get(name)
+        if entry is None or isinstance(value, (str, dict)) or value is None:
+            continue
+        annotation, accepted = entry
+        converted = _legacy_config_coerced_value(cls, name, value, accepted)
+        if converted is _LEGACY_CONFIG_NOT_COERCED:
+            continue
+        if valid(name, value, annotation):
+            continue
+        if type_validator is not None and not valid(name, converted, annotation):
+            continue
+        if updated is None:
+            updated = dict(kwargs)
+        updated[name] = converted
+        key = (cls.__name__, name, type(value).__name__)
+        if key not in _legacy_config_coercions_logged:
+            _legacy_config_coercions_logged.add(key)
+            logger.warning(
+                f"Unsloth: `{cls.__name__}.{name}` is {value!r} ({type(value).__name__}), written by "
+                f"an older transformers; using {converted!r} since transformers 5 expects "
+                f"`{getattr(annotation, '__name__', None) or annotation}`."
+            )
+    return kwargs if updated is None else updated
+
+
+def _legacy_config_init_is_generated(init):
+    # Only the dataclass-generated __init__ (exec'd as <string>) coerces arguments.
+    depth = 0
+    while hasattr(init, "__wrapped__") and depth < 32:
+        init, depth = init.__wrapped__, depth + 1
+    code = getattr(init, "__code__", None)
+    return code is not None and code.co_filename == "<string>"
+
+
+def _patch_config_init_for_legacy_types(cls):
+    init = cls.__dict__.get("__init__")
+    if (
+        init is None
+        or init in _legacy_config_wrappers
+        or not _legacy_config_init_is_generated(init)
+    ):
+        return
+
+    @functools.wraps(init)
+    def __init__(self, *args, **kwargs):
+        if kwargs:
+            try:
+                kwargs = _coerce_legacy_config_kwargs(type(self), kwargs)
+            except Exception as e:
+                logger.info(f"Unsloth: legacy config type coercion skipped ({e})")
+        return init(self, *args, **kwargs)
+
+    _legacy_config_wrappers.add(__init__)
+    try:
+        cls.__init__ = __init__
+    except Exception:
+        pass
+
+
+def fix_transformers5_legacy_config_types():
+    """Coerce 4.x-era config values (e.g. Llama 4 attn_temperature_tuning: 4) that 5.x @strict rejects."""
+    try:
+        import transformers
+        if Version(transformers.__version__) < Version("5.0.0"):
+            return
+        from transformers.configuration_utils import PretrainedConfig as _BaseConfig
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping legacy config type fix ({e})")
+        return
+    if not isinstance(getattr(_BaseConfig, "__validators__", None), dict):
+        return
+    previous = _BaseConfig.__dict__.get("__new__")
+    previous = getattr(previous, "__func__", previous)
+    if previous in _legacy_config_wrappers:
+        return
+
+    # Patch lazily, after every class decorator has run: @strict(accept_kwargs=True) swaps in an __init__ that never calls the original.
+    def __new__(cls, *args, **kwargs):
+        if cls not in _legacy_config_ready:
+            for klass in cls.__mro__:
+                if isinstance(klass, type) and issubclass(klass, _BaseConfig):
+                    try:
+                        _patch_config_init_for_legacy_types(klass)
+                    except Exception as e:
+                        logger.info(
+                            f"Unsloth: legacy config type patch skipped for {klass.__name__} ({e})"
+                        )
+            _legacy_config_ready.add(cls)
+        if previous is not None:
+            return previous(cls, *args, **kwargs)
+        return object.__new__(cls)
+
+    _legacy_config_wrappers.add(__new__)
+    try:
+        _BaseConfig.__new__ = staticmethod(__new__)
+    except Exception as e:
+        logger.info(f"Unsloth: Failed patching PretrainedConfig.__new__ ({e})")
+        return
+    logger.info("Unsloth: Patched transformers config classes to accept legacy 4.x value types.")
+
+
+# Image modules first so their `resize` wins; transformers.utils last, it can shadow names.
+_IMAGE_PROCESSING_SYMBOL_HOMES = (
+    "transformers.image_transforms",
+    "transformers.image_utils",
+    "transformers.image_processing_utils",
+    "transformers.feature_extraction_utils",
+    "transformers.utils",
+)
+
+# Image-processing modules that third-party remote code imports as a namespace (`import ... as siglip2_ips`), then reads helpers off.
+_IMAGE_PROCESSING_MODULES = (
+    "transformers.models.siglip2.image_processing_siglip2",
+    "transformers.models.siglip.image_processing_siglip",
+)
+
+_IMAGE_REEXPORT_FLAG = "_unsloth_legacy_image_reexports"
+
+# Tracks names the forwarder cached via setattr so undo can remove them too.
+_IMAGE_REEXPORT_BOUND = "_unsloth_legacy_image_bound"
+
+# One probe name per module that transformers 5 stopped re-exporting, used to decide if this environment is affected.
+_IMAGE_REEXPORT_PROBE = "filter_out_non_signature_kwargs"
+
+# Set on the wrapper AND on the module. The wrapper's copy is the one the guard reads.
+_GET_CLASS_PATCH_FLAG = "_unsloth_patched_get_class_in_module"
+
+
+def _image_processing_reexports_are_missing(module):
+    """Is this module missing the helpers remote code expects on it?
+
+    Asked of the live module rather than of a transformers version, because the
+    re-export lists were trimmed per model over several releases and a version
+    window would mislabel builds that lost them early or kept them late.
+    """
+    return not hasattr(module, _IMAGE_REEXPORT_PROBE)
+
+
+def _image_reexports_are_installed(module):
+    """Are the live bindings ours, right now?
+
+    Asked of the FUNCTIONS rather than of a flag on the module, for the reason
+    spelled out in `_sdpa_mask_is_patched`: `importlib.reload` re-runs the module
+    body in the EXISTING namespace, so every name the source assigns goes back to
+    upstream while anything we merely added survives. Measured on
+    `image_processing_siglip2`: the module-level `__getattr__` survives a reload
+    because the source never assigns it, but `convert_image_to_patches` and
+    `pad_along_first_dim` do not, so the numpy dispatch is silently gone while the
+    flag that would gate reinstalling it is still True.
+
+    Both halves must be live, so a half-installed module re-runs.
+    """
+    if not getattr(getattr(module, "__getattr__", None), _IMAGE_REEXPORT_FLAG, False):
+        return False
+    for name in _LEGACY_NUMPY_IMAGE_HELPERS:
+        current = getattr(module, name, None)
+        if current is not None and not getattr(current, "_unsloth_numpy_dispatch", False):
+            return False
+    return True
+
+
+def _install_legacy_image_reexports(module_name):
+    """Resolve dropped image helpers off `module_name` from their current homes.
+
+    A module-level ``__getattr__`` (PEP 562) rather than a fixed list of names:
+    the set that was dropped differs per transformers release, and a list
+    written today would miss the next one. Only names transformers still
+    defines somewhere resolve, so a genuine typo in remote code keeps raising
+    ``AttributeError`` instead of turning into a confusing failure later.
+    """
+    try:
+        module = importlib.import_module(module_name)
+    except Exception:
+        return False
+    if _image_reexports_are_installed(module):
+        return False
+    # A surviving forwarder fools the probe below; reinstall the numpy half that reload wiped.
+    if getattr(getattr(module, "__getattr__", None), _IMAGE_REEXPORT_FLAG, False):
+        try:
+            _install_legacy_numpy_image_helpers(module)
+        except Exception as e:
+            logger.info(f"Unsloth: Skipping numpy image helper shim for {module_name} ({e})")
+        return True
+    if not _image_processing_reexports_are_missing(module):
+        return False
+
+    previous = getattr(module, "__getattr__", None)
+    bound = set()
+
+    def __getattr__(name):
+        # Private names are never re-exports, and dunders go through the type for real modules, so __getattr__ skips both.
+        if not name.startswith("_"):
+            for home in _IMAGE_PROCESSING_SYMBOL_HOMES:
+                try:
+                    source = importlib.import_module(home)
+                except Exception:
+                    continue
+                if hasattr(source, name):
+                    value = getattr(source, name)
+                    # Bind it so later reads skip this lookup entirely.
+                    setattr(module, name, value)
+                    bound.add(name)
+                    return value
+        if previous is not None:
+            return previous(name)
+        raise AttributeError(f"module {module_name!r} has no attribute {name!r}")
+
+    # Keep the original reachable, so the patch can be tested and undone.
+    __getattr__.__wrapped__ = previous
+    # On the function, so the guard above survives a reload of the module.
+    setattr(__getattr__, _IMAGE_REEXPORT_FLAG, True)
+    module.__getattr__ = __getattr__
+    setattr(module, _IMAGE_REEXPORT_FLAG, True)
+    setattr(module, _IMAGE_REEXPORT_BOUND, bound)
+    # Names that still resolve never reach __getattr__, so the ones whose contract changed from numpy to torch are handled separately.
+    try:
+        _install_legacy_numpy_image_helpers(module)
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping numpy image helper shim for {module_name} ({e})")
+    return True
+
+
+# Helpers transformers 5 kept but switched from numpy channel-last to torch channel-first;
+# __getattr__ never fires for them, so they must be replaced (e.g. Phi-4-reasoning-vision).
+_IMAGE_REEXPORT_LEGACY_BOUND = "_unsloth_legacy_image_numpy_bound"
+
+
+def _legacy_convert_image_to_patches(image, patch_size):
+    """transformers 4.x semantics: (height, width, channels) numpy in."""
+    image_height, image_width, num_channels = image.shape
+    num_patches_height = image_height // patch_size
+    num_patches_width = image_width // patch_size
+    patched_image = image.reshape(
+        num_patches_height, patch_size, num_patches_width, patch_size, num_channels
+    )
+    patched_image = patched_image.transpose(0, 2, 1, 3, 4)
+    return patched_image.reshape(num_patches_height * num_patches_width, -1)
+
+
+def _legacy_pad_along_first_dim(
+    array,
+    target_length,
+    pad_value = 0,
+):
+    """transformers 4.x semantics: numpy in, numpy array and mask out."""
+    import numpy as np
+
+    current_length = array.shape[0]
+    padding_length = target_length - current_length
+    mask = np.ones((target_length,), dtype = np.int32)
+    if padding_length > 0:
+        paddings = [(0, padding_length)] + [(0, 0)] * (array.ndim - 1)
+        array = np.pad(array, paddings, mode = "constant", constant_values = pad_value)
+        mask[-padding_length:] = 0
+    return array, mask
+
+
+# transformers renamed pad_along_first_dim's first param from `array` to `tensor`.
+_LEGACY_NUMPY_IMAGE_HELPERS = {
+    "convert_image_to_patches": (_legacy_convert_image_to_patches, ("image",)),
+    "pad_along_first_dim": (_legacy_pad_along_first_dim, ("array", "tensor")),
+}
+
+
+def _install_legacy_numpy_image_helpers(module):
+    """Dispatch the retained helpers on the argument type.
+
+    A numpy array takes the 4.x implementation, anything else (a torch tensor)
+    goes to whatever the module already had, so transformers' OWN
+    Siglip2ImageProcessor keeps calling the current code unchanged. Replacing
+    them outright would fix the remote checkpoint by breaking the model the
+    module is named after.
+    """
+    import numpy as np
+
+    bound = []
+    for name, (legacy, first_names) in _LEGACY_NUMPY_IMAGE_HELPERS.items():
+        current = getattr(module, name, None)
+        if current is None or getattr(current, "_unsloth_numpy_dispatch", False):
+            continue
+
+        def make(
+            current = current,
+            legacy = legacy,
+            first_names = first_names,
+        ):
+            @functools.wraps(current)
+            def dispatch(*args, **kwargs):
+                # The first argument may arrive positionally or under either era's keyword, so check every spelling before deciding.
+                first = args[0] if args else None
+                if first is None:
+                    for key in first_names:
+                        if key in kwargs:
+                            first = kwargs[key]
+                            break
+                if isinstance(first, np.ndarray):
+                    # Rewrite the current-era keyword to the 4.x name the legacy function takes, so either spelling works.
+                    if not args:
+                        for key in first_names[1:]:
+                            if key in kwargs:
+                                kwargs = dict(kwargs)
+                                kwargs[first_names[0]] = kwargs.pop(key)
+                                break
+                    return legacy(*args, **kwargs)
+                return current(*args, **kwargs)
+
+            dispatch.__wrapped__ = current
+            dispatch._unsloth_numpy_dispatch = True
+            return dispatch
+
+        setattr(module, name, make())
+        bound.append(name)
+    if bound:
+        setattr(module, _IMAGE_REEXPORT_LEGACY_BOUND, bound)
+    return bound
+
+
+def _remove_legacy_numpy_image_helpers(module):
+    for name in getattr(module, _IMAGE_REEXPORT_LEGACY_BOUND, ()):
+        current = getattr(module, name, None)
+        original = getattr(current, "__wrapped__", None)
+        if original is not None:
+            setattr(module, name, original)
+    try:
+        delattr(module, _IMAGE_REEXPORT_LEGACY_BOUND)
+    except AttributeError:
+        pass
+
+
+# transformers 5 backend methods reject or mis-handle numpy; `rescale` silently returns float64,
+# so patching cannot be gated on exceptions.
+_IMAGE_METHOD_PATCH_FLAG = "_unsloth_numpy_image_method"
+
+# Names installed on a class, so the patch can be fully undone.
+_IMAGE_METHOD_BOUND = "_unsloth_numpy_image_methods"
+
+# Where transformers puts every module it builds out of a checkpoint's own code.
+_REMOTE_IMAGE_MODULE_PREFIX = "transformers_modules."
+
+# Matched by name on the loaded MRO so classifying configs and models imports nothing.
+_IMAGE_PROCESSOR_BASE_NAMES = frozenset(
+    (
+        "ImageProcessingMixin",
+        "BaseImageProcessor",
+        "BaseImageProcessorFast",
+    )
+)
+
+
+def _legacy_rescale(
+    self,
+    image,
+    scale,
+    data_format = None,
+    input_data_format = None,
+    **kwargs,
+):
+    """transformers 4.x `BaseImageProcessor.rescale`, which was this and nothing else.
+
+    BY KEYWORD: the function's 4th positional is `dtype` and the method's was
+    `input_data_format`, so a positional splat crosses them.
+    """
+    from transformers.image_transforms import rescale
+    return rescale(
+        image,
+        scale = scale,
+        data_format = data_format,
+        input_data_format = input_data_format,
+        **kwargs,
+    )
+
+
+def _legacy_normalize(
+    self,
+    image,
+    mean,
+    std,
+    data_format = None,
+    input_data_format = None,
+    **kwargs,
+):
+    """transformers 4.x `BaseImageProcessor.normalize`, which was this and nothing else."""
+    from transformers.image_transforms import normalize
+    return normalize(
+        image,
+        mean = mean,
+        std = std,
+        data_format = data_format,
+        input_data_format = input_data_format,
+        **kwargs,
+    )
+
+
+# Only 4.x thin passthroughs to image_transforms; resize/center_crop/pad converted a dict
+# `size` first so are not signature compatible.
+_LEGACY_NUMPY_IMAGE_METHODS = {
+    "rescale": (_legacy_rescale, {"scale": 1.0 / 255.0}),
+    "normalize": (_legacy_normalize, {"mean": [0.5, 0.5, 0.5], "std": [0.5, 0.5, 0.5]}),
+}
+
+
+def _is_remote_image_processor_class(obj):
+    """Is this an image processor defined by a checkpoint's own code?
+
+    Names and module strings off the in-memory MRO, no imports, since every
+    config and model class comes through the same hook. The `transformers.`
+    exclusion is the hard guarantee that a base class is never touched.
+    """
+    if not isinstance(obj, type):
+        return False
+    module = getattr(obj, "__module__", "") or ""
+    if module == "transformers" or module.startswith("transformers."):
+        return False
+    try:
+        mro = obj.__mro__
+    except Exception:
+        return False
+    for base in mro:
+        base_module = getattr(base, "__module__", "") or ""
+        if base_module.startswith("transformers.") and base.__name__ in _IMAGE_PROCESSOR_BASE_NAMES:
+            return True
+    return False
+
+
+def _resolved_image_method(cls, name):
+    """The class that owns `name`, and the function it owns.
+
+    Where it came from is the rule: a method the remote code wrote itself is
+    never ours to replace, and `getattr` alone cannot tell.
+    """
+    try:
+        mro = cls.__mro__
+    except Exception:
+        return None, None
+    for base in mro:
+        if name in base.__dict__:
+            return base, base.__dict__[name]
+    return None, None
+
+
+def _numpy_image_method_needs_legacy(cls, name, legacy, probe_kwargs):
+    """Does the live method still behave like transformers 4.x on numpy?
+
+    The gate, and the only reason this is a no-op on 4.57.6. Equivalence, not
+    acceptance, and by CALLING both on a real array rather than comparing
+    versions: the backend arrived per model over several releases. `object.__new__`
+    gives a receiver without `__init__`, which could read files; the probed
+    methods are pure.
+    """
+    import numpy as np
+
+    image = np.arange(2 * 2 * 3, dtype = np.uint8).reshape(2, 2, 3)
+    kwargs = dict(probe_kwargs)
+    # Stated rather than inferred, so the two calls cannot disagree about layout.
+    kwargs["input_data_format"] = "channels_last"
+    try:
+        probe_self = object.__new__(cls)
+    except Exception:
+        return False
+    try:
+        expected = legacy(probe_self, image.copy(), **kwargs)
+    except Exception:
+        return False  # no 4.x contract available here, so there is nothing to restore
+    try:
+        actual = getattr(cls, name)(probe_self, image.copy(), **kwargs)
+    except Exception:
+        return True  # rejects numpy outright: the loud half
+    if not isinstance(actual, np.ndarray):
+        return True
+    if actual.dtype != expected.dtype or actual.shape != expected.shape:
+        return True  # the quiet half: right numbers, wrong dtype
+    try:
+        return not np.allclose(actual, expected, rtol = 1e-5, atol = 1e-6)
+    except Exception:
+        return True
+
+
+def _install_legacy_numpy_image_methods(cls):
+    """Dispatch ONE remote class's backend methods on the argument type.
+
+    Set on the remote subclass only: numpy takes the 4.x implementation,
+    anything else goes to whatever the class resolved before, so transformers'
+    own Siglip2ImageProcessor is unreachable from here rather than merely
+    unpatched.
+    """
+    import numpy as np
+
+    if not _is_remote_image_processor_class(cls):
+        return []
+
+    bound = []
+    for name, (legacy, probe_kwargs) in _LEGACY_NUMPY_IMAGE_METHODS.items():
+        owner, current = _resolved_image_method(cls, name)
+        if current is None:
+            continue
+        # Read the live descriptor: a class flag outlives what it describes.
+        if getattr(current, _IMAGE_METHOD_PATCH_FLAG, False):
+            continue
+        owner_module = getattr(owner, "__module__", "") or ""
+        if not owner_module.startswith("transformers."):
+            continue  # the remote code wrote this one itself
+        if not _numpy_image_method_needs_legacy(cls, name, legacy, probe_kwargs):
+            continue  # transformers 4.x, or a transformers 5 that already honours numpy
+
+        def make(current = current, legacy = legacy):
+            @functools.wraps(current)
+            def dispatch(self, image, *args, **kwargs):
+                # `image` is the parameter name in both eras, so keyword calls like self.normalize(image=...) bind here too.
+                if isinstance(image, np.ndarray):
+                    return legacy(self, image, *args, **kwargs)
+                return current(self, image, *args, **kwargs)
+
+            # Keep the original reachable, so the patch can be tested and undone.
+            dispatch.__wrapped__ = current
+            # After functools.wraps, which copies __dict__ and could drop the mark. Do not reorder.
+            setattr(dispatch, _IMAGE_METHOD_PATCH_FLAG, True)
+            return dispatch
+
+        try:
+            setattr(cls, name, make())
+        except Exception as e:
+            logger.info(f"Unsloth: Could not shim {cls.__name__}.{name} ({e})")
+            continue
+        bound.append(name)
+
+    if bound:
+        try:
+            setattr(cls, _IMAGE_METHOD_BOUND, tuple(bound))
+        except Exception:
+            pass
+        logger.info(
+            "Unsloth: Restoring transformers 4.x numpy image processing on "
+            f"{cls.__module__}.{cls.__qualname__} ({', '.join(bound)})"
+        )
+    return bound
+
+
+def _remove_legacy_numpy_image_methods(cls):
+    """Undo `_install_legacy_numpy_image_methods`.
+
+    `delattr`, not a restoring `setattr`: the method was always inherited, so
+    putting it back on the subclass would leave the class owning its base's
+    function and the next install would refuse to touch it.
+    """
+    removed = []
+    for name in tuple(cls.__dict__.get(_IMAGE_METHOD_BOUND, ())):
+        current = cls.__dict__.get(name)
+        if not getattr(current, _IMAGE_METHOD_PATCH_FLAG, False):
+            continue
+        try:
+            delattr(cls, name)
+        except AttributeError:
+            continue
+        removed.append(name)
+    try:
+        delattr(cls, _IMAGE_METHOD_BOUND)
+    except AttributeError:
+        pass
+    return removed
+
+
+def _install_legacy_numpy_image_methods_on_module(module):
+    """Patch every remote image processor a freshly executed module defines.
+
+    Only classes this module itself defined, so a remote file that imports
+    `Siglip2ImageProcessor` to subclass it does not get the base patched.
+    """
+    bound = []
+    for value in list(vars(module).values()):
+        if not isinstance(value, type):
+            continue
+        if getattr(value, "__module__", None) != getattr(module, "__name__", None):
+            continue
+        try:
+            bound.extend(_install_legacy_numpy_image_methods(value))
+        except Exception as e:
+            logger.info(f"Unsloth: numpy image method shim skipped for {value!r} ({e})")
+    return bound
+
+
+def _install_legacy_numpy_image_methods_now(loaded = None):
+    """Patch the module `loaded` came from, and every remote module alongside it.
+
+    The class itself is not enough: an image processor is usually defined beside
+    the model and read off the module, so it never comes through the hook. Both
+    halves are needed -- the sweep catches a sibling imported earlier in the same
+    load, `loaded` catches code placed outside `transformers_modules`.
+    """
+    seen = set()
+    bound = []
+    targets = []
+    loaded_module = sys.modules.get(getattr(loaded, "__module__", None) or "")
+    if loaded_module is not None:
+        targets.append(loaded_module)
+    for module_name, module in list(sys.modules.items()):
+        if module is not None and module_name.startswith(_REMOTE_IMAGE_MODULE_PREFIX):
+            targets.append(module)
+    for module in targets:
+        if id(module) in seen:
+            continue
+        seen.add(id(module))
+        try:
+            bound.extend(_install_legacy_numpy_image_methods_on_module(module))
+        except Exception as e:
+            logger.info(f"Unsloth: numpy image method shim skipped for {module!r} ({e})")
+    return bound
+
+
+def _remove_legacy_image_reexports(module_name):
+    """Undo `_install_legacy_image_reexports`, including the cached bindings."""
+    module = sys.modules.get(module_name)
+    if module is None or not getattr(module, _IMAGE_REEXPORT_FLAG, False):
+        return False
+    _remove_legacy_numpy_image_helpers(module)
+    for name in getattr(module, _IMAGE_REEXPORT_BOUND, ()):  # drop cached hits
+        try:
+            delattr(module, name)
+        except AttributeError:
+            pass
+    previous = getattr(module.__getattr__, "__wrapped__", None)
+    if previous is None:
+        try:
+            del module.__getattr__
+        except AttributeError:
+            pass
+    else:
+        module.__getattr__ = previous
+    for attr in (_IMAGE_REEXPORT_FLAG, _IMAGE_REEXPORT_BOUND):
+        try:
+            delattr(module, attr)
+        except AttributeError:
+            pass
+    return True
+
+
+def _install_legacy_image_reexports_now():
+    """Patch every target module, importing the ones not yet loaded."""
+    patched = []
+    for module_name in _IMAGE_PROCESSING_MODULES:
+        try:
+            if _install_legacy_image_reexports(module_name):
+                patched.append(module_name.rsplit(".", 1)[-1])
+        except Exception as e:
+            logger.info(f"Unsloth: Skipping image re-export fix for {module_name} ({e})")
+    if patched:
+        logger.info(
+            "Unsloth: Restoring transformers 4.x image processing re-exports on "
+            + ", ".join(patched)
+        )
+    return patched
+
+
+_REMOTE_IMAGE_FINDER_SENTINEL = "_unsloth_remote_image_processor_finder"
+
+
+class _RemoteImageProcessorLoader:
+    """Wraps the real loader so a remote module is patched as soon as it executes."""
+
+    def __init__(self, loader):
+        self._loader = loader
+
+    def create_module(self, spec):
+        create = getattr(self._loader, "create_module", None)
+        if create is None:
+            return None
+        return create(spec)
+
+    def exec_module(self, module):
+        # Before delegating: checkpoint class bodies read the dropped re-exports during exec_module.
+        try:
+            _install_legacy_image_reexports_now()
+        except Exception:
+            pass
+        self._loader.exec_module(module)
+        # After, because the classes do not exist until the body has run.
+        try:
+            _install_legacy_numpy_image_methods_on_module(module)
+        except Exception:
+            pass
+
+    def __getattr__(self, attribute):
+        return getattr(self._loader, attribute)
+
+
+class _RemoteImageProcessorFinder(importlib.abc.MetaPathFinder):
+    """Inserted at the FRONT of sys.meta_path: the module really exists on disk.
+
+    The one path `get_class_in_module` cannot cover: pickle stores a processor by
+    (module, qualname), so a spawn worker IMPORTS the remote module to rebuild
+    the class. A string compare per import, then out of the way.
+    """
+
+    __slots__ = (_REMOTE_IMAGE_FINDER_SENTINEL, "_finding")
+
+    def __init__(self):
+        setattr(self, _REMOTE_IMAGE_FINDER_SENTINEL, True)
+        # Thread-local reentrancy flag: a shared one lets concurrent imports return an unpatched module.
+        self._finding = threading.local()
+
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
+        if getattr(self._finding, "active", False):
+            return None
+        if not fullname.startswith(_REMOTE_IMAGE_MODULE_PREFIX):
+            return None
+        self._finding.active = True
+        try:
+            spec = importlib.util.find_spec(fullname)
+        except Exception:
+            return None
+        finally:
+            self._finding.active = False
+        if spec is None or spec.loader is None:
+            return None
+        if not hasattr(spec.loader, "exec_module"):
+            return None  # a loader from before PEP 451; leave the import entirely alone
+        try:
+            spec.loader = _RemoteImageProcessorLoader(spec.loader)
+        except Exception:
+            return None
+        return spec
+
+
+def _install_remote_image_processor_finder():
+    """Install the unpickle-path finder once.
+
+    At `import unsloth` time, not on first patch: in a spawn child nothing is
+    patched before the unpickle import, so a lazy finder would not yet exist.
+    """
+    for finder in sys.meta_path:
+        if getattr(finder, _REMOTE_IMAGE_FINDER_SENTINEL, False):
+            return False
+    sys.meta_path.insert(0, _RemoteImageProcessorFinder())
+    return True
+
+
+def fix_transformers5_image_processing_reexports():
+    """Let remote-code image processors keep reading helpers off siglip modules.
+
+    transformers 5 stopped re-exporting the generic image helpers
+    (``filter_out_non_signature_kwargs``, ``resize``, ``to_numpy_array``,
+    ``ChannelDimension`` and friends) from each model's ``image_processing_*``
+    module. Remote code pinned to the 4.x layout does
+    ``import transformers.models.siglip2.image_processing_siglip2 as siglip2_ips``
+    and then uses ``@siglip2_ips.filter_out_non_signature_kwargs()`` at class
+    definition time, so the import raises ``AttributeError`` and the model
+    cannot be loaded at all. microsoft/Phi-4-reasoning-vision-15B is one such
+    checkpoint.
+
+    The helpers themselves were not removed, only the re-exports, so this
+    forwards attribute reads to wherever transformers keeps them now. No-op on
+    transformers 4.x, where the names are still there.
+
+    Applied when remote code is about to run rather than at import: plain
+    ``import transformers`` does not pull in the siglip2 image-processing
+    module, and importing it eagerly to patch it costs every user about three
+    seconds of PIL and torchvision setup for a checkpoint they may never load.
+    """
+    try:
+        import transformers
+        if Version(transformers.__version__) < Version("5.0.0"):
+            return
+        from transformers import dynamic_module_utils
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping image processing re-export fix ({e})")
+        return
+
+    # First: pickle in a child process imports the remote module directly, not via get_class_in_module.
+    try:
+        _install_remote_image_processor_finder()
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping remote image processor finder ({e})")
+
+    # Anything already imported can be fixed right now for free.
+    for module_name in _IMAGE_PROCESSING_MODULES:
+        if module_name in sys.modules:
+            try:
+                _install_legacy_image_reexports(module_name)
+            except Exception as e:
+                logger.info(f"Unsloth: Skipping image re-export fix for {module_name} ({e})")
+
+    # Check the live function, not a module flag: importlib.reload restores upstream but keeps attrs.
+    original = getattr(dynamic_module_utils, "get_class_in_module", None)
+    if original is None:
+        return
+    if getattr(original, _GET_CLASS_PATCH_FLAG, False):
+        return
+
+    @functools.wraps(original)
+    def get_class_in_module(*args, **kwargs):
+        # Runs right before a checkpoint's modeling file executes, the only place the missing re-exports are read.
+        try:
+            _install_legacy_image_reexports_now()
+        except Exception as e:
+            logger.info(f"Unsloth: image re-export fix skipped ({e})")
+        loaded = original(*args, **kwargs)
+        # Sweep modules, not just `loaded`: image processors are usually read off the module.
+        try:
+            _install_legacy_numpy_image_methods_now(loaded)
+        except Exception as e:
+            logger.info(f"Unsloth: numpy image method shim skipped ({e})")
+        return loaded
+
+    # Keep the original reachable, so the patch can be tested and undone.
+    get_class_in_module.__wrapped__ = original
+    # On the function, so the guard above survives a reload of the module.
+    setattr(get_class_in_module, _GET_CLASS_PATCH_FLAG, True)
+    try:
+        dynamic_module_utils.get_class_in_module = get_class_in_module
+        setattr(dynamic_module_utils, _GET_CLASS_PATCH_FLAG, True)
+    except Exception as e:
+        logger.info(f"Unsloth: Failed patching get_class_in_module ({e})")
+
+
+_UNTRUSTED_CONFIG_PATCH_FLAG = "_unsloth_patched_untrusted_config_fields"
+# to_dict never writes these, so a config.json carrying them was crafted (CVE-2026-4372).
+_INTERNAL_IMPLEMENTATION_KEYS = (
+    "_attn_implementation_internal",
+    "_experts_implementation_internal",
+)
+
+
+def _strip_untrusted_config_fields(config_dict, strip_internal, strip_lightglue):
+    if not isinstance(config_dict, dict):
+        return config_dict
+    cleaned = None
+    for key, value in config_dict.items():
+        drop = (strip_internal and key in _INTERNAL_IMPLEMENTATION_KEYS) or (
+            strip_lightglue
+            and key == "trust_remote_code"
+            and config_dict.get("model_type") == "lightglue"
+        )
+        new_value = _strip_untrusted_config_fields(value, strip_internal, strip_lightglue)
+        if drop or new_value is not value:
+            if cleaned is None:
+                cleaned = dict(config_dict)
+            if drop:
+                cleaned.pop(key, None)
+            else:
+                cleaned[key] = new_value
+    return config_dict if cleaned is None else cleaned
+
+
+def fix_transformers_untrusted_config_fields():
+    """Drop config.json fields that run repo code without trust_remote_code: a Hub kernel named by
+    `_attn_implementation_internal` (CVE-2026-4372, < 5.3.0) and LightGlue's nested `trust_remote_code`
+    (CVE-2026-5241, < 5.5.0). Keyword arguments apply after from_dict, so explicit ones still work."""
+    try:
+        import transformers
+
+        # PEP 440 order: Version() ranks 5.3.0rc1 above 5.3.0, which would skip the fix on an rc.
+        version = TrueVersion(transformers.__version__)
+        strip_internal = version < TrueVersion("5.3.0")
+        strip_lightglue = version < TrueVersion("5.5.0")
+        if not (strip_internal or strip_lightglue):
+            return
+        from transformers.configuration_utils import PretrainedConfig
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the untrusted config field fix ({e})")
+        return
+
+    def clean(cls, config_dict):
+        config_dict = _strip_untrusted_config_fields(config_dict, strip_internal, strip_lightglue)
+        # The class being built decides, not the model_type the file claims.
+        if (
+            strip_lightglue
+            and getattr(cls, "model_type", None) == "lightglue"
+            and isinstance(config_dict, dict)
+            and "trust_remote_code" in config_dict
+        ):
+            config_dict = {k: v for k, v in config_dict.items() if k != "trust_remote_code"}
+        return config_dict
+
+    def wrap_from_dict(original):
+        @functools.wraps(original)
+        def from_dict(cls, config_dict, *args, **kwargs):
+            return original(cls, clean(cls, config_dict), *args, **kwargs)
+
+        return from_dict
+
+    def wrap_json_reader(original):
+        # from_json_file builds cls(**dict) without from_dict, so its reader is cleaned too.
+        @functools.wraps(original)
+        def _dict_from_json_file(cls, *args, **kwargs):
+            return clean(cls, original(cls, *args, **kwargs))
+
+        return _dict_from_json_file
+
+    for name, wrap in (("from_dict", wrap_from_dict), ("_dict_from_json_file", wrap_json_reader)):
+        current = PretrainedConfig.__dict__.get(name)
+        if not isinstance(current, classmethod) or getattr(
+            current.__func__, _UNTRUSTED_CONFIG_PATCH_FLAG, False
+        ):
+            continue
+        wrapped = wrap(current.__func__)
+        setattr(wrapped, _UNTRUSTED_CONFIG_PATCH_FLAG, True)
+        try:
+            setattr(PretrainedConfig, name, classmethod(wrapped))
+        except Exception as e:
+            logger.info(f"Unsloth: Failed patching PretrainedConfig.{name} ({e})")
+
+
+_CHAT_TEMPLATE_NAME_PATCH_FLAG = "_unsloth_patched_chat_template_names"
+
+
+def _chat_template_name_escapes(template_name):
+    # Upstream's check (#46191), plus drive prefixes: Windows `C:evil` lands on another drive.
+    if os.path.splitdrive(template_name)[0]:
+        return True
+    base = os.path.abspath(os.path.join(os.sep, "unsloth_chat_templates"))
+    target = os.path.normpath(os.path.join(base, f"{template_name}.jinja"))
+    return os.path.dirname(target) != base
+
+
+def _check_chat_template_names(obj, kwargs):
+    chat_template = getattr(obj, "chat_template", None)
+    # Regardless of save_jinja_files: processor save_pretrained ignores it.
+    if not isinstance(chat_template, dict):
+        return
+    for template_name in chat_template:
+        if template_name != "default" and _chat_template_name_escapes(str(template_name)):
+            raise ValueError(f"Invalid chat template name: {template_name!r}")
+
+
+def fix_transformers_chat_template_path_traversal():
+    """CVE-2026-9856 (< 5.10.0): a repo-supplied chat template name like `../../x` is written outside
+    the save directory; raise upstream's ValueError before anything is written."""
+    try:
+        import transformers
+        if TrueVersion(transformers.__version__) >= TrueVersion("5.10.0"):
+            return
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the chat template name fix ({e})")
+        return
+    targets = []
+    try:
+        from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+        targets.append(PreTrainedTokenizerBase)
+    except Exception:
+        pass
+    try:
+        from transformers.processing_utils import ProcessorMixin
+        targets.append(ProcessorMixin)
+    except Exception:
+        pass
+
+    def wrap(original):
+        @functools.wraps(original)
+        def checked(self, *args, **kwargs):
+            _check_chat_template_names(self, kwargs)
+            return original(self, *args, **kwargs)
+
+        setattr(checked, _CHAT_TEMPLATE_NAME_PATCH_FLAG, True)
+        return checked
+
+    # save_chat_templates is public too, and writes the same files.
+    for target in targets:
+        for name in ("save_pretrained", "save_chat_templates"):
+            original = target.__dict__.get(name)
+            if original is None or getattr(original, _CHAT_TEMPLATE_NAME_PATCH_FLAG, False):
+                continue
+            try:
+                setattr(target, name, wrap(original))
+            except Exception as e:
+                logger.info(f"Unsloth: Failed patching {target.__name__}.{name} ({e})")
+
+
+_TOKENIZER_VOCAB_PATH_PATCH_FLAG = "_unsloth_patched_tokenizer_config_vocab_paths"
+# Resolved files _from_pretrained reads itself; every other one it hands to the tokenizer class.
+_TOKENIZER_FILES_READ_BY_LOADER = (
+    "tokenizer_config_file",
+    "added_tokens_file",
+    "special_tokens_map_file",
+)
+
+
+def fix_transformers_tokenizer_config_vocab_file_override():
+    """Back-port of the 5.17.0 vocab file precedence: below it `_from_pretrained` keeps a
+    `vocab_file` / `merges_file` / `tokenizer_file` from tokenizer_config.json over the file it
+    resolved inside the repo, and the tokenizer opens that path as given, even outside the repo.
+    save_pretrained never writes these keys. Hand the resolved paths over as keyword arguments,
+    which apply after the config, so only an explicit caller path overrides them."""
+    try:
+        import transformers
+
+        if TrueVersion(transformers.__version__) >= TrueVersion("5.17.0"):
+            return
+        from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+
+        current = PreTrainedTokenizerBase.__dict__["_from_pretrained"]
+        if not isinstance(current, classmethod):
+            return
+        original = current.__func__
+        if getattr(original, _TOKENIZER_VOCAB_PATH_PATCH_FLAG, False):
+            return
+        # The wrapper reads the resolved files from the first argument after cls.
+        params = list(inspect.signature(original).parameters)
+        if params[1:2] != ["resolved_vocab_files"]:
+            logger.info("Unsloth: Skipping the tokenizer vocab path fix (unknown signature)")
+            return
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the tokenizer vocab path fix ({e})")
+        return
+
+    @functools.wraps(original)
+    def _from_pretrained(cls, resolved_vocab_files, *args, **kwargs):
+        for args_name, file_path in dict(resolved_vocab_files or {}).items():
+            # chat_template_file and chat_template_<name> are read by the loader as well.
+            read_by_loader = args_name in _TOKENIZER_FILES_READ_BY_LOADER
+            if read_by_loader or args_name.startswith("chat_template"):
+                continue
+            if kwargs.get(args_name) is None:
+                kwargs[args_name] = file_path
+        return original(cls, resolved_vocab_files, *args, **kwargs)
+
+    setattr(_from_pretrained, _TOKENIZER_VOCAB_PATH_PATCH_FLAG, True)
+    try:
+        PreTrainedTokenizerBase._from_pretrained = classmethod(_from_pretrained)
+    except Exception as e:
+        logger.info(f"Unsloth: Failed patching PreTrainedTokenizerBase._from_pretrained ({e})")
+
+
 _SDPA_MASK_PATCH_FLAG = "_unsloth_patched_sdpa_mask"
 
 
@@ -774,12 +1979,9 @@ def _sdpa_mask_leaves_rows_fully_masked():
     sdpa_mask = getattr(masking_utils, "sdpa_mask", None)
     if sdpa_mask is None:
         return False
-    # Unwrap first: a second call must probe the ORIGINAL, or the installed patch reports the bug
-    # as fixed and a reload silently drops it.
+    # Unwrap first, or the installed patch reports the bug fixed and a reload drops it.
     sdpa_mask = getattr(sdpa_mask, "__wrapped__", sdpa_mask)
-    # The query axis is named differently per version: 5.x takes q_length, while 4.57.6 binds
-    # sdpa_mask to sdpa_mask_recent_torch, which takes cache_position. Ask the signature, since a
-    # probe that raises TypeError answers "no bug" for an unrelated reason.
+    # Query arg is q_length on 5.x, cache_position on 4.57.6; ask the signature, since a TypeError would falsely answer no bug.
     kwargs = {
         "batch_size": 2,
         "kv_length": 2,
@@ -802,8 +2004,7 @@ def _sdpa_mask_leaves_rows_fully_masked():
         mask = sdpa_mask(**kwargs)
         if mask is None or mask.is_floating_point():
             return False
-        # Inside the guard too: reading a mask's truth value is what fails on a meta or unmaterialised
-        # tensor, and a probe that raises would take `import unsloth` down with it.
+        # Inside the guard: reading a meta tensor's truth value raises and would break import.
         return bool((~mask.any(dim = -1)).any())
     except Exception:
         # Signature moved under us. Patching blind would be worse than not.
@@ -861,16 +2062,13 @@ def fix_transformers_fully_masked_rows():
     def sdpa_mask(*args, **kwargs):
         return _unmask_rows_attending_to_nothing(original(*args, **kwargs))
 
-    # functools.wraps sets __wrapped__, but set it explicitly: the probe and the tests both read
-    # it, and a wraps-less edit must not make the patch un-probeable and un-undoable.
+    # Set explicitly: the probe and tests read __wrapped__.
     sdpa_mask.__wrapped__ = original
-    # The mark travels ON the wrapper, so the guard above reads the live binding and a reload that
-    # drops it is re-patched rather than skipped.
+    # Mark on the wrapper so a reload that drops it is re-patched.
     setattr(sdpa_mask, _SDPA_MASK_PATCH_FLAG, True)
 
     try:
-        # BOTH bindings, which are not the same object: eager_mask calls the module global by name at
-        # call time, while the interface captured the original in _global_mapping at class-body time.
+        # Both bindings: eager_mask reads the module global; the interface captured the original.
         masking_utils.sdpa_mask = sdpa_mask
         interface = getattr(masking_utils, "ALL_MASK_ATTENTION_FUNCTIONS", None)
         if interface is not None:
@@ -884,21 +2082,378 @@ def fix_transformers_fully_masked_rows():
         logger.info(f"Unsloth: Failed patching sdpa_mask ({e})")
 
 
+_PACKED_SEQUENCE_PATCH_FLAG = "_unsloth_patched_is_packed_sequence"
+
+
+def _mrope_position_ids_read_as_packed(is_packed_sequence):
+    """Does `_is_packed_sequence` call Qwen3.5's `(3, 1, L)` mRoPE ids packed (transformers#44910)?"""
+    try:
+        import torch
+        positions = torch.arange(4, device = "cpu").view(1, 1, 4).expand(3, 1, 4)
+        return bool(is_packed_sequence(positions, batch_size = 1))
+    except Exception:
+        return False
+
+
+def fix_transformers_flash_attention_mrope_packed_sequence():
+    """Stop transformers 5.3 turning Qwen3.5's `(3, 1, L)` mRoPE ids into out-of-bounds
+    `cu_seqlens = [0, L, 2L, 3L]`: packed ids are flattened 2D `(1, total)`, never more dims.
+    """
+    try:
+        from transformers import modeling_flash_attention_utils as fa_utils
+    except Exception:
+        return
+    current = getattr(fa_utils, "_is_packed_sequence", None)
+    if current is None or getattr(current, _PACKED_SEQUENCE_PATCH_FLAG, False):
+        return
+    original = getattr(current, "__wrapped__", current)
+    if not _mrope_position_ids_read_as_packed(original):
+        return
+
+    @functools.wraps(original)
+    def _is_packed_sequence(position_ids, batch_size):
+        if position_ids is not None and position_ids.dim() > 2:
+            return False
+        return original(position_ids, batch_size)
+
+    _is_packed_sequence.__wrapped__ = original
+    setattr(_is_packed_sequence, _PACKED_SEQUENCE_PATCH_FLAG, True)
+    fa_utils._is_packed_sequence = _is_packed_sequence
+    logger.info(
+        "Unsloth: Patching transformers `_is_packed_sequence` so flash attention never "
+        "reads mRoPE position ids as packed sequences (transformers#44910)"
+    )
+
+
+_PACKED_ROWS_PATCH_FLAG = "_unsloth_patched_mrope_packed_rows"
+_PACKED_ROWS_CHECKED = [None, None, False]
+
+
+def _packed_row_varlen_kwargs(query, attention_mask, kwargs):
+    """cu_seqlens from an Unsloth packed row whose layers got mRoPE ids, else None."""
+    if kwargs.get("packed_seq_lengths") is None:
+        return None
+    import torch
+
+    position_ids = kwargs.get("position_ids")
+    if (
+        attention_mask is not None
+        or kwargs.get("cu_seq_lens_q") is not None
+        or not isinstance(position_ids, torch.Tensor)
+        or position_ids.dim() <= 2
+        or query.dim() != 4
+        or query.shape[0] != 1
+    ):
+        return None
+    from .utils.packing import get_packed_info_from_kwargs
+
+    info = get_packed_info_from_kwargs(kwargs, query.device)
+    if info is None:
+        return None
+    _, cu_seqlens, max_seqlen = info
+    # One host read per batch, not per layer: rows that do not cover the query keep the original path.
+    if not torch.compiler.is_compiling():
+        checked = _PACKED_ROWS_CHECKED
+        if checked[0] is not cu_seqlens or checked[1] != query.shape[1]:
+            checked[:] = [cu_seqlens, query.shape[1], int(cu_seqlens[-1]) == query.shape[1]]
+        if not checked[2]:
+            return None
+    return {
+        "cu_seq_lens_q": cu_seqlens,
+        "cu_seq_lens_k": cu_seqlens,
+        "max_length_q": max_seqlen,
+        "max_length_k": max_seqlen,
+    }
+
+
+def fix_transformers_flash_attention_mrope_packed_rows():
+    """Qwen3.5 / Qwen3.5-MoE on transformers 5.3 give decoder layers 3-row mRoPE ids, which cannot mark
+    document starts: take a packed row's boundaries from `packed_seq_lengths` instead."""
+    try:
+        from transformers.integrations import flash_attention as fa_integration
+    except Exception:
+        return
+    current = getattr(fa_integration, "_flash_attention_forward", None)
+    if current is None or getattr(current, _PACKED_ROWS_PATCH_FLAG, False):
+        return
+
+    @functools.wraps(current)
+    def _flash_attention_forward(
+        query_states, key_states, value_states, attention_mask, *args, **kwargs
+    ):
+        varlen = _packed_row_varlen_kwargs(query_states, attention_mask, kwargs)
+        if varlen is not None:
+            kwargs.update(varlen)
+        return current(query_states, key_states, value_states, attention_mask, *args, **kwargs)
+
+    setattr(_flash_attention_forward, _PACKED_ROWS_PATCH_FLAG, True)
+    fa_integration._flash_attention_forward = _flash_attention_forward
+    logger.info(
+        "Unsloth: Patching transformers flash attention so packed rows with mRoPE layer "
+        "position ids keep their documents apart"
+    )
+
+
+_CHUNKED_MASK_PATCH_FLAG = "_unsloth_patched_chunked_block_sequence_ids"
+_BLOCK_SEQUENCE_IDS = "block_sequence_ids"
+
+
+def _names_parameter(function, name):
+    # Ignores **kwargs on purpose: unsloth_zoo's bare (*args, **kwargs) wrapper would match 5.4.
+    try:
+        return name in inspect.signature(function).parameters
+    except Exception:
+        return False
+
+
+def _accepts_keyword(function, name):
+    try:
+        parameters = inspect.signature(function).parameters
+    except Exception:
+        return True  # Unknown signature: leave it alone.
+    if name in parameters:
+        return True
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values())
+
+
+def _masks_pass_block_sequence_ids(masking_utils):
+    # Several markers: unsloth_zoo wraps create_masks_for_generate/create_causal_mask sans signature.
+    if callable(getattr(masking_utils, "blockwise_overlay", None)):
+        return True
+    for name in (
+        "create_masks_for_generate",
+        "_unsloth_original_create_causal_mask",
+        "create_causal_mask",
+    ):
+        function = getattr(masking_utils, name, None)
+        if function is not None and _names_parameter(function, _BLOCK_SEQUENCE_IDS):
+            return True
+    return False
+
+
+def _chunked_mask_rejects_block_sequence_ids(masking_utils = None):
+    if masking_utils is None:
+        try:
+            from transformers import masking_utils
+        except Exception:
+            return False
+    function = getattr(masking_utils, "create_chunked_causal_mask", None)
+    if function is None:
+        return False
+    if getattr(function, _CHUNKED_MASK_PATCH_FLAG, False):
+        function = getattr(function, "__wrapped__", function)
+    if _accepts_keyword(function, _BLOCK_SEQUENCE_IDS):
+        return False
+    return _masks_pass_block_sequence_ids(masking_utils)
+
+
+def _bounded_blockwise_overlay(block_sequence_ids):
+    # Upstream pads ids with -1 to kv_length + kv_offset (unknown here); out-of-range = -1 matches.
+    import torch
+
+    length = block_sequence_ids.shape[-1]
+    device = block_sequence_ids.device
+
+    def group_of(batch_idx, index):
+        index = torch.as_tensor(index, device = device)
+        inside = index < length
+        return torch.where(
+            inside,
+            block_sequence_ids[batch_idx, index.clamp(max = length - 1)],
+            -1,
+        )
+
+    def inner_mask(batch_idx, head_idx, q_idx, kv_idx):
+        q_group = group_of(batch_idx, q_idx)
+        kv_group = group_of(batch_idx, kv_idx)
+        return (q_group == kv_group) & (q_group >= 0)
+
+    return inner_mask
+
+
+def _swap_function_references(masking_utils, original, replacement):
+    # vars(), not getattr: a transformers _LazyModule must never be asked to import anything.
+    swap = lambda value: replacement if value is original else value
+    mapping = getattr(masking_utils, "LAYER_PATTERN_TO_MASK_FUNCTION_MAPPING", None)
+    if isinstance(mapping, dict):
+        for key, value in list(mapping.items()):
+            if isinstance(value, dict):
+                for inner_key, inner_value in list(value.items()):
+                    if inner_value is original:
+                        value[inner_key] = replacement
+            elif isinstance(value, functools.partial) and value.func is original:
+                mapping[key] = functools.partial(replacement, *value.args, **value.keywords)
+            else:
+                mapping[key] = swap(value)
+    masking_utils.create_chunked_causal_mask = replacement
+    for name, module in list(sys.modules.items()):
+        if module is None or module is masking_utils:
+            continue
+        if not (name.startswith("transformers.") or "unsloth_compiled" in name):
+            continue
+        try:
+            namespace = vars(module)
+        except TypeError:
+            continue
+        if namespace.get("create_chunked_causal_mask") is original:
+            namespace["create_chunked_causal_mask"] = replacement
+
+
+def fix_transformers_chunked_mask_block_sequence_ids():
+    """5.17 passes `block_sequence_ids` to chunked masks that reject it (Llama-4 static cache)."""
+    try:
+        from transformers import masking_utils
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the chunked mask fix ({e})")
+        return
+    try:
+        current = getattr(masking_utils, "create_chunked_causal_mask", None)
+        if current is None or getattr(current, _CHUNKED_MASK_PATCH_FLAG, False):
+            return
+        if not _chunked_mask_rejects_block_sequence_ids(masking_utils):
+            return
+        original = current
+        signature = inspect.signature(original)
+
+        @functools.wraps(original)
+        def create_chunked_causal_mask(*args, **kwargs):
+            block_sequence_ids = kwargs.pop(_BLOCK_SEQUENCE_IDS, None)
+            # Never drop a real tensor: that would silently make bidirectional media blocks causal.
+            if block_sequence_ids is None:
+                return original(*args, **kwargs)
+            arguments = signature.bind_partial(*args, **kwargs).arguments
+            overlay = _bounded_blockwise_overlay(block_sequence_ids)
+            or_mask_function = arguments.get("or_mask_function")
+            if or_mask_function is not None:
+                overlay = masking_utils.or_masks(or_mask_function, overlay)
+            arguments["or_mask_function"] = overlay
+            return original(**arguments)
+
+        create_chunked_causal_mask.__wrapped__ = original
+        setattr(create_chunked_causal_mask, _CHUNKED_MASK_PATCH_FLAG, True)
+        _swap_function_references(masking_utils, original, create_chunked_causal_mask)
+        logger.info(
+            "Unsloth: Patching transformers `create_chunked_causal_mask` to accept "
+            "`block_sequence_ids`, so chunked-attention models can generate with a static cache"
+        )
+    except Exception as e:
+        logger.info(f"Unsloth: Failed patching create_chunked_causal_mask ({e})")
+
+
+_FLEX_MASK_PATCH_FLAG = "_unsloth_patched_flex_mask_graph_breaks"
+
+
+def _is_dynamo_compiling():
+    import torch
+    is_compiling = getattr(getattr(torch, "compiler", None), "is_compiling", None)
+    return bool(is_compiling()) if callable(is_compiling) else False
+
+
+def _flex_mask_reads_padding_values(masking_utils, flex_attention_mask):
+    """True if building from a meta mask fails (values read) while no mask succeeds."""
+    import torch
+
+    try:
+        if "q_length" not in inspect.signature(flex_attention_mask).parameters:
+            return False
+    except (TypeError, ValueError):
+        return False
+    builder = masking_utils.create_block_mask
+    masking_utils.create_block_mask = lambda *args, **kwargs: None
+    kwargs = dict(batch_size = 1, q_length = 2, kv_length = 2, device = "meta")
+    try:
+        try:
+            flex_attention_mask(attention_mask = None, **kwargs)
+        except Exception:
+            return False
+        try:
+            mask = torch.ones((1, 2), dtype = torch.bool, device = "meta")
+            flex_attention_mask(attention_mask = mask, **kwargs)
+        except Exception:
+            return True
+        return False
+    finally:
+        masking_utils.create_block_mask = builder
+
+
+def fix_transformers_flex_mask_graph_breaks():
+    """While dynamo traces, always apply the padding mask (all-ones gives an equal BlockMask) instead
+    of branching on `fast_all`, and drop `_compile`, whose deprecation warnings.warn breaks the graph."""
+    try:
+        from transformers import masking_utils
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the flex mask graph break fix ({e})")
+        return
+    interface = getattr(masking_utils, "ALL_MASK_ATTENTION_FUNCTIONS", None)
+    builder = getattr(masking_utils, "create_block_mask", None)
+    if interface is None or builder is None:
+        return
+    try:
+        if not getattr(builder, _FLEX_MASK_PATCH_FLAG, False):
+
+            @functools.wraps(builder)
+            def create_block_mask(
+                *args,
+                _original = builder,
+                **kwargs,
+            ):
+                if _is_dynamo_compiling():
+                    kwargs.pop("_compile", None)
+                return _original(*args, **kwargs)
+
+            setattr(create_block_mask, _FLEX_MASK_PATCH_FLAG, True)
+            masking_utils.create_block_mask = create_block_mask
+
+        current = interface["flex_attention"]
+        if getattr(current, _FLEX_MASK_PATCH_FLAG, False):
+            return
+        # Before torch 2.6 the padded branch also pads the mask to the 128 block size.
+        if not getattr(masking_utils, "_is_torch_greater_or_equal_than_2_6", False):
+            return
+        if not _flex_mask_reads_padding_values(masking_utils, current):
+            return
+        original = current
+
+        @functools.wraps(original)
+        def flex_attention_mask(*args, **kwargs):
+            attention_mask = kwargs.get("attention_mask")
+            if (
+                args
+                or attention_mask is None
+                or "kv_length" not in kwargs
+                or not _is_dynamo_compiling()
+            ):
+                return original(*args, **kwargs)
+            padding_mask = masking_utils.prepare_padding_mask(
+                attention_mask, kwargs["kv_length"], kwargs.get("kv_offset", 0)
+            )
+            kwargs["mask_function"] = masking_utils.and_masks(
+                kwargs.get("mask_function", masking_utils.causal_mask_function),
+                masking_utils.padding_mask_function(padding_mask),
+            )
+            kwargs["attention_mask"] = None
+            return original(**kwargs)
+
+        flex_attention_mask.__wrapped__ = original
+        setattr(flex_attention_mask, _FLEX_MASK_PATCH_FLAG, True)
+        interface.register("flex_attention", flex_attention_mask)
+        if getattr(masking_utils, "flex_attention_mask", None) is original:
+            masking_utils.flex_attention_mask = flex_attention_mask
+        logger.info(
+            "Unsloth: Patching transformers `flex_attention_mask` so a compiled mask "
+            "builds without graph breaks"
+        )
+    except Exception as e:
+        logger.info(f"Unsloth: Failed patching flex_attention_mask ({e})")
+
+
 _COMPOSITE_PREFIX_RENAMING_FLAG = "_unsloth_patched_composite_prefix_renaming"
 
-# unsloth_zoo marks its own copy of this repair with this. Spelled as a literal rather than
-# imported, so a zoo too old to define it cannot turn a skipped repair into an ImportError.
+# Literal, not imported, so an older unsloth_zoo cannot cause an ImportError.
 _ZOO_COMPOSITE_PREFIX_RENAMING_FLAG = "_unsloth_zoo_patched_composite_prefix_renaming"
 
-# zoo's `temporary_patches/common.py:WRAPPER_INNER_ATTR`: the explicit link a wrapper on that
-# same function publishes to whatever it wrapped. Following it matters because zoo's MoE
-# wrapper (`temporary_patches/moe_utils_bnb4bit.py`) deliberately does NOT publish
-# `__wrapped__` -- zoo's re-scope unwraps `__wrapped__` to pick what to wrap, so a MoE wrapper
-# carrying one would be replaced rather than sat on top of, dropping its per-expert converters.
-# zoo registers the re-scope BEFORE the MoE patch, so the MoE wrapper is on top in the normal
-# case, and a `__wrapped__`-only walk stops there and reports no repair for one that is
-# running underneath. Spelled as a literal, like the flag above, so a zoo too old to define it
-# cannot turn a skipped repair into an ImportError.
+# zoo's WRAPPER_INNER_ATTR: its MoE wrapper links the inner function here, not via __wrapped__,
+# so walking only __wrapped__ would miss a repair underneath it.
 _ZOO_WRAPPER_INNER_ATTR = "_unsloth_wrapper_inner"
 
 
@@ -971,9 +2526,7 @@ def _zoo_composite_prefix_renaming_installed():
     return False
 
 
-# How many of a submodule's own parameter names to try a renaming against. A prefix renaming
-# either matches every name under the submodule or none of them, so one would do; eight costs
-# nothing and covers a mapping that only rewrites some leaf names.
+# A renaming matches all names under a submodule or none; eight samples cover partial maps.
 _COMPOSITE_RENAMING_SAMPLE = 8
 
 
@@ -1063,9 +2616,7 @@ def _rescoped_renaming(conversion, prefix, sample_keys, model_keys):
     try:
         rescoped = type(conversion)(**patterns)
     except Exception:
-        # A subclass whose __init__ takes something else entirely -- upstream's `PrefixChange`
-        # takes prefixes, not patterns. It is still a WeightRenaming, and a renaming is all
-        # this produces, so fall back to the base class rather than giving up.
+        # Subclasses like PrefixChange take other init args; fall back to base WeightRenaming.
         try:
             rescoped = WeightRenaming(**patterns)
         except Exception:
@@ -1096,8 +2647,7 @@ def _leaked_submodule_prefix_renamings(model):
     from transformers.modeling_utils import PreTrainedModel
 
     def extract(module, prefix):
-        # 5.6 to 5.9 take the submodule's dotted path as a second argument, everything else
-        # takes the module alone. Asked of the function rather than of a version.
+        # 5.6 to 5.9 take the submodule's dotted path as a second argument.
         try:
             return extract_weight_conversions_for_model(module, prefix)
         except TypeError:
@@ -1199,12 +2749,7 @@ def fix_transformers_composite_prefix_renaming():
     """
     if _transformers_rescopes_submodule_prefix_renamings():
         return
-    # unsloth_zoo carries the same repair, in temporary_patches/conversion_mapping_rescope.py,
-    # because it owns the bitsandbytes Linear4bit patch that reports this failure and is
-    # importable without unsloth. When it installed first there is nothing left to do: a second
-    # wrapper is measurably inert -- the first pass leaves no leaked signature for the second to
-    # match -- but it is still a wrapper nobody needs, and one of the two has to yield. This one
-    # does, so the newer implementation wins on a stack where the two versions disagree.
+    # unsloth_zoo carries the same repair; if it installed first, yield to it.
     if _zoo_composite_prefix_renaming_installed():
         return
     try:
@@ -1216,12 +2761,10 @@ def fix_transformers_composite_prefix_renaming():
     original = getattr(conversion_mapping, "get_model_conversion_mapping", None)
     if original is None:
         return
-    # Through the chain, not the top object: another library may have wrapped us since, and a
-    # second copy walks every submodule again per load.
+    # Walk the chain: another library may have wrapped us since.
     if _own_composite_prefix_renaming_installed(original):
         return
-    # Wrap whatever is live, never `original.__wrapped__`: functools.wraps publishes that
-    # link, so unwrapping discards a third-party wrapper instead of one of ours.
+    # Wrap whatever is live, never original.__wrapped__, or a third-party wrapper is discarded.
 
     @functools.wraps(original)
     def get_model_conversion_mapping(*args, **kwargs):
@@ -1236,17 +2779,13 @@ def fix_transformers_composite_prefix_renaming():
             logger.info(f"Unsloth: Could not re-scope the conversion mapping ({e})")
             return conversions
 
-    # functools.wraps sets __wrapped__, but set it explicitly: the probe and the tests both
-    # read it, and a wraps-less edit must not make the patch un-probeable and un-undoable.
+    # Set explicitly: the probe and tests read __wrapped__.
     get_model_conversion_mapping.__wrapped__ = original
     setattr(get_model_conversion_mapping, _COMPOSITE_PREFIX_RENAMING_FLAG, True)
 
     try:
         conversion_mapping.get_model_conversion_mapping = get_model_conversion_mapping
-        # `from ... import get_model_conversion_mapping` binds the object, not the attribute,
-        # so every holder needs rebinding: transformers.modeling_utils, transformers.
-        # integrations.peft, peft itself, and vllm's Transformers backend, which builds its
-        # WeightsMapper from it (vllm/model_executor/models/transformers/base.py).
+        # `from ... import` binds the object, so rebind every holder (transformers, peft, vllm).
         owning_packages = ("transformers", "peft", "unsloth_zoo", "unsloth", "vllm")
         upstream_module = getattr(conversion_mapping, "__name__", "transformers.conversion_mapping")
         for module_name, module in list(sys.modules.items()):
@@ -1258,13 +2797,8 @@ def fix_transformers_composite_prefix_renaming():
             namespace = getattr(module, "__dict__", None)
             if not isinstance(namespace, dict):
                 continue
-            # `__dict__`, never `getattr`: transformers' lazy modules answer any name through
-            # `__getattr__` and print several hundred deprecation notices.
-            # Rebound only if it IS an alias of what we wrapped: `original` itself, upstream's
-            # own function (a module that imported the name before zoo wrapped it holds that,
-            # transformers.integrations.peft does), or zoo's marked wrapper. An identity test
-            # alone misses the first case; any-callable-by-name clobbers a package-local
-            # helper. Rebinding zoo's wrapper keeps its fix, since ours wraps it.
+            # __dict__, not getattr: lazy modules print deprecation noise. Rebind only true aliases of
+            # the wrapped function so package-local helpers are not clobbered.
             try:
                 bound = namespace.get("get_model_conversion_mapping", None)
                 if not callable(bound) or bound is get_model_conversion_mapping:
@@ -1284,6 +2818,77 @@ def fix_transformers_composite_prefix_renaming():
         )
     except Exception as e:
         logger.info(f"Unsloth: Failed patching get_model_conversion_mapping ({e})")
+
+
+_BNB_PREQUANTIZED_SAVE_FLAG = "_unsloth_skips_bnb_deserialize_on_save"
+
+
+def _bnb_deserialize_ops_without_reverse():
+    """The bitsandbytes deserialize ops on this transformers whose `reverse_op` raises."""
+    try:
+        from transformers.integrations import bitsandbytes as bnb_integration
+    except Exception:
+        return ()
+    broken = []
+    for name in ("Bnb4bitDeserialize", "Bnb8bitDeserialize"):
+        op_class = getattr(bnb_integration, name, None)
+        if not isinstance(op_class, type):
+            continue
+        try:
+            op_class.__new__(op_class).reverse_op
+        except NotImplementedError:
+            broken.append(op_class)
+        except Exception:
+            continue
+    return tuple(broken)
+
+
+def fix_transformers_bnb_prequantized_save():
+    """transformers 5.x: `save_pretrained` reverses the `Bnb{4,8}bitDeserialize` converter a
+    pre-quantized load attaches, and neither op has a `reverse_op` (NotImplementedError, #638;
+    upstream PR #45743 closed unmerged). Quantized modules already emit the checkpoint layout,
+    so skip that converter on save. Probe-gated on `reverse_op` raising."""
+    broken_ops = _bnb_deserialize_ops_without_reverse()
+    if not broken_ops:
+        return
+    try:
+        from transformers import core_model_loading, modeling_utils
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the bitsandbytes save fix ({e})")
+        return
+    original = getattr(core_model_loading, "revert_weight_conversion", None)
+    if original is None or getattr(original, _BNB_PREQUANTIZED_SAVE_FLAG, False):
+        return
+
+    def _is_bnb_deserialize(conversion):
+        operations = getattr(conversion, "operations", None)
+        return bool(operations) and all(isinstance(op, broken_ops) for op in operations)
+
+    @functools.wraps(original)
+    def revert_weight_conversion(model, *args, **kwargs):
+        conversions = getattr(model, "_weight_conversions", None)
+        if not isinstance(conversions, list) or not any(map(_is_bnb_deserialize, conversions)):
+            return original(model, *args, **kwargs)
+        # An empty list, never None: None makes transformers rebuild the default mapping.
+        model._weight_conversions = [c for c in conversions if not _is_bnb_deserialize(c)]
+        try:
+            return original(model, *args, **kwargs)
+        finally:
+            model._weight_conversions = conversions
+
+    revert_weight_conversion.__wrapped__ = original
+    setattr(revert_weight_conversion, _BNB_PREQUANTIZED_SAVE_FLAG, True)
+    try:
+        core_model_loading.revert_weight_conversion = revert_weight_conversion
+        # modeling_utils binds the function at import (`from .core_model_loading import ...`).
+        if modeling_utils.__dict__.get("revert_weight_conversion") is original:
+            modeling_utils.revert_weight_conversion = revert_weight_conversion
+        logger.info(
+            "Unsloth: Patching transformers `revert_weight_conversion` so a pre-quantized "
+            "bitsandbytes model can be saved"
+        )
+    except Exception as e:
+        logger.info(f"Unsloth: Failed patching revert_weight_conversion ({e})")
 
 
 _ROPE_SCALING_PATCH_FLAG = "_unsloth_patched_rope_scaling_setter"
@@ -1379,23 +2984,48 @@ def _rope_theta_snapshot(config):
     return snapshot or None
 
 
-def _carry_per_layer_rope_theta(config, parameters, carried):
+def _rope_labels_naming_no_base(config, value):
+    """Labels of a NESTED incoming ``rope_scaling`` whose entry states no ``rope_theta``.
+
+    Read before the upstream setter runs: from transformers 5.21.0 that setter calls
+    ``standardize_rope_params``, which ``setdefault``s the ONE global ``rope_theta`` into
+    every nested entry in place, so afterwards a filled-in default looks caller-stated.
+    """
+    if not isinstance(value, dict) or not _rope_parameters_are_per_layer(config, value):
+        return None
+    return frozenset(
+        label
+        for label, entry in value.items()
+        if isinstance(entry, dict) and entry.get("rope_theta", None) is None
+    )
+
+
+def _carry_per_layer_rope_theta(
+    config,
+    parameters,
+    carried,
+    unnamed = None,
+):
     """Put each layer type's base back into a per-layer replacement that lost it.
 
     A top-level ``rope_theta`` would make the dict read as flat, so the base goes back
     into each nested entry. Copies throughout, never the caller's dicts in place. An
-    entry naming its own base is left alone. ``None`` means nothing was written -- no nested
-    snapshot, OR every entry already named its base, OR refused; never "fall through as scalar".
+    entry naming its own base is left alone; ``unnamed`` lists the labels the caller gave
+    no base, so a global default transformers filled in there is not mistaken for one.
+    ``None`` means nothing was written -- no nested snapshot, OR every entry already named
+    its base, OR refused; never "fall through as scalar".
     """
     if not isinstance(carried, dict) or not carried:
         return None
+    unnamed = unnamed or ()
     replacement = {}
     changed = False
     for layer_type, entry in parameters.items():
         if (
             isinstance(entry, dict)
-            and entry.get("rope_theta", None) is None
+            and (entry.get("rope_theta", None) is None or layer_type in unnamed)
             and carried.get(layer_type, None) is not None
+            and entry.get("rope_theta", None) != carried[layer_type]
         ):
             entry = dict(entry)
             entry["rope_theta"] = carried[layer_type]
@@ -1410,7 +3040,11 @@ def _carry_per_layer_rope_theta(config, parameters, carried):
     return carried
 
 
-def _carry_rope_theta_across_assignment(config, carried):
+def _carry_rope_theta_across_assignment(
+    config,
+    carried,
+    unnamed = None,
+):
     """Keep the RoPE base frequency across a ``rope_scaling`` replacement.
 
     Separated from the wrapper so every parameter shape is testable without a live
@@ -1435,18 +3069,15 @@ def _carry_rope_theta_across_assignment(config, carried):
     parameters = getattr(config, "rope_parameters", None)
     per_layer = _rope_parameters_are_per_layer(config, parameters)
     if per_layer:
-        # Per-layer bases go back one level down. Falls through to the global attribute
-        # below only when there is no nested snapshot to restore.
-        restored = _carry_per_layer_rope_theta(config, parameters, carried)
+        # Per-layer rope bases are restored from the nested snapshot; the global attribute is used only when none exists.
+        restored = _carry_per_layer_rope_theta(config, parameters, carried, unnamed)
         if restored is not None:
             return restored
         if isinstance(carried, dict):
             # Nothing restored = no-op or refused; a scalar fall-through put the MAPPING here.
             return None
     elif isinstance(carried, dict):
-        # Per-layer parameters replaced by a FLAT dict. Passing the mapping through would
-        # write a dict where a number belongs. One base stands for it only when every
-        # layer type agreed; otherwise carry nothing rather than invent a scalar.
+        # Per-layer params replaced by a flat dict: carry a base only when all layer types agreed.
         bases = set(carried.values())
         carried = bases.pop() if len(bases) == 1 else None
     is_flat_dict = isinstance(parameters, dict) and not per_layer
@@ -1461,17 +3092,13 @@ def _carry_rope_theta_across_assignment(config, carried):
     if base is None:
         return None
     if isinstance(base, dict):
-        # A base is a number. Also reachable from a config SAVED by the #11037 release,
-        # whose own rope_theta holds a mapping: refuse, it needs fixing at rest instead.
+        # Also reachable from a config saved with a mapping in rope_theta: refuse.
         return None
 
     readable = current is not None
     if is_flat_dict and not readable:
         try:
-            # A COPY, never the dict in place: transformers 5 stores the caller's object
-            # verbatim, so one scaling dict reused across a loop of models would carry the
-            # first config's base into the second. Measured on 5.0.0, 5.5.4 and 5.17.0: a
-            # config declaring 10000.0 came out with 500000.0, silently.
+            # Copy: transformers 5 stores the caller's dict verbatim, so reuse leaks bases across configs.
             replacement = dict(parameters)
             replacement["rope_theta"] = base
             config.rope_parameters = replacement
@@ -1508,8 +3135,7 @@ def _transformers_rope_scaling_assignment_drops_theta():
     scaling = {"rope_type": "linear", "factor": 4.0}
 
     def build():
-        # Tiny, and a base far from the 10000.0 default so a silent fallback shows up
-        # as a difference rather than a match.
+        # Base far from 10000.0 so a silent fallback shows up as a difference.
         return LlamaConfig(
             hidden_size = 64,
             num_attention_heads = 2,
@@ -1520,8 +3146,7 @@ def _transformers_rope_scaling_assignment_drops_theta():
             rope_scaling = dict(scaling),
         )
 
-    # CPU explicitly: under a "meta" default device the comparison cannot be read, which
-    # would answer "not affected" for a reason unrelated to the bug.
+    # CPU explicitly: under a meta default device the comparison cannot be read.
     device = torch.device("cpu")
     try:
         reference, _attention_factor = rope_init_fn(build(), device)
@@ -1541,6 +3166,703 @@ def _transformers_rope_scaling_assignment_drops_theta():
         return not bool(torch.allclose(replaced.float().cpu(), reference.float().cpu()))
     except Exception:
         return False
+
+
+_REMOTE_MODEL_API_FLAG = "_unsloth_remote_model_api"
+
+
+def _tie_weights_accepting_new_keywords(own, accepted):
+    @functools.wraps(own)
+    def tie_weights(self, *args, **kwargs):
+        return own(self, *args, **{k: v for k, v in kwargs.items() if k in accepted})
+
+    setattr(tie_weights, _REMOTE_MODEL_API_FLAG, True)
+    return tie_weights
+
+
+def _patch_remote_model_class(cls, new_keywords):
+    if "transformers_modules" not in (getattr(cls, "__module__", "") or ""):
+        return
+    own = cls.__dict__.get("tie_weights")
+    if own is None or getattr(own, _REMOTE_MODEL_API_FLAG, False):
+        return
+    try:
+        params = inspect.signature(own).parameters
+    except (TypeError, ValueError):
+        return
+    if any(p.kind == p.VAR_KEYWORD for p in params.values()):
+        return
+    if all(k in params for k in new_keywords):
+        return
+    cls.tie_weights = _tie_weights_accepting_new_keywords(own, set(params))
+
+
+def _legacy_tied_weights_mapping(model, keys):
+    """4.x list -> 5.x {target: source}; only the output embedding is tied (the one tie 4.x made), other keys get no source rather than a wrong one."""
+    try:
+        embedding = model.get_input_embeddings()
+        output = model.get_output_embeddings()
+    except Exception:
+        return {}
+    weight = getattr(embedding, "weight", None)
+    output_weight = getattr(output, "weight", None)
+    if weight is None or output_weight is None:
+        return {}
+    names = {}
+    for name, param in model.named_parameters(remove_duplicate = False):
+        names.setdefault(id(param), name)
+    source = names.get(id(weight))
+    if source is None:
+        return {}
+    output_names = {
+        name
+        for name, param in model.named_parameters(remove_duplicate = False)
+        if param is output_weight
+    }
+    return {key: source for key in keys if key in output_names and key != source}
+
+
+def fix_transformers5_remote_code_model_api():
+    """Transformers 5 shims for 4.x remote code (Kimi-K3): OutputRecorder alias (before remote import),
+    tie_weights dropping new keywords, list _tied_weights_keys -> mapping. Only transformers_modules
+    classes; no-op on 4.57."""
+    try:
+        import transformers.utils.generic as generic
+    except Exception:
+        return
+    if not hasattr(generic, "OutputRecorder"):
+        try:
+            from transformers.utils.output_capturing import OutputRecorder
+            generic.OutputRecorder = OutputRecorder
+        except Exception:
+            pass
+    try:
+        from transformers import PreTrainedModel
+    except Exception:
+        return
+    if getattr(PreTrainedModel, _REMOTE_MODEL_API_FLAG, False):
+        return
+    try:
+        params = inspect.signature(PreTrainedModel.tie_weights).parameters
+    except (TypeError, ValueError):
+        params = {}
+    new_keywords = tuple(k for k in ("missing_keys", "recompute_mapping") if k in params)
+    original_post_init = PreTrainedModel.post_init
+
+    @functools.wraps(original_post_init)
+    def post_init(self, *args, **kwargs):
+        keys = getattr(self, "_tied_weights_keys", None)
+        if (
+            new_keywords
+            and isinstance(keys, (list, tuple))
+            and "transformers_modules" in (type(self).__module__ or "")
+        ):
+            self._tied_weights_keys = _legacy_tied_weights_mapping(self, keys)
+        if new_keywords:
+            for klass in type(self).__mro__:
+                _patch_remote_model_class(klass, new_keywords)
+        return original_post_init(self, *args, **kwargs)
+
+    PreTrainedModel.post_init = post_init
+    setattr(PreTrainedModel, _REMOTE_MODEL_API_FLAG, True)
+    if UNSLOTH_ENABLE_LOGGING:
+        logger.info(
+            "Unsloth: Remote modeling code written for transformers 4.x gets the 5.x model API shims."
+        )
+
+
+def _fp8_replace_swaps_named_experts(fn) -> bool:
+    try:
+        return 'endswith(".experts")' in inspect.getsource(fn)
+    except Exception:
+        return False
+
+
+def _wrap_fp8_replace_for_modulelist_experts(original):
+    if getattr(original, "_unsloth_modulelist_experts", False):
+        return original
+    try:
+        from transformers.quantizers.quantizers_utils import should_convert_module
+        signature = inspect.signature(original)
+    except Exception:
+        return original
+
+    @functools.wraps(original)
+    def replace_with_fp8_linear(model, *args, **kwargs):
+        import torch.nn as nn
+
+        try:
+            bound = signature.bind(model, *args, **kwargs)
+        except TypeError:
+            return original(model, *args, **kwargs)
+        patterns = bound.arguments.get("modules_to_not_convert", None)
+        hidden = [
+            (name, module)
+            for name, module in model.named_modules()
+            if name.endswith(".experts") and isinstance(module, nn.ModuleList)
+        ]
+        if not hidden:
+            return original(model, *args, **kwargs)
+
+        # Rename off `.experts` so children take the FP8Linear branch; keep exclusions under the new name.
+        parked_suffix = "_unsloth_modulelist"
+        extra_patterns = []
+        renames = []
+        for name, module in hidden:
+            parent_name, _, child = name.rpartition(".")
+            parent = model.get_submodule(parent_name)
+            parked = child + parked_suffix
+            if parked in parent._modules:
+                return original(model, *args, **kwargs)
+            for sub_name, _ in module.named_modules():
+                if sub_name and not should_convert_module(f"{name}.{sub_name}", patterns):
+                    extra_patterns.append(re.escape(f"{parent_name}.{parked}.{sub_name}") + "$")
+            renames.append((parent, child, parked))
+
+        def _rename(parent, old, new):
+            items = list(parent._modules.items())
+            parent._modules.clear()
+            for key, value in items:
+                parent._modules[new if key == old else key] = value
+
+        for parent, child, parked in renames:
+            _rename(parent, child, parked)
+        try:
+            if extra_patterns:
+                bound.arguments["modules_to_not_convert"] = list(patterns or []) + extra_patterns
+            return original(*bound.args, **bound.kwargs)
+        finally:
+            for parent, child, parked in renames:
+                _rename(parent, parked, child)
+
+    replace_with_fp8_linear._unsloth_modulelist_experts = True
+    return replace_with_fp8_linear
+
+
+def fix_transformers_fp8_modulelist_experts():
+    """transformers 5.x swaps any `*.experts` for FP8Experts, breaking remote-code ModuleList experts (sarvam)."""
+    try:
+        from transformers.quantizers import quantizer_finegrained_fp8
+    except Exception:
+        return
+    quantizer_cls = getattr(quantizer_finegrained_fp8, "FineGrainedFP8HfQuantizer", None)
+    method = getattr(quantizer_cls, "_process_model_before_weight_loading", None)
+    if method is None or getattr(method, "_unsloth_modulelist_experts", False):
+        return
+
+    @functools.wraps(method)
+    def _process_model_before_weight_loading(self, model, *args, **kwargs):
+        try:
+            import transformers.integrations.finegrained_fp8 as fp8_integration
+            current = getattr(fp8_integration, "replace_with_fp8_linear", None)
+            if current is not None and _fp8_replace_swaps_named_experts(current):
+                fp8_integration.replace_with_fp8_linear = _wrap_fp8_replace_for_modulelist_experts(
+                    current
+                )
+        except Exception:
+            pass
+        try:
+            import transformers.integrations.finegrained_fp8 as fp8_integration
+            _cast_fp8_dequantize_to_model_dtype(getattr(fp8_integration, "Fp8Dequantize", None))
+        except Exception:
+            pass
+        try:
+            import transformers.integrations.finegrained_fp8 as fp8_integration
+            _pad_fp8_dequantize_ragged_blocks(getattr(fp8_integration, "Fp8Dequantize", None))
+        except Exception:
+            pass
+        return method(self, model, *args, **kwargs)
+
+    _process_model_before_weight_loading._unsloth_modulelist_experts = True
+    quantizer_cls._process_model_before_weight_loading = _process_model_before_weight_loading
+
+
+_FP8_SCALE_SUFFIXES = (".weight_scale_inv", ".weight_scale")
+
+
+def _safetensors_header_dtypes(path):
+    import json
+    with open(path, "rb") as f:
+        n = int.from_bytes(f.read(8), "little")
+        header = json.loads(f.read(n))
+    return {
+        k: v.get("dtype") for k, v in header.items() if k != "__metadata__" and isinstance(v, dict)
+    }
+
+
+def _fp8_checkpoint_files(checkpoint_files, config):
+    files = [str(f) for f in (checkpoint_files or []) if f]
+    if files:
+        return files
+    # transformers 4.x does not pass checkpoint_files to the quantizer.
+    import glob
+
+    name = getattr(config, "_name_or_path", None) or getattr(config, "name_or_path", None)
+    if not name:
+        return []
+    directory = str(name) if os.path.isdir(str(name)) else None
+    if directory is None:
+        try:
+            from huggingface_hub import try_to_load_from_cache
+            for filename in ("model.safetensors.index.json", "model.safetensors"):
+                hit = try_to_load_from_cache(
+                    name, filename, revision = getattr(config, "_commit_hash", None)
+                )
+                if isinstance(hit, str):
+                    directory = os.path.dirname(hit)
+                    break
+        except Exception:
+            return []
+    if directory is None:
+        return []
+    return sorted(glob.glob(os.path.join(directory, "*.safetensors")))
+
+
+def _fp8_checkpoint_tensor_dtypes(checkpoint_files, config):
+    # Shard headers, not the index: Step-3.7-Flash-FP8's index omits weight_scale_inv.
+    import json
+
+    files = _fp8_checkpoint_files(checkpoint_files, config)
+    dtypes = {}
+    for path in files:
+        if path.endswith(".safetensors") and os.path.isfile(path):
+            try:
+                dtypes.update(_safetensors_header_dtypes(path))
+            except Exception:
+                pass
+    if dtypes:
+        return dtypes
+    for directory in {os.path.dirname(f) for f in files}:
+        index = os.path.join(directory, "model.safetensors.index.json")
+        if os.path.isfile(index):
+            try:
+                with open(index, "r", encoding = "utf-8") as f:
+                    dtypes.update(dict.fromkeys(json.load(f).get("weight_map", {})))
+            except Exception:
+                pass
+    return dtypes
+
+
+def _fp8_unscaled_linear_patterns(model, tensor_dtypes):
+    import torch.nn as nn
+
+    if not tensor_dtypes:
+        return []
+    known = {k: v for k, v in tensor_dtypes.items() if v is not None}
+    if known:
+        if not any(str(v).upper().startswith("F8") for v in known.values()):
+            return []
+        unscaled = [
+            k[: -len(".weight")]
+            for k, v in known.items()
+            if k.endswith(".weight") and not str(v).upper().startswith("F8")
+        ]
+    else:
+        names = set(tensor_dtypes)
+        if not any(n.endswith(_FP8_SCALE_SUFFIXES) for n in names):
+            return []
+        unscaled = [
+            n[: -len(".weight")]
+            for n in names
+            if n.endswith(".weight")
+            and not any(n[: -len(".weight")] + s in names for s in _FP8_SCALE_SUFFIXES)
+        ]
+    if not unscaled:
+        return []
+    linears = {n for n, m in model.named_modules() if isinstance(m, nn.Linear)}
+    try:
+        from transformers.conversion_mapping import get_model_conversion_mapping
+        renamings = get_model_conversion_mapping(model) or []
+    except Exception:
+        renamings = []
+    try:
+        # transformers 5 matches skip entries as regexes; 4.x as substrings.
+        from transformers.quantizers.quantizers_utils import should_convert_module  # noqa: F401
+        exact = lambda n: re.escape(n) + "$"
+    except Exception:
+        exact = lambda n: n
+    patterns = []
+    for name in unscaled:
+        # Rename the key, not the module name: renames need the trailing dot (`^vit_large_projector\.`).
+        renamed = name + ".weight"
+        for rename in renamings:
+            try:
+                renamed, _ = rename.rename_source_key(renamed)
+            except Exception:
+                pass
+        renamed = renamed[: -len(".weight")] if renamed.endswith(".weight") else renamed
+        for candidate in (renamed, name):
+            if candidate in linears:
+                pattern = exact(candidate)
+                if pattern not in patterns:
+                    patterns.append(pattern)
+                break
+    return patterns
+
+
+def fix_transformers_fp8_unscaled_checkpoint_linears():
+    """Keep Linear layers an FP8 checkpoint stores unscaled in bf16 unconverted; modules_to_not_convert misses renamed ones."""
+    try:
+        from transformers.quantizers import quantizer_finegrained_fp8
+    except Exception:
+        return
+    quantizer_cls = getattr(quantizer_finegrained_fp8, "FineGrainedFP8HfQuantizer", None)
+    method = getattr(quantizer_cls, "_process_model_before_weight_loading", None)
+    if method is None or getattr(method, "_unsloth_unscaled_linears", False):
+        return
+
+    @functools.wraps(method)
+    def _process_model_before_weight_loading(self, model, *args, **kwargs):
+        extra = []
+        qconfig = getattr(self, "quantization_config", None)
+        if getattr(self, "pre_quantized", False) and qconfig is not None:
+            try:
+                dtypes = _fp8_checkpoint_tensor_dtypes(
+                    kwargs.get("checkpoint_files"), getattr(model, "config", None)
+                )
+                extra = _fp8_unscaled_linear_patterns(model, dtypes)
+            except Exception:
+                extra = []
+        saved = getattr(qconfig, "modules_to_not_convert", None) if extra else None
+        original = list(saved or [])
+        added = [p for p in extra if p not in original]
+        if not added:
+            return method(self, model, *args, **kwargs)
+        qconfig.modules_to_not_convert = original + added
+        try:
+            return method(self, model, *args, **kwargs)
+        finally:
+            # Strip only what was added: the checkpoint may list the same pattern itself.
+            current = list(getattr(qconfig, "modules_to_not_convert", None) or [])
+            restored = [p for p in current if p not in added]
+            qconfig.modules_to_not_convert = restored if restored or saved is not None else None
+
+    _process_model_before_weight_loading._unsloth_unscaled_linears = True
+    quantizer_cls._process_model_before_weight_loading = _process_model_before_weight_loading
+
+
+def _cast_fp8_dequantize_to_model_dtype(op_cls):
+    # transformers 5.4 dequantizes to the scale's fp32; cast to the replaced parameter's dtype.
+    convert = getattr(op_cls, "convert", None)
+    if convert is None or getattr(convert, "_unsloth_model_dtype", False):
+        return
+
+    @functools.wraps(convert)
+    def cast_convert(self, input_dict, *args, **kwargs):
+        import torch
+
+        out = convert(self, input_dict, *args, **kwargs)
+        model = kwargs.get("model")
+        if model is None or not isinstance(out, dict):
+            return out
+        for name, value in out.items():
+            tensor = value[0] if isinstance(value, list) and value else value
+            if not isinstance(tensor, torch.Tensor) or not tensor.is_floating_point():
+                continue
+            try:
+                target = model.get_parameter(name).dtype
+            except Exception:
+                continue
+            if target.is_floating_point and target != tensor.dtype:
+                tensor = tensor.to(target)
+                out[name] = [tensor] if isinstance(value, list) else tensor
+        return out
+
+    cast_convert._unsloth_model_dtype = True
+    op_cls.convert = cast_convert
+
+
+def _fp8_pad_ragged_block(quantized, scales, block):
+    """Zero-pad a block-FP8 weight with a ragged last block to its ceil scale grid, else None."""
+    import torch
+
+    try:
+        rows, cols = quantized.shape[-2:]
+        scale_rows, scale_cols = scales.shape[-2:]
+        block_m, block_n = int(block[0]), int(block[1])
+    except Exception:
+        return None
+    # Packed FP4 doubles its columns inside transformers; FP8 may arrive already cast, so exclude only packed.
+    packed = (torch.int8, torch.uint8, getattr(torch, "float4_e2m1fn_x2", torch.int8))
+    if quantized.dtype in packed or (rows % block_m == 0 and cols % block_n == 0):
+        return None
+    if -(-rows // block_m) != scale_rows or -(-cols // block_n) != scale_cols:
+        return None
+    padded = quantized.new_zeros(
+        (*quantized.shape[:-2], scale_rows * block_m, scale_cols * block_n)
+    )
+    padded[..., :rows, :cols] = quantized
+    return padded
+
+
+def _pad_fp8_dequantize_ragged_blocks(op_cls):
+    """16-bit loads of block-FP8 weights with a ragged last block (GLM-5.3 kv_a_proj_with_mqa: 576 rows) raise: pad, dequantize, slice."""
+    if op_cls is None:
+        return
+
+    def _block(self):
+        config = getattr(getattr(self, "hf_quantizer", None), "quantization_config", None)
+        return getattr(config, "weight_block_size", None)
+
+    original = getattr(op_cls, "_dequantize_one", None)
+    if original is not None:
+        # rows // scale_rows: raises on a ragged grid, or silently picks the wrong block when it divides (200 / 2).
+        if getattr(original, "_unsloth_ragged_blocks", False):
+            return
+
+        @functools.wraps(original)
+        def _dequantize_one(self, quantized, scales, *args, **kwargs):
+            block = _block(self)
+            padded = None if block is None else _fp8_pad_ragged_block(quantized, scales, block)
+            if padded is None:
+                return original(self, quantized, scales, *args, **kwargs)
+            rows, cols = quantized.shape[-2:]
+            out = original(self, padded, scales, *args, **kwargs)
+            return out[..., :rows, :cols].contiguous()
+
+        _dequantize_one._unsloth_ragged_blocks = True
+        op_cls._dequantize_one = _dequantize_one
+        return
+
+    convert = getattr(op_cls, "convert", None)
+    if convert is None or getattr(convert, "_unsloth_ragged_blocks", False):
+        return
+
+    @functools.wraps(convert)
+    def ragged_convert(self, input_dict, *args, **kwargs):
+        try:
+            weight = input_dict["weight$"]
+            scale = input_dict["weight_scale_inv"]
+            quantized = weight[0] if isinstance(weight, list) else weight
+            scales = scale[0] if isinstance(scale, list) else scale
+            block = _block(self)
+            padded = None if block is None else _fp8_pad_ragged_block(quantized, scales, block)
+        except Exception:
+            padded = None
+        if padded is None:
+            return convert(self, input_dict, *args, **kwargs)
+        rows, cols = quantized.shape[-2:]
+        input_dict = dict(input_dict)
+        input_dict["weight$"] = [padded] if isinstance(weight, list) else padded
+        out = convert(self, input_dict, *args, **kwargs)
+        for name, value in out.items():
+            tensor = value[0] if isinstance(value, list) and value else value
+            if getattr(tensor, "shape", None) is not None and tuple(tensor.shape[-2:]) == tuple(
+                padded.shape[-2:]
+            ):
+                tensor = tensor[..., :rows, :cols].contiguous()
+                out[name] = [tensor] if isinstance(value, list) else tensor
+        return out
+
+    ragged_convert._unsloth_ragged_blocks = True
+    op_cls.convert = ragged_convert
+
+
+def fix_transformers_is_torch_fx_available():
+    """Restore ``is_torch_fx_available`` (removed in 5.0) for 4.x-era remote code."""
+    try:
+        import transformers.utils as utils
+        import transformers.utils.import_utils as import_utils
+    except Exception:
+        return
+    if hasattr(import_utils, "is_torch_fx_available") and hasattr(utils, "is_torch_fx_available"):
+        return
+    is_torch_available = getattr(import_utils, "is_torch_available", None)
+    if is_torch_available is None:
+        return
+
+    def is_torch_fx_available():
+        return is_torch_available()
+
+    is_torch_fx_available._unsloth_restored = True
+    for module in (import_utils, utils):
+        if not hasattr(module, "is_torch_fx_available"):
+            module.is_torch_fx_available = is_torch_fx_available
+    logger.info(
+        "Unsloth: Restored transformers `is_torch_fx_available` for remote modeling code written against 4.x."
+    )
+
+
+_no_own_ignore_keys = object()
+
+
+def _validate_rope_accepting_ignore_keys(original):
+    if original is None or getattr(original, "_unsloth_ignore_keys", False):
+        return None
+    try:
+        parameters = inspect.signature(original).parameters
+    except (TypeError, ValueError):
+        return None
+    if "ignore_keys" in parameters:
+        return None
+    # 5.0 was (self, ignore_keys = None): a lone positional arg is ignore_keys only if the validator takes none.
+    takes_positional = any(
+        p.kind
+        in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.VAR_POSITIONAL,
+        )
+        for p in list(parameters.values())[1:]
+    )
+
+    @functools.wraps(original)
+    def validate_rope(
+        self,
+        *args,
+        ignore_keys = None,
+        **kwargs,
+    ):
+        if len(args) == 1 and not kwargs and not takes_positional:
+            if ignore_keys is None:
+                ignore_keys = args[0]
+            args = ()
+        if not ignore_keys:
+            return original(self, *args, **kwargs)
+        # 5.4 moved ignore_keys onto this attribute; merge them in for this call only.
+        own = self.__dict__.get("ignore_keys_at_rope_validation", _no_own_ignore_keys)
+        try:
+            merged = set(getattr(self, "ignore_keys_at_rope_validation", None) or ()) | set(
+                ignore_keys
+            )
+            self.ignore_keys_at_rope_validation = merged
+        except Exception:
+            return original(self, *args, **kwargs)
+        try:
+            return original(self, *args, **kwargs)
+        finally:
+            if own is _no_own_ignore_keys:
+                self.__dict__.pop("ignore_keys_at_rope_validation", None)
+            else:
+                self.ignore_keys_at_rope_validation = own
+
+    validate_rope._unsloth_ignore_keys = True
+    return validate_rope
+
+
+def _patch_own_validate_rope(cls):
+    wrapped = _validate_rope_accepting_ignore_keys(cls.__dict__.get("validate_rope"))
+    if wrapped is not None:
+        try:
+            cls.validate_rope = wrapped
+        except Exception:
+            pass
+
+
+def fix_transformers_validate_rope_ignore_keys():
+    """Accept 5.0-era ``validate_rope(ignore_keys = ...)``, removed in 5.4 (TypeError on load).
+    Configs like Phi3Config define their own validator: patch subclasses, hook later/remote ones."""
+    try:
+        from transformers.modeling_rope_utils import RotaryEmbeddingConfigMixin
+    except Exception:
+        return
+    original = RotaryEmbeddingConfigMixin.__dict__.get("validate_rope")
+    try:
+        if original is None or "ignore_keys" in inspect.signature(original).parameters:
+            return
+    except (TypeError, ValueError):
+        return
+    _patch_own_validate_rope(RotaryEmbeddingConfigMixin)
+
+    try:
+        from transformers import PretrainedConfig as _BaseConfig
+    except Exception:
+        _BaseConfig = None
+    if _BaseConfig is not None:
+        pending = [_BaseConfig]
+        seen = set()
+        while pending:
+            cls = pending.pop()
+            if id(cls) in seen:
+                continue
+            seen.add(id(cls))
+            _patch_own_validate_rope(cls)
+            try:
+                pending.extend(cls.__subclasses__())
+            except Exception:
+                pass
+        hook = _BaseConfig.__dict__.get("__init_subclass__")
+        if not getattr(getattr(hook, "__func__", hook), "_unsloth_ignore_keys_hook", False):
+            previous = hook.__func__ if isinstance(hook, classmethod) else None
+
+            def __init_subclass__(cls, **kwargs):
+                if previous is not None:
+                    previous(cls, **kwargs)
+                else:
+                    super(_BaseConfig, cls).__init_subclass__(**kwargs)
+                _patch_own_validate_rope(cls)
+
+            __init_subclass__._unsloth_ignore_keys_hook = True
+            if previous is not None:
+                __init_subclass__.__wrapped__ = previous
+            _BaseConfig.__init_subclass__ = classmethod(__init_subclass__)
+    logger.info(
+        "Unsloth: Patched transformers `validate_rope` to accept the 5.0 `ignore_keys` argument."
+    )
+
+
+_PLAIN_ROPE_KEYS = frozenset({"rope_type", "type", "rope_theta", "partial_rotary_factor"})
+_ATTRIBUTE_ROPE_KEYS = ("rope_theta", "partial_rotary_factor")
+_NO_ROPE_ATTRIBUTE = object()
+
+
+def fix_transformers_remote_rope_scaling_none():
+    """For remote-code configs only, read plain RoPE back as ``rope_scaling = None`` as 4.x did.
+
+    transformers 5 aliases ``rope_scaling`` to ``rope_parameters``, which is never None, so hub code
+    guarded by ``if config.rope_scaling is not None`` indexes missing keys (``KeyError: 'factor'``).
+    Only configs whose ``__init__`` takes ``rope_scaling`` and not ``rope_parameters``; native and
+    5.x-authored configs are untouched; a real scaling dict only loses the base and partial rotary
+    factor it duplicates from the config's own attributes."""
+    try:
+        from transformers.configuration_utils import PretrainedConfig
+    except Exception:
+        return
+    prop = PretrainedConfig.__dict__.get("rope_scaling")
+    if not isinstance(prop, property) or prop.fget is None:
+        return
+    if getattr(prop.fget, "_unsloth_remote_plain_rope_none", False):
+        return
+    original_get = prop.fget
+
+    legacy = {}
+
+    def _written_for_4x(cls):
+        # A 4.x-era config takes rope_scaling in __init__; a 5.x one takes rope_parameters.
+        if cls not in legacy:
+            try:
+                parameters = inspect.signature(cls.__init__).parameters
+                legacy[cls] = "rope_scaling" in parameters and "rope_parameters" not in parameters
+            except (TypeError, ValueError):
+                legacy[cls] = False
+        return legacy[cls]
+
+    @functools.wraps(original_get)
+    def rope_scaling(self):
+        value = original_get(self)
+        if not (
+            isinstance(value, dict)
+            and "transformers_modules" in (type(self).__module__ or "")
+            and _written_for_4x(type(self))
+        ):
+            return value
+        if (
+            value.get("rope_type", value.get("type", "default")) == "default"
+            and set(value) <= _PLAIN_ROPE_KEYS
+        ):
+            return None
+        # Copies in a real scaling dict fail 4.x validators expecting exact keys (InternLM2).
+        moved = [
+            key
+            for key in _ATTRIBUTE_ROPE_KEYS
+            if key in value and self.__dict__.get(key, _NO_ROPE_ATTRIBUTE) == value[key]
+        ]
+        if not moved:
+            return value
+        return {key: item for key, item in value.items() if key not in moved}
+
+    rope_scaling._unsloth_remote_plain_rope_none = True
+    PretrainedConfig.rope_scaling = property(rope_scaling, prop.fset, prop.fdel, prop.__doc__)
 
 
 def fix_transformers_rope_scaling_drops_theta():
@@ -1571,12 +3893,8 @@ def fix_transformers_rope_scaling_drops_theta():
     owner = _rope_scaling_property_owner()
     if owner is not None and _rope_scaling_setter_is_patched(owner):
         return
-    # The probe answers through the cached `transformers.LlamaConfig`. After a reload of
-    # configuration_utils that class still inherits the OLD patched owner while the live
-    # owner is new and unpatched, so the probe would report the base survives and leave
-    # the live owner to lose it. A probe that cannot see the owner is no evidence and
-    # does not get to veto; installing anyway is safe, since the wrapper is a no-op on a
-    # build that keeps the base.
+    # After a reload the cached LlamaConfig still inherits the old owner, so a probe that cannot
+    # see the live owner must not veto; the wrapper is a no-op when unneeded.
     probe_can_see_owner = owner is None or _rope_probe_inherits(owner)
     if probe_can_see_owner and not _transformers_rope_scaling_assignment_drops_theta():
         return
@@ -1585,28 +3903,28 @@ def fix_transformers_rope_scaling_drops_theta():
         return
 
     prop = owner.__dict__["rope_scaling"]
-    # Unwrap first, so a reload that restored upstream's property is re-patched rather
-    # than wrapped on top of a wrapper.
+    # Unwrap first so a reload is re-patched, not double-wrapped.
     original = getattr(prop.fset, "__wrapped__", prop.fset)
 
     @functools.wraps(original)
     def rope_scaling(self, value):
-        # Both halves are guarded, since this runs on every model load and an unexpected
-        # config shape must not turn an assignment into a traceback. The assignment
-        # itself is not, since swallowing that would be a silent behaviour change.
+        # Guard the reads but not the assignment: swallowing that would change behaviour silently.
         try:
             carried = _rope_theta_snapshot(self)
         except Exception:
             carried = None
+        try:
+            unnamed = _rope_labels_naming_no_base(self, value)
+        except Exception:
+            unnamed = None
         result = original(self, value)
         try:
-            _carry_rope_theta_across_assignment(self, carried)
+            _carry_rope_theta_across_assignment(self, carried, unnamed)
         except Exception:
             pass
         return result
 
-    # Set explicitly as well as by wraps: the unwrap above and the tests read it, so a
-    # wraps-less edit must not make the patch un-probeable.
+    # Set explicitly: the unwrap above and tests read __wrapped__.
     rope_scaling.__wrapped__ = original
     # The mark travels ON the setter, so a reload that drops it is re-patched.
     setattr(rope_scaling, _ROPE_SCALING_PATCH_FLAG, True)
@@ -1619,6 +3937,339 @@ def fix_transformers_rope_scaling_drops_theta():
         )
     except Exception as e:
         logger.info(f"Unsloth: Failed patching rope_scaling ({e})")
+
+
+# Token ids 4.x `PretrainedConfig.__init__` set (None) on every config; 5 dropped them from the base.
+_LEGACY_CONFIG_TOKEN_ATTRIBUTES = (
+    "pad_token_id",
+    "bos_token_id",
+    "eos_token_id",
+    "sep_token_id",
+    "decoder_start_token_id",
+)
+_REMOTE_CODE_LEGACY_FLAG = "_unsloth_remote_code_legacy_defaults"
+
+
+def _legacy_config_attributes_missing_from_base():
+    """Legacy token attributes the base config lacks, measured on an instance (empty on 4.x)."""
+    try:
+        from transformers import PretrainedConfig
+        base = PretrainedConfig()
+    except Exception:
+        return ()
+    missing = []
+    for name in _LEGACY_CONFIG_TOKEN_ATTRIBUTES:
+        try:
+            getattr(base, name)
+        except AttributeError:
+            missing.append(name)
+        except Exception:
+            pass
+    return tuple(missing)
+
+
+def _compute_legacy_default_rope_parameters(
+    config = None,
+    device = None,
+    seq_len = None,
+    **kwargs,
+):
+    """transformers 4.x `_compute_default_rope_parameters` (5 dropped "default")."""
+    import torch
+
+    base = getattr(config, "rope_theta", None)
+    if base is None:
+        parameters = getattr(config, "rope_parameters", None)
+        if isinstance(parameters, dict):
+            base = parameters.get("rope_theta")
+    if base is None:
+        base = 10000.0
+    partial_rotary_factor = getattr(config, "partial_rotary_factor", None) or 1.0
+    head_dim = getattr(config, "head_dim", None) or config.hidden_size // config.num_attention_heads
+    dim = int(head_dim * partial_rotary_factor)
+    inv_freq = 1.0 / (
+        base
+        ** (torch.arange(0, dim, 2, dtype = torch.int64).to(device = device, dtype = torch.float) / dim)
+    )
+    return inv_freq, 1.0
+
+
+class _RopeInitFunctionsWithDefault(dict):
+    """Live view of `ROPE_INIT_FUNCTIONS` plus "default"; never add it to the real dict, whose spread in `_init_weights` would override every native default."""
+
+    def __init__(self, live):
+        super().__init__()
+        self._live = live
+
+    def __getitem__(self, key):
+        try:
+            return self._live[key]
+        except KeyError:
+            if key == "default":
+                return _compute_legacy_default_rope_parameters
+            raise
+
+    def get(
+        self,
+        key,
+        default = None,
+    ):
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+    def __contains__(self, key):
+        return key == "default" or key in self._live
+
+    def __setitem__(self, key, value):
+        self._live[key] = value
+
+    def __iter__(self):
+        return iter(self._live)
+
+    def __len__(self):
+        return len(self._live)
+
+    def keys(self):
+        return self._live.keys()
+
+    def items(self):
+        return self._live.items()
+
+    def values(self):
+        return self._live.values()
+
+
+# 4.x mask-builder keywords 5 renamed or dropped: (old, new), new None if dropped.
+_MASKING_LEGACY_KEYWORDS = (("input_embeds", "inputs_embeds"), ("cache_position", None))
+
+
+def _masking_legacy_keyword_changes():
+    """Changed entries, read off `_preprocess_mask_arguments` since public builders may already be wrapped (unsloth_zoo)."""
+    try:
+        from transformers import masking_utils
+        parameters = inspect.signature(masking_utils._preprocess_mask_arguments).parameters
+    except Exception:
+        return ()
+    return tuple(
+        (old, new)
+        for old, new in _MASKING_LEGACY_KEYWORDS
+        if old not in parameters and (new is None or new in parameters)
+    )
+
+
+def _accept_legacy_mask_keywords(function, changes):
+    @functools.wraps(function)
+    def wrapper(*args, **kwargs):
+        for old, new in changes:
+            if old not in kwargs:
+                continue
+            value = kwargs.pop(old)
+            if new is not None and new not in kwargs:
+                kwargs[new] = value
+        return function(*args, **kwargs)
+
+    wrapper._unsloth_legacy_mask_keywords = True
+    return wrapper
+
+
+def _patch_remote_code_module(
+    module,
+    missing_attributes,
+    restore_default_rope,
+    mask_keyword_changes = (),
+):
+    """Class attributes so checkpoint values win and config.json is unchanged; no module flag, since transformers re-executes changed remote files in the same module."""
+    if module is None:
+        return
+    namespace = getattr(module, "__dict__", {})
+    module_name = getattr(module, "__name__", None)
+    if restore_default_rope:
+        rope = namespace.get("ROPE_INIT_FUNCTIONS")
+        if (
+            isinstance(rope, dict)
+            and not isinstance(rope, _RopeInitFunctionsWithDefault)
+            and "default" not in rope
+        ):
+            module.ROPE_INIT_FUNCTIONS = _RopeInitFunctionsWithDefault(rope)
+    if mask_keyword_changes:
+        from transformers import masking_utils
+        for name, value in list(namespace.items()):
+            if (
+                callable(value)
+                and name.startswith("create_")
+                and not getattr(value, "_unsloth_legacy_mask_keywords", False)
+                and (
+                    value is getattr(masking_utils, name, None)
+                    or getattr(value, "__module__", None) == masking_utils.__name__
+                )
+            ):
+                setattr(module, name, _accept_legacy_mask_keywords(value, mask_keyword_changes))
+    config_base = module_base = None
+    if missing_attributes:
+        from transformers import PretrainedConfig as config_base
+    if restore_default_rope:
+        from torch.nn import Module as module_base
+    for value in list(namespace.values()):
+        if not isinstance(value, type) or value.__module__ != module_name:
+            continue
+        if config_base is not None and issubclass(value, config_base):
+            for name in missing_attributes:
+                if not any(name in klass.__dict__ for klass in value.__mro__):
+                    setattr(value, name, None)
+        # 5's `_init_weights` calls the module's `compute_default_rope_parameters`; 4.x classes lack it.
+        elif (
+            module_base is not None
+            and issubclass(value, module_base)
+            and "RotaryEmbedding" in value.__name__
+            and not hasattr(value, "compute_default_rope_parameters")
+        ):
+            value.compute_default_rope_parameters = staticmethod(
+                _compute_legacy_default_rope_parameters
+            )
+
+
+def _patch_remote_code_package(
+    module_name,
+    missing_attributes,
+    restore_default_rope,
+    mask_keyword_changes = (),
+):
+    if not module_name.startswith("transformers_modules."):
+        return
+    package = module_name.rpartition(".")[0]
+    for name, module in list(sys.modules.items()):
+        if name == package or name.startswith(package + "."):
+            _patch_remote_code_module(
+                module, missing_attributes, restore_default_rope, mask_keyword_changes
+            )
+
+
+def fix_transformers5_remote_code_legacy_defaults():
+    """Let 4.x remote code (Trinity-Large `modeling_afmoe.py`) build on 5; hooks `get_class_in_module` so native models are untouched."""
+    try:
+        import transformers.dynamic_module_utils as dynamic_module_utils
+        from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping remote-code legacy defaults ({e})")
+        return
+    missing_attributes = _legacy_config_attributes_missing_from_base()
+    restore_default_rope = "default" not in ROPE_INIT_FUNCTIONS
+    mask_keyword_changes = _masking_legacy_keyword_changes()
+    if not (missing_attributes or restore_default_rope or mask_keyword_changes):
+        return
+    original = getattr(dynamic_module_utils, "get_class_in_module", None)
+    if original is None or getattr(original, _REMOTE_CODE_LEGACY_FLAG, False):
+        return
+
+    @functools.wraps(original)
+    def get_class_in_module(*args, **kwargs):
+        cls = original(*args, **kwargs)
+        try:
+            _patch_remote_code_package(
+                getattr(cls, "__module__", "") or "",
+                missing_attributes,
+                restore_default_rope,
+                mask_keyword_changes,
+            )
+        except Exception as e:
+            logger.info(f"Unsloth: remote-code legacy defaults skipped ({e})")
+        return cls
+
+    setattr(get_class_in_module, _REMOTE_CODE_LEGACY_FLAG, True)
+    dynamic_module_utils.get_class_in_module = get_class_in_module
+    for name, module in list(sys.modules.items()):
+        if name.startswith("transformers_modules."):
+            try:
+                _patch_remote_code_module(
+                    module, missing_attributes, restore_default_rope, mask_keyword_changes
+                )
+            except Exception:
+                pass
+
+
+_CONFIG_ONLY_REMOTE_CODE_FLAG = "_unsloth_config_only_remote_code"
+_CONFIG_ONLY_REMOTE_CODE_WARNED = set()
+
+
+def _remote_config_breaks_native_model(config):
+    """True for a config-only remote repo (MiniMax-M3) whose config leaves a native sub-config a bare `PretrainedConfig`."""
+    config_class = type(config)
+    if not (getattr(config_class, "__module__", "") or "").startswith("transformers_modules"):
+        return False
+    auto_map = getattr(config, "auto_map", None)
+    if not isinstance(auto_map, dict) or "AutoConfig" not in auto_map:
+        return False
+    if any(str(key).startswith("AutoModel") for key in auto_map):
+        return False
+    from transformers import PretrainedConfig
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+
+    model_type = getattr(config, "model_type", None)
+    if not model_type or model_type not in CONFIG_MAPPING:
+        return False
+    native_class = CONFIG_MAPPING[model_type]
+    if issubclass(config_class, native_class):
+        return False
+    for key in getattr(native_class, "sub_configs", None) or {}:
+        try:
+            sub_config = getattr(config, key, None)
+        except Exception:
+            continue
+        if sub_config is not None and type(sub_config) is PretrainedConfig:
+            return True
+    return False
+
+
+def fix_transformers_config_only_remote_code():
+    """Return the native config when `_remote_config_breaks_native_model`, so every caller (device-map planner too) sees it."""
+    try:
+        from transformers import AutoConfig
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping config-only remote code fix ({e})")
+        return
+    original = AutoConfig.__dict__.get("from_pretrained")
+    original_func = getattr(original, "__func__", None)
+    if original_func is None or getattr(original_func, _CONFIG_ONLY_REMOTE_CODE_FLAG, False):
+        return
+
+    @functools.wraps(original_func)
+    def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
+        result = original_func(cls, pretrained_model_name_or_path, *args, **kwargs)
+        if not kwargs.get("trust_remote_code"):
+            return result
+        config = result[0] if isinstance(result, tuple) else result
+        try:
+            breaks = _remote_config_breaks_native_model(config)
+        except Exception:
+            breaks = False
+        if not breaks:
+            return result
+        try:
+            native = original_func(
+                cls, pretrained_model_name_or_path, *args, **{**kwargs, "trust_remote_code": False}
+            )
+        except Exception as e:
+            logger.info(f"Unsloth: Native config reload failed, keeping the remote one ({e})")
+            return result
+        model_type = getattr(config, "model_type", None)
+        if model_type not in _CONFIG_ONLY_REMOTE_CODE_WARNED:
+            _CONFIG_ONLY_REMOTE_CODE_WARNED.add(model_type)
+            native_config = native[0] if isinstance(native, tuple) else native
+            print(
+                f"Unsloth: `{pretrained_model_name_or_path}` ships only a config class for "
+                f"`{model_type}`, and transformers builds its own model for it. Using "
+                f"transformers' `{type(native_config).__name__}`, since the repo's config "
+                f"leaves sub-configs that model reads unparsed."
+            )
+        return native
+
+    setattr(from_pretrained, _CONFIG_ONLY_REMOTE_CODE_FLAG, True)
+    try:
+        AutoConfig.from_pretrained = classmethod(from_pretrained)
+    except Exception as e:
+        logger.info(f"Unsloth: Failed patching AutoConfig.from_pretrained ({e})")
 
 
 # ValueError: 'aimv2' is already used by a Transformers config, pick another name.
@@ -1669,9 +4320,8 @@ def fix_vllm_aimv2_issue():
             logger.info(f"Unsloth: Failed patching vLLM with error = {str(e)}")
 
 
-# vLLM >= 0.22 (PR #35024) deleted vllm.transformers_utils.tokenizer, which an older
-# unsloth_zoo still imports unguarded (#6385). Stub it with a meta path finder appended AFTER
-# the real ones, so it only fires when vLLM no longer ships the module.
+# vLLM >= 0.22 removed vllm.transformers_utils.tokenizer, which older unsloth_zoo imports;
+# a stub finder appended after the real ones fills in only when missing.
 _VLLM_LORA_TOKENIZER_MODULE = "vllm.transformers_utils.tokenizer"
 _VLLM_TOKENIZER_STUB_SENTINEL = "__unsloth_vllm_tokenizer_stub__"
 
@@ -1778,22 +4428,47 @@ def fix_vllm_guided_decoding_params():
 
 
 def fix_trl_vllm_ascend():
-    # transformers >= 4.48's _is_package_available returns (bool, version_or_None), which TRL
-    # caches and returns directly. A non-empty tuple is truthy, so `if is_X_available():` fires
-    # for an absent X and triggers a failing import -- vllm_ascend blocked `from trl import
-    # GRPOConfig` off Ascend hosts. Coerce every tuple-cached flag to bool.
     if importlib.util.find_spec("trl") is None:
         return
     try:
         import trl.import_utils as tiu
     except Exception:
         return
+    _coerce_trl_available_checks(tiu)
+
+
+def _coerce_trl_available_checks(tiu):
+    # TRL caches transformers' (bool, version) tuple, which is always truthy; coerce to bool.
     for attr in list(vars(tiu)):
         if not (attr.startswith("_") and attr.endswith("_available")):
             continue
         cached = getattr(tiu, attr)
         if isinstance(cached, tuple):
             setattr(tiu, attr, bool(cached and cached[0]))
+    # TRL 0.27-0.28 call this helper per check; transformers >= 5.3 returns (exists, None) there.
+    helper = getattr(tiu, "_is_package_available", None)
+    if helper is None or getattr(helper, "_unsloth_bool", False):
+        return
+    try:
+        if not isinstance(helper("_unsloth_absent_package_probe"), tuple):
+            return
+    except Exception:
+        return
+
+    @functools.wraps(helper)
+    def _is_package_available(
+        pkg_name,
+        return_version = False,
+        *args,
+        **kwargs,
+    ):
+        result = helper(pkg_name, return_version, *args, **kwargs)
+        if not return_version and isinstance(result, tuple):
+            return bool(result and result[0])
+        return result
+
+    _is_package_available._unsloth_bool = True
+    tiu._is_package_available = _is_package_available
 
 
 def ignore_logger_messages():
@@ -1805,13 +4480,8 @@ def ignore_logger_messages():
         pass
 
 
-# huggingface_hub routes to Xet on `is_xet_available()`, which asks importlib.metadata whether the
-# hf_xet DISTRIBUTION is installed and never whether it IMPORTS, so an unloadable hf_xet is still
-# routed to and dies as transformers' misleading "you need to install the hf_xet package".
-# HF_HUB_DISABLE_XET=1 is the Hub's own way off that path, and constants.py freezes it at import
-# time, which is why this is wired into the FIRST block of _gpu_init.py, not the late fixes.
-# unsloth_zoo.hf_xet_fallback does not cover this: it is a stall watchdog around its own wrappers,
-# and an ImportError at import time never reaches it.
+# huggingface_hub routes to Xet if hf_xet metadata exists, even if it cannot import.
+# HF_HUB_DISABLE_XET is frozen at import, so this runs in the first block of _gpu_init.py.
 _CPU_FAMILY_BY_MACHINE = {
     "amd64": "x86_64",
     "x86_64": "x86_64",
@@ -1832,8 +4502,7 @@ _WINDOWS_PLATFORM_TAG_CPU = {
     "win32": "x86",
 }
 _MULTI_ARCH_PLATFORM_TAG_PREFIXES = ("macosx_", "manylinux", "musllinux", "linux_")
-# Header machine ids, for installs whose WHEEL metadata cannot be read. A family absent here reads
-# as "cannot tell", which is never a mismatch.
+# A family absent here reads as cannot tell, never a mismatch.
 _ELF_MACHINE_CPU = {
     0x03: "x86",
     0x15: "ppc64le",
@@ -1843,8 +4512,7 @@ _ELF_MACHINE_CPU = {
     0xB7: "arm64",
 }
 _PE_MACHINE_CPU = {0x014C: "x86", 0x01C4: "armv7l", 0x8664: "x86_64", 0xAA64: "arm64"}
-# huggingface_hub.constants.ENV_VARS_TRUE_VALUES, matched after .upper(), so an explicit disable
-# is read exactly the way the Hub itself would have read it.
+# Mirrors huggingface_hub ENV_VARS_TRUE_VALUES (after .upper()).
 _HF_HUB_ENV_TRUE_VALUES = ("1", "ON", "TRUE", "YES")
 _MACHO_CPU_TYPE_CPU = {7: "x86", 12: "armv7l", 0x01000007: "x86_64", 0x0100000C: "arm64"}
 
@@ -2053,17 +4721,14 @@ def fix_broken_hf_xet_wheel():
     """Route Hugging Face downloads over plain HTTPS when hf_xet is installed but unimportable."""
     explicit = os.environ.get("HF_HUB_DISABLE_XET", "").strip()
     if explicit != "":
-        # Set explicitly, in either direction: the user's choice outranks ours. A TRUTHY value set
-        # after the Hub was already imported is read by nobody, though, so carry it to the frozen
-        # constant. Falsey values are left alone, so an explicit opt back IN to Xet still wins.
+        # Explicit user setting wins. A truthy value set after the Hub imported is carried to the
+        # frozen constant; falsey values are left so an opt back in still wins.
         if explicit.upper() in _HF_HUB_ENV_TRUE_VALUES:
             _disable_xet_on_already_imported_huggingface_hub()
         return
     cached = sys.modules.get("hf_xet", None)
     if cached is not None:
-        # Already imported, so it works, and repeat calls stay free. Unless it is the namespace
-        # shell: huggingface_hub's own `from hf_xet import ...` leaves that cached even though the
-        # symbols it wanted were missing, so a cached module is not proof of a working one.
+        # A cached namespace shell is not proof of a working hf_xet.
         if _hf_xet_module_is_real(cached):
             return
         sys.modules.pop("hf_xet", None)
@@ -2074,10 +4739,7 @@ def fix_broken_hf_xet_wheel():
     except Exception:
         return
     if spec is None:
-        # find_spec cannot see it, but huggingface_hub never asks find_spec: a leftover
-        # hf_xet-*.dist-info with no package beside it still reports Xet available and still dies
-        # in `from hf_xet import XetFileInfo`. A genuinely absent hf_xet has no metadata either
-        # and is left alone, since huggingface_hub handles that case correctly.
+        # Leftover hf_xet dist-info without the package still reports Xet available to the Hub.
         if not _hf_xet_distribution_is_installed():
             return
         suspicion = (
@@ -2090,13 +4752,7 @@ def fix_broken_hf_xet_wheel():
     else:
         return
 
-    # Confirm the suspicion by importing. If it imports after all, we misread the metadata and Xet
-    # stays on. Only reached for an already-suspect install, so a healthy one never pays for it.
-    #
-    # Importing the package is not enough on its own: an hf_xet/ directory with no __init__.py and
-    # no extension in it is a NAMESPACE package, which imports fine and defines nothing, while
-    # huggingface_hub does `from hf_xet import PyXetDownloadInfo, download_files` and fails. So the
-    # module has to carry real code, which a namespace package never does (its __file__ is None).
+    # Must carry real code: a namespace hf_xet imports fine but defines nothing (__file__ is None).
     try:
         module = importlib.import_module("hf_xet")
         if _hf_xet_module_is_real(module):
@@ -2106,8 +4762,7 @@ def fix_broken_hf_xet_wheel():
     except Exception as error:
         failure = f"{type(error).__name__}: {error}"
 
-    # The variable is what child processes inherit; the helper is what fixes THIS process when
-    # something already imported the Hub and froze the constant.
+    # The env var covers children; the helper fixes this process if the Hub already froze it.
     os.environ["HF_HUB_DISABLE_XET"] = "1"
     _disable_xet_on_already_imported_huggingface_hub()
     logger.warning(
@@ -2123,8 +4778,7 @@ def fix_broken_hf_xet_wheel():
 
 
 def patch_ipykernel_hf_xet():
-    # HF-XET 1.1.10 with ipykernel 7.0.0 / 7.0.1 raises LookupError on ContextVar 'shell_parent';
-    # see huggingface/xet-core#526.
+    # hf_xet 1.1.10 with ipykernel 7.0.0/7.0.1 raises LookupError on ContextVar 'shell_parent'.
     if importlib.util.find_spec("hf_xet") is None:
         return
     if importlib.util.find_spec("ipykernel") is None:
@@ -2169,16 +4823,13 @@ def patch_datasets():
         )
 
 
-# psutil divides the pmgr voltage-states tables by 1e6 for MHz, but Apple switched them from
-# Hz to kHz on M4, so psutil <= 7.2.2 reads a 4.5 GHz M4 Pro as 4 MHz (#8519). Upstream fix
-# giampaolo/psutil#2824 is merged and unreleased; mirrored here and in
-# studio/backend/utils/hardware/hardware.py. Keep both in sync; delete once psutil is fixed.
-# Apple clocks are 0.6-4.6 GHz, so a raw Hz entry sits above 1e8 and kHz below.
+# psutil <= 7.2.2 reads M4 freq tables (now kHz) as Hz. Mirrored in
+# studio/backend/utils/hardware/hardware.py: keep in sync; delete once psutil#2824 ships.
+# Apple clocks are 0.6-4.6 GHz: a raw Hz entry is above 1e8, kHz below.
 _APPLE_CPU_FREQ_UNIT_THRESHOLD = 100_000_000
 _APPLE_MIN_PLAUSIBLE_CPU_MHZ = 500
 _APPLE_MAX_PLAUSIBLE_CPU_MHZ = 20000
-# Below this a table is a GPU/NPU rail: above every Apple GPU peak so far, under the slowest
-# CPU cluster shipped (M1 E-core, 2064 MHz).
+# Tables peaking below this are GPU/NPU rails; slowest CPU cluster is M1 E-core at 2064 MHz.
 _APPLE_CPU_CLUSTER_MIN_PEAK_MHZ = 2000
 _APPLE_VOLTAGE_STATES_KEY = re.compile(r"^voltage-states\d+-sram$")
 # Fixed for the life of the host, so probe once. The sentinel separates "not probed yet" from "probed, unavailable".
@@ -2230,8 +4881,7 @@ def _apple_cpu_freq_range_mhz():
     if _apple_cpu_freq_range != "unprobed":
         return _apple_cpu_freq_range
 
-    # Unlocked, every thread spawns its own ioreg and a slow failing probe landing last overwrites
-    # a good reading with None.
+    # Probe under the lock: unlocked, each thread spawns its own ioreg, and a slow failing probe can overwrite a good reading with None.
     with _apple_cpu_freq_lock:
         if _apple_cpu_freq_range != "unprobed":
             return _apple_cpu_freq_range
@@ -2271,8 +4921,7 @@ def _corrected_apple_cpu_freq(sample):
         return sample._replace(current = peak, min = low, max = peak)
     if not usable:
         return sample
-    # No tables: recover the magnitude instead. psutil truncates in integer arithmetic, so this
-    # lands on the GHz step (4 -> 4000 MHz), not the peak.
+    # No tables: psutil truncates, so this lands on the GHz step, not the peak.
     return sample._replace(
         current = current * 1000,
         min = getattr(sample, "min", 0.0) * 1000,
@@ -2331,12 +4980,10 @@ def patch_psutil_cpu_freq():
         try:
             result = original_cpu_freq(*args, **kwargs)
         except TypeError:
-            # Arguments psutil does not take are the caller's mistake, not psutil declining to answer.
-            # This replaces psutil's function globally, so swallowing would hide the error everywhere.
+            # This replaces psutil globally, so caller argument errors must propagate.
             raise
         except Exception:
-            # psutil raises on M5, whose renumbered tables are not at the indexes it hardcodes. With no
-            # tables either, its error is the honest answer.
+            # psutil raises on M5 because its renumbered tables sit at other indexes; with no tables either, re-raise its error.
             stand_in = _from_tables(_percpu_requested(args, kwargs))
             if stand_in is None:
                 raise
@@ -2366,8 +5013,7 @@ def check_fbgemm_gpu_version():
         fbgemm_gpu_version = importlib_version("fbgemm_gpu_genai")
     except:
         return
-    # Lower fbgemm_gpu versions segfault or bad-alloc, so disable FBGEMM and fall back to Triton
-    # rather than raise.
+    # fbgemm_gpu < 1.4.0 segfaults or bad-allocs; fall back to Triton.
     if Version(fbgemm_gpu_version) < Version("1.4.0"):
         os.environ["UNSLOTH_HAS_FBGEMM"] = "0"
         logger.info(
@@ -2381,23 +5027,99 @@ def check_fbgemm_gpu_version():
 
 def patch_enable_input_require_grads():
     """Patch PreTrainedModel.enable_input_require_grads to tolerate vision models
-    that raise NotImplementedError from get_input_embeddings()."""
+    that raise NotImplementedError from get_input_embeddings(), and so that its hook traces
+    under torch.compile."""
     import inspect
+    import torch
     from transformers import PreTrainedModel
 
-    # Only patch the new variant that iterates over self.modules(); see huggingface/transformers#41993.
     try:
         original_source = inspect.getsource(PreTrainedModel.enable_input_require_grads)
     except:
         return
 
+    class _RequireGrad(torch.autograd.Function):
+        # x + -0.0 is x exactly (signed zeros too); the anchor only makes the output need grad.
+        @staticmethod
+        def forward(ctx, x, anchor):
+            return x + anchor
+
+        @staticmethod
+        def backward(ctx, grad):
+            return grad, None
+
+    # Created here: torch.compile cannot create a tensor that requires grad inside a graph.
+    anchor = torch.tensor(-0.0, requires_grad = True)
+
+    def make_inputs_require_grads(module, input, output):
+        # requires_grad_() on an intermediate is a graph break under torch.compile.
+        if torch.compiler.is_compiling():
+            if not torch.is_grad_enabled():
+                return  # a compiled decode step records no grad
+            return _RequireGrad.apply(output, anchor)
+        output.requires_grad_(True)
+
+    def make_inputs_embeds_require_grads(module, args, kwargs):
+        # inputs_embeds skips the embedding hook, so reentrant checkpointing starved the adapters (#2178).
+        inputs_embeds = kwargs.get("inputs_embeds")
+        if (
+            not isinstance(inputs_embeds, torch.Tensor)
+            or inputs_embeds.requires_grad
+            or not torch.is_grad_enabled()
+            or not inputs_embeds.is_floating_point()
+        ):
+            return None
+        if torch.compiler.is_compiling():
+            inputs_embeds = _RequireGrad.apply(inputs_embeds, anchor)
+        else:
+            inputs_embeds = inputs_embeds.detach().requires_grad_(True)
+        return args, {**kwargs, "inputs_embeds": inputs_embeds}
+
+    def register_inputs_embeds_hooks(model):
+        # Replace, not stack: a repeat enable keeps one hook, and disable can remove it.
+        handles = []
+        for module in model.modules():
+            if not isinstance(module, PreTrainedModel):
+                continue
+            for key, hook in list(module._forward_pre_hooks.items()):
+                if getattr(hook, "__name__", None) == make_inputs_embeds_require_grads.__name__:
+                    del module._forward_pre_hooks[key]
+                    module._forward_pre_hooks_with_kwargs.pop(key, None)
+            handles.append(
+                module.register_forward_pre_hook(make_inputs_embeds_require_grads, with_kwargs = True)
+            )
+        return handles
+
+    # Older transformers hooks a single embedding (huggingface/transformers#41993 added the loop).
+    # wraps keeps inspect.getsource on transformers' source for later source checks.
+    original = PreTrainedModel.enable_input_require_grads
     if "for module in self.modules()" not in original_source:
+
+        @functools.wraps(original)
+        def _patched_single_enable_input_require_grads(self):
+            self._require_grads_hook = self.get_input_embeddings().register_forward_hook(
+                make_inputs_require_grads
+            )
+            self._require_grads_hooks = [self._require_grads_hook] + register_inputs_embeds_hooks(
+                self
+            )
+
+        original_disable = PreTrainedModel.disable_input_require_grads
+
+        # The old disable only removes _require_grads_hook, which would leave the pre-hooks.
+        @functools.wraps(original_disable)
+        def _patched_single_disable_input_require_grads(self):
+            for hook in getattr(self, "_require_grads_hooks", ()):
+                hook.remove()
+            self._require_grads_hooks = []
+            original_disable(self)
+
+        PreTrainedModel.enable_input_require_grads = _patched_single_enable_input_require_grads
+        PreTrainedModel.disable_input_require_grads = _patched_single_disable_input_require_grads
         return
 
+    @functools.wraps(original)
     def _patched_enable_input_require_grads(self):
-        def make_inputs_require_grads(module, input, output):
-            output.requires_grad_(True)
-
         hooks = []
         seen_modules = set()
 
@@ -2411,10 +5133,7 @@ def patch_enable_input_require_grads():
             try:
                 inspect.signature(getter).bind()
             except TypeError:
-                # Remote code may declare get_input_embeddings(self, input_ids)
-                # (stepfun-ai/Step-3.7-Flash). Asked by binding, not by calling: a
-                # TypeError from INSIDE a working getter must propagate, not cost the
-                # module its input-gradient hook.
+                # Checked by binding, not calling: a TypeError inside a working getter must propagate.
                 continue
             except (ValueError, AttributeError):
                 pass  # no introspectable signature; undecidable, so just call it
@@ -2435,13 +5154,59 @@ def patch_enable_input_require_grads():
             seen_modules.add(embedding_id)
             hooks.append(input_embeddings.register_forward_hook(make_inputs_require_grads))
 
-        self._require_grads_hooks = hooks
+        self._require_grads_hooks = hooks + register_inputs_embeds_hooks(self)
         if hooks:
             self._require_grads_hook = hooks[0]
 
     PreTrainedModel.enable_input_require_grads = _patched_enable_input_require_grads
 
     logger.info("Unsloth: Patched enable_input_require_grads for vision model compatibility")
+
+
+_VOXTRAL_REALTIME_MODULE = "transformers.models.voxtral_realtime.modeling_voxtral_realtime"
+
+
+def fix_transformers_voxtral_realtime_inplace_audio_add():
+    """VoxtralRealtimeModel.forward does `inputs_embeds += audio_embeds`; with input gradients on that is a
+    leaf requiring grad, so step 1 raises (#3013, transformers <= 5.19). Hand it a non-leaf copy. Lazy: only
+    once transformers imported the module."""
+    cls = getattr(sys.modules.get(_VOXTRAL_REALTIME_MODULE), "VoxtralRealtimeModel", None)
+    if cls is None or getattr(cls.forward, "_unsloth_inplace_audio_fix", False):
+        return
+    try:
+        if "inputs_embeds +=" not in inspect.getsource(cls.forward):
+            return
+    except Exception:
+        return
+    import torch
+
+    original = cls.forward
+
+    @functools.wraps(original)
+    def forward(
+        self,
+        input_ids = None,
+        *args,
+        **kwargs,
+    ):
+        if args or not torch.is_grad_enabled():
+            return original(self, input_ids, *args, **kwargs)
+        inputs_embeds = kwargs.get("inputs_embeds")
+        # input_ids is read only for this lookup, so passing the embeddings instead is equivalent.
+        if inputs_embeds is None and input_ids is not None:
+            inputs_embeds, input_ids = self.get_input_embeddings()(input_ids), None
+        if (
+            isinstance(inputs_embeds, torch.Tensor)
+            and inputs_embeds.is_leaf
+            and inputs_embeds.requires_grad
+        ):
+            inputs_embeds = inputs_embeds.clone()
+        if inputs_embeds is not None:
+            kwargs["inputs_embeds"] = inputs_embeds
+        return original(self, input_ids, **kwargs)
+
+    forward._unsloth_inplace_audio_fix = True
+    cls.forward = forward
 
 
 def patch_unsafe_trainer_rng_load():
@@ -2481,8 +5246,7 @@ def patch_unsafe_trainer_rng_load():
                     "(CVE-2026-1839 / CVE-2025-32434); upgrade to torch >= 2.6."
                 )
 
-    # One process-wide torch.load shim, inert unless the calling thread is inside _load_rng_state,
-    # so the gate applies at the real rng load with no global-swap race.
+    # One process-wide torch.load shim, inert unless the calling thread is inside _load_rng_state; a global swap would race other threads.
     if not getattr(torch.load, "_unsloth_rng_guard", False):
         _orig_load = torch.load
         _rng_active = threading.local()
@@ -2512,6 +5276,355 @@ def patch_unsafe_trainer_rng_load():
     logger.info("Unsloth: Hardened Trainer._load_rng_state rng loading (CVE-2026-1839).")
 
 
+def patch_bitsandbytes_paged_optimizer_resume():
+    """Keep paged bitsandbytes optimizer state paged after a checkpoint resume (#2168).
+    Optimizer8bit.load_state_dict moves every state1/state2 into plain CUDA memory, so a resumed
+    paged_* run holds that state in the CUDA allocator (or OOMs loading it), where a fresh run
+    keeps it in paged memory that can spill to CPU. Load it on the host instead and copy each
+    tensor into the buffer a fresh run would allocate (get_state_buffer, or AdEMAMix's doubled
+    state1); everything else still moves to the parameter's device as before."""
+    if "bitsandbytes" not in sys.modules:
+        return
+    try:
+        from bitsandbytes.optim.optimizer import Optimizer8bit
+    except Exception:
+        return
+    load_state_dict = getattr(Optimizer8bit, "load_state_dict", None)
+    if (
+        load_state_dict is None
+        or not hasattr(Optimizer8bit, "get_state_buffer")
+        or getattr(load_state_dict, "_unsloth_repage", False)
+    ):
+        return
+    try:
+        stages_on_host = "move_to_device" in inspect.signature(load_state_dict).parameters
+    except (TypeError, ValueError):
+        stages_on_host = False
+
+    import torch
+
+    def _paged_buffer(self, p, value):
+        if value.shape == p.shape:
+            buffer = self.get_state_buffer(p, dtype = value.dtype)
+        elif value.shape == (2, *p.shape) and hasattr(self, "_get_state_double_buffer"):
+            buffer = self._get_state_double_buffer(p, dtype = value.dtype)
+        else:
+            return None
+        return buffer if getattr(buffer, "is_paged", False) else None
+
+    @functools.wraps(load_state_dict)
+    def _unsloth_load_state_dict(self, state_dict, *args, **kwargs):
+        if not getattr(self, "is_paged", False):
+            return load_state_dict(self, state_dict, *args, **kwargs)
+        move_to_device = kwargs.pop("move_to_device", args[0] if args else True)
+        if stages_on_host:
+            result = load_state_dict(self, state_dict, False, *args[1:], **kwargs)
+        else:
+            result = load_state_dict(self, state_dict, *args, **kwargs)
+        non_castable = getattr(self, "non_castable_tensor_keys", ("state1", "state2"))
+        for group in self.param_groups:
+            for p in group["params"]:
+                state = self.state.get(p)
+                if not state:
+                    continue
+                for key, value in state.items():
+                    # No is_paged check: torch.save keeps that attribute, so a loaded host copy still claims it.
+                    if key not in non_castable or not isinstance(value, torch.Tensor):
+                        continue
+                    buffer = None
+                    if move_to_device and key in ("state1", "state2") and p.device.type != "cpu":
+                        buffer = _paged_buffer(self, p, value)
+                    if buffer is not None:
+                        buffer.copy_(value)
+                        state[key] = buffer
+                    elif move_to_device and stages_on_host:
+                        state[key] = value.to(p.device)
+        return result
+
+    _unsloth_load_state_dict._unsloth_repage = True
+    Optimizer8bit.load_state_dict = _unsloth_load_state_dict
+
+
+def patch_bitsandbytes_optimizer_step_sync():
+    """Skip Optimizer8bit.step's per-parameter sync_gpu for non-paged optimizers on the default stream.
+    Paged state needs it to order prefetch (bnb 41a9c708); non-paged it only stalls the host, output bit-identical."""
+    if "bitsandbytes" not in sys.modules:
+        return
+    try:
+        import bitsandbytes.optim.optimizer as bnb_optimizer
+    except Exception:
+        return
+    Optimizer8bit = getattr(bnb_optimizer, "Optimizer8bit", None)
+    step = getattr(Optimizer8bit, "step", None)
+    sync_gpu = getattr(bnb_optimizer, "sync_gpu", None)
+    if step is None or sync_gpu is None or getattr(step, "_unsloth_no_sync", False):
+        return
+    try:
+        if "sync_gpu(p)" not in inspect.getsource(step):
+            return
+    except (OSError, TypeError):
+        return
+    import contextvars
+
+    skip = contextvars.ContextVar("unsloth_bnb_skip_sync", default = False)
+
+    @functools.wraps(sync_gpu)
+    def _unsloth_sync_gpu(t):
+        if skip.get():
+            return None
+        return sync_gpu(t)
+
+    import torch
+
+    def _on_default_streams(optimizer):
+        # bnb kernels run on the legacy default stream; off it the sync is the only ordering.
+        devices = {p.device for group in optimizer.param_groups for p in group["params"]}
+        return bool(devices) and all(
+            d.type == "cuda" and torch.cuda.current_stream(d) == torch.cuda.default_stream(d)
+            for d in devices
+        )
+
+    @functools.wraps(step)
+    def _unsloth_step(self, *args, **kwargs):
+        token = skip.set(not getattr(self, "is_paged", False) and _on_default_streams(self))
+        try:
+            return step(self, *args, **kwargs)
+        finally:
+            skip.reset(token)
+
+    _unsloth_step._unsloth_no_sync = True
+    bnb_optimizer.sync_gpu = _unsloth_sync_gpu
+    Optimizer8bit.step = _unsloth_step
+
+
+def _raised_in_triton_host_build(exc):
+    """Triton builds each kernel's launcher with the host C compiler in triton/runtime/build.py."""
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        tb = exc.__traceback__
+        while tb is not None:
+            path = tb.tb_frame.f_code.co_filename.replace("\\", "/")
+            if path.endswith("triton/runtime/build.py"):
+                return True
+            tb = tb.tb_next
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+def patch_bitsandbytes_triton_quantize_fallback(device_type = "xpu"):
+    """bitsandbytes' XPU quantize ops are Triton's, whose launchers need a host C compiler that a stock
+    Windows box lacks (#10844). On that build failure use bitsandbytes' PyTorch kernels instead."""
+    if "bitsandbytes" not in sys.modules:
+        return
+    try:
+        import torch
+        from bitsandbytes.backends.utils import triton_available
+
+        if not triton_available:
+            return
+        from bitsandbytes.backends.triton import ops as triton_ops
+    except Exception:
+        return
+    if getattr(triton_ops, "_unsloth_quantize_fallback", None) is not None:
+        return
+    state = {"error": None}
+    # bitsandbytes registers its PyTorch kernels under "default", i.e. this key.
+    default_keys = torch._C.DispatchKeySet(torch._C.DispatchKey.CompositeExplicitAutograd)
+
+    def _wrap(name):
+        triton_kernel = getattr(triton_ops, name)
+        op = getattr(torch.ops.bitsandbytes, name).default
+
+        @functools.wraps(triton_kernel)
+        def kernel(*args, **kwargs):
+            if state["error"] is None:
+                try:
+                    return triton_kernel(*args, **kwargs)
+                except Exception as exc:
+                    if not _raised_in_triton_host_build(exc):
+                        raise
+                    state["error"] = f"{type(exc).__name__}: {str(exc).strip().splitlines()[0]}"
+                    print(
+                        "Unsloth: Triton could not build its kernel launcher, as there is no working "
+                        f"C/C++ compiler ({state['error']}). bitsandbytes 4bit quantization will use "
+                        "its PyTorch kernels instead - only model loading is slower."
+                    )
+            return op.redispatch(default_keys, *args, **kwargs)
+
+        return kernel
+
+    try:
+        kernels = {name: _wrap(name) for name in ("quantize_4bit", "quantize_blockwise")}
+        key = torch._C._dispatch_key_for_device(device_type)
+        lib = torch.library.Library("bitsandbytes", "FRAGMENT")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            for name, kernel in kernels.items():
+                # torch < 2.13 refuses to override a Python-registered kernel unless asked to.
+                lib.impl(name, torch._disable_dynamo(kernel), key, allow_override = True)
+    except Exception:
+        return
+    state["lib"] = lib
+    triton_ops._unsloth_quantize_fallback = state
+
+
+_PT2_UNSAFE_LOAD_ENV = "UNSLOTH_ALLOW_UNSAFE_PT2_LOAD"
+# torch.export's .pt2 readers: their weights_only=False loads unpickle archive bytes.
+_PT2_LOADER_MODULES = frozenset(
+    (
+        "torch._export.serde.serialize",
+        "torch.export.pt2_archive._package",
+    )
+)
+
+
+def _pt2_unsafe_load_allowed():
+    return os.environ.get(_PT2_UNSAFE_LOAD_ENV, "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _pt2_unsafe_load_error(what):
+    import pickle
+    return pickle.UnpicklingError(
+        f"Unsloth: refused to {what} inside a torch.export .pt2 archive. Unpickling it can run "
+        f"arbitrary code (CVE-2026-4538). If you trust this file, set {_PT2_UNSAFE_LOAD_ENV}=1 "
+        "and load it again."
+    )
+
+
+def _pt2_loader_caller(frame):
+    # A few frames up: other torch.load wrappers (the rng guard, later patches) sit in between.
+    hops = 0
+    while frame is not None and hops < 8:
+        name = frame.f_globals.get("__name__", "")
+        if name in _PT2_LOADER_MODULES:
+            return name
+        frame = frame.f_back
+        hops += 1
+    return ""
+
+
+class _Pt2PickleModule(types.ModuleType):
+    """Stands in for `pickle` inside torch.export.pt2_archive._package: loads is refused."""
+
+    def __init__(self, real):
+        super().__init__(real.__name__)
+        self._unsloth_pt2_real_pickle = real
+
+    def __getattr__(self, name):
+        return getattr(self._unsloth_pt2_real_pickle, name)
+
+    def loads(self, *args, **kwargs):
+        if _pt2_unsafe_load_allowed():
+            return self._unsloth_pt2_real_pickle.loads(*args, **kwargs)
+        raise _pt2_unsafe_load_error("unpickle an opaque object")
+
+
+_PT2_PACKAGE_MODULE = "torch.export.pt2_archive._package"
+_PT2_FINDER_SENTINEL = "_unsloth_pt2_package_finder"
+
+
+def _install_pt2_pickle_proxy(package):
+    real_pickle = getattr(package, "pickle", None)
+    # Marker, not isinstance: a reloaded import_fixes defines a new _Pt2PickleModule class.
+    already = hasattr(real_pickle, "_unsloth_pt2_real_pickle")
+    if isinstance(real_pickle, types.ModuleType) and not already:
+        package.pickle = _Pt2PickleModule(real_pickle)
+        return True
+    return False
+
+
+class _Pt2PackageLoader(importlib.abc.Loader):
+    __slots__ = ("_loader",)
+
+    def __init__(self, loader):
+        self._loader = loader
+
+    def create_module(self, spec):
+        create_module = getattr(self._loader, "create_module", None)
+        return None if create_module is None else create_module(spec)
+
+    def exec_module(self, module):
+        self._loader.exec_module(module)
+        _install_pt2_pickle_proxy(module)
+
+    def __getattr__(self, name):
+        return getattr(self._loader, name)
+
+
+class _Pt2PackageFinder(importlib.abc.MetaPathFinder):
+    """Installs the pickle stand-in right after torch.export.pt2_archive._package first runs."""
+
+    def __init__(self):
+        setattr(self, _PT2_FINDER_SENTINEL, True)
+
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
+        if fullname != _PT2_PACKAGE_MODULE:
+            return None
+        for finder in sys.meta_path:
+            if finder is self or getattr(finder, _PT2_FINDER_SENTINEL, False):
+                continue
+            find_spec = getattr(finder, "find_spec", None)
+            try:
+                spec = find_spec(fullname, path, target) if find_spec is not None else None
+            except Exception:
+                spec = None
+            if spec is not None:
+                if spec.loader is not None and hasattr(spec.loader, "exec_module"):
+                    spec.loader = _Pt2PackageLoader(spec.loader)
+                return spec
+        return None
+
+
+def patch_torch_export_pt2_unsafe_load():
+    """CVE-2026-4538 (pytorch/pytorch#176791 never merged): torch.export.load unpickles .pt2
+    payloads with weights_only=False. Those loads become weights_only=True and the bare
+    pickle.loads for opaque constants is refused; tensors and ordinary exported programs still
+    load. UNSLOTH_ALLOW_UNSAFE_PT2_LOAD=1 restores torch's behaviour."""
+    try:
+        import torch
+    except Exception:
+        return
+    patched = False
+    load = torch.load
+    if not getattr(load, "_unsloth_pt2_guard", False):
+
+        @functools.wraps(load)
+        def _pt2_guarded_torch_load(*args, **kwargs):
+            if kwargs.get("weights_only") is not False or _pt2_unsafe_load_allowed():
+                return load(*args, **kwargs)
+            if _pt2_loader_caller(sys._getframe(1)) not in _PT2_LOADER_MODULES:
+                return load(*args, **kwargs)
+            kwargs["weights_only"] = True
+            try:
+                return load(*args, **kwargs)
+            except Exception as error:
+                raise _pt2_unsafe_load_error("unpickle a non-tensor payload") from error
+
+        _pt2_guarded_torch_load._unsloth_pt2_guard = True
+        # Carry the rng guard's markers so patch_unsafe_trainer_rng_load stays idempotent.
+        for attribute in ("_unsloth_rng_guard", "_unsloth_rng_flag"):
+            if hasattr(load, attribute):
+                setattr(_pt2_guarded_torch_load, attribute, getattr(load, attribute))
+        torch.load = _pt2_guarded_torch_load
+        patched = True
+
+    # Opaque constants bypass torch.load: patch _package now, or lazily so import stays cheap.
+    package = sys.modules.get(_PT2_PACKAGE_MODULE)
+    if package is not None:
+        patched = _install_pt2_pickle_proxy(package) or patched
+    elif not any(getattr(finder, _PT2_FINDER_SENTINEL, False) for finder in sys.meta_path):
+        sys.meta_path.insert(0, _Pt2PackageFinder())
+        patched = True
+    if patched:
+        logger.info("Unsloth: Hardened torch.export .pt2 loading (CVE-2026-4538).")
+
+
 def _is_custom_torch_build(raw_version_str):
     """Check if a raw version string indicates a custom or source build.
 
@@ -2524,8 +5637,7 @@ def _is_custom_torch_build(raw_version_str):
     local = raw_version_str.split("+", 1)[1]
     if not local:
         return False
-    # fullmatch, so the whole local identifier matches: cu/rocm need a trailing digit (cu124,
-    # rocm6.3), cpu/xpu are exact, and case-insensitive since some builds use uppercase.
+    # fullmatch: cu/rocm need a trailing digit, cpu/xpu are exact, case-insensitive.
     return not re.fullmatch(r"cu\d[\d.]*|rocm\d[\d.]*|cpu|xpu", local, re.IGNORECASE)
 
 
@@ -2551,21 +5663,11 @@ _TORCHVISION_ABI_MARKERS = (
     "torchvision.io.video",
     "torchvision.io._video",
 )
-# A loader failure means torchvision only when it names torchvision or the torch libraries it
-# links: the probe below imports torchvision where nothing used to, so a box broken for an
-# unrelated reason must keep importing unsloth, not get "reinstall torchvision".
+# Require torchvision or torch libs in the message so unrelated breakage is not misdiagnosed.
 _LOADER_FAILURE_MARKERS = ("undefined symbol", "cannot open shared object file")
 _TORCH_LIBRARY_MARKERS = ("torchvision", "libtorch", "libc10", "_C.so", "c10::")
-# A lazily-imported torchvision with a dead extension surfaces as this, not a loader error.
-# "partially initialized" is load-bearing: without it a typo on a healthy torchvision
-# ("module 'torchvision' has no attribute 'nms'") would be answered with "reinstall". Nothing
-# AFTER the module name is, because CPython words the rest four ways for the one fault:
-#   3.9 - 3.12   partially initialized module 'torchvision' has no attribute 'extension'
-#   3.13, 3.14   partially initialized module 'torchvision' from '<file>' has no attribute
-#   from-import  cannot import name 'extension' from partially initialized module 'torchvision'
-#   submodule    cannot access submodule 'ops' of module 'torchvision'
-# The first three share "partially initialized module 'torchvision'"; the fourth names it as
-# the parent instead, so it gets its own alternative.
+# "partially initialized" is required so a typo on a healthy torchvision is not misread;
+# the 4th alternative covers "cannot access submodule 'ops' of module 'torchvision'".
 _TORCHVISION_ATTRIBUTE_RE = re.compile(
     r"partially initialized module 'torchvision(?:\.[\w.]+)?'"
     r"|cannot access submodule '[\w.]+' of module 'torchvision(?:\.[\w.]+)?'"
@@ -2629,20 +5731,11 @@ def _is_broken_torchvision_error(error) -> bool:
     return False
 
 
-# PyPI carries one torchvision build per release, for one CUDA family; every other build lives
-# on download.pytorch.org under an index named after torch's local tag. With --no-deps an
-# unqualified pin swaps a working wheel for PyPI's and raises the very
-# "operator torchvision::nms does not exist" it was handed out to clear.
+# Non-default torchvision builds live on download.pytorch.org; a bare PyPI pin breaks them.
 _TORCH_BACKEND_INDEX = re.compile(r"cpu|xpu|cu\d+|rocm\d+(?:\.\d+)*", re.IGNORECASE)
-# The same families, matched as a PREFIX. A vendor build carries more than the family in its
-# local tag: this repo's AMD extras install torch-2.10.0+rocm7.2.0.lw.gitb6ee5fde and
-# triton-3.6.0+rocm7.2.0.gitba5c1517 straight from repo.radeon.com, and neither tag is an
-# index name. Those are not PyPI builds, so advice that treats them as PyPI ones would swap a
-# working Radeon wheel for the default CUDA build.
+# Prefix match: vendor builds (e.g. +rocm7.2.0.lw.git...) carry more than the index name.
 _TORCH_BACKEND_FAMILY = re.compile(r"(cpu|xpu|cu\d+|rocm[\d.]*)", re.IGNORECASE)
-# conda keeps the backend in the build string (py3.12_cuda12.4_cudnn9_0) and leaves the version
-# plain, so a conda torch looks like a PyPI one by version alone; its
-# conda-meta/<name>-<version>-<build>.json tells them apart.
+# conda keeps the backend in the build string, so check conda-meta to tell it from PyPI.
 _CONDA_TORCH_PACKAGES = ("pytorch", "pytorch-cpu", "pytorch-gpu", "libtorch")
 
 
@@ -2655,8 +5748,7 @@ def _torch_local_tag(torch_version_raw):
 def _is_conda_managed(names, version_raw):
     """Did conda install one of `names` at this version, rather than pip?"""
     conda_meta = os.path.join(sys.prefix, "conda-meta")
-    # A conda version never carries the +tag, but strip it so a pip install inside a conda prefix is
-    # still matched on its release numbers.
+    # Strip any +tag so a pip install inside a conda prefix still matches on its release numbers.
     version = (version_raw or "").split("+", 1)[0]
     if not version or not os.path.isdir(conda_meta):
         return False
@@ -2683,8 +5775,7 @@ def _has_no_matching_public_wheel(torch_version_raw):
         return True
     local = _torch_local_tag(torch_version_raw)
     if not local:
-        # An absent tag means PyPI for a pip install, but conda never writes one either, and its torch
-        # may be CPU, ROCm or a CUDA family PyPI does not ship.
+        # No tag means PyPI for pip, but conda never writes one either.
         return _torch_is_conda_managed(torch_version_raw)
     return not _TORCH_BACKEND_INDEX.fullmatch(local)
 
@@ -2736,10 +5827,7 @@ def _torch_accelerator_note(torch_version_raw):
     """
     local = _torch_local_tag(torch_version_raw)
     if not local:
-        # conda never writes a local tag, so an untagged version alone reads like a PyPI
-        # install. `pip install --upgrade torch` into a conda environment overlays the
-        # conda-managed files with a PyPI wheel, and the backend it lands on is whatever
-        # PyPI ships by default rather than the one the channel built.
+        # pip install --upgrade torch into conda overlays conda's files with PyPI's default backend.
         if _torch_is_conda_managed(torch_version_raw):
             return (
                 "    conda installed this torch, so upgrade it the same way "
@@ -2752,10 +5840,7 @@ def _torch_accelerator_note(torch_version_raw):
         vendor = _TORCH_BACKEND_FAMILY.match(local)
         if vendor is None:
             return ""
-        # A tag that names a family but is not an index name is a vendor build, which is
-        # what this repo's own AMD extras install. PyPI has no such version, and neither
-        # does download.pytorch.org, so the only advice that keeps the accelerator is to
-        # go back to the source the wheel came from.
+        # A family tag that is not an index name is a vendor build: reinstall from its source.
         return (
             f"    That takes the default build from PyPI. This torch is a {local} build, "
             f"which no public index carries, so upgrade it from wherever it came from "
@@ -2797,8 +5882,7 @@ def _torchvision_repair_command(required = None, torch_version_raw = None):
     if required is None:
         spec = "torchvision"
     elif len(required) >= 3:
-        # Exact, because the pair is: torchvision 0.22.0 needs torch 2.7.0 and 0.22.1 needs 2.7.1, so
-        # a 0.22.* wildcard resolves 0.22.1 while --no-deps keeps the mismatched torch.
+        # Exact pin: torch 2.7.0 needs 0.22.0, 2.7.1 needs 0.22.1, and --no-deps keeps torch.
         spec = f"torchvision=={required[0]}.{required[1]}.{required[2]}"
     else:
         spec = f"torchvision=={required[0]}.{required[1]}.*"
@@ -2829,8 +5913,7 @@ def _probe_torchvision_binary(
     except Exception as error:
         shadow = _shadowing_torchvision_path()
         if shadow is not None and _TORCHVISION_ATTRIBUTE_RE.search(str(error)):
-            # Named: the metadata says torchvision is installed and it is, so a reinstall
-            # changes nothing. The file is the whole fix.
+            # Metadata says torchvision is installed and it is, so a reinstall changes nothing; the file is the whole fix.
             raise ImportError(
                 f"Unsloth: {shadow} is being imported as `torchvision`, ahead of the "
                 f"installed package ({type(error).__name__}: {error}). Rename or move that "
@@ -2894,8 +5977,7 @@ def torchvision_compatibility_check():
     if required is None:
         return
 
-    # Carry torch's own patch into the companion: they move together (2.7.0/0.22.0, 2.7.1/0.22.1),
-    # so the repair names one wheel instead of a minor-wide range --no-deps cannot satisfy.
+    # Pin torchvision to torch's patch number too, since they move together (2.7.1/0.22.1); a minor-wide range fails under --no-deps.
     if len(torch_release) >= 3:
         required = (required[0], required[1], torch_release[2])
 
@@ -2922,15 +6004,13 @@ def torchvision_compatibility_check():
         torchvision_version_raw
     )
 
-    # Nightly/dev/alpha/beta/rc builds mismatch expectedly, so those and source builds only warn;
-    # a stable mismatch fails fast to prevent runtime operator errors.
+    # Prerelease and source builds only warn; stable mismatches fail fast.
     _pre_tags = (".dev", "a0", "b0", "rc", "alpha", "beta", "nightly")
     is_prerelease = any(t in torch_version_raw for t in _pre_tags) or any(
         t in torchvision_version_raw for t in _pre_tags
     )
 
-    # Only downgrade to warning for custom/source or prerelease builds. Stable mismatches should fail fast to
-    # prevent runtime operator errors.
+    # Only custom/source and prerelease builds downgrade to a warning; stable mismatches fail fast to avoid runtime operator errors.
     if is_custom or is_prerelease:
         reason = "custom/source build" if is_custom else "pre-release build"
         logger.warning(
@@ -2972,8 +6052,7 @@ def _unsatisfied_transformers_requirements():
         except Exception:
             continue  # Unparseable requirement line - ignore it, never guess.
 
-        # extra = "" drops optional-extra requirements and inapplicable python_version / sys_platform
-        # gates: packages the user is right not to have.
+        # extra = "" drops optional-extra and inapplicable platform requirements.
         if requirement.marker is not None:
             try:
                 if not requirement.marker.evaluate({"extra": ""}):
@@ -2984,8 +6063,7 @@ def _unsatisfied_transformers_requirements():
         try:
             installed = importlib_version(requirement.name)
         except PackageNotFoundError:
-            # Absent, which --no-deps causes as readily as a stale version: transformers checks its base
-            # requirements at root import and raises PackageNotFoundError with the same misleading hint.
+            # Absent (e.g. after --no-deps) also triggers transformers' misleading root-import error.
             unsatisfied.append((requirement.name, str(requirement.specifier), None))
             continue
         except Exception:
@@ -2995,8 +6073,7 @@ def _unsatisfied_transformers_requirements():
             continue  # Installed, and no floor it could fall below.
 
         try:
-            # Parse explicitly: SpecifierSet.contains() reports a non-PEP440 version as "not contained"
-            # rather than raising, which would be a false positive.
+            # Parse explicitly: SpecifierSet.contains() treats non-PEP440 as not contained.
             installed_version = TrueVersion(installed)
         except Exception:
             continue  # Not a PEP 440 version - we cannot judge it, so stay quiet.
@@ -3030,8 +6107,7 @@ def check_transformers_dependency_versions():
     ):
         return
     try:
-        # find_spec RAISES ValueError rather than returning None for a transformers in sys.modules with
-        # __spec__ None or unset (a stub, or one mid-teardown). Not worth failing the import over.
+        # find_spec raises ValueError when transformers in sys.modules has no __spec__.
         if importlib.util.find_spec("transformers") is None:
             return
     except Exception:
@@ -3074,20 +6150,13 @@ def check_transformers_dependency_versions():
     logger.warning("\n".join(lines))
 
 
-# torch releases that first provide a given attribute, used only to name the
-# upgrade in the message below. Measured against the wheels rather than guessed:
-# torch 2.6.0 has neither MX dtype and 2.8.0 has both, and both landed in 2.7.0
-# (pytorch/pytorch#146427 and #146578). An attribute that is not in here still
-# gets the diagnosis, just without a release to name, which is the point: the
-# table is a convenience and never the mechanism.
+# Only names the upgrade in the message; MX dtypes landed in torch 2.7.0.
 _TORCH_ATTRIBUTE_FLOORS = {
     "float8_e8m0fnu": "2.7.0",
     "float4_e2m1fn_x2": "2.7.0",
 }
 
-# Packages unsloth imports and cannot add a missing torch attribute to. The same
-# AttributeError raised from user code is a typo, so it is left exactly as torch
-# wrote it.
+# The same AttributeError from user code is a typo, so only these packages get the diagnosis.
 _TORCH_ATTRIBUTE_DEPENDENTS = frozenset(
     (
         "accelerate",
@@ -3138,8 +6207,7 @@ def _installed_version(package):
 
 
 def _torch_too_old_message(attribute, package, exception):
-    # torch.__version__ rather than the metadata version, because it carries the
-    # build (2.6.0+cu124) and that is what the user reads in every other message.
+    # Use torch.__version__ over the metadata version: it carries the build tag (2.6.0+cu124) users see elsewhere.
     torch_version = getattr(sys.modules.get("torch"), "__version__", None)
     if not torch_version:
         torch_version = _installed_version("torch")
@@ -3156,8 +6224,7 @@ def _torch_too_old_message(attribute, package, exception):
         f"a {package} with a torch that cannot serve it.",
     ]
     if floor is not None:
-        # A known floor is evidence of the direction: the attribute was ADDED in that
-        # release, so the torch here is the older half and upgrading it is the remedy.
+        # A known floor means the attribute was added in that release, so this torch is the older side and upgrading is the remedy.
         lines += [
             f"torch.{attribute} first appears in torch {floor}, so this torch is the "
             f"older half.",
@@ -3166,10 +6233,7 @@ def _torch_too_old_message(attribute, package, exception):
             f"    pip install --upgrade {requirement}{_torch_companion_specs()}",
         ]
     else:
-        # No floor is no evidence of direction. The attribute may be newer than this
-        # torch, and it may equally have been REMOVED by it, which an older dependency
-        # reaching for a retired API hits; prescribing an upgrade there is the opposite
-        # remedy. So state both directions and prescribe neither.
+        # No known floor: the attribute may be newer or removed, so prescribe neither direction.
         lines += [
             "",
             f"torch.{attribute} is not in this release's table of added attributes, so "
@@ -3221,35 +6285,38 @@ def patch_torch_missing_attribute_error():
     try:
         import torch
     except Exception:
-        # A missing or broken torch has its own, clearer error further down
-        # _gpu_init.py; there is nothing to wrap here.
+        # A missing or broken torch raises its own clearer error later in _gpu_init.py, so there is nothing to wrap here.
         return False
 
     original = torch.__dict__.get("__getattr__")
     if original is None:
-        # No module-level __getattr__ to wrap, so torch raises its AttributeError
-        # from the interpreter itself and there is nothing to improve.
+        # Without a module-level __getattr__, torch raises AttributeError itself and there is nothing to improve.
         return False
     if getattr(original, "__unsloth_patched__", False):
         return True
 
+    # torch's stacklevel=2 would name this wrapper; catch_warnings + replay is process-global, so warn here.
+    deprecated_attrs = torch.__dict__.get("_deprecated_attrs", {})
+
     @functools.wraps(original)
     def __getattr__(name):
+        replacement = deprecated_attrs.get(name)
+        if replacement is not None:
+            warnings.warn(
+                f"'{name}' is deprecated, please use "
+                f"'{replacement.__module__}.{replacement.__name__}()'",
+                UserWarning,
+                stacklevel = 2,
+            )
+            return replacement()
         try:
             return original(name)
         except AttributeError as exception:
             try:
-                # The frame that made the access, and only that one. Walking
-                # further up would blame transformers for a typo in a callback
-                # transformers happened to call.
+                # Only the direct caller frame; walking up would blame transformers for a callback typo.
                 requester = sys._getframe(1).f_globals.get("__name__") or ""
             except Exception:
-                # sys._getframe is CPython-only and raises an audit event, so a
-                # hardened interpreter can refuse it. A bare `raise` here would
-                # rethrow THAT exception instead of torch's AttributeError, and
-                # `hasattr(torch, name)` only swallows AttributeError, so an
-                # ordinary feature probe would start propagating a RuntimeError.
-                # Unattributable is not fatal: leave it to torch's own error.
+                # sys._getframe can be refused by audit hooks; re-raising would replace AttributeError.
                 requester = ""
             package = requester.split(".", 1)[0]
             if package not in _TORCH_ATTRIBUTE_DEPENDENTS:
@@ -3264,12 +6331,10 @@ def patch_torch_missing_attribute_error():
     return True
 
 
-# The '#' argument formats in triton's CUDA driver shim need this macro, and
-# CPython stopped requiring it in 3.13.
+# Triton's CUDA driver shim needs this macro for '#' formats; CPython 3.13 dropped the need.
 _PY_SSIZE_T_CLEAN = "PY_SSIZE_T_CLEAN"
 
-# `#define` / `#undef PY_SSIZE_T_CLEAN` as their own directives, anchored to the start of
-# a line so a mention inside a comment or a string literal is neither.
+# Match only real define or undef directives for PY_SSIZE_T_CLEAN, anchored to line start so comments and strings are skipped.
 _PY_SSIZE_T_CLEAN_DIRECTIVE = re.compile(
     r"^[ \t]*#[ \t]*(define|undef)[ \t]+" + _PY_SSIZE_T_CLEAN + r"\b",
     re.M,
@@ -3362,12 +6427,8 @@ def _defines_py_ssize_t_clean_before_python_h(source: str) -> bool:
     return state
 
 
-# Every distribution this repository knows of that provides the `triton` import name. Only a
-# fallback for interpreters without `packages_distributions`; the mapping is asked for first
-# wherever it exists, so a provider added upstream is still found on 3.10 and later.
-# Providers published only on download.pytorch.org, so a reinstall of one needs torch's own
-# accelerator index rather than PyPI. `pytorch-triton*` is matched by prefix; these are the
-# renamed spellings that prefix no longer covers.
+# Fallback when packages_distributions is unavailable. Renamed torch-index-only providers
+# that the `pytorch-triton*` prefix does not cover.
 _TORCH_INDEX_TRITON_PROVIDERS = ("triton-xpu", "triton-rocm")
 
 _TRITON_PROVIDERS = (
@@ -3376,11 +6437,7 @@ _TRITON_PROVIDERS = (
     "pytorch-triton",
     "pytorch-triton-rocm",
     "pytorch-triton-xpu",
-    # The renamed spellings. Both accelerator providers were renamed on
-    # download.pytorch.org: `pytorch-triton-rocm` stops at 3.5.1 and `triton-rocm` carries
-    # 3.7 onwards, the same split `pytorch-triton-xpu` and `triton-xpu` have. Missing here,
-    # a current ROCm or XPU shim reads as `triton==unknown` on the probing fallback, and
-    # the repair command then installs generic CUDA `triton` over the installed provider.
+    # Missing these, ROCm/XPU shims read as triton==unknown and repair installs CUDA triton.
     "triton-xpu",
     "triton-rocm",
 )
@@ -3447,19 +6504,12 @@ def _distribution_owning_path(names, path):
         return claimants[0]
     if not claimants:
         return None
-    # Coexisting providers can both RECORD the same file, and then the first entry is
-    # nothing but ordering. Three tiebreaks, most authoritative first.
-    #
-    # 1. The distribution torch itself requires. A renamed provider leaves the old
-    #    dist-info behind (`pytorch-triton-xpu` beside `triton-xpu` after an upgrade), so
-    #    both claim the file and both name the backend; only torch says which one belongs
-    #    to the torch that is installed.
+    # Coexisting providers can RECORD the same file; tiebreak 1: what torch requires.
     required = _torch_required_triton_distributions()
     named = [name for name in claimants if _canonical_distribution(name) in required]
     if len(named) == 1:
         return named[0]
-    # 2. Failing that, torch's backend family, because the harmful answer is always the one
-    #    that installs a CUDA build over an accelerator one.
+    # 2. torch's backend family, so we never install CUDA triton over an accelerator build.
     local = _torch_local_tag(getattr(sys.modules.get("torch"), "__version__", None)).lower()
     for family in ("xpu", "rocm"):
         if family in local:
@@ -3493,12 +6543,7 @@ def _triton_distribution(offending_path = None):
     except Exception:
         names = []
     if not names:
-        # `packages_distributions` is Python 3.10+, and pyproject still admits 3.9, where
-        # the import above raises and leaves this empty -- reporting `triton==unknown` and
-        # recommending the CUDA `triton` over the platform build, which is the exact
-        # failure this helper exists to avoid. The backport answers the same question when
-        # it is installed; when it is not, ask each provider directly, which needs no
-        # mapping at all: a provider that is not installed has no version to report.
+        # packages_distributions needs 3.10+; on 3.9 the fallback avoids reporting triton==unknown and advising CUDA triton
         try:
             from importlib_metadata import packages_distributions as _backport
             names = list(_backport().get("triton") or [])
@@ -3506,13 +6551,11 @@ def _triton_distribution(offending_path = None):
             names = []
     if not names:
         names = [name for name in _TRITON_PROVIDERS if _installed_version(name) != "unknown"]
-    # The distribution that actually ships the offending file wins over ordering, when the
-    # file is known and the metadata answers.
+    # The distribution that ships the offending file is tried first, ahead of list order, when metadata identifies it.
     owner = _distribution_owning_path(names, offending_path)
     if owner is not None:
         names = [owner] + [name for name in names if name != owner]
-    # Prefer a provider that can actually report a version; a stale empty dist-info
-    # otherwise wins over the real one purely on ordering.
+    # Prefer a provider with a version: a stale empty dist-info could otherwise win on order.
     for name in names:
         try:
             return name, importlib_version(name)
@@ -3536,10 +6579,7 @@ def _triton_reinstall_command(distribution, triton_version):
     pin to give, and an invented one would resolve to nothing at all, so that case stays bare.
     """
     index = ""
-    # `triton-xpu` as well as `pytorch-triton-*`: torch 2.10 renamed the XPU provider and
-    # pyproject pins the new name straight from download.pytorch.org (studio/setup.ps1
-    # records the rename too). Matching only the old spelling asked PyPI for `triton-xpu`,
-    # where that pinned wheel is not published at all.
+    # torch 2.10 renamed the XPU provider to triton-xpu, published only on download.pytorch.org.
     if distribution.startswith("pytorch-triton") or distribution in _TORCH_INDEX_TRITON_PROVIDERS:
         torch_version_raw = getattr(sys.modules.get("torch"), "__version__", None)
         index = _torch_wheel_index(torch_version_raw)
@@ -3561,10 +6601,7 @@ def _triton_repair_advice(distribution, triton_version):
     """
     command = _triton_reinstall_command(distribution, triton_version)
     if _is_conda_managed((distribution,), triton_version):
-        # conda-forge publishes `triton`, and a pip --force-reinstall over a conda-managed
-        # one overlays conda's own files with a wheel, leaving two package managers owning
-        # the same paths. Same reasoning, and same remedy shape, as the conda branch of the
-        # torch upgrade advice.
+        # pip over a conda-managed triton leaves two package managers owning the same files.
         return (
             f"conda installed this Triton, so repair it the same way "
             f"(`conda install --force-reinstall {distribution}={triton_version}` on the "
@@ -3633,9 +6670,10 @@ def check_triton_py_ssize_t_clean():
     in pyproject.toml would not have prevented this and cannot: torch pins triton
     exactly (torch 2.6.0 requires `triton==3.2.0`), so any floor above what the
     oldest supported torch carries makes that torch unresolvable rather than
-    safe. What is actually broken in these reports is a rebuilt or repackaged
-    triton whose shim lost the macro, which no dependency specifier can describe,
-    so name it here instead. Warns rather than raises: nothing has failed yet,
+    safe. The reported failures come from a stale cached shim built by Python
+    3.13 (fixed by `fix_triton_module_cache_python_key`); this names the rarer
+    rebuilt or repackaged triton whose shim lost the macro, which no dependency
+    specifier can describe. Warns rather than raises: nothing has failed yet,
     and a process that launches no Triton kernel never will.
     """
     if os.environ.get("UNSLOTH_SKIP_TRITON_SHIM_CHECK", "0").lower() in ("1", "true"):
@@ -3667,6 +6705,44 @@ def check_triton_py_ssize_t_clean():
     )
 
 
+def fix_triton_module_cache_python_key():
+    """#2760: triton 3.2 / 3.3 cache `cuda_utils.so` and launchers by C source hash alone, so
+    Python 3.12 reuses a 3.13 build and the first launch raises `SystemError: PY_SSIZE_T_CLEAN
+    macro must be defined for '#' formats`. Tag the source with EXT_SUFFIX, as triton 3.4 keys it.
+    """
+    try:
+        if importlib.util.find_spec("triton") is None:
+            return
+        from triton.backends import backends
+    except Exception:
+        return
+    tag = f"\n/* unsloth: {sysconfig.get_config_var('EXT_SUFFIX') or sys.implementation.cache_tag} */\n"
+    for backend in backends.values():
+        # Backend drivers load outside sys.modules: patch the defining module via its globals.
+        namespace = getattr(getattr(backend.driver, "__init__", None), "__globals__", None)
+        if not isinstance(namespace, dict):
+            continue
+        original = namespace.get("compile_module_from_src")
+        # 3.4+ imports the EXT_SUFFIX-keyed one from triton.runtime.build.
+        if not callable(original) or getattr(original, "__unsloth_patched__", False):
+            continue
+        if getattr(original, "__module__", None) != namespace.get("__name__"):
+            continue
+
+        def compile_module_from_src(
+            src,
+            name,
+            *args,
+            _original = original,
+            **kwargs,
+        ):
+            return _original(src + tag, name, *args, **kwargs)
+
+        functools.update_wrapper(compile_module_from_src, original)
+        compile_module_from_src.__unsloth_patched__ = True
+        namespace["compile_module_from_src"] = compile_module_from_src
+
+
 def _transformers_rescopes_submodule_prefix_renamings():
     """True when this build scopes a nested submodule's conversions to where it lives.
 
@@ -3691,8 +6767,7 @@ def _transformers_rescopes_submodule_prefix_renamings():
     try:
         from transformers import core_model_loading
     except Exception:
-        # Separate import, allowed to fail: it needs torch, and the two spellings it carries
-        # are extra evidence. The signature check below has to stand on its own.
+        # Separate import that may fail (it needs torch); the two spellings are extra evidence, so the signature check must stand alone.
         core_model_loading = None
     if core_model_loading is not None:
         transform = getattr(core_model_loading, "WeightTransform", None)
@@ -3745,13 +6820,7 @@ def check_transformers_prequantized_vlm_quant_state():
     except Exception:
         transformers_version = "unknown"
 
-    # The runtime repair covers exactly these releases, and it is installed in the same
-    # import. Warning anyway would tell users to downgrade or upgrade away from a version
-    # that now works, which is worse than saying nothing: the advice contradicts the fix.
-    # Checked on the live attribute, so a repair that declined to install still warns.
-    # Either repair counts: when unsloth_zoo installed its copy first,
-    # `fix_transformers_composite_prefix_renaming` deliberately yields and the live function
-    # carries the zoo mark instead of ours, which is repaired all the same.
+    # Do not warn when either repair (ours or unsloth_zoo's) is live: the advice would contradict it.
     if _composite_prefix_renaming_repaired():
         return
 
@@ -3811,35 +6880,77 @@ def fix_openenv_no_vllm():
         logger.info(f"Unsloth: Failed patching TRL OpenEnv with error = {str(e)}")
 
 
-# Fix Exeuctorch needing get_mapped_key
-def fix_executorch():
-    spec = importlib.util.find_spec("executorch")
-    if spec is None:
-        return
-    executorch_location = spec.origin
-    if executorch_location is None:
-        executorch_location = spec.submodule_search_locations[0]
-    else:
-        executorch_location = os.path.split(executorch_location)[0]
-    executorch = Path(executorch_location) / "examples" / "models" / "__init__.py"
-    if not executorch.exists():
-        return
+# Verbatim block older Unsloth wrote into executorch; it hid a real torchtune, so we repair it.
+_LEGACY_EXECUTORCH_TORCHTUNE_SHIM = textwrap.dedent(
+    r"""
+    import sys
+    import types
+    import re
+    from typing import Any, Optional
+    def get_mapped_key(key: str, mapping_dict: dict[str, str]) -> str:
+        try:
+            # Checks if there is a layer # in the key
+            if any(k.isdigit() for k in key.split(".")):
+                # Replace layer number with "{}" to create key for lookup
+                abstract_key = re.sub(r"(\.\d+)", ".{}", key)
+                layer_num = re.search(r"\d+", key).group(0)
+                new_key = mapping_dict[abstract_key]
+                new_key = new_key.format(layer_num)
+            else:
+                new_key = mapping_dict[key]
+        except KeyError as e:
+            raise Exception(
+                f'Error converting the state dict. Found unexpected key: "{key}". '
+                "Please make sure you're loading a checkpoint with the right format. "
+            ) from e
 
-    try:
-        what = r"""
+        return new_key
+
+    torchtune = types.ModuleType("torchtune")
+    torchtune.__path__ = []
+    models = types.ModuleType("torchtune.models")
+    models.__path__ = []
+    convert_weights = types.ModuleType("torchtune.models.convert_weights")
+    convert_weights.get_mapped_key = get_mapped_key
+    torchtune.models = models
+    models.convert_weights = convert_weights
+    sys.modules["torchtune"] = torchtune
+    sys.modules["torchtune.models"] = models
+    sys.modules["torchtune.models.convert_weights"] = convert_weights
+    """
+)
+
+_EXECUTORCH_TORCHTUNE_SHIM_MARKER = "# Unsloth: torchtune get_mapped_key shim v2"
+
+# Stub only when torchtune is not installed or imported.
+_EXECUTORCH_TORCHTUNE_SHIM = _EXECUTORCH_TORCHTUNE_SHIM_MARKER + textwrap.dedent(
+    r"""
+    def _unsloth_torchtune_shim():
+        import importlib.machinery
+        import importlib.util
+        import re
         import sys
         import types
-        import re
-        from typing import Any, Optional
-        def get_mapped_key(key: str, mapping_dict: dict[str, str]) -> str:
+
+        if "torchtune" in sys.modules:
+            return
+        try:
+            if importlib.util.find_spec("torchtune") is not None:
+                return
+        except (ImportError, ValueError):
+            return
+
+        def get_mapped_key(key, mapping_dict):
             try:
-                # Checks if there is a layer # in the key
                 if any(k.isdigit() for k in key.split(".")):
-                    # Replace layer number with "{}" to create key for lookup
                     abstract_key = re.sub(r"(\.\d+)", ".{}", key)
-                    layer_num = re.search(r"\d+", key).group(0)
-                    new_key = mapping_dict[abstract_key]
-                    new_key = new_key.format(layer_num)
+                    match = re.search(r"\.(\d+)", key)
+                    if match is None:
+                        raise Exception(
+                            f'Error converting the state dict. Could not find layer number in key: "{key}". '
+                            "Please make sure you're loading a checkpoint with the right format. "
+                        )
+                    new_key = mapping_dict[abstract_key].format(match.group(1))
                 else:
                     new_key = mapping_dict[key]
             except KeyError as e:
@@ -3847,32 +6958,109 @@ def fix_executorch():
                     f'Error converting the state dict. Found unexpected key: "{key}". '
                     "Please make sure you're loading a checkpoint with the right format. "
                 ) from e
-
             return new_key
 
-        torchtune = types.ModuleType("torchtune")
-        torchtune.__path__ = []
-        models = types.ModuleType("torchtune.models")
-        models.__path__ = []
-        convert_weights = types.ModuleType("torchtune.models.convert_weights")
-        convert_weights.get_mapped_key = get_mapped_key
-        torchtune.models = models
-        models.convert_weights = convert_weights
-        sys.modules["torchtune"] = torchtune
-        sys.modules["torchtune.models"] = models
-        sys.modules["torchtune.models.convert_weights"] = convert_weights
-        """
-        what = textwrap.dedent(what)
+        def _missing(name):
+            raise AttributeError(
+                f"torchtune.models.convert_weights.{name} is unavailable: torchtune is not "
+                "installed (only a get_mapped_key stub is provided). Install torchtune."
+            )
 
-        with open(executorch, "r+", encoding = "utf-8") as f:
-            text = f.read()
-            bad = "from enum import Enum\n"
-            if bad in text and what not in text:
-                text = text.replace(bad + "\n", bad + "\n" + what)
-                f.seek(0)
+        names = ("torchtune", "torchtune.models", "torchtune.models.convert_weights")
+        mods = []
+        for i, name in enumerate(names):
+            mod = types.ModuleType(name)
+            is_pkg = i < 2
+            mod.__spec__ = importlib.machinery.ModuleSpec(name, None, is_package = is_pkg)
+            if is_pkg:
+                mod.__path__ = []
+            mods.append(mod)
+        mods[2].get_mapped_key = get_mapped_key
+        mods[2].__getattr__ = _missing
+        mods[0].models = mods[1]
+        mods[1].convert_weights = mods[2]
+        for name, mod in zip(names, mods):
+            sys.modules.setdefault(name, mod)
+
+    _unsloth_torchtune_shim()
+    del _unsloth_torchtune_shim
+    """
+)
+
+
+def _executorch_needs_torchtune_get_mapped_key(models_dir):
+    # Newer ExecuTorch ships its own get_mapped_key; only old imports need the stub.
+    needle = "from torchtune.models.convert_weights import get_mapped_key"
+    try:
+        for path in Path(models_dir).glob("*/*.py"):
+            try:
+                if needle in path.read_text(encoding = "utf-8", errors = "ignore"):
+                    return True
+            except OSError:
+                continue
+    except OSError:
+        return False
+    return False
+
+
+# Fix Executorch needing torchtune's get_mapped_key when torchtune is absent
+def _drop_loaded_legacy_torchtune_stub():
+    # An old patched executorch imported before Unsloth already put the legacy stub in sys.modules; it has no
+    # file and no hf_to_tune. Drop it when a real torchtune is installed so the next import finds the package.
+    stub = sys.modules.get("torchtune")
+    if (
+        stub is None
+        or getattr(stub, "__file__", None) is not None
+        or getattr(stub, "__spec__", None) is not None
+    ):
+        return
+    convert_weights = sys.modules.get("torchtune.models.convert_weights")
+    if convert_weights is None or not hasattr(convert_weights, "get_mapped_key"):
+        return
+    if hasattr(convert_weights, "hf_to_tune"):
+        return
+    names = ("torchtune.models.convert_weights", "torchtune.models", "torchtune")
+    saved = {name: sys.modules.pop(name) for name in names if name in sys.modules}
+    try:
+        # Full import machinery, so editable (meta path finder) installs are seen too.
+        found = importlib.util.find_spec("torchtune") is not None
+    except (ImportError, ValueError):
+        found = False
+    if not found:
+        sys.modules.update(saved)
+
+
+def fix_executorch():
+    spec = importlib.util.find_spec("executorch")
+    if spec is None:
+        return
+    executorch_location = spec.origin
+    if executorch_location is None:
+        if not spec.submodule_search_locations:
+            return
+        executorch_location = list(spec.submodule_search_locations)[0]
+    else:
+        executorch_location = os.path.split(executorch_location)[0]
+    executorch = Path(executorch_location) / "examples" / "models" / "__init__.py"
+    if not executorch.exists():
+        return
+
+    try:
+        with open(executorch, "r", encoding = "utf-8") as f:
+            original = f.read()
+        text = original
+        needs_shim = _executorch_needs_torchtune_get_mapped_key(executorch.parent)
+        legacy = _LEGACY_EXECUTORCH_TORCHTUNE_SHIM
+        if legacy in text:
+            text = text.replace(legacy, _EXECUTORCH_TORCHTUNE_SHIM if needs_shim else "")
+        anchor = "from enum import Enum\n\n"
+        if needs_shim and _EXECUTORCH_TORCHTUNE_SHIM_MARKER not in text and anchor in text:
+            text = text.replace(anchor, anchor + _EXECUTORCH_TORCHTUNE_SHIM, 1)
+        if text != original:
+            with open(executorch, "w", encoding = "utf-8") as f:
                 f.write(text)
-                f.truncate()
-                logger.info("Unsloth: Patching Executorch to fix get_mapped_key")
+            logger.info("Unsloth: Patching Executorch to fix get_mapped_key")
+        _drop_loaded_legacy_torchtune_stub()
     except Exception as e:
         logger.info(f"Unsloth: Failed Executorch with error = {str(e)}")
 
@@ -3915,8 +7103,7 @@ def fix_triton_compiled_kernel_missing_attrs():
     except (ImportError, ModuleNotFoundError):
         return
 
-    # Only needed when CompiledKernel lacks num_ctas as a direct attr but has metadata
-    # (triton >= 3.6.0 with torch < 2.10).
+    # Only needed for triton >= 3.6.0 with torch < 2.10 (num_ctas only in metadata).
     _ck_cls = triton_compiler.CompiledKernel
     if hasattr(_ck_cls, "num_ctas"):
         return
@@ -3934,6 +7121,126 @@ def fix_triton_compiled_kernel_missing_attrs():
     logger.info(
         "Unsloth: Patched triton CompiledKernel with num_ctas/cluster_dims "
         "for torch.compile compatibility."
+    )
+
+
+def _key_inductor_caches_on_readback_barrier(inductor_config, custom_graph_pass):
+    # Warm FX / AOTAutograd caches would return barrier-free kernels: a no-op pass's uuid keys them.
+    if custom_graph_pass is None:
+        # torch < 2.6 keys no custom pass: skip the FX graph cache rather than reuse racy kernels.
+        inductor_config.fx_graph_cache = False
+        return
+    marker = "unsloth-inductor-readback-barrier-v1"
+
+    class ReadbackBarrierCacheKey(custom_graph_pass):
+        _unsloth_readback_barrier = True
+
+        def __call__(self, graph):
+            return None
+
+        def uuid(self):
+            return marker
+
+    existing = getattr(inductor_config, "post_grad_custom_post_pass", None)
+    if existing is None:
+        inductor_config.post_grad_custom_post_pass = ReadbackBarrierCacheKey()
+        return
+    # A pre-set pass keys the cache by its uuid alone; raw callables / uuid-less passes bypass it.
+    if isinstance(existing, (list, tuple)):
+        if any(getattr(p, "_unsloth_readback_barrier", False) for p in existing):
+            return
+        inductor_config.post_grad_custom_post_pass = type(existing)(
+            [*existing, ReadbackBarrierCacheKey()]
+        )
+        return
+    if getattr(existing, "_unsloth_readback_barrier", False):
+        return
+    if not isinstance(existing, custom_graph_pass) or not existing.uuid():
+        return
+    base = custom_graph_pass
+    try:
+        from torch._inductor.custom_graph_pass import CustomInferenceAwareGraphPass
+        if isinstance(existing, CustomInferenceAwareGraphPass):
+            base = CustomInferenceAwareGraphPass  # called with is_inference=
+    except ImportError:
+        pass
+
+    class ReadbackBarrierKeyedPass(base):
+        _unsloth_readback_barrier = True
+
+        def __init__(self, inner):
+            self.inner = inner
+
+        def __call__(self, graph, *args, **kwargs):
+            return self.inner(graph, *args, **kwargs)
+
+        def uuid(self):
+            # None is the inner pass opting out of the FX cache: keep it, never key a stale graph.
+            inner_uuid = self.inner.uuid()
+            return None if inner_uuid is None else (marker, inner_uuid)
+
+    inductor_config.post_grad_custom_post_pass = ReadbackBarrierKeyedPass(existing)
+
+
+def fix_inductor_reduction_readback_race():
+    """torch < 2.14 Inductor reloads a buffer stored by an earlier loop of the same reduction kernel with no
+    barrier, and Triton may give the store and the reload different warps: silently wrong gradients
+    (pytorch/pytorch#198562). Backports pytorch/pytorch#190519."""
+    try:
+        import torch
+        from torch._inductor.codegen import triton as triton_codegen
+        from torch._inductor import config as inductor_config
+        from torch._inductor.virtualized import V
+    except Exception:
+        return
+    kernel = getattr(triton_codegen, "TritonKernel", None)
+    deferred_line = getattr(triton_codegen, "DeferredLine", None)
+    if kernel is None or deferred_line is None or not hasattr(kernel, "get_load_buffer"):
+        return
+    if getattr(kernel.load, "_unsloth_readback_barrier", False):
+        return
+    try:
+        if "invalidated_stores" in inspect.getsource(kernel.load):
+            return
+    except Exception:
+        return
+
+    original_load = kernel.load
+    original_get_load_buffer = kernel.get_load_buffer
+
+    @functools.wraps(original_load)
+    def load(self, name, index, *args, **kwargs):
+        previous = self.__dict__.get("_unsloth_readback_name")
+        self._unsloth_readback_name = name
+        try:
+            return original_load(self, name, index, *args, **kwargs)
+        finally:
+            self._unsloth_readback_name = previous
+
+    @functools.wraps(original_get_load_buffer)
+    def get_load_buffer(self, indexing):
+        buffer = original_get_load_buffer(self, indexing)
+        name = self.__dict__.get("_unsloth_readback_name")
+        if name is not None and name in self.cse.invalidated_stores:
+            try:
+                device = V.graph.get_current_device_or_throw().type
+            except Exception:
+                device = None
+            if device != "cpu":
+                buffer.writeline(deferred_line(name, "tl.debug_barrier()"))
+                self._unsloth_readback_name = None
+        return buffer
+
+    load._unsloth_readback_barrier = True
+    kernel.load = load
+    kernel.get_load_buffer = get_load_buffer
+    try:
+        from torch._inductor.custom_graph_pass import CustomGraphPass
+    except ImportError:
+        CustomGraphPass = None
+    _key_inductor_caches_on_readback_barrier(inductor_config, CustomGraphPass)
+    logger.info(
+        "Unsloth: Patched Inductor to sync before re-reading a buffer stored in a reduction loop."
     )
 
 
@@ -3972,8 +7279,8 @@ def fix_dynamo_config_thread_visibility():
 
     mirrored_modules = ("torch._dynamo.config", "torch._inductor.config")
 
-    # config.patch() and config.load_config() also assign via __setattr__, but their writes are
-    # thread-local by design, so a per-thread depth counter keeps them out of the global default.
+    # config.patch()/load_config() writes are thread-local by design; a per-thread depth counter
+    # keeps them out of the global default.
     import threading
 
     _scoped_depth = threading.local()
@@ -4056,9 +7363,7 @@ def fix_dynamo_config_thread_visibility():
     _patched_setattr.__unsloth_patched__ = True
     ConfigModule.__setattr__ = _patched_setattr
 
-    # No replay of existing overrides: unsloth installs this before setting any dynamo/inductor
-    # config, so the wrapper mirrors every later assignment, and replaying would bake a
-    # still-active config.patch override into the global default.
+    # No replay of existing overrides: it could bake an active config.patch into the default.
     logger.info(
         "Unsloth: Patched torch config modules so dynamo/inductor settings "
         "(e.g. recompile_limit) apply across threads on torch >= 2.12."
@@ -4325,6 +7630,299 @@ def fix_vllm_pdl_blackwell():
         logger.info(f"Unsloth: Set TRITON_DISABLE_PDL=1 for SM100 ({sm100_gpu_name})")
 
 
+_SDPA_CUDNN_D256_FLAG = "_unsloth_avoids_cudnn_d256_masked_backward"
+_SDPA_CUDNN_D256_WARNED = False
+
+
+def _sdpa_cudnn_d256_sm100_devices():
+    try:
+        import torch
+        if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+            return frozenset()
+        return frozenset(
+            i
+            for i in range(torch.cuda.device_count())
+            if torch.cuda.get_device_capability(i)[0] == 10
+        )
+    except Exception:
+        return frozenset()
+
+
+def _sdpa_needs_cudnn_d256_detour(sm100_devices, query, key, attn_mask):
+    """True for the calls whose cuDNN backward returns NaN dQ on SM100 (no-grad never reaches it)."""
+    import torch
+
+    if attn_mask is None or not torch.is_grad_enabled():
+        return False
+    if not isinstance(query, torch.Tensor) or not query.is_cuda:
+        return False
+    dtype = query.dtype
+    # CUDA autocast casts fp32 SDPA inputs (e.g. DoRA-promoted Q/K/V) to half before dispatch.
+    if dtype == torch.float32 and torch.is_autocast_enabled("cuda"):
+        dtype = torch.get_autocast_dtype("cuda")
+    if dtype not in (torch.float16, torch.bfloat16):
+        return False
+    if query.shape[-1] != 256:
+        return False
+    if not (query.requires_grad or (isinstance(key, torch.Tensor) and key.requires_grad)):
+        return False
+    return query.device.index in sm100_devices
+
+
+def fix_cudnn_sdpa_d256_masked_backward():
+    """Run masked head_dim-256 SDPA training without cuDNN attention on SM100.
+
+    torch 2.14 (cuDNN 9.24) first dispatches such calls to cuDNN, whose backward returns NaN dQ
+    (bf16 / fp16); torch <= 2.13 never picks cuDNN here, so the detour is a no-op
+    there. Gated on the device, not the torch version. UNSLOTH_ALLOW_CUDNN_SDPA_D256=1 opts out.
+    """
+    if os.environ.get("UNSLOTH_ALLOW_CUDNN_SDPA_D256", "0") == "1":
+        return
+    sm100_devices = _sdpa_cudnn_d256_sm100_devices()
+    if not sm100_devices:
+        return
+    try:
+        import torch
+        import torch.nn.functional as F
+        from torch.nn.attention import SDPBackend, sdpa_kernel
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the cuDNN SDPA head_dim 256 fix ({e})")
+        return
+    if getattr(F.scaled_dot_product_attention, _SDPA_CUDNN_D256_FLAG, False):
+        return
+
+    original = F.scaled_dot_product_attention
+    backends = [SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]
+
+    @functools.wraps(original)
+    def scaled_dot_product_attention(
+        query,
+        key,
+        value,
+        attn_mask = None,
+        *args,
+        **kwargs,
+    ):
+        global _SDPA_CUDNN_D256_WARNED
+        if _sdpa_needs_cudnn_d256_detour(sm100_devices, query, key, attn_mask):
+            if not torch.compiler.is_compiling():
+                if not _SDPA_CUDNN_D256_WARNED:
+                    _SDPA_CUDNN_D256_WARNED = True
+                    logger.warning(
+                        "Unsloth: head_dim 256 attention with a mask is training on an SM100 GPU; "
+                        "running it without cuDNN attention, whose backward returns NaN gradients "
+                        "there (set UNSLOTH_ALLOW_CUDNN_SDPA_D256=1 to keep cuDNN)."
+                    )
+            with sdpa_kernel(backends):
+                return original(query, key, value, attn_mask, *args, **kwargs)
+        return original(query, key, value, attn_mask, *args, **kwargs)
+
+    scaled_dot_product_attention.__wrapped__ = original
+    setattr(scaled_dot_product_attention, _SDPA_CUDNN_D256_FLAG, True)
+    F.scaled_dot_product_attention = scaled_dot_product_attention
+    logger.info(
+        "Unsloth: SM100 GPU found; masked head_dim 256 SDPA training will avoid cuDNN attention "
+        f"(devices {sorted(sm100_devices)})"
+    )
+
+
+_SDPA_GRAD_LAYOUT_FLAG = "_unsloth_gives_sdpa_backward_the_output_layout"
+_SDPA_GRAD_LAYOUT_FUNCTION = []
+# Eager outputs whose backward is cuDNN's; flash / efficient / math outputs stay untouched.
+_SDPA_GRAD_LAYOUT_NODES = frozenset(("ScaledDotProductCudnnAttentionBackward0",))
+
+
+def _cudnn_sdpa_backward_cache_ignores_grad_layout(torch_version, cudnn_version):
+    """torch 2.6 - 2.13 key the cuDNN backward plan without grad_output strides (fixed in
+    pytorch/pytorch#191576); cuDNN < 9.5.1 always copies grad_output to the output layout."""
+    try:
+        torch_version = TrueVersion(TrueVersion(str(torch_version)).base_version)
+    except Exception:
+        return False
+    if not (TrueVersion("2.6") <= torch_version < TrueVersion("2.14")):
+        return False
+    return cudnn_version is not None and int(cudnn_version) >= 90501
+
+
+def _sdpa_grad_to_layout(stride, grad):
+    if grad.stride() == stride:
+        return grad
+    return grad.new_empty_strided(grad.size(), stride).copy_(grad)
+
+
+def _sdpa_grad_layout_function():
+    if _SDPA_GRAD_LAYOUT_FUNCTION:
+        return _SDPA_GRAD_LAYOUT_FUNCTION[0]
+    import torch
+
+    try:
+        import torch._dynamo.config as dynamo_config
+
+        # torch 2.6 Dynamo bans grad.stride() in a traced backward: a graph break per SDPA call.
+        stride_banned = "stride" in dynamo_config._autograd_backward_strict_mode_banned_ops
+    except Exception:
+        stride_banned = False
+
+    class _GradInOutputLayout(torch.autograd.Function):
+        # setup_context + generate_vmap_rule: torch.func.grad / vmap / jacrev keep working.
+        generate_vmap_rule = True
+
+        @staticmethod
+        def forward(out):
+            # Not a view: view outputs reject in-place consumers; Inductor drops the clone.
+            return out.clone()
+
+        @staticmethod
+        def setup_context(ctx, inputs, output):
+            ctx.out_stride = inputs[0].stride()
+
+        @staticmethod
+        def backward(ctx, grad):
+            if stride_banned and torch.compiler.is_compiling():
+                return grad.new_empty_strided(grad.size(), ctx.out_stride).copy_(grad)
+            return _sdpa_grad_to_layout(ctx.out_stride, grad)
+
+    _SDPA_GRAD_LAYOUT_FUNCTION.append(_GradInOutputLayout)
+    return _GradInOutputLayout
+
+
+def fix_cudnn_sdpa_backward_grad_layout():
+    """Force SDPA grad_output into the output's layout, which the plan key does cover, so two
+    same-shape backwards with different grad layouts cannot share a stale plan (wrong grads)."""
+    if os.environ.get("UNSLOTH_SKIP_CUDNN_SDPA_GRAD_LAYOUT_FIX", "0") == "1":
+        return
+    try:
+        import torch
+        import torch.nn.functional as F
+
+        if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+            return
+        if not _cudnn_sdpa_backward_cache_ignores_grad_layout(
+            torch.__version__, torch.backends.cudnn.version()
+        ):
+            return
+        grad_in_output_layout = _sdpa_grad_layout_function()
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the cuDNN SDPA backward layout fix ({e})")
+        return
+    if getattr(F.scaled_dot_product_attention, _SDPA_GRAD_LAYOUT_FLAG, False):
+        return
+
+    original = F.scaled_dot_product_attention
+
+    @functools.wraps(original)
+    def scaled_dot_product_attention(*args, **kwargs):
+        out = original(*args, **kwargs)
+        # Plain tensors only: a DTensor gradient cannot be copied into a plain empty_strided buffer.
+        if type(out) is torch.Tensor and out.requires_grad and out.is_cuda and not out.is_nested:
+            if torch.compiler.is_compiling():
+                # Dynamo graph-breaks on a hook on an intermediate; the Function traces inline.
+                return grad_in_output_layout.apply(out)
+            if type(out.grad_fn).__name__ in _SDPA_GRAD_LAYOUT_NODES:
+                # A hook keeps out a plain tensor: a Function output is a view, so in-place
+                # ops on it would raise.
+                out.register_hook(functools.partial(_sdpa_grad_to_layout, out.stride()))
+        return out
+
+    scaled_dot_product_attention.__wrapped__ = original
+    setattr(scaled_dot_product_attention, _SDPA_GRAD_LAYOUT_FLAG, True)
+    F.scaled_dot_product_attention = scaled_dot_product_attention
+    logger.info(
+        f"Unsloth: torch {torch.__version__} reuses cuDNN SDPA backward plans across gradient "
+        "layouts; SDPA gradients are given the output's layout"
+    )
+
+
+def _rocm_windows_broken_sdpa_backends():
+    """Fused SDPA backends ("flash", "mem_efficient") failing on this process's Windows ROCm GPU.
+
+    torch 2.11.0+rocm7.14.1 on gfx1151 fails every fused call (hipErrorInvalidValue), raised only
+    by the next checked launch, so each probe ends in one and is compared against math.
+    """
+    if sys.platform != "win32":
+        return []
+    try:
+        import torch
+        import torch.nn.functional as F
+        from torch.nn.attention import SDPBackend, sdpa_kernel
+
+        # Some AMD wheels tag only __version__, so torch.version.hip alone misses them.
+        is_rocm = bool(getattr(torch.version, "hip", None)) or _is_rocm_torch_build()
+        if not is_rocm or not torch.cuda.is_available():
+            return []
+    except Exception:
+        return []
+
+    def attend(device, backend):
+        g = torch.Generator(device = device).manual_seed(0)
+        q, k, v = (
+            torch.randn(1, 2, 16, 64, device = device, dtype = dtype, generator = g) for _ in range(3)
+        )
+        q.requires_grad_(True)
+        with sdpa_kernel([backend]):
+            out = F.scaled_dot_product_attention(q, k, v, is_causal = True)
+            out = out.float()  # checked launch: a failed attention launch raises here
+            out.sum().backward()
+        dq = q.grad.float()
+        dq.sum().item()
+        return torch.cat([out.detach().flatten(), dq.flatten()])
+
+    # Only this process's device: probing every visible GPU would open a HIP context on each.
+    device = torch.device("cuda", torch.cuda.current_device())
+    try:
+        from .device_type import arch_lacks_bf16
+        arch = torch.cuda.get_device_properties(device).gcnArchName
+    except Exception:
+        arch_lacks_bf16, arch = (lambda _: True), None
+    # gfx10 claims bf16 it lacks (device_type.arch_lacks_bf16); fp16 is safe everywhere.
+    dtype = torch.float16 if arch_lacks_bf16(arch) else torch.bfloat16
+    broken = []
+    # An import under inference_mode would leave nothing to backpropagate through.
+    with torch.inference_mode(False), torch.enable_grad():
+        try:
+            reference = attend(device, SDPBackend.MATH)
+        except Exception:
+            return []  # math fails too: nothing to learn about the fused kernels
+        for name, backend in (
+            ("flash", SDPBackend.FLASH_ATTENTION),
+            ("mem_efficient", SDPBackend.EFFICIENT_ATTENTION),
+        ):
+            try:
+                ok = torch.allclose(attend(device, backend), reference, atol = 2e-2, rtol = 2e-2)
+            except Exception as e:
+                ok = "No available kernel" in str(e)
+            if not ok:
+                broken.append(name)
+    return broken
+
+
+def fix_rocm_windows_fused_sdpa():
+    """Turn off fused SDPA backends that fail on this Windows ROCm GPU, so attention uses math.
+
+    Probe-gated, so it is a no-op once the kernels work. UNSLOTH_ALLOW_ROCM_FUSED_SDPA=1 opts out.
+    """
+    if os.environ.get("UNSLOTH_ALLOW_ROCM_FUSED_SDPA", "0") == "1":
+        return
+    broken = _rocm_windows_broken_sdpa_backends()
+    if not broken:
+        return
+    try:
+        import torch
+        if "flash" in broken:
+            torch.backends.cuda.enable_flash_sdp(False)
+        if "mem_efficient" in broken:
+            torch.backends.cuda.enable_mem_efficient_sdp(False)
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the Windows ROCm SDPA fix ({e})")
+        return
+    names = " or ".join("flash" if b == "flash" else "memory-efficient" for b in broken)
+    fallback = "the math kernel" if len(broken) == 2 else "the remaining kernels"
+    logger.warning(
+        f"Unsloth: this Windows ROCm torch cannot run {names} attention; using {fallback} "
+        "instead (set UNSLOTH_ALLOW_ROCM_FUSED_SDPA=1 to keep them)."
+    )
+
+
 def patch_openspiel_env_async():
     """Apply nest_asyncio for OpenEnv EnvClient async compatibility.
 
@@ -4359,13 +7957,13 @@ def patch_torchcodec_audio_decoder():
     try:
         from unsloth_zoo.dataset_utils import patch_torchcodec_audio_decoder as _patch
         _patch()
-    except (ImportError, AttributeError, RuntimeError):
+    except Exception:
+        # torchcodec 0.12+ built for another torch raises OSError loading its native library;
+        # disable_torchcodec_if_broken runs next and swaps in the fallback decoder.
         pass
 
 
-# torch.minor -> compatible torchcodec.minor strings (see notebook_validator.py).
-# torchcodec ships no `Requires-Dist: torch`, so pip cannot catch a mismatch and this table
-# is the only check. Lockstep releases only; 0.12+ is the ABI-stable rule below.
+# torchcodec ships no Requires-Dist on torch, so this table is the only check; it lists lockstep releases only
 _TORCH_TORCHCODEC_MINORS: dict[str, set[str]] = {
     "2.11": {"0.11"},
     "2.10": {"0.10"},
@@ -4383,9 +7981,7 @@ _TORCH_TORCHCODEC_EXTRAS: dict[str, str] = {
     "2.10": "audio-torch210",
 }
 
-# torchcodec 0.12+ is ABI-stable against torch >=2.11 (its build sets TORCH_TARGET_VERSION
-# to 2.11), so that half of the matrix is open-ended rather than a finite set of minors.
-# Mirrors notebook_validator.TORCHCODEC_ABI_STABLE_{TORCH,CODEC}.
+# torchcodec 0.12+ is ABI-stable against torch >= 2.11, so that half of the matrix is open-ended
 _TORCHCODEC_ABI_STABLE_TORCH = (2, 11)
 _TORCHCODEC_ABI_STABLE_CODEC = (0, 12)
 
@@ -4417,15 +8013,11 @@ def _torch_index_url_for_remedy(local_tag: str) -> str:
     mirror is where the matching build actually is.
     """
     if os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip():
-        # The variable, not its value: an authenticated mirror carries credentials in its
-        # userinfo or query token, and this warning lands in terminals and CI logs. The
-        # shell expands it, so the command still works and nothing is written down.
+        # The variable, not its value: mirror URLs may carry credentials and this lands in logs.
         return _shell_env_ref("UNSLOTH_TORCH_INDEX_URL")
     leaf = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip().strip("/") or local_tag
     if os.environ.get("UNSLOTH_PYTORCH_MIRROR", "").strip():
-        # UNSLOTH_PYTORCH_MIRROR replaces the base every install_python_stack index is built
-        # from, so naming the public site fails on an air-gapped host. Expanded, not disclosed,
-        # as above.
+        # UNSLOTH_PYTORCH_MIRROR replaces the base of every install_python_stack index, so naming the public site fails on an air-gapped host.
         return f"{_shell_env_ref('UNSLOTH_PYTORCH_MIRROR')}/{leaf}"
     return f"https://download.pytorch.org/whl/{leaf}"
 
@@ -4446,9 +8038,7 @@ def _torchcodec_version_mismatch_hint() -> str | None:
         return tuple(parts[:2]) + (0,) * (2 - len(parts[:2]))
 
     def _at_least(version: str, floor: tuple) -> bool:
-        # The FULL Version, not its release tuple: PEP 440 sorts `2.11.0rc1` below `2.11`,
-        # while `.release` drops the rc and read it as being at the ABI floor. That approved a
-        # pairing outside the ABI-stable contract and silenced this hint on it.
+        # Full Version, not .release: 2.11.0rc1 sorts below 2.11 and is outside the ABI contract.
         return Version(version.split("+", 1)[0]) >= Version(".".join(str(p) for p in floor))
 
     try:
@@ -4481,8 +8071,7 @@ def _torchcodec_version_mismatch_hint() -> str | None:
 
     allowed = _TORCH_TORCHCODEC_MINORS.get(torch_minor)
     if allowed is None:
-        # No lockstep row: below the table stays silent; at or past the ABI floor this is a
-        # pre-0.12 codec, since 0.12+ already returned above.
+        # No lockstep row for this torch: silent below the ABI floor, and at or above it the codec must be pre-0.12.
         if not torch_at_abi:
             return None
         abi_pin = ".".join(str(p) for p in _TORCHCODEC_ABI_STABLE_CODEC)
@@ -4496,9 +8085,7 @@ def _torchcodec_version_mismatch_hint() -> str | None:
         upper = _torchcodec_exclusive_upper(pin)
         install_hint = f"`pip install {_index_flag(tuple(int(x) for x in pin.split('.')))}'torchcodec>={pin},{upper}'`"
         extra = _TORCH_TORCHCODEC_EXTRAS.get(torch_minor)
-        # Only when no index pin is needed. An extra cannot carry one -- the marker picks the
-        # version, not the index -- and --index-url on the whole command would resolve unsloth
-        # from the torch index too, handing back the same unloadable wheel.
+        # An extra cannot carry an index pin, and --index-url would resolve unsloth from it too.
         if extra is not None and not _index_flag(tuple(int(x) for x in pin.split("."))):
             install_hint += f" or `pip install 'unsloth[{extra}]'`"
     return (
@@ -4554,9 +8141,7 @@ def _torchcodec_provenance_hint() -> "str | None":
         return None  # rocm and xpu publish no torchcodec under this name
     index = _torch_index_url_for_remedy(torch_local)
     codec_from = codec_local or "the default index"
-    # The window the table allows, not a bare name: the accelerator indexes carry the whole
-    # codec line, so `pip install torchcodec` on torch 2.9 trades a wrong-accelerator build
-    # for a wrong-VERSION one and audio stays disabled. Past the table, the ABI floor pins.
+    # Pin the version window: a bare torchcodec on an accelerator index gets a wrong-version build
     try:
         from packaging.version import Version
         parts = Version(str(torch.__version__).split("+", 1)[0]).release
@@ -4572,9 +8157,7 @@ def _torchcodec_provenance_hint() -> "str | None":
         want = f"'torchcodec>={abi}.0'"
     else:
         want = "torchcodec"
-    # "may be", not "is": this only establishes different indexes. torchcodec is published
-    # per accelerator on every line, 0.12+ included, so a mismatch stays possible -- but the
-    # load can equally have failed on a missing libavutil, which no reinstall fixes. Name both.
+    # Different indexes only make a mismatch possible; a missing libavutil is equally likely.
     return (
         f"torchcodec {codec_version or '?'} came from {codec_from} while "
         f"torch {getattr(torch, '__version__', '?')} is a {torch_local} build, so the codec "
@@ -4643,31 +8226,32 @@ def disable_torchcodec_if_broken():
     their existing except ImportError handlers cleanly.
     """
     mismatch_hint = _torchcodec_version_mismatch_hint()
-    if mismatch_hint is not None:
+
+    def _warn_mismatch():
+        if mismatch_hint is None:
+            return
         try:
             import warnings
-            warnings.warn(mismatch_hint, stacklevel = 2)
+            warnings.warn(mismatch_hint, stacklevel = 3)
         except Exception:
-            # Warning filters promoted to errors (PYTHONWARNINGS=error, pytest -W error) must not abort the
-            # disable fallback below.
+            # Warnings promoted to errors must not abort the disable fallback below.
             pass
+
     try:
         import importlib.util
         if importlib.util.find_spec("torchcodec") is None:
+            _warn_mismatch()
             return  # absent or already disabled
 
-        # RuntimeError on dlopen failure, OSError on chained libavutil.so misses, and a damaged or
-        # version-skewed wheel can raise anything else; the package is present, so every shape is "broken".
+        # A broken wheel can raise anything; the package is present, so every shape is broken.
         from torchcodec.decoders import AudioDecoder
     except Exception as load_error:
-        if mismatch_hint is None:
+        remedy_hint = mismatch_hint
+        if remedy_hint is None:
             # Versions agree, so the load failed for another reason. A mismatched accelerator
             # build is the one this can still name, and the one pinning the index repairs.
             try:
-                provenance_hint = _torchcodec_provenance_hint()
-                if provenance_hint is not None:
-                    import warnings
-                    warnings.warn(provenance_hint, stacklevel = 2)
+                remedy_hint = _torchcodec_provenance_hint()
             except Exception:
                 pass  # a diagnostic must never abort the disable fallback below
         # transformers: flip the flag (<5) and/or rebind the lru_cache'd func (>=5).
@@ -4697,8 +8281,7 @@ def disable_torchcodec_if_broken():
         except ImportError:
             pass
 
-        # Drop half-loaded entries and seat the absence sentinel: after this, `import torchcodec` raises
-        # ModuleNotFoundError and find_spec returns None.
+        # Seat the absence sentinel so import raises ModuleNotFoundError and find_spec returns None.
         for _stale in [
             n
             for n in list(sys.modules)
@@ -4718,9 +8301,26 @@ def disable_torchcodec_if_broken():
                 if decodes
                 else "audio datasets will not decode until soundfile and PyAV are installed (pip install soundfile av)"
             )
-            warnings.warn(f"Unsloth: torchcodec is installed but {note}; {tail}.", stacklevel = 2)
+            # One warning per broken codec; the version remedy rides along.
+            remedy = f" {remedy_hint}" if remedy_hint is not None else ""
+            warnings.warn(
+                f"Unsloth: torchcodec is installed but {note}; {tail}.{remedy}", stacklevel = 2
+            )
         except Exception:
             pass  # a report must never abort the disable fallback above
+    else:
+        _warn_mismatch()
+
+
+def _audio_av_open(av, source):
+    """Open ``source`` for reading with undecodable metadata ignored. PyAV 19 removed ``metadata_errors`` from ``av.open``, so passing it there raises TypeError before anything is read; retry without it."""
+    try:
+        return av.open(source, mode = "r", metadata_errors = "ignore")
+    except TypeError as exc:
+        if "metadata_errors" not in str(exc):
+            raise
+        # format = None spelled out to distinguish this from Path.open for the encoding lint.
+        return av.open(source, mode = "r", format = None)
 
 
 def _audio_decode_with_av(source, stream_index = None):
@@ -4731,7 +8331,7 @@ def _audio_decode_with_av(source, stream_index = None):
     chunks = []
     rate = 0
     resampler = None
-    with av.open(source, mode = "r", metadata_errors = "ignore") as container:
+    with _audio_av_open(av, source) as container:
         if not container.streams.audio:
             raise ValueError("audio container has no audio stream")
         # datasets.Audio(stream_index=...) is the container's absolute stream index, as torchcodec reads it; None is the best audio stream.
@@ -4993,10 +8593,7 @@ def disable_torchaudio_if_cuda_mismatched():
                 tf_import_utils._torchaudio_available = False
             except AttributeError:
                 pass
-            # `speech` is transformers' composite backend and is nothing but torchaudio (is_speech_available
-            # returns is_torchaudio_available()). On 4.x both read one module global; on 5.x each is
-            # separately lru_cached, so an answer computed before this repair stays True and
-            # requires_backends(..., "speech") waves callers into a torchaudio that is now a None sentinel.
+            # On 5.x is_speech_available is separately lru_cached, so clear both or speech stays True.
             for _name in ("is_torchaudio_available", "is_speech_available"):
                 is_avail = getattr(tf_import_utils, _name, None)
                 if is_avail is None:
@@ -5021,6 +8618,58 @@ def disable_torchaudio_if_cuda_mismatched():
         ]:
             sys.modules.pop(_stale, None)
         sys.modules["torchaudio"] = None
+
+
+def _torch_distributed_unavailable():
+    """True when torch has no `torch._C._distributed_c10d` (AMD's Windows ROCm wheels, torch 2.11)."""
+    try:
+        import torch.distributed as dist
+        return not dist.is_available()
+    except Exception:
+        return False
+
+
+def _is_missing_torch_distributed(exc):
+    name = getattr(exc, "name", None) or ""
+    return name.startswith("torch._C._distributed") or "torch._C._distributed" in str(exc)
+
+
+def fix_accelerate_dtensor_check_without_torch_distributed():
+    """Backport huggingface/accelerate#4250: accelerate 1.15.0's `prepare_model` calls `model_has_dtensor`,
+    which imports `torch.distributed.tensor` and kills every Trainer on a torch without a distributed
+    backend (huggingface/accelerate#4249). No DTensor can exist there, so the answer is False.
+    """
+    if not _torch_distributed_unavailable():
+        return False
+    if importlib.util.find_spec("accelerate") is None:
+        return False
+    try:
+        import accelerate.utils.other as acc_other
+    except Exception:
+        return False
+    original = getattr(acc_other, "model_has_dtensor", None)
+    if original is None:
+        return False
+    if getattr(original, "__unsloth_patched__", False):
+        return True
+
+    @functools.wraps(original)
+    def model_has_dtensor(model):
+        try:
+            return original(model)
+        except ImportError as exc:
+            if _is_missing_torch_distributed(exc):
+                return False
+            raise
+
+    model_has_dtensor.__unsloth_patched__ = True
+    acc_other.model_has_dtensor = model_has_dtensor
+    # Both re-export the function by name at import time.
+    for module_name in ("accelerate.utils", "accelerate.accelerator"):
+        module = sys.modules.get(module_name)
+        if getattr(module, "model_has_dtensor", None) is original:
+            module.model_has_dtensor = model_has_dtensor
+    return True
 
 
 def disable_broken_wandb():
@@ -5056,8 +8705,7 @@ def disable_broken_wandb():
             tf_integration.is_wandb_available = _wandb_false
         except (ImportError, AttributeError):
             pass
-        # Patch accelerate.utils.imports and the accelerate.utils re-export, since
-        # `from accelerate.utils import is_wandb_available` reads the latter.
+        # Patch accelerate.utils.imports and the accelerate.utils re-export; `from accelerate.utils import is_wandb_available` reads the latter.
         try:
             import accelerate.utils.imports as acc_imports
             acc_imports.is_wandb_available = _wandb_false
@@ -5071,12 +8719,10 @@ def disable_broken_wandb():
         os.environ["WANDB_DISABLED"] = "true"
 
 
-# peft 0.19.x's transformers_weight_conversion.py imports transformers.conversion_mapping and
-# transformers.core_model_loading at module top; neither exists on transformers <5, so the
-# import raises ModuleNotFoundError, swallowed by the bare except below. Stub the two
-# submodules only when broken; peft calls them only behind `if is_transformers_ge_v5:`.
+# peft 0.19.x imports transformers.conversion_mapping/core_model_loading, absent on <5;
+# stub them only when broken.
 
-# Stamped on stub modules so a second call is a strict no-op and third parties can introspect __unsloth_stub__.
+# Stamped on stub modules so a second call is a strict no-op.
 # ---------------------------------------------------------------------------
 
 _UNSLOTH_STUB_SENTINEL = "__unsloth_stub__"
@@ -5376,8 +9022,7 @@ def _install_transformers_core_model_loading_stub():
     return mod
 
 
-# Names peft's transformers_weight_conversion imports at module top; a real module missing ANY
-# of them breaks that import as hard as an absent one.
+# Names peft's transformers_weight_conversion imports at module top; a real module missing any breaks it like an absent one.
 _PEFT_REQUIRED_SYMBOLS = {
     "transformers.conversion_mapping": (
         "_MODEL_TO_CONVERSION_PATTERN",
@@ -5434,8 +9079,7 @@ def _backfill_missing_peft_symbols(name):
     return tuple(added)
 
 
-# An empty pattern is peft's own starting point; the rest stand in for real upstream
-# behaviour, so those are worth warning about.
+# An empty pattern is peft's own starting point; the rest stand in for real upstream behaviour, so those are worth warning about.
 _PEFT_INERT_BACKFILL_IS_FINE = frozenset(("_MODEL_TO_CONVERSION_PATTERN",))
 
 
@@ -5510,13 +9154,10 @@ def fix_peft_transformers_weight_conversion_import():
         _install_transformers_core_model_loading_stub()
         patched_any = True
 
-    # Present but incomplete: transformers 5.x kept both modules and dropped names peft still
-    # imports at module top. The stubs above only fire when a module is ABSENT, so backfill the
-    # missing names onto the real module, which is strictly additive.
+    # transformers 5.x kept both modules but dropped names peft imports; backfill them.
     patched_any = _backfill_missing_conversion_symbols() or patched_any
 
-    # An importable submodule can still lack individual symbols; backfill just those rather than
-    # replacing a real module wholesale.
+    # An importable submodule can still lack single symbols; backfill just those instead of replacing the module wholesale.
     backfilled = {}
     for _submodule in _PEFT_REQUIRED_SYMBOLS:
         added = _backfill_missing_peft_symbols(_submodule)
@@ -5552,8 +9193,7 @@ def fix_peft_transformers_weight_conversion_import():
     return True
 
 
-# What peft.utils.transformers_weight_conversion imports at module top, kept beside the stubs
-# so the two lists cannot drift apart.
+# Names peft.utils.transformers_weight_conversion imports at module top; kept beside the stubs
 _PEFT_CONVERSION_SYMBOLS = {
     "transformers.conversion_mapping": (
         "_MODEL_TO_CONVERSION_PATTERN",
@@ -5572,20 +9212,14 @@ _PEFT_CONVERSION_SYMBOLS = {
     ),
 }
 
-# Of those, the ones peft calls rather than merely imports. The stubs are deliberately inert: on
-# transformers <5 the whole module is ours and peft's converter never runs. An inert body on a REAL
-# transformers is a different matter, since peft would call it and get a wrong answer, so those get a
-# placeholder that says what is wrong instead.
+# Symbols peft calls; on a real transformers an inert stub would answer wrongly, so raise.
 _PEFT_CONVERSION_RUNTIME_SYMBOLS = frozenset(
     (
         "transformers.core_model_loading.dot_natural_key",
         "transformers.core_model_loading.rename_source_key",
         "transformers.core_model_loading.WeightRenaming",
         "transformers.core_model_loading.WeightConverter",
-        # build_peft_weight_mapping buckets entries with isinstance(op, Concatenate) /
-        # isinstance(op, MergeModulelist) and builds Transpose outright, so an inert stub silences the
-        # isinstance arms and the conversion is skipped. ConversionOps stays import-only: peft
-        # subclasses it and never asks about instances.
+        # peft uses isinstance on these, so an inert stub silently skips conversion.
         "transformers.core_model_loading.Concatenate",
         "transformers.core_model_loading.MergeModulelist",
         "transformers.core_model_loading.Transpose",
@@ -5612,9 +9246,7 @@ def _unsupported_conversion_symbol(qualified, donor_value = None):
         "transformers that still exports it, or a peft that does not need it."
     )
     if isinstance(donor_value, type):
-        # isinstance has to raise, not answer False: peft buckets conversion entries by type, and a
-        # placeholder that quietly matches nothing drops the operations instead of reporting that it
-        # cannot do the job. Subclassing still works, since creating a class constructs nothing.
+        # isinstance must raise, not answer False, or peft drops the operations silently.
         class _RefusingMeta(type):
             def __instancecheck__(cls, instance):
                 raise RuntimeError(message)
@@ -5639,20 +9271,16 @@ def _unsupported_conversion_symbol(qualified, donor_value = None):
     return _refuse
 
 
-# The model types peft acts on, snapshotted from conversion_mapping._MODEL_TO_CONVERSION_PATTERN
-# because the case handled here is that map being gone. A list and not a rule: deepseek_v3,
-# dots1, longcat_flash, minimax, mellum, qwen3_next, solar_open and flex_olmo are all fused MoE
-# and none of them say so.
+# Snapshot of the conversion map for when it is gone; many fused MoE types lack 'moe' in name.
 _PEFT_MOE_CONVERSION_PATTERNS = {
-    # The two base patterns map to themselves, and omitting them was not harmless: mixtral says
-    # nothing about MoE, so the substring hint answered the default and the drift test failed on
-    # transformers 5.5.0. qwen3_5_moe is here for 5.3.0, where it is a separate key.
+    # Base patterns map to themselves; mixtral lacks 'moe'. qwen3_5_moe is separate on 5.3.0.
     "mixtral": "mixtral",
     "qwen2_moe": "qwen2_moe",
     "qwen3_5_moe": "qwen2_moe",
     "minimax": "mixtral",
     "minimax_m2": "mixtral",
     "afmoe": "qwen2_moe",
+    "beam": "qwen2_moe",
     "cohere2_moe": "qwen2_moe",
     "deepseek_v2": "qwen2_moe",
     "deepseek_v3": "qwen2_moe",
@@ -5667,31 +9295,38 @@ _PEFT_MOE_CONVERSION_PATTERNS = {
     "glm_moe_dsa": "qwen2_moe",
     "hunyuan_v1_moe": "qwen2_moe",
     "longcat_flash": "qwen2_moe",
+    # Registered by unsloth/models/longcat_lsa.py, so the snapshot must agree with the live map.
+    "longcat_flash_lsa": "qwen2_moe",
     "mellum": "qwen2_moe",
     "olmoe": "qwen2_moe",
     "qwen3_moe": "qwen2_moe",
     "qwen3_next": "qwen2_moe",
     "qwen3_omni_moe": "qwen2_moe",
     "qwen3_omni_moe_thinker": "qwen2_moe",
+    "qwen3_omni_moe_text": "qwen2_moe",
     "solar_open": "qwen2_moe",
+    # Keyed by class name, not model type: transformers (main, October 2026) aliases the
+    # unlimited_ocr text model's class to qwen2_moe, and the lookup keeps its case.
+    "UnlimitedOcrTextModel": "qwen2_moe",
 }
 
 # MoE-named types whose conversion family is NOT one of the two fused ones, so peft's
 # _convert_peft_config_moe finds no mapping entry and returns without a rewrite. The substring
-# hint below raised for all three on the name alone. Checked before the hint, never instead of
+# hint below raised for these on the name alone. Checked before the hint, never instead of
 # the snapshot above.
 _PEFT_MOE_NAMED_NOT_FUSED = frozenset(
     (
         "granitemoehybrid",
         "granitemoeshared",
         "qwen3_5_moe_text",
+        # Keyed by class name: transformers (main, October 2026) aliases the Qwen3-Omni MoE
+        # thinker classes to the dense Qwen2.5-Omni thinker, which peft does not rewrite.
+        "Qwen3OmniMoeThinkerForConditionalGeneration",
+        "Qwen3OmniMoeThinkerModel",
     )
 )
 
-# The other half of the carve-out: MoE-named types not in the conversion map AT ALL, where
-# peft's .get() answers None and skips the rewrite, so a refusal breaks an ordinary adapter
-# load (qwen3_vl_moe, lfm2_moe). A name absent from only one of 5.3.0 / 5.5.0 stays fused:
-# refusing a fused type costs a message, answering None is a silent mis-conversion.
+# MoE types missing from the map: peft get returns None so raising breaks loads; missing from one version only stays fused
 _PEFT_MOE_NAMED_NOT_CONVERTED = frozenset(
     (
         "ernie4_5_vl_moe",
@@ -5706,8 +9341,7 @@ _PEFT_MOE_NAMED_NOT_CONVERTED = frozenset(
     )
 )
 
-# How many pairs a candidate map must match before we believe it is the conversion map under a
-# new name. Three: a coincidence does not pass, a few renamed types still do.
+# Matches needed to accept a renamed map; three rules out coincidence.
 _CONVERSION_MAP_MATCHES = 3
 
 
@@ -5767,17 +9401,17 @@ class _UnavailableConversionPatternMap(dict):
         "peft that does not need the conversion."
     )
 
-    # Only fused-MoE lookups are unsafe to answer with a silent None: peft reaches
-    # _convert_peft_config_moe for any type with a conversion mapping, and there None is what the
-    # real map gives too, so raising for all would break ordinary adapter loads. The substring
-    # hints sit on top of the snapshot, for a fused type added later that follows the convention.
+    # Only fused-MoE lookups are unsafe to answer with None; raising for all breaks normal loads.
     _MOE_HINTS = ("moe", "mixtral")
 
     def _is_moe(self, key):
         name = str(key).lower()
-        if name in _PEFT_MOE_CONVERSION_PATTERNS:
+        # Both spellings: model types are lowercase, the class-name aliases are not.
+        if key in _PEFT_MOE_CONVERSION_PATTERNS or name in _PEFT_MOE_CONVERSION_PATTERNS:
             return True
-        if name in _PEFT_MOE_NAMED_NOT_FUSED or name in _PEFT_MOE_NAMED_NOT_CONVERTED:
+        if key in _PEFT_MOE_NAMED_NOT_FUSED or name in _PEFT_MOE_NAMED_NOT_FUSED:
+            return False
+        if name in _PEFT_MOE_NAMED_NOT_CONVERTED:
             return False
         return any(hint in name for hint in self._MOE_HINTS)
 
@@ -5828,21 +9462,12 @@ def _backfill_conversion_symbols_once(builders, added):
         missing = [s for s in symbols if not hasattr(real, s)]
         if not missing:
             continue
-        # Build the stub off to the side rather than installing it, so the real module keeps its
-        # identity and everything else it exports.
-        saved = sys.modules.pop(name, None)
-        try:
-            donor = builders[name]()
-        finally:
-            if saved is not None:
-                sys.modules[name] = saved
-            else:
-                sys.modules.pop(name, None)
+        # Build the stub off to the side rather than installing it, so the real module keeps its identity and its other exports.
+        donor = builders[name]()
         for symbol in missing:
             qualified = f"{name}.{symbol}"
             if symbol == "_MODEL_TO_CONVERSION_PATTERN":
-                # peft copies this and looks families up in it, so the stub's empty dict silently drops every
-                # alias. Recover the real one.
+                # The stub's empty dict silently drops every alias peft looks up; recover the real one.
                 recovered = _recover_conversion_pattern_map(real)
                 if recovered is None:
                     logger.warning(
@@ -5851,10 +9476,7 @@ def _backfill_conversion_symbols_once(builders, added):
                         "targets for fused MoE checkpoints. Adapters for other "
                         "architectures are unaffected."
                     )
-                # An empty dict is the one shape that fails SILENTLY: peft does
-                # _MODEL_TO_CONVERSION_PATTERN.copy() at import then .get(model_type, None), and a None makes
-                # _convert_peft_config_moe return early, so every affected adapter loads with legacy targets
-                # unconverted and no message anywhere.
+                # Empty dict fails silently: peft's .get(model_type, None) returns None, so MoE adapters load with legacy targets unconverted.
                 setattr(
                     real,
                     symbol,
@@ -5863,8 +9485,7 @@ def _backfill_conversion_symbols_once(builders, added):
                 added.append(qualified)
                 continue
             if qualified in _PEFT_CONVERSION_RUNTIME_SYMBOLS:
-                # peft calls this one. The stub bodies exist to make the import work on transformers <5, where
-                # peft's converter never runs; on a real transformers it would run and answer wrongly.
+                # peft calls this one: the stubs only make the import work on transformers <5; on a real transformers a stub would answer wrongly.
                 setattr(
                     real,
                     symbol,
@@ -5884,15 +9505,13 @@ def _backfill_missing_conversion_symbols():
     Never replaces a module and never overwrites a name transformers defines,
     so this is a no-op on every release that still exports them.
     """
+    # _build_ not _install_: installing also attaches the stub to the transformers package.
     builders = {
-        "transformers.conversion_mapping": _install_transformers_conversion_mapping_stub,
-        "transformers.core_model_loading": _install_transformers_core_model_loading_stub,
+        "transformers.conversion_mapping": _build_transformers_conversion_mapping_stub,
+        "transformers.core_model_loading": _build_transformers_core_model_loading_stub,
     }
     added = []
-    # One pass is not enough when the drifts coincide: conversion_mapping imports names from
-    # core_model_loading at module top, so while those are missing its import raises and the pass
-    # skips it, and _gpu_init calls this guard once. Repeat while a pass adds a symbol and leaves
-    # a module unimportable; each pass adds one, so the bound is the module count.
+    # Repeat: conversion_mapping imports from core_model_loading, so one pass may not suffice.
     for _attempt in range(len(_PEFT_CONVERSION_SYMBOLS) + 1):
         before = len(added)
         skipped = _backfill_conversion_symbols_once(builders, added)
@@ -5905,6 +9524,76 @@ def _backfill_missing_conversion_symbols():
             ", ".join(added),
         )
     return bool(added)
+
+
+def patch_peft_float8_adapter_upcast():
+    """PEFT < 0.19 builds adapters in an FP8 base weight's dtype; upcast them to float32 as PEFT >= 0.19 does."""
+    try:
+        import torch
+        import peft.tuners.tuners_utils as tu
+    except Exception:
+        return
+    original = getattr(tu, "cast_adapter_dtype", None)
+    if original is None or getattr(original, "_unsloth_float8_upcast", False):
+        return
+    try:
+        from peft.utils.constants import UPCAST_DTYPES  # noqa: F401  (PEFT >= 0.19 already upcasts float8)
+        return
+    except ImportError:
+        pass
+    float8 = tuple(
+        getattr(torch, n)
+        for n in ("float8_e4m3fn", "float8_e4m3fnuz", "float8_e5m2", "float8_e5m2fnuz")
+        if hasattr(torch, n)
+    )
+
+    @functools.wraps(original)
+    def cast_adapter_dtype(
+        model,
+        adapter_name,
+        autocast_adapter_dtype = True,
+    ):
+        original(model, adapter_name = adapter_name, autocast_adapter_dtype = autocast_adapter_dtype)
+        if not autocast_adapter_dtype:
+            return
+        for module in model.modules():
+            if not isinstance(module, tu.BaseTunerLayer):
+                continue
+            for name in module.adapter_layer_names:
+                layer = getattr(module, name, None)
+                if not isinstance(layer, torch.nn.Module) or adapter_name not in layer:
+                    continue
+                item = layer[adapter_name]
+                params = item.parameters() if isinstance(item, torch.nn.Module) else (item,)
+                for p in params:
+                    if p.dtype in float8:
+                        p.data = p.data.to(torch.float32)
+
+    cast_adapter_dtype._unsloth_float8_upcast = True
+    tu.cast_adapter_dtype = cast_adapter_dtype
+
+
+def patch_peft_shared_active_adapter():
+    """Compiled layers guard on peft's shared active-adapter str; TRL DPO's ref switch broke Gemma 4 E2B recompute."""
+    try:
+        import peft.tuners.tuners_utils as tu
+    except Exception:
+        return
+    layer_cls = getattr(tu, "BaseTunerLayer", None)
+    original = getattr(layer_cls, "set_adapter", None)
+    if original is None or getattr(original, "_unsloth_shared_active_adapter", False):
+        return
+
+    @functools.wraps(original)
+    def set_adapter(self, adapter_names, *args, **kwargs):
+        out = original(self, adapter_names, *args, **kwargs)
+        active = self.__dict__.get("_active_adapter")
+        if type(active) is list and len(active) == 1 and type(active[0]) is str:
+            self._active_adapter = sys.intern(active[0])
+        return out
+
+    set_adapter._unsloth_shared_active_adapter = True
+    layer_cls.set_adapter = set_adapter
 
 
 def patch_peft_weight_converter_compatibility():
@@ -6001,7 +9690,8 @@ def _patch_peft_moe_target_conversion(twc):
 
         target_modules = getattr(peft_config, "target_modules", None)
         if isinstance(target_modules, str):
-            if "." in target_modules:
+            # peft 0.19 turns the string into a set of characters and then fails to find any target.
+            if "." in target_modules or not hasattr(twc, "_resolve_string_target_modules"):
                 return
             return original_convert_moe(peft_config, model_type)
 
@@ -6023,13 +9713,126 @@ def _patch_peft_moe_target_conversion(twc):
         peft_config.target_modules = set(peft_config.target_modules or ()) | explicit_targets
 
     twc._convert_peft_config_moe = _convert_peft_config_moe_unsloth
+    # transformers <= 5.5 mapped qwen2_moe onto itself, later releases dropped it and peft adds only
+    # "mixtral", so a qwen2_moe v4 adapter loaded with its experts silently unconverted.
+    pattern_map = getattr(twc, "_MODEL_TO_CONVERSION_PATTERN", None)
+    if isinstance(pattern_map, dict):
+        for base_model_type in getattr(twc, "_MOE_TARGET_MODULE_MAPPING", {}):
+            if not dict.__contains__(pattern_map, base_model_type):
+                pattern_map[base_model_type] = base_model_type
+    _patch_peft_moe_keep_linear_targets(twc)
     twc._unsloth_moe_target_conversion_patch = True
+
+
+def _is_lora_linear_target(module):
+    from torch import nn
+
+    # Quantized linears PEFT wraps that are not nn.Linear: GPTQ / AWQ / HQQ / Megatron shapes, EETQ / AQLM names.
+    if isinstance(module, nn.Linear):
+        return True
+    if isinstance(module, (nn.Embedding, nn.modules.conv._ConvNd)):
+        return False
+    if "Linear" in type(module).__name__:
+        return True
+    return any(
+        hasattr(module, a) and hasattr(module, b)
+        for a, b in (
+            ("in_features", "out_features"),
+            ("infeatures", "outfeatures"),
+            ("input_size", "output_size"),
+        )
+    )
+
+
+def _moe_linear_targets_to_restore(twc, model, before, peft_config):
+    """Converted-away targets that name linear layers (shared experts, first_k_dense layers), which PEFT
+    otherwise leaves without LoRA and whose v4 adapter weights it drops."""
+    after = peft_config.target_modules
+    if after is None or isinstance(after, str):
+        return set()
+    after = set(after)
+    modules = list(model.named_modules())
+
+    if isinstance(before, str):
+        if not hasattr(twc, "_resolve_string_target_modules"):
+            return set()
+        old_names = set()
+        for mapping in getattr(twc, "_MOE_TARGET_MODULE_MAPPING", {}).values():
+            old_names.update(mapping)
+        output = model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
+        candidates = set()
+        for name, module in modules:
+            leaf = name.rpartition(".")[-1]
+            if leaf not in old_names or leaf in after or not _is_lora_linear_target(module):
+                continue
+            if module is output:
+                continue
+            if before.lower() == "all-linear":
+                candidates.add(leaf)  # peft resolves all-linear to leaf names too
+            elif re.fullmatch(before, name):
+                candidates.add(name)  # a regex may select one layer: keep exactly what it matched
+    else:
+        candidates = set(before) - after
+
+    target_parameters = set(peft_config.target_parameters or ())
+    restore = set()
+    for target in candidates:
+        matched = [
+            (name, module)
+            for name, module in modules
+            if name == target or name.endswith("." + target)
+        ]
+        # Not the router or experts, and never a Linear whose weight is now a parameter target.
+        linear = [
+            name
+            for name, module in matched
+            if _is_lora_linear_target(module)
+            and not any(
+                f"{name}.weight" == parameter or f"{name}.weight".endswith("." + parameter)
+                for parameter in target_parameters
+            )
+        ]
+        if not linear:
+            continue
+        if len(linear) == len(matched):
+            restore.add(target)
+        else:
+            restore.update(linear)  # a non-Linear namesake must not take the Linears down with it
+    return restore
+
+
+def _patch_peft_moe_keep_linear_targets(twc):
+    original_convert = getattr(twc, "convert_peft_config_for_transformers", None)
+    if original_convert is None or getattr(
+        original_convert, "_unsloth_keeps_linear_targets", False
+    ):
+        return
+
+    @functools.wraps(original_convert)
+    def convert_peft_config_for_transformers(peft_config, model, *args, **kwargs):
+        before = getattr(peft_config, "target_modules", None)
+        before = before if isinstance(before, str) or before is None else list(before)
+        result = original_convert(peft_config, model, *args, **kwargs)
+        if before is None or not hasattr(model, "named_modules"):
+            return result
+        try:
+            restore = _moe_linear_targets_to_restore(twc, model, before, peft_config)
+        except Exception as exc:
+            logger.warning("Unsloth: could not restore MoE Linear LoRA targets: %s", exc)
+            return result
+        if restore:
+            peft_config.target_modules = set(peft_config.target_modules) | restore
+        return result
+
+    convert_peft_config_for_transformers._unsloth_keeps_linear_targets = True
+    twc.convert_peft_config_for_transformers = convert_peft_config_for_transformers
 
 
 CAUSAL_CONV1D_BROKEN = False
 _CAUSAL_CONV1D_PREFIX = "causal_conv1d"
 _CAUSAL_CONV1D_BLOCKER_SENTINEL = "_unsloth_causal_conv1d_blocker"
 VLLM_BROKEN = False
+VLLM_DISABLED_REASON = None  # the warning logged when vLLM was disabled, for fast_inference errors
 _VLLM_PREFIX = "vllm"
 _VLLM_BLOCKER_SENTINEL = "_unsloth_vllm_blocker"
 _ROCM_ENV_HINT_KEYS = (
@@ -6061,8 +9864,7 @@ def _log_rocm_detection(message):
 
 @functools.lru_cache(1)
 def _is_rocm_torch_build() -> bool:
-    # Most official ROCm wheels carry a +rocmX.Y local version, but some custom or source builds do
-    # not, so fall back to runtime hints.
+    # Some custom ROCm builds lack a +rocm local version, so fall back to runtime hints.
     try:
         torch_version_raw = str(importlib_version("torch")).lower()
         if "rocm" in torch_version_raw:
@@ -6154,13 +9956,8 @@ def configure_amdgpu_asic_id_table_path():
     return None
 
 
-# bitsandbytes Windows ROCm fix: cextension.py calls get_rocm_gpu_arch() (bnb >= 0.47) and
-# get_rocm_warpsize() (0.49.x) at import, shelling out to rocminfo / hipInfo.exe via PATH. Neither
-# is on PATH on Windows (AMD torch wheels put hipInfo.exe in venv Scripts), so ROCM_GPU_ARCH
-# becomes "unknown" and warp size defaults to 64, wrong on RDNA (wave 32) and breaking 4-bit
-# blocksizes and ALLOW_PREQUANTIZED_MODELS. Upstream fix unmerged (bitsandbytes#1969), so a
-# MetaPathFinder swaps both helpers right after bitsandbytes.cuda_specs executes. Must run before
-# `import unsloth_zoo`.
+# bitsandbytes Windows ROCm fix: rocminfo / hipInfo.exe are not on PATH, so ROCM_GPU_ARCH is "unknown" and warp size defaults to 64 (wrong on RDNA).
+# Upstream fix unmerged (bitsandbytes#1969): a MetaPathFinder swaps both helpers right after bitsandbytes.cuda_specs executes. Must run before `import unsloth_zoo`.
 
 # ---------------------------------------------------------------------------
 
@@ -6365,8 +10162,7 @@ class _BnbCudaSpecsPatchLoader(importlib.abc.Loader):
 
     def exec_module(self, module):
         self._loader.exec_module(module)
-        # Patch after the module body ran, before cextension calls it. The finder stays on
-        # sys.meta_path so importlib.reload(bitsandbytes.cuda_specs) re-patches.
+        # Patch after the module body runs but before cextension calls it; the finder stays so reload re-patches
         try:
             _patch_bnb_cuda_specs_module(module)
         except Exception as e:
@@ -6391,8 +10187,7 @@ class _BnbCudaSpecsPatchFinder(importlib.abc.MetaPathFinder):
     ):
         if fullname != _BNB_CUDA_SPECS_MODULE:
             return None
-        # Delegate to the remaining finders (editable installs, frozen apps) and wrap the loader that
-        # would actually be used.
+        # Delegate to the other meta-path finders (editable installs, frozen apps), skipping this one, then wrap the loader used.
         spec = None
         for finder in sys.meta_path:
             if finder is self or getattr(finder, _BNB_ROCM_FIX_FINDER_SENTINEL, False):
@@ -6521,6 +10316,83 @@ def _is_broken_causal_conv1d_error(error) -> bool:
     return False
 
 
+# Our Linux x86_64 cp313 CUDA 13 builds for torch 2.13/2.14, which no upstream wheel matches.
+_PREBUILT_KERNEL_RELEASE_URL = (
+    "https://github.com/unslothai/unsloth/releases/download/prebuilt-wheels-cu13"
+)
+_FLASH_ATTN_TORCH213_SOURCE = "flash-attn @ git+https://github.com/Dao-AILab/flash-attention@edb5c76ee329b18ed95d1f7ea9aa522a1331ab7d"
+_PREBUILT_KERNEL_VERSIONS = {
+    "flash_attn": "2.8.4",
+    "causal_conv1d": "1.7.0",
+    "mamba_ssm": "2.3.2.post1",
+}
+
+
+def _glibc_at_least(major: int, minor: int) -> bool:
+    # The builds run on ubuntu-22.04, and the linux_x86_64 tag lets pip install them on older glibc.
+    try:
+        name, version = platform.libc_ver()
+        return name == "glibc" and tuple(int(x) for x in version.split(".")[:2]) >= (major, minor)
+    except Exception:
+        return False
+
+
+def stale_kernel_hint(package: str, error) -> str:
+    """How to rebuild ``package`` when ``error`` says its extension was built for another torch, else ""."""
+    checked = set()
+    current = error
+    while current is not None and id(current) not in checked:
+        checked.add(id(current))
+        # Only an unresolved c10/at/torch symbol means a torch ABI break that a rebuild fixes.
+        if re.search(r"undefined symbol: (?:_ZN\w*?(?:3c10|2at|5torch)|aoti_torch_)", str(current)):
+            break
+        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+    else:
+        return ""
+    try:
+        import torch
+
+        torch_version = str(torch.__version__)
+        cuda = str(torch.version.cuda or "")
+        cxx11 = bool(getattr(torch._C, "_GLIBCXX_USE_CXX11_ABI", True))
+    except Exception:
+        return ""
+    public = torch_version.split("+")[0]
+    # Only a stable release matches the wheel; a nightly or rc of the same minor has its own ABI.
+    stable = re.fullmatch(r"(\d+)\.(\d+)\.\d+", public)
+    minor = ".".join(stable.groups()) if stable else ""
+    loose = re.match(r"(\d+)\.(\d+)", public)
+    torch_minor = tuple(int(x) for x in loose.groups()) if loose else (0, 0)
+    head = f"Unsloth: {package} was built for a different torch than {torch_version}, so its fast kernels are off."
+    if (
+        package in _PREBUILT_KERNEL_VERSIONS
+        and sys.platform.startswith("linux")
+        and platform.machine().lower() in ("x86_64", "amd64")
+        and sys.version_info[:2] == (3, 13)
+        and not sysconfig.get_config_var("Py_GIL_DISABLED")
+        and _glibc_at_least(2, 35)
+        and minor in ("2.13", "2.14")
+        and cuda.startswith("13.")
+        and cxx11
+    ):
+        wheel = (
+            f"{package}-{_PREBUILT_KERNEL_VERSIONS[package]}+cu13torch{minor}cxx11abiTRUE"
+            "-cp313-cp313-linux_x86_64.whl"
+        )
+        return f"{head} To restore them:\n  pip install --no-deps --force-reinstall {_PREBUILT_KERNEL_RELEASE_URL}/{wheel}"
+    dist = package.replace("_", "-")
+    if package == "flash_attn" and torch_minor >= (2, 13):
+        # The last flash-attn release predates the c++20 switch torch 2.13 headers need.
+        return (
+            f"{head} To restore them, rebuild it against this torch:\n"
+            f'  pip install --no-deps --no-build-isolation --no-cache-dir --force-reinstall "{_FLASH_ATTN_TORCH213_SOURCE}"'
+        )
+    return (
+        f"{head} To restore them, rebuild it against this torch:\n"
+        f"  pip install --no-deps --no-build-isolation --no-cache-dir --force-reinstall --no-binary {dist} {dist}"
+    )
+
+
 def _is_broken_vllm_error(error) -> bool:
     checked = set()
     current = error
@@ -6536,9 +10408,21 @@ def _is_broken_vllm_error(error) -> bool:
             )
         ) or ("vllm" in message and "undefined symbol" in message):
             return True
-        # A forced extension load raises the bare loader error with no "vllm._C" wrapper, so match any
-        # .so failure; callers feed only vLLM imports.
+        # Forced extension loads raise the bare loader error without the vllm._C wrapper.
         if "cannot open shared object file" in message:
+            return True
+        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+    return False
+
+
+def _is_vllm_needs_transformers_v5_error(error) -> bool:
+    # vLLM >= 0.24 raises ImportError at import under transformers < 5 (vllm/transformers_utils/config.py).
+    checked = set()
+    current = error
+    while current is not None and id(current) not in checked:
+        checked.add(id(current))
+        message = str(current).lower()
+        if "support for transformers v4" in message and "removed in vllm" in message:
             return True
         current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
     return False
@@ -6547,8 +10431,7 @@ def _is_broken_vllm_error(error) -> bool:
 _VLLM_RELEASES_URL = "https://github.com/vllm-project/vllm/releases"
 _VLLM_INSTALL_DOCS_URL = "https://docs.vllm.ai/en/latest/getting_started/installation/gpu/"
 
-# A plain release version, e.g. "0.23.0". Anything else (rc / dev / post) has no matching
-# GitHub release asset, so never name a wheel for it.
+# Plain numeric release only (e.g. 0.23.0): rc, dev and post versions have no GitHub release asset, so never name a wheel.
 _VLLM_RELEASE_VERSION_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)*$")
 
 # Normalises platform.machine() onto the arch spelling used in wheel names.
@@ -6565,13 +10448,8 @@ def _both_arches(manylinux_tag):
     return {"x86_64": manylinux_tag, "aarch64": manylinux_tag}
 
 
-# vLLM ships one CUDA build per release unsuffixed and the other under a +cuXXX tag, and which
-# major is default flipped at 0.20.0 while the manylinux tag moved and differs between the two
-# wheels of one release. The name cannot be derived: vLLM's documented "+cu${CUDA_VERSION}"
-# pattern 404s (vllm-project/vllm#37847) and no release published a +cu128 wheel.
-# Each entry is (min_version, max_version, {cuda_major: (local_tag, {arch: manylinux})}),
-# transcribed from the real release assets; an absent major or arch was never published for
-# that range. Extend on a new release; until then newer versions fall back to the release page.
+# vLLM wheel names cannot be derived (+cuXXX tags and manylinux vary per release); transcribed
+# from real release assets. Extend on a new release.
 _VLLM_WHEEL_ASSETS = (
     (
         "0.11.0",
@@ -6628,8 +10506,7 @@ _VLLM_WHEEL_ASSETS = (
     ),
 )
 
-# From this release on, the default wheel is the CUDA 13 build and the CUDA 12 one carries
-# +cu129, so the right variant can be named even when the manylinux tag is unknown.
+# From this release on the default wheel is the CUDA 13 build and CUDA 12 carries +cu129, so the variant is nameable without a manylinux tag.
 _VLLM_CUDA13_DEFAULT_SINCE = "0.20.0"
 
 
@@ -6695,15 +10572,6 @@ def _get_vllm_cuda_mismatch_message(error):
     # Detect what CUDA version is actually available on the system
     system_cuda_display = None  # Human-readable, e.g. "13.0"
     system_cuda_major = None
-    # A random name is never reused, so a failed attempt would be litter rather than something the next run
-    # overwrites.
-    # torchao also hangs a handler off aten._grouped_mm at import time, and that operator only exists from torch
-    # 2.8. Same skew, different lookup: supplying the torch.nn.functional names above does not help it.
-    # Second guard for the same hazard, in case the alias is the file rather than the directory: never chain to
-    # this very hook.
-    # Ask the import system rather than probing for a filename, so the package (`sitecustomize/__init__.py`) and
-    # .pyc forms chain too.
-    # Debug mode calls find_device(...).type on gather/broadcast inputs
     try:
         import torch
         cuda_version = torch.version.cuda
@@ -6894,8 +10762,7 @@ def _clear_vllm_modules():
             sys.modules.pop(module_name, None)
 
 
-# vLLM's compiled extensions: a CUDA-major ABI break hits all of them, so probing the eagerly
-# loaded _C and its siblings reliably trips it.
+# A CUDA-major ABI break hits all of vLLM's compiled extensions, so probing the eagerly loaded _C reliably trips it.
 _VLLM_COMPILED_EXTENSIONS = (
     "vllm._C",
     "vllm._C_stable_libtorch",
@@ -6905,8 +10772,8 @@ _VLLM_COMPILED_EXTENSIONS = (
 
 
 def disable_broken_vllm(error = None):
-    """Disable vLLM dynamically when its shared library is ABI-broken."""
-    global VLLM_BROKEN
+    """Disable vLLM dynamically when its shared library is ABI-broken or it refuses this transformers."""
+    global VLLM_BROKEN, VLLM_DISABLED_REASON
     if VLLM_BROKEN:
         _install_vllm_blocker()
         return True
@@ -6922,8 +10789,7 @@ def disable_broken_vllm(error = None):
         try:
             import vllm  # noqa: F401
 
-            # Lazy vLLM lets a bare `import vllm` succeed with an ABI-broken extension; force-load each to
-            # surface the .so failure here. A missing one raises ModuleNotFoundError (skipped below).
+            # Lazy vLLM lets import vllm succeed with a broken .so; force-load each, and a missing one is skipped below
             for _ext in _VLLM_COMPILED_EXTENSIONS:
                 try:
                     importlib.import_module(_ext)
@@ -6933,22 +10799,34 @@ def disable_broken_vllm(error = None):
         except Exception as import_error:
             failure = import_error
 
-    if not _is_broken_vllm_error(failure):
+    needs_transformers_v5 = _is_vllm_needs_transformers_v5_error(failure)
+    if not needs_transformers_v5 and not _is_broken_vllm_error(failure):
         return False
 
     VLLM_BROKEN = True
     _clear_vllm_modules()
     _install_vllm_blocker()
-    cuda_msg = _get_vllm_cuda_mismatch_message(failure)
-    if cuda_msg:
-        logger.warning(cuda_msg)
+    cuda_msg = None if needs_transformers_v5 else _get_vllm_cuda_mismatch_message(failure)
+    if needs_transformers_v5:
+        try:
+            vllm_version = importlib_version("vllm")
+        except Exception:
+            vllm_version = "unknown"
+        VLLM_DISABLED_REASON = (
+            f"Unsloth: vLLM {vllm_version} needs transformers >= 5.0, so vLLM is disabled and "
+            "fast_inference is unavailable; everything else still works.\n"
+            'To use fast_inference, upgrade transformers or install "vllm<0.24".'
+        )
+    elif cuda_msg:
+        VLLM_DISABLED_REASON = cuda_msg
     else:
-        logger.warning(
+        VLLM_DISABLED_REASON = (
             "Unsloth: Detected broken vLLM binary extension; "
             "disabling vLLM imports and continuing import.\n"
             "Please reinstall via `uv pip install unsloth vllm torchvision torchaudio "
             "--torch-backend=auto`."
         )
+    logger.warning(VLLM_DISABLED_REASON)
     return True
 
 
@@ -6994,6 +10872,7 @@ def disable_broken_causal_conv1d():
     except Exception as error:
         if not _is_broken_causal_conv1d_error(error):
             return
+        hint = stale_kernel_hint("causal_conv1d", error)
 
     CAUSAL_CONV1D_BROKEN = True
     _clear_causal_conv1d_modules()
@@ -7003,6 +10882,8 @@ def disable_broken_causal_conv1d():
         "Unsloth: Detected broken causal_conv1d binary; "
         "disabling causal_conv1d fast path and continuing import."
     )
+    if hint:
+        print(hint)
 
 
 _BNB_ROCM_DLL_RE = re.compile(r"libbitsandbytes_rocm(\d+)\.dll", re.IGNORECASE)
@@ -7182,11 +11063,7 @@ def patch_accelerate_recursively_apply():
                         pass
 
 
-# The one ImportError worth answering False to. Matching "torchao" anywhere is too wide: a
-# missing submodule ("No module named 'torchao.quantization'") or libtorchao_ops_cuda.so also
-# says it and both mean genuinely broken, so match the version complaint itself. peft's wording
-# is first; the rest are how other libraries phrase it, so a reword does not silently turn this
-# back into a raise.
+# Match only the stale-version complaint; other torchao ImportErrors mean genuinely broken.
 _TORCHAO_STALE_VERSION_ERROR = re.compile(
     r"incompatible version of torchao"
     r"|torchao.{0,120}?only versions?\s+(?:above|below|>=|<=)"
@@ -7240,6 +11117,11 @@ def fix_peft_stale_torchao_import_error():
             return False
 
     is_torchao_available.__unsloth_patched__ = True
+    # functools.wraps does not copy lru_cache's cache_clear/cache_info; forward them.
+    for name in ("cache_clear", "cache_info"):
+        method = getattr(original, name, None)
+        if method is not None:
+            setattr(is_torchao_available, name, method)
 
     patched = False
     try:
@@ -7248,9 +11130,7 @@ def fix_peft_stale_torchao_import_error():
     except Exception:
         return False
 
-    # `from peft.import_utils import is_torchao_available` binds the original into each importing
-    # module, so patching import_utils alone leaves the real caller, peft.tuners.lora.torchao,
-    # still raising.
+    # Importers bind the original by name, e.g. peft.tuners.lora.torchao; patch them too.
     for mod_name, mod in tuple(sys.modules.items()):
         if not mod_name.startswith("peft") or mod is None:
             continue
@@ -7262,10 +11142,10 @@ def fix_peft_stale_torchao_import_error():
     return patched
 
 
-# Matches both spellings a torchao removal produces: the class name, and the module that used to
-# define it. Only these two, so a torchao that is BROKEN rather than newer still raises.
+# Messages a torchao removal produces (class, old module, torchao.dtypes package); a broken torchao still raises
 _PEFT_TORCHAO_MISSING_TENSOR_SUBCLASS = re.compile(
-    r"linear_?activation_?quantized_?tensor|affine_?quantized_?tensor",
+    r"linear_?activation_?quantized_?tensor|affine_?quantized_?tensor"
+    r"|no module named '?torchao\.dtypes'?(?![.\w])",
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -7301,8 +11181,7 @@ def _guard_peft_torchao_dispatcher(original):
     remain, so an AffineQuantizedTensor weight still gets a TorchaoLoraLinear.
     """
     warned = [False]
-    # The defining module's own globals, so the degraded path uses the very objects upstream would
-    # have, including an is_torchao_available already patched by the sibling fix.
+    # Use the defining module's globals so the degraded path sees the same objects, including the is_torchao_available patch.
     namespace = getattr(original, "__globals__", None)
     if not isinstance(namespace, dict):
         namespace = {}
@@ -7370,9 +11249,7 @@ def _guard_peft_torchao_dispatcher(original):
                 raise
             classes, missing = _peft_torchao_tensor_subclasses()
             if not missing:
-                # The message named one of the two classes but both are there, so this came from
-                # somewhere else in the dispatcher and is a real failure. Redoing the dispatch
-                # would swallow it and re-run whatever construction already happened.
+                # Both classes exist, so the failure came from elsewhere; redoing dispatch would swallow it.
                 raise
         if not warned[0]:
             warned[0] = True
@@ -7414,15 +11291,12 @@ def fix_peft_torchao_missing_tensor_subclass():
     except Exception:
         return None
     try:
-        # Normally already imported, and costs nothing extra: the torchao imports that break live
-        # inside the functions, not the module body.
+        # Usually already imported and free here, since the torchao imports that break live inside functions, not the module body.
         import peft.tuners.lora.torchao  # noqa: F401
     except Exception:
         pass
 
-    # `from .torchao import dispatch_torchao` copies the function into peft.tuners.lora.model,
-    # where the dispatch list is built, so patching the definer alone leaves the real caller
-    # raising. One wrapper per distinct original, shared, so a missing class warns once.
+    # dispatch_torchao is copied into peft.tuners.lora.model, so patch that caller too.
     wrapped = []
     patched = False
     for mod_name, mod in tuple(sys.modules.items()):
@@ -7452,9 +11326,7 @@ def fix_peft_torchao_missing_tensor_subclass():
     return patched
 
 
-# Every name torchao 0.18.0 imports from torch.nn.functional. scaled_grouped_mm is on the path
-# of a plain `import torchao`; scaled_dot_product_attention is listed for completeness, and the
-# loop below skips symbols torch provides.
+# Names torchao 0.18.0 imports from torch.nn.functional; symbols torch provides are skipped.
 _TORCHAO_TORCH_SYMBOLS = (
     "ScalingType",
     "SwizzleType",
@@ -7494,16 +11366,13 @@ def _make_torch_symbol_placeholder(name, detail):
     return placeholder
 
 
-# The same skew one layer down: torchao 0.18 does @implements([aten._grouped_mm.default]) at
-# module scope in float8/float8_tensor.py, and that op only arrived in torch 2.8, so older torch
-# raises AttributeError. This goes through torch.ops, so the schema itself has to exist.
+# torchao 0.18 registers on aten._grouped_mm (torch >= 2.8) at import, so the schema must exist.
 _ATEN_GROUPED_MM_SCHEMA = (
     "_grouped_mm(Tensor self, Tensor mat2, Tensor? offs=None, "
     "Tensor? bias=None, ScalarType? out_dtype=None) -> Tensor"
 )
 
-# Module level on purpose: a torch.library.Library deregisters everything it defined once
-# collected, so a local would undo itself.
+# Module level: a Library deregisters its definitions once garbage collected.
 _aten_grouped_mm_library = None
 
 
@@ -7629,8 +11498,7 @@ def fix_torchao_torch_symbol_skew():
             torch_version,
         )
 
-    # The aten-op half of the same skew, independent of the loop above: a torch can have every
-    # functional symbol and still lack the operator, or the reverse.
+    # The aten-op check is separate from the symbol loop: torch can have every symbol and miss the operator, or the reverse.
     op_detail = (
         f"torchao {torchao_version} registers a handler for it at "
         f"import time, but torch {torch_version} does not provide it "
@@ -7646,6 +11514,179 @@ def fix_torchao_torch_symbol_skew():
             torch_version,
         )
     return bool(patched)
+
+
+def fix_torchao_pytree_register_constant():
+    """Let `import unsloth` survive torchao 0.17+ on torch 2.6.
+
+    torchao 0.17+ calls `torch.utils._pytree.register_constant` on its config enums at import
+    time (0.16 only in its MX prototype), and that function arrived in torch 2.7, so on
+    torch 2.6 importing transformers (which imports torchao) raises AttributeError. A
+    pass-through is the exact torch 2.6 behaviour: there are no pytree constants, so the
+    enums stay plain leaves for dynamo, and nothing is computed differently.
+    """
+    if importlib.util.find_spec("torchao") is None:
+        return False
+    try:
+        torchao_version = importlib_version("torchao")
+        if Version(torchao_version) < Version("0.17.0"):
+            return False
+        import torch
+        import torch.utils._pytree as pytree
+    except Exception:
+        return False
+    if hasattr(pytree, "register_constant"):
+        return False
+
+    def register_constant(cls):
+        return None
+
+    register_constant.__unsloth_placeholder__ = True
+    try:
+        pytree.register_constant = register_constant
+    except Exception:
+        return False
+    logger.info(
+        "Unsloth: torchao %s needs torch.utils._pytree.register_constant, which torch %s "
+        "does not have (it arrived in torch 2.7). Adding a pass-through so the import succeeds.",
+        torchao_version,
+        torch.__version__,
+    )
+    return True
+
+
+# Newest torchao release whose Python API supports each torch minor (pytorch/ao#2919); newer torch has no ceiling.
+_TORCHAO_NEWEST_FOR_TORCH = {
+    (2, 4): (0, 12),
+    (2, 5): (0, 12),
+    (2, 6): (0, 13),
+    (2, 7): (0, 15),
+    (2, 8): (0, 16),
+}
+
+# What importing transformers / peft pulls from torchao at module scope (transformers 5 quantizer_torchao, peft lora).
+_TORCHAO_IMPORT_TIME_MODULES = (
+    "torchao",
+    "torchao.quantization",
+    "torchao.prototype.safetensors.safetensors_support",
+)
+
+# "<torchao>|<torch>" metadata versions; the subprocess sitecustomize hides torchao only on an exact match.
+_TORCHAO_DISABLED_ENV = "UNSLOTH_TORCHAO_DISABLED_FOR"
+
+TORCHAO_DISABLED_FOR_OLD_TORCH = False
+
+
+def _release_pair(version_string):
+    match = re.match(r"\s*(\d+)\.(\d+)", str(version_string))
+    return (int(match.group(1)), int(match.group(2))) if match else None
+
+
+def _is_torchao_torch_skew_error(error):
+    """Only torch's own missing-name wording; any other torchao failure stays visible."""
+    message = str(error)
+    if isinstance(error, AttributeError):
+        return message.startswith("module 'torch") and "has no attribute" in message
+    if isinstance(error, ImportError):
+        return "cannot import name" in message and "from 'torch" in message
+    return False
+
+
+def _hide_torchao_from_dependents():
+    """Make torchao read as not installed, as `disable_torchaudio_if_cuda_mismatched` does."""
+    for name in [n for n in list(sys.modules) if n == "torchao" or n.startswith("torchao.")]:
+        sys.modules.pop(name, None)
+    # find_spec returns None and `import torchao` raises ModuleNotFoundError: every guard takes its no-torchao branch.
+    sys.modules["torchao"] = None
+    # Libraries imported before unsloth cached the answer.
+    for module_name, flag_names in (
+        ("transformers.utils.import_utils", ("_torchao_available",)),
+        ("transformers.utils", ()),
+        ("peft.import_utils", ()),
+        ("diffusers.utils.import_utils", ("_torchao_available",)),
+    ):
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        for flag_name in flag_names:
+            if hasattr(module, flag_name):
+                try:
+                    setattr(module, flag_name, False)
+                except Exception:
+                    pass
+        check = getattr(module, "is_torchao_available", None)
+        if check is None:
+            continue
+        try:
+            check.cache_clear()
+        except AttributeError:
+            pass
+        try:
+            setattr(module, "is_torchao_available", lambda *args, **kwargs: False)
+        except Exception:
+            pass
+
+
+def disable_torchao_if_torch_too_old():
+    """Treat a torchao built for a newer torch as not installed instead of failing `import unsloth`.
+
+    unsloth_zoo's uncapped `torchao>=0.13.0` resolves 0.18 on torch 2.6, whose import reads
+    `torch.float4_e2m1fn_x2` (torch 2.7+). Disables only on a real missing torch name.
+    """
+    global TORCHAO_DISABLED_FOR_OLD_TORCH
+    if TORCHAO_DISABLED_FOR_OLD_TORCH:
+        _hide_torchao_from_dependents()
+        return True
+    try:
+        if "torchao" in sys.modules or importlib.util.find_spec("torchao") is None:
+            return False
+        torchao_version = importlib_version("torchao")
+        torchao_release = _release_pair(torchao_version)
+        import torch
+
+        torch_version = str(torch.__version__)
+        newest = _TORCHAO_NEWEST_FOR_TORCH.get(_release_pair(torch_version))
+    except Exception:
+        return False
+    if newest is None or torchao_release is None or torchao_release <= newest:
+        return False
+    reason = None
+    for module_name in _TORCHAO_IMPORT_TIME_MODULES:
+        try:
+            importlib.import_module(module_name)
+        except Exception as error:
+            if _is_torchao_torch_skew_error(error):
+                reason = str(error).split("\n", 1)[0]
+                break
+            if isinstance(error, ModuleNotFoundError) and str(
+                getattr(error, "name", "")
+            ).startswith("torchao"):
+                # An older torchao without this submodule: nothing imports it there.
+                continue
+            return False
+    if reason is None:
+        return False
+    TORCHAO_DISABLED_FOR_OLD_TORCH = True
+    _hide_torchao_from_dependents()
+    try:
+        os.environ[_TORCHAO_DISABLED_ENV] = (
+            f"{importlib_version('torchao')}|{importlib_version('torch')}"
+        )
+    except Exception:
+        pass
+    # unsloth_zoo needs torchao>=0.13, so below that only a newer torch is installable.
+    remedy = (
+        f'    pip install "torchao<{newest[0]}.{newest[1] + 1}"\nor a newer torch.'
+        if newest >= (0, 13)
+        else '    pip install --upgrade "torch>=2.6"'
+    )
+    print(
+        f"Unsloth: torchao=={torchao_version} does not support torch=={torch_version} "
+        f"({reason}), so torchao is disabled for this process and everything that does "
+        f"not use it keeps working. QAT, torchao float8 and torchao-quantized checkpoints "
+        f"need a torchao that matches this torch:\n{remedy}"
+    )
+    return True
 
 
 # vLLM inspects architectures in a separate process that imports torchao itself, never sees a
@@ -7684,8 +11725,7 @@ def _subprocess_fix_directory():
             raise RuntimeError(
                 "refusing a subprocess fix directory owned by another user: " + directory
             )
-        # chmod then re-read: some network and FUSE mounts ignore mode bits and report success without
-        # changing anything.
+        # Re-read after chmod: some network/FUSE mounts ignore mode bits silently.
         if stat.S_IMODE(info.st_mode) & 0o022:
             try:
                 os.chmod(directory, 0o700)
@@ -7708,8 +11748,9 @@ def _subprocess_sitecustomize_source():
     every subprocess. Ours runs the next one on sys.path first, then the fix.
     """
     return '''"""Written by unsloth. Makes `import torchao` survive a torch that
-predates the symbols torchao 0.18 imports unconditionally, in processes
-unsloth did not launch (notably vLLM's model-architecture inspector)."""
+predates the symbols torchao 0.18 imports unconditionally, or hides a torchao
+the parent disabled, in processes unsloth did not launch (notably vLLM's
+model-architecture inspector)."""
 import os
 import sys
 
@@ -7890,6 +11931,15 @@ class _TorchaoImportHook:
 # module object alive here: the finder below outlives this file's execution.
 _SELF = sys.modules.get(__name__)
 _chain_to_the_real_sitecustomize()
+# The parent disabled a torchao too new for its torch; hide it here only for the same torchao and torch.
+try:
+    _expected = os.environ.get("UNSLOTH_TORCHAO_DISABLED_FOR")
+    if _expected:
+        import importlib.metadata as _md
+        if _expected == "%s|%s" % (_md.version("torchao"), _md.version("torch")):
+            sys.modules["torchao"] = None
+except Exception:
+    pass
 try:
     sys.meta_path.insert(0, _TorchaoImportHook())
 except Exception:
@@ -7935,8 +11985,7 @@ def _write_hook_atomically(target, source):
                 stream.write(payload)
             os.replace(tmp, target)  # atomic
         except BaseException:
-            # A random name is never reused, so a failed attempt is litter rather than something the next
-            # run overwrites.
+            # A random name is never reused, so a failed attempt is litter rather than something the next run overwrites.
             try:
                 os.unlink(tmp)
             except Exception:
@@ -7985,12 +12034,30 @@ def _torch_really_has(F, name):
     return not getattr(symbol, "__unsloth_placeholder__", False)
 
 
+def _child_torchao_symbol_fix_needed():
+    if importlib.util.find_spec("torchao") is None:
+        return False
+    try:
+        if Version(importlib_version("torchao")) < Version("0.18.0"):
+            return False
+        import torch.nn.functional as F
+
+        # Our own in-process patches do not count as torch having the symbols.
+        return not (
+            all(_torch_really_has(F, n) for n in _TORCHAO_TORCH_SYMBOLS)
+            and _aten_grouped_mm_library is None
+            and not _torch_op_is_missing("aten", "_grouped_mm")
+        )
+    except Exception:
+        return False
+
+
 def propagate_torchao_fix_to_subprocesses():
     """Make the torchao fix apply to child processes too.
 
-    A no-op unless the fix is needed: returns early when torchao is absent,
-    old enough to guard its own import, or when torch already has the symbols.
-    Nothing is written and PYTHONPATH is untouched on a healthy pair.
+    A no-op unless the symbol fix is needed (torchao 0.18+ on a torch missing its
+    symbols) or `disable_torchao_if_torch_too_old` disabled torchao here. Nothing is
+    written and PYTHONPATH is untouched on a healthy pair.
 
     The generated file inlines the symbol fix rather than importing unsloth: a
     sitecustomize runs at the start of every subprocess on the machine, so an
@@ -8002,36 +12069,14 @@ def propagate_torchao_fix_to_subprocesses():
 
     Returns the directory added to PYTHONPATH, or None.
     """
-    if importlib.util.find_spec("torchao") is None:
-        return None
-    try:
-        if Version(importlib_version("torchao")) < Version("0.18.0"):
-            return None
-    except Exception:
-        return None
-    try:
-        import torch.nn.functional as F
-
-        # Both halves of the skew must be absent for there to be nothing to do. Today a torch missing
-        # the operator also misses the functional symbols (2.8 vs 2.10), so the second check never
-        # fires alone. Our own patches do not count: the in-process fix ran first.
-        if (
-            all(_torch_really_has(F, n) for n in _TORCHAO_TORCH_SYMBOLS)
-            and _aten_grouped_mm_library is None
-            and not _torch_op_is_missing("aten", "_grouped_mm")
-        ):
-            return None  # this torch is new enough; nothing to do
-    except Exception:
+    if not TORCHAO_DISABLED_FOR_OLD_TORCH and not _child_torchao_symbol_fix_needed():
         return None
 
     try:
         directory = _subprocess_fix_directory()
         target = os.path.join(directory, "sitecustomize.py")
         source = _subprocess_sitecustomize_source()
-        # Rewrite only when it differs, so concurrent runs do not fight and a reader never sees a
-        # truncated file. Matching contents count as evidence only when the file is ours. A directory
-        # in the way makes os.replace raise, which becomes "no subprocess fix" rather than a hook we
-        # do not trust.
+        # Rewrite only when contents differ; matching contents count as evidence only if the file is ours
         if _existing_hook_is_trustworthy(target):
             try:
                 existing = open(target, "r", encoding = "utf-8").read()
@@ -8051,26 +12096,20 @@ def propagate_torchao_fix_to_subprocesses():
 
     # os.pathsep, not ":": Windows uses ";".
     current = os.environ.get("PYTHONPATH", "")
-    # An empty component is an import location, not padding: PYTHONPATH="$PYTHONPATH:/opt/lib"
-    # leaves one when PYTHONPATH was unset, and CPython reads it as the cwd. A SET-BUT-EMPTY
-    # PYTHONPATH is the opposite: CPython ignores it, so it must not become a lone "" that ADDS
-    # the cwd.
+    # An empty component means cwd, but a set-but-empty PYTHONPATH must not add one.
     parts = current.split(os.pathsep) if current else []
     if directory not in parts:
         os.environ["PYTHONPATH"] = os.pathsep.join([directory] + parts)
         logger.info(
-            "Unsloth: torchao %s needs torch symbols this torch lacks. Added "
-            "a sitecustomize to PYTHONPATH so subprocesses (vLLM's model "
-            "inspector) can import torchao too.",
+            "Unsloth: torchao %s does not match this torch. Added a "
+            "sitecustomize to PYTHONPATH so subprocesses (vLLM's model "
+            "inspector) get the same torchao fix.",
             importlib_version("torchao"),
         )
     return directory
 
 
-# torchao 0.18.0 moved torchao/dtypes/nf4tensor.py under quantization/quantize_/workflows/nf4/,
-# but torchtune (and xcodec2 through it) still imports the old path. Same shape as the vLLM
-# tokenizer stub: a meta path finder APPENDED after the real ones, so an older torchao wins and
-# the alias resolves lazily.
+# torchao 0.18.0 moved nf4tensor but torchtune imports the old path; appended alias finder.
 _TORCHAO_NF4_OLD = "torchao.dtypes.nf4tensor"
 _TORCHAO_NF4_NEW = "torchao.quantization.quantize_.workflows.nf4.nf4_tensor"
 _TORCHAO_NF4_SENTINEL = "__unsloth_torchao_nf4_alias__"
@@ -8084,12 +12123,9 @@ class _TorchaoNF4AliasLoader(importlib.abc.Loader):
         self.real_spec = None
 
     def create_module(self, spec):
-        # Return the RELOCATED module itself, not a stub with a hand-copied surface: torchtune then
-        # sees whatever torchao ships, and this cannot rot as symbols are added.
+        # Return the relocated module itself, not a hand-copied stub, so torchtune sees whatever torchao ships and cannot rot.
         module = importlib.import_module(_TORCHAO_NF4_NEW)
-        # module_from_spec is about to overwrite this shared object's __spec__ with the old-name one
-        # (_bootstrap.py assigns it unconditionally), leaving find_spec reporting the old name and
-        # making reload run the no-op exec_module below instead of the file.
+        # module_from_spec overwrites the shared __spec__ with the old name, so reload runs a no-op exec_module instead of the file
         self.real_spec = getattr(module, "__spec__", None)
         return module
 
@@ -8354,18 +12390,12 @@ def fix_torchao_safe_int_mm_repr_probe():
     return True
 
 
-# `datasets` fingerprints through dill, and dill._dill._is_builtin_module pickles a module by
-# reference only if its __file__ starts with a sys prefix, ends with an extension suffix, or
-# contains the literal `site-packages`. An install matching none (pip install --target, a
-# PYTHONPATH overlay, a vendored tree) is pickled BY VALUE, and Dataset.from_dict then walks
-# datasets/utils/_dill.py:_save_arrowTable -> create_arrowTable -> its globals -> the pyarrow
-# MODULE, dying on pyarrow's Cython MonthDayNano, whose __module__ is `builtins`. Reproduced with
-# the DIRECTORY NAME as the only variable.
+# dill pickles modules outside site-packages/sys prefixes by value, which breaks datasets
+# fingerprinting on pyarrow (e.g. pip --target installs).
 _DILL_FIX_SENTINEL = "_unsloth_dill_by_reference_fix"
 _DILL_FIX_ENV = "UNSLOTH_DISABLE_DILL_FIX"
 
-# Never widened for these: dill's by-value contract is about the module the user works IN, and
-# `python -m pkg` gives __main__ a real __spec__ that would satisfy the rule below.
+# Never widened: python -m gives __main__ a real __spec__ that would pass the rule below.
 _DILL_NEVER_BY_REFERENCE = frozenset(("__main__", "__mp_main__"))
 
 
@@ -8381,9 +12411,7 @@ def _dill_path_pickles_by_value(origin):
         real = os.path.realpath(origin)
     except Exception:
         return False
-    # The LITERAL path only, as dill does: it reads 'site-packages' in module.__file__ and resolves
-    # only for the prefix comparisons. Searching `real` too would answer "not affected" for a
-    # symlink into a site-packages-named directory dill still pickles by value.
+    # Literal path only, as dill does; resolving symlinks would misjudge.
     if "site-packages" in origin:
         return False
     for name in ("base_prefix", "base_exec_prefix", "exec_prefix", "prefix", "real_prefix"):
@@ -8428,9 +12456,7 @@ def _dill_install_root(origin):
     except Exception:
         return None
     parent = os.path.dirname(real)
-    # Any initializer, not just the source: a bytecode-only deployment gives pyarrow/__init__.pyc,
-    # and matching __init__.py exactly would leave the root at .../pyarrow, where no sibling
-    # metadata is found.
+    # Any __init__ form, so bytecode-only deployments (.pyc) still find sibling metadata.
     if os.path.splitext(os.path.basename(real))[0] == "__init__":
         parent = os.path.dirname(parent)
     return parent or None
@@ -8473,8 +12499,7 @@ def _dill_distribution_paths(root):
             full = os.path.realpath(os.path.join(base, *rel.split("/")))
         except Exception:
             return
-        # Inside the root, and not the metadata itself. installed-files.txt entries are relative to the
-        # egg-info dir and start with `..`, so containment is checked after resolving.
+        # installed-files.txt entries start with `..`, so check containment after resolving.
         if not full.startswith(prefix):
             return
         head = full[len(prefix) :].split(os.sep, 1)[0]
@@ -8502,9 +12527,7 @@ def _dill_distribution_paths(root):
             break
         if listed:
             continue
-        # No file list anywhere. A top_level.txt name is honoured only when it resolves to ONE file:
-        # `dill` -> dill.py is unambiguous, `google` is a directory the metadata cannot account for.
-        # Declining costs the original loud PicklingError, not a silently pinned fingerprint.
+        # No file list, so top_level.txt names count only when they resolve to one file; declining keeps the loud PicklingError
         top_level = os.path.join(meta, "top_level.txt")
         try:
             with open(top_level, encoding = "utf-8") as f:
@@ -8555,8 +12578,7 @@ def _dill_module_is_importable_by_name(module, files = ()):
         return False
     if real in files:
         return True
-    # A deployment that compiles to adjacent bytecode and drops the sources leaves RECORD naming
-    # pkg/__init__.py while the live spec points at pkg/__init__.pyc. Same installed file.
+    # Bytecode-only deployments: RECORD names .py while the spec points at .pyc.
     stem, ext = os.path.splitext(real)
     return ext in (".pyc", ".pyo") and stem + ".py" in files
 
@@ -8604,10 +12626,7 @@ def fix_dill_module_by_value_pickling():
     if probe is None or not roots:
         return False
 
-    # Every off-prefix path entry carrying installed metadata, not just the one datasets or pyarrow
-    # lives in: layers can be spread, and a transform reaching a dependency in a second layer hits
-    # the very failure this prevents. A root with no metadata contributes nothing. Read once, at
-    # patch time: re-scanning per module would put directory listings in every fingerprint.
+    # Scan every off-prefix path entry with metadata, once at patch time.
     for entry in list(sys.path):
         if not entry or not os.path.isdir(entry):
             continue
@@ -8641,8 +12660,7 @@ def fix_dill_module_by_value_pickling():
 
     setattr(_is_builtin_module, _DILL_FIX_SENTINEL, True)
     _dill_module._is_builtin_module = _is_builtin_module
-    # dill.session binds the name at import time, so patching the defining module alone leaves that
-    # copy on the original.
+    # dill.session binds the name at import, so patch it too.
     session = sys.modules.get("dill.session")
     if session is not None and getattr(session, "_is_builtin_module", None) is original:
         session._is_builtin_module = _is_builtin_module
@@ -8655,15 +12673,8 @@ def fix_dill_module_by_value_pickling():
     return True
 
 
-# Windows refuses sentencepiece's compiled extension on some machines. Smart App Control and
-# App Control for Business judge by reputation, one file at a time, so a freshly published
-# unsigned .pyd can be refused on a machine where everything else loads. The user sees a Bad
-# Image dialog naming the file, and transformers keeps saying the package is available,
-# because it decides that from find_spec and installed metadata and loads nothing.
-#
-# There is no way to ask whether this machine will refuse the file that does not involve
-# handing the file to the loader, which is the thing being avoided: a probe IS the dialog. So
-# on Windows the extension is simply never imported.
+# Windows Smart App Control can refuse sentencepiece's unsigned .pyd, and any probe triggers
+# the dialog, so on Windows the extension is never imported.
 DISABLE_SENTENCEPIECE_VARIABLE = "UNSLOTH_DISABLE_SENTENCEPIECE"
 _SENTENCEPIECE_TRUTHY = frozenset({"1", "true", "yes", "on"})
 _SENTENCEPIECE_FALSY = frozenset({"0", "false", "no", "off"})
@@ -8711,15 +12722,10 @@ def disable_sentencepiece_on_windows():
     if not sentencepiece_should_be_disabled():
         return False
     if "sentencepiece" in sys.modules:
-        # Already imported by something earlier, or already disabled by an earlier call.
-        # Replacing a live module here would break whoever is holding it.
+        # Replacing a live module here would break whoever holds it.
         return sys.modules["sentencepiece"] is None
     if "transformers" in sys.modules:
-        # Too late, and installing it anyway would be worse than doing nothing. transformers
-        # has already read availability from find_spec and cached "installed", so the sentinel
-        # would only produce the disagreement described above, and a tokenizer that loads
-        # today would start raising ModuleNotFoundError. Whoever imported transformers first
-        # keeps the ordinary behaviour.
+        # Too late: transformers already cached sentencepiece as installed, and a sentinel would break tokenizers that load today
         return False
     sys.modules["sentencepiece"] = None
     if UNSLOTH_ENABLE_LOGGING:
@@ -8729,3 +12735,250 @@ def disable_sentencepiece_on_windows():
             f"{DISABLE_SENTENCEPIECE_VARIABLE}=0 to import it again."
         )
     return True
+
+
+# compressed-tensors fake-quantizes W8A8 activations under no_grad; STE so LoRA gets input gradients.
+_CT_FORWARD_MODULE = "compressed_tensors.quantization.lifecycle.forward"
+_CT_BY_NAME_MODULES = (
+    "compressed_tensors.modeling.kvcache",
+    "compressed_tensors.modeling.attention",
+)
+_CT_STE_SENTINEL = "_unsloth_activation_ste"
+_CT_FINDER_SENTINEL = "__unsloth_compressed_tensors_ste_finder__"
+
+
+def _compressed_tensors_ste_forward_quantize(original):
+    import torch
+
+    class _StraightThrough(torch.autograd.Function):
+        # Not `value + (out - value).detach()`: that rounds where a static scale saturates.
+        @staticmethod
+        def forward(ctx, value, quantized):
+            ctx.value_dtype = value.dtype
+            return quantized.to(value.dtype).view_as(quantized)
+
+        @staticmethod
+        def backward(ctx, grad_output):
+            return grad_output.to(ctx.value_dtype), None
+
+    @functools.wraps(original)
+    def forward_quantize(*args, **kwargs):
+        out = original(*args, **kwargs)
+        if not torch.is_grad_enabled():
+            return out
+        value = args[1] if len(args) > 1 else kwargs.get("value")
+        base_name = args[2] if len(args) > 2 else kwargs.get("base_name")
+        if (
+            base_name != "weight"
+            and isinstance(value, torch.Tensor)
+            and isinstance(out, torch.Tensor)
+            and value.requires_grad
+            and not out.requires_grad
+            and out.shape == value.shape
+        ):
+            return _StraightThrough.apply(value, out)
+        return out
+
+    setattr(forward_quantize, _CT_STE_SENTINEL, True)
+    return forward_quantize
+
+
+def _patch_compressed_tensors_forward_module(module):
+    original = getattr(module, "forward_quantize", None)
+    if not callable(original):
+        return False
+    if getattr(original, _CT_STE_SENTINEL, False):
+        return True
+    patched = _compressed_tensors_ste_forward_quantize(original)
+    module.forward_quantize = patched
+    # Modules that imported the function by name before this ran hold the original.
+    for name in _CT_BY_NAME_MODULES:
+        other = sys.modules.get(name)
+        if other is not None and getattr(other, "forward_quantize", None) is original:
+            other.forward_quantize = patched
+    return True
+
+
+class _CompressedTensorsSTELoader(importlib.abc.Loader):
+    __slots__ = ("_loader",)
+
+    def __init__(self, loader):
+        self._loader = loader
+
+    def create_module(self, spec):
+        create_module = getattr(self._loader, "create_module", None)
+        if create_module is None:
+            return None
+        return create_module(spec)
+
+    def exec_module(self, module):
+        self._loader.exec_module(module)
+        try:
+            _patch_compressed_tensors_forward_module(module)
+        except Exception as e:
+            logger.info(f"Unsloth: compressed-tensors activation gradient patch skipped: {e}")
+
+    def __getattr__(self, name):
+        return getattr(self._loader, name)
+
+
+class _CompressedTensorsSTEFinder(importlib.abc.MetaPathFinder):
+    __slots__ = (_CT_FINDER_SENTINEL,)
+
+    def __init__(self):
+        setattr(self, _CT_FINDER_SENTINEL, True)
+
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
+        if fullname != _CT_FORWARD_MODULE:
+            return None
+        spec = None
+        for finder in sys.meta_path:
+            if finder is self or getattr(finder, _CT_FINDER_SENTINEL, False):
+                continue
+            finder_find_spec = getattr(finder, "find_spec", None)
+            if finder_find_spec is None:
+                continue
+            try:
+                spec = finder_find_spec(fullname, path, target)
+            except Exception:
+                spec = None
+            if spec is not None:
+                break
+        if spec is None or spec.loader is None or not hasattr(spec.loader, "exec_module"):
+            return None
+        spec.loader = _CompressedTensorsSTELoader(spec.loader)
+        return spec
+
+
+def fix_compressed_tensors_activation_quant_gradient():
+    if importlib.util.find_spec("compressed_tensors") is None:
+        return
+    module = sys.modules.get(_CT_FORWARD_MODULE)
+    if module is not None:
+        _patch_compressed_tensors_forward_module(module)
+        return
+    for finder in sys.meta_path:
+        if getattr(finder, _CT_FINDER_SENTINEL, False):
+            return
+    sys.meta_path.insert(0, _CompressedTensorsSTEFinder())
+
+
+def fix_transformers_longcat_lsa_config():
+    """Answer AutoConfig's "Unrecognized model" on a LongcatCausalLM config (no model_type,
+    auto_map or modeling code) with ``models/longcat_lsa.py``; all other loads are untouched."""
+    try:
+        from transformers import AutoConfig
+        from transformers.configuration_utils import PretrainedConfig
+    except Exception:
+        return
+    current = AutoConfig.__dict__.get("from_pretrained")
+    original = getattr(current, "__func__", None)
+    if original is None or getattr(original, "_unsloth_longcat_lsa", False):
+        return
+    try:
+        import transformers.models.longcat_flash  # noqa: F401
+    except Exception:
+        return
+
+    def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
+        try:
+            return original(cls, pretrained_model_name_or_path, *args, **kwargs)
+        except ValueError as error:
+            message = str(error)
+            if "Unrecognized model" not in message and "longcat_flash_lsa" not in message:
+                raise
+            from .models.longcat_lsa import (
+                is_longcat_lsa_config_dict,
+                load_longcat_lsa_config,
+            )
+
+            hub_kwargs = {
+                key: kwargs[key]
+                for key in (
+                    "cache_dir",
+                    "force_download",
+                    "local_files_only",
+                    "token",
+                    "revision",
+                    "subfolder",
+                )
+                if key in kwargs
+            }
+            try:
+                config_dict, _ = PretrainedConfig.get_config_dict(
+                    pretrained_model_name_or_path, **hub_kwargs
+                )
+            except Exception:
+                raise error
+            if not is_longcat_lsa_config_dict(config_dict):
+                raise
+            return load_longcat_lsa_config(pretrained_model_name_or_path, *args, **kwargs)
+
+    from_pretrained._unsloth_longcat_lsa = True
+    from_pretrained.__wrapped__ = original
+    AutoConfig.from_pretrained = classmethod(from_pretrained)
+    if UNSLOTH_ENABLE_LOGGING:
+        logger.info(
+            "Unsloth: LongcatCausalLM configs without a model_type load on transformers' longcat_flash."
+        )
+
+
+class _BailingHybridLowRankQuery:
+    """`q_b_proj(q_a_layernorm(q_a_proj(x)))` standing in for the attention's `q_proj` call. Not a
+    module, so the state dict holds the three checkpoint tensors and no `q_proj`."""
+
+    __slots__ = ("attention",)
+
+    def __init__(self, attention):
+        self.attention = attention
+
+    def __call__(self, hidden_states):
+        attention = self.attention
+        return attention.q_b_proj(attention.q_a_layernorm(attention.q_a_proj(hidden_states)))
+
+
+def fix_transformers_bailing_hybrid_low_rank_query():
+    """transformers' bailing_hybrid (5.20) builds the full-attention query as one `q_proj`, so a Ling
+    3.x checkpoint with `q_lora_rank` set (Ling-3.0-tiny, Ling-3.1-flash: `q_a_proj`, `q_a_layernorm`,
+    `q_b_proj` on disk) loads those layers with a randomly initialised query (#13948). Build the
+    low-rank query the checkpoint and its own modeling code carry; `q_lora_rank = None` (Ling-3.0-flash)
+    is untouched. Lazy: called from the loader once the config names bailing_hybrid."""
+    try:
+        from transformers.models.bailing_hybrid import modeling_bailing_hybrid as module
+    except Exception:
+        return
+    cls = getattr(module, "BailingHybridAttention", None)
+    norm = getattr(module, "BailingHybridRMSNorm", None)
+    if cls is None or norm is None or getattr(cls.__init__, "_unsloth_low_rank_query", False):
+        return
+    try:
+        if "q_a_proj" in inspect.getsource(cls):
+            return
+    except Exception:
+        return
+    import torch
+
+    original = cls.__init__
+
+    @functools.wraps(original)
+    def __init__(self, config, *args, **kwargs):
+        original(self, config, *args, **kwargs)
+        rank = getattr(config, "q_lora_rank", None)
+        query = self.__dict__.get("_modules", {}).get("q_proj")
+        if not rank or not isinstance(query, torch.nn.Linear):
+            return
+        del self.q_proj
+        self.q_a_proj = torch.nn.Linear(
+            config.hidden_size, rank, bias = bool(getattr(config, "use_qkv_bias", False))
+        )
+        self.q_a_layernorm = norm(rank)  # the checkpoint's own code keeps the default eps
+        self.q_b_proj = torch.nn.Linear(rank, query.out_features, bias = False)
+        object.__setattr__(self, "q_proj", _BailingHybridLowRankQuery(self))
+
+    __init__._unsloth_low_rank_query = True
+    cls.__init__ = __init__

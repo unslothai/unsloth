@@ -242,11 +242,14 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
       .map((value) => value.trim())
       .filter(Boolean);
     if (targets.length === 0) {
-      errors.push("Choose the code step to check.");
+      errors.push("Choose the field to check.");
     }
     const batch = parseIntNumber(config.batch_size);
     if (batch === null || batch < 1) {
       errors.push("Batch size must be an integer >= 1.");
+    }
+    if (config.validator_type === "json" || config.validator_type === "markdown") {
+      return errors;
     }
     if (!config.code_lang.trim()) {
       errors.push("Choose a code language for this check.");

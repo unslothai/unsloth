@@ -67,8 +67,6 @@ def _forwarded(tmp_path, **env_extra):
 def test_the_hub_pages_still_have_a_variable_table():
     assert len(DOCUMENTED) >= 10, DOCUMENTED
     assert "UNSLOTH_SKIP_GPU_CHECK" in ROCM_DOCUMENTED, ROCM_DOCUMENTED
-    # named one by one: a row reformatted out of the parser's reach would otherwise
-    # drop that variable's case silently, and the suite would still report all green
     for name in (
         "JUPYTER_PORT",
         "UNSLOTH_SKIP_NOTEBOOK_SYNC",
@@ -86,3 +84,7 @@ def test_every_documented_variable_reaches_the_container(tmp_path, name):
 @pytest.mark.parametrize("name", DOCUMENTED)
 def test_an_unset_variable_is_not_forwarded(tmp_path, name):
     assert name not in _forwarded(tmp_path)
+
+
+def test_keep_legacy_reaches_the_container(tmp_path):
+    assert "UNSLOTH_STUDIO_KEEP_LEGACY" in _forwarded(tmp_path, UNSLOTH_STUDIO_KEEP_LEGACY = "0")

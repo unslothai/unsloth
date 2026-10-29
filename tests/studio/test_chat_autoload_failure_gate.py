@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A failed auto-load of a cached model must not become a Hub download.
-
-Runs the real ``autoLoadSmallestModel`` from chat-adapter.ts under node with the module boundary
-stubbed, so these assert behaviour, not source text. The sweep's catches are parameterless, so a
-cached repo whose load rejected fell through to fetching an unrelated default model.
-"""
+"""A failed cached auto-load must not fall through to a Hub download of an unrelated default model."""
 
 import json
 import os
@@ -30,8 +25,7 @@ def _source_path(relative_path: str) -> Path:
 
 
 ADAPTER = _source_path("studio/frontend/src/features/chat/api/chat-adapter.ts")
-# Inlined for real, not stubbed: waitForSettledServerStatus raises this gate so an ordinary
-# refresh cannot publish a mid-replacement status as the pick underneath it.
+# Inlined, not stubbed: this gate keeps a refresh from publishing a mid-replacement status.
 WAIT_GATE = _source_path("studio/frontend/src/features/chat/lib/server-model-wait.ts")
 
 
@@ -52,6 +46,23 @@ def _wait_gate_source() -> str:
     ).replace(": PollSignal", "")
     assert "export function beginServerModelWait(" in gate
     return gate
+
+
+# Inlined, not copied: it builds the llama-server half of the /load payload these scenarios assert on.
+LOAD_REQUEST = _source_path("studio/frontend/src/features/chat/lib/load-request.ts")
+
+
+def _load_request_source() -> str:
+    """The load-request module with its imports dropped; PREAMBLE supplies serverTuningLoadPayload."""
+    source = "\n".join(
+        line
+        for line in LOAD_REQUEST.read_text(encoding = "utf-8").splitlines()
+        if not line.startswith(
+            ("import ", "  type ServerTuningValues,", "  serverTuningLoadPayload,", "} from ")
+        )
+    )
+    assert "export function llamaServerLoadFields(" in source
+    return source
 
 
 # Short so no scenario waits out the real 30s cap; the shipped value is asserted in
@@ -91,8 +102,7 @@ DEFAULT_MODEL = "unsloth/gemma-4-E2B-it-GGUF"
 GEMMA_REPO = "unsloth/gemma-4-26B-A4B-it-qat-GGUF"
 LOCAL_GGUF_PATH = "/home/john-doe/models/qwen3-1.7b-instruct-q4_k_m.gguf"
 
-# Stubs for everything autoLoadSmallestModel imports;
-# each scenario supplies the cache inventory and how /validate and /load answer per model_path.
+# Stubs for autoLoadSmallestModel's imports; scenarios supply inventory and /validate, /load replies.
 PREAMBLE = """
 type LastLocalModelKind = "gguf" | "model";
 type GgufVariantDetail = {
@@ -258,6 +268,10 @@ function isExternalModelId(value: unknown) {
 function resolvePreserveThinkingOnLoad(resp: any) {
   return Boolean(resp?.supports_preserve_thinking && resp?.preserve_thinking_default);
 }
+// Verbatim from lib/speculative-modes.ts, so a load asks for the mode production would.
+function resolveSpeculativeType(chosen: string | null, standing: string, isMlx: boolean) {
+  return chosen ?? (isMlx && standing === "ngram" ? "auto" : standing);
+}
 
 function resolveInferenceCheckpointId(status: any) {
   return status.active_model
@@ -353,20 +367,20 @@ let STORE: any = makeStore();
 // rather than complete-by-luck.
 // Imported by chat-adapter.ts from ../lib/mlx-runtime-state. Mirrors the real
 // one rather than returning {}: a non-MLX response retires the verdict but
-// leaves mlxKvBits absent, and a scenario that saw an empty object would keep
+// leaves mlxKvQuant absent, and a scenario that saw an empty object would keep
 // a stale width alive and pass for the wrong reason.
 function mlxRuntimeStateFrom(resp: any) {
   if (resp?.is_mlx !== true) {
     return {
-      loadedMlxKvBitsRequested: null,
+      loadedMlxKvQuantRequested: null,
       mlxKvQuantReason: null,
       chatTemplateOverrideReason: null,
       mlxKvQuantNote: null,
     };
   }
   return {
-    mlxKvBits: resp.mlx_kv_bits_requested ?? null,
-    loadedMlxKvBitsRequested: resp.mlx_kv_bits_requested ?? null,
+    mlxKvQuant: resp.mlx_kv_quant_requested ?? null,
+    loadedMlxKvQuantRequested: resp.mlx_kv_quant_requested ?? null,
     mlxKvQuantReason: resp.mlx_kv_quant_reason ?? null,
     chatTemplateOverrideReason: resp.chat_template_override_reason ?? null,
     mlxKvQuantNote: resp.mlx_kv_quant_note ?? null,
@@ -387,15 +401,31 @@ function loadFallbackNotice(
   baseTitle: string,
   cpuFallbackReason: any,
   mmprojFallbackReason: any,
+  offloadNotice?: any,
 ) {
   const parts: string[] = [];
   if (cpuFallbackReason) parts.push(`cpu:${cpuFallbackReason}`);
+  else if (offloadNotice) parts.push(`offload:${offloadNotice.titleSuffix}`);
   if (mmprojFallbackReason) parts.push(`mmproj:${mmprojFallbackReason}`);
   return {
     title: parts.length > 0 ? `${baseTitle} (${parts.join(", ")})` : baseTitle,
     description: parts.length > 0 ? parts.join(" ") : undefined,
     degraded: parts.length > 0,
   };
+}
+// Defined beside chat-adapter.ts's imports, outside the sliced region: toasts and resyncs the models a
+// load unloaded to make room, which no scenario here asserts on.
+function reportEvicted(_loadResp: any) {}
+// From ../lib/partial-offload: the auto-load success toast reports a layer split through them.
+// Real semantics are tested in studio/frontend/tests/partial-offload.test.ts.
+function offloadCountsFrom(response: any) {
+  return { offloaded: response?.offloaded_layers, total: response?.offload_total_layers };
+}
+function offloadWarning(counts: any) {
+  const { offloaded, total } = counts ?? {};
+  if (typeof offloaded !== "number" || typeof total !== "number") return null;
+  if (total <= 0 || offloaded >= total) return null;
+  return { titleSuffix: ", partly on CPU", description: `${offloaded} of ${total}` };
 }
 async function prepareHfTokenForUse(token: any) {
   EVENTS.push({ kind: "prepareHfToken" });
@@ -532,6 +562,7 @@ function unreportedWindowMaxTokens(g: boolean, held: number) { return g ? held :
 function resolveManualAutoCtxPin(..._a: any[]) { return null; }
 async function ensureGpuDeviceCache() {}
 function reconcilePersistedGpuIds(ids: any) { return ids; }
+function reconcileTensorSplit(..._a: any[]) { return null; }
 function saveSpeculativeType(_x: any) {}
 function persistGpuMemoryModeOnLoad(..._a: any[]) {}
 function reasoningCapsFromLoad(_x: any) { return {}; }
@@ -811,7 +842,7 @@ def _require_node():
             ["node", "--experimental-strip-types", "--version"],
             capture_output = True,
             text = True,
-            # A cold Windows runner is slow to start node; an impatient probe would fail the gate.
+            # A cold Windows runner is slow to start node.
             timeout = 60,
         )
     except (OSError, subprocess.SubprocessError):
@@ -840,39 +871,31 @@ def _build_harness(run_dir: Path):
     ), "could not locate the auto-load region in chat-adapter.ts"
     body = "\n".join(lines[start:end])
     assert "async function autoLoadSmallestModel" in body
-    # Anything the adapter imports and the sliced region uses has to exist in the
-    # preamble. Otherwise it is a bare ReferenceError at runtime, the retry loop
-    # catches it and scores it as a failed load, and the scenario fails as a
-    # wrong-model assertion that says nothing about the real cause. That is what
-    # #7699 did by adding a syncModelCapabilities call here.
+    # Every import the sliced region uses must exist in the preamble, or the ReferenceError is
+    # swallowed as a failed load and surfaces as a misleading wrong-model assertion.
     imported = set()
     source = "\n".join(lines)
-    # Default and namespace forms bind a name too, and it is the same ReferenceError when the harness lacks it.
-    # chat-adapter.ts has none today, so this is for the first one somebody adds.
+    # Default and namespace imports bind names too.
     for match in re.finditer(
         r"^import\s+(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s*(?:,|from)", source, re.M
     ):
         imported.add(match.group(1))
-    # The optional prefix is the mixed form, `import def, { named } from`, whose braces a `^import\s+\{` anchor
-    # would skip entirely.
+    # The optional prefix handles mixed `import def, { named } from`.
     for match in re.finditer(
         r"^import\s+(?:[A-Za-z_$][\w$]*\s*,\s*)?\{([^}]*)\}\s+from", source, re.M
     ):
         for spec in match.group(1).split(","):
             spec = spec.strip()
-            # `import { type Foo }` is erased at runtime, so it can never be a
-            # ReferenceError and must not be demanded of the harness.
+            # `import { type Foo }` is erased at runtime.
             if not spec or spec.startswith("type "):
                 continue
             name = spec.split(" as ")[-1].strip()
             if name:
                 imported.add(name)
-    # Any mention, not just a call. useChatRuntimeStore, toast and GPU_LAYERS_AUTO are all used in this region without a
-    # following paren, and each would be the same ReferenceError; they pass today only because the preamble happens to
-    # define them. Comments are stripped first so a name discussed in prose does not count as a use.
+    # Any mention, not just a call; comments are stripped first.
     code = re.sub(r"/\*.*?\*/", "", body, flags = re.S)
     code = re.sub(r"//[^\n]*", "", code)
-    preamble = PREAMBLE + PONYFILLS + _wait_gate_source()
+    preamble = PREAMBLE + PONYFILLS + _wait_gate_source() + _load_request_source()
     missing = sorted(
         name
         for name in imported
@@ -907,12 +930,11 @@ def _run(
     queued: bool = False,
 ) -> dict:
     _require_node()
-    # Its own directory per invocation: a shared file lets one runner read another's rewrite.
+    # Own directory per invocation so runners do not read each other's rewrite.
     TEMP.mkdir(parents = True, exist_ok = True)
     run_dir = Path(tempfile.mkdtemp(prefix = "run", dir = TEMP))
     _build_harness(run_dir)
-    # The real send path always supplies an abort signal, so every scenario
-    # exercises the signal plumbing whichever entry point it enters through.
+    # The real send path always supplies an abort signal.
     entry = (
         "resolveQueuedEmptyLocalModel(signal)"
         if queued
@@ -959,8 +981,7 @@ def _run(
         cwd = str(run_dir),
         capture_output = True,
         text = True,
-        # Explicit: text alone decodes with the Windows ANSI code page, which mangles the non-ASCII toast copy node
-        # emits as UTF-8.
+        # Explicit UTF-8: the Windows ANSI code page mangles non-ASCII toast copy.
         encoding = "utf-8",
         timeout = 60,
         env = dict(os.environ, NODE_NO_WARNINGS = "1"),
@@ -1186,10 +1207,7 @@ def test_a_rejected_validation_still_lets_a_later_cached_model_load():
     assert _toasts(out, "toast.error") == []
 
 
-# #7374: a model already on disk must be found before anything is fetched
-
-
-# --- #7374: a model already on disk must be found before anything is fetched ---
+# #7374: a model already on disk must be found before anything is fetched.
 def test_an_indexed_local_gguf_loads_instead_of_downloading_the_default():
     """The reported bug. The user has a GGUF in their models dir, but the cascade
     only read the two managed-cache lists, so Send fetched a model instead."""
@@ -1216,7 +1234,6 @@ def test_the_smallest_on_device_model_wins_across_inventories():
         " localModels: [LOCAL_GGUF] })"
     )
 
-    # LOCAL_GGUF is 1.1 GB, GEMMA is 15.8 GB.
     assert _loaded_paths(out) == [LOCAL_GGUF_PATH]
 
 
@@ -1239,14 +1256,12 @@ def test_one_broken_inventory_still_loads_a_model_another_one_found(broken):
     """A failure is one unknown source, not a verdict on the other two.
     Promise.all rejected the batch, discarding lists that had already arrived,
     so a broken local scan left a loadable model unused."""
-    # Put the model in a source that is not the one being broken.
     holder = "localModels" if broken != "localModels" else "ggufRepos"
     rows = "[LOCAL_GGUF]" if holder == "localModels" else "[GEMMA]"
     extra = "" if holder == "localModels" else ", variants: { [GEMMA.repo_id]: GEMMA_VARIANTS }"
     out = _run(f"scenario({{ {broken}: 'throw', {holder}: {rows}{extra} }})")
 
     assert out["result"]["loaded"] is True
-    # Still fails closed on the part it cannot see: no default is fetched.
     assert _downloads_started(out) == []
     assert DEFAULT_MODEL not in _loaded_paths(out)
 
@@ -1283,10 +1298,8 @@ def test_the_default_model_is_fetched_through_the_download_manager():
     out = _run("scenario({})")
 
     assert _downloads_started(out) == [DEFAULT_MODEL]
-    # The bytes land before the load is attempted.
     kinds = [event["kind"] for event in out["events"]]
     assert kinds.index("download.start") < kinds.index("loadModel")
-    # Nothing loadable on device, so the default download is the correct answer.
     assert _loaded_paths(out) == [DEFAULT_MODEL]
 
 
@@ -1337,7 +1350,6 @@ def test_a_chat_only_install_never_auto_loads_a_format_it_cannot_run():
     assert "st" not in _loaded_paths(out)
     assert _loaded_paths(out) == [DEFAULT_MODEL]
 
-    # The same row is fair game on a full install.
     out = _run(f"scenario({{ chatOnly: false, localModels: [{safetensors}] }})")
     assert _loaded_paths(out) == ["st"]
 
@@ -1464,7 +1476,6 @@ def test_a_mixed_cached_repo_is_attempted_once_not_twice():
     )
 
     assert _loaded_paths(out) == [GEMMA_REPO]
-    # The GGUF row is the one the backend will actually resolve, so it survives.
     assert [event["gguf_variant"] for event in out["events"] if event["kind"] == "loadModel"] == [
         "UD-Q4_K_XL"
     ]
@@ -1548,10 +1559,8 @@ def test_a_failed_cancel_does_not_latch_the_toast_action_off():
     )
     helper = src.split("async function ensureDefaultModelDownloaded", 1)[1]
     helper = helper.split("async function autoLoadSmallestModel", 1)[0]
-    # In flight only, cleared when the request settles.
     assert 'if (cancelInFlight || active.state === "cancelling") return true;' in helper
     assert "cancelInFlight = false;\n    });" in helper
-    # The subscription fires the deferred attempt once; retries come from clicks.
     assert "if (!cancelEverIssued) issueCancel();" in helper
 
 
@@ -1713,10 +1722,7 @@ def test_a_cached_safetensors_repo_is_still_auto_loaded():
 
 @pytest.mark.parametrize("broken", ["ggufRepos", "modelRepos"])
 def test_an_hf_cache_row_is_used_when_the_cached_lookup_fails(broken):
-    """/api/hub/local also reports hf_cache rows, which autoload normally skips
-    as duplicates. When a cached list fails they are the only evidence left, and
-    dropping them ended the send with no model at all, since the gap also blocks
-    the default."""
+    """hf_cache rows are the only evidence left when the cached list fails, so they must not be dropped."""
     row = "{ ...LOCAL_GGUF, source: 'hf_cache' }"
     out = _run(f"scenario({{ {broken}: 'throw', localModels: [{row}] }})")
 
@@ -1731,7 +1737,6 @@ def test_an_hf_cache_row_stays_excluded_when_both_lookups_answer():
     out = _run(f"scenario({{ localModels: [{row}] }})")
 
     assert LOCAL_GGUF_PATH not in _loaded_paths(out)
-    # Nothing loadable on device, so the default download is the correct answer.
     assert _loaded_paths(out) == [DEFAULT_MODEL]
 
 
@@ -1769,10 +1774,7 @@ def test_a_safetensors_twin_survives_a_gguf_row_with_no_loadable_quant():
 
 
 def test_a_legacy_gguf_row_without_model_format_loads_as_gguf():
-    """model_format is optional, so an older backend omits it on a direct .gguf
-    row. The source builder did not fall back to the suffix, so the row became a
-    Transformers source: /load got the safetensors context length instead of 0
-    and the remembered kind was wrong."""
+    """An older backend omits model_format, so the builder must fall back to the .gguf suffix."""
     row = "{ ...LOCAL_GGUF, model_format: undefined }"
     out = _run(f"scenario({{ localModels: [{row}] }})")
 
@@ -1783,11 +1785,7 @@ def test_a_legacy_gguf_row_without_model_format_loads_as_gguf():
 
 @pytest.mark.parametrize("fmt", ["'unknown'", "undefined"])
 def test_an_unclassified_local_row_is_never_auto_loaded(fmt):
-    """The gate was a denylist, so a row the backend could not classify passed
-    it: "unknown" is what the backend sends when it cannot tell, and an older one
-    omits the field. Either way the row may be the pickle checkpoint the
-    exclusions exist to keep out, and a directory gives no suffix to tell them
-    apart, so this fails closed."""
+    """Unclassified rows are refused, since one may be a pickle checkpoint that a denylist let through."""
     row = f"{{ ...LOCAL_GGUF, id: 'x', load_id: '/models/x', path: '/models/x', model_format: {fmt} }}"
     out = _run(f"scenario({{ localModels: [{row}] }})")
 
@@ -1815,7 +1813,6 @@ def test_send_retries_status_then_waits_for_and_adopts_the_cli_model():
     assert _loaded_paths(out) == []
     assert _downloads_started(out) == []
     assert out["result"]["loaded"] is True
-    # Announced once, not once per poll.
     assert [t["msg"] for t in _toasts(out, "toast.info")] == [
         "Waiting for model to finish loading…"
     ]
@@ -1858,9 +1855,7 @@ def test_a_status_endpoint_that_never_answers_refuses_rather_than_guessing():
     assert [t["msg"] for t in _toasts(out, "toast.error")] == ["Could not reach the model server"]
 
 
-# A queued turn whose thread carries no model resolves one of its own, and the visible
-# tab may be on a provider model meanwhile. That resolver reads /status directly, so it
-# needs the same in-flight-load gate the sweep above has.
+# A queued turn's resolver reads /status directly, so it needs the in-flight-load gate too.
 
 
 def test_a_queued_turn_binds_the_incoming_model_not_the_one_being_replaced():
@@ -1926,12 +1921,10 @@ def test_an_unpinned_mlx_candidate_is_loaded_at_the_window_the_backend_resolved(
     out = _run("scenario({ modelRepos: [QWEN], platform: MAC, load: SERVED(262144) })")
     [load] = [e for e in out["events"] if e["kind"] == "loadModel"]
     assert load["model_path"] == "unsloth/Qwen3.5-4B"
-    # The sentinel that hands sizing to the backend, not a length chosen here.
+    # The sentinel that hands sizing to the backend.
     assert load["max_seq_length"] == 0
-    # And what comes back describes the model rather than the request.
     assert out["store"]["maxSeqLength"] == 262144
     assert out["store"]["maxTokens"] == 262144
-    # Nothing was pinned, so nothing is remembered as pinned.
     assert out["store"]["customContextLength"] is None
     assert out["store"]["loadedCustomContextLength"] is None
 

@@ -1,0 +1,11 @@
+{
+  "package": "clef",
+  "source": "https://huggingface.co/Cloudflare/clef",
+  "revision": "6a3ac5fc030a3f33f7fa860a1271886b64a6606d",
+  "also_identical_in": "https://huggingface.co/Cloudflare/clef-flash",
+  "license": "Apache-2.0",
+  "files": {
+    "LICENSE": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a",
+    "joint_schema_model.py": "0e304cf7c6500e8bb59bef7e2afd2c6373f82596dfb3b57d1aa93c175e2dc3a3"
+  }
+}

@@ -85,15 +85,23 @@ from routes.inference import (
     openai_embeddings,
     openai_chat_completions,
 )
+import routes.inference as inf_mod
+from state import active_generations
 from state.tool_policy import reset_tool_policy, set_tool_policy
 
-# 1x1 PNGs that Pillow can actually decode, for the paths that reach the decoder.
 _RED_PNG_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
 )
 _BLUE_PNG_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYPgPAAEDAQAIicLsAAAAAElFTkSuQmCC"
 )
+
+
+# Generous bound: the worker starts on a pool thread, so tight waits measure the scheduler.
+_DRAIN_BUDGET_S = 30.0
+
+# Stub workers linger after cancel so a route that skips the drain raises first.
+_WORKER_LINGER_S = 0.3
 
 
 @pytest.fixture(autouse = True)
@@ -133,19 +141,17 @@ class TestFriendlyUpstreamError:
     def test_grammar_parse_failure_gets_actionable_message(self):
         raw = '{"error":{"code":400,"message":"Failed to initialize samplers: failed to parse grammar","type":"invalid_request_error"}}'
         msg = _friendly_upstream_error(raw)
-        assert "failed to parse grammar" not in msg  # raw body is not surfaced verbatim
+        assert "failed to parse grammar" not in msg
         assert "compile a grammar" in msg and "Update Unsloth" in msg
 
     def test_sampler_failure_without_a_grammar_keeps_its_own_text(self):
-        # llama-server prefixes every sampler failure the same way, so a bad penalty
-        # would otherwise be reported as an uncompilable schema.
+        # llama-server prefixes every sampler failure alike, so a bad penalty looks like a schema error.
         detail = "Failed to initialize samplers: penalty_repeat must be finite and greater than 0"
         msg = _friendly_upstream_error(detail)
         assert "compile a grammar" not in msg
         assert "penalty_repeat" in msg
 
     def test_message_does_not_blame_the_model(self):
-        # The request's schemas decide the failure; swapping the GGUF changes nothing.
         msg = _friendly_upstream_error("failed to parse grammar")
         assert "schema" in msg
         assert "GGUF" not in msg and "quant and tool-schema" not in msg
@@ -154,15 +160,12 @@ class TestFriendlyUpstreamError:
         assert _friendly_upstream_error("out of memory") == "llama-server error: out of memory"
 
     def test_openai_passthrough_error_rewrites_grammar_failure(self):
-        # OpenAI-compatible agents (opencode/openclaw/hermes/pi via /v1/chat/completions)
-        # get the same actionable message as the Anthropic passthrough, not the raw body.
         from routes.inference import _openai_passthrough_error
 
         exc = _openai_passthrough_error(
             400, '{"error":{"message":"Failed to initialize samplers: failed to parse grammar"}}'
         )
         assert "compile a grammar" in exc.detail
-        # An unrelated upstream error still passes through verbatim.
         assert "llama-server error:" in _openai_passthrough_error(500, "disk full").detail
 
     def test_anthropic_upstream_error_rewords_context_overflow(self):
@@ -192,10 +195,8 @@ class TestFriendlyUpstreamError:
         assert "compile a grammar" in _anthropic_upstream_error("failed to parse grammar")
 
     def test_anthropic_upstream_error_keeps_kv_starvation_out_of_the_overflow_rewrite(self):
-        """llama-server says "Context size has been exceeded" when concurrent
-        generations drain the shared KV cache. Nothing about the request was too
-        long, so rewording it as an oversized prompt sends the client compacting a
-        valid conversation instead of retrying."""
+        """KV-cache starvation text must not be reworded as an oversized prompt; that makes clients
+        compact."""
         from routes.inference import _anthropic_upstream_error
 
         from routes.inference import _anthropic_upstream_error, _classify_llama_generation_error
@@ -253,12 +254,10 @@ class TestFriendlyUpstreamError:
                     "latest_turn_tokens": 500,
                 }
             )
-            # The recovered window is what lets the fit be consulted at all.
             assert "shortening the conversation will not help" in body(message, source)["message"]
         finally:
             context_refusal.clear()
 
-        # An unrelated error must not have the payload spliced into its text.
         assert body("disk full", source)["message"] == "llama-server error: disk full"
 
     def test_counts_come_from_the_structured_fields_when_the_message_has_none(self):
@@ -295,7 +294,6 @@ class TestFriendlyUpstreamError:
                 }
             )
             msg = _anthropic_upstream_error(body)
-            # The head Anthropic clients key on survives.
             assert msg.startswith("Prompt is too long: 214331 tokens > 131072 maximum.")
             assert "shortening the conversation will not help" in msg
 
@@ -315,7 +313,6 @@ class TestFriendlyUpstreamError:
         finally:
             context_refusal.clear()
 
-        # With no recorded fit it stays the generic wording.
         assert "Try increasing the Context Length" in _anthropic_upstream_error(body)
 
     def test_in_band_sse_error_gets_the_same_wording_as_the_non_200_branch(self):
@@ -344,7 +341,6 @@ class TestFriendlyUpstreamError:
         assert "Prompt is too long: 214331 tokens > 131072 maximum" in counted["message"]
         assert counted["type"] == "invalid_request_error"
 
-        # Starvation keeps the retry advice and must not become a 400.
         starved = body("Context size has been exceeded.")
         assert "shared pool of context" in starved["message"]
         assert "too long" not in starved["message"].lower()
@@ -364,12 +360,6 @@ class TestFriendlyUpstreamError:
             )
             is True
         )
-
-
-# =====================================================================
-
-# ChatMessage - tool role, tool_calls, optional content
-# =====================================================================
 
 
 class TestChatMessageToolRoles:
@@ -440,8 +430,6 @@ class TestChatMessageToolRoles:
             ChatMessage(role = "function", content = "x")
 
     def test_content_absent_on_assistant_tool_call_defaults_to_none(self):
-        # Assistant messages carrying only tool_calls are the one documented
-        # case where `content=None` is permitted.
         msg = ChatMessage(
             role = "assistant",
             tool_calls = [
@@ -455,10 +443,6 @@ class TestChatMessageToolRoles:
         assert msg.content is None
 
     def test_tool_role_missing_tool_call_id_left_for_request_validator(self):
-        # Per-message: missing tool_call_id is now allowed at this layer.
-        # ChatCompletionRequest's walkback fills it from the prior assistant
-        # tool_calls; see test_inference_model_validation.py for resolution
-        # coverage.
         msg = ChatMessage(role = "tool", content = '{"temperature": 72}')
         assert msg.tool_call_id is None
         assert msg.content == '{"temperature": 72}'
@@ -469,10 +453,7 @@ class TestChatMessageToolRoles:
             tool_call_id = "",
             content = '{"temperature": 72}',
         )
-        # Empty-string is treated the same as missing by the walkback.
         assert msg.tool_call_id in (None, "")
-
-    # ── Role-aware content requirements ────────────────────────────
 
     @pytest.mark.parametrize("role", ["user", "system"])
     def test_empty_string_content_allowed(self, role):
@@ -488,13 +469,10 @@ class TestChatMessageToolRoles:
             ChatMessage(role = "user", content = [])
 
     def test_tool_empty_content_accepted(self):
-        # Empty tool output (mkdir, git add, ...) is routine in agentic loops;
-        # OpenAI and llama-server both accept it, so Unsloth must not 400.
         msg = ChatMessage(role = "tool", tool_call_id = "call_1", content = "")
         assert msg.content == ""
 
     def test_assistant_without_content_or_tool_calls_tolerated(self):
-        # Stop-button leaves an empty assistant turn; tolerate for replay.
         msg = ChatMessage(role = "assistant")
         assert msg.content is None
         assert msg.tool_calls is None
@@ -506,8 +484,6 @@ class TestChatMessageToolRoles:
     def test_assistant_empty_list_content_normalised_to_none(self):
         msg = ChatMessage(role = "assistant", content = [])
         assert msg.content is None
-
-    # ── Role-constrained tool-call metadata ────────────────────────
 
     def test_tool_calls_on_user_rejected(self):
         with pytest.raises(ValidationError) as exc_info:
@@ -533,12 +509,6 @@ class TestChatMessageToolRoles:
     def test_participant_name_accepted_on_every_role(self, role):
         msg = ChatMessage(role = role, content = "Hi", name = "alice")
         assert msg.name == "alice"
-
-
-# =====================================================================
-
-# ChatCompletionRequest - standard OpenAI tool fields
-# =====================================================================
 
 
 class TestChatCompletionRequestToolFields:
@@ -602,10 +572,7 @@ class TestChatCompletionRequestToolFields:
         assert req.stop is None
 
     def test_extra_fields_accepted(self):
-        """Declared fields bind and are typed; unknown ones still survive
-        extra="allow". Declaring response_format is what turns away a value of
-        the wrong shape -- a bare string names no schema to constrain to. What
-        is inside the object is the serving path's business, not the schema's."""
+        """Declaring response_format rejects a bare string, since it names no schema to constrain to."""
         from pydantic import ValidationError
 
         req = self._make(
@@ -632,16 +599,11 @@ class TestChatCompletionRequestToolFields:
         assert req.session_id == "abc"
 
     def test_stream_defaults_false_matching_openai_spec(self):
-        # OpenAI defaults `stream` to false. Unsloth used to default true,
-        # breaking naive curl/.NET clients (#5047) that omit it. Pin the fix.
+        # OpenAI defaults stream to false; omitting it must not return SSE.
         req = self._make()
         assert req.stream is False
 
     def test_post_without_stream_field_decodes_to_stream_false_over_http(self, monkeypatch):
-        # Wire-level guard: a POST body omitting `stream` must deserialise to
-        # stream=False and return application/json, never text/event-stream.
-        # Mounts the real router to catch middleware/aliasing regressions;
-        # backends are bypassed via provider_type + a stubbed proxy.
         import routes.inference as inference_route
 
         from fastapi import FastAPI
@@ -857,9 +819,6 @@ class TestChatCompletionRequestToolFields:
 
         backend = _GGUFBackend()
         assert _takes_tool_passthrough(self._make(response_format = {"type": "json_object"}), backend)
-        # The field takes any object, and anything but the exact default -- an
-        # unknown type, or a text format carrying members this build does not know
-        # -- is a contract, so it keeps going where one can be answered or rejected.
         assert _takes_tool_passthrough(self._make(response_format = {"type": "later"}), backend)
         assert _takes_tool_passthrough(
             self._make(response_format = {"type": "text", "strict": True}), backend
@@ -870,11 +829,7 @@ class TestChatCompletionRequestToolFields:
     def test_the_gguf_tool_loop_refuses_a_contract_it_cannot_forward(
         self, monkeypatch, enabled_tools
     ):
-        """Unsloth's loop runs its own turns and never forwards response_format, so
-        serving the request would answer with text that violates the contract while
-        the client has no way to tell. A selection that resolves to no tool routes to
-        the ordinary generator, which forwards it no more than the loop does, and the
-        refusal lands after the monitor row opens, so it must close it."""
+        """The tool loop never forwards response_format, so it must refuse it and close the monitor row."""
         import routes.inference as inference_route
 
         class _GGUFBackend:
@@ -1026,11 +981,8 @@ class TestChatCompletionRequestToolFields:
         return self._v1_client(monkeypatch, _LlamaOff(), backend), backend
 
     def test_several_undecodable_images_on_one_message_are_still_refused(self, monkeypatch):
-        """The count is of image PARTS, not of images extraction could decode.
-
-        Only a data URL becomes base64, so several remote image URLs decode to
-        nothing; gating on a decoded image would let exactly those be flattened
-        away unannounced, which is the silent drop this guard exists to stop."""
+        """Count image parts, not decodable images: remote URLs decode to nothing yet must still be
+        refused."""
         monitor = ApiMonitor(max_entries = 3)
         client, backend = self._standard_vision_client(monkeypatch, monitor)
         remote = {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}}
@@ -1125,7 +1077,7 @@ class TestChatCompletionRequestToolFields:
         assert monitor.active_count() == 0
 
     def test_an_unreadable_part_alone_is_still_answered(self, monkeypatch):
-        """Control: one remote image and no top-level image is not a multi-image
+        """Control: one payloadless image and no top-level image is not a multi-image
         call, and clients relying on that text answer must keep it."""
         monitor = ApiMonitor(max_entries = 3)
         client, backend = self._standard_vision_client(monkeypatch, monitor)
@@ -1137,7 +1089,7 @@ class TestChatCompletionRequestToolFields:
                         "role": "user",
                         "content": [
                             {"type": "text", "text": "x"},
-                            {"type": "image_url", "image_url": {"url": "https://e.com/a.png"}},
+                            {"type": "image_url", "image_url": {"url": "data:image/png;base64,"}},
                         ],
                     }
                 ]
@@ -1371,9 +1323,10 @@ class TestChatCompletionRequestToolFields:
         assert backend.generated[0]["image"] is not None
         assert monitor.active_count() == 0
 
-    def test_a_single_undecodable_image_is_left_alone(self, monkeypatch):
-        """One remote image is not a multi-image call. Clients that pass a remote
-        URL today get a text answer, and this guard must not turn that into a 400."""
+    def test_an_unfetchable_remote_image_closes_the_monitor_row(self, monkeypatch):
+        import core.inference.external_provider as ep
+
+        monkeypatch.setattr(ep, "safe_fetch_remote_image_sync", lambda *_a, **_k: None)
         monitor = ApiMonitor(max_entries = 3)
         client, backend = self._standard_vision_client(monkeypatch, monitor)
         resp = client.post(
@@ -1394,9 +1347,9 @@ class TestChatCompletionRequestToolFields:
             },
         )
 
-        assert resp.status_code == 200
-        assert len(backend.generated) == 1
-        assert backend.generated[0]["image"] is None
+        assert resp.status_code == 400
+        assert "Could not fetch the remote image URL" in resp.text
+        assert backend.generated == []
         assert monitor.active_count() == 0
 
     def test_a_text_only_model_closes_the_monitor_row(self, monkeypatch):
@@ -1817,14 +1770,9 @@ class TestChatCompletionRequestToolFields:
         assert monitor.active_count() == 0
 
     def test_permission_mode_does_not_reject_client_tool_passthrough(self, monkeypatch):
-        # A non-streaming client-tool passthrough (client tools, no Unsloth tool
-        # loop) that also carries permission_mode "ask"/"auto" must reach the
-        # provider passthrough, not the confirm-without-stream guard: the
-        # validator leaves confirm_tool_calls unset for passthrough, and a bare
-        # permission_mode only gates Unsloth's own local tool loop. An explicit
-        # confirm_tool_calls=True still forces the local-confirm rejection.
-        # The pre-switch guard only runs when an automatic load may run, so force
-        # that predicate on to exercise it against a resident passthrough backend.
+        # Client-tool passthrough with permission_mode ask/auto must reach the passthrough, not the
+        # confirm-without-stream guard; only confirm_tool_calls=True forces the rejection.
+        # The pre-switch guard only runs when an automatic load may run, so that is forced on.
 
         import routes.inference as inference_route
 
@@ -1862,9 +1810,6 @@ class TestChatCompletionRequestToolFields:
             )
             return self._v1_client(monkeypatch, _GGUFBackend())
 
-        # A process --enable-tools policy must not turn a client-tool passthrough
-        # into an Unsloth local loop, so a policy of None or True both keep the
-        # passthrough (the guard mirrors _explicit_studio_tool_loop_requested).
         for policy in (None, True):
             for mode in ("ask", "auto"):
                 client = _setup(policy)
@@ -1880,9 +1825,6 @@ class TestChatCompletionRequestToolFields:
                 assert resp.status_code == 200, resp.text
                 assert resp.json()["ok"] is True
 
-        # A JSON-schema response_format is guided-decoding passthrough, not a local
-        # tool loop, so a --enable-tools policy must not 400 a non-streaming ask/auto
-        # structured-output request under the confirm guard.
         for mode in ("ask", "auto"):
             client = _setup(True)
             resp = client.post(
@@ -1900,8 +1842,6 @@ class TestChatCompletionRequestToolFields:
             assert resp.status_code == 200, resp.text
             assert resp.json()["ok"] is True
 
-        # An explicit confirm_tool_calls=True with client tools and no stream is
-        # still a confirm-without-stream request and must be rejected up front.
         client = _setup()
         resp = client.post(
             "/v1/chat/completions",
@@ -1916,12 +1856,7 @@ class TestChatCompletionRequestToolFields:
         assert "requires stream=true" in resp.json()["error"]["message"]
 
     def test_permission_mode_policy_forced_local_loop_rejected_before_switch(self, monkeypatch):
-        # A process --enable-tools policy forces Unsloth's own tool loop on even
-        # when the request omits enable_tools and carries no client tools. A
-        # non-streaming ask/auto request is then confirm-gated with no stream to
-        # prompt on, so it must 400 at the pre-switch guard -- before
-        # _maybe_auto_switch_model runs -- rather than evicting the resident model
-        # and 400ing only at the per-backend check.
+        # --enable-tools forces the local loop, so non-stream ask/auto must 400 before auto-switch.
 
         import routes.inference as inference_route
 
@@ -1968,9 +1903,7 @@ class TestChatCompletionRequestToolFields:
             reset_tool_policy()
 
     def test_enable_tools_on_non_tool_backend_keeps_client_tools_on_passthrough(self, monkeypatch):
-        # DiffusionGemma forces supports_tools off while passthrough stays
-        # available (#6851): enable_tools=True must not steal client tools
-        # from the passthrough into an Unsloth tool loop that cannot run.
+        # DiffusionGemma forces supports_tools off; enable_tools must not steal client tools.
 
         import routes.inference as inference_route
 
@@ -2281,11 +2214,8 @@ class TestChatCompletionRequestToolFields:
     def test_studio_tool_history_under_guided_decoding_has_no_adjacent_user_turns(
         self, monkeypatch
     ):
-        """A response_format on this same thread routes to the guided-decoding passthrough,
-        which is the one path that never coalesces. Folding a tool result there leaves it
-        next to the turn that follows it, and Gemma checks alternation by index parity, so
-        llama-server answered 'Unable to generate parser for this template' for the whole
-        request until the fold merged them itself."""
+        """Guided decoding never coalesces, so the tool-result fold must merge adjacent user turns
+        itself."""
         import routes.inference as inference_route
 
         captured = {}
@@ -2349,10 +2279,8 @@ class TestChatCompletionRequestToolFields:
     def test_studio_tool_history_under_guided_decoding_survives_a_stopped_turn(
         self, monkeypatch, sentinel
     ):
-        """Stop leaves an empty assistant turn between the tool result and the next question. The
-        coalesce cannot merge across it and the passthrough drops it downstream without
-        coalescing, so the two user turns land adjacent again -- the failure above, one Stop
-        later. Sanitizing before the fold, not after it, is what holds it."""
+        """A stopped turn leaves an empty assistant turn, so sanitizing must run before the fold,
+        not after."""
         import routes.inference as inference_route
 
         captured = {}
@@ -2444,7 +2372,6 @@ class TestChatCompletionRequestToolFields:
 
         rendered = json.dumps([m.model_dump(exclude_none = True) for m in folded])
         assert "code_execution" not in rendered, rendered
-        # The Studio result is the one that must survive: it is what recall depends on.
         assert "search_conversation" in rendered
         roles = [m.role for m in folded]
         assert not any(a == "user" and b == "user" for a, b in zip(roles, roles[1:])), roles
@@ -2463,7 +2390,6 @@ class TestChatCompletionRequestToolFields:
                 {"role": "user", "content": [{"type": "text", "text": "placeholder"}]},
             ]
         ]
-        # Exactly what the audio lift leaves behind on the latest user turn.
         messages[-1].content = []
 
         folded = _folded_studio_tool_messages(messages)
@@ -2531,12 +2457,8 @@ class TestChatCompletionRequestToolFields:
     def test_the_non_gguf_paths_refuse_what_they_cannot_serve(
         self, monkeypatch, param, model_entry, extra_body, unreachable_pre_switch
     ):
-        """Plain non-GGUF text now serves extra choices, so only the paths that
-        answer something other than a sample still refuse n: one waveform, one
-        transcript of the one recording, a loop that runs turns rather than
-        samples, and one SSE stream, which carries a single choice whether or not
-        the pre-switch check (reached only when a load may) ran. And no non-GGUF
-        backend can constrain decoding at all."""
+        """Non-GGUF backends refuse n and response_format where they cannot serve them; plain text
+        serves n."""
         import routes.inference as inference_route
 
         class _NoGGUFBackend:
@@ -2561,7 +2483,6 @@ class TestChatCompletionRequestToolFields:
         )
         self._assert_unsupported_param(resp, param)
 
-    # Same two rejection sites, and same reason to pin one, as the GGUF case below.
     @pytest.mark.parametrize("validate_before_switch", [False, True])
     def test_confirm_tool_calls_requires_streaming_for_safetensors_tools(
         self, monkeypatch, validate_before_switch
@@ -2609,13 +2530,85 @@ class TestChatCompletionRequestToolFields:
         assert body["error"]["param"] == "confirm_tool_calls"
         assert "requires stream=true" in body["error"]["message"]
         if validate_before_switch:
-            # Early site rejects before the monitor row is opened.
             assert monitor.snapshot() == []
         else:
             [entry] = monitor.snapshot()
             assert entry["status"] == "error"
             assert "confirm_tool_calls requires stream=true" in entry["error"]
         assert monitor.active_count() == 0
+
+    def test_safetensors_client_tools_keep_the_template_default_after_the_date(self, monkeypatch):
+        import routes.inference as inference_route
+
+        from core.inference import chat_template_helpers
+
+        captured = {}
+
+        class _NoGGUFBackend:
+            is_loaded = False
+            supports_tools = False
+
+        class _InferenceBackend:
+            active_model_name = "test-model"
+            models = {
+                "test-model": {
+                    "is_vision": False,
+                    "chat_template_info": {"template": "tool-template"},
+                    "context_length": 4096,
+                }
+            }
+
+            def generate_chat_response(self, **kwargs):
+                captured.update(kwargs)
+                yield "ok"
+
+            def reset_generation_state(self, cancel_event = None):
+                pass
+
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda *a, **k: {"supports_tools": True},
+        )
+        monkeypatch.setattr(
+            inference_route,
+            "_local_template_system_turn",
+            lambda _today, image = False, tools = False, controls = (): (
+                True,
+                "You are Qwen." if tools else "",
+            ),
+        )
+        monkeypatch.setattr(
+            inference_route,
+            "current_date_prompt_line",
+            lambda **_kwargs: "The current date is 2026-10-04.",
+        )
+        monkeypatch.setattr(
+            chat_template_helpers,
+            "renderable_tool_catalog_for_targets",
+            lambda tools, *_args, **_kwargs: tools,
+        )
+        monkeypatch.setattr(inference_route, "api_monitor", ApiMonitor(max_entries = 3))
+        client = self._v1_client(monkeypatch, _NoGGUFBackend(), _InferenceBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "use client tool"}],
+                "enable_tools": False,
+                "tools": _lookup_tools(),
+            },
+        )
+
+        assert resp.status_code == 200, resp.text
+        assert captured["system_prompt"] == ""
+        assert captured["messages"][:2] == [
+            {
+                "role": "system",
+                "content": "The current date is 2026-10-04.\n\nYou are Qwen.",
+            },
+            {"role": "user", "content": "use client tool"},
+        ]
+        assert captured["tools"] == _lookup_tools()
 
     def test_multiturn_tool_loop_messages(self):
         req = ChatCompletionRequest(
@@ -2659,12 +2652,6 @@ class TestChatCompletionRequestToolFields:
         assert req.messages[2].tool_call_id == "call_1"
 
 
-# =====================================================================
-
-# anthropic_tool_choice_to_openai - pure translation helper
-# =====================================================================
-
-
 class TestAnthropicToolChoiceToOpenAI:
     def test_auto(self):
         assert anthropic_tool_choice_to_openai({"type": "auto"}) == "auto"
@@ -2689,12 +2676,6 @@ class TestAnthropicToolChoiceToOpenAI:
         assert anthropic_tool_choice_to_openai({"type": "wibble"}) is None
         assert anthropic_tool_choice_to_openai("auto") is None
         assert anthropic_tool_choice_to_openai(42) is None
-
-
-# =====================================================================
-
-# _build_passthrough_payload - tool_choice propagation
-# =====================================================================
 
 
 class TestBuildPassthroughPayloadToolChoice:
@@ -2759,8 +2740,6 @@ class TestBuildPassthroughPayloadToolChoice:
                 },
             },
             "largeScript": {"type": "string", "minLength": 1, "maxLength": 65536},
-            # Each keyword's highest compilable bound survives; the first one that reaches
-            # llama.cpp's rule budget does not.
             "keptScript": {"type": "string", "maxLength": 1999, "minLength": 1999},
             "budgetScript": {"type": "string", "maxLength": 2000},
             "budgetFloor": {"type": "string", "minLength": 2000},
@@ -2768,15 +2747,11 @@ class TestBuildPassthroughPayloadToolChoice:
             "budgetList": {"type": "array", "items": {"type": "string"}, "maxItems": 1998},
             "keptFloorList": {"type": "array", "items": {"type": "string"}, "minItems": 2000},
             "budgetFloorList": {"type": "array", "items": {"type": "string"}, "minItems": 2001},
-            # An integral bound can decode to float, and llama.cpp reads one either way.
             "floatList": {"type": "array", "items": {"type": "string"}, "minItems": 2001.0},
-            # draft-07 tuple form, which llama.cpp visits member by member.
             "tupleList": {
                 "type": "array",
                 "items": [{"type": "string", "maxLength": 2000}],
             },
-            # Unsatisfiable pairs, small enough to pass every limit above: they reach the
-            # parser as a descending repetition, which exhausts memory.
             "impossibleList": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -2786,7 +2761,6 @@ class TestBuildPassthroughPayloadToolChoice:
             "impossibleScript": {"type": "string", "minLength": 5, "maxLength": 2},
             "referenced": {"$ref": "#/$defs/Bounded"},
         }
-        # llama.cpp resolves the reference, so its target has to be filtered too.
         schema["$defs"] = {"Bounded": {"type": "string", "maxLength": 2000}}
 
         body = _build_passthrough_payload(**args)
@@ -2823,9 +2797,7 @@ class TestBuildPassthroughPayloadToolChoice:
         assert schema["properties"]["largeScript"]["maxLength"] == 65536
 
     def test_repetition_limits_match_the_measured_grammar_budget(self):
-        # First bound llama-server refuses, measured against llama.cpp b10639 and b10679 by
-        # posting each schema to a live server. maxItems costs N+2 rules, not N+1, so 1998 is
-        # already over budget even though the other three keywords reach 2000.
+        # First bound llama-server refuses (measured on b10639/b10679); maxItems costs N+2 rules.
         from routes.inference import _JSON_SCHEMA_REPETITION_LIMITS
         first_rejected = {"maxItems": 1998, "maxLength": 2000, "minItems": 2001, "minLength": 2000}
         assert _JSON_SCHEMA_REPETITION_LIMITS == {
@@ -2833,7 +2805,6 @@ class TestBuildPassthroughPayloadToolChoice:
         }
 
     def test_response_format_schema_drops_incompatible_constraints(self):
-        # Guided decoding reaches the same grammar engine tool schemas do.
         rf = {
             "type": "json_schema",
             "json_schema": {
@@ -2852,7 +2823,6 @@ class TestBuildPassthroughPayloadToolChoice:
         assert rf["json_schema"]["schema"]["properties"]["summary"]["maxLength"] == 2000
 
     def test_response_format_json_object_schema_is_filtered_too(self):
-        # An array bound only reaches the grammar when the items schema does too.
         rf = {
             "type": "json_object",
             "schema": {"type": "array", "items": {"type": "string"}, "maxItems": 1999},
@@ -2942,6 +2912,25 @@ class TestBuildPassthroughPayloadToolChoice:
             {"role": "user", "content": "hi"},
         ]
 
+    @pytest.mark.parametrize(
+        "tool_choice, kept",
+        [("auto", False), ("required", False), ("none", True)],
+    )
+    def test_passthrough_body_sets_response_format_aside_for_callable_tools(
+        self, tool_choice, kept
+    ):
+        payload = ChatCompletionRequest(
+            model = "default",
+            messages = [{"role": "user", "content": "hi"}],
+            tools = self._args()["openai_tools"],
+            tool_choice = tool_choice,
+            response_format = {"type": "json_object"},
+        )
+
+        body = _build_openai_passthrough_body(payload, backend_ctx = 4096)
+
+        assert ("response_format" in body) is kept
+
 
 class TestOpenAIPassthroughSSETerminalState:
     def test_done_sentinel(self):
@@ -2978,15 +2967,12 @@ class TestOpenAIPassthroughSSETerminalState:
         ]
 
     def test_plain_content_line_is_returned_identically(self):
-        # The relay dispatches terminal classification on `out_line is raw_line`,
-        # so the no-mutation path must return the identical string object.
+        # The relay checks `out_line is raw_line`, so no-mutation must return the same object.
         line = 'data: {"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}'
         assert _normalize_openai_passthrough_sse_line(line) is line
         assert _normalize_openai_passthrough_sse_line(line, cap_parallel_tool_calls = True) is line
 
     def test_reasoning_key_inside_content_text_keeps_line_identical(self):
-        # Fast-path substring gate fires, but the parse finds nothing to change:
-        # the original object must come back so the relay stays byte-identical.
         line = (
             'data: {"choices":[{"index":0,"delta":{"content":'
             '"mentions \\"reasoning_content\\" in text"},"finish_reason":null}]}'
@@ -3009,15 +2995,6 @@ class TestOpenAIPassthroughSSETerminalState:
 
     def test_reasoning_normalization_preserves_done_sentinel(self):
         assert _normalize_openai_passthrough_sse_line("data: [DONE]") == "data: [DONE]"
-
-
-# =====================================================================
-
-# =====================================================================
-# Passthrough reasoning kwargs — enable_thinking / reasoning_effort /
-# preserve_thinking must reach llama-server via chat_template_kwargs,
-# gated on template capabilities like the non-passthrough paths.
-# =====================================================================
 
 
 def _reasoning_backend(
@@ -3123,12 +3100,6 @@ class TestPassthroughReasoningKwargs:
         assert "chat_template_kwargs" not in body
 
 
-# =====================================================================
-
-# OpenAI API compatibility helpers - verified spec edge cases
-# =====================================================================
-
-
 class TestOpenAICompatibilityHelpers:
     def test_max_completion_tokens_wins_over_deprecated_max_tokens(self):
         payload = SimpleNamespace(max_tokens = 128, max_completion_tokens = 64)
@@ -3169,8 +3140,6 @@ class TestOpenAICompatibilityHelpers:
         assert exc.value.detail["error"]["code"] == "invalid_type"
 
     def test_openai_compat_max_tokens_zero_is_valid_and_negative_rejected(self):
-        # Legacy completions spec: max_tokens has minimum 0, so 0 must pass
-        # through; only negatives are invalid_value.
         assert _effective_openai_max_tokens_from_values(0) == 0
 
         with pytest.raises(HTTPException) as exc:
@@ -3349,6 +3318,32 @@ class TestOpenAICompatibilityHelpers:
         assert usage["prompt_tokens"] == 0
         assert usage["completion_tokens"] == 7
         assert usage["total_tokens"] == 7
+
+    def test_stream_usage_chunk_forwards_tool_loop_context_tokens(self):
+        payload = SimpleNamespace(stream_options = {"include_usage": True})
+        tool_loop = {
+            "prompt_tokens": 140,
+            "completion_tokens": 40,
+            "total_tokens": 180,
+            "context_tokens": 150,
+        }
+        line = _openai_stream_usage_chunk(payload, "c", 1, "m", tool_loop, None)
+        usage = json.loads(line.removeprefix("data: "))["usage"]
+        assert usage["total_tokens"] == 180
+        assert usage["context_tokens"] == 150
+
+        single = {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
+        line = _openai_stream_usage_chunk(payload, "c", 1, "m", single, None)
+        assert "context_tokens" not in json.loads(line.removeprefix("data: "))["usage"]
+
+    def test_non_streaming_usage_omits_unset_context_tokens(self):
+        from models.inference import CompletionUsage
+
+        assert "context_tokens" not in json.loads(CompletionUsage(total_tokens = 5).model_dump_json())
+        assert "context_tokens" not in CompletionUsage(total_tokens = 5).model_dump()
+        assert (
+            json.loads(CompletionUsage(context_tokens = 4).model_dump_json())["context_tokens"] == 4
+        )
 
     def test_completion_stream_monitor_reads_usage_before_client_strip(self, monkeypatch):
         import routes.inference as inf_mod
@@ -3560,8 +3555,6 @@ class TestOpenAICompatibilityHelpers:
         assert image_b64 == "GENERATED"
 
     def test_first_image_wins_within_one_message(self):
-        # The composer allows multi-select, and findLatestUserImageBase64
-        # (chat-adapter.ts) names the first of them, so this must agree.
         payload = ChatCompletionRequest(
             messages = [
                 {
@@ -3586,7 +3579,6 @@ class TestOpenAICompatibilityHelpers:
         assert image_b64 == "LEFT"
 
     def test_later_turn_still_wins_over_a_multi_image_turn(self):
-        # Per-message first, per-thread latest: the two rules compose.
         payload = ChatCompletionRequest(
             messages = [
                 {
@@ -3622,7 +3614,6 @@ class TestOpenAICompatibilityHelpers:
         assert image_b64 == "LATER"
 
     def test_payloadless_part_does_not_claim_the_message_slot(self):
-        # An empty data URL is not an image, so the first real one still wins.
         payload = ChatCompletionRequest(
             messages = [
                 {
@@ -3647,8 +3638,6 @@ class TestOpenAICompatibilityHelpers:
         assert image_b64 == "RIGHT"
 
     def test_earlier_real_image_survives_a_payloadless_opening_turn(self):
-        # The old helper latched "" here and suppressed every later image, so
-        # the request reached the model with none.
         def turn(url):
             return {
                 "role": "user",
@@ -3671,12 +3660,6 @@ class TestOpenAICompatibilityHelpers:
         assert image_b64 == "REAL"
 
 
-# =====================================================================
-
-# _friendly_error - httpx transport failures
-# =====================================================================
-
-
 class TestFriendlyErrorHttpx:
     def _req(self):
         return httpx.Request("POST", "http://127.0.0.1:65535/v1/chat/completions")
@@ -3695,22 +3678,14 @@ class TestFriendlyErrorHttpx:
 
     def test_read_timeout_mapped(self):
         exc = httpx.ReadTimeout("timed out", request = self._req())
-        assert "first token within 20 minutes" in _friendly_error(exc)
+        assert "first token within the waiting limit" in _friendly_error(exc)
 
     def test_non_httpx_unchanged(self):
-        # Non-httpx exceptions still fall through to the substring heuristics
-        # - a context-size message must still produce "Message too long".
         ctx_msg = "request (4096 tokens) exceeds the available context size (2048 tokens)"
         assert "Message too long" in _friendly_error(ValueError(ctx_msg))
 
     def test_generic_exception_returns_generic_message(self):
         assert _friendly_error(RuntimeError("unrelated")) == "An internal error occurred"
-
-
-from routes.inference import (  # noqa: E402
-    _drop_empty_assistant_sentinels,
-    _openai_messages_for_gguf_chat,
-)
 
 
 def _image_question_messages():
@@ -3843,6 +3818,14 @@ async def fake_send(*_args, **_kwargs):
     return httpx.Response(200, content = b"")
 
 
+# Upper bounds only: the route reaches the hanging client and notices the disconnect (it polls
+# is_disconnected every 0.1 s) in milliseconds here. 0.2 s / 0.5 s timed out on loaded xdist
+# workers (the first embeddings call on a cold worker does extra setup), so allow seconds; a real
+# hang or a missed disconnect still fails, just later.
+_HANGING_CLIENT_START_TIMEOUT_S = 10.0
+_DISCONNECT_TO_499_TIMEOUT_S = 5.0
+
+
 class HangingCancelableClient:
     def __init__(self):
         self.started = asyncio.Event()
@@ -3917,7 +3900,6 @@ class TestDropEmptyAssistantSentinels:
         assert out == [{"role": "user", "content": "hi"}, {"role": "user", "content": "again"}]
 
     def test_drops_assistant_with_no_content_key(self):
-        # exclude_none=True strips the content key entirely; filter must catch it.
         msgs = [
             {"role": "user", "content": "hi"},
             {"role": "assistant"},
@@ -3957,7 +3939,6 @@ class TestDropEmptyAssistantSentinels:
         assert out == msgs
 
     def test_preserves_user_and_system_with_empty_content(self):
-        # Filter scoped to role="assistant" only.
         msgs = [
             {"role": "system", "content": ""},
             {"role": "user", "content": ""},
@@ -4219,8 +4200,6 @@ class TestGgufVisionMessages:
         assert len(messages[2]["content"]) == 2
         assert isinstance(messages[1]["content"], str)
 
-        # Legacy top-level image_base64 must be ignored when a message-level
-        # image exists; otherwise turn 2 ends up with two image parts.
         for msg in messages:
             content = msg.get("content")
             if isinstance(content, list):
@@ -4363,12 +4342,11 @@ class TestGgufVisionMessages:
 
         _, chat_messages, _ = _extract_content_parts(req.messages)
 
-        # The name is correlated from the call now, so the local path can run the
-        # provenance gate on a result that arrived unnamed.
         assert chat_messages[2] == {
             "role": "tool",
             "content": "[1 image returned]",
             "name": "mcp__fs__read_media_file",
+            "tool_call_id": "call_0",
         }
 
     def test_a_replayed_envelope_alone_does_not_demand_a_vision_model(self):
@@ -4380,7 +4358,6 @@ class TestGgufVisionMessages:
         req = ChatCompletionRequest(model = "default", messages = self._mcp_tool_history())
 
         assert not _request_has_attached_image(req)
-        # Still an image for the paths that decode one: the work stays off the loop.
         assert _request_has_image(req)
 
     def test_an_attached_image_still_demands_a_vision_model(self):
@@ -4479,10 +4456,7 @@ class TestGgufVisionMessages:
         assert all(self._PNG_B64 not in str(m.get("content")) for m in priced)
 
     def test_a_mixed_catalog_provider_still_forwards_an_attached_image(self):
-        """openrouter and huggingface are vision-capable for the family and name no
-        model, so the MCP gate says no for every model on them. Passed as the general
-        vision flag it also stripped the picture the caller attached to a chosen
-        vision model, which main forwarded."""
+        """The MCP gate says no on openrouter and huggingface, so it must not strip an attached image."""
         from core.inference.providers import get_provider_info
         from routes.inference import _build_external_messages, _external_takes_mcp_images
 
@@ -4520,8 +4494,6 @@ class TestGgufVisionMessages:
             parts = built[0]["content"]
             assert [p["type"] for p in parts] == ["text", "image_url"], provider
 
-            # The shape the regression had: one flag answering both questions.
-            # The image is gone and the lone text part collapses back to a string.
             conflated = _build_external_messages(attached, gate, provider_type = provider)
             assert (
                 conflated[0]["content"] == "what colour is this"
@@ -4571,7 +4543,6 @@ class TestGgufVisionToolRouting:
         method = "POST"
 
         def __init__(self, ui_events = False):
-            # Tool cards and the approval handshake ride these frames.
             self.headers = {"X-Unsloth-Events": "1"} if ui_events else {}
 
         async def is_disconnected(self):
@@ -4845,8 +4816,10 @@ class TestGgufVisionToolRouting:
             yield {"type": "content", "text": "done"}
 
         class ApiRequest(self._Request):
-            headers = {"authorization": "Bearer sk-unsloth-test"}
             state = SimpleNamespace(skip_api_monitor = True)
+
+            def __init__(self):
+                self.headers = {"authorization": "Bearer sk-unsloth-test"}
 
         monkeypatch.setattr(
             inf_mod,
@@ -4908,10 +4881,8 @@ class TestGgufVisionToolRouting:
         assert exc.value.status_code == 400
         assert exc.value.detail["error"]["param"] == "tool_choice"
 
-    # Two sites reject this shape and `_should_validate_before_switch()` picks
-    # which; the early one runs before the api_monitor row is opened. It reads
-    # process-wide state, so unpinned this asserted whichever site the xdist
-    # worker happened to leave reachable. Pinned, both sites are covered.
+    # _should_validate_before_switch() reads process-wide state; pin it so xdist order cannot
+    # pick the rejection site.
     @pytest.mark.parametrize("validate_before_switch", [False, True])
     def test_confirm_tool_calls_requires_streaming_for_gguf_tools(
         self, monkeypatch, validate_before_switch
@@ -4956,20 +4927,14 @@ class TestGgufVisionToolRouting:
         assert exc.value.status_code == 400
         assert "requires stream=true" in exc.value.detail["error"]["message"]
         if validate_before_switch:
-            # Early site rejects before the monitor row is opened, so there is no
-            # row to fail; opening one here would be a behaviour change, not a fix.
             assert monitor.snapshot() == []
         else:
             [entry] = monitor.snapshot()
             assert entry["status"] == "error"
             assert "confirm_tool_calls requires stream=true" in entry["error"]
-        # Neither site may leave a row running.
         assert monitor.active_count() == 0
 
     def test_streaming_confirm_gate_refuses_a_caller_that_hid_the_frames(self, monkeypatch):
-        # A stream without X-Unsloth-Events has nowhere to be asked, so the loop would park
-        # in wait_tool_decision for the full timeout (_confirm_gate_has_no_channel).
-
         import routes.inference as inf_mod
 
         reset_tool_policy()
@@ -5006,11 +4971,9 @@ class TestGgufVisionToolRouting:
         assert exc.value.status_code == 400
         message = exc.value.detail["error"]["message"]
         assert "X-Unsloth-Events" in message
-        # Names the way out, or a client that cannot render a prompt is stuck.
         assert "permission_mode" in message
 
     def test_streaming_confirm_gate_admits_a_caller_that_opted_in(self, monkeypatch):
-        # Same request with the frames on runs the loop: the guard refuses no one else.
         def _tools(**_kwargs):
             yield {"type": "content", "text": "done"}
             yield _stop_metadata()
@@ -5029,11 +4992,29 @@ class TestGgufVisionToolRouting:
         deltas = [p["choices"][0].get("delta", {}) for p in result.payloads if p.get("choices")]
         assert "".join(d.get("content", "") for d in deltas) == "done"
 
-    def test_an_empty_selection_is_not_refused_for_a_prompt_it_can_never_show(self, monkeypatch):
-        # mcp_enabled arms _confirm_gate_needs_stream on intent, but discovery finds no MCP
-        # tool here, so the selection is empty and the loop is skipped. Refusing on intent
-        # would 400 a request that answers fine without ever prompting.
+    def test_a_tool_heartbeat_is_not_sent_as_a_stall_keepalive(self, monkeypatch):
+        import routes.inference as inf_mod
 
+        def _tools(**_kwargs):
+            yield {"type": "heartbeat"}
+            yield {"type": "content", "text": "done"}
+            yield _stop_metadata()
+
+        result = self._run_gguf_case(
+            monkeypatch,
+            tool_generate = _tools,
+            payload_kwargs = {
+                "stream": True,
+                "enable_tools": True,
+                "enabled_tools": ["terminal"],
+                "messages": [{"role": "user", "content": "run something"}],
+            },
+            request = self._Request(ui_events = True),
+        )
+        assert inf_mod._OPENAI_TOOL_HEARTBEAT_SSE in result.chunks
+        assert inf_mod._OPENAI_PASSTHROUGH_SSE_KEEPALIVE not in result.chunks
+
+    def test_an_empty_selection_is_not_refused_for_a_prompt_it_can_never_show(self, monkeypatch):
         import routes.inference as inf_mod
 
         reset_tool_policy()
@@ -5211,6 +5192,7 @@ class TestGgufVisionToolRouting:
                 started.set()
                 while not cancel_event.is_set():
                     time.sleep(0.005)
+                time.sleep(_WORKER_LINGER_S)
                 released.set()
                 yield from ()
 
@@ -5244,12 +5226,14 @@ class TestGgufVisionToolRouting:
             iterator = response.body_iterator
             assert await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
             pending = asyncio.create_task(iterator.__anext__())
-            assert await asyncio.to_thread(started.wait, 1.0)
+            assert await asyncio.to_thread(
+                started.wait, _DRAIN_BUDGET_S
+            ), "the worker never started"
 
             await asyncio.sleep(0)
             pending.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(pending, timeout = 1.0)
+                await asyncio.wait_for(pending, timeout = _DRAIN_BUDGET_S)
 
             assert released.is_set()
             [entry] = monitor.snapshot()
@@ -5383,7 +5367,6 @@ class TestGgufVisionToolRouting:
             )
             response = await openai_chat_completions(
                 payload,
-                # A gateable request has to opt in: tool_start carries the approval_id.
                 request = self._Request(ui_events = True),
                 current_subject = "test",
             )
@@ -5408,6 +5391,135 @@ class TestGgufVisionToolRouting:
 
         asyncio.run(_run())
 
+    @pytest.mark.parametrize("outcome", ["allow", "deny", "expire"])
+    def test_gguf_decision_reaches_other_tabs_while_another_chat_holds_the_slot(
+        self, monkeypatch, outcome
+    ):
+        """Other tabs clear their prompt on the first frame after a decision, so it must not wait for the
+        model slot. The run itself does no more work until the slot is back."""
+        import routes.inference as inf_mod
+        from state.tool_approvals import TOOL_APPROVAL_EXPIRED_MESSAGE, TOOL_REJECTED_MESSAGE
+
+        async def _run():
+            async def fake_select_tools(*_args, **_kwargs):
+                return [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "python",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ]
+
+            decided = threading.Event()
+            resumed = threading.Event()
+            end = {"type": "tool_end", "tool_name": "python", "tool_call_id": "call_0"}
+
+            # The GGUF loop's own frames after each outcome: an Allow sends the approval and then the
+            # running status; a refusal or an expiry ends the card at once.
+            def _generate(**kwargs):
+                cancel_event = kwargs["cancel_event"]
+                yield {"type": "status", "text": "Waiting for approval: Python"}
+                yield {
+                    "type": "tool_start",
+                    "tool_name": "python",
+                    "tool_call_id": "call_0",
+                    "arguments": {"code": "print(1)"},
+                    "awaiting_confirmation": True,
+                    "approval_id": "approval_0",
+                }
+                while not decided.is_set() and not cancel_event.is_set():
+                    time.sleep(0.005)
+                if outcome == "allow":
+                    yield {
+                        "type": "tool_approved",
+                        "tool_name": "python",
+                        "tool_call_id": "call_0",
+                        "approval_id": "approval_0",
+                    }
+                    resumed.set()
+                    yield {"type": "status", "text": "Running Python..."}
+                    yield {**end, "result": "1"}
+                else:
+                    result = (
+                        TOOL_REJECTED_MESSAGE
+                        if outcome == "deny"
+                        else TOOL_APPROVAL_EXPIRED_MESSAGE
+                    )
+                    yield {**end, "result": result}
+                    resumed.set()
+                yield {"type": "content", "text": "next-turn-answer"}
+
+            backend = SimpleNamespace(
+                is_loaded = True,
+                is_vision = False,
+                supports_tools = True,
+                supports_reasoning = True,
+                reasoning_always_on = True,
+                _is_audio = False,
+                model_identifier = "test-gguf",
+                context_length = 4096,
+                base_url = f"http://llama.decision-{outcome}.test",
+                effective_parallel_slots = 1,
+                count_chat_tokens = lambda *_args, **_kwargs: 10,
+                generate_chat_completion = lambda **_kwargs: "unused",
+                generate_chat_completion_with_tools = _generate,
+            )
+            monkeypatch.setattr(inf_mod, "api_monitor", ApiMonitor(max_entries = 3))
+            monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+            monkeypatch.setattr(inf_mod, "_select_request_tools", fake_select_tools)
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [{"role": "user", "content": "run python"}],
+                enable_tools = True,
+                stream = True,
+            )
+            response = await openai_chat_completions(
+                payload,
+                request = self._Request(ui_events = True),
+                current_subject = "test",
+            )
+            iterator = response.body_iterator
+
+            async def next_frame(needle):
+                async for chunk in iterator:
+                    if needle in chunk:
+                        return chunk
+                pytest.fail(f"{needle} never arrived")
+
+            blocker = None
+            rest = None
+            try:
+                await asyncio.wait_for(next_frame('"tool_start"'), timeout = 2)
+                # The parked run gave up its slot; another chat takes it.
+                queue = get_llama_admission_queue(f"http://llama.decision-{outcome}.test")
+                blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
+                assert blocker is not None
+                decided.set()
+                first = '"tool_approved"' if outcome == "allow" else '"tool_end"'
+                await asyncio.wait_for(next_frame(first), timeout = 2)
+
+                # The run itself waits for the slot before it goes on.
+                rest = asyncio.create_task(next_frame("next-turn-answer"))
+                await asyncio.sleep(0.2)
+                assert not rest.done()
+                assert not resumed.is_set(), "the run went on while another chat held its slot"
+                blocker.release()
+                blocker = None
+                await asyncio.wait_for(rest, timeout = 2)
+            finally:
+                decided.set()
+                if blocker is not None:
+                    blocker.release()
+                if rest is not None and not rest.done():
+                    rest.cancel()
+                    await asyncio.gather(rest, return_exceptions = True)
+                await iterator.aclose()
+
+        asyncio.run(_run())
+
     def test_gguf_tool_stream_task_cancel_after_first_chunk_finalizes_monitor(self, monkeypatch):
         import routes.inference as inf_mod
         async def _run():
@@ -5419,6 +5531,7 @@ class TestGgufVisionToolRouting:
                 started.set()
                 while not cancel_event.is_set():
                     time.sleep(0.005)
+                time.sleep(_WORKER_LINGER_S)
                 released.set()
                 yield from ()
 
@@ -5455,12 +5568,14 @@ class TestGgufVisionToolRouting:
             iterator = response.body_iterator
             assert await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
             pending = asyncio.create_task(iterator.__anext__())
-            assert await asyncio.to_thread(started.wait, 1.0)
+            assert await asyncio.to_thread(
+                started.wait, _DRAIN_BUDGET_S
+            ), "the worker never started"
 
             await asyncio.sleep(0)
             pending.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(pending, timeout = 1.0)
+                await asyncio.wait_for(pending, timeout = _DRAIN_BUDGET_S)
 
             assert released.is_set()
             [entry] = monitor.snapshot()
@@ -5800,8 +5915,6 @@ class TestGgufVisionToolRouting:
         result = self._run_gguf_case(
             monkeypatch,
             generate = _generate,
-            # The shape Studio's own composer sends for an enable_thinking template
-            # once the Thinking toggle is off.
             payload_kwargs = {"stream": True, "thinking": {"type": "disabled"}},
             backend_kwargs = {"reasoning_always_on": False},
         )
@@ -5847,7 +5960,6 @@ class TestGgufVisionToolRouting:
                 "enabled_tools": ["terminal"],
                 "messages": [{"role": "user", "content": "list files"}],
             },
-            # terminal is confirmable, so the gate needs the frames it asks on.
             request = self._Request(ui_events = True),
         )
         deltas = [p["choices"][0].get("delta", {}) for p in result.payloads if p.get("choices")]
@@ -5874,7 +5986,6 @@ class TestGgufVisionToolRouting:
                 "enabled_tools": ["terminal"],
                 "messages": [{"role": "user", "content": "say literal"}],
             },
-            # terminal is confirmable, so the gate needs the frames it asks on.
             request = self._Request(ui_events = True),
         )
         deltas = [p["choices"][0].get("delta", {}) for p in result.payloads if p.get("choices")]
@@ -6132,6 +6243,7 @@ class TestGgufVisionToolRouting:
                 started.set()
                 while not cancel_event.is_set():
                     time.sleep(0.005)
+                time.sleep(_WORKER_LINGER_S)
                 released.set()
                 yield from ()
 
@@ -6160,26 +6272,14 @@ class TestGgufVisionToolRouting:
             task = asyncio.create_task(
                 openai_chat_completions(payload, request = self._Request(), current_subject = "test")
             )
-            # Generous budgets. What this test asserts is that cancelling the
-            # request drains the worker, and none of the numbers below are part
-            # of that: they only bound how long to wait before calling it hung.
-            # A one-second bound on a THREAD START is a bound on the scheduler,
-            # not on this code, and it went red once on a runner busy with the
-            # rest of the backend suite. Failing here still takes seconds, and
-            # the assertion is unchanged.
-            assert await asyncio.to_thread(started.wait, self._DRAIN_BUDGET_S)
+            assert await asyncio.to_thread(started.wait, _DRAIN_BUDGET_S)
 
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, timeout = self._DRAIN_BUDGET_S)
+                await asyncio.wait_for(task, timeout = _DRAIN_BUDGET_S)
 
-            # Waited on, not sampled. Cancelling the task unblocks the awaiting
-            # coroutine; it does not join the worker, which is off polling
-            # cancel_event every 5ms and only then sets this. Reading it the
-            # instant the await returns is a race that happens to be won on an
-            # idle box, and it is the drain itself that matters, not whether it
-            # had already finished by the time we looked.
-            assert await asyncio.to_thread(released.wait, self._DRAIN_BUDGET_S)
+            # Waited on, not sampled: cancelling the task does not join the worker.
+            assert await asyncio.to_thread(released.wait, _DRAIN_BUDGET_S)
             assert get_llama_admission_queue("http://llama.tool.test").snapshot().active == 0
             [entry] = monitor.snapshot()
             assert entry["status"] == "cancelled"
@@ -6288,11 +6388,6 @@ class TestGgufVisionToolRouting:
         assert json.loads(response.body)["choices"][0]["message"]["content"] == "reply"
         assert captured["perf_callback"] is None
 
-    # Wall-clock bound for the cancel drain. Only ever hit when something is
-    # genuinely stuck, so it is sized for a loaded runner rather than for the
-    # ~5ms this takes when it works.
-    _DRAIN_BUDGET_S = 30.0
-
     def test_non_streaming_gguf_cancel_drains_worker(self, monkeypatch):
         import routes.inference as inf_mod
         async def _run():
@@ -6304,6 +6399,7 @@ class TestGgufVisionToolRouting:
                 started.set()
                 while not cancel_event.is_set():
                     time.sleep(0.005)
+                time.sleep(_WORKER_LINGER_S)
                 released.set()
                 yield from ()
 
@@ -6327,11 +6423,13 @@ class TestGgufVisionToolRouting:
             task = asyncio.create_task(
                 openai_chat_completions(payload, request = self._Request(), current_subject = "test")
             )
-            assert await asyncio.to_thread(started.wait, 1.0)
+            assert await asyncio.to_thread(
+                started.wait, _DRAIN_BUDGET_S
+            ), "the worker never started"
 
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, timeout = 1.0)
+                await asyncio.wait_for(task, timeout = _DRAIN_BUDGET_S)
 
             assert released.is_set()
             [entry] = monitor.snapshot()
@@ -6340,7 +6438,86 @@ class TestGgufVisionToolRouting:
 
         asyncio.run(_run())
 
-    def _drive_standard_gguf(self, monkeypatch, date_line: str) -> list[dict]:
+    @pytest.mark.parametrize(
+        "payload_kwargs",
+        [
+            pytest.param({}, id = "plain"),
+            pytest.param({"n": 3}, id = "plain-n"),
+            pytest.param({"enable_tools": True}, id = "tools"),
+        ],
+    )
+    def test_non_streaming_gguf_disconnect_stops_generation(self, monkeypatch, payload_kwargs):
+        import routes.inference as inf_mod
+
+        total = 200
+        emitted = []
+        generations = []
+        started = threading.Event()
+
+        class _LeavingRequest(self._Request):
+            async def is_disconnected(self):
+                return started.is_set()
+
+        def _emit(kwargs, event):
+            generations.append("plain" if event is None else "tools")
+            cancel_event = kwargs["cancel_event"]
+            for _ in range(total):
+                if cancel_event.wait(0.005):
+                    return
+                emitted.append(1)
+                started.set()
+                yield event
+
+        def _generate(**kwargs):
+            text = ""
+            for _ in _emit(kwargs, None):
+                text += "x"
+                yield text
+
+        def _tools(**kwargs):
+            yield from _emit(kwargs, {"type": "content", "text": "x"})
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = True,
+            _is_audio = False,
+            model_identifier = "test-gguf",
+            context_length = 4096,
+            base_url = "http://llama.disconnect.test",
+            effective_parallel_slots = 1,
+            generate_chat_completion = _generate,
+            generate_chat_completion_with_tools = _tools,
+        )
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+        monkeypatch.setattr(inf_mod, "_select_request_tools", fake_select_tools)
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            messages = [{"role": "user", "content": "hi"}],
+            **payload_kwargs,
+        )
+        response = self._drive(
+            openai_chat_completions(payload, request = _LeavingRequest(), current_subject = "test")
+        )
+
+        assert response.status_code == 200
+        assert len(emitted) < total, "generation ran to completion after the client left"
+        assert generations == ["tools" if payload_kwargs.get("enable_tools") else "plain"]
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "cancelled"
+        assert monitor.active_count() == 0
+        assert get_llama_admission_queue("http://llama.disconnect.test").snapshot().active == 0
+
+    def _drive_standard_gguf(
+        self,
+        monkeypatch,
+        date_line: str,
+        messages = None,
+        chat_template = None,
+    ) -> list[dict]:
         """Run one non-tool GGUF completion with the current-date setting pinned."""
         import routes.inference as inf_mod
 
@@ -6362,14 +6539,16 @@ class TestGgufVisionToolRouting:
             model_identifier = "test-gguf",
             context_length = 4096,
             generate_chat_completion = _generate,
+            chat_template = chat_template,
+            chat_template_override = None,
         )
         monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
-        # Pinned, not left to the host's stored setting, so the assertion is the same everywhere.
         monkeypatch.setattr(inf_mod, "current_date_prompt_line", lambda **_kwargs: date_line)
 
         payload = ChatCompletionRequest(
             model = "default",
-            messages = [
+            messages = messages
+            or [
                 {"role": "system", "content": "original system"},
                 {"role": "developer", "content": "developer rules"},
                 {"role": "user", "content": "hi"},
@@ -6388,7 +6567,6 @@ class TestGgufVisionToolRouting:
         ]
 
     def test_standard_gguf_prefixes_the_current_date(self, monkeypatch):
-        # Covers the wiring, not just the helper: a tool-less GGUF chat must carry the date.
         assert self._drive_standard_gguf(monkeypatch, "The current date is 2026-08-15.") == [
             {
                 "role": "system",
@@ -6396,6 +6574,40 @@ class TestGgufVisionToolRouting:
             },
             {"role": "user", "content": "hi"},
         ]
+
+    @pytest.mark.parametrize(
+        ("chat_template", "system"),
+        [
+            (
+                "{% if messages[0]['role'] == 'system' %}{% set s = messages[0]['content'] %}"
+                "{% set rest = messages[1:] %}{% else %}{% set s = 'You are Qwen.' %}"
+                "{% set rest = messages %}{% endif %}<|im_start|>system\n{{ s }}<|im_end|>\n"
+                "{% for m in rest %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n"
+                "{% endfor %}",
+                "The current date is 2026-08-15.\n\nYou are Qwen.",
+            ),
+            (
+                "{% for m in messages %}<start_of_turn>{{ m['role'] }}\n{{ m['content'] }}"
+                "<end_of_turn>\n{% endfor %}",
+                "The current date is 2026-08-15.",
+            ),
+        ],
+    )
+    def test_standard_gguf_without_a_system_prompt_dates_a_system_turn(
+        self, monkeypatch, chat_template, system
+    ):
+        history = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "second"},
+        ]
+        sent = self._drive_standard_gguf(
+            monkeypatch,
+            "The current date is 2026-08-15.",
+            messages = history,
+            chat_template = chat_template,
+        )
+        assert sent == [{"role": "system", "content": system}, *history]
 
     @pytest.mark.parametrize(
         ("seed", "expected"),
@@ -6470,6 +6682,7 @@ class TestApiMonitorProviderAndCompletionStreams:
         monkeypatch,
         lines,
         stream_options = None,
+        **payload_extra,
     ):
         import routes.inference as inf_mod
 
@@ -6494,6 +6707,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             stream = True,
             stream_options = stream_options,
             tools = [_LOOKUP_TOOL],
+            **payload_extra,
         )
 
         response = await _openai_passthrough_stream(
@@ -6510,6 +6724,8 @@ class TestApiMonitorProviderAndCompletionStreams:
             chunks = chunks,
             body = "".join(chunks),
             monitor = monitor,
+            monitor_id = monitor_id,
+            response_headers = dict(response.headers),
             upstream_bodies = upstream_bodies,
         )
 
@@ -7311,7 +7527,8 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
-    def test_completions_stream_requests_usage_only_for_monitor(self, monkeypatch):
+    @pytest.mark.parametrize("client_progress", [False, True])
+    def test_completions_stream_requests_usage_only_for_monitor(self, monkeypatch, client_progress):
         import routes.inference as inf_mod
         async def _run():
             class Request:
@@ -7320,7 +7537,10 @@ class TestApiMonitorProviderAndCompletionStreams:
                 method = "POST"
 
                 async def json(self):
-                    return {"prompt": "hi", "stream": True}
+                    body = {"prompt": "hi", "stream": True}
+                    if client_progress:
+                        body["return_progress"] = True
+                    return body
 
                 async def is_disconnected(self):
                     return False
@@ -7333,6 +7553,8 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             async def fake_items(*_args, **_kwargs):
                 yield (
+                    b'data: {"choices":[{"text":"","finish_reason":null}],'
+                    b'"prompt_progress":{"total":4,"processed":2,"cache":0,"time_ms":1}}\n\n'
                     b'data: {"choices":[{"text":"ok","finish_reason":"stop"}]}\n\n'
                     b'data: {"choices":[],"usage":{"prompt_tokens":3,'
                     b'"completion_tokens":2,"total_tokens":5}}\n\n'
@@ -7344,12 +7566,20 @@ class TestApiMonitorProviderAndCompletionStreams:
             _pin_loaded_backend(monkeypatch)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
             monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
+            monkeypatch.setattr(
+                inf_mod, "_openai_passthrough_stream_keepalive_interval", lambda: 1e-9
+            )
 
             response = await openai_completions(Request(), current_subject = "test")
             body = b"".join([chunk async for chunk in response.body_iterator])
 
+            assert upstream_bodies[0]["return_progress"] is True
+            assert (b": prefill-progress" in body) is not client_progress
+            assert (b": keep-alive" in body) is False
             assert upstream_bodies[0]["stream_options"]["include_usage"] is True
             assert b'"usage"' not in body
+            assert (b"prompt_progress" in body) is client_progress
+            assert b'"ok"' in body
             [entry] = monitor.snapshot()
             assert entry["prompt_tokens"] == 3
             assert entry["completion_tokens"] == 2
@@ -7386,7 +7616,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-            # Per-request client so a forced swap can close it mid-call; the pooled one is shared.
             monkeypatch.setattr(
                 inf_mod,
                 "_cancelable_nonstreaming_client",
@@ -7405,8 +7634,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         asyncio.run(_run())
 
     def test_completions_omitted_max_tokens_falls_back_to_context(self, monkeypatch):
-        # With no env knobs set, an omitted max_tokens must forward the
-        # backend's context length, exactly as on main.
         import routes.inference as inf_mod
         async def _run():
             class Request:
@@ -7521,7 +7748,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-            monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: UnusedClient())
             monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: UnusedClient())
             _pin_loaded_backend(monkeypatch)
 
@@ -8270,7 +8496,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-            # Per-request client so a forced swap can close it mid-call; the pooled one is shared.
             monkeypatch.setattr(
                 inf_mod,
                 "_cancelable_nonstreaming_client",
@@ -8287,6 +8512,61 @@ class TestApiMonitorProviderAndCompletionStreams:
             assert entry["prompt_preview"] == "alpha\nbeta"
             assert entry["prompt_tokens"] == 4
             assert entry["total_tokens"] == 4
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    @pytest.mark.parametrize(
+        ("route", "path", "body"),
+        [
+            (openai_completions, "/v1/completions", {"prompt": "hi", "stream": False}),
+            (openai_embeddings, "/v1/embeddings", {"input": ["hi"], "model": "embed"}),
+        ],
+    )
+    def test_non_streaming_proxy_disconnect_returns_499(self, monkeypatch, route, path, body):
+        import routes.inference as inf_mod
+        async def _run():
+            class Request:
+                state = SimpleNamespace()
+                url = SimpleNamespace(path = path)
+                method = "POST"
+
+                def __init__(self):
+                    self.disconnected = False
+
+                async def json(self):
+                    return body
+
+                async def is_disconnected(self):
+                    return self.disconnected
+
+            client = HangingCancelableClient()
+            request = Request()
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
+            monkeypatch.setattr(
+                inf_mod,
+                "get_llama_cpp_backend",
+                lambda: SimpleNamespace(
+                    is_loaded = True,
+                    base_url = "http://llama.test",
+                    context_length = 4096,
+                    model_identifier = "gguf",
+                ),
+            )
+
+            task = asyncio.create_task(route(request, current_subject = "test"))
+            await asyncio.wait_for(client.started.wait(), _HANGING_CLIENT_START_TIMEOUT_S)
+            request.disconnected = True
+
+            with pytest.raises(HTTPException) as exc:
+                await asyncio.wait_for(task, _DISCONNECT_TO_499_TIMEOUT_S)
+
+            assert exc.value.status_code == 499
+            assert client.closed.is_set()
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
             assert monitor.active_count() == 0
 
         asyncio.run(_run())
@@ -8466,7 +8746,6 @@ class TestApiMonitorProviderAndCompletionStreams:
                 assert cancel_id in inf_mod._CANCEL_REGISTRY
 
                 blocker.release()
-                # The lease is announced before handover, so drain that marker first.
                 assert (
                     await asyncio.wait_for(iterator.__anext__(), timeout = 1.0)
                     == ": admission-done\n\n"
@@ -8477,11 +8756,13 @@ class TestApiMonitorProviderAndCompletionStreams:
                         break
                     await asyncio.sleep(0.01)
                 body = body_holder["body"]
-                assert await asyncio.to_thread(body.started.wait, 1.0)
+                assert await asyncio.to_thread(
+                    body.started.wait, _DRAIN_BUDGET_S
+                ), "the worker never started"
 
                 pending.cancel()
                 with pytest.raises(asyncio.CancelledError):
-                    await asyncio.wait_for(pending, timeout = 1.0)
+                    await asyncio.wait_for(pending, timeout = _DRAIN_BUDGET_S)
             finally:
                 aclose = getattr(iterator, "aclose", None)
                 if aclose is not None:
@@ -8566,7 +8847,6 @@ class TestApiMonitorProviderAndCompletionStreams:
                 assert chunk == ": admission-wait\n\n"
 
                 blocker.release()
-                # The lease is announced before handover, so the payload is the next chunk.
                 assert (
                     await asyncio.wait_for(iterator.__anext__(), timeout = 1.0)
                     == ": admission-done\n\n"
@@ -8716,6 +8996,35 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
+    @pytest.mark.parametrize("client_progress", [False, True])
+    def test_passthrough_prompt_progress_reaches_monitor_and_response_header(
+        self, monkeypatch, client_progress
+    ):
+        async def _run():
+            extra = {"return_progress": True} if client_progress else {}
+            result = await self._run_passthrough_stream(
+                monkeypatch,
+                [
+                    'data: {"prompt_progress":{"total":2000,"processed":1200,"cache":0,"time_ms":15000},"choices":[{"index":0,"delta":{"role":"assistant","content":null},"finish_reason":null}]}',
+                    'data: {"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}',
+                    "data: [DONE]",
+                ],
+                **extra,
+            )
+
+            assert result.upstream_bodies[0]["return_progress"] is True
+            assert (
+                result.response_headers.get("x-unsloth-monitor-id") == result.monitor_id
+            ), result.response_headers
+            [entry] = result.monitor.snapshot()
+            assert entry["running_phase"] == "token_generation"
+            assert entry["prompt_progress"]["processed"] == 1200
+            assert entry["prompt_progress"]["percent"] == 60.0
+            assert ("prompt_progress" in result.body) is client_progress
+            assert '"ok"' in result.body
+
+        asyncio.run(_run())
+
     def test_passthrough_stream_queued_request_sends_keepalive_before_upstream(self, monkeypatch):
         import routes.inference as inf_mod
         async def _run():
@@ -8754,6 +9063,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 "chatcmpl-test",
                 monitor_id = monitor_id,
             )
+            assert response.headers["x-unsloth-monitor-id"] == monitor_id
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
@@ -8995,7 +9305,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(
                 inf_mod,
-                "nonstreaming_client",
+                "_cancelable_nonstreaming_client",
                 lambda: CancellingAsyncClient(),
             )
             monitor_id = _monitor_entry(monitor)
@@ -9013,6 +9323,41 @@ class TestApiMonitorProviderAndCompletionStreams:
                     monitor_id = monitor_id,
                 )
 
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_passthrough_non_streaming_task_cancel_propagates(self, monkeypatch):
+        import routes.inference as inf_mod
+        async def _run():
+            client = HangingCancelableClient()
+            monitor, monitor_id = _install_monitor(monkeypatch)
+            monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                tools = [_LOOKUP_TOOL],
+            )
+
+            task = asyncio.create_task(
+                _openai_passthrough_non_streaming(
+                    _passthrough_backend(),
+                    payload,
+                    "gguf",
+                    monitor_id = monitor_id,
+                    request = _ConnectedRequest(),
+                    cancel_event = threading.Event(),
+                )
+            )
+            await asyncio.wait_for(client.started.wait(), _HANGING_CLIENT_START_TIMEOUT_S)
+            task.cancel()
+
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+            assert client.closed.is_set()
             [entry] = monitor.snapshot()
             assert entry["status"] == "cancelled"
             assert monitor.active_count() == 0
@@ -9048,12 +9393,13 @@ class TestApiMonitorProviderAndCompletionStreams:
                     cancel_event = cancel_event,
                 )
             )
-            await asyncio.wait_for(client.started.wait(), 0.2)
+            await asyncio.wait_for(client.started.wait(), _HANGING_CLIENT_START_TIMEOUT_S)
             cancel_event.set()
 
-            with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, 0.5)
+            with pytest.raises(HTTPException) as exc:
+                await asyncio.wait_for(task, _DISCONNECT_TO_499_TIMEOUT_S)
 
+            assert exc.value.status_code == 499
             assert client.closed.is_set()
             [entry] = monitor.snapshot()
             assert entry["status"] == "cancelled"
@@ -9115,9 +9461,10 @@ class TestApiMonitorProviderAndCompletionStreams:
             assert cancel_id in inf_mod._CANCEL_REGISTRY
             assert inf_mod._cancel_by_cancel_id_or_stash(cancel_id) == 1
 
-            with pytest.raises(asyncio.CancelledError):
+            with pytest.raises(HTTPException) as exc:
                 await asyncio.wait_for(task, 5.0)
 
+            assert exc.value.status_code == 499
             assert client.closed.is_set()
             assert cancel_id not in inf_mod._CANCEL_REGISTRY
             [entry] = monitor.snapshot()
@@ -9163,12 +9510,13 @@ class TestApiMonitorProviderAndCompletionStreams:
                     cancel_event = cancel_event,
                 )
             )
-            await asyncio.wait_for(client.started.wait(), 0.2)
+            await asyncio.wait_for(client.started.wait(), _HANGING_CLIENT_START_TIMEOUT_S)
             request.disconnected = True
 
-            with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, 0.5)
+            with pytest.raises(HTTPException) as exc:
+                await asyncio.wait_for(task, _DISCONNECT_TO_499_TIMEOUT_S)
 
+            assert exc.value.status_code == 499
             assert client.closed.is_set()
             assert cancel_event.is_set()
             [entry] = monitor.snapshot()
@@ -9205,7 +9553,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             monitor, monitor_id = _install_monitor(monkeypatch)
             monkeypatch.setattr(
                 inf_mod,
-                "nonstreaming_client",
+                "_cancelable_nonstreaming_client",
                 lambda: FakeNonStreamingClient(),
             )
             payload = ChatCompletionRequest(
@@ -9267,7 +9615,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(
                 inf_mod,
-                "nonstreaming_client",
+                "_cancelable_nonstreaming_client",
                 lambda: FakeNonStreamingClient(),
             )
             monitor_id = _monitor_entry(monitor)
@@ -9313,9 +9661,7 @@ class TestApiMonitorProviderAndCompletionStreams:
         asyncio.run(_run())
 
     def test_passthrough_finish_without_done_closes_stream_early(self, monkeypatch):
-        # Some llama-server builds emit the finish chunk and then hold the HTTP
-        # stream open without sending [DONE]; the terminal classifier must end
-        # the client stream promptly instead of hanging on the open socket.
+        # Some llama-server builds hold the stream open after the finish chunk without [DONE].
         import routes.inference as inf_mod
         async def _run():
             async def fake_items(
@@ -9366,9 +9712,6 @@ class TestApiMonitorProviderAndCompletionStreams:
         asyncio.run(_run())
 
     def test_passthrough_stall_after_finish_closes_cleanly(self, monkeypatch):
-        # include_usage keeps the stream open past the finish chunk waiting for
-        # the usage chunk; if that never arrives, the post-terminal grace path
-        # must close with a clean [DONE], not an in-band error.
         import routes.inference as inf_mod
         async def _run():
             async def fake_items(*_args, **_kwargs):
@@ -9443,11 +9786,11 @@ class TestApiMonitorProviderAndCompletionStreams:
             assert 'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n' in body
             assert '"finish_reason"' not in body.replace(" ", "")
             assert '"type":"api_error"' in body.replace(" ", "")
-            assert "still processing the prompt" in body
+            assert "first token within the waiting limit" in body
             assert body.endswith("data: [DONE]\n\n")
             [entry] = monitor.snapshot()
             assert entry["status"] == "error"
-            assert "still processing the prompt" in entry["error"]
+            assert "first token within the waiting limit" in entry["error"]
             assert entry["reply"] == "hello"
             assert monitor.active_count() == 0
 
@@ -9684,12 +10027,13 @@ class TestApiMonitorSafetensorsUsage:
                 *_args,
                 **_kwargs,
             ):
-                # Only the generation hop should cancel; resolution runs before the row opens.
                 if getattr(func, "__name__", "") == "resolve_local_gguf":
                     return None
-                # Resolving what is already serving is pre-row work too, offloaded for the
-                # same reason: _loaded_satisfies reaches the singleton, whose build detects.
-                if func in (inf_mod.get_inference_backend, inf_mod._loaded_satisfies):
+                if func in (
+                    inf_mod.get_inference_backend,
+                    inf_mod._loaded_satisfies,
+                    inf_mod._trained_run_dir,
+                ):
                     return func(*_args, **_kwargs)
                 raise asyncio.CancelledError()
 
@@ -10092,8 +10436,6 @@ class TestApiMonitorAudioInput:
             assert entry["reply"] == "[Generated audio]"
             assert monitor.active_count() == 0
 
-            # This branch answers speech and returns before the routing that decides
-            # a decoding contract, so it refuses one itself rather than ignoring it.
             payload.response_format = {"type": "json_object"}
             with pytest.raises(HTTPException) as excinfo:
                 await inf_mod.openai_chat_completions(
@@ -10101,21 +10443,10 @@ class TestApiMonitorAudioInput:
                 )
             assert excinfo.value.status_code == 400
             assert excinfo.value.detail["error"]["param"] == "response_format"
-            # `{"type": "text"}` constrains nothing, so speech is still served.
             payload.response_format = {"type": "text"}
             await inf_mod.openai_chat_completions(payload, request = request, current_subject = "test")
 
         asyncio.run(_run())
-
-
-# =====================================================================
-
-# =====================================================================
-# Responses API -> Chat Completions translation: chat_template_kwargs
-# (e.g. {"enable_thinking": true}) sent via the Responses extra-body must
-# reach the built ChatCompletionRequest's typed ``enable_thinking`` field,
-# otherwise /v1/responses silently ignores reasoning control (issue #6198).
-# =====================================================================
 
 
 class TestResponsesChatTemplateKwargs:
@@ -10297,15 +10628,6 @@ class TestResponsesChatTemplateKwargs:
         asyncio.run(_run())
 
 
-# =====================================================================
-
-# =====================================================================
-# GGUF chat-template role alternation: coalesce orphaned user turns left
-# behind when an empty assistant turn is dropped, so strict templates
-# (Gemma 3, ...) do not 400 on a role-parity break.
-# =====================================================================
-
-
 class TestMergeUserContent:
     def test_strings_join_with_blank_line(self):
         assert _merge_user_content("hi", "again") == "hi\n\nagain"
@@ -10471,8 +10793,6 @@ class TestGgufChatHistoryAlternation:
         assert [m["role"] for m in out] == ["user", "assistant", "user"]
 
     def test_tool_path_rebuild_stays_alternating(self):
-        # Tool path rebuilds via _set_or_prepend_system_message over the coalesced
-        # history, so it stays alternating too.
         req = ChatCompletionRequest(
             model = "default",
             messages = [
@@ -10579,14 +10899,9 @@ class TestExternalProviderParticipantNames:
         assert [m.get("name") for m in out] == [None, None, None, "get_weather", None]
 
 
-# ── Per-choice seeds on the GGUF drain ──────────────────────────────
-
-
 def test_every_gguf_choice_gets_a_seed_of_its_own():
-    """llama-server holds the seed as a uint32 and draws at random for exactly
-    one value, LLAMA_DEFAULT_SEED (0xFFFFFFFF). Only -1 converts to it, so every
-    other negative is an ordinary fixed seed there: exempting all of them from
-    the offset sent n identical requests and returned n copies of one run."""
+    """Every GGUF choice needs its own seed; only -1 maps to the random sentinel, other negatives
+    are fixed."""
     from routes.inference import _choice_seed
 
     sent = 0xFFFFFFFF
@@ -10594,28 +10909,21 @@ def test_every_gguf_choice_gets_a_seed_of_its_own():
         served = [_choice_seed(seed, i, negative_is_random = True) for i in range(3)]
         as_read = [v & 0xFFFFFFFF for v in served]
         assert len(set(as_read)) == 3, (seed, served)
-        # A shifted seed that landed on the sentinel would sample at random where
-        # the caller asked for a fixed run.
+        # A shifted seed landing on -1 would sample randomly.
         assert sent not in as_read, (seed, served)
 
-    # -1 is the sentinel itself: offsetting it would make every choice after the
-    # first deterministic, which is the opposite of what was asked for.
+    # -1 is the sentinel: offsetting it would make later choices deterministic.
     assert [_choice_seed(-1, i, negative_is_random = True) for i in range(3)] == [-1, -1, -1]
 
-    # MLX maps every seed onto its key domain, so nothing is exempt there.
     assert [_choice_seed(-2, i) for i in range(3)] == [-2, -1, 0]
     assert [_choice_seed(5, i) for i in range(3)] == [5, 6, 7]
 
-    # Choice 0 is always the caller's own seed, on both drains.
     assert _choice_seed(-2, 0, negative_is_random = True) == -2
     assert _choice_seed(None, 2, negative_is_random = True) is None
 
 
 def test_the_two_seed_helpers_agree_on_which_seeds_are_random():
-    """``-1`` is not the only request seed that reaches LLAMA_DEFAULT_SEED: the seed is a
-    uint32 there, so ``-1``, ``4294967295`` and ``2**64-1`` are all the sentinel and the
-    schemas accept all three. Both helpers must agree, or choice 0 keeps the caller's random
-    seed while choice 1 is offset into a fixed one, half reproducible and half uncached."""
+    """The seed helpers must agree on what is random: -1, 4294967295 and 2**64-1 are the same sentinel."""
     from core.inference.llama_cpp import _LLAMA_RANDOM_SEED, _apply_seeded_llama_request
     from routes.inference import _choice_seed
 
@@ -10635,6 +10943,85 @@ def test_the_two_seed_helpers_agree_on_which_seeds_are_random():
             payload = {}
             _apply_seeded_llama_request(payload, value)
             assert payload["cache_prompt"] is False, (seed, value)
+            warm = {}
+            _apply_seeded_llama_request(warm, value, reuse_prompt_cache = True)
+            assert warm == {"seed": value}, (seed, value, warm)
+
+
+def test_a_lenient_schema_reaches_llama_server_where_it_reads_one():
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _response_format_for_llama_server as for_llama
+
+    schema = {"type": "integer"}
+    wrapped = {"type": "json_schema", "json_schema": {"schema": schema}}
+    lenient = {"type": "json_schema", "schema": schema}
+    assert for_llama(lenient) == wrapped
+    assert for_llama({"type": "json_schema", "json_schema": None, "schema": schema}) == wrapped
+    for already in (
+        {"type": "json_schema", "json_schema": {"name": "x", "schema": schema}},
+        {"type": "json_schema", "json_schema": {"schema": schema}, "schema": {}},
+        {"type": "json_object", "schema": schema},
+        {"type": "json_object"},
+        {"type": "text"},
+        None,
+    ):
+        assert for_llama(already) is already
+    request = ChatCompletionRequest(
+        model = "m", messages = [{"role": "user", "content": "hi"}], response_format = lenient
+    )
+    assert _build_openai_passthrough_body(request)["response_format"] == wrapped
+
+
+_WEATHER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_weather",
+        "parameters": {
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "required": ["city"],
+        },
+    },
+}
+_WEATHER_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "final_output",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {"city": {"type": "string"}, "temp_c": {"type": "number"}},
+            "required": ["city", "temp_c"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+def _weather_body(**fields):
+    request = ChatCompletionRequest(
+        model = "m", messages = [{"role": "user", "content": "Weather in Paris?"}], **fields
+    )
+    return _build_openai_passthrough_body(request)
+
+
+@pytest.mark.parametrize("response_format", [_WEATHER_FORMAT, {"type": "json_object"}])
+@pytest.mark.parametrize(
+    "tool_choice",
+    [None, "auto", "required", {"type": "function", "function": {"name": "get_weather"}}],
+)
+def test_a_response_format_does_not_lock_out_callable_tools(tool_choice, response_format):
+    body = _weather_body(
+        tools = [_WEATHER_TOOL], tool_choice = tool_choice, response_format = response_format
+    )
+    assert [tool["function"]["name"] for tool in body["tools"]] == ["get_weather"]
+    assert "response_format" not in body
+
+
+def test_a_response_format_still_applies_when_tools_cannot_be_called():
+    body = _weather_body(tools = [_WEATHER_TOOL], tool_choice = "none", response_format = _WEATHER_FORMAT)
+    assert body["response_format"] == _WEATHER_FORMAT
+    assert _weather_body(response_format = _WEATHER_FORMAT)["response_format"] == _WEATHER_FORMAT
 
 
 class TestPassthroughImageNormalization:
@@ -10721,9 +11108,7 @@ class TestPassthroughImageNormalization:
         return buf.getvalue()
 
     def test_sixteen_bit_grayscale_keeps_its_levels(self):
-        # convert("RGB") reads a 16-bit source as 8-bit and clips: the whole ramp
-        # above 255 collapses to white. llama-server reading the same PNG itself
-        # scales instead, so re-encoding must not throw the picture away.
+        # convert('RGB') clips 16-bit to white; llama-server scales instead.
 
         from PIL import Image
         from io import BytesIO
@@ -10737,9 +11122,7 @@ class TestPassthroughImageNormalization:
         assert row[0] == 0 and row[-1] == 255
 
     def test_endian_tagged_sixteen_bit_mode_does_not_raise(self):
-        # I;16B rejects point() outright, and the caller turns any exception into
-        # a 400, so scaling without normalising the mode is worse than clipping.
-        # PNG cannot carry the tagged modes; a 16-bit TIFF reopens as I;16B.
+        # I;16B rejects point(); a 16-bit TIFF reopens as I;16B (PNG cannot carry it).
 
         from PIL import Image
         from io import BytesIO
@@ -10755,9 +11138,7 @@ class TestPassthroughImageNormalization:
         assert len(set(row)) == 256, f"collapsed to {len(set(row))} levels"
 
     def test_plain_int_mode_is_not_scaled(self):
-        # "I" and "F" declare no range. A 32-bit TIFF whose samples already sit
-        # in 0..255 must keep them: scaling it by 1/257 would black the picture
-        # out, which is worse than the clipping the scaling was added to fix.
+        # 'I'/'F' declare no range: a 32-bit TIFF already in 0..255 must not be scaled by 1/257.
 
         from PIL import Image
         from io import BytesIO
@@ -10824,9 +11205,6 @@ class TestPassthroughImageNormalization:
         assert exc.value.status_code == 400
 
     def test_local_template_caller_leaves_a_payloadless_data_url_alone(self):
-        # The safetensors/MLX client-tools path only gets here when the turn has no
-        # decodable image, and flattens image parts away straight after. A payloadless
-        # data URL was ignored with a warning before; it must not become a 400.
         req = self._req("data:image/png;base64,")
 
         messages = _openai_messages_for_passthrough(req, normalize_images = False)
@@ -10834,8 +11212,6 @@ class TestPassthroughImageNormalization:
         assert messages[0]["content"][1]["image_url"]["url"] == "data:image/png;base64,"
 
     def test_the_local_template_call_site_opts_out_of_normalization(self):
-        # The guard that keeps the re-encode on llama-server bodies only. Reverting it
-        # brings the 400 above back to the safetensors/MLX client-tools path.
         import inspect
 
         import routes.inference as inference_mod
@@ -10890,7 +11266,6 @@ class TestMcpImagesOnTheClientToolPassthrough:
     def test_one_marker_is_restored_per_retained_payload(self):
         from core.inference.mcp_images import append_placeholder_turn
 
-        # What the rebuild leaves: plain string content, no parts at all.
         messages = [
             {"role": "user", "content": "what does the file look like"},
             {"role": "tool", "tool_call_id": "call_0", "content": "[2 images returned]"},
@@ -10928,7 +11303,6 @@ class TestMcpImagesOnTheClientToolPassthrough:
         assert (
             "promote_mcp_images = False" in branch
         ), "the passthrough must leave the envelopes on for the promotion to find"
-        # One marker per batch at its own position, never one block of them all.
         assert "mark_mcp_image_turn_local(" not in branch
         assert "insert_mcp_image_turn_before(" not in branch
 
@@ -10959,8 +11333,6 @@ class TestCodexVisionCapability:
         predicate = body[start : body.index("if _may_receive_image", start)]
         assert "image_requested" in predicate
         assert "mcp_enabled" in predicate
-        # The promotable form, so a named non-MCP result ending in a valid envelope
-        # does not buy a catalog fetch nothing needs.
         assert "_request_has_promotable_mcp_images(payload, exact = False)" in predicate
 
 
@@ -11010,11 +11382,7 @@ class TestMcpImageAdmissionAndCaps:
             assert self._PNG not in json.dumps(estimate), vision
 
     def test_an_attachment_counts_against_the_replay_cap(self):
-        """promote_history_local caps the replay alone; the attachment lands after it.
-        Its marker goes on the newest user turn -- here a placeholder already holding
-        a replay marker -- and a non-GGUF message carries one picture, so the replay
-        marker is displaced and pixels_in_marker_order drops its payload rather than
-        sliding it onto the next marker. Markers and pixels stay in step at the cap."""
+        """Attachments count against the replay cap, and their marker must stay in step with the pixels."""
         from core.inference import mcp_images
 
         conversation = []
@@ -11023,7 +11391,6 @@ class TestMcpImageAdmissionAndCaps:
             conversation.append(mcp_images.placeholder_turn(1, 1))
             payloads.append("AAAA")
         prior = mcp_images.image_marker_parts(conversation)
-        # what the route does when an image is attached on top
         conversation = mcp_images.mark_last_user_turn(conversation, 1)
         pixels = mcp_images.pixels_in_marker_order(conversation, prior, payloads, "BBBB")
         mcp_images.trim_image_turns(conversation, pixels)
@@ -11031,7 +11398,6 @@ class TestMcpImageAdmissionAndCaps:
         markers = mcp_images.count_image_parts(conversation, "image")
         assert len(pixels) == mcp_images.MAX_TOTAL_MODEL_IMAGES
         assert markers == len(pixels)
-        # The attachment is the one that survives on its turn, and it is the newest.
         assert pixels[-1] == "BBBB"
         assert pixels.count("AAAA") == mcp_images.MAX_TOTAL_MODEL_IMAGES - 1
 
@@ -11108,10 +11474,8 @@ class TestMcpImageProvenanceAndCounting:
             estimate, parts = _openai_llama_admission_messages_for_estimate(
                 [dict(turn)], vision = True
             )
-            # Stripped on both sides regardless of provenance...
             assert out[0]["content"] != turn["content"], name
             assert self._PNG not in json.dumps(estimate), name
-            # ...and charged exactly where it is promoted.
             assert (len(out) > 1) is promoted, name
             assert (parts > 0) is promoted, name
 
@@ -11140,7 +11504,6 @@ class TestMcpReplayDetectorProvenance:
 
         assert _request_has_promotable_mcp_images(self._req("mcp__fs__read_media_file"))
         assert not _request_has_promotable_mcp_images(self._req("bash"))
-        # No name is not evidence against it: older stored turns carry none.
         assert _request_has_promotable_mcp_images(self._req(None))
 
     def test_the_count_guard_runs_before_the_mlx_dispatch(self):
@@ -11196,11 +11559,7 @@ def test_kimi_stays_permissive_because_its_allowlist_already_narrowed_it():
 
 
 def test_admission_prices_replay_against_what_generation_really_sends():
-    """The GGUF paths keep the full replay allowance BESIDE the caller's own picture
-    (only a provider reserves the caller's room), so this request sends nine and is
-    charged nine. Subtracting the attachment admitted a second such request into KV
-    the first had already taken; charging a second full allowance on top of it would
-    over-reserve instead, so the replay is still capped at MAX_TOTAL_MODEL_IMAGES."""
+    """Admission charges the full replay allowance beside the caller's image, as generation sends it."""
     import json as _json
 
     from core.inference import mcp_images
@@ -11236,3 +11595,342 @@ def test_admission_prices_replay_against_what_generation_really_sends():
         f"reserved {image_parts} image embeddings for a request that sends "
         f"{mcp_images.MAX_TOTAL_MODEL_IMAGES + 1}"
     )
+
+
+class _MLXCompletionBackend:
+    active_model_name = "mlx/m"
+
+    def resolve_completion_prompt(
+        self,
+        prompt,
+        cancel_event = None,
+    ):
+        if prompt == "stopped":
+            cancel_event.set()
+            raise InterruptedError("Request cancelled.")
+        if prompt == [999]:
+            raise ValueError("Prompt contains invalid tokens.")
+        if prompt == "queued":
+            active_generations.cancel_all()  # e.g. a model swap while behind another generation
+        ids = [1, 2] * len(prompt) if isinstance(prompt, str) else [1, 2]
+        return {"ids": ids, "text": prompt if isinstance(prompt, str) else "P", "n_vocab": 50}
+
+    def generate_completion(self, prompt_ids, cancel_event, stats_holder, **kw):
+        self.call, self.runs = (
+            (prompt_ids, kw),
+            [*getattr(self, "runs", []), (prompt_ids, kw["seed"])],
+        )
+        if kw["stop"] == ["cancel"]:
+            cancel_event.set()
+        if kw["stop"] == ["budget"]:
+            from core.inference.context_refusal import ContextBudgetExceeded
+            raise ContextBudgetExceeded(9, 4)
+        if kw["stop"] == ["refused"]:
+            from core.inference.orchestrator import GenStreamError
+            yield GenStreamError("No grammar here.", public = True, openai_param = "response_format")
+            return
+        yield from ("a", "ab" + ("" if kw["seed"] is None else str(kw["seed"])))
+        n = len(prompt_ids)
+        usage = {"prompt_tokens": n, "completion_tokens": n, "total_tokens": 2 * n}
+        usage["prompt_tokens_details"] = {"cached_tokens": n - 1}
+        stats_holder["stats"] = {"usage": usage, "finish_reason": "length" if n == 2 else "stop"}
+
+    def generate_completion_batch(self, rows, cancel_event, stats_holder, **kw):
+        self.batches = [*getattr(self, "batches", []), len(rows)]
+        stats_holder["stats"] = [{} for _ in rows]
+        for row, spec in enumerate(rows):
+            for text in self.generate_completion(
+                spec["prompt_ids"],
+                cancel_event,
+                stats_holder["stats"][row],
+                **kw,
+                seed = spec["seed"],
+            ):
+                yield row, text
+            stats_holder["stats"][row] = stats_holder["stats"][row]["stats"]
+
+    def reset_generation_state(self, _event):
+        pass
+
+
+def _run_mlx_completion(monkeypatch, body):
+    class Request:
+        state = SimpleNamespace()
+        url = SimpleNamespace(path = "/v1/completions")
+        method = "POST"
+
+        async def json(self):
+            return body
+
+        async def is_disconnected(self):
+            return False
+
+    async def _switch(request, *_a, **_k):
+        return await request.json()
+
+    from utils.hardware import DeviceType
+
+    backend = _MLXCompletionBackend()
+    monkeypatch.setattr("utils.hardware.get_device", lambda: DeviceType.MLX)
+    # No per-model recommendation, so llama-server's own defaults show.
+    monkeypatch.setattr("utils.inference.inference_config._recommended_sampling", lambda _m: {})
+    monkeypatch.setattr(inf_mod, "api_monitor", ApiMonitor(max_entries = 3))
+    monkeypatch.setattr(inf_mod, "_auto_switch_from_request_body", _switch)
+    monkeypatch.setattr(inf_mod, "_active_mlx_backend", lambda: backend)
+    _pin_loaded_backend(monkeypatch, is_loaded = False)
+
+    async def _run():
+        out = await openai_completions(Request(), current_subject = "test")
+        if not hasattr(out, "body_iterator"):
+            return out
+        lines = [ln[6:] async for chunk in out.body_iterator for ln in chunk.split("\n")]
+        return [ln if ln == "[DONE]" else json.loads(ln) for ln in lines if ln]
+
+    return backend, asyncio.run(_run())
+
+
+def test_mlx_completion_reads_the_body_as_llama_server_does(monkeypatch):
+    body = {"prompt": "P", "echo": True, "n_predict": 5, "max_tokens": 9, "repeat_last_n": 3}
+    body.update(repeat_penalty = 1.2, seed = -1, top_k = -3, temperature = -1, stop = "x")
+    threads, refusal = [], inf_mod._mlx_completions_refusal
+    record = lambda b: threads.append(threading.current_thread().name) or refusal(b)  # noqa: E731
+    monkeypatch.setattr(inf_mod, "_mlx_completions_refusal", record)
+    backend, out = _run_mlx_completion(monkeypatch, {**body, "logit_bias": [[7, False], [8, 2]]})
+    # A client grammar compiles here, so it stays off the event loop.
+    assert threads and all(t.startswith("inference-response-format") for t in threads)
+    assert out["object"] == "text_completion" and out["id"].startswith("cmpl-")
+    assert out["choices"] == [dict(text = "Pab", index = 0, logprobs = None, finish_reason = "length")]
+    assert out["usage"]["total_tokens"] == 4 and backend.call[0] == [1, 2]
+    kw = backend.call[1]
+    read = [kw[k] for k in ("max_new_tokens", "penalty_window", "stop", "seed")]
+    assert read == [5, 3, ["x"], None]
+    # llama-server's defaults, clamps and random-seed sentinel.
+    sampled = [kw[k] for k in ("temperature", "top_k", "min_p", "repetition_penalty")]
+    assert sampled == [0.0, 0, 0.05, 1.2] and kw["logit_bias"] == {7: float("-inf"), 8: 2.0}
+    greedy, _ = _run_mlx_completion(monkeypatch, {"prompt": "P", "top_p": 0, "top_k": 0})
+    assert greedy.call[1]["top_k"] == 1
+    # top_k at or past the vocabulary keeps every candidate, as on llama-server.
+    for top_k, sent in ((10**6, 0), (50, 0), (49, 49)):
+        wide, _ = _run_mlx_completion(monkeypatch, {"prompt": "P", "top_k": top_k})
+        assert wide.call[1]["top_k"] == sent
+    assert inf_mod.api_monitor.snapshot()[0]["reply_preview"] == "ab"
+    for alias in ("n_predict", "max_completion_tokens"):
+        unset, _ = _run_mlx_completion(monkeypatch, {"prompt": "P", alias: -1, "max_tokens": 9})
+        assert unset.call[1]["max_new_tokens"] is None and unset.call[1]["penalty_window"] == 64
+    none, out = _run_mlx_completion(monkeypatch, {"prompt": "P", "n_predict": 0})
+    assert not hasattr(none, "call") and out["choices"][0]["finish_reason"] == "length"
+    unmarked = [None, None]
+    monkeypatch.setattr("core.inference.llama_keepwarm.mark_current_response_failed", unmarked.pop)
+    _run_mlx_completion(monkeypatch, {"prompt": "P", "stop": "cancel"})
+    assert unmarked == [None] and inf_mod.api_monitor.snapshot()[0]["status"] == "cancelled"
+    queued, _ = _run_mlx_completion(monkeypatch, {"prompt": "queued"})
+    assert not hasattr(queued, "call") and unmarked == []
+    assert inf_mod.api_monitor.snapshot()[0]["status"] == "cancelled"
+    with pytest.raises(HTTPException) as exc:
+        _run_mlx_completion(monkeypatch, {"prompt": [999]})
+    assert exc.value.status_code == 400 and active_generations.count() == 0
+    # Stopped while queued behind another generation: the wait ends, nothing generates.
+    with pytest.raises(HTTPException) as exc:
+        _run_mlx_completion(monkeypatch, {"prompt": "stopped"})
+    assert exc.value.status_code == 499 and active_generations.count() == 0
+
+
+def test_mlx_completion_streams_text_completion_chunks(monkeypatch):
+    stream, usage = {"prompt": "P", "stream": True}, {"include_usage": True}
+    _, chunks = _run_mlx_completion(monkeypatch, {**stream, "echo": True, "stream_options": usage})
+    assert [c["choices"][0]["text"] for c in chunks[:4]] == ["P", "a", "b", ""]
+    assert chunks[3]["choices"][0]["finish_reason"] == "length"
+    assert chunks[4]["choices"] == [] and chunks[4]["usage"]["completion_tokens"] == 2
+    assert chunks[5:] == ["[DONE]"]
+    _, plain = _run_mlx_completion(monkeypatch, {**stream, "stream_options": True})
+    assert len(plain) == 4 and "usage" not in plain[2]
+    # A client gone before the body starts still closes the monitor entry and the tracker.
+    monkeypatch.setattr(inf_mod, "_sse_streaming_response", lambda _, **k: k["unstarted_cleanup"])
+    _, cleanup = _run_mlx_completion(monkeypatch, stream)
+    asyncio.run(cleanup())
+    assert inf_mod.api_monitor.snapshot()[0]["status"] == "cancelled"
+    assert active_generations.count() == 0
+
+
+def test_mlx_completion_fans_out_prompts_and_n_in_llama_server_order(monkeypatch):
+    body = {"prompt": ["a", "bb"], "n": 2, "seed": 7, "echo": True}
+    backend, out = _run_mlx_completion(monkeypatch, body)
+    got = [(c["index"], c["text"], c["finish_reason"]) for c in out["choices"]]
+    texts = ["aab7", "aab8", "bbab7", "bbab8"]
+    assert got == [(i, t, "length" if i < 2 else "stop") for i, t in enumerate(texts)]
+    assert backend.runs == [([1, 2], 7), ([1, 2], 8), ([1, 2] * 2, 7), ([1, 2] * 2, 8)]
+    assert backend.batches == [4], "every choice in one command"
+    # Cached prompt tokens count once per prompt, as its prompt tokens do.
+    cached = {"prompt_tokens_details": {"cached_tokens": 4}}
+    assert out["usage"] == {
+        "prompt_tokens": 6,
+        "completion_tokens": 12,
+        "total_tokens": 18,
+        **cached,
+    }
+    assert "Choice 4:\nab8" in inf_mod.api_monitor.snapshot()[0]["reply_preview"]
+    # Cancelled mid-batch: every choice decoding with it answers as stopped.
+    _, out = _run_mlx_completion(monkeypatch, {**body, "stop": "cancel"})
+    assert [(c["text"], c["finish_reason"]) for c in out["choices"]] == [(t, "stop") for t in texts]
+    # No batch is wider than chat's cap on n, however many prompts there are.
+    monkeypatch.setitem(inf_mod._LLAMA_HARD_LIMITS, "n_cmpl", (1, 3))
+    backend, out = _run_mlx_completion(monkeypatch, body)
+    assert backend.batches == [3, 1] and [c["text"] for c in out["choices"]] == texts
+
+
+@pytest.mark.parametrize(
+    "stop, code", [("budget", "context_length_exceeded"), ("refused", "unsupported_parameter")]
+)
+def test_mlx_completion_refusals_are_client_errors_as_in_chat(monkeypatch, stop, code):
+    monkeypatch.setattr(inf_mod, "_mlx_completion_grammar", lambda body: body.get("grammar"))
+    with pytest.raises(HTTPException) as err:
+        _run_mlx_completion(monkeypatch, {"prompt": "P", "stop": stop, "grammar": 'root ::= "a"'})
+    assert err.value.status_code == 400 and err.value.detail["error"]["code"] == code
+    # A runtime grammar refusal names the field the request sent.
+    assert err.value.detail["error"]["param"] == ("prompt" if stop == "budget" else "grammar")
+    _, lines = _run_mlx_completion(monkeypatch, {"prompt": "P", "stop": stop, "stream": True})
+    assert [line["error"]["code"] for line in lines if "error" in line] == [code]
+
+
+# llama-server's /v1/completions fields at b11160 (tools/server/server-schema.cpp) that MLX
+# serves, or ignores because they change neither the text nor the response shape.
+_LLAMA_SERVED = (
+    "stream stream_options n_predict max_tokens max_completion_tokens top_k top_p min_p "
+    "temperature repeat_last_n repeat_penalty frequency_penalty presence_penalty seed "
+    "logit_bias stop echo n n_cmpl grammar json_schema response_format logprobs n_probs"
+)
+_LLAMA_IGNORED = (
+    "cache_prompt sse_ping_interval n_keep n_discard n_cache_reuse backend_sampling "
+    "grammar_triggers chat_format "
+    "reasoning_format generation_prompt parse_tool_calls chat_parser continue_final_message "
+    "reasoning_control reasoning_budget_start_tag reasoning_budget_end_tags "
+    "reasoning_budget_end_tag reasoning_budget_message"
+)
+# The rest change the text or the shape with no MLX equivalent: a value MLX refuses, and the one
+# that turns the field off.
+_LLAMA_UNSERVED = json.loads(
+    '{"best_of": [2, 1], "suffix": ["x", ""],'
+    ' "timings_per_token": [true, false], "return_tokens": [true, false],'
+    ' "return_progress": [true, false], "verbose": [true, false], "response_fields": [["id"], []], "lora":'
+    ' [[{"id": 0, "scale": 1}], []], "n_indent": [2, 0], "t_max_predict_ms": [100, -1], "ignore_eos":'
+    ' [true, false], "min_keep": [2, 0], "samplers": ["kt", "edskypmxt"], "typical_p": [0.5, 1.0],'
+    ' "top_n_sigma": [1.0, -1.0], "xtc_probability": [0.5, 0.0], "dynatemp_range": [0.5, 0.0],'
+    ' "mirostat": [2, 0], "dry_multiplier": [0.8, 0.0], "adaptive_target": [0.5, -1.0],'
+    ' "reasoning_budget_tokens": [0, -1], "preserved_tokens": [["<|im_start|>"], []]}'
+)
+# Read by llama-server only while the field named with it is on.
+_LLAMA_DEPENDENT = json.loads(
+    '{"xtc_threshold": "xtc_probability", "dynatemp_exponent": "dynatemp_range", "mirostat_tau":'
+    ' "mirostat", "mirostat_eta": "mirostat", "dry_base": "dry_multiplier", "dry_allowed_length":'
+    ' "dry_multiplier", "dry_penalty_last_n": "dry_multiplier", "dry_sequence_breakers":'
+    ' "dry_multiplier", "adaptive_decay": "adaptive_target", "grammar_lazy": "grammar",'
+    ' "post_sampling_probs": "n_probs"}'
+)
+
+
+def test_mlx_completion_grammar_follows_llama_server_precedence(monkeypatch):
+    pytest.importorskip("llguidance.mlx")
+    from core.inference.grammar_constraint import grammar_from_gbnf, grammar_from_json_schema
+    from routes.inference import _mlx_completion_grammar as grammar
+
+    yes, array = 'root ::= "yes"', {"type": "json_schema", "json_schema": {"schema": {}}}
+    assert grammar({"grammar": "", "json_schema": {}, "response_format": array}) is None
+    object_ = grammar_from_json_schema({"type": "object"})
+    assert grammar({"json_schema": {}, "response_format": array}) == object_
+    assert grammar({"response_format": array}) == grammar_from_json_schema({})
+    run, _ = _run_mlx_completion(monkeypatch, {"prompt": "P", "grammar": yes, "json_schema": {}})
+    assert run.call[1]["grammar"] == grammar_from_gbnf(yes)
+    # A client grammar is held only within the shared cache's byte budget.
+    from collections import OrderedDict
+    import core.inference.grammar_constraint as gc
+
+    for budget, held in ((gc._GRAMMAR_CACHE_MAX_BYTES, 1), (0, 0)):
+        monkeypatch.setattr(gc, "_GRAMMAR_CACHE", OrderedDict())
+        monkeypatch.setattr(gc, "_GRAMMAR_CACHE_MAX_BYTES", budget)
+        grammar_from_gbnf(yes)
+        assert len(gc._GRAMMAR_CACHE) == held
+
+
+def test_mlx_completion_refuses_only_what_mlx_cannot_reproduce(monkeypatch):
+    from routes.inference import _MLX_COMPLETION_FIELDS_OFF, _mlx_completions_refusal as refusal
+
+    for is_mlx in (True, False):
+        held = SimpleNamespace(active_model_name = "m", models = {"m": {"is_mlx": is_mlx}})
+        monkeypatch.setattr(inf_mod, "_peek_inference_backend", lambda: held)
+        assert (inf_mod._active_mlx_backend() is held) is is_mlx
+
+    assert set(_MLX_COMPLETION_FIELDS_OFF) == set(_LLAMA_UNSERVED) | set(_LLAMA_DEPENDENT)
+    assert not set((_LLAMA_SERVED + " " + _LLAMA_IGNORED).split()) & set(_MLX_COMPLETION_FIELDS_OFF)
+    for name, (on, off) in _LLAMA_UNSERVED.items():
+        assert f"'{name}'" in refusal({"prompt": "p", name: on})
+        assert refusal({"prompt": "p", name: off}) is None
+    for name, enabler in _LLAMA_DEPENDENT.items():
+        on = _LLAMA_UNSERVED.get(enabler, ['root ::= "x"'])[0]
+        assert refusal({"prompt": "p", name: 0.3}) is None
+        assert refusal({"prompt": "p", name: 0.3, enabler: on})
+    assert refusal({"prompt": "p", "xtc_probability": 0.5, "xtc_threshold": 0.6}) is None
+    assert refusal({"prompt": "p", "dry_multiplier": 0.8, "dry_penalty_last_n": 0}) is None
+    assert refusal({"prompt": "p", "n_cmpl": 1, "n": 2, "n_probs": 0, "logprobs": 5}) is None
+    # llama-server reads post_sampling_probs only with n_probs, and then renames the fields.
+    assert refusal({"prompt": "p", "post_sampling_probs": True}) is None
+    assert "'post_sampling_probs'" in refusal(
+        {"prompt": "p", "logprobs": 2, "post_sampling_probs": True}
+    )
+    assert refusal({"prompt": "p", "n": 2, "best_of": 2}) is None
+    assert refusal({"prompt": "p", "grammar": None, "json_schema": {}}) is None
+    for prompt in ([1, "a"], ["a", 1], [[1, 2]], {"prompt_string": [1, "a"]}):
+        assert refusal({"prompt": prompt, "n_predict": -1, "repeat_last_n": 0}) is None
+    for bad in (
+        {"prompt": ["a", "b"], "stream": True},
+        {"prompt": "p", "n": 2, "stream": True},
+        {"prompt": "p", "n": 0},
+        {"prompt": "p", "n_cmpl": 129, "n": 1},
+        {"prompt": ["a", {"prompt_string": "a", "multimodal_data": ["x"]}]},
+        {"prompt": [1, 1.5]},
+        {"prompt": "p", "typical_p": "x"},
+        {"prompt": [True]},
+        {"prompt": {}},
+        {"prompt": []},
+        {"prompt": "p", "max_tokens": -2, "n_predict": None},
+        {"prompt": "p", "repeat_last_n": -1},
+        {"prompt": "p", "logit_bias": {"hi": 1}},
+        {"prompt": "p", "grammar": "root ::= nowhere"},
+        {"prompt": "p", "logprobs": 2, "stream": True},
+        {"prompt": "p", "logprobs": 2, "echo": True},
+        {"prompt": "p", "logprobs": 2, "n": 2},
+        {"prompt": ["a", "b"], "n_probs": 1},
+        {"prompt": "p", "n_probs": -1},
+        {"prompt": "p", "logprobs": True},
+    ):
+        assert refusal(bad), bad
+
+
+def test_mlx_completion_reports_logprobs_in_llama_server_shape(monkeypatch):
+    entry = {
+        "id": 7,
+        "token": " a",
+        "bytes": [32, 97],
+        "logprob": -2.5,
+        "top_logprobs": [
+            {"id": 3, "token": " b", "bytes": [32, 98], "logprob": -0.1},
+            {"id": 7, "token": " a", "bytes": [32, 97], "logprob": -2.5},
+        ],
+    }
+    real = _MLXCompletionBackend.generate_completion
+
+    def generate_completion(self, prompt_ids, cancel_event, stats_holder, **kw):
+        yield from real(self, prompt_ids, cancel_event, stats_holder, **kw)
+        if kw.get("n_probs"):
+            stats_holder["stats"]["token_logprobs"] = [entry]
+
+    monkeypatch.setattr(_MLXCompletionBackend, "generate_completion", generate_completion)
+    body = {"prompt": [1, 2], "max_tokens": 1, "temperature": 0, "logprobs": 2}
+    backend, out = _run_mlx_completion(monkeypatch, {**body, "logit_bias": [[7, 100]]})
+    assert backend.call[1]["n_probs"] == 2 and backend.call[1]["logit_bias"] == {7: 100.0}
+    assert out["choices"][0]["logprobs"] == {"content": [entry]}
+    # n_probs is llama-server's own name and wins over the alias.
+    backend, _ = _run_mlx_completion(monkeypatch, {**body, "n_probs": 4})
+    assert backend.call[1]["n_probs"] == 4
+    for off in ({}, {"logprobs": 0}, {"logprobs": False}):
+        plain, out = _run_mlx_completion(monkeypatch, {"prompt": [1, 2], **off})
+        assert "n_probs" not in plain.call[1] and out["choices"][0]["logprobs"] is None

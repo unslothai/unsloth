@@ -1,42 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The amd-smi VRAM branch must answer for HIP's inventory, or not at all.
-
-amd-smi reads the driver's own view over sysfs and libdrm, so it answers for every
-card the host has. The llama-server child is a HIP process and sees whatever HIP
-sees, and three things move those two apart without any of the visibility variables
-``_resolve_visible_physical_ids`` reads being set:
-
-* ``GPU_DEVICE_ORDINAL``. ROCm's fourth visibility variable, which
-  ``_active_gpu_visibility_mask`` does not read, so the branch would take "no mask"
-  from a process that has been masked. ``utils/hardware/hardware.py::
-  _rocm_visibility_mask_active`` already counts it as one of the four, and
-  ``test_overlay_skips_under_gpu_device_ordinal`` pins the behaviour it forces
-  there: ``GPU_DEVICE_ORDINAL=1`` surfaces physical GPU 1 as torch ordinal 0.
-* A device-cgroup container. Given one ``/dev/dri/renderD*`` node and no env var at
-  all, HIP opens one device while amd-smi still enumerates the host
-  (``test_overlay_skips_device_cgroup_filtered_container`` is the same topology).
-  The two read different sources: libhsakmt drops a topology node whose render node
-  it cannot open (the cgroup denies it with EPERM) and ROCr then renumbers what is
-  left from zero, while amd-smi walks /sys/class/drm and /sys/class/kfd, which the
-  cgroup does not touch, and keeps the device with its host numbering.
-* ``amd-smi metric`` omitting a device it cannot read. What is left is a shorter
-  list, and on a two-card host the remaining single row would take the single-GPU
-  shortcut in ``_amd_smi_hip_id_map`` and pass for a one-card host.
-
-Fourth, the two can enumerate the same devices and still be measuring different
-pools. ``_rocm_classify_unified_memory`` names an APU from ``is_integrated``, then
-from ``gfx1150``/``gfx1151``/``gfx1152``, then from the Radeon name table; a wheel
-that exposes a Phoenix iGPU as ``gfx1103`` with no ``is_integrated`` flag hits none
-of them, and the branch's APU deferral never fires. amd-smi then reports the BIOS
-carve-out where HIP reports the GTT pool, and the fit loses most of the memory the
-model can actually use. Comparing the totals catches it without the branch having to
-recognise the device: ``hardware.py::_rocm_system_wide_vram_by_index`` gates its own
-overlay on the same 10% comparison, for the same two scopes.
-
-torch, ROCm detection and amd-smi are all mocked; this repository has no AMD GPU.
-"""
+"""amd-smi VRAM must match HIP's inventory or not answer: masks, device cgroups and pools can differ."""
 
 from __future__ import annotations
 
@@ -96,12 +61,7 @@ def _hip_sees(
 
 @pytest.fixture
 def rocm(monkeypatch):
-    """A ROCm host with no APU the classifier can name and no visibility mask.
-
-    Every variable is cleared as well as patched: the probe asks whether a mask is
-    SET before asking what it resolves to, so the shell's own CUDA_VISIBLE_DEVICES
-    would read as a mask that resolves to nothing (#8662). HIP's inventory is
-    declared for the same reason: unpatched it reads this host's own GPU."""
+    """Clears every visibility variable, since a set CUDA mask would read as a mask resolving to nothing."""
     monkeypatch.setattr(LlamaCppBackend, "_torch_is_rocm", staticmethod(lambda torch: True))
     monkeypatch.setattr(LlamaCppBackend, "_rocm_hip_is_reachable", staticmethod(lambda: True))
     monkeypatch.setattr(
@@ -128,15 +88,7 @@ def two_cards(rocm, monkeypatch):
 
 
 class TestGpuDeviceOrdinalIsHonoured:
-    """``GPU_DEVICE_ORDINAL`` is a ROCm visibility variable and
-    ``_resolve_visible_physical_ids`` does not read it, so an unfiltered amd-smi
-    inventory would be offered as the whole visible set.
-
-    AMD documents it as masking "OpenCL and HIP applications" while clr reads it
-    only when ``amd::IS_HIP`` is false, so the two disagree on whether HIP obeys it.
-    The branch declines under either reading: deferring on a host where HIP ignores
-    it costs only the context saving, offering a hidden card where HIP obeys it
-    costs a load."""
+    """The resolver does not read GPU_DEVICE_ORDINAL, and HIP may ignore it, so the branch declines."""
 
     def test_a_masked_process_is_not_offered_the_hidden_card(self, two_cards, monkeypatch):
         """GPU_DEVICE_ORDINAL=1 is the mask this repository already models, in
@@ -192,10 +144,7 @@ class TestTheInventoryMustBeTheOneHipOpens:
         assert LlamaCppBackend._get_gpu_memory() == [(0, 20480, 24576)]
 
     def test_a_row_amd_smi_omitted_does_not_pass_for_a_one_card_host(self, rocm, monkeypatch):
-        """``amd-smi metric`` skipped the device it could not read. One row and no
-        mask is exactly the shape ``_amd_smi_hip_id_map``'s single-GPU shortcut
-        accepts without consulting ``list -e``, so the omitted card would simply
-        cease to exist for tensor-parallel placement."""
+        """amd-smi omitting a row leaves one row that passes the single-GPU shortcut, hiding the card."""
         monkeypatch.setattr(amd, "_run_amd_smi", _fake_amd_smi(_payload((0, 4096, 24576)), None))
         assert LlamaCppBackend._get_gpu_memory_amd_smi() == []
 
@@ -213,10 +162,7 @@ class TestTheInventoryMustBeTheOneHipOpens:
 
 
 class TestAnApuTheClassifierMisses:
-    """The field shape: a Phoenix iGPU a wheel reports as ``gfx1103`` with no
-    ``is_integrated``. ``_rocm_classify_unified_memory`` calls it discrete, so the
-    APU deferral never fires and amd-smi's 512 MiB carve-out would replace the
-    16 GiB pool torch reports."""
+    """A Phoenix iGPU without is_integrated is classed discrete, so the APU deferral never fires."""
 
     @pytest.fixture
     def phoenix(self, rocm, monkeypatch):
@@ -265,10 +211,8 @@ class TestAnApuTheClassifierMisses:
         assert LlamaCppBackend._get_gpu_memory_amd_smi() == [(0, 20480, 24576)]
 
     def test_a_device_torch_cannot_describe_fails_open(self, rocm, monkeypatch):
-        """``_rocm_total_memory_mib_by_physical_id`` omits a device whose properties
-        it cannot read, exactly like ``_rocm_arch_by_physical_id``. No evidence is
-        not evidence against, or an unreadable properties call would disable this
-        branch on every host."""
+        """A device torch cannot describe is omitted, so missing evidence must not count against the
+        branch."""
         monkeypatch.setattr(amd, "_run_amd_smi", _fake_amd_smi(_payload((0, 4096, 24576)), None))
         _hip_sees(monkeypatch, 1, {})
         assert LlamaCppBackend._get_gpu_memory_amd_smi() == [(0, 20480, 24576)]

@@ -2,21 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * `residentRuntimeMatchesConfig` across the accelerators Unsloth runs on, crossed with every
- * setting a remembered config can pin.
- *
- * The two failures are not symmetric. A wrong FALSE costs one reload, which is what
- * happened before #8893. A wrong TRUE leaves the user on a server invoked differently from
- * what they asked for, with the panel rolled back so nothing says so. Hence both directions
- * for every field rather than sampling.
- *
- * The accelerator axis is real even though no paths are compared, because the fields read
- * are the GPU ones: CUDA and ROCm report a placement pool and an offload mode, a CPU-only
- * host reports `manual` with zero layers, MLX reports none of them and a KV width instead.
- * "The status does not carry this field" must never read as agreement.
- *
- * The structural test at the bottom is the one that lasts: it fails when a field is added
- * to `PerModelConfig` without being classified here.
+ * A wrong TRUE silently runs a different server, so every field is tested both ways.
+ * The structural test fails when a PerModelConfig field is added unclassified.
  */
 
 import assert from "node:assert/strict";
@@ -30,21 +17,13 @@ const { residentRuntimeMatchesConfig: matchesWithStanding } = await import(
   "../src/features/chat/lib/resident-config-match.ts"
 );
 
-/**
- * What the applier resolves an unset field to. Four fields are not per-model, so leaving
- * them out of a config is not silence; the caller passes what `/load` would actually send.
- * These are the shipped defaults: speculation off, memory mode "auto", `GPU_LAYERS_AUTO`
- * and no CPU MoE offload.
- */
+/** Four fields are not per-model; unset resolves to the shipped standing defaults. */
 const STANDING = {
   speculativeType: null,
   gpuMemoryMode: "auto" as const,
   gpuLayers: -1,
   nCpuMoe: 0,
-  // Identity: the sweep is about the fields, not about a stale pick. The reconciler's own
-  // effect is covered in resident-config-match.test.ts.
   reconcileGpuIds: (ids: number[] | null) => ids,
-  // Auto resolves to 0 here; the resident-repick branch is exercised on its own below.
   resolveContextLength: (customContextLength: number | null) =>
     customContextLength ?? 0,
   parallelSlots: 1,
@@ -58,12 +37,11 @@ const residentRuntimeMatchesConfig = (
   config: Parameters<typeof matchesWithStanding>[1],
 ) => matchesWithStanding(status, config, STANDING);
 
-/** A config that pins nothing: what a model the user never configured carries. */
 const BLANK = {
   customContextLength: null,
   maxSeqLength: null,
   kvCacheDtype: null,
-  mlxKvBits: null,
+  mlxKvQuant: null,
   speculativeType: null,
   specDraftNMax: null,
   nParallel: null,
@@ -76,16 +54,13 @@ const BLANK = {
   chatTemplateOverride: null,
 };
 
-/** What `/api/inference/status` reports per host, measured against a running Unsloth rather
- * than copied from the type: a default CUDA load answers auto / -1 / 0 / null / false. */
+/** Measured against a running Unsloth: a default CUDA load reports auto / -1 / 0 / null / false. */
 const ACCELERATORS: Record<string, Record<string, unknown>> = {
   "nvidia-cuda": {
     gpu_memory_mode: "auto",
     gpu_layers: -1,
     n_cpu_moe: 0,
-    // A default load requests no particular GPU, so the echo is null. The set comparison
-    // on a real placement pool has its own test below; here a non-null pool would make
-    // BLANK disagree, since an unset pick resolves to Automatic rather than to "any".
+    // An unset pick resolves to Automatic, so a non-null pool would make BLANK disagree.
     requested_gpu_ids: null,
     tensor_parallel: false,
   },
@@ -93,15 +68,10 @@ const ACCELERATORS: Record<string, Record<string, unknown>> = {
     gpu_memory_mode: "auto",
     gpu_layers: -1,
     n_cpu_moe: 0,
-    // Left unrequested for the same reason as above; the ROCm-shaped pool of several
-    // physical indices, compared as a SET, has its own test below.
     requested_gpu_ids: null,
     tensor_parallel: false,
   },
-  // A host with no GPU still reports the invocation it was ASKED for, not what llama.cpp
-  // settled on: a default load sends Auto, so the echo is "auto" / -1 exactly as on a CUDA
-  // box, with no placement pool. A manual zero-layer load is a different thing and is
-  // covered on its own below, since an unset config resolves to Auto and so differs from it.
+  // A CPU host echoes the requested invocation, so a default load still reports auto / -1.
   "cpu-only": {
     gpu_memory_mode: "auto",
     gpu_layers: -1,
@@ -109,27 +79,24 @@ const ACCELERATORS: Record<string, Record<string, unknown>> = {
     requested_gpu_ids: null,
     tensor_parallel: false,
   },
-  // An MLX server records a KV width and none of the llama.cpp placement fields at all. A
-  // default load leaves the width unrequested; a pinned width is swept below like any other
-  // field, and is not part of the base for the same reason placement is not.
   "apple-mlx": {
-    mlx_kv_bits_requested: null,
+    mlx_kv_quant_requested: null,
   },
 };
 
-/** One field a remembered config can pin, and a value that is NOT what the status runs. */
 type FieldCase = {
   key: string;
   statusKey: string;
   same: unknown;
   different: unknown;
-  /**
-   * What must hold on both sides for the field to be live at all. The backend compares
-   * the offload knobs only under Manual, and the MoE count only with a layer pin beside
-   * it, so sweeping them under Auto would assert a comparison that does not happen.
-   */
+  /** The backend compares offload knobs only under Manual, MoE count only with a layer pin. */
   live?: { config: Record<string, unknown>; status: Record<string, unknown> };
+  wrap?: (value: unknown) => unknown;
 };
+
+const offloadRequest = (part: "ple" | "experts") => (requested: unknown) => ({
+  [part]: { applied: null, requested, reason: null },
+});
 
 const MANUAL_MODE = {
   config: { gpuMemoryMode: "manual" },
@@ -137,6 +104,12 @@ const MANUAL_MODE = {
 };
 
 const FIELDS: FieldCase[] = [
+  {
+    key: "engine",
+    statusKey: "engine",
+    same: "vllm",
+    different: "sglang",
+  },
   {
     key: "customContextLength",
     statusKey: "requested_context_length",
@@ -150,10 +123,10 @@ const FIELDS: FieldCase[] = [
     different: "f16",
   },
   {
-    key: "mlxKvBits",
-    statusKey: "mlx_kv_bits_requested",
-    same: 8,
-    different: 4,
+    key: "mlxKvQuant",
+    statusKey: "mlx_kv_quant_requested",
+    same: "8",
+    different: "tq-4",
   },
   {
     key: "speculativeType",
@@ -167,6 +140,7 @@ const FIELDS: FieldCase[] = [
     same: 16,
     different: 8,
   },
+  { key: "specDraftModel", statusKey: "spec_draft_model", same: "org/d", different: "org/e" },
   {
     key: "nParallel",
     statusKey: "requested_parallel_slots",
@@ -274,7 +248,34 @@ const FIELDS: FieldCase[] = [
     same: true,
     different: false,
   },
+  {
+    key: "mlxInt8Prefill",
+    statusKey: "mlx_int8_prefill_requested",
+    same: true,
+    different: false,
+  },
+  { key: "mlxPleOffload", statusKey: "mlx_offload", same: 0.5, different: "off", wrap: offloadRequest("ple") },
+  {
+    key: "mlxExpertOffload",
+    statusKey: "mlx_offload",
+    same: "off",
+    different: 0.25,
+    wrap: offloadRequest("experts"),
+  },
 ];
+
+test("an Auto offload adopts a load that asked for auto, whatever fraction it applied", () => {
+  const status = {
+    ...ACCELERATORS["apple-mlx"],
+    mlx_offload: {
+      ple: { applied: null, requested: null, reason: null },
+      experts: { applied: 0.5, requested: "auto" as const, reason: null },
+      disk_bytes: null,
+    },
+  };
+  assert.equal(residentRuntimeMatchesConfig(status, BLANK), true);
+  assert.equal(residentRuntimeMatchesConfig(status, { ...BLANK, mlxExpertOffload: 0.5 }), false);
+});
 
 for (const [accelerator, base] of Object.entries(ACCELERATORS)) {
   test(`[${accelerator}] a config pinning nothing adopts the resident load`, () => {
@@ -286,7 +287,7 @@ for (const [accelerator, base] of Object.entries(ACCELERATORS)) {
     test(`[${accelerator}] ${field.key} the resident load already runs is adopted`, () => {
       assert.equal(
         residentRuntimeMatchesConfig(
-          { ...base, ...field.live?.status, [field.statusKey]: field.same },
+          { ...base, ...field.live?.status, [field.statusKey]: (field.wrap ?? ((v) => v))(field.same) },
           { ...BLANK, ...field.live?.config, [field.key]: field.same },
         ),
         true,
@@ -296,7 +297,11 @@ for (const [accelerator, base] of Object.entries(ACCELERATORS)) {
     test(`[${accelerator}] ${field.key} the resident load does not run is a reload`, () => {
       assert.equal(
         residentRuntimeMatchesConfig(
-          { ...base, ...field.live?.status, [field.statusKey]: field.different },
+          {
+            ...base,
+            ...field.live?.status,
+            [field.statusKey]: (field.wrap ?? ((v) => v))(field.different),
+          },
           { ...BLANK, ...field.live?.config, [field.key]: field.same },
         ),
         false,
@@ -316,8 +321,7 @@ for (const [accelerator, base] of Object.entries(ACCELERATORS)) {
           ...field.live?.config,
           [field.key]: field.same,
         }),
-        // tensorParallel has no unset state: false is a real request for a layer split,
-        // and a status omitting the flag ran without one, so they agree.
+        // tensorParallel has no unset state: false agrees with a status omitting the flag.
         field.key === "tensorParallel" ? field.same === false : false,
       );
     });
@@ -325,8 +329,7 @@ for (const [accelerator, base] of Object.entries(ACCELERATORS)) {
 }
 
 test("placement compares as an order on a multi-GPU host, not as a set", () => {
-  // The picker's order is the order the backend pins, so the same cards in a
-  // different order are a different placement and the runner has to restart.
+  // Picker order is the order the backend pins, so a reorder must restart the runner.
   assert.equal(
     residentRuntimeMatchesConfig(
       { ...ACCELERATORS["amd-rocm"], requested_gpu_ids: [0, 1] },
@@ -351,9 +354,7 @@ test("placement compares as an order on a multi-GPU host, not as a set", () => {
 });
 
 test("automatic placement is a request of its own, not a wildcard", () => {
-  // The applier turns an absent or null selection into a null selection, and the load sends
-  // that as Automatic. Automatic is not "whatever is running": a server the user placed on
-  // four specific GPUs was invoked differently and has to be reloaded.
+  // Automatic is not "whatever is running": a server on chosen GPUs must reload.
   for (const ids of [null, undefined]) {
     assert.equal(
       residentRuntimeMatchesConfig(
@@ -373,8 +374,7 @@ test("automatic placement is a request of its own, not a wildcard", () => {
 });
 
 test("a CPU-only host distinguishes zero offloaded layers from automatic", () => {
-  // gpu_layers 0 under manual is "all on the CPU", -1 is "let llama.cpp size it": two
-  // different loads, and 0 must not read as absent.
+  // Under manual, gpu_layers 0 means all-CPU and -1 means auto, so 0 is not absent.
   assert.equal(
     residentRuntimeMatchesConfig(
       { ...ACCELERATORS["cpu-only"], gpu_memory_mode: "manual", gpu_layers: 0 },
@@ -382,8 +382,6 @@ test("a CPU-only host distinguishes zero offloaded layers from automatic", () =>
     ),
     true,
   );
-  // The other direction, which is the one the standing defaults buy: a config that pins
-  // neither field resolves to Auto and so does NOT adopt a manual zero-layer server.
   assert.equal(
     residentRuntimeMatchesConfig(
       { ...ACCELERATORS["cpu-only"], gpu_memory_mode: "manual", gpu_layers: 0 },
@@ -401,12 +399,8 @@ test("a CPU-only host distinguishes zero offloaded layers from automatic", () =>
 });
 
 test("a config stored by an older Unsloth does not throw and does not over-adopt", () => {
-  // Blobs written before a field existed lack the key. Optional ones express no opinion
-  // and adopt; a missing tensorParallel cannot be confirmed and reloads. Neither throws.
-  // Cast at the boundary on purpose: these come off localStorage, so the point is the
-  // shapes the current type says cannot occur.
+  // Old localStorage blobs lack keys: optional ones adopt, missing tensorParallel reloads.
   const legacyBlobs = [
-    // Pre-GPU-controls, pre-extra-args, pre-MLX.
     {
       customContextLength: null,
       maxSeqLength: null,
@@ -419,9 +413,7 @@ test("a config stored by an older Unsloth does not throw and does not over-adopt
       tensorParallel: false,
       chatTemplateOverride: null,
     },
-    // A blob so old it carries only what the very first version stored.
     { customContextLength: null, kvCacheDtype: null },
-    // Corrupt-but-parseable: the key is there with the wrong emptiness.
     { ...BLANK, selectedGpuIds: [] },
   ];
   for (const blob of legacyBlobs) {
@@ -437,7 +429,6 @@ test("a config stored by an older Unsloth does not throw and does not over-adopt
       ACCELERATORS["nvidia-cuda"],
       legacyBlobs[1] as PerModelConfig,
     ),
-    // tensorParallel absent vs status false: reloads, the direction that loses nothing.
     false,
   );
 });
@@ -448,15 +439,16 @@ test("an empty pinned pool is Automatic, not a demand for no GPUs", () => {
       { ...ACCELERATORS["nvidia-cuda"], requested_gpu_ids: [0, 1] },
       { ...BLANK, selectedGpuIds: [] },
     ),
-    // set() treats [] as pinned, so this reloads. Recorded, not endorsed: the panel
-    // writes null for Automatic.
+    // set() treats [] as pinned; recorded, not endorsed, since the panel writes null.
     false,
   );
 });
 
 test("every PerModelConfig field is either compared or deliberately excluded", () => {
   // A new setting not classified here is one an adopted pick would drop silently.
-  const source = readSrc("features/model-picker/model-config/per-model-config.ts");
+  const source = readSrc(
+    "features/model-picker/model-config/per-model-config.ts",
+  );
   const body = source.slice(
     source.indexOf("export interface PerModelConfig {"),
     source.indexOf("export const DEFAULT_PER_MODEL_CONFIG"),
@@ -470,17 +462,117 @@ test("every PerModelConfig field is either compared or deliberately excluded", (
   const excluded = new Set([
     // A client-side generation cap: no status echoes it, so it cannot force a reload.
     "maxSeqLength",
+    "enginePrecision",
+    "engineParallelism",
+    "engineKvCacheDtype",
+    "engineSeed",
+    "engineGpuMemoryUtilization",
+    // Compared ahead of the table, against the status's requested load_in_4bit.
+    "loadIn4bit",
     // Qualifies selectedGpuIds rather than adding a dimension of its own: it is read, as
     // the reconciler's namespace argument, but /status has no field to compare it against.
     "selectedGpuIndexKind",
+    // Compared through standing.splitRatio, which the caller seeds from it.
+    "tensorSplit",
   ]);
   const unclassified = [...declared].filter(
     (field) => !compared.has(field) && !excluded.has(field),
   );
   assert.deepEqual(unclassified, []);
-  // And the reverse, so a removed field leaves no dead check here.
   const stale = [...compared, ...excluded].filter(
     (field) => !declared.has(field),
   );
   assert.deepEqual(stale, []);
 });
+
+for (const engine of ["vllm", "sglang"] as const) {
+  test(`${engine}: GPU and context changes require reloading the resident engine`, () => {
+    const status = {
+      engine,
+      is_gguf: false,
+      requested_gpu_ids: [1],
+      gpu_ids: [1],
+      requested_context_length: 4096,
+    };
+    const config = {
+      ...BLANK,
+      engine,
+      selectedGpuIds: [1],
+      selectedGpuIndexKind: "physical" as const,
+      maxSeqLength: 4096,
+    };
+    assert.equal(residentRuntimeMatchesConfig(status, config), true);
+    assert.equal(
+      residentRuntimeMatchesConfig(status, { ...config, selectedGpuIds: [0] }),
+      false,
+    );
+    assert.equal(
+      residentRuntimeMatchesConfig(status, { ...config, maxSeqLength: 8192 }),
+      false,
+    );
+    assert.equal(
+      residentRuntimeMatchesConfig(status, { ...config, engine: "auto" }),
+      false,
+    );
+  });
+}
+
+for (const engine of ["vllm", "sglang"] as const) {
+  test(`${engine}: an unpicked GPU matches the backend's first visible GPU`, () => {
+    // Studio restricted to GPUs 2 and 3: the backend loads an unpicked engine on 2, not 0.
+    const status = { engine, is_gguf: false, requested_gpu_ids: [2], gpu_ids: [2] };
+    const config = { ...BLANK, engine };
+    const withDefault = (defaultEngineGpuIds: number[]) =>
+      matchesWithStanding(status, config, { ...STANDING, defaultEngineGpuIds });
+    assert.equal(withDefault([2]), true);
+    assert.equal(withDefault([0]), false);
+  });
+}
+
+for (const engine of ["vllm", "sglang"] as const) {
+  test(`${engine}: changing a tensor-parallel GPU group requires a reload`, () => {
+    const status = {
+      engine,
+      is_gguf: false,
+      gpu_ids: [1, 0],
+      requested_gpu_ids: [1, 0],
+      tensor_parallel: true,
+      requested_context_length: 4096,
+    };
+    const config = {
+      ...BLANK,
+      engine,
+      selectedGpuIds: [1, 0],
+      selectedGpuIndexKind: "physical" as const,
+      maxSeqLength: 4096,
+    };
+    assert.equal(residentRuntimeMatchesConfig(status, config), true);
+    for (const ids of [[1], [0], [0, 1]]) {
+      assert.equal(
+        residentRuntimeMatchesConfig(status, { ...config, selectedGpuIds: ids }),
+        false,
+      );
+    }
+  });
+}
+
+for (const engine of ["vllm", "sglang"] as const) {
+  test(`${engine}: precision changes require a reload`, () => {
+    const status = { engine, engine_precision: "int4" as const, gpu_ids: [0] };
+    const config = { ...BLANK, engine, selectedGpuIds: [0], enginePrecision: "int4" as const };
+    assert.equal(residentRuntimeMatchesConfig(status, config), true);
+    assert.equal(residentRuntimeMatchesConfig(status, { ...config, enginePrecision: "int8" }), false);
+  });
+}
+
+for (const engine of ["vllm", "sglang"] as const) {
+  for (const mode of ["tensor", "pipeline", "data"] as const) {
+    test(`${engine}: ${mode} mode is compared before reusing a resident model`, () => {
+      const status = { engine, engine_parallelism: mode, gpu_ids: [0, 1] };
+      const config = { ...BLANK, engine, engineParallelism: mode, selectedGpuIds: [0, 1] };
+      assert.equal(residentRuntimeMatchesConfig(status, config), true);
+      const other = mode === "tensor" ? "pipeline" : "tensor";
+      assert.equal(residentRuntimeMatchesConfig(status, { ...config, engineParallelism: other }), false);
+    });
+  }
+}

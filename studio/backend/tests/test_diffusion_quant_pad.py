@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the small-M activation padding (``diffusion_quant_pad.py``).
-
-Real torch, CPU only: the padding is a shape transform plus a slice, so a dense Linear proves
-every structural property (shape, pad-row content, state-dict transparency, attribute
-passthrough). The granularity gate is exercised against FAKE torchao weight layouts, so the
-tests pin the ATTRIBUTES the probe reads rather than needing torchao installed. One CUDA-gated
-test closes the loop on a genuinely int8-quantized Linear.
-"""
+"""Small-M activation padding: real CPU torch; the granularity gate reads fake torchao attributes."""
 
 from __future__ import annotations
 
@@ -23,11 +16,13 @@ from core.inference.diffusion_quant_pad import (  # noqa: E402
     DEFAULT_PAD_TO,
     INT_MM_MIN_M,
     PadToMinM,
+    ZeroRowSafeLinear,
     activation_granularity_is_per_row,
     is_quantized_linear,
     matching_linear_fqns,
     padding_is_bitwise_exact,
     wrap_small_m_linears,
+    wrap_zero_row_linears,
 )
 
 
@@ -40,13 +35,7 @@ class _RecordingLinear(nn.Linear):
 
 
 def _fake_quant_tensor_type(**class_attrs):
-    """A stand-in for a torchao weight subclass.
-
-    The marker the probe looks for is ``__tensor_flatten__``, which every torchao tensor subclass
-    defines. The granularity attributes are set on the TYPE rather than on the instance because
-    ``nn.Parameter(subclass_tensor)`` returns ``tensor.detach()`` -- a fresh Python object of the
-    same type -- so an instance attribute would not survive the assignment the real quantiser
-    makes either."""
+    """Fake torchao weight type; granularity is set on the class, as nn.Parameter loses instance attrs."""
 
     def __tensor_flatten__(self):  # pragma: no cover - presence is the whole point
         return ["qdata"], None
@@ -83,20 +72,10 @@ def _fake_quantized_linear(
     return lin
 
 
-# ── shape and value preservation ──────────────────────────────────────────────
-
-
 @pytest.mark.parametrize("m", [1, 5, 10, 16, 17, 19, 64])
 @pytest.mark.parametrize("lead", [(), (2,), (2, 3)])
 def test_padding_returns_the_unpadded_result(m, lead):
-    """The rows the caller asked for come back unchanged, at the caller's leading dims.
-
-    The reference is the same module without the wrapper, so any difference is the padding's
-    fault and nothing else's. Note the tolerance: this is a DENSE float Linear, where a taller
-    GEMM can pick a different BLAS path and reassociate the accumulation (torch routes a single
-    row through addmv and 32 rows through addmm). The exactness claim belongs to the int8 path,
-    where the accumulation is integer and therefore order-independent -- see
-    ``test_int8_padding_is_bitwise_exact_on_a_real_quantized_linear``."""
+    """Padded output must match the unpadded result; dense float tolerates BLAS reordering."""
     torch.manual_seed(0)
     inner = nn.Linear(8, 6)
     wrapped = PadToMinM(inner, min_m = INT_MM_MIN_M, pad_to = DEFAULT_PAD_TO)
@@ -124,10 +103,7 @@ def test_pad_rows_replicate_row_zero_rather_than_being_zeros():
 
 
 def test_every_small_activation_normalises_to_one_row_count():
-    """Below ``pad_to`` every activation reaches the GEMM at exactly ``pad_to`` rows, so one
-    inductor graph covers every prompt length in the range rather than one graph per length.
-    H3's seven eval prompts run at M = 10, 13, 13, 13, 14, 17, 19 -- which straddles the floor,
-    so padding only up to ``min_m`` would leave three distinct shapes behind."""
+    """Small activations pad to one row count, so one inductor graph covers every prompt length."""
     inner = _RecordingLinear(8, 6)
     wrapped = PadToMinM(inner, min_m = 17, pad_to = 32)
     for m in (1, 10, 13, 14, 16, 17, 19, 31):
@@ -182,9 +158,6 @@ def test_forward_holds_no_mutable_integer_state():
     assert before == int_attrs(wrapped) == {"min_m": 17, "pad_to": 32}
 
 
-# ── drop-in transparency ──────────────────────────────────────────────────────
-
-
 def test_attributes_pass_through_to_the_inner_linear():
     """diffusers' attention processors read ``to_q.weight.dtype`` and H3's blocks read
     ``context_embedder.weight``; without the passthrough the wrapper is a drop-in only until the
@@ -216,13 +189,9 @@ def test_state_dict_hides_the_wrapper_in_both_directions():
     assert sorted(wrapped_model.state_dict()) == sorted(plain.state_dict())
     assert "context_embedder.inner.weight" not in wrapped_model.state_dict()
 
-    # A checkpoint written from a wrapped tree loads into an unwrapped one, and the reverse.
     assert plain.load_state_dict(dict(wrapped_model.state_dict()), strict = True)
     assert wrapped_model.load_state_dict(dict(plain.state_dict()), strict = True)
     assert torch.equal(wrapped_model.context_embedder.weight, plain.context_embedder.weight)
-
-
-# ── the granularity gate ──────────────────────────────────────────────────────
 
 
 def test_activation_granularity_probe_reads_both_torchao_layouts():
@@ -247,7 +216,6 @@ def test_activation_granularity_probe_reads_both_torchao_layouts():
     assert activation_granularity_is_per_row(_v2("PerTensor")) is False
     assert activation_granularity_is_per_row(_v2("PerGroup")) is False
 
-    # A dense Linear is not quantized at all, so there is no activation granularity to report.
     assert activation_granularity_is_per_row(nn.Linear(8, 6)) is None
 
 
@@ -278,7 +246,7 @@ def test_wrap_skips_dense_and_already_wrapped_linears():
     assert isinstance(model.context_embedder, PadToMinM)
     assert wrap_small_m_linears(model, ["context_embedder"]) == ()
     assert not isinstance(model.context_embedder.inner, PadToMinM)
-    # The wrapper forwards `weight` to its inner Linear, so the gate cannot lean on that alone.
+    # the wrapper forwards `weight` to its inner Linear, so the gate cannot rely on it alone
     assert model.context_embedder.weight is model.context_embedder.inner.weight
     assert is_quantized_linear(model.context_embedder) is False
 
@@ -306,7 +274,84 @@ def test_is_quantized_linear_only_accepts_a_torchao_weight():
     assert is_quantized_linear(nn.LayerNorm(8)) is False
 
 
-# ── the real thing ────────────────────────────────────────────────────────────
+@pytest.mark.parametrize("bias", [True, False])
+@pytest.mark.parametrize("shape", [(1, 0, 8), (0, 8), (2, 0, 8)])
+def test_an_empty_activation_comes_back_at_the_projected_width(bias, shape):
+    inner = _RecordingLinear(8, 6, bias = bias).to(torch.bfloat16)
+    wrapped = ZeroRowSafeLinear(inner)
+    x = torch.zeros(*shape, dtype = torch.bfloat16)
+    with torch.no_grad():
+        got, want = wrapped(x), torch.nn.functional.linear(x, inner.weight, inner.bias)
+    assert got.shape == (*shape[:-1], 6) == want.shape
+    assert got.dtype == want.dtype == torch.bfloat16
+    assert torch.equal(got, want)
+    assert not hasattr(inner, "seen"), "the inner GEMM must not be called with an empty input"
+
+
+def test_the_guard_is_inert_on_a_non_empty_activation():
+    torch.manual_seed(0)
+    inner = _RecordingLinear(8, 6)
+    wrapped = ZeroRowSafeLinear(inner)
+    for shape in ((1, 8), (5, 8), (2, 7, 8)):
+        x = torch.randn(*shape)
+        with torch.no_grad():
+            assert torch.equal(wrapped(x), inner(x))
+        assert inner.seen.shape == x.shape
+
+
+def test_the_guard_passes_attributes_and_keys_through():
+    plain, guarded = _Tiny(), _Tiny()
+    guarded.context_embedder = ZeroRowSafeLinear(guarded.context_embedder)
+    assert guarded.context_embedder.in_features == 8
+    assert guarded.context_embedder.out_features == 6
+    assert guarded.context_embedder.weight is guarded.context_embedder.inner.weight
+    with pytest.raises(AttributeError):
+        guarded.context_embedder.definitely_not_a_linear_attribute
+
+    assert sorted(guarded.state_dict()) == sorted(plain.state_dict())
+    assert "context_embedder.inner.weight" not in guarded.state_dict()
+    assert plain.load_state_dict(dict(guarded.state_dict()), strict = True)
+    assert guarded.load_state_dict(dict(plain.state_dict()), strict = True)
+    assert torch.equal(guarded.context_embedder.weight, plain.context_embedder.weight)
+
+
+def test_wrapping_for_zero_rows_is_idempotent_and_skips_dense_linears():
+    model = _Tiny()
+    assert wrap_zero_row_linears(model, ["context_embedder"]) == ()
+    assert isinstance(model.context_embedder, nn.Linear)
+
+    model.context_embedder = _fake_quantized_linear()
+    assert wrap_zero_row_linears(model, ["context_embedder"]) == ("context_embedder",)
+    assert isinstance(model.context_embedder, ZeroRowSafeLinear)
+    assert wrap_zero_row_linears(model, ["context_embedder"]) == ()
+    assert not isinstance(model.context_embedder.inner, ZeroRowSafeLinear)
+
+
+def test_the_two_wrappers_never_stack():
+    model = _Tiny()
+    model.context_embedder = _fake_quantized_linear()
+    assert wrap_small_m_linears(model, ["context_embedder"]) == ("context_embedder",)
+    assert wrap_zero_row_linears(model, ["context_embedder"]) == ()
+    assert isinstance(model.context_embedder, PadToMinM)
+    assert model.context_embedder(torch.randn(0, 8)).shape == (0, 6)
+
+
+def test_the_guard_list_is_read_with_the_same_substring_rule():
+    class _Projection(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear_1 = _fake_quantized_linear(8, 8)
+            self.linear_2 = _fake_quantized_linear(8, 6)
+
+        def forward(self, x):
+            return self.linear_2(self.linear_1(x))
+
+    model = _Tiny()
+    model.image_embedder = _Projection()
+    fqns = matching_linear_fqns(model, ("image_embedder",))
+    assert fqns == ("image_embedder.linear_1", "image_embedder.linear_2")
+    assert wrap_zero_row_linears(model, fqns) == fqns
+    assert model.image_embedder(torch.zeros(1, 0, 8)).shape == (1, 0, 6)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "int8 dynamic quant needs CUDA")
@@ -324,3 +369,68 @@ def test_int8_padding_is_bitwise_exact_on_a_real_quantized_linear():
     assert activation_granularity_is_per_row(lin) is True
     for m in (1, 10, 13, 16, 17, 19, 64):
         assert padding_is_bitwise_exact(lin, m), f"padding changed the kept rows at M = {m}"
+
+
+def test_a_dynamic_row_count_compiles_one_graph_for_short_and_long_captions():
+    from torch._dynamo.utils import counters
+
+    torch.manual_seed(0)
+    wrapped = PadToMinM(_RecordingLinear(64, 48), min_m = 17, pad_to = 32).eval()
+    torch._dynamo.reset()
+    counters.clear()
+    compiled = torch.compile(wrapped, backend = "eager", dynamic = None)
+    for m in (19, 21, 540, 7, 32):
+        x = torch.randn(1, m, 64)
+        torch._dynamo.mark_dynamic(x, 1)
+        with torch.no_grad():
+            got = compiled(x)
+            want = wrapped(x)
+        assert got.shape == (1, m, 48)
+        assert torch.equal(got, want), m
+    if tuple(int(v) for v in torch.__version__.split(".")[:2]) >= (2, 8):
+        assert counters["stats"]["unique_graphs"] == 1
+    torch._dynamo.reset()
+
+
+@pytest.mark.parametrize("dynamic", [None, False])
+def test_a_static_row_count_still_compiles_fullgraph(dynamic):
+    torch.manual_seed(0)
+    wrapped = PadToMinM(nn.Linear(64, 48), min_m = 17, pad_to = 32).eval()
+    torch._dynamo.reset()
+    compiled = torch.compile(wrapped, backend = "eager", dynamic = dynamic, fullgraph = True)
+    for m in (1, 19, 32, 540):
+        x = torch.randn(2, m, 64)
+        with torch.no_grad():
+            assert torch.equal(compiled(x), wrapped(x)), m
+    torch._dynamo.reset()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "nvfp4 dynamic quant needs Blackwell")
+def test_the_zero_row_guard_on_a_real_nvfp4_linear():
+    """A real nvfp4 Linear survives a zero-row call once wrapped."""
+    pytest.importorskip("torchao")
+    if torch.cuda.get_device_capability() < (10, 0):
+        pytest.skip("nvfp4 needs sm_100+")
+    from torchao.quantization import quantize_
+
+    from core.inference.diffusion_transformer_quant import _make_quant_config, make_filter_fn
+
+    lin = nn.Linear(1152, 3072, dtype = torch.bfloat16).cuda().eval()
+    quantize_(lin, _make_quant_config("nvfp4"), filter_fn = make_filter_fn(0))
+    assert is_quantized_linear(lin)
+
+    empty = torch.zeros(1, 0, 1152, dtype = torch.bfloat16, device = "cuda")
+    with pytest.raises(RuntimeError, match = "numel"):
+        lin(empty)
+
+    guarded = ZeroRowSafeLinear(lin)
+    out = guarded(empty)
+    assert out.shape == (1, 0, 3072) and out.dtype == torch.bfloat16
+
+    torch.manual_seed(0)
+    for m in (1, 5, 7):
+        x = torch.randn(1, m, 1152, dtype = torch.bfloat16, device = "cuda")
+        with torch.no_grad():
+            got = guarded(x)
+            assert torch.equal(got, lin(x))
+        assert torch.isfinite(got).all()

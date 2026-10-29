@@ -1,17 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""#11143: a Fedora box whose AMD iGPU drives the desktop and whose discrete Radeon RX 9060
-XT (RDNA4, gfx1200) does the work kept being installed for the iGPU and kept coming back on
-ROCm after the user had configured Vulkan.
-
-Two defects, both in studio/install_llama_prebuilt.py:
-
-  * ``_pick_rocm_gfx_target`` ended ``return _tokens[0]``, so the arch that decides the
-    bundle for the whole host was the one that happened to enumerate first -- the APU.
-  * ``persisted_marker_backend_request`` erased a request the install could not honour to
-    "auto", so the Vulkan choice was destroyed permanently and every later update
-    re-detected, which on an AMD host means ROCm.
-"""
+"""_pick_rocm_gfx_target took the first arch listed, and a Vulkan request was erased to auto."""
 
 from __future__ import annotations
 
@@ -41,7 +30,8 @@ def _rocminfo(*arches: str) -> str:
     )
 
 
-@pytest.fixture
+# Autouse: _pick_rocm_gfx_target reads visibility masks set on GPU hosts.
+@pytest.fixture(autouse = True)
 def unmasked(monkeypatch):
     for name in _VISIBILITY_ENV:
         monkeypatch.delenv(name, raising = False)
@@ -77,8 +67,42 @@ def test_an_all_integrated_host_keeps_its_own_arch(unmasked):
 def test_gfx906_is_never_the_repick(unmasked):
     """install.sh excludes it because naming it on a mixed host strands BOTH cards."""
     assert ILP._pick_rocm_gfx_target(_rocminfo("gfx1036", "gfx906", "gfx1200")) == "gfx1200"
-    # Nothing else to move to: the iGPU stays, rather than gfx906 being chosen.
     assert ILP._pick_rocm_gfx_target(_rocminfo("gfx1036", "gfx906")) == "gfx1036"
+
+
+def test_rocminfo_output_is_not_masked_by_rocr_twice(unmasked):
+    """rocminfo already applied ROCR_VISIBLE_DEVICES=1,0: its survivors are R9700, iGPU."""
+    out = _rocminfo("gfx1201", "gfx1036")
+    unmasked.setenv("ROCR_VISIBLE_DEVICES", "1,0")
+    assert ILP._pick_rocm_gfx_target(out, rocr_filtered = True) == "gfx1201"
+    unmasked.setenv("HIP_VISIBLE_DEVICES", "1")
+    assert ILP._pick_rocm_gfx_target(out, rocr_filtered = True) == "gfx1036"
+    unmasked.delenv("HIP_VISIBLE_DEVICES")
+    assert ILP._pick_rocm_gfx_target(out) == "gfx1036"
+
+
+def test_rocr_over_filtered_output_is_still_an_explicit_choice(unmasked):
+    """ROCR=0,1 leaves the iGPU first; it was chosen, so the discrete repick must not undo it."""
+    out = _rocminfo("gfx1036", "gfx1200")
+    unmasked.setenv("ROCR_VISIBLE_DEVICES", "0,1")
+    assert ILP._pick_rocm_gfx_target(out, rocr_filtered = True) == "gfx1036"
+    unmasked.setenv("ROCR_VISIBLE_DEVICES", "-1")
+    assert ILP._pick_rocm_gfx_target(out, rocr_filtered = True) is None
+
+
+def test_the_rocminfo_probe_says_its_output_is_rocr_filtered():
+    import ast
+
+    tree = ast.parse(Path(ILP.__file__).read_text(encoding = "utf-8"))
+    fn = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "detect_host"
+    )
+    calls = [
+        c
+        for c in ast.walk(fn)
+        if isinstance(c, ast.Call) and getattr(c.func, "id", "") == "_pick_rocm_gfx_target"
+    ]
+    assert any(k.arg == "rocr_filtered" for c in calls for k in c.keywords)
 
 
 @pytest.mark.parametrize("env", _VISIBILITY_ENV)
@@ -191,34 +215,12 @@ def test_only_a_flagged_marker_may_disagree_with_its_own_backend():
 
 
 def test_an_unserved_preferred_arch_source_builds_rather_than_using_the_igpus_bundle():
-    """The trade-off the preference accepts, pinned so changing it is deliberate.
-
-    Among the shadowing arches only gfx1103 is served (by the gfx110X family), so a
-    gfx1103 APU beside a discrete card this release does not build -- RDNA1 gfx1010 to
-    gfx1012 -- now resolves to the discrete arch, finds no bundle, and source builds,
-    where before the preference it silently ran on the iGPU.
-
-    That is the intended direction, not a regression to paper over: running the iGPU
-    while a discrete card sits idle IS the complaint in #11143, and
-    test_rdna1_unsupported_message_8529 records that CPU is the correct outcome on
-    RDNA1 rather than a working-looking install on the wrong device. A fallback to the
-    iGPU's bundle was tried and reverted: it selected a bundle for a device the user
-    may have masked off, and left _kept_install_covers_host rejecting the very bundle
-    it had just installed, because that check reads only host.rocm_gfx_target.
-    """
+    """An unserved discrete arch must source build, since the iGPU's bundle may be for a masked device."""
     assert ILP._pick_rocm_gfx_target(_rocminfo("gfx1103", "gfx1010")) == "gfx1010"
 
 
 def test_the_fast_path_keeps_the_callers_forwarded_rocm_detection():
-    """An unsatisfied recorded request re-derives the route as "auto" inside
-    existing_install_current_without_plan. It has to re-derive it from the SAME
-    forwarded detection, or on every Linux AMD host -- setup.sh always forwards
-    --rocm-gfx -- the rebuilt host profile cannot match the recorded one, the fast path
-    fails, and each update pays the full listing plus re-validation.
-
-    Asserted on the call site because the cost is a missing keyword argument, and a
-    behavioural test would have to stand up a whole install tree to observe it.
-    """
+    """Re-derived route must reuse the forwarded ROCm detection, or AMD hosts always miss the fast path."""
     import ast
     import inspect
 
@@ -274,20 +276,12 @@ def test_a_satisfied_marker_without_the_flag_is_left_alone():
 
 
 def test_a_single_build_platform_never_records_an_unfulfillable_request():
-    """macOS ships one universal Metal bundle, and `metal` is kept out of
-    REQUESTABLE_BACKENDS for that reason, so `cpu` or `vulkan` there can never become the
-    installed backend. Preserving the request left Settings with a stored selection the
-    picker has no option for -- resolve_backends_payload offers only "auto" on macOS -- and
-    an Apply that always answered backend_unavailable. Record detection instead, and keep
-    preservation for the multi-build platforms it exists for.
-    """
+    """On single-build platforms record auto, since a kept request has no picker option."""
     mac = _choice("macos-arm64")
     for request in ("cpu", "vulkan", "rocm", "cuda"):
         assert ILP.persisted_marker_backend_request(request, mac) == "auto"
         assert ILP.marker_backend_request_was_satisfied(request, mac) is True
-    # The reason it is safe: the landed backend is not one a user can ask for.
     assert ILP.backend_for_install_kind("macos-arm64") == "metal"
     assert "metal" not in ILP.REQUESTABLE_BACKENDS
-    # Unchanged where a later release COULD serve the request.
     assert ILP.persisted_marker_backend_request("vulkan", _choice("linux-rocm")) == "vulkan"
     assert ILP.marker_backend_request_was_satisfied("vulkan", _choice("linux-rocm")) is False

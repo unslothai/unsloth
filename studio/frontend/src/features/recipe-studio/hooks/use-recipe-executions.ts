@@ -2,7 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { usePlatformStore } from "@/config/env";
-import { getInferenceStatus, loadModel, validateModel } from "@/features/chat";
+import {
+  getInferenceStatus,
+  loadModel,
+  offloadCountsFrom,
+  offloadWarning,
+  validateModel,
+} from "@/features/chat";
 import { unpinnedLoadContext } from "@/features/chat/presets/preset-policy";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import { isOllamaModelId } from "@/features/hub/lib/model-identity";
@@ -75,10 +81,8 @@ type LocalModelSelection = {
   aliases: string[];
   requestedContextLength?: number | null;
   isMlx?: boolean;
-  /** What that load ASKED for, captured the same way as the context request: a restore
-   *  replays it, while a recipe's own target runs at the defaults. Requested rather than
-   *  effective, because the effective pair folds in a LLAMA_ARG_THINK_BUDGET* no request can
-   *  express, and comparing against that would reload on every run and never converge. */
+  /** Requested, not effective, budget: the effective one folds in LLAMA_ARG_THINK_BUDGET*,
+   *  which no request can express, so comparing against it would reload forever. */
   reasoningBudget?: number;
   reasoningBudgetMessage?: string;
 };
@@ -247,7 +251,7 @@ async function localSelectionMatchesResident(input: {
       model_path: input.target,
       // biome-ignore lint/style/useNamingConvention: api schema
       hf_token: null,
-      // Only `resident` is read; these are what /validate assumes when a caller sends none.
+      // Only `resident` is read; these are the /validate defaults.
       // biome-ignore lint/style/useNamingConvention: api schema
       max_seq_length: 0,
       // biome-ignore lint/style/useNamingConvention: api schema
@@ -261,7 +265,7 @@ async function localSelectionMatchesResident(input: {
   }
 }
 
-/** A context request, read only where it pins: llama.cpp echoes n_ctx while Auto, MLX does not. */
+/** llama.cpp echoes n_ctx while Auto and MLX does not, so only a pinning request counts. */
 function contextIntent(
   value: number | null | undefined,
   isMlx: boolean | null | undefined,
@@ -291,7 +295,6 @@ export async function isLocalModelAlreadyLoaded(
     ) {
       return false;
     }
-    // A different context intent is a different load: asking for nothing inherits no pin.
     const residentIsMlx = status.is_mlx ?? false;
     if (
       contextIntent(requestedContextLength, residentIsMlx) !==
@@ -299,9 +302,7 @@ export async function isLocalModelAlreadyLoaded(
     ) {
       return false;
     }
-    // Same rule for reasoning: a recipe asked for the defaults, so Chat's budget would
-    // otherwise change what the run produces. Both sides are REQUESTED values, so an
-    // inherited environment default reads as equal and cannot loop.
+    // A recipe asks for default reasoning; both sides are requested values so this cannot loop.
     return (
       (reasoningBudget ?? -1) === (status.requested_reasoning_budget ?? -1) &&
       (reasoningBudgetMessage ?? "") ===
@@ -335,10 +336,8 @@ async function loadLocalModelSelection(
   });
   try {
     const isGguf = GGUF_MODEL_PATTERN.test(target) || Boolean(ggufVariant);
-    // A recipe's own target loads the way an unpinned chat model does; restoring the
-    // model it displaced replays what that model's own load asked for.
     const platform = usePlatformStore.getState();
-    await loadModel({
+    const loadResp = await loadModel({
       // biome-ignore lint/style/useNamingConvention: api schema
       model_path: target,
       // biome-ignore lint/style/useNamingConvention: api schema
@@ -372,15 +371,18 @@ async function loadLocalModelSelection(
       // biome-ignore lint/style/useNamingConvention: api schema
       tensor_parallel: false,
     });
+    const offloadNotice = offloadWarning(offloadCountsFrom(loadResp));
     const successOptions = {
-      description: undefined,
-      duration: 2000,
+      description: offloadNotice?.description,
+      duration: offloadNotice ? 8000 : 2000,
       icon: undefined,
     };
+    const title = `Loaded ${modelLabel}${offloadNotice?.titleSuffix ?? ""}`;
+    const showToast = offloadNotice ? toast.warning : toast.success;
     if (loadToastDismissed) {
-      toast.success(`Loaded ${modelLabel}`, successOptions);
+      showToast(title, successOptions);
     } else {
-      toast.success(`Loaded ${modelLabel}`, { ...successOptions, id: toastId });
+      showToast(title, { ...successOptions, id: toastId });
     }
     return null;
   } catch (error) {
@@ -691,9 +693,7 @@ export function useRecipeExecutions({
 
     resetForRecipe();
 
-    // Seed previewRows from the recipe's original run.rows (the loaded JSON, not
-    // the rebuilt payload, which hardcodes 5). Templates ship a suggested preview
-    // size (e.g. GitHub Support Bot: 10); honor it so users don't see a surprise 5.
+    // Seed previewRows from the loaded JSON's run.rows; the rebuilt payload hardcodes 5.
     if (
       typeof initialRunRows === "number" &&
       Number.isFinite(initialRunRows) &&
@@ -920,9 +920,7 @@ export function useRecipeExecutions({
         return false;
       }
 
-      // Flip to the Runs pane before validation starts. Validation can re-crawl
-      // the seed (seconds for the github_repo reader); runExecution() later no-ops
-      // this callback if the view has already been flipped.
+      // Flip to Runs before validation, which can re-crawl the seed for seconds.
       onExecutionStart?.();
 
       const normalizedRows = sanitizeExecutionRows(rows, kind);
@@ -938,10 +936,8 @@ export function useRecipeExecutions({
         return false;
       }
 
-      // Recipe and Chat share one singleton local inference backend. This direct load is a
-      // point-in-time handoff to job creation, not a lease: if Chat swaps models after this
-      // succeeds, the backend runs against current state. A future generation token should be
-      // validated across this load and the `/jobs` loaded-model gate.
+      // Recipe and Chat share one local backend: this load is a handoff, not a lease, so a later Chat
+      // model swap can still change what the job runs against.
       const restorePrevious = await prepareLocalModelForExecution(payload);
       if (restorePrevious === false) {
         return false;

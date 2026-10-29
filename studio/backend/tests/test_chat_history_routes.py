@@ -49,6 +49,39 @@ def test_async_delete_handlers_dispatch_sqlite_to_the_threadpool():
         assert "run_in_threadpool" in inspect.getsource(handler)
 
 
+def test_message_removal_paths_sweep_chat_originals(monkeypatch):
+    """A removed or rewritten message can drop the last reference to a kept original, so every
+    path sweeps."""
+    for handler in (
+        chat_history.clear_history,
+        chat_history.delete_project,
+        chat_history.delete_threads,
+    ):
+        assert "chat_originals.sweep" in inspect.getsource(handler)
+
+    sweeps = []
+    monkeypatch.setattr(chat_history, "get_chat_thread", lambda thread_id: {"id": thread_id})
+    monkeypatch.setattr(chat_history, "sync_chat_messages", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        chat_history.chat_originals, "sweep", lambda force = False: sweeps.append(force)
+    )
+    for prune, deleted in ((False, []), (True, []), (False, ["msg-2"])):
+        chat_history.replace_thread_messages(
+            "thread-1",
+            chat_history.ChatMessageSyncRequest(
+                messages = [_message("msg-1", "thread-1")],
+                pruneMissing = prune,
+                deletedMessageIds = deleted,
+            ),
+            current_subject = "test-user",
+        )
+    monkeypatch.setattr(chat_history, "upsert_chat_message", lambda message, **kwargs: message)
+    chat_history.save_thread_message(
+        "thread-1", "msg-1", _message("msg-1", "thread-1"), current_subject = "test-user"
+    )
+    assert sweeps == [False] * 4
+
+
 def test_replace_thread_messages_rejects_body_thread_mismatch(monkeypatch):
     called = False
 
@@ -264,11 +297,7 @@ def test_clear_history_fences_pending_thread_ids(monkeypatch):
 
 
 def test_clear_history_reaps_search_thumbnails_with_a_body(monkeypatch):
-    """DELETE /api/chat is clear-all either way, and the frontend always sends a body.
-
-    Gating the thumbnail reap on `payload is None` meant it never ran, so "Clear all
-    chats" left every cached thumbnail — which says what was searched for — on disk.
-    """
+    """Reap search thumbnails on every clear; gating the reap on payload is None meant it never ran."""
     from core.inference import search_images
 
     reaped: list[bool] = []
@@ -341,11 +370,6 @@ def test_project_delete_cancels_research_before_workspace_cleanup(monkeypatch):
     assert cancelled == ["run-1"]
 
 
-# ---------------------------------------------------------------------------
-# /api/chat/settings
-# ---------------------------------------------------------------------------
-
-
 def test_chat_settings_payload_accepts_fast_mode_presets():
     payload = chat_history.ChatSettingsPayload.model_validate(
         {
@@ -393,7 +417,6 @@ def test_chat_settings_payload_carries_per_model_params():
     assert dumped["inferenceParamsByModel"] == {
         "unsloth/Qwen3.5-9B-GGUF": {"temperature": 0.2, "maxTokens": 4096},
     }
-    # Nothing else is implied by the patch, so the merge cannot clobber it.
     assert "inferenceParams" not in dumped
 
 
@@ -465,8 +488,7 @@ def test_chat_settings_payload_accepts_preset_load_config():
 def test_chat_settings_payload_accepts_preset_batch_sizes():
     from pydantic import ValidationError
 
-    # extra="forbid" 400s the whole settings write, and the normalizer emits both keys on
-    # every preset (null included), so a preset that only pinned nParallel would stop saving.
+    # extra='forbid' 400s the whole write, and the normalizer emits both keys on every preset.
     payload = chat_history.ChatSettingsPayload.model_validate(
         {
             "customPresets": [
@@ -482,7 +504,6 @@ def test_chat_settings_payload_accepts_preset_batch_sizes():
     assert dumped["customPresets"][0]["loadConfig"]["nBatch"] == 4096
     assert dumped["customPresets"][0]["loadConfig"]["nUbatch"] == 1024
 
-    # The unset shape the normalizer sends alongside an untouched knob.
     chat_history.ChatPresetLoadConfig.model_validate(
         {"nParallel": 4, "nBatch": None, "nUbatch": None}
     )
@@ -492,12 +513,7 @@ def test_chat_settings_payload_accepts_preset_batch_sizes():
 
 
 def test_chat_settings_payload_accepts_preset_server_tuning_and_vision():
-    # Same forbid trap as nBatch (#9879): normalizePresetLoadConfig always emits
-    # loadMode / specDraftCacheDtype / ctxCheckpoints / cacheRam / disableVision
-    # (null/false included). Without them on ChatPresetLoadConfig, saving a named
-    # system-prompt preset that carries any loadConfig 400s the whole customPresets
-    # write; the settings retry then drops customPresets and only the activePreset
-    # name survives -- which is why the toast fires and the entry vanishes on restart.
+    # normalizePresetLoadConfig always emits these keys; extra='forbid' would 400 the save.
     payload = chat_history.ChatSettingsPayload.model_validate(
         {
             "customPresets": [
@@ -527,7 +543,6 @@ def test_chat_settings_payload_accepts_preset_server_tuning_and_vision():
     assert load["disableVision"] is False
     assert dumped["activePreset"] == "Test"
 
-    # A saved non-default shape must round-trip too.
     chat_history.ChatPresetLoadConfig.model_validate(
         {
             "loadMode": "mmap+mlock",
@@ -549,9 +564,7 @@ def test_chat_settings_payload_accepts_preset_server_tuning_and_vision():
 
 
 def test_chat_preset_load_config_covers_frontend_persisted_fields():
-    # Drift guard: every key normalizePresetLoadConfig / PresetLoadConfig persists
-    # must exist on ChatPresetLoadConfig, else extra="forbid" 400s the preset save
-    # the next time the UI grows a load knob (#9879, same shape as #5862).
+    # Drift guard: every persisted preset load key must exist on ChatPresetLoadConfig (forbid).
     preset_ts = os.path.join(
         _backend,
         "..",
@@ -575,40 +588,38 @@ def test_chat_preset_load_config_covers_frontend_persisted_fields():
     assert persisted, "no PresetLoadConfig keys parsed"
 
     backend = set(chat_history.ChatPresetLoadConfig.model_fields)
+    backend -= {"mlxKvBits"}
     assert (
         persisted == backend
     ), f"schema drift: frontend-only {persisted - backend}, backend-only {backend - persisted}"
 
 
-def test_chat_settings_payload_accepts_mlx_kv_bits():
+def test_chat_settings_payload_accepts_mlx_kv_quant():
     from pydantic import ValidationError
 
-    # extra="forbid" rejects the whole settings write on an undeclared key.
     payload = chat_history.ChatSettingsPayload.model_validate(
         {
             "customPresets": [
                 {
                     "name": "MLX preset",
                     "params": {"temperature": 0.7},
-                    "loadConfig": {"mlxKvBits": 8},
+                    "loadConfig": {"mlxKvQuant": "tq-3.5"},
                 },
             ],
         }
     )
     dumped = payload.model_dump(exclude_unset = True)
-    assert dumped["customPresets"][0]["loadConfig"]["mlxKvBits"] == 8
+    assert dumped["customPresets"][0]["loadConfig"]["mlxKvQuant"] == "tq-3.5"
 
+    chat_history.ChatPresetLoadConfig.model_validate({"mlxKvQuant": "auto"})
     for width in (4, None):
         chat_history.ChatPresetLoadConfig.model_validate({"mlxKvBits": width})
-    # Only the widths MLX supports.
     with pytest.raises(ValidationError):
         chat_history.ChatPresetLoadConfig.model_validate({"mlxKvBits": 7})
 
 
 def test_chat_settings_payload_accepts_nudge_tool_calls():
-    # extra="forbid" 400s PUT /api/chat/settings on unknown keys, so the
-    # frontend's persisted nudgeToolCalls needs a payload field (like
-    # autoHealToolCalls).
+    # extra='forbid' 400s unknown keys, so persisted nudgeToolCalls needs a payload field.
     payload = chat_history.ChatSettingsPayload.model_validate(
         {"autoHealToolCalls": True, "nudgeToolCalls": False}
     )
@@ -617,9 +628,7 @@ def test_chat_settings_payload_accepts_nudge_tool_calls():
 
 
 def test_chat_inference_settings_covers_frontend_persisted_fields():
-    # Drift guard: every InferenceParams field the UI persists (all but
-    # checkpoint) must exist on ChatInferenceSettings, else extra="forbid"
-    # 400s PUT /api/chat/settings on the next added field (issue #5862).
+    # Drift guard: UI-persisted InferenceParams fields must exist on ChatInferenceSettings.
     runtime_ts = os.path.join(
         _backend,
         "..",
@@ -634,19 +643,21 @@ def test_chat_inference_settings_covers_frontend_persisted_fields():
         pytest.skip("frontend runtime.ts not present")
 
     with open(runtime_ts, encoding = "utf-8") as fh:
-        block = re.search(r"interface InferenceParams \{(.*?)\n\}", fh.read(), re.DOTALL)
+        source = fh.read()
+    block = re.search(r"interface InferenceParams \{(.*?)\n\}", source, re.DOTALL)
     assert block, "InferenceParams interface not found in runtime.ts"
-    persisted = set(re.findall(r"^\s*(\w+)\??:", block.group(1), re.M)) - {"checkpoint"}
+    omitted = re.search(
+        r"PersistedInferenceParams = Partial<\s*Omit<\s*InferenceParams,([^>]*)>", source
+    )
+    assert omitted, "PersistedInferenceParams Omit<> not found in runtime.ts"
+    persisted = set(re.findall(r"^\s*(\w+)\??:", block.group(1), re.M)) - set(
+        re.findall(r'"(\w+)"', omitted.group(1))
+    )
 
     backend = set(chat_history.ChatInferenceSettings.model_fields)
     assert (
         persisted == backend
     ), f"schema drift: frontend-only {persisted - backend}, backend-only {backend - persisted}"
-
-
-# ---------------------------------------------------------------------------
-# /api/chat/import-ledger
-# ---------------------------------------------------------------------------
 
 
 def test_get_import_ledger_round_trips_through_storage(monkeypatch):
@@ -670,7 +681,6 @@ def test_record_import_ledger_returns_accepted_and_inserted(monkeypatch):
 
     def fake_upsert(thread_ids):
         captured.append(list(thread_ids))
-        # Pretend two of the three were already in the ledger.
         return (len(thread_ids), max(0, len(thread_ids) - 2))
 
     monkeypatch.setattr(chat_history, "upsert_chat_legacy_imports", fake_upsert)
@@ -692,11 +702,6 @@ def test_record_import_ledger_rejects_oversize_payload():
         chat_history.ChatImportLedgerRecordRequest(
             threadIds = [f"id-{i}" for i in range(10_001)],
         )
-
-
-# ---------------------------------------------------------------------------
-# /api/chat/threads/{id}/fork
-# ---------------------------------------------------------------------------
 
 
 def test_fork_thread_404_when_source_missing(monkeypatch):
@@ -794,11 +799,7 @@ def test_fork_thread_refuses_before_it_resolves_the_tip(monkeypatch):
 
 
 def test_fork_thread_409_while_the_chat_is_generating(monkeypatch):
-    """A fork taken mid-generation ends at a prompt with no answer, or a half-written reply.
-
-    The client checks too, but another tab can start a generation between its snapshot and
-    this request, so the refusal has to live inside the request that forks.
-    """
+    """Refuse forking a generating chat in the request itself; the client check can race another tab."""
     import threading
 
     from state import active_generations
@@ -838,7 +839,6 @@ def test_fork_thread_allows_a_fork_of_another_generating_chat(monkeypatch):
                 ),
                 current_subject = "test-user",
             )
-    # Past the generation gate, refused later for the missing branch message.
     assert exc.value.status_code == 404
 
 
@@ -859,7 +859,7 @@ def test_fork_thread_happy_path(monkeypatch):
     forked = {
         **source,
         "id": "new",
-        "title": "fork · Original",
+        "title": "Original (1)",
         "createdAt": 2,
         "forkedFromThreadId": "src",
         "forkedFromMessageId": "m1",
@@ -901,7 +901,7 @@ def test_fork_thread_happy_path(monkeypatch):
         current_subject = "test-user",
     )
     assert response.thread.id == "new"
-    assert response.thread.title == "fork · Original"
+    assert response.thread.title == "Original (1)"
     assert response.thread.forkedFromThreadId == "src"
     assert response.thread.forkedFromMessageId == "m1"
     assert len(response.messages) == 1
@@ -940,7 +940,7 @@ def test_fork_thread_warns_when_parent_had_container(monkeypatch):
         lambda **_: {
             **source,
             "id": "new",
-            "title": "fork · T",
+            "title": "T (1)",
             "forkedFromThreadId": "src",
             "forkedFromMessageId": "m1",
             "openaiCodeExecContainerId": None,
@@ -992,16 +992,7 @@ def _clear_thread_row(thread_id: str) -> dict:
 
 
 def test_a_clear_does_not_reap_an_image_registered_while_it_was_running(tmp_path, monkeypatch):
-    """The reap is global; the delete it accompanies is not.
-
-    Between the transaction committing and the reap there is archive and sandbox cleanup
-    that can run for seconds. A chat created in that window survives the delete, so
-    wiping the whole registry afterwards took ITS thumbnails and left its cards 404ing
-    out of thumbnail_bytes. Independent of the replay case: this one is a first clear.
-
-    The snapshot is taken before the slow work, so an id registered during it is not the
-    clear's to reap.
-    """
+    """Reap only the thumbnails snapshotted before the slow work, since the registry is global."""
     from core.inference import search_images
     from storage import studio_db
 
@@ -1030,8 +1021,6 @@ def test_a_clear_does_not_reap_an_image_registered_while_it_was_running(tmp_path
     late: dict[str, str] = {}
 
     async def remove_sandboxes(_thread_ids, _delete_files):
-        # Stands in for the concurrent client: another tab registers an image for a chat
-        # created after the transaction, while this slow cleanup is still running.
         entries = search_images.register_images(
             [
                 {
@@ -1072,15 +1061,7 @@ def test_a_clear_does_not_reap_an_image_registered_while_it_was_running(tmp_path
 
 
 def test_replayed_clear_keeps_the_thumbnails_of_a_chat_it_did_not_delete(tmp_path, monkeypatch):
-    """A retry under a recorded operationId replays, so it must not reap the global cache.
-
-    The frontend retries DELETE /chat once under the SAME operationId after its 30s
-    abort, and Starlette does not cancel the first handler when the client hangs up, so
-    the retry lands behind a transaction that already committed. That transaction
-    deliberately leaves chats created since alone -- but the thumbnail registry is
-    global, so reaping it again took the images of a chat this call is not deleting and
-    left its cards 404ing.
-    """
+    """A replayed clear must not reap the global thumbnail registry again, or it takes others' images."""
     from core.inference import search_images
     from storage import studio_db
 
@@ -1113,7 +1094,6 @@ def test_replayed_clear_keeps_the_thumbnails_of_a_chat_it_did_not_delete(tmp_pat
     assert clear()["deletedThreadIds"] == ["before-clear"]
     assert reaped == ["reaped"], "the first clear has to reap: the thumbnails say what was searched"
 
-    # The image-bearing chat the delayed retry must not touch.
     studio_db.upsert_chat_thread(_clear_thread_row("after-clear"))
 
     replay = clear()
@@ -1123,18 +1103,8 @@ def test_replayed_clear_keeps_the_thumbnails_of_a_chat_it_did_not_delete(tmp_pat
 
 
 def test_the_replay_bit_comes_from_the_clear_transaction(monkeypatch, tmp_path):
-    """Two concurrent retries of one operationId: exactly one of them performed the clear.
-
-    Establishing `replayed` with a read taken before the transaction is a guess. Both
-    requests carrying the same operationId see the same unrecorded ledger, so both
-    conclude they cleared; BEGIN IMMEDIATE then serialises them and the loser silently
-    replays while still believing otherwise. It would go on to reap the thumbnail
-    registry -- which is global, and so is not covered by the ids the transaction
-    deliberately kept -- taking the images of chats created since the winner committed.
-    This is the retry the operationId exists to make safe: the frontend reissues the
-    same id after its 30s abort, and Starlette does not cancel the handler the client
-    hung up on, so both really do run at once.
-    """
+    """Of concurrent retries of one operationId, only the winner clears; replay comes from the
+    transaction."""
     from core.inference import search_images
     from storage import studio_db
 
@@ -1162,8 +1132,7 @@ def test_the_replay_bit_comes_from_the_clear_transaction(monkeypatch, tmp_path):
 
     studio_db.upsert_chat_thread(_clear_thread_row("before-clear"))
 
-    # Released together, so both are past the point the old code decided `replayed` at
-    # before either transaction commits -- which is the whole race.
+    # Both threads must pass the point that decides `replayed` before either commits.
     start = threading.Barrier(2)
     failures: list[BaseException] = []
 
@@ -1195,12 +1164,7 @@ def test_the_replay_bit_comes_from_the_clear_transaction(monkeypatch, tmp_path):
 
 
 def test_clear_history_does_not_read_the_replay_ledger_outside_the_transaction():
-    """The structural half of the race above, which no scheduling can hide.
-
-    `replayed` has to be whatever the transaction did, so it is returned by the call
-    that does the clear. A separate ledger read reintroduces the window even if the
-    threads in the test above happen to serialise.
-    """
+    """The replay flag must come from the clear transaction's own return, not a separate ledger read."""
     source = inspect.getsource(chat_history.clear_history)
     assert "clear_chat_history_with_replay_status" in source
     assert (
@@ -1209,23 +1173,7 @@ def test_clear_history_does_not_read_the_replay_ledger_outside_the_transaction()
 
 
 def test_a_chat_created_in_the_gap_after_the_clear_keeps_its_images(monkeypatch, tmp_path):
-    """The snapshot has to be taken at the clear boundary, not one await later.
-
-    `await run_in_threadpool(...)` is a yield point. With the clear and the snapshot in
-    separate calls, the event loop can run another request in between: a chat created there
-    survives the transaction (the clear only deletes what it saw), but its images register
-    before the snapshot, so the reap that follows takes them and its cards 404 out of
-    thumbnail_bytes. One threadpool call for both removes that gap.
-
-    It does not make the two atomic -- another worker THREAD can still land between the
-    commit and the read, and closing that would mean holding the image registry's lock across
-    the whole transaction, stalling every search in the process for the length of a clear.
-    This pins the gap that was worth removing.
-
-    The interleave is forced rather than raced: `run_in_threadpool` is wrapped so the other
-    tab registers its image immediately after the FIRST hop returns, which is exactly the
-    window in question.
-    """
+    """Clear and snapshot in one threadpool call; an await between them lets new images register first."""
     from core.inference import search_images
     from storage import studio_db
 
@@ -1247,8 +1195,6 @@ def test_a_chat_created_in_the_gap_after_the_clear_keeps_its_images(monkeypatch,
     monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda _request, _ids: None)
     monkeypatch.setattr(chat_history, "_remove_thread_rag_data", lambda _ids, cutoff = None: None)
 
-    # The other tab's image, registered in the gap. Straight into the registry: this is about
-    # WHEN the id becomes visible to the snapshot, not about how it got there.
     late_image_id = "beefbeefbeef"
     hops = {"n": 0}
     # The route imports it inside the handler, so the patch has to land on the module it
@@ -1307,18 +1253,7 @@ def test_the_clear_and_its_image_snapshot_share_one_threadpool_hop():
 
 
 def test_a_replay_finishes_a_reap_the_original_clear_died_before_running(monkeypatch, tmp_path):
-    """A crash between the clear's commit and its thumbnail reap must not lose the reap.
-
-    The reap runs after the transaction, behind seconds of archive and sandbox cleanup. Killed
-    in that window the operation is already recorded, so the retry the frontend sends replays
-    -- and a replay deliberately reaps nothing, because the chats created since the original
-    clear are not its to take. The thumbnails of every deleted chat then stay on disk for good,
-    saying what was searched for, which is the worse of the two failures this path weighs.
-
-    The ledger now carries the original clear's own snapshot and whether the reap finished, so
-    the replay can complete exactly that set. The crash is simulated by making the first reap
-    raise, which is the same state a SIGKILL leaves behind: committed, recorded, unreaped.
-    """
+    """Ledger keeps the clear's snapshot and reap state, so a replay after a crash finishes the reap."""
     from core.inference import search_images
     from storage import studio_db
 
@@ -1369,7 +1304,6 @@ def test_a_replay_finishes_a_reap_the_original_clear_died_before_running(monkeyp
         clear()
     assert reaps == [{doomed_image_id}], "the first attempt got as far as its own reap"
 
-    # A chat started after the crash, whose images the replay must NOT take.
     studio_db.upsert_chat_thread(_clear_thread_row("after-crash"))
     later_image_id = "ddddeeeeffff"
     search_images._registry[later_image_id] = {
@@ -1387,7 +1321,6 @@ def test_a_replay_finishes_a_reap_the_original_clear_died_before_running(monkeyp
     }, "bounded to the original clear's own snapshot, so a chat created since keeps its images"
     assert later_image_id not in finished
 
-    # And a further retry has nothing left to do.
     clear()
     assert len(reaps) == 2, "the finished reap must be recorded, not repeated on every retry"
 
@@ -1455,12 +1388,7 @@ def _conflict_kind(exc_info) -> Optional[str]:
     ],
 )
 def test_the_two_conflicts_are_distinguishable_on_the_wire(monkeypatch, error, kind):
-    """Both are 409, and they mean opposite things to the client.
-
-    A protected message is the server refusing an edit it owns, so the autosave stops. A
-    thread collision is an ordinary failure the caller has to see; answering both the same
-    way let the frontend swallow a collision as success and lose the message.
-    """
+    """The two 409s must differ on the wire, or the frontend swallows a thread collision as success."""
     monkeypatch.setattr(chat_history, "get_chat_thread", lambda _thread_id: {"id": "t1"})
 
     def reject(*_args, **_kwargs):
@@ -1498,3 +1426,90 @@ def test_compare_and_set_rejects_a_non_finite_number_renderably(monkeypatch):
 
     assert response.status_code == 400
     assert "NaN" not in response.text
+
+
+def test_fork_route_numbers_the_title_and_reports_the_boundary(tmp_path, monkeypatch):
+    """The whole path, real storage: the name loses the prefix and the divider gets its anchor."""
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
+
+    studio_db.upsert_chat_thread(
+        {"id": "src", "title": "Research notes", "modelType": "base", "createdAt": 1}
+    )
+    studio_db.sync_chat_messages(
+        "src",
+        [
+            {
+                "id": f"m{i}",
+                "threadId": "src",
+                "parentId": None if i == 1 else f"m{i - 1}",
+                "role": "user",
+                "content": [{"type": "text", "text": f"m{i}"}],
+                "createdAt": i,
+            }
+            for i in (1, 2)
+        ],
+    )
+
+    titles = []
+    for i in range(2):
+        response = chat_history.fork_thread(
+            thread_id = "src",
+            payload = chat_history.ChatForkRequest(newThreadId = f"fork-{i}", createdAt = 10 + i),
+            current_subject = "test-user",
+        )
+        titles.append(response.thread.title)
+
+    assert titles == ["Research notes (1)", "Research notes (2)"]
+    assert not any(t.startswith("fork") for t in titles)
+
+    forked = chat_history.fork_thread(
+        thread_id = "src",
+        payload = chat_history.ChatForkRequest(newThreadId = "fork-x", createdAt = 20),
+        current_subject = "test-user",
+    )
+    assert forked.thread.title == "Research notes (3)"
+    assert forked.thread.forkBoundaryMessageId == forked.messages[-1].id
+    assert forked.thread.forkBoundaryMessageId not in {"m1", "m2"}
+
+
+def test_fork_title_comes_from_the_row_not_the_route_s_earlier_read(tmp_path, monkeypatch):
+    """A rename landing between the route's read and the write lock must not name the fork."""
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
+
+    studio_db.upsert_chat_thread(
+        {"id": "src", "title": "Renamed", "modelType": "base", "createdAt": 1}
+    )
+    studio_db.sync_chat_messages(
+        "src",
+        [
+            {
+                "id": "m1",
+                "threadId": "src",
+                "parentId": None,
+                "role": "user",
+                "content": [{"type": "text", "text": "hi"}],
+                "createdAt": 1,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        chat_history,
+        "get_chat_thread",
+        lambda _id: {"id": "src", "title": "Stale name", "modelType": "base", "createdAt": 1},
+    )
+
+    response = chat_history.fork_thread(
+        thread_id = "src",
+        payload = chat_history.ChatForkRequest(newThreadId = "fork-1", createdAt = 2),
+        current_subject = "test-user",
+    )
+    assert response.thread.title == "Renamed (1)"
+    assert "Stale" not in response.thread.title

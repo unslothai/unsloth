@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Min P / Repetition Penalty / Top K must reach a self-hosted OpenAI-compatible server.
-
-The panel offered all three and persisted them, but ``stream_chat_completion`` built only
-``temperature`` / ``top_p`` / ``presence_penalty`` / ``max_tokens``, so the sliders moved
-and nothing changed.
-
-They stay opt-in: the schema defaults (20 / 0.01 / 1.0) are non-None for the local path, so
-forwarding unconditionally would start sending sampling to providers that never got any.
-"""
+"""Min P, repetition penalty and top K forward only when set; local schema defaults are non-None."""
 
 from __future__ import annotations
 
@@ -98,7 +90,7 @@ def test_llama_server_gets_repeat_penalty_not_repetition_penalty():
 
 
 def test_a_zero_value_is_forwarded_rather_than_read_as_unset():
-    # 0 means "disabled" here, so a truthiness gate would restore the server's default.
+    # 0 means "disabled", so a truthiness gate would restore the server default
     body = _capture_body("vllm", top_k = 0, min_p = 0.0)
     assert body["top_k"] == 0
     assert body["min_p"] == 0.0
@@ -117,7 +109,7 @@ def test_the_schema_defaults_are_not_none_so_the_route_cannot_test_for_none():
         min_p = 0.0,
         repetition_penalty = 1.0,
     )
-    # Both equal a default, so only model_fields_set can tell them from an omission.
+    # both equal a default, so only model_fields_set tells them from an omission
     assert {"min_p", "repetition_penalty"} <= asked.model_fields_set
 
 
@@ -150,7 +142,7 @@ def test_the_proxy_hands_the_client_explicit_values_not_schema_defaults():
 
 @pytest.mark.parametrize("provider_type", ["ollama", "custom"])
 def test_the_registry_strips_the_three_for_providers_that_cannot_take_them(provider_type):
-    # Ollama ignores them; a gateway behind a Custom base URL rejects the whole turn.
+    # Ollama ignores them; a gateway behind a Custom base URL rejects the whole turn
     body = _capture_body(
         provider_type,
         temperature = 0.31,
@@ -164,3 +156,24 @@ def test_the_registry_strips_the_three_for_providers_that_cannot_take_them(provi
     assert "repetition_penalty" not in body
     assert body["temperature"] == 0.31
     assert body["presence_penalty"] == 0.11
+
+
+@pytest.mark.parametrize("provider", ["llama_cpp", "vllm"])
+@pytest.mark.parametrize("value", [True, False, None])
+def test_llama_preserve_thinking_template_option(provider, value):
+    body = _capture_body(provider, preserve_thinking = value)
+    if value is None:
+        assert "chat_template_kwargs" not in body
+    else:
+        assert body["chat_template_kwargs"] == {"preserve_thinking": value}
+
+
+def test_llama_preserve_thinking_keeps_enable_thinking():
+    body = _capture_body("llama_cpp", preserve_thinking = True, enable_thinking = False)
+    assert body["chat_template_kwargs"] == {"preserve_thinking": True, "enable_thinking": False}
+
+
+@pytest.mark.parametrize("provider", ["custom", "ollama", "openrouter"])
+def test_preserve_thinking_does_not_leak_to_other_providers(provider):
+    body = _capture_body(provider, preserve_thinking = True)
+    assert "preserve_thinking" not in body.get("chat_template_kwargs", {})

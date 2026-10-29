@@ -1,19 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# scripts/uninstall.sh must remove the prebuilt siblings of ~/.unsloth/studio,
-# then prune ~/.unsloth itself.
-#
-# Each prebuilt serializes on <parent>/.<name>.install.lock (prebuilt_core.py
-# install_lock_path), so llama.cpp, node and whisper.cpp each leave one behind.
-# A stray lock is a zero-byte file that looks harmless, but the final
-# `rmdir "$HOME/.unsloth"` refuses a non-empty directory, so one missed lock
-# keeps the whole tree on disk. whisper.cpp only installs when a prebuilt
-# matching the pinned llama.cpp build exists, so a live install often skips it
-# and never exercises that path; the fixture below always creates it.
-#
-# The uninstaller runs for real against a fixture HOME, so this asserts the
-# removal OUTCOME rather than the presence of a line in the script.
+# uninstall.sh must remove the prebuilt siblings and their .install.lock files, since one stray
+# lock makes the final `rmdir ~/.unsloth` fail. Runs the real uninstaller on a fixture HOME.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -21,12 +10,7 @@ UNINSTALL_SH="$SCRIPT_DIR/../../scripts/uninstall.sh"
 PASS=0
 FAIL=0
 
-# This suite runs the REAL uninstaller, and overriding HOME does not contain it
-# on WSL: the body detects WSL from /proc/version and then reaches host state
-# outside the fixture -- powershell.exe deletes Windows-side "Unsloth Studio*.lnk"
-# shortcuts and the shared unsloth.ico (uninstall.sh WSL branch), the interop-off
-# fallback scans /mnt/{c,d,e}/Users, and `sudo rm -f /etc/profile.d/unsloth-rocm-wsl.sh`
-# touches the system. Skip there, exactly like tests/sh/test_uninstall_arg_guard.sh.
+# Skip on WSL: the real uninstaller reaches host state outside the fixture HOME there.
 if grep -qi microsoft /proc/version 2>/dev/null; then
     echo "  SKIP: WSL -- the uninstall body reaches Windows-side state outside the fixture"
     exit 0
@@ -35,8 +19,12 @@ fi
 _TMP_ROOT=$(mktemp -d)
 trap 'rm -rf "$_TMP_ROOT"' EXIT
 
-# Isolate every environment-controlled removal path.
 unset UNSLOTH_STUDIO_HOME STUDIO_HOME UNSLOTH_UNINSTALL_ROCM
+# audio.cpp's link farm sits beside the HF hub cache these name; the default is under HOME.
+unset HF_HUB_CACHE HUGGINGFACE_HUB_CACHE HF_HOME XDG_CACHE_HOME
+TMPDIR="$_TMP_ROOT/tmp"
+export TMPDIR
+mkdir -p "$TMPDIR"
 XDG_RUNTIME_DIR="$_TMP_ROOT/run"
 export XDG_RUNTIME_DIR
 mkdir -p "$XDG_RUNTIME_DIR"
@@ -57,15 +45,18 @@ assert_kept() {
     fi
 }
 
-# A default-mode install plus every sibling artifact the prebuilt installers
-# can leave under ~/.unsloth. Explicit mktemp template: BSD mktemp with no
-# template implies -t and would land outside _TMP_ROOT on macOS.
+# Explicit mktemp template: BSD mktemp without one implies -t and lands outside _TMP_ROOT.
 make_home() {
     FIXTURE_HOME=$(mktemp -d "$_TMP_ROOT/home.XXXXXX")
     mkdir -p "$FIXTURE_HOME/.unsloth/studio/unsloth_studio/bin" \
              "$FIXTURE_HOME/.unsloth/llama.cpp/build/bin" \
              "$FIXTURE_HOME/.unsloth/node/bin" \
              "$FIXTURE_HOME/.unsloth/whisper.cpp/build/bin" \
+             "$FIXTURE_HOME/.unsloth/audio.cpp" \
+             "$FIXTURE_HOME/.cache/huggingface/hub/models--audio-cpp--audio.cpp-gguf" \
+             "$FIXTURE_HOME/.cache/huggingface/unsloth-audiocpp-links/kokoro" \
+             "$TMPDIR/unsloth-audiocpp-home-$(id -u)/.config" \
+             "$TMPDIR/unsloth-audiocpp-home-not-this-user" \
              "$FIXTURE_HOME/.unsloth/.cache" \
              "$FIXTURE_HOME/.unsloth/.staging" \
              "$FIXTURE_HOME/.local/share/unsloth" \
@@ -75,11 +66,16 @@ make_home() {
     : > "$FIXTURE_HOME/.unsloth/llama.cpp/build/bin/llama-server"
     : > "$FIXTURE_HOME/.unsloth/node/bin/node"
     : > "$FIXTURE_HOME/.unsloth/whisper.cpp/build/bin/whisper-server"
+    : > "$FIXTURE_HOME/.unsloth/audio.cpp/audiocpp_server"
+    : > "$FIXTURE_HOME/.unsloth/audio.cpp/.unsloth-studio-owned"
+    : > "$FIXTURE_HOME/.cache/huggingface/hub/models--audio-cpp--audio.cpp-gguf/model.gguf"
+    : > "$FIXTURE_HOME/.cache/huggingface/unsloth-audiocpp-links/kokoro/model.gguf"
     : > "$FIXTURE_HOME/.unsloth/.llama.cpp.install.lock"
     : > "$FIXTURE_HOME/.unsloth/.node.install.lock"
     : > "$FIXTURE_HOME/.unsloth/.whisper.cpp.install.lock"
-    # Taking over an abandoned lock renames it rather than deleting it
-    # (install_node_prebuilt.py), so these accumulate across interrupted runs.
+    : > "$FIXTURE_HOME/.unsloth/.audio.cpp.install.lock"
+    : > "$FIXTURE_HOME/.unsloth/.audio.cpp.install.lock.stale.4242"
+    # Abandoned locks are renamed, not deleted, so they accumulate across interrupted runs.
     : > "$FIXTURE_HOME/.unsloth/.node.install.lock.stale.12345"
     : > "$FIXTURE_HOME/.unsloth/.llama.cpp.install.lock.stale.6789"
     ln -s "$FIXTURE_HOME/.unsloth/studio/unsloth_studio/bin/unsloth" \
@@ -96,11 +92,18 @@ assert_gone "studio install dir"        "$FIXTURE_HOME/.unsloth/studio"
 assert_gone "llama.cpp prebuilt"        "$FIXTURE_HOME/.unsloth/llama.cpp"
 assert_gone "node runtime"              "$FIXTURE_HOME/.unsloth/node"
 assert_gone "whisper.cpp prebuilt"      "$FIXTURE_HOME/.unsloth/whisper.cpp"
-assert_gone "prebuilt cache"            "$FIXTURE_HOME/.unsloth/.cache"
+assert_gone "audio.cpp prebuilt"        "$FIXTURE_HOME/.unsloth/audio.cpp"
+assert_gone "prebuilt cache"           "$FIXTURE_HOME/.unsloth/.cache"
 assert_gone "staging dir"               "$FIXTURE_HOME/.unsloth/.staging"
 assert_gone "llama.cpp install lock"    "$FIXTURE_HOME/.unsloth/.llama.cpp.install.lock"
 assert_gone "node install lock"         "$FIXTURE_HOME/.unsloth/.node.install.lock"
 assert_gone "whisper.cpp install lock"  "$FIXTURE_HOME/.unsloth/.whisper.cpp.install.lock"
+assert_gone "audio.cpp install lock"    "$FIXTURE_HOME/.unsloth/.audio.cpp.install.lock"
+assert_gone "stale audio.cpp lock"      "$FIXTURE_HOME/.unsloth/.audio.cpp.install.lock.stale.4242"
+assert_gone "audio.cpp model link farm" "$FIXTURE_HOME/.cache/huggingface/unsloth-audiocpp-links"
+assert_kept "the HF cache itself stays" "$FIXTURE_HOME/.cache/huggingface/hub/models--audio-cpp--audio.cpp-gguf/model.gguf"
+assert_gone "audio.cpp scratch home"    "$TMPDIR/unsloth-audiocpp-home-$(id -u)"
+assert_kept "another user's is kept"    "$TMPDIR/unsloth-audiocpp-home-not-this-user"
 assert_gone "stale node lock"           "$FIXTURE_HOME/.unsloth/.node.install.lock.stale.12345"
 assert_gone "stale llama.cpp lock"      "$FIXTURE_HOME/.unsloth/.llama.cpp.install.lock.stale.6789"
 assert_gone "~/.unsloth is pruned"      "$FIXTURE_HOME/.unsloth"
@@ -122,6 +125,16 @@ assert_kept "a user file survives"             "$FIXTURE_HOME/.unsloth/notes.txt
 assert_kept "~/.unsloth kept for user content" "$FIXTURE_HOME/.unsloth"
 assert_gone "artifacts still cleared"          "$FIXTURE_HOME/.unsloth/whisper.cpp"
 assert_gone "locks still cleared"              "$FIXTURE_HOME/.unsloth/.node.install.lock"
+
+echo "=== an unmarked ~/.unsloth/audio.cpp is the user's own build ==="
+
+make_home
+rm -f "$FIXTURE_HOME/.unsloth/audio.cpp/.unsloth-studio-owned"
+HOME="$FIXTURE_HOME" sh "$UNINSTALL_SH" > "$_TMP_ROOT/out4.log" 2>&1 || {
+    echo "  FAIL: uninstall exited $?"; FAIL=$((FAIL + 1)); cat "$_TMP_ROOT/out4.log"; }
+
+assert_kept "an unmarked audio.cpp build survives" "$FIXTURE_HOME/.unsloth/audio.cpp/audiocpp_server"
+assert_gone "marked siblings still go"             "$FIXTURE_HOME/.unsloth/whisper.cpp"
 
 echo "=== a missing ~/.unsloth is a clean no-op ==="
 

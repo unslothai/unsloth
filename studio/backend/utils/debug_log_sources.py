@@ -83,16 +83,7 @@ def candidate_roots() -> list[Path]:
 
 
 def _identity(path) -> str:
-    """One comparable spelling of a path, for containment and for dedup.
-
-    Two Windows quirks. realpath is called separately for the directory and for
-    each entry, and ntpath.realpath decides PER CALL whether to keep the \\\\?\\
-    extended-length prefix, so the directory can come back as C:\\... and the
-    file as \\\\?\\C:\\..., which pathlib reads as two different DRIVES:
-    containment fails and the whole family is silently dropped. And normcase
-    folds case (identity on POSIX), so a case-insensitive volume cannot yield
-    one file twice under two spellings.
-    """
+    """Windows realpath keeps the extended-length prefix only sometimes, so one drive can look like two."""
     text = os.path.normcase(str(path))
     for prefix in ("\\\\?\\unc\\", "\\\\?\\UNC\\", "\\\\?\\"):
         if text.startswith(prefix):
@@ -190,6 +181,30 @@ def resolve_source_id(source_id: str) -> Optional[Path]:
     for path in _family_files(family):
         if _digest(str(path)) == digest:
             return path
+    return None
+
+
+def source_id_for_path(
+    raw: Optional[str], sources: Optional[list[LogSource]] = None
+) -> Optional[str]:
+    """The opaque id of the source a WRITER's own spelling of a path names, if any."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    wanted = set()
+    for expand in (False, True):
+        try:
+            spelling = Path(raw.strip())
+            wanted.add(_identity(os.path.realpath(spelling.expanduser() if expand else spelling)))
+        except (OSError, ValueError, RuntimeError):
+            pass
+    if not wanted:
+        return None
+    for source in list_sources() if sources is None else sources:
+        try:
+            if _identity(os.path.realpath(source.realpath)) in wanted:
+                return source.id
+        except (OSError, ValueError):
+            continue
     return None
 
 

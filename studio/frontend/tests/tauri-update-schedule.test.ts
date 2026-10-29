@@ -28,9 +28,8 @@ interface HookHarnessOptions {
   failCheckAt?: number;
   noUpdateAt?: number;
   tauri?: boolean;
-  /** Whether `start_backend_update` resolves; the shell steps only run if it does. */
   backendUpdate?: "completes" | "fails";
-  /** One entry per `desktopUpdateBundleStatus` poll; the last one repeats. */
+  updateConfirmed?: boolean;
   bundleStates?: BundleState[];
 }
 
@@ -239,6 +238,7 @@ function hookHarness(
     noUpdateAt,
     tauri = true,
     backendUpdate = "fails",
+    updateConfirmed = true,
     bundleStates = [{ version: null, downloaded: false, downloading: false }],
   }: HookHarnessOptions = {},
 ) {
@@ -251,11 +251,11 @@ function hookHarness(
   let checks = 0;
   let polls = 0;
   let relaunches = 0;
+  let backendUpdates = 0;
   const events = new Map<string, Set<(event: { payload: unknown }) => void>>();
   const emit = (name: string, payload?: unknown) => {
     for (const callback of events.get(name) ?? []) callback({ payload });
   };
-  // What the hook does with the download it is only watching, not running.
   const download: {
     attached: string[];
     released: number;
@@ -322,8 +322,9 @@ function hookHarness(
           };
         }
         if (command === "desktop_update_cleanup_armed") return true;
+        if (command === "confirm_backend_update") return updateConfirmed;
         if (command === "start_backend_update") {
-          // The command itself decides the backend step, rather than a stub that happens to throw.
+          backendUpdates += 1;
           if (backendUpdate === "fails")
             throw new Error("backend update failed");
           queueMicrotask(() => emit("update-complete"));
@@ -365,6 +366,7 @@ function hookHarness(
     polls: () => polls,
     progressUpdates: host.progressUpdates,
     relaunches: () => relaunches,
+    backendUpdates: () => backendUpdates,
     statusUpdates: host.statusUpdates,
   };
 }
@@ -448,7 +450,6 @@ test("scheduled checks leave a failed install in its error state", async (t) => 
   await settle();
   assert.equal(hook.statusUpdates.at(-1), "available");
 
-  // start_backend_update itself refuses, which is the failure the classic path reports.
   await hook.controller.installUpdate();
   await settle();
   assert.equal(hook.statusUpdates.at(-1), "error");
@@ -461,10 +462,20 @@ test("scheduled checks leave a failed install in its error state", async (t) => 
   assert.equal(hook.statusUpdates.at(-1), "error");
 });
 
+test("keeping training at the update prompt keeps the update on offer", async (t) => {
+  const hook = hookHarness(t, { updateConfirmed: false });
+  hook.browser.fireTimeouts(STARTUP_DELAY_MS);
+  await settle();
+
+  await hook.controller.installUpdate();
+  await settle();
+  assert.equal(hook.backendUpdates(), 0);
+  assert.deepEqual(hook.statusUpdates, ["checking", "available"]);
+});
+
 test("a bundle download the update did not start reports its progress", async (t) => {
   const hook = hookHarness(t, {
     backendUpdate: "completes",
-    // A webview reload left a native download running, and a second one would be refused.
     bundleStates: [
       { version: "2.0.0", downloaded: false, downloading: true },
       { version: "2.0.0", downloaded: false, downloading: true },
@@ -498,7 +509,6 @@ test("a bundle download the update did not start reports its progress", async (t
 test("waiting out a bundle download the update did not start is bounded", async (t) => {
   const hook = hookHarness(t, {
     backendUpdate: "completes",
-    // Stuck: the flag never clears, so without the bound the update waits forever.
     bundleStates: [{ version: "2.0.0", downloaded: false, downloading: true }],
   });
   hook.browser.fireTimeouts(STARTUP_DELAY_MS);
@@ -513,7 +523,6 @@ test("waiting out a bundle download the update did not start is bounded", async 
   await settle();
   await installing;
 
-  // Handed back to the real download, which is what surfaces the failure.
   assert.equal(hook.download.started, 1);
   assert.equal(hook.download.released, 1);
 });

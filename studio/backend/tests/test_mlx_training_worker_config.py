@@ -3,6 +3,7 @@
 import ast
 import importlib.util
 import inspect
+import os
 import sys
 import textwrap
 import types
@@ -12,8 +13,10 @@ import pytest
 
 
 def _load_worker_module():
+    worker_path = Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py"
     stub_names = (
-        "structlog",
+        "core.training",
+        "core.training.dataset_bounds",
         "loggers",
         "utils",
         "utils.child_stdio",
@@ -23,24 +26,34 @@ def _load_worker_module():
         "utils.training_runs",
         "utils.wheel_utils",
         "utils.training_runs",
+        # Imported for real against the stubs above, so dropped again afterwards.
+        "utils.kernel_install",
+        "utils.ssm_runtime",
     )
     previous_modules = {name: sys.modules.get(name) for name in stub_names}
 
     try:
-        sys.modules["structlog"] = types.ModuleType("structlog")
+        core_training = types.ModuleType("core.training")
+        core_training.__path__ = [str(worker_path.parent)]
+        sys.modules["core.training"] = core_training
 
         loggers = types.ModuleType("loggers")
         loggers.get_logger = lambda *_args, **_kwargs: None
         sys.modules["loggers"] = loggers
 
         utils = types.ModuleType("utils")
-        # An empty __path__ shadows the real package and breaks the worker's own
-        # imports; only the stubs below replace it.
+        # Keep the real __path__: an empty one shadows the package and breaks the worker's imports.
         utils.__path__ = [str(Path(__file__).resolve().parents[1] / "utils")]
         sys.modules["utils"] = utils
 
         child_stdio = types.ModuleType("utils.child_stdio")
-        child_stdio.utf8_child_env = lambda env = None: dict(env or {})
+
+        def utf8_child_env(env = None):
+            child = dict(os.environ if env is None else env)
+            child["PYTHONIOENCODING"] = "utf-8"
+            return child
+
+        child_stdio.utf8_child_env = utf8_child_env
         sys.modules["utils.child_stdio"] = child_stdio
 
         hardware = types.ModuleType("utils.hardware")
@@ -51,9 +64,7 @@ def _load_worker_module():
         hf_dataset_options.hf_dataset_split_instruction_names = lambda *_args, **_kwargs: ()
         sys.modules["utils.hf_dataset_options"] = hf_dataset_options
 
-        # worker.py calls this at import time. Without the stub the module only loads when
-        # some other test happened to import the real utils.native_tls first, so this file
-        # passed in a full run and failed on its own.
+        # worker.py calls this at import time; without the stub this file fails when run alone.
         native_tls = types.ModuleType("utils.native_tls")
         native_tls.activate_native_tls = lambda *_args, **_kwargs: None
         sys.modules["utils.native_tls"] = native_tls
@@ -67,13 +78,30 @@ def _load_worker_module():
             "direct_wheel_url",
             "flash_attn_wheel_url",
             "install_wheel",
+            "is_windows_wheel_env",
+            "pinned_source_build_supported",
             "probe_torch_wheel_env",
             "url_exists",
         ):
             setattr(wheel_utils, name, lambda *_args, **_kwargs: None)
+        # Read at import by utils.kernel_install, which the worker imports.
+        for name in (
+            "package_installs_offline_env",
+            "redact_url_credentials",
+            "xformers_wheel_url",
+        ):
+            setattr(wheel_utils, name, lambda *_args, **_kwargs: None)
+        for name in (
+            "CAUSAL_CONV1D_PACKAGE_VERSION",
+            "CAUSAL_CONV1D_RELEASE_BASE_URL",
+            "CAUSAL_CONV1D_RELEASE_TAG",
+            "MAMBA_SSM_PACKAGE_VERSION",
+            "MAMBA_SSM_RELEASE_BASE_URL",
+            "MAMBA_SSM_RELEASE_TAG",
+        ):
+            setattr(wheel_utils, name, "")
         sys.modules["utils.wheel_utils"] = wheel_utils
 
-        worker_path = Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py"
         spec = importlib.util.spec_from_file_location("mlx_training_worker_under_test", worker_path)
         module = importlib.util.module_from_spec(spec)
         assert spec.loader is not None
@@ -98,7 +126,9 @@ _adapt_for_mlx_vlm = _worker._adapt_for_mlx_vlm
 _mlx_dora_peft_kwargs = _worker._mlx_dora_peft_kwargs
 
 
-def test_mlx_studio_optimizer_aliases_are_explicit():
+def test_mlx_studio_optimizer_aliases_are_explicit(monkeypatch):
+    # Pin the local fallback: a zoo with the MLX normalizer keeps adamw_8bit (real 8-bit AdamW).
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.trainer", None)
     assert _normalize_mlx_studio_optimizer("adamw_8bit") == "adamw"
     assert _normalize_mlx_studio_optimizer("paged_adamw_8bit") == "adamw"
     assert _normalize_mlx_studio_optimizer("adafactor") == "adafactor"
@@ -115,8 +145,7 @@ def test_mlx_studio_rejects_unknown_scheduler():
 
 
 def test_mlx_dora_requires_the_named_use_dora_parameter():
-    # A **kwargs catch-all absorbs use_dora and trains plain LoRA, so accepting the
-    # keyword is not support.
+    # A **kwargs catch-all absorbs use_dora, so accepting the keyword is not support.
     def old_zoo(
         model,
         r = 16,
@@ -158,8 +187,6 @@ def test_mlx_dora_requires_the_named_use_dora_parameter():
             _mlx_dora_peft_kwargs({"use_dora": True}, unusable)
     with pytest.raises(NotImplementedError, match = "unsloth-zoo"):
         _mlx_dora_peft_kwargs({"use_dora": True}, object())
-    # An image-bearing dataset is not proof of a vision model; a text
-    # model can still train language-only DoRA.
     assert _mlx_dora_peft_kwargs(
         {
             "use_dora": True,
@@ -182,8 +209,7 @@ def test_mlx_studio_keeps_hf_style_tokenizer_dual_purpose():
 
 
 def test_mlx_wandb_run_config_excludes_subject_and_secrets():
-    # The MLX W&B run config uploads everything minus a sensitive set. The owner's subject must be
-    # filtered alongside the secrets, or it lands in W&B even though DB history strips it.
+    # The owner's subject must be filtered with the secrets or it lands in W&B.
     source = (Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py").read_text(
         encoding = "utf-8"
     )
@@ -324,16 +350,8 @@ def test_mlx_vlm_adapter_applies_chw_layout_to_message_images():
     assert adapted[0]["messages"][0]["content"][0] == {"type": "image"}
 
 
-# ---- issue #6103: MLX transformers-version activation must not fail silently ----
-
-
 def test_activate_transformers_version_or_warn_logs_on_failure(monkeypatch):
-    """A failed activation in the MLX fast-path must be logged, not swallowed.
-
-    The non-MLX path already surfaces this failure; the MLX path used a bare
-    ``except Exception: pass`` so a missing/broken transformers venv produced
-    no trace and a confusing downstream crash.
-    """
+    """The MLX fast-path activation must log failures; a bare except Exception: pass hid broken venvs."""
     warnings_logged = []
     fake_logger = types.SimpleNamespace(
         warning = lambda *a, **k: warnings_logged.append((a, k)),
@@ -345,7 +363,6 @@ def test_activate_transformers_version_or_warn_logs_on_failure(monkeypatch):
 
     monkeypatch.setattr(_worker, "_activate_transformers_version", _boom)
 
-    # Non-fatal: the MLX path falls through, so this must not raise.
     _worker._activate_transformers_version_or_warn("google/gemma-4-12b")
 
     assert len(warnings_logged) == 1, "activation failure was not logged"
@@ -412,11 +429,7 @@ def _run_masking(
     detect = None,
     **overrides,
 ):
-    """Execute the real masking block from _run_mlx_training and return its events.
-
-    _run_mlx_training only runs on Apple Silicon, so the block is lifted out and executed
-    directly. That keeps the production statements under test rather than a copy of them.
-    """
+    """Lifts the real masking block out of _run_mlx_training, which only runs on Apple Silicon."""
     block = compile(ast.Module(body = [_masking_block()], type_ignores = []), "<masking>", "exec")
     events = []
     trainer = types.SimpleNamespace(processing_class = types.SimpleNamespace(), tokenizer = None)
@@ -449,7 +462,7 @@ def _run_masking(
     return events, namespace.get("masking_applied")
 
 
-try:  # the block imports this lazily; skip the behaviour tests where it cannot load
+try:
     import utils.datasets.completion_masking  # noqa: F401
     _MASKING_IMPORTABLE = True
 except Exception:  # pragma: no cover
@@ -520,3 +533,84 @@ def test_odd_model_names_do_not_break_the_warning(model_name):
     events, applied = _run_masking(model_name = model_name, detect = _detect_fails)
 
     assert applied is False and len(_warnings(events)) == 1
+
+
+class _FakeRankTrainer:
+    def __init__(
+        self,
+        rank = 0,
+        world_size = 1,
+        save_error = None,
+    ):
+        self.distributed_world_size = world_size
+        self.is_main_process = rank == 0
+        self.stop_requested = False
+        self.saved = []
+        self._save_error = save_error
+
+    def save_model(self, path):
+        if self._save_error is not None:
+            raise self._save_error
+        self.saved.append(path)
+
+    def _distributed_any_flag(self, flag):
+        return bool(flag)
+
+    def _raise_distributed_failure(
+        self,
+        failed,
+        context,
+        exc = None,
+    ):
+        if failed:
+            raise RuntimeError(f"{context}: {exc}")
+
+
+def _finalize(
+    trainer,
+    stop = (False, True),
+    checkpoint_ok = True,
+):
+    events = []
+    _worker._finalize_mlx_training(
+        trainer,
+        lambda: stop,
+        "/out",
+        lambda: None,
+        lambda event_type, **payload: events.append((event_type, payload)),
+        lambda: checkpoint_ok,
+    )
+    return events
+
+
+def test_mlx_epoch_steps_divide_by_world_size_only_when_derived():
+    steps = _worker._resolve_mlx_training_steps
+    assert steps(0, 16, 2, 2, 3, 1) == 12
+    assert steps(0, 16, 2, 2, 3, 2) == 6
+    assert steps(7, 16, 2, 2, 3, 2) == 7
+
+
+@pytest.mark.parametrize("rank", [0, 1])
+def test_mlx_final_save_is_rank0_owned(rank):
+    trainer = _FakeRankTrainer(rank = rank, world_size = 2)
+    events = _finalize(trainer)
+    assert trainer.saved == (["/out"] if rank == 0 else [])
+    assert events[-1] == (
+        "complete",
+        {"output_dir": "/out" if rank == 0 else None, "status_message": "Training completed"},
+    )
+
+
+def test_mlx_rank0_save_failure_reaches_every_rank():
+    with pytest.raises(RuntimeError, match = "final model save"):
+        _finalize(_FakeRankTrainer(world_size = 2, save_error = OSError("disk full")))
+
+
+def test_mlx_single_process_finalization_keeps_prior_contract():
+    trainer = _FakeRankTrainer()
+    assert _finalize(trainer, stop = (True, False))[-1][1]["status_message"] == "Training cancelled"
+    assert trainer.saved == []
+
+    events = _finalize(trainer, stop = (True, True), checkpoint_ok = False)
+    assert trainer.saved == ["/out"]
+    assert events[-1][0] == "error" and events[-1][1]["resume_blocked"] is True
