@@ -2888,6 +2888,38 @@ def mlx_drafter_fit(
     return outcome == "fits" or (outcome == "fitted" and not pinned), fitted
 
 
+def mlx_prompt_cache_room(
+    model_dir,
+    n_ctx,
+    source,
+    *,
+    load_in_4bit: bool,
+    offload = None,
+    prefill_chunk = None,
+):
+    """Bytes MLX's own cap leaves beside an mlx-vlm load of *model_dir* and *source*'s drafter at
+    *n_ctx*: what the prompt cache may still hold once that drafter spent its share. None where unsized."""
+    budget = mlx_memory_budget(retains_history = False)
+    if budget is None or not n_ctx or not model_dir:
+        return None
+    with mlx_rng_preserved():
+        try:
+            from core.inference.mlx_memory import mlx_headroom
+            return mlx_headroom(
+                model_dir,
+                budget_bytes = budget,
+                n_ctx = int(n_ctx),
+                load_in_4bit = load_in_4bit,
+                vision = True,
+                drafter = (source.path, source.builtin),
+                offload = offload,
+                prefill_chunk = prefill_chunk,
+            )
+        except Exception as exc:
+            logger.info("MLX prompt cache room beside %s not priced: %s", source.path, exc)
+            return None
+
+
 def _kv_window_enforced(model, is_vlm, window):
     """Whether a cache built at *window* is bounded in every layer, None where none could be built
     to judge: both runtimes defer to a model's own make_cache and ignore max_kv_size there."""
@@ -4580,6 +4612,7 @@ class MLXInferenceBackend:
 
         self._prompt_cache_history = None
         self._prompt_cache_unavailable = False
+        self._prompt_cache_room = None
         self._vlm_snapshot_store = None
         self._vlm_snapshot_store_unavailable = False
         self._vlm_is_diffusion_model = None
@@ -4587,7 +4620,7 @@ class MLXInferenceBackend:
     def _prompt_cache(self):
         if self._prompt_cache_history is not None or self._prompt_cache_unavailable:
             return self._prompt_cache_history
-        max_bytes = _prompt_cache_max_bytes(self._memory_limits_applied.get("recommended_gb"))
+        max_bytes = self._prompt_cache_bytes()
         if max_bytes <= 0:
             self._prompt_cache_unavailable = True
             logger.info("MLX prompt cache disabled by budget")
@@ -4610,9 +4643,15 @@ class MLXInferenceBackend:
         )
         return self._prompt_cache_history
 
+    def _prompt_cache_bytes(self):
+        max_bytes = _prompt_cache_max_bytes(self._memory_limits_applied.get("recommended_gb"))
+        room = getattr(self, "_prompt_cache_room", None)
+        return max_bytes if room is None else min(max_bytes, room)
+
     def _clear_prompt_cache(self):
         self._prompt_cache_history = None
         self._prompt_cache_unavailable = False
+        self._prompt_cache_room = None
         self._vlm_snapshot_store = None
         self._vlm_snapshot_store_unavailable = False
         self._vlm_is_diffusion_model = None
@@ -4734,7 +4773,7 @@ class MLXInferenceBackend:
     def _vlm_prompt_cache_store(self):
         if self._vlm_snapshot_store is not None or self._vlm_snapshot_store_unavailable:
             return self._vlm_snapshot_store
-        max_bytes = _prompt_cache_max_bytes(self._memory_limits_applied.get("recommended_gb"))
+        max_bytes = self._prompt_cache_bytes()
         if max_bytes <= 0:
             self._vlm_snapshot_store_unavailable = True
             logger.info("MLX VLM prompt cache disabled by budget")
@@ -5518,6 +5557,7 @@ class MLXInferenceBackend:
             _offloaded["prefill_chunk"] = self._prefill_step
         _priceable = not (is_distributed or is_lora or dtype is not None)
         spec_kind = _drafter_ctx = None
+        _stretched = []
         _vlm_route = speculates and not is_vision
         if speculates and _vlm_generation_is_diffusion(self._model):
             # Neither the single path nor the resident batch may decode a diffusion model speculatively.
@@ -5552,6 +5592,12 @@ class MLXInferenceBackend:
                     **_offloaded,
                 )
 
+            def _stretch(source):
+                ok, context = _fits(source, reserve = False)
+                if ok is not False:
+                    _stretched.append(source)
+                return ok, context
+
             (
                 self._speculative_draft,
                 spec_kind,
@@ -5561,7 +5607,7 @@ class MLXInferenceBackend:
                 self._model,
                 resolution,
                 fits = _fits,
-                stretch = functools.partial(_fits, reserve = False),
+                stretch = _stretch,
                 draft_n_max = _positive_int(spec_draft_n_max),
             )
             logger.info(
@@ -5595,6 +5641,21 @@ class MLXInferenceBackend:
             logger.info("MLX context fitted to %d tokens from %d", _fitted_ctx, _served_ctx or 0)
             _served_ctx = _fitted_ctx
         self._served_context = _served_ctx
+        # Stretched sources are priced only once none fits beside the prompt cache, so a drafter of
+        # their kind spent its share: the cache keeps what MLX's own cap leaves beside any it may be.
+        _rooms = [
+            mlx_prompt_cache_room(
+                model_dir, _served_ctx, source, load_in_4bit = load_in_4bit, **_offloaded
+            )
+            for source in _stretched
+            if _priceable and source.kind == spec_kind
+        ]
+        if _rooms := [room for room in _rooms if room is not None]:
+            self._prompt_cache_room = min(_rooms)
+            logger.info(
+                "MLX prompt cache holds at most %.2f GB beside the chosen drafter",
+                self._prompt_cache_room / 1e9,
+            )
         # Classified now so a cache the model cannot attend over is refused here, not on a token.
         (
             self._kv_quant,

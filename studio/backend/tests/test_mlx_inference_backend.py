@@ -4912,12 +4912,19 @@ def test_an_explicit_speculative_mode_loads_through_mlx_vlm_and_attaches_what_fi
         mlx_inference, "mlx_drafter_fit", lambda *a, **k: fits.append(a[1:4]) or (True, 4096)
     )
     monkeypatch.setattr(drafters, "companion_drafter", lambda path, target: SimpleNamespace())
+    spent, rooms = [], {"/drafter": 123, "/cheap": 500}
+    monkeypatch.setattr(
+        mlx_inference,
+        "mlx_prompt_cache_room",
+        lambda model_dir, n_ctx, source, **_k: spent.append((n_ctx, source)) or rooms[source.path],
+    )
     config = SimpleNamespace(identifier = "org/text", is_vision = False, is_lora = False)
 
     backend = mlx_inference.MLXInferenceBackend()
     backend.load_model(config, max_seq_length = 0, speculative_type = "dflash", spec_draft_n_max = 5)
     entry = backend.models["org/text"]
     assert attempts == [False] and fits == [(8192, None, source)]
+    assert backend._prompt_cache_room is None and spent == []  # a drafter that fits spends no share
     assert (entry["spec_drafter_kind"], entry["spec_fallback_reason"]) == ("dflash", None)
     assert entry["context_length"] == 4096 and entry["spec_draft_n_max"] == 5
     assert backend._speculative_draft.controller.max_depth == 5
@@ -4945,9 +4952,41 @@ def test_an_explicit_speculative_mode_loads_through_mlx_vlm_and_attaches_what_fi
     backend.load_model(config, max_seq_length = 0, speculative_type = "dflash")
     assert backend._speculative_draft.drafter is not None and fits == [True]
     assert backend.models["org/text"]["spec_fallback_reason"] is None
+    # That drafter spent the prompt cache's share, so both caches hold only what the cap still leaves.
+    assert spent == [(8192, source)] and backend._prompt_cache_room == 123
+    sized = []
+    monkeypatch.setattr(
+        mlx_inference,
+        "_MLXPromptCacheHistory",
+        lambda n, max_bytes, *a, **k: sized.append(max_bytes),
+    )
+    monkeypatch.setattr(
+        mlx_inference, "VLMPromptSnapshotStore", lambda max_bytes: sized.append(max_bytes)
+    )
+    backend._prompt_cache(), backend._vlm_prompt_cache_store()
+    assert sized in ([123, 123], [123])  # the second only where this mlx-vlm builds the store
+    # Where a cheaper drafter of that kind failed to build, the room is the one any of them leaves.
+    cheap = mlx_speculative.DrafterSource("dflash", "/cheap", False)
+    resolve, build = mlx_speculative.resolve_speculation, drafters.companion_drafter
+    monkeypatch.setattr(
+        mlx_speculative,
+        "resolve_speculation",
+        lambda *_a, **_k: mlx_speculative.SpecResolution("dflash", (cheap, source)),
+    )
+    monkeypatch.setattr(
+        drafters,
+        "companion_drafter",
+        lambda path, target: (_ for _ in ()).throw(ValueError("no"))
+        if path == "/cheap"
+        else build(path, target),
+    )
+    backend.load_model(config, max_seq_length = 0, speculative_type = "dflash")
+    assert backend._speculative_draft.drafter is not None and backend._prompt_cache_room == 123
+    monkeypatch.setattr(mlx_speculative, "resolve_speculation", resolve)
+    monkeypatch.setattr(drafters, "companion_drafter", build)
     room.append(False)
     backend.load_model(config, max_seq_length = 0, speculative_type = "dflash")
-    assert backend._speculative_draft is None
+    assert backend._speculative_draft is None and backend._prompt_cache_room is None
     assert backend.models["org/text"]["spec_fallback_reason"] == mlx_speculative.DRAFTER_NO_MEMORY
     backend.load_model(config, max_seq_length = 0, spec_draft_model = "org/d")
     assert fits[-2:] == [True, True]  # a named drafter enters the speculative route under Auto

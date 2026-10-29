@@ -4824,6 +4824,10 @@ class TestPricingALoad:
             str(tmp_path), budget_bytes = price + (2 << 30), max_ctx = 1 << 20, offload = offload
         )
         assert fit((None, 0.5)) == ("fitted", 8192) != fit(None)
+        room = lambda offload: mm.mlx_headroom(
+            str(tmp_path), budget_bytes = price + (2 << 30) + 5, n_ctx = 8192, offload = offload
+        )
+        assert room((None, 0.5)) == 5  # the room keeps the same margin free as the fit
 
     def test_a_quantizing_load_is_priced_below_the_shards(self, tmp_path):
         config = self._checkpoint(tmp_path)
@@ -5234,8 +5238,12 @@ class TestTheContextSearch:
             "no_fit",
             None,
         )
+        assert mm.mlx_headroom("x", budget_bytes = 9000, n_ctx = 8192) == 808
+        assert mm.mlx_headroom("x", budget_bytes = 9000, n_ctx = 100) == 9000 - 256
+        assert mm.mlx_headroom("x", budget_bytes = 7000, n_ctx = 8192) == 0
         monkeypatch.setattr(mm, "_size_load", lambda *a, **kw: None)
         assert mm.mlx_fit_outcome("x", budget_bytes = 7000, max_ctx = 8192) == ("unsizable", None)
+        assert mm.mlx_headroom("x", budget_bytes = 7000, n_ctx = 8192) is None
 
 
 @_NEEDS_MLX
