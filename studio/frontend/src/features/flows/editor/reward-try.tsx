@@ -119,7 +119,7 @@ export function RewardTryPanel({ node }: { node: FlowNode }) {
           return authFetch("/api/rewards/preview", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ rewards: [reward], completion, reference: own || null }),
+            body: JSON.stringify({ rewards: [reward], completion, reference: own }),
           })
             .then((res) => json<{ scores: Score[] }>(res))
             .then((res) => res.scores[0]);
