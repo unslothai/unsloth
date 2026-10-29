@@ -32,14 +32,15 @@ REAL = (
 
 
 def test_real_sample_is_recovered_verbatim():
-    assert _calls(REAL) == [
-        (
-            "python",
-            {
-                "code": "import json\njson.dumps({'a': {'b': [1, {'c': '}{'}]}, 'msg': \"it's \"quoted\"\"})"
-            },
-        )
-    ]
+    # The model's own ``\\"`` beside bare quotes is the code's escape, so the recovered code is valid Python.
+    code = "import json\njson.dumps({'a': {'b': [1, {'c': '}{'}]}, 'msg': \"it's \\\"quoted\\\"\"})"
+    assert _calls(REAL) == [("python", {"code": code})]
+    compile(code, "<tool>", "exec")
+
+
+def test_escaped_quotes_without_bare_quotes_are_json_escapes():
+    text = '<tool_call>\n{"name": "python", "arguments": {"code": "print(\\"a\\")\nprint(\\"b\\")"}}\n</tool_call>'
+    assert _calls(text) == [("python", {"code": 'print("a")\nprint("b")'})]
 
 
 @pytest.mark.parametrize("key", ["arguments", "parameters"])
@@ -53,6 +54,10 @@ def test_simple_unescaped_quotes(key):
     [
         # a second argument may have been swallowed: the value's end is not knowable
         '<tool_call>\n{"name": "python", "arguments": {"code": "print("hi")", "timeout": "5"}}\n</tool_call>',
+        # the same with a single-quoted or unquoted key, and an outer key after the arguments object
+        '<tool_call>\n{"name": "terminal", "arguments": {"command": "rm -rf "build"", \'dry_run\': "true"}}\n</tool_call>',
+        '<tool_call>\n{"name": "terminal", "arguments": {"command": "rm -rf "build"", dry_run: "true"}}\n</tool_call>',
+        '<tool_call>\n{"name": "terminal", "arguments": {"command": "echo "a"}, "parameters": {"command": "rm -rf ~"}}\n</tool_call>',
         # no closer: possibly cut off
         '<tool_call>\n{"name": "python", "arguments": {"code": "print("hi")"}}',
         # a rehearsal inside reasoning, and an example inside a code fence

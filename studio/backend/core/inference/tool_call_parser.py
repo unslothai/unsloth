@@ -2344,23 +2344,31 @@ _ONE_STRING_ARG_CALL_RE = re.compile(
     r'\{\s*"([A-Za-z_][\w\-]*)"\s*:\s*"(.*)"\s*\}\s*\}\s*\Z',
     re.DOTALL,
 )
-# A lost second argument (``..." , "key": ``): the value's end is no longer knowable, so it is refused.
-_SECOND_KEY_RE = re.compile(r'"\s*,\s*"[A-Za-z_][\w\-]*"\s*:')
+# A lost second argument or outer key (``", "key":``, ``", 'key':``, ``", key:``, ``"}, "key":``): the
+# value's end is no longer knowable, so it is refused.
+_SECOND_KEY_RE = re.compile(
+    r'"[\s}\]]*,\s*(?:"[A-Za-z_][\w\-]*"|\'[A-Za-z_][\w\-]*\'|[A-Za-z_][\w\-]*)\s*:'
+)
 
 
 def _escape_bare_quotes(raw: str) -> str:
-    """Escape the ``"`` no backslash escapes; every escape the model did write is kept as written."""
-    out: list[str] = []
+    """Escape the ``"`` no backslash escapes. A model that left bare quotes was not JSON-escaping quotes, so a
+    ``\\"`` it wrote next to them is the code's own escape and stays a backslash-quote; other escapes (``\\n``)
+    are JSON's. With no bare quote at all, every escape is JSON's."""
+    tokens: list[str] = []
+    bare = False
     i, n = 0, len(raw)
     while i < n:
-        ch = raw[i]
-        if ch == "\\" and i + 1 < n:
-            out.append(raw[i : i + 2])
+        if raw[i] == "\\" and i + 1 < n:
+            tokens.append(raw[i : i + 2])
             i += 2
             continue
-        out.append('\\"' if ch == '"' else ch)
+        bare = bare or raw[i] == '"'
+        tokens.append(raw[i])
         i += 1
-    return "".join(out)
+    if not bare:
+        return raw
+    return "".join('\\"' if tok == '"' else '\\\\\\"' if tok == '\\"' else tok for tok in tokens)
 
 
 def _parse_closed_call_unescaped_quotes(content: str, *, id_offset: int) -> list[dict]:

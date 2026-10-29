@@ -1135,7 +1135,7 @@
       "_OUTER_ENVELOPE_CLOSED_PATS[1]": "'<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>(?:(?!<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>).)*</function>' flags=48",
       "_OUTER_ENVELOPE_CLOSED_PATS[2]": "'<\\\\|tool_call>.*?<tool_call\\\\|>' flags=48",
       "_OUTER_ENVELOPE_OPEN_RE": "'<tool_call>|<function(?:=|\\\\s+name=\")|<\\\\|tool_call>|<\\\\|python_tag\\\\|>(?=\\\\s*(?:\\\\{|[A-Za-z_][\\\\w.]*\\\\())' flags=32",
-      "_SECOND_KEY_RE": "'\"\\\\s*,\\\\s*\"[A-Za-z_][\\\\w\\\\-]*\"\\\\s*:' flags=32",
+      "_SECOND_KEY_RE": "'\"[\\\\s}\\\\]]*,\\\\s*(?:\"[A-Za-z_][\\\\w\\\\-]*\"|\\\\\\'[A-Za-z_][\\\\w\\\\-]*\\\\\\'|[A-Za-z_][\\\\w\\\\-]*)\\\\s*:' flags=32",
       "_TC_END_TAG_RE": "'</(?:tool_call|function)>' flags=32",
       "_TC_FUNC_CLOSE_RE": "'\\\\s*</function>\\\\s*$' flags=32",
       "_TC_FUNC_START_RE": "'<function(?:=([\\\\w\\\\.\\\\-]+)|\\\\s+name=\"([\\\\w\\\\.\\\\-]+)\")>\\\\s*' flags=32",
@@ -1170,7 +1170,7 @@
     },
     "regexes": {
       "re.compile(\"(?im)(\\\\b(i['\\\\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall)\\\\b(?!\\\\s+(?:not|never)\\\\b)(?!\\\\s+\" + _HELP_OFFER + ')|\\\\b(?:let me|allow me)\\\\b(?!\\\\s+(?:not|never|know)\\\\b)(?!\\\\s+' + _SIGN_OFF + ')(?!\\\\s+to\\\\s+' + _HELP_OFFER + \")|(?:^|[.!?]\\\\s+)\\\\s*(?:the\\\\s+)?first\\\\s+step\\\\b|(?:^|[.!?]\\\\s+)\\\\s*first\\\\s*[,:–—-]?\\\\s+(?:my|our)\\\\s+(?:plan|approach|step)\\\\b|(?:^|[.!?]\\\\s+)\\\\s*first\\\\s*[,:–—-]?\\\\s+(?:i|we|let['’]?s|let us)\\\\b|(?:^|[.!?]\\\\s+)\\\\s*first\\\\s*[,:–—-]?\\\\s+\" + _ACTION_VERB + \"\\\\b|\\\\bstep \\\\d+[ \\\\t*_]*(?::[ \\\\t*_\\\\r]*$|(?:[:,.)\\\\u2013\\\\u2014-][ \\\\t*_]*)?(?:\\\\r?\\\\n(?:[ \\\\t]*\\\\r?\\\\n)?[ \\\\t*_#>-]*(?:\\\\d+[.)][ \\\\t*_]*)?)?(?:(?:let['’]?s|let us)\\\\b|\" + _ACTION_VERB + \"\\\\b))|\\\\bhere['\\\\u2019]?s (?:my |the |a )?(?:plan|approach)|\\\\b(?:now i|next i)\\\\b)\")": 1,
-      "re.compile('\"\\\\s*,\\\\s*\"[A-Za-z_][\\\\w\\\\-]*\"\\\\s*:')": 1,
+      "re.compile('\"[\\\\s}\\\\]]*,\\\\s*(?:\"[A-Za-z_][\\\\w\\\\-]*\"|\\\\\\'[A-Za-z_][\\\\w\\\\-]*\\\\\\'|[A-Za-z_][\\\\w\\\\-]*)\\\\s*:')": 1,
       "re.compile('\"name\"\\\\s*:\\\\s*\"([^\"]+)\"')": 1,
       "re.compile('(?<!\\\\w)call\\\\s*(?::\\\\s*[\\\\w\\\\.\\\\-]*)?$')": 1,
       "re.compile('(?<!\\\\w)call\\\\s*:\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\{')": 1,
