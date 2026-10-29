@@ -5489,7 +5489,7 @@ if ($NeedNodeForSetup) {
         Remove-Item Env:NODE_PATH -ErrorAction SilentlyContinue
         step "node" "$(node -v) | npm $(npm -v) (isolated)"
 
-        # Only the frontend build uses bun; Node provisioned just for OXC (Desktop, pip installs) skips it, as setup.sh does.
+        # Only the frontend build uses bun (as in setup.sh); OXC-only Node (Desktop) skips it.
         if (-not (Test-Path (Join-Path $FrontendDir "package-lock.json")) -and -not (Get-Command bun -ErrorAction SilentlyContinue) -and $NeedFrontendBuild) {
             substep "installing bun (faster frontend package installs)..."
             $prevEAP_bun = $ErrorActionPreference

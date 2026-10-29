@@ -68,8 +68,7 @@ def test_bun_is_not_provisioned_when_npm_ci_will_run():
 
 
 def test_bun_is_not_provisioned_without_a_frontend_build():
-    # setup.sh installs bun inside the build branch only; Node provisioned for the OXC validator
-    # alone (Desktop and pip installs, every desktop update) must not download bun.
+    # Node provisioned only for the OXC validator (every Desktop install/update) must not fetch bun.
     sh = _read("studio/setup.sh")
     build_branch = sh.index('elif [ "$_NEED_FRONTEND_BUILD" = false ]; then')
     assert build_branch < sh.index("npm install -g bun")
