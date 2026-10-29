@@ -590,16 +590,42 @@ def _hf_cache_is_empty(_empty_hf_hub_cache, monkeypatch):
     monkeypatch.setattr(constants, "HF_HUB_CACHE", _empty_hf_hub_cache)
 
 
+_REAL_APPLE_METAL_BUDGET = None
+
+
 @pytest.fixture(autouse = True)
 def _no_live_metal_wired_ceiling(monkeypatch):
     """Keep Metal context verdicts off the host's live GPU memory."""
+    import inspect
+
     from core.inference.llama_cpp import LlamaCppBackend
 
+    global _REAL_APPLE_METAL_BUDGET
+    if _REAL_APPLE_METAL_BUDGET is None:
+        _REAL_APPLE_METAL_BUDGET = inspect.getattr_static(
+            LlamaCppBackend, "_apple_metal_memory_budget_bytes"
+        )
     monkeypatch.setattr(
         LlamaCppBackend, "_apple_metal_wired_ceiling_bytes", staticmethod(lambda: 0)
     )
     monkeypatch.setattr(
         LlamaCppBackend, "_apple_metal_wired_headroom_bytes", staticmethod(lambda: None)
+    )
+    # On a Mac the real budget is non-zero, which sends every GGUF load down the Metal
+    # context-fit path and adds its "cannot size the KV cache" notice to loads that tests
+    # written against a CPU or CUDA host expect to be silent. Tests of the budget itself,
+    # or of the Metal path, set it explicitly or ask for real_apple_metal_budget.
+    monkeypatch.setattr(
+        LlamaCppBackend, "_apple_metal_memory_budget_bytes", staticmethod(lambda: 0)
+    )
+
+
+@pytest.fixture
+def real_apple_metal_budget(monkeypatch):
+    """The real budget probe, for the tests of the probe itself."""
+    from core.inference.llama_cpp import LlamaCppBackend
+    monkeypatch.setattr(
+        LlamaCppBackend, "_apple_metal_memory_budget_bytes", _REAL_APPLE_METAL_BUDGET
     )
 
 
@@ -979,8 +1005,15 @@ def rag_home(tmp_path, monkeypatch, linkable_temp_base):
 @pytest.fixture
 def rag_conn(rag_home):
     """A fresh RAG connection bound to the isolated ``rag_home`` database."""
+    import sqlite3
+
     from storage import rag_db
 
+    # Same gate as the RAG tests that skip on their own: an interpreter whose sqlite3 cannot load
+    # extensions (the macos-15 runner's) never has RAG, and the product reports that rather than
+    # failing. Anything else that stops sqlite-vec loading still errors here.
+    if not rag_db.RAG_AVAILABLE or not hasattr(sqlite3.Connection, "enable_load_extension"):
+        pytest.skip("sqlite-vec cannot be loaded by this Python's sqlite3")
     conn = rag_db.get_connection()
     try:
         yield conn

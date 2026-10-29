@@ -50,12 +50,14 @@ except ValueError:
 
 # Process wide: every block class shares one cudagraph tree (one pool per device).
 # off: why graphs went off (None = on); release: None, "done" or "kept"; ours: compile ids of the
-# tree functions block calls created; managers: CUDA index -> the tree manager block graphs ran on.
+# tree functions block calls created; built: compile ids the graphs-on block backend compiled;
+# managers: CUDA index -> the tree manager block graphs ran on.
 def _new_cudagraph_state():
     return {
         "off": None,
         "release": None,
         "ours": set(),
+        "built": set(),
         "managers": {},
         "notes": set(),
         "auto": _new_auto_state(),
@@ -122,9 +124,31 @@ def _tree_manager(device):
         return None
 
 
+def _block_backend(options):
+    """Inductor noting each compile id it builds, so foreign regions behind a graph break are not
+    counted as ours. None if unsupported (then the pool is kept)."""
+    try:
+        from torch._guards import CompileContext
+        class _BlockInductor(torch._TorchCompileInductorWrapper):
+            def __call__(
+                self,
+                *args,
+                options = None,
+                **kwargs,
+            ):
+                # options were already applied by the constructor.
+                _CUDAGRAPH_STATE["built"].add(CompileContext.current_compile_id())
+                return super().__call__(*args, **kwargs)
+
+        return _BlockInductor(None, options, None)
+    except Exception:
+        return None
+
+
 def _graphed_call(compiled, device, *args, **kwargs):
     """Call the graphs-on region; note the compile ids of tree functions it created (forward here,
-    the backward of the same compile later), so the release can tell its pool is only ours."""
+    the backward of the same compile later) that the block backend built, so the release can tell
+    its pool is only ours."""
     managers = _CUDAGRAPH_STATE["managers"]
     manager = managers.get(device)
     if manager is None:
@@ -140,8 +164,9 @@ def _graphed_call(compiled, device, *args, **kwargs):
             return out
         managers[device] = manager
     if len(manager.ids_to_funcs) > before:
-        ids = list(manager.ids_to_funcs)[before:]
-        _CUDAGRAPH_STATE["ours"].update(manager.id_to_compile_id.get(i) for i in ids)
+        built = _CUDAGRAPH_STATE["built"]
+        cids = (manager.id_to_compile_id.get(i) for i in list(manager.ids_to_funcs)[before:])
+        _CUDAGRAPH_STATE["ours"].update(cid for cid in cids if cid is not None and cid in built)
     return out
 
 
@@ -1380,8 +1405,11 @@ def _wrap(
     isolate = {}
     if _ISOLATE_RECOMPILES:
         isolate = dict(isolate_recompiles = True, recompile_limit = _region_recompile_limit(kinds))
+    graphs = bool(compile_options.get("triton.cudagraphs"))
+    backend = _block_backend(compile_options) if graphs else None
+    owned = {} if backend is None else {"backend": backend}
     compiled = torch.compile(
-        original, fullgraph = False, dynamic = None, options = compile_options, **isolate
+        original, fullgraph = False, dynamic = None, options = compile_options, **owned, **isolate
     )
     try:
         from unsloth_zoo.temporary_patches.utils import UNSLOTH_DECODE_COMPILE as inline_flag
@@ -1397,7 +1425,6 @@ def _wrap(
     state = {"reported": set(), "start": {}}
     # Under Unsloth checkpointing each block call is a new cudagraph generation: the next replay
     # overwrites this block's outputs and gradients, so they are cloned out of the pool.
-    graphs = bool(compile_options.get("triton.cudagraphs"))
     # Auto: `compiled` stays the graphs-off region; the graphed one is compiled once graphs turn on.
     auto = not graphs and _CUDAGRAPH_MODE == "auto"
     if graphs:
@@ -1414,11 +1441,15 @@ def _wrap(
 
     def graphed():
         if graphed_box[0] is None:
+            options = {**compile_options, "triton.cudagraphs": True}
+            backend = _block_backend(options)
+            owned = {} if backend is None else {"backend": backend}
             graphed_box[0] = torch.compile(
                 original,
                 fullgraph = False,
                 dynamic = None,
-                options = {**compile_options, "triton.cudagraphs": True},
+                options = options,
+                **owned,
                 **isolate,
             )
         return graphed_box[0]

@@ -432,7 +432,7 @@ import {
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  FileDatabaseIcon,
+  FileSearchIcon,
   FolderAttachmentIcon,
   Folder01Icon,
   FolderAddIcon,
@@ -6933,7 +6933,7 @@ const ComposerToolsMenu: FC<{
           setRagEnabled(!ragEnabled);
         }}
       >
-        <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
+        <HugeiconsIcon icon={FileSearchIcon} strokeWidth={2} />
         Chat with files
         {ragEnabled && !ragDisabled ? (
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />

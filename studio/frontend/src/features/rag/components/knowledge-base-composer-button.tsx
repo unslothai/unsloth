@@ -4,7 +4,7 @@
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { FileDatabaseIcon, Cancel01Icon } from "@hugeicons/core-free-icons";
+import { Cancel01Icon, FileSearchIcon } from "@hugeicons/core-free-icons";
 import { FileGlyph } from "@/lib/file-icon";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
@@ -133,7 +133,7 @@ export function KnowledgeBaseComposerButton({
               className="composer-pill-glyph cursor-pointer"
             >
               <HugeiconsIcon
-                icon={FileDatabaseIcon}
+                icon={FileSearchIcon}
                 strokeWidth={2}
                 className="size-[calc(15px*var(--ui-space-scale,1))]"
               />
