@@ -7,7 +7,11 @@ import re
 from typing import Any, Optional
 
 from utils.datasets.cells import text_cell_check, unwrap_message_column
-from utils.datasets.format_detection import detect_dataset_format, has_message_prompt_completion
+from utils.datasets.format_detection import (
+    detect_dataset_format,
+    has_message_prompt_completion,
+    is_plain_text_dataset,
+)
 from utils.datasets.pretokenized import PRETOKENIZED_FORMAT, is_pretokenized_dataset
 
 
@@ -733,6 +737,23 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
         "detected_audio_column": multimodal_info.get("detected_audio_column"),
         "detected_speaker_column": multimodal_info.get("detected_speaker_column"),
     }
+
+    if is_plain_text_dataset(dataset):
+        # A lone ``text`` column is the training text itself, so there are no
+        # roles to assign and raw text is the only shape the trainer can build.
+        # Checked before the VLM branch: text-only data trains fine on a vision
+        # model (the trainer skips its chat formatting in raw text mode).
+        return {
+            "requires_manual_mapping": False,
+            "detected_format": "raw",
+            "columns": columns,
+            "suggested_mapping": None,
+            "detected_image_column": None,
+            "detected_text_column": None,
+            "is_image": multimodal_info["is_image"],
+            "multimodal_columns": multimodal_info.get("multimodal_columns"),
+            **audio_fields,
+        }
 
     if is_vlm:
         vlm_structure = detect_vlm_dataset_structure(dataset)

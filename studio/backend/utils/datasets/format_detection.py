@@ -17,6 +17,8 @@ CONVERSATION_COLUMNS = ("messages", "conversations", "texts")
 _CHATML_KEYS = frozenset({"role", "content"})
 _SHAREGPT_KEYS = frozenset({"from", "value"})
 _TRACE_SUFFIXES = ("__trace", "_trace")
+# Enough rows to catch a column that stops being a string, cheap enough to sample.
+_PLAIN_TEXT_SAMPLE_ROWS = 10
 
 
 def _sample_dataset_rows(dataset, limit: int = 100) -> list[dict]:
@@ -157,6 +159,31 @@ def _detect_conversation_column(
     if unknown_exact is not None:
         return unknown_exact
     return None
+
+
+def is_plain_text_dataset(dataset) -> bool:
+    """True when the dataset has exactly one column and it holds strings.
+
+    There are no roles to map in one of these: every cell is the training text,
+    so the trainer reads it as raw text. The column name does not matter —
+    ``prepare_raw_text_dataset`` renames whichever string column it finds to
+    ``text``. Shared by the preview (``check_dataset_format``) and the training
+    formatter so the two agree about what the dataset is.
+    """
+    column_names = getattr(dataset, "column_names", None)
+    if column_names is not None and len(list(column_names)) != 1:
+        return False
+    rows = _sample_dataset_rows(dataset, limit = _PLAIN_TEXT_SAMPLE_ROWS)
+    if not rows:
+        return False
+    return all(_is_single_string_row(row) for row in rows)
+
+
+def _is_single_string_row(row) -> bool:
+    if not isinstance(row, dict) or len(row) != 1:
+        return False
+    value = next(iter(row.values()))
+    return isinstance(value, str) and bool(value.strip())
 
 
 def detect_dataset_format(dataset):
