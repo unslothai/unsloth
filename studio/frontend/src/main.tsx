@@ -38,8 +38,7 @@ import { watchSpellCheck } from "./lib/spellcheck";
 markAppSessionStart();
 setHubSessionRefresh(refreshSession);
 
-// Chat is where a signed-in session lands ("/" redirects there), so its page is fetched alongside the
-// startup bundle and the first render waits for it, as it did when the page was part of that bundle.
+// Signed-in sessions land on Chat, so fetch it with the startup bundle and wait for it.
 const startPath = window.location.pathname;
 const chatPageAtStart =
   startPath === "/chat" ||
@@ -101,10 +100,7 @@ function renderApp(): void {
       <App />
     </StrictMode>,
   );
-  // Any other first screen: fetch Chat as soon as that screen is up, so opening it later does not
-  // wait. Fetching it during the first frame would slow that screen down. Screens that send no
-  // ready signal get it after CHAT_PREFETCH_FALLBACK_MS; hovering or focusing a Chat entry in the
-  // sidebar starts it sooner.
+  // Otherwise prefetch Chat once the first screen is up, not during its first frame.
   if (!chatPageAtStart) {
     const prefetchOnce = () => {
       window.removeEventListener(APP_SHELL_READY_EVENT, afterReady);

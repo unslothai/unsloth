@@ -167,9 +167,7 @@ function RouteBoundary({
   );
 }
 
-// Loaded on first use so other screens start without it. Startup on Chat and the prefetch after the
-// first render load it before it mounts, so it renders straight away; only a mount that beats them
-// suspends. A new lazy() per attempt, since lazy() keeps a rejection for good.
+// New lazy() per attempt: lazy() caches a rejection forever.
 function lazyChatPage() {
   return lazy(() => loadChatPage().then((m) => ({ default: m.ChatPage })));
 }
@@ -183,7 +181,6 @@ function ChatPageLoadFailure({
 }) {
   const t = useT();
   const wasActive = useRef(active);
-  // Coming back to Chat after leaving it tries the import again.
   useEffect(() => {
     if (active && !wasActive.current) {
       onRetry();
@@ -201,7 +198,7 @@ function ChatPageLoadFailure({
 }
 
 function ChatPage(props: { search: ChatSearch; active: boolean }) {
-  // Kept until an attempt fails: switching component type would remount the page and drop its state.
+  // Kept until a failure: swapping component type would remount the page and drop its state.
   const [page, setPage] = useState(() => ({
     attempt: 0,
     Page: loadedChatPage() ?? lazyChatPage(),

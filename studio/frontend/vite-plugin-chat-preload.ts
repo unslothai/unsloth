@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The chat page loads on first use, but a signed-in session lands on Chat. This adds a classic
-// script ahead of the entry that, on that start only, preloads the page's chunks next to the
-// startup bundle instead of after it. It is a file, not inline: script-src is 'self'.
+// Preloads the chat chunks before the entry on a start that lands on Chat. A file, not inline: script-src is 'self'.
 
 import { createHash } from "node:crypto";
 import type { Plugin } from "vite";
@@ -39,7 +37,6 @@ function staticClosure(
   return seen;
 }
 
-/** The script body: preload `files` when the page starts on Chat ("/" redirects a session there). */
 export function chatPreloadScript(files: string[]): string {
   return `(function () {
   try {

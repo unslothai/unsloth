@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// ChatPage loads on first use so other screens start without it; a start on Chat preloads it.
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -93,7 +92,6 @@ test("the preload runs only where the app lands on Chat", () => {
   const signedIn = { unsloth_auth_token: "t" };
   assert.deepEqual(preloadsFor("/chat", {}), files);
   assert.deepEqual(preloadsFor("/", signedIn), files);
-  // "/" without a session goes to login, and a pending password change goes there first.
   assert.deepEqual(preloadsFor("/", {}), []);
   assert.deepEqual(
     preloadsFor("/", { ...signedIn, unsloth_auth_must_change_password: "1" }),
@@ -110,7 +108,6 @@ test("the preload follows main.tsx for the single-user Desktop app", () => {
     unsloth_auth_token: "t",
     unsloth_auth_must_change_password: "1",
   };
-  // Single-user Desktop lands on Chat even with a password change pending; multi-user does not.
   assert.deepEqual(preloadsFor("/", pending, true), files);
   assert.deepEqual(
     preloadsFor(
@@ -130,7 +127,6 @@ test("the preload follows main.tsx for the single-user Desktop app", () => {
 
 test("a failed chat page load stays inside the chat area and retries", () => {
   const root = readSrc("app/routes/__root.tsx");
-  // Each attempt gets its own lazy(), since lazy() keeps a rejection for good.
   assert.match(root, /function lazyChatPage\(\) \{\s*return lazy\(/);
   assert.match(root, /<LazyImportBoundary\s+key=\{page\.attempt\}/);
   assert.match(
@@ -138,6 +134,5 @@ test("a failed chat page load stays inside the chat area and retries", () => {
     /<Suspense fallback=\{<RouteFallback \/>\}>\s*<Page \{\.\.\.props\} \/>/,
   );
   const loader = readSrc("features/chat/load-chat-page.ts");
-  // A rejected import is dropped so the next caller fetches again.
   assert.match(loader, /chatPageModule = null;\s*throw error;/);
 });
