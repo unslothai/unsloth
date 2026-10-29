@@ -10113,9 +10113,7 @@ if (-not $llamaCppIsLink -and (
 
 Complete-FrontendBuildBackground
 
-# ── Precompile bytecode ── (opt-in on Windows; only after a dependency pass, never fatal)
-# Off by default: Defender scans every .pyc written during the update, which cost more than
-# Python's own lazy compile on first import. UNSLOTH_STUDIO_COMPILE_BYTECODE=1 turns it on.
+# ── Precompile bytecode ── (opt-in: a whole-venv compile per update cost more than lazy compile on import; never fatal)
 $_pycPython = Join-Path $VenvDir 'Scripts\python.exe'
 $_pycHelper = Join-Path $PSScriptRoot 'precompile_bytecode.py'
 $_pycSwitches = @(@($env:UV_COMPILE_BYTECODE, $env:UNSLOTH_STUDIO_COMPILE_BYTECODE) |

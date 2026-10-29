@@ -5489,9 +5489,7 @@ _print_llama_gpu_notes() {
 
 _frontend_bg_join
 
-# ── Precompile bytecode ── (opt-in; only after a dependency pass, never fatal)
-# Off by default: compiling the whole venv on every update cost more than Python's own lazy compile
-# on first import. UNSLOTH_STUDIO_COMPILE_BYTECODE=1 turns it on; a false value always wins.
+# ── Precompile bytecode ── (opt-in: a whole-venv compile per update cost more than lazy compile on import; never fatal)
 _setup_bytecode_opted_out() {
     local _sbo _sbo_out=0
     for _sbo in "${UV_COMPILE_BYTECODE:-}" "${UNSLOTH_STUDIO_COMPILE_BYTECODE:-}"; do

@@ -5,9 +5,8 @@
 
 Only adds missing .pyc, never rewrites one; always exits 0; prints nothing; skipped under 4 GiB free.
 A timeout or Ctrl+C kills the worker tree and removes exactly what this run created.
-Off by default: compiling the whole venv on every update cost more than the lazy per-import compile
-it saves, on every desktop OS (Defender scans each new .pyc on Windows). Opt in:
-UNSLOTH_STUDIO_COMPILE_BYTECODE (or UV_COMPILE_BYTECODE) true; a false always wins. Bound:
+Off by default (a whole-venv compile per update cost more than lazy compile; Defender scans each .pyc).
+Opt in: UNSLOTH_STUDIO_COMPILE_BYTECODE (or UV_COMPILE_BYTECODE) true; a false always wins. Bound:
 UNSLOTH_STUDIO_COMPILE_BYTECODE_TIMEOUT (240 s, under the desktop installer's 5 min silence report).
 Usage: python -I precompile_bytecode.py [DIR ...]
 """

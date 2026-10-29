@@ -71,7 +71,6 @@ def _clean_env(monkeypatch):
         "SOURCE_DATE_EPOCH",
     ):
         monkeypatch.delenv(name, raising = False)
-    # The helper only compiles with the opt-in.
     monkeypatch.setenv("UNSLOTH_STUDIO_COMPILE_BYTECODE", "1")
 
 
@@ -171,7 +170,6 @@ def _setup_sh_block() -> str:
 @pytest.mark.parametrize(
     "changed, rerun, opt_out, fake_exit, expect_call",
     [
-        # Off by default on every OS: compiling the whole venv each update cost more than it saved.
         ("true", "", None, 1, False),
         ("false", "1", None, 1, False),
         ("true", "", ("UNSLOTH_STUDIO_COMPILE_BYTECODE", "1"), 1, True),
@@ -226,7 +224,6 @@ def test_setup_sh_block_never_fails_and_runs_only_after_a_deps_pass(
 @pytest.mark.parametrize(
     "switches, expect_call",
     [
-        # Off by default: Defender scans every .pyc the update writes.
         ({}, False),
         ({"UNSLOTH_STUDIO_COMPILE_BYTECODE": "1"}, True),
         ({"UNSLOTH_STUDIO_COMPILE_BYTECODE": " On "}, True),
