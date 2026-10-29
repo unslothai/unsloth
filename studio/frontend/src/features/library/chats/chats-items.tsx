@@ -1228,7 +1228,7 @@ function CardFooter({ meta, date, className }: { meta?: ReactNode; date: string;
 
 // Without a tile the empty marks row collapses; the title keeps the full width and the hover menu overlays it.
 const TILELESS_ROW = "empty:hidden pe-8";
-const TILELESS_ROW_NAME = "min-h-13";
+const TILELESS_ROW_NAME = "min-h-10";
 
 const CARD_TITLE =
   "block w-full rounded-md text-left font-medium text-ui-12p5 leading-snug text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-ring";
@@ -1244,7 +1244,7 @@ export function GroupHeading({
 }) {
   const t = useT();
   return (
-    <h3 className="mb-2 mt-7 flex items-baseline gap-2 border-b border-border pb-2 pl-4 font-sans text-ui-12 first:mt-3">
+    <h3 className="mb-2 mt-3 flex items-baseline gap-2 border-b border-border pb-2 pl-4 font-sans text-ui-12">
       <span className="font-medium text-muted-foreground">{children}</span>
       <span className="text-ui-11 text-muted-foreground/70">
         {countLabel ?? chatCount(count, t)}

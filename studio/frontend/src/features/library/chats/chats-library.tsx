@@ -1114,7 +1114,7 @@ export function ChatsLibrary({
           )
         ) : (
           groups.map((group) => (
-            <section key={group.key} aria-label={groupBy === "none" ? undefined : groupLabel(group)}>
+            <section key={group.key} aria-label={groupBy === "none" ? undefined : groupLabel(group)} className="not-first:mt-6">
               {groupBy !== "none" && (
                 <GroupHeading count={groupTotals.get(group.key) ?? group.items.length}>
                   {groupLabel(group)}
