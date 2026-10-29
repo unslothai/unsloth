@@ -239,8 +239,8 @@ except Exception:  # noqa: BLE001 - a broken shim must never break user code
 class _HostPackagesFinder:
     _skip = frozenset(("sitecustomize", "usercustomize"))
 
-    def __init__(self, folder):
-        self._folder = folder
+    def __init__(self, folders):
+        self._folders = [folder for folder in folders.split(os.pathsep) if folder]
 
     def find_spec(
         self,
@@ -253,7 +253,7 @@ class _HostPackagesFinder:
         if "." not in name:
             if path is not None or name in self._skip:
                 return None
-            return importlib.machinery.PathFinder.find_spec(name, [self._folder])
+            return importlib.machinery.PathFinder.find_spec(name, self._folders)
         parent, _, _ = name.rpartition(".")
         module = sys.modules.get(parent)
         spec = getattr(module, "__spec__", None)
@@ -263,15 +263,18 @@ class _HostPackagesFinder:
         pkgutil_style = spec.origin not in (None, "namespace")
         if pkgutil_style and not self._extends_path(spec.origin):
             return None
-        portion = os.path.join(self._folder, *parent.split("."))
-        if not os.path.isdir(portion):
+        portions = [os.path.join(folder, *parent.split(".")) for folder in self._folders]
+        portions = [portion for portion in portions if os.path.isdir(portion)]
+        if not portions:
             return None
-        found = importlib.machinery.PathFinder.find_spec(name, [portion])
+        found = importlib.machinery.PathFinder.find_spec(name, portions)
         if found is not None:
-            # The portion extend_path / PEP 420 would have collected; a _NamespacePath drops it on sys.path changes.
+            # The portions extend_path / PEP 420 would have collected; a _NamespacePath drops them on sys.path changes.
             search = getattr(module, "__path__", None)
-            if search is not None and hasattr(search, "append") and portion not in list(search):
-                search.append(portion)
+            if search is not None and hasattr(search, "append"):
+                for portion in portions:
+                    if portion not in list(search):
+                        search.append(portion)
         return found
 
     _extends = {}
@@ -324,7 +327,7 @@ class _HostPackagesFinder:
         import importlib.metadata
 
         return importlib.metadata.MetadataPathFinder.find_distributions(
-            importlib.metadata.DistributionFinder.Context(name = name, path = [self._folder])
+            importlib.metadata.DistributionFinder.Context(name = name, path = self._folders)
         )
 
 

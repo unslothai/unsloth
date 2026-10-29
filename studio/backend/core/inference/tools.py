@@ -9090,7 +9090,9 @@ def _host_access_launch(plan, script: "str | None") -> "tuple[tuple, dict, str]"
         packages = os.path.join(plan.workdir, os_sandbox.SESSION_PACKAGES_RELPATH)
         if os.path.isdir(packages):
             # Served by sitecustomize's last-resort finder, not sys.path, so plugin discovery never sees them.
-            env["_UNSLOTH_HOST_SESSION_PACKAGES"] = packages
+            env["_UNSLOTH_HOST_SESSION_PACKAGES"] = os.pathsep.join(
+                os_sandbox.session_package_paths(packages)
+            )
             env["PYTHONNOUSERSITE"] = "1"
             # Chat-installed CLIs the approved call names resolve too, but only after every system executable.
             # Copies of just those: a tool probing for a command it lacks never reaches the rest of the folder.
