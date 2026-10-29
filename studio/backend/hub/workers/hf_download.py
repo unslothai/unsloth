@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""HF download subprocess (SIGKILL stops chunk threads); resume needs single-stream writes, enforced
-by HF_HUB_DISABLE_XET=1, HF_HUB_ENABLE_HF_TRANSFER=0 (http), max_workers=1, purge of unprovable
+"""HF download subprocess (SIGKILL stops chunk threads); resume needs single-stream writes per file, enforced
+by HF_HUB_DISABLE_XET=1, HF_HUB_ENABLE_HF_TRANSFER=0 (http), one writer per blob, purge of unprovable
 .incomplete blobs."""
 
 from __future__ import annotations
@@ -38,10 +38,25 @@ from hub.utils.gguf_plan import (
     sibling_sha256,
 )
 from hub.utils.state_dir import RepoType
-from hub.utils.resumable_partials import restore_resumable_partials
+from hub.utils.resumable_partials import (
+    LAST_STOCK_RESUMABLE_VERSION,
+    _hub_version,
+    restore_resumable_partials,
+)
 
 # Put huggingface_hub's 1.17 HTTP writer back: the SIGKILL then restart loop reads .incomplete for its resume offset, and 1.18+ leaves nothing to read.
 _PARTIALS_RESUMABLE = restore_resumable_partials()
+
+# Each file is still one sequential writer under huggingface_hub's per-blob lock, so overlapping files only hides request latency and per-connection caps.
+_HTTP_FILE_WORKERS = 4
+
+
+def _file_workers(mode: str) -> int:
+    """``snapshot_download(max_workers=...)``. Xet stays serial: hf_xet fans out inside a file and a killed Xet file restarts from zero. HTTP overlaps only where a killed partial resumes: the stock writer up to 1.17, past it only the writer restored at import."""
+    version = _hub_version()
+    resumes = _PARTIALS_RESUMABLE or (bool(version) and version <= LAST_STOCK_RESUMABLE_VERSION)
+    return _HTTP_FILE_WORKERS if mode == "http" and resumes else 1
+
 
 # typing.Union, not `str | bool | None`: an alias is evaluated on import and PEP 604 raises below 3.10.
 HfTokenArg = Union[str, bool, None]
@@ -669,7 +684,7 @@ def _download_snapshot(
         repo_id = repo_id,
         token = _hf_token_arg(hf_token),
         ignore_patterns = ignore_patterns,
-        max_workers = 1,
+        max_workers = _file_workers(mode),
         tqdm_class = tqdm_class,
     )
     if info is None:
@@ -818,7 +833,7 @@ def _download_gguf_variant(
         repo_id = repo_id,
         token = _hf_token_arg(hf_token),
         allow_patterns = targets,
-        max_workers = 1,
+        max_workers = _file_workers(mode),
         tqdm_class = tqdm_class,
     )
     _verify_completed_download(
@@ -919,7 +934,7 @@ def _download_scoped_snapshot(
         repo_id = repo_id,
         token = _hf_token_arg(hf_token),
         allow_patterns = files,
-        max_workers = 1,
+        max_workers = _file_workers(mode),
         tqdm_class = tqdm_class,
     )
     if info is None:
@@ -992,7 +1007,7 @@ def _download_dataset(
         "repo_id": repo_id,
         "token": _hf_token_arg(hf_token),
         "repo_type": "dataset",
-        "max_workers": 1,
+        "max_workers": _file_workers(mode),
         "tqdm_class": tqdm_class,
     }
     if isinstance(commit_hash, str) and commit_hash.strip():
