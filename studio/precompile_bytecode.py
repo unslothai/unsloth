@@ -5,9 +5,9 @@
 
 Only adds missing .pyc, never rewrites one; always exits 0; prints nothing; skipped under 4 GiB free.
 A timeout or Ctrl+C kills the worker tree and removes exactly what this run created.
-Off by default on Windows: Defender scans every newly written .pyc, which made the update slower
-than the lazy per-import compile it saves. Opt in: UNSLOTH_STUDIO_COMPILE_BYTECODE (or
-UV_COMPILE_BYTECODE) true. Opt out elsewhere: either one false; a false always wins. Bound:
+Off by default: compiling the whole venv on every update cost more than the lazy per-import compile
+it saves, on every desktop OS (Defender scans each new .pyc on Windows). Opt in:
+UNSLOTH_STUDIO_COMPILE_BYTECODE (or UV_COMPILE_BYTECODE) true; a false always wins. Bound:
 UNSLOTH_STUDIO_COMPILE_BYTECODE_TIMEOUT (240 s, under the desktop installer's 5 min silence report).
 Usage: python -I precompile_bytecode.py [DIR ...]
 """
@@ -22,7 +22,6 @@ import sysconfig
 _FALSE = ("0", "false", "no", "off")
 _TRUE = ("1", "true", "yes", "on")
 _SWITCHES = ("UV_COMPILE_BYTECODE", "UNSLOTH_STUDIO_COMPILE_BYTECODE")
-_IS_WINDOWS = os.name == "nt"
 _DEFAULT_TIMEOUT = 240.0
 _MIN_FREE_BYTES = 4 * 1024**3
 _PACKAGES = ("studio", "unsloth", "unsloth_cli")
@@ -38,9 +37,7 @@ def _disabled():
     values = [os.environ.get(name, "").strip().lower() for name in _SWITCHES]
     if any(value in _FALSE for value in values):
         return True
-    if _IS_WINDOWS:
-        return not any(value in _TRUE for value in values)
-    return False
+    return not any(value in _TRUE for value in values)
 
 
 def _timeout():

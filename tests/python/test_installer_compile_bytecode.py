@@ -71,9 +71,8 @@ def _clean_env(monkeypatch):
         "SOURCE_DATE_EPOCH",
     ):
         monkeypatch.delenv(name, raising = False)
-    if os.name == "nt":
-        # Windows needs the opt-in for the helper to compile at all.
-        monkeypatch.setenv("UNSLOTH_STUDIO_COMPILE_BYTECODE", "1")
+    # The helper only compiles with the opt-in.
+    monkeypatch.setenv("UNSLOTH_STUDIO_COMPILE_BYTECODE", "1")
 
 
 def _tree(root: Path) -> Path:
@@ -172,10 +171,14 @@ def _setup_sh_block() -> str:
 @pytest.mark.parametrize(
     "changed, rerun, opt_out, fake_exit, expect_call",
     [
-        ("true", "", None, 1, True),
-        ("true", "", None, 0, True),
-        ("false", "1", None, 1, True),
-        ("false", "", None, 0, False),
+        # Off by default on every OS: compiling the whole venv each update cost more than it saved.
+        ("true", "", None, 1, False),
+        ("false", "1", None, 1, False),
+        ("true", "", ("UNSLOTH_STUDIO_COMPILE_BYTECODE", "1"), 1, True),
+        ("true", "", ("UNSLOTH_STUDIO_COMPILE_BYTECODE", "1"), 0, True),
+        ("false", "1", ("UNSLOTH_STUDIO_COMPILE_BYTECODE", " On "), 1, True),
+        ("false", "", ("UNSLOTH_STUDIO_COMPILE_BYTECODE", "1"), 0, False),
+        ("true", "", ("UNSLOTH_STUDIO_COMPILE_BYTECODE", "maybe"), 0, False),
         ("true", "", ("UV_COMPILE_BYTECODE", " FALSE "), 0, False),
         ("true", "", ("UNSLOTH_STUDIO_COMPILE_BYTECODE", "0"), 0, False),
         ("true", "", ("UV_COMPILE_BYTECODE", "1"), 0, True),
@@ -223,7 +226,7 @@ def test_setup_sh_block_never_fails_and_runs_only_after_a_deps_pass(
 @pytest.mark.parametrize(
     "switches, expect_call",
     [
-        # Off by default on Windows: Defender scans every .pyc the update writes.
+        # Off by default: Defender scans every .pyc the update writes.
         ({}, False),
         ({"UNSLOTH_STUDIO_COMPILE_BYTECODE": "1"}, True),
         ({"UNSLOTH_STUDIO_COMPILE_BYTECODE": " On "}, True),
@@ -297,16 +300,14 @@ def test_setup_ps1_block_never_fails(tmp_path, switches, expect_call):
     assert marker.exists() is expect_call
 
 
-def test_helper_is_off_by_default_on_windows(tmp_path, monkeypatch):
+def test_helper_is_off_by_default(tmp_path, monkeypatch):
     _clean_env(monkeypatch)
     monkeypatch.delenv("UNSLOTH_STUDIO_COMPILE_BYTECODE", raising = False)
     helper = _helper()
-    # raising=False: on a helper without the Windows default this compiles and the assert fails.
-    monkeypatch.setattr(helper, "_IS_WINDOWS", True, raising = False)
     _tree(tmp_path)
     before = _snapshot(tmp_path)
     assert helper.main([str(tmp_path)]) == 0
-    assert _snapshot(tmp_path) == before, "Windows must not precompile without the opt-in"
+    assert _snapshot(tmp_path) == before, "no OS may precompile without the opt-in"
 
 
 @pytest.mark.parametrize(
@@ -319,27 +320,15 @@ def test_helper_is_off_by_default_on_windows(tmp_path, monkeypatch):
         ({"UNSLOTH_STUDIO_COMPILE_BYTECODE": "1", "UV_COMPILE_BYTECODE": "0"}, False),
     ],
 )
-def test_helper_windows_opt_in(tmp_path, monkeypatch, switches, compiles):
+def test_helper_opt_in(tmp_path, monkeypatch, switches, compiles):
     _clean_env(monkeypatch)
     monkeypatch.delenv("UNSLOTH_STUDIO_COMPILE_BYTECODE", raising = False)
     for name, value in switches.items():
         monkeypatch.setenv(name, value)
     helper = _helper()
-    monkeypatch.setattr(helper, "_IS_WINDOWS", True, raising = False)
     pkg = _tree(tmp_path)
     assert helper.main([str(tmp_path)]) == 0
     assert len(_pycs(pkg)) == (2 if compiles else 0)
-
-
-def test_helper_is_on_by_default_off_windows(tmp_path, monkeypatch):
-    """Linux, macOS and WSL keep the post-install compile unless opted out."""
-    _clean_env(monkeypatch)
-    monkeypatch.delenv("UNSLOTH_STUDIO_COMPILE_BYTECODE", raising = False)
-    helper = _helper()
-    monkeypatch.setattr(helper, "_IS_WINDOWS", False, raising = False)
-    pkg = _tree(tmp_path)
-    assert helper.main([str(tmp_path)]) == 0
-    assert len(_pycs(pkg)) == 2
 
 
 def test_helper_compiles_a_tree_and_is_idempotent(tmp_path, monkeypatch):
@@ -498,7 +487,10 @@ def test_a_stop_signal_kills_the_compile_and_undoes_it(tmp_path, signame):
         encoding = "utf-8",
     )
     proc = subprocess.Popen(
-        [sys.executable, str(driver)], stdout = subprocess.PIPE, stderr = subprocess.PIPE
+        [sys.executable, str(driver)],
+        stdout = subprocess.PIPE,
+        stderr = subprocess.PIPE,
+        env = {**os.environ, "UNSLOTH_STUDIO_COMPILE_BYTECODE": "1"},
     )
     deadline = time.monotonic() + 30
     while not pidfile.exists() and time.monotonic() < deadline:
