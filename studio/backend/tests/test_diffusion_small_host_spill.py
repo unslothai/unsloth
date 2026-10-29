@@ -45,7 +45,12 @@ def _clean_env(monkeypatch):
         monkeypatch.delenv(name, raising = False)
 
 
-def _decide(comps = KLEIN9, total = COLAB_TOTAL, available = COLAB_AVAILABLE, **kw):
+def _decide(
+    comps = KLEIN9,
+    total = COLAB_TOTAL,
+    available = COLAB_AVAILABLE,
+    **kw,
+):
     return sh.decide_small_host(
         comps,
         torch.float16,
@@ -144,12 +149,16 @@ def test_stored_components_reads_the_encoder_embedding(tmp_path):
     )
     dit = tmp_path / "transformer"
     dit.mkdir()
-    _write_st(dit / "diffusion_pytorch_model.safetensors", {"x_embedder.weight": ("BF16", (1024, 1024))})
+    _write_st(
+        dit / "diffusion_pytorch_model.safetensors", {"x_embedder.weight": ("BF16", (1024, 1024))}
+    )
     comps = sh.stored_components(tmp_path)
     assert comps["text_encoder"].embed_mib == 1
     assert comps["transformer"].embed_mib == 0
     # the dtype totals other readers use are unchanged
-    assert sh._safetensors_bytes_by_dtype(te / "model.safetensors") == {"bfloat16": 1024 * 512 * 2 + 512 * 512 * 2}
+    assert sh._safetensors_bytes_by_dtype(te / "model.safetensors") == {
+        "bfloat16": 1024 * 512 * 2 + 512 * 512 * 2
+    }
 
 
 class _Tiny(torch.nn.Module):

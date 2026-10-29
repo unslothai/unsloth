@@ -77,7 +77,6 @@ def spill_dir() -> Path:
         return Path(os.path.expanduser(raw))
     try:
         from utils.paths.storage_roots import cache_root as studio_cache_root
-
         return studio_cache_root() / "diffusion_int8_spill"
     except Exception:  # noqa: BLE001
         return Path.home() / ".cache" / "unsloth" / "diffusion_int8_spill"
@@ -694,7 +693,9 @@ def quantize_int8_weight_(
     ]
     spill = None
     if spill_dir is not None:
-        sizes = [lin.weight.numel() for _, lin in targets if lin.weight.numel() >= _INT8_MIN_ELEMENTS]
+        sizes = [
+            lin.weight.numel() for _, lin in targets if lin.weight.numel() >= _INT8_MIN_ELEMENTS
+        ]
         spill = Int8Spill(spill_dir, spill_bytes_for(sizes))
     for name, lin in targets:
         if lin.weight.numel() < _INT8_MIN_ELEMENTS:
