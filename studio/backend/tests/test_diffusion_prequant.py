@@ -143,6 +143,7 @@ def test_resolve_prefers_a_family_declared_filename():
     src = resolve_prequant_source(fam, "int8")
     assert src.filename == "Model-INT8-ConvRot-ComfyUI.safetensors"
     assert src.fallback_filenames == (
+        "Model-INT8-ConvRot.safetensors",
         "Model-INT8-ConvRot.pt",
         "Model-INT8-ComfyUI.safetensors",
         "Model-INT8.safetensors",

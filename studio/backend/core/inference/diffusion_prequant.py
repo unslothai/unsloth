@@ -702,6 +702,29 @@ def prefer_cached_pickle_twins(
     return out
 
 
+# 0 stops requesting the ``<stem>.safetensors`` twin ahead of a family-declared ``<stem>.pt`` (the older chain).
+SAFETENSORS_TWINS_ENV = "UNSLOTH_PREQUANT_SAFETENSORS_TWINS"
+
+
+def with_declared_safetensors_twins(names: Sequence[str], declared: Sequence[str]) -> list:
+    """Put ``<stem>.safetensors`` right before each declared root ``<stem>.pt`` / ``.pth``; the .pt stays as 404 fallback."""
+    import os
+
+    out = [n for n in names if n]
+    if (os.environ.get(SAFETENSORS_TWINS_ENV) or "").strip().lower() in ("0", "false", "no", "off"):
+        return out
+    wanted = {n for n in declared if n}
+    ordered: list = []
+    for name in out:
+        if name in wanted and "/" not in name and name.lower().endswith(_PICKLE_SUFFIXES):
+            twin = name[: name.rfind(".")] + ".safetensors"
+            if twin not in ordered:
+                ordered.append(twin)
+        if name not in ordered:
+            ordered.append(name)
+    return ordered
+
+
 _LOCAL_FILES_ONLY = contextvars.ContextVar("unsloth_prequant_local_files_only", default = False)
 # The load's Hub token for probes lacking one in their signature (cache freshness of a gated base); outer token wins.
 _LOAD_HF_TOKEN: contextvars.ContextVar = contextvars.ContextVar(
@@ -914,10 +937,13 @@ def resolve_prequant_source(
         # fallback: another partition's denoiser would pass every check with the wrong weights.
         task_specific = preferred is not None and preferred != agnostic
         if task_specific:
+            # Only the same artifact's safetensors twin goes ahead of it: same partition, same weights.
+            names = with_declared_safetensors_twins((preferred,), (preferred,))
             return PrequantSource(
                 kind = "repo",
                 location = repo_id,
-                filename = preferred,
+                filename = names[0],
+                fallback_filenames = tuple(names[1:]),
                 declared_filenames = (preferred,),
             )
         # Declared name first, then derived chain (safetensors ahead); dedup in order. Declared names are default-repo files; variant repos derive their own.
@@ -955,6 +981,7 @@ def resolve_prequant_source(
         for name in declared + derived:
             if name and name not in names:
                 names.append(name)
+        names = with_declared_safetensors_twins(names, declared)
         if comfy_prequant_enabled() and _comfy_prequant_family(fam):
             names = with_comfy_twins(names, lead = scheme in COMFY_TWIN_LEADS)
         return PrequantSource(
