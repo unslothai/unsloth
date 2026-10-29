@@ -1,32 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Several selected CUDA / ROCm cards for one image or video pipeline, without NCCL.
-
-Three levers, all at a component or denoiser-call boundary, never inside a model forward:
-
-* Component split (planner): the DiT stays whole and resident on the primary card while the text encoders, VAE and
-  other companions sit on a secondary card, when that removes offload on the primary. Inputs move to a module's own
-  card at its entry points and outputs come back to the primary, so the pipeline still sees one device. Copies are
-  exact, so the output is bit-identical to a single-card resident run.
-* Layer split (``diffusion_layer_split``): a DiT that fits no single selected card is split by contiguous ranges of
-  its repeated blocks, the rest of it on the primary. Activations cross at the range boundaries only; outputs are
-  bit-identical to a one-card run.
-* Second denoiser (after load): a two-DiT pipeline (an MoE ``transformer_2``) keeps one expert per card when both
-  experts do not fit one card.
-* CFG-parallel (generate): when guidance runs separate cond / uncond denoiser calls on the same latents, every odd
-  branch of a step runs on a replica of the denoiser on the secondary card, launched from a worker thread bound to
-  that card, while the primary computes the even branch. One output is copied per step; guidance and the scheduler
-  step stay on the primary. Branches are recognised from the call boundary alone (same latent tensor object in
-  consecutive calls), so true CFG, rescale and multi-branch guidance work unchanged and a guidance-distilled model
-  (one call per step) never builds a replica.
-* Layer split (after load, diffusion_layer_split_plan): when one card would offload the denoiser itself and no
-  component assignment fits, the denoiser's blocks are cut across the cards. Excludes CFG-parallel.
-
-Kill switches: ``UNSLOTH_DIFFUSION_MULTIGPU=0`` (everything here; one card as before), ``UNSLOTH_DIFFUSION_CFG_PARALLEL=0``
-(only the replica). ``UNSLOTH_DIFFUSION_MULTIGPU=force`` splits the companions even when one card would hold
-everything (for proving bit-identity). With one selected card nothing here engages.
-"""
+"""Several CUDA/ROCm cards per pipeline without NCCL, split only at component or denoiser-call
+boundaries, never inside a forward; outputs bit-identical; UNSLOTH_DIFFUSION_MULTIGPU=0 disables"""
 
 from __future__ import annotations
 

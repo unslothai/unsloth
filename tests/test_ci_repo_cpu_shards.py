@@ -126,6 +126,26 @@ class TestEveryTestFileLandsInExactlyOneShard:
         )
 
 
+class TestEveryGlobRootMatchesAFile:
+    def test_no_shard_hands_pytest_an_unexpanded_pattern(self):
+        """bash passes a glob that matches nothing through as the literal pattern, and pytest
+        then fails the whole shard on a path that does not exist. A split that moved the last
+        file out of one of its globs would break that shard rather than drop the file."""
+        files = _test_files()
+        empty = [
+            (name, root)
+            for name, (roots, _) in _shards().items()
+            for root in roots
+            if "*" in root and not any(fnmatch.fnmatch(path, root) for path in files)
+        ]
+        assert not empty, f"these shard globs match no test file: {empty}"
+
+    def test_an_empty_glob_is_reported(self):
+        assert not any(
+            fnmatch.fnmatch(path, "tests/test_no_such_prefix_*.py") for path in _test_files()
+        )
+
+
 class TestTheSplitKeepsTheSelectionItInherited:
     def test_the_deselected_hub_tests_stay_deselected(self):
         """Both hit huggingface_hub for live model existence checks. They live in a shard-3

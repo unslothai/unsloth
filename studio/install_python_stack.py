@@ -7187,7 +7187,6 @@ WINDOWS_ARM64_SKIP_PACKAGES = {
     "librosa",
     "openai-whisper",
     "torch-c-dlpack-ext",
-    "pytorch_tokenizers",
     "hf_transfer",
     "xformers",
 }
@@ -11374,7 +11373,7 @@ def _diffusers_release_target() -> "str | None":
 
 def _diffusers_release_behind() -> bool:
     """Resident diffusers older than diffusers-pin.txt's ``==``; a git / zip / checkout build is judged on
-    release numbers (the main build's 0.41.0.dev0 is current), an index prerelease is not."""
+    its release number (0.41.0.dev0 reads as 0.41.0), an index prerelease is not."""
     target = _diffusers_release_target()
     installed = _installed_distribution_version("diffusers")
     if target is None or installed is None:
@@ -12443,8 +12442,7 @@ def install_python_stack() -> int:
         )
 
     # 11b. The pinned Diffusers release, after every other requirements file and on every path.
-    # Stands down once 11c's build is resident (main reports 0.41.0.dev0, never ==0.40.0), else every
-    # update would install the release then main again.
+    # Stands down while 11c's main build is pinned and resident, else every update reinstalls both.
     if not _skip_step(
         REQ_ROOT / "diffusers-pin.txt",
         "diffusers pin",

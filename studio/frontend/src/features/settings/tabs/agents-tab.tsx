@@ -89,6 +89,7 @@ import {
   type ExampleOs,
   useSettingsPanelPrefsStore,
 } from "../stores/settings-panel-prefs-store";
+import { useFreshApiKeyStore } from "../stores/fresh-api-key-store";
 import { LineBox } from "@/components/ui/line-box";
 
 const DOCS_URL = UNSLOTH_START_DOCS_URL;
@@ -348,12 +349,15 @@ function CopyableCode({
   copied,
   onCopy,
   breakAll = true,
+  sensitive = false,
 }: {
   value: string;
   copyLabel: string;
   copied: boolean;
   onCopy: () => void;
   breakAll?: boolean;
+  /** Holds a real API key: reload-snapshot.js clears it instead of saving it to sessionStorage. */
+  sensitive?: boolean;
 }) {
   const t = useT();
 
@@ -365,6 +369,7 @@ function CopyableCode({
           "block min-w-0 whitespace-pre-wrap border border-border bg-background/70 py-2.5 pr-9 pl-4 font-mono text-ui-11 leading-relaxed text-foreground dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]",
           breakAll ? "break-all" : "break-words",
         )}
+        data-reload-snapshot-sensitive={sensitive ? "" : undefined}
       >
         {value}
       </LineBox>
@@ -390,9 +395,11 @@ function CopyableCode({
 function SubagentSection({
   agent,
   command,
+  sensitive,
 }: {
   agent: AgentDetails;
   command: string;
+  sensitive: boolean;
 }) {
   const t = useT();
   const prompt =
@@ -429,6 +436,7 @@ function SubagentSection({
           copyLabel={t("settings.agents.subagent.copySetupCommand")}
           copied={commandCopy.copied}
           onCopy={commandCopy.copy}
+          sensitive={sensitive}
         />
       </div>
 
@@ -473,6 +481,7 @@ export function AgentsTab() {
   // A Tauri origin is unreachable for the CLI, so use the backend URL; on loopback deviceType
   // decides (it can report wsl).
   const studioBase = isTauri ? (serverUrl ?? getApiBase()) : origin;
+  const freshApiKey = useFreshApiKeyStore((s) => s.key);
   const inferredCommandOs: ExampleOs = (
     isLoopbackBase(studioBase)
       ? deviceType === "windows"
@@ -641,12 +650,12 @@ export function AgentsTab() {
   const modelArgs = attachOnly
     ? ""
     : [selectedModelArgs, selectedModelFlags].filter(Boolean).join(" ");
-  // No key: the CLI caches an explicit key per base, overwriting a working saved one.
   const shellCommands = buildAgentShellCommands(
     studioBase,
     commandOs,
     selectedAgent,
     modelArgs,
+    freshApiKey,
   );
   const command = shellCommands.primary;
   const {
@@ -1421,6 +1430,7 @@ export function AgentsTab() {
             copyLabel={t("settings.agents.copyGeneratedCommand")}
             copied={copied}
             onCopy={handleCopy}
+            sensitive={freshApiKey !== null}
           />
           {selectedAgent === "vscode" && (
             <p className="text-ui-11 leading-relaxed text-muted-foreground">
@@ -1445,6 +1455,7 @@ export function AgentsTab() {
           key={`${selectedAgent}:${commandModel}`}
           command={shellCommands.subagent}
           agent={selectedAgentDetails}
+          sensitive={freshApiKey !== null}
         />
 
         <p className="text-ui-11 leading-relaxed text-muted-foreground">

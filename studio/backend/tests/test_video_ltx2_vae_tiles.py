@@ -183,6 +183,27 @@ def test_fp32_accumulator_only_when_budgeted(free, monkeypatch, free_bytes, fp32
     assert (torch.bfloat16 if fp32_accum else torch.float32) not in seen
 
 
+def test_repeat_tiled_decode_reuses_its_blend_weights(free, monkeypatch):
+    vae = _ltx_vae()
+    z = torch.randn(1, 8, 2, 22, 38, generator = torch.Generator().manual_seed(1))
+    vae.enable_tiling()
+    free["bytes"] = 0
+    assert vt.install(vae)
+    real, calls = vt.axis_weights, []
+    monkeypatch.setattr(vt, "axis_weights", lambda *a: calls.append(a) or real(*a))
+    first = _decode(vae, z)
+    assert vae._unsloth_last_decode_tile == (16, 16) and len(calls) == 2
+    second = _decode(vae, z)
+    assert len(calls) == 2 and torch.equal(first, second)
+    for (starts, tile, length, scale, _t, device), got in zip(
+        calls, vae.__dict__[vt._WEIGHTS_ATTR].values()
+    ):
+        want = real(starts, tile, length, scale, torch, device)
+        assert all(torch.equal(a, b) and a.device == b.device for a, b in zip(got, want))
+    vt.uninstall(vae)
+    assert vt._WEIGHTS_ATTR not in vae.__dict__
+
+
 def test_install_is_scoped_idempotent_and_reversible(monkeypatch):
     monkeypatch.delenv(vt.WIDE_TILES_ENV, raising = False)
     vae = _ltx_vae()

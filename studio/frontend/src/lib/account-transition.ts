@@ -67,6 +67,7 @@ export const ACCOUNT_CHROME_KEYS = new Set([
   "unsloth_loaded_models_collapsed",
   "unsloth_loaded_models_dismissed",
   "unsloth-rag-preview-width",
+  "unsloth_halloween",
 ]);
 export const ACCOUNT_CHROME_PREFIXES = [
   "unsloth_web_update_dismissed:",

@@ -1502,6 +1502,8 @@ function scheduleGenerationRecovery(
             sessionId,
             `${sessionId || "_default"}:${threadId}`,
             threadId,
+            undefined,
+            runId,
           ),
       resolve: (partId) =>
         useChatRuntimeStore.getState().clearToolConfirmation(partId),

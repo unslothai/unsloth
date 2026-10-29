@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Block-diffusion families (LLaDA2.x, SDAR).
-
-Training follows BD3-LM (https://arxiv.org/abs/2503.09573): each row is fed as [x_t ; x_0] with position ids
-restarting at the clean copy. A noisy token sees its own noisy block and the clean blocks before it; clean tokens
-see clean blocks causally. The loss reads the noisy half at the same position (no shift).
-"""
+"""Block-diffusion (LLaDA2.x, SDAR), BD3-LM training: rows [x_t ; x_0]; loss on noisy half, no shift."""
 
 import contextlib
 import functools

@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""In-process threaded ingestion: parse -> chunk -> embed -> store.
-``start_ingestion`` returns ``(document_id, job_id)`` immediately and runs on a
-daemon thread, pushing progress onto a per-job queue (streamed as SSE by
-``job_events``). Documents are deduped by content hash per scope."""
+"""Threaded in-process ingestion (parse, chunk, embed, store); start_ingestion returns (document_id,
+job_id) at once; docs dedupe by content hash per scope."""
 
 from __future__ import annotations
 

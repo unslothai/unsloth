@@ -629,6 +629,37 @@ export const ar = {
     compactEmpty: "لا يوجد ما يمكن ضغطه بعد",
     compactUnsupported: "ضغط المحادثة يتطلب نموذج GGUF أو MLX يدعم الأدوات",
   },
+  halloween: {
+    navLabel: "حلوى أم خدعة…",
+    title: "حلوى أم خدعة?!",
+    description:
+      "حضّرنا بعض المفاجآت المخيفة لـ Unsloth، وستبقى حتى نهاية أكتوبر.",
+    chooseTheme: "اختر سمة مخيفة",
+    spookyGreetings: "تحيات مخيفة",
+    spookyGreetingsDescription: "يستقبل الكسلان المحادثات الجديدة بإخافة.",
+    decorations: "عناكب وخفافيش",
+    decorationsDescription:
+      "شباك عنكبوت في الزوايا، وعنكبوت أو خفاش بين حين وآخر مع سمة الهالوين.",
+    surprise: "حلوى أم خدعة!",
+    surpriseDescription: "دع الكسلان يختار سمة لك.",
+    themesTitle: "سمات مخيفة",
+    back: "رجوع",
+    footer: "يعود Unsloth إلى طبيعته عند منتصف ليل 1 نوفمبر.",
+    removeNow: "إزالة الآن",
+    hideFromSidebar: "إخفاء من الشريط الجانبي",
+    greeting: {
+      pumpkins: "نُحتت اليقطينات. ما التالي؟",
+      brewing: "هيا نحضّر الجرعة",
+      trickOrTreat: "حلوى أم خدعة؟",
+      manor: "مرحبًا بك في القصر",
+      manorName: "مرحبًا بك في القصر يا {name}",
+      happyHalloween: "هالوين سعيد",
+      happyHalloweenName: "هالوين سعيد يا {name}",
+      spirits: "الأرواح تُصغي…",
+      mysteries: "ما الأسرار التي سنكشفها الليلة؟",
+      conjure: "ماذا أستحضر لك؟",
+    },
+  },
   welcome: {
     goodToSeeYou: "سعيد برؤيتك",
     goodToSeeYouName: "سعيد برؤيتك يا {name}",
@@ -790,6 +821,8 @@ export const ar = {
       guidedTour: "جولة إرشادية",
       help: "مساعدة",
       logOut: "تسجيل الخروج",
+      logOutNeedsPassword: "عيّن كلمة مرور في الإعدادات > الوصول عن بُعد قبل تسجيل الخروج، حتى تتمكن من تسجيل الدخول مرة أخرى.",
+      logOutFailed: "تعذّر تسجيل الخروج بأمان. حاول مرة أخرى بعد قليل.",
       shutdown: "إيقاف التشغيل",
     },
     commandPalette: {
@@ -934,6 +967,11 @@ export const ar = {
   },
   settings: {
     accounts: {
+      signsInAs: "يسجّل الدخول باسم {username}",
+      signsInAsOwner: "يسجّل الدخول باسم {alias} أو {username}",
+      signInName: "اسم تسجيل الدخول",
+      signInNameDescription: "الاسم الذي تكتبه لتسجيل الدخول عندما يكون في هذا التثبيت أكثر من حساب. يعمل unsloth دائمًا أيضًا. اتركه فارغًا لاستخدام unsloth فقط.",
+      signInNameSave: "حفظ الاسم",
       title: "الحسابات",
       description: "أنشئ حسابات Unsloth خاصة. يسجّل المستخدمون الجدد الدخول برمز إعداد يُستخدم مرة واحدة ثم يختارون كلمة مرور.",
       username: "اسم المستخدم",
@@ -1074,7 +1112,7 @@ export const ar = {
       lastVisited: "آخر ما تمت زيارته",
     },
     tabs: {
-      sandbox: "وضع الحماية",
+      sandbox: "الأمان",
       accounts: "الحسابات",
       general: "عام",
       profile: "الملف الشخصي",
@@ -1358,7 +1396,7 @@ export const ar = {
       },
     },
     sandbox: {
-      title: "وضع الحماية",
+      title: "الأمان",
       description: "ما إذا كانت استدعاءات أدوات Python والطرفية تعمل داخل وضع حماية نظام التشغيل على هذا الكمبيوتر.",
       docs: "التوثيق",
       docsLabel: "فتح توثيق وضع الحماية",
@@ -1413,7 +1451,7 @@ export const ar = {
       installingRuntime: "جارٍ التثبيت…",
       installRuntimeFailed: "فشل تثبيت بيئة التشغيل.",
       installRuntimeError: "تعذر بدء تثبيت بيئة التشغيل.",
-      unsupportedArch: "يعمل وضع حماية Windows (MXC) على Windows x64 فقط، لذا فهو غير متاح على هذا الكمبيوتر.",
+      unsupportedArch: "يعمل وضع حماية Windows (MXC) على Windows x64 وARM64 فقط، لذا فهو غير متاح على هذا الكمبيوتر.",
       builtinNeedsUpdate:
         "تحتاج الحاوية المدمجة في Windows إلى الإصدار {required} أو أحدث، بينما يعمل هذا الكمبيوتر بالإصدار {current}. ثبّت آخر تحديث لـ Windows لاستخدامها دون خطوة مسؤول، أو فعّل وضع الحماية الاحتياطي أدناه.",
       unsupportedBuild: "يتطلب وضع حماية Windows (MXC) إصدار Windows 11 24H2 (البنية 26100) أو أحدث، لذا فهو غير متاح على هذا الكمبيوتر.",
@@ -1434,6 +1472,7 @@ export const ar = {
       managedNote: "يُعدّ مالك خادم Unsloth هذا وضع حماية نظام التشغيل.",
     },
     debugging: {
+      description: "اقرأ سجلات Unsloth دون مغادرة التطبيق.",
       logSection: "ملف السجل",
       source: "ملف السجل",
       sourceHint: "تكتب مشغّلات النماذج سجلاتها الخاصة، لذا غالبًا ما يكون سبب فشل التحميل أو التوليد موضّحًا فيها لا في سجل الخادم.",
@@ -2180,6 +2219,12 @@ export const ar = {
         classic: "كلاسيكية",
         minimal: "بسيطة",
         moreThemes: "المزيد من السمات",
+        halloween: "هالوين",
+      },
+      trickOrTreat: {
+        label: "حلوى أم خدعة",
+        description:
+          "سمات الهالوين وتحيات مخيفة حتى 1 نوفمبر.",
       },
       custom: {
         chatWidth: {
@@ -2312,7 +2357,8 @@ export const ar = {
       description: "راقب عتاد خادم Unsloth هذا ومساحة تخزينه.",
       liveUpdates: "التحديثات المباشرة",
       floatingWindow: "نافذة عائمة",
-      disableOverlay: "تعطيل التراكب",
+      showFloatingWindow: "إظهار النافذة العائمة",
+      showFloatingWindowDescription: "أبقِ استخدام المعالج والذاكرة ووحدة الرسوميات ظاهرًا فوق Unsloth.",
       liveMonitor: {
         title: "المراقبة المباشرة",
         apiTitle: "مراقبة API",
@@ -2335,7 +2381,7 @@ export const ar = {
         gpuUnusableDetail: "تم اكتشافه، لكن PyTorch لا يستطيع استخدامه",
         detailedView: "عرض مفصل",
         detailedViewDescription:
-          "اعرض حمل المعالج وحمل كل وحدة GPU وحرارتها واستهلاكها للطاقة في النافذة العائمة وهنا.",
+          "اعرض حمل المعالج وحمل كل وحدة GPU وحرارتها واستهلاكها للطاقة في النافذة العائمة.",
         cpuLoad: "حمل المعالج",
         gpuLoad: "حمل GPU",
         temperature: "الحرارة",
@@ -2368,6 +2414,10 @@ export const ar = {
         used: "{value} مستخدم",
         free: "{value} متاح",
         total: "{value} إجمالي",
+        usedOf: "{used} مستخدمة من {total}",
+        segmentUsed: "مستخدمة بواسطة GPU",
+        segmentSystem: "مستخدمة بواسطة النظام",
+        segmentAvailable: "متاحة",
       },
       llamaBackend: {
         title: "محرك استدلال GGUF",
@@ -2497,6 +2547,10 @@ export const ar = {
           hideDetailsAction: "إخفاء التفاصيل",
           clearAction: "مسح ذاكرات التخزين المؤقت",
           clearOneAction: "مسح",
+          showFolders: "إظهار المجلدات",
+          hideFolders: "إخفاء المجلدات",
+          previousLocations: "يشمل المواقع السابقة. يؤثر زر المسح الرئيسي على مجلد ذاكرة التخزين المؤقت الحالي. تمسح أزرار النماذج النسخة المحددة فقط.",
+          clearModelDescription: "يؤدي هذا إلى إزالة هذه النسخة المخزنة مؤقتًا فقط. سيتم تنزيلها مرة أخرى عند الحاجة.",
           clearingAction: "جارٍ المسح...",
           confirmTitle: "هل تريد مسح الملفات المخزّنة مؤقتًا؟",
           confirmDescription: "سيؤدي ذلك إلى تحرير نحو {size}.",
@@ -2743,11 +2797,6 @@ export const ar = {
       autoScrollManual: "يدوي",
       autoScrollKeywords:
         "تمرير تلقائي متابعة أسفل قفز بث إنشاء تثبيت scroll autoscroll follow",
-      scrollToBottomButton: "زر التمرير إلى الأسفل",
-      scrollToBottomButtonDescription:
-        "إظهار زر للعودة إلى أحدث رسالة بعد التمرير لأعلى.",
-      scrollToBottomButtonKeywords:
-        "تمرير أسفل أحدث سهم زر إخفاء scroll bottom button",
       replyNotification: "الإشعار عند انتهاء الرد",
       replyNotificationDescription:
         "إظهار إشعار من النظام عند انتهاء الرد بينما يكون Unsloth مصغرًا أو في الخلفية.",
@@ -3138,6 +3187,7 @@ export const ar = {
       readDocs: "قراءة وثائق API",
       noAccess: "لا يوجد وصول إلى API بعد.",
       accessTokens: "توكنات الوصول",
+      quickstartTitle: "البدء السريع",
       columnName: "الاسم",
       columnToken: "التوكن",
       columnCreated: "تاريخ الإنشاء",
@@ -3277,8 +3327,9 @@ export const ar = {
         loadError: "تعذّر تحميل إعدادات واجهة القرارات.",
         sendsTo: "تُرسَل الطلبات إلى {provider}.",
         connectionMissing: "هذا الاتصال لم يعد موجودًا أو لا يحتوي على نماذج قرارات. اختر نموذجًا آخر.",
-        addConnection: "لاستخدام نموذج قرارات مستضاف، أضف TypeSafe أو Liquid AI أو OpenRouter في الاتصالات.",
-        openConnections: "فتح الاتصالات",
+        addConnection: "لاستخدام نموذج قرارات مستضاف، أضفه في ",
+        connectionsLink: "الاتصالات",
+        addConnectionSuffix: ".",
       },
       mcp: {
         title: "وصول الوكلاء (MCP)",
@@ -4193,7 +4244,6 @@ export const ar = {
       terminalStart: "> يبدأ تدريب Unsloth...",
       preparingResources: "> جارٍ تحضير النموذج ومجموعة البيانات...",
       gettingReady: "> نُجهّز كل شيء لعملية التدريب...",
-      waitingForFirstStep: "> {message} | في انتظار الخطوة الأولى... ({step})",
       resumingTraining: "جارٍ استئناف التدريب...",
       startingTraining: "جارٍ بدء التدريب...",
       dataset: "مجموعة البيانات",

@@ -60,6 +60,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
   appearance: [
     "settings.appearance.theme.label",
     "settings.appearance.palette.label",
+    "settings.appearance.trickOrTreat.label",
     "settings.appearance.custom.colors.accent",
     "settings.appearance.custom.colors.background",
     "settings.appearance.custom.colors.foreground",
@@ -131,7 +132,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.toolResultLimit",
     "settings.chat.firstTokenLabel",
     "settings.chat.autoScroll",
-    "settings.chat.scrollToBottomButton",
     "settings.chat.replyNotification",
     "settings.profile.greetingSloth",
     "settings.chat.thinking.visibility",
@@ -464,7 +464,6 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
   "settings.chat.tools.visibility": "settings.chat.visibilityKeywords",
   "settings.chat.tools.foldIntoThinking": "settings.chat.visibilityKeywords",
   "settings.chat.autoScroll": "settings.chat.autoScrollKeywords",
-  "settings.chat.scrollToBottomButton": "settings.chat.scrollToBottomButtonKeywords",
   "settings.chat.replyNotification": "settings.chat.replyNotificationKeywords",
   "settings.chat.showReplyTimes": "settings.chat.showReplyTimesKeywords",
   "settings.chat.showGenerationDetails": "settings.chat.showGenerationDetailsKeywords",

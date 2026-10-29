@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Admission control for local llama-server generation requests.
-
-These helpers deliberately know nothing about FastAPI, SSE or the OpenAI-compatible route shape.
-They only coordinate how many upstream generation requests may be active for one llama-server
-backend and provide a cancellable FIFO queue for excess requests.
-"""
+"""Per-backend concurrency limit with a cancellable FIFO queue for llama-server; no FastAPI or SSE"""
 
 from __future__ import annotations
 

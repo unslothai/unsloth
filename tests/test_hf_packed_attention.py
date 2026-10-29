@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 """Packed rows on the transformers modeling path run varlen attention, and nothing else changes."""
 
+import contextlib
 import inspect
 import types
 
@@ -659,6 +660,141 @@ def test_int32_guard_follows_training_or_grad_mode(monkeypatch, mode):
         assert out[0].shape == (1, 6, 4, 64)
     else:
         assert out == ("orig", None)
+
+
+# (L + 128 * n) * H * round32(D) at H = 8, D = 64: 400 tokens' worth per group.
+_SMALL_INT32_LIMIT = 400 * 8 * 64
+
+
+def test_int32_safe_groups_split_at_document_boundaries(monkeypatch):
+    import unsloth.utils.attention_dispatch as ad
+
+    monkeypatch.setattr(ad, "_INT32_ELEMENTS", _SMALL_INT32_LIMIT)
+    lengths = [37, 100, 2, 5, 230, 64, 9]
+    groups = hpa._int32_safe_groups(lengths, 8, 64)
+    assert groups[0][0] == 0 and groups[-1][1] == len(lengths) and groups[-1][3] == sum(lengths)
+    for (first, end, start, stop, longest), following in zip(groups, groups[1:] + [None]):
+        assert stop - start == sum(lengths[first:end]) and longest == max(lengths[first:end])
+        assert not ad._varlen_backward_overflows_int32(end - first, stop - start, 8, 64)
+        if following is not None:
+            assert following[0] == end and following[2] == stop
+    assert len(groups) > 1
+    # One document alone past the limit cannot be split.
+    assert hpa._int32_safe_groups([37, 300], 8, 64) is None
+
+
+@_CUDA
+@pytest.mark.parametrize("window", [None, 4])
+@pytest.mark.parametrize("route", ["torch", "dispatch"])
+def test_int32_guard_splits_documents_instead_of_the_dense_fallback(monkeypatch, route, window):
+    """A row past the varlen backward's int32 limit runs the kernel per group of documents, and the
+    output and gradients are the unsplit kernel's; SDPA over the dense mask is never reached."""
+    import unsloth.utils.attention_dispatch as ad
+
+    if route == "torch" and hpa._torch_varlen(torch.device("cuda", 0)) is None:
+        pytest.skip("this torch has no window_size varlen_attn")
+    if route == "dispatch":
+        if not (ad.HAS_FLASH_ATTENTION or ad.HAS_XFORMERS):
+            pytest.skip("needs xformers or flash-attn")
+        monkeypatch.setattr(hpa, "_torch_varlen", lambda device: None)
+        # Where torch's packed kernels beat xformers the dispatcher picks sdpa: pin the varlen one.
+        backend = ad.FLASH_VARLEN if ad.HAS_FLASH_ATTENTION else ad.XFORMERS
+        monkeypatch.setattr(ad, "select_attention_backend", lambda **kwargs: backend)
+
+    def _dense(*args, **kwargs):
+        raise AssertionError("packed row fell back to SDPA over the dense mask")
+
+    hpa._ORIG_SDPA[0] = _dense
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    torch.manual_seed(0)
+    lengths = [37, 100, 2, 5, 230, 64, 9]
+    T, H, n_kv, D = sum(lengths), 8, 2, 64
+    module = types.SimpleNamespace(
+        is_causal = True, num_key_value_groups = H // n_kv, training = True, sliding_window = window
+    )
+    q, k, v = (
+        torch.randn(1, h, T, D, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+        for h in (H, n_kv, n_kv)
+    )
+    mask = (
+        _block_causal(lengths, "cuda")
+        if window is None
+        else _hf_window_mask(lengths, window, "cuda")
+    )
+    psl = torch.tensor(lengths, dtype = torch.int32)
+    g = torch.randn(1, T, H, D, device = "cuda", dtype = torch.bfloat16)
+
+    def run():
+        out, _ = hpa._sdpa_packed_varlen(
+            module, q, k, v, mask, scaling = 0.11, packed_seq_lengths = psl
+        )
+        return (out, *torch.autograd.grad(out, (q, k, v), g))
+
+    whole = run()
+    monkeypatch.setattr(ad, "_INT32_ELEMENTS", _SMALL_INT32_LIMIT)
+    assert ad._varlen_backward_overflows_int32(len(lengths), T, H, D)
+    before = dict(hpa.HF_PACKED_ATTENTION_STATS)
+    split = run()
+    assert hpa.HF_PACKED_ATTENTION_STATS["int32_split"] == before["int32_split"] + 1
+    assert hpa.HF_PACKED_ATTENTION_STATS["fallback"] == before["fallback"]
+    for a, b in zip(split, whole):
+        torch.testing.assert_close(a, b, atol = 0, rtol = 0)
+
+
+def test_block_varlen_kwargs_sends_rows_past_int32_to_the_eager_wrapper(monkeypatch):
+    """The traced kernel cannot split a row, so the eager wrapper (which can) runs it; a document that
+    alone overflows keeps the previous dense path."""
+    import unsloth.utils.attention_dispatch as ad
+
+    hpa._ORIG_SDPA[0] = _plain_sdpa
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+    monkeypatch.setattr(hpa, "_torch_varlen", lambda device: object())
+    monkeypatch.setattr(hpa, "_sdpa_policy_requested", lambda *args: False)
+    monkeypatch.setattr(hpa, "_BLOCK_PREP", {})
+    monkeypatch.setattr(ad, "_INT32_ELEMENTS", 200 * 4 * 32)
+    layer = _block_layer(head_dim = 32, n_heads = 4)
+    for lengths, expected in (([20, 30, 40], hpa._LEAVE_BLOCK), ([20, 80], None)):
+        hidden = torch.randn(1, sum(lengths), 8)
+        kwargs = {
+            "packed_seq_lengths": torch.tensor(lengths),
+            "attention_mask": _block_causal(lengths),
+        }
+        before = hpa.HF_PACKED_ATTENTION_STATS["compiled"]
+        assert hpa.block_varlen_kwargs(layer, hidden, kwargs) == expected
+        assert hpa.HF_PACKED_ATTENTION_STATS["compiled"] == before
+
+
+def test_traced_leave_block_call_runs_the_eager_wrapper(monkeypatch):
+    seen = []
+
+    @torch.compiler.disable
+    def eager(module, q, k, v, mask, **kwargs):
+        seen.append(set(kwargs))
+        return q.transpose(1, 2) * 3, None
+
+    hpa._ORIG_SDPA[0] = lambda *args, **kwargs: pytest.fail("the dense path stayed in the graph")
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    monkeypatch.setattr(hpa, "_sdpa_packed_varlen_eager", eager)
+    lengths = [3, 3]
+    module = types.SimpleNamespace(is_causal = True, num_key_value_groups = 1, training = True)
+    q = torch.randn(1, 4, 6, 16, dtype = torch.bfloat16)
+    mask, psl = _block_causal(lengths), torch.tensor(lengths, dtype = torch.int32)
+    torch._dynamo.reset()
+    fn = torch.compile(
+        lambda q: hpa._sdpa_packed_varlen(
+            module,
+            q,
+            q,
+            q,
+            mask,
+            packed_seq_lengths = psl,
+            **{hpa.BLOCK_VARLEN_KWARG: hpa._LEAVE_BLOCK},
+        )[0],
+        backend = "eager",
+    )
+    torch.testing.assert_close(fn(q), q.transpose(1, 2) * 3)
+    assert seen and all(hpa.BLOCK_VARLEN_KWARG not in kwargs for kwargs in seen)
 
 
 @_CUDA
@@ -1485,6 +1621,154 @@ def test_traced_block_varlen_call_stays_in_the_graph(monkeypatch, in_graph):
         assert hpa.BLOCK_VARLEN_KWARG not in seen["orig_kwargs"]
 
 
+@pytest.mark.parametrize("in_graph", [True, False])
+def test_traced_packed_probes_take_symbolic_head_dims(monkeypatch, in_graph):
+    """dynamic = True head sizes reach the probes as plain ints; the sequence dim stays dynamic."""
+    from torch._dynamo.testing import CompileCounter
+
+    keys = []
+
+    def probe(name):
+        def run(*key):
+            keys.append((name, key))
+            return in_graph if name == "varlen" else False
+
+        return run
+
+    def gqa_sdpa(
+        module,
+        q,
+        k,
+        v,
+        mask,
+        scaling = None,
+        **kwargs,
+    ):
+        out = torch.nn.functional.scaled_dot_product_attention(
+            q, k, v, attn_mask = mask, scale = scaling, enable_gqa = True
+        )
+        return out.transpose(1, 2), None
+
+    hpa._ORIG_SDPA[0] = gqa_sdpa
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    _block_flag(monkeypatch, True)
+    monkeypatch.setattr(hpa, "_static_window", lambda *args: None)
+    monkeypatch.setattr(hpa, "_VARLEN_IN_GRAPH", {})
+    monkeypatch.setattr(hpa, "_LEAVES_BLOCK", {})
+    monkeypatch.setattr(hpa, "_varlen_in_graph_probe", probe("varlen"))
+    monkeypatch.setattr(hpa, "_leaves_block_probe", probe("leaves"))
+    monkeypatch.setattr(
+        hpa,
+        "_flash_varlen",
+        lambda q, k, v, cu, m, scale, window: q.transpose(1, 2) * scale,
+    )
+    module = types.SimpleNamespace(is_causal = True, num_key_value_groups = 2, training = True)
+    torch._dynamo.reset()
+    torch._dynamo.utils.counters.clear()
+    counter = CompileCounter()
+    fn = torch.compile(
+        lambda q, k, mask, psl, cu: hpa._sdpa_packed_varlen(
+            module, q, k, k, mask, packed_seq_lengths = psl, **{hpa.BLOCK_VARLEN_KWARG: (cu, 3)}
+        )[0],
+        backend = counter,
+        fullgraph = True,
+        dynamic = True,
+    )
+    # Segment counts and lengths avoid the head sizes (4, 2, 16): duck sizing would tie them.
+    for lengths in ([2, 2, 2], [2, 5, 4, 1, 1], [7, 1, 1, 6, 2, 3]):
+        T = sum(lengths)
+        q = torch.randn(1, 4, T, 16)
+        k = torch.randn(1, 2, T, 16)
+        mask, psl = _block_causal(lengths), torch.tensor(lengths, dtype = torch.int32)
+        cu = torch.tensor([0, *torch.tensor(lengths).cumsum(0).tolist()], dtype = torch.int32)
+        out = fn(q, k, mask, psl, cu)
+        if in_graph:
+            torch.testing.assert_close(out, q.transpose(1, 2) * 16**-0.5)
+        else:
+            ref = gqa_sdpa(module, q, k, k, mask)[0]
+            torch.testing.assert_close(out, ref)
+    assert sum(torch._dynamo.utils.counters["graph_break"].values()) == 0
+    assert counter.frame_count == 1
+    expected = [("varlen", (None, torch.float32, 16, 4, 2, None))]
+    if not in_graph:
+        expected.append(("leaves", ("cpu", None, torch.float32, 16, None)))
+    assert keys == expected
+    assert all(type(x) is int for _, key in keys for x in key if isinstance(x, int))
+
+
+def test_shared_forward_with_mixed_head_dims_compiles(monkeypatch):
+    """Gemma4-style mixed head_dim: allow_unspec_int_on_nn_module (set by unsloth_zoo) makes
+    self.head_dim symbolic even with dynamic = None; the probes must still get plain ints."""
+    from torch._dynamo.testing import CompileCounter
+
+    if not hasattr(torch._dynamo.config, "allow_unspec_int_on_nn_module"):
+        pytest.skip("torch without allow_unspec_int_on_nn_module keeps module ints static")
+    keys = []
+
+    def probe(name):
+        def run(*key):
+            keys.append((name, key))
+            return False
+
+        return run
+
+    def gqa_sdpa(
+        module,
+        q,
+        k,
+        v,
+        mask,
+        scaling = None,
+        **kwargs,
+    ):
+        out = torch.nn.functional.scaled_dot_product_attention(
+            q, k, v, attn_mask = mask, scale = scaling, enable_gqa = True
+        )
+        return out.transpose(1, 2), None
+
+    class Attn(torch.nn.Module):
+        def __init__(self, heads, kv_heads, head_dim):
+            super().__init__()
+            self.head_dim, self.is_causal = head_dim, True
+            self.num_key_value_groups = heads // kv_heads
+            self.q_proj = torch.nn.Linear(64, heads * head_dim, bias = False)
+            self.k_proj = torch.nn.Linear(64, kv_heads * head_dim, bias = False)
+
+        def forward(self, h, mask, psl):
+            shape = (*h.shape[:-1], -1, self.head_dim)
+            q = self.q_proj(h).view(shape).transpose(1, 2)
+            k = self.k_proj(h).view(shape).transpose(1, 2)
+            return hpa._sdpa_packed_varlen(self, q, k, k, mask, packed_seq_lengths = psl)[0]
+
+    hpa._ORIG_SDPA[0] = gqa_sdpa
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    _block_flag(monkeypatch, True)
+    monkeypatch.setattr(hpa, "_static_window", lambda *args: None)
+    monkeypatch.setattr(hpa, "_VARLEN_IN_GRAPH", {})
+    monkeypatch.setattr(hpa, "_LEAVES_BLOCK", {})
+    monkeypatch.setattr(hpa, "_varlen_in_graph_probe", probe("varlen"))
+    monkeypatch.setattr(hpa, "_leaves_block_probe", probe("leaves"))
+    torch.manual_seed(0)
+    layers = [Attn(4, 2, 16), Attn(2, 1, 32), Attn(4, 2, 16), Attn(2, 1, 32)]
+    lengths = [2, 5, 4]
+    h = torch.randn(1, sum(lengths), 64)
+    mask, psl = _block_causal(lengths), torch.tensor(lengths, dtype = torch.int32)
+    torch._dynamo.reset()
+    torch._dynamo.utils.counters.clear()
+    counter = CompileCounter()
+    with torch._dynamo.config.patch(allow_unspec_int_on_nn_module = True):
+        compiled = torch.compile(Attn.forward, backend = counter, fullgraph = True)
+        for layer in layers:
+            out = compiled(layer, h, mask, psl)
+            shape = (*h.shape[:-1], -1, layer.head_dim)
+            q = layer.q_proj(h).view(shape).transpose(1, 2)
+            k = layer.k_proj(h).view(shape).transpose(1, 2)
+            torch.testing.assert_close(out, gqa_sdpa(layer, q, k, k, mask)[0])
+    assert sum(torch._dynamo.utils.counters["graph_break"].values()) == 0
+    assert {key[3] for name, key in keys if name == "leaves"} == {16, 32}
+    assert all(type(x) is int for _, key in keys for x in key if isinstance(x, int))
+
+
 @_CUDA
 @_TORCH_VARLEN_HOST
 @pytest.mark.parametrize("window", [None, 4])
@@ -1682,3 +1966,128 @@ def test_reentrant_checkpoint_first_trace_keeps_the_block_varlen_path(monkeypatc
     torch.testing.assert_close(out.float(), ref_out.float(), atol = 2e-2, rtol = 2e-2)
     for g, r in zip(got, ref):
         torch.testing.assert_close(g.float(), r.float(), atol = 3e-2, rtol = 3e-2)
+
+
+def _dtype_seen():
+    seen = []
+
+    def orig(
+        module,
+        q,
+        k,
+        v,
+        mask,
+        dropout = 0.0,
+        scaling = None,
+        is_causal = None,
+        **kwargs,
+    ):
+        seen.append((q.dtype, k.dtype, v.dtype))
+        return torch.nn.functional.scaled_dot_product_attention(
+            q, k, v, attn_mask = mask, scale = scaling
+        ), None
+
+    return seen, orig
+
+
+@pytest.mark.parametrize(
+    "case, autocast, dtype, packed, expected",
+    [
+        # Full finetuning: fp32 q_norm / k_norm leave Q and K in fp32 under bf16 autocast.
+        ("fp32_under_bf16_autocast", torch.bfloat16, torch.float32, True, torch.bfloat16),
+        ("fp32_under_fp16_autocast", torch.float16, torch.float32, True, torch.float16),
+        ("fp32_without_autocast", None, torch.float32, True, torch.float32),
+        ("bf16_under_fp16_autocast", torch.float16, torch.bfloat16, True, torch.bfloat16),
+        ("unpacked_fp32_under_autocast", torch.bfloat16, torch.float32, False, torch.float32),
+    ],
+)
+def test_packed_fp32_rows_under_autocast_run_in_the_autocast_dtype(
+    monkeypatch, case, autocast, dtype, packed, expected
+):
+    """Packed fp32 Q / K / V under autocast reach the varlen checks in the dtype SDPA runs in."""
+    seen, orig = _dtype_seen()
+    hpa._ORIG_SDPA[0] = orig
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    lengths = [3, 5]
+    q, k, v = (torch.randn(1, 2, 8, 16, dtype = dtype) for _ in range(3))
+    kwargs = {"packed_seq_lengths": torch.tensor(lengths, dtype = torch.int32)} if packed else {}
+    module = types.SimpleNamespace(is_causal = True)
+    mask = _block_causal(lengths)
+    context = (
+        torch.autocast("cpu", dtype = autocast) if autocast is not None else contextlib.nullcontext()
+    )
+    with context:
+        out, _ = hpa._sdpa_packed_varlen(module, q, k, v, mask, scaling = 0.25, **kwargs)
+        ref = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask = mask, scale = 0.25)
+    assert seen == [(dtype, dtype, dtype)]
+    assert out.dtype == ref.dtype
+    torch.testing.assert_close(out, ref, atol = 0, rtol = 0)
+    if packed:
+        with context:
+            assert {t.dtype for t in hpa._autocast_float32(q, k, v)} == {expected}
+
+
+@pytest.mark.parametrize("autocast", [torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("n_kv", [2, 8])
+def test_packed_fp32_fallback_rows_keep_their_gradients(monkeypatch, autocast, n_kv):
+    """Fallback rows must get uncast Q / K / V: GQA's dK / dV reduce in fp32 after repeat_kv."""
+    from transformers.integrations.sdpa_attention import sdpa_attention_forward
+
+    hpa._ORIG_SDPA[0] = sdpa_attention_forward
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    torch.manual_seed(0)
+    lengths = [37, 100, 2, 5, 56]
+    T, H, D = sum(lengths), 8, 64
+    module = types.SimpleNamespace(is_causal = True, num_key_value_groups = H // n_kv, training = True)
+    q = torch.randn(1, H, T, D, requires_grad = True)
+    k = torch.randn(1, n_kv, T, D, requires_grad = True)
+    v = torch.randn(1, n_kv, T, D, requires_grad = True)
+    mask, psl = _block_causal(lengths), torch.tensor(lengths, dtype = torch.int32)
+    with torch.autocast("cpu", dtype = autocast):
+        out, _ = hpa._sdpa_packed_varlen(
+            module, q, k, v, mask, scaling = 0.125, packed_seq_lengths = psl
+        )
+        ref, _ = sdpa_attention_forward(module, q, k, v, mask, scaling = 0.125)
+    g = torch.randn_like(ref)
+    got = torch.autograd.grad(out, (q, k, v), g)
+    want = torch.autograd.grad(ref, (q, k, v), g)
+    torch.testing.assert_close(out, ref, atol = 0, rtol = 0)
+    for a, b in zip(got, want):
+        assert a.dtype == b.dtype == torch.float32
+        torch.testing.assert_close(a, b, atol = 0, rtol = 0)
+
+
+@_CUDA
+@_TORCH_VARLEN_HOST
+@pytest.mark.parametrize("autocast", [torch.bfloat16, torch.float16])
+def test_packed_fp32_rows_under_autocast_take_varlen(monkeypatch, autocast):
+    if hpa._torch_varlen(torch.device("cuda", 0)) is None:
+        pytest.skip("this torch has no window_size varlen_attn")
+    from transformers.integrations.sdpa_attention import sdpa_attention_forward
+
+    hpa._ORIG_SDPA[0] = sdpa_attention_forward
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    torch.manual_seed(0)
+    lengths = [37, 100, 2, 5, 230]
+    T, H, n_kv, D = sum(lengths), 8, 2, 64
+    module = types.SimpleNamespace(is_causal = True, num_key_value_groups = H // n_kv, training = True)
+    q = torch.randn(1, H, T, D, device = "cuda", requires_grad = True)
+    k = torch.randn(1, n_kv, T, D, device = "cuda", requires_grad = True)
+    v = torch.randn(1, n_kv, T, D, device = "cuda", requires_grad = True)
+    mask, psl = _block_causal(lengths, "cuda"), torch.tensor(lengths, dtype = torch.int32)
+    before = dict(hpa.HF_PACKED_ATTENTION_STATS)
+    with torch.autocast("cuda", dtype = autocast):
+        fast, _ = hpa._sdpa_packed_varlen(
+            module, q, k, v, mask, scaling = 0.11, packed_seq_lengths = psl
+        )
+        ref, _ = sdpa_attention_forward(module, q, k, v, mask, scaling = 0.11)
+    assert hpa.HF_PACKED_ATTENTION_STATS["fast"] == before["fast"] + 1
+    assert hpa.HF_PACKED_ATTENTION_STATS["fallback"] == before["fallback"]
+    assert fast.dtype == ref.dtype == autocast and fast.shape == ref.shape
+    torch.testing.assert_close(fast.float(), ref.float(), atol = 2e-2, rtol = 2e-2)
+    g = torch.randn_like(ref)
+    grads_fast = torch.autograd.grad(fast, (q, k, v), g)
+    grads_ref = torch.autograd.grad(ref, (q, k, v), g)
+    for a, b in zip(grads_fast, grads_ref):
+        assert a.dtype == torch.float32
+        torch.testing.assert_close(a, b, atol = 5e-2, rtol = 5e-2)

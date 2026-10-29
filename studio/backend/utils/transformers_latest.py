@@ -1,38 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Latest-transformers support check for brand-new model architectures.
-
-When a model's ``model_type`` is absent from every installed transformers overlay
-(base 4.57.x plus the .venv_t5_530/550/510 sidecars and, if provisioned, .venv_t5_latest),
-Unsloth cannot load it today. This module answers, without authentication, code execution,
-or trust_remote_code:
-
-  1. Does the LATEST transformers release on PyPI ship this ``model_type``?
-  2. Does transformers ``main`` on GitHub ship it (installable from main after consent)?
-
-Sources (all unauthenticated; raw.githubusercontent.com is not API rate-limited and
-api.github.com is deliberately never used):
-  - https://pypi.org/pypi/transformers/json                       -> latest release version
-  - https://raw.githubusercontent.com/huggingface/transformers/{ref}/src/transformers/
-        models/auto/configuration_auto.py + auto_mappings.py      -> CONFIG_MAPPING_NAMES
-
-The fetched sources are parsed with the same AST extractor the static router uses
-(:func:`utils.transformers_version._model_types_from_source`), so the remote answer is
-computed exactly like the local overlay answer.
-
-Results are cached in memory and in a small JSON snapshot under ``studio_root()/cache``
-(ttl ~1 day) so repeated tier resolutions never re-fetch; failures are backed off in
-memory. Every fetch is bounded by an explicit wall-clock budget on the transfer (not just
-the socket timeout, which only bounds one read), so a hung or drip-feeding network cannot
-block model loading. Fully offline-safe: offline env vars or the kill switch
-``UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS=1`` make every check return None (current
-behavior preserved).
-
-The consented install path (:func:`install_latest_transformers`) provisions the
-persistent ``.venv_t5_latest`` sidecar via
-:func:`utils.transformers_version.ensure_latest_transformers_venv`.
-"""
+"""Checks whether PyPI's latest or GitHub main transformers ships a missing model_type, with no
+auth, code execution or trust_remote_code; each fetch has a wall-clock budget so a hung network
+never blocks loading; UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS=1 or offline env vars make checks
+return None."""
 
 import contextlib
 import json
