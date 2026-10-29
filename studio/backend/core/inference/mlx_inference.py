@@ -1066,6 +1066,44 @@ def _int8_prefill_status(requested, model):
     return status
 
 
+def _ane_prefill_zoo():
+    """unsloth_zoo's MLX inference module when it can run Neural Engine prefill, else None."""
+    try:
+        zoo = importlib.import_module("unsloth_zoo.mlx.inference")
+        if "ane_prefill" in inspect.signature(zoo.ane_prefill_mlp).parameters:
+            return zoo
+    except Exception:
+        pass
+    return None
+
+
+def _ane_prefill_status(requested, model):
+    """Whether a load runs Neural Engine prefill: asked for, and the loaded model can use it here. Read again after
+    the warm-up, whose first prepare settles which layers attach."""
+    status = {"requested": bool(requested), "active": False, "reason": "", "scope": None}
+    if not requested:
+        return status
+    zoo = _ane_prefill_zoo()
+    if zoo is None:
+        status["reason"] = "unsupported_zoo"
+        return status
+    try:
+        verdict = zoo.ane_prefill_available(model)
+    except Exception as exc:
+        if is_metal_queue_dead(exc):
+            raise
+        logger.warning("MLX Neural Engine prefill check failed: %s", exc)
+        status["reason"] = "probe_failed"
+        return status
+    status["reason"] = verdict.reason
+    if verdict.available:
+        status["active"] = True
+        status["scope"] = zoo.ane_prefill_mlp
+    else:
+        logger.info("MLX Neural Engine prefill not applied: %s", verdict.reason)
+    return status
+
+
 _MLX_OFFLOAD_PARTS = (("ple", "PLE tables"), ("experts", "quantized routed experts"))
 
 
@@ -1307,6 +1345,37 @@ def mlx_int8_prefill_checkpoint_status(model_dir) -> tuple[bool, str]:
             _int8_prefill_checkpoint_cache[key] = answer
             while len(_int8_prefill_checkpoint_cache) > 32:
                 _int8_prefill_checkpoint_cache.pop(next(iter(_int8_prefill_checkpoint_cache)))
+    return answer
+
+
+_ane_prefill_checkpoint_cache: dict = {}
+_ane_prefill_checkpoint_lock = threading.Lock()
+
+
+def mlx_ane_prefill_checkpoint_status(model_dir) -> tuple[bool, str]:
+    """(available, reason) of Neural Engine prefill for a downloaded MLX checkpoint, without loading it."""
+    check = getattr(_ane_prefill_zoo(), "ane_prefill_checkpoint_available", None)
+    if check is None:
+        return False, "unsupported_zoo"
+    try:
+        from core.inference.mlx_memory import _checkpoint_fingerprint
+        key = (os.path.realpath(model_dir), _checkpoint_fingerprint(model_dir))
+    except Exception:
+        key = None
+    with _ane_prefill_checkpoint_lock:
+        if key in _ane_prefill_checkpoint_cache:
+            return _ane_prefill_checkpoint_cache[key]
+    try:
+        verdict = check(model_dir)
+        answer = (bool(verdict.available), verdict.reason)
+    except Exception as exc:
+        logger.debug("MLX Neural Engine prefill checkpoint check failed for %s: %s", model_dir, exc)
+        return False, "probe_failed"
+    if key is not None and answer[1] != "probe_failed":
+        with _ane_prefill_checkpoint_lock:
+            _ane_prefill_checkpoint_cache[key] = answer
+            while len(_ane_prefill_checkpoint_cache) > 32:
+                _ane_prefill_checkpoint_cache.pop(next(iter(_ane_prefill_checkpoint_cache)))
     return answer
 
 
@@ -4054,7 +4123,7 @@ class _TextBatchSession:
                 self._held.enter_context(
                     _temporary_mlx_adapter_state(backend._model, adapter_state)
                 )
-            self._held.enter_context(backend._int8_prefill_scope())
+            self._held.enter_context(backend._prefill_decision_scopes())
             self._held.enter_context(backend._generation_scopes("batch"))
             self.generator = BatchGenerator(
                 backend._model,
@@ -4366,7 +4435,7 @@ class _VisionBatchSession:
                 self._held.enter_context(
                     _temporary_mlx_adapter_state(backend._model, adapter_state)
                 )
-            self._held.enter_context(backend._int8_prefill_scope())
+            self._held.enter_context(backend._prefill_decision_scopes())
             self._speculative = getattr(backend, "_speculative_draft", None)
             self.stream = BatchStream(
                 backend._model,
@@ -4569,6 +4638,7 @@ class MLXInferenceBackend:
         # Load-time knobs read by all generation paths; bound early so a failed load still leaves dicts.
         self._kv_quant = _kv_quant_status(None, None, False)
         self._int8_prefill = _int8_prefill_status(False, None)
+        self._ane_prefill = _ane_prefill_status(False, None)
         self._kv_cache_window = None
         self._kv_context_budget = None
         self._served_context = None
@@ -4648,6 +4718,7 @@ class MLXInferenceBackend:
             bool(getattr(self, "_turboquant", False)),
             self._kv_cache_window,
             bool(self._int8_prefill.get("active")),
+            bool(self._ane_prefill.get("active")),
             self._prefill_step,
             self._resume_load_args,
         )
@@ -4963,20 +5034,25 @@ class MLXInferenceBackend:
             max_new_tokens = max(1, min(int(max_new_tokens), int(budget) - len(prompt_tokens)))
         return max_new_tokens
 
-    def _int8_prefill_scope(self):
-        """Outermost scope of a generation, which every Zoo scope nested in it inherits. Pinned
-        off when inactive, so Zoo's full-precision NAX routes still run and no scope reads the Int8
-        Prefill env."""
-        scope = (getattr(self, "_int8_prefill", None) or {}).get("scope")
-        if scope is not None:
-            return scope(self._model, True)
-        if _int8_prefill_zoo() is None:
-            return nullcontext()
-        return _mlx_optional_fusion("nax_quantized_linear", self._model, False)
+    def _prefill_decision_scopes(self):
+        """Outermost scopes of a generation, whose Int8 and Neural Engine Prefill decisions every Zoo
+        scope nested in them inherits. Each is pinned off when inactive, so Zoo's full-precision NAX
+        routes still run and no scope reads either env switch."""
+        stack = ExitStack()
+        for status, zoo, name in (
+            (self._int8_prefill, _int8_prefill_zoo, "nax_quantized_linear"),
+            (self._ane_prefill, _ane_prefill_zoo, "ane_prefill_mlp"),
+        ):
+            scope = (status or {}).get("scope")
+            if scope is not None:
+                stack.enter_context(scope(self._model, True))
+            elif zoo() is not None:
+                stack.enter_context(_mlx_optional_fusion(name, self._model, False))
+        return stack
 
     def _generation_scopes(self, *call):
         """Zoo's scopes for a generation of this load, under its Int8 Prefill decision. Nested in
-        _int8_prefill_scope, which stays outermost."""
+        _prefill_decision_scopes, which stays outermost."""
         active = (getattr(self, "_int8_prefill", None) or {}).get("active", False)
         return _mlx_inference_scopes(self._model, call, active)
 
@@ -5245,6 +5321,7 @@ class MLXInferenceBackend:
         kv_quant = None,
         chat_template_override = None,
         int8_prefill = False,
+        ane_prefill = False,
         speculative_type = None,
         spec_draft_n_max = None,
         spec_draft_model = None,
@@ -5613,6 +5690,7 @@ class MLXInferenceBackend:
                 self._kv_quant["eligibility"],
             )
         self._int8_prefill = _int8_prefill_status(int8_prefill, self._model)
+        self._ane_prefill = _ane_prefill_status(ane_prefill, self._model)
 
         # Captured before install so the shipped template is kept, from the render target, not the nested tokenizer, which would overwrite the processor template
         native_source = _native_template_source(self._tokenizer, self._processor)
@@ -5698,6 +5776,9 @@ class MLXInferenceBackend:
             "mlx_int8_prefill": self._int8_prefill["active"],
             "mlx_int8_prefill_requested": self._int8_prefill["requested"],
             "mlx_int8_prefill_reason": self._int8_prefill["reason"],
+            "mlx_ane_prefill": self._ane_prefill["active"],
+            "mlx_ane_prefill_requested": self._ane_prefill["requested"],
+            "mlx_ane_prefill_reason": self._ane_prefill["reason"],
             "mlx_offload": _offload,
             "chat_template_override_requested": self._template_override["requested"],
             "chat_template_override_reason": self._template_override["reason"],
@@ -5715,8 +5796,14 @@ class MLXInferenceBackend:
             self._model_fusion.enter_context(_mlx_optional_fusion("fused_moe_gate_up", model))
         # Every rank of a distributed load must run each forward together.
         if not is_distributed:
-            with mlx_rng_preserved(), self._int8_prefill_scope():
+            with mlx_rng_preserved(), self._prefill_decision_scopes():
                 _mlx_warm_inference(model, self._int8_prefill["active"])
+            if self._ane_prefill["active"]:
+                self._ane_prefill = _ane_prefill_status(True, model)
+                self.models[model_name].update(
+                    mlx_ane_prefill = self._ane_prefill["active"],
+                    mlx_ane_prefill_reason = self._ane_prefill["reason"],
+                )
         logger.info("Model %s loaded successfully", model_name)
         return True
 
@@ -5813,6 +5900,9 @@ class MLXInferenceBackend:
         import gc
 
         self._model_fusion.close()
+        if self._ane_prefill["active"] and self._model is not None:
+            # The Neural Engine worker can hold its last request's program past the model.
+            _ane_prefill_zoo().release_ane_prefill(self._model)
         if model_name in self.models:
             del self.models[model_name]
         self._speculative_draft = None
@@ -6353,7 +6443,7 @@ class MLXInferenceBackend:
         with (
             self._generation_lock,
             _temporary_mlx_adapter_state(self._model, _adapter_state),
-            self._int8_prefill_scope(),
+            self._prefill_decision_scopes(),
             self._generation_scopes(),
         ):
             input_embeddings = None
@@ -7189,7 +7279,7 @@ class MLXInferenceBackend:
             with (
                 self._generation_lock,
                 _temporary_mlx_adapter_state(self._model, _adapter_state),
-                self._int8_prefill_scope(),
+                self._prefill_decision_scopes(),
                 ExitStack() as generation_scope,
                 session_scope,
             ):
@@ -7584,7 +7674,7 @@ class MLXInferenceBackend:
         with (
             self._generation_lock,
             _temporary_mlx_adapter_state(self._model, _adapter_state),
-            self._int8_prefill_scope(),
+            self._prefill_decision_scopes(),
         ):
             if any(plan.images for plan in plans):
                 self._release_vlm_snapshots()
@@ -7762,7 +7852,7 @@ class MLXInferenceBackend:
         with (
             self._generation_lock,
             _temporary_mlx_adapter_state(self._model, use_adapter),
-            self._int8_prefill_scope(),
+            self._prefill_decision_scopes(),
             ExitStack() as generation_scope,
         ):
             # As on the image path: the tower gets the headroom, under the lock.

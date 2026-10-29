@@ -304,7 +304,9 @@ def test_mlx_fusion_failure_at_load_still_loads_the_model(monkeypatch, mlx_moe):
     assert backend.unload_model("fake/text")
 
 
-@pytest.mark.parametrize("outcome", ["warmed", "int8", "failed", "dead_queue", "distributed"])
+@pytest.mark.parametrize(
+    "outcome", ["warmed", "int8", "ane", "failed", "dead_queue", "distributed"]
+)
 def test_a_load_warms_zoo_scopes_under_its_int8_decision(monkeypatch, mlx_moe, outcome):
     from core.inference import mlx_inference
 
@@ -355,6 +357,16 @@ def test_a_load_warms_zoo_scopes_under_its_int8_decision(monkeypatch, mlx_moe, o
     if outcome == "int8":
         status = {"requested": True, "active": True, "reason": "", "scope": int8}
         monkeypatch.setattr(mlx_inference, "_int8_prefill_status", lambda *_: status)
+    if outcome == "ane":
+        # Calibration in the warm-up's first prepare rejects the split the static check allowed.
+        ane = lambda model, on: (events.append(("ane", on)), contextlib.nullcontext())[1]
+        reads = iter(
+            [
+                {"requested": True, "active": True, "reason": "", "scope": ane},
+                {"requested": True, "active": False, "reason": "no_gain", "scope": None},
+            ]
+        )
+        monkeypatch.setattr(mlx_inference, "_ane_prefill_status", lambda *_: next(reads))
     config = SimpleNamespace(identifier = "fake/text", is_vision = False, is_lora = False)
     group = SimpleNamespace(size = lambda: 2, rank = lambda: 0)
     kwargs = (
@@ -370,9 +382,20 @@ def test_a_load_warms_zoo_scopes_under_its_int8_decision(monkeypatch, mlx_moe, o
     warmed = (
         []
         if outcome == "distributed"
-        else ["rng", ("int8", active), ("warm", True, active), "/int8", "/rng"]
+        else [
+            "rng",
+            ("int8", active),
+            *[("ane", True)] * (outcome == "ane"),
+            ("warm", True, active),
+            "/int8",
+            "/rng",
+        ]
     )
     assert events == ["gate_up", *warmed]
+    if outcome == "ane":
+        entry = backend.models["fake/text"]
+        assert (entry["mlx_ane_prefill"], entry["mlx_ane_prefill_reason"]) == (False, "no_gain")
+        assert not backend._ane_prefill["active"]
     assert any("MLX warm-up failed" in warning for warning in warnings) == (outcome == "failed")
 
 
@@ -5290,8 +5313,49 @@ def test_int8_prefill_is_the_outermost_scope_of_generation_pinned_off_when_inact
 
     mlx_inference_patches.nax_quantized_linear = broken
     if not active:  # an inactive load never asked for the scope, so its failure costs no request
-        with backend._int8_prefill_scope():
+        with backend._prefill_decision_scopes():
             pass
+
+
+@pytest.mark.parametrize("requested,available", [(True, True), (True, False), (False, True)])
+def test_ane_prefill_is_pinned_inside_int8_released_on_unload_and_reloads_on_change(
+    mlx_inference_patches, requested, available
+):
+    from core.inference import mlx_inference
+    from models.inference import LoadRequest
+    from routes.inference import _mlx_runtime_settings_match
+
+    events = _int8_zoo(mlx_inference_patches)
+
+    @contextmanager
+    def ane_prefill_mlp(model, ane_prefill = None):
+        events.append(("ane", ane_prefill))
+        yield
+        events.append(("ane_exit", ane_prefill))
+
+    mlx_inference_patches.ane_prefill_mlp = ane_prefill_mlp
+    verdict = SimpleNamespace(available = available, reason = "" if available else "no_gain")
+    mlx_inference_patches.ane_prefill_available = lambda m: verdict
+    mlx_inference_patches.release_ane_prefill = lambda m: events.append(("release", None))
+    active = requested and available
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model, backend.models["m"] = object(), {}
+    backend._ane_prefill = mlx_inference._ane_prefill_status(requested, backend._model)
+    assert backend._ane_prefill["reason"] == ("no_gain" if requested and not available else "")
+    with backend._prefill_decision_scopes():
+        pass
+    backend.unload_model("m")
+    assert events == [
+        ("int8", False),
+        ("ane", active),
+        ("ane_exit", active),
+        ("int8_exit", False),
+    ] + ([("release", None)] if active else [])
+    entry = {"mlx_kv_quant_requested": "auto", "mlx_ane_prefill_requested": requested}
+    load = lambda on: LoadRequest(model = "m", model_path = "m", mlx_ane_prefill = on)
+    be = SimpleNamespace(active_model_name = "m", models = {"m": entry})
+    assert _mlx_runtime_settings_match(be, load(requested))
+    assert not _mlx_runtime_settings_match(be, load(not requested))
 
 
 def test_a_batch_session_holds_int8_prefill_for_its_whole_life(monkeypatch, mlx_inference_patches):
