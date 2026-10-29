@@ -8,6 +8,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import test from "node:test";
 import {
   EXAMPLE_TRAINING_API_REQUEST,
+  TRAINING_FIELD_ROUTE,
   buildTrainingApiSnippet,
   buildTrainingCancelSnippet,
   trainingApiJobBody,
@@ -89,39 +90,11 @@ function payload(overrides: Partial<TrainingStartRequest> = {}): TrainingStartRe
   } as TrainingStartRequest;
 }
 
-const ALLOWED = new Set([
-  "learning_rate",
-  "max_steps",
-  "training_type",
-  "load_in_4bit",
-  "max_seq_length",
-  "gradient_accumulation_steps",
-  "warmup_steps",
-  "warmup_ratio",
-  "weight_decay",
-  "optim",
-  "lr_scheduler_type",
-  "packing",
-  "lora_r",
-  "lora_alpha",
-  "lora_dropout",
-  "target_modules",
-  "use_rslora",
-  "use_dora",
-  "use_loftq",
-  "train_on_completions",
-  "model_subfolder",
-  "is_dataset_image",
-  "is_dataset_audio",
-  "is_embedding",
-  "is_decision",
-  "finetune_vision_layers",
-  "finetune_language_layers",
-  "finetune_attention_modules",
-  "finetune_mlp_modules",
-  "format_type",
-  "custom_format_mapping",
-]);
+const ALLOWED = new Set(
+  Object.entries(TRAINING_FIELD_ROUTE)
+    .filter(([, route]) => route === "extra")
+    .map(([key]) => key),
+);
 
 const SECRETS = ["hf_SECRET", "wandb_SECRET", "/home/me", "abc\"", "tensorboard", "offload", "drafter"];
 
@@ -149,6 +122,70 @@ test("the snapshot keeps only the allowlist and maps the OpenAI fields", () => {
   assert.ok(!("training_type" in request.extras));
   assert.ok(!("format_type" in request.extras));
   assert.deepEqual(request.extras.target_modules, ["q_proj", "v_proj"]);
+});
+
+test("every extra setting the form changes reaches the example, and nothing host-side does", () => {
+  // A non-default value per extra field, with what its condition needs (LoRA on, warmup steps unset).
+  const changed: Partial<TrainingStartRequest> = {
+    learning_rate: "1e-5",
+    max_steps: 60,
+    training_type: "Continued Pretraining",
+    load_in_4bit: true,
+    max_seq_length: 8192,
+    vision_image_size: 448,
+    trust_remote_code: true,
+    dataset_slice_start: 10,
+    dataset_slice_end: 500,
+    format_type: "chatml",
+    custom_format_mapping: { text: "body" },
+    embedding_learning_rate: 5e-6,
+    gradient_accumulation_steps: 8,
+    warmup_steps: null,
+    warmup_ratio: 0.1,
+    save_steps: 25,
+    weight_decay: 0.1,
+    max_grad_norm: 0.5,
+    max_grad_value: 2,
+    packing: true,
+    optim: "adamw_torch",
+    lr_scheduler_type: "cosine",
+    lora_r: 64,
+    lora_alpha: 128,
+    lora_dropout: 0.05,
+    target_modules: ["q_proj"],
+    gradient_checkpointing: "true",
+    use_rslora: true,
+    use_loftq: true,
+    use_dora: true,
+    train_on_completions: false,
+    finetune_vision_layers: true,
+    finetune_language_layers: false,
+    finetune_attention_modules: false,
+    finetune_mlp_modules: false,
+    is_dataset_image: true,
+    is_dataset_audio: true,
+    is_embedding: true,
+    is_decision: true,
+    model_subfolder: "multilingual",
+  };
+  const full = payload({
+    ...changed,
+    hf_dataset: "org/data",
+    s3_config: { bucket: "b" } as TrainingStartRequest["s3_config"],
+    eval_steps: 10,
+    offload_layers: 4,
+    resume_from_checkpoint: "/home/me/ckpt",
+  });
+  const { extras } = trainingApiRequestFromPayload(full, null);
+  for (const [key, route] of Object.entries(TRAINING_FIELD_ROUTE)) {
+    const value = changed[key as keyof TrainingStartRequest];
+    if (route === "extra" && value != null) {
+      assert.deepEqual(extras[key], value, key);
+    } else {
+      assert.ok(!(key in extras), key);
+    }
+  }
+  for (const key of ALLOWED) assert.ok(key in changed, `${key} has no test value`);
 });
 
 test("full finetuning names its training type and drops the LoRA settings", () => {
@@ -391,6 +428,24 @@ test("the backend contract fixture is what the examples send", () => {
     vision: trainingApiJobBody(
       trainingApiRequestFromPayload(
         payload({ is_dataset_image: true, finetune_vision_layers: true, use_dora: false }),
+        null,
+      ),
+    ),
+    everySetting: trainingApiJobBody(
+      trainingApiRequestFromPayload(
+        payload({
+          training_type: "Continued Pretraining",
+          embedding_learning_rate: 5e-6,
+          dataset_slice_start: 10,
+          dataset_slice_end: 500,
+          save_steps: 25,
+          max_grad_norm: 0.5,
+          max_grad_value: 2,
+          gradient_checkpointing: "true",
+          vision_image_size: 448,
+          trust_remote_code: true,
+          use_dora: false,
+        }),
         null,
       ),
     ),

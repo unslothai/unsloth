@@ -18,8 +18,103 @@ export interface TrainingApiSnippetInput {
 
 const LORA = "LoRA/QLoRA";
 
-/** Run type and layer choices, sent only where they differ from the route's defaults. */
-const FLAG_DEFAULTS = {
+/**
+ * Where each field Start sends goes in the example. Exhaustive over the request type, so a new
+ * field fails typecheck until it is placed: "openai" fields map to the OpenAI job fields, "extra"
+ * ones are sent as Studio settings, "derived" ones follow from another field, and "host" ones
+ * (secrets, this machine's paths and caches, offload, eval, logging, Hub / S3 data, resume) stay out.
+ */
+export const TRAINING_FIELD_ROUTE: Record<keyof TrainingStartRequest, "openai" | "extra" | "derived" | "host"> = {
+  model_name: "openai",
+  project_name: "openai",
+  num_epochs: "openai",
+  batch_size: "openai",
+  random_seed: "openai",
+  local_datasets: "openai",
+  learning_rate: "extra",
+  max_steps: "extra",
+  training_type: "extra",
+  load_in_4bit: "extra",
+  max_seq_length: "extra",
+  vision_image_size: "extra",
+  trust_remote_code: "extra",
+  dataset_slice_start: "extra",
+  dataset_slice_end: "extra",
+  format_type: "extra",
+  custom_format_mapping: "extra",
+  embedding_learning_rate: "extra",
+  gradient_accumulation_steps: "extra",
+  warmup_steps: "extra",
+  warmup_ratio: "extra",
+  save_steps: "extra",
+  weight_decay: "extra",
+  max_grad_norm: "extra",
+  max_grad_value: "extra",
+  packing: "extra",
+  optim: "extra",
+  lr_scheduler_type: "extra",
+  lora_r: "extra",
+  lora_alpha: "extra",
+  lora_dropout: "extra",
+  target_modules: "extra",
+  gradient_checkpointing: "extra",
+  use_rslora: "extra",
+  use_loftq: "extra",
+  use_dora: "extra",
+  train_on_completions: "extra",
+  finetune_vision_layers: "extra",
+  finetune_language_layers: "extra",
+  finetune_attention_modules: "extra",
+  finetune_mlp_modules: "extra",
+  is_dataset_image: "extra",
+  is_dataset_audio: "extra",
+  is_embedding: "extra",
+  is_decision: "extra",
+  model_subfolder: "extra",
+  use_lora: "derived",
+  actual_model_repo_id: "host",
+  hf_token: "host",
+  model_known_cached: "host",
+  model_local_path: "host",
+  model_format: "host",
+  model_snapshot_path: "host",
+  approved_remote_code_fingerprint: "host",
+  hf_dataset: "host",
+  dataset_known_cached: "host",
+  dataset_local_path: "host",
+  dataset_snapshot_path: "host",
+  subset: "host",
+  train_split: "host",
+  eval_split: "host",
+  dataset_streaming: "host",
+  local_eval_datasets: "host",
+  s3_config: "host",
+  eval_steps: "host",
+  early_stopping_patience: "host",
+  offload_layers: "host",
+  offload_vram_gb: "host",
+  offload_vram_gb_per_device: "host",
+  prefetch_depth: "host",
+  enable_wandb: "host",
+  wandb_token: "host",
+  wandb_project: "host",
+  enable_tensorboard: "host",
+  tensorboard_dir: "host",
+  resume_from_checkpoint: "host",
+  drafter: "host",
+};
+
+/** Extras sent only where they differ from the route's defaults (null = sent whenever set). */
+const EXTRA_DEFAULTS = {
+  "vision_image_size": null,
+  "trust_remote_code": false,
+  "dataset_slice_start": null,
+  "dataset_slice_end": null,
+  "embedding_learning_rate": null,
+  "save_steps": 100,
+  "max_grad_norm": null,
+  "max_grad_value": null,
+  "model_subfolder": null,
   "is_dataset_image": false,
   "is_dataset_audio": false,
   "is_embedding": false,
@@ -31,8 +126,8 @@ const FLAG_DEFAULTS = {
 } as const;
 
 /**
- * The Studio settings a fine-tuning job takes beyond the OpenAI fields. Everything else Start sends
- * (tokens, cache and host paths, offload, drafter, the Hub / S3 dataset) stays out of the example.
+ * The "extra" fields of `TRAINING_FIELD_ROUTE`, as the Studio settings a fine-tuning job takes beyond
+ * the OpenAI fields.
  */
 function trainingExtras(payload: TrainingStartRequest): Record<string, unknown> {
   const extras: Record<string, unknown> = {
@@ -66,11 +161,10 @@ function trainingExtras(payload: TrainingStartRequest): Record<string, unknown> 
       if (payload[flag]) extras[flag] = true;
     }
   }
-  // Decision checkpoints share one repo and differ only by subfolder.
-  if (payload.model_subfolder) extras.model_subfolder = payload.model_subfolder;
-  for (const [flag, fallback] of Object.entries(FLAG_DEFAULTS)) {
-    const value = payload[flag as keyof typeof FLAG_DEFAULTS];
-    if (value != null && value !== fallback) extras[flag] = value;
+  extras.gradient_checkpointing = payload.gradient_checkpointing;
+  for (const [key, fallback] of Object.entries(EXTRA_DEFAULTS)) {
+    const value = payload[key as keyof typeof EXTRA_DEFAULTS];
+    if (value != null && value !== "" && value !== fallback) extras[key] = value;
   }
   extras.train_on_completions = payload.train_on_completions;
   if (payload.format_type && payload.format_type !== "auto") {
