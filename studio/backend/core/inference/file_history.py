@@ -337,13 +337,20 @@ class FileHistory:
             return {}  # the baseline is where history starts, not a change
         return changes
 
-    def _walk_sync(self, workdir: str, walk) -> dict:
+    def _walk_sync(
+        self,
+        workdir: str,
+        walk,
+        extra = (),
+    ) -> dict:
         snap, complete = walk(workdir)
         changes = self._sync(workdir, snap, None, complete)
+        missed = {rel for rel in extra if rel not in snap}
         if not complete:
             # A capped walk never reached these: read them directly, or a rewind trusts a stale state
             # and overwrites the user's later edit.
-            missed = {rel for rel in self._load_state(workdir) if rel not in snap}
+            missed.update(rel for rel in self._load_state(workdir) if rel not in snap)
+        if missed:
             changes.update(self._sync(workdir, _probe(workdir, missed), missed))
         return changes
 
@@ -525,23 +532,24 @@ class FileHistory:
         return report
 
     def _rewind_folder(self, chat_id, workdir, rows, walk, report, dry_run, force, undo_turn):
+        target: dict = {}
+        # Written while another chat's call ran in this folder: either chat's, so never ours to undo.
+        shared = set()
+        for wd, rel, kind, blob, mode, ambiguous in rows:
+            if wd == workdir:
+                target.setdefault(rel, (kind, blob, mode))
+                if ambiguous:
+                    shared.add(rel)
         with self._lock:
             # Edits made since the last call (by the user, or another chat) are stored first, so the
-            # rewind can tell them apart from this chat's own and they stay restorable too.
+            # rewind can tell them apart from this chat's own and they stay restorable too. Targets
+            # are probed too: no walk lists one inside a dot folder.
             self._transaction(
                 workdir,
                 lambda: self._record(
-                    None, workdir, None, "external", self._walk_sync(workdir, walk)
+                    None, workdir, None, "external", self._walk_sync(workdir, walk, target)
                 ),
             )
-            target: dict = {}
-            # Written while another chat's call ran in this folder: either chat's, so never ours to undo.
-            shared = set()
-            for wd, rel, kind, blob, mode, ambiguous in rows:
-                if wd == workdir:
-                    target.setdefault(rel, (kind, blob, mode))
-                    if ambiguous:
-                        shared.add(rel)
             last_after = {
                 row[0]: (row[1], row[2])
                 for row in self._db.execute(
@@ -587,7 +595,7 @@ class FileHistory:
             self._transaction(
                 workdir,
                 lambda: self._record(
-                    chat_id, workdir, undo_turn, "rewind", self._walk_sync(workdir, walk)
+                    chat_id, workdir, undo_turn, "rewind", self._walk_sync(workdir, walk, target)
                 ),
             )
 

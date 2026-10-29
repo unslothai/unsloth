@@ -432,6 +432,31 @@ def test_edit_file_changes_inside_dot_folders_are_rewound(chat):
     assert ci.read_text(encoding = "utf-8") == "on: push\n"
 
 
+def test_a_dot_folder_file_recreated_by_hand_is_a_conflict(chat):
+    workdir, history = chat
+    ci = workdir / ".github" / "ci.yml"
+    ci.parent.mkdir()
+    ci.write_text("a\n", encoding = "utf-8")
+    file_history.set_turn("chat-1", "u1")
+    _edit(".github/ci.yml", "a", "b")
+    file_history.set_turn("chat-1", "u2")
+    execute_tool("python", {"code": "import os; os.remove('.github/ci.yml')"}, session_id = "s")
+    ci.write_text("user\n", encoding = "utf-8")
+
+    assert _rewind(history, ["u2"]).conflicts == [".github/ci.yml"]
+    assert ci.read_text(encoding = "utf-8") == "user\n"
+
+    ci.unlink()
+    report = _rewind(history, ["u2"])
+    assert report.recreated == [".github/ci.yml"]
+    assert _rewind(history, [report.undo_turn_id]).deleted == [".github/ci.yml"]
+    assert not ci.exists()
+    assert _rewind(history, ["u2"]).recreated == [".github/ci.yml"]
+    ci.write_text("user\n", encoding = "utf-8")
+    assert _rewind(history, ["u1"]).conflicts == [".github/ci.yml"]
+    assert ci.read_text(encoding = "utf-8") == "user\n"
+
+
 @pytest.mark.skipif(os.name != "posix", reason = "uses a POSIX shell")
 def test_a_file_past_the_download_card_walk_is_rewound(chat, monkeypatch):
     workdir, _history = chat
