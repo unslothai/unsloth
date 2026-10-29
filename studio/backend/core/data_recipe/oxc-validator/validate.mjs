@@ -601,7 +601,6 @@ async function main() {
 }
 
 // --serve: one {"id", "payload"} per line, answered in order with {"id", "result"|"error"}.
-// Nothing outlives a request.
 const SERVE_MAX_LINE_CHARS = 64 * 1024 * 1024;
 
 let servedRequests = 0;

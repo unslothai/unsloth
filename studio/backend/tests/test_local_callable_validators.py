@@ -189,7 +189,6 @@ def test_one_worker_answers_every_batch_exactly_like_a_process_per_batch(monkeyp
     rng = random.Random(seed)
     batches = _parity_batches(rng)
     expected = {batch: json.dumps(_run_batch(batch)) for batch in batches}
-    # Shuffled repeats: no answer may depend on an earlier request.
     order = batches + rng.sample(batches, len(batches) // 2)
     rng.shuffle(order)
 

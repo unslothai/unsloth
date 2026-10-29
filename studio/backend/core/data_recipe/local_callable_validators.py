@@ -222,8 +222,7 @@ def _build_oxc_validation_function(lang: str, validation_mode: str, code_shape: 
     return _validator
 
 
-# One Node process (``validate.mjs --serve``) per job instead of per batch: startup was ~99% of
-# a 10 row syntax batch. Anything the worker cannot answer falls back to the one-shot run.
+# One ``validate.mjs --serve`` per job, not per batch: Node startup was ~99% of a syntax batch.
 _OXC_WORKER_MAX_LINE_BYTES = 64 * 1024 * 1024
 _OXC_WORKER_MAX_FAILURES = 3
 _OXC_WORKER_ENV = "UNSLOTH_OXC_PERSISTENT_WORKER"
@@ -259,7 +258,6 @@ class _OxcWorker:
         try:
             while True:
                 line = stdout.readline(_OXC_WORKER_MAX_LINE_BYTES + 1)
-                # EOF or an oversized reply.
                 if not line.endswith(b"\n"):
                     break
                 self._replies.put(line)
@@ -468,7 +466,6 @@ class _OneShotFailure:
 
 
 def _run_oxc_one_shot(node_executable: str, env: dict[str, str], request_text: str) -> Any:
-    """One Node process for one batch: the parsed reply, or a ``_OneShotFailure``."""
     proc = subprocess.run(
         [node_executable, str(_OXC_RUNNER_PATH)],
         cwd = str(_OXC_TOOL_DIR),
