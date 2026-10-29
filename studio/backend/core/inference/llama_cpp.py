@@ -7514,6 +7514,27 @@ def _llama_chunk_has_generated_output(data: dict) -> bool:
     return False
 
 
+# llama-server's own tool-call parser refusing the model's reply: b11000+ PEG parser, the older
+# parser, and a call whose arguments are not JSON. The reply text is dropped with the error.
+_TOOL_PARSE_REJECTIONS = (
+    "the model produced output that does not match the expected",
+    "failed to parse input at pos",
+    "failed to parse tool call arguments as json",
+)
+
+
+def _is_tool_parse_rejection(data: Any) -> bool:
+    """True for a streamed error event that is llama-server rejecting a reply it could not parse as tool calls."""
+    if not isinstance(data, dict) or "error" not in data:
+        return False
+    error = data["error"]
+    message = error.get("message") if isinstance(error, dict) else error
+    if not isinstance(message, str):
+        return False
+    lowered = message.strip().lower()
+    return any(lowered.startswith(prefix) for prefix in _TOOL_PARSE_REJECTIONS)
+
+
 def _perf_callback_wants_timings(callback) -> bool:
     """A callback that only tracks prefill progress opts out of per-token timings."""
     return callback is not None and getattr(callback, "wants_timings", True)
@@ -35738,6 +35759,63 @@ class LlamaCppBackend:
             return False
         return _llama_chunk_has_generated_output(data)
 
+    def _iter_tool_round_text(
+        self,
+        response: "httpx.Response",
+        payload: dict,
+        cancel_event: Optional[threading.Event],
+        first_token_deadline: Optional[float],
+    ) -> Generator[str, None, None]:
+        """Raw SSE text of one tool round. When llama-server's tool-call parser rejects the reply before
+        any of it was streamed (Llama 3.x ``{"type": "function", "function": NAME, ...}``, ``;``-joined
+        calls), the round is asked once more with tool_choice "none", which turns that parser off, so the
+        raw reply reaches Studio's own parser instead of failing the turn. Anything already streamed, or a
+        request that already had tool_choice "none", passes through unchanged."""
+        stream = self._iter_text_cancellable(
+            response,
+            cancel_event,
+            first_token_deadline = first_token_deadline,
+        )
+        if not payload.get("tools") or payload.get("tool_choice") == "none":
+            yield from stream
+            return
+        pending = ""
+        for chunk in stream:
+            pending += chunk
+            while "\n" in pending:
+                line, pending = pending.split("\n", 1)
+                stripped = line.strip()
+                data = None
+                if stripped.startswith("data: ") and stripped != "data: [DONE]":
+                    try:
+                        data = json.loads(stripped[6:])
+                    except json.JSONDecodeError:
+                        data = None
+                if _is_tool_parse_rejection(data):
+                    logger.info(
+                        "llama-server could not parse the reply as tool calls; "
+                        "asking again with its tool-call parser off"
+                    )
+                    with self._open_chat_stream_with_respawn_retry(
+                        {**payload, "tool_choice": "none"},
+                        cancel_event,
+                    ) as (retry_response, retry_deadline):
+                        yield from self._iter_text_cancellable(
+                            retry_response,
+                            cancel_event,
+                            first_token_deadline = retry_deadline,
+                        )
+                    return
+                yield line + "\n"
+                if isinstance(data, dict) and _llama_chunk_has_generated_output(data):
+                    # Output reached the caller: a second request could not be joined to it.
+                    if pending:
+                        yield pending
+                    yield from stream
+                    return
+        if pending:
+            yield pending
+
     @staticmethod
     def _iter_text_cancellable(
         response: "httpx.Response",
@@ -37773,10 +37851,11 @@ class LlamaCppBackend:
                     for truncation in _respawn_truncations:
                         yield {"type": "context_truncated", **truncation}
                     raw_buf = ""
-                    for raw_chunk in self._iter_text_cancellable(
+                    for raw_chunk in self._iter_tool_round_text(
                         response,
+                        payload,
                         cancel_event,
-                        first_token_deadline = first_token_deadline,
+                        first_token_deadline,
                     ):
                         raw_buf += raw_chunk
                         while "\n" in raw_buf:
