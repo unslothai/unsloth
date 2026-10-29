@@ -20,6 +20,8 @@ versions are simulated, so this runs on any torch, CPU only.
 """
 
 import functools
+import os
+import subprocess
 import importlib.util
 import sys
 import types
@@ -152,3 +154,58 @@ def test_it_runs_after_the_torchao_shims_and_before_unsloth_zoo():
     assert source.index("\nfix_torchao_without_torch_distributed()\n") < call
     assert call < source.index("    import unsloth_zoo\n")
     assert "\ndel disable_torchao_if_torch_too_old\n" in source
+
+
+def test_disable_records_the_pair_for_subprocesses(isolated, monkeypatch):
+    monkeypatch.delenv(import_fixes._TORCHAO_DISABLED_ENV, raising = False)
+    isolated("2.6.0", "0.18.0", MISSING_TORCH_DTYPE)
+    assert import_fixes.disable_torchao_if_torch_too_old() is True
+    assert os.environ[import_fixes._TORCHAO_DISABLED_ENV] == "0.18.0|0.18.0"
+
+
+def test_propagation_is_staged_when_torchao_was_disabled(monkeypatch, tmp_path):
+    monkeypatch.setattr(import_fixes, "TORCHAO_DISABLED_FOR_OLD_TORCH", True)
+    monkeypatch.setattr(import_fixes, "_subprocess_fix_directory", lambda: str(tmp_path))
+    monkeypatch.setenv("PYTHONPATH", "")
+    assert import_fixes.propagate_torchao_fix_to_subprocesses() == str(tmp_path)
+    assert (tmp_path / "sitecustomize.py").exists()
+
+
+def _child_sees_torchao(tmp_path, marker):
+    (tmp_path / "sitecustomize.py").write_text(import_fixes._subprocess_sitecustomize_source())
+    env = dict(os.environ, PYTHONPATH = str(tmp_path))
+    env.pop(import_fixes._TORCHAO_DISABLED_ENV, None)
+    if marker is not None:
+        env[import_fixes._TORCHAO_DISABLED_ENV] = marker
+    out = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import importlib.util; print(importlib.util.find_spec('torchao') is not None)",
+        ],
+        env = env,
+        capture_output = True,
+        text = True,
+        check = True,
+    ).stdout.strip()
+    return out == "True"
+
+
+def test_child_hides_torchao_only_for_the_same_pair(tmp_path):
+    from importlib.metadata import version
+
+    if importlib.util.find_spec("torchao") is None:
+        pytest.skip("torchao not installed")
+    pair = f"{version('torchao')}|{version('torch')}"
+    assert _child_sees_torchao(tmp_path, None) is True
+    assert _child_sees_torchao(tmp_path, pair) is False
+    assert (
+        _child_sees_torchao(tmp_path, "0.0.1|" + version("torch")) is True
+    ), "another env keeps its torchao"
+
+
+def test_torch_25_is_told_to_upgrade_torch_not_pin_below_the_zoo_floor(isolated, capsys):
+    isolated("2.5.1", "0.18.0", MISSING_TORCH_DTYPE)
+    assert import_fixes.disable_torchao_if_torch_too_old() is True
+    out = capsys.readouterr().out
+    assert "torchao<0.13" not in out and "torch>=2.6" in out
