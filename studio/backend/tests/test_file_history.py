@@ -417,6 +417,21 @@ def test_files_deep_in_the_folder_are_rewound(chat, monkeypatch):
     assert route.read_text(encoding = "utf-8") == helpers.read_text(encoding = "utf-8") == "v1\n"
 
 
+def test_edit_file_changes_inside_dot_folders_are_rewound(chat):
+    workdir, history = chat
+    ci = workdir / ".github" / "workflows" / "ci.yml"
+    ci.parent.mkdir(parents = True)
+    ci.write_text("on: push\n", encoding = "utf-8")
+    file_history.set_turn("chat-1", "u1")
+    _edit(".github/workflows/ci.yml", "on: push", "on: [push, pull_request]")
+    execute_tool("python", {"code": "open('app.py', 'w').write('x = 1')"}, session_id = "s")
+
+    preview = _rewind(history, ["u1"], dry_run = True)
+    assert preview.restored == [".github/workflows/ci.yml"] and preview.deleted == ["app.py"]
+    assert _rewind(history, ["u1"]).restored == [".github/workflows/ci.yml"]
+    assert ci.read_text(encoding = "utf-8") == "on: push\n"
+
+
 @pytest.mark.skipif(os.name != "posix", reason = "uses a POSIX shell")
 def test_a_file_past_the_download_card_walk_is_rewound(chat, monkeypatch):
     workdir, _history = chat

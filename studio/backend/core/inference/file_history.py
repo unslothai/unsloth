@@ -278,6 +278,9 @@ class FileHistory:
         ``paths`` limits the sync to those names (edit_file knows its one file); ``complete`` says
         whether a name missing from ``snap`` is really gone (a capped walk cannot say so)."""
         state = self._load_state(workdir)
+        if paths is None and complete:
+            # edit_file records files no walk lists, such as .github/workflows/ci.yml.
+            snap = {**_probe(workdir, [rel for rel in state if rel not in snap]), **snap}
         first = (
             not state
             and self._db.execute("SELECT 1 FROM workdirs WHERE workdir=?", (workdir,)).fetchone()
