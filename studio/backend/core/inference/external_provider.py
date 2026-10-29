@@ -795,7 +795,7 @@ def _apply_minimax_reasoning_controls(
     enable_thinking: Optional[bool],
     reasoning_effort: Optional[str],
 ) -> None:
-    """M3.1-Flash 400s on thinking off; M3 can disable it; M2.x always thinks."""
+    """M3.1-Flash 400s on thinking off; M3 can disable it."""
     body["reasoning_split"] = True
     normalized = model.strip().lower()
     if normalized.startswith("minimax-m3.1"):

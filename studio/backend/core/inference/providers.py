@@ -292,12 +292,10 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "default_models": [
             "MiniMax-M3.1-Flash",
             "MiniMax-M3",
-            "MiniMax-M2.7",
         ],
         "model_capabilities": {
             "MiniMax-M3.1-Flash": {"vision": True},
             "MiniMax-M3": {"vision": True},
-            "MiniMax-M2.7": {"vision": False},
         },
         "supports_streaming": True,
         "supports_vision": True,
@@ -306,8 +304,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         "notes": "MiniMax API key. China: use base URL https://api.minimaxi.com/v1",
-        # /v1/models lists every model on the account; keep the chat M-series.
-        "model_id_allowlist": re.compile(r"^MiniMax-M\d", re.IGNORECASE),
+        # /v1/models lists every model on the account, retired M2.x (404) included; keep M3 and up.
+        "model_id_allowlist": re.compile(r"^MiniMax-M(?:[3-9]|\d\d)", re.IGNORECASE),
         # Fixed at 1 / 0.95 server-side (https://platform.minimax.io/docs/api-reference/text-openai-api).
         "body_omit": ("temperature", "top_p", "presence_penalty"),
     },

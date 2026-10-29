@@ -46,9 +46,11 @@ def test_minimax_listed():
 def test_minimax_lists_chat_models_live():
     info = get_provider_info("minimax")
     assert info.get("model_list_mode") != "curated"
-    chat = ["MiniMax-M3.1-Flash", "MiniMax-M3", "MiniMax-M2.7"]
-    listed = chat + ["speech-2.8-hd", "MiniMax-Hailuo-2.3", "image-01"]
+    chat = ["MiniMax-M3.1-Flash", "MiniMax-M3"]
+    retired = ["MiniMax-M2.7", "MiniMax-M2.5-highspeed", "MiniMax-M2"]
+    listed = chat + retired + ["speech-2.8-hd", "MiniMax-Hailuo-2.3", "image-01"]
     assert [m for m in listed if info["model_id_allowlist"].match(m)] == chat
+    assert info["default_models"] == chat
 
 
 def test_minimax_body_shape(monkeypatch):

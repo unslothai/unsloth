@@ -937,9 +937,6 @@ function resolveMiniMaxReasoningCapabilities(modelId: string): ExternalReasoning
   if (modelId === "minimax-m3") {
     return withEnableThinkingStyle({ supportsReasoning: true, supportsReasoningOff: true });
   }
-  if (modelId.startsWith("minimax-m2")) {
-    return withEnableThinkingStyle({ supportsReasoning: true, reasoningAlwaysOn: true });
-  }
   return withEnableThinkingStyle();
 }
 
