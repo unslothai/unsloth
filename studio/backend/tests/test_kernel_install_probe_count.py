@@ -73,7 +73,6 @@ def _run_check(name, env, tmp_path):
 def test_an_absent_extension_fails_without_importing_torch(tmp_path, name):
     env, marker = _site(tmp_path)
     assert _run_check(name, env, tmp_path) != 0
-    # main imported torch first (about 2 s on Colab) only to fail on the missing module.
     assert not marker.exists()
 
 

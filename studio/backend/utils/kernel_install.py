@@ -391,7 +391,6 @@ KERNELS = {
     "causal_conv1d": ("causal-conv1d", "import torch, causal_conv1d_cuda"),
     "mamba_ssm": ("mamba-ssm", "import torch, selective_scan_cuda"),
 }
-# The top-level module each check imports after torch.
 _CHECKED_MODULE = {
     "xformers": "xformers",
     "flash_attn": "flash_attn_2_cuda",
