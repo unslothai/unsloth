@@ -596,7 +596,6 @@ def test_a_legacy_archive_still_gets_two_different_ends(rag_home, rag_conn):
 
 
 def test_dense_packs_float32_rows_without_struct_and_the_query_once(rag_conn, monkeypatch):
-    """float32 numpy rows store their buffer; a multi-scope query packs once."""
     np = pytest.importorskip("numpy")
     texts = ["alpha alpha", "hotel golf", "alpha bravo"]
     for i, scope in enumerate(("kb_a", "kb_b", "kb_c")):
