@@ -3389,10 +3389,11 @@ _MEASURED_DENSE_BF16_EAGER_PEAK_MIB: dict[str, tuple[int, int]] = {
 
 
 # Small-host int8 DiT, eager: (peak MiB above resident weights at 1024^2, largest int8 DiT MiB covered).
-# FLUX.2-klein-4B, Kaggle T4 fp16, 4 steps, sliced VAE. "0" = learned peak alone.
+# T4 fp16, 4 steps, sliced VAE: FLUX.2-klein-4B 2805 (Kaggle), 9B 2459 (Colab); the 4B's covers both.
+# "0" = learned peak alone.
 MEASURED_ACTIVATION_SMALL_HOST_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_SMALL_HOST"
 _MEASURED_SMALL_HOST_INT8_EAGER_PEAK_MIB: dict[str, tuple[int, int]] = {
-    "flux.2-klein": (2805, 3800),
+    "flux.2-klein": (2805, 8700),
 }
 
 
