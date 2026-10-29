@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The gallery prune decides "nothing to remove" from names and sizes when both caps hold."""
-
 from __future__ import annotations
 
 import os

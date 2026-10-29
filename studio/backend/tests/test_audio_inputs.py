@@ -391,7 +391,6 @@ def test_the_sweep_lists_prepared_copies_once_for_every_live_input(monkeypatch):
 
 
 def test_the_sweep_sizes_prepared_copies_like_the_per_input_glob(monkeypatch):
-    """Byte-cap decisions from the single listing match the old glob, odd neighbours included."""
     directory = audio_inputs.inputs_dir()
     now = time.time()
     names = {
