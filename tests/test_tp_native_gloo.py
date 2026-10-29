@@ -390,6 +390,47 @@ def _case_qlora(rank, world, tmp, nested):
     }
 
 
+class _DropoutMLP(torch.nn.Module):
+    """LlamaMLP with dropout between the column (gate / up) and row (down) projections."""
+
+    def forward(self, x):
+        return self.down_proj(self.drop(self.act_fn(self.gate_proj(x)) * self.up_proj(x)))
+
+
+def _add_mlp_dropout(model, p = 0.25):
+    for module in list(model.modules()):
+        if type(module).__name__ == "LlamaMLP":
+            module.add_module("drop", torch.nn.Dropout(p))
+            module.__class__ = type("LlamaMLP", (_DropoutMLP, type(module)), {})
+    return model
+
+
+def _case_mlp_dropout(rank, world, tmp, quantized):
+    from torch.distributed.device_mesh import init_device_mesh
+
+    def make():
+        if quantized:
+            return _add_mlp_dropout(_qlora_model(False))
+        return _add_mlp_dropout(build(LLAMA, QLORA_SIZES).train())
+
+    ref, model = make(), make()
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))
+    tpn.apply_tensor_parallel(model, mesh["tp"])
+    widths = [
+        r.module._unsloth_tp_local_width for r in model._unsloth_tp_plan.regions if r.kind == "mlp"
+    ]
+    ids = _batch(ref)
+    out = {}
+    for name, m, clip in (
+        ("ref", ref, torch.nn.utils.clip_grad_norm_),
+        ("tp", model, tpn.tp_clip_grad_norm_),
+    ):
+        torch.manual_seed(1234)  # the same dropout RNG state on every rank and in the reference
+        out[name] = _train(m, ids, 2, clip)
+    out["widths"] = widths
+    return out
+
+
 def _case_qlora_misaligned(rank, world, tmp):
     from torch.distributed.device_mesh import init_device_mesh
 
@@ -934,6 +975,7 @@ CASES = {
     "guards": _case_guards,
     "qlora": _case_qlora,
     "qlora_misaligned": _case_qlora_misaligned,
+    "mlp_dropout": _case_mlp_dropout,
     "sharded_load": _case_sharded_load,
     "sharded_lora_init": _case_sharded_lora_init,
     "tp_fsdp2": _case_tp_fsdp2,
@@ -1043,6 +1085,24 @@ def test_tp2_qlora_matches_one_process(nested):
         ref_logits, ref_grads, ref_losses, ref_norms = res["ref"]
         logits, grads, losses, norms = res["tp"]
         assert res["shard_err"] == 0.0
+        torch.testing.assert_close(logits, ref_logits, rtol = 1e-5, atol = 1e-5)
+        assert set(grads) == set(ref_grads) and grads
+        for name in ref_grads:
+            torch.testing.assert_close(grads[name], ref_grads[name], rtol = 1e-4, atol = 1e-6, msg = name)
+        assert losses == pytest.approx(ref_losses, rel = 1e-5, abs = 1e-6)
+        assert norms == pytest.approx(ref_norms, rel = 1e-5)
+
+
+@pytest.mark.parametrize("quantized", [False, True], ids = ["bf16_weights", "4bit_weights"])
+def test_tp2_mlp_dropout_between_column_and_row_matches_one_process(quantized):
+    # The row projection's local in_features is intermediate_size / tp, also once a 4-bit weight is sharded.
+    results = _spawn("mlp_dropout", 2, quantized = quantized)
+    for res in results:
+        assert res["widths"] and set(res["widths"]) == {QLORA_SIZES["intermediate_size"] // 2}, res[
+            "widths"
+        ]
+        ref_logits, ref_grads, ref_losses, ref_norms = res["ref"]
+        logits, grads, losses, norms = res["tp"]
         torch.testing.assert_close(logits, ref_logits, rtol = 1e-5, atol = 1e-5)
         assert set(grads) == set(ref_grads) and grads
         for name in ref_grads:

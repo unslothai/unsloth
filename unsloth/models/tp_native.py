@@ -1793,6 +1793,16 @@ def apply_tensor_parallel(
     )  # a norm weight shared by several regions gets one tp sum, not one per region
     dropout_regions = 0
     for region in tp_plan.regions:
+        # Row projections' local in_features, read before sharding: a sharded Params4bit's quant_state holds
+        # the local shape already.
+        local_width = next(
+            (
+                _logical_shape(*_weight(p.module))[1] // tp
+                for p in region.projs
+                if p.style == ROWWISE
+            ),
+            None,
+        )
         for proj in region.projs:
             _shard_projection(region, proj, tp_mesh, rank, tp)
         for _, norm in region.norms:
@@ -1809,14 +1819,7 @@ def apply_tensor_parallel(
             _set_local_heads(module, region, tp)
         module._unsloth_tp_kind = region.kind
         module._unsloth_tp_coord = (rank, tp)
-        module._unsloth_tp_local_width = next(
-            (
-                _logical_shape(*_weight(p.module))[1] // tp
-                for p in region.projs
-                if p.style == ROWWISE
-            ),
-            None,
-        )
+        module._unsloth_tp_local_width = local_width
 
         def state_of(module = module):
             return module.__dict__.get("_unsloth_tp_dropout")
