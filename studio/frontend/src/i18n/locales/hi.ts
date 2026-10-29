@@ -2133,8 +2133,8 @@ export const hi = {
       uploadPhoto: "फ़ोटो अपलोड करें",
       removePhoto: "हटाएं",
       pictureOptions: "प्रोफ़ाइल फ़ोटो विकल्प",
-      greetingSloth: "अभिवादन में स्लॉथ",
-      greetingSlothDescription: "चैट के अभिवादन में स्लॉथ दिखाएं।",
+      greetingSloth: "अभिवादन",
+      greetingSlothDescription: "नई चैट में अभिवादन दिखाएँ।",
       noPicture: "कोई प्रोफ़ाइल फ़ोटो नहीं",
       noneLabel: "कोई नहीं",
       stats: {
@@ -2826,9 +2826,8 @@ export const hi = {
         "विवरण गति टोकन आँकड़े परतें verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "जवाबों पर जवाब संपादित करें",
       inlineEditResponseDescription: "जवाब संपादित करें को More मेन्यू के बजाय हर जवाब पर दिखाएँ।",
-      modelDisclaimer: "मॉडल अस्वीकरण दिखाएं",
-      modelDisclaimerDescription:
-        'चैट बॉक्स के नीचे "LLMs can make mistakes" दिखाएं।',
+      composerAtBottom: "कंपोज़र नीचे",
+      composerAtBottomDescription: "नई चैट में कंपोज़र को पेज के बीच के बजाय नीचे दिखाएँ।",
       projectAttachments: "प्रोजेक्ट भर में फ़ाइलें साझा करें",
       projectAttachmentsDescription:
         "नए चैट अटैचमेंट प्रोजेक्ट की हर चैट में उपलब्ध कराएँ।",

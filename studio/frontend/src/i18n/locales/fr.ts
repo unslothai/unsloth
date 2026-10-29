@@ -2155,9 +2155,8 @@ export const fr = {
       uploadPhoto: "Importer une photo",
       removePhoto: "Retirer",
       pictureOptions: "Options de la photo de profil",
-      greetingSloth: "Paresseux dans le message d'accueil",
-      greetingSlothDescription:
-        "Afficher le paresseux dans le message d'accueil de la discussion.",
+      greetingSloth: "Message d'accueil",
+      greetingSlothDescription: "Afficher le message d'accueil dans les nouvelles discussions.",
       noPicture: "Aucune photo de profil",
       noneLabel: "Aucun",
       stats: {
@@ -2856,9 +2855,8 @@ export const fr = {
         "détails vitesse jetons statistiques couches déchargement verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Modifier la réponse sur les réponses",
       inlineEditResponseDescription: "Afficher Modifier la réponse sur chaque réponse, plutôt que dans le menu Plus.",
-      modelDisclaimer: "Afficher l'avertissement du modèle",
-      modelDisclaimerDescription:
-        'Afficher "Les LLM peuvent faire des erreurs" sous la zone de discussion.',
+      composerAtBottom: "Zone de saisie en bas",
+      composerAtBottomDescription: "Commencer les nouvelles discussions avec la zone de saisie en bas de la page plutôt qu'au centre.",
       projectAttachments: "Partager les fichiers dans tout le projet",
       projectAttachmentsDescription:
         "Rend les nouvelles pièces jointes accessibles à toutes les discussions du projet.",

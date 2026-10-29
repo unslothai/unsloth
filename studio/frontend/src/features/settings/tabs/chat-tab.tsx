@@ -17,9 +17,7 @@ import {
   DEFAULT_TOOL_VISIBILITY,
   type PlusMenuItemId,
   normaliseDisplayVisibility,
-  refreshModelDisclaimerPreference,
   requestReplyFinishedPermission,
-  saveModelDisclaimerPreference,
   useChatPreferencesStore,
   useChatRuntimeStore,
   usePlusMenuPrefsStore,
@@ -320,6 +318,12 @@ export function ChatTab() {
     (state) => state.setKeepRunningWhenTabClosed,
   );
   const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
+  const composerAtBottom = useChatPreferencesStore(
+    (s) => s.newChatComposerAtBottom,
+  );
+  const setComposerAtBottom = useChatPreferencesStore(
+    (s) => s.setNewChatComposerAtBottom,
+  );
   const setShowGreetingSloth = useUserProfileStore(
     (s) => s.setShowGreetingSloth,
   );
@@ -347,9 +351,6 @@ export function ChatTab() {
   const fitOnDeviceOnly = useChatRuntimeStore((state) => state.fitOnDeviceOnly);
   const setFitOnDeviceOnly = useChatRuntimeStore(
     (state) => state.setFitOnDeviceOnly,
-  );
-  const showModelDisclaimer = useChatPreferencesStore(
-    (state) => state.showModelDisclaimer,
   );
   const showResponseModel = useChatPreferencesStore(
     (state) => state.showResponseModel,
@@ -429,7 +430,6 @@ export function ChatTab() {
 
   useEffect(() => {
     void hydratePersistedSettings();
-    refreshModelDisclaimerPreference().catch(() => undefined);
   }, [hydratePersistedSettings]);
 
   useEffect(() => {
@@ -803,20 +803,6 @@ export function ChatTab() {
           />
         </SettingsRow>
         <SettingsRow
-          label={t("settings.chat.modelDisclaimer")}
-          description={t("settings.chat.modelDisclaimerDescription")}
-        >
-          <Switch
-            aria-label={t("settings.chat.modelDisclaimer")}
-            checked={showModelDisclaimer}
-            onCheckedChange={(checked) => {
-              return saveModelDisclaimerPreference(checked).catch(() => {
-                toast.error("Could not save the model disclaimer setting.");
-              });
-            }}
-          />
-        </SettingsRow>
-        <SettingsRow
           label={t("settings.profile.greetingSloth")}
           description={t("settings.profile.greetingSlothDescription")}
         >
@@ -825,6 +811,16 @@ export function ChatTab() {
             id="profile-greeting-sloth"
             checked={showGreetingSloth}
             onCheckedChange={setShowGreetingSloth}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.composerAtBottom")}
+          description={t("settings.chat.composerAtBottomDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.composerAtBottom")}
+            checked={composerAtBottom}
+            onCheckedChange={setComposerAtBottom}
           />
         </SettingsRow>
       </SettingsSection>
