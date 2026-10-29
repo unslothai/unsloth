@@ -23,6 +23,37 @@ def lookup_manual_markers(model_name):
     return template, None, None
 
 
+def count_truncated_drops(rows, kept_rows, max_length):
+    """Rows masking dropped (rows minus kept_rows) that had been truncated at max_length."""
+    from collections import Counter
+
+    kept = Counter(map(tuple, kept_rows))
+    cut = 0
+    for row in rows:
+        key = tuple(row)
+        if kept[key]:
+            kept[key] -= 1
+        elif len(row) >= max_length:
+            cut += 1
+    return cut
+
+
+def truncated_drop_cause(cut, dropped, max_length):
+    """Error text for drops a too-short context length caused, or None when none did."""
+    if not cut:
+        return None
+    cause = (
+        f"{cut} of them are longer than the context length ({max_length} tokens), so truncation "
+        f"removed their response: raise the context length or shorten those rows."
+    )
+    if dropped > cut:
+        cause += (
+            f" The other {dropped - cut} do not contain this model's response template, so "
+            f"'Train on completions' should be turned off for this dataset."
+        )
+    return cause
+
+
 def _mask_tool_responses(trainer, start_id, end_id, turn_id):
     def mask(batch):
         all_labels = []
