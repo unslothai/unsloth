@@ -2,7 +2,8 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
 """CUDA-graph decode; UNSLOTH_DECODE_CUDA_GRAPHS=1 forces, =0 disables; unset, only RL-trainer
-generate on NVIDIA CUDA; graphs dropped when params, LoRA, quant or RoPE change."""
+generate and Studio's chat worker on NVIDIA CUDA; graphs dropped when params, LoRA, quant or RoPE
+change."""
 
 import math
 import os
@@ -11,7 +12,7 @@ import threading
 import torch
 
 # Programmatic override (tests, harnesses): True / False force graphs on / off, None (default) follows
-# the environment variable read at call time and the RL generation scope (enabled()).
+# the environment variable read at call time and the RL / Studio generation scopes (enabled()).
 ENABLED = None
 # KV-cache rows are allocated in multiples of this with graphs on.
 BUCKET = 256
@@ -22,6 +23,7 @@ __all__ = [
     "ENABLED",
     "enabled",
     "rl_generation",
+    "studio_generation",
     "static",
     "alloc_decode_buffers",
     "decode_step",
@@ -89,6 +91,14 @@ class rl_generation:
     def __exit__(self, *exc):
         _TLS.rl_depth -= 1
         return False
+
+
+class studio_generation(rl_generation):
+    """Scope of a generate() call in Studio's inference worker (per thread): graphs default on inside
+    it, as in RL rollouts. That process only serves inference, so graphs and buffers live until the
+    model is unloaded (release()). Plain model.generate() elsewhere stays eager by default."""
+
+    __slots__ = ()
 
 
 def static():
