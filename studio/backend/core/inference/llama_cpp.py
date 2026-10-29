@@ -34983,12 +34983,8 @@ class LlamaCppBackend:
         return True
 
     def _start_mtp_crash_watchdog(self) -> None:
-        """Background poll that recovers a crashed llama-server even when no
-        request observes it (direct proxy endpoints, or nothing in flight).
-
-        Armed for a live MTP launch or a caller's load; the recovery reload is
-        neither, so it can't loop.
-        """
+        """Recover a llama-server that dies with no request watching. Never armed by a non-MTP
+        recovery reload, so a server that keeps dying can't loop."""
         if not self._mtp_runtime_fallback_active and getattr(_AUTO_RECOVERY_LOAD, "active", False):
             return
         proc = self._process
