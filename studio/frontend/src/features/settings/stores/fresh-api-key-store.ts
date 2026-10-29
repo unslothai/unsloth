@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The key created on Settings > API, so the Agents tab's command can carry it. Memory only: the raw
-// key is shown once and must not outlive the page.
+// Memory only: the raw key is shown once and must not outlive the page.
 
 import { create } from "zustand";
 
 interface FreshApiKeyState {
   key: string | null;
   setKey: (key: string) => void;
-  /** Drops the key only when it is the one being revoked; `keyPrefix` is the ApiKey field. */
   forgetIfRevoked: (keyPrefix: string) => void;
 }
 

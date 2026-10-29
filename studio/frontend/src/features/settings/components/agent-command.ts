@@ -103,8 +103,7 @@ export function buildAgentShellCommands(
   os: AgentCommandOs,
   agent: string,
   modelArgs: string,
-  // Only a key just created on Settings > API: the CLI caches an explicit key per base, so a stale
-  // one would overwrite a working saved key.
+  // Fresh keys only: the CLI caches an explicit key per base, so a stale one overwrites a working one.
   freshKey: string | null = null,
 ): AgentShellCommands {
   const primaryBase = buildAgentCommand(base, freshKey, os, agent);
