@@ -102,10 +102,8 @@ test("the memory key is the card's model, else the loaded one, matched case-inse
 });
 
 test("new cards start on; a flow saved before the setting stays off and keeps its values", () => {
-  assert.equal(
-    s.newCardParams("llm.generate", defaultParams(GENERATE)).use_model_settings,
-    true,
-  );
+  assert.equal(defaultParams(GENERATE).use_model_settings, true);
+  assert.equal(defaultParams(VISION).use_model_settings, true);
   assert.equal(
     s.newCardParams("text.template", { template: "" }).use_model_settings,
     undefined,
