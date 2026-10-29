@@ -237,7 +237,7 @@ function mergeRlHistory(
 function upsertRlPoint(
   history: RlMetricPoint[],
   step: number,
-  values: Record<string, number>,
+  values: Record<string, number | null>,
 ): RlMetricPoint[] {
   const last = history[history.length - 1];
   if (last && last.step === step) {

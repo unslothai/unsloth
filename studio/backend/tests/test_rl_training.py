@@ -2062,3 +2062,13 @@ def test_gemma_fold_keeps_the_system_prompt_as_given():
     assert fold_system_into_user(rows)[0]["prompt"] == [
         {"role": "user", "content": "Think first.\n\n\n1+1?"}
     ]
+
+
+def test_an_unscored_step_warns_once_from_the_log_callback():
+    import inspect
+
+    from core.training import trainer
+
+    source = inspect.getsource(trainer)
+    assert "if rl_unscored_step(logs):" in source
+    assert "trainer_ref._record_warning(UNSCORED_STEP_WARNING)" in source

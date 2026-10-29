@@ -54,7 +54,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable, Union
 from datasets import Dataset
 from core.training.eval_dataset import evaluation_enabled
-from core.training.rl import rl_log_metrics, with_reward_isolation
+from core.training.rl import (
+    UNSCORED_STEP_WARNING,
+    rl_log_metrics,
+    rl_unscored_step,
+    with_reward_isolation,
+)
 from utils.datasets.audio_decode import ensure_audio_decoding
 from utils.datasets.tokenizer_fingerprint import install_tokenizer_fingerprint
 from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
@@ -1060,6 +1065,8 @@ class UnslothTrainer:
                 )
 
                 num_tokens = getattr(state, "num_input_tokens_seen", None)
+                if rl_unscored_step(logs):
+                    trainer_ref._record_warning(UNSCORED_STEP_WARNING)
 
                 trainer_ref._update_progress(
                     step = current_step,

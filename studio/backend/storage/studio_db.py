@@ -1927,6 +1927,14 @@ def get_run_metrics(id: str) -> dict:
                         for k, v in values.items()
                         if isinstance(v, (int, float)) and math.isfinite(v)
                     }
+                    # A reward that scored nothing keeps its series, as a gap.
+                    clean.update(
+                        {
+                            k: None
+                            for k, v in values.items()
+                            if v is None and k.startswith("rewards/") and k.endswith("/mean")
+                        }
+                    )
                     rl_history.append({"step": step, **clean})
 
         return {
