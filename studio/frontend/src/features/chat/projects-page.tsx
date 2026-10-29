@@ -69,6 +69,7 @@ import {
   Download01Icon,
   Edit03Icon,
   Folder01Icon,
+  Folder02Icon,
   PencilEdit02Icon,
   PinIcon,
   PinOffIcon,
@@ -81,7 +82,6 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowDownIcon } from "lucide-react";
-import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -754,7 +754,7 @@ export function ProjectsPage() {
                 >
                   <span className="mr-1 flex size-9 shrink-0 items-center justify-center rounded-md bg-muted text-foreground/70 transition-colors group-hover/project-row:bg-primary/10 group-hover/project-row:text-primary">
                     <HugeiconsIcon
-                      icon={Folder01Icon}
+                      icon={chatsOpen ? Folder02Icon : Folder01Icon}
                       strokeWidth={1.75}
                       className="size-5"
                     />
@@ -855,19 +855,19 @@ export function ProjectsPage() {
               </div>
             </div>
             {chatsOpen && (
-              <div className="mb-2 flex flex-col gap-0.5 pl-[calc(76px*var(--ui-space-scale,1))]">
+              <div className="mb-2 flex flex-col gap-0.5 pl-[calc(52px*var(--ui-space-scale,1))]">
                 {chats === undefined || chats === "loading" ? (
-                  <Skeleton className="h-6 w-48 rounded-full" />
+                  <Skeleton className="ml-5 h-6 w-48 rounded-full" />
                 ) : chats === "error" ? (
                   <button
                     type="button"
                     onClick={() => loadProjectChats(project.id)}
-                    className="cursor-pointer self-start py-1 text-left text-sm text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                    className="cursor-pointer self-start py-1 pl-5 text-left text-sm text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
                   >
                     Could not load chats. Retry
                   </button>
                 ) : chats.length === 0 ? (
-                  <p className="py-1 text-sm text-muted-foreground">No chats</p>
+                  <p className="py-1 pl-5 text-sm text-muted-foreground">No chats</p>
                 ) : (
                   <>
                     {chats.map((chat) => {
@@ -879,18 +879,13 @@ export function ProjectsPage() {
                       return (
                       <div
                         key={chat.id}
-                        className="group/chat-row flex items-center gap-3 rounded-full py-1.5 pl-2 pr-5 text-left text-sm text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.055*var(--contrast-wash-gain,1)))]"
+                        className="group/chat-row flex items-center gap-3 rounded-full py-1.5 pl-5 pr-5 text-left text-sm text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.055*var(--contrast-wash-gain,1)))]"
                       >
                         <button
                           type="button"
                           onClick={() => openChat(chat, project.id)}
                           className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-full text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         >
-                          <HugeiconsIcon
-                            icon={MessageCircleIcon}
-                            strokeWidth={1.75}
-                            className="size-4 shrink-0"
-                          />
                           <span className="min-w-0 truncate">{chat.title}</span>
                           {chatUnread ? (
                             <span

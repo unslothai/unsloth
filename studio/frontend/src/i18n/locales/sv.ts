@@ -4952,6 +4952,8 @@ export const sv = {
       pdfs: "PDF-filer",
       gridView: "Rutnätsvy",
       listView: "Listvy",
+      grid: "Rutnät",
+      list: "Lista",
       settings: "Biblioteksinställningar",
       sort: "Sortera",
       sortDefault: "Standardordning",

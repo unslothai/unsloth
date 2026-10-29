@@ -82,8 +82,8 @@ const CARD = cn(
   RAISED_SURFACE,
   CARD_SHADOW,
   // min-h-0 min-w-0: content must not size the card, or one long card grows its whole tab.
-  // Tile beside the text keeps cards wide and short; pe-10 clears the corner menu.
-  "group/chat relative flex min-h-0 min-w-0 cursor-pointer items-center gap-3.5 self-stretch rounded-2xl py-4 ps-4 pe-10 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
+  // The corner menu overlays the text on hover, so the text keeps the full width.
+  "group/chat relative flex min-h-0 min-w-0 cursor-pointer items-start gap-2 self-stretch rounded-2xl p-4 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
 );
 import {
   type ChatContents,
@@ -560,29 +560,30 @@ function ChatMenu({
 const TILE =
   "flex size-9 shrink-0 items-center justify-center rounded-md bg-muted text-foreground/70 transition-colors group-hover/chat:bg-primary/10 group-hover/chat:text-primary";
 const TILE_ICON = "size-5";
+// Cards are narrow at five per row, so they mark the kind with a bare icon on the title's first line.
+const CARD_ICON =
+  "mt-px size-4 shrink-0 text-muted-foreground transition-colors group-hover/chat:text-primary";
 
 function ChatTile({
   chat,
   className,
+  bare = false,
 }: {
   chat: SidebarItem;
   className?: string;
+  bare?: boolean;
 }) {
-  return (
-    <div className={cn(TILE, className)}>
-      {chat.type === "compare" ? (
-        <Columns2Icon strokeWidth={1.75} className={TILE_ICON} />
-      ) : chat.isFork ? (
-        <GitBranchIcon strokeWidth={1.75} className={TILE_ICON} />
-      ) : (
-        <HugeiconsIcon
-          icon={MessageCircleIcon}
-          strokeWidth={1.75}
-          className={TILE_ICON}
-        />
-      )}
-    </div>
-  );
+  const iconClass = bare ? CARD_ICON : TILE_ICON;
+  const icon =
+    chat.type === "compare" ? (
+      <Columns2Icon strokeWidth={1.75} className={iconClass} />
+    ) : chat.isFork ? (
+      <GitBranchIcon strokeWidth={1.75} className={iconClass} />
+    ) : (
+      <HugeiconsIcon icon={MessageCircleIcon} strokeWidth={1.75} className={iconClass} />
+    );
+  if (bare) return icon;
+  return <div className={cn(TILE, className)}>{icon}</div>;
 }
 
 function Badge({ children }: { children: ReactNode }) {
@@ -1181,7 +1182,7 @@ export function ChatCard({
       }
       className={cn(CARD, selected && "ring-2 ring-foreground")}
     >
-      {showTile && <ChatTile chat={chat} />}
+      {showTile && <ChatTile chat={chat} bare />}
       <div className={CARD_TEXT}>
         <div className={CARD_TITLE_ROW}>
           <button
@@ -1212,21 +1213,16 @@ export function ChatCard({
 
 function CardFooter({ meta, date, className }: { meta?: ReactNode; date: string; className?: string }) {
   return (
-    <div className={cn("flex min-w-0 items-center gap-1.5 text-ui-11p5 text-muted-foreground", className)}>
-      {meta && (
-        <>
-          <span className="min-w-0 truncate">{meta}</span>
-          <span aria-hidden="true">·</span>
-        </>
-      )}
-      <span className="shrink-0 whitespace-nowrap">{date}</span>
+    <div className={cn("flex min-w-0 flex-col items-start gap-0.5 text-ui-11p5 text-muted-foreground", className)}>
+      {meta && <span className="w-full min-w-0 truncate">{meta}</span>}
+      <span className="truncate">{date}</span>
     </div>
   );
 }
 
 const TILELESS_ROW_NAME = "min-h-13";
 
-const CARD_TEXT = "flex min-w-0 flex-1 flex-col gap-1";
+const CARD_TEXT = "flex min-w-0 flex-1 flex-col gap-1.5";
 const CARD_TITLE_ROW = "flex min-w-0 items-start gap-2 [&>svg]:mt-0.5";
 const CARD_TITLE =
   "block min-w-0 flex-1 rounded-md text-left font-medium text-ui-13 leading-snug text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-ring";
@@ -1251,7 +1247,8 @@ export function GroupHeading({
   );
 }
 
-function CollectionTile({ icon }: { icon: IconSvgElement }) {
+function CollectionTile({ icon, bare = false }: { icon: IconSvgElement; bare?: boolean }) {
+  if (bare) return <HugeiconsIcon icon={icon} strokeWidth={1.75} className={CARD_ICON} />;
   return (
     <span className={TILE}>
       <HugeiconsIcon icon={icon} strokeWidth={1.75} className={TILE_ICON} />
@@ -1419,7 +1416,7 @@ export function ProjectCard({
       onClick={() => actions.viewProject(project.id)}
       className={CARD}
     >
-      {showTile && <CollectionTile icon={Folder02Icon} />}
+      {showTile && <CollectionTile icon={Folder02Icon} bare />}
       <div className={CARD_TEXT}>
         <div className={CARD_TITLE_ROW}>
           <button
@@ -1670,7 +1667,7 @@ export function SectionCard({
       onClick={() => actions.viewSection(section.id)}
       className={CARD}
     >
-      {showTile && <CollectionTile icon={LayerIcon} />}
+      {showTile && <CollectionTile icon={LayerIcon} bare />}
       <div className={CARD_TEXT}>
         <div className={CARD_TITLE_ROW}>
           <button

@@ -4621,6 +4621,8 @@ export const ja = {
       pdfs: "PDF",
       gridView: "グリッド表示",
       listView: "リスト表示",
+      grid: "グリッド",
+      list: "リスト",
       settings: "ライブラリの設定",
       sort: "並べ替え",
       sortDefault: "デフォルトの順序",

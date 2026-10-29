@@ -4740,6 +4740,8 @@ export const en = {
       pdfs: "PDFs",
       gridView: "Grid view",
       listView: "List view",
+      grid: "Grid",
+      list: "List",
       settings: "Library settings",
       sort: "Sort",
       sortDefault: "Default order",

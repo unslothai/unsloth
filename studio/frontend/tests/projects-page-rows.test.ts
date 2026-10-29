@@ -280,6 +280,6 @@ test("a row is a container, and each of its controls is its own button", () => {
   );
   assert.match(
     PAGE,
-    /className="group\/chat-row flex items-center gap-3 rounded-full py-1\.5 pl-2 pr-5 text-left text-sm/,
+    /className="group\/chat-row flex items-center gap-3 rounded-full py-1\.5 pl-5 pr-5 text-left text-sm/,
   );
 });

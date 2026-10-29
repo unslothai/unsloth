@@ -4747,6 +4747,8 @@ export const it = {
       pdfs: "PDF",
       gridView: "Vista a griglia",
       listView: "Vista a elenco",
+      grid: "Griglia",
+      list: "Elenco",
       settings: "Impostazioni della Libreria",
       sort: "Ordina",
       sortDefault: "Ordine predefinito",

@@ -4682,6 +4682,8 @@ export const hi = {
       pdfs: "PDF",
       gridView: "ग्रिड व्यू",
       listView: "सूची व्यू",
+      grid: "ग्रिड",
+      list: "सूची",
       settings: "लाइब्रेरी सेटिंग्स",
       sort: "क्रमबद्ध करें",
       sortDefault: "डिफ़ॉल्ट क्रम",

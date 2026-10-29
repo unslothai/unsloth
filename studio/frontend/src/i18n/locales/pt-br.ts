@@ -4706,6 +4706,8 @@ export const ptBR = {
       pdfs: "PDFs",
       gridView: "Visualização em grade",
       listView: "Visualização em lista",
+      grid: "Grade",
+      list: "Lista",
       settings: "Configurações da Biblioteca",
       sort: "Ordenar",
       sortDefault: "Ordem padrão",

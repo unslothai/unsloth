@@ -4572,6 +4572,8 @@ export const zhCN = {
       pdfs: "PDF",
       gridView: "网格视图",
       listView: "列表视图",
+      grid: "网格",
+      list: "列表",
       settings: "资料库设置",
       sort: "排序",
       sortDefault: "默认顺序",

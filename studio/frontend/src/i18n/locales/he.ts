@@ -4808,6 +4808,8 @@ export const he = {
       pdfs: "קובצי PDF",
       gridView: "תצוגת רשת",
       listView: "תצוגת רשימה",
+      grid: "רשת",
+      list: "רשימה",
       settings: "הגדרות הספרייה",
       sort: "מיון",
       sortDefault: "סדר ברירת מחדל",

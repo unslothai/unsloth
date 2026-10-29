@@ -396,8 +396,8 @@ export function ChatsToolbar({
     <div className="flex min-w-0 items-center gap-2">
       {filters && <FilterMenu filters={filters} onChange={onFiltersChange} facets={facets} />}
       {sort}
-      {VIEW_OPTIONS.map(({ value, label, icon }) => (
-        <ToolbarTip key={value} label={t(label)}>
+      {VIEW_OPTIONS.map(({ value, label, tip, icon }) => (
+        <ToolbarTip key={value} label={t(tip)}>
           <button
             type="button"
             aria-label={t(label)}

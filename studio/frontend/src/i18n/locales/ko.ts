@@ -4661,6 +4661,8 @@ export const ko = {
       pdfs: "PDF",
       gridView: "그리드 보기",
       listView: "목록 보기",
+      grid: "그리드",
+      list: "목록",
       settings: "라이브러리 설정",
       sort: "정렬",
       sortDefault: "기본 순서",

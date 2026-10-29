@@ -75,9 +75,9 @@ const TYPE_OPTIONS: MenuOption<LibraryTypeFilter>[] = [
 ];
 
 export const VIEW_OPTIONS = [
-  { value: "grid", label: "library.toolbar.gridView", icon: GridViewIcon },
-  { value: "list", label: "library.toolbar.listView", icon: LeftToRightListBulletIcon },
-] satisfies MenuOption<LibraryView>[];
+  { value: "grid", label: "library.toolbar.gridView", tip: "library.toolbar.grid", icon: GridViewIcon },
+  { value: "list", label: "library.toolbar.listView", tip: "library.toolbar.list", icon: LeftToRightListBulletIcon },
+] satisfies (MenuOption<LibraryView> & { tip: TranslationKey })[];
 
 export type LibrarySortChoice = "default" | LibrarySortKey;
 
@@ -377,8 +377,8 @@ export function LibraryToolbar({
           />
         )}
         {sort && <SortMenu {...sort} />}
-        {VIEW_OPTIONS.map(({ value, label, icon }) => (
-          <ToolbarTip key={value} label={t(label)}>
+        {VIEW_OPTIONS.map(({ value, label, tip, icon }) => (
+          <ToolbarTip key={value} label={t(tip)}>
             <button
               type="button"
               aria-label={t(label)}

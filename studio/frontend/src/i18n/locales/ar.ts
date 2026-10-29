@@ -4671,6 +4671,8 @@ export const ar = {
       pdfs: "ملفات PDF",
       gridView: "عرض الشبكة",
       listView: "عرض القائمة",
+      grid: "شبكة",
+      list: "قائمة",
       settings: "إعدادات المكتبة",
       sort: "الترتيب",
       sortDefault: "الترتيب الافتراضي",

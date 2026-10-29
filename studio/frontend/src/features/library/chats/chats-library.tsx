@@ -90,7 +90,7 @@ import { type HeaderTab, LibraryHeader } from "../components/library-header";
 import type { LibrarySearch } from "../search";
 import { CardGrid } from "../components/library-cards";
 import { LIST_ROW_GAP } from "../components/library-list";
-import { CHAT_CARD_COLUMNS, type LibraryView } from "../settings-store";
+import type { LibraryView } from "../settings-store";
 import {
   ChatCard,
   ChatListHeader,
@@ -1109,7 +1109,7 @@ export function ChatsLibrary({
           list ? (
             <div className={cn("mt-1 flex flex-col", LIST_ROW_GAP)}>{shownEntries.map(entryRow)}</div>
           ) : (
-            <CardGrid columns={CHAT_CARD_COLUMNS}>{shownEntries.map(entryRow)}</CardGrid>
+            <CardGrid>{shownEntries.map(entryRow)}</CardGrid>
           )
         ) : (
           groups.map((group) => (
@@ -1124,7 +1124,7 @@ export function ChatsLibrary({
                   {group.items.map((chat) => chatRow(chat, group.bucket?.kind))}
                 </div>
               ) : (
-                <CardGrid columns={CHAT_CARD_COLUMNS}>{group.items.map((chat) => chatRow(chat, group.bucket?.kind))}</CardGrid>
+                <CardGrid>{group.items.map((chat) => chatRow(chat, group.bucket?.kind))}</CardGrid>
               )}
             </section>
           ))
@@ -1187,7 +1187,7 @@ export function ChatsLibrary({
       );
     }
     return (
-      <CardGrid columns={CHAT_CARD_COLUMNS}>
+      <CardGrid>
         <button
           type="button"
           onClick={() => setMovingIntoNew({ kind: "section", chats: [] })}
@@ -1233,7 +1233,7 @@ export function ChatsLibrary({
             ))}
           </div>
         ) : (
-          <CardGrid columns={CHAT_CARD_COLUMNS}>
+          <CardGrid>
             {sectionProjects.map((project) => (
               <ProjectCard key={project.id} project={project} stats={stats.get(project.id)} showTile={false} />
             ))}
@@ -1282,7 +1282,7 @@ export function ChatsLibrary({
       );
     }
     return (
-      <CardGrid columns={CHAT_CARD_COLUMNS}>
+      <CardGrid>
         {!embedded && (
           <button
             type="button"

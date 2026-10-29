@@ -4703,6 +4703,8 @@ export const ru = {
       pdfs: "PDF",
       gridView: "Сетка",
       listView: "Список",
+      grid: "Сетка",
+      list: "Список",
       settings: "Настройки библиотеки",
       sort: "Сортировка",
       sortDefault: "Порядок по умолчанию",
