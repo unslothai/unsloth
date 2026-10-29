@@ -155,3 +155,20 @@ def test_oxlint_lints_snippets_under_a_gitignored_temp_root(monkeypatch, tmp_pat
     )
 
     assert [result["code"] for result in results] == ["eslint(no-debugger)", None]
+
+
+@real_oxlint
+def test_oxlint_lints_a_batch_longer_than_one_command_line(monkeypatch, tmp_path):
+    # batch_size is unbounded and Windows caps a command line at 32,767 chars, so naming every
+    # snippet in one oxlint call failed the whole batch there; the names go in chunks instead.
+    monkeypatch.setattr(validators, "oxc_validator_tmp_root", lambda: tmp_path)
+    codes = ["debugger;\n", "export const x = 1;\n"] * 1500
+
+    results = validators._run_oxc_batch(
+        node_lang = "js",
+        validation_mode = "lint",
+        code_shape = "module",
+        code_values = codes,
+    )
+
+    assert [result["code"] for result in results] == ["eslint(no-debugger)", None] * 1500

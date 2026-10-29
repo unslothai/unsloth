@@ -32,6 +32,8 @@ const OXLINT_CONFIG_PATH = join(TOOL_DIR, "oxlintrc.json");
 // refuses the .cmd one without a shell, so run oxlint's bin entry with this Node instead.
 const IS_WINDOWS = process.platform === "win32";
 const OXLINT_ENTRY = join(TOOL_DIR, "node_modules", "oxlint", "bin", "oxlint");
+// Windows caps a whole command line at 32,767 chars and batch_size is unbounded: lint in chunks.
+const OXLINT_FILE_ARGS_MAX_CHARS = 24_000;
 
 function mapLang(value) {
   const normalized = String(value || "").trim().toLowerCase();
@@ -397,19 +399,27 @@ function runLintBatch(entries, budgetMs) {
 
   const entryByIndex = new Map(entries.map((entry) => [entry.index, entry]));
   const tempDir = mkdtempSync(join(tmpdir(), "oxlint-"));
-  const snippetPaths = [];
   try {
+    // Named files, not the folder: a folder walk honours a .gitignore above the temp dir, so a temp
+    // dir inside an ignored tree linted nothing. Relative names (cwd = tempDir) keep the args short.
+    const chunks = [[]];
+    let chunkChars = 0;
     for (const entry of entries) {
       const ext = LANG_TO_EXT[entry.lang] ?? "js";
-      const filePath = join(tempDir, `snippet_${entry.index}.${ext}`);
-      writeFileSync(filePath, entry.code, "utf8");
-      snippetPaths.push(filePath);
+      const name = `snippet_${entry.index}.${ext}`;
+      writeFileSync(join(tempDir, name), entry.code, "utf8");
+      if (chunkChars + name.length + 1 > OXLINT_FILE_ARGS_MAX_CHARS) {
+        chunks.push([]);
+        chunkChars = 0;
+      }
+      chunks[chunks.length - 1].push(name);
+      chunkChars += name.length + 1;
     }
 
     const oxlintBin = IS_WINDOWS
       ? process.execPath
       : join(TOOL_DIR, "node_modules", ".bin", "oxlint");
-    const oxlintArgs = [
+    const oxlintBaseArgs = [
       ...(IS_WINDOWS ? [OXLINT_ENTRY] : []),
       "--config",
       OXLINT_CONFIG_PATH,
@@ -417,46 +427,47 @@ function runLintBatch(entries, budgetMs) {
       ...OXLINT_SUPPRESSED_RULES.flatMap((rule) => ["-A", rule]),
       "--format",
       "json",
-      // The files, not the folder: a folder walk honours a .gitignore above the temp dir (a temp
-      // dir inside an ignored tree lints nothing), while named files are always linted.
-      ...snippetPaths,
     ];
-    const timeoutMs = Math.floor(budgetMs - OXLINT_BUDGET_MARGIN_MS - performance.now());
-    if (timeoutMs < OXLINT_MIN_TIMEOUT_MS) {
-      return fallbackLintResults(entries, "oxlint skipped: validation budget exhausted");
-    }
-    const exec = spawnSync(oxlintBin, oxlintArgs, {
-      encoding: "utf8",
-      cwd: TOOL_DIR,
-      timeout: timeoutMs,
-      // SIGTERM is ignorable, and spawnSync then waits out the child regardless.
-      killSignal: "SIGKILL",
-    });
-    if (exec.error) {
-      return fallbackLintResults(
-        entries,
-        `oxlint execution failed: ${exec.error.message}`,
-      );
-    }
-    const stdout = String(exec.stdout || "").trim();
-    if (!stdout) {
-      const stderr = String(exec.stderr || "").trim();
-      return fallbackLintResults(
-        entries,
-        stderr || "oxlint returned empty output",
-      );
+    const rawDiagnostics = [];
+    for (const names of chunks) {
+      const timeoutMs = Math.floor(budgetMs - OXLINT_BUDGET_MARGIN_MS - performance.now());
+      if (timeoutMs < OXLINT_MIN_TIMEOUT_MS) {
+        return fallbackLintResults(entries, "oxlint skipped: validation budget exhausted");
+      }
+      const oxlintArgs = [...oxlintBaseArgs, ...names];
+      const exec = spawnSync(oxlintBin, oxlintArgs, {
+        encoding: "utf8",
+        cwd: tempDir,
+        timeout: timeoutMs,
+        // SIGTERM is ignorable, and spawnSync then waits out the child regardless.
+        killSignal: "SIGKILL",
+      });
+      if (exec.error) {
+        return fallbackLintResults(
+          entries,
+          `oxlint execution failed: ${exec.error.message}`,
+        );
+      }
+      const stdout = String(exec.stdout || "").trim();
+      if (!stdout) {
+        const stderr = String(exec.stderr || "").trim();
+        return fallbackLintResults(
+          entries,
+          stderr || "oxlint returned empty output",
+        );
+      }
+
+      let parsed;
+      try {
+        parsed = JSON.parse(stdout);
+      } catch {
+        return fallbackLintResults(entries, "oxlint JSON parse failed");
+      }
+      if (Array.isArray(parsed?.diagnostics)) {
+        rawDiagnostics.push(...parsed.diagnostics);
+      }
     }
 
-    let parsed;
-    try {
-      parsed = JSON.parse(stdout);
-    } catch {
-      return fallbackLintResults(entries, "oxlint JSON parse failed");
-    }
-
-    const rawDiagnostics = Array.isArray(parsed?.diagnostics)
-      ? parsed.diagnostics
-      : [];
     const byIndex = new Map();
 
     for (const diag of rawDiagnostics) {
