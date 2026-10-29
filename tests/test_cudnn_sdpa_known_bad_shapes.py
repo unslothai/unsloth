@@ -72,7 +72,13 @@ def test_dq_nan_gate(torch_version, cudnn, cap, expected):
 class _FakeCuda:
     """Enough of a CUDA tensor for the per-call decision (no GPU here)."""
 
-    def __init__(self, *shape, dtype = None, requires_grad = False, index = 0):
+    def __init__(
+        self,
+        *shape,
+        dtype = None,
+        requires_grad = False,
+        index = 0,
+    ):
         self.shape = torch.Size(shape)
         self.dtype = dtype or torch.bfloat16
         self.requires_grad = requires_grad
@@ -94,7 +100,13 @@ ALL_BACKENDS = [
 NONE = frozenset()
 
 
-def _bad(decode, dq, q, k, is_causal = False):
+def _bad(
+    decode,
+    dq,
+    q,
+    k,
+    is_causal = False,
+):
     return fixes._sdpa_cudnn_known_bad(decode, dq, q, k, is_causal)
 
 
@@ -131,7 +143,9 @@ class TestPerCallDecision:
 
     def test_dq_nan_needs_noncausal_grad(self):
         k = _FakeCuda(1, 8, 704, 64)
-        assert _bad(NONE, D0, _FakeCuda(1, 8, 704, 64, requires_grad = True), k, is_causal = True) is None
+        assert (
+            _bad(NONE, D0, _FakeCuda(1, 8, 704, 64, requires_grad = True), k, is_causal = True) is None
+        )
         assert _bad(NONE, D0, _FakeCuda(1, 8, 704, 64), k) is None
         with torch.no_grad():
             assert _bad(NONE, D0, _FakeCuda(1, 8, 704, 64, requires_grad = True), k) is None
@@ -151,7 +165,14 @@ class TestPerCallDecision:
 
 
 class TestDevices:
-    def _mock(self, monkeypatch, version, cudnn, caps, hip = None):
+    def _mock(
+        self,
+        monkeypatch,
+        version,
+        cudnn,
+        caps,
+        hip = None,
+    ):
         monkeypatch.setattr(torch, "__version__", version)
         monkeypatch.setattr(torch.version, "hip", hip, raising = False)
         monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
@@ -183,7 +204,15 @@ def recorder(monkeypatch):
 
     calls = []
 
-    def fake_sdpa(query, key, value, attn_mask = None, dropout_p = 0.0, is_causal = False, **kw):
+    def fake_sdpa(
+        query,
+        key,
+        value,
+        attn_mask = None,
+        dropout_p = 0.0,
+        is_causal = False,
+        **kw,
+    ):
         cuda = torch.backends.cuda
         calls.append(
             dict(
