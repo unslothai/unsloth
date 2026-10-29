@@ -83,7 +83,6 @@ def spill_dir() -> Path:
 
 
 def _fs_type(path: Path) -> Optional[str]:
-    """Filesystem type holding ``path`` from ``/proc/mounts``, None if unreadable."""
     try:
         real = os.path.realpath(path)
         best, kind = "", None
@@ -121,7 +120,6 @@ def spill_capacity_mib(directory: Any = None) -> Optional[int]:
 
 
 def _sweep_stale_spills(directory: Path) -> None:
-    """Delete spill files of dead processes."""
     try:
         for f in directory.glob(f"{_SPILL_PREFIX}*.bin"):
             try:
@@ -219,7 +217,6 @@ def _header_sizes(path: Path, keep: tuple[str, ...] = ()) -> tuple[dict[str, int
 
 
 def _is_embedding_name(name: str) -> bool:
-    # the encoder's first parameter owner, converted on the host
     leaf = name.rsplit(".", 2)
     return "embed" in name or (len(leaf) >= 2 and leaf[-2] == "shared")
 

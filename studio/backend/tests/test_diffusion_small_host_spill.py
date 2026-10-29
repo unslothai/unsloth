@@ -19,7 +19,6 @@ import torch
 
 import core.inference.diffusion_small_host as sh
 
-# stored sizes read from the FLUX.2-klein-9B safetensors headers
 KLEIN9 = {
     "transformer": sh.StoredComponent("transformer", 17317, "bfloat16", 0, "diffusers"),
     "text_encoder": sh.StoredComponent(
@@ -155,7 +154,6 @@ def test_stored_components_reads_the_encoder_embedding(tmp_path):
     comps = sh.stored_components(tmp_path)
     assert comps["text_encoder"].embed_mib == 1
     assert comps["transformer"].embed_mib == 0
-    # the dtype totals other readers use are unchanged
     assert sh._safetensors_bytes_by_dtype(te / "model.safetensors") == {
         "bfloat16": 1024 * 512 * 2 + 512 * 512 * 2
     }
@@ -192,7 +190,6 @@ def test_spilled_int8_is_bit_identical_and_file_backed(tmp_path):
         assert torch.equal(r.qweight, s.qweight) and torch.equal(r.scale, s.scale)
         assert s.qweight.untyped_storage().filename is not None
         assert r.qweight.untyped_storage().filename is None
-    # the scratch file is unlinked once mapped: nothing is left on disk
     assert not list(tmp_path.iterdir())
     x = torch.randn(3, 2048, dtype = torch.float16)
     with torch.no_grad():
