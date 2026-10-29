@@ -230,8 +230,8 @@ pub fn note_window_shown() {
     }
 }
 
-/// Child only: watches for the parent's `T` and calls `on_terminate` once. EOF (the parent was
-/// killed) is ignored.
+/// Child only: calls `on_terminate` once on the parent's `T` or EOF. A dead supervisor must not
+/// strand the app in its separate process group, even if the parent died before this reader began.
 pub fn start_control_reader(on_terminate: impl Fn() + Send + 'static) {
     let Some(stream) = CHANNEL.get() else {
         return;
@@ -246,7 +246,12 @@ pub fn start_control_reader(on_terminate: impl Fn() + Send + 'static) {
             let mut buf = [0u8; 16];
             loop {
                 match reader.read(&mut buf) {
-                    Ok(0) => return,
+                    Ok(0) => {
+                        if !fired {
+                            on_terminate();
+                        }
+                        return;
+                    }
                     Ok(n) => {
                         if !fired && buf[..n].contains(&MSG_TERMINATE) {
                             fired = true;
@@ -527,10 +532,7 @@ fn run_attempt(mut command: Command, shared: &Shared) -> io::Result<Option<Attem
     let child_fd = child_end.as_raw_fd();
     command.env(SUPERVISOR_FD_ENV, child_fd.to_string());
     command.process_group(0);
-    let parent_pid = std::process::id() as libc::pid_t;
-    // SAFETY: the closure only calls fcntl(2), signal(2), prctl(2) and getppid(2), without
-    // allocating or taking locks. The parent-death signal also covers an uncatchable SIGKILL
-    // sent to the supervisor's group, which no longer includes the app.
+    // SAFETY: the closure only calls async-signal-safe fcntl(2) and signal(2).
     unsafe {
         command.pre_exec(move || {
             if !set_cloexec(child_fd, false) {
@@ -538,13 +540,6 @@ fn run_attempt(mut command: Command, shared: &Shared) -> io::Result<Option<Attem
             }
             for signal in [libc::SIGINT, libc::SIGQUIT, libc::SIGHUP, libc::SIGTERM] {
                 libc::signal(signal, libc::SIG_DFL);
-            }
-            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
-                return Err(io::Error::last_os_error());
-            }
-            // The supervisor may have died between fork and prctl, before the signal was armed.
-            if libc::getppid() != parent_pid {
-                return Err(io::Error::from_raw_os_error(libc::ECANCELED));
             }
             Ok(())
         });
