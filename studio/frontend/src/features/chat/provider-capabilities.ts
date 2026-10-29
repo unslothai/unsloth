@@ -1371,7 +1371,10 @@ export function providerModelReplaysReasoning(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
 ): boolean {
-  return providerType === "kimi" && modelId?.trim().toLowerCase() === "kimi-k3";
+  return (
+    providerType === "minimax" ||
+    (providerType === "kimi" && modelId?.trim().toLowerCase() === "kimi-k3")
+  );
 }
 
 /** Sent as a llama-server / vLLM template kwarg, so the model's template must still read it. */
