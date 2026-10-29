@@ -1981,11 +1981,16 @@ if hasattr(torch._dynamo, "assume_constant_result"):
     _fp8_rowwise_backend = torch._dynamo.assume_constant_result(_fp8_rowwise_backend)
 
 
+# torch 2.10 - 2.13's rowwise CUTLASS kernel picks its output element type from the bias dtype, so
+# without a bias an fp16 output buffer receives bf16 bits (and float32 is rejected); 2.14 dispatches
+# on the output dtype.
+_SCALED_MM_OUT_DISPATCH = Version(torch.__version__).release[:2] >= (2, 14)
+
+
 def _scaled_mm_out_dtype(dtype):
-    """Rowwise torch._scaled_mm output dtype for activations of `dtype`. torch 2.10's rowwise CUTLASS
-    kernel picks its output element type from the bias dtype, so without a bias an fp16 output buffer
-    receives bf16 bits (every value garbage); ask for bf16 and let the caller cast back."""
-    return torch.bfloat16 if dtype == torch.float16 else dtype
+    """Rowwise torch._scaled_mm output dtype for activations of `dtype`: fp16 asks for bf16 (the caller
+    casts back) only where the kernel cannot write fp16, since the bf16 rounding can overflow fp16."""
+    return torch.bfloat16 if dtype == torch.float16 and not _SCALED_MM_OUT_DISPATCH else dtype
 
 
 def _parse_fp8_dequant_max_rows(value):
@@ -2088,6 +2093,8 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
         elif (
             backend == "scaled_mm"
             and rowwise
+            # Before torch 2.14 rowwise outputs are bf16 / fp16 only: float32 dequantizes.
+            and (x.dtype != torch.float32 or _SCALED_MM_OUT_DISPATCH)
             and (weight.shape[0] % 16 == 0 and weight.shape[1] % 16 == 0)
             and x.shape[-1] == weight.shape[1]
             # Decode-sized calls: dequant + 16-bit GEMM beats quantizing the activation unless the weight
@@ -2242,6 +2249,9 @@ def _fp8_rowwise_direct_route(X, weight, weight_scale):
     if torch.is_grad_enabled() and (
         X.requires_grad or weight.requires_grad or weight_scale.requires_grad
     ):
+        return None
+    # The compiled path dequantizes inside autocast's GEMM; a buffer in another dtype could overflow first.
+    if torch.is_autocast_enabled("cuda") and torch.get_autocast_dtype("cuda") != X.dtype:
         return None
     if not (
         _FP8_ROWWISE_DIRECT

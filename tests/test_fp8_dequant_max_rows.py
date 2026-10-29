@@ -53,6 +53,15 @@ def test_row_bounds_are_unchanged(route):
     assert route(65, SMALL) == "scaled_mm"
 
 
+@pytest.mark.parametrize("autocast_dtype, expected", [(None, "scaled_mm"), (torch.bfloat16, "scaled_mm"),
+                                                      (torch.float16, None)])
+def test_autocast_in_another_dtype_keeps_the_compiled_path(route, monkeypatch, autocast_dtype, expected):
+    # The direct path would round the dequantized weight into X's dtype before autocast's GEMM.
+    monkeypatch.setattr(torch, "is_autocast_enabled", lambda device_type = None: autocast_dtype is not None)
+    monkeypatch.setattr(torch, "get_autocast_dtype", lambda device_type: autocast_dtype)
+    assert route(32, LARGE) == expected
+
+
 def test_unknown_l2_keeps_the_64_row_default(route):
     assert route(32, LARGE, l2 = 0) == "dequant"
     assert route(65, LARGE, l2 = 0) == "scaled_mm"
@@ -96,8 +105,17 @@ def test_l2_probe_only_reports_measured_arches(monkeypatch, capability, l2, expe
         F8._probe_fp8_l2_cache_bytes.cache_clear()
 
 
-@pytest.mark.parametrize("shape, scaled", [(LARGE, True), (SMALL, False)])
-def test_autograd_function_uses_the_same_gate(monkeypatch, shape, scaled):
+@pytest.mark.parametrize(
+    "shape, scaled, dtype, dispatch",
+    [
+        (LARGE, True, torch.bfloat16, False),
+        (SMALL, False, torch.bfloat16, False),
+        # Rowwise scaled_mm cannot write float32 before torch 2.14: float32 keeps dequant there.
+        (LARGE, False, torch.float32, False),
+        (LARGE, True, torch.float32, True),
+    ],
+)
+def test_autograd_function_uses_the_same_gate(monkeypatch, shape, scaled, dtype, dispatch):
     calls = []
 
     def fake_scaled_mm(a, b, **kwargs):
@@ -111,9 +129,10 @@ def test_autograd_function_uses_the_same_gate(monkeypatch, shape, scaled):
     monkeypatch.setattr(torch, "_scaled_mm", fake_scaled_mm)
     monkeypatch.setattr(F8, "weight_dequant", fake_dequant)
     monkeypatch.setattr(F8, "_fp8_l2_cache_bytes", lambda device: L2)
+    monkeypatch.setattr(F8, "_SCALED_MM_OUT_DISPATCH", dispatch, raising = False)
     N, K = shape
     with FakeTensorMode(), torch.no_grad():
-        X = torch.empty(1, 32, K, device = "cuda", dtype = torch.bfloat16)
+        X = torch.empty(1, 32, K, device = "cuda", dtype = dtype)
         w = torch.empty(N, K, device = "cuda", dtype = torch.float8_e4m3fn)
         s = torch.empty(N, 1, device = "cuda", dtype = torch.float32)
         y = F8.FbgemmFp8Linear_matmul.apply(X, w, s, None, "scaled_mm")
@@ -121,12 +140,19 @@ def test_autograd_function_uses_the_same_gate(monkeypatch, shape, scaled):
     assert calls == ["scaled_mm" if scaled else "dequant"]
 
 
-def test_scaled_mm_asks_for_bf16_when_activations_are_fp16():
-    """torch 2.10's rowwise CUTLASS kernel writes bf16 bits into an fp16 output when there is no
-    bias: fp16 calls request bf16 and cast back; bf16 / fp32 are unchanged."""
-    assert F8._scaled_mm_out_dtype(torch.float16) is torch.bfloat16
+@pytest.mark.parametrize("dispatch", [False, True])
+def test_scaled_mm_asks_for_bf16_only_where_fp16_output_is_broken(monkeypatch, dispatch):
+    """torch 2.10 - 2.13's rowwise CUTLASS kernel writes bf16 bits into an fp16 output when there is no
+    bias: there fp16 calls request bf16 and cast back. 2.14 writes fp16, and the bf16 round trip would
+    overflow fp16 near 65504, so fp16 stays fp16. bf16 / fp32 are unchanged."""
+    monkeypatch.setattr(F8, "_SCALED_MM_OUT_DISPATCH", dispatch)
+    assert F8._scaled_mm_out_dtype(torch.float16) is (torch.float16 if dispatch else torch.bfloat16)
     assert F8._scaled_mm_out_dtype(torch.bfloat16) is torch.bfloat16
     assert F8._scaled_mm_out_dtype(torch.float32) is torch.float32
+
+
+def test_out_dtype_dispatch_follows_the_torch_release():
+    assert F8._SCALED_MM_OUT_DISPATCH == (F8.Version(torch.__version__).release[:2] >= (2, 14))
 
 
 def test_every_rowwise_scaled_mm_call_uses_the_out_dtype_helper():
