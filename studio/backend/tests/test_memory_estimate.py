@@ -4473,7 +4473,13 @@ def test_the_route_is_asked_about_a_cache_longer_than_the_chunk(monkeypatch, chu
         quantize = quantize,
     )
 
-    def fused_kernel_exists(queries, q_keys, q_values, group_size, mask = None):
+    def fused_kernel_exists(
+        queries,
+        q_keys,
+        q_values,
+        group_size,
+        mask = None,
+    ):
         asked.append((queries.shape[-2], q_keys[0].shape[-2], q_values[0].shape[-2], mask))
         return q_keys[0].shape[-2] >= queries.shape[-2]
 
