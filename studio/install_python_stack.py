@@ -9138,8 +9138,7 @@ def _build_pip_cmd(args: tuple[str, ...]) -> list[str]:
         # By canonical project name: pip refuses `--upgrade-package mlx` beside `mlx==0.32.3` as a double
         # requirement where uv does not.
         def _project(requirement: str) -> str:
-            # _requirement_name stops at "==" and "@"; a range (mlx-vlm>=0.4.4,<=0.7.11) needs the
-            # rest.
+            # _requirement_name stops at "==" and "@", not at a range specifier.
             return _canonical_package_name(
                 re.split(r"[<>=!~;\[ ]", _requirement_name(requirement), maxsplit = 1)[0]
             )
