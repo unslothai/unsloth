@@ -54,13 +54,14 @@ def _site(
         path.write_text(
             source + ("raise ImportError('undefined symbol')\n" if broken and last else "")
         )
-    env = dict(os.environ, PYTHONPATH = str(site), PYTHONNOUSERSITE = "1")
+    env = dict(os.environ, PYTHONPATH = str(site))
     return env, marker
 
 
 def _run_check(name, env, tmp_path):
     return subprocess.run(
-        [sys.executable, "-c", kernel_install._load_check(name)],
+        # -S: only the fake site, so a real xformers / torch in this venv cannot answer.
+        [sys.executable, "-S", "-c", kernel_install._load_check(name)],
         env = env,
         cwd = tmp_path,
         stdout = subprocess.DEVNULL,

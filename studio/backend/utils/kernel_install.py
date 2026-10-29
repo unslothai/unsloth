@@ -401,9 +401,8 @@ _CHECKED_MODULE = {
 
 
 def _load_check(name: str) -> str:
-    """KERNELS[name]'s check, exiting 1 first when no import path finds its module: the check
-    would fail the same way, only after a ~2 s torch import (importing torch adds no path or
-    finder). A find_spec that raises leaves the decision to the check."""
+    """KERNELS[name]'s check, exiting 1 before the ~2 s torch import when no path finds its module
+    (torch adds no path or finder). A raising find_spec leaves it to the check."""
     return (
         "import importlib.util, sys\n"
         "try:\n"
