@@ -37068,6 +37068,32 @@ class LlamaCppBackend:
         # Caller's continue_final_message is restored once a turn progresses; forced only to join one answer.
         _final_answer_stripper = _StreamingMarkupStripper(_enabled_names_gate, seg_final = False)
 
+        def _final_answer_visible(
+            cleaned: str,
+            answer: str,
+            *,
+            at_end: bool = False,
+        ):
+            """The final pass sends tool_choice "none", so llama-server leaves a Llama 3.x bare-JSON call
+            (no marker) in the answer text. Hold an answer that opens with ``{`` until its first object
+            closes, then drop a leading call to an enabled tool, as the tool rounds do; blocked exec-class
+            calls and ordinary JSON stay visible. None means hold."""
+            if not _enabled_names_gate or not cleaned.endswith(answer):
+                return cleaned
+            probe = strip_llama3_leading_sentinels(answer.lstrip())
+            if not probe.startswith("{"):
+                return cleaned
+            if (
+                not at_end
+                and len(probe) < _MAX_BARE_JSON_BUFFER
+                and _balanced_brace_end(probe, 0) is None
+            ):
+                return None
+            kept = strip_leading_bare_json_call(answer, _enabled_names_gate)
+            if kept == answer:
+                return cleaned
+            return cleaned[: len(cleaned) - len(answer)] + kept
+
         def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:
             if not (auto_heal_tool_calls or force):
                 return text
@@ -40391,14 +40417,26 @@ class LlamaCppBackend:
                                             if auto_heal_tool_calls
                                             else cumulative
                                         )
+                                        if auto_heal_tool_calls:
+                                            cleaned = _final_answer_visible(cleaned, answer_text)
                                         # Emit only when cleaned text grows (monotonic).
-                                        if len(cleaned) > len(_last_emitted):
+                                        if cleaned is not None and len(cleaned) > len(
+                                            _last_emitted
+                                        ):
                                             _last_emitted = cleaned
                                             yield {"type": "content", "text": cleaned}
                             except json.JSONDecodeError:
                                 logger.debug(f"Skipping malformed SSE line: {line[:100]}")
                         if _stream_done:
                             break  # exit outer for
+                    if auto_heal_tool_calls and has_content_tokens and not in_thinking:
+                        # Release an answer still held as a possible bare-JSON call.
+                        _flushed = _final_answer_visible(
+                            _final_answer_stripper.strip(cumulative), answer_text, at_end = True
+                        )
+                        if len(_flushed) > len(_last_emitted):
+                            _last_emitted = _flushed
+                            yield {"type": "content", "text": _flushed}
                     # Commit the candidate only once another stream runs, so usage is not double counted; replay only new text, or the fragment is repeated.
                     _shown_this_attempt = _last_emitted[len(_attempt_started_at) :]
                     if (
