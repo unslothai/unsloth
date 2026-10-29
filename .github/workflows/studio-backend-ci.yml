@@ -350,9 +350,24 @@ jobs:
               --ignore=tests/sh
               --ignore=tests/vllm_compat
               --ignore=tests/version_compat
+              --ignore=tests/diffusion
+              --ignore=tests/kaggle
+              --ignore=tests/security
+              --ignore-glob=tests/test_[dimsu]*.py
               --ignore-glob=tests/test_fsdp2*.py
               --ignore-glob=tests/test_[!f]*gloo*.py
               --ignore-glob=tests/test_f[!s]*gloo*.py
+          # The catch-all then ran 1213 to 2092 s of its 2100 s cap on 2026-10-29 (median about
+          # 1750 s), and was interrupted after passing on a slow runner. Measured per file, the
+          # diffusion, kaggle and security folders plus top-level test_d/i/m/s/u files are about
+          # half of it. No *gloo* or fsdp2 file starts with d, i, m, s or u, so the glob cannot
+          # take a file another shard also names (tests/test_ci_repo_cpu_shards.py checks it).
+          - shard: rest-2
+            selection: >-
+              tests/diffusion
+              tests/kaggle
+              tests/security
+              tests/test_[dimsu]*.py
               --deselect tests/test_model_registry.py::test_model_registration
               --deselect tests/test_model_registry.py::test_all_model_registration
           # Native FSDP2's gloo tests spawn 2 to 4 ranks each: about ten minutes of this
