@@ -116,6 +116,7 @@ import {
   useApiMonitor,
 } from "./use-api-monitor";
 import { PlayIcon } from "lucide-react";
+import { useFreshApiKeyStore } from "@/features/settings/stores/fresh-api-key-store";
 
 const API_INFERENCE_PREFIX_RE = /^\/api\/inference/;
 const V1_PREFIX_RE = /^\/v1\//;
@@ -916,6 +917,7 @@ function QuickStart({
   const choices = useApiExampleChoices(baseUrl, "curl");
   const [useTunnel] = useApiTunnelPref();
   const [kind, setKind] = useState<ApiExampleKind>("chat");
+  const freshKey = useFreshApiKeyStore((s) => s.key);
   return (
     <div className="flex flex-col items-center gap-4 px-6 py-12 text-center">
       <span className="flex size-10 items-center justify-center icon-disc text-muted-foreground">
@@ -940,10 +942,12 @@ function QuickStart({
         <div className="w-full max-w-2xl text-left">
           <ApiExampleBox
             choices={choices}
+            hasRealKey={freshKey !== null}
             code={buildApiExample({
               baseUrl,
               model: model ?? "MODEL_ID",
               sampling: {},
+              apiKey: freshKey ?? undefined,
               language: choices.language,
               os: choices.os,
             })}
@@ -952,9 +956,17 @@ function QuickStart({
       ) : (
         <div className="w-full max-w-3xl text-left">
           {kind === "media" ? (
-            <MediaApiExamples useTunnel={useTunnel} showHeading={false} />
+            <MediaApiExamples
+              apiKey={freshKey}
+              useTunnel={useTunnel}
+              showHeading={false}
+            />
           ) : kind === "audio" ? (
-            <AudioApiExamples useTunnel={useTunnel} showHeading={false} />
+            <AudioApiExamples
+              apiKey={freshKey}
+              useTunnel={useTunnel}
+              showHeading={false}
+            />
           ) : (
             <DecisionApiSection showHeading={false} />
           )}

@@ -44,7 +44,7 @@ test("usage examples sit right under the keys, where a new key lands", () => {
 test("MCP, keyless access and the monitor sit under one heading", () => {
   assert.match(
     TAB,
-    /<SettingsSection title="Access & monitoring">\s*\{isOwner \? <McpAccessSection apiKey=\{revealed\} \/> : null\}\s*\{isOwner \? <KeylessApiAccessLink \/> : null\}\s*<MonitorLink hideHeading=\{true\} \/>\s*<\/SettingsSection>/,
+    /<SettingsSection title="Access & monitoring">\s*\{isOwner \? <McpAccessSection apiKey=\{freshKey\} \/> : null\}\s*\{isOwner \? <KeylessApiAccessLink \/> : null\}\s*<MonitorLink hideHeading=\{true\} \/>\s*<\/SettingsSection>/,
   );
   const keyless = readSrc("features/settings/components/keyless-api-access-link.tsx");
   assert.match(keyless, /<SettingsRow\s+label="Keyless API access"/);
