@@ -15,7 +15,6 @@ import { useMonitorOverlayStore } from "@/features/settings";
 import { monitorRefreshMs } from "./monitor-refresh";
 import { vramCards } from "./monitor-cards";
 import {
-  CardRows,
   formatGiB,
   MeterRow,
   MemoryBar,
@@ -528,13 +527,14 @@ function FloatingMonitorPanel({
                 <UsageBar percent={ramKnown ? ramPercent : null} />
               )}
             </MeterRow>
-            {discreteVram && (
+            {/* One card, or several with the share on: one VRAM row over every card. */}
+            {discreteVram && (vram.rows.length === 0 || vramSegments) && (
               <MeterRow
                 testId="floating-monitor-vram"
                 label={t("settings.resources.liveMonitor.vram")}
                 readout={`${cardsUsedKnown ? formatGiB(cardsUsed) : "--"} / ${formatGiB(vram.totalGb)}`}
                 footer={
-                  (cardLabel || vramSegments || vram.rows.length > 0) && (
+                  (cardLabel || vramSegments) && (
                     <>
                       {cardLabel && (
                         <div className="truncate" title={cardLabel}>
@@ -547,7 +547,6 @@ function FloatingMonitorPanel({
                           noModels={breakdown?.models.length === 0}
                         />
                       )}
-                      {vram.rows.length > 0 && <CardRows rows={vram.rows} />}
                     </>
                   )
                 }
@@ -559,6 +558,29 @@ function FloatingMonitorPanel({
                 )}
               </MeterRow>
             )}
+            {/* Several cards: each is a row of its own, the same size as the rest. */}
+            {discreteVram &&
+              vram.rows.map((row) => {
+                const percent =
+                  row.usedGb !== null && row.totalGb > 0
+                    ? clampPercent((row.usedGb / row.totalGb) * 100)
+                    : null;
+                return (
+                  <MeterRow
+                    key={row.key}
+                    testId="floating-monitor-gpu-card"
+                    label={row.label}
+                    readout={`${row.usedGb === null ? "--" : formatGiB(row.usedGb)} / ${formatGiB(row.totalGb)}`}
+                    footer={
+                      <div className="truncate" title={row.title}>
+                        {row.name}
+                      </div>
+                    }
+                  >
+                    <UsageBar percent={percent} />
+                  </MeterRow>
+                );
+              })}
             {hasGpu && memoryDisplay.sharedDevices.length > 0 && (
               <div className="space-y-1 text-xs">
                 <div className="font-medium">

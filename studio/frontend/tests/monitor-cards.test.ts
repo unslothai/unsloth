@@ -21,9 +21,9 @@ test("an iGPU beside dedicated cards neither blanks nor pads the VRAM total", ()
   assert.equal(vram.cards.length, 2);
   assert.equal(vram.totalGb, 63.72);
   assert.ok(Math.abs((vram.usedGb ?? 0) - 14.35) < 1e-9);
-  assert.deepEqual(vram.rows.map((row) => [row.name, row.usedGb, row.totalGb]), [
-    ["0 · AI PRO R9700", 6.62, 31.86],
-    ["1 · AI PRO R9700", 7.73, 31.86],
+  assert.deepEqual(vram.rows.map((row) => [row.label, row.name, row.usedGb, row.totalGb]), [
+    ["GPU 0", "AI PRO R9700", 6.62, 31.86],
+    ["GPU 1", "AI PRO R9700", 7.73, 31.86],
   ]);
 });
 
@@ -43,7 +43,10 @@ test("shared-only hosts keep their devices: there is nothing dedicated to prefer
 test("the floating monitor and Settings both read VRAM through vramCards", () => {
   assert.match(readSrc("components/floating-monitor.tsx"), /vramCards\(devices, memoryDisplay\.usageGpu\)/);
   assert.match(readSrc("features/settings/tabs/resources-tab.tsx"), /vramCards\(memoryDisplay\.usageDevices, memoryDisplay\.usageGpu\)/);
-  assert.match(readSrc("components/floating-monitor.tsx"), /<CardRows rows=\{vram\.rows\} \/>/);
+  // Each card is a full-size MeterRow, not a smaller sub-list.
+  const monitor = readSrc("components/floating-monitor.tsx");
+  assert.match(monitor, /vram\.rows\.map\(\(row\) => \{[\s\S]*?<MeterRow[\s\S]*?testId="floating-monitor-gpu-card"/);
+  assert.doesNotMatch(monitor, /CardRows/);
 });
 
 test("card names drop the vendor prefix every row would repeat", () => {

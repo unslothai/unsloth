@@ -11,8 +11,10 @@ import type { GpuDevice } from "../hooks/use-system.ts";
 
 export interface CardUsage {
   key: string;
+  /** "GPU 0": the row label. */
+  label: string;
+  /** Short adapter name under the bar; the full one is `title`. */
   name: string;
-  /** Full adapter name, for the tooltip. */
   title: string;
   usedGb: number | null;
   totalGb: number;
@@ -32,7 +34,7 @@ export interface VramCards {
   totalGb: number;
   /** null = unknown: one card without a reading must not read as 0. */
   usedGb: number | null;
-  /** One row per card, only when there is more than one. */
+  /** One full-size row per card, only when there is more than one. */
   rows: CardUsage[];
 }
 
@@ -54,7 +56,8 @@ export function vramCards(
     cards.length > 1
       ? cards.map((card, position) => ({
           key: `${card.index ?? position}`,
-          name: `${card.index ?? position} · ${shortCardName(card.name)}`,
+          label: `GPU ${card.index ?? position}`,
+          name: shortCardName(card.name),
           title: card.name ?? "GPU",
           usedGb: Number.isFinite(card.vram_used_gb) ? (card.vram_used_gb as number) : null,
           totalGb: gpuMemoryTotalsGb([card]).total,
