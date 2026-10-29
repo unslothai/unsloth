@@ -173,12 +173,14 @@ function useSavedLoad(key: string | null, variant: string | null) {
 /** The loaded model as Chat's status reports it, for the reload hint. */
 function useLoadedModel() {
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const ggufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const contextLength = useChatRuntimeStore((s) => s.loadedContextLength);
   const kvCacheDtype = useChatRuntimeStore((s) => s.loadedKvCacheDtype);
   const nParallel = useChatRuntimeStore((s) => s.loadedNParallel);
   const speculativeType = useChatRuntimeStore((s) => s.loadedSpeculativeType);
   return {
     checkpoint: checkpoint || null,
+    ggufVariant,
     contextLength,
     kvCacheDtype,
     nParallel,

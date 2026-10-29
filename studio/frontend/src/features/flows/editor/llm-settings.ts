@@ -253,6 +253,7 @@ export function effectiveLoad(
 
 export interface LoadedModel {
   checkpoint: string | null;
+  ggufVariant?: string | null;
   contextLength: number | null;
   kvCacheDtype: string | null;
   nParallel: number | null;
@@ -273,6 +274,9 @@ export function reloadHint(
   if (!loaded.checkpoint) return repo ? `Loads ${repo.split("/").pop()}` : null;
   if (repo && repo.toLowerCase() !== loaded.checkpoint.toLowerCase())
     return `Reloads the model: ${repo.split("/").pop()} vs ${loaded.checkpoint.split("/").pop()} loaded`;
+  const variant = (params.model as ModelChoice | null | undefined)?.variant?.trim();
+  if (repo && variant && loaded.ggufVariant && variant.toLowerCase() !== loaded.ggufVariant.toLowerCase())
+    return `Reloads the model: ${variant} vs ${loaded.ggufVariant} loaded`;
   const load = (params.load as LoadSettings | null) ?? {};
   const diffs: string[] = [];
   const ctx = contextPin(load);

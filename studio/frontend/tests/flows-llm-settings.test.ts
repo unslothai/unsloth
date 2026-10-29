@@ -272,3 +272,18 @@ test("Context Length writes Chat's context pin and drops a stale max_seq_length"
   assert.equal(s.contextPin({ max_seq_length: 4096 }), 4096);
   assert.equal(s.contextPin(null), undefined);
 });
+
+test("the reload hint names a different GGUF quant of the loaded repo", () => {
+  const loaded = {
+    checkpoint: "unsloth/Qwen3-4B-GGUF",
+    ggufVariant: "UD-Q4_K_XL",
+    contextLength: 8192,
+    kvCacheDtype: null,
+    nParallel: 4,
+    speculativeType: null,
+  };
+  const card = (variant: string | null) => ({ model: { repo: "unsloth/Qwen3-4B-GGUF", variant } });
+  assert.equal(s.reloadHint(card("Q8_0"), loaded), "Reloads the model: Q8_0 vs UD-Q4_K_XL loaded");
+  assert.equal(s.reloadHint(card("ud-q4_k_xl"), loaded), null);
+  assert.equal(s.reloadHint(card(null), loaded), null);
+});
