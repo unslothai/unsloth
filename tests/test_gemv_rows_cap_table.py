@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Decode rows per architecture that take the Triton NF4 GEMV, and the row from which T4 hands them to the
-bitsandbytes gemm_4bit when that branch applies."""
+"""Per-architecture NF4 GEMV row cap and the T4 handoff to bitsandbytes gemm_4bit."""
 
 import pytest
 import torch

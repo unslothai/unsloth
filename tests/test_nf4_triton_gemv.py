@@ -435,7 +435,6 @@ def test_decode_rows_above_the_gemv_cap_use_the_bnb_gemm(bsz, monkeypatch):
         @ F.dequantize_4bit(proj.weight.data, proj.weight.quant_state).float().t()
     )
     monkeypatch.setattr(utils, "_gemv_rows_cap", lambda device: 4)
-    # T4: batch 4 is within the GEMV cap but handed to bitsandbytes.
     monkeypatch.setattr(utils, "_GEMV_ROWS_BNB_FROM", {X.device.index: 4})
     monkeypatch.setattr(utils, "_BNB_GEMM_4BIT", True)
     monkeypatch.setattr(utils, "_bnb_gemm_4bit_device_ok", lambda device: True)
@@ -521,8 +520,6 @@ def test_the_bnb_gemm_is_skipped_where_it_does_not_apply(case, monkeypatch):
     ],
 )
 def test_t4_batch_4_leaves_the_gemv_only_for_a_bnb_gemm_that_runs(case, monkeypatch):
-    """T4 batch 4 takes the bitsandbytes gemm_4bit; wherever that branch would not run, it keeps the
-    GEMV instead of falling to dequantize."""
     utils = _utils_with_kernels()
     _bnb_gemm_utils()
     monkeypatch.setattr(utils, "_GEMV_ROWS_CAP", {})
@@ -554,7 +551,6 @@ def test_t4_batch_4_leaves_the_gemv_only_for_a_bnb_gemm_that_runs(case, monkeypa
 
     def x(bsz):
         if case == "misaligned_x":
-            # Contiguous, but 2 bytes past a 16-byte boundary.
             return torch.randn(bsz * 4096 + 1, dtype = dtype, device = "cuda")[1:].view(bsz, 1, 4096)
         return torch.randn(bsz, 1, 4096, dtype = dtype, device = "cuda")
 

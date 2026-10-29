@@ -1500,9 +1500,8 @@ def _quant_state_dtype(quant_state):
 # decoding is reproducible; others dequantize. UNSLOTH_GEMV_MAX_ROWS overrides where the Triton GEMV runs.
 _GEMV_ROWS_BY_ARCH = {(7, 5): 4, (8, 0): 2, (8, 9): 4, (12, 0): 4}
 _GEMV_ROWS_CAP = {}
-# Rows from which the bitsandbytes gemm_4bit below takes over from the GEMV wherever it applies. On Colab T4
-# eager decode (Qwen3-4B, Llama-3.2-3B bnb-4bit) batch 4 runs 13-30% faster there with per-token NLL as
-# close to an fp32 reference, while batch 2 runs ~40% slower (host bound) and batch 3 is a tie.
+# Rows from which bnb gemm_4bit replaces the GEMV. Colab T4 eager decode (Qwen3-4B, Llama-3.2-3B): batch 4
+# 13-30% faster at equal NLL vs fp32; batch 2 ~40% slower (host bound), batch 3 a tie.
 _GEMV_ROWS_BNB_FROM_BY_ARCH = {(7, 5): 4}
 _GEMV_ROWS_BNB_FROM = {}
 
@@ -1607,7 +1606,6 @@ def _gemv_rows(X, W, quant_state, out):
     # First, so rows above the cap cost the dequantize path nothing.
     if not 2 <= M <= _gemv_rows_cap(X.device) or W.device != X.device:
         return None
-    # Only where the bitsandbytes branch will run; compiled graphs keep the GEMV.
     if (
         not _is_compiling()
         and M >= _GEMV_ROWS_BNB_FROM.get(X.device.index, M + 1)
