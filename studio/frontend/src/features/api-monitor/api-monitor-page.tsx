@@ -91,6 +91,7 @@ import {
 import { ApiExampleDialog } from "./components/api-example-dialog";
 import { ApiModelLoadControls } from "./components/api-model-load-controls";
 import { SavedModelSettingsPanel } from "./components/saved-model-settings";
+import { VideoGenerationApiDocs } from "./video-generation-api-docs";
 import { isLifecycleEntry, lifecycleLabel } from "./lifecycle";
 import { useApiMonitorOverlayStore } from "./overlay-store";
 import { useSingleLine } from "./use-single-line";
@@ -1712,6 +1713,8 @@ export function ApiMonitorPage(): ReactElement {
             )}
           </div>
         </section>
+
+        <VideoGenerationApiDocs baseUrl={baseUrl} />
 
         {error ? <Banner>{error}</Banner> : null}
         {unloadError ? (
