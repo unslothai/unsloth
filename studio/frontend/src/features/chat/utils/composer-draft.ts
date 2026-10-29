@@ -100,10 +100,8 @@ export function adoptLegacyDraft(threadId: string | null): boolean {
 }
 
 // The chat composer stays mounted, hidden, under Compare's, so every composer publishes its text
-// here as it changes and hears the others; `latestDraft` is ahead of the debounced save. Other
-// tabs are not heard: each open tab keeps its own text, so typing or sending in one never
-// rewrites another tab's composer on a different chat. The saved slot seeds a tab once, so a
-// reload or a new tab still picks up the last draft.
+// here and hears the others; `latestDraft` is ahead of the debounced save. Other open tabs are
+// never heard (#15782): the saved slot only seeds a tab once, for a reload or a new tab.
 type DraftListener = (text: string, source: symbol) => void;
 const draftListeners = new Set<DraftListener>();
 let latest: string | null = null;
