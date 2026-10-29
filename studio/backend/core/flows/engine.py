@@ -30,6 +30,7 @@ from typing import Any, Awaitable, Callable, Optional, Union
 
 from core.flows import assets as asset_store
 from core.flows import capabilities
+from core.flows import model_settings
 from core.flows import caller as flow_caller
 from core.flows.cache import cache_key
 from core.flows.compiler import FOR_EACH, CompileError, Plan, compile_flow
@@ -1729,6 +1730,7 @@ class FlowEngine:
             rs.set_status(nid, "skipped", "Another trigger started this run")
             self._record(rs, nid, "skipped", None, None, iteration)
             return
+        bound = {p["param"] for p in spec["inputs"] if p.get("param") and p["id"] in inputs}
         params = param_values(spec, node)
         _bind_params(spec, params, inputs)
         seed = self._seed(rs, nid, params, inputs, iteration)
@@ -1761,6 +1763,8 @@ class FlowEngine:
             return
 
         ctx = NodeContextImpl(self, rs, nid, spec, params, inputs, seed, iteration)
+        if params.get(model_settings.USE_SAVED) and spec.get("model_kind"):
+            await _apply_saved_settings(ctx, spec, params, bound)
         key = None
         choice = params.get("model")
         cacheable = spec["cacheable"] and not (
@@ -2152,6 +2156,18 @@ class FlowEngine:
         finished.sort(key = lambda r: r.finished_at or 0)
         for rs in finished[: len(finished) - FINISHED_RUNS_KEPT]:
             self.runs.pop(rs.id, None)
+
+
+async def _apply_saved_settings(ctx: Any, spec: dict, params: dict, bound: set[str]) -> None:
+    """In place, before the cache key: a saved setting that changes must miss the cache."""
+    choice = params.get("model")
+    model_id = choice.get("repo") if isinstance(choice, dict) else None
+    if not model_id:
+        from core.flows.nodes._common import resident_name
+
+        model_id = await resident_name(ctx, spec["model_kind"])
+    saved = await asyncio.to_thread(model_settings.read_saved, model_id)
+    params.update(model_settings.overlay(params, saved, spec, bound))
 
 
 def _bind_params(spec: dict, params: dict, inputs: dict) -> None:

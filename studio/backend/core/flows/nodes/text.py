@@ -10,6 +10,7 @@ import math
 import re
 from typing import Any
 
+from core.flows.model_settings import sampling
 from core.flows.nodes._common import as_text, first_json, lookup, render, template_vars
 from core.flows.registry import FlowNodeError, NodeContext, handler
 
@@ -42,6 +43,11 @@ def _prompt(ctx: NodeContext, param: str, port: str) -> str:
     return prompt.strip()
 
 
+def _temperature(ctx: NodeContext) -> float:
+    value = ctx.params.get("temperature")
+    return float(0.8 if value is None else value)
+
+
 @handler("llm.generate")
 async def generate(ctx: NodeContext) -> dict:
     prompt = _prompt(ctx, "prompt", "prompt")
@@ -56,26 +62,24 @@ async def generate(ctx: NodeContext) -> dict:
             system = system,
             prompt = prompt,
             schema = schema,
-            temperature = float(
-                0.8 if ctx.params.get("temperature") is None else ctx.params["temperature"]
-            ),
+            temperature = _temperature(ctx),
             max_tokens = int(ctx.params.get("max_tokens") or 1024),
             seed = ctx.seed,
             images = images,
+            sampling = sampling(ctx.params),
         )
         return {"text": json.dumps(value, ensure_ascii = False, indent = 1), "json": value}
     text = await ctx.llm_text(
         model = ctx.params.get("model"),
         system = system,
         prompt = prompt,
-        temperature = float(
-            0.8 if ctx.params.get("temperature") is None else ctx.params["temperature"]
-        ),
+        temperature = _temperature(ctx),
         max_tokens = int(ctx.params.get("max_tokens") or 1024),
         images = images,
         thinking = bool(ctx.params.get("thinking")),
         seed = ctx.seed,
         stream_port = "text",
+        sampling = sampling(ctx.params),
     )
     outputs: dict[str, Any] = {"text": text}
     try:
@@ -88,26 +92,31 @@ async def generate(ctx: NodeContext) -> dict:
 @handler("llm.vision")
 async def vision(ctx: NodeContext) -> dict:
     question = _prompt(ctx, "question", "question") or "Describe this image."
+    system = render(str(ctx.params.get("system") or ""), template_vars(ctx))
     schema = _schema(ctx.params.get("json_schema"))
     images = [ctx.inputs["image"]]
     if schema is not None:
         value = await ctx.llm_json(
             model = ctx.params.get("model"),
-            system = "",
+            system = system,
             prompt = question,
             schema = schema,
+            temperature = _temperature(ctx),
             max_tokens = int(ctx.params.get("max_tokens") or 512),
             seed = ctx.seed,
             images = images,
+            sampling = sampling(ctx.params),
         )
         return {"text": json.dumps(value, ensure_ascii = False), "json": value}
     text = await ctx.llm_text(
         model = ctx.params.get("model"),
-        system = "",
+        system = system,
         prompt = question,
+        temperature = _temperature(ctx),
         max_tokens = int(ctx.params.get("max_tokens") or 512),
         images = images,
         seed = ctx.seed,
+        sampling = sampling(ctx.params),
     )
     outputs: dict[str, Any] = {"text": text}
     try:
