@@ -1,16 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Video first load on a host too small for the dense fp32 -> fp16 / bf16 conversion (Wan2.1 1.3B on a 12.7 GB
-host: a 22.7 GB fp32 UMT5 lands as a 13.4 GB anonymous copy and the process is OOM-killed).
+"""Stage cast-cache misses too big for host RAM (e.g. fp32 UMT5 on a 12.7 GB host gets OOM-killed) onto the card.
 
-Before ``from_pretrained``, a cast-cache miss that would not fit host RAM is loaded alone straight onto the card
-(transformers streams it one tensor at a time, so the host holds about one tensor), written to the local cast cache
-from those device tensors, and freed. The cast-cache read then serves it memory-mapped, exactly as every returning
-load already reads it: same transformers load, same dtypes, same bits. Hosts where the dense load fits never take
-this path.
-
-``UNSLOTH_VIDEO_SMALL_HOST=0`` turns it off, ``=1`` stages every miss that fits the card.
+Each such miss loads alone onto the device (transformers streams per tensor), is written to the cast cache from the
+device tensors and freed; the normal cast-cache read then serves it, same bits. ``UNSLOTH_VIDEO_SMALL_HOST=0`` off,
+``=1`` stages every miss that fits the card.
 """
 
 from __future__ import annotations
@@ -99,11 +94,7 @@ def plan_stage(
     forced: bool = False,
     disabled: bool = False,
 ) -> StagePlan:
-    """Which cast-cache misses to stage on the card. ``misses``: component -> loaded MiB.
-
-    Nothing changes while the dense conversion of every miss fits ``available_mib`` less ``reserve_mib``. Otherwise
-    misses stage largest first (each alone must fit the free card) until the rest fits; forced stages every miss
-    that fits the card."""
+    """``misses``: component -> loaded MiB. Stage largest first (each must fit the card) until the rest fits host RAM."""
     if disabled:
         return StagePlan(False, f"{SMALL_HOST_ENV}=0")
     sizes = {k: int(v) for k, v in misses.items() if v is not None}
