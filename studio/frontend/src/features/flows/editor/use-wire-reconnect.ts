@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { type Connection, useReactFlow } from "@xyflow/react";
+import {
+  type Connection,
+  type FinalConnectionState,
+  useReactFlow,
+} from "@xyflow/react";
 import { useCallback, useMemo, useRef } from "react";
 import { toast } from "sonner";
 import { useDocStore } from "../stores/doc-store";
@@ -9,11 +13,18 @@ import type { RfEdge } from "./derive-rf";
 import { tryConnect } from "./node-factory";
 
 const EDGE_OPTIONS = { reconnectable: "target" as const };
+// A read-only canvas: no ×, no drag-off, nothing deletes a wire.
+const LOCKED_OPTIONS = { reconnectable: false, deletable: false };
 
 /** Moves a wire to another input as one undo step; restores it if the new input refuses. */
-export function reconnectWire(old: RfEdge, connection: Connection): string | null {
+export function reconnectWire(
+  old: RfEdge,
+  connection: Connection,
+): string | null {
   const before = useDocStore.getState();
-  if (!before.graph.edges[old.id]) return null;
+  // A reroute's wire segments are not plain edges and do not reconnect.
+  if (!before.graph.edges[old.id] || isWireSegment(before.graph, old.id))
+    return null;
   if (
     old.source === connection.source &&
     old.target === connection.target &&
@@ -40,12 +51,22 @@ export function reconnectWire(old: RfEdge, connection: Connection): string | nul
   return null;
 }
 
-/** Drag a wire's input end to another port to move it, or off onto the canvas to remove it. */
+function isWireSegment(graph: object, id: string): boolean {
+  const wires = (graph as { wires?: Record<string, unknown> }).wires;
+  return !!wires?.[id];
+}
+
+/**
+ * Drag a wire's end to another port to move it, or off onto the canvas to remove it.
+ * `reconnecting` is true for the length of that drag, so the canvas can keep it out of Quick Add.
+ */
 export function useWireReconnect(enabled: boolean) {
   const { deleteElements } = useReactFlow();
   const moved = useRef(false);
+  const reconnecting = useRef(false);
   const onReconnectStart = useCallback(() => {
     moved.current = false;
+    reconnecting.current = true;
   }, []);
   const onReconnect = useCallback((old: RfEdge, connection: Connection) => {
     moved.current = true;
@@ -53,13 +74,21 @@ export function useWireReconnect(enabled: boolean) {
     if (error) toast.error(error);
   }, []);
   const onReconnectEnd = useCallback(
-    (_: unknown, edge: RfEdge) => {
-      if (!moved.current) void deleteElements({ edges: [{ id: edge.id }] });
+    (
+      _: unknown,
+      edge: RfEdge,
+      _handle: unknown,
+      state?: FinalConnectionState,
+    ) => {
+      reconnecting.current = false;
+      // Dropped on empty canvas: remove. Dropped on a port that refused it: keep the wire.
+      if (!moved.current && !state?.toHandle)
+        void deleteElements({ edges: [{ id: edge.id }] });
       moved.current = false;
     },
     [deleteElements],
   );
-  return useMemo(
+  const props = useMemo(
     () =>
       enabled
         ? {
@@ -68,7 +97,8 @@ export function useWireReconnect(enabled: boolean) {
             onReconnectEnd,
             defaultEdgeOptions: EDGE_OPTIONS,
           }
-        : {},
+        : { defaultEdgeOptions: LOCKED_OPTIONS },
     [enabled, onReconnect, onReconnectStart, onReconnectEnd],
   );
+  return { props, reconnecting };
 }

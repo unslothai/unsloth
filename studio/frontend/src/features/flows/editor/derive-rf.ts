@@ -337,6 +337,8 @@ export class RfDeriver {
         ...wireHandles(graph, wire),
         type: "flowEdge",
         selected: isSelected,
+        // A segment through a reroute moves by moving the reroute, not its end.
+        reconnectable: false,
         data: { kind: "data", portType: info.portType, ends: info.ends },
       };
       this.wireCache.set(id, { source: wire, selected: isSelected, key, rf });

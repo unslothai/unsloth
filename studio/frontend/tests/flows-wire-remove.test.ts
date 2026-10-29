@@ -69,9 +69,14 @@ test("a refused move puts the wire back untouched", () => {
 
 test("drag-off removes through the canvas delete path; inputs are the reconnectable end", () => {
   const hook = readSrc("features/flows/editor/use-wire-reconnect.ts");
-  assert.match(hook, /if \(!moved\.current\) void deleteElements\(\{ edges: \[\{ id: edge\.id \}\] \}\)/);
+  // Removed only when dropped on empty canvas; a port that refused the drop keeps the wire.
+  assert.match(hook, /if \(!moved\.current && !state\?\.toHandle\)\s*void deleteElements\(\{ edges: \[\{ id: edge\.id \}\] \}\)/);
   assert.match(hook, /reconnectable: "target"/);
-  assert.match(readSrc("features/flows/editor/canvas.tsx"), /\{\.\.\.wireReconnect\}/);
+  assert.match(hook, /LOCKED_OPTIONS = \{ reconnectable: false, deletable: false \}/, "read-only: no × and no drag-off");
+  const canvas = readSrc("features/flows/editor/canvas.tsx");
+  assert.match(canvas, /\{\.\.\.wireReconnect\}/);
+  assert.match(canvas, /readOnly \|\|\s*\/\/[^\n]*\n\s*reconnecting\.current \|\|/, "a reconnect drag never opens Quick Add");
+  assert.match(canvas, /\}: \{ nodes: RfNode\[\]; edges: RfEdge\[\] \}\) => \{\n\s*if \(readOnly\) return;/);
 });
 
 test("each wire draws its own × at its midpoint on hover or selection, and a selected wire gets a halo", () => {

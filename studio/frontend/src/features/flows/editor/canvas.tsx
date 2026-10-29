@@ -179,7 +179,8 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
   const bus = useUiStore((s) => s.wireStyle === "bus");
   const flowId = useDocStore((s) => s.flowId);
   const { screenToFlowPosition, flowToScreenPosition } = useReactFlow();
-  const wireReconnect = useWireReconnect(!readOnly);
+  const { props: wireReconnect, reconnecting } =
+    useWireReconnect(!readOnly);
 
   const deriver = useRef<RfDeriver | null>(null);
   deriver.current ??= new RfDeriver();
@@ -404,6 +405,8 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
       connectStart.current = null;
       if (
         readOnly ||
+        // Dropping a wire's end to remove it is not a new wire.
+        reconnecting.current ||
         !start?.nodeId ||
         !start.handleId ||
         state.isValid ||
@@ -454,6 +457,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
       nodes: rfNodes,
       edges: rfEdges,
     }: { nodes: RfNode[]; edges: RfEdge[] }) => {
+      if (readOnly) return;
       const ids = {
         nodes: [] as string[],
         // removeElements keeps a deleted reroute's own wires out of this, so it can heal.
@@ -473,7 +477,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
       useDocStore.getState().removeElements(ids);
       useUiStore.getState().setSelection([], []);
     },
-    [],
+    [readOnly],
   );
 
   const onDoubleClick = useCallback(
