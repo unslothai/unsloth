@@ -819,7 +819,9 @@ def _sent_expressions(field: str) -> list[str]:
         hoisted = re.match(r"([A-Za-z_$][\w$]*)\s*[,\n}]", value)
         if hoisted:
             const = re.search(rf"\bconst {re.escape(hoisted.group(1))}\s*=\s*", CHAT_ADAPTER)
-            assert const, f"{field} sends {hoisted.group(1)}, which is not a const this file defines"
+            assert (
+                const
+            ), f"{field} sends {hoisted.group(1)}, which is not a const this file defines"
             value = CHAT_ADAPTER[const.end() : const.end() + 200]
         sent.append(value)
     return sent
@@ -833,7 +835,8 @@ def test_the_body_reader_follows_a_hoisted_value_and_sees_a_history_scan(monkeyp
     )
     monkeypatch.setattr(module, "CHAT_ADAPTER", hoisted)
     assert re.match(
-        r"findLatestUserAudioBase64\(\s*currentTurnMessages\s*,", _sent_expressions("audio_base64")[0]
+        r"findLatestUserAudioBase64\(\s*currentTurnMessages\s*,",
+        _sent_expressions("audio_base64")[0],
     )
     assert _sent_expressions("image_base64")[0].startswith("findLatestUserImageBase64(messages)")
 
