@@ -10099,6 +10099,9 @@ class DiffusionBackend:
                         audit = load_audit,
                         logger = logger,
                     )
+                    if speed_deferred:
+                        from .diffusion_qwenimage21_eager import install_for_pipe as q21_eager
+                        q21_eager(pipe, logger)
                     # fp16-only cards: a guarded family stays float16; patch its overflow sites.
                     from .diffusion_fp16_guard import family_fp16_guard, install_fp16_guard
 
@@ -12892,6 +12895,9 @@ class DiffusionBackend:
     def _engage_deferred_profile(self, state: _LoadState) -> None:
         """Runs the deferred speed profile at the 3rd generation under _generate_lock; the flag clears first so it never retries."""
         object.__setattr__(state, "speed_deferred", False)
+        from .diffusion_qwenimage21_eager import demote
+
+        demote(getattr(state, "pipe", None))
         from . import diffusion_autoopt as autoopt
 
         target = self._state_device_target(state)
