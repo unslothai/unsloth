@@ -4146,6 +4146,7 @@ class InferenceOrchestrator:
         stop = None,
         extra_audio_arrays: Optional[list] = None,
         speak: bool = False,
+        tools: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Audio input generation (e.g. Gemma 3n): streams text tokens; with ``speak``, then one
         ``{"speech", "sample_rate"}`` item carrying the spoken reply."""
@@ -4166,6 +4167,7 @@ class InferenceOrchestrator:
             stop = stop,
             extra_audio_arrays = extra_audio_arrays,
             speak = speak,
+            tools = tools,
         )
 
     def _generate_audio_input_inner(
@@ -4186,6 +4188,7 @@ class InferenceOrchestrator:
         stop = None,
         extra_audio_arrays: Optional[list] = None,
         speak: bool = False,
+        tools: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Shared inner logic for audio input generation (Whisper + ASR). ``stats_holder``: as in
         generate_chat_response, caller-owned and filled on gen_done with the worker's usage /
@@ -4233,6 +4236,8 @@ class InferenceOrchestrator:
                 cmd["stop"] = stop
             if speak:
                 cmd["speak"] = True
+            if tools is not None:
+                cmd["tools"] = tools
 
             read_one, drain, release_mailbox = self._direct_reader(request_id, cancel_event)
             try:

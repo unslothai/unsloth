@@ -38,10 +38,9 @@ from core.inference.chat_template_helpers import (
     count_structured_videos as _count_vlm_videos,
     detect_reasoning_channel_markers,
     make_reasoning_normalizer,
-    markup_for_tokenizer,
     messages_have_tool_history as _vlm_messages_have_tool_history,
     messages_with_attached_image,
-    neutralize_control_markup_in_messages,
+    neutralize_for_render,
     normalize_reasoning_snapshots,
     prompt_opens_reasoning_channel,
     strip_open_reasoning_prefill,
@@ -1490,6 +1489,7 @@ def _render_registered_vlm_prompt(
     num_images,
     num_audios = 0,
     continue_final_message = False,
+    tools = None,
 ):
     """Resumes a partial from the swept messages, since a raw partial could close the turn."""
     from mlx_vlm import prompt_utils
@@ -1522,7 +1522,7 @@ def _render_registered_vlm_prompt(
     if _resumes_thought(messages, continue_final_message):
         return None
     # Recovery path: sweeps the caller's original list rather than reusing a copy (#7066).
-    swept = neutralize_control_markup_in_messages(messages, None, markup_for_tokenizer(processor))
+    swept, tools, _ = neutralize_for_render(processor, messages, tools)
     partial = trailing_assistant_text(swept) if continue_final_message else None
     rendered = prompt_utils.apply_chat_template(
         processor,
@@ -1531,6 +1531,7 @@ def _render_registered_vlm_prompt(
         add_generation_prompt = True,
         num_images = num_images,
         num_audios = num_audios,
+        **({"tools": tools} if tools else {}),
     )
     if isinstance(rendered, str) and rendered.strip():
         # A prefilled open "<think>" would resume the answer inside the reasoning block.
@@ -7752,12 +7753,14 @@ class MLXInferenceBackend:
         stop = None,
         extra_audio_arrays = None,
         speak = False,
+        tools = None,
         **_sampler,
     ):
         """Audio-input chat (omni models): waveform in, incremental text deltas out (the audio route
         forwards deltas, unlike the snapshot-diffing text/vision paths). Greedy, so the worker's
         sampler kwargs go unused. ``speak`` answers in the model's own voice instead: the reply
-        text, then one ``{"speech": <base64 wav>, "sample_rate": ...}`` item."""
+        text, then one ``{"speech": <base64 wav>, "sample_rate": ...}`` item. ``tools`` (a list,
+        empty for tool history alone) renders the catalogue and keeps ``messages`` as sent."""
         entry = self.models.get(self.active_model_name) or {}
         if entry.get("audio_type") != "audio_vlm":
             raise RuntimeError(
@@ -7781,7 +7784,7 @@ class MLXInferenceBackend:
             system_prompt = "You are an assistant that transcribes speech accurately."
 
         audio_messages = messages_with_attached_image(
-            alternating_turns(messages),
+            alternating_turns(messages) if tools is None else messages,
             system_prompt = system_prompt,
             fallback_user_text = "Please transcribe this audio.",
             image = 0,
@@ -7793,6 +7796,7 @@ class MLXInferenceBackend:
             audio_messages,
             num_images = 0,
             num_audios = 1,
+            **({"tools": tools} if tools else {}),
         )
         if prompt is None:
             raise RuntimeError(

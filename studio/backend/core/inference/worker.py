@@ -1947,6 +1947,8 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
                 audio_kwargs["stop"] = cmd["stop"]
             if cmd.get("speak"):
                 audio_kwargs["speak"] = True
+            if cmd.get("tools") is not None:
+                audio_kwargs["tools"] = cmd["tools"]
             generator = backend.generate_audio_input_response(**audio_kwargs, **extra_audio_kwargs)
 
         logger.info("Starting audio input generation for request_id=%s", request_id)
