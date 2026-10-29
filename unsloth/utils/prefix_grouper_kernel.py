@@ -213,9 +213,9 @@ def _seg_labels_host(group_specs):
         base = cursor
     T = base
     T_pad = _pad_len(T)
-    labels = torch.empty((3, T_pad), dtype = torch.long)
-    lens = torch.tensor(seg_lens, dtype = torch.long)
-    per_seg = torch.tensor([seg_group, seg_prefix, seg_suffix], dtype = torch.long)
+    labels = torch.empty((3, T_pad), dtype = torch.long, device = "cpu")
+    lens = torch.tensor(seg_lens, dtype = torch.long, device = "cpu")
+    per_seg = torch.tensor([seg_group, seg_prefix, seg_suffix], dtype = torch.long, device = "cpu")
     labels[:, :T] = torch.repeat_interleave(per_seg, lens, dim = 1, output_size = T)
     labels[0, T:] = _PAD_GROUP
     labels[1, T:] = 0

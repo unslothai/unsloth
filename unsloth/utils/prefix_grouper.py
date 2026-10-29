@@ -388,7 +388,7 @@ def build_group_layout(
     keep = ids != pad_id
     n_real = keep.sum(dim = 1)
     first = torch.argmax(keep.to(torch.int8), dim = 1)
-    ar = torch.arange(L)
+    ar = torch.arange(L, device = "cpu")
     end = first + n_real
     if not bool((keep == ((ar >= first.unsqueeze(1)) & (ar < end.unsqueeze(1)))).all()):
         return _build_group_layout_reference(*args, **kwargs)
@@ -408,7 +408,7 @@ def build_group_layout(
     first_g = first.view(num_groups, G)
     P_list = P_g[:, 0].tolist()
     for gi, P in enumerate(P_list):
-        cols = first_g[gi].unsqueeze(1) + torch.arange(P)
+        cols = first_g[gi].unsqueeze(1) + torch.arange(P, device = "cpu")
         prompts = ids[gi * G : (gi + 1) * G].gather(1, cols)
         if not bool((prompts == prompts[:1]).all()):
             return None
@@ -431,20 +431,20 @@ def build_group_layout(
     labels, T, T_pad, _, sig_parts = _seg_labels_host(group_specs)
 
     # Flat order per group: shared prefix (from its first row), then one suffix per row.
-    rows_g = torch.arange(total_rows).view(num_groups, G)
+    rows_g = torch.arange(total_rows, device = "cpu").view(num_groups, G)
     P_t = P_g[:, :1]
     seg_len = torch.cat([P_t, R_g], dim = 1).reshape(-1)
     seg_row = torch.cat([rows_g[:, :1], rows_g], dim = 1).reshape(-1)
     seg_col = torch.cat([first_g[:, :1], pe.view(num_groups, G)], dim = 1).reshape(-1)
     seg_pos = torch.cat([torch.zeros_like(P_t), P_t.expand(num_groups, G)], dim = 1).reshape(-1)
-    seg_is_suffix = torch.ones((num_groups, G + 1), dtype = torch.bool)
+    seg_is_suffix = torch.ones((num_groups, G + 1), dtype = torch.bool, device = "cpu")
     seg_is_suffix[:, 0] = False
     seg_is_suffix = seg_is_suffix.reshape(-1)
     seg_start = torch.cumsum(seg_len, dim = 0) - seg_len
     group_base = seg_start.view(num_groups, G + 1)[:, :1]
     seg_plast = (group_base + P_t - 1).expand(num_groups, G + 1).reshape(-1)
 
-    flat = torch.arange(T)
+    flat = torch.arange(T, device = "cpu")
     j = flat - torch.repeat_interleave(seg_start, seg_len, output_size = T)
     flat_src_rows = torch.repeat_interleave(seg_row, seg_len, output_size = T)
     flat_src_cols = torch.repeat_interleave(seg_col, seg_len, output_size = T) + j

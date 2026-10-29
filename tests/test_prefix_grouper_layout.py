@@ -254,3 +254,15 @@ def test_unusual_arguments_take_the_reference_decision():
             _assert_same(ref[1], got[1])
             if ref[1] is not None:
                 assert type(got[1].signature[0]) is type(ref[1].signature[0])
+
+
+def test_host_tables_ignore_the_default_device():
+    rng = torch.Generator().manual_seed(0)
+    ids, lp = _batch(rng, 3, 4, 32, 16)
+    ref = pg._build_group_layout_reference(ids, 16, 0, 4, lp, apply_tokr_gate = False)
+    torch.set_default_device("meta")
+    try:
+        got = pg.build_group_layout(ids, 16, 0, 4, lp, apply_tokr_gate = False)
+    finally:
+        torch.set_default_device(None)
+    _assert_same(ref, got)
