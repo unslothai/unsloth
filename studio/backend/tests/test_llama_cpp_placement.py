@@ -3427,6 +3427,10 @@ def _vulkan_cpu_replay_backend(tmp_path, monkeypatch, *, gguf_gb, free_mib, avai
     monkeypatch.setattr(
         LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: avail_mib)
     )
+    # A Vulkan host is never Apple Silicon; on a Mac runner the Metal budget would size the context instead.
+    monkeypatch.setattr(
+        LlamaCppBackend, "_apple_metal_memory_budget_bytes", staticmethod(lambda: 0)
+    )
     monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
     return backend, gguf
 
