@@ -126,11 +126,10 @@ class Subscription:
         return (f"id: {event_id}\n" f"event: {event_type}\n" f"data: {body}\n\n").encode("utf-8")
 
 
-# Shard row counts per parquet dir, reused while neither the dir nor any listed shard changed.
 _SHARD_ROWS_CACHE: dict[str, tuple[tuple, tuple[tuple[str, int], ...]]] = {}
 _SHARD_ROWS_CACHE_MAX = 8
 _SHARD_ROWS_CACHE_LOCK = threading.Lock()
-# A stat younger than this may hide a later write in the same timestamp tick, so it is never reused.
+# A stamp this close to the read may hide a same-tick write, so it is never trusted.
 _SHARD_ROWS_SETTLE_NS = 2_000_000_000
 
 
@@ -146,17 +145,15 @@ def _shard_rows_signature(
     file_names,
     read_started_ns: int | None = None,
 ) -> tuple | None:
-    # Adding, removing or renaming a shard changes the dir listing; rewriting one moves its own stat.
-    # Stamps are only trusted when older than the read they describe (minus the settle window), so a
-    # change landing while the footers were being read is never paired with the old row counts.
+    # Stamps must predate the footer read by the settle window, so a mid-read write never
+    # pairs with old counts.
     if read_started_ns is None:
         read_started_ns = time.time_ns()
     settled_before_ns = read_started_ns - _SHARD_ROWS_SETTLE_NS
     try:
         dir_key = _stat_key(str(parquet_dir), settled_before_ns)
         file_keys = [_stat_key(name, settled_before_ns) for name in file_names]
-        # The names themselves, not only the dir stamps: some filesystems (FAT on Windows) do not
-        # move a directory's mtime when an entry is added. Any name DuckDB's glob could match counts.
+        # Names too: FAT leaves a dir mtime alone on add; DuckDB globs match dot-prefixed names.
         listed = tuple(
             sorted(entry for entry in os.listdir(parquet_dir) if entry.lower().endswith(".parquet"))
         )
