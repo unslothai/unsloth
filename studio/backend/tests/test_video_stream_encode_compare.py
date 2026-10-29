@@ -28,7 +28,6 @@ def test_equal_frames_compare_equal(shape):
 
 
 def test_any_differing_byte_is_found(monkeypatch):
-    # small slices, so the flips land in the first, a middle and the last slice and in the sub-word tail
     monkeypatch.setattr(vse, "_COMPARE_WORDS", 16)
     rng = np.random.default_rng(1)
     a = rng.integers(
@@ -46,7 +45,6 @@ def test_shape_dtype_and_layout_corners():
     a = np.zeros((2, 4, 4, 3), dtype = np.uint8)
     assert vse._frames_equal(a, np.zeros((2, 4, 4, 4), dtype = np.uint8), _scratch()) is False
     assert vse._frames_equal(a, np.zeros((2, 4, 4, 3), dtype = np.int8), _scratch()) is False
-    # a non-contiguous view takes np.array_equal and decides the same
     big = np.arange(2 * 4 * 8 * 3, dtype = np.uint8).reshape(2, 4, 8, 3)
     view = big[:, :, ::2]
     assert not view.flags.c_contiguous
@@ -82,11 +80,9 @@ def _peak_during_matches(session, final):
 
 
 def test_matches_allocates_no_chunk_sized_temporary(monkeypatch):
-    """np.array_equal's bool result is chunk-sized and numpy madvises it for huge pages (over 4 MiB): on a host
-    fragmented by pinned weights each fault of it ran direct reclaim + compaction. The sliced compare keeps the
-    allocation to its 128 KiB scratch; the kill switch restores the old one."""
+    """Sliced compare peaks at its 128 KiB scratch; the kill switch restores the chunk-sized temporary."""
     rng = np.random.default_rng(2)
-    frames = rng.integers(0, 256, size = (6, 256, 512, 3), dtype = np.uint8)  # 2.25 MiB of frames
+    frames = rng.integers(0, 256, size = (6, 256, 512, 3), dtype = np.uint8)
     chunk_bytes = 3 * 256 * 512 * 3
     monkeypatch.delenv(vse.STREAM_COMPARE_ENV, raising = False)
     ok, peak = _peak_during_matches(

@@ -23,10 +23,9 @@ STREAM_ENCODE_ENV = "UNSLOTH_STUDIO_VIDEO_STREAM_ENCODE"
 STREAM_CHAIN_ENV = "UNSLOTH_STUDIO_VIDEO_STREAM_ENCODE_CHAIN"
 QUEUE_DEPTH = 8
 _STOP = object()
-# Kill switch: "0" compares the streamed frames with one whole-chunk np.array_equal again (as before).
+# "0" = old whole-chunk np.array_equal compare.
 STREAM_COMPARE_ENV = "UNSLOTH_STUDIO_VIDEO_STREAM_COMPARE_SLICED"
-# uint64 words per compare slice (1 MiB of frames): its bool scratch is 128 KiB, far under numpy's 4 MiB
-# hugepage madvise, so the compare never faults in a transparent huge page.
+# 128 KiB bool scratch stays under numpy's 4 MiB hugepage madvise threshold.
 _COMPARE_WORDS = 1 << 17
 
 STATS = {"streamed": 0, "fallback": 0, "last": ""}
@@ -41,12 +40,7 @@ def _sliced_compare_enabled() -> bool:
 
 
 def _frames_equal(a: Any, b: Any, scratch: Any) -> bool:
-    """``np.array_equal(a, b)`` for uint8 arrays, slice by slice into ``scratch`` (bool, ``_COMPARE_WORDS`` long).
-
-    np.array_equal allocates a bool array the size of the chunk (tens of MB per H3 chunk), which numpy madvises
-    for huge pages; on a host whose memory is fragmented by pinned weights each of its faults runs direct
-    reclaim + compaction that fails (H3 1344x768 on an A100-40: a 124-frame compare took 115-152 s). Here
-    nothing is allocated per slice."""
+    """Sliced ``np.array_equal`` for uint8 arrays: a chunk-sized hugepage bool temp stalled 115-152 s on fragmented hosts."""
     import numpy as np
 
     if a.shape != b.shape or a.dtype != b.dtype:
