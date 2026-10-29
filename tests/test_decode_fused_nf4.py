@@ -276,3 +276,29 @@ def test_off_unless_requested(monkeypatch):
     for value, expected in (("0", False), ("1", True), ("force", True), ("yes", False)):
         monkeypatch.setenv("UNSLOTH_DECODE_FUSED_NF4", value)
         assert D.requested() is expected
+
+
+def test_step_runs_on_the_model_device(monkeypatch):
+    # Triton launches on the current device: a model on cuda:1 while cuda:0 is current must switch.
+    D = _driver()
+    seen = []
+
+    class Device:
+        def __init__(self, device):
+            self.device = device
+
+        def __enter__(self):
+            seen.append(("enter", self.device))
+
+        def __exit__(self, *exc):
+            seen.append(("exit", self.device))
+
+    monkeypatch.setattr(D.torch.cuda, "device", Device)
+    monkeypatch.setattr(
+        D, "_decode_forward", lambda model, X, *a: seen.append(("step", X.device)) or "out"
+    )
+    X = types.SimpleNamespace(device = torch.device("cuda", 1))
+    assert D.decode_forward(None, X, 1, 2) == "out"
+    cuda1 = torch.device("cuda", 1)
+    assert seen == [("enter", cuda1), ("step", cuda1), ("exit", cuda1)]
+    assert D.decode_forward(None, types.SimpleNamespace(device = torch.device("cpu"))) is None

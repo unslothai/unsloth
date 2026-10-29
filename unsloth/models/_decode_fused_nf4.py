@@ -338,7 +338,17 @@ def _build(model, X):
     return plan
 
 
-def decode_forward(
+def decode_forward(model, X, *args):
+    """The fused decode step: (normed last hidden state [1, 1, H], next cache), or None (regular path;
+    nothing was written). X: the [1, 1, H] embedding of the step's token."""
+    if X.device.type != "cuda":
+        return None
+    # Triton launches run on the current device: a model on cuda:1 while cuda:0 is current needs this.
+    with torch.cuda.device(X.device):
+        return _decode_forward(model, X, *args)
+
+
+def _decode_forward(
     model,
     X,
     past_key_values,
@@ -348,8 +358,6 @@ def decode_forward(
     attention_core,
     kv_increment,
 ):
-    """The fused decode step: (normed last hidden state [1, 1, H], next cache), or None (regular path;
-    nothing was written). X: the [1, 1, H] embedding of the step's token."""
     if torch.is_grad_enabled() or torch.compiler.is_compiling():
         return None
     layers = model.model.layers
