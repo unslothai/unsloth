@@ -2138,3 +2138,34 @@ class TestAPruneReadsTheRecordOnce:
         tools._prune_spills(str(root))
 
         assert tools._spill_record(str(root))[0] is None
+
+    def test_kept_spills_are_not_hashed_again(self, tmp_path, monkeypatch):
+        for n in range(tools._SPILL_KEEP):
+            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
+        root = tmp_path / tools._SPILL_DIR
+        hashed = []
+        real = tools._file_digest
+        monkeypatch.setattr(
+            tools, "_file_digest", lambda *a, **k: hashed.append(a) or real(*a, **k)
+        )
+
+        tools._prune_spills(str(root))
+
+        assert hashed == []
+        assert len(_spills(root)) == tools._SPILL_KEEP
+
+    def test_a_spill_whose_content_no_longer_matches_is_not_deleted(self, tmp_path, monkeypatch):
+        """Listing goes by stamp alone; the digest still decides the delete."""
+        for n in range(tools._SPILL_KEEP + 1):
+            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
+        root = tmp_path / tools._SPILL_DIR
+        identity, owned = tools._spill_record(str(root))
+        oldest = min(_spills(root), key = os.path.getmtime)
+        name = os.path.relpath(oldest, root).replace(os.sep, "/")
+        owned[name] = (owned[name][0], "0" * 64)
+        tools._write_spill_manifest(str(root), owned, identity = identity)
+        monkeypatch.setattr(tools, "_SPILL_KEEP", tools._SPILL_KEEP - 1)
+
+        tools._prune_spills(str(root))
+
+        assert os.path.exists(oldest)
