@@ -309,7 +309,6 @@ def why_unsupported(mod: Any) -> Optional[str]:
 def install(logger: Any = None) -> bool:
     try:
         import torch
-
         if is_rocm_torch(torch) or not torch.cuda.is_available():
             return False
         from diffusers.models.transformers import transformer_qwenimage21 as mod
