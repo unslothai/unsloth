@@ -84,6 +84,7 @@ import {
   memoryShare,
   modelBreakdown,
   modelShares,
+  unslothPoolGb,
 } from "@/components/monitor-share";
 import { useLoadedModels } from "@/features/loaded-models/use-loaded-models";
 import {
@@ -662,8 +663,11 @@ export function ResourcesTab() {
   const models = modelShares(loadedModels);
   const processMb =
     systemInfo.memory?.process_tree_used_mb ?? systemInfo.memory?.process_used_mb;
-  const unslothRamGb =
-    !hostUnread && processMb !== undefined ? processMb / 1024 : null;
+  const unslothRamGb = unslothPoolGb(
+    !hostUnread && processMb !== undefined ? processMb / 1024 : null,
+    models.reduce((sum, model) => sum + model.gb, 0),
+    !discreteVram,
+  );
   const ramShare = showUnslothShare
     ? memoryShare(metrics.ramUsed, metrics.ramTotal, unslothRamGb)
     : null;

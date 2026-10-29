@@ -23,7 +23,12 @@ import {
   usageIndicatorClass,
   usageTextClass,
 } from "./monitor-memory";
-import { memoryShare, modelBreakdown, modelShares } from "./monitor-share";
+import {
+  memoryShare,
+  modelBreakdown,
+  modelShares,
+  unslothPoolGb,
+} from "./monitor-share";
 import type { LoadedModelEntry } from "@/features/loaded-models";
 import { useCornerCardFrameStore } from "@/features/settings/stores/monitor-frame-store";
 import { gpuMemoryDisplay } from "@/hooks/gpu-memory-display";
@@ -274,8 +279,11 @@ function FloatingMonitorPanel({
   // Unsloth Studio's server plus its children (llama-server, workers), resident set.
   const processMb =
     systemInfo.memory?.process_tree_used_mb ?? systemInfo.memory?.process_used_mb;
-  const unslothRamGb =
-    ramKnown && processMb !== undefined ? processMb / 1024 : null;
+  const unslothRamGb = unslothPoolGb(
+    ramKnown && processMb !== undefined ? processMb / 1024 : null,
+    modelsGb,
+    !discreteVram,
+  );
   const ramShare = showShare
     ? memoryShare(ramUsed, ramTotal, unslothRamGb)
     : null;

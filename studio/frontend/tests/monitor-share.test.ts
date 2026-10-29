@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  unslothPoolGb,
   memoryShare,
   modelBreakdown,
   modelShares,
@@ -36,7 +37,8 @@ test("the app row is what is left of Unsloth's share once the models in that poo
   assert.deepEqual(modelBreakdown(6, models, true), { models, app: 2 });
   // Discrete GPU: the models are in VRAM, so they do not come out of RAM.
   assert.deepEqual(modelBreakdown(6, models, false), { models, app: 6 });
-  assert.deepEqual(modelBreakdown(3, models, true), { models, app: 0 });
+  // RSS below the models (Metal buffers on Apple): no app row rather than "0.00 GiB".
+  assert.deepEqual(modelBreakdown(3, models, true), { models, app: null });
   assert.deepEqual(modelBreakdown(null, models, true), { models, app: null });
 });
 
@@ -52,4 +54,12 @@ test("both toggles are off by default and only poll loaded models when one is on
   const monitor = readSrc("components/floating-monitor.tsx");
   assert.match(monitor, /lazy\(\(\) => import\("\.\/monitor-loaded-models"\)\)/);
   assert.match(monitor, /\{wantsModels && \(\s*<Suspense/);
+});
+
+test("Unsloth's share never reads below the models it holds in that pool", () => {
+  assert.equal(unslothPoolGb(2.26, 2.57, true), 2.57);
+  assert.equal(unslothPoolGb(4, 2.57, true), 4);
+  // Discrete GPU: the models are in VRAM, RAM is the process tree alone.
+  assert.equal(unslothPoolGb(2.26, 2.57, false), 2.26);
+  assert.equal(unslothPoolGb(null, 2.57, true), null);
 });

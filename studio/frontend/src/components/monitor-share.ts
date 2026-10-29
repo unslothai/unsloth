@@ -51,6 +51,19 @@ export function modelShares(
 }
 
 /**
+ * Unsloth's share of a pool. On Apple, Metal buffers are not always counted in RSS, so the process
+ * tree can read below the models it holds; the models' own figure is the floor then.
+ */
+export function unslothPoolGb(
+  processGb: number | null,
+  modelsGb: number,
+  modelsInPool: boolean,
+): number | null {
+  if (processGb === null || !Number.isFinite(processGb)) return null;
+  return modelsInPool ? Math.max(processGb, modelsGb) : processGb;
+}
+
+/**
  * `modelsInPool`: the models sit inside `unslothGb` (unified memory, or a CPU host), so the app's own
  * share is what is left after them. On a discrete GPU the models are in VRAM and `unslothGb` is RAM,
  * so the app row is the whole RAM figure.
@@ -64,5 +77,7 @@ export function modelBreakdown(
     return { models, app: null };
   }
   const inPool = modelsInPool ? models.reduce((sum, model) => sum + model.gb, 0) : 0;
-  return { models, app: Math.max(0, unslothGb - inPool) };
+  const app = unslothGb - inPool;
+  // Under 10 MiB left means RSS could not tell the app apart from the models: no row beats "0.00 GiB".
+  return { models, app: app >= 0.01 ? app : null };
 }
