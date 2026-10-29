@@ -33,3 +33,11 @@ def test_bare_call_decodes_gemma_quotes_like_the_wrapped_one(lead):
 @pytest.mark.parametrize("body", ["call:web_search{query:x}", 'call:web_search{query:"x"}'])
 def test_unquoted_bare_bodies_are_unchanged(body):
     assert _calls(body) == [("web_search", {"query": "x"})]
+
+
+def test_literal_marker_inside_a_json_quoted_value_keeps_its_arguments():
+    # ``, b:<|"|>`` sits inside a JSON string, so the Gemma decoder rejects the body: keep the
+    # quote-less reading rather than running the tool with no arguments.
+    assert _calls('call:web_search{query:"a, b:<|"|>c"}') == [
+        ("web_search", {"query": 'a, b:<|"|>c'})
+    ]

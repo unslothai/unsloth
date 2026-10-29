@@ -3019,15 +3019,20 @@ def _parse_gemma_tool_calls(
         if _tool_healing._in_code(code_spans, cursor):
             code_spans, code_from = None, cursor
         body = content[body_start + 1 : end]
-        try:
-            # <|"|>-quoted values need the wrapped path's decoder; the quote-less parser keeps the delimiters.
-            args = (
-                _tool_healing._gemma_arguments_to_json(body)
-                if _GEMMA_QUOTED_VALUE_RE.search(body)
-                else _gemma_parse_stripped_body(body)
-            )
-        except Exception:
-            args = {}
+        # <|"|>-quoted values need the wrapped path's decoder; the quote-less parser keeps the delimiters.
+        # The marker test cannot see quoting, so a body that decoder rejects (a literal <|"|> inside a
+        # JSON-quoted value) keeps the quote-less reading instead of running the tool with no arguments.
+        args = None
+        if _GEMMA_QUOTED_VALUE_RE.search(body):
+            try:
+                args = _tool_healing._gemma_arguments_to_json(body)
+            except Exception:
+                args = None
+        if not isinstance(args, dict):
+            try:
+                args = _gemma_parse_stripped_body(body)
+            except Exception:
+                args = {}
         out.append(
             {
                 "id": f"call_{id_offset + len(out)}",
