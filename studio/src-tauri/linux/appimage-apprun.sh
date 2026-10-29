@@ -21,6 +21,10 @@ unsloth_host_env() {
     GST_PLUGIN_SYSTEM_PATH_1_0 GST_PLUGIN_PATH_1_0 GST_PLUGIN_SCANNER_1_0 GST_PTP_HELPER_1_0
   # The hook forces Adwaita unless the user asked for a theme through APPIMAGE_GTK_THEME.
   [ "${APPIMAGE_GTK_THEME+x}" = x ] || unset GTK_THEME
+  # A bundled-mode parent relaunching (an in-app update) passes its Jammy font policy back in.
+  case "${FONTCONFIG_FILE:-}" in
+    */unsloth-studio/fonts-*.conf | */usr/etc/fonts/unsloth-appimage.conf) unset FONTCONFIG_FILE ;;
+  esac
   [ "${XDG_DATA_DIRS+x}" = x ] || return 0
   unsloth_hooked="${unsloth_hook_appdir:-$APPDIR}"
   # Each pass through the hooks (a relaunch) prepends the same prefix again.

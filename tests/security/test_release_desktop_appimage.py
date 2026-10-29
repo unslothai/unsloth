@@ -965,6 +965,28 @@ def test_apprun_host_mode_keeps_an_explicit_theme_and_survives_a_relaunch(tmp_pa
 
 
 @pytest.mark.parametrize(
+    "policy",
+    [
+        "{state}/unsloth-studio/fonts-.mount_UnslotOLD.conf",
+        "/tmp/.mount_UnslotOLD/usr/etc/fonts/unsloth-appimage.conf",
+    ],
+    ids = ["written", "template"],
+)
+def test_apprun_host_mode_drops_a_bundled_parents_font_policy(tmp_path, policy):
+    # The updater's relaunch inherits the bundled-mode parent's FONTCONFIG_FILE.
+    appdir = _apprun_mount(tmp_path, host_copy = True, hooked = True)
+    inherited = policy.format(state = tmp_path / "state")
+    run = _launch(
+        appdir, tmp_path, FONTCONFIG_FILE = inherited, UNSLOTH_APPIMAGE_WEBKIT_MODE = "bundled"
+    )
+    assert run["mode"][0] == "host"
+    _assert_host_env_restored(run, appdir)
+
+    operator = _launch(appdir, tmp_path, FONTCONFIG_FILE = "/etc/fonts/custom.conf")
+    assert operator["env"]["FONTCONFIG_FILE"] == "/etc/fonts/custom.conf"
+
+
+@pytest.mark.parametrize(
     ("knobs", "reason"),
     [
         ({"FAKE_PROBE_OUTPUT": "webkit=2.52.6\\n"}, "reason: version 2.52.6 < 2.54"),
