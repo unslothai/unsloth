@@ -1023,3 +1023,59 @@ def test_training_refuses_a_python_score_past_the_bound(worker_factory, value):
     worker = worker_factory([huge])
     with pytest.raises(PythonRewardError, match = "outside -1,000,000 to 1,000,000"):
         worker.score(["huge"], [], [[{"content": "x"}]], {})
+
+
+def test_a_reward_that_edits_its_inputs_does_not_change_the_next_ones(worker_factory):
+    vandal = (
+        "def reward(completions, prompts, **kw):\n"
+        "    completions[0][0]['content'] = 'changed'\n"
+        "    prompts[0][0]['content'] = 'changed'\n"
+        "    kw['answer'][0] = 'changed'\n"
+        "    return [0.0]\n"
+    )
+    reader = (
+        "def reward(completions, prompts, answer, **kw):\n"
+        "    seen = (completions[0][0]['content'], prompts[0][0]['content'], answer[0])\n"
+        "    return [1.0 if seen == ('x', 'q', 'a') else -1.0]\n"
+    )
+    worker = worker_factory([_spec("a-vandal", vandal), _spec("b-reader", reader)])
+    scores = worker.score(
+        ["a-vandal", "b-reader"],
+        [[{"role": "user", "content": "q"}]],
+        [[{"role": "assistant", "content": "x"}]],
+        {"answer": ["a"]},
+    )
+    assert scores["b-reader"] == [1.0]
+
+
+class _RecordingKernel:
+    def __init__(self):
+        self.calls = []
+
+    def SetInformationJobObject(self, handle, info_class, info_ref, size):
+        info = info_ref._obj
+        self.calls.append(
+            (handle, info_class, info.BasicLimitInformation.LimitFlags, info.ProcessMemoryLimit)
+        )
+        return 1
+
+
+def test_the_windows_reward_job_carries_the_memory_limit(monkeypatch):
+    # Windows has no RLIMIT_AS; the job's per-process memory limit stands in for it.
+    import types
+
+    from core.inference import tools
+
+    kernel32 = _RecordingKernel()
+    job = types.SimpleNamespace(_kernel32 = kernel32, _handle = 77)
+    monkeypatch.setattr(python_rewards, "os", types.SimpleNamespace(name = "nt"))
+    monkeypatch.setattr(tools, "_windows_job_capture", lambda proc: job)
+    monkeypatch.setattr(python_rewards, "_reward_as_bytes", 8 * 1024**3)
+    assert python_rewards._windows_job(object()) is job
+    assert kernel32.calls == [(77, 9, python_rewards._JOB_OBJECT_LIMIT_PROCESS_MEMORY, 8 * 1024**3)]
+
+
+def test_no_memory_limit_set_means_no_windows_job_limit():
+    kernel32 = _RecordingKernel()
+    assert python_rewards._limit_job_memory(kernel32, 77, None) is False
+    assert kernel32.calls == []
