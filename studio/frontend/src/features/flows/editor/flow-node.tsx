@@ -20,6 +20,8 @@ import {
 } from "./connection-rules";
 import type { RfNode } from "./derive-rf";
 import { nodeIcon } from "./icons";
+import { LLM_SETTINGS_NODES } from "./llm-settings";
+import { LlmReloadHint } from "./llm-settings-panel";
 import { MediaThumb, isMediaValue } from "./media";
 import {
   CollapsedPorts,
@@ -299,6 +301,7 @@ function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
           {Body ? <Body node={node} /> : null}
           {fields && <NodeFieldRows rows={fields.rows} />}
           {fields && <NodeDisclosure sections={fields.long} />}
+          {LLM_SETTINGS_NODES.has(node.type) && <LlmReloadHint node={node} />}
           {(runtime.outputs ||
             runtime.partial ||
             runtime.text ||

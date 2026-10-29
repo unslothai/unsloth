@@ -74,10 +74,10 @@ test("editing while on forks the card onto its own copy of what it showed", () =
 });
 
 test("turning the toggle off keeps the values on screen; on drops nothing", () => {
-  const off = s.togglePatch(SAVED, GENERATE, false);
+  const off = s.togglePatch({}, SAVED, GENERATE, false);
   assert.equal(off.use_model_settings, false);
   assert.equal(off.temperature, 0.3);
-  assert.deepEqual(s.togglePatch(SAVED, GENERATE, true), {
+  assert.deepEqual(s.togglePatch({}, SAVED, GENERATE, true), {
     use_model_settings: true,
   });
 });
@@ -141,4 +141,106 @@ test("the panel reuses Chat's controls and none of its chat-only sections", () =
   assert.match(src, /paramsByModel/);
   for (const chatOnly of ["Tools", "Retrieval", "Preset", "Prompt variables"])
     assert.doesNotMatch(src, new RegExp(`label="${chatOnly}"`));
+});
+
+const SAVED_LOAD = { max_seq_length: 65536, kv_cache_dtype: "q8_0" };
+
+test("load settings follow the same precedence: saved over the card's own when on", () => {
+  const card = {
+    use_model_settings: true,
+    load: { max_seq_length: 8192, n_parallel: 2 },
+  };
+  assert.deepEqual(s.effectiveParams(card, undefined, GENERATE, SAVED_LOAD).load, {
+    max_seq_length: 65536,
+    n_parallel: 2,
+    kv_cache_dtype: "q8_0",
+  });
+  const off = { ...card, use_model_settings: false };
+  assert.deepEqual(s.effectiveParams(off, undefined, GENERATE, SAVED_LOAD).load, off.load);
+  // Editing one load field while on forks the whole shown load onto the card.
+  const patch = s.editPatch(card, undefined, GENERATE, { load: { max_seq_length: 4096 } }, SAVED_LOAD);
+  assert.equal(patch.use_model_settings, false);
+  assert.deepEqual(patch.load, { max_seq_length: 4096 });
+  assert.deepEqual(s.loadPatch(undefined, GENERATE, SAVED_LOAD).load, SAVED_LOAD);
+  assert.deepEqual(s.togglePatch(card, undefined, GENERATE, false, SAVED_LOAD).load, {
+    max_seq_length: 65536,
+    n_parallel: 2,
+    kv_cache_dtype: "q8_0",
+  });
+});
+
+test("a blank load field goes back to the model's default", () => {
+  assert.deepEqual(s.withLoadField({ n_parallel: 2 }, "max_seq_length", 4096), {
+    n_parallel: 2,
+    max_seq_length: 4096,
+  });
+  assert.equal(s.withLoadField({ n_parallel: 2 }, "n_parallel", undefined), null);
+  assert.deepEqual(s.withLoadField({ a: 1, b: "x" }, "b", ""), { a: 1 });
+});
+
+test("the reload hint names what differs from what is loaded, and stays quiet otherwise", () => {
+  const loaded = {
+    checkpoint: "unsloth/Qwen3-4B-GGUF",
+    contextLength: 8192,
+    kvCacheDtype: null,
+    nParallel: 4,
+    speculativeType: "auto",
+  };
+  assert.equal(
+    s.reloadHint({ load: { max_seq_length: 32768 } }, loaded),
+    "Reloads the model: context 32k vs 8k loaded",
+  );
+  assert.equal(
+    s.reloadHint({ load: { kv_cache_dtype: "q8_0", n_parallel: 1 } }, loaded),
+    "Reloads the model: KV cache q8_0 vs f16 loaded, 1 slots vs 4 loaded",
+  );
+  assert.equal(
+    s.reloadHint({ model: { repo: "unsloth/gemma-3-4b-it-GGUF", variant: null } }, loaded),
+    "Reloads the model: gemma-3-4b-it-GGUF vs Qwen3-4B-GGUF loaded",
+  );
+  assert.equal(s.reloadHint({ load: { max_seq_length: 8192 } }, loaded), null);
+  assert.equal(s.reloadHint({}, loaded), null);
+  assert.equal(
+    s.reloadHint({ model: { repo: "UNSLOTH/qwen3-4b-gguf", variant: null } }, loaded),
+    null,
+  );
+});
+
+test("load settings, thinking and effort are panel params on both LLM nodes", () => {
+  for (const spec of [GENERATE, VISION]) {
+    for (const id of ["load", "thinking", "reasoning_effort", "top_p"])
+      assert.ok(spec.params.some((p) => p.id === id), `${spec.type} ${id}`);
+    assert.equal(spec.params.find((p) => p.id === "load")?.default, null);
+  }
+  const effort = GENERATE.params.find((p) => p.id === "reasoning_effort");
+  assert.deepEqual(effort?.options, ["low", "medium", "high", "max"]);
+});
+
+test("the load section rebuilds Chat's load controls with Chat's constants", () => {
+  const src = readSrc("features/flows/editor/llm-load-settings.tsx");
+  for (const label of [
+    "Context Length",
+    "GPU Memory",
+    "GPU Layers",
+    "MoE Layers on CPU",
+    "Load in 4-bit",
+    "KV Cache Dtype",
+    "Mmap/Mlock",
+    "Vision",
+    "Speculative Decoding",
+    "Draft Tokens",
+    "Parallel Slots",
+    "Batch Size",
+    "Micro-batch Size",
+    "Tensor Parallelism",
+    "Reasoning Budget",
+    "Reasoning Budget Message",
+    "Chat Template",
+    "Checkpoints",
+    "Cache RAM",
+    "Extra Arguments",
+  ])
+    assert.match(src, new RegExp(`label="${label}"|>${label}<`), label);
+  assert.match(src, /KV_CACHE_DTYPES/);
+  assert.match(src, /SPECULATIVE_TYPES/);
 });

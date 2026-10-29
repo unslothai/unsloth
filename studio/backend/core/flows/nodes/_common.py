@@ -552,6 +552,9 @@ async def _chat_body(
     if seed is not None:
         body["seed"] = int(seed)
     body.update(sampling or {})
+    # Effort is a level of thinking, as in Chat's composer: off sends none.
+    if not thinking:
+        body.pop("reasoning_effort", None)
 
     _register_chat_cancel(ctx, cancel_id)
     return body
@@ -577,12 +580,13 @@ async def llm_text(
     seed: Optional[int] = None,
     stream_port: Optional[str] = "text",
     sampling: Optional[dict] = None,
+    load: Optional[dict] = None,
 ) -> str:
     from core.flows import caller as flow_caller
     from state.tool_policy import tools_force_disabled
 
     kind = "vision" if images else "chat"
-    await ensure_model(ctx, kind, model)
+    await (ensure_model(ctx, kind, model, load) if load else ensure_model(ctx, kind, model))
     body = await _chat_body(
         ctx,
         system = system,
@@ -718,6 +722,7 @@ async def llm_json(
     on_text: Optional[Callable[[str], None]] = None,
     retry_bad_json: bool = True,
     sampling: Optional[dict] = None,
+    load: Optional[dict] = None,
 ) -> Any:
     """``on_text`` streams the answer: it is called with the raw JSON written so far after every chunk.
     ``retry_bad_json = False`` raises on an unparsable answer instead of asking again (servers without
@@ -725,7 +730,7 @@ async def llm_json(
     from state.tool_policy import tools_force_disabled
 
     kind = "vision" if images else "chat"
-    await ensure_model(ctx, kind, model)
+    await (ensure_model(ctx, kind, model, load) if load else ensure_model(ctx, kind, model))
     body = await _chat_body(
         ctx,
         system = system,

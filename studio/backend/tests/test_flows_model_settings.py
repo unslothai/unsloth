@@ -75,10 +75,11 @@ def test_an_old_flow_runs_unchanged():
     # Saved before these params existed: the toggle is off and no sampling key is sent.
     old = param_values(GENERATE, {"params": {"system": "s", "temperature": 0.2, "max_tokens": 300}})
     assert old["use_model_settings"] is False
-    assert model_settings.sampling(old) == {}
+    assert model_settings.request_params(old) == {}
     assert (old["system"], old["temperature"], old["max_tokens"]) == ("s", 0.2, 300)
     vision = param_values(VISION, {"params": {"max_tokens": 120}})
     assert vision["temperature"] is None and vision["system"] == "" and not vision["use_model_settings"]
+    assert vision["thinking"] is False and vision["reasoning_effort"] is None
 
 
 class _Ctx:
@@ -89,8 +90,8 @@ class _Ctx:
         pass
 
 
-def test_sampling_reaches_the_request_body():
-    body = asyncio.run(
+def _body(thinking, params):
+    return asyncio.run(
         _common._chat_body(
             _Ctx(),
             system = "",
@@ -98,13 +99,23 @@ def test_sampling_reaches_the_request_body():
             temperature = 0.5,
             max_tokens = 8,
             images = None,
-            thinking = False,
+            thinking = thinking,
             seed = None,
             stream = False,
-            sampling = model_settings.sampling({"top_p": 0.8, "top_k": 0, "min_p": None}),
+            sampling = model_settings.request_params(params),
         )
     )
-    assert body["top_p"] == 0.8 and body["top_k"] == 0 and "min_p" not in body
+
+
+def test_request_params_reach_the_request_body():
+    body = _body(False, {"top_p": 0.8, "top_k": 0, "min_p": None, "reasoning_effort": ""})
+    assert body["top_p"] == 0.8 and body["top_k"] == 0
+    assert "min_p" not in body and "reasoning_effort" not in body
+
+
+def test_reasoning_effort_is_sent_only_with_thinking_on():
+    assert _body(True, {"reasoning_effort": "high"})["reasoning_effort"] == "high"
+    assert "reasoning_effort" not in _body(False, {"reasoning_effort": "high"})
 
 
 def test_the_engine_reads_the_loaded_model_when_the_card_names_none(monkeypatch):
@@ -129,3 +140,140 @@ def test_the_engine_reads_the_loaded_model_when_the_card_names_none(monkeypatch)
     )
     asyncio.run(engine_mod._apply_saved_settings(_Ctx(), GENERATE, params, set()))
     assert seen == ["a/b"]
+
+
+# Load settings: a card's own, or the model's saved launch override, reload only when they differ.
+
+from types import SimpleNamespace
+
+from core.flows.cache import cache_key
+from core.flows.nodes import text as text_nodes
+from studio_mcp import loading
+
+GGUF = "unsloth/Qwen3-4B-GGUF"
+CARD_LOAD = {"max_seq_length": 32768, "kv_cache_dtype": "q8_0"}
+
+
+def test_card_load_settings_map_onto_the_load_request():
+    kwargs = model_settings.load_kwargs(CARD_LOAD, is_gguf = True)
+    assert kwargs == {"max_seq_length": 32768, "cache_type_kv": "q8_0"}
+    assert model_settings.load_kwargs({}, is_gguf = True) is None
+    assert model_settings.load_kwargs(None, is_gguf = True) is None
+    # GPU placement is a GGUF-only knob, as in Chat's own load path.
+    assert "gpu_layers" not in (model_settings.load_kwargs({"gpu_layers": 10}, is_gguf = False) or {})
+
+
+def _load_fakes(monkeypatch, serving):
+    loads = []
+    state = {"serving": list(serving)}
+
+    async def fake_load_llm(caller, ctx, **kwargs):
+        loads.append(kwargs)
+        state["serving"] = [kwargs["model"]]
+
+    async def fake_slots(caller):
+        return {"llm": state["serving"]}
+
+    async def fake_resident(caller):
+        return {"llm": state["serving"]}, {"is_gguf": True, "serving": state["serving"]}
+
+    monkeypatch.setattr(loading, "load_llm", fake_load_llm)
+    monkeypatch.setattr(loading, "resident_slots", fake_slots)
+    monkeypatch.setattr(loading, "_resident", fake_resident)
+    monkeypatch.setattr(_common, "_caller", lambda ctx: None)
+    monkeypatch.setattr(_common, "_LOADED_VARIANT", {})
+    monkeypatch.setattr(_common, "_LOADED_OPTIONS", {})
+    return loads
+
+
+class _LoadCtx:
+    def __init__(self, params):
+        self.params, self.resident, self.spec, self.gpu_shared = params, {}, {}, False
+        self.statuses = []
+
+    def set_status(self, status, message = None):
+        self.statuses.append(status)
+
+    def on_cancel(self, fn):
+        pass
+
+
+async def _ensure(params, kind = "chat"):
+    ctx = _LoadCtx(params)
+    model, load = await text_nodes._model_and_load(ctx, kind)
+    await _common.ensure_model(ctx, kind, model, load)
+    return ctx
+
+
+def test_a_card_reloads_when_its_load_settings_differ_and_not_when_they_match(monkeypatch):
+    loads = _load_fakes(monkeypatch, [GGUF])
+    card = {"model": {"repo": GGUF, "variant": None}, "load": CARD_LOAD}
+    ctx = asyncio.run(_ensure(card))
+    assert len(loads) == 1 and loads[0]["max_seq_length"] == 32768
+    assert loads[0]["extra_body"] == {"cache_type_kv": "q8_0"}
+    assert "loading_model" in ctx.statuses
+    # The next card asks for the same: no reload.
+    ctx = asyncio.run(_ensure(dict(card)))
+    assert len(loads) == 1 and "loading_model" not in ctx.statuses
+    # A different context does.
+    asyncio.run(_ensure({**card, "load": {**CARD_LOAD, "max_seq_length": 8192}}))
+    assert len(loads) == 2 and loads[1]["max_seq_length"] == 8192
+
+
+def test_a_card_on_the_loaded_model_with_load_settings_reloads_that_model(monkeypatch):
+    loads = _load_fakes(monkeypatch, [GGUF])
+    asyncio.run(_ensure({"model": None, "load": {"max_seq_length": 4096}}))
+    assert [l["model"] for l in loads] == [GGUF]
+
+
+def test_an_old_card_without_load_settings_keeps_what_is_loaded(monkeypatch):
+    loads = _load_fakes(monkeypatch, [GGUF])
+    old = param_values(GENERATE, {"params": {"model": {"repo": GGUF, "variant": None}}})
+    assert old["load"] is None
+    asyncio.run(_ensure(old))
+    asyncio.run(_ensure(param_values(GENERATE, {"params": {}})))
+    assert loads == []
+
+
+def test_saved_load_settings_apply_when_the_card_follows_them(monkeypatch):
+    monkeypatch.setattr(model_settings, "read_saved", lambda model_id: None)
+    monkeypatch.setattr(
+        model_settings, "saved_load", lambda model_id, variant = None: {"max_seq_length": 65536}
+    )
+    params = param_values(
+        GENERATE,
+        {"params": {"use_model_settings": True, "model": {"repo": GGUF, "variant": None}, "load": CARD_LOAD}},
+    )
+    asyncio.run(engine_mod._apply_saved_settings(_Ctx(), GENERATE, params, set()))
+    assert params["load"] == {"max_seq_length": 65536, "kv_cache_dtype": "q8_0"}
+
+
+def test_the_cache_key_includes_the_load_settings():
+    base = param_values(GENERATE, {"params": {"model": {"repo": GGUF, "variant": None}}})
+    key = lambda p: cache_key("llm.generate", 1, p, {}, model = {"repo": GGUF, "variant": None}, seed = 1)
+    assert key(base) != key({**base, "load": CARD_LOAD})
+    assert key({**base, "load": CARD_LOAD}) != key({**base, "load": {**CARD_LOAD, "max_seq_length": 8192}})
+
+
+def _plan(nodes):
+    return SimpleNamespace(
+        specs = {nid: GENERATE for nid in nodes},
+        nodes = {nid: {"params": params} for nid, params in nodes.items()},
+    )
+
+
+def test_ready_cards_sharing_a_load_run_back_to_back(monkeypatch):
+    monkeypatch.setattr(_common, "_LOADED_OPTIONS", {})
+    model = {"repo": GGUF, "variant": None}
+    big = {"model": model, "load": {"max_seq_length": 32768}}
+    small = {"model": model, "load": {"max_seq_length": 8192}}
+    plan = _plan({"a": big, "b": small, "c": small})
+    rs = SimpleNamespace(plan = plan, resident = {})
+    engine = engine_mod.FlowEngine.__new__(engine_mod.FlowEngine)
+    # Two ready cards share 8k: one of them goes first.
+    assert engine._pick_gpu(rs, ["a", "b", "c"]) in ("b", "c")
+    # With the model resident at 32k, the 32k card goes first.
+    opts = model_settings.load_kwargs(big["load"], is_gguf = True)
+    monkeypatch.setattr(_common, "_LOADED_OPTIONS", {"llm": (GGUF.lower(), _common.options_hash(opts), 0)})
+    rs.resident = {"llm": GGUF}
+    assert engine._pick_gpu(rs, ["b", "a", "c"]) == "a"

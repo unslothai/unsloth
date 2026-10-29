@@ -125,6 +125,16 @@ _LLM_SETTINGS = [
         advanced = True,
     ),
     P("presence_penalty", "number", None, "Presence penalty", min = 0, max = 2, step = 0.1, advanced = True),
+    P(
+        "reasoning_effort",
+        "select",
+        None,
+        "Reasoning effort",
+        options = ["low", "medium", "high", "max"],
+        advanced = True,
+    ),
+    # Chat's run settings for the load, in its saved-override shape; empty loads the way the model loads anyway.
+    P("load", "json", None, "Load settings", advanced = True),
     P("use_model_settings", "bool", False, "Use the model's saved settings", advanced = True),
 ]
 
@@ -604,6 +614,7 @@ NODE_SPECS: list[dict] = [
             P("system", "textarea", "", "System prompt", advanced = True),
             P("temperature", "number", None, "Temperature", min = 0, max = 2, step = 0.01, advanced = True),
             P("seed", "seed", None, "Seed", advanced = True),
+            P("thinking", "bool", False, "Allow thinking", advanced = True),
             *_LLM_SETTINGS,
         ],
         lane = "gpu",

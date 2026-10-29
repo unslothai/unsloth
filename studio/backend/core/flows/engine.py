@@ -1664,15 +1664,38 @@ class FlowEngine:
         def model_of(nid: str) -> tuple[str, str]:
             return self._model_of(plan, nid)
 
+        from core.flows.nodes._common import _LOADED_OPTIONS, options_hash
+
+        # Cards with their own load settings group by them too, so same-settings cards run back to back.
+        loads: dict[str, Optional[str]] = {}
+
+        def load_of(nid: str) -> Optional[str]:
+            if nid not in loads:
+                params = plan.nodes[nid].get("params") or {}
+                loads[nid] = (
+                    options_hash(model_settings.card_load_kwargs(params))
+                    if model_settings.LOAD in params or params.get(model_settings.USE_SAVED)
+                    else None
+                )
+            return loads[nid]
+
+        def loaded_with(slot: str, repo: str) -> Optional[str]:
+            found = _LOADED_OPTIONS.get(slot)
+            return found[1] if found and found[0] == repo else None
+
         for nid in ready:
             slot, repo = model_of(nid)
-            if not repo or (rs.resident.get(slot) or "").lower() == repo:
+            if not repo or (
+                (rs.resident.get(slot) or "").lower() == repo
+                and load_of(nid) == loaded_with(slot, repo)
+            ):
                 return nid
         counts: dict[tuple, int] = {}
         for nid in ready:
-            counts[model_of(nid)] = counts.get(model_of(nid), 0) + 1
+            key = (*model_of(nid), load_of(nid))
+            counts[key] = counts.get(key, 0) + 1
         best = max(counts.values())
-        return next(n for n in ready if counts[model_of(n)] == best)
+        return next(n for n in ready if counts[(*model_of(n), load_of(n))] == best)
 
     def _gather_inputs(self, rs: RunState, nid: str, env: Env) -> tuple[dict, Optional[str]]:
         plan = rs.plan
@@ -2168,6 +2191,11 @@ async def _apply_saved_settings(ctx: Any, spec: dict, params: dict, bound: set[s
         model_id = await resident_name(ctx, spec["model_kind"])
     saved = await asyncio.to_thread(model_settings.read_saved, model_id)
     params.update(model_settings.overlay(params, saved, spec, bound))
+    if any(p["id"] == model_settings.LOAD for p in spec["params"]):
+        variant = choice.get("variant") if isinstance(choice, dict) else None
+        load = await asyncio.to_thread(model_settings.saved_load, model_id, variant)
+        if load:
+            params[model_settings.LOAD] = {**(params.get(model_settings.LOAD) or {}), **load}
 
 
 def _bind_params(spec: dict, params: dict, inputs: dict) -> None:

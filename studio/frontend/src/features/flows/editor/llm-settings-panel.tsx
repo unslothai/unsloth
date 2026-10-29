@@ -3,20 +3,42 @@
 
 import { Button } from "@/components/ui/button";
 import { InfoHint } from "@/components/ui/info-hint";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { usePlatformStore } from "@/config/env";
 import {
   ParamSlider,
   defaultInferenceParams,
   useChatRuntimeStore,
 } from "@/features/chat";
+import {
+  fetchModelOverrides,
+  modelOverrideKey,
+  syncModelOverride,
+} from "@/features/model-picker";
+// eslint-disable-next-line no-restricted-imports -- the override <-> config mapping Chat's own panel uses.
+import {
+  fromApiOverride,
+  resolveStoredOverride,
+} from "@/features/model-picker/api/model-overrides";
+// eslint-disable-next-line no-restricted-imports -- the per-model store Chat's run settings write.
+import { savePerModelConfig } from "@/features/model-picker/model-config/per-model-config";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactNode, useEffect, useId, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useId, useState } from "react";
 import { toast } from "sonner";
 import { useDocStore } from "../stores/doc-store";
-import type { FlowNode, NodeSpec } from "../types";
+import type { FlowNode, ModelChoice, NodeSpec } from "../types";
+import { LlmLoadSettings } from "./llm-load-settings";
 import {
+  type LoadSettings,
   editPatch,
   effectiveParams,
   findSaved,
@@ -24,7 +46,9 @@ import {
   loadPatch,
   modelKey,
   paramsAsSaved,
+  reloadHint,
   togglePatch,
+  withLoadField,
 } from "./llm-settings";
 import { ParamField } from "./param-fields";
 
@@ -76,6 +100,80 @@ function shortModel(key: string): string {
   return key.split("/").pop() ?? key;
 }
 
+const SAMPLING_KEYS = [
+  "top_p",
+  "top_k",
+  "min_p",
+  "repetition_penalty",
+  "presence_penalty",
+] as const;
+
+const EFFORTS = [
+  ["low", "Low"],
+  ["medium", "Medium"],
+  ["high", "High"],
+  ["max", "Max"],
+] as const;
+const EFFORT_DEFAULT = "__model__";
+
+function cardModel(node: FlowNode): ModelChoice | null {
+  const choice = node.params.model as ModelChoice | null | undefined;
+  return choice?.repo?.trim() ? choice : null;
+}
+
+/** Chat's saved launch settings for the model, as the engine reads them. */
+function useSavedLoad(key: string | null, variant: string | null) {
+  const [saved, setSaved] = useState<LoadSettings | null>(null);
+  const [version, setVersion] = useState(0);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: version re-reads after a save
+  useEffect(() => {
+    if (!key) {
+      setSaved(null);
+      return;
+    }
+    let alive = true;
+    fetchModelOverrides()
+      .then((overrides) => {
+        const keys = variant ? [modelOverrideKey(key, variant), key] : [key];
+        const found = resolveStoredOverride(overrides, keys);
+        if (alive) setSaved(found ? { ...found } : null);
+      })
+      .catch(() => alive && setSaved(null));
+    return () => {
+      alive = false;
+    };
+  }, [key, variant, version]);
+  return { savedLoad: saved, reread: useCallback(() => setVersion((v) => v + 1), []) };
+}
+
+/** The loaded model as Chat's status reports it, for the reload hint. */
+function useLoadedModel() {
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const contextLength = useChatRuntimeStore((s) => s.loadedContextLength);
+  const kvCacheDtype = useChatRuntimeStore((s) => s.loadedKvCacheDtype);
+  const nParallel = useChatRuntimeStore((s) => s.loadedNParallel);
+  const speculativeType = useChatRuntimeStore((s) => s.loadedSpeculativeType);
+  return {
+    checkpoint: checkpoint || null,
+    contextLength,
+    kvCacheDtype,
+    nParallel,
+    speculativeType,
+  };
+}
+
+/** The card face's one quiet line when running it would reload the model. */
+export function LlmReloadHint({ node }: { node: FlowNode }) {
+  const loaded = useLoadedModel();
+  const hint = reloadHint(node.params, loaded);
+  if (!hint) return null;
+  return (
+    <p className="flow-detail px-3 text-ui-10p5 leading-snug text-muted-foreground">
+      {hint}
+    </p>
+  );
+}
+
 export function LlmSettingsPanel({
   node,
   spec,
@@ -83,17 +181,28 @@ export function LlmSettingsPanel({
   node: FlowNode;
   spec: NodeSpec;
 }) {
-  const loaded = useChatRuntimeStore((s) => s.params.checkpoint);
-  const key = modelKey(node.params, loaded);
+  const loadedModel = useLoadedModel();
+  const loadedVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const loadedIsGguf = useChatRuntimeStore((s) => s.loadedIsGguf);
+  const isMac = usePlatformStore((s) => s.deviceType === "mac");
+  const choice = cardModel(node);
+  const key = modelKey(node.params, loadedModel.checkpoint);
+  const variant = choice ? (choice.variant ?? null) : loadedVariant;
   const saved = useChatRuntimeStore((s) => findSaved(s.paramsByModel, key));
+  const { savedLoad, reread } = useSavedLoad(key, variant);
   const switchId = useId();
+  const isGguf = choice
+    ? Boolean(choice.variant) || /gguf/i.test(choice.repo)
+    : loadedIsGguf;
 
   useEffect(() => {
     void useChatRuntimeStore.getState().hydratePersistedSettings();
   }, []);
 
   const on = isOn(node.params);
-  const shown = effectiveParams(node.params, saved, spec);
+  const shown = effectiveParams(node.params, saved, spec, savedLoad);
+  const shownLoad = (shown.load as LoadSettings | null) ?? {};
+  const hint = reloadHint(shown, loadedModel);
   const has = (id: string) => spec.params.some((p) => p.id === id);
   const paramSpec = (id: string) => spec.params.find((p) => p.id === id);
   const d = defaultInferenceParams;
@@ -103,11 +212,23 @@ export function LlmSettingsPanel({
       .getState()
       .updateParams(node.id, patch, `param:${node.id}:${label}`);
   const edit = (id: string) => (value: unknown) =>
-    update(editPatch(node.params, saved, spec, { [id]: value }), id);
+    update(editPatch(node.params, saved, spec, { [id]: value }, savedLoad), id);
+  const editLoad = (field: string, value: unknown) =>
+    update(
+      editPatch(
+        node.params,
+        saved,
+        spec,
+        { load: withLoadField(shownLoad, field, value) },
+        savedLoad,
+      ),
+      `load:${field}`,
+    );
+  const hasSaved = !!saved || !!savedLoad;
 
   const status = !key
     ? "No model picked or loaded, so this card's own values apply."
-    : saved
+    : hasSaved
       ? on
         ? `Following Chat's saved settings for ${shortModel(key)}.`
         : `Chat has saved settings for ${shortModel(key)}.`
@@ -145,13 +266,27 @@ export function LlmSettingsPanel({
               id={switchId}
               checked={on}
               onCheckedChange={(checked) =>
-                update(togglePatch(saved, spec, checked === true), "use-saved")
+                update(
+                  togglePatch(
+                    node.params,
+                    saved,
+                    spec,
+                    checked === true,
+                    savedLoad,
+                  ),
+                  "use-saved",
+                )
               }
             />
           </div>
           <p className="text-ui-11 leading-snug text-muted-foreground">
             {status}
           </p>
+          {hint && (
+            <p className="text-ui-11 leading-snug text-amber-600 dark:text-amber-400">
+              {hint}
+            </p>
+          )}
           <div className="flex flex-wrap gap-2">
             <Button
               type="button"
@@ -164,6 +299,14 @@ export function LlmSettingsPanel({
                 useChatRuntimeStore
                   .getState()
                   .setRememberedParamsForModel(key, paramsAsSaved(node.params));
+                const own = node.params.load as LoadSettings | null;
+                if (own && Object.keys(own).length > 0) {
+                  // Over what is saved, so a field this card leaves unset keeps Chat's value.
+                  const config = fromApiOverride({ ...savedLoad, ...own });
+                  if (savePerModelConfig(key, variant, config))
+                    syncModelOverride(key, variant, config);
+                  setTimeout(reread, 500);
+                }
                 toast.success(`Saved as defaults for ${shortModel(key)}`);
               }}
             >
@@ -173,9 +316,11 @@ export function LlmSettingsPanel({
               type="button"
               variant="outline"
               size="xs"
-              disabled={!saved || on}
+              disabled={!hasSaved || on}
               title="Copy Chat's saved settings for the model onto this card"
-              onClick={() => update(loadPatch(saved, spec), "load-saved")}
+              onClick={() =>
+                update(loadPatch(saved, spec, savedLoad), "load-saved")
+              }
             >
               Load model defaults
             </Button>
@@ -296,10 +441,17 @@ export function LlmSettingsPanel({
           )}
           {has("thinking") && (
             <div className="flex items-center justify-between gap-3">
-              <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
-                Allow thinking
-              </span>
+              <div className="flex min-w-0 items-center gap-1.5">
+                <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+                  Thinking
+                </span>
+                <InfoHint>
+                  Let the model reason before it answers, as the Thinking
+                  button in Chat's composer does. Off for JSON output.
+                </InfoHint>
+              </div>
               <Switch
+                aria-label="Thinking"
                 checked={node.params.thinking === true}
                 onCheckedChange={(checked) =>
                   update({ thinking: checked === true }, "thinking")
@@ -307,8 +459,86 @@ export function LlmSettingsPanel({
               />
             </div>
           )}
+          {has("reasoning_effort") && node.params.thinking === true && (
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex min-w-0 items-center gap-1.5">
+                <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+                  Reasoning Effort
+                </span>
+                <InfoHint>
+                  How hard the model thinks, for models that take a level
+                  (gpt-oss, GLM). Others ignore it.
+                </InfoHint>
+              </div>
+              <Select
+                value={
+                  typeof node.params.reasoning_effort === "string" &&
+                  node.params.reasoning_effort
+                    ? node.params.reasoning_effort
+                    : EFFORT_DEFAULT
+                }
+                onValueChange={(next) =>
+                  update(
+                    {
+                      reasoning_effort: next === EFFORT_DEFAULT ? null : next,
+                    },
+                    "reasoning_effort",
+                  )
+                }
+              >
+                <SelectTrigger
+                  aria-label="Reasoning Effort"
+                  className="panel-select-trigger h-8! w-auto"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={EFFORT_DEFAULT}>Model default</SelectItem>
+                  {EFFORTS.map(([value, label]) => (
+                    <SelectItem key={value} value={value}>
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+          <div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="text-muted-foreground"
+              title="Back to Auto: the model's saved or recommended sampling"
+              onClick={() =>
+                update(
+                  editPatch(
+                    node.params,
+                    saved,
+                    spec,
+                    Object.fromEntries(SAMPLING_KEYS.map((k) => [k, null])),
+                    savedLoad,
+                  ),
+                  "reset-sampling",
+                )
+              }
+            >
+              Reset
+            </Button>
+          </div>
         </div>
       </Section>
+
+      {has("load") && (
+        <Section label="Model Load" defaultOpen={false}>
+          <LlmLoadSettings
+            load={shownLoad}
+            isGguf={isGguf}
+            isMac={isMac}
+            onChange={editLoad}
+          />
+        </Section>
+      )}
 
       {schema && (
         <Section label="Structured Output" defaultOpen={!!node.params.json_schema}>

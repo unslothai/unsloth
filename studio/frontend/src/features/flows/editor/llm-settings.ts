@@ -28,8 +28,14 @@ export const PANEL_PARAMS: ReadonlySet<string> = new Set([
   "max_tokens",
   "seed",
   "thinking",
+  "reasoning_effort",
   "json_schema",
+  "load",
 ]);
+
+/** Chat's saved launch settings for a model, in the override shape the server stores and loads with. A card keeps
+ *  its own load settings in the same shape, so one mapping on the server turns either into the load request. */
+export type LoadSettings = Record<string, unknown>;
 
 /** The subset of Chat's remembered params a card maps onto. */
 export interface SavedModelSettings {
@@ -133,13 +139,35 @@ export function savedAsParams(
   return out;
 }
 
+function hasLoad(spec: NodeSpec): boolean {
+  return spec.params.some((p) => p.id === "load");
+}
+
+/** The card's load settings with the saved ones over them, as the engine merges them. */
+function savedLoadOver(
+  params: Params,
+  savedLoad: LoadSettings | null | undefined,
+  spec: NodeSpec,
+): Params {
+  if (!savedLoad || !hasLoad(spec) || Object.keys(savedLoad).length === 0)
+    return {};
+  return { load: { ...((params.load as LoadSettings | null) ?? {}), ...savedLoad } };
+}
+
 /** What the panel shows and the engine runs: saved values over the card's own when on. */
 export function effectiveParams(
   params: Params,
   saved: SavedModelSettings | undefined,
   spec: NodeSpec,
+  savedLoad?: LoadSettings | null,
 ): Params {
-  return isOn(params) ? { ...params, ...savedAsParams(saved, spec) } : params;
+  return isOn(params)
+    ? {
+        ...params,
+        ...savedAsParams(saved, spec),
+        ...savedLoadOver(params, savedLoad, spec),
+      }
+    : params;
 }
 
 /** An edit while on keeps what the card was showing and turns the toggle off. */
@@ -148,27 +176,96 @@ export function editPatch(
   saved: SavedModelSettings | undefined,
   spec: NodeSpec,
   patch: Params,
+  savedLoad?: LoadSettings | null,
 ): Params {
   if (!isOn(params)) return patch;
-  return { ...savedAsParams(saved, spec), ...patch, [USE_SAVED]: false };
+  return {
+    ...savedAsParams(saved, spec),
+    ...savedLoadOver(params, savedLoad, spec),
+    ...patch,
+    [USE_SAVED]: false,
+  };
 }
 
 export function togglePatch(
+  params: Params,
   saved: SavedModelSettings | undefined,
   spec: NodeSpec,
   on: boolean,
+  savedLoad?: LoadSettings | null,
 ): Params {
   return on
     ? { [USE_SAVED]: true }
-    : { ...savedAsParams(saved, spec), [USE_SAVED]: false };
+    : {
+        ...savedAsParams(saved, spec),
+        ...savedLoadOver(params, savedLoad, spec),
+        [USE_SAVED]: false,
+      };
 }
 
-/** "Load model defaults": the saved values onto the card's own copy. */
+/** "Load model defaults": the saved values onto the card's own copy, load settings replaced whole. */
 export function loadPatch(
   saved: SavedModelSettings | undefined,
   spec: NodeSpec,
+  savedLoad?: LoadSettings | null,
 ): Params {
-  return savedAsParams(saved, spec);
+  return {
+    ...savedAsParams(saved, spec),
+    ...(savedLoad && hasLoad(spec) && Object.keys(savedLoad).length > 0
+      ? { load: { ...savedLoad } }
+      : {}),
+  };
+}
+
+/** One load setting changed; undefined or "" removes it, so the model's own default applies. */
+export function withLoadField(
+  load: LoadSettings | null | undefined,
+  key: string,
+  value: unknown,
+): LoadSettings | null {
+  const next: LoadSettings = { ...(load ?? {}) };
+  if (value === undefined || value === null || value === "") delete next[key];
+  else next[key] = value;
+  return Object.keys(next).length > 0 ? next : null;
+}
+
+export interface LoadedModel {
+  checkpoint: string | null;
+  contextLength: number | null;
+  kvCacheDtype: string | null;
+  nParallel: number | null;
+  speculativeType: string | null;
+}
+
+function tokens(n: number): string {
+  return n >= 1024 && n % 1024 === 0 ? `${n / 1024}k` : n.toLocaleString();
+}
+
+/** The quiet hint on a card whose model or load settings differ from what is loaded, or null. Only what the
+ *  loaded status reports is compared, so a setting it cannot see never claims a reload. */
+export function reloadHint(
+  params: Params,
+  loaded: LoadedModel,
+): string | null {
+  const repo = (params.model as ModelChoice | null | undefined)?.repo?.trim();
+  if (!loaded.checkpoint) return repo ? `Loads ${repo.split("/").pop()}` : null;
+  if (repo && repo.toLowerCase() !== loaded.checkpoint.toLowerCase())
+    return `Reloads the model: ${repo.split("/").pop()} vs ${loaded.checkpoint.split("/").pop()} loaded`;
+  const load = (params.load as LoadSettings | null) ?? {};
+  const diffs: string[] = [];
+  const ctx = load.max_seq_length;
+  if (typeof ctx === "number" && loaded.contextLength && ctx !== loaded.contextLength)
+    diffs.push(`context ${tokens(ctx)} vs ${tokens(loaded.contextLength)} loaded`);
+  const kv = load.kv_cache_dtype;
+  if (typeof kv === "string" && kv !== (loaded.kvCacheDtype ?? "f16"))
+    diffs.push(`KV cache ${kv} vs ${loaded.kvCacheDtype ?? "f16"} loaded`);
+  const slots = load.n_parallel;
+  if (typeof slots === "number" && loaded.nParallel && slots !== loaded.nParallel)
+    diffs.push(`${slots} slots vs ${loaded.nParallel} loaded`);
+  const spec = load.speculative_type;
+  if (typeof spec === "string" && loaded.speculativeType && spec !== loaded.speculativeType)
+    diffs.push(`speculative ${spec} vs ${loaded.speculativeType} loaded`);
+  return diffs.length > 0 ? `Reloads the model: ${diffs.join(", ")}` : null;
 }
 
 /** "Save as model defaults": the card's values as a patch for Chat's memory. Unset knobs and an
