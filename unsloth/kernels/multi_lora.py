@@ -1005,7 +1005,7 @@ def _grouped_disabled() -> bool:
 _WARNED: set = set()
 
 
-def _warn_once(message: str) -> None:
+def _warn_once(message: str, level: int = logging.WARNING) -> None:
     if message in _WARNED:
         return
     _WARNED.add(message)
@@ -1013,7 +1013,7 @@ def _warn_once(message: str) -> None:
         from unsloth_zoo.log import logger
     except Exception:  # noqa: BLE001
         logger = logging.getLogger(__name__)
-    logger.warning(message)
+    logger.log(level, message)
 
 
 class MultiLoraExperts(nn.Module):
@@ -1144,6 +1144,10 @@ class MultiLoraExperts(nn.Module):
             reason = f"{type(error).__name__}: {error}"
         if reason is None:
             self.mode = "grouped"
+            _warn_once(
+                f"Unsloth: batched MoE LoRA on {type(self.base_layer).__name__} runs every adapter in one grouped pass.",
+                logging.INFO,
+            )
             return
         if not torch.compiler.is_compiling():
             MULTI_LORA_MOE_STATS["grouped_fallbacks"] += 1
