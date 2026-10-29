@@ -1573,6 +1573,13 @@ export const hi = {
         sttQuantDescription:
           "लोकली चलाने के लिए STT मॉडल चुनें या खोजें, फिर उसका क्वांटाइज़ेशन चुनें।",
         sttDeviceLabel: "इसमें लोड करें",
+        sttContextLabel: "आवज क कनक",
+        sttContextAuto: "सचलत (अनशसत)",
+        sttContextAutoDescription:
+          "हर रकरग क अनसर आकर समयजत करत ह। लब ऑडय क लए अधक ममर इसमल हत ह। परन रनटइम म ममर उपयग घटन क लए आकर तय करन पड सकत ह। “आवज” और “टसकइब” म Qwen3-ASR पर लग हत ह।",
+        sttContextFixedDescription:
+          "छट सम कम ममर इसमल करत ह। सम म न समन वल रकरग क लए सम बढए य “सचलत” चन। “आवज” और “टसकइब” म Qwen3-ASR पर लग हत ह।",
+        sttContextTokens: "{count} टकन",
         sttDeviceAuto: "उपलब्ध होने पर GPU",
         sttDeviceCpu: "CPU RAM",
         sttDeviceAutoDescription:
