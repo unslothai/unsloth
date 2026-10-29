@@ -653,6 +653,8 @@ def test_grouped_under_torch_compile(monkeypatch, dtype):
     experts = _wrapped(_StaticExperts(E, H = 24, I = 16).to(dtype), RANKS, ALPHAS, False, ids).to(
         DEVICE
     )
+    for _, layer in ml._layers(experts):
+        layer.seen = None  # a plain attribute, so .to() left it on the CPU
     ml.set_multi_lora_batch(experts, ids.to(DEVICE))
     index, weights = _routes(T, k, E)
     index[0, -1] = 0
