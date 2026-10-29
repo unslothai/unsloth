@@ -13698,9 +13698,8 @@ def _search_conversation(arguments: dict, rag_scope: dict | None) -> str:
         counter = scope.get("token_counter")
         attempt = max(1, int(top_k or 1))
         while True:
-            rendered = _rendered_conversation_search(found)
-            if _conversation_search_cost(rendered, counter) <= int(budget):
-                return rendered
+            if _conversation_search_cost(found[0], counter) <= int(budget):
+                return _rendered_conversation_search(found)
             if attempt <= 1:
                 return "There is no room left in this context to search earlier conversation."
             attempt = max(1, attempt // 2)
@@ -13731,7 +13730,7 @@ def _conversation_search_tokens(text: str) -> int:
 
 
 def _rendered_conversation_search(found) -> str:
-    """The tool result exactly as the model would receive it."""
+    """The full result; the model never sees the source map."""
     text, sources = found
     if sources:
         import json as _json
