@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 """PrefixGrouper layout: the single-copy builder matches the token-by-token reference, and its
 host / device traffic does not grow with the number of groups or segments."""
 
