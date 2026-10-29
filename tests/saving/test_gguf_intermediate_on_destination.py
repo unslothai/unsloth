@@ -101,10 +101,8 @@ def test_intermediate_is_written_inside_the_gguf_directory(monkeypatch, tmp_path
 
     files, _, _ = _save(model_directory, methods)
 
-    # Converter wrote on the destination filesystem, inside the output folder.
     (outfile,) = converter.outfiles
     assert os.path.dirname(os.path.dirname(outfile)) == os.path.abspath(gguf_directory)
-    # Final names unchanged, nothing staged left behind, nothing in the CWD, no byte copy.
     assert sorted(os.listdir(gguf_directory)) == sorted(os.path.basename(f) for f in files)
     assert os.path.basename(outfile) == "MyModel.BF16.gguf"
     assert os.listdir(cwd) == []
@@ -122,7 +120,6 @@ def test_a_failed_conversion_leaves_no_partial_file_anywhere(monkeypatch, tmp_pa
         _save(model_directory, ["q4_k_m"])
 
     assert os.listdir(cwd) == []
-    # The folder did not exist before, so it is not left behind empty either.
     assert not os.path.exists(gguf_directory)
 
 

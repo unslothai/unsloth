@@ -2494,8 +2494,7 @@ def _gguf_conversion_staging(gguf_directory):
         return None, False
 
 
-# Windows MAX_PATH is 260 including the terminator unless LongPathsEnabled is set, and the
-# converter appends at most `.BF16-mmproj-00001-of-00002.gguf` (32 characters) to the stem.
+# MAX_PATH 260 incl. terminator without LongPathsEnabled; the converter appends at most `.BF16-mmproj-00001-of-00002.gguf` (32 chars).
 _WINDOWS_MAX_PATH_CHARS = 259
 _GGUF_CONVERTER_SUFFIX_CHARS = 40
 
