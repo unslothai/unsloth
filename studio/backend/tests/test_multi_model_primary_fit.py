@@ -12,7 +12,7 @@ from fastapi import HTTPException
 import core.inference.model_slots as model_slots
 import core.inference.orchestrator as orchestrator
 import routes.inference as inf
-from core.inference import gpu_arbiter, gpu_residency
+from core.inference import gpu_arbiter, gpu_residency, mlx_inference
 from core.inference.llama_cpp import GpuMemoryShortError
 from models.inference import LoadRequest, LoadResponse
 from utils import multi_model_settings
@@ -297,6 +297,26 @@ def test_media_on_target_gpus(monkeypatch, held, placement, expected):
     assert inf._media_on_target_gpus(placement) is expected
 
 
+def test_mlx_chat_need_prices_one_row_the_prompt_cache_and_a_batch_row_per_extra_slot(monkeypatch):
+    gib = 1024**3
+    breakdown = SimpleNamespace(
+        total_bytes = 3 * gib, weights_bytes = gib, kv_bytes = gib // 2, compute_bytes = gib // 4
+    )
+    estimate = inf._MlxLoadEstimate(breakdown, None, (), True)
+    monkeypatch.setattr(inf, "_mlx_load_estimate", lambda *a: (None, estimate))
+    monkeypatch.setattr(
+        mlx_inference, "mlx_memory_budget", lambda **k: (10 - k["retains_history"]) << 30
+    )
+    mlx = SimpleNamespace(is_gguf = False)
+    assert inf._mlx_chat_need(None, mlx, "m") is None  # not on Metal
+    monkeypatch.setattr(inf, "_unified_metal_host", lambda: True)
+    need, growth = inf._mlx_chat_need(None, mlx, "m", 4)
+    assert (need, growth) == (4096 + 3 * 768, {"mib": 3072, "row_mib": 768, "slots": 4})
+    offloaded = estimate._replace(offloaded = True)
+    monkeypatch.setattr(inf, "_mlx_load_estimate", lambda *a: (None, offloaded))
+    assert inf._mlx_chat_need(None, mlx, "m", 4) is None
+
+
 def test_chat_fit_kwargs(monkeypatch):
     policy = SimpleNamespace(value = "off")
     monkeypatch.setattr(gpu_residency, "current_policy", lambda: policy.value)
@@ -328,6 +348,11 @@ def test_chat_fit_kwargs(monkeypatch):
     # No target GPUs (or Vulkan ordinals) leaves every GPU in play.
     assert inf._chat_fit_kwargs(gguf, _placement(None)) == {"policy": "always"}
     assert inf._chat_fit_kwargs(gguf, _placement([0], vulkan = True)) == {"policy": "always"}
+    monkeypatch.setattr(inf, "_unified_metal_host", lambda: True)
+    assert inf._chat_fit_kwargs(native, _placement(None)).get("evict_first") is True
+    priced = inf._chat_fit_kwargs(native, _placement(None), mlx_need_mib = 700, mlx_credit_mib = 50)
+    assert priced.get("need_mib") == {0: 700} and "evict_first" not in priced
+    assert priced["need_mib"].credit_mib == 50
 
 
 @pytest.mark.parametrize(
@@ -355,6 +380,62 @@ def test_the_replace_fallback_never_refuses_a_partial_fit():
         < source.index("_primary_can_retry_fit.set(False)", unload)
         < source.index("_run_tracked_load_model_impl", unload)
     )
+
+
+def test_only_a_bounded_mlx_cache_is_priced_and_its_admitted_width_never_shrinks():
+    assert inf._mlx_cache_bounded({"context_length_enforced": True})
+    assert inf._mlx_cache_bounded({"context_length_enforced": False, "mlx_context_budget": 4096})
+    assert not inf._mlx_cache_bounded({"context_length_enforced": None})
+    batching = {"context_length_enforced": True, "context_unbounded_when_batched": True}
+    assert inf._mlx_cache_bounded(batching) and not inf._mlx_cache_bounded(batching, 2)
+    assert not inf._mlx_cache_bounded(
+        {"context_length_enforced": False, "mlx_context_budget": None}
+    )
+    entry = {"context_length_enforced": True, "mlx_growth": {"mib": 1, "row_mib": 1, "slots": 1}}
+    backend = SimpleNamespace(models = {"m": entry}, active_model_name = "m")
+    for slots in (4, 1):
+        inf._note_mlx_slots(backend, slots)
+    assert entry["mlx_growth"]["slots"] == 4
+    vision = {**batching, "mlx_growth": {"mib": 1, "row_mib": 1, "slots": 1}}
+    inf._note_mlx_slots(SimpleNamespace(models = {"v": vision}, active_model_name = "v"), 2)
+    assert "mlx_growth" not in vision
+    inf._note_mlx_slots(SimpleNamespace(models = {}, active_model_name = None), 2)
+    import inspect
+
+    source = inspect.getsource(inf._load_model_impl)
+    assert "_note_mlx_slots(backend, backend.set_parallel_slots(_n_parallel))" in source
+    assert (
+        '_mlx_cache_bounded(\n                _resident_entry, mlx_chat_need[1]["slots"]' in source
+    )
+
+
+def test_the_mlx_diffusers_fallback_forgets_the_mlx_price():
+    import inspect
+    source = inspect.getsource(inf._mlx_fallback_load_gate)
+    assert (
+        source.index("refuse_unless_fits(")
+        < source.index("forget_media_price(DIFFUSION, cancel)")
+        < source.index("return start()")
+    )
+
+
+def test_an_mlx_load_is_credited_what_it_replaces_and_more_rows_reprice_it():
+    import inspect
+
+    source = inspect.getsource(inf._load_model_impl)
+    shortcut = source.index('logger.info(f"Model already loaded (Unsloth)')
+    assert (
+        "not _mlx_slots_outgrow_price(backend, _n_parallel)" in source[shortcut - 1200 : shortcut]
+    )
+    inherit = source.index("# A reload for more rows keeps the context the resident was asked for.")
+    assert inherit < shortcut and '"max_seq_length_requested"' in source[inherit : inherit + 400]
+    credit = source.index(
+        "mlx_credit_mib = await asyncio.to_thread(mlx_replaced_credit_mib, backend)"
+    )
+    assert "gguf_replaced_credit_mib" not in source
+    assert credit < source.index("mlx_credit_mib = mlx_credit_mib", credit)
+    settle = source.index("settle_unpriced_chat_beside_media, multi_model_mode")
+    assert settle < source.index("backend.unload_model, config.identifier", settle)
 
 
 def test_a_pinned_non_gguf_chat_load_keeps_its_requested_gpus(monkeypatch):

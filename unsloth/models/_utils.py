@@ -1033,6 +1033,14 @@ def _flex_call_needs_backward(query, key, value):
         return False
 
 
+def _flex_main_kernel_forced(kwargs):
+    """True when the caller's kernel_options force the main flex kernel over flex_decoding."""
+    requested = kwargs.get("kernel_options") or {}
+    if not isinstance(requested, dict):
+        return False
+    return requested.get("FORCE_USE_FLEX_ATTENTION") is True or requested.get("BACKEND") == "TRITON"
+
+
 # unsloth_zoo drops the causal mask of unpadded, cache-free batches; route that None to SDPA is_causal.
 # Kill switch: UNSLOTH_FLEX_MASKLESS_SDPA=0.
 _FLEX_MASKLESS_SDPA_ENABLED = os.environ.get("UNSLOTH_FLEX_MASKLESS_SDPA", "1") != "0"
@@ -1185,8 +1193,14 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             and small_smem_device_ok
             and hasattr(query, "dim")
             and query.dim() == 4
-            # Short no-grad queries go to flex_decoding, whose own tiles are left alone.
-            and (query.shape[2] >= 128 or _flex_call_needs_backward(query, key, value))
+            # Short no-grad queries go to flex_decoding, whose own tiles are left alone, unless the
+            # caller (the block compile hook, also for no-grad checkpoint forwards) forces the main
+            # kernel. Shape last, so training calls add no seq >= 128 guard.
+            and (
+                _flex_call_needs_backward(query, key, value)
+                or _flex_main_kernel_forced(kwargs)
+                or query.shape[2] >= 128
+            )
             and _flex_tuned_bwd_fits(
                 args, kwargs, _FLEX_SMALL_SMEM_KERNEL_OPTIONS, ("fwd_", "bwd_", "BLOCK_", "num_")
             )
@@ -1617,6 +1631,11 @@ def _enable_flex_attention_support(model_class, model_type = ""):
 _FLEX_TEMPLATE_HEAD_DIM_256_SHARED_MEMORY = 151552
 
 
+def _flex_attention_runs_float32(dtype):
+    """Attention runs in float32: a float32 load, or Gemma 3 / 4 under UNSLOTH_FORCE_FLOAT32."""
+    return dtype is torch.float32 or os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
+
+
 def _flex_preferred_fits(config, dtype = None):
     """False when a visible CUDA card lacks that shared memory; fails open on ROCm / no CUDA."""
     head_dim = _text_attention_head_dim(config)
@@ -1627,9 +1646,9 @@ def _flex_preferred_fits(config, dtype = None):
     try:
         if getattr(torch.version, "hip", None) or not torch.cuda.is_available():
             return True
-        # sm86 / sm89, torch >= 2.10: small tiles fit 2-byte dtypes only; fp32 overflows smem.
+        # sm86 / sm89, torch >= 2.10: small tiles fit 2-byte dtypes only; fp32 (or forced fp32) overflows smem.
         if _flex_small_smem_device_ok():
-            return dtype is not torch.float32
+            return not _flex_attention_runs_float32(dtype)
         return all(
             torch.cuda.get_device_properties(index).shared_memory_per_block_optin
             >= _FLEX_TEMPLATE_HEAD_DIM_256_SHARED_MEMORY
@@ -10528,6 +10547,18 @@ class _AutoCheckpointSkip:
         if not initialized:
             print(
                 'Unsloth: checkpoint_skip_layers = "auto" under torchrun needs the process group before the second step; every layer stays checkpointed.'
+            )
+            return 0
+        try:
+            # Every rank enters DDP.join() (also accelerate join_uneven_inputs), so all take this branch.
+            from torch.nn.parallel import DistributedDataParallel
+            ddp = DistributedDataParallel._get_active_ddp_module()
+            joined = ddp is not None and ddp._join_config.enable
+        except Exception:
+            joined = False
+        if joined:
+            print(
+                'Unsloth: checkpoint_skip_layers = "auto" does not plan under DDP.join() (uneven inputs); every layer stays checkpointed.'
             )
             return 0
         backend = str(dist.get_backend())

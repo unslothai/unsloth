@@ -373,6 +373,26 @@ def _isolate_studio_home(_studio_home_root, monkeypatch):
             monkeypatch.setattr(module, "_schema_ready", set())
 
 
+def _drain_sandbox_movers(timeout: float = 30.0) -> None:
+    import threading
+
+    from .thread_drain import join_when_started
+    for thread in threading.enumerate():
+        if thread.name == "sandbox-migrate" and not join_when_started(thread, timeout = timeout):
+            raise RuntimeError("a background sandbox migration did not finish within 30s")
+
+
+@pytest.fixture(autouse = True)
+def _no_sandbox_mover_outlives_its_test(monkeypatch):
+    # get_sandbox_workdir starts a background mover that reads the legacy root from HOME when it gets
+    # scheduled, not when it starts: one left running moved the next test's legacy folder into the
+    # previous test's root. Requesting monkeypatch drains it before HOME is put back, so a late mover
+    # never reads the real home either.
+    _drain_sandbox_movers()
+    yield
+    _drain_sandbox_movers()
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",
@@ -581,6 +601,13 @@ def _no_live_metal_wired_ceiling(monkeypatch):
     monkeypatch.setattr(
         LlamaCppBackend, "_apple_metal_wired_headroom_bytes", staticmethod(lambda: None)
     )
+
+
+@pytest.fixture(autouse = True)
+def _not_on_metal(monkeypatch):
+    """Keep co-residency verdicts off the host's device: on a Mac they take the Metal paths."""
+    from core.inference import gpu_residency
+    monkeypatch.setattr(gpu_residency, "_on_metal", lambda: False)
 
 
 @pytest.fixture(autouse = True)
@@ -952,8 +979,15 @@ def rag_home(tmp_path, monkeypatch, linkable_temp_base):
 @pytest.fixture
 def rag_conn(rag_home):
     """A fresh RAG connection bound to the isolated ``rag_home`` database."""
+    import sqlite3
+
     from storage import rag_db
 
+    # Same gate as the RAG tests that skip on their own: an interpreter whose sqlite3 cannot load
+    # extensions (the macos-15 runner's) never has RAG, and the product reports that rather than
+    # failing. Anything else that stops sqlite-vec loading still errors here.
+    if not rag_db.RAG_AVAILABLE or not hasattr(sqlite3.Connection, "enable_load_extension"):
+        pytest.skip("sqlite-vec cannot be loaded by this Python's sqlite3")
     conn = rag_db.get_connection()
     try:
         yield conn
