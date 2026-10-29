@@ -1,9 +1,8 @@
 ; Unsloth NSIS installer hooks
 
 !macro NSIS_HOOK_PREINSTALL
-  ; The in-app updater starts this per-user installer unelevated, so an install the user put
-  ; under Program Files fails at the first File with "Error opening file for writing".
-  ; Relaunch elevated once, same arguments and directory; a declined prompt falls through.
+  ; The updater runs this per-user installer unelevated, so an install under Program Files
+  ; failed at the first File (#15866): relaunch elevated once; a declined prompt falls through.
   ${If} $UpdateMode = 1
     Push $0
     Push $1
