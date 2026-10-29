@@ -432,7 +432,7 @@ def h3_te_pin_yields(
         if text_encoder is None or streamed_denoiser is None:
             return None
         te_bytes = _module_payload_bytes(text_encoder)
-        dit_bytes = _module_payload_bytes(streamed_denoiser)
+        dit_bytes = _host_payload_bytes(streamed_denoiser)
         if dit_bytes <= 0 or not h3_te_pin_allowed(te_bytes, device):
             return None
         if h3_te_pin_allowed(te_bytes + dit_bytes, device):
@@ -450,6 +450,19 @@ def h3_te_pin_yields(
         return False
     except Exception:  # noqa: BLE001 -- keep the stock decision
         return None
+
+
+def _host_payload_bytes(module: Any) -> int:
+    """Host bytes of ``module``'s CPU tensors, torchao subclasses at their inner (int8) size, not their bf16 shape."""
+    from .diffusion_prequant import tensor_payload_bytes
+
+    seen: set = set()
+    total = 0
+    for tensor in list(module.parameters()) + list(module.buffers()):
+        if id(tensor) not in seen and tensor.device.type == "cpu":
+            seen.add(id(tensor))
+            total += tensor_payload_bytes(tensor)
+    return total
 
 
 def _module_payload_bytes(module: Any) -> int:

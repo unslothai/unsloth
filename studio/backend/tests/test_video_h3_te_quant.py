@@ -688,6 +688,7 @@ def _pin_world(monkeypatch, budget_bytes):
 
     sizes = {}
     monkeypatch.setattr(te, "_module_payload_bytes", lambda m: sizes[id(m)])
+    monkeypatch.setattr(te, "_host_payload_bytes", lambda m: sizes[id(m)])
     monkeypatch.setattr(te, "h3_te_pin_allowed", lambda payload = 0, device = None: payload <= budget_bytes)
     return te, sizes
 
@@ -725,3 +726,15 @@ def test_h3_placement_sizes_the_stream_before_it_pins_the_conditioner():
     src = inspect.getsource(VideoBackend)
     call = src.index("pin = h3_te_pin_yields(")
     assert call - src.rindex("_h3_placement_tier(", 0, call) < 1500
+
+
+def test_streamed_denoiser_is_priced_at_its_int8_payload():
+    import torch
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+
+    from core.inference import video_minimax_h3_te as te
+
+    lin = torch.nn.Linear(256, 512, bias = False).to(torch.bfloat16)
+    quantize_(lin, Int8DynamicActivationInt8WeightConfig())
+    payload = te._host_payload_bytes(lin)
+    assert 512 * 256 <= payload < 512 * 256 * 2
