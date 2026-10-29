@@ -543,14 +543,14 @@ class StreamToolCallHealer:
             self._buffer = self._buffer[run_end:]
             self._holding = False
 
-    def finalize(self) -> list:
+    def finalize(self, promote: bool = True) -> list:
         """Keeps event order; only promoted call markup is dropped and all other residue flushes as text."""
         self._strict_gate.release()
         if not self._buffer:
             return []
         residue, self._buffer = self._buffer, ""
         holding, self._holding = self._holding, False
-        if self.dormant or not holding:
+        if self.dormant or not holding or not promote:
             return [("text", residue)]
         parsed, spans = parse_tool_calls_from_text(
             residue,

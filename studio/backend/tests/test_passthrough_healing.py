@@ -1217,6 +1217,26 @@ class TestAnthropicEmitterHealing:
         (message_delta,) = [e for e in events if e.get("type") == "message_delta"]
         assert message_delta["delta"]["stop_reason"] == "max_tokens"
 
+    def test_call_cut_at_max_tokens_is_not_runnable(self):
+        cut = (
+            "<tool_call><function=Write><parameter=file_path>app.py</parameter>"
+            "<parameter=content>line1\nline2\nli"
+        )
+        events = self._events(
+            self._emitter(allowed = ("Write",)),
+            [self._chunk(content = cut), self._chunk(finish_reason = "length")],
+        )
+        starts = [e for e in events if e.get("type") == "content_block_start"]
+        assert [e["content_block"]["type"] for e in starts] == ["text"]
+        texts = [
+            e["delta"]["text"]
+            for e in events
+            if e.get("type") == "content_block_delta" and e["delta"]["type"] == "text_delta"
+        ]
+        assert "".join(texts) == cut
+        (message_delta,) = [e for e in events if e.get("type") == "message_delta"]
+        assert message_delta["delta"]["stop_reason"] == "max_tokens"
+
     def test_structured_deltas_disable_healing_and_flush(self):
         structured = [
             {
