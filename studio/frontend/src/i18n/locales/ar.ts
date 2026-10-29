@@ -3189,7 +3189,7 @@ export const ar = {
       readDocs: "قراءة وثائق API",
       noAccess: "لا يوجد وصول إلى API بعد.",
       accessTokens: "توكنات الوصول",
-      examplesTitle: "أمثلة",
+      quickstartTitle: "البدء السريع",
       columnName: "الاسم",
       columnToken: "التوكن",
       columnCreated: "تاريخ الإنشاء",

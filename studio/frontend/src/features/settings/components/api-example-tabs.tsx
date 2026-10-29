@@ -179,7 +179,7 @@ export function ApiExamplesPanel({
   return (
     <div ref={panelRef} className="flex min-w-0 scroll-mt-6 flex-col gap-4">
       <h2 className="settings-heading text-base font-semibold font-heading">
-        {t("settings.apiKeys.examplesTitle")}
+        {t("settings.apiKeys.quickstartTitle")}
       </h2>
       <ApiExampleTabNav kind={kind} onChange={setKind} className="-ml-1" />
       {kind === "chat" ? (

@@ -3134,7 +3134,7 @@ export const zhCN = {
       readDocs: "阅读 API 文档",
       noAccess: "还没有 API 访问权限。",
       accessTokens: "访问 token",
-      examplesTitle: "示例",
+      quickstartTitle: "快速开始",
       columnName: "名称",
       columnToken: "Token",
       columnCreated: "创建时间",

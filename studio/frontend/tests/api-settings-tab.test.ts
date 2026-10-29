@@ -69,7 +69,7 @@ test("one tab row holds every example, with no jump links above it; Agents opens
     assert.match(tabs, card);
   }
   assert.equal(tabs.match(/<h2/g)?.length, 1);
-  assert.match(tabs, /<h2[^>]*>\s*\{t\("settings\.apiKeys\.examplesTitle"\)\}/);
+  assert.match(tabs, /<h2[^>]*>\s*\{t\("settings\.apiKeys\.quickstartTitle"\)\}/);
   assert.doesNotMatch(tabs, /<h3/);
   assert.match(tabs, /entry\.id === "agents"\s*\? useSettingsDialogStore\.getState\(\)\.openDialog\("agents"\)/);
   assert.match(tabs, /\.\.\.\(isOwner\s*\? \[[\s\S]*?id: "agents" as const/);

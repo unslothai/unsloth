@@ -3319,7 +3319,7 @@ export const he = {
       readDocs: "קרא את תיעוד ה-API",
       noAccess: "אין עדיין גישת API.",
       accessTokens: "טוקני גישה",
-      examplesTitle: "דוגמאות",
+      quickstartTitle: "התחלה מהירה",
       columnName: "שם",
       columnToken: "טוקן",
       columnCreated: "נוצר",

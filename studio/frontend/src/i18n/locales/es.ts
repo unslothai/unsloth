@@ -3229,7 +3229,7 @@ export const es = {
       readDocs: "Leer la documentación de la API",
       noAccess: "Aún no hay acceso a la API.",
       accessTokens: "Tokens de acceso",
-      examplesTitle: "Ejemplos",
+      quickstartTitle: "Inicio rápido",
       columnName: "Nombre",
       columnToken: "Token",
       columnCreated: "Creado",
