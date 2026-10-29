@@ -1209,7 +1209,7 @@ export const he = {
       lastVisited: "ביקור אחרון",
     },
     tabs: {
-      sandbox: "ארגז חול",
+      sandbox: "אבטחה",
       accounts: "חשבונות",
       general: "כללי",
       profile: "פרופיל",
@@ -1494,7 +1494,7 @@ export const he = {
       },
     },
     sandbox: {
-      title: "ארגז חול",
+      title: "אבטחה",
       description:
         "האם קריאות לכלי Python ו-Terminal רצות בתוך ארגז חול של מערכת ההפעלה במחשב זה.",
       docs: "תיעוד",
@@ -1584,6 +1584,7 @@ export const he = {
         "הבעלים של שרת Unsloth זה מגדיר את ארגז החול של מערכת ההפעלה.",
     },
     debugging: {
+      description: "קרא את יומני Unsloth בלי לצאת מהאפליקציה.",
       logSection: "קובץ יומן",
       source: "קובץ יומן",
       sourceHint:
@@ -2924,11 +2925,6 @@ export const he = {
       autoScrollManual: "ידני",
       autoScrollKeywords:
         "scroll autoscroll auto-scroll follow stick bottom jump streaming generating viewport lock hold auto manual גלילה אוטומטי ידני",
-      scrollToBottomButton: "לחצן גלילה לתחתית",
-      scrollToBottomButtonDescription:
-        "הצג לחצן לקפיצה חזרה להודעה האחרונה לאחר גלילה למעלה.",
-      scrollToBottomButtonKeywords:
-        "scroll bottom jump latest newest arrow down button floating hide show גלילה תחתית לחצן חץ",
       replyNotification: "התראה כשתשובה מסתיימת",
       replyNotificationDescription:
         "הצגת התראת מערכת כשתשובה מסתיימת בזמן ש-Unsloth ממוזער או ברקע.",

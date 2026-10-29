@@ -1170,7 +1170,7 @@ export const en = {
       lastVisited: "Last visited",
     },
     tabs: {
-      sandbox: "Sandbox",
+      sandbox: "Security",
       accounts: "Accounts",
       general: "General",
       profile: "Profile",
@@ -1454,7 +1454,7 @@ export const en = {
       },
     },
     sandbox: {
-      title: "Sandbox",
+      title: "Security",
       description: "Whether Python and Terminal tool calls run inside an OS sandbox on this computer.",
       docs: "Docs",
       docsLabel: "Open the sandbox docs",
@@ -1529,6 +1529,7 @@ export const en = {
       managedNote: "The owner of this Unsloth server sets up the OS sandbox.",
     },
     debugging: {
+      description: "Read the Unsloth logs without leaving the app.",
       logSection: "Log file",
       source: "Log file",
       sourceHint: "The model runners write their own logs, so a failed load or generation is often explained there rather than in the server log.",
@@ -2858,11 +2859,6 @@ export const en = {
       autoScrollManual: "Manual",
       autoScrollKeywords:
         "scroll autoscroll auto-scroll follow stick bottom jump streaming generating viewport lock hold auto manual",
-      scrollToBottomButton: "Scroll to bottom button",
-      scrollToBottomButtonDescription:
-        "Show a button to jump back to the latest message after you scroll up.",
-      scrollToBottomButtonKeywords:
-        "scroll bottom jump latest newest arrow down button floating hide show",
       replyNotification: "Notify when a reply finishes",
       replyNotificationDescription:
         "Show a system notification when a reply finishes while Unsloth is minimized or in the background.",

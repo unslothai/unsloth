@@ -581,6 +581,15 @@ export function DebuggingTab() {
 
   return (
     <div className="settings-page">
+      <header className="flex min-w-0 flex-col gap-1 pr-6">
+        <h1 className="text-xl font-semibold font-heading">
+          {t("settings.tabs.debugging")}
+        </h1>
+        <p className="text-xs text-muted-foreground">
+          {t("settings.debugging.description")}
+        </p>
+      </header>
+
       <SettingsSection
         title={t("settings.debugging.logSection")}
         description={t("settings.debugging.sourceHint")}

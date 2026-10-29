@@ -1115,7 +1115,7 @@ export const ptBR = {
       lastVisited: "Última visitada",
     },
     tabs: {
-      sandbox: "Sandbox",
+      sandbox: "Segurança",
       accounts: "Contas",
       general: "Geral",
       profile: "Perfil",
@@ -1399,7 +1399,7 @@ export const ptBR = {
       },
     },
     sandbox: {
-      title: "Sandbox",
+      title: "Segurança",
       description: "Indica se as chamadas de ferramentas de Python e Terminal rodam dentro de um sandbox do sistema neste computador.",
       docs: "Documentação",
       docsLabel: "Abrir a documentação do sandbox",
@@ -1474,6 +1474,7 @@ export const ptBR = {
       managedNote: "O proprietário deste servidor Unsloth configura o sandbox do sistema.",
     },
     debugging: {
+      description: "Leia os logs do Unsloth sem sair do app.",
       logSection: "Arquivo de log",
       source: "Arquivo de log",
       sourceHint: "Os executores de modelos gravam os próprios logs, então uma falha ao carregar ou ao gerar costuma ser explicada ali, e não no log do servidor.",
@@ -2815,11 +2816,6 @@ export const ptBR = {
       autoScrollManual: "Manual",
       autoScrollKeywords:
         "rolagem rolar automática acompanhar fim pular streaming gerar visualização travar scroll autoscroll follow",
-      scrollToBottomButton: "Botão de rolar até o final",
-      scrollToBottomButtonDescription:
-        "Mostra um botão para voltar à mensagem mais recente depois de rolar para cima.",
-      scrollToBottomButtonKeywords:
-        "rolar final baixo pular recente seta botão ocultar scroll bottom button",
       replyNotification: "Avisar quando uma resposta terminar",
       replyNotificationDescription:
         "Mostra uma notificação do sistema quando uma resposta termina enquanto o Unsloth está minimizado ou em segundo plano.",

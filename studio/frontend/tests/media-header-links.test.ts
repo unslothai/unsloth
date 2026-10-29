@@ -78,8 +78,19 @@ test("the sibling link keeps its icon where the square button puts it and trails
   for (const page of [IMAGES, VIDEO]) {
     assert.match(
       page,
-      /justify-end pr-\[calc\(var\(--thread-scrollbar-gutter,10px\)\+0\.5rem\*var\(--ui-space-scale,1\)\+var\(--studio-chat-header-right-inset,var\(--studio-window-control-inset,0px\)\)\)\]/,
+      /<MediaHeaderActions className="pr-\[calc\(var\(--thread-scrollbar-gutter,10px\)\+0\.5rem\*var\(--ui-space-scale,1\)\+var\(--studio-chat-header-right-inset,var\(--studio-window-control-inset,0px\)\)\)\]/,
     );
+  }
+});
+
+test("media headers centre Create / Train and hide their links as a group when they do not fit", () => {
+  const actions = readSrc("components/media-header-actions.tsx");
+  assert.match(actions, /setFits\(group\.scrollWidth <= room\)/);
+  assert.match(actions, /inert=\{!fits \|\| undefined\}/);
+  assert.match(actions, /!fits && "invisible"/);
+  for (const page of [IMAGES, VIDEO, readSrc("features/audio/audio-page.tsx")]) {
+    assert.match(page, /<div className="grid h-full min-w-0 grid-cols-\[1fr_auto_1fr\]">/);
+    assert.match(page, /<MediaHeaderActions /);
   }
 });
 

@@ -160,7 +160,7 @@ function MetricTile({
   const percentKnown = isFiniteNumber(percent);
   const safePercent = clampPercent(percent);
   return (
-    <div className="flex min-w-0 flex-col gap-3 rounded-xl border border-border/60 bg-card px-6 py-5 dark:border-transparent">
+    <div className="flex min-w-0 flex-col gap-3 rounded-xl border border-border/60 bg-card px-6 pt-5 pb-6 dark:border-transparent">
       <div className="flex min-w-0 flex-col gap-0.5">
         <div className="flex min-w-0 items-center justify-between gap-3">
           <span className="text-ui-12 text-muted-foreground">{label}</span>
@@ -655,7 +655,7 @@ export function ResourcesTab() {
         </div>
         {/* Top edge on the h1's cap top (text-xl at leading 1.4; Hellix: 0.322em). */}
         <div className="mt-[calc(var(--text-xl)*0.322)] flex min-w-0 flex-wrap items-center gap-2">
-          <label className="flex h-8 shrink-0 items-center gap-2.5 text-xs font-medium text-foreground">
+          <label className="flex h-8 shrink-0 items-center gap-2 rounded-full border border-border/60 px-2.5 text-xs font-medium text-foreground">
             <span>{t("settings.resources.liveUpdates")}</span>
             <Switch
               aria-label={t("settings.resources.liveUpdates")}
@@ -779,53 +779,6 @@ export function ResourcesTab() {
             percent={metrics.vramUsageKnown ? metrics.vramPercent : null}
           />
         </div>
-      </SettingsSection>
-
-      <SettingsSection title={t("settings.resources.floatingWindow")}>
-        <SettingsRow
-          label={t("settings.resources.showFloatingWindow")}
-          description={t("settings.resources.showFloatingWindowDescription")}
-        >
-          <Switch
-            aria-label={t("settings.resources.showFloatingWindow")}
-            checked={isOpen}
-            onCheckedChange={setIsOpen}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.resources.liveMonitor.detailedView")}
-          description={t(
-            "settings.resources.liveMonitor.detailedViewDescription",
-          )}
-        >
-          <Switch
-            aria-label={t("settings.resources.liveMonitor.detailedView")}
-            checked={showDetails}
-            onCheckedChange={setShowDetails}
-          />
-        </SettingsRow>
-        {showDetails && (
-          <div className="flex flex-wrap gap-x-5 gap-y-2 pb-3">
-            {MONITOR_DETAIL_METRICS.map((metric) => {
-              const label = t(`settings.resources.liveMonitor.${metric}`);
-              return (
-                <label
-                  key={metric}
-                  className="flex cursor-pointer items-center gap-2 text-xs font-medium text-foreground"
-                >
-                  <Checkbox
-                    checked={detailMetrics.has(metric)}
-                    onCheckedChange={(checked) =>
-                      setDetailMetric(metric, checked === true)
-                    }
-                    aria-label={label}
-                  />
-                  {label}
-                </label>
-              );
-            })}
-          </div>
-        )}
       </SettingsSection>
 
       <SettingsSection title={t("settings.resources.gpu.title")}>
@@ -1145,6 +1098,53 @@ export function ResourcesTab() {
         ) : (
           <div className="py-3 text-sm text-muted-foreground">
             {gpuUnknown ? gpuUnknownLabel : t("settings.resources.gpu.noGpu")}
+          </div>
+        )}
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.resources.floatingWindow")}>
+        <SettingsRow
+          label={t("settings.resources.showFloatingWindow")}
+          description={t("settings.resources.showFloatingWindowDescription")}
+        >
+          <Switch
+            aria-label={t("settings.resources.showFloatingWindow")}
+            checked={isOpen}
+            onCheckedChange={setIsOpen}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.resources.liveMonitor.detailedView")}
+          description={t(
+            "settings.resources.liveMonitor.detailedViewDescription",
+          )}
+        >
+          <Switch
+            aria-label={t("settings.resources.liveMonitor.detailedView")}
+            checked={showDetails}
+            onCheckedChange={setShowDetails}
+          />
+        </SettingsRow>
+        {showDetails && (
+          <div className="flex flex-wrap gap-x-5 gap-y-2 pb-3">
+            {MONITOR_DETAIL_METRICS.map((metric) => {
+              const label = t(`settings.resources.liveMonitor.${metric}`);
+              return (
+                <label
+                  key={metric}
+                  className="flex cursor-pointer items-center gap-2 text-xs font-medium text-foreground"
+                >
+                  <Checkbox
+                    checked={detailMetrics.has(metric)}
+                    onCheckedChange={(checked) =>
+                      setDetailMetric(metric, checked === true)
+                    }
+                    aria-label={label}
+                  />
+                  {label}
+                </label>
+              );
+            })}
           </div>
         )}
       </SettingsSection>

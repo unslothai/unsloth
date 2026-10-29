@@ -1112,7 +1112,7 @@ export const ja = {
       lastVisited: "前回開いたタブ",
     },
     tabs: {
-      sandbox: "サンドボックス",
+      sandbox: "セキュリティ",
       accounts: "アカウント",
       general: "一般",
       profile: "プロフィール",
@@ -1396,7 +1396,7 @@ export const ja = {
       },
     },
     sandbox: {
-      title: "サンドボックス",
+      title: "セキュリティ",
       description: "このコンピューターで Python とターミナルのツール呼び出しを OS サンドボックス内で実行するかどうか。",
       docs: "ドキュメント",
       docsLabel: "サンドボックスのドキュメントを開く",
@@ -1472,6 +1472,7 @@ export const ja = {
       managedNote: "OS サンドボックスは、この Unsloth サーバーの所有者が設定します。",
     },
     debugging: {
+      description: "アプリを離れずに Unsloth のログを確認できます。",
       logSection: "ログファイル",
       source: "ログファイル",
       sourceHint: "モデルランナーはそれぞれ独自のログを書き出すため、読み込みや生成の失敗の理由は、サーバーログではなくそちらに記録されていることがよくあります。",
@@ -2780,11 +2781,6 @@ export const ja = {
       autoScrollManual: "手動",
       autoScrollKeywords:
         "スクロール 自動スクロール 追従 下 ジャンプ ストリーミング 生成 固定 scroll autoscroll follow",
-      scrollToBottomButton: "一番下へスクロールボタン",
-      scrollToBottomButtonDescription:
-        "上にスクロールしたときに、最新のメッセージへ戻るボタンを表示します。",
-      scrollToBottomButtonKeywords:
-        "スクロール 一番下 最新 矢印 ボタン 非表示 scroll bottom button",
       replyNotification: "応答完了時に通知",
       replyNotificationDescription:
         "Unsloth が最小化またはバックグラウンドにあるときに応答が完了すると、システム通知を表示します。",

@@ -1238,7 +1238,7 @@ export const sv = {
       lastVisited: "Senast besökt",
     },
     tabs: {
-      sandbox: "Sandlåda",
+      sandbox: "Säkerhet",
       accounts: "Konton",
       general: "Allmänt",
       profile: "Profil",
@@ -1524,7 +1524,7 @@ export const sv = {
       },
     },
     sandbox: {
-      title: "Sandlåda",
+      title: "Säkerhet",
       description:
         "Om verktygsanrop för Python och Terminal körs i en OS-sandlåda på den här datorn.",
       docs: "Dokumentation",
@@ -1619,6 +1619,7 @@ export const sv = {
       managedNote: "Ägaren av den här Unsloth-servern konfigurerar OS-sandlådan.",
     },
     debugging: {
+      description: "Läs Unsloths loggar utan att lämna appen.",
       logSection: "Loggfil",
       source: "Loggfil",
       sourceHint:
@@ -3008,11 +3009,6 @@ export const sv = {
       autoScrollManual: "Manuell",
       autoScrollKeywords:
         "rulla automatisk rullning autoscroll följ fäst botten hoppa strömning generering visningsområde lås håll auto manuell scroll auto-scroll follow stick bottom jump streaming generating viewport lock hold manual",
-      scrollToBottomButton: "Knapp för att rulla till botten",
-      scrollToBottomButtonDescription:
-        "Visa en knapp för att hoppa tillbaka till senaste meddelandet efter att du har rullat uppåt.",
-      scrollToBottomButtonKeywords:
-        "rulla botten hoppa senaste nyaste pil ner knapp flytande dölj visa scroll bottom jump latest newest arrow down button floating hide show",
       replyNotification: "Avisera när ett svar är klart",
       replyNotificationDescription:
         "Visa en systemavisering när ett svar blir klart medan Unsloth är minimerat eller i bakgrunden.",

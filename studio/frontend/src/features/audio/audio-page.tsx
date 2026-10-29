@@ -6,6 +6,7 @@
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { SparklesIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { MediaHeaderActions } from "@/components/media-header-actions";
 import { LibraryPageLink } from "@/components/media-page-link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -1950,8 +1951,8 @@ export function AudioPage({
             />
           </div>
         </div>
-        <div className="grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2 @[50rem]:grid-cols-[1fr_auto_1fr] @[50rem]:gap-0">
-          <div className="pointer-events-auto col-start-2 justify-self-end pt-[var(--studio-chat-header-padding-top,11px)] @[50rem]:justify-self-center">
+        <div className="grid h-full min-w-0 grid-cols-[1fr_auto_1fr]">
+          <div className="pointer-events-auto col-start-2 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)]">
             {workflowTab.createTrain ? (
               <PillTabs
                 ariaLabel="Page mode"
@@ -1989,21 +1990,19 @@ export function AudioPage({
               />
             ) : null}
           </div>
-          <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
-            <div className="pointer-events-auto flex min-w-0 items-center gap-2">
-              {connection || (mode === "transcribe" && transcribeConnection) ? null : (
-                <UseViaApiButton
-                  workflow={pageWorkflow}
-                  model={selectorValue ?? null}
-                />
-              )}
-              <LibraryPageLink
-                tab="audio"
-                labelClassName="hidden @[50rem]:inline"
-                arrowClassName="hidden @[50rem]:block"
+          <MediaHeaderActions className="pr-2" groupClassName="gap-2">
+            {connection || (mode === "transcribe" && transcribeConnection) ? null : (
+              <UseViaApiButton
+                workflow={pageWorkflow}
+                model={selectorValue ?? null}
               />
-            </div>
-          </div>
+            )}
+            <LibraryPageLink
+              tab="audio"
+              labelClassName="hidden @[50rem]:inline"
+              arrowClassName="hidden @[50rem]:block"
+            />
+          </MediaHeaderActions>
         </div>
       </div>
       {/* Below 50rem the panes stack and the page scrolls as one column, as on Images and Video. */}

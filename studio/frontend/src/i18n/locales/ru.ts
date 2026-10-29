@@ -1114,7 +1114,7 @@ export const ru = {
       lastVisited: "Последняя открытая",
     },
     tabs: {
-      sandbox: "Песочница",
+      sandbox: "Безопасность",
       accounts: "Учётные записи",
       general: "Общие",
       profile: "Профиль",
@@ -1398,7 +1398,7 @@ export const ru = {
       },
     },
     sandbox: {
-      title: "Песочница",
+      title: "Безопасность",
       description: "Выполняются ли вызовы инструментов Python и терминала в песочнице ОС на этом компьютере.",
       docs: "Документация",
       docsLabel: "Открыть документацию по песочнице",
@@ -1474,6 +1474,7 @@ export const ru = {
       managedNote: "Песочницу ОС настраивает владелец этого сервера Unsloth.",
     },
     debugging: {
+      description: "Читайте журналы Unsloth, не выходя из приложения.",
       logSection: "Файл журнала",
       source: "Файл журнала",
       sourceHint: "Средства запуска моделей ведут собственные журналы, поэтому причина неудачной загрузки или генерации чаще всего указана именно в них, а не в журнале сервера.",
@@ -2812,11 +2813,6 @@ export const ru = {
       autoScrollManual: "Вручную",
       autoScrollKeywords:
         "прокрутка автопрокрутка следовать вниз низ поток генерация зафиксировать scroll autoscroll follow",
-      scrollToBottomButton: "Кнопка «Прокрутить вниз»",
-      scrollToBottomButtonDescription:
-        "Показывать кнопку для возврата к последнему сообщению после прокрутки вверх.",
-      scrollToBottomButtonKeywords:
-        "прокрутка вниз последнее стрелка кнопка скрыть scroll bottom button",
       replyNotification: "Уведомлять о готовом ответе",
       replyNotificationDescription:
         "Показывать системное уведомление, когда ответ готов, а Unsloth свернут или в фоне.",

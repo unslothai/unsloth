@@ -1108,7 +1108,7 @@ export const zhCN = {
       lastVisited: "上次访问",
     },
     tabs: {
-      sandbox: "沙盒",
+      sandbox: "安全",
       accounts: "账户",
       general: "通用",
       profile: "个人资料",
@@ -1392,7 +1392,7 @@ export const zhCN = {
       },
     },
     sandbox: {
-      title: "沙盒",
+      title: "安全",
       description: "Python 和终端工具调用是否在此计算机上的系统沙箱中运行。",
       docs: "文档",
       docsLabel: "打开沙盒文档",
@@ -1468,6 +1468,7 @@ export const zhCN = {
       managedNote: "操作系统沙盒由此 Unsloth 服务器的所有者设置。",
     },
     debugging: {
+      description: "无需离开应用即可查看 Unsloth 日志。",
       logSection: "日志文件",
       source: "日志文件",
       sourceHint: "模型运行器会各自写入日志，因此加载或生成失败的原因通常记录在那里，而不是服务器日志中。",
@@ -2752,11 +2753,6 @@ export const zhCN = {
       autoScrollManual: "手动",
       autoScrollKeywords:
         "滚动 自动滚动 跟随 底部 跳转 流式 生成 锁定 scroll autoscroll follow",
-      scrollToBottomButton: "滚动到底部按钮",
-      scrollToBottomButtonDescription:
-        "向上滚动后显示一个按钮，用于跳回最新消息。",
-      scrollToBottomButtonKeywords:
-        "滚动 底部 跳转 最新 箭头 按钮 隐藏 scroll bottom button",
       replyNotification: "回复完成时通知",
       replyNotificationDescription:
         "当 Unsloth 最小化或在后台时，回复完成后显示系统通知。",

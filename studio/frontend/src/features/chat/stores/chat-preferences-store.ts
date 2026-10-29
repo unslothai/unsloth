@@ -66,8 +66,6 @@ export interface ChatPreferencesState {
   setPastedTextMinChars: (value: number) => void;
   autoScrollWhileGenerating: boolean;
   setAutoScrollWhileGenerating: (value: boolean) => void;
-  showScrollToBottomButton: boolean;
-  setShowScrollToBottomButton: (value: boolean) => void;
   notifyWhenReplyFinishes: boolean;
   setNotifyWhenReplyFinishes: (value: boolean) => void;
   filesPanelCollapsed: boolean;
@@ -127,9 +125,6 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       autoScrollWhileGenerating: true,
       setAutoScrollWhileGenerating: (autoScrollWhileGenerating) =>
         set({ autoScrollWhileGenerating }),
-      showScrollToBottomButton: true,
-      setShowScrollToBottomButton: (showScrollToBottomButton) =>
-        set({ showScrollToBottomButton }),
       // Off by default: it asks for notification permission, so it stays opt in.
       notifyWhenReplyFinishes: false,
       setNotifyWhenReplyFinishes: (notifyWhenReplyFinishes) =>
@@ -181,7 +176,6 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
             saved?.pastedTextMinChars,
           ),
           autoScrollWhileGenerating: saved?.autoScrollWhileGenerating ?? true,
-          showScrollToBottomButton: saved?.showScrollToBottomButton ?? true,
           notifyWhenReplyFinishes: saved?.notifyWhenReplyFinishes === true,
           filesPanelCollapsed: saved?.filesPanelCollapsed === true,
         };

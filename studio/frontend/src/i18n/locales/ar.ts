@@ -1111,7 +1111,7 @@ export const ar = {
       lastVisited: "آخر ما تمت زيارته",
     },
     tabs: {
-      sandbox: "وضع الحماية",
+      sandbox: "الأمان",
       accounts: "الحسابات",
       general: "عام",
       profile: "الملف الشخصي",
@@ -1395,7 +1395,7 @@ export const ar = {
       },
     },
     sandbox: {
-      title: "وضع الحماية",
+      title: "الأمان",
       description: "ما إذا كانت استدعاءات أدوات Python والطرفية تعمل داخل وضع حماية نظام التشغيل على هذا الكمبيوتر.",
       docs: "التوثيق",
       docsLabel: "فتح توثيق وضع الحماية",
@@ -1471,6 +1471,7 @@ export const ar = {
       managedNote: "يُعدّ مالك خادم Unsloth هذا وضع حماية نظام التشغيل.",
     },
     debugging: {
+      description: "اقرأ سجلات Unsloth دون مغادرة التطبيق.",
       logSection: "ملف السجل",
       source: "ملف السجل",
       sourceHint: "تكتب مشغّلات النماذج سجلاتها الخاصة، لذا غالبًا ما يكون سبب فشل التحميل أو التوليد موضّحًا فيها لا في سجل الخادم.",
@@ -2795,11 +2796,6 @@ export const ar = {
       autoScrollManual: "يدوي",
       autoScrollKeywords:
         "تمرير تلقائي متابعة أسفل قفز بث إنشاء تثبيت scroll autoscroll follow",
-      scrollToBottomButton: "زر التمرير إلى الأسفل",
-      scrollToBottomButtonDescription:
-        "إظهار زر للعودة إلى أحدث رسالة بعد التمرير لأعلى.",
-      scrollToBottomButtonKeywords:
-        "تمرير أسفل أحدث سهم زر إخفاء scroll bottom button",
       replyNotification: "الإشعار عند انتهاء الرد",
       replyNotificationDescription:
         "إظهار إشعار من النظام عند انتهاء الرد بينما يكون Unsloth مصغرًا أو في الخلفية.",
