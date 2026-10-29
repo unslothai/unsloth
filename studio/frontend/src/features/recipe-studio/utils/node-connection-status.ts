@@ -29,28 +29,25 @@ type Adjacency = Map<string, string[]>;
 const adjacencyByEdges = new WeakMap<readonly Edge[], Adjacency>();
 
 export function edgeAdjacency(edges: readonly Edge[]): Adjacency {
-  let adjacency = adjacencyByEdges.get(edges);
-  if (adjacency) {
-    return adjacency;
+  const cached = adjacencyByEdges.get(edges);
+  if (cached) {
+    return cached;
   }
-  adjacency = new Map();
+  const index: Adjacency = new Map();
   const add = (nodeId: string, otherId: string) => {
-    const others = adjacency?.get(nodeId);
+    const others = index.get(nodeId);
     if (others) {
       others.push(otherId);
     } else {
-      adjacency?.set(nodeId, [otherId]);
+      index.set(nodeId, [otherId]);
     }
   };
   for (const edge of edges) {
     add(edge.source, edge.target);
-    // A self loop is one edge of its node, as in a filter over the edges.
-    if (edge.target !== edge.source) {
-      add(edge.target, edge.source);
-    }
+    add(edge.target, edge.source);
   }
-  adjacencyByEdges.set(edges, adjacency);
-  return adjacency;
+  adjacencyByEdges.set(edges, index);
+  return index;
 }
 
 export function nodeConnectionStatus(
