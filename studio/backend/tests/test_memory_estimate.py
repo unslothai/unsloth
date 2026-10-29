@@ -4377,7 +4377,7 @@ def _unfused_route(monkeypatch, fuses):
 
 
 _BONSAI = (5120, 17408, 24, 4, 256, 0)
-_SCORE = 24 * 2 * mm._UNFUSED_SCORE_LIVE
+_SCORE = 24 * 2 * mm._SCORE_LIVE
 
 
 @pytest.mark.parametrize(
@@ -4452,7 +4452,7 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
         row = mm._dequantized_row_bytes(self.GQA, 2, 4, 64, 2048)
         floor = mm._compute_bytes(self.GQA, 2, 2048, [], 32768, None)
         priced = mm._compute_bytes(self.GQA, 2, 2048, [], 32768, 2048, 4, 64)
-        scores = mm._widest_quantized_scores(32768, 2048, 2048) * 32 * mm._QUANT_SCORE_DTYPE_SIZE
+        scores = mm._widest_quantized_scores(32768, 2048, 2048) * 32 * 2 * mm._SCORE_LIVE
         assert priced - floor == row * 32768 < scores
 
     def test_the_decode_step_still_scores_where_that_is_the_wider_of_the_two(self):
@@ -4460,7 +4460,7 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
         row = mm._dequantized_row_bytes(widths, 2, 8, 64, 2048)
         floor = mm._compute_bytes(widths, 2, 2048, [], 32768, None)
         charged = mm._compute_bytes(widths, 2, 2048, [], 32768, 2048, 8, 64) - floor
-        assert row is not None and charged == (32769) * 128 * mm._QUANT_SCORE_DTYPE_SIZE
+        assert row is not None and charged == (32769) * 128 * 2 * mm._SCORE_LIVE
         assert charged > row * 32768
 
     def test_a_full_width_cache_is_charged_the_scores_mlx_builds_below_nax(self):
@@ -4473,8 +4473,7 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
         assert mm._compute_bytes(self.GQA, 2, 2048, plan, 32768, None) == unrouted
         wide = mm._compute_bytes(self.WIDE, 2, 2048, plan, 32768, None)
         assert (
-            wide - unrouted
-            == mm._widest_quantized_scores(32768, 0, 2048) * 16 * 2 * mm._UNFUSED_SCORE_LIVE
+            wide - unrouted == mm._widest_quantized_scores(32768, 0, 2048) * 16 * 2 * mm._SCORE_LIVE
         )
 
     def test_a_zoo_that_cannot_route_it_keeps_the_scores_whole(self, monkeypatch):
@@ -4492,7 +4491,7 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
         floor = mm._compute_bytes(self.GQA, 2, 2048, [], 32768, None)
         priced = mm._compute_bytes(self.GQA, 2, 2048, [], 32768, 2048, 4, 64)
         assert priced - floor == (
-            mm._widest_quantized_scores(32768, 2048, 2048) * 32 * mm._QUANT_SCORE_DTYPE_SIZE
+            mm._widest_quantized_scores(32768, 2048, 2048) * 32 * 2 * mm._SCORE_LIVE
         )
 
     @pytest.mark.parametrize(

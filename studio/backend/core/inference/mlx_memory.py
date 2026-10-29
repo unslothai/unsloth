@@ -51,12 +51,9 @@ _COMPUTE_BASE_BYTES = int(0.64 * 1024**3)
 
 _RECURRENT_DTYPE_SIZE = 4
 
-_QUANT_SCORE_DTYPE_SIZE = 4
-
-_QUANT_SCORE_LIVE = 1.0
-
-# Copies of the scores mlx's unfused attention holds; measured 1.08 to 1.15 on Metal (mlx 0.32.4).
-_UNFUSED_SCORE_LIVE = 1.25
+# Copies of the scores an unfused attention call holds at the queries' width, quantized or not:
+# measured 1.03 to 1.15 on Metal (mlx 0.32.4, mlx-lm 0.32.2).
+_SCORE_LIVE = 1.25
 
 _WIDTH_NAMES = {"float64": "f64", "float32": "f32", "bfloat16": "bf16", "float16": "f16"}
 
@@ -996,7 +993,7 @@ def _compute_bytes(
     recurrent_width = sum(int(entry["conv_width"]) for entry in plan) * _RECURRENT_DTYPE_SIZE
     total = _COMPUTE_BASE_BYTES + prefill_chunk * (attention_width + recurrent_width)
     if quant_boundary is not None:
-        score = heads * _QUANT_SCORE_DTYPE_SIZE * _QUANT_SCORE_LIVE
+        score = heads * dtype_size * _SCORE_LIVE
         row = _dequantized_row_bytes(widths, dtype_size, kv_bits, kv_group_size, prefill_chunk)
         if row is None:
             total += _widest_quantized_scores(n_ctx, quant_boundary, prefill_chunk) * score
@@ -1004,7 +1001,7 @@ def _compute_bytes(
             total += max(row * n_ctx, (n_ctx + 1) * score)
     elif not any(entry.get("bound_spec") for entry in plan):
         # Windowed models are skipped: the config's head_dim need not be the full-context layers' width.
-        score = heads * dtype_size * _UNFUSED_SCORE_LIVE
+        score = heads * dtype_size * _SCORE_LIVE
         total += _widest_unfused_scores(widths, dtype_size, n_ctx, prefill_chunk) * score
     return int(total)
 
