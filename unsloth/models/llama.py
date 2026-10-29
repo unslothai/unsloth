@@ -5298,7 +5298,6 @@ class FastLlamaModel:
                 if name.startswith("unsloth/") and name.endswith("-bnb-4bit"):
                     name = name[: len(name) - len("-bnb-4bit")]
                     model.peft_config[active_adapter].base_model_name_or_path = name
-                pass
             # Adding a revision to enable future fast inference paths bugs out; see #492.
 
         from transformers.trainer import Trainer

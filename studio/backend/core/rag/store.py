@@ -12,6 +12,7 @@ import os
 import re
 import sqlite3
 import struct
+import sys
 import threading
 import uuid
 from collections import OrderedDict
@@ -49,6 +50,17 @@ def _scopes(scope) -> list[str]:
 
 def _f32(vector) -> bytes:
     """Pack a vector into float32 bytes for vec0."""
+    np = sys.modules.get("numpy")
+    if (
+        np is not None
+        and type(vector) is np.ndarray
+        and vector.ndim == 1
+        and vector.dtype == np.float32
+        and vector.dtype.isnative
+        and not np.isnan(vector).any()
+    ):
+        # float32 -> float -> 'f' is exact, so the buffer is the packed bytes; NaN keeps the struct path.
+        return vector.tobytes()
     return struct.pack(f"{len(vector)}f", *(float(x) for x in vector))
 
 
@@ -815,6 +827,7 @@ def _search_dense(conn: sqlite3.Connection, scope, vector, k: int, embedding_mod
     kept: dict[str, list[tuple[str, float]]] = {}
     fetches = dict.fromkeys(scopes, max(k * 3, k + 10))
     pending = list(scopes)
+    query = _f32(vector) if pending else b""
     while pending:
         widen: list[str] = []
         for s in pending:
@@ -823,7 +836,7 @@ def _search_dense(conn: sqlite3.Connection, scope, vector, k: int, embedding_mod
             rows = conn.execute(
                 "SELECT chunk_id, distance FROM chunks_vec "
                 "WHERE scope=? AND embedding MATCH ? AND k=? ORDER BY distance",
-                (s, _f32(vector), fetch),
+                (s, query, fetch),
             ).fetchall()
             kept[s] = _drop_incompatible(
                 conn,

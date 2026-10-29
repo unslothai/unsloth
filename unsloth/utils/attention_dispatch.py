@@ -1045,8 +1045,11 @@ _flex_shared_prefix_attention = None
 if os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER", "1").lower() not in ("0", "false", "no", "off"):
     try:
         from .prefix_grouper_kernel import (
+            TORCH_SUPPORTS_PREFIX_GROUPER as _pg_torch_ok,
             flex_shared_prefix_attention as _flex_shared_prefix_attention,
         )
+        if not _pg_torch_ok:
+            _flex_shared_prefix_attention = None
     except Exception:
         _flex_shared_prefix_attention = None
 

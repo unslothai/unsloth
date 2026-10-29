@@ -18311,6 +18311,8 @@ class LlamaCppBackend:
             total_ram_mib = self._total_system_memory_mib()
             if total_ram_mib is None:
                 return None
+            if self._host_offload_fits_without_gpus(argv, total_ram_mib):
+                return None
             probed = self._get_gpu_memory(binary)
             # an igpu and a MIG/vGPU line report total 0, leaving the ceiling unknown
             if any(total <= 0 for _idx, _free, total in probed):
@@ -18323,6 +18325,22 @@ class LlamaCppBackend:
         except Exception as e:  # noqa: BLE001 -- a probe that failed is not a verdict
             logger.debug("Host-RAM preflight failed for the route: %s", e)
         return None
+
+    def _host_offload_fits_without_gpus(self, argv: list[str], total_ram_mib: int) -> bool:
+        """Whole GGUF fits RAM less headroom: every credit (VRAM, lazy read) only lowers the
+        priced bytes, so no GPU probe can warn. False when unsure or opted out (that path logs)."""
+        if self._host_offload_warning_opted_out():
+            return False
+        model_path = _extra_args_device(argv, self._ARGV_MODEL)
+        if not model_path:
+            return False
+        try:
+            model_bytes = self._get_gguf_size_bytes(model_path)
+        except Exception:  # noqa: BLE001
+            return False
+        return 0 < model_bytes and model_bytes / (1024 * 1024) <= (
+            total_ram_mib - _HOST_RAM_HEADROOM_MIB
+        )
 
     # Each ask may take several 15s Hub calls, so the route hands its verdict to the load.
     # Taken once by its own load; the TTL only covers a route ask no load came for.
@@ -33865,7 +33883,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _pid_start_identity(pid: int) -> str:
-        """True when the parent still runs, so the server is not orphaned; uncertainty reads as alive so a live server is never mistakenly reaped"""
+        """Process start time as a string ('' when unknown); a recycled PID will not match it."""
         try:
             import psutil
             try:
@@ -33886,7 +33904,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _pid_parent_is_alive(pid: int) -> bool:
-        """Reaps only true orphans so a second backend cannot kill a live server; recycled PIDs are rejected by start time and name; SIGKILL becomes SIGTERM on Windows"""
+        """True when the parent still runs, so the server is not orphaned; uncertainty reads as alive."""
         try:
             import psutil
 
@@ -33911,7 +33929,7 @@ class LlamaCppBackend:
             if ppid <= 1:
                 return False
             return Path(f"/proc/{ppid}").exists()
-        return False
+        return True  # no psutil and no /proc: unknown
 
     @staticmethod
     def _unlink_pidfile(path: Path) -> None:
@@ -33944,7 +33962,6 @@ class LlamaCppBackend:
             return 0  # never our own pid; leave the record alone
 
         if cls._pid_parent_is_alive(pid):
-            # Kills only Unsloth-root or env-override servers, gathering all candidates first so a failed scan kills none; a positive count arms the VRAM settle wait
             return 0
 
         # Parent is gone: candidate orphan. Reject a PID recycled to something else.
@@ -34160,7 +34177,6 @@ class LlamaCppBackend:
 
             # -- Ownership check, orphan check, kill ---------------------------
             for pid, binary, kill in candidates:
-                # atexit: log streams may be closed, so log nothing; stdlib loggers need raiseExceptions off, while the except covers structlog; neither alone is enough
                 if not _is_signalable_pid(pid):
                     continue
                 # Ownership: exact match OR binary under a known root.

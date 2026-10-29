@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
+import json
 import math
 import os
 import time
@@ -83,6 +85,24 @@ def _clip(rate = 16000, audio_type = "snac") -> dict:
 def _frames(path) -> tuple[int, int, int]:
     with wave.open(str(path)) as w:
         return w.getframerate(), w.getnchannels(), w.getnframes()
+
+
+def test_transcode_writes_the_wav_header_sizes_once_at_close(tmp_path, monkeypatch):
+    src = tmp_path / "clip.wav"
+    src.write_bytes(encode("wav", "pcm_s16le", 44100, "stereo", 1.5))
+    patches = []
+    real = wave.Wave_write._patchheader
+
+    def patch(self):
+        patches.append(self._datawritten)
+        return real(self)
+
+    monkeypatch.setattr(wave.Wave_write, "_patchheader", patch)
+    dst = tmp_path / "out.wav"
+    info = audio_inputs.transcode(src, dst)
+    assert patches == [os.path.getsize(dst) - 44]
+    assert _frames(dst) == (44100, 2, int(round(44100 * 1.5)))
+    assert info == {"duration_s": 1.5, "sample_rate": 44100, "channels": 2}
 
 
 @pytest.fixture
@@ -359,3 +379,47 @@ def test_the_sweep_reaps_a_prepared_upload_a_crash_left_behind():
         os.utime(path, (time.time() - age, time.time() - age))
     audio_inputs.sweep()
     assert not stale.exists() and waiting.exists()
+
+
+@pytest.mark.parametrize(
+    "fmt, codec, rate, layout, start_s, end_s",
+    [
+        ("mp4", "aac", 44100, "stereo", 0.25, 1.1),
+        ("wav", "pcm_s16le", 96000, "mono", 0.0, None),
+        ("flac", "flac", 16000, "5.1", 0.5, None),
+    ],
+)
+def test_a_media_cut_is_decoded_once_and_stored_as_cut(
+    tmp_path, monkeypatch, fmt, codec, rate, layout, start_s, end_s
+):
+    src = tmp_path / f"clip.{fmt}"
+    src.write_bytes(encode(fmt, codec, rate, layout, 1.5))
+    whole = tmp_path / "whole.wav"
+    audio_inputs.transcode(src, whole)
+    with wave.open(str(whole)) as r:
+        out_rate, channels, total = r.getframerate(), r.getnchannels(), r.getnframes()
+        first = int(start_s * out_rate)
+        last = total if end_s is None else min(total, int(end_s * out_rate))
+        r.setpos(first)
+        expected = io.BytesIO()
+        with wave.open(expected, "wb") as w:
+            w.setparams(r.getparams())
+            w.writeframes(r.readframes(last - first))
+
+    calls = []
+    real = audio_inputs.transcode
+    monkeypatch.setattr(audio_inputs, "transcode", lambda *a, **k: calls.append(a) or real(*a, **k))
+    record, created = audio_inputs.save_from_media(src, "clip", start_s, end_s)
+    assert created and len(calls) == 1
+    stored = audio_inputs.inputs_dir() / f"{record['id']}.wav"
+    assert stored.read_bytes() == expected.getvalue()
+    assert record["sample_rate"] == out_rate and record["channels"] == channels
+    assert record["duration_s"] == round((last - first) / out_rate, 3)
+    meta = json.loads((audio_inputs.inputs_dir() / f"{record['id']}.json").read_text())
+    assert meta["sha256"] == hashlib.sha256(expected.getvalue()).hexdigest()
+    assert meta["bytes"] == len(expected.getvalue())
+
+    again, created = audio_inputs.save_from_media(src, "clip", start_s, end_s)
+    assert not created and again["id"] == record["id"]
+    leftovers = [p.name for p in audio_inputs.inputs_dir().iterdir() if p.name.startswith(".")]
+    assert leftovers == []
