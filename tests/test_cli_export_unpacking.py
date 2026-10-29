@@ -91,6 +91,32 @@ def runner() -> CliRunner:
     return CliRunner()
 
 
+def test_an_export_run_leaves_sys_path_as_it_found_it(runner: CliRunner, tmp_path: Path) -> None:
+    """The run puts studio/backend first on sys.path, and studio/backend/tests is a package: left
+    there, every later `spawn` child in the worker resolves `tests.<file>` to it and dies. First in
+    the file, so the tests below cannot have leaked the path before it looks."""
+    before = list(sys.path)
+    ckpt = tmp_path / "ckpt"
+    ckpt.mkdir()
+    backend_dir = str(Path(__file__).resolve().parents[1] / "studio" / "backend")
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        _install_fake_studio_backend(monkeypatch)
+        # Another collected module may already have put it there, and the CLI skips a path it finds.
+        # In place, on the copy the helper above swapped in: only that helper's restore may undo it.
+        sys.path[:] = [p for p in sys.path if p != backend_dir]
+        clean = list(sys.path)
+        from unsloth_cli.commands import export as export_cmd
+
+        app = typer.Typer()
+        app.command("export")(export_cmd.export)
+        app.command("noop")(lambda: None)
+        result = runner.invoke(app, ["export", str(ckpt), str(tmp_path / "out"), "--format", "lora"])
+        assert result.exit_code == 0, result.output
+        # Non-vacuous: the run did put studio/backend on sys.path, which the restore has to undo.
+        assert backend_dir in sys.path and backend_dir not in clean
+    assert sys.path == before
+
+
 @pytest.mark.parametrize(
     "format_flag,quant_flag",
     [
@@ -186,24 +212,3 @@ def test_cli_export_forwards_hf_token_to_checkpoint_load(
     assert result.exit_code == 0, f"CLI error:\n{result.output}"
     assert _FakeExportBackend.last_load.get("hf_token") == "hf_cli_token"
 
-
-def test_an_export_run_leaves_sys_path_as_it_found_it(runner: CliRunner, tmp_path: Path) -> None:
-    """The run puts studio/backend first on sys.path, and studio/backend/tests is a package: left
-    there, every later `spawn` child in the worker resolves `tests.<file>` to it and dies."""
-    before = list(sys.path)
-    ckpt = tmp_path / "ckpt"
-    ckpt.mkdir()
-    with pytest.MonkeyPatch.context() as monkeypatch:
-        _install_fake_studio_backend(monkeypatch)
-        from unsloth_cli.commands import export as export_cmd
-
-        app = typer.Typer()
-        app.command("export")(export_cmd.export)
-        app.command("noop")(lambda: None)
-        result = runner.invoke(
-            app, ["export", str(ckpt), str(tmp_path / "out"), "--format", "lora"]
-        )
-        assert result.exit_code == 0, result.output
-        # Non-vacuous: the run did change sys.path, which the restore below has to undo.
-        assert sys.path != before
-    assert sys.path == before
