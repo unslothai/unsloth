@@ -438,7 +438,6 @@ class LlamaAdmissionLease:
                     return self._give_up_repark(queue, held, cancelled = True)
                 if deadline is not None and time.monotonic() >= deadline:
                     return self._give_up_repark(queue, held, cancelled = False)
-                # The cancel event and the deadline do not notify, so the poll interval still bounds them.
                 queue.wait_for_change(seen, poll_s)
         except BaseException:
             self._give_up_repark(queue, held, cancelled = True)
@@ -608,7 +607,7 @@ class LlamaAdmissionQueue:
         self._budget = 0
         # Reparkers still hold a slot, so they are not in _waiters. See yield_commitment.
         self._reparking = 0
-        # Bumped on every state change so polling waits wake on it; their poll stays as the fallback.
+        # Bumped by every _grant_waiters_locked; the poll stays for what never notifies (cancel event, deadline).
         self._changes = 0
         self._changed = threading.Condition(self._lock)
         self._change_sleepers = 0
@@ -907,7 +906,6 @@ class LlamaAdmissionQueue:
                         return None
                     if abandoned is not None and abandoned():
                         return None
-                # The cancel event, abandoned() and the deadline do not notify, so the poll still bounds them.
                 timer = loop.call_later(poll_s, changed.set)
                 try:
                     await changed.wait()
@@ -967,7 +965,6 @@ class LlamaAdmissionQueue:
                     self._change_sleepers -= 1
 
     def _grant_waiters_locked(self) -> None:
-        # Every state change runs this, so it is where the polling waits get woken.
         self._changes += 1
         # notify_all probes lock ownership even with no sleeper, doubling reserve + release.
         if self._change_sleepers:

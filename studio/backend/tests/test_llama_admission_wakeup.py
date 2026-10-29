@@ -94,7 +94,6 @@ def test_a_parked_holder_resumes_when_the_slot_frees():
         await asyncio.sleep(0.05)
         assert not resumed.done()
         start = time.monotonic()
-        # From another thread, as a route teardown in a worker would.
         threading.Thread(target = b_lease.release).start()
         await asyncio.wait_for(resumed, timeout = _SLOW_POLL_S * 2)
         waited = time.monotonic() - start
