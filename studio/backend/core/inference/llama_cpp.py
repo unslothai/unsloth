@@ -18327,12 +18327,8 @@ class LlamaCppBackend:
         return None
 
     def _host_offload_fits_without_gpus(self, argv: list[str], total_ram_mib: int) -> bool:
-        """True when the whole GGUF fits the RAM ceiling, so no GPU rows can produce a warning.
-
-        The advisory warns only when the bytes left after the VRAM credit exceed RAM less
-        headroom, and every credit (VRAM, lazy-read discount) only lowers those bytes. Skips
-        the GPU probe (an nvidia-smi run plus a Python child) on the route's critical path.
-        False whenever unsure, including under the opt-out, which logs from the full path."""
+        """Whole GGUF fits RAM less headroom: every credit (VRAM, lazy read) only lowers the
+        priced bytes, so no GPU probe can warn. False when unsure or opted out (that path logs)."""
         if self._host_offload_warning_opted_out():
             return False
         model_path = _extra_args_device(argv, self._ARGV_MODEL)
@@ -18340,7 +18336,7 @@ class LlamaCppBackend:
             return False
         try:
             model_bytes = self._get_gguf_size_bytes(model_path)
-        except Exception:  # noqa: BLE001 -- the full path decides
+        except Exception:  # noqa: BLE001
             return False
         return 0 < model_bytes and model_bytes / (1024 * 1024) <= (
             total_ram_mib - _HOST_RAM_HEADROOM_MIB

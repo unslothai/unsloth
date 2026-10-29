@@ -2788,32 +2788,35 @@ def test_the_route_precheck_skips_the_gpu_probe_when_the_file_fits_in_ram(tmp_pa
 
 
 @pytest.mark.parametrize("ram_total_mib", [32_000, 8_000, 1_000])
-@pytest.mark.parametrize("opt_out", [False, True])
-@pytest.mark.parametrize("override_model", [False, True])
 @pytest.mark.parametrize(
     "rows",
     [
         [],
+        [(0, 1, 1)],
         [(0, 20_000, 24_000)],
         [(0, 20_000, 24_000), (1, 7_000, 8_192)],
         [(0, 20_000, 0)],
         [(0, 20_000, 24_000), (1, 9_000, 0)],
         "raise",
     ],
-    ids = ["no_gpu", "one_gpu", "multi_gpu", "igpu_or_mig_total_0", "mixed_total_0", "probe_fails"],
+    ids = [
+        "no_gpu",
+        "one_mib_gpu",
+        "one_gpu",
+        "multi_gpu",
+        "igpu_or_mig_total_0",
+        "mixed_total_0",
+        "probe_fails",
+    ],
 )
 def test_the_route_precheck_answers_as_the_full_preflight(
-    tmp_path, monkeypatch, rows, override_model, opt_out, ram_total_mib
+    tmp_path, monkeypatch, rows, ram_total_mib
 ):
     """The skip only ever returns what the probing path returns, at and around the edge."""
     backend, gguf = _offload_backend(
         tmp_path, gguf_gb = 1, free_mib = 20_000, avail_mib = 10_000, monkeypatch = monkeypatch
     )
     _host_totals(monkeypatch, backend, vram_total_mib = 24_000, ram_total_mib = ram_total_mib)
-    if opt_out:
-        monkeypatch.setenv("UNSLOTH_ALLOW_HOST_OFFLOAD", "1")
-    else:
-        monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
 
     def probe(_binary = None, **_kw):
         if rows == "raise":
@@ -2823,24 +2826,41 @@ def test_the_route_precheck_answers_as_the_full_preflight(
     backend._get_gpu_memory = probe
     other = tmp_path / "other.gguf"
     other.write_bytes(b"x")
-    edge = (ram_total_mib - 2048) * 1024 * 1024
-    sizes = [0, 1, 512 * 1024**2, edge - 1, edge, edge + 1, 3 * edge + 7, 100 * 1024**3]
-    sizes = [s for s in sizes if s >= 0]
+    mib = 1024 * 1024
+    edge = (ram_total_mib - 2048) * mib
+    sizes = [0, 1, 512 * mib, edge - 1, edge, edge + 1, edge + mib + 1, edge + 1024 * mib]
+    sizes = [s for s in (*sizes, 3 * edge + 7, 100 * 1024**3) if s >= 0]
     full = LlamaCppBackend._host_offload_fits_without_gpus
-    for size in sizes:
-        for discount in (0, size // 3):
-            backend._lazy_read_host_bytes = lambda *_a, _d = discount, **_k: _d
-            backend._get_gguf_size_bytes = lambda path, _s = size: (
-                _s if path == str(other if override_model else gguf) else 1
-            )
+    warned = 0
+    for opt_out in (False, True):
+        if opt_out:
+            monkeypatch.setenv("UNSLOTH_ALLOW_HOST_OFFLOAD", "1")
+        else:
+            monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
+        for override_model in (False, True):
+            target = str(other if override_model else gguf)
             extra = ["-m", str(other)] if override_model else None
-            monkeypatch.setattr(
-                LlamaCppBackend, "_host_offload_fits_without_gpus", lambda *_a, **_k: False
-            )
-            expected = backend.host_offload_warning_for_intent(_load_intent(gguf, extra_args = extra))
-            monkeypatch.setattr(LlamaCppBackend, "_host_offload_fits_without_gpus", full)
-            got = backend.host_offload_warning_for_intent(_load_intent(gguf, extra_args = extra))
-            assert got == expected, (size, discount)
+            for size in sizes:
+                for discount in (0, size // 3):
+                    backend._lazy_read_host_bytes = lambda *_a, _d = discount, **_k: _d
+                    backend._get_gguf_size_bytes = lambda path, _s = size: (
+                        _s if path == target else 1
+                    )
+                    monkeypatch.setattr(
+                        LlamaCppBackend, "_host_offload_fits_without_gpus", lambda *_a, **_k: False
+                    )
+                    expected = backend.host_offload_warning_for_intent(
+                        _load_intent(gguf, extra_args = extra)
+                    )
+                    monkeypatch.setattr(LlamaCppBackend, "_host_offload_fits_without_gpus", full)
+                    got = backend.host_offload_warning_for_intent(
+                        _load_intent(gguf, extra_args = extra)
+                    )
+                    assert got == expected, (opt_out, override_model, size, discount)
+                    warned += expected is not None
+    # Rows the full path can price must reach a warning, or the grid compares only Nones.
+    if rows in ([(0, 1, 1)], [(0, 20_000, 24_000)], [(0, 20_000, 24_000), (1, 7_000, 8_192)]):
+        assert warned
 
 
 def test_an_arch_gated_cpu_launch_prices_the_whole_model(tmp_path, monkeypatch):
