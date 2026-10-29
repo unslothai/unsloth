@@ -21,6 +21,7 @@ _CODE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 TAG_FIELDS = {
     "not_loaded": ("kind",),
     "needs_user_load": ("kind", "page"),
+    "needs_download": ("kind",),
     "multi_model_always": ("kind",),
 }
 WHAT = {
@@ -85,6 +86,15 @@ def _ask_user_load(kind: str, model: Optional[str] = None) -> str:
     return f"Ask the user to load {what} on the {page} page in Unsloth Studio, then try again."
 
 
+def download_hint(kind: str, model: Optional[str], tools: frozenset[str]) -> str:
+    if "download_model" not in tools or not model:
+        return _ask_user_load(kind, model)
+    return (
+        f"Call download_model(model='{model}', kind='{kind}'), follow it with "
+        "get_job(kind='download', id=<its id>), then try again."
+    )
+
+
 def load_hint(kind: str, tools: frozenset[str]) -> str:
     if "load_model" not in tools:
         return _ask_user_load(kind)
@@ -124,7 +134,10 @@ def hint(problem: Problem, tools: frozenset[str]) -> Optional[str]:
     if problem.code == "not_loaded":
         return load_hint(kind or "llm", tools)
     if problem.code == "needs_user_load":
-        return _ask_user_load(kind or "llm", problem.fields.get("model"))
+        # The route's message already says what the user must do and why.
+        return None
+    if problem.code == "needs_download":
+        return download_hint(kind or "llm", problem.fields.get("model"), tools)
     if problem.code == "multi_model_always":
         return unload_hint(kind, tools)
     if problem.code == "active_generations":

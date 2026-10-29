@@ -295,14 +295,15 @@ def test_already_loaded_does_not_reload(monkeypatch):
 
 
 @contextlib.contextmanager
-def _as_chat_tools_key():
+def _as_chat_tools_key(*, owner = True):
     """Bound as the auth layer binds a request made with the chat's per-call tools key."""
     from dataclasses import replace
 
     from core.inference.load_policy import LoadPolicy
-    from utils.account_context import OWNER, bind_account, reset_account
+    from utils.account_context import OWNER, AccountContext, bind_account, reset_account
 
-    token = bind_account(replace(OWNER, via_api_key = True, load_policy = LoadPolicy.BESIDE_ONLY))
+    account = OWNER if owner else AccountContext("acct-alice", "alice")
+    token = bind_account(replace(account, via_api_key = True, load_policy = LoadPolicy.BESIDE_ONLY))
     try:
         yield
     finally:
@@ -333,14 +334,22 @@ def test_a_chat_tools_key_never_replaces_the_loaded_model(monkeypatch):
     assert len(rec.calls) == 1
 
 
-def _music_beside_text(monkeypatch, mode):
-    """A text model serving chat; a music model on disk; multi-model in ``mode``."""
+def _music_beside_text(
+    monkeypatch,
+    mode,
+    *,
+    enabled = True,
+):
+    """A text model serving chat; a music model on disk; multi-model in ``mode``; "Switch model by request" ``enabled``."""
     from utils import multi_model_settings
 
     monkeypatch.setattr(multi_model_settings, "get_multi_model_enabled", lambda: mode != "off")
     monkeypatch.setattr(multi_model_settings, "get_multi_model_mode", lambda: mode)
     backend, rec = _wired(
-        monkeypatch, _FakeBackend("unsloth/A-GGUF"), ("org/Music-GGUF", "Q4_K_M", "org/Music-GGUF")
+        monkeypatch,
+        _FakeBackend("unsloth/A-GGUF"),
+        ("org/Music-GGUF", "Q4_K_M", "org/Music-GGUF"),
+        enabled = enabled,
     )
     backend.is_active = True
     backend._is_audio = False
@@ -378,8 +387,32 @@ def test_a_chat_tools_key_refuses_a_music_model_that_would_replace_the_chat_mode
     assert _problem(excinfo.value) == (
         "needs_user_load kind=audio model=org/Music-GGUF:Q4_K_M page=Audio"
     )
+    # The real reason and the setting that lifts it, for the model to pass on.
+    assert "Keep multiple models loaded" in excinfo.value.detail
+    assert "is Off" in excinfo.value.detail and "Always" in excinfo.value.detail
     assert beside == [] and rec.calls == []
     assert backend.model_identifier == "unsloth/A-GGUF"
+
+
+def test_the_owners_chat_loads_beside_without_switch_model_by_request(monkeypatch):
+    """The Colab run: a fresh Studio (switch off), Always, the owner's chat names a music model."""
+    backend, rec, beside = _music_beside_text(monkeypatch, "always", enabled = False)
+    with _as_chat_tools_key(), pytest.raises(_Reached):
+        _run_music()
+    assert beside == [True] and rec.calls == []
+    assert backend.model_identifier == "unsloth/A-GGUF"
+
+
+def test_a_managed_accounts_chat_still_needs_switch_model_by_request(monkeypatch):
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None, enabled = False)
+    # Model access is its own check (it has granted this one); only the switch is under test.
+    monkeypatch.setattr(inference_route.account_access, "managed_account", lambda: False)
+    with _as_chat_tools_key(owner = False), pytest.raises(HTTPException) as excinfo:
+        _run_hook(AUDIO_CPP_MUSIC, require_speech = True, require_audio_workflow = "music")
+    assert excinfo.value.status_code == 403 and rec.calls == []
+    assert _problem(excinfo.value).startswith("needs_user_load kind=audio")
+    assert "Switch model by request" in excinfo.value.detail
+    assert "would unload" not in excinfo.value.detail
 
 
 AUDIO_CPP_MUSIC = "audio-cpp/audio.cpp-gguf/Stable-Audio-3-Small-Music-GGUF"
@@ -395,8 +428,10 @@ def test_switch_off_refuses_an_audio_cpp_model_that_is_not_loaded(monkeypatch, c
         _run_hook(AUDIO_CPP_MUSIC, require_speech = True, require_audio_workflow = "music")
     assert rec.calls == []
     if chat_tools:
-        assert excinfo.value.status_code == 403
-        assert _problem(excinfo.value).startswith("needs_user_load kind=audio model=audio-cpp/")
+        # The owner's chat may switch, but nothing is on disk: download first, not "would unload".
+        assert excinfo.value.status_code == 404
+        assert _problem(excinfo.value).startswith("needs_download kind=audio model=audio-cpp/")
+        assert "not downloaded" in excinfo.value.detail
         return
     # Not the bare "Load a music model first.": the code, the model and the way out.
     assert excinfo.value.status_code == 400

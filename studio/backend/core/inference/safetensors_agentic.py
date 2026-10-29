@@ -1177,6 +1177,8 @@ def run_safetensors_tool_loop(
                     # Retrieval injected up front is no reason to stop a browser task mid-way.
                     and (not rag_autoinjected or (browser_turns and already_acted))
                     and not tool_denied
+                    # Telling the user what only they can do is the answer, not a stall.
+                    and not tool_controller.awaiting_user
                     and (browser_turns or not already_acted)
                     and not is_reprompt_repeat(intent_text, last_reprompt_text)
                     and is_short_intent_without_action(intent_text)

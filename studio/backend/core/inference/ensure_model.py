@@ -72,16 +72,72 @@ class Refusal:
 Outcome = Union[Load, Refusal]
 
 
-def needs_user_load(kind: str, model: Optional[str]) -> Refusal:
+MULTI_MODEL_SETTING = "Keep multiple models loaded (Settings > System > Model memory)"
+# (why it is refused, what the user can change so a retry works), for a credential that may only load beside.
+SWITCH_OFF_FOR_ACCOUNT = (
+    "'Switch model by request' is off for this account",
+    "have the owner turn it on in Settings > API",
+)
+
+
+def _why_it_would_unload() -> tuple[str, Optional[str]]:
+    """Why a load would unload the chat model, and the setting that would keep it, by the current mode."""
+    from utils.multi_model_settings import get_multi_model_mode
+
+    try:
+        mode = get_multi_model_mode()
+    except Exception:  # noqa: BLE001 - unread: no setting to name
+        mode = None
+    if mode == "off":
+        return (
+            f"{MULTI_MODEL_SETTING} is Off, so loading it would unload the model serving this chat",
+            "set it to Always",
+        )
+    if mode == "fit":
+        return (
+            f"{MULTI_MODEL_SETTING} is When they fit, and it does not fit beside the model serving "
+            "this chat",
+            "set it to Always",
+        )
+    return ("Loading it here would unload the model serving this chat", None)
+
+
+def needs_user_load(
+    kind: str,
+    model: Optional[str],
+    *,
+    reason: Optional[tuple[str, Optional[str]]] = None,
+) -> Refusal:
+    """``reason`` (why, fix) overrides the multi-model one, for a refusal that setting would not lift."""
     page = PAGES.get(kind, "Chat")
     what = _WHAT.get(kind, "model")
-    named = f"the {what} '{model}'" if model else f"a {what}"
+    named = f"The {what} '{model}'" if model else f"A {what}"
+    why, fix = reason or _why_it_would_unload()
+    on_page = f"load it on the {page} page in Unsloth Studio"
+    ask = (
+        f"Ask the user to {fix} and then try again, or to {on_page}."
+        if fix
+        else f"Ask the user to {on_page}, then try again."
+    )
     return Refusal(
         code = "needs_user_load",
         status = 403,
+        message = f"{named} is not loaded. {why}. {ask}",
+        kind = kind,
+        model = model,
+        page = page,
+    )
+
+
+def needs_download(kind: str, model: str) -> Refusal:
+    """A named model that is not on disk, for a credential that may not start a download by loading it."""
+    page = PAGES.get(kind, "Chat")
+    return Refusal(
+        code = "needs_download",
+        status = 404,
         message = (
-            f"Loading {named} here would unload the model serving this chat. "
-            f"Ask the user to load it on the {page} page in Unsloth Studio, then try again."
+            f"The {_WHAT.get(kind, 'model')} '{model}' is not downloaded yet. Download it first, "
+            f"or ask the user to load it on the {page} page in Unsloth Studio."
         ),
         kind = kind,
         model = model,
@@ -93,7 +149,7 @@ def not_resident_with_switch_off(kind: str, model: str) -> Refusal:
     """A named model that is not loaded while "Switch model by request" is off."""
     page = PAGES.get(kind, "Chat")
     if current_load_policy() is not LoadPolicy.ANY:
-        return needs_user_load(kind, model)
+        return needs_user_load(kind, model, reason = SWITCH_OFF_FOR_ACCOUNT)
     return Refusal(
         code = "not_loaded",
         status = 400,

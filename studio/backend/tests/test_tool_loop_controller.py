@@ -1040,3 +1040,18 @@ def test_a_tool_that_drops_its_read_only_hint_counts_as_work_again():
     assert tool_facts.reads_only(name)
     tool_facts.note_mcp_tool(name, {"name": "lister"})
     assert not tool_facts.reads_only(name)
+
+
+def test_a_result_only_the_user_can_unblock_marks_the_turn_as_awaiting_them():
+    name = "mcp__unsloth__generate_audio"
+    controller = ToolLoopController(tools = [_tool(name)])
+    controller.record_result(
+        controller.prepare_call(_call(name, {"model": "m"})),
+        "Error: [needs_user_load kind=audio page=Audio] The music model 'm' is not loaded.",
+    )
+    assert controller.awaiting_user
+    # A later result that the model can act on clears it.
+    controller.record_result(
+        controller.prepare_call(_call(name, {"model": "n"})), "Error: [not_loaded kind=audio] x"
+    )
+    assert not controller.awaiting_user

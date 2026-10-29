@@ -128,7 +128,9 @@ def test_kind_comes_from_the_task(monkeypatch, kind, expected):
     models = result["structuredContent"]["models"]
     assert {model["id"] for model in models} == expected
     assert {model["kind"] for model in models} == {kind}
-    assert [query for _m, _p, query in studio.state.queries] == [""]
+    # Audio kinds also read the audio catalog for downloaded audio.cpp models.
+    audio = [AUDIO_ROUTE] if kind in ("stt", "tts", "audio") else []
+    assert [path for _m, path, _q in studio.state.queries] == ["/v1/models", *audio]
 
 
 def test_entries_carry_only_the_allowlisted_fields(monkeypatch):
@@ -149,8 +151,7 @@ def test_entries_carry_only_the_allowlisted_fields(monkeypatch):
     }
     assert models["unsloth/orpheus-3b"]["audio_workflows"] == ["speak", "clone"]
     assert result["structuredContent"]["training_defaults"] is None
-    (_method, path, _headers, _body) = studio.state.calls[-1]
-    assert path == "/v1/models"
+    assert [path for _method, path, *_ in studio.state.calls] == ["/v1/models", AUDIO_ROUTE]
 
 
 LLAMA = "unsloth/Llama-3.2-1B-Instruct-GGUF"
@@ -313,14 +314,15 @@ def test_a_failed_catalog_part_names_itself_instead_of_a_partial_list(monkeypatc
     assert "could not list the audio catalog" in text and 'Pass kind="image"' in text
 
 
-# Negative control: the default source reads only /v1/models, and the new fields stay null.
+# Negative control: the default source lists /v1/models (plus downloaded audio.cpp models, none
+# here), and the catalog fields stay null.
 def test_the_default_source_is_unchanged(monkeypatch):
     result, studio = _list(monkeypatch)
     explicit, _studio = _list(monkeypatch, {"source": "local"})
     models = result["structuredContent"]["models"]
     assert explicit["structuredContent"] == result["structuredContent"]
     assert [m["id"] for m in models] == [row["id"] for row in CATALOG["data"]]
-    assert [path for _m, path, _q in studio.state.queries] == ["/v1/models"]
+    assert [path for _m, path, _q in studio.state.queries] == ["/v1/models", AUDIO_ROUTE]
     new = ("size_bytes", "low_vram", "fits_now", "source")
     assert {m[key] for m in models for key in new} == {None}
 
@@ -345,3 +347,35 @@ def test_catalog_skips_audio_rows_the_catalog_refuses(monkeypatch):
     models, _paths = _catalog(monkeypatch, {"kind": "audio"}, routes = routes)
     assert refused["id"] not in [m["id"] for m in models]
     assert "audio-cpp/audio.cpp-gguf/ACE-Step-GGUF" in [m["id"] for m in models]
+
+
+MUSIC_ROW = {
+    "id": "audio-cpp/audio.cpp-gguf/Stable-Audio-3-Small-Music-GGUF",
+    "task": "music",
+    "workflows": ["music"],
+    "display_name": "Stable Audio",
+    "downloaded": True,
+}
+
+
+def test_a_downloaded_audio_cpp_model_is_listed_by_the_default_source(monkeypatch):
+    """/v1/models skips audio.cpp files, so after download_model the agent saw nothing to use."""
+    audio = {**AUDIO, "models": [*AUDIO["models"], MUSIC_ROW]}
+    routes = {**PAYLOADS, ("GET", AUDIO_ROUTE): audio}
+    result, _studio = _list(monkeypatch, {"workflow": "music"}, routes = routes)
+    assert [(m["id"], m["kind"], m["loaded"]) for m in result["structuredContent"]["models"]] == [
+        (MUSIC_ROW["id"], "audio", False)
+    ]
+    everything, _studio = _list(monkeypatch, routes = routes)
+    ids = [m["id"] for m in everything["structuredContent"]["models"]]
+    # Only the downloaded catalog row joins; the others are not on disk.
+    assert MUSIC_ROW["id"] in ids and "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF" not in ids
+
+
+def test_an_unreadable_audio_catalog_never_fails_the_local_list(monkeypatch):
+    routes = {**PAYLOADS, ("GET", AUDIO_ROUTE): JSONResponse({"detail": "down"}, status_code = 503)}
+    result, _studio = _list(monkeypatch, routes = routes)
+    assert result["isError"] is False
+    assert [m["id"] for m in result["structuredContent"]["models"]] == [
+        row["id"] for row in CATALOG["data"]
+    ]

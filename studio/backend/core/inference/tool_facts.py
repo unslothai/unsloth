@@ -19,6 +19,15 @@ _BUILT_IN_READS = frozenset({"view_image"})
 _mcp_reads: set[str] = set()
 
 
+# A tool result carrying one of these tags is blocked until the user acts, so a reply that tells
+# the user what to do is the answer, not a stall to push past.
+AWAITS_USER = ("[needs_user_load",)
+
+
+def awaits_user(result: str) -> bool:
+    return any(tag in result for tag in AWAITS_USER)
+
+
 def note_mcp_tool(name: str, tool: Mapping[str, Any]) -> None:
     annotations = tool.get("annotations")
     if isinstance(annotations, Mapping) and annotations.get("readOnlyHint") is True:

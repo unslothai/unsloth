@@ -10989,8 +10989,12 @@ async def _maybe_auto_switch_model(
         if claim_resident:
             _claim_slot_for_non_preview(fastapi_request)
         return
-    auto_switch_on = get_openai_auto_switch_enabled() or _model_switch_allowed_for_request(
-        fastapi_request
+    from core.inference.load_policy import owner_chat_loads_beside
+
+    auto_switch_on = (
+        get_openai_auto_switch_enabled()
+        or _model_switch_allowed_for_request(fastapi_request)
+        or owner_chat_loads_beside()
     )
 
     def _refuse_non_gguf_endpoint() -> None:
@@ -11104,11 +11108,11 @@ async def _maybe_auto_switch_model(
             )
             # Not on disk. Opt-in: fetch in the background and ask the caller to retry.
             if auto_switch_on and not reload_only and not trained:
-                # A download is the first half of a load, refused as a replacing one would be.
+                # A beside-only credential downloads with its own tool, not as part of a load.
                 from core.inference.load_policy import LoadPolicy, current_load_policy
                 if current_load_policy() is not LoadPolicy.ANY:
-                    from core.inference.ensure_model import needs_user_load
-                    raise needs_user_load(switch_kind, requested_model).http_exception(
+                    from core.inference.ensure_model import needs_download
+                    raise needs_download(switch_kind, requested_model).http_exception(
                         getattr(getattr(fastapi_request, "url", None), "path", None)
                     )
                 await _maybe_auto_download_model(

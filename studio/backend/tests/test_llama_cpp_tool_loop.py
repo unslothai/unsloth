@@ -7291,3 +7291,32 @@ def test_appended_notice_keeps_an_image_part_an_image():
         {"type": "text", "text": "\n\nStop."},
     ]
     assert _with_appended_text("Over the cap.", "\n\nStop.") == "Over the cap.\n\nStop."
+
+
+def test_no_post_tool_nudge_when_only_the_user_can_unblock(monkeypatch):
+    """The Colab chat: the tool said to ask the user, the model asked; that reply is the answer."""
+
+    streams = [
+        [_tool_call_sse("web_search", {"query": "music"}, "call_first"), _done()],
+        [_sse({"content": "Let me know once it is loaded and I will make the song."}), _done()],
+        [_sse({"content": "unreachable"}), _done()],
+    ]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda *_a,
+        **_k: "Error: [needs_user_load kind=audio page=Audio] The music model is not loaded.",
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Make a song."}],
+            tools = [_web_search_tool()],
+            max_tool_iterations = 3,
+            nudge_tool_calls = True,
+        )
+    )
+
+    assert len(payloads) == 2
+    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
+    assert "Let me know once it is loaded" in "".join(content_texts)

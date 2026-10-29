@@ -498,8 +498,23 @@ def test_needs_user_load_names_the_page_and_never_a_tool():
         with scope:
             message = _message(resp)
         assert message.startswith("[needs_user_load kind=audio page=Audio] ")
-        assert f"Ask the user to load '{MUSIC}' on the Audio page" in message
+        # The route's message is the instruction; no hint repeats it.
+        assert message.endswith("would unload the model serving this chat. (HTTP 403)")
         assert "load_model" not in message
+
+
+def test_needs_download_points_at_download_model_only_when_the_caller_has_it():
+    resp = _v1(
+        404,
+        f"The music model '{MUSIC}' is not downloaded yet.",
+        code = "needs_download",
+        headers = {"X-Unsloth-Problem": f"needs_download kind=audio model={MUSIC} page=Audio"},
+    )
+    for scope in (contextlib.nullcontext(), _as_chat_caller()):
+        with scope:
+            message = _message(resp)
+        assert message.startswith("[needs_download kind=audio] ")
+        assert f"download_model(model='{MUSIC}', kind='audio')" in message
 
 
 @pytest.mark.parametrize(

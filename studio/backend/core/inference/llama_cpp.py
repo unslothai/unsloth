@@ -38651,6 +38651,8 @@ class LlamaCppBackend:
                             and _nudge_enabled(nudge_tool_calls)
                             and active_tools
                             and not _render_html_already_done_intent
+                            # Telling the user what only they can do is the answer, not a stall.
+                            and not tool_controller.awaiting_user
                             and _reprompt_used < _reprompt_cap
                             and not _is_reprompt_repeat(_stripped, _last_reprompt_text)
                             # _stripped is what gets replayed; intent text may be a short tail.

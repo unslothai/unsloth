@@ -18,7 +18,7 @@ from core.inference.browser_agent import BROWSER_TOOL_NAMES
 from core.inference.llama_tool_schema import unrelaxed
 from core.inference.mcp_images import is_image_tool, split_images as split_mcp_images
 from core.inference.media_chat_tools import MEDIA_CHAT_TOOLS
-from core.inference.tool_facts import REPEATABLE, reads_only
+from core.inference.tool_facts import REPEATABLE, awaits_user, reads_only
 
 # Provenance the envelope is trusted on; stamped by mcp_client.
 MCP_TOOL_PREFIX = "mcp__"
@@ -1181,6 +1181,12 @@ class ToolLoopController:
         self._duplicate_noop_limit = max(1, duplicate_noop_limit)
         self._history: list[_ToolCallRecord] = []
         self._force_final_answer = False
+        self._awaiting_user = False
+
+    @property
+    def awaiting_user(self) -> bool:
+        """The last tool result said only the user can unblock this turn."""
+        return self._awaiting_user
 
     @property
     def history(self) -> tuple[_ToolCallRecord, ...]:
@@ -1303,6 +1309,7 @@ class ToolLoopController:
         """Record a real tool execution and return model/frontend payload helpers."""
         result_text = result if isinstance(result, str) else str(result)
         failed = is_tool_error(result_text)
+        self._awaiting_user = awaits_user(result_text)
         result_text = self._cap_result(result_text, decision.tool_name)
         self._history.append(
             _ToolCallRecord(
