@@ -598,8 +598,7 @@ def test_reap_recorded_pid_spares_live_server(tmp_path):
 
 @pytest.mark.parametrize("platform", ["win32", "darwin"])
 def test_reap_recorded_pid_spares_live_server_without_psutil(tmp_path, monkeypatch, platform):
-    """Without psutil and without /proc the parent's liveness is unknown; unknown must read
-    as alive so a live server is never reaped (the Windows CI leg runs before psutil is installed)."""
+    """Unknown parent liveness (no psutil, no /proc) must never reap a live server."""
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     pidfile = tmp_path / "llama-server.pid"
     pidfile.write_text(str(proc.pid))
