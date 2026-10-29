@@ -260,7 +260,7 @@ const MIXED_CATALOG_PROVIDER_TYPES = new Set([
   "opencode_go",
 ]);
 // Mirrors _CATALOG_VISION_NAMESPACES: mixed catalogs whose model catalog answers vision per model.
-const CATALOG_VISION_PROVIDER_TYPES = new Set(["qwencloud", "zai"]);
+const CATALOG_VISION_PROVIDER_TYPES = new Set(["qwencloud", "zai", "opencode", "opencode_go"]);
 
 /** Same rule as the backend's _external_takes_mcp_images, so stripped images are not resent. */
 export function providerModelTakesMcpImages(

@@ -66,3 +66,26 @@ def test_opencode_hides_free_tier_models():
     assert [m for m in zen_ids if not zen.search(m)] == ["glm-5.3"]
     go_ids = ("beam-free", "iceman-contributor-free", "kimi-k3")
     assert [m for m in go_ids if not go.search(m)] == ["kimi-k3"]
+
+
+def test_opencode_mcp_images_follow_the_models_dev_catalog(monkeypatch):
+    from core.inference.provider_model_capabilities import trim_models_dev_catalog
+    from routes import providers as provider_routes
+    from routes.inference import _external_takes_mcp_images
+
+    models = {
+        "kimi-k3": {"modalities": {"input": ["text", "image"]}},
+        "glm-5.3": {"modalities": {"input": ["text"]}},
+    }
+    catalog = trim_models_dev_catalog(
+        {"opencode": {"models": models}, "opencode-go": {"models": models}}
+    )
+    monkeypatch.setattr(
+        provider_routes, "_model_catalog_cache", {"fetched_at": 0, "providers": catalog}
+    )
+    for provider_type in ("opencode", "opencode_go"):
+        info = get_provider_info(provider_type)
+        vision = info["supports_vision"]
+        assert _external_takes_mcp_images(provider_type, vision, "kimi-k3", info) is True
+        assert _external_takes_mcp_images(provider_type, vision, "glm-5.3", info) is False
+        assert _external_takes_mcp_images(provider_type, vision, "unknown-model", info) is False

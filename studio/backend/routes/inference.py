@@ -9389,7 +9389,12 @@ _MIXED_CATALOG_PROVIDER_TYPES = frozenset(
 
 # Mixed catalogs whose models.dev namespace answers vision per model.
 # Mirrors CATALOG_VISION_PROVIDER_TYPES in external-providers.ts.
-_CATALOG_VISION_NAMESPACES = {"qwencloud": "qwen", "zai": "zai"}
+_CATALOG_VISION_NAMESPACES = {
+    "qwencloud": "qwen",
+    "zai": "zai",
+    "opencode": "opencode",
+    "opencode_go": "opencode_go",
+}
 
 
 def _external_takes_mcp_images(
