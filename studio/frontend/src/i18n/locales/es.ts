@@ -2151,8 +2151,8 @@ export const es = {
       uploadPhoto: "Subir foto",
       removePhoto: "Quitar",
       pictureOptions: "Opciones de la foto de perfil",
-      greetingSloth: "Perezoso en el saludo",
-      greetingSlothDescription: "Muestra el perezoso en el saludo del chat.",
+      greetingSloth: "Saludo",
+      greetingSlothDescription: "Mostrar el saludo en los chats nuevos.",
       noPicture: "Sin foto de perfil",
       noneLabel: "Ninguno",
       stats: {
@@ -2853,9 +2853,8 @@ export const es = {
         "detalles velocidad tokens estadísticas capas descarga verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Editar respuesta en las respuestas",
       inlineEditResponseDescription: "Mostrar Editar respuesta en cada respuesta, en lugar de en el menú Más.",
-      modelDisclaimer: "Mostrar aviso del modelo",
-      modelDisclaimerDescription:
-        'Muestra "Los LLM pueden cometer errores" bajo el cuadro de chat.',
+      composerAtBottom: "Cuadro de texto abajo",
+      composerAtBottomDescription: "Empieza los chats nuevos con el cuadro de texto abajo en lugar de en el centro.",
       projectAttachments: "Compartir archivos en todo el proyecto",
       projectAttachmentsDescription:
         "Comparte los nuevos archivos adjuntos con todos los chats del proyecto.",

@@ -2156,8 +2156,8 @@ export const de = {
       uploadPhoto: "Foto hochladen",
       removePhoto: "Entfernen",
       pictureOptions: "Optionen für das Profilbild",
-      greetingSloth: "Faultier in der Begrüßung",
-      greetingSlothDescription: "Das Faultier in der Chat-Begrüßung anzeigen.",
+      greetingSloth: "Begrüßung",
+      greetingSlothDescription: "Die Begrüßung in neuen Chats anzeigen.",
       noPicture: "Kein Profilbild",
       noneLabel: "Keines",
       stats: {
@@ -2862,9 +2862,8 @@ export const de = {
         "Details Geschwindigkeit Token Statistik Schichten Auslagerung verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Antwort bearbeiten bei Antworten",
       inlineEditResponseDescription: "Antwort bearbeiten bei jeder Antwort anzeigen statt im Menü „Mehr“.",
-      modelDisclaimer: "Modell-Hinweis anzeigen",
-      modelDisclaimerDescription:
-        "Zeigt „LLMs können Fehler machen“ unter dem Chatfeld an.",
+      composerAtBottom: "Eingabefeld unten",
+      composerAtBottomDescription: "Neue Chats mit dem Eingabefeld unten auf der Seite statt in der Mitte beginnen.",
       projectAttachments: "Dateien projektweit teilen",
       projectAttachmentsDescription:
         "Stellt neue Chat-Anhänge allen Chats im Projekt zur Verfügung.",

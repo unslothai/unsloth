@@ -2129,8 +2129,8 @@ export const ptBR = {
       avatarShape: "Formato da foto de perfil",
       avatarShapeCircle: "Círculo",
       avatarShapeRounded: "Arredondado",
-      greetingSloth: "Bicho-preguiça na saudação",
-      greetingSlothDescription: "Mostra o bicho-preguiça na saudação do chat.",
+      greetingSloth: "Saudação",
+      greetingSlothDescription: "Mostrar a saudação nas novas conversas.",
       chooseSloth: "Ou escolha um bicho-preguiça",
       noPicture: "Sem foto de perfil",
       noneLabel: "Nenhuma",
@@ -2840,9 +2840,8 @@ export const ptBR = {
         "detalhes geração velocidade tokens estatísticas camadas especialistas desenvolvedor verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Editar resposta nas respostas",
       inlineEditResponseDescription: "Mostrar Editar resposta em cada resposta, em vez de no menu Mais.",
-      modelDisclaimer: "Mostrar aviso do modelo",
-      modelDisclaimerDescription:
-        'Mostra "LLMs podem cometer erros" abaixo da caixa de chat.',
+      composerAtBottom: "Caixa de texto embaixo",
+      composerAtBottomDescription: "Comece novas conversas com a caixa de texto na parte de baixo da página, não no meio.",
       projectAttachments: "Compartilhar arquivos em todo o projeto",
       projectAttachmentsDescription:
         "Disponibiliza novos anexos para todos os chats do projeto.",

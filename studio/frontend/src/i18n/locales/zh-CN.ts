@@ -2088,8 +2088,8 @@ export const zhCN = {
       avatarShape: "头像形状",
       avatarShapeCircle: "圆形",
       avatarShapeRounded: "圆角矩形",
-      greetingSloth: "问候语中显示树懒",
-      greetingSlothDescription: "在对话问候语中显示树懒。",
+      greetingSloth: "问候语",
+      greetingSlothDescription: "在新聊天中显示问候语。",
       chooseSloth: "或选择一只树懒作为头像",
       noPicture: "无头像",
       noneLabel: "无",
@@ -2776,9 +2776,8 @@ export const zhCN = {
         "详情 速度 统计 层 卸载 verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "在回复上显示编辑回复",
       inlineEditResponseDescription: "在每条回复上显示编辑回复，而不是放在“更多”菜单中。",
-      modelDisclaimer: "显示模型免责声明",
-      modelDisclaimerDescription:
-        "在聊天框下方显示“LLM 可能会出错”。",
+      composerAtBottom: "输入框置底",
+      composerAtBottomDescription: "新聊天时将输入框放在页面底部，而不是中间。",
       projectAttachments: "在项目内共享文件",
       projectAttachmentsDescription:
         "让项目内的所有聊天都能使用新添加的聊天附件。",

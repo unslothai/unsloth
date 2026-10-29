@@ -2136,8 +2136,8 @@ export const ru = {
       uploadPhoto: "Загрузить фото",
       removePhoto: "Удалить",
       pictureOptions: "Параметры фото профиля",
-      greetingSloth: "Ленивец в приветствии",
-      greetingSlothDescription: "Показывать ленивца в приветствии чата.",
+      greetingSloth: "Приветствие",
+      greetingSlothDescription: "Показывать приветствие в новых чатах.",
       noPicture: "Нет фото профиля",
       noneLabel: "Нет",
       stats: {
@@ -2837,9 +2837,8 @@ export const ru = {
         "подробности скорость токены статистика слои выгрузка verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Изменение ответа в ответах",
       inlineEditResponseDescription: "Показывать «Изменить ответ» у каждого ответа, а не в меню «Ещё».",
-      modelDisclaimer: "Показывать предупреждение о модели",
-      modelDisclaimerDescription:
-        "Показывать сообщение «LLM могут ошибаться» под полем ввода.",
+      composerAtBottom: "Поле ввода внизу",
+      composerAtBottomDescription: "Начинать новые чаты с полем ввода внизу страницы, а не посередине.",
       projectAttachments: "Общий доступ к файлам в проекте",
       projectAttachmentsDescription:
         "Делает новые вложения доступными во всех чатах проекта.",

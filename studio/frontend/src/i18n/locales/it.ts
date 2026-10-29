@@ -2015,8 +2015,8 @@ export const it = {
       avatarShape: "Forma dell'avatar",
       avatarShapeCircle: "Circolare",
       avatarShapeRounded: "Arrotondata",
-      greetingSloth: "Bradipo nel saluto",
-      greetingSlothDescription: "Mostra il bradipo nel saluto della chat.",
+      greetingSloth: "Saluto",
+      greetingSlothDescription: "Mostra il saluto nelle nuove chat.",
       chooseSloth: "Oppure scegli un bradipo",
       noPicture: "Nessuna immagine del profilo",
       noneLabel: "Nessuna",
@@ -2732,9 +2732,8 @@ export const it = {
         "dettagli velocità token statistiche livelli scaricamento verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Modifica risposta nelle risposte",
       inlineEditResponseDescription: "Mostra Modifica risposta su ogni risposta, invece che nel menu Altro.",
-      modelDisclaimer: "Mostra l'avviso sul modello",
-      modelDisclaimerDescription:
-        "Mostra «Gli LLM possono commettere errori» sotto il campo della chat.",
+      composerAtBottom: "Casella di testo in basso",
+      composerAtBottomDescription: "Avvia le nuove chat con la casella di testo in fondo alla pagina invece che al centro.",
       projectAttachments: "Condividi i file nel progetto",
       projectAttachmentsDescription:
         "Rende i nuovi allegati disponibili in tutte le chat del progetto.",
