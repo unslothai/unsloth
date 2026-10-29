@@ -11,7 +11,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
+import { BENCH_CARD } from "@/features/benchmarks/components/bench-ui";
 import { useT } from "@/i18n";
+import { cn } from "@/lib/utils";
 import {
   CancelCircleIcon,
   CheckmarkCircle01Icon,
@@ -24,6 +26,8 @@ import {
   type BenchmarkRunSummary,
   getBenchmarkRunDetail,
 } from "../api/benchmark-api";
+import { useModelPalette } from "../lib/model-colors";
+import { modelName, modelsOf } from "../lib/score-bars";
 
 const ACCURACY_LIKE_RE = /(em|exact|strict|flexible|acc|f1|match|score)/i;
 
@@ -56,16 +60,6 @@ function formatMetricValue(m: BenchmarkRunMetric): string {
     return String(m.score);
   }
   return m.score.toFixed(m.score < 1 ? 4 : 1);
-}
-
-function scoreColor(score: number): string {
-  if (score >= 0.8) {
-    return "text-emerald-500";
-  }
-  if (score >= 0.5) {
-    return "amber-500";
-  }
-  return "text-red-500";
 }
 
 function formatDate(iso: string): string {
@@ -104,6 +98,7 @@ export function CompareDialog({
   selectedRuns,
 }: CompareDialogProps) {
   const t = useT();
+  const palette = useModelPalette();
   const [details, setDetails] = useState<Map<string, BenchmarkRunDetail>>(
     new Map(),
   );
@@ -152,6 +147,10 @@ export function CompareDialog({
   const loadedDetails = selectedRuns
     .map((r) => details.get(r.id))
     .filter((d): d is BenchmarkRunDetail => d != null);
+
+  const models = modelsOf(loadedDetails);
+  const color = (model: string) =>
+    palette[models.indexOf(modelName(model)) % palette.length] ?? palette[0];
 
   // Collect all metric names across all runs
   const allMetricNames =
@@ -210,54 +209,49 @@ export function CompareDialog({
                 return (
                   <div
                     key={detail.id}
-                    className="flex flex-col gap-3 rounded-lg border border-border/60 bg-card p-3"
+                    className={cn(BENCH_CARD, "flex flex-col gap-3 px-5 py-4")}
                   >
-                    {/* Header */}
-                    <div className="space-y-1">
-                      <div className="text-sm font-semibold">{detail.task}</div>
-                      <div
-                        className="truncate text-xs text-muted-foreground/70"
-                        title={detail.model}
-                      >
-                        {detail.model}
-                      </div>
-                      <div className="text-xs text-muted-foreground/50">
-                        {formatDate(detail.created_at)}
-                      </div>
-                    </div>
-
-                    {/* Primary score */}
-                    {primary && (
-                      <div className="text-center">
+                    {/* Header: the sweeps tile, label then the headline number */}
+                    <div className="flex min-w-0 flex-col gap-1.5">
+                      <span className="flex min-w-0 items-center gap-1.5 text-ui-11 font-medium tracking-nav text-muted-foreground">
                         <span
-                          className={`text-2xl font-bold tabular-nums ${scoreColor(primary.score)}`}
-                        >
+                          className="size-2 shrink-0 rounded-[2px]"
+                          style={{ background: color(detail.model) }}
+                          aria-hidden={true}
+                        />
+                        <span className="truncate">{detail.task}</span>
+                      </span>
+                      {primary && (
+                        <span className="truncate font-heading text-ui-22 font-semibold leading-tight tracking-[-0.02em] tabular-nums text-foreground">
                           {formatMetricValue(primary)}
-                          {isRatioScore(primary) && (
-                            <span className="text-sm font-medium">%</span>
+                          {isRatioScore(primary) && "%"}
+                          {accuracy && (
+                            <span className="ml-2 text-ui-11 font-normal tracking-normal text-muted-foreground">
+                              {detail.correct_count}/{detail.total_count}
+                            </span>
                           )}
                         </span>
-                        {accuracy && (
-                          <div className="text-xs text-muted-foreground/60">
-                            ({detail.correct_count}/{detail.total_count})
-                          </div>
-                        )}
-                      </div>
-                    )}
+                      )}
+                      <span
+                        className="truncate text-ui-11 text-muted-foreground"
+                        title={detail.model}
+                      >
+                        {modelName(detail.model)} ·{" "}
+                        {formatDate(detail.created_at)}
+                      </span>
+                    </div>
 
                     {/* All metrics */}
-                    <div className="space-y-1">
+                    <div className="space-y-1 border-t border-border/40 pt-2">
                       {detail.metrics.filter(isDisplayMetric).map((m) => (
                         <div
                           key={m.name}
-                          className="flex items-center justify-between text-xs"
+                          className="flex items-center justify-between text-ui-12"
                         >
-                          <span className="truncate text-muted-foreground/70">
+                          <span className="truncate text-muted-foreground">
                             {m.name}
                           </span>
-                          <span
-                            className={`shrink-0 pl-2 font-mono font-medium ${scoreColor(m.score)}`}
-                          >
+                          <span className="shrink-0 pl-2 font-medium tabular-nums text-foreground">
                             {formatMetricValue(m)}
                             {isRatioScore(m) ? "%" : ""}
                           </span>
@@ -267,26 +261,26 @@ export function CompareDialog({
 
                     {/* Sample results summary */}
                     {detail.samples.length > 0 && (
-                      <div className="space-y-1 border-t border-border/30 pt-2">
-                        <div className="text-ui-10 font-medium text-muted-foreground/60">
+                      <div className="space-y-1 border-t border-border/40 pt-2">
+                        <div className="text-ui-10 uppercase tracking-wider font-medium text-muted-foreground">
                           {t("benchmark.compare.sampleSummary")}
                         </div>
-                        <div className="flex items-center gap-3 text-xs">
-                          <span className="flex items-center gap-1 text-emerald-500">
+                        <div className="flex items-center gap-3 text-ui-12 tabular-nums">
+                          <span className="flex items-center gap-1 text-foreground">
                             <HugeiconsIcon
                               icon={CheckmarkCircle01Icon}
                               className="size-3"
                             />
                             {detail.correct_count}
                           </span>
-                          <span className="flex items-center gap-1 text-red-400">
+                          <span className="flex items-center gap-1 text-muted-foreground">
                             <HugeiconsIcon
                               icon={CancelCircleIcon}
                               className="size-3"
                             />
                             {detail.total_count - detail.correct_count}
                           </span>
-                          <span className="text-muted-foreground/50">
+                          <span className="text-muted-foreground">
                             {detail.total_count}{" "}
                             {t("benchmark.history.samples", {
                               count: detail.total_count,
@@ -302,23 +296,25 @@ export function CompareDialog({
 
             {/* Cross-run metric comparison table */}
             {allMetricNames.length > 0 && loadedDetails.length > 1 && (
-              <div className="mt-4">
-                <div className="mb-2 text-xs font-medium text-muted-foreground/70">
+              <section className={cn(BENCH_CARD, "mt-4 flex flex-col gap-2 p-3 sm:p-4")}>
+                <span className="px-1 text-ui-13 font-medium text-foreground">
                   {t("benchmark.compare.metricBreakdown")}
-                </div>
-                <div className="overflow-x-auto rounded-lg border border-border/40">
-                  <table className="w-full text-xs">
+                </span>
+                <div className="overflow-x-auto rounded-xl">
+                  <table className="w-full text-ui-12">
                     <thead>
-                      <tr className="border-b border-border/30 bg-accent/20">
-                        <th className="px-3 py-2 text-left font-medium text-muted-foreground/70">
-                          {t("benchmark.compare.metric")}
-                        </th>
+                      <tr className="text-left text-ui-10 uppercase tracking-wider text-muted-foreground [&>th]:px-3 [&>th]:py-2.5 [&>th]:font-medium">
+                        <th>{t("benchmark.compare.metric")}</th>
                         {loadedDetails.map((d) => (
-                          <th
-                            key={d.id}
-                            className="px-3 py-2 text-right font-medium text-muted-foreground/70"
-                          >
-                            {d.task}
+                          <th key={d.id} className="text-right">
+                            <span className="inline-flex items-center gap-1.5">
+                              <span
+                                className="size-2 shrink-0 rounded-[2px]"
+                                style={{ background: color(d.model) }}
+                                aria-hidden={true}
+                              />
+                              {d.task}
+                            </span>
                           </th>
                         ))}
                       </tr>
@@ -338,9 +334,9 @@ export function CompareDialog({
                         return (
                           <tr
                             key={metricName}
-                            className="border-b border-border/20 last:border-0"
+                            className="border-t border-border/40 tabular-nums [&>td]:whitespace-nowrap [&>td]:px-3 [&>td]:py-2"
                           >
-                            <td className="px-3 py-1.5 text-muted-foreground/70">
+                            <td className="text-foreground">
                               {metricName}
                             </td>
                             {scores.map((score, i) => {
@@ -351,9 +347,12 @@ export function CompareDialog({
                               return (
                                 <td
                                   key={loadedDetails[i].id}
-                                  className={`px-3 py-1.5 text-right font-mono ${
-                                    isBest ? "font-bold text-emerald-500" : ""
-                                  }`}
+                                  className={cn(
+                                    "text-right",
+                                    isBest
+                                      ? "font-semibold text-foreground"
+                                      : "text-muted-foreground",
+                                  )}
                                 >
                                   {score != null
                                     ? `${(score * 100).toFixed(1)}%`
@@ -367,7 +366,7 @@ export function CompareDialog({
                     </tbody>
                   </table>
                 </div>
-              </div>
+              </section>
             )}
           </div>
         )}

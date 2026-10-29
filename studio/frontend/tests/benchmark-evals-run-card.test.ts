@@ -36,8 +36,24 @@ test("metric stderr shows in the score's units, not as a raw float string", () =
   assert.equal((panel.match(/±\{formatStderr\(m\)\}/g) ?? []).length, 2);
 });
 
-test("a scoreboard row keeps the quant visible when the model name truncates", () => {
+test("the scoreboard and comparison draw through the shared Benchmarks bar chart", () => {
+  for (const file of ["components/eval-scoreboard.tsx", "components/benchmark-graph-dialog.tsx"]) {
+    const src = read(file);
+    assert.match(src, /import \{ BarChart \} from "@\/features\/benchmarks\/components\/bar-chart";/, file);
+    assert.match(src, /<BarChart \{\.\.\.chart\} bare=\{true\} \/>/, file);
+    assert.match(src, /<ChartSaveMenu svgRef=\{exportRef\}/, file);
+  }
   const board = read("components/eval-scoreboard.tsx");
-  assert.match(board, /<ModelLabel model=\{b\.model\} \/>/);
-  assert.match(board, /<span className="truncate">\{name\}<\/span>\s*\{quant && <span className="shrink-0/);
+  assert.match(board, /<StatTile/);
+  assert.doesNotMatch(board, /function Tile\(/);
+  // The matplotlib route is an export now, not the in-app view.
+  const graph = read("components/benchmark-graph-dialog.tsx");
+  assert.doesNotMatch(graph, /<img /);
+  assert.match(graph, /await downloadFile\(blob, "benchmark-chart\.png", "image\/png"\)/);
+});
+
+test("the live run log is the shared log pane, not per-line coloured divs", () => {
+  const panel = read("components/benchmark-run-panel.tsx");
+  assert.match(panel, /<LogPane text=\{logText\}/);
+  assert.doesNotMatch(panel, /bg-black\/80|log-style/);
 });

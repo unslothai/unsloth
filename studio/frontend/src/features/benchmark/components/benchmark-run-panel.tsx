@@ -3,10 +3,12 @@
 
 // The live run card, drawn like Config sweeps' so both tabs read the same while a run is on.
 
+import { LogPane } from "@/components/log-pane";
 import { SectionCard } from "@/components/section-card";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { useT, type TranslationKey } from "@/i18n";
+import { stripAnsi } from "@/lib/strip-ansi";
 import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
@@ -14,8 +16,7 @@ import {
   StopIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useState } from "react";
-import { getBenchmarkLogLineClass } from "../lib/log-style";
+import { useMemo, useState } from "react";
 import { useBenchmarkRuntimeStore } from "../stores/benchmark-runtime-store";
 
 const PHASE_LABEL_KEY: Record<string, TranslationKey> = {
@@ -73,9 +74,11 @@ export function BenchmarkRunPanel({
     : progress > 0
       ? PHASE_LABEL_KEY.running
       : PHASE_LABEL_KEY.starting;
-  const lines = logLines.filter(
-    (e) => e.stream === "stdout" || e.stream === "stderr",
+  const lines = useMemo(
+    () => logLines.filter((e) => e.stream === "stdout" || e.stream === "stderr"),
+    [logLines],
   );
+  const logText = useMemo(() => lines.map((e) => stripAnsi(e.line)).join("\n"), [lines]);
 
   return (
     <SectionCard
@@ -162,13 +165,7 @@ export function BenchmarkRunPanel({
               {showLog ? "Hide log" : `Show log (${lines.length} lines)`}
             </button>
             {showLog && (
-              <div className="max-h-48 overflow-y-auto rounded-xl bg-black/80 p-3 font-mono text-xs leading-relaxed">
-                {lines.map((entry, i) => (
-                  <div key={i} className={getBenchmarkLogLineClass(entry)}>
-                    {entry.line}
-                  </div>
-                ))}
-              </div>
+              <LogPane text={logText} className="h-[min(20rem,40vh)]" />
             )}
           </>
         )}

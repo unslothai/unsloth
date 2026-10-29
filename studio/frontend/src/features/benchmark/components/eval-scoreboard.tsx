@@ -4,113 +4,31 @@
 // Scores at a glance: the latest run of each model on each task, as bars on one 0-100 scale,
 // so two models on the same benchmark read side by side. The full list stays in history.
 
+import { BarChart } from "@/features/benchmarks/components/bar-chart";
 import { BENCH_CARD } from "@/features/benchmarks/components/bench-ui";
-import { useTheme } from "@/features/settings";
+import { StatTile } from "@/features/benchmarks/components/stat-tile";
+import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import {
-  type ReactElement,
-  type ReactNode,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
+import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
 import {
   type BenchmarkRunSummary,
   listBenchmarkRuns,
 } from "../api/benchmark-api";
+import { useModelPalette } from "../lib/model-colors";
+import { fmtScore, latestScores, scoreboardGroups } from "../lib/score-bars";
 import { useBenchmarkRuntimeStore } from "../stores/benchmark-runtime-store";
-
-// The Benchmarks page's validated categorical order, minus its neutral. Assigned by first
-// appearance and never cycled: an eighth model is left to the history list.
-const MODEL_COLORS = {
-  light: [
-    "#2a78d6",
-    "#eb6834",
-    "#1baf7a",
-    "#eda100",
-    "#e87ba4",
-    "#008300",
-    "#4a3aa7",
-  ],
-  dark: [
-    "#3987e5",
-    "#d95926",
-    "#199e70",
-    "#c98500",
-    "#d55181",
-    "#008300",
-    "#9085e9",
-  ],
-};
-
-interface Bar {
-  model: string;
-  score: number;
-  stderr: number | null;
-  run: BenchmarkRunSummary;
-}
-
-function modelName(model: string): string {
-  return model.split(/[\\/]/).filter(Boolean).pop() ?? model;
-}
-
-function score(
-  run: BenchmarkRunSummary,
-): { score: number; stderr: number | null } | null {
-  const m = run.metrics.find((x) => x.name === run.default_metric);
-  if (!m || m.score < 0 || m.score > 1) return null;
-  const err = m.stderr != null ? Number.parseFloat(m.stderr) : Number.NaN;
-  return { score: m.score, stderr: Number.isFinite(err) ? err : null };
-}
+import { ChartSaveMenu } from "./chart-save-menu";
 
 const pct = (n: number) => `${(n * 100).toFixed(1)}%`;
 
-// The quant ("repo:Q8_0") never truncates, so two quants of one model stay told apart.
-function ModelLabel({ model }: { model: string }): ReactElement {
-  const cut = model.lastIndexOf(":");
-  const name = cut > 0 ? model.slice(0, cut) : model;
-  const quant = cut > 0 ? model.slice(cut + 1) : null;
-  return (
-    <span className="flex min-w-0 justify-end gap-1 text-ui-12 text-foreground/85">
-      <span className="truncate">{name}</span>
-      {quant && <span className="shrink-0 text-muted-foreground">{quant}</span>}
-    </span>
-  );
-}
-
-function Tile({
-  label,
-  value,
-  detail,
-}: {
-  label: string;
-  value: ReactNode;
-  detail?: ReactNode;
-}): ReactElement {
-  return (
-    <div className={cn(BENCH_CARD, "flex min-w-0 flex-col gap-1.5 px-5 py-4")}>
-      <span className="text-ui-11 font-medium tracking-nav text-muted-foreground">
-        {label}
-      </span>
-      <span className="truncate font-heading text-ui-22 font-semibold leading-tight tracking-[-0.02em] tabular-nums text-foreground">
-        {value}
-      </span>
-      {detail && (
-        <span className="truncate text-ui-11 text-muted-foreground">
-          {detail}
-        </span>
-      )}
-    </div>
-  );
-}
-
 export function EvalScoreboard(): ReactElement | null {
-  const { resolved } = useTheme();
-  const palette = MODEL_COLORS[resolved === "dark" ? "dark" : "light"];
+  const t = useT();
+  const palette = useModelPalette();
   const running = useBenchmarkRuntimeStore(
     (s) => s.phase === "running" || s.phase === "starting",
   );
   const [runs, setRuns] = useState<BenchmarkRunSummary[]>([]);
+  const exportRef = useRef<SVGSVGElement | null>(null);
 
   // On mount (even mid-run, e.g. after a reload) and again when a run ends, which lands in the list.
   useEffect(() => {
@@ -125,125 +43,77 @@ export function EvalScoreboard(): ReactElement | null {
     };
   }, [running]);
 
-  const { groups, models, best } = useMemo(() => {
-    const newestFirst = [...runs].sort((a, b) =>
-      b.created_at.localeCompare(a.created_at),
-    );
-    const models: string[] = [];
-    for (const r of [...newestFirst].reverse()) {
-      const name = modelName(r.model);
-      if (!models.includes(name)) models.push(name);
-    }
-    const shown = models.slice(0, palette.length);
-    const byTask = new Map<string, Bar[]>();
-    for (const run of newestFirst) {
-      const s = score(run);
-      const model = modelName(run.model);
-      if (!s || !shown.includes(model)) continue;
-      const bars = byTask.get(run.task) ?? [];
-      if (bars.some((b) => b.model === model)) continue;
-      bars.push({ model, ...s, run });
-      byTask.set(run.task, bars);
-    }
-    const groups = [...byTask.entries()].map(([task, bars]) => ({
-      task,
-      bars: bars.sort((a, b) => b.score - a.score),
-    }));
-    const best = groups
-      .flatMap((g) => g.bars)
-      .sort((a, b) => b.score - a.score)[0];
-    return { groups, models: shown, best };
-  }, [runs, palette.length]);
+  const { groups, models, best } = useMemo(
+    () => latestScores(runs, palette.length),
+    [runs, palette.length],
+  );
+  const bars = useMemo(
+    () =>
+      scoreboardGroups(
+        groups,
+        (model) => palette[models.indexOf(model)] ?? palette[0],
+      ),
+    [groups, models, palette],
+  );
 
   if (groups.length === 0) return null;
   const color = (model: string) => palette[models.indexOf(model)] ?? palette[0];
+  const chart = {
+    groups: bars,
+    max: 100,
+    format: fmtScore,
+    axisLabel: t("benchmark.chart.scoreAxis"),
+    title: t("benchmark.chart.scoresTitle"),
+  };
 
   return (
     <div className="flex flex-col gap-4">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <Tile
+        <StatTile
           label="Best score"
           value={best ? pct(best.score) : "—"}
           detail={best ? `${best.run.task} · ${best.model}` : undefined}
         />
-        <Tile
+        <StatTile
           label="Benchmarks"
           value={groups.length}
           detail={groups.map((g) => g.task).join(", ")}
         />
-        <Tile
+        <StatTile
           label="Models"
           value={models.length}
           detail="Latest run of each shown"
         />
       </div>
 
-      <section className={cn(BENCH_CARD, "flex flex-col gap-5 p-4 sm:p-5")}>
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+      <section className={cn(BENCH_CARD, "flex flex-col gap-3 p-3 sm:p-4")}>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 px-1">
           <span className="text-ui-13 font-medium text-foreground">Scores</span>
-          <span className="flex min-w-0 flex-wrap gap-x-3 gap-y-1 text-ui-11 text-muted-foreground">
-            {models.map((m) => (
-              <span key={m} className="flex min-w-0 items-center gap-1.5">
-                <span
-                  className="size-2 shrink-0 rounded-full"
-                  style={{ background: color(m) }}
-                  aria-hidden={true}
-                />
-                <span className="truncate">{m}</span>
-              </span>
-            ))}
-          </span>
-        </div>
-
-        {groups.map(({ task, bars }) => (
-          <div key={task} className="flex flex-col gap-1.5">
-            <span className="text-ui-11 font-medium uppercase tracking-[0.05em] text-muted-foreground/70">
-              {task}
-            </span>
-            {bars.map((b) => (
-              <div
-                key={b.model}
-                className="grid grid-cols-[minmax(0,calc(180px*var(--ui-space-scale,1)))_minmax(0,1fr)_calc(64px*var(--ui-space-scale,1))] items-center gap-3"
-                title={`${b.run.model}\n${b.run.n_samples} samples${
-                  b.run.num_fewshot ? ` · ${b.run.num_fewshot}-shot` : ""
-                } · ${new Date(b.run.created_at).toLocaleString()}`}
-              >
-                <ModelLabel model={b.model} />
-                <span className="relative h-3 rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)]">
-                  {[25, 50, 75].map((x) => (
-                    <span
-                      key={x}
-                      className="absolute inset-y-0 w-px bg-background/60"
-                      style={{ left: `${x}%` }}
-                      aria-hidden={true}
-                    />
-                  ))}
+          {models.length > 1 && (
+            <ul className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-ui-11 text-muted-foreground">
+              {models.map((m) => (
+                <li key={m} className="flex min-w-0 items-center gap-1.5">
                   <span
-                    className="absolute inset-y-0 left-0 rounded-full transition-[width] duration-500 ease-out"
-                    style={{
-                      width: `${b.score * 100}%`,
-                      background: color(b.model),
-                    }}
+                    className="size-2.5 shrink-0 rounded-[3px]"
+                    style={{ background: color(m) }}
+                    aria-hidden={true}
                   />
-                  {b.stderr != null && b.stderr > 0 && (
-                    <span
-                      className="absolute top-1/2 h-px -translate-y-1/2 opacity-70"
-                      style={{
-                        background: "var(--foreground)",
-                        left: `${Math.max(0, b.score - b.stderr) * 100}%`,
-                        width: `${(Math.min(1, b.score + b.stderr) - Math.max(0, b.score - b.stderr)) * 100}%`,
-                      }}
-                      aria-hidden={true}
-                    />
-                  )}
-                </span>
-                <span className="text-ui-12 font-semibold tabular-nums text-foreground">
-                  {pct(b.score)}
-                </span>
-              </div>
-            ))}
+                  <span className="truncate">{m}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="ml-auto">
+            <ChartSaveMenu svgRef={exportRef} fileBase="evals-scores" />
           </div>
-        ))}
+        </div>
+        <div className="overflow-hidden rounded-xl">
+          <BarChart {...chart} bare={true} />
+        </div>
+        {/* Exports carry the title the screen leaves off. */}
+        <div className="hidden" aria-hidden={true}>
+          <BarChart {...chart} bare={false} svgRef={exportRef} />
+        </div>
       </section>
     </div>
   );

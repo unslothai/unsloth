@@ -24,9 +24,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { BENCH_CARD } from "@/features/benchmarks/components/bench-ui";
+import { StatTile } from "@/features/benchmarks/components/stat-tile";
 import { useDebouncedValue } from "@/hooks";
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 import {
   AlertCircleIcon,
   ArrowLeftIcon,
@@ -51,6 +54,7 @@ import {
   listBenchmarkRuns,
 } from "../api/benchmark-api";
 import { GraphDialog } from "./benchmark-graph-dialog";
+import { modelName } from "../lib/score-bars";
 import { useBenchmarkRuntimeStore } from "../stores/benchmark-runtime-store";
 
 const NON_METRIC_PATTERNS = new Set([
@@ -154,12 +158,6 @@ function sortRuns(
   }
 }
 
-function scoreColor(score: number): string {
-  if (score >= 0.75) return "text-emerald-600 dark:text-emerald-400";
-  if (score >= 0.5) return "text-amber-600 dark:text-amber-400";
-  return "text-red-600 dark:text-red-400";
-}
-
 function filterRuns(
   runs: BenchmarkRunSummary[],
   query: string,
@@ -192,7 +190,7 @@ function RunCard({
   const accuracy = score != null ? (score * 100).toFixed(1) : null;
 
   return (
-    <div className="group flex w-full items-center gap-4 rounded-lg border border-border/60 bg-card px-4 py-3 transition-colors hover:bg-accent/50">
+    <div className="elevated-card group flex w-full items-center gap-4 bg-card px-4 py-3 transition-colors hover:bg-accent/30">
       <div className="flex shrink-0 items-center">
         <Checkbox
           checked={selected}
@@ -208,7 +206,7 @@ function RunCard({
         <div className="flex w-20 shrink-0 items-baseline justify-center">
           {accuracy != null ? (
             <span
-              className={`text-lg font-bold tabular-nums ${scoreColor(score ?? 0)}`}
+              className="text-lg font-bold tabular-nums text-foreground"
             >
               {accuracy}
               <span className="text-xs font-medium">%</span>
@@ -373,45 +371,22 @@ function RunDetailView({
 
       {detail && (
         <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <div className="rounded-lg border border-border/60 bg-card p-3">
-              <div className="text-ui-10 font-medium text-muted-foreground/60">
-                {t("benchmark.history.task")}
-              </div>
-              <div className="mt-0.5 text-sm font-semibold">{detail.task}</div>
-            </div>
-            <div className="rounded-lg border border-border/60 bg-card p-3">
-              <div className="text-ui-10 font-medium text-muted-foreground/60">
-                {t("benchmark.history.accuracy")}
-              </div>
-              <div
-                className={`mt-0.5 text-lg font-bold tabular-nums ${scoreColor(detail.correct_count / Math.max(detail.total_count, 1))}`}
-              >
-                {accuracy}%
-                <span className="ml-1 text-xs font-normal text-muted-foreground/60">
-                  ({detail.correct_count}/{detail.total_count})
-                </span>
-              </div>
-            </div>
-            <div className="rounded-lg border border-border/60 bg-card p-3">
-              <div className="text-ui-10 font-medium text-muted-foreground/60">
-                {t("benchmark.history.model")}
-              </div>
-              <div
-                className="mt-0.5 truncate text-sm font-medium"
-                title={detail.model}
-              >
-                {detail.model}
-              </div>
-            </div>
-            <div className="rounded-lg border border-border/60 bg-card p-3">
-              <div className="text-ui-10 font-medium text-muted-foreground/60">
-                {t("benchmark.history.date")}
-              </div>
-              <div className="mt-0.5 text-sm tabular-nums">
-                {formatDate(detail.created_at)}
-              </div>
-            </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <StatTile
+              label={t("benchmark.history.accuracy")}
+              value={accuracy != null ? `${accuracy}%` : "—"}
+              detail={`${detail.correct_count}/${detail.total_count}`}
+            />
+            <StatTile
+              label={t("benchmark.history.task")}
+              value={detail.task}
+              detail={formatDate(detail.created_at)}
+            />
+            <StatTile
+              label={t("benchmark.history.model")}
+              value={modelName(detail.model)}
+              detail={<span title={detail.model}>{detail.model}</span>}
+            />
           </div>
 
           {detail.metrics.filter(isDisplayMetric).length > 0 && (
@@ -423,7 +398,7 @@ function RunDetailView({
                   className="gap-1 px-3 py-1.5 text-xs"
                 >
                   <span className="text-muted-foreground/70">{m.name}:</span>
-                  <span className={scoreColor(m.score)}>
+                  <span className="font-medium text-foreground">
                     {formatMetricValue(m)}
                     {m.score >= 0 && m.score <= 1 ? "%" : ""}
                   </span>
@@ -444,13 +419,6 @@ function RunDetailView({
                 : 0
             }
             className="h-2 bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)]"
-            indicatorClassName={
-              detail.correct_count / Math.max(detail.total_count, 1) >= 0.8
-                ? "bg-green-400"
-                : detail.correct_count / Math.max(detail.total_count, 1) >= 0.5
-                  ? "bg-orange-400"
-                  : "bg-red-400"
-            }
           />
 
           <div>
@@ -459,7 +427,7 @@ function RunDetailView({
                 count: detail.samples.length,
               })}
             </h3>
-            <div className="max-h-[calc(500px*var(--ui-space-scale,1))] overflow-y-auto rounded-lg border border-border/40">
+            <div className="max-h-[calc(500px*var(--ui-space-scale,1))] overflow-y-auto rounded-xl border border-border/60">
               {detail.samples.length === 0 ? (
                 <div className="flex items-center justify-center py-8 text-xs text-muted-foreground/60">
                   {t("benchmark.history.noSampleData")}
@@ -485,46 +453,23 @@ function CompareColumn({ detail }: { detail: BenchmarkRunDetail }) {
       : null;
 
   return (
-    <div className="flex min-w-[calc(640px*var(--ui-space-scale,1))] flex-1 flex-col gap-4 rounded-lg border border-border/60 bg-card p-4">
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <div className="rounded-lg border border-border/60 bg-card p-3">
-          <div className="text-ui-10 font-medium text-muted-foreground/60">
-            {t("benchmark.history.task")}
-          </div>
-          <div className="mt-0.5 text-sm font-semibold">{detail.task}</div>
-        </div>
-        <div className="rounded-lg border border-border/60 bg-card p-3">
-          <div className="text-ui-10 font-medium text-muted-foreground/60">
-            {t("benchmark.history.accuracy")}
-          </div>
-          <div
-            className={`mt-0.5 text-lg font-bold tabular-nums ${scoreColor(detail.correct_count / Math.max(detail.total_count, 1))}`}
-          >
-            {accuracy}%
-            <span className="ml-1 text-xs font-normal text-muted-foreground/60">
-              ({detail.correct_count}/{detail.total_count})
-            </span>
-          </div>
-        </div>
-        <div className="rounded-lg border border-border/60 bg-card p-3">
-          <div className="text-ui-10 font-medium text-muted-foreground/60">
-            {t("benchmark.history.model")}
-          </div>
-          <div
-            className="mt-0.5 truncate text-sm font-medium"
-            title={detail.model}
-          >
-            {detail.model}
-          </div>
-        </div>
-        <div className="rounded-lg border border-border/60 bg-card p-3">
-          <div className="text-ui-10 font-medium text-muted-foreground/60">
-            {t("benchmark.history.date")}
-          </div>
-          <div className="mt-0.5 text-sm tabular-nums">
-            {formatDate(detail.created_at)}
-          </div>
-        </div>
+    <div className={cn(BENCH_CARD, "flex min-w-[calc(640px*var(--ui-space-scale,1))] flex-1 flex-col gap-4 p-4")}>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <StatTile
+          label={t("benchmark.history.accuracy")}
+          value={accuracy != null ? `${accuracy}%` : "—"}
+          detail={`${detail.correct_count}/${detail.total_count}`}
+        />
+        <StatTile
+          label={t("benchmark.history.task")}
+          value={detail.task}
+          detail={formatDate(detail.created_at)}
+        />
+        <StatTile
+          label={t("benchmark.history.model")}
+          value={modelName(detail.model)}
+          detail={<span title={detail.model}>{detail.model}</span>}
+        />
       </div>
 
       {detail.metrics.filter(isDisplayMetric).length > 0 && (
@@ -536,7 +481,7 @@ function CompareColumn({ detail }: { detail: BenchmarkRunDetail }) {
               className="gap-1 px-3 py-1.5 text-xs"
             >
               <span className="text-muted-foreground/70">{m.name}:</span>
-              <span className={scoreColor(m.score)}>
+              <span className="font-medium text-foreground">
                 {formatMetricValue(m)}
                 {m.score >= 0 && m.score <= 1 ? "%" : ""}
               </span>
@@ -555,13 +500,6 @@ function CompareColumn({ detail }: { detail: BenchmarkRunDetail }) {
             : 0
         }
         className="h-2 bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)]"
-        indicatorClassName={
-          detail.correct_count / Math.max(detail.total_count, 1) >= 0.8
-            ? "bg-green-400"
-            : detail.correct_count / Math.max(detail.total_count, 1) >= 0.5
-              ? "bg-orange-400"
-              : "bg-red-400"
-        }
       />
 
       <div>
@@ -570,7 +508,7 @@ function CompareColumn({ detail }: { detail: BenchmarkRunDetail }) {
             count: detail.samples.length,
           })}
         </h3>
-        <div className="max-h-[calc(500px*var(--ui-space-scale,1))] overflow-y-auto rounded-lg border border-border/40">
+        <div className="max-h-[calc(500px*var(--ui-space-scale,1))] overflow-y-auto rounded-xl border border-border/60">
           {detail.samples.length === 0 ? (
             <div className="flex items-center justify-center py-8 text-xs text-muted-foreground/60">
               {t("benchmark.history.noSampleData")}
