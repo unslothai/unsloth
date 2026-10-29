@@ -5038,17 +5038,17 @@ class MLXInferenceBackend:
         """Outermost scopes of a generation, whose Int8 and Neural Engine Prefill decisions every Zoo
         scope nested in them inherits. Each is pinned off when inactive, so Zoo's full-precision NAX
         routes still run and no scope reads either env switch."""
-        stack = ExitStack()
-        for status, zoo, name in (
-            (self._int8_prefill, _int8_prefill_zoo, "nax_quantized_linear"),
-            (self._ane_prefill, _ane_prefill_zoo, "ane_prefill_mlp"),
-        ):
-            scope = (status or {}).get("scope")
-            if scope is not None:
-                stack.enter_context(scope(self._model, True))
-            elif zoo() is not None:
-                stack.enter_context(_mlx_optional_fusion(name, self._model, False))
-        return stack
+        with ExitStack() as stack:  # a scope that fails to enter unwinds the ones before it
+            for status, zoo, name in (
+                (getattr(self, "_int8_prefill", None), _int8_prefill_zoo, "nax_quantized_linear"),
+                (getattr(self, "_ane_prefill", None), _ane_prefill_zoo, "ane_prefill_mlp"),
+            ):
+                scope = (status or {}).get("scope")
+                if scope is not None:
+                    stack.enter_context(scope(self._model, True))
+                elif zoo() is not None:
+                    stack.enter_context(_mlx_optional_fusion(name, self._model, False))
+            return stack.pop_all()
 
     def _generation_scopes(self, *call):
         """Zoo's scopes for a generation of this load, under its Int8 Prefill decision. Nested in

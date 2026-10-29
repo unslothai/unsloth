@@ -5357,6 +5357,29 @@ def test_ane_prefill_is_pinned_inside_int8_released_on_unload_and_reloads_on_cha
     assert _mlx_runtime_settings_match(be, load(requested))
     assert not _mlx_runtime_settings_match(be, load(not requested))
 
+    @contextmanager
+    def int8(model, int8_prefill = None):
+        events.append(("int8", int8_prefill))
+        try:
+            yield
+        finally:
+            events.append(("int8_exit", int8_prefill))
+
+    @contextmanager
+    def dead(model, on):
+        raise RuntimeError("[METAL] Command buffer execution failed")
+        yield
+
+    events.clear()
+    mlx_inference_patches.nax_quantized_linear = int8
+    backend._ane_prefill = {"scope": dead}
+    try:
+        backend._prefill_decision_scopes()
+    except RuntimeError:  # unwound before the error leaves, not when its traceback is collected
+        assert events == [("int8", False), ("int8_exit", False)]
+    else:
+        pytest.fail("the Neural Engine scope's error was swallowed")
+
 
 def test_a_batch_session_holds_int8_prefill_for_its_whole_life(monkeypatch, mlx_inference_patches):
     from core.inference import mlx_inference
