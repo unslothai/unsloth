@@ -61,7 +61,11 @@ class _FakeProcess:
         return _types.SimpleNamespace(private = 16_500 * _MIB, wset = 235 * _MIB)
 
 
-def _windows_child(monkeypatch, backends, headroom_mib = 1_150):
+def _windows_child(
+    monkeypatch,
+    backends,
+    headroom_mib = 1_150,
+):
     monkeypatch.setattr(llama_cpp_module.sys, "platform", "win32")
     monkeypatch.setattr(
         LlamaCppBackend, "_installed_ggml_backends", staticmethod(lambda binary = None: backends)

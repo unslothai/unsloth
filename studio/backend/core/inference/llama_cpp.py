@@ -15873,7 +15873,9 @@ class LlamaCppBackend:
         )
 
     @staticmethod
-    def _hip_commit_headroom_message(untouched_mib: int, headroom_mib: Optional[int]) -> Optional[str]:
+    def _hip_commit_headroom_message(
+        untouched_mib: int, headroom_mib: Optional[int]
+    ) -> Optional[str]:
         """Advisory for commit the Windows AMD driver charges for GPU memory; None while there is room."""
         if headroom_mib is None or untouched_mib < _WINDOWS_HIP_UNTOUCHED_COMMIT_MIN_MIB:
             return None
