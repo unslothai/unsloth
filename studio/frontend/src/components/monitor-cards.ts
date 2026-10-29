@@ -12,8 +12,18 @@ import type { GpuDevice } from "../hooks/use-system.ts";
 export interface CardUsage {
   key: string;
   name: string;
+  /** Full adapter name, for the tooltip. */
+  title: string;
   usedGb: number | null;
   totalGb: number;
+}
+
+// The vendor prefix is the same on every row and is what truncates first in a 256 px card.
+const VENDOR_PREFIX = /^(?:AMD\s+Radeon(?:\(TM\))?|NVIDIA(?:\s+GeForce)?|Intel(?:\(R\))?\s+Arc(?:\(TM\))?)\s+/i;
+
+export function shortCardName(name: string | undefined): string {
+  if (!name) return "GPU";
+  return name.replace(VENDOR_PREFIX, "") || name;
 }
 
 export interface VramCards {
@@ -44,7 +54,8 @@ export function vramCards(
     cards.length > 1
       ? cards.map((card, position) => ({
           key: `${card.index ?? position}`,
-          name: `${card.index ?? position} · ${card.name ?? "GPU"}`,
+          name: `${card.index ?? position} · ${shortCardName(card.name)}`,
+          title: card.name ?? "GPU",
           usedGb: Number.isFinite(card.vram_used_gb) ? (card.vram_used_gb as number) : null,
           totalGb: gpuMemoryTotalsGb([card]).total,
         }))

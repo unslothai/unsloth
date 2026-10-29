@@ -193,7 +193,7 @@ export function CardRows({ rows }: { rows: CardUsage[] }) {
         return (
           <div key={row.key} className="space-y-0.5">
             <div className="flex justify-between gap-2">
-              <span className="min-w-0 truncate" title={row.name}>
+              <span className="min-w-0 truncate" title={row.title}>
                 {row.name}
               </span>
               <span className="shrink-0 font-mono tabular-nums">
