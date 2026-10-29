@@ -214,7 +214,10 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
           nextDrag ??= { ...(drag ?? {}) };
           delete nextDrag[change.id];
           ended = true;
-        } else if (change.type === "dimensions" && change.dimensions) {
+        }
+        // Every new size reaches `measured`, a resize's too: the DOM already has the final size
+        // when the handle is released, so no later measurement would report it.
+        if (change.type === "dimensions" && change.dimensions) {
           const current = (nextSizes ?? sizes).get(change.id);
           if (
             !current ||
