@@ -288,3 +288,13 @@ def test_ready_cards_sharing_a_load_run_back_to_back(monkeypatch):
     monkeypatch.setattr(_common, "_LOADED_OPTIONS", {"llm": (GGUF.lower(), _common.options_hash(opts), 0)})
     rs.resident = {"llm": GGUF}
     assert engine._pick_gpu(rs, ["b", "a", "c"]) == "a"
+
+
+def test_an_explicit_zero_context_reaches_the_load(monkeypatch):
+    # Manual GPU memory with Auto layers maps to max_seq_length 0: llama.cpp's fit sizes the context.
+    loads = _load_fakes(monkeypatch, ["other/model"])
+    load = {"gpu_memory_mode": "manual"}
+    assert model_settings.load_kwargs(load, is_gguf = True)["max_seq_length"] == 0
+    asyncio.run(_ensure({"model": {"repo": GGUF, "variant": None}, "load": load}))
+    assert loads[0]["max_seq_length"] == 0
+    assert _common._load_context(None) == _common.FLOW_CHAT_CONTEXT

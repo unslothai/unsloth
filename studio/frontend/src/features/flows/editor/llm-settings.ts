@@ -229,6 +229,17 @@ export function withLoadField(
   return Object.keys(next).length > 0 ? next : null;
 }
 
+/** The load a card runs with: the saved one over its own when it follows saved settings. */
+export function effectiveLoad(
+  params: Params,
+  savedLoad: LoadSettings | null | undefined,
+): LoadSettings | null {
+  const own = (params.load as LoadSettings | null) ?? null;
+  if (!isOn(params) || !savedLoad || Object.keys(savedLoad).length === 0)
+    return own;
+  return { ...(own ?? {}), ...savedLoad };
+}
+
 export interface LoadedModel {
   checkpoint: string | null;
   contextLength: number | null;

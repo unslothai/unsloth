@@ -244,3 +244,21 @@ test("the load section rebuilds Chat's load controls with Chat's constants", () 
   assert.match(src, /KV_CACHE_DTYPES/);
   assert.match(src, /SPECULATIVE_TYPES/);
 });
+
+test("the card's hint uses the saved load when the card follows it", () => {
+  const loaded = {
+    checkpoint: "unsloth/Qwen3-4B-GGUF",
+    contextLength: 8192,
+    kvCacheDtype: null,
+    nParallel: null,
+    speculativeType: null,
+  };
+  const card = { use_model_settings: true, load: null };
+  const load = s.effectiveLoad(card, { max_seq_length: 32768 });
+  assert.deepEqual(load, { max_seq_length: 32768 });
+  assert.equal(
+    s.reloadHint({ ...card, load }, loaded),
+    "Reloads the model: context 32k vs 8k loaded",
+  );
+  assert.equal(s.effectiveLoad({ ...card, use_model_settings: false }, { max_seq_length: 32768 }), null);
+});

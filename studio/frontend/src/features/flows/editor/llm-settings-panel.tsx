@@ -18,6 +18,7 @@ import {
   useChatRuntimeStore,
 } from "@/features/chat";
 import {
+  type ApiModelOverrides,
   fetchModelOverrides,
   modelOverrideKey,
   syncModelOverride,
@@ -32,7 +33,7 @@ import { savePerModelConfig } from "@/features/model-picker/model-config/per-mod
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactNode, useCallback, useEffect, useId, useState } from "react";
+import { type ReactNode, useEffect, useId, useState } from "react";
 import { toast } from "sonner";
 import { useDocStore } from "../stores/doc-store";
 import type { FlowNode, ModelChoice, NodeSpec } from "../types";
@@ -40,6 +41,7 @@ import { LlmLoadSettings } from "./llm-load-settings";
 import {
   type LoadSettings,
   editPatch,
+  effectiveLoad,
   effectiveParams,
   findSaved,
   isOn,
@@ -121,10 +123,34 @@ function cardModel(node: FlowNode): ModelChoice | null {
   return choice?.repo?.trim() ? choice : null;
 }
 
+// One read shared by every card on the canvas; a save drops it.
+let overridesRead: Promise<ApiModelOverrides> | null = null;
+const overrideListeners = new Set<() => void>();
+
+function readOverrides(): Promise<ApiModelOverrides> {
+  overridesRead ??= fetchModelOverrides().catch(() => {
+    overridesRead = null;
+    return {};
+  });
+  return overridesRead;
+}
+
+function overridesChanged() {
+  overridesRead = null;
+  for (const listener of overrideListeners) listener();
+}
+
 /** Chat's saved launch settings for the model, as the engine reads them. */
 function useSavedLoad(key: string | null, variant: string | null) {
   const [saved, setSaved] = useState<LoadSettings | null>(null);
   const [version, setVersion] = useState(0);
+  useEffect(() => {
+    const bump = () => setVersion((v) => v + 1);
+    overrideListeners.add(bump);
+    return () => {
+      overrideListeners.delete(bump);
+    };
+  }, []);
   // biome-ignore lint/correctness/useExhaustiveDependencies: version re-reads after a save
   useEffect(() => {
     if (!key) {
@@ -132,18 +158,16 @@ function useSavedLoad(key: string | null, variant: string | null) {
       return;
     }
     let alive = true;
-    fetchModelOverrides()
-      .then((overrides) => {
-        const keys = variant ? [modelOverrideKey(key, variant), key] : [key];
-        const found = resolveStoredOverride(overrides, keys);
-        if (alive) setSaved(found ? { ...found } : null);
-      })
-      .catch(() => alive && setSaved(null));
+    void readOverrides().then((overrides) => {
+      const keys = variant ? [modelOverrideKey(key, variant), key] : [key];
+      const found = resolveStoredOverride(overrides, keys);
+      if (alive) setSaved(found ? { ...found } : null);
+    });
     return () => {
       alive = false;
     };
   }, [key, variant, version]);
-  return { savedLoad: saved, reread: useCallback(() => setVersion((v) => v + 1), []) };
+  return saved;
 }
 
 /** The loaded model as Chat's status reports it, for the reload hint. */
@@ -165,7 +189,17 @@ function useLoadedModel() {
 /** The card face's one quiet line when running it would reload the model. */
 export function LlmReloadHint({ node }: { node: FlowNode }) {
   const loaded = useLoadedModel();
-  const hint = reloadHint(node.params, loaded);
+  const loadedVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const choice = cardModel(node);
+  const key = isOn(node.params) ? modelKey(node.params, loaded.checkpoint) : null;
+  const savedLoad = useSavedLoad(
+    key,
+    choice ? (choice.variant ?? null) : loadedVariant,
+  );
+  const hint = reloadHint(
+    { ...node.params, load: effectiveLoad(node.params, savedLoad) },
+    loaded,
+  );
   if (!hint) return null;
   return (
     <p className="flow-detail px-3 text-ui-10p5 leading-snug text-muted-foreground">
@@ -189,7 +223,7 @@ export function LlmSettingsPanel({
   const key = modelKey(node.params, loadedModel.checkpoint);
   const variant = choice ? (choice.variant ?? null) : loadedVariant;
   const saved = useChatRuntimeStore((s) => findSaved(s.paramsByModel, key));
-  const { savedLoad, reread } = useSavedLoad(key, variant);
+  const savedLoad = useSavedLoad(key, variant);
   const switchId = useId();
   const isGguf = choice
     ? Boolean(choice.variant) || /gguf/i.test(choice.repo)
@@ -305,7 +339,7 @@ export function LlmSettingsPanel({
                   const config = fromApiOverride({ ...savedLoad, ...own });
                   if (savePerModelConfig(key, variant, config))
                     syncModelOverride(key, variant, config);
-                  setTimeout(reread, 500);
+                  setTimeout(overridesChanged, 500);
                 }
                 toast.success(`Saved as defaults for ${shortModel(key)}`);
               }}

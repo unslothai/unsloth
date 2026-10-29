@@ -438,7 +438,7 @@ async def _ensure_model(
                 None,
                 model = repo,
                 variant = variant,
-                max_seq_length = int((options or {}).get("max_seq_length") or FLOW_CHAT_CONTEXT),
+                max_seq_length = _load_context(options),
                 load_in_4bit = True,
                 hf_token = None,
                 kind = LOAD_KIND.get(model_kind, "llm"),
@@ -472,6 +472,13 @@ async def _ensure_model(
         _LOADED_OPTIONS[slot] = (repo.lower(), settings, gpu_arbiter.load_count(gpu_arbiter.CHAT))
     ctx.set_status("running")
     return {"repo": repo, "variant": variant}
+
+
+def _load_context(options: Optional[dict]) -> int:
+    """An explicit 0 hands sizing to llama.cpp's fit (Manual GPU memory with Auto layers), so only an absent
+    context falls back to the Flows default."""
+    value = (options or {}).get("max_seq_length")
+    return FLOW_CHAT_CONTEXT if value is None else int(value)
 
 
 def note_loaded(ctx: Any, slot: str, repo: str) -> None:
