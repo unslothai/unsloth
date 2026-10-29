@@ -7833,6 +7833,186 @@ def fix_cudnn_sdpa_backward_grad_layout():
     )
 
 
+_SDPA_CUDNN_KNOWN_BAD_FLAG = "_unsloth_avoids_cudnn_sdpa_known_bad_shapes"
+_SDPA_CUDNN_KNOWN_BAD_WARNED = set()
+_SDPA_CUDNN_DECODE = "decode"
+_SDPA_CUDNN_DQ_NAN = "dq_nan"
+
+
+def _torch_release(torch_version):
+    try:
+        return TrueVersion(TrueVersion(str(torch_version)).base_version)
+    except Exception:
+        return None
+
+
+def _cudnn_sdpa_decode_corrupts(torch_version, cudnn_version, capability):
+    """pytorch#193893: cuDNN 9.19 - 9.25.0 (but not 9.24.1) SDPA with one query row (decode) on
+    SM 10.x / 11.x gives wrong outputs (a negative-logit row whose KV tail is padded gets row max 0).
+    torch 2.14 refuses that call itself (pytorch#194963, same version / device rule); torch <= 2.13
+    does not, and its cu128 / cu129 / cu130 wheels ship cuDNN 9.19 / 9.20. cu126 wheels ship 9.10."""
+    release = _torch_release(torch_version)
+    if release is None or release >= TrueVersion("2.14") or cudnn_version is None:
+        return False
+    cudnn_version = int(cudnn_version)
+    if cudnn_version < 91900 or cudnn_version > 92500 or 92400 < cudnn_version < 92500:
+        return False
+    return int(capability[0]) in (10, 11)
+
+
+def _cudnn_sdpa_dq_nan(torch_version, cudnn_version, capability):
+    """pytorch#196678: cuDNN < 9.26 SDPA backward on SM90 returns NaN dQ for non-causal calls with
+    a key length of 64 mod 128 (a padding row's logsumexp below ln(FLT_MIN), e.g. left padding).
+    torch 2.15 refuses that call (pytorch#196861, same rule) and ships cuDNN 9.26."""
+    release = _torch_release(torch_version)
+    if release is None or release >= TrueVersion("2.15") or cudnn_version is None:
+        return False
+    return int(cudnn_version) < 92600 and tuple(int(x) for x in capability[:2]) == (9, 0)
+
+
+def _sdpa_cudnn_known_bad_devices():
+    """(decode devices, dQ-NaN devices): CUDA indices where torch would still pick a broken cuDNN path."""
+    try:
+        import torch
+
+        if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+            return frozenset(), frozenset()
+        cudnn_version = torch.backends.cudnn.version()
+        capabilities = [
+            torch.cuda.get_device_capability(i) for i in range(torch.cuda.device_count())
+        ]
+    except Exception:
+        return frozenset(), frozenset()
+    decode = frozenset(
+        i
+        for i, cap in enumerate(capabilities)
+        if _cudnn_sdpa_decode_corrupts(torch.__version__, cudnn_version, cap)
+    )
+    dq_nan = frozenset(
+        i
+        for i, cap in enumerate(capabilities)
+        if _cudnn_sdpa_dq_nan(torch.__version__, cudnn_version, cap)
+    )
+    return decode, dq_nan
+
+
+def _sdpa_cudnn_known_bad(decode_devices, dq_devices, query, key, is_causal):
+    """Which known cuDNN bug this call would hit if torch picked cuDNN for it (None if none).
+    Mirrors torch's own guards: s_q == 1 (pytorch#194963), and not causal, query requires grad,
+    s_kv % 128 == 64 (pytorch#196861; a mask is not required there, nor here)."""
+    import torch
+
+    if not getattr(query, "is_cuda", False) or getattr(query, "is_nested", False):
+        return None
+    index = query.device.index
+    if index not in decode_devices and index not in dq_devices:
+        return None
+    dtype = query.dtype
+    # CUDA autocast casts fp32 SDPA inputs to half before dispatch; cuDNN takes fp16 / bf16 only.
+    if dtype == torch.float32 and torch.is_autocast_enabled("cuda"):
+        dtype = torch.get_autocast_dtype("cuda")
+    if dtype not in (torch.float16, torch.bfloat16) or query.dim() < 2:
+        return None
+    if index in decode_devices and query.shape[-2] == 1:
+        return _SDPA_CUDNN_DECODE
+    if (
+        index in dq_devices
+        and not is_causal
+        and query.requires_grad
+        and torch.is_grad_enabled()
+        and getattr(key, "dim", lambda: 0)() >= 2
+        and key.shape[-2] % 128 == 64
+    ):
+        return _SDPA_CUDNN_DQ_NAN
+    return None
+
+
+def _sdpa_cudnn_free_index():
+    """Bit 0 / 1 / 2: flash / efficient / math enabled; 0 when cuDNN is off (nothing to avoid)."""
+    import torch
+
+    cuda = torch.backends.cuda
+    if not cuda.cudnn_sdp_enabled():
+        return 0
+    return (
+        (1 if cuda.flash_sdp_enabled() else 0)
+        | (2 if cuda.mem_efficient_sdp_enabled() else 0)
+        | (4 if cuda.math_sdp_enabled() else 0)
+    )
+
+
+def fix_cudnn_sdpa_known_bad_shapes():
+    """Keep SDPA off cuDNN for exactly the calls torch 2.14 / 2.15 later refused (wrong decode on
+    Blackwell, pytorch#193893; NaN dQ on H100 / H200, pytorch#196678). Only the caller's enabled
+    flash / efficient / math backends run instead; a cuDNN-only policy is left alone. Not installed
+    unless a visible device is affected. UNSLOTH_ALLOW_BUGGY_CUDNN_SDPA=1 opts out."""
+    if os.environ.get("UNSLOTH_ALLOW_BUGGY_CUDNN_SDPA", "0") == "1":
+        return
+    decode_devices, dq_devices = _sdpa_cudnn_known_bad_devices()
+    if not decode_devices and not dq_devices:
+        return
+    try:
+        import torch
+        import torch.nn.functional as F
+        from torch.nn.attention import SDPBackend, sdpa_kernel
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the cuDNN SDPA known-bad-shape fix ({e})")
+        return
+    if getattr(F.scaled_dot_product_attention, _SDPA_CUDNN_KNOWN_BAD_FLAG, False):
+        return
+
+    order = (SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH)
+    cudnn_free = (None,) + tuple(
+        [b for j, b in enumerate(order) if i >> j & 1] for i in range(1, 8)
+    )
+    free_index = _sdpa_cudnn_free_index
+    if hasattr(torch.compiler, "assume_constant_result"):
+        # Read at trace time, like SDPA's own backend pick: Dynamo cannot trace the flag getters.
+        free_index = torch.compiler.assume_constant_result(_sdpa_cudnn_free_index)
+    messages = {
+        _SDPA_CUDNN_DECODE: "single-token decode on this Blackwell GPU (cuDNN 9.19 - 9.25.0 "
+        "returns wrong attention there, pytorch#193893)",
+        _SDPA_CUDNN_DQ_NAN: "training with a key length of 64 mod 128 on this H100 / H200 (cuDNN "
+        "< 9.26 returns NaN query gradients there, pytorch#196678)",
+    }
+    original = F.scaled_dot_product_attention
+
+    @functools.wraps(original)
+    def scaled_dot_product_attention(
+        query,
+        key,
+        value,
+        attn_mask = None,
+        dropout_p = 0.0,
+        is_causal = False,
+        *args,
+        **kwargs,
+    ):
+        bug = _sdpa_cudnn_known_bad(decode_devices, dq_devices, query, key, is_causal)
+        if bug is not None:
+            backends = cudnn_free[free_index()]
+            if backends is not None:
+                if not torch.compiler.is_compiling() and bug not in _SDPA_CUDNN_KNOWN_BAD_WARNED:
+                    _SDPA_CUDNN_KNOWN_BAD_WARNED.add(bug)
+                    logger.warning(
+                        f"Unsloth: running SDPA without cuDNN attention for {messages[bug]}. "
+                        "Upgrade to torch 2.15 / cuDNN 9.26, or set UNSLOTH_ALLOW_BUGGY_CUDNN_SDPA=1."
+                    )
+                with sdpa_kernel(backends):
+                    return original(
+                        query, key, value, attn_mask, dropout_p, is_causal, *args, **kwargs
+                    )
+        return original(query, key, value, attn_mask, dropout_p, is_causal, *args, **kwargs)
+
+    scaled_dot_product_attention.__wrapped__ = original
+    setattr(scaled_dot_product_attention, _SDPA_CUDNN_KNOWN_BAD_FLAG, True)
+    F.scaled_dot_product_attention = scaled_dot_product_attention
+    logger.info(
+        "Unsloth: cuDNN SDPA known-bad shapes avoided "
+        f"(decode devices {sorted(decode_devices)}, NaN dQ devices {sorted(dq_devices)})"
+    )
+
+
 def _rocm_windows_broken_sdpa_backends():
     """Fused SDPA backends ("flash", "mem_efficient") failing on this process's Windows ROCm GPU.
 
