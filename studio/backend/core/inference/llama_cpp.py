@@ -2189,6 +2189,7 @@ def _archive_and_recall(
     try:
         from core.inference.tools import build_conversation_recall
         from core.rag import conversation_archive
+        from core.rag.retrieval import query_vector_memo
 
         if not conversation_archive.enabled():
             return result
@@ -2236,48 +2237,50 @@ def _archive_and_recall(
                 break
             attempt_k = max(1, attempt_k // 2)
 
-        for index, k in enumerate(attempts):
-            recall = build_conversation_recall(
-                conversation,
-                thread_id,
-                style = style,
-                top_k = k,
-                branch_messages = branch_messages,
-            )
-            if not recall:
-                result["counts"] = counts
-                return result
-
-            candidate = _inject_recall(conversation, recall, style)
-            if candidate is None:
-                result["counts"] = counts
-                return result
-
-            grew = None
-            if count_tokens is not None and recall_budget_tokens > 0:
-                try:
-                    grew = count_tokens(candidate["conversation"]) - count_tokens(conversation)
-                except Exception:
-                    grew = None
-            if grew is not None and grew > recall_budget_tokens:
-                logger.info(
-                    "conversation_recall.over_budget grew=%s budget=%s top_k=%s",
-                    grew,
-                    recall_budget_tokens,
-                    k,
+        # One encode per query across the retries and the widenings inside each recall.
+        with query_vector_memo():
+            for index, k in enumerate(attempts):
+                recall = build_conversation_recall(
+                    conversation,
+                    thread_id,
+                    style = style,
+                    top_k = k,
+                    branch_messages = branch_messages,
                 )
-                if index + 1 < len(attempts):
-                    continue
-                logger.info(
-                    "conversation_recall.dropped_over_budget budget=%s", recall_budget_tokens
-                )
-                result["counts"] = counts
-                return result
+                if not recall:
+                    result["counts"] = counts
+                    return result
 
-            result["conversation"] = candidate["conversation"]
-            result["events"] = candidate["events"]
-            result["anchored"] = candidate["anchored"]
-            break
+                candidate = _inject_recall(conversation, recall, style)
+                if candidate is None:
+                    result["counts"] = counts
+                    return result
+
+                grew = None
+                if count_tokens is not None and recall_budget_tokens > 0:
+                    try:
+                        grew = count_tokens(candidate["conversation"]) - count_tokens(conversation)
+                    except Exception:
+                        grew = None
+                if grew is not None and grew > recall_budget_tokens:
+                    logger.info(
+                        "conversation_recall.over_budget grew=%s budget=%s top_k=%s",
+                        grew,
+                        recall_budget_tokens,
+                        k,
+                    )
+                    if index + 1 < len(attempts):
+                        continue
+                    logger.info(
+                        "conversation_recall.dropped_over_budget budget=%s", recall_budget_tokens
+                    )
+                    result["counts"] = counts
+                    return result
+
+                result["conversation"] = candidate["conversation"]
+                result["events"] = candidate["events"]
+                result["anchored"] = candidate["anchored"]
+                break
 
         counts["recalled_chunks"] = int(recall.get("sources") or 0)
         result["counts"] = counts

@@ -2262,8 +2262,17 @@ def _candidates(conn, scope: str, query: str, model, fetch: int, thread_id: str)
     if len(hits) < fetch:
         try:
             seen = {hit.chunk_id for hit in hits}
+            # Legs sized to the fetch: at the default 30 each, widening past 60 reads as an exhausted archive.
+            legs = max(fetch, config.TOP_K_LEXICAL, config.TOP_K_DENSE)
             for hit in retrieval.retrieve_hybrid(
-                conn, scope, query, k = fetch, model_name = model, mode = "hybrid"
+                conn,
+                scope,
+                query,
+                k = fetch,
+                model_name = model,
+                mode = "hybrid",
+                lexical_k = legs,
+                dense_k = legs,
             ):
                 if hit.chunk_id not in seen:
                     hits.append(hit)
@@ -2290,6 +2299,26 @@ def recall(
     forced: bool = False,
 ) -> Optional[tuple[str, list[dict]]]:
     """Lexical first, since recall is mostly exact match; no relevance floor, as weak matches beat none."""
+    with retrieval.query_vector_memo():
+        return _recall(
+            thread_id,
+            query,
+            top_k = top_k,
+            branch_messages = branch_messages,
+            extra_queries = extra_queries,
+            forced = forced,
+        )
+
+
+def _recall(
+    thread_id: str,
+    query: str,
+    *,
+    top_k: Optional[int] = None,
+    branch_messages: Optional[list[dict]] = None,
+    extra_queries: Optional[list[str]] = None,
+    forced: bool = False,
+) -> Optional[tuple[str, list[dict]]]:
     query = (query or "").strip()
     if not thread_id or not query or not enabled():
         return None
