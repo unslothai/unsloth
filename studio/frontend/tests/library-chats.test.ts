@@ -453,7 +453,7 @@ test("grid cards share a two-line title and a footer of contents over date", () 
   assert.match(items, /const CARD_TITLE =\s*"[^"]*font-medium text-ui-12p5 /);
   const footer = items.slice(items.indexOf("function CardFooter("), items.indexOf("const CARD_TITLE"));
   assert.match(footer, /flex-col items-start/);
-  assert.match(footer, /\{meta && <span className="w-full min-w-0 truncate">\{meta\}<\/span>\}\s*<span className="truncate">\{date\}<\/span>/);
+  assert.match(footer, /\{meta && <span className="w-full min-w-0 truncate">\{meta\}<\/span>\}\s*<span className="truncate text-ui-10p5">\{date\}<\/span>/);
   assert.doesNotMatch(footer, /·/);
   const cardOf = (start: string, end: string) =>
     items.slice(items.indexOf(start), items.indexOf(end));

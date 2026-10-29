@@ -1094,6 +1094,7 @@ export function ProjectsPage() {
             </Button>
             <Button
               type="button"
+              variant="dark"
               onClick={() => void commitChatRename()}
               disabled={
                 !chatNameDraft.trim() ||

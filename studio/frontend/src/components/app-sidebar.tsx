@@ -7097,6 +7097,7 @@ export function AppSidebar() {
           </Button>
           <Button
             type="button"
+            variant="dark"
             onClick={() => void commitRename()}
             disabled={!renameDirty}
           >

@@ -82,7 +82,7 @@ const CARD = cn(
   RAISED_SURFACE,
   CARD_SHADOW,
   // min-h-0 min-w-0: content must not size the card, or one long card grows its whole tab.
-  "group/chat relative flex min-h-0 min-w-0 cursor-pointer flex-col gap-2.5 self-stretch rounded-xl px-5 py-5 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
+  "group/chat relative flex min-h-0 min-w-0 cursor-pointer flex-col gap-2.5 self-stretch rounded-xl px-5 pt-5 pb-4.5 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
 );
 
 // Fits the fullest card (bare icon, two-line title, two-line footer); rows grow past it, never to a square.
@@ -1221,7 +1221,7 @@ function CardFooter({ meta, date, className }: { meta?: ReactNode; date: string;
       )}
     >
       {meta && <span className="w-full min-w-0 truncate">{meta}</span>}
-      <span className="truncate">{date}</span>
+      <span className="truncate text-ui-10p5">{date}</span>
     </div>
   );
 }
@@ -1244,9 +1244,9 @@ export function GroupHeading({
 }) {
   const t = useT();
   return (
-    <h3 className="mb-1 mt-7 flex items-baseline gap-2 pl-4 font-sans text-ui-13 first:mt-3">
-      <span className="font-medium text-foreground">{children}</span>
-      <span className="text-ui-12 text-muted-foreground">
+    <h3 className="mb-2 mt-7 flex items-baseline gap-2 border-b border-border pb-2 pl-4 font-sans text-ui-12 first:mt-3">
+      <span className="font-medium text-muted-foreground">{children}</span>
+      <span className="text-ui-11 text-muted-foreground/70">
         {countLabel ?? chatCount(count, t)}
       </span>
     </h3>
