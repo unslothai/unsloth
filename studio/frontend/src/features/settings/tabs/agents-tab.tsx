@@ -349,12 +349,15 @@ function CopyableCode({
   copied,
   onCopy,
   breakAll = true,
+  sensitive = false,
 }: {
   value: string;
   copyLabel: string;
   copied: boolean;
   onCopy: () => void;
   breakAll?: boolean;
+  /** Holds a real API key: reload-snapshot.js clears it instead of saving it to sessionStorage. */
+  sensitive?: boolean;
 }) {
   const t = useT();
 
@@ -366,6 +369,7 @@ function CopyableCode({
           "block min-w-0 whitespace-pre-wrap border border-border bg-background/70 py-2.5 pr-9 pl-4 font-mono text-ui-11 leading-relaxed text-foreground dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]",
           breakAll ? "break-all" : "break-words",
         )}
+        data-reload-snapshot-sensitive={sensitive ? "" : undefined}
       >
         {value}
       </LineBox>
@@ -391,9 +395,11 @@ function CopyableCode({
 function SubagentSection({
   agent,
   command,
+  sensitive,
 }: {
   agent: AgentDetails;
   command: string;
+  sensitive: boolean;
 }) {
   const t = useT();
   const prompt =
@@ -430,6 +436,7 @@ function SubagentSection({
           copyLabel={t("settings.agents.subagent.copySetupCommand")}
           copied={commandCopy.copied}
           onCopy={commandCopy.copy}
+          sensitive={sensitive}
         />
       </div>
 
@@ -1423,6 +1430,7 @@ export function AgentsTab() {
             copyLabel={t("settings.agents.copyGeneratedCommand")}
             copied={copied}
             onCopy={handleCopy}
+            sensitive={freshApiKey !== null}
           />
           {selectedAgent === "vscode" && (
             <p className="text-ui-11 leading-relaxed text-muted-foreground">
@@ -1447,6 +1455,7 @@ export function AgentsTab() {
           key={`${selectedAgent}:${commandModel}`}
           command={shellCommands.subagent}
           agent={selectedAgentDetails}
+          sensitive={freshApiKey !== null}
         />
 
         <p className="text-ui-11 leading-relaxed text-muted-foreground">

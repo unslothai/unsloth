@@ -67,3 +67,9 @@ test("revoking that key drops it, revoking another keeps it", () => {
   store.forgetIfRevoked("abcd1234");
   assert.equal(useFreshApiKeyStore.getState().key, null);
 });
+
+test("the Agents commands that can carry the key are kept out of reload snapshots", () => {
+  const tab = readSrc("features/settings/tabs/agents-tab.tsx");
+  assert.match(tab, /data-reload-snapshot-sensitive=\{sensitive \? "" : undefined\}/);
+  assert.equal(tab.match(/sensitive=\{freshApiKey !== null\}/g)?.length, 2);
+});
