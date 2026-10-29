@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { apiUrl } from "@/lib/api-base";
+import { apiUrl, getApiPort, isTauri } from "@/lib/api-base";
 import { setHfEndpoints } from "@/lib/hf-endpoint";
 import {
   isDetectionDeferred,
@@ -113,6 +113,17 @@ export function forgetMeasuredVerdict(): void {
   usePlatformStore.setState({ verdictStale: true, detectionDeferred: false });
 }
 
+// Backend not ready: use client detection, keep fetched=false, but never wipe an authoritative one.
+function localPlatformFallback(force?: boolean): DeviceType {
+  if (shouldKeepAuthoritativePlatform(force)) {
+    return usePlatformStore.getState().deviceType;
+  }
+  const deviceType = detectLocalPlatform();
+  const chatOnly = deviceType === "mac";
+  usePlatformStore.setState({ deviceType, chatOnly, fetched: false });
+  return deviceType;
+}
+
 // Bumped on a backend replacement so a read sent to the old backend is never joined.
 let backendGeneration = 0;
 
@@ -139,6 +150,10 @@ export async function fetchDeviceType(options?: {
 }): Promise<DeviceType> {
   const { fetched } = usePlatformStore.getState();
   if (fetched && !options?.force) return usePlatformStore.getState().deviceType;
+  // Desktop before server-port: port 0 never connects, so take the refused-fetch fallback.
+  if (isTauri && getApiPort() === null) {
+    return localPlatformFallback(options?.force);
+  }
   if (options?.force) return readHealth(options);
 
   let token: string | null;
@@ -287,14 +302,7 @@ async function readHealth(
       return deviceType;
     }
   } catch {
-    // Backend not ready: use client detection, keep fetched=false, but never wipe an authoritative one.
-    if (shouldKeepAuthoritativePlatform(options?.force)) {
-      return usePlatformStore.getState().deviceType;
-    }
-    const deviceType = detectLocalPlatform();
-    const chatOnly = deviceType === "mac";
-    usePlatformStore.setState({ deviceType, chatOnly, fetched: false });
-    return deviceType;
+    return localPlatformFallback(options?.force);
   }
 
   return usePlatformStore.getState().deviceType;
