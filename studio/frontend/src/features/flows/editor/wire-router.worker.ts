@@ -17,12 +17,15 @@ export interface RouteRequest {
   zones: WireRect[];
   edges: WireEdgeInput[];
   hopRadius: number;
+  /** Only some wires were sent (a drag): the rest keep their routes. */
+  partial?: boolean;
 }
 
 export interface RouteResponse {
   id: number;
   routes?: WireRoute[];
   ms?: number;
+  partial?: boolean;
   error?: string;
 }
 
@@ -49,6 +52,7 @@ scope.onmessage = (event) => {
       id: request.id,
       routes: [...result.routes.values()],
       ms: performance.now() - started,
+      partial: request.partial,
     });
   } catch (error) {
     scope.postMessage({

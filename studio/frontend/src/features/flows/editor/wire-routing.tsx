@@ -5,7 +5,7 @@ import {
   BaseEdge,
   type EdgeProps,
   type InternalNode,
-  getSmoothStepPath,
+  getBezierPath,
   useStore,
   useStoreApi,
 } from "@xyflow/react";
@@ -13,7 +13,9 @@ import { type CSSProperties, memo, useEffect } from "react";
 import { create } from "zustand";
 import { useCatalogStore } from "../stores/catalog-store";
 import type { RfEdge, RfNode } from "./derive-rf";
+import { WireDelete, WireHalo, useWireHover } from "./wire-delete";
 import { isWireObstacle, routingKey } from "./wire-obstacles";
+import { stretchToHandles, wireMidpoint, wiresToReroute } from "./wire-live";
 import type { RouteRequest, RouteResponse } from "./wire-router.worker";
 import {
   type WireEdgeInput,
@@ -67,10 +69,16 @@ function sameRoute(a: WireRoute, b: WireRoute): boolean {
   );
 }
 
-function applyRoutes(routes: WireRoute[], ms: number | null): void {
+function applyRoutes(
+  routes: WireRoute[],
+  ms: number | null,
+  partial = false,
+): void {
   const previous = useWireRoutes.getState().routes;
-  const next = new Map<string, WireRoute>();
-  let changed = routes.length !== previous.size;
+  const next = partial
+    ? new Map<string, WireRoute>(previous)
+    : new Map<string, WireRoute>();
+  let changed = !partial && routes.length !== previous.size;
   for (const route of routes) {
     const old = previous.get(route.id);
     if (old && sameRoute(old, route)) next.set(route.id, old);
@@ -161,7 +169,11 @@ function send(request: RouteRequest): void {
       undefined,
       request.zones,
     );
-    applyRoutes([...result.routes.values()], performance.now() - started);
+    applyRoutes(
+      [...result.routes.values()],
+      performance.now() - started,
+      request.partial,
+    );
     return;
   }
   if (!worker) {
@@ -171,7 +183,11 @@ function send(request: RouteRequest): void {
     worker.onmessage = (event: MessageEvent<RouteResponse>) => {
       inflight = false;
       if (event.data.routes)
-        applyRoutes(event.data.routes, event.data.ms ?? null);
+        applyRoutes(
+          event.data.routes,
+          event.data.ms ?? null,
+          event.data.partial,
+        );
       pump();
     };
   }
@@ -187,24 +203,51 @@ function pump(): void {
   send(build());
 }
 
+// A drag sends at most one request per animation frame.
+let frame = 0;
+function pumpNextFrame(): void {
+  if (frame || typeof requestAnimationFrame === "undefined") return pump();
+  frame = requestAnimationFrame(() => {
+    frame = 0;
+    pump();
+  });
+}
+
 /**
  * Routes the canvas wires off the main thread whenever nodes or edges change. Bus mode only.
- * While `paused` (a drag or resize) nothing is routed: the moved card's wires follow it as plain
- * steps and the rest hold still, then one pass runs on release.
+ * While cards move (`moving`), only their wires and the ones sharing a lane with them re-route,
+ * once per frame; the rest keep their routes. One full pass runs on release.
  */
 export const WireRouterController = memo(function WireRouterController({
   scope,
-  paused = false,
+  moving = null,
 }: {
   scope: string;
-  paused?: boolean;
+  moving?: ReadonlySet<string> | null;
 }) {
   const store = useStoreApi<RfNode, RfEdge>();
   const nodesKey = useStore((s) => routingKey(s.nodes));
   const edges = useStore((s) => s.edges);
 
   useEffect(() => {
-    if (!edges || paused) return;
+    if (!edges) return;
+    if (moving?.size) {
+      const live = wiresToReroute(store.getState().edges, moving);
+      // A note or a frame on its own moves no wire.
+      if (!live.length) return;
+      pending = () => ({
+        id: ++nextId,
+        scope,
+        hopRadius: HOP_RADIUS,
+        partial: true,
+        ...buildRequest(
+          store.getState().nodeLookup,
+          wiresToReroute(store.getState().edges, moving),
+        ),
+      });
+      pumpNextFrame();
+      return;
+    }
     pending = () => ({
       id: ++nextId,
       scope,
@@ -212,7 +255,7 @@ export const WireRouterController = memo(function WireRouterController({
       ...buildRequest(store.getState().nodeLookup, store.getState().edges),
     });
     pump();
-  }, [nodesKey, edges, scope, store, paused]);
+  }, [nodesKey, edges, scope, store, moving]);
 
   useEffect(
     () => () => {
@@ -275,6 +318,7 @@ function BusEdgeImpl({
       ends ?? [source, target],
     ),
   );
+  const { hover, enter, leave } = useWireHover();
   const flow = data?.kind === "flow";
   const base: CSSProperties = flow
     ? {
@@ -285,8 +329,8 @@ function BusEdgeImpl({
       }
     : {
         stroke: color,
-        strokeWidth: selected ? 3 : 1.75,
-        opacity: selected ? 1 : 0.75,
+        strokeWidth: selected ? 2.5 : 1.75,
+        opacity: selected || hover ? 1 : 0.75,
       };
   const style: CSSProperties = {
     ...base,
@@ -298,30 +342,60 @@ function BusEdgeImpl({
         ? { opacity: DIM_OPACITY }
         : {}),
   };
-  const points = route
-    ? alignToHandles(route, sourceX, sourceY, targetX, targetY)
-    : null;
+  // A blocked route is a straight line through cards: draw the curve instead.
+  const exact =
+    route && !route.blocked
+      ? alignToHandles(route, sourceX, sourceY, targetX, targetY)
+      : null;
+  const points =
+    exact ??
+    (route && !route.blocked
+      ? stretchToHandles(route.points, sourceX, sourceY, targetX, targetY)
+      : null);
+  const remove = (x: number, y: number) => (
+    <WireDelete
+      id={id}
+      x={x}
+      y={y}
+      show={hover || !!selected}
+      onEnter={enter}
+      onLeave={leave}
+    />
+  );
   if (!(route && points)) {
-    const [path] = getSmoothStepPath({
+    // Until a route lands (or when none exists), a curve: a step path would cut through cards.
+    const [path, labelX, labelY] = getBezierPath({
       sourceX,
       sourceY,
       sourcePosition,
       targetX,
       targetY,
       targetPosition,
-      borderRadius: CORNER_RADIUS,
-      offset: 20,
     });
-    return <BaseEdge id={id} path={path} style={style} />;
+    return (
+      // biome-ignore lint/a11y/noStaticElementInteractions: hover only reveals the × button
+      <g onMouseEnter={enter} onMouseLeave={leave}>
+        {selected && <WireHalo path={path} />}
+        <BaseEdge id={id} path={path} style={style} />
+        {remove(labelX, labelY)}
+      </g>
+    );
   }
+  // Hops and junction dots belong to the settled route only.
+  const path = buildWirePath(
+    points,
+    exact ? route.hops : [],
+    HOP_RADIUS,
+    CORNER_RADIUS,
+  );
+  const mid = wireMidpoint(points);
   return (
-    <>
-      <BaseEdge
-        id={id}
-        path={buildWirePath(points, route.hops, HOP_RADIUS, CORNER_RADIUS)}
-        style={style}
-      />
-      {route.junctions.map((point) => (
+    // biome-ignore lint/a11y/noStaticElementInteractions: hover only reveals the × button
+    <g onMouseEnter={enter} onMouseLeave={leave}>
+      {selected && <WireHalo path={path} />}
+      <BaseEdge id={id} path={path} style={style} />
+      {remove(mid.x, mid.y)}
+      {(exact ? route.junctions : []).map((point) => (
         <circle
           key={`${point.x}:${point.y}`}
           cx={point.x}
@@ -332,7 +406,7 @@ function BusEdgeImpl({
           className="pointer-events-none"
         />
       ))}
-    </>
+    </g>
   );
 }
 

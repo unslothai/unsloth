@@ -49,6 +49,7 @@ import {
   type RfNode,
   type WireInfo,
 } from "./derive-rf";
+import { useWireReconnect } from "./use-wire-reconnect";
 import { addFileNodes } from "./file-drop";
 import { FlowEdgeView } from "./flow-edge";
 import { FlowNodeView } from "./flow-node";
@@ -178,6 +179,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
   const bus = useUiStore((s) => s.wireStyle === "bus");
   const flowId = useDocStore((s) => s.flowId);
   const { screenToFlowPosition, flowToScreenPosition } = useReactFlow();
+  const wireReconnect = useWireReconnect(!readOnly);
 
   const deriver = useRef<RfDeriver | null>(null);
   deriver.current ??= new RfDeriver();
@@ -193,6 +195,10 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
   sizesRef.current = sizes;
   const dragRef = useRef<Positions | null>(null);
   dragRef.current = drag;
+  const moving = useMemo(
+    () => (drag ? new Set(Object.keys(drag)) : null),
+    [drag],
+  );
 
   const selectedSet = useMemo(
     () => new Set([...selectedNodes, ...selectedEdges]),
@@ -586,6 +592,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
         onConnectEnd={onConnectEnd}
         isValidConnection={isValidConnection}
         onDelete={onDelete}
+        {...wireReconnect}
         onNodeDoubleClick={onNodeDoubleClick}
         onEdgeDoubleClick={onEdgeDoubleClick}
         onNodeMouseEnter={bus ? onNodeMouseEnter : undefined}
@@ -633,7 +640,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
         />
         <SelectedNodeToolbar readOnly={readOnly} />
         {bus && (
-          <WireRouterController scope={flowId ?? ""} paused={drag !== null} />
+          <WireRouterController scope={flowId ?? ""} moving={moving} />
         )}
       </ReactFlow>
     </div>
