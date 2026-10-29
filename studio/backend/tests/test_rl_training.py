@@ -2032,3 +2032,33 @@ def test_gemma_fold_keeps_the_system_prompt_as_given():
     assert fold_system_into_user(rows)[0]["prompt"] == [
         {"role": "user", "content": "Think first.\n\n\n1+1?"}
     ]
+
+
+@pytest.mark.parametrize("continues_adapter", [False, True])
+def test_dpo_warns_about_its_reference_only_when_continuing_an_adapter(
+    monkeypatch, continues_adapter
+):
+    # A fresh LoRA run has peft_config too; its base model is the right reference.
+    @dataclasses.dataclass
+    class _DPOConfig:
+        output_dir: str = None
+        beta: float = 0.1
+        max_length: int = None
+
+    fake = types.SimpleNamespace(DPOConfig = _DPOConfig, DPOTrainer = lambda **kw: kw)
+    monkeypatch.setitem(sys.modules, "trl", fake)
+    monkeypatch.setitem(sys.modules, "unsloth", types.SimpleNamespace(PatchDPOTrainer = lambda: None))
+    warnings = []
+    build_rl_trainer(
+        "dpo",
+        model = types.SimpleNamespace(peft_config = {"default": object()}),
+        tokenizer = None,
+        train_dataset = None,
+        eval_dataset = None,
+        config_args = {"output_dir": "o", "max_seq_length": 1024},
+        settings = {},
+        reward_specs = [],
+        on_warning = warnings.append,
+        continues_adapter = continues_adapter,
+    )
+    assert bool(warnings) is continues_adapter
