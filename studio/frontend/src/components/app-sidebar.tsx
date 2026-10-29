@@ -249,6 +249,7 @@ import {
   removeCustomSectionWithUndo,
   sectionKeyLanding,
   useSectionDrag,
+  prefetchChatPage,
 } from "@/features/chat";
 import {
   imeOwnsInputKeydown,
@@ -5949,6 +5950,8 @@ export function AppSidebar() {
                     if (chatDisabled) return;
                     openNewChat(null);
                   }}
+                  onPointerEnter={prefetchChatPage}
+                  onFocus={prefetchChatPage}
                   className={cn(
                     "flex min-w-0 items-center gap-[calc(6px*var(--ui-space-scale,1))] select-none transition-opacity",
                     chatDisabled && "pointer-events-none",
@@ -6073,6 +6076,7 @@ export function AppSidebar() {
                   : t("shell.navigation.newChat")
               }
               spinner={anyChatRunning && !isChatRoute}
+              onIntent={prefetchChatPage}
               // On every route: the waiting row can be folded away, behind Show more, or scrolled off.
               waiting={
                 anyChatWaiting
