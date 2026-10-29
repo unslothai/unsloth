@@ -1094,6 +1094,21 @@ def _torchcodec_index_url(torch_version: "str | None", spec: str = "") -> "str |
     return _torch_accelerator_index_url(torch_version, _TORCHCODEC_INDEX_TAGS)
 
 
+def _torchao_index_url(torch_version: "str | None") -> "str | None":
+    """The torchao index serving the resident torch's build, or None to stay unpinned.
+
+    Windows CUDA is the one case excluded: every cuNNN leaf publishes torchao for Linux only,
+    so a pin there is a guaranteed wasted resolve, and the untagged wheel the retry installs
+    then fails the next run's tag check, forcing a reinstall on every update. PyPI's
+    py3-none-any wheel carries the same Python sources; what the leaf adds is Linux .so files.
+    The cpu and xpu leaves do serve Windows a py3-none-any wheel, so those keep their pin.
+    """
+    tag = _torch_index_tag(torch_version)
+    if IS_WINDOWS and tag and tag.startswith("cu"):
+        return None
+    return _torch_accelerator_index_url(torch_version)
+
+
 def _torch_index_tag(
     torch_version: "str | None", substitutions: "dict[str, str] | None" = None
 ) -> "str | None":
@@ -5434,7 +5449,7 @@ def _install_torchao_for_torch(torch_version: "str | None", default_index: bool 
     """
     spec = _select_torchao_spec(torch_version)
     # See _TORCHAO_DEFAULT_SPEC. Unlike torchcodec, rocm leaves do publish torchao.
-    index = None if default_index else _torch_accelerator_index_url(torch_version)
+    index = None if default_index else _torchao_index_url(torch_version)
     # --no-deps guards the second caller, which runs right after the torch repair.
     args = ["--no-deps", "--no-cache-dir"]
     needs_reinstall = _pin_needs_reinstall(spec, _torch_index_tag(torch_version) if index else "")
@@ -5498,7 +5513,7 @@ def _resync_torch_coupled_packages(label_before: str) -> bool:
         try:
             _spec = _select_torchao_spec(_label_after)
             # Same pin as step 4, or PyPI's build lands over it; ==0.18.0 never equals 0.18.0+cu130.
-            _ao_index = _torch_accelerator_index_url(_label_after)
+            _ao_index = _torchao_index_url(_label_after)
             _ao_args = ["--force-reinstall", "--no-deps", "--no-cache-dir"]
             if _pin_needs_reinstall(_spec, _torch_index_tag(_label_after) if _ao_index else ""):
                 _note(f"torch {_label_after} after repair -- reinstalling {_spec}")
