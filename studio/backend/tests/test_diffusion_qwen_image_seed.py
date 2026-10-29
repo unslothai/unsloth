@@ -19,8 +19,8 @@ LOADED = {
 # "estimates={'model_dense_mib': 30603, 'companion_dense_mib': 9151, 'text_encoder_dense_mib': 8864, ...}"
 FLAT = dict(model_dense_mib = 30603, companion_dense_mib = 9151, text_encoder_dense_mib = 8864)
 WINDOW = 1620  # "streams 60 offload groups with event-fenced prefetch (2 ahead, 1620 MiB window)"
-RESIDENT_HEADROOM = 7168  # 6032 x 1.15, rounded up to 256 MiB
-STREAMED_HEADROOM = 4608  # 3824 x 1.15, rounded up to 256 MiB
+RESIDENT_HEADROOM = 7168  # seed x 1.15, rounded up to 256 MiB
+STREAMED_HEADROOM = 4608
 BUDGETS = [(9550, 12288), (13638, 16376)]
 ENVS = (
     "MEASURED_ACTIVATION_ENV",
@@ -96,12 +96,10 @@ def test_seed_values(monkeypatch):
     assert m("qwen-image", "max") == RESIDENT_HEADROOM
     assert m("qwen-image", "default", streamed = True) == STREAMED_HEADROOM
     assert m("qwen-image", "default", width = 1328, height = 1328) > RESIDENT_HEADROOM
-    # the dense eager table and the off tier are untouched
     assert m("qwen-image", "off") is None
     assert m("qwen-image", "off", dense_transformer_mib = 38968) == 5120
     # GGUF / packed denoisers (no static seed) still answer from a learned peak alone
     assert m("qwen-image", "default", static_seed = False) is None
-    # Edit keeps its own seeds
     assert m("qwen-image-edit", "default") == RESIDENT_HEADROOM
     assert m("qwen-image-edit", "default", streamed = True) == STREAMED_HEADROOM
 
@@ -137,7 +135,6 @@ def test_kill_switch_restores_the_all_streamed_plan(pipe, monkeypatch, budget, t
     assert dm.measured_image_runtime_mib("qwen-image", "default", streamed = True) is None
     plan = _plan(budget, total)
     assert _refine(pipe, plan) is plan
-    # the other Qwen families keep their seeds under this switch
     assert dm.measured_image_runtime_mib("qwen-image-edit", "default") == RESIDENT_HEADROOM
 
 
