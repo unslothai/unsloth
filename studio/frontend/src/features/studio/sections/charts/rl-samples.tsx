@@ -10,9 +10,9 @@ import { cn } from "@/lib/utils";
 import { ArrowLeft01Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useRef, useState } from "react";
+import { keepNewest, shownIndex } from "./rl-sample-groups";
 
 const POLL_MS = 5000;
-const KEEP_GROUPS = 12;
 
 function scoreTone(value: number | null): string {
   if (value === null || value === 0) {
@@ -97,14 +97,14 @@ export function RlSamplesCard({
 }): ReactElement | null {
   const t = useT();
   const [groups, setGroups] = useState<RlSampleGroup[]>([]);
-  const [index, setIndex] = useState<number | null>(null);
+  const [selectedSeq, setSelectedSeq] = useState<number | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [pollError, setPollError] = useState<string | null>(null);
   const lastSeq = useRef(0);
 
   useEffect(() => {
     setGroups([]);
-    setIndex(null);
+    setSelectedSeq(null);
     setLoaded(false);
     setPollError(null);
     lastSeq.current = 0;
@@ -120,7 +120,7 @@ export function RlSamplesCard({
         setPollError(null);
         if (fresh.length > 0) {
           lastSeq.current = fresh[fresh.length - 1].seq;
-          setGroups((prev) => [...prev, ...fresh].slice(-KEEP_GROUPS));
+          setGroups((prev) => keepNewest(prev, fresh));
         }
       } catch (err) {
         // Shown, and retried on the next tick while training.
@@ -173,8 +173,7 @@ export function RlSamplesCard({
       </Card>
     );
   }
-  // null follows the newest group as it arrives.
-  const shown = index === null ? groups.length - 1 : index;
+  const shown = shownIndex(groups, selectedSeq);
   const group = groups[shown];
   const best = Math.max(...group.items.map((i) => i.total));
 
@@ -193,7 +192,7 @@ export function RlSamplesCard({
               variant="ghost"
               aria-label={t("rl.samples.older")}
               disabled={shown === 0}
-              onClick={() => setIndex(shown - 1)}
+              onClick={() => setSelectedSeq(groups[shown - 1].seq)}
             >
               <HugeiconsIcon icon={ArrowLeft01Icon} className="size-3.5" />
             </Button>
@@ -207,7 +206,11 @@ export function RlSamplesCard({
               aria-label={t("rl.samples.newer")}
               disabled={shown === groups.length - 1}
               onClick={() =>
-                setIndex(shown + 1 === groups.length - 1 ? null : shown + 1)
+                setSelectedSeq(
+                  shown + 1 === groups.length - 1
+                    ? null
+                    : groups[shown + 1].seq,
+                )
               }
             >
               <HugeiconsIcon icon={ArrowRight01Icon} className="size-3.5" />
