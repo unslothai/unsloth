@@ -262,7 +262,9 @@ def _console_script_wheel(directory: Path, name: str) -> None:
     with zipfile.ZipFile(directory / f"{name}-1.0-py3-none-any.whl", "w") as wheel:
         for path, text in files.items():
             wheel.writestr(path, text)
-        wheel.writestr(f"{info}/RECORD", "".join(f"{path},,\n" for path in [*files, f"{info}/RECORD"]))
+        wheel.writestr(
+            f"{info}/RECORD", "".join(f"{path},,\n" for path in [*files, f"{info}/RECORD"])
+        )
 
 
 def test_a_second_pip_install_keeps_its_commands_and_namespace_modules(tmp_path):
@@ -283,7 +285,16 @@ def test_a_second_pip_install_keeps_its_commands_and_namespace_modules(tmp_path)
     )
     for name in ("alpha", "beta"):
         installed = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--no-index", "--find-links", str(wheels), name],
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--no-index",
+                "--find-links",
+                str(wheels),
+                name,
+            ],
             env = env,
             capture_output = True,
             text = True,

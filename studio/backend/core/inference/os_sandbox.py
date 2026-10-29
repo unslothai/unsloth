@@ -42,7 +42,9 @@ def _pip_prefix_lib_dirs() -> tuple[str, ...]:
     else:
         scheme = "nt" if os.name == "nt" else "posix_prefix"
     paths = sysconfig.get_paths(scheme, vars = {"base": os.sep, "platbase": os.sep})
-    return tuple(dict.fromkeys(os.path.relpath(paths[key], os.sep) for key in ("purelib", "platlib")))
+    return tuple(
+        dict.fromkeys(os.path.relpath(paths[key], os.sep) for key in ("purelib", "platlib"))
+    )
 
 
 _PIP_PREFIX_LIB_DIRS = _pip_prefix_lib_dirs()

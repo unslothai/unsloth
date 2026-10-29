@@ -299,7 +299,9 @@ def test_pip_gets_a_writable_prefix_inside_the_workdir(prepared):
     assert "PIP_TARGET" not in argv
     pythonpath = argv[argv.index("PYTHONPATH") + 1].split(os.pathsep)
     assert pythonpath[-1] == packages
-    assert sysconfig.get_path("purelib", vars = {"base": packages, "platbase": packages}) in pythonpath
+    assert (
+        sysconfig.get_path("purelib", vars = {"base": packages, "platbase": packages}) in pythonpath
+    )
 
 
 def test_system_directories_are_bound_whole_and_never_file_by_file(prepared):
