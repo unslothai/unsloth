@@ -2,6 +2,34 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export const en = {
+  chatBackground: {
+    title: "Background image",
+    description: "A local image for your workspace. JPEG, PNG or WebP, up to 20 MiB. Text stays readable automatically.",
+    upload: "Upload image",
+    replace: "Replace image",
+    remove: "Remove background",
+    reset: "Reset adjustments",
+    effect: "Effect",
+    none: "None",
+    dither: "Dither",
+    ascii: "ASCII",
+    halftone: "Halftone",
+    scanlines: "Scanlines",
+    visibility: "Visibility",
+    blur: "Image blur",
+    position: "Position",
+    positionValue: "Horizontal {x}%, vertical {y}%",
+    newChat: "New chat",
+    conversation: "Conversation",
+    prompt: "What would you like to explore?",
+    response: "Your conversation stays clear over the background.",
+    storageError: "Could not save the background. Check available browser storage.",
+    fileError: "Choose a JPEG, PNG or WebP image under 20 MiB.",
+    dimensionsError: "Choose an image smaller than 40 megapixels.",
+    decodeError: "Could not decode this image. Try another file.",
+    effectError: "Could not render the effect. Try None or choose another image.",
+  },
+
   linkMenu: {
     openInBrowser: "Open in Unsloth browser",
     openExternal: "Open in external browser",

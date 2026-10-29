@@ -5,6 +5,34 @@ import type { DeepPartialMessageTree } from "../types";
 import { en } from "./en.ts";
 
 export const ar = {
+  chatBackground: {
+    title: "صورة الخلفية",
+    description: "صورة محلية لمساحة عملك. JPEG أو PNG أو WebP، حتى 20 MiB. يبقى النص مقروءًا تلقائيًا.",
+    upload: "رفع صورة",
+    replace: "استبدال الصورة",
+    remove: "إزالة الخلفية",
+    reset: "إعادة ضبط التعديلات",
+    effect: "التأثير",
+    none: "بلا",
+    dither: "تنقيط",
+    ascii: "ASCII",
+    halftone: "نصف نغمة",
+    scanlines: "خطوط المسح",
+    visibility: "الظهور",
+    blur: "تمويه الصورة",
+    position: "الموضع",
+    positionValue: "أفقي {x}%، عمودي {y}%",
+    newChat: "دردشة جديدة",
+    conversation: "محادثة",
+    prompt: "ماذا تود استكشافه؟",
+    response: "تبقى محادثتك واضحة فوق الخلفية.",
+    storageError: "تعذر حفظ الخلفية. تحقق من مساحة تخزين المتصفح.",
+    fileError: "اختر صورة JPEG أو PNG أو WebP أصغر من 20 MiB.",
+    dimensionsError: "اختر صورة أصغر من 40 ميغابكسل.",
+    decodeError: "تعذرت قراءة الصورة. جرّب ملفًا آخر.",
+    effectError: "تعذر إنشاء التأثير. اختر بلا أو صورة أخرى.",
+  },
+
   linkMenu: {
     openInBrowser: "فتح في متصفح Unsloth",
     openExternal: "فتح في متصفح خارجي",

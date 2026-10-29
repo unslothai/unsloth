@@ -4,6 +4,34 @@
 import { en } from "./en.ts";
 
 export const it = {
+  chatBackground: {
+    title: "Immagine di sfondo",
+    description: "Un’immagine locale per il tuo spazio di lavoro. JPEG, PNG o WebP, fino a 20 MiB. Il testo rimane automaticamente leggibile.",
+    upload: "Carica immagine",
+    replace: "Sostituisci immagine",
+    remove: "Rimuovi sfondo",
+    reset: "Ripristina regolazioni",
+    effect: "Effetto",
+    none: "Nessuno",
+    dither: "Dithering",
+    ascii: "ASCII",
+    halftone: "Mezzitoni",
+    scanlines: "Linee di scansione",
+    visibility: "Visibilità",
+    blur: "Sfocatura immagine",
+    position: "Posizione",
+    positionValue: "Orizzontale {x}%, verticale {y}%",
+    newChat: "Nuova chat",
+    conversation: "Conversazione",
+    prompt: "Cosa vorresti esplorare?",
+    response: "La conversazione rimane leggibile sullo sfondo.",
+    storageError: "Impossibile salvare lo sfondo. Controlla lo spazio del browser.",
+    fileError: "Scegli un’immagine JPEG, PNG o WebP inferiore a 20 MiB.",
+    dimensionsError: "Scegli un’immagine inferiore a 40 megapixel.",
+    decodeError: "Impossibile leggere l’immagine. Prova un altro file.",
+    effectError: "Impossibile creare l’effetto. Scegli Nessuno o un’altra immagine.",
+  },
+
   linkMenu: {
     openInBrowser: "Apri nel browser di Unsloth",
     openExternal: "Apri nel browser esterno",

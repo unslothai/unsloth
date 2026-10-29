@@ -58,6 +58,11 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.profile.stats.longestStreak",
   ],
   appearance: [
+    "chatBackground.title",
+    "chatBackground.effect",
+    "chatBackground.visibility",
+    "chatBackground.blur",
+    "chatBackground.position",
     "settings.appearance.theme.label",
     "settings.appearance.palette.label",
     "settings.appearance.trickOrTreat.label",
