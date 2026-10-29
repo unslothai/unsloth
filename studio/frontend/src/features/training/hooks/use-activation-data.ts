@@ -122,10 +122,12 @@ export function useActivationData({
 
     if (!isTraining) return;
 
+    // A tick already awaiting its fetch when this effect is torn down must not schedule another.
+    let cancelled = false;
     const schedule = () => {
       timerRef.current = setTimeout(async () => {
         await doFetch();
-        if (mountedRef.current && isTraining) {
+        if (mountedRef.current && !cancelled) {
           schedule();
         }
       }, pollIntervalMs);
@@ -134,6 +136,7 @@ export function useActivationData({
     schedule();
 
     return () => {
+      cancelled = true;
       if (timerRef.current !== null) {
         clearTimeout(timerRef.current);
         timerRef.current = null;

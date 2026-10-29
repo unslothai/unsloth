@@ -65,3 +65,9 @@ test("Neuron Health uses the shared stats and the heatmap marks pinned columns",
   assert.match(heatmap, /new Set\(metadata\?\.pinned_channels \?\? \[\]\)/);
   assert.match(heatmap, /if \(!pinnedChannels\.has\(ch\)\) return;/);
 });
+
+test("a poll tick in flight when training ends does not reschedule", () => {
+  const hook = readSrc("features/training/hooks/use-activation-data.ts");
+  assert.match(hook, /if \(mountedRef\.current && !cancelled\) \{\s*schedule\(\);/);
+  assert.match(hook, /return \(\) => \{\s*cancelled = true;/);
+});
