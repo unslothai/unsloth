@@ -1,6 +1,35 @@
 ; Unsloth NSIS installer hooks
 
 !macro NSIS_HOOK_PREINSTALL
+  ; The in-app updater starts this per-user installer unelevated, so an install the user put
+  ; under Program Files fails at the first File with "Error opening file for writing".
+  ; Relaunch elevated once, same arguments and directory; a declined prompt falls through.
+  ${If} $UpdateMode = 1
+    Push $0
+    Push $1
+    System::Call 'shell32::IsUserAnAdmin() i .r0'
+    ClearErrors
+    ${GetOptions} $CMDLINE "/UNSLOTHRELAUNCH" $1
+    ${If} ${Errors}
+    ${AndIf} $0 = 0
+      ClearErrors
+      FileOpen $1 "$INSTDIR\.unsloth-update-write-probe" w
+      ${If} ${Errors}
+        ${GetParameters} $1
+        ClearErrors
+        ExecShell "runas" "$EXEPATH" "/UNSLOTHRELAUNCH $1 /D=$INSTDIR"
+        ${IfNot} ${Errors}
+          Quit
+        ${EndIf}
+      ${Else}
+        FileClose $1
+        Delete "$INSTDIR\.unsloth-update-write-probe"
+      ${EndIf}
+    ${EndIf}
+    Pop $1
+    Pop $0
+  ${EndIf}
+
   ; Windows bundles carry only install.ps1 now. NSIS writes the current resource manifest
   ; and deletes nothing, so an in-place upgrade from a release that shipped both would keep
   ; install.sh forever and make the non-recursive RMDir "$INSTDIR" fail at uninstall.
