@@ -86,7 +86,7 @@ function treeHash() {
         digest.update(`D\0${relPath}\n`);
         walk(path, relPath);
       } else if (!PRUNED.has(name)) {
-        digest.update(`F\0${relPath}\0${st.size}\0${fileHash(path)}\n`);
+        digest.update(`F\0${relPath}\0${st.size}\0${st.mode & 0o111}\0${fileHash(path)}\n`);
       }
     }
   };

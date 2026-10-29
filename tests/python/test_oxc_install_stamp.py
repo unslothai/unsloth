@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import sys
 import json
 import os
 import re
@@ -157,6 +158,19 @@ def test_helper_fails_open_on_any_doubt(tmp_path, name):
     assert _helper(oxc, "check", env) == 0
     TAMPERS[name](oxc)
     assert _helper(oxc, "check", env) == 1
+
+
+@needs_node
+@pytest.mark.skipif(sys.platform == "win32", reason = "no POSIX exec bits")
+def test_helper_fails_open_when_an_exec_bit_is_lost(tmp_path):
+    oxc = _oxc(tmp_path)
+    _template(oxc)
+    binary = oxc / "node_modules" / "oxlint" / "binding.node"
+    binary.chmod(0o755)
+    assert _helper(oxc, "write") == 0
+    assert _helper(oxc, "check") == 0
+    binary.chmod(0o644)
+    assert _helper(oxc, "check") == 1
 
 
 @needs_node
