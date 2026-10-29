@@ -65,6 +65,7 @@ function servedSubset(st: InferenceStatusResponse): Record<string, unknown> {
     "parallel_slots",
     "gguf_variant",
     "n_cpu_moe",
+    "offloaded_layers",
   ] as const;
   const out: Record<string, unknown> = {};
   for (const k of keys) {

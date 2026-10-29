@@ -477,6 +477,10 @@ export interface ServedStatus {
   gpu_placement_paravirtual?: boolean | null;
   /** The context window the server runs, after any fit clamp. */
   context_length?: number | null;
+  /** Layers llama.cpp reports it put on a GPU, when it reported a count. */
+  offloaded_layers?: number | null;
+  /** A GPU was detected but llama.cpp's GPU backend did not start. */
+  gpu_backend_unavailable?: boolean | null;
 }
 
 const NGRAM_FLAGS = [
@@ -685,6 +689,12 @@ export function servedMismatch(
   // config under many GPU labels.
   if (variant.load.gpu_memory_mode === "manual" && st.gpu_placement_paravirtual)
     return "this Mac's GPU is virtualised, so every load runs on the CPU";
+  // A CPU-only build still loads a manual placement, so rows like "All on GPU" would chart CPU decoding.
+  const wantGpu = variant.load.gpu_memory_mode === "manual" && (variant.load.gpu_layers ?? 0) > 0;
+  if (wantGpu && st.gpu_backend_unavailable)
+    return "llama.cpp's GPU backend did not start, so this load ran on the CPU";
+  if (wantGpu && st.offloaded_layers === 0)
+    return "The server placed no layers on the GPU";
   const want = variant.load.speculative_type;
   // Only rows that pick a forced mode can be let down by a fallback; the Auto row asks Studio to
   // choose, so its fallback (ngram, speculation off) is the Studio-default config we mean to measure.
