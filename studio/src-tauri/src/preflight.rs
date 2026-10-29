@@ -1193,8 +1193,7 @@ exit 1
         };
         let ready = |probe: ManagedProbe| matches!(probe, ManagedProbe::Ready { .. });
 
-        // Miss at launch: the launch probe asks both before any preflight, which asks nothing more
-        // and caches the answer.
+        // Miss at launch: asked before any preflight, which then starts no Python.
         install_launch_cli_probe_like_setup(bin.clone());
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while capability_calls() == 0 && std::time::Instant::now() < deadline {
@@ -1208,13 +1207,13 @@ exit 1
         assert!(ready(probe_managed_bin(bin.clone()).await));
         assert_eq!(read_calls(), "-h\n");
 
-        // Hit at launch: the launch probe asks `-h` only, as before.
+        // Hit at launch: `-h` only.
         fs::write(&calls, "").unwrap();
         install_launch_cli_probe_like_setup(bin.clone());
         assert!(ready(probe_managed_bin(bin.clone()).await));
         assert_eq!(read_calls(), "-h\n");
 
-        // The tree changed after the launch probe: its answer is not used, the preflight asks again.
+        // Tree changed after the launch probe: asked again.
         remove_managed_capability_cache();
         fs::write(&calls, "").unwrap();
         install_launch_cli_probe_like_setup(bin.clone());
@@ -1222,7 +1221,7 @@ exit 1
         assert!(ready(probe_managed_bin(bin.clone()).await));
         assert_eq!(capability_calls(), 2, "{}", read_calls());
 
-        // A launch capability probe that failed is asked again, and its verdict is the preflight's.
+        // A failed launch capability probe: asked again.
         remove_managed_capability_cache();
         fs::write(&calls, "").unwrap();
         fs::write(&fail_once, "").unwrap();

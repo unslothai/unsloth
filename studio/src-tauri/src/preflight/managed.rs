@@ -1106,8 +1106,7 @@ pub(super) fn begin_launch_cli_probe() -> tokio::sync::oneshot::Sender<Option<La
     sender
 }
 
-/// The tree a capability ask would be cached under, when the cache has no answer for it.
-/// A miss here is one at the first preflight too, unless the tree changes in between.
+/// The fingerprint to ask capabilities against, when the cache has no answer for it.
 fn capability_cache_miss(bin: &Path) -> Option<ManagedBinFingerprint> {
     managed_bin_fingerprint(bin).filter(|fingerprint| read_cached_capability(fingerprint).is_none())
 }
@@ -1174,9 +1173,8 @@ pub(super) fn install_launch_cli_probe_task(
 
 #[derive(Default)]
 struct LaunchProbeReuse {
-    /// A recent passing launch `-h` on this CLI.
     help_passed: bool,
-    /// Its capability answer, only when it was asked against the tree the preflight sees.
+    /// Only when asked against the tree the preflight sees.
     capability: Option<DesktopCapability>,
 }
 
@@ -1196,7 +1194,6 @@ async fn take_launch_cli_probe(
     let Ok(Some(probe)) = pending.await else {
         return LaunchProbeReuse::default();
     };
-    // Resolves after both spawns of a miss probe have finished.
     let passed = matches!(probe.handle.await, Ok(Ok(true)));
     if probe.bin != bin {
         info!(
@@ -1272,7 +1269,6 @@ pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
         (help_probe.await, None)
     } else if let Some(capability) = launch.capability {
         drop(help_probe);
-        // The launch probe asked both on this tree; `-h` passed, so its answer stands as one from here.
         (Ok(true), Some(Ok(Some(capability))))
     } else {
         let (help, capability) = tokio::join!(help_probe, probe_cli_capability(&bin));
