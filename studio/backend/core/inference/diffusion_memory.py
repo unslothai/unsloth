@@ -6750,7 +6750,6 @@ class _GroupPinner:
         self._done = {id(g): threading.Event() for g in groups}
         self._stop = threading.Event()
         self._lock = threading.Lock()
-        # Pinners that must finish first; ``late`` = the render does not wait for this one.
         self.after: list = []
         self.late = False
         self._thread = threading.Thread(target = self._entry, name = "unsloth-offload-pin", daemon = True)
@@ -7013,11 +7012,8 @@ LATE_EXPERT_PIN_ENV = "UNSLOTH_VIDEO_LATE_EXPERT_PIN"
 
 
 def defer_late_expert_pins(pipe: Any, late_modules: Any, logger: Any = None) -> int:
-    """Pin ``late_modules`` after every other pinner of ``pipe``, and keep the render from waiting for them.
-
-    Pinning reads the host copies from disk on a returning load, and all pinners share that disk: Wan2.2-A14B's
-    first render waited 47.8 s for both experts and the encoder. The low-noise expert first runs after the
-    high-noise steps, and its group onloads still wait for their own pins."""
+    """Pin ``late_modules`` after the other pinners of ``pipe``; the render waits only for those, and a late group's
+    onload still waits for its own pin. A returning Wan2.2-A14B load read all three from disk at once (47.8 s)."""
     if _env_off(LATE_EXPERT_PIN_ENV):
         return 0
     late_ids = {id(m) for m in late_modules or () if m is not None}
