@@ -168,9 +168,6 @@ def test_another_adapter_cannot_move_a_row(base, monkeypatch, mode):
     ids = _ids()
     ml.set_multi_lora_batch(model, torch.tensor([0, 1, 2], device = DEVICE), seq_len = T)
     before = model(input_ids = ids, use_cache = False).logits.detach()
-    # Run-to-run spread of the same forward: 0 on a deterministic host; some CPU BLAS builds split reductions
-    # across threads, so other rows may move by that much and no more.
-    noise = (model(input_ids = ids, use_cache = False).logits.detach() - before).abs().max().item()
     with torch.no_grad():
         for _, layer in ml._layers(model):
             layer.lora_A[0].mul_(3.0)
@@ -178,7 +175,11 @@ def test_another_adapter_cannot_move_a_row(base, monkeypatch, mode):
     after = model(input_ids = ids, use_cache = False).logits.detach()
     assert _modes(model) == {mode}
     assert (after[0] - before[0]).abs().max() > 1e-3
-    torch.testing.assert_close(after[1:], before[1:], atol = noise, rtol = 0)
+    # Adapter 0's attention LoRA reroutes its tokens, so in grouped mode the other adapters' rows sit at other
+    # positions of each expert's base GEMM. GPU kernels are row-position independent (bit-exact); AVX2 / NEON CPU
+    # BLAS tails round a row by an ulp or two depending on where it falls, so allow that much there.
+    atol = 1e-6 if mode == "grouped" and DEVICE == "cpu" else 0
+    torch.testing.assert_close(after[1:], before[1:], atol = atol, rtol = 0)
 
 
 @pytest.mark.parametrize("mode", ["grouped", "fold"])
