@@ -142,7 +142,7 @@ def test_fetches_run_under_the_callers_context(monkeypatch, workers):
     assert fetch.seen_context == ["account-a"] * 12
 
 
-def test_local_rows_stay_inline_and_in_order(monkeypatch, workers, tmp_path):
+def test_mixed_local_and_url_rows_keep_row_order(monkeypatch, workers, tmp_path):
     fetch = _SlowFetch()
     monkeypatch.setattr(format_conversion, "_fetch_row_image", fetch)
     monkeypatch.setattr(format_conversion, "_own_image_path", lambda path, account: path)
@@ -194,3 +194,29 @@ def test_a_row_without_the_image_key_is_skipped_as_before(monkeypatch, workers):
     converted = convert_sharegpt_with_images_to_vlm_format(rows)
 
     assert _widths(converted) == [0, 1, 3, 4, 5]
+
+
+def test_repo_filename_rows_download_concurrently(monkeypatch, workers, tmp_path):
+    import huggingface_hub
+
+    files = [f"images/{i}.png" for i in range(12)]
+    for i in range(12):
+        Image.new("RGB", (i + 1, 1)).save(tmp_path / f"{i}.png")
+    monkeypatch.setattr(huggingface_hub.HfApi, "list_repo_files", lambda self, *a, **k: files)
+    fetch = _SlowFetch()
+
+    def fake_download(repo, filename, **kwargs):
+        name = filename.rsplit("/", 1)[1]
+        fetch(f"https://hub/{name}")
+        return str(tmp_path / name)
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+    rows = [
+        {"image": f"{i}.png", "conversations": [{"from": "human", "value": f"<image> row {i}"}]}
+        for i in range(12)
+    ]
+
+    converted = convert_sharegpt_with_images_to_vlm_format(rows, dataset_name = "org/ds")
+
+    assert _widths(converted) == list(range(12))
+    assert 1 < fetch.peak <= 4

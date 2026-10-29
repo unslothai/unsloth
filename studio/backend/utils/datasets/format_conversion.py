@@ -447,7 +447,7 @@ def _format_eta(seconds):
         return f"{h}h {m}m"
 
 
-# Concurrent ShareGPT+image row fetches, the default worker count of huggingface_hub's snapshot_download.
+# huggingface_hub snapshot_download's default; caps parallel requests to one image host or the Hub.
 _MAX_ROW_FETCH_WORKERS = 8
 
 
@@ -939,42 +939,19 @@ def convert_sharegpt_with_images_to_vlm_format(
     converted_list = []
     failed_count = 0
 
-    def _needs_network(image_data):
-        # Only a URL or a repo download waits on the network; local paths and decoded images stay inline.
-        if not isinstance(image_data, str):
-            return False
-        if image_data.startswith(("http://", "https://")):
-            return True
-        return _image_lookup is not None and image_data in _image_lookup
-
-    def _record(outcome):
+    def _record(future_or_sample):
         nonlocal failed_count
-        ok, value = outcome
-        if ok:
-            converted_list.append(value)
-        else:
+        try:
+            if isinstance(future_or_sample, Future):
+                converted_list.append(future_or_sample.result())
+            else:
+                converted_list.append(_convert_single_sample(future_or_sample))
+        except Exception as e:
             failed_count += 1
             if failed_count == 1:
-                logger.info(f"⚠️ First conversion failure: {type(value).__name__}: {value}")
+                logger.info(f"⚠️ First conversion failure: {type(e).__name__}: {e}")
         pbar.set_postfix(ok = len(converted_list), failed = failed_count, refresh = False)
 
-    def _run_inline(sample):
-        try:
-            return True, _convert_single_sample(sample)
-        except Exception as e:
-            return False, e
-
-    def _settle(pending):
-        # Results are recorded in row order, so the first failure logged is the earliest failing row, as in a serial pass.
-        entry = pending.popleft()
-        if not isinstance(entry, Future):
-            return entry
-        try:
-            return True, entry.result()
-        except Exception as e:
-            return False, e
-
-    from collections import deque
     from concurrent.futures import Future
 
     num_workers = 1
@@ -982,13 +959,7 @@ def convert_sharegpt_with_images_to_vlm_format(
         isinstance(first_image, str) and first_image.startswith(("http://", "https://"))
     ):
         from utils.hardware import safe_thread_num_proc
-
-        # Capped like huggingface_hub's own parallel downloads, so many-core hosts do not open dozens of requests to one host.
         num_workers = min(safe_thread_num_proc(), _MAX_ROW_FETCH_WORKERS)
-    # Bounds how many fetched images can wait for their turn in memory.
-    max_pending = 2 * num_workers
-    executor = None
-    pending = deque()
 
     pbar = tqdm(
         dataset,
@@ -998,31 +969,32 @@ def convert_sharegpt_with_images_to_vlm_format(
         **_quiet_bar_kwargs(),
     )
     try:
-        for sample in pbar:
-            try:
-                to_pool = num_workers > 1 and _needs_network(sample[image_column])
-            except Exception:
-                # A row the converter cannot read fails inside it, recorded like a serial pass.
-                to_pool = False
-            if to_pool:
-                if executor is None:
-                    from concurrent.futures import ThreadPoolExecutor
-                    executor = ThreadPoolExecutor(max_workers = num_workers)
-                # Each fetch runs under the caller's context (account, request scoped settings).
-                pending.append(
-                    executor.submit(contextvars.copy_context().run, _convert_single_sample, sample)
-                )
-            elif pending:
-                pending.append(_run_inline(sample))
-            else:
-                _record(_run_inline(sample))
-            while len(pending) > max_pending or (pending and not isinstance(pending[0], Future)):
-                _record(_settle(pending))
-        while pending:
-            _record(_settle(pending))
+        if num_workers <= 1:
+            for sample in pbar:
+                _record(sample)
+        else:
+            from collections import deque
+            from concurrent.futures import ThreadPoolExecutor
+
+            # Settled in row order (same output and first-failure log as serial); 2x workers bounds images held in memory.
+            pending = deque()
+            with ThreadPoolExecutor(max_workers = num_workers) as executor:
+                try:
+                    for sample in pbar:
+                        # A fresh context copy per task: the fetch sees the caller's account / HF cache settings.
+                        pending.append(
+                            executor.submit(
+                                contextvars.copy_context().run, _convert_single_sample, sample
+                            )
+                        )
+                        if len(pending) > 2 * num_workers:
+                            _record(pending.popleft())
+                    while pending:
+                        _record(pending.popleft())
+                except BaseException:
+                    executor.shutdown(wait = False, cancel_futures = True)
+                    raise
     finally:
-        if executor is not None:
-            executor.shutdown(wait = True, cancel_futures = True)
         pbar.close()
 
     if failed_count > 0:
