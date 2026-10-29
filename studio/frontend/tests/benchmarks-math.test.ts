@@ -381,6 +381,22 @@ test("offload rows are skipped on a virtualised Mac GPU, where every load runs o
   assert.equal(servedMismatch(auto, { gpu_placement_paravirtual: true }), null);
 });
 
+test("offload rows that land on the CPU are skipped, not charted under GPU labels", () => {
+  const allGpu: Variant = { label: "All on GPU", load: { gpu_memory_mode: "manual", gpu_layers: 999, n_cpu_moe: 0 } };
+  const cpu: Variant = { label: "CPU", load: { gpu_memory_mode: "manual", gpu_layers: 0 } };
+  const auto: Variant = { label: "Auto fit", load: { gpu_memory_mode: "auto", gpu_layers: -1 } };
+  assert.equal(
+    servedMismatch(allGpu, { gpu_backend_unavailable: true, offloaded_layers: 0 }),
+    "llama.cpp's GPU backend did not start, so this load ran on the CPU",
+  );
+  assert.equal(servedMismatch(allGpu, { offloaded_layers: 0 }), "The server placed no layers on the GPU");
+  assert.equal(servedMismatch(allGpu, { offloaded_layers: 33 }), null);
+  // No count reported: nothing to check against.
+  assert.equal(servedMismatch(allGpu, { offloaded_layers: null }), null);
+  assert.equal(servedMismatch(cpu, { offloaded_layers: 0 }), null);
+  assert.equal(servedMismatch(auto, { gpu_backend_unavailable: true, offloaded_layers: 0 }), null);
+});
+
 test("a context row served with a smaller window is skipped, not charted at its label", () => {
   const ctx128k: Variant = { label: "128K", load: { max_seq_length: 131072 } };
   assert.equal(
