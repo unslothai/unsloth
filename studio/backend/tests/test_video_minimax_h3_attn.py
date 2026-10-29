@@ -276,22 +276,53 @@ def test_shared_qkv_census_needs_the_int8_swap(quantized):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "int8 GEMM swap needs CUDA")
-def test_shared_qkv_on_the_int8_swap_is_bit_identical_on_cuda():
+def test_shared_qkv_on_the_int8_swap_is_bit_identical_on_cuda(monkeypatch):
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+
     from core.inference import diffusion_convrot_quant as cq
     from core.inference import diffusion_int8_gemm as g8
 
-    model = _quantize(_tiny_model().to("cuda", torch.bfloat16), version = 2)
+    monkeypatch.setenv(g8.INT8_GEMM_ENV, "1")
+    index = torch.cuda.current_device()
+    if g8.device_config(index) is None or cq.rotquant_device_config(index) is None:
+        pytest.skip("int8 GEMM / fused rotation probe refused this device")
+    torch.manual_seed(0)
+    model = h3.MiniMaxH3Transformer3DModel(
+        num_attention_heads = 8,
+        attention_head_dim = 128,
+        hidden_size = 1024,
+        num_layers = 2,
+        num_refiner_layers = 1,
+        ffn_dim = 2048,
+        in_channels = 4,
+        audio_in_channels = 4,
+        patch_size = (1, 2, 2),
+        text_dim = 32,
+        freq_dim = 32,
+        time_embed_hidden_dim = 64,
+        time_embed_dim = 32,
+        rope_freq_dim = 4,
+    ).eval().to("cuda", torch.bfloat16)
+    fqns = [
+        name
+        for name, m in model.named_modules()
+        if isinstance(m, torch.nn.Linear) and name.startswith("transformer_blocks.") and ".attn." in name
+    ]
+    rotate_linears_(model, fqns, 256)
+    quantize_(
+        model,
+        Int8DynamicActivationInt8WeightConfig(set_inductor_config = False),
+        filter_fn = lambda m, fqn: isinstance(m, torch.nn.Linear) and fqn in fqns,
+    )
     model.set_attention_backend("_native_math")
-    if not g8.install(model):
-        pytest.skip("int8 GEMM swap not available on this device")
+    assert g8.install(model)
     stock = copy.deepcopy(model)
     A.install_strided_attention(stock)
     for m in stock.modules():
         if isinstance(m, h3.MiniMaxH3Attention):
             m.processor._unsloth_shared_qkv = False
     A.install_strided_attention(model)
-    if not A.shared_qkv_count(model):
-        pytest.skip("fused rotation kernel not armed on this device")
+    assert A.shared_qkv_count(model) == 2
     inputs = _inputs(n_text = 16, n_video = 48, n_audio = 8)
     inputs = {
         k: (v.to("cuda", torch.bfloat16) if torch.is_floating_point(v) else v.to("cuda"))
@@ -305,7 +336,7 @@ def test_shared_qkv_on_the_int8_swap_is_bit_identical_on_cuda():
         out = model(**inputs)
         after = cq.rotquant_call_count()
     assert _equal(ref, out)
-    assert 0 < after - mid < mid - before
+    assert after - mid == mid - before - 2 * A.shared_qkv_count(model) > 0
 
 
 def test_install_is_idempotent(quantized):
