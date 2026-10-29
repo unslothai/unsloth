@@ -89,7 +89,6 @@ def _case_qlora(rank, world, tmp):
     k_local = bnb.functional.dequantize_4bit(
         k.base_layer.weight.data, k.base_layer.weight.quant_state
     )
-    # generate gathers a whole replica (the 4-bit k_proj regathered from the ranks' head rows).
     generated = model.generate(
         input_ids = torch.zeros(1, 2, dtype = torch.long), max_new_tokens = 2, pad_token_id = 0
     )
@@ -249,7 +248,6 @@ def test_kv_heads_below_tp_qlora_matches_one_process():
 
 
 def test_kv_heads_below_tp_env_trainer_matches_one_process():
-    # UNSLOTH_TP_SIZE=2 with a one-KV-head checkpoint: sharded 16-bit load + Trainer, 3 steps vs one process.
     ref = _spawn("env", 1, ckpt_overrides = KV1, bs = 2)[0]
     assert ref["layout"] is None and not ref["is_tp"]
     results = _spawn("env", 2, {"UNSLOTH_TP_SIZE": "2"}, ckpt_overrides = KV1, bs = 2)

@@ -639,7 +639,6 @@ def test_env_tp2_trainer_matches_one_process(four_bit):
         _close(res["a"], ref["a"], what = rank)
         hint = "UNSLOTH_TP_SIZE=2: unset it"
         assert "map-style dataset" in res["iterable"] and hint in res["iterable"], res["iterable"]
-        # Evaluation gathers over dp only (parity with one process: test_tp_eval_gloo.py).
         assert res["eval"] is None and res["evaluate"] is None, (res["eval"], res["evaluate"])
         assert "lion_8bit" in res["lion"], res["lion"]
         assert res["generate"] is None, res["generate"]  # a whole replica per rank (tp_replica.py)

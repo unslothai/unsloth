@@ -78,7 +78,6 @@ def _case_api(rank, world, tmp, arch):
     ref_dir, tp_dir = os.path.join(tmp, "ref"), os.path.join(tmp, "tp")
     if rank == 0:
         ref.save_pretrained(ref_dir)
-    # The 1-GPU model, gathered to rank 0 (tp_replica.tp_collective), as Trainer.save_model does.
     from unsloth.models.tp_replica import tp_collective
 
     tp_collective(model, "save_pretrained", lambda: model.save_pretrained(tp_dir), "all")

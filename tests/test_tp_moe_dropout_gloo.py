@@ -22,7 +22,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_tp_native_gloo import _free_port, _train  # noqa: E402
 from test_tp_native_oracle import LLAMA, QWEN3_MOE, _batch, build, tpn  # noqa: E402
 
-# Layer 0 sparse MoE (replicated), layer 1 a dense MLP (sharded): both kinds in one model.
 MOE_OVERRIDES = {"mlp_only_layers": [1]}
 MOE_LORA = dict(target_parameters = ["mlp.experts.gate_up_proj", "mlp.experts.down_proj"])
 
@@ -102,7 +101,6 @@ def _case_parity(
     else:
         ref_out = _seeded_train(ref, ids, 3, torch.nn.utils.clip_grad_norm_, dropout_seed)
         tp_out = _seeded_train(model, ids, 3, T.tp_clip_grad_norm_, dropout_seed)
-        # Dropout on: a different seed must change the loss (the masks are really drawn).
         other = build(repo, overrides, **lora_kwargs)
         other_out = _seeded_train(other, ids, 1, torch.nn.utils.clip_grad_norm_, dropout_seed + 1)
     ref_dir, tp_dir = os.path.join(tmp, f"ref{rank}"), os.path.join(tmp, "tp")
@@ -216,9 +214,7 @@ def test_tp2_replicated_mean_does_not_overflow_half(dtype):
 def test_tp2_moe_runs_replicated_and_matches_one_process():
     res = _check(_spawn("parity", 2, repo = QWEN3_MOE, overrides = MOE_OVERRIDES, lora_kwargs = MOE_LORA))
     assert res["replicated_moe"] == 1 and res["moe_synced"]
-    # Attention of both layers and the dense MLP of layer 1 sharded; the MoE block of layer 0 is not a region.
     assert sorted(k for _, k in res["regions"]) == ["attention", "attention", "mlp"], res["regions"]
-    # The expert LoRA trained (and its gradient matched above).
     assert any("experts" in k for k in res["saved_tp"]), sorted(res["saved_tp"])[:8]
 
 
@@ -238,7 +234,6 @@ def test_tp2_dropout_draws_one_process_masks(overrides, lora_kwargs):
         "parity", 2, repo = LLAMA, overrides = overrides, lora_kwargs = lora_kwargs, dropout_seed = 1234
     )
     res = _check(results)
-    # Dropout really ran: another seed gives another first loss.
     assert res["other_loss"] != pytest.approx(res["ref"][2][0], rel = 1e-6), (
         res["other_loss"],
         res["ref"][2],

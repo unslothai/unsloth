@@ -377,8 +377,7 @@ jobs:
           # catch-all's 1258 s. The two globs are every *gloo* file except test_fs*, which is
           # fsdp2's: an explicit file root cannot be filtered by --ignore, so the split is done in
           # the globs themselves.
-          # That shard then ran 1975 to 1990 s of the cap on main; the tensor parallel suites pushed it
-          # to 2095 s and past the cap, so the test_t* files (tensor parallel) run beside it.
+          # Tensor parallel suites pushed that shard past its time cap, so test_t* runs beside it.
           - shard: gloo
             selection: >-
               tests/test_[!ft]*gloo*.py

@@ -459,8 +459,7 @@ def derive_tp_plan(
     layers_path, layers = _decoder_layers(model)
     _refuse_mla(model, layers)
     _refuse_dropout(model, layers)
-    # Mixture-of-experts blocks are not sharded: they run replicated on every tp rank (expert styles in the
-    # plan name parts of them). An expert style that lands inside a sharded region is refused in _classify.
+    # MoE blocks run replicated, not sharded; an expert style inside a sharded region is refused in _classify.
     for key, _, style in compiled:
         if style in _MLA_STYLES:
             raise ValueError(
@@ -1796,8 +1795,7 @@ def apply_tensor_parallel(
     )  # a norm weight shared by several regions gets one tp sum, not one per region
     dropout_regions = 0
     for region in tp_plan.regions:
-        # Row projections' local in_features, read before sharding: a sharded Params4bit's quant_state holds
-        # the local shape already.
+        # Row projections' in_features, read before sharding: a sharded Params4bit's quant_state is already local.
         local_width = next(
             (
                 _logical_shape(*_weight(p.module))[1] // tp
@@ -3105,7 +3103,6 @@ def tp_trainer_setup(
     ddp_mesh = _ddp_mesh(model)
     dp_size, dp_rank = (dp_mesh.size(), dp_mesh.get_local_rank()) if dp_mesh is not None else (1, 0)
     trainer.accelerator.__dict__[_TP_DATA] = (dp_size, dp_rank)
-    # Evaluation / predict gather over the dp replicas only: the tp ranks of a replica hold the same results.
     trainer.accelerator.__dict__[_TP_GATHER] = dp_mesh
     _tp_train_sampler(trainer, dp_size, dp_rank)
     trainer.__dict__["_unsloth_tensor_parallel"] = (
@@ -3441,7 +3438,6 @@ def _tp_trainer_save_model(
     else:
         from .tp_replica import tp_collective
         model = self.model
-        # The whole model is gathered to rank 0, which runs the model's own (1-GPU) save_pretrained.
         tp_collective(model, "save_model", lambda: model.save_pretrained(output_dir), "all")
     processing = getattr(self, "processing_class", None) or getattr(self, "tokenizer", None)
     if processing is not None and self.args.should_save:
@@ -3562,8 +3558,7 @@ def _install_tp_accelerate_hooks():
         input_data,
         use_gather_object = False,
     ):
-        # accelerate's gather_for_metrics with the gather over dp only: the eval loader is sharded over dp
-        # (prepare_data_loader above), so its remainder truncation is the dp-sized world's.
+        # Gather over dp only: the eval loader is sharded over dp, so remainder truncation is the dp world's.
         if _TP_GATHER not in self.__dict__:
             return original_gather_for_metrics(
                 self, input_data, use_gather_object = use_gather_object

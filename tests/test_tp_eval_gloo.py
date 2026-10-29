@@ -108,7 +108,6 @@ def _case_generate(rank, world, tmp, tp):
         error = None
     except Exception as e:
         out, error = None, f"{type(e).__name__}: {e}"
-    # Training forward after generate runs on the shards again (replica released).
     active = tp_replica.replica_active(model) if tp > 1 else False
     return {"out": out, "error": error, "wrapped": wrapped, "replica_after": active}
 
