@@ -125,9 +125,13 @@ def _score(fn, request):
             scores.append(None)
             continue
         value = float(value)
-        if math.isfinite(value) and abs(value) > MAX_SCORE:
+        # NaN is "doesn't apply", like None; an infinity is out of range like any huge score.
+        if math.isnan(value):
+            scores.append(None)
+            continue
+        if abs(value) > MAX_SCORE:
             raise ValueError("returned %g, outside -1,000,000 to 1,000,000" % value)
-        scores.append(value if math.isfinite(value) else None)
+        scores.append(value)
     return scores
 
 
