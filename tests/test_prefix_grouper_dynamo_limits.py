@@ -76,7 +76,6 @@ def test_import_raises_the_new_names_when_present(monkeypatch):
     _load_kernel()
     assert config.recompile_limit == 256
     assert config.accumulated_recompile_limit == 2048
-    # Never lowers a limit the user already raised.
     monkeypatch.setattr(config, "recompile_limit", 4096)
     _load_kernel()
     assert config.recompile_limit == 4096
@@ -133,12 +132,12 @@ def test_torch_26_prefix_grouper_off_with_one_log(monkeypatch, capsys):
     monkeypatch.setattr(torch._dynamo, "config", _OldDynamoConfig(torch._dynamo.config))
     monkeypatch.setattr(torch, "__version__", "2.6.0+cu124")
     pg = _load_prefix_grouper()
-    assert capsys.readouterr().out == ""  # nothing at import
+    assert capsys.readouterr().out == ""
     assert pg.prefix_grouper_enabled() is False
     out = capsys.readouterr().out
     assert out.count("\n") == 1 and "PrefixGrouper is off on torch 2.6.0+cu124" in out
     assert pg.prefix_grouper_enabled() is False
-    assert capsys.readouterr().out == ""  # logged once per process
+    assert capsys.readouterr().out == ""
 
 
 def test_torch_26_env_off_stays_quiet(monkeypatch, capsys):

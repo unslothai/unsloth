@@ -28,8 +28,7 @@ from torch.nn.attention.flex_attention import (
 )
 
 
-# torch 2.6 inductor cannot compile the dynamic block mask or the flex kernel; suppress_errors then
-# falls back to eager flex_attention, which materialises the full T x T scores.
+# torch 2.6 inductor fails on the dynamic mask + flex kernel; suppress_errors then runs eager T x T flex.
 PREFIX_GROUPER_MIN_TORCH = (2, 7)
 
 
@@ -44,8 +43,7 @@ def torch_supports_prefix_grouper(version = None) -> bool:
 TORCH_SUPPORTS_PREFIX_GROUPER = torch_supports_prefix_grouper()
 
 
-# At the default recompile_limit (8) the many segment lengths silently reuse a mismatched
-# specialisation. Older torch names it cache_size_limit; unknown dynamo config names raise.
+# Default recompile_limit (8) silently reuses a mismatched specialisation; old name cache_size_limit.
 def _raise_dynamo_limit(names, floor):
     config = torch._dynamo.config
     name = next((n for n in names if hasattr(config, n)), None)
