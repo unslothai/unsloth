@@ -1,42 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Pipeline parallelism (torch.distributed.pipelining) for any dense decoder, one stage per rank.
-
-    model = FastLanguageModel.get_peft_model(model, ...)  # LoRA first: same init as 1 GPU
-    pp = apply_pipeline_parallel(model, init_device_mesh("cuda", (pp,), mesh_dim_names = ("pp",))["pp"],
-                                 n_microbatches = 4)
-
-LoRA / QLoRA training of dense decoders (no Trainer, generate). Custom loop (torchrun --nproc_per_node pp),
-the same batch on every rank:
-
-    optimizer = torch.optim.AdamW(pp.parameters(), lr = 2e-4)  # this stage's trainable parameters
-    loss = pp.step(input_ids, labels)  # one optimizer step's batch: n_microbatches micro-batches
-    pp.clip_grad_norm_(1.0)            # global norm over every stage
-    optimizer.step(); optimizer.zero_grad()
-    pp.save_adapter("out")             # collective: the standard 1-GPU PEFT adapter, written by rank 0
-
-Each rank keeps its contiguous slice of decoder layers (FLOP balanced, lm_head + loss counted on the last
-stage). The other layers become parameter-free pass-throughs, so the ModuleList length, layer indices and
-parameter names (adapter keys) do not change. Every stage runs the model's own forward: the first stage from
-input_ids, later stages substitute the received hidden states before their first layer, earlier stages stop
-after their last layer, and the last stage returns the model's own loss (lm_head + fused cross entropy, no
-logits are sent). The loss of each micro-batch is its summed token loss over the token count of the whole
-batch, as with gradient accumulation on one GPU.
-
-Composed with data / tensor parallelism (torchtitan's order: pp outermost, then dp, then tp; split first,
-then parallelize each stage), on one mesh covering every rank:
-
-    mesh = init_device_mesh("cuda", (pp, dp, tp), mesh_dim_names = ("pp", "dp", "tp"))  # any 2 or all 3
-    pp = apply_pipeline_parallel(model, mesh["pp"], n_microbatches = 4)  # 1. this rank's stage
-    apply_tensor_parallel(model, mesh["tp"])                             # 2. optional: tp inside the stage
-    shard_model(model, FSDP2Config(mesh = mesh["dp"]))                   # 3. optional: FSDP2 over dp
-    loss = pp.step(input_ids, labels)  # this dp replica's slice of the global batch (same on pp / tp peers)
-
-The loss then averages over the tokens of the whole global batch (every dp replica), clip_grad_norm_ counts
-every gradient element once over the world, the GradScaler skip is decided over the world and save_adapter
-writes the 1-GPU adapter from global rank 0.
-"""
+"""Pipeline parallel, one stage per rank; LoRA first; order pp outermost then dp then tp, split
+before parallelizing; save_adapter is collective, rank 0 writes; param names unchanged."""
 
 from __future__ import annotations
 

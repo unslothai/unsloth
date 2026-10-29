@@ -20,7 +20,6 @@ import {
   useState,
 } from "react";
 import {
-  ArrowExpand01Icon,
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
   Delete02Icon,
@@ -34,8 +33,8 @@ import {
   PlusSignIcon,
   Refresh01Icon,
   SparklesIcon,
+  UndoIcon,
 } from "@hugeicons/core-free-icons";
-import { ReloadIcon } from "@/lib/reload-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { History as HistoryIcon, Shuffle } from "lucide-react";
 import { MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
@@ -192,6 +191,7 @@ import {
   matchAspect,
 } from "@/components/media-size-controls";
 import { cn } from "@/lib/utils";
+import { MediaHeaderActions } from "@/components/media-header-actions";
 import { isTauri } from "@/lib/api-base";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 import {
@@ -470,6 +470,7 @@ import {
   TrainBaseSelector,
   type TrainFamilyOption,
 } from "./train/train-base-selector";
+import { ExpandArrowsIcon } from "@/lib/expand-icons";
 
 function withEngagedFamily(
   { repoId, kind, filename, textEncoderFiles, vaeFile }: RememberedImageModel,
@@ -687,9 +688,9 @@ async function downloadImage(
       }
     }
     const filename = exportFilename(image, outputFormat);
-    await downloadFile(output, filename, output.type || "image/png");
-    if (isTauri) {
-      toast.success("Image saved", { description: filename });
+    const savedFileName = await downloadFile(output, filename, output.type || "image/png");
+    if (savedFileName !== undefined) {
+      toast.success("Image saved", { description: savedFileName });
     }
   } catch (error) {
     if (isDownloadCancelled(error)) {
@@ -1447,7 +1448,7 @@ function RecipePopover({
         </div>
         <div className="shrink-0 border-t border-border/60 px-3 py-2.5">
           <Button size="sm" className="w-full gap-1.5" onClick={() => onRestore(image)}>
-            <HugeiconsIcon icon={Refresh01Icon} className="size-4" />
+            <HugeiconsIcon icon={UndoIcon} className="size-4" />
             Restore these settings
           </Button>
           {/* The caption that actually ran, with Enhance prompt off, so the run reproduces without the upsampler. */}
@@ -6015,8 +6016,7 @@ export function ImagesPage({
                 resolveDownloadFootprint={resolveDownloadFootprint}
                 onEject={status?.loaded ? handleUnload : undefined}
                 variant="ghost"
-                className="!h-[calc(34px*var(--ui-space-scale,1))] max-w-full gap-1 overflow-hidden pl-3 pr-1 @[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"
-                triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"
+                className="ml-1.5 max-w-full overflow-hidden !pl-2.5 !pr-1.5 !h-[var(--studio-chat-control-height,34px)]"
                 task={IMAGE_GEN_TASKS}
                 catalog={IMAGE_CATALOG}
                 opaqueKind={opaqueKind}
@@ -6045,15 +6045,15 @@ export function ImagesPage({
             )}
           </div>
         </div>
-        <div className="grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2 @[50rem]:grid-cols-[1fr_auto_1fr] @[50rem]:gap-0">
-          <div className="pointer-events-auto col-start-2 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)]">
+        <div className="grid h-full min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(max-content,1fr)]">
+          <div data-media-header-centre className="pointer-events-auto col-start-2 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)]">
             <PillTabs
               dataTour="images-mode"
               ariaLabel="Page mode"
               value={pageMode}
               onValueChange={(v) => setPageMode(v as "create" | "train")}
               fit={true}
-              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-7 @[68rem]:[&>button]:px-14 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
+              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-7 @[68rem]:[&>button]:px-14 [[data-media-header-tight]_&]:[&>button]:px-4 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
               tabs={[
                 { value: "create", label: "Create", icon: <HugeiconsIcon icon={SparklesIcon} className="size-3.5" /> },
                 { value: "train", label: "Train", icon: <HugeiconsIcon icon={TestTubeOutlineIcon} className="size-3.5" /> },
@@ -6061,16 +6061,14 @@ export function ImagesPage({
             />
           </div>
           {/* The chat header's right inset. */}
-          <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-[calc(var(--thread-scrollbar-gutter,10px)+0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))] pt-[var(--studio-chat-header-padding-top,11px)]">
-            <div className="pointer-events-auto flex min-w-0 items-center gap-1">
-              <MediaApiButton
-                kind="images"
-                model={status?.loaded ? (status.repo_id ?? null) : null}
-              />
-              <LibraryPageLink tab="images" iconOnly={true} />
-              <SiblingMediaPageLink to="/video" />
-            </div>
-          </div>
+          <MediaHeaderActions className="pr-[calc(var(--thread-scrollbar-gutter,10px)+0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
+            <MediaApiButton
+              kind="images"
+              model={status?.loaded ? (status.repo_id ?? null) : null}
+            />
+            <LibraryPageLink tab="images" iconOnly={true} />
+            <SiblingMediaPageLink to="/video" />
+          </MediaHeaderActions>
         </div>
       </div>
       {trainMounted && (
@@ -7088,7 +7086,7 @@ export function ImagesPage({
                         disabled={busy !== null}
                         onClick={handleReapply}
                       >
-                        <HugeiconsIcon icon={ReloadIcon} className="size-4" />
+                        <HugeiconsIcon icon={Refresh01Icon} className="size-4" />
                         Reapply
                       </Button>
                     </TooltipTrigger>
@@ -7198,7 +7196,7 @@ export function ImagesPage({
                       openViewer();
                     }}
                   >
-                    <HugeiconsIcon icon={ArrowExpand01Icon} className="size-4" />
+                    <HugeiconsIcon icon={ExpandArrowsIcon} strokeWidth={1.5} className="size-4" />
                   </Button>
                   <RecipePopover image={selected} onRestore={restoreSettings} active={active} />
                   <DropdownMenu>
@@ -7297,7 +7295,7 @@ export function ImagesPage({
                 <p className="text-sm">
                   {status?.loaded || external
                     ? "Enter a prompt and hit Generate."
-                    : "Select a diffusion model to load"}
+                    : "Select image model to create an image"}
                 </p>
               </div>
             )}

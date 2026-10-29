@@ -4263,3 +4263,32 @@ def test_forced_dflash_on_an_mrope_vision_load_still_launches_and_warns(monkeypa
     )
     assert seen["dflash_fetched"] is True
     assert any("DFlash forced" in m for m in seen["warnings"])
+
+
+@pytest.mark.parametrize(
+    "listing, sized",
+    [
+        (["model-Q4_K_M.gguf", "mmproj-F16.gguf", "MTP/mtp-model.gguf"], False),
+        (["model-Q4_K_M.gguf", "sub/dflash-model.gguf"], False),
+        (["model-Q4_K_M.gguf", "dflash-model-00001-of-00002.gguf"], False),
+        (["model-Q4_K_M.gguf", "dflash-model.gguf"], True),
+    ],
+)
+def test_download_dflash_asks_the_hub_for_sizes_only_with_a_candidate(
+    monkeypatch, tmp_path, listing, sized
+):
+    """No eligible root sidecar, no model_info(files_metadata=True) call."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    weight = tmp_path / "model-Q4_K_M.gguf"
+    weight.write_bytes(b"x" * 10_000)
+    calls = []
+
+    def _sizes(repo, token = None):
+        calls.append(repo)
+        return {}
+
+    monkeypatch.setattr(LlamaCppBackend, "_remote_root_gguf_sizes", staticmethod(_sizes))
+    picked = _dflash_download_pick(monkeypatch, listing = listing, near_path = str(weight))
+    assert picked == ("dflash-model.gguf" if sized else None)
+    assert len(calls) == (1 if sized else 0)

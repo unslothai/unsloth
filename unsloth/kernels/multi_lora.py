@@ -1,20 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""
-Batched multi-LoRA training: many LoRA adapters on one frozen base model, trained in one batch.
-
-Each token belongs to one adapter (or none, id -1); tokens are stable-sorted by adapter once per batch
-and kernels gather rows through that order (like Punica SGMV, but with dX and per-adapter dA / dB).
-
-``UNSLOTH_MULTI_LORA_TRITON=0`` (or no CUDA / XPU) uses a PyTorch loop. LoRA dropout is unsupported.
-"""
+"""Batched multi-LoRA training on one frozen base: tokens (id -1 = no adapter) are stable-sorted by
+adapter once per batch and kernels gather through that order. UNSLOTH_MULTI_LORA_TRITON=0, or no
+CUDA/XPU, uses a PyTorch loop; LoRA dropout unsupported."""
 
 from __future__ import annotations
 
 import contextlib
+import functools
+import inspect
 import math
 import os
+import re
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
@@ -40,9 +38,12 @@ except Exception:  # noqa: BLE001
 __all__ = [
     "MultiLoraBatch",
     "MultiLoraLinear",
+    "MultiLoraExperts",
+    "MultiLoraExpertParam",
     "multi_lora_delta",
     "multi_lora_linear",
     "inject_multi_lora",
+    "inject_multi_lora_experts",
     "set_multi_lora_batch",
     "per_adapter_loss",
     "adapter_token_counts",
@@ -659,8 +660,7 @@ def inject_multi_lora(
     ]
     if not found:
         raise ValueError(f"No linear layers named {targets} found.")
-    for p in model.parameters():
-        p.requires_grad_(False)
+    _freeze_all_but_adapters(model)
     for name, module in found:
         parent_name, _, child = name.rpartition(".")
         parent = model.get_submodule(parent_name) if parent_name else model
@@ -668,8 +668,353 @@ def inject_multi_lora(
     return [name for name, _ in found]
 
 
-def _layers(model: nn.Module) -> list[tuple[str, MultiLoraLinear]]:
-    return [(n, m) for n, m in model.named_modules() if isinstance(m, MultiLoraLinear)]
+class MultiLoraExpertParam(nn.Module):
+    """LoRA on one fused expert stack: per adapter, A (E, r, in) and B (E, out, r), each expert as PEFT inits it."""
+
+    def __init__(
+        self,
+        num_experts: int,
+        in_features: int,
+        out_features: int,
+        num_adapters: int,
+        r: int | Iterable[int] = 16,
+        lora_alpha: float | Iterable[float] = 16,
+        use_rslora: bool = False,
+        device = None,
+        dtype: torch.dtype = torch.float32,
+    ):
+        super().__init__()
+        ranks = [int(r)] * num_adapters if isinstance(r, int) else [int(x) for x in r]
+        alphas = (
+            [float(lora_alpha)] * num_adapters
+            if isinstance(lora_alpha, (int, float))
+            else [float(x) for x in lora_alpha]
+        )
+        if len(ranks) != num_adapters or len(alphas) != num_adapters:
+            raise ValueError("Need one rank and one alpha per adapter.")
+        self.ranks = ranks
+        self.num_experts, self.in_features, self.out_features = (
+            num_experts,
+            in_features,
+            out_features,
+        )
+        kw = dict(dtype = dtype, device = device)
+        self.lora_A = nn.ParameterList(
+            [nn.Parameter(torch.zeros(num_experts, k, in_features, **kw)) for k in ranks]
+        )
+        self.lora_B = nn.ParameterList(
+            [nn.Parameter(torch.zeros(num_experts, out_features, k, **kw)) for k in ranks]
+        )
+        self.scales = [a / (math.sqrt(k) if use_rslora else k) for a, k in zip(alphas, ranks)]
+        self.reset_parameters()
+        self.batch: Optional[MultiLoraBatch] = None
+        self.seen: Optional[torch.Tensor] = None
+        self.trained: Optional[torch.Tensor] = None
+
+    @torch.no_grad()
+    def reset_parameters(self):
+        # PEFT inits A as one (E*r, in) matrix, so fan_in is `in` for every expert slice.
+        for A, B in zip(self.lora_A, self.lora_B):
+            for e in range(A.shape[0]):
+                nn.init.kaiming_uniform_(A[e], a = math.sqrt(5))
+            B.zero_()
+
+    @property
+    def num_adapters(self) -> int:
+        return len(self.lora_A)
+
+    def grouped_mm_factors(
+        self,
+        adapter: int,
+        reversed_io: bool = False,
+    ) -> tuple:
+        """Zoo's stash (first (E, in, r), second (E, r, out), scaling, E); ``reversed_io`` swaps the factors' roles
+        as Zoo's _reversed_lora_weights_for_grouped_mm does."""
+        A, B = self.lora_A[adapter], self.lora_B[adapter]
+        if reversed_io:
+            return B.contiguous(), A.contiguous(), self.scales[adapter], self.num_experts
+        return (
+            A.transpose(1, 2).contiguous(),
+            B.transpose(1, 2).contiguous(),
+            self.scales[adapter],
+            self.num_experts,
+        )
+
+    def folded(self, W: torch.Tensor, adapter: int, transposed: bool) -> torch.Tensor:
+        """W + delta in W's dtype, as PEFT's ParamWrapper folds it (one baddbmm, autocast off)."""
+        A, B = self.lora_A[adapter].to(W.dtype), self.lora_B[adapter].to(W.dtype)
+        lhs, rhs = (A.transpose(1, 2), B.transpose(1, 2)) if transposed else (B, A)
+        with torch.autocast(device_type = W.device.type, enabled = False):
+            return torch.baddbmm(W, lhs, rhs, alpha = self.scales[adapter])
+
+    def peft_tensors(self, adapter: int, b_layout: str) -> tuple[torch.Tensor, torch.Tensor]:
+        """PEFT ParamWrapper's packing: lora_A (E*r, in) expert-major, lora_B (out, E*r) in ``b_layout``."""
+        A, B = _full(self.lora_A[adapter]), _full(self.lora_B[adapter])
+        E, out, k = B.shape
+        flat_A = A.reshape(E * k, A.shape[-1])
+        if b_layout == "rank_major":
+            flat_B = B.permute(1, 2, 0).reshape(out, k * E)
+        else:
+            flat_B = B.permute(1, 0, 2).reshape(out, E * k)
+        return flat_A.detach().clone(), flat_B.detach().clone()
+
+
+@functools.lru_cache(maxsize = None)
+def _peft_expert_in_axis(is_transposed: bool) -> int:
+    """Which axis of an (E, d1, d2) stack the installed PEFT's ParamWrapper calls in_features (it moved in 0.19)."""
+    import peft
+
+    class Experts(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.w = nn.Parameter(torch.zeros(2, 3, 5))
+            self.is_transposed = is_transposed
+
+    class Block(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.experts = Experts()
+
+    model = peft.get_peft_model(Block(), peft.LoraConfig(r = 1, target_parameters = ["experts.w"]))
+    A = next(p for n, p in model.named_parameters() if "lora_A" in n)
+    return 1 if A.shape[-1] == 3 else 2
+
+
+def _expert_stack_shape(param) -> tuple[int, int, int]:
+    shape = getattr(param, "_original_shape", None) or tuple(param.shape)
+    if len(shape) != 3:
+        raise ValueError(f"Expected a fused (experts, d1, d2) parameter, got shape {tuple(shape)}.")
+    return tuple(int(x) for x in shape)
+
+
+def _stash_name(parameter_name: str) -> str:
+    return f"_unsloth_lora_{parameter_name}"
+
+
+def _zoo_stash_read_store(experts: nn.Module):
+    try:
+        from unsloth_zoo.temporary_patches.moe_utils import _MOE_LORA_STASH_READ_ATTR
+    except Exception:  # noqa: BLE001 - without Unsloth Zoo's MoE forwards nothing reads a stash
+        return None
+    store = experts.__dict__.get(_MOE_LORA_STASH_READ_ATTR)
+    if store is None:
+        store = {}
+        setattr(experts, _MOE_LORA_STASH_READ_ATTR, store)
+    return store
+
+
+def _adapter_groups(batch: MultiLoraBatch) -> list:
+    """(adapter or None, token rows) per adapter present; one host sync per batch, shared by every MoE layer."""
+    groups = batch.__dict__.get("_expert_groups")
+    if groups is None:
+        seg = batch.seg_start.tolist()
+        groups = [
+            (u, batch.sorted_idx[seg[u] : seg[u + 1]].long())
+            for u in range(batch.num_adapters)
+            if seg[u + 1] > seg[u]
+        ]
+        if seg[-1] < batch.num_tokens:
+            groups.append((None, batch.sorted_idx[seg[-1] :].long()))
+        batch.__dict__["_expert_groups"] = groups
+    return groups
+
+
+class MultiLoraExperts(nn.Module):
+    """Frozen fused experts; each adapter's tokens run the experts' own forward with only its factors, as a lone
+    PEFT job does: through Zoo's stash when its MoE forward reads one, else with the delta folded in."""
+
+    def __init__(
+        self,
+        base: nn.Module,
+        parameter_names: Iterable[str],
+        num_adapters: int,
+        r: int | Iterable[int] = 16,
+        lora_alpha: float | Iterable[float] = 16,
+        use_rslora: bool = False,
+    ):
+        super().__init__()
+        self.base_layer = base
+        for p in base.parameters():
+            p.requires_grad_(False)
+        self.parameter_names = tuple(parameter_names)
+        is_transposed = bool(getattr(base, "is_transposed", False))
+        # Shapes and fold follow the installed PEFT; the stash follows Zoo's extractor (stored input axis).
+        peft_in_axis = _peft_expert_in_axis(is_transposed)
+        zoo_in_axis = (
+            1 if is_transposed or getattr(base, "_unsloth_grouped_mm_format", False) else 2
+        )
+        self.transposed = peft_in_axis == 1
+        self.reversed_io = peft_in_axis != zoo_in_axis
+        self.adapters = nn.ModuleDict()
+        for name in self.parameter_names:
+            param = getattr(base, name)
+            E, d1, d2 = _expert_stack_shape(param)
+            out_features, in_features = (d2, d1) if self.transposed else (d1, d2)
+            device = param.device if param.device.type != "meta" else None
+            self.adapters[name] = MultiLoraExpertParam(
+                E, in_features, out_features, num_adapters, r, lora_alpha, use_rslora, device = device
+            )
+        self.mode: Optional[str] = None  # "stash" or "fold", decided on the first adapter call
+
+    def __getattr__(self, name: str):
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            return getattr(self._modules["base_layer"], name)
+
+    @property
+    def num_adapters(self) -> int:
+        return next(iter(self.adapters.values())).num_adapters
+
+    def _run_stash(self, adapter: int, args) -> Optional[torch.Tensor]:
+        base = self.base_layer
+        store = _zoo_stash_read_store(base)
+        if store is None:
+            return None
+        for name in self.parameter_names:
+            store.pop(name, None)
+            setattr(
+                base,
+                _stash_name(name),
+                self.adapters[name].grouped_mm_factors(adapter, self.reversed_io),
+            )
+        try:
+            out = base(*args)
+        finally:
+            for name in self.parameter_names:
+                if _stash_name(name) in base.__dict__:
+                    delattr(base, _stash_name(name))
+        if all(store.get(name) for name in self.parameter_names):
+            return out
+        return None
+
+    def _run_fold(self, adapter: int, args) -> torch.Tensor:
+        base = self.base_layer
+        weights = {}
+        for name in self.parameter_names:
+            W = getattr(base, name)
+            if W.dtype not in (torch.float16, torch.bfloat16, torch.float32, torch.float64):
+                raise RuntimeError(
+                    f"These experts' forward ignores the LoRA stash and {name} is quantized, so its delta cannot be folded."
+                )
+            weights[name] = self.adapters[name].folded(W, adapter, self.transposed)
+        return torch.func.functional_call(base, weights, args)
+
+    def _run(self, adapter: Optional[int], args) -> torch.Tensor:
+        if adapter is None:
+            return self.base_layer(*args)
+        if self.mode is None:
+            # Probe on one token without autograd, so a checkpointed forward and its recompute run the same ops.
+            with torch.no_grad():
+                probe = self._run_stash(adapter, tuple(a[:1] for a in args))
+            self.mode = "fold" if probe is None else "stash"
+        if self.mode == "fold":
+            return self._run_fold(adapter, args)
+        out = self._run_stash(adapter, args)
+        if out is None:
+            raise RuntimeError("The experts' forward stopped reading the LoRA stash mid-run.")
+        return out
+
+    def forward(self, hidden_states: torch.Tensor, *args):
+        batch = next(iter(self.adapters.values())).batch
+        if batch is None or hidden_states.shape[0] != batch.num_tokens:
+            raise ValueError(
+                "Call set_multi_lora_batch(model, ...) with this batch's adapter ids first."
+            )
+        groups = _adapter_groups(batch)
+        if len(groups) == 1:
+            out = self._run(groups[0][0], (hidden_states, *args))
+        else:
+            out = None
+            for u, rows in groups:
+                y = self._run(u, (hidden_states[rows], *(a[rows] for a in args)))
+                if out is None:
+                    out = y.new_zeros((hidden_states.shape[0], *y.shape[1:]))
+                out = out.index_copy(0, rows, y)
+        present = {u for u, _ in groups}
+        absent = [u for u in range(self.num_adapters) if u not in present]
+        if absent and torch.is_grad_enabled():
+            # Default DDP needs every trainable parameter used; empty slices stay zero even for an inf / NaN adapter.
+            zero = sum(
+                A[u].reshape(-1)[:0].sum() + B[u].reshape(-1)[:0].sum()
+                for adapter in self.adapters.values()
+                for A, B in ((adapter.lora_A, adapter.lora_B),)
+                for u in absent
+            )
+            out = out + zero.to(out.dtype)
+        return out
+
+
+def inject_multi_lora_experts(
+    model: nn.Module,
+    target_parameters: str | Iterable[str],
+    num_adapters: int,
+    r: int | Iterable[int] = 16,
+    lora_alpha: float | Iterable[float] = 16,
+    use_rslora: bool = False,
+) -> list[str]:
+    """Wrap every fused experts module holding a ``target_parameters`` entry, matched on path suffix as PEFT does."""
+    targets = (
+        (target_parameters,) if isinstance(target_parameters, str) else tuple(target_parameters)
+    )
+    by_module: dict[str, list[str]] = {}
+    for name, module in model.named_modules():
+        if isinstance(module, MultiLoraExperts):
+            continue
+        for param, value in module._parameters.items():
+            if not isinstance(value, torch.Tensor):
+                continue
+            key = f"{name}.{param}"
+            if any(key == t or key.endswith("." + t) for t in targets):
+                by_module.setdefault(name, []).append(param)
+    if not by_module:
+        raise ValueError(f"No fused expert parameters named {targets} found.")
+    for name, params in by_module.items():
+        parent_name, _, child = name.rpartition(".")
+        parent = model.get_submodule(parent_name) if parent_name else model
+        bypass = _reads_experts_directly(parent, child, params)
+        if bypass:
+            raise ValueError(
+                f"{type(parent).__name__}.forward reads {child}.{bypass} itself instead of calling {child}(...), "
+                "so per-adapter expert LoRA would never run there."
+            )
+    _freeze_all_but_adapters(model)
+    for name, params in by_module.items():
+        parent_name, _, child = name.rpartition(".")
+        parent = model.get_submodule(parent_name) if parent_name else model
+        module = parent.get_submodule(child)
+        setattr(
+            parent, child, MultiLoraExperts(module, params, num_adapters, r, lora_alpha, use_rslora)
+        )
+    return [f"{name}.{param}" for name, params in by_module.items() for param in params]
+
+
+def _reads_experts_directly(parent: nn.Module, child: str, params: list) -> Optional[str]:
+    """The targeted parameter a parent's forward reads off its experts (e.g. a grouped-GEMM fast path), if any."""
+    try:
+        source = inspect.getsource(type(parent).forward)
+    except (OSError, TypeError):
+        return None
+    for param in params:
+        if re.search(rf"\bself\.{re.escape(child)}\.{re.escape(param)}\b", source):
+            return param
+    return None
+
+
+def _freeze_all_but_adapters(model: nn.Module) -> None:
+    # Dense and expert adapters are injected one after the other: neither call may freeze the other's.
+    keep = {id(p) for _, layer in _layers(model) for p in (*layer.lora_A, *layer.lora_B)}
+    for p in model.parameters():
+        if id(p) not in keep:
+            p.requires_grad_(False)
+
+
+def _layers(model: nn.Module) -> list[tuple[str, nn.Module]]:
+    return [
+        (n, m)
+        for n, m in model.named_modules()
+        if isinstance(m, (MultiLoraLinear, MultiLoraExpertParam))
+    ]
 
 
 def set_multi_lora_batch(
@@ -866,6 +1211,28 @@ def adapter_state_dict(
     """Adapter ``adapter`` as a PEFT LoRA state dict (``<name>.lora_A.weight`` / ``lora_B.weight``)."""
     out = {}
     for name, layer in _layers(model):
-        out[f"{prefix}{name}.lora_A.weight"] = _full(layer.lora_A[adapter]).detach().clone()
-        out[f"{prefix}{name}.lora_B.weight"] = _full(layer.lora_B[adapter]).detach().clone()
+        if isinstance(layer, MultiLoraLinear):
+            out[f"{prefix}{name}.lora_A.weight"] = _full(layer.lora_A[adapter]).detach().clone()
+            out[f"{prefix}{name}.lora_B.weight"] = _full(layer.lora_B[adapter]).detach().clone()
+    b_layout = _peft_moe_lora_b_layout()
+    for name, experts in model.named_modules():
+        if not isinstance(experts, MultiLoraExperts):
+            continue
+        # PEFT nests one ParamWrapper per target parameter: the first listed is the innermost.
+        depth = len(experts.parameter_names)
+        for i, param in enumerate(experts.parameter_names):
+            key = f"{prefix}{name}" + ".base_layer" * (depth - 1 - i)
+            # Folded experts load through PEFT's own ParamWrapper delta, which is rank-major whatever Zoo uses.
+            layout = "rank_major" if experts.mode == "fold" else b_layout
+            A, B = experts.adapters[param].peft_tensors(adapter, layout)
+            out[f"{key}.lora_A.weight"] = A
+            out[f"{key}.lora_B.weight"] = B
     return out
+
+
+def _peft_moe_lora_b_layout() -> str:
+    try:
+        from unsloth_zoo.temporary_patches.moe_utils import moe_lora_b_layout
+        return moe_lora_b_layout()
+    except Exception:  # noqa: BLE001 - PEFT's own packing: weight_B.reshape(out, r, E)
+        return "rank_major"

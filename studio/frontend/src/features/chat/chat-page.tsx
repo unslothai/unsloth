@@ -1281,9 +1281,6 @@ function CompareShell({
   children: ReactElement;
   composer: ReactElement;
 }): ReactElement {
-  const showModelDisclaimer = useChatPreferencesStore(
-    (s) => s.showModelDisclaimer,
-  );
   return (
     <CompareHandlesProvider handlesRef={handlesRef}>
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col">
@@ -1296,11 +1293,6 @@ function CompareShell({
         <div className="shrink-0 bg-background pl-5 pr-5 md:px-[calc(30px*var(--ui-space-scale,1))] pb-2 pt-1">
           {/* unsloth-composer-shell: the size container the single composer's narrow layout queries. */}
           <div className="unsloth-composer-shell mx-auto w-full max-w-[var(--custom-chat-max-width,48rem)]">{composer}</div>
-          {showModelDisclaimer && (
-            <p className="composer-footer-note">
-              LLMs can make mistakes. Double-check responses.
-            </p>
-          )}
         </div>
       </div>
     </CompareHandlesProvider>

@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Condition images and output geometry for the reference and unified-edit workflows, shared by
-the diffusers and sd.cpp engines.
-
-Localized editing follows the official Qwen-Image-2.1 demo conventions, which are generative
-guides rather than inpainting masks: nothing here keeps pixels outside the region.
-
-- ``annotate``: coloured marks (outlines, arrows) drawn ON the source. The instruction names the
-  colours and asks for the marks to be left out of the result.
-- ``paint``: an opaque white region painted ON the source. The instruction refers to the white
-  area.
-- ``mask``: a separate white-on-black mask at the source's geometry, sent as Image 2 right after
-  the source. The instruction refers to the marked area.
-"""
+"""Reference/edit image modes (annotate, paint, mask) are generative guides, not inpainting masks."""
 
 from __future__ import annotations
 
