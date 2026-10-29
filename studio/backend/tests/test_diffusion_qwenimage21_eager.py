@@ -122,7 +122,6 @@ def test_install_is_idempotent_and_uninstall_restores():
     assert e.install() and e.install()
     wrapped = qmod._qwenimage21_prepare_qkv
     assert wrapped is not stock and wrapped.__wrapped__ is stock
-    # the fingerprint other patches read sees through the wrapper
     from core.inference.diffusion_autoopt.patches import source_digest
 
     assert source_digest(wrapped) == source_digest(stock)

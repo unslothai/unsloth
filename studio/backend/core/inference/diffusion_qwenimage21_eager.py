@@ -20,7 +20,7 @@ EAGER_FAST_ENV = "UNSLOTH_DIFFUSION_Q21_EAGER_FAST"
 
 _MODULE = "diffusers.models.transformers.transformer_qwenimage21"
 _CLASS = "QwenImage21Transformer2DModel"
-# 0.41.0 and 0.42.1. The prepare copy below follows 0.42.1's head split (inner_dim // heads), equal for both.
+# diffusers 0.41.0 / 0.42.1; the prepare copy below uses 0.42.1's head split, equal for both.
 _FINGERPRINTS: dict[str, frozenset] = {
     "_qwenimage21_prepare_qkv": frozenset({"574bacc8f355456d", "4c3830595aef56a0"}),
     "RMSNorm.forward": frozenset({"2633294611ed3bdf"}),
@@ -30,8 +30,7 @@ _FINGERPRINTS: dict[str, frozenset] = {
     "QwenImage21AttnProcessor.__call__": frozenset({"2125e0b56c1490b6"}),
 }
 
-# Per-module state: EAGER = every eager render of this load, BG = only renders forced eager by a pending background
-# compile (the deferred profile engaged), absent = stock.
+# EAGER: every eager render of this load. BG: only renders a pending background compile keeps eager.
 _ATTR = "_unsloth_q21_eager_fast"
 EAGER = "eager"
 BG = "bg"
@@ -48,7 +47,6 @@ def disabled() -> bool:
 
 
 def active(module: Any) -> bool:
-    """Whether this call of ``module`` (the transformer or one of its attention modules) takes the eager fast path."""
     import torch
 
     state = module.__dict__.get(_ATTR)
@@ -126,14 +124,14 @@ def _kernel() -> Any:
         dt = xe.dtype
         xe = xe.to(tl.float32)
         xo = xo.to(tl.float32)
-        # diffusers RMSNorm: fp32 mean of squares, x * rsqrt, round, then * weight in the weight dtype
+        # diffusers RMSNorm: x * rsqrt in fp32, round, then * weight, round
         ms = (tl.sum(_mul(xe, xe), axis = 1) + tl.sum(_mul(xo, xo), axis = 1)) * (0.5 / HALF)
         r = _rsqrt(_add(ms, eps))[:, None]
         we = tl.load(w_ptr + 2 * i).to(tl.float32)[None, :]
         wo = tl.load(w_ptr + 2 * i + 1).to(tl.float32)[None, :]
         a = _mul(_mul(xe, r).to(dt).to(tl.float32), we).to(dt).to(tl.float32)
         bb = _mul(_mul(xo, r).to(dt).to(tl.float32), wo).to(dt).to(tl.float32)
-        # complex RoPE in fp32, with the multiply-add pairing this card's complex multiply uses
+        # the fma pairing this card's complex multiply uses
         fo = s[:, None] * f_stride + 2 * i[None, :]
         c = tl.load(f_ptr + fo, mask = m, other = 0.0)
         d = tl.load(f_ptr + fo + 1, mask = m, other = 0.0)
@@ -302,7 +300,6 @@ def why_unsupported(mod: Any) -> Optional[str]:
 
 
 def install(logger: Any = None) -> bool:
-    """Idempotent module-level wrapper; it runs stock unless a module carries the eager state."""
     try:
         import torch
 
@@ -344,7 +341,6 @@ def uninstall() -> None:
 
 
 def install_for_pipe(pipe: Any, logger: Any = None) -> bool:
-    """Arms this load's eager renders (a speed-deferred load). False keeps every render stock."""
     transformer = getattr(pipe, "transformer", None)
     if disabled() or type(transformer).__name__ != _CLASS:
         return False
@@ -360,7 +356,6 @@ def install_for_pipe(pipe: Any, logger: Any = None) -> bool:
 
 
 def demote(pipe: Any) -> None:
-    """The deferred profile engaged: only renders kept eager by its pending background compile stay fast."""
     transformer = getattr(pipe, "transformer", None)
     if transformer is not None and getattr(transformer, "__dict__", {}).get(_ATTR) is not None:
         set_state(transformer, BG)

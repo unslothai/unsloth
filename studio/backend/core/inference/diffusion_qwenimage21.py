@@ -207,8 +207,7 @@ def _cached_core(
 ) -> Any:
     """One decode step from the prefix KV cache. Reads no host value off the device, so it records as a CUDA graph;
     the eager step and the graph run this same code. ``layer_cache(i)`` returns block ``i``'s cache entry.
-    ``broadcast_modulation``: every row is a target row, so the blocks read the sampled-t modulation row broadcast,
-    the values torch.where would gather."""
+    ``broadcast_modulation``: every row is a target row, so the sampled-t row is read broadcast."""
     import torch
 
     batch_size = hidden_states.shape[0]
