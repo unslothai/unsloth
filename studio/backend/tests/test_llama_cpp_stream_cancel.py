@@ -14,8 +14,9 @@ import pytest
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
-from core.inference import llama_cpp
-from core.inference.llama_cpp import LlamaCppBackend, _LlamaStreamCancelled
+from core.inference import llama_chat, llama_cpp
+from core.inference.llama_cpp import LlamaCppBackend
+from core.inference.llama_chat import _LlamaStreamCancelled
 
 
 def _backend_stub() -> LlamaCppBackend:
@@ -169,7 +170,7 @@ def test_streams_reuse_ssl_setup_without_sharing_connections(monkeypatch):
     with _StallUpstream() as first_server, _StallUpstream() as second_server:
         with backend._open_stream(first_server.url, {}, None) as (first, _):
             assert next(first.iter_text()) == "data: hello\n\n"
-            monkeypatch.setattr(llama_cpp.ssl, "create_default_context", repeated_ssl_setup)
+            monkeypatch.setattr(llama_chat.ssl, "create_default_context", repeated_ssl_setup)
             with backend._open_stream(second_server.url, {}, None) as (second, _):
                 assert next(second.iter_text()) == "data: hello\n\n"
                 assert first.extensions["network_stream"] is not second.extensions["network_stream"]
@@ -183,12 +184,12 @@ def test_route_upstream_clients_reuse_ssl_setup(monkeypatch):
 
     from routes.inference import _cancelable_nonstreaming_client
 
-    llama_cpp._local_ssl_context()
+    llama_chat._local_ssl_context()
 
     def repeated_ssl_setup(*_args, **_kwargs):
         pytest.fail("A passthrough request must not reload CA certificates")
 
-    monkeypatch.setattr(llama_cpp.ssl, "create_default_context", repeated_ssl_setup)
+    monkeypatch.setattr(llama_chat.ssl, "create_default_context", repeated_ssl_setup)
     first, second = _cancelable_nonstreaming_client(), _cancelable_nonstreaming_client()
     assert first is not second
     asyncio.run(first.aclose())

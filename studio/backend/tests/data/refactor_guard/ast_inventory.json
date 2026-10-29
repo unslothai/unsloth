@@ -1,4 +1,89 @@
 {
+  "core.inference.chat_compaction": {
+    "symbols": {
+      "_ANCHOR_ARGS_CHARS": {
+        "kind": "assign"
+      },
+      "_ANCHOR_TEXT_CHARS": {
+        "kind": "assign"
+      },
+      "_anchor_text": {
+        "kind": "def"
+      },
+      "_archive_and_recall": {
+        "kind": "def"
+      },
+      "_archive_branch_transcript": {
+        "kind": "def"
+      },
+      "_archive_content_on_branch": {
+        "kind": "def"
+      },
+      "_archive_is_degraded": {
+        "kind": "def"
+      },
+      "_archive_message_text": {
+        "kind": "def"
+      },
+      "_boundary_metadata": {
+        "kind": "def"
+      },
+      "_branch_boundary": {
+        "kind": "def"
+      },
+      "_branch_boundary_anchor": {
+        "kind": "def"
+      },
+      "_branch_non_system": {
+        "kind": "def"
+      },
+      "_can_reset_epoch": {
+        "kind": "def"
+      },
+      "_compaction_fit_kwargs": {
+        "kind": "def"
+      },
+      "_conversation_recall_reserve": {
+        "kind": "def"
+      },
+      "_effective_headroom_ratio": {
+        "kind": "def"
+      },
+      "_fit_context": {
+        "kind": "def"
+      },
+      "_fit_with_instruction_pins": {
+        "kind": "def"
+      },
+      "_inject_recall": {
+        "kind": "def"
+      },
+      "_keeps_compaction_boundary": {
+        "kind": "def"
+      },
+      "_memory_tool_withheld": {
+        "kind": "def"
+      },
+      "_prefix_user_text": {
+        "kind": "def"
+      },
+      "_recall_top_k": {
+        "kind": "def"
+      },
+      "_records_boundary": {
+        "kind": "def"
+      },
+      "_request_uses_checkpoint": {
+        "kind": "def"
+      },
+      "_sticky_compaction_boundary": {
+        "kind": "def"
+      },
+      "_sticky_compaction_state": {
+        "kind": "def"
+      }
+    }
+  },
   "core.inference.inference": {
     "symbols": {
       "HarmonyTextStreamer": {
@@ -24,11 +109,117 @@
       }
     }
   },
-  "core.inference.llama_cpp": {
+  "core.inference.llama_chat": {
     "symbols": {
       "CountAborted": {
         "kind": "class"
       },
+      "_ANSWER_PIVOT": {
+        "kind": "assign"
+      },
+      "_CONTINUE_AFTER_LENGTH_STATUS": {
+        "kind": "assign"
+      },
+      "_CONTINUE_TRUNCATED_ANSWER_STATUS": {
+        "kind": "assign"
+      },
+      "_DEFAULT_MAX_TOKENS_FLOOR": {
+        "kind": "assign"
+      },
+      "_FINAL_ANSWER_SIGNAL": {
+        "kind": "assign"
+      },
+      "_FORCED_PLAN_INTENT": {
+        "kind": "assign"
+      },
+      "_GGUF_REHEARSAL_ARGS_RE": {
+        "kind": "assign"
+      },
+      "_LLAMA_RANDOM_SEED": {
+        "kind": "assign"
+      },
+      "_LlamaStreamCancelled": {
+        "kind": "class"
+      },
+      "_MAX_IDENTICAL_TOOL_RESULTS": {
+        "kind": "assign"
+      },
+      "_MAX_LENGTH_CONTINUATIONS": {
+        "kind": "assign"
+      },
+      "_MAX_TOOL_CALLS_PER_TURN": {
+        "kind": "assign"
+      },
+      "_MIN_USEFUL_RESULT_TOKENS": {
+        "kind": "assign"
+      },
+      "_PROVISIONAL_ARGS_MIN_CHARS": {
+        "kind": "assign"
+      },
+      "_TEXT_TOOL_GEMMA_RE": {
+        "kind": "assign"
+      },
+      "_TEXT_TOOL_NAME_RE": {
+        "kind": "assign"
+      },
+      "_TEXT_TOOL_REHEARSAL_RE": {
+        "kind": "assign"
+      },
+      "_UNSET": {
+        "kind": "assign"
+      },
+      "_WINDOW_NOTICE_MARKER": {
+        "kind": "assign"
+      },
+      "_ZERO_ROOM_MARKER": {
+        "kind": "assign"
+      },
+      "_apply_seeded_llama_request": {
+        "kind": "def"
+      },
+      "_backend_supports_tools": {
+        "kind": "def"
+      },
+      "_backfill_usage_from_timings": {
+        "kind": "def"
+      },
+      "_finalize_reasoning_only_cumulative": {
+        "kind": "def"
+      },
+      "_gguf_active_tool_names": {
+        "kind": "def"
+      },
+      "_gguf_has_genuine_tool_signal": {
+        "kind": "def"
+      },
+      "_gguf_rehearsal_signal_pos": {
+        "kind": "def"
+      },
+      "_held_rehearsal_tail_len": {
+        "kind": "def"
+      },
+      "_is_rehearsal_prefix": {
+        "kind": "def"
+      },
+      "_is_window_notice": {
+        "kind": "def"
+      },
+      "_report_live_llama_timings": {
+        "kind": "def"
+      },
+      "_retrieval_budget": {
+        "kind": "assign"
+      },
+      "_should_suppress_forced_no_tool_output": {
+        "kind": "def"
+      },
+      "_sniff_text_tool_name": {
+        "kind": "def"
+      }
+    }
+  },
+  "core.inference.llama_cpp": {
+    "symbols": {
       "GgufDownloadCancelled": {
         "kind": "class"
       },
@@ -50,15 +241,6 @@
       "_AMD_SMI_TOTAL_TOLERANCE": {
         "kind": "assign"
       },
-      "_ANCHOR_ARGS_CHARS": {
-        "kind": "assign"
-      },
-      "_ANCHOR_TEXT_CHARS": {
-        "kind": "assign"
-      },
-      "_ANSWER_PIVOT": {
-        "kind": "assign"
-      },
       "_APPLE_UNIFIED_MEMORY_FRACTION": {
         "kind": "assign"
       },
@@ -78,12 +260,6 @@
         "kind": "assign"
       },
       "_CHAT_LOADS_IN_FLIGHT": {
-        "kind": "assign"
-      },
-      "_CONTINUE_AFTER_LENGTH_STATUS": {
-        "kind": "assign"
-      },
-      "_CONTINUE_TRUNCATED_ANSWER_STATUS": {
         "kind": "assign"
       },
       "_CPU_DEVICE_VALUES": {
@@ -119,9 +295,6 @@
       "_DEFAULT_LLAMA_N_UBATCH": {
         "kind": "assign"
       },
-      "_DEFAULT_MAX_TOKENS_FLOOR": {
-        "kind": "assign"
-      },
       "_DEFAULT_STREAM_STALL_TIMEOUT_S": {
         "kind": "assign"
       },
@@ -146,16 +319,10 @@
       "_FAILURE_SCAN_TAIL_CHARS": {
         "kind": "assign"
       },
-      "_FINAL_ANSWER_SIGNAL": {
-        "kind": "assign"
-      },
       "_FIT_FLOOR_MIN_CTX": {
         "kind": "assign"
       },
       "_FIT_MIN_CTX": {
-        "kind": "assign"
-      },
-      "_FORCED_PLAN_INTENT": {
         "kind": "assign"
       },
       "_GEMMA_MTP_FAMILY_RE": {
@@ -180,9 +347,6 @@
         "kind": "assign"
       },
       "_GGUF_METADATA_LOGGED_MAX": {
-        "kind": "assign"
-      },
-      "_GGUF_REHEARSAL_ARGS_RE": {
         "kind": "assign"
       },
       "_GGUF_UINT_WIDTHS": {
@@ -242,9 +406,6 @@
       "_LLAMA_FIT_TARGET_DEFAULT_MIB": {
         "kind": "assign"
       },
-      "_LLAMA_RANDOM_SEED": {
-        "kind": "assign"
-      },
       "_LOADS_IN_FLIGHT": {
         "kind": "assign"
       },
@@ -252,21 +413,6 @@
         "kind": "assign"
       },
       "_LOCAL_DRAFT_FLAGS": {
-        "kind": "assign"
-      },
-      "_LlamaStreamCancelled": {
-        "kind": "class"
-      },
-      "_MAX_IDENTICAL_TOOL_RESULTS": {
-        "kind": "assign"
-      },
-      "_MAX_LENGTH_CONTINUATIONS": {
-        "kind": "assign"
-      },
-      "_MAX_TOOL_CALLS_PER_TURN": {
-        "kind": "assign"
-      },
-      "_MIN_USEFUL_RESULT_TOKENS": {
         "kind": "assign"
       },
       "_MISS": {
@@ -317,9 +463,6 @@
       "_PROC_SELF_CGROUP": {
         "kind": "assign"
       },
-      "_PROVISIONAL_ARGS_MIN_CHARS": {
-        "kind": "assign"
-      },
       "_QWEN38_MODEL_RE": {
         "kind": "assign"
       },
@@ -362,22 +505,10 @@
       "_TENSOR_SPLIT_FLAGS": {
         "kind": "assign"
       },
-      "_TEXT_TOOL_GEMMA_RE": {
-        "kind": "assign"
-      },
-      "_TEXT_TOOL_NAME_RE": {
-        "kind": "assign"
-      },
-      "_TEXT_TOOL_REHEARSAL_RE": {
-        "kind": "assign"
-      },
       "_THREAD_OVERRIDE_FLAGS": {
         "kind": "assign"
       },
       "_UNRECOVERABLE_LOCAL_ERRNOS": {
-        "kind": "assign"
-      },
-      "_UNSET": {
         "kind": "assign"
       },
       "_VALID_CACHE_TYPES": {
@@ -392,25 +523,13 @@
       "_VULKAN_DIFFUSION_GPU_IDS_ERROR": {
         "kind": "assign"
       },
-      "_WINDOW_NOTICE_MARKER": {
-        "kind": "assign"
-      },
-      "_ZERO_ROOM_MARKER": {
-        "kind": "assign"
-      },
       "_accumulated_spec_types": {
         "kind": "def"
       },
       "_active_vram_fraction": {
         "kind": "def"
       },
-      "_anchor_text": {
-        "kind": "def"
-      },
       "_apply_igpu_host_reserve_mib": {
-        "kind": "def"
-      },
-      "_apply_seeded_llama_request": {
         "kind": "def"
       },
       "_arch_aliases": {
@@ -422,43 +541,10 @@
       "_arch_mtp_skips_target_kv_copy": {
         "kind": "def"
       },
-      "_archive_and_recall": {
-        "kind": "def"
-      },
-      "_archive_branch_transcript": {
-        "kind": "def"
-      },
-      "_archive_content_on_branch": {
-        "kind": "def"
-      },
-      "_archive_is_degraded": {
-        "kind": "def"
-      },
-      "_archive_message_text": {
-        "kind": "def"
-      },
       "_args_place_tensors_on_cpu": {
         "kind": "def"
       },
       "_auto_mode_drops_mtp": {
-        "kind": "def"
-      },
-      "_backend_supports_tools": {
-        "kind": "def"
-      },
-      "_backfill_usage_from_timings": {
-        "kind": "def"
-      },
-      "_boundary_metadata": {
-        "kind": "def"
-      },
-      "_branch_boundary": {
-        "kind": "def"
-      },
-      "_branch_boundary_anchor": {
-        "kind": "def"
-      },
-      "_branch_non_system": {
         "kind": "def"
       },
       "_build_ngram_mod_flags": {
@@ -488,9 +574,6 @@
       "_cached_variant_sizes": {
         "kind": "def"
       },
-      "_can_reset_epoch": {
-        "kind": "def"
-      },
       "_canonicalize_spec_mode": {
         "kind": "def"
       },
@@ -500,13 +583,7 @@
       "_coerce_reasoning_effort": {
         "kind": "def"
       },
-      "_compaction_fit_kwargs": {
-        "kind": "def"
-      },
       "_companion_snapshot_sibling": {
-        "kind": "def"
-      },
-      "_conversation_recall_reserve": {
         "kind": "def"
       },
       "_cpu_runtime_owner_alive": {
@@ -525,9 +602,6 @@
         "kind": "def"
       },
       "_drafter_set_bytes": {
-        "kind": "def"
-      },
-      "_effective_headroom_ratio": {
         "kind": "def"
       },
       "_effective_main_cache_types": {
@@ -635,19 +709,7 @@
       "_fetch_swa_entry_from_hf": {
         "kind": "def"
       },
-      "_finalize_reasoning_only_cumulative": {
-        "kind": "def"
-      },
-      "_fit_context": {
-        "kind": "def"
-      },
-      "_fit_with_instruction_pins": {
-        "kind": "def"
-      },
       "_flash_attn_enabled_from_args": {
-        "kind": "def"
-      },
-      "_gguf_active_tool_names": {
         "kind": "def"
       },
       "_gguf_extra_shards": {
@@ -656,16 +718,7 @@
       "_gguf_files_for_variant": {
         "kind": "def"
       },
-      "_gguf_has_genuine_tool_signal": {
-        "kind": "def"
-      },
-      "_gguf_rehearsal_signal_pos": {
-        "kind": "def"
-      },
       "_gguf_snapshot_files": {
-        "kind": "def"
-      },
-      "_held_rehearsal_tail_len": {
         "kind": "def"
       },
       "_hf_endpoint_host": {
@@ -696,9 +749,6 @@
         "kind": "def"
       },
       "_idle_slot_clearing_active": {
-        "kind": "def"
-      },
-      "_inject_recall": {
         "kind": "def"
       },
       "_is_big_endian_gguf_path": {
@@ -737,16 +787,7 @@
       "_is_published_mtp_drafter_name": {
         "kind": "def"
       },
-      "_is_rehearsal_prefix": {
-        "kind": "def"
-      },
       "_is_root_dflash_drafter_path": {
-        "kind": "def"
-      },
-      "_is_window_notice": {
-        "kind": "def"
-      },
-      "_keeps_compaction_boundary": {
         "kind": "def"
       },
       "_kv_bytes_per_elem": {
@@ -774,9 +815,6 @@
         "kind": "def"
       },
       "_loader_path_var": {
-        "kind": "def"
-      },
-      "_memory_tool_withheld": {
         "kind": "def"
       },
       "_metal_capable_host": {
@@ -842,9 +880,6 @@
       "_planned_scratch_cache_type": {
         "kind": "def"
       },
-      "_prefix_user_text": {
-        "kind": "def"
-      },
       "_prepend_loader_dir": {
         "kind": "def"
       },
@@ -852,18 +887,6 @@
         "kind": "def"
       },
       "_quant_label_for_endian": {
-        "kind": "def"
-      },
-      "_recall_top_k": {
-        "kind": "def"
-      },
-      "_records_boundary": {
-        "kind": "def"
-      },
-      "_report_live_llama_timings": {
-        "kind": "def"
-      },
-      "_request_uses_checkpoint": {
         "kind": "def"
       },
       "_resolve_llama_binary": {
@@ -884,9 +907,6 @@
       "_resolved_mmproj_offload": {
         "kind": "def"
       },
-      "_retrieval_budget": {
-        "kind": "assign"
-      },
       "_save_swa_cache": {
         "kind": "def"
       },
@@ -894,9 +914,6 @@
         "kind": "def"
       },
       "_shim_supports_ngl": {
-        "kind": "def"
-      },
-      "_should_suppress_forced_no_tool_output": {
         "kind": "def"
       },
       "_sidecar_adapter_bytes": {
@@ -911,9 +928,6 @@
       "_snapshot_has_all_shards": {
         "kind": "def"
       },
-      "_sniff_text_tool_name": {
-        "kind": "def"
-      },
       "_source_declares_option": {
         "kind": "def"
       },
@@ -921,12 +935,6 @@
         "kind": "def"
       },
       "_split_mode_confines_to_one_device": {
-        "kind": "def"
-      },
-      "_sticky_compaction_boundary": {
-        "kind": "def"
-      },
-      "_sticky_compaction_state": {
         "kind": "def"
       },
       "_strip_flag_pairs": {

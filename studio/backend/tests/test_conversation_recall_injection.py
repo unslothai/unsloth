@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.inference import llama_cpp  # noqa: E402
+from core.inference import chat_compaction  # noqa: E402
 from core.inference import tools as tools_mod  # noqa: E402
 from core.rag import conversation_archive  # noqa: E402
 
@@ -121,7 +121,7 @@ def test_recall_is_none_when_nothing_matches(archived):
 def test_prefix_user_text_does_not_mutate_the_original():
     message = {"role": "user", "content": "original"}
 
-    updated = llama_cpp._prefix_user_text(message, "PREFIX ")
+    updated = chat_compaction._prefix_user_text(message, "PREFIX ")
 
     assert message["content"] == "original"
     assert updated["content"] == "PREFIX original"
@@ -133,7 +133,7 @@ def test_prefix_user_text_handles_content_parts():
         "content": [{"type": "image_url", "image_url": {}}, {"type": "text", "text": "hello"}],
     }
 
-    updated = llama_cpp._prefix_user_text(message, "PREFIX ")
+    updated = chat_compaction._prefix_user_text(message, "PREFIX ")
 
     assert updated["content"][1]["text"] == "PREFIX hello"
     assert message["content"][1]["text"] == "hello"
@@ -144,7 +144,7 @@ def test_archive_and_recall_reports_counts_only(archived):
     before = _conversation() + [{"role": "user", "content": "evicted turn"}]
     after = _conversation()
 
-    result = llama_cpp._archive_and_recall(
+    result = chat_compaction._archive_and_recall(
         after, before, thread_id = THREAD, style = "tool", recall_done = False
     )
 
@@ -156,7 +156,7 @@ def test_archive_and_recall_skips_recall_once_already_done(archived):
     before = _conversation() + [{"role": "user", "content": "evicted turn"}]
     after = _conversation()
 
-    result = llama_cpp._archive_and_recall(
+    result = chat_compaction._archive_and_recall(
         after, before, thread_id = THREAD, style = "tool", recall_done = True
     )
 
@@ -173,7 +173,7 @@ def test_a_stopped_request_skips_the_automatic_recall(archived, monkeypatch, sto
     before = _conversation() + [{"role": "user", "content": "evicted turn"}]
     after = _conversation()
 
-    result = llama_cpp._archive_and_recall(
+    result = chat_compaction._archive_and_recall(
         after,
         before,
         thread_id = THREAD,
@@ -192,7 +192,7 @@ def test_a_refused_fit_still_archives_what_it_evicted(archived):
     before = _conversation() + [{"role": "user", "content": "a turn only the fit saw"}]
     after = _conversation()
 
-    result = llama_cpp._archive_and_recall(
+    result = chat_compaction._archive_and_recall(
         after, before, thread_id = THREAD, style = "tool", recall_done = True
     )
 
@@ -230,7 +230,7 @@ def test_a_shrunken_window_hands_the_respawn_refit_a_reduced_refusal():
 def test_archive_and_recall_is_a_noop_without_a_thread_id(archived):
     after = _conversation()
 
-    result = llama_cpp._archive_and_recall(
+    result = chat_compaction._archive_and_recall(
         after, after, thread_id = None, style = "tool", recall_done = False
     )
 
@@ -239,13 +239,13 @@ def test_archive_and_recall_is_a_noop_without_a_thread_id(archived):
 
 
 def test_recall_reserve_is_zero_without_a_thread():
-    assert llama_cpp._conversation_recall_reserve(None) == 0
+    assert chat_compaction._conversation_recall_reserve(None) == 0
 
 
 def test_recall_reserve_is_zero_when_the_archive_is_disabled(monkeypatch):
     monkeypatch.setattr(conversation_archive.config, "CONVERSATION_ARCHIVE", False)
 
-    assert llama_cpp._conversation_recall_reserve(THREAD) == 0
+    assert chat_compaction._conversation_recall_reserve(THREAD) == 0
 
 
 def test_build_rag_autoinject_still_emits_its_original_shape(monkeypatch):
@@ -341,7 +341,7 @@ def _fake_studio_db(monkeypatch, messages):
 
 
 def test_sticky_boundary_reads_the_newest_assistant_truncation(monkeypatch):
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
     _fake_studio_db(
         monkeypatch,
         [
@@ -352,12 +352,12 @@ def test_sticky_boundary_reads_the_newest_assistant_truncation(monkeypatch):
         ],
     )
 
-    assert llama_cpp._sticky_compaction_boundary("t1") == 18
+    assert chat_compaction._sticky_compaction_boundary("t1") == 18
 
 
 def test_sticky_boundary_ignores_a_sibling_branchs_assistant_turn(monkeypatch):
     """Sticky boundary must come from this branch's reply, since the newest row may be a sibling."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     _fake_studio_db(
         monkeypatch,
@@ -376,13 +376,13 @@ def test_sticky_boundary_ignores_a_sibling_branchs_assistant_turn(monkeypatch):
         {"role": "user", "content": "next"},
     ]
 
-    assert llama_cpp._sticky_compaction_boundary("t1") == 40
-    assert llama_cpp._sticky_compaction_boundary("t1", branch) == 4
+    assert chat_compaction._sticky_compaction_boundary("t1") == 40
+    assert chat_compaction._sticky_compaction_boundary("t1", branch) == 4
 
 
 def test_sticky_boundary_takes_the_smaller_of_two_identical_replies(monkeypatch):
     """Identical replies cannot be told apart, so take the smaller boundary as the safe one."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     _fake_studio_db(
         monkeypatch,
@@ -398,12 +398,12 @@ def test_sticky_boundary_takes_the_smaller_of_two_identical_replies(monkeypatch)
         {"role": "user", "content": "next"},
     ]
 
-    assert llama_cpp._sticky_compaction_boundary("t1", branch) == 4
+    assert chat_compaction._sticky_compaction_boundary("t1", branch) == 4
 
 
 def test_sticky_boundary_still_prefers_the_newest_distinguishable_reply(monkeypatch):
     """Only replies indistinguishable from the newest are folded in, or the boundary ratchets backwards."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     _fake_studio_db(
         monkeypatch,
@@ -417,12 +417,12 @@ def test_sticky_boundary_still_prefers_the_newest_distinguishable_reply(monkeypa
         {"role": "assistant", "content": "the newest answer"},
     ]
 
-    assert llama_cpp._sticky_compaction_boundary("t1", branch) == 30
+    assert chat_compaction._sticky_compaction_boundary("t1", branch) == 30
 
 
 def test_sticky_boundary_prefers_a_reply_that_matches_the_branch_exactly(monkeypatch):
     """The branch check is a substring test, so a short reply like 'Done' matches a longer live reply."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     _fake_studio_db(
         monkeypatch,
@@ -438,13 +438,13 @@ def test_sticky_boundary_prefers_a_reply_that_matches_the_branch_exactly(monkeyp
         {"role": "user", "content": "keep going"},
     ]
 
-    assert llama_cpp._sticky_compaction_boundary("t1", branch) == 4
+    assert chat_compaction._sticky_compaction_boundary("t1", branch) == 4
 
 
 def test_sticky_boundary_still_reads_a_reply_no_branch_message_matches_exactly(monkeypatch):
     """Preferring an exact match must not become a requirement; stored rows are not always byte-
     identical."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     _fake_studio_db(
         monkeypatch,
@@ -457,12 +457,12 @@ def test_sticky_boundary_still_reads_a_reply_no_branch_message_matches_exactly(m
         {"role": "assistant", "content": "the answer, with a block the request drops"},
     ]
 
-    assert llama_cpp._sticky_compaction_boundary("t1", branch) == 9
+    assert chat_compaction._sticky_compaction_boundary("t1", branch) == 9
 
 
 def test_sticky_boundary_prefers_the_recorded_branch_boundary(monkeypatch):
     """Summed dropped counts include tool exchanges the transcript lacks; restore the recorded boundary."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     _fake_studio_db(
         monkeypatch,
@@ -483,7 +483,7 @@ def test_sticky_boundary_prefers_the_recorded_branch_boundary(monkeypatch):
         ],
     )
 
-    assert llama_cpp._sticky_compaction_boundary("t1") == 4
+    assert chat_compaction._sticky_compaction_boundary("t1") == 4
 
 
 def _anchored_row(
@@ -508,7 +508,7 @@ def _anchored_row(
 
 def test_sticky_boundary_rebases_after_an_evicted_turn_is_deleted(monkeypatch):
     """Recorded boundary counts are absolute, so re-derive the cut from the anchor after a delete."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     _fake_studio_db(monkeypatch, [_anchored_row(4, "kept first")])
     branch = [
@@ -518,12 +518,12 @@ def test_sticky_boundary_rebases_after_an_evicted_turn_is_deleted(monkeypatch):
         {"role": "assistant", "content": "a"},
     ]
 
-    assert llama_cpp._sticky_compaction_boundary("t1", branch) == 2
+    assert chat_compaction._sticky_compaction_boundary("t1", branch) == 2
 
 
 def test_sticky_boundary_anchor_never_deepens_the_cut(monkeypatch):
     """An anchor may make the boundary shallower but never deeper, since a repeat can match far in."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     _fake_studio_db(monkeypatch, [_anchored_row(2, "kept first")])
     branch = [
@@ -535,12 +535,12 @@ def test_sticky_boundary_anchor_never_deepens_the_cut(monkeypatch):
         {"role": "assistant", "content": "a"},
     ]
 
-    assert llama_cpp._sticky_compaction_boundary("t1", branch) == 2
+    assert chat_compaction._sticky_compaction_boundary("t1", branch) == 2
 
 
 def test_sticky_boundary_ignores_an_anchor_the_branch_no_longer_has(monkeypatch):
     """The anchor's own turn can be the one deleted. Fall back to the recorded count."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     _fake_studio_db(monkeypatch, [_anchored_row(2, "a text this branch does not have")])
     branch = [
@@ -550,12 +550,12 @@ def test_sticky_boundary_ignores_an_anchor_the_branch_no_longer_has(monkeypatch)
         {"role": "assistant", "content": "a"},
     ]
 
-    assert llama_cpp._sticky_compaction_boundary("t1", branch) == 2
+    assert chat_compaction._sticky_compaction_boundary("t1", branch) == 2
 
 
 def test_sticky_boundary_anchor_skips_the_system_turn(monkeypatch):
     """Count as _branch_boundary does, skipping system and developer turns, or each anchor lands late."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     _fake_studio_db(monkeypatch, [_anchored_row(4, "kept first")])
     branch = [
@@ -566,12 +566,12 @@ def test_sticky_boundary_anchor_skips_the_system_turn(monkeypatch):
         {"role": "assistant", "content": "a"},
     ]
 
-    assert llama_cpp._sticky_compaction_boundary("t1", branch) == 2
+    assert chat_compaction._sticky_compaction_boundary("t1", branch) == 2
 
 
 def test_branch_boundary_anchor_names_the_first_kept_message():
     """The anchor and the count describe the same cut, or the rebase is meaningless."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     branch = [
         {"role": "system", "content": "sys"},
@@ -583,13 +583,13 @@ def test_branch_boundary_anchor_names_the_first_kept_message():
     ]
     conversation = [branch[0]] + branch[3:]
 
-    assert llama_cpp._branch_boundary(conversation, branch) == 2
-    assert llama_cpp._branch_boundary_anchor(conversation, branch) == "kept prompt"
+    assert chat_compaction._branch_boundary(conversation, branch) == 2
+    assert chat_compaction._branch_boundary_anchor(conversation, branch) == "kept prompt"
 
 
 def test_sticky_boundary_falls_back_for_turns_saved_before_the_boundary_existed(monkeypatch):
     """Rows written by an earlier build carry only the dropped count."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     _fake_studio_db(
         monkeypatch,
@@ -598,25 +598,25 @@ def test_sticky_boundary_falls_back_for_turns_saved_before_the_boundary_existed(
         ],
     )
 
-    assert llama_cpp._sticky_compaction_boundary("t1") == 6
+    assert chat_compaction._sticky_compaction_boundary("t1") == 6
 
 
 def test_the_recall_reserve_is_dropped_once_archiving_has_failed(monkeypatch):
     """Drop the recall reserve once archiving fails: the embedder cannot start, so nothing is recalled."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
     from core.rag import conversation_archive as archive
 
     monkeypatch.setattr(archive, "can_archive", lambda _tid: True)
     monkeypatch.setattr(archive, "degraded", lambda: False)
-    assert llama_cpp._conversation_recall_reserve("t1") > 0
+    assert chat_compaction._conversation_recall_reserve("t1") > 0
 
     monkeypatch.setattr(archive, "degraded", lambda: True)
-    assert llama_cpp._conversation_recall_reserve("t1") == 0
+    assert chat_compaction._conversation_recall_reserve("t1") == 0
 
 
 def test_sticky_boundary_only_matches_assistant_messages(monkeypatch):
     """Match only assistant messages; a user message that merely contains 'Done' must not count."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     _fake_studio_db(
         monkeypatch,
@@ -627,12 +627,12 @@ def test_sticky_boundary_only_matches_assistant_messages(monkeypatch):
     )
     branch = [{"role": "user", "content": "did the deploy finish? not done yet I think"}]
 
-    assert llama_cpp._sticky_compaction_boundary("t1", branch) == 0
+    assert chat_compaction._sticky_compaction_boundary("t1", branch) == 0
 
 
 def test_sticky_boundary_reads_the_flattened_metadata_shape(monkeypatch):
     """The history row flattens `custom` into `metadata`; both shapes are in the wild."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     _fake_studio_db(
         monkeypatch,
@@ -645,12 +645,12 @@ def test_sticky_boundary_reads_the_flattened_metadata_shape(monkeypatch):
         ],
     )
 
-    assert llama_cpp._sticky_compaction_boundary("t1") == 7
+    assert chat_compaction._sticky_compaction_boundary("t1") == 7
 
 
 def test_sticky_boundary_ignores_a_provider_summary(monkeypatch):
     """A provider summary is useful only while its opaque block is replayed to that provider."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     _fake_studio_db(
         monkeypatch,
@@ -672,21 +672,21 @@ def test_sticky_boundary_ignores_a_provider_summary(monkeypatch):
         ],
     )
 
-    assert llama_cpp._sticky_compaction_boundary("t1") == 0
+    assert chat_compaction._sticky_compaction_boundary("t1") == 0
 
 
 def test_sticky_boundary_is_zero_without_a_thread_or_history(monkeypatch):
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
-    assert llama_cpp._sticky_compaction_boundary(None) == 0
-    assert llama_cpp._sticky_compaction_boundary("") == 0
+    assert chat_compaction._sticky_compaction_boundary(None) == 0
+    assert chat_compaction._sticky_compaction_boundary("") == 0
     _fake_studio_db(monkeypatch, [])
-    assert llama_cpp._sticky_compaction_boundary("t1") == 0
+    assert chat_compaction._sticky_compaction_boundary("t1") == 0
 
 
 def test_sticky_boundary_ignores_a_fit_that_did_not_fit(monkeypatch):
     """`fits: false` means the fit gave up, so it describes no boundary to restore."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     _fake_studio_db(
         monkeypatch,
@@ -695,7 +695,7 @@ def test_sticky_boundary_ignores_a_fit_that_did_not_fit(monkeypatch):
         ],
     )
 
-    assert llama_cpp._sticky_compaction_boundary("t1") == 0
+    assert chat_compaction._sticky_compaction_boundary("t1") == 0
 
 
 def test_sticky_boundary_never_raises_on_a_storage_failure(monkeypatch):
@@ -703,7 +703,7 @@ def test_sticky_boundary_never_raises_on_a_storage_failure(monkeypatch):
     import sys
     import types
 
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     def explode(thread_id):
         raise RuntimeError("database is locked")
@@ -714,25 +714,25 @@ def test_sticky_boundary_never_raises_on_a_storage_failure(monkeypatch):
     monkeypatch.setitem(sys.modules, "storage", package)
     monkeypatch.setitem(sys.modules, "storage.studio_db", module)
 
-    assert llama_cpp._sticky_compaction_boundary("t1") == 0
+    assert chat_compaction._sticky_compaction_boundary("t1") == 0
 
 
 def test_recall_is_sized_by_the_room_the_fit_actually_obtained():
     """Size recall to the room the fit obtained, since protected messages can leave the trim short."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
-    assert llama_cpp._recall_top_k(0) == 0
-    assert llama_cpp._recall_top_k(-500) == 0
-    assert 0 < llama_cpp._recall_top_k(1024) <= 4
-    assert llama_cpp._recall_top_k(1_000_000) == 4
+    assert chat_compaction._recall_top_k(0) == 0
+    assert chat_compaction._recall_top_k(-500) == 0
+    assert 0 < chat_compaction._recall_top_k(1024) <= 4
+    assert chat_compaction._recall_top_k(1_000_000) == 4
 
 
 def test_a_tool_loop_retrieval_leaves_room_for_the_turn_it_enables():
     """A tool-loop retrieval leaves room for the reply that follows it."""
-    from core.inference import llama_cpp
+    from core.inference import llama_chat
 
-    single_shot = llama_cpp._retrieval_budget(3000, 3000, 747)
-    in_loop = llama_cpp._retrieval_budget(3000, 3000, 747, reply_returns = True)
+    single_shot = llama_chat._retrieval_budget(3000, 3000, 747)
+    in_loop = llama_chat._retrieval_budget(3000, 3000, 747, reply_returns = True)
 
     assert single_shot == 2250 - 747
     assert in_loop == 1125
@@ -740,31 +740,31 @@ def test_a_tool_loop_retrieval_leaves_room_for_the_turn_it_enables():
 
 
 def test_a_retrieval_budget_is_only_capped_where_it_would_take_most_of_the_turn():
-    from core.inference import llama_cpp
-    assert llama_cpp._retrieval_budget(32768, 32768, 18976, reply_returns = True) == 24576 - 18976
-    assert llama_cpp._retrieval_budget(3000, 3000, 9000, reply_returns = True) == 0
+    from core.inference import llama_chat
+    assert llama_chat._retrieval_budget(32768, 32768, 18976, reply_returns = True) == 24576 - 18976
+    assert llama_chat._retrieval_budget(3000, 3000, 9000, reply_returns = True) == 0
 
 
 def test_a_recorded_boundary_is_still_not_a_replayable_one():
     """A rescue's depth is recorded for the compaction notice, but only fitted boundaries are replayed."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     rescued = {"fits": False, "dropped_messages": 6, "boundary_messages": 6}
     fitted = {"fits": True, "dropped_messages": 6, "boundary_messages": 6}
     refused = {"fits": False, "dropped_messages": 0}
 
-    assert llama_cpp._records_boundary(rescued) is True
-    assert llama_cpp._records_boundary(fitted) is True
-    assert llama_cpp._records_boundary(refused) is False
+    assert chat_compaction._records_boundary(rescued) is True
+    assert chat_compaction._records_boundary(fitted) is True
+    assert chat_compaction._records_boundary(refused) is False
 
 
 def test_both_local_tool_loops_size_retrieval_with_the_same_policy():
     """GGUF and safetensors loops must share one retrieval sizing policy; a private copy drifts."""
     import inspect
 
-    from core.inference import context_window, llama_cpp, safetensors_agentic
+    from core.inference import context_window, llama_chat, safetensors_agentic
 
-    assert llama_cpp._retrieval_budget is context_window.retrieval_budget
+    assert llama_chat._retrieval_budget is context_window.retrieval_budget
 
     source = inspect.getsource(safetensors_agentic)
     assert "retrieval_budget(" in source
@@ -814,7 +814,7 @@ def test_the_sticky_boundary_is_applied_once_per_request():
     assert reapplied["dropped_messages"] > once["dropped_messages"]
     from pathlib import Path
 
-    source = Path(__file__).resolve().parent.parent / "core/inference/llama_cpp.py"
+    source = Path(__file__).resolve().parent.parent / "core/inference/llama_chat.py"
     text = source.read_text(encoding = "utf-8")
     assert "_sticky_boundary_applied = True" in text
     assert "(0, True) if _sticky_boundary_applied" in " ".join(text.split())
@@ -1004,7 +1004,7 @@ def test_both_retrieval_tools_share_the_per_turn_search_cap():
 
     assert RAG_SEARCH_TOOLS == {"search_knowledge_base", "search_conversation"}
     backend = Path(__file__).resolve().parent.parent / "core/inference"
-    for module in ("llama_cpp.py", "safetensors_agentic.py"):
+    for module in ("llama_chat.py", "safetensors_agentic.py"):
         text = (backend / module).read_text(encoding = "utf-8")
         assert "decision.tool_name in RAG_SEARCH_TOOLS" in text, module
         assert 'decision.tool_name == "search_knowledge_base"' not in text, module
@@ -1035,17 +1035,17 @@ def test_an_omitted_top_k_falls_through_to_the_configured_default(archived, monk
 
 def test_a_thread_that_cannot_be_archived_holds_back_no_reserve(monkeypatch):
     """A thread that cannot be archived holds no reserve, since nothing can be recalled into it."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
     from core.rag import conversation_archive
 
     monkeypatch.setattr(conversation_archive, "enabled", lambda: True)
 
     monkeypatch.setattr(conversation_archive, "can_archive", lambda thread_id: False)
-    assert llama_cpp._conversation_recall_reserve("incognito") == 0
+    assert chat_compaction._conversation_recall_reserve("incognito") == 0
 
     monkeypatch.setattr(conversation_archive, "can_archive", lambda thread_id: True)
-    assert llama_cpp._conversation_recall_reserve("saved") > 0
-    assert llama_cpp._conversation_recall_reserve(None) == 0
+    assert chat_compaction._conversation_recall_reserve("saved") > 0
+    assert chat_compaction._conversation_recall_reserve(None) == 0
 
 
 def test_the_forced_recall_searches_for_the_USERS_question(archived, monkeypatch):
@@ -1109,7 +1109,7 @@ def test_a_model_initiated_search_is_filtered_to_the_request_branch(archived, mo
 
 def test_inline_recall_anchors_only_the_turn_it_rewrote(archived, monkeypatch):
     """Inline recall rewrites the latest user message in place, so anchor only that turn."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     conversation = [
         {"role": "user", "content": "an earlier question"},
@@ -1122,7 +1122,7 @@ def test_inline_recall_anchors_only_the_turn_it_rewrote(archived, monkeypatch):
         lambda *args, **kwargs: {"prefix": "RECALLED ", "messages": [], "events": [], "sources": 1},
     )
 
-    out = llama_cpp._archive_and_recall(
+    out = chat_compaction._archive_and_recall(
         conversation,
         conversation,
         thread_id = THREAD,
@@ -1140,7 +1140,7 @@ def test_inline_recall_anchors_only_the_turn_it_rewrote(archived, monkeypatch):
 
 def test_tool_recall_anchors_the_synthetic_exchange(archived, monkeypatch):
     """The tool style DOES append two messages, and those are what must survive a refit."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     conversation = [{"role": "user", "content": "what was that limerick"}]
     synthetic = [
@@ -1153,7 +1153,7 @@ def test_tool_recall_anchors_the_synthetic_exchange(archived, monkeypatch):
         lambda *args, **kwargs: {"messages": synthetic, "events": [], "sources": 1},
     )
 
-    out = llama_cpp._archive_and_recall(
+    out = chat_compaction._archive_and_recall(
         conversation,
         conversation,
         thread_id = THREAD,
@@ -1167,7 +1167,7 @@ def test_tool_recall_anchors_the_synthetic_exchange(archived, monkeypatch):
 
 def test_an_over_budget_recall_is_retried_with_fewer_turns(archived, monkeypatch):
     """When a full top-K overshoots, retry with fewer turns rather than dropping all forced recall."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     conversation = [{"role": "user", "content": "what was that pelicans limerick"}]
     asked = []
@@ -1186,7 +1186,7 @@ def test_an_over_budget_recall_is_retried_with_fewer_turns(archived, monkeypatch
     monkeypatch.setattr(tools_mod, "build_conversation_recall", build)
     chars = lambda messages: sum(len(m.get("content") or "") for m in messages)
 
-    out = llama_cpp._archive_and_recall(
+    out = chat_compaction._archive_and_recall(
         conversation,
         conversation,
         thread_id = THREAD,
@@ -1204,7 +1204,7 @@ def test_an_over_budget_recall_is_retried_with_fewer_turns(archived, monkeypatch
 
 def test_recall_is_dropped_when_the_real_prompt_exceeds_the_budget(archived, monkeypatch):
     """CHUNK_TOKENS is an embedding limit, so the chat template's real cost can overshoot the budget."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     conversation = [{"role": "user", "content": "what was that pelicans limerick"}]
     monkeypatch.setattr(
@@ -1219,7 +1219,7 @@ def test_recall_is_dropped_when_the_real_prompt_exceeds_the_budget(archived, mon
     )
     chars = lambda messages: sum(len(m.get("content") or "") for m in messages)
 
-    tight = llama_cpp._archive_and_recall(
+    tight = chat_compaction._archive_and_recall(
         conversation,
         conversation,
         thread_id = THREAD,
@@ -1231,7 +1231,7 @@ def test_recall_is_dropped_when_the_real_prompt_exceeds_the_budget(archived, mon
     assert tight["recalled"] is False
     assert tight["conversation"] == conversation
 
-    roomy = llama_cpp._archive_and_recall(
+    roomy = chat_compaction._archive_and_recall(
         conversation,
         conversation,
         thread_id = THREAD,
@@ -1246,7 +1246,7 @@ def test_recall_is_dropped_when_the_real_prompt_exceeds_the_budget(archived, mon
 
 def test_the_branch_boundary_excludes_the_turn_inline_recall_rewrites():
     """A prefill after the newest user turn must not leave that user message counted as evicted."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     user_first = {"role": "user", "content": "first"}
     answer_first = {"role": "assistant", "content": "first answer"}
@@ -1256,8 +1256,8 @@ def test_the_branch_boundary_excludes_the_turn_inline_recall_rewrites():
 
     rewritten = {"role": "user", "content": "recalled turns\nlatest question"}
 
-    assert llama_cpp._branch_boundary([rewritten, prefill], branch) == 2
-    assert llama_cpp._branch_boundary([user_latest, prefill], branch) == 2
+    assert chat_compaction._branch_boundary([rewritten, prefill], branch) == 2
+    assert chat_compaction._branch_boundary([user_latest, prefill], branch) == 2
 
 
 def test_a_conversation_search_charges_token_dense_text_properly(archived, monkeypatch):
@@ -1292,8 +1292,11 @@ def test_a_tool_exchange_this_request_created_stays_on_the_branch(monkeypatch):
     """A tool exchange this request created stays on its branch, though the client never sent it."""
     from pathlib import Path
 
-    source = Path(__file__).resolve().parent.parent / "core/inference/llama_cpp.py"
-    text = " ".join(source.read_text(encoding = "utf-8").split())
+    backend = Path(__file__).resolve().parent.parent / "core/inference"
+    text = " ".join(
+        " ".join((backend / module).read_text(encoding = "utf-8").split())
+        for module in ("llama_cpp.py", "llama_chat.py", "chat_compaction.py")
+    )
 
     assert "branch_messages = _extend_live_branch(" in text
     assert 'kwargs["conversation_branch"] = _extend_live_branch(' in text
@@ -1524,7 +1527,7 @@ def test_a_dense_ascii_result_is_priced_by_the_callers_tokenizer(archived, monke
 def test_the_anchor_survives_a_tool_call_message_with_no_text(monkeypatch):
     """Tool-call messages have no text; the anchor must fall back to their calls or the rebase is
     skipped."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     call = {
         "role": "assistant",
@@ -1541,9 +1544,9 @@ def test_the_anchor_survives_a_tool_call_message_with_no_text(monkeypatch):
     ]
     conversation = [branch[0]] + branch[3:]
 
-    anchor = llama_cpp._branch_boundary_anchor(conversation, branch)
+    anchor = chat_compaction._branch_boundary_anchor(conversation, branch)
     assert anchor, "a tool-call message left the anchor empty, which disables the rebase"
-    assert llama_cpp._branch_boundary(conversation, branch) == 2
+    assert chat_compaction._branch_boundary(conversation, branch) == 2
 
     _fake_studio_db(monkeypatch, [_anchored_row(2, anchor)])
     shortened = [
@@ -1553,12 +1556,12 @@ def test_the_anchor_survives_a_tool_call_message_with_no_text(monkeypatch):
         {"role": "assistant", "content": "a"},
     ]
 
-    assert llama_cpp._sticky_compaction_boundary("t1", shortened) == 1
+    assert chat_compaction._sticky_compaction_boundary("t1", shortened) == 1
 
 
 def test_the_anchor_is_bounded_so_a_pasted_prompt_is_not_persisted_per_turn():
     """Anchors are a bounded head, so a huge pasted prompt is not copied into every turn's metadata."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     pasted = "PASTE " + "z" * 40_000
     branch = [
@@ -1571,21 +1574,21 @@ def test_the_anchor_is_bounded_so_a_pasted_prompt_is_not_persisted_per_turn():
     ]
     conversation = [branch[0]] + branch[3:]
 
-    anchor = llama_cpp._branch_boundary_anchor(conversation, branch)
+    anchor = chat_compaction._branch_boundary_anchor(conversation, branch)
 
-    assert 0 < len(anchor) <= llama_cpp._ANCHOR_TEXT_CHARS
+    assert 0 < len(anchor) <= chat_compaction._ANCHOR_TEXT_CHARS
     assert pasted.startswith(anchor)
 
 
 def test_any_room_at_all_is_worth_one_recall_attempt():
     """Flooring the budget by CHUNK_TOKENS disables recall on tight windows; the exact recount decides."""
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
     from core.rag import config as rag_config
 
-    assert llama_cpp._recall_top_k(0) == 0
-    assert llama_cpp._recall_top_k(-5) == 0
-    assert llama_cpp._recall_top_k(rag_config.CHUNK_TOKENS - 1) == 1
-    assert llama_cpp._recall_top_k(rag_config.CHUNK_TOKENS * 2) >= 2
+    assert chat_compaction._recall_top_k(0) == 0
+    assert chat_compaction._recall_top_k(-5) == 0
+    assert chat_compaction._recall_top_k(rag_config.CHUNK_TOKENS - 1) == 1
+    assert chat_compaction._recall_top_k(rag_config.CHUNK_TOKENS * 2) >= 2
 
 
 def test_a_short_earlier_prompt_is_still_worth_searching_for(

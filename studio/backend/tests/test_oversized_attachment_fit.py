@@ -9,7 +9,7 @@ import copy
 
 import pytest
 
-from core.inference import checkpoint, llama_cpp
+from core.inference import chat_compaction, checkpoint
 from core.inference.context_window import evicted_messages, fit_oversized_attachments
 
 PATH = '".unsloth_attachments/abc123/notes.txt"'
@@ -134,7 +134,7 @@ def test_content_parts_are_cut_in_place():
 def test_the_compaction_fit_serves_the_turn_instead_of_refusing_it(monkeypatch):
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "rolling")
 
-    fitted, truncation = llama_cpp._fit_context(
+    fitted, truncation = chat_compaction._fit_context(
         _messages(), context_length = 2048, max_tokens = 512, count_tokens = count
     )
 
@@ -151,7 +151,7 @@ def test_a_recount_cuts_an_oversized_attachment_before_replaying_the_boundary(ch
         {"role": "user", "content": "What does line 1000 say?\n" + note() + FILE},
     ]
 
-    fitted, truncation = llama_cpp._fit_context(
+    fitted, truncation = chat_compaction._fit_context(
         messages,
         context_length = 2048,
         max_tokens = 512,

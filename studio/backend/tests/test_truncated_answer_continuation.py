@@ -89,11 +89,8 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 from core.inference.context_window import _reply_floor
-from core.inference.llama_cpp import (
-    _CONTINUE_TRUNCATED_ANSWER_STATUS,
-    _MAX_LENGTH_CONTINUATIONS,
-    LlamaCppBackend,
-)
+from core.inference.llama_cpp import LlamaCppBackend
+from core.inference.llama_chat import _CONTINUE_TRUNCATED_ANSWER_STATUS, _MAX_LENGTH_CONTINUATIONS
 
 _HALF_AN_ANSWER = (
     "<!DOCTYPE html>\n<html>\n<body>\n<canvas id='c'></canvas>\n<script>\n"

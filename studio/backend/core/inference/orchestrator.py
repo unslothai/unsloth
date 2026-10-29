@@ -2817,7 +2817,7 @@ class InferenceOrchestrator:
                 retrieval_budget,
                 truncate_oldest_messages,
             )
-            from core.inference.llama_cpp import (
+            from core.inference.chat_compaction import (
                 _archive_and_recall,
                 _boundary_metadata,
                 _can_reset_epoch,

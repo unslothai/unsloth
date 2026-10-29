@@ -18,17 +18,13 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-from core.inference.llama_cpp import (
-    _MAX_REPROMPTS,
-    _PROVISIONAL_ARGS_MIN_CHARS,
-    GgufLoadIntent,
-    LlamaCppBackend,
-)
+from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
+from core.inference.llama_chat import _MAX_REPROMPTS, _PROVISIONAL_ARGS_MIN_CHARS
 from core.inference.tool_call_parser import NUDGE_TOOL_CALLS_STATUS
 from state import tool_approvals
 from state.tool_approvals import TOOL_REJECTED_MESSAGE, resolve_tool_decision
-from core.inference import llama_cpp
-from core.inference.llama_cpp import _should_suppress_forced_no_tool_output as suppress
+from core.inference import chat_compaction, llama_chat
+from core.inference.llama_chat import _should_suppress_forced_no_tool_output as suppress
 import httpx
 
 
@@ -336,7 +332,7 @@ def test_plain_random_seed_sentinel_keeps_slot_prompt_cache_reuse(monkeypatch):
 
 def test_reuse_prompt_cache_keeps_fixed_seed_without_disabling_slot_reuse():
     """Tool-loop continuations opt out of #9979's cold-cache pin (#10698)."""
-    from core.inference.llama_cpp import _apply_seeded_llama_request
+    from core.inference.llama_chat import _apply_seeded_llama_request
 
     cold: dict = {}
     _apply_seeded_llama_request(cold, 3407)
@@ -2791,12 +2787,12 @@ def test_confirm_tool_calls_allow_executes_gguf_tool(monkeypatch):
     backend, payloads = _backend_and_payloads(monkeypatch, streams)
 
     calls = _record_tool_calls(monkeypatch, "OK")
-    monkeypatch.setattr("core.inference.llama_cpp.new_approval_id", lambda: "approval-1")
+    monkeypatch.setattr("core.inference.llama_chat.new_approval_id", lambda: "approval-1")
     monkeypatch.setattr(
-        "core.inference.llama_cpp.begin_tool_decision",
+        "core.inference.llama_chat.begin_tool_decision",
         lambda *_a, **_k: object(),
     )
-    monkeypatch.setattr("core.inference.llama_cpp.wait_tool_decision", lambda *_a, **_k: "allow")
+    monkeypatch.setattr("core.inference.llama_chat.wait_tool_decision", lambda *_a, **_k: "allow")
 
     events = list(
         backend.generate_chat_completion_with_tools(
@@ -2827,7 +2823,7 @@ def test_confirm_tool_calls_close_after_prompt_cleans_gguf_slot(monkeypatch):
         "core.inference.tools.execute_tool",
         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("tool should not run")),
     )
-    monkeypatch.setattr("core.inference.llama_cpp.new_approval_id", lambda: approval_id)
+    monkeypatch.setattr("core.inference.llama_chat.new_approval_id", lambda: approval_id)
 
     with tool_approvals._lock:
         tool_approvals._pending.clear()
@@ -2981,13 +2977,13 @@ def test_confirm_tool_calls_deny_skips_gguf_tool_and_retry_can_execute(monkeypat
     approvals = iter(["approval-1", "approval-2"])
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
-    monkeypatch.setattr("core.inference.llama_cpp.new_approval_id", lambda: next(approvals))
+    monkeypatch.setattr("core.inference.llama_chat.new_approval_id", lambda: next(approvals))
     monkeypatch.setattr(
-        "core.inference.llama_cpp.begin_tool_decision",
+        "core.inference.llama_chat.begin_tool_decision",
         lambda *_a, **_k: object(),
     )
     monkeypatch.setattr(
-        "core.inference.llama_cpp.wait_tool_decision",
+        "core.inference.llama_chat.wait_tool_decision",
         lambda *_a, **_k: next(decisions),
     )
 
@@ -3089,7 +3085,7 @@ def test_gated_python_call_still_streams_its_arguments(monkeypatch):
     backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
 
     monkeypatch.setattr("core.inference.tools.execute_tool", lambda name, arguments, **_k: "OK")
-    monkeypatch.setattr("core.inference.llama_cpp.wait_tool_decision", lambda *_a, **_k: "allow")
+    monkeypatch.setattr("core.inference.llama_chat.wait_tool_decision", lambda *_a, **_k: "allow")
 
     events = _run_tool_loop(
         backend,
@@ -3123,7 +3119,7 @@ def test_only_an_approved_call_is_marked_approved(monkeypatch, verdict):
         "core.inference.tools.execute_tool",
         lambda name, arguments, **kwargs: seen.append(kwargs.get("host_access_approved")) or "OK",
     )
-    monkeypatch.setattr("core.inference.llama_cpp.wait_tool_decision", lambda *_a, **_k: verdict)
+    monkeypatch.setattr("core.inference.llama_chat.wait_tool_decision", lambda *_a, **_k: verdict)
 
     _run_tool_loop(
         backend,
@@ -3143,7 +3139,7 @@ def test_an_allowed_call_tells_every_follower_before_tool_end(monkeypatch, verdi
     final_stream = [_sse({"content": "Done."}), _done()]
     backend, _payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
     monkeypatch.setattr("core.inference.tools.execute_tool", lambda name, arguments, **_k: "OK")
-    monkeypatch.setattr("core.inference.llama_cpp.wait_tool_decision", lambda *_a, **_k: verdict)
+    monkeypatch.setattr("core.inference.llama_chat.wait_tool_decision", lambda *_a, **_k: verdict)
 
     events = _run_tool_loop(
         backend,
@@ -3597,7 +3593,7 @@ def test_media_compaction_recall_recount_uses_the_stripped_view(monkeypatch, wit
         }
 
     monkeypatch.setattr(backend, "count_chat_tokens", count_tokens)
-    monkeypatch.setattr(llama_cpp, "_archive_and_recall", fake_archive)
+    monkeypatch.setattr(llama_chat, "_archive_and_recall", fake_archive)
     audio_turn = {
         "role": "user",
         "content": [
@@ -3644,7 +3640,7 @@ def test_media_compaction_recall_recount_uses_the_stripped_view(monkeypatch, wit
 def test_a_respawn_refit_that_misses_its_target_still_archives_and_reports(monkeypatch):
     """A rescued respawn refit archives its evictions and emits metadata."""
     # Captured once: the second pass would otherwise wrap the first pass's spy.
-    real_archive = llama_cpp._archive_and_recall
+    real_archive = chat_compaction._archive_and_recall
 
     for max_tool_iterations in (1, 0):
         payloads: list[dict] = []
@@ -3670,7 +3666,7 @@ def test_a_respawn_refit_that_misses_its_target_still_archives_and_reports(monke
             archived.append((len(before), len(conversation)))
             return real_archive(conversation, before, **kwargs)
 
-        monkeypatch.setattr(llama_cpp, "_archive_and_recall", spy)
+        monkeypatch.setattr(llama_chat, "_archive_and_recall", spy)
 
         def fake_respawn():
             backend._effective_context_length = 1000
@@ -3868,10 +3864,10 @@ def test_a_respawn_refit_archives_what_it_evicts(monkeypatch):
     archived: list = []
 
     def fake_archive(conversation, before, **kwargs):
-        archived.append(llama_cpp.evicted_messages(before, conversation))
+        archived.append(chat_compaction.evicted_messages(before, conversation))
         return {"conversation": conversation, "events": [], "counts": {}, "recalled": False}
 
-    monkeypatch.setattr(llama_cpp, "_archive_and_recall", fake_archive)
+    monkeypatch.setattr(llama_chat, "_archive_and_recall", fake_archive)
 
     payloads: list[dict] = []
     backend = _make_backend(
@@ -3937,7 +3933,7 @@ def test_the_respawn_retry_keeps_the_thread(monkeypatch):
     monkeypatch.setattr(backend, "_respawn_if_dead", fake_respawn)
     seen: list = []
     monkeypatch.setattr(
-        llama_cpp,
+        llama_chat,
         "_conversation_recall_reserve",
         lambda thread_id: seen.append(thread_id) or 0,
     )
@@ -4742,7 +4738,7 @@ def test_context_usage_frame_absent_on_a_single_pass(monkeypatch):
 
 def test_context_usage_event_reads_timings_when_usage_is_missing():
     """timings.prompt_n leaves out the KV-cache hit that usage.prompt_tokens includes."""
-    from core.inference.llama_cpp import _context_usage_event
+    from core.inference.llama_chat import _context_usage_event
 
     assert _context_usage_event(None, {"prompt_n": 12, "cache_n": 88, "predicted_n": 7}) == {
         "type": "context_usage",
@@ -5049,7 +5045,7 @@ def test_gguf_inactive_rehearsal_before_active_call_executes_and_keeps_prose(mon
 
 
 def test_gguf_rehearsal_detection_recognises_spent_one_shot_with_original_tools():
-    from core.inference.llama_cpp import _gguf_has_genuine_tool_signal
+    from core.inference.llama_chat import _gguf_has_genuine_tool_signal
     from core.inference.tool_call_parser import TOOL_XML_SIGNALS
 
     repeat = 'render_html[ARGS]{"code":"<html>x</html>"}'
@@ -5060,7 +5056,7 @@ def test_gguf_rehearsal_detection_recognises_spent_one_shot_with_original_tools(
 
 
 def test_gguf_rehearsal_prefix_and_tail_hold_recognise_spent_one_shot():
-    from core.inference.llama_cpp import _held_rehearsal_tail_len, _is_rehearsal_prefix
+    from core.inference.llama_chat import _held_rehearsal_tail_len, _is_rehearsal_prefix
 
     active_only = [{"type": "function", "function": {"name": "web_search"}}]
     original = active_only + [{"type": "function", "function": {"name": "render_html"}}]
@@ -5129,7 +5125,7 @@ def test_gguf_bare_json_call_not_replayed_in_next_turn_content(monkeypatch):
 def test_gguf_textual_fallback_caps_distinct_tool_calls_per_turn(monkeypatch):
     """Textual fallback calls are capped at _MAX_TOOL_CALLS_PER_TURN; llama-server bounds structured
     ones."""
-    from core.inference.llama_cpp import _MAX_TOOL_CALLS_PER_TURN
+    from core.inference.llama_chat import _MAX_TOOL_CALLS_PER_TURN
 
     n = _MAX_TOOL_CALLS_PER_TURN + 4
     blocks = "".join(
@@ -5165,7 +5161,7 @@ def test_gguf_textual_fallback_caps_distinct_tool_calls_per_turn(monkeypatch):
 
 
 def test_gguf_textual_fallback_over_cap_notice_is_not_folded_into_tool_result(monkeypatch):
-    from core.inference.llama_cpp import _MAX_TOOL_CALLS_PER_TURN
+    from core.inference.llama_chat import _MAX_TOOL_CALLS_PER_TURN
 
     def _call(i):
         return '<tool_call>{"name":"web_search","arguments":{"query":"q%d"}}</tool_call>' % i
@@ -5200,7 +5196,7 @@ def test_gguf_textual_fallback_over_cap_notice_is_not_folded_into_tool_result(mo
 
 
 def test_gguf_textual_fallback_over_cap_on_last_turn_does_not_ask_for_retry(monkeypatch):
-    from core.inference.llama_cpp import _MAX_TOOL_CALLS_PER_TURN
+    from core.inference.llama_chat import _MAX_TOOL_CALLS_PER_TURN
     from core.inference.tool_call_parser import BUDGET_EXHAUSTED_NUDGE
 
     blocks = "".join(
@@ -5261,7 +5257,7 @@ def test_gguf_over_cap_notice_is_not_folded_into_an_unrelated_tools_result(monke
 
 
 def test_gguf_over_cap_notice_for_several_tools_is_not_folded_into_one_tools_result(monkeypatch):
-    from core.inference.llama_cpp import _MAX_TOOL_CALLS_PER_TURN
+    from core.inference.llama_chat import _MAX_TOOL_CALLS_PER_TURN
     from core.inference.tool_call_parser import BUDGET_EXHAUSTED_NUDGE
 
     blocks = "".join(
@@ -6702,7 +6698,7 @@ def test_a_cancel_emits_the_blocked_object_the_gguf_guard_was_holding(monkeypatc
     """A completed blocked markerless call keeps the chain guard true while its suffix is
     empty, so the whole object sits in the buffer as display text the parser never promotes.
     The cancel arm returned without it and the reply vanished."""
-    from core.inference.llama_cpp import _LlamaStreamCancelled
+    from core.inference.llama_chat import _LlamaStreamCancelled
 
     backend = _make_backend(monkeypatch, [[_sse({"content": held})]], [])
 
@@ -7251,10 +7247,10 @@ def test_budget_notice_folded_into_a_denied_result_is_reported_for_replay(monkey
     backend, _payloads = _backend_and_payloads(monkeypatch, streams)
     calls = _record_tool_calls(monkeypatch, "OK")
     decisions = iter(["allow", "deny"])
-    monkeypatch.setattr("core.inference.llama_cpp.new_approval_id", lambda: "approval-1")
-    monkeypatch.setattr("core.inference.llama_cpp.begin_tool_decision", lambda *_a, **_k: object())
+    monkeypatch.setattr("core.inference.llama_chat.new_approval_id", lambda: "approval-1")
+    monkeypatch.setattr("core.inference.llama_chat.begin_tool_decision", lambda *_a, **_k: object())
     monkeypatch.setattr(
-        "core.inference.llama_cpp.wait_tool_decision", lambda *_a, **_k: next(decisions)
+        "core.inference.llama_chat.wait_tool_decision", lambda *_a, **_k: next(decisions)
     )
 
     events = list(

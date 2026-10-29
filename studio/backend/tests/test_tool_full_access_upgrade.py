@@ -182,7 +182,7 @@ def test_full_access_request_requires_allow_and_the_exact_session():
 
 
 def _run_two_calls(loop, monkeypatch, execute, answer):
-    from core.inference import llama_cpp, safetensors_agentic, studio_tool_loop
+    from core.inference import llama_chat, safetensors_agentic, studio_tool_loop
     from test_api_key_tool_confirm import _tool_call_markup
 
     session = "chat-a"
@@ -216,7 +216,7 @@ def _run_two_calls(loop, monkeypatch, execute, answer):
             _done,
         )
 
-        monkeypatch.setattr(llama_cpp, "wait_tool_decision", answer)
+        monkeypatch.setattr(llama_chat, "wait_tool_decision", answer)
         monkeypatch.setattr("core.inference.tools.execute_tool", execute)
         backend, _ = _backend_and_payloads(
             monkeypatch,

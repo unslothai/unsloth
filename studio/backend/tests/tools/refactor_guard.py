@@ -26,6 +26,8 @@ GUARDED_MODULES = {
     "core.tool_healing": BACKEND_ROOT / "core" / "tool_healing.py",
     "core.inference.tool_call_parser": BACKEND_ROOT / "core" / "inference" / "tool_call_parser.py",
     "core.inference.llama_cpp": BACKEND_ROOT / "core" / "inference" / "llama_cpp.py",
+    "core.inference.chat_compaction": BACKEND_ROOT / "core" / "inference" / "chat_compaction.py",
+    "core.inference.llama_chat": BACKEND_ROOT / "core" / "inference" / "llama_chat.py",
     "core.inference.inference": BACKEND_ROOT / "core" / "inference" / "inference.py",
     "core.inference.safetensors_agentic": (
         BACKEND_ROOT / "core" / "inference" / "safetensors_agentic.py"

@@ -8,7 +8,7 @@ from unittest.mock import Mock
 import pytest
 
 import core.inference.tools as tools_mod
-from core.inference import llama_cpp
+from core.inference import chat_compaction
 from core.inference.context_window import retrieval_budget
 from core.inference.orchestrator import InferenceOrchestrator
 
@@ -62,9 +62,9 @@ def archive_calls(monkeypatch):
     ):
         return bool(thread_id and supports_tools and not tools_withheld)
 
-    monkeypatch.setattr(llama_cpp, "_archive_and_recall", _archive)
-    monkeypatch.setattr(llama_cpp, "_can_reset_epoch", _can_reset)
-    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
+    monkeypatch.setattr(chat_compaction, "_archive_and_recall", _archive)
+    monkeypatch.setattr(chat_compaction, "_can_reset_epoch", _can_reset)
+    monkeypatch.setattr(chat_compaction, "_archive_is_degraded", lambda: False)
     return calls
 
 
@@ -144,7 +144,7 @@ def test_a_request_resets_only_where_search_can_follow_and_names_only_an_offered
 
     # A plain request has no catalogue to miss the tool from: the route's answer alone decides.
     with monkeypatch.context() as patch:
-        patch.setattr(llama_cpp, "_memory_tool_withheld", lambda thread_id, tools: True)
+        patch.setattr(chat_compaction, "_memory_tool_withheld", lambda thread_id, tools: True)
         truncation, system, archived = fit(recall_reachable = True)
         assert truncation["checkpoint_started"] is True and "carried_forward" in system
         assert "search_conversation tool" not in system and archived["style"] == "inline"
@@ -245,7 +245,7 @@ def test_a_turn_that_is_not_fitted_leaves_the_saved_boundary_to_the_next(
         asked.append(1)
         return saved, False
 
-    monkeypatch.setattr(llama_cpp, "_sticky_compaction_state", _saved_boundary)
+    monkeypatch.setattr(chat_compaction, "_sticky_compaction_state", _saved_boundary)
     first, second = ({"role": "user", "content": letter * 400} for letter in "ab")
     resumed = {"role": "assistant", "content": "Let me"}
     _, prompts, _ = _run_loop(

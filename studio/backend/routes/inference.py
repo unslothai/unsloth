@@ -176,11 +176,10 @@ from core.inference.tool_stream_exec import TOOL_APPROVAL_FLUSH_DELAY_S
 from core.inference import model_slots
 from core.inference.llama_cpp import (
     _TERMINAL_RETIREMENT_HOOKS,
-    _llama_chunk_has_generated_output,
-    _local_ssl_context,
     register_serving_backend,
     requested_video_fps,
 )
+from core.inference.llama_chat import _llama_chunk_has_generated_output, _local_ssl_context
 from core.inference.model_slots import ExtraSlot as _ExtraSlot
 from core.inference.llama_video_input import shrink_video_for_llama
 
@@ -1633,9 +1632,7 @@ try:
         GgufLoadIntent,
         LlamaCppBackend,
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
-        _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
-        _apply_seeded_llama_request,
         _emitted_n_batch,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
@@ -1652,6 +1649,7 @@ try:
         detect_reasoning_flags,
         paravirtual_normalized_request,
     )
+    from core.inference.llama_chat import _DEFAULT_MAX_TOKENS_FLOOR, _apply_seeded_llama_request
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
         drop_managed_flags,
@@ -1698,9 +1696,7 @@ except ImportError:
         GgufLoadIntent,
         LlamaCppBackend,
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
-        _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
-        _apply_seeded_llama_request,
         _emitted_n_batch,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
@@ -1717,6 +1713,7 @@ except ImportError:
         detect_reasoning_flags,
         paravirtual_normalized_request,
     )
+    from core.inference.llama_chat import _DEFAULT_MAX_TOKENS_FLOOR, _apply_seeded_llama_request
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
         drop_managed_flags,
@@ -6007,7 +6004,7 @@ def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
     if not thread_id:
         return False
     try:
-        from core.inference.llama_cpp import _compaction_branch_states
+        from core.inference.chat_compaction import _compaction_branch_states
         from storage import studio_db
 
         # As dicts: the completions path sends `ChatMessage`, the resolver uses `.get`.
@@ -27981,7 +27978,7 @@ def _fit_external_context(
         prompt_budget,
         retrieval_budget,
     )
-    from core.inference.llama_cpp import (
+    from core.inference.chat_compaction import (
         _archive_and_recall,
         _boundary_metadata,
         _compaction_fit_kwargs,
@@ -41557,7 +41554,7 @@ def _count_model_id(model_id, via_api_key):
 
 
 def _count_chat_context_tokens(backend, payload, messages, tools, template_kwargs):
-    from core.inference.llama_cpp import (
+    from core.inference.chat_compaction import (
         _can_reset_epoch,
         _compaction_fit_kwargs,
         _fit_with_instruction_pins,
@@ -41892,7 +41889,7 @@ async def chat_count_tokens(
             detail = "Cannot count tokens while a generation is in progress.",
         )
 
-    from core.inference.llama_cpp import CountAborted
+    from core.inference.llama_chat import CountAborted
 
     try:
         count = await asyncio.to_thread(

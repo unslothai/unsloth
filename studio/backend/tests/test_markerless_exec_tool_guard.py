@@ -227,7 +227,7 @@ EXEC_TOOLS = [
 
 @pytest.mark.parametrize("name", EXEC_NAMES)
 def test_stream_detectors_do_not_drain_on_bare_execution_rehearsal(name):
-    from core.inference.llama_cpp import _gguf_has_genuine_tool_signal
+    from core.inference.llama_chat import _gguf_has_genuine_tool_signal
     from core.inference.safetensors_agentic import _earliest_tool_signal, _has_genuine_tool_signal
     from core.inference.tool_call_parser import TOOL_XML_SIGNALS
 
@@ -239,7 +239,7 @@ def test_stream_detectors_do_not_drain_on_bare_execution_rehearsal(name):
 
 
 def test_stream_detectors_still_drain_on_benign_and_wrapped_calls():
-    from core.inference.llama_cpp import _gguf_has_genuine_tool_signal
+    from core.inference.llama_chat import _gguf_has_genuine_tool_signal
     from core.inference.safetensors_agentic import _earliest_tool_signal
     from core.inference.tool_call_parser import TOOL_XML_SIGNALS
 
@@ -254,7 +254,7 @@ def test_stream_detectors_still_drain_on_benign_and_wrapped_calls():
 
 @pytest.mark.parametrize("name", EXEC_NAMES)
 def test_split_rehearsal_hold_does_not_apply_to_execution_names(name):
-    from core.inference.llama_cpp import _is_rehearsal_prefix as _gguf_prefix
+    from core.inference.llama_chat import _is_rehearsal_prefix as _gguf_prefix
     from core.inference.safetensors_agentic import _is_rehearsal_prefix
 
     assert _is_rehearsal_prefix(name, EXEC_TOOLS) is False
@@ -267,12 +267,12 @@ def test_split_rehearsal_hold_does_not_apply_to_execution_names(name):
 @pytest.mark.parametrize("shape", ['{name}[ARGS]{{"command":"id"}}', "call:{name}{{command:id}}"])
 @pytest.mark.parametrize("name", EXEC_NAMES)
 def test_provisional_card_sniff_ignores_bare_execution_call(shape, name):
-    from core.inference.llama_cpp import _sniff_text_tool_name
+    from core.inference.llama_chat import _sniff_text_tool_name
     assert _sniff_text_tool_name(shape.format(name = name), EXEC_ENABLED) == ""
 
 
 def test_provisional_card_sniff_keeps_benign_and_structured_names():
-    from core.inference.llama_cpp import _sniff_text_tool_name
+    from core.inference.llama_chat import _sniff_text_tool_name
 
     assert _sniff_text_tool_name('web_search[ARGS]{"query":"x"}', EXEC_ENABLED) == "web_search"
     assert _sniff_text_tool_name("call:web_search{query:x}", EXEC_ENABLED) == "web_search"
@@ -284,7 +284,7 @@ def test_rehearsal_prefix_scan_stays_linear_in_the_tool_catalog():
     """The per-name gate has to be an O(1) set test: ``_held_rehearsal_tail_len`` runs on every
     streamed chunk over the whole catalog, so testing membership against the tool LIST in that
     loop is quadratic, measurably so with a large MCP catalog's thousands of tools."""
-    from core.inference import llama_cpp, safetensors_agentic
+    from core.inference import llama_chat, safetensors_agentic
 
     class _CountingSet(frozenset):
         lookups = 0
@@ -301,7 +301,7 @@ def test_rehearsal_prefix_scan_stays_linear_in_the_tool_catalog():
 
     for name, call in (
         ("safetensors", lambda: safetensors_agentic._held_rehearsal_tail_len("x web_sea", tools)),
-        ("gguf", lambda: llama_cpp._held_rehearsal_tail_len("x web_sea", tools)),
+        ("gguf", lambda: llama_chat._held_rehearsal_tail_len("x web_sea", tools)),
     ):
         counting = _CountingSet(tool_healing.EXECUTION_CLASS_TOOL_NAMES)
         original = tool_healing.EXECUTION_CLASS_TOOL_NAMES
@@ -625,7 +625,7 @@ def test_the_provisional_card_skips_a_blocked_leading_object():
     """``_sniff_text_tool_name`` scans the whole drained prefix for ``"name"``. On a blocked-first
     chain that is the object that will NOT run, so the card opens as ``terminal`` with ``call_0``
     and the real ``web_search`` call then reuses that id."""
-    from core.inference.llama_cpp import _sniff_text_tool_name
+    from core.inference.llama_chat import _sniff_text_tool_name
     from core.inference.tool_call_parser import blocked_markerless_prefix_end
 
     pad = "x" * 260
@@ -644,7 +644,7 @@ def test_the_provisional_card_skips_a_blocked_leading_object():
 
 
 def test_every_leading_blocked_object_is_skipped_before_the_sniff():
-    from core.inference.llama_cpp import _sniff_text_tool_name
+    from core.inference.llama_chat import _sniff_text_tool_name
 
     pad = "x" * 140
     chain = (
@@ -769,7 +769,7 @@ def test_a_promotable_bare_gemma_call_is_a_streaming_boundary():
     """Bare Gemma has no ``TOOL_XML_SIGNALS`` entry, yet the parser promotes it anywhere, so
     without a boundary the detectors miss a mid-prose call and its serialization reaches the
     client before it executes. The boundary is the call's own start, so prose ahead still streams."""
-    from core.inference.llama_cpp import _gguf_has_genuine_tool_signal
+    from core.inference.llama_chat import _gguf_has_genuine_tool_signal
     from core.inference.safetensors_agentic import _earliest_tool_signal
     from core.inference.tool_call_parser import TOOL_XML_SIGNALS, promotable_gemma_call_pos
 
@@ -911,7 +911,7 @@ def test_a_mid_prose_gemma_prefix_is_held_until_it_settles():
     """``promotable_gemma_call_pos`` only sees a call once its ``{`` arrives, so a promotable call
     written after prose streamed ``call:web`` to the client and was promoted a snapshot later.
     STREAMING holds the tail as it holds a split ``NAME[ARGS]`` rehearsal."""
-    from core.inference.llama_cpp import _held_rehearsal_tail_len as gguf_hold
+    from core.inference.llama_chat import _held_rehearsal_tail_len as gguf_hold
     from core.inference.safetensors_agentic import _held_rehearsal_tail_len as st_hold
     from core.inference.tool_call_parser import held_bare_gemma_tail_len
 
@@ -971,7 +971,7 @@ def test_the_gemma_tail_hold_does_not_walk_the_tool_catalog_per_chunk():
     """The hold runs on every streamed chunk, so materializing the enabled-name list over a
     large MCP catalog would cost more than the scan it gates, and ordinary prose never reaches
     the branch that needs it. Both loops pass a callable that this must leave unresolved."""
-    from core.inference.llama_cpp import _held_rehearsal_tail_len as gguf_hold
+    from core.inference.llama_chat import _held_rehearsal_tail_len as gguf_hold
     from core.inference.safetensors_agentic import _held_rehearsal_tail_len as st_hold
     from core.inference.tool_call_parser import held_bare_gemma_tail_len
 
@@ -991,14 +991,14 @@ def test_the_gemma_tail_hold_does_not_walk_the_tool_catalog_per_chunk():
 
     assert held_bare_gemma_tail_len('prose call:web_search{q:"x', EXEC_ENABLED) == 20
 
-    import core.inference.llama_cpp as gguf_mod
+    from core.inference import llama_chat
     import core.inference.safetensors_agentic as st_mod
 
     tools = [
         {"type": "function", "function": {"name": name}}
         for name in ("web_search", "terminal", "python", "edit_file")
     ]
-    for module, hold in ((st_mod, st_hold), (gguf_mod, gguf_hold)):
+    for module, hold in ((st_mod, st_hold), (llama_chat, gguf_hold)):
         seen = []
         real = module.held_bare_gemma_tail_len
         module.held_bare_gemma_tail_len = lambda text, arg: seen.append(arg) or real(text, arg)
@@ -1063,7 +1063,7 @@ def test_a_blocked_prefix_anchors_the_promotable_peer_in_every_markerless_format
 def test_the_gguf_card_is_named_after_the_call_that_will_actually_run():
     """A provisional card named after a blocked prefix shows a terminal call that never
     runs, and the real call then reuses that card by id."""
-    from core.inference.llama_cpp import _sniff_text_tool_name
+    from core.inference.llama_chat import _sniff_text_tool_name
 
     gate = {"terminal", "web_search"}
     for chain in (
@@ -1177,7 +1177,7 @@ def test_an_mcp_name_is_not_held_as_a_rehearsal_prefix():
         _is_rehearsal_prefix as sft_prefix,
         _held_rehearsal_tail_len as sft_held,
     )
-    from core.inference.llama_cpp import (
+    from core.inference.llama_chat import (
         _is_rehearsal_prefix as gguf_prefix,
         _held_rehearsal_tail_len as gguf_held,
     )
