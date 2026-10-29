@@ -356,6 +356,12 @@ test("notes and reroutes drawn among a card's blocks fold with it", () => {
       data: { noteId: "n1" },
     },
     {
+      id: "note:n3",
+      type: "flowNote",
+      position: { x: 700, y: 220 },
+      data: { noteId: "n3" },
+    },
+    {
       id: "note:n2",
       type: "flowNote",
       position: { x: 300, y: 900 },
@@ -380,6 +386,8 @@ test("notes and reroutes drawn among a card's blocks fold with it", () => {
     specs,
   );
   assert.ok(!out.nodes.some((n) => n.id === "rr1" || n.id === "note:n1"));
+  // Inside the folded group frame, below the blocks.
+  assert.ok(!out.nodes.some((n) => n.id === "note:n3"));
   assert.ok(out.nodes.some((n) => n.id === "note:n2"));
   // Dragging the card carries them, where they sit.
   const card = out.nodes.find((n) => n.id === "super:sc1");

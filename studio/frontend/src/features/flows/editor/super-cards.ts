@@ -229,13 +229,28 @@ export function applySuperCards(
     const seen = groupCard.get(group);
     groupCard.set(group, seen === undefined || seen === card ? card : null);
   }
-  for (const [group, card] of groupCard)
-    if (card) owner.set(GROUP_PREFIX + group, card);
+  // Things inside a folded frame fold too (a recipe's notes sit below its blocks).
+  const areas: [string, Box][] = [...boxes];
+  for (const [group, card] of groupCard) {
+    if (!card) continue;
+    owner.set(GROUP_PREFIX + group, card);
+    const rect = graph.groups[group]?.rect;
+    if (rect)
+      areas.push([
+        card,
+        {
+          x: rect[0],
+          y: rect[1],
+          right: rect[0] + rect[2],
+          bottom: rect[1] + rect[3],
+        },
+      ]);
+  }
   for (const n of nodes) {
     if (graph.nodes[n.id] || n.id.startsWith(GROUP_PREFIX)) continue;
     const x = n.position.x + (n.measured?.width ?? 0) / 2;
     const y = n.position.y + (n.measured?.height ?? 0) / 2;
-    for (const [cardId, b] of boxes) {
+    for (const [cardId, b] of areas) {
       if (x >= b.x && y >= b.y && x <= b.right && y <= b.bottom) {
         owner.set(n.id, cardId);
         break;
