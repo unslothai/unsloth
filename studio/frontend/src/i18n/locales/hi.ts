@@ -3475,6 +3475,8 @@ export const hi = {
   },
   studio: {
     goToLibrary: "लाइब्रेरी पर जाएं",
+    imageTraining: "इमेज ट्रेनिंग",
+    goToImageTraining: "इमेज LoRA ट्रेन करें",
     routeTitle: "ट्रेनिंग",
     wizard: {
       modelTitle: "मॉडल",

@@ -3454,6 +3454,8 @@ export const ko = {
   },
   studio: {
     goToLibrary: "라이브러리로 이동",
+    imageTraining: "이미지 학습",
+    goToImageTraining: "이미지 LoRA 학습",
     routeTitle: "학습",
     wizard: {
       modelTitle: "모델",
