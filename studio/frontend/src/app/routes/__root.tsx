@@ -23,7 +23,6 @@ import {
 import {
   ChatPage,
   type ChatSearch,
-  hydrateModelDisclaimerPreference,
   openFolderAsProject,
   startLlamaCppAutoReload,
   StopRunningChatsDialog,
@@ -204,7 +203,6 @@ function ChatSettingsHydrationMount() {
   );
   useEffect(() => {
     void hydratePersistedSettings();
-    hydrateModelDisclaimerPreference().catch(() => undefined);
   }, [hydratePersistedSettings]);
   return null;
 }

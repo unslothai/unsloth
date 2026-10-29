@@ -2220,8 +2220,8 @@ export const he = {
       avatarShape: "צורת תמונת פרופיל",
       avatarShapeCircle: "עיגול",
       avatarShapeRounded: "פינות מעוגלות",
-      greetingSloth: "עצלן בברכת השלום",
-      greetingSlothDescription: "הצג את העצלן בברכת הפתיחה של הצ'אט.",
+      greetingSloth: "ברכה",
+      greetingSlothDescription: "הצגת הברכה בצ'אטים חדשים.",
       chooseSloth: "או בחר עצלן",
       noPicture: "ללא תמונת פרופיל",
       noneLabel: "ללא",
@@ -2946,9 +2946,8 @@ export const he = {
       inlineEditResponse: "עריכת תגובה על גבי התגובות",
       inlineEditResponseDescription:
         "הצג את 'עריכת תגובה' בכל תגובה, במקום בתפריט 'עוד'.",
-      modelDisclaimer: "הבהרה לגבי המודל",
-      modelDisclaimerDescription:
-        'הצג את הכיתוב "מודלי שפה עלולים לטעות" מתחת לתיבת הצ\'אט.',
+      composerAtBottom: "תיבת הכתיבה למטה",
+      composerAtBottomDescription: "התחלת צ'אטים חדשים עם תיבת הכתיבה בתחתית הדף במקום באמצע.",
       projectAttachments: "שתף קבצים בכל הפרויקט",
       projectAttachmentsDescription:
         "הפוך קבצים מצורפים חדשים לזמינים לכל צ'אט בפרויקט.",

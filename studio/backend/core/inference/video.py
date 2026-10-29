@@ -10803,12 +10803,6 @@ class VideoBackend:
                         stream_prequantized_module,
                     )
 
-                    if text_encoder_quant_engaged is not None:
-                        # Stream the conditioner, not rotate it; denoiser sizing assumes rotation; None keeps rotation.
-                        from .video_minimax_h3_te import stream_h3_text_encoder
-                        te_streamed = stream_h3_text_encoder(
-                            manager, getattr(pipe, "text_encoder", None), device, logger = logger
-                        )
                     pinned_sizes = _h3_dense_denoiser_resident_bytes(
                         fam,
                         denoiser = denoiser,
@@ -10827,6 +10821,19 @@ class VideoBackend:
                         )
                         == "stream"
                     )
+                    if text_encoder_quant_engaged is not None:
+                        # Stream the conditioner, not rotate it; denoiser sizing assumes rotation; None keeps rotation.
+                        from .video_minimax_h3_te import h3_te_pin_yields, stream_h3_text_encoder
+                        te_module = getattr(pipe, "text_encoder", None)
+                        te_streamed = stream_h3_text_encoder(
+                            manager,
+                            te_module,
+                            device,
+                            pin = h3_te_pin_yields(
+                                te_module, denoiser if stream else None, device, logger = logger
+                            ),
+                            logger = logger,
+                        )
                     placed = (
                         stream_prequantized_module(manager, denoiser, device, logger = logger)
                         if stream
@@ -11117,6 +11124,16 @@ class VideoBackend:
                 compile_blocks_below_offload_hooks(
                     getattr(pipe, denoiser_component, None), logger = logger
                 )
+            if "h3_strided_attn" in speed_optims:
+                from .video_minimax_h3_attn import shared_qkv_count
+                shared_qkv = shared_qkv_count(getattr(pipe, denoiser_component, None))
+                if shared_qkv:
+                    speed_optims += ("h3_shared_qkv_quant",)
+                    logger.info(
+                        "video.h3_attn: Q / K / V share one ConvRot rotation + act quant on %d "
+                        "attention modules",
+                        shared_qkv,
+                    )
         except Exception as exc:  # noqa: BLE001 -- optimisation only, never fail a load
             logger.warning("video.h3_speed_optims failed, continuing unoptimised: %s", exc)
         # H3 declines graphs; this only acts when a family override forces them.

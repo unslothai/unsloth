@@ -136,7 +136,7 @@ def test_calling_twice_is_stable(isolated, capsys):
 
 
 def test_it_runs_after_the_torchao_shims_and_before_unsloth_zoo():
-    source = GPU_INIT.read_text()
+    source = GPU_INIT.read_text(encoding = "utf-8")
     call = source.index("\ndisable_torchao_if_torch_too_old()\n")
     assert source.index("\nfix_torchao_torch_symbol_skew()\n") < call
     assert source.index("\nfix_torchao_pytree_register_constant()\n") < call

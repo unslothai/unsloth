@@ -2120,8 +2120,8 @@ export const ko = {
       uploadPhoto: "사진 업로드",
       removePhoto: "제거",
       pictureOptions: "프로필 사진 옵션",
-      greetingSloth: "인사말에 나무늘보 표시",
-      greetingSlothDescription: "채팅 인사말에 나무늘보를 표시합니다.",
+      greetingSloth: "인사말",
+      greetingSlothDescription: "새 채팅에 인사말을 표시합니다.",
       noPicture: "프로필 사진 없음",
       noneLabel: "없음",
       stats: {
@@ -2809,9 +2809,8 @@ export const ko = {
         "세부 속도 토큰 통계 레이어 오프로드 verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "응답에 응답 편집 표시",
       inlineEditResponseDescription: "응답 편집을 더보기 메뉴 대신 모든 응답에 표시합니다.",
-      modelDisclaimer: "모델 고지 표시",
-      modelDisclaimerDescription:
-        '채팅 상자 아래에 "LLMs can make mistakes" 문구를 표시합니다.',
+      composerAtBottom: "입력창을 아래에",
+      composerAtBottomDescription: "새 채팅에서 입력창을 가운데가 아닌 페이지 아래쪽에 표시합니다.",
       projectAttachments: "프로젝트 전체에서 파일 공유",
       projectAttachmentsDescription:
         "새 채팅 첨부 파일을 프로젝트의 모든 채팅에서 사용할 수 있게 합니다.",
