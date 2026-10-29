@@ -48,6 +48,13 @@ def node_needs(spec: dict, params: dict) -> list[tuple[str, str]]:
                 found.append((cap, provider))
         else:
             found.append((cap, cap))
+    from core.flows.compiler import RECIPE_PARAM
+    from core.flows.recipe_share import uses_mcp
+
+    compiled = params.get(RECIPE_PARAM)
+    # A recipe group's MCP servers come in on its compiled recipe, not the step's own spec.
+    if isinstance(compiled, dict) and uses_mcp(compiled.get("recipe")) and ("mcp", "mcp") not in found:
+        found.append(("mcp", "mcp"))
     return found
 
 
