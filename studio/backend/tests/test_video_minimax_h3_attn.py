@@ -106,7 +106,12 @@ def _quantize(
     return model
 
 
-def _inputs(seed: int = 1, n_text: int = 5, n_video: int = 8, n_audio: int = 3) -> dict:
+def _inputs(
+    seed: int = 1,
+    n_text: int = 5,
+    n_video: int = 8,
+    n_audio: int = 3,
+) -> dict:
     g = torch.Generator().manual_seed(seed)
     seq = n_text + n_video + n_audio
     text_idx = torch.arange(0, n_text)
@@ -263,7 +268,9 @@ def test_shared_qkv_kill_switch(quantized, monkeypatch):
     from core.inference import diffusion_int8_gemm as g8
 
     monkeypatch.setenv(A.SHARED_QKV_ENV, "0")
-    monkeypatch.setattr(g8, "shared_rotq_linears", lambda x, linears: pytest.fail("shared path used"))
+    monkeypatch.setattr(
+        g8, "shared_rotq_linears", lambda x, linears: pytest.fail("shared path used")
+    )
     A.install_strided_attention(quantized)
     quantized.set_attention_backend("_native_math")
     _run(quantized)
@@ -287,26 +294,32 @@ def test_shared_qkv_on_the_int8_swap_is_bit_identical_on_cuda(monkeypatch):
     if g8.device_config(index) is None or cq.rotquant_device_config(index) is None:
         pytest.skip("int8 GEMM / fused rotation probe refused this device")
     torch.manual_seed(0)
-    model = h3.MiniMaxH3Transformer3DModel(
-        num_attention_heads = 8,
-        attention_head_dim = 128,
-        hidden_size = 1024,
-        num_layers = 2,
-        num_refiner_layers = 1,
-        ffn_dim = 2048,
-        in_channels = 4,
-        audio_in_channels = 4,
-        patch_size = (1, 2, 2),
-        text_dim = 32,
-        freq_dim = 32,
-        time_embed_hidden_dim = 64,
-        time_embed_dim = 32,
-        rope_freq_dim = 4,
-    ).eval().to("cuda", torch.bfloat16)
+    model = (
+        h3.MiniMaxH3Transformer3DModel(
+            num_attention_heads = 8,
+            attention_head_dim = 128,
+            hidden_size = 1024,
+            num_layers = 2,
+            num_refiner_layers = 1,
+            ffn_dim = 2048,
+            in_channels = 4,
+            audio_in_channels = 4,
+            patch_size = (1, 2, 2),
+            text_dim = 32,
+            freq_dim = 32,
+            time_embed_hidden_dim = 64,
+            time_embed_dim = 32,
+            rope_freq_dim = 4,
+        )
+        .eval()
+        .to("cuda", torch.bfloat16)
+    )
     fqns = [
         name
         for name, m in model.named_modules()
-        if isinstance(m, torch.nn.Linear) and name.startswith("transformer_blocks.") and ".attn." in name
+        if isinstance(m, torch.nn.Linear)
+        and name.startswith("transformer_blocks.")
+        and ".attn." in name
     ]
     rotate_linears_(model, fqns, 256)
     quantize_(
@@ -326,7 +339,8 @@ def test_shared_qkv_on_the_int8_swap_is_bit_identical_on_cuda(monkeypatch):
     inputs = _inputs(n_text = 16, n_video = 48, n_audio = 8)
     inputs = {
         k: (v.to("cuda", torch.bfloat16) if torch.is_floating_point(v) else v.to("cuda"))
-        if torch.is_tensor(v) else v
+        if torch.is_tensor(v)
+        else v
         for k, v in inputs.items()
     }
     with torch.no_grad():
