@@ -780,7 +780,11 @@ export function FloatingMonitor() {
   const refreshMs = useMonitorOverlayStore((state) =>
     monitorRefreshMs(state.refreshMs),
   );
-  const systemInfo = useSystemInfo({ enabled: visible, pollMs: refreshMs });
+  const systemInfo = useSystemInfo({
+    enabled: visible,
+    pollMs: refreshMs,
+    gpuFollowsPoll: true,
+  });
   const [panelKey, setPanelKey] = useState(0);
   const wasOpenRef = useRef(isOpen);
 

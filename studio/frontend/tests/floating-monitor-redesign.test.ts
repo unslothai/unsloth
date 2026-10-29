@@ -46,3 +46,12 @@ test("the card drags from its background, and controls and resize edges keep the
   // The grip stays.
   assert.match(floatingMonitor, /data-testid="floating-monitor-drag-handle"/);
 });
+
+test("at a fast refresh the GPU rows follow it instead of the backend's 10 s GPU cache", () => {
+  assert.match(floatingMonitor, /gpuFollowsPoll: true/);
+  const hook = readSrc("hooks/use-system.ts");
+  assert.match(hook, /params\.set\("gpu_max_age", String\(gpuMaxAgeMs \/ 1000\)\)/);
+  assert.match(hook, /gpuMaxAgeMs: gpuFollowsPoll \? pollMs : undefined/);
+  // Settings keeps the default cache: only the monitor opts in.
+  assert.doesNotMatch(readSrc("features/settings/tabs/resources-tab.tsx"), /gpuFollowsPoll/);
+});
