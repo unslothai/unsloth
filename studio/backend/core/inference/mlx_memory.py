@@ -1002,39 +1002,84 @@ def _compute_bytes(
             total += _widest_quantized_scores(n_ctx, quant_boundary, prefill_chunk) * score
         else:
             total += max(row * n_ctx, (n_ctx + 1) * score)
-    elif not any(entry.get("bound_spec") for entry in plan) and not _attention_fuses(
-        widths, dtype_size, prefill_chunk
-    ):
+    elif not any(entry.get("bound_spec") for entry in plan):
         # Windowed models are skipped: the config's head_dim need not be the full-context layers' width.
         score = heads * dtype_size * _UNFUSED_SCORE_LIVE
-        total += _widest_quantized_scores(n_ctx, 0, prefill_chunk) * score
+        total += _widest_unfused_scores(widths, dtype_size, n_ctx, prefill_chunk) * score
     return int(total)
 
 
-def _attention_fuses(widths, dtype_size: int, prefill_chunk: int) -> bool:
-    """Whether mlx fuses a full-width prefill chunk; elsewhere it materializes the scores."""
-    heads, kv_heads, head_dim, value_dim = (*widths[2:], 0, 0, 0, 0)[:4]
-    if not (heads and kv_heads and head_dim):
-        return True
+def _widest_unfused_scores(widths, dtype_size: int, n_ctx: int, prefill_chunk: int) -> int:
+    """Query x key cells of the widest call mlx leaves unfused over every prompt the context admits."""
+    heads, kv_heads, head_dim = (*widths[2:], 0, 0, 0)[:3]
+    route = _zoo_route() if heads and kv_heads and head_dim else None
+    if route is None:
+        return 0
+    widths, chunk = tuple(widths), prefill_chunk
+
+    def unfused(queries, keys):
+        return not _attention_fuses(route, widths, dtype_size, queries, keys)
+
+    def longest_tail(whole, limit):
+        # The tail of a prompt holding `whole` chunks is square only when it is the first call.
+        lengths = _unfused_tails(route, widths, dtype_size, chunk)[min(whole, 1)]
+        if limit > _TAIL_SCAN and unfused(limit, limit + whole * chunk):
+            return limit
+        return max((r for r in lengths if r <= limit), default = 0)
+
+    whole, rest = divmod(max(n_ctx - 1, 0), chunk)
+    cells = [n_ctx + 1 if unfused(1, 2) or unfused(1, n_ctx + 1) else 0]
+    if whole and unfused(chunk, chunk):
+        cells.append(chunk * chunk)
+    if whole >= 2 and unfused(chunk, whole * chunk):
+        cells.append(chunk * whole * chunk)
+    r = longest_tail(whole, rest)
+    cells.append(r * (whole * chunk + r))
+    if whole:
+        r = longest_tail(whole - 1, chunk - 1)
+        cells.append(r * ((whole - 1) * chunk + r))
+    return max(cells)
+
+
+# mlx's fused-kernel thresholds all sit below this, so longer tails route as this one does.
+_TAIL_SCAN = 4096
+
+
+@functools.lru_cache(maxsize = 64)
+def _unfused_tails(route, widths, dtype_size: int, chunk: int):
+    """Tail lengths mlx leaves unfused, as the first call (square) and after a whole chunk."""
+    span = range(1, min(chunk - 1, _TAIL_SCAN) + 1)
+    return tuple(
+        tuple(r for r in span if not _attention_fuses(route, widths, dtype_size, r, r + later))
+        for later in (0, chunk)
+    )
+
+
+def _zoo_route():
     try:
-        import mlx.core as mx
+        import mlx.core  # noqa: F401
 
         from unsloth_zoo.mlx.attention import fused_kernel_exists
     except Exception:
-        return True
+        return None
+    return fused_kernel_exists
+
+
+def _attention_fuses(route, widths, dtype_size: int, queries: int, keys: int) -> bool:
+    """Whether mlx fuses a full-width causal call; elsewhere it materializes the scores."""
+    import mlx.core as mx
+
+    _heads, kv_heads, head_dim, value_dim = (*widths[2:], 0, 0, 0, 0)[:4]
     try:
         dtype = mx.float32 if dtype_size == 4 else mx.bfloat16
-        cached = prefill_chunk + 1
 
         # zoo reads only shapes and dtypes; a group of one makes the scales the cache's width.
         def cache(width):
-            scales = mx.zeros((1, kv_heads, cached, width), dtype = dtype)
+            scales = mx.zeros((1, kv_heads, keys, width), dtype = dtype)
             return scales, scales, scales
 
-        queries = mx.zeros((1, heads, prefill_chunk, head_dim), dtype = dtype)
-        return bool(
-            fused_kernel_exists(queries, cache(head_dim), cache(value_dim or head_dim), 1, "causal")
-        )
+        q = mx.zeros((1, widths[2], queries, head_dim), dtype = dtype)
+        return bool(route(q, cache(head_dim), cache(value_dim or head_dim), 1, "causal"))
     except Exception as exc:
         logger.debug("MLX estimate cannot route the attention: %s", exc)
         return True

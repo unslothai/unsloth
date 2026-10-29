@@ -4360,10 +4360,11 @@ def _unfused_route(monkeypatch, fuses):
         group_size,
         mask = None,
     ):
-        asked.append(
-            (queries.shape, q_keys[0].shape, q_keys[1].shape[-1] * group_size, q_values, mask)
-        )
-        return fuses
+        L, S = queries.shape[-2], q_keys[0].shape[-2]
+        assert q_keys[1].shape[-1] * group_size == q_values[1].shape[-1] * group_size == 256
+        assert queries.shape[1] == 24 and q_keys[0].shape[1] == 4 and mask == "causal"
+        asked.append((L, S))
+        return fuses(L, S)
 
     monkeypatch.setitem(sys.modules, "mlx", SimpleNamespace(core = mx))
     monkeypatch.setitem(sys.modules, "mlx.core", mx)
@@ -4375,23 +4376,39 @@ def _unfused_route(monkeypatch, fuses):
     return asked
 
 
-@pytest.mark.parametrize("fuses", [True, False])
-def test_a_full_width_cache_pays_for_the_scores_only_where_mlx_does_not_fuse(monkeypatch, fuses):
-    widths = (5120, 17408, 24, 4, 256, 0)
+_BONSAI = (5120, 17408, 24, 4, 256, 0)
+_SCORE = 24 * 2 * mm._UNFUSED_SCORE_LIVE
+
+
+@pytest.mark.parametrize(
+    "fuses, cells",
+    [
+        (lambda L, S: True, 0),
+        (lambda L, S: L <= 8, 2048 * 32768),
+        # NAX: the split kernel needs 1024 queries, so only the 1023-token tail is unfused.
+        (lambda L, S: L <= 8 or L >= 1024, 1023 * 33791),
+    ],
+)
+def test_a_full_width_cache_pays_for_the_widest_call_mlx_does_not_fuse(monkeypatch, fuses, cells):
+    n_ctx = 33792
+    floor = mm._compute_bytes(_BONSAI[:3], 2, 2048, [_GROWING], n_ctx, None)
     asked = _unfused_route(monkeypatch, fuses)
-    floor = mm._compute_bytes(widths[:3], 2, 2048, [_GROWING], 262144, None)
-    priced = mm._compute_bytes(widths, 2, 2048, [_GROWING], 262144, None)
-    scores = mm._widest_quantized_scores(262144, 0, 2048) * 24 * 2 * 2
-    assert priced - floor == (0 if fuses else scores)
-    ((queries, keys, head_dim, values, mask),) = asked
-    assert queries == (1, 24, 2048, 256) and keys == (1, 4, 2049, 256) and head_dim == 256
-    assert values[1].shape[-1] == 256 and mask == "causal"
+    priced = mm._compute_bytes(_BONSAI, 2, 2048, [_GROWING], n_ctx, None)
+    assert priced - floor == cells * _SCORE
+    assert (2048, 16 * 2048) in asked and (1023, 1023 + 2048) in asked
+
+
+def test_the_scores_charged_never_fall_as_the_context_grows(monkeypatch):
+    _unfused_route(monkeypatch, lambda L, S: L <= 8 or L == S >= 2048)
+    steps = range(256, 12_289, 256)
+    priced = [mm._compute_bytes(_BONSAI, 2, 2048, [_GROWING], n, None) for n in steps]
+    assert priced == sorted(priced)
 
 
 def test_a_windowed_model_and_an_unreachable_zoo_keep_the_old_price(monkeypatch):
-    widths = (5120, 17408, 24, 4, 256, 0)
+    widths = _BONSAI
     floor = mm._compute_bytes(widths[:3], 2, 2048, [_GROWING], 262144, None)
-    asked = _unfused_route(monkeypatch, False)
+    asked = _unfused_route(monkeypatch, lambda L, S: False)
     windowed = [_GROWING, _plan_entry(bound_spec = (object, "max_size", 1024))]
     assert mm._compute_bytes(widths, 2, 2048, windowed, 262144, None) == floor
     assert asked == []
@@ -5093,8 +5110,10 @@ class TestShardsTheLoaderReads:
             mm.mlx_shard_files(str(tmp_path), self._VISION)
 
 
-# Below NAX mlx 0.32.4 runs head_dim 256 prefill unfused, so the score matrix is held at full width.
-_UNFUSED_HEAD_DIM_256_SCORES = {"unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit": 4_292_739_136}
+# mlx 0.32.4 leaves head_dim 256 prefill unfused below NAX, and tails under 1024 queries on NAX.
+_UNFUSED_HEAD_DIM_256_SCORES = {
+    "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit": {True: 2_078_277_696, False: 4_292_739_136}
+}
 
 
 @_NEEDS_MLX
@@ -5188,7 +5207,7 @@ _UNFUSED_HEAD_DIM_256_SCORES = {"unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit": 4_292_739
             None,
             5_298_715_127,
             249_561_088,
-            1_281_737_359,
+            1_283_579_535,
             28,
             "bf16",
         ),
@@ -5215,7 +5234,7 @@ def test_a_real_checkpoint_is_priced_to_the_byte(
     assert (breakdown.weights_bytes, breakdown.kv_bytes) == (weights, kv)
     from unsloth_zoo.mlx.nax import nax_available
 
-    unfused = 0 if nax_available() else _UNFUSED_HEAD_DIM_256_SCORES.get(repo, 0)
+    unfused = _UNFUSED_HEAD_DIM_256_SCORES.get(repo, {}).get(nax_available(), 0)
     assert breakdown.compute_bytes == compute + unfused
     assert breakdown.layer_count == layers
     assert breakdown.cache_type_kv == caption
