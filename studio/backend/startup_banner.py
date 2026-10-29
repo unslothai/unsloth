@@ -203,12 +203,13 @@ def print_studio_access_banner(
                     ),
                 ]
             )
-        lines.append(
-            style(
-                "  Only on trusted networks -- anyone who reaches this machine can use Unsloth.",
-                secondary,
+        if lan_addresses or not remote_access_starting:
+            lines.append(
+                style(
+                    "  Only on trusted networks -- anyone who reaches this machine can use Unsloth.",
+                    secondary,
+                )
             )
-        )
 
     if include_stop_hint:
         lines.extend(

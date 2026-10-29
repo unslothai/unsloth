@@ -641,14 +641,20 @@ def _emit_startup_output(
         if wsl_nat:
             _print_wsl_windows_hint(port)
         _verify_global_reachability(display_host, port, wsl_nat = wsl_nat)
-        # --cloudflare is refused alongside --ssl-certfile
-        if _url_scheme == "http" and (not remote_access_starting or _cloudflare_url):
-            _print_cloudflare_line(loopback_host = _loopback_bind_host_for(host))
+        if _url_scheme == "http":  # --cloudflare is refused alongside --ssl-certfile
+            _print_cloudflare_line(
+                loopback_host = _loopback_bind_host_for(host),
+                remote_access_starting = remote_access_starting,
+            )
     _emit_tool_policy_notice(lan_addresses[0] if lan_addresses else host, False, enable_tools)
     print_studio_stop_hint()
 
 
-def _print_cloudflare_line(secure: bool = False, loopback_host: str = "127.0.0.1") -> None:
+def _print_cloudflare_line(
+    secure: bool = False,
+    loopback_host: str = "127.0.0.1",
+    remote_access_starting: bool = False,
+) -> None:
     from startup_banner import stdout_supports_color
 
     accent = "\033[38;5;150;1m"
@@ -681,6 +687,16 @@ def _print_cloudflare_line(secure: bool = False, loopback_host: str = "127.0.0.1
                     "firewall access to keep Unsloth private.",
                     warn,
                 )
+        return
+    if remote_access_starting:
+        # The banner already announces the saved auto-start tunnel; "OFF" would contradict it.
+        if _public_reachable is True:
+            _emit(
+                "  The raw port is also reachable from the public internet (see the "
+                "reachability check above): --no-cloudflare skips only the Cloudflare URL; "
+                f"bind {loopback_host} or close firewall access to keep Unsloth private.",
+                warn,
+            )
         return
     if _cloudflare_requested:
         if _public_reachable is True:

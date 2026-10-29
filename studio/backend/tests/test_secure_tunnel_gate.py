@@ -262,6 +262,26 @@ def test_startup_output_auto_start_on_wildcard_does_not_say_tunnel_off(capsys, m
     assert "Cloudflare tunnel: OFF" not in out
 
 
+def test_startup_output_auto_start_keeps_the_public_raw_port_warning(capsys, monkeypatch):
+    import run
+
+    def _reachable(*a, **k):
+        run._public_reachable = True
+
+    monkeypatch.setattr(run, "_verify_global_reachability", _reachable)
+    monkeypatch.setattr(run, "_localhost_ipv6_mismatch_url", lambda *a, **k: None)
+    monkeypatch.setattr(run, "_is_wsl_nat", lambda: False)
+    monkeypatch.setattr(run, "_cloudflare_url", None)
+    monkeypatch.setattr(run, "_cloudflare_requested", False)
+    monkeypatch.setattr(run, "_cloudflare_flag", None)
+
+    run._emit_startup_output("0.0.0.0", 8000, "203.0.113.5", remote_access_starting = True)
+    out = capsys.readouterr().out
+    assert "raw port is also reachable from the public internet" in out
+    assert "bind 127.0.0.1" in out
+    assert "Cloudflare tunnel: OFF" not in out
+
+
 def test_startup_output_auto_start_on_wildcard_keeps_a_ready_tunnel_url(capsys, monkeypatch):
     import run
 

@@ -51,6 +51,7 @@ def test_banner_says_when_remote_access_auto_start_opens_a_public_url(capsys, ho
     assert "PUBLIC Cloudflare URL" in out
     assert "--no-cloudflare" in out
     assert "Reachable on this machine only" not in out
+    assert "Only on trusted networks" not in out
 
 
 WSL_HINT = "WSL2: open http://localhost:"
