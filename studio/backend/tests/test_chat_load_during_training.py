@@ -1137,8 +1137,10 @@ class TestNativeAudioPlacementContracts(unittest.TestCase):
     def test_automatic_selection_without_a_fitting_card_is_a_placement_refusal(self):
         with self.assertRaises(HTTPException) as raised:
             self._automatic_preflight(((0, 8, 2), (1, 8, 2)), required_gb = 9.0)
-        self.assertIn("No single GPU has enough free memory", str(raised.exception.detail))
-        self.assertNotIn("Select a single GPU", str(raised.exception.detail))
+        detail = str(raised.exception.detail)
+        self.assertIn("No single GPU has enough free memory", detail)
+        self.assertIn("CPU RAM", detail)
+        self.assertNotIn("Select a", detail)
 
     def test_automatic_selection_keeps_the_freest_card_that_fits_now(self):
         placement = self._automatic_preflight(((0, 24, 20), (1, 24, 2)), required_gb = 9.0)
