@@ -106,7 +106,8 @@ def test_zoo_declared_specifier_reads_the_real_requirement(monkeypatch):
 
 
 def test_uv_executable_finds_installer_location_when_path_is_minimal(monkeypatch, tmp_path):
-    uv = tmp_path / ".local" / "bin" / "uv"
+    # uv.exe on Windows: the lookup asks for the platform's executable name.
+    uv = tmp_path / ".local" / "bin" / mr._UV_NAME
     uv.parent.mkdir(parents = True)
     uv.write_text("#!/bin/sh\n", encoding = "utf-8")
     uv.chmod(0o755)
