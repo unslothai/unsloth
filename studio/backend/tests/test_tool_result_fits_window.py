@@ -2089,3 +2089,52 @@ class TestTheResultIsFittedAsItIsReplayed:
         # At most: the head stops on a line boundary.
         assert len(head) <= int(re.match(r"(\d+) chars", notice).group(1)), len(head)
         assert head == tools._defuse_sentinels(head)
+
+
+class TestAPruneReadsTheRecordOnce:
+    def test_the_rewrite_reuses_the_identity_it_already_read(self, tmp_path, monkeypatch):
+        """The prune already read the record, header included, under the same lock, so the
+        rewrite takes the identity from there instead of reading the whole record again."""
+        for n in range(tools._SPILL_KEEP + 5):
+            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
+        root = tmp_path / tools._SPILL_DIR
+        record = tools._spill_record_path(str(root))
+        before = open(record, encoding = "utf-8").read().splitlines()[0]
+        reads = []
+        real = tools._spill_record
+
+        def _counting(path):
+            reads.append(path)
+            return real(path)
+
+        monkeypatch.setattr(tools, "_spill_record", _counting)
+        monkeypatch.setattr(tools, "_SPILL_KEEP", 5)
+
+        tools._prune_spills(str(root))
+
+        assert len(reads) == 1, reads
+        assert open(record, encoding = "utf-8").read().splitlines()[0] == before
+        assert len(_spills(root)) == 5
+
+    def test_a_record_forgotten_during_the_prune_does_not_get_its_identity_back(
+        self, tmp_path, monkeypatch
+    ):
+        """Removing a sandbox drops the record without the spill lock. The rewrite then writes no
+        identity, as a fresh read would give, so a directory recreated at that path is not
+        refused as someone else's."""
+        for n in range(tools._SPILL_KEEP + 5):
+            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
+        root = tmp_path / tools._SPILL_DIR
+        record = tools._spill_record_path(str(root))
+        real = tools._unlink_verified_spill
+
+        def _forget_first(*args, **kwargs):
+            tools._forget_spill_record(record)
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(tools, "_unlink_verified_spill", _forget_first)
+        monkeypatch.setattr(tools, "_SPILL_KEEP", 5)
+
+        tools._prune_spills(str(root))
+
+        assert tools._spill_record(str(root))[0] is None
