@@ -266,6 +266,12 @@ def rl_config(params: dict, objective: str, config: dict) -> list[dict]:
             config[field] = cast(params[param])
     if str(params.get("system_prompt") or "").strip():
         config["rl_system_prompt"] = str(params["system_prompt"])
+    if params.get("batch_size") in (None, ""):
+        # One prompt and all its completions per step, as Unsloth's GRPO notebooks run. The start
+        # route's batch of 1 has TRL spread each prompt over num_generations steps instead.
+        config["batch_size"] = int(params.get("num_generations") or 4)
+        if params.get("gradient_accumulation_steps") in (None, ""):
+            config["gradient_accumulation_steps"] = 1
     return rewards
 
 

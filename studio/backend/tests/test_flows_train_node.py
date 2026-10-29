@@ -346,6 +346,18 @@ def test_grpo_without_saved_rewards_or_prompt_uses_the_node_defaults():
     training.rl_config({"system_prompt": ""}, "grpo", config)
     assert "rl_system_prompt" not in config
 
+
+def test_grpo_steps_take_one_whole_prompt_group_unless_the_batch_is_set():
+    config = {}
+    training.rl_config({"num_generations": 8}, "grpo", config)
+    assert (config["batch_size"], config["gradient_accumulation_steps"]) == (8, 1)
+    config = {}
+    training.rl_config({"batch_size": 2, "gradient_accumulation_steps": 4}, "grpo", config)
+    assert "batch_size" not in config and "gradient_accumulation_steps" not in config
+    config = {}
+    training.rl_config({}, "dpo", config)
+    assert "batch_size" not in config
+
 def test_a_coded_route_error_reaches_the_node_as_its_message():
     from core.flows.caller import route_detail
     body = b'{"detail": {"code": "hf_model_verification_failed", "message": "The Hugging Face model could not be verified."}}'
