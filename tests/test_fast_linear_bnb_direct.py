@@ -64,11 +64,10 @@ def test_fast_linear_forward_routes_its_bnb_branch_through_it():
 
 
 import pytest  # noqa: E402
+from real_accelerator import has_real_cuda  # noqa: E402
 
 
-@pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.version.hip is not None, reason = "NVIDIA CUDA"
-)
+@pytest.mark.skipif(not has_real_cuda() or torch.version.hip is not None, reason = "NVIDIA CUDA")
 @pytest.mark.parametrize("bsz", [5, 8, 16])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_cuda_bnb_branch_bitwise_and_direct(bsz, dtype, monkeypatch):
