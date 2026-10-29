@@ -9,6 +9,7 @@ import http.client
 import http.server
 import io
 import json
+import math
 import os
 import re
 import shlex
@@ -8387,7 +8388,8 @@ def test_vibe_env(tmp_path):
             "name": MODEL["id"],
             "provider": start._VIBE_PROVIDER,
             "alias": start._VIBE_MODEL_ALIAS,
-            "auto_compact_threshold": int(MODEL["context_length"] * 0.9),
+            "max_context_length": MODEL["context_length"],
+            "auto_compact_threshold": MODEL["context_length"] - 24_000,
         }
     ]
     assert env["VIBE_ACTIVE_MODEL"] == start._VIBE_MODEL_ALIAS
@@ -8400,9 +8402,19 @@ def test_vibe_env_carries_temperature_and_odd_model_ids():
     _, models = _vibe_settings(start._vibe_env(BASE, model, {"temperature": 0.7}))
     assert models[0]["name"] == model["id"]
     assert models[0]["temperature"] == 0.7
-    assert models[0]["auto_compact_threshold"] == int(32768 * 0.9)
+    assert models[0]["max_context_length"] == 32768
+    assert models[0]["auto_compact_threshold"] == 32768 * 3 // 4
     _, models = _vibe_settings(start._vibe_env(BASE, {"id": "m"}))
     assert set(models[0]) == {"name", "provider", "alias"}
+
+
+@pytest.mark.parametrize("window", [16384, 40960, 131072, 262144])
+def test_vibe_env_compaction_threshold_fits_the_window(window):
+    _, models = _vibe_settings(start._vibe_env(BASE, {"id": "m", "context_length": window}))
+    assert models[0]["max_context_length"] == window
+    low = max(min(50_000, window // 2), 10_000)
+    high = window - min(24_000, math.ceil(window / 4))
+    assert low <= models[0]["auto_compact_threshold"] <= high
 
 
 def test_connect_vibe_no_launch_uses_env_only(fake_studio, tmp_path):
@@ -8425,7 +8437,8 @@ def test_vibe_launch_keeps_user_home(fake_studio, monkeypatch):
 
 
 @pytest.mark.skipif(shutil.which("vibe") is None, reason = "needs the mistral-vibe CLI")
-def test_vibe_real_cli_reaches_unsloth(monkeypatch, tmp_path):
+@pytest.mark.parametrize("window", [40960, MODEL["context_length"]])
+def test_vibe_real_cli_reaches_unsloth(monkeypatch, tmp_path, window):
     requests = []
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -8435,18 +8448,28 @@ def test_vibe_real_cli_reaches_unsloth(monkeypatch, tmp_path):
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             requests.append((self.headers.get("Authorization"), body))
-            chunk = {
-                "choices": [{"index": 0, "delta": {"content": "pong"}, "finish_reason": "stop"}]
-            }
+            chunks = [
+                {"choices": [{"index": 0, "delta": {"content": "pong"}, "finish_reason": "stop"}]},
+                # Vibe 3 refuses a stream without usage; Studio sends it for include_usage.
+                {
+                    "choices": [],
+                    "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6},
+                },
+            ]
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
-            self.wfile.write(f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n".encode())
+            self.wfile.write("".join(f"data: {json.dumps(c)}\n\n" for c in chunks).encode())
+            self.wfile.write(b"data: [DONE]\n\n")
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target = server.serve_forever, daemon = True).start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
-    monkeypatch.setattr(start, "_connect", lambda *args, **kwargs: (base, "sk-unsloth-e2e", MODEL))
+    monkeypatch.setattr(
+        start,
+        "_connect",
+        lambda *args, **kwargs: (base, "sk-unsloth-e2e", {**MODEL, "context_length": window}),
+    )
     monkeypatch.setenv("VIBE_HOME", str(tmp_path / "vibe"))
     monkeypatch.chdir(tmp_path)
     try:

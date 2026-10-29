@@ -11,6 +11,7 @@ import functools
 import hashlib
 import http.client
 import json
+import math
 import os
 import re
 import shlex
@@ -5941,8 +5942,12 @@ def _vibe_env(
         entry["temperature"] = float(temperature)
     window = model.get("context_length") or model.get("max_context_length")
     if window:
-        # Vibe compacts at 200k tokens by default, past most local windows.
-        entry["auto_compact_threshold"] = max(1, int(int(window) * 0.9))
+        window = int(window)
+        entry["max_context_length"] = window
+        # Vibe's 200k default is past most local windows; Vibe 3 needs min(24k, window / 4) free.
+        entry["auto_compact_threshold"] = min(
+            int(window * 0.9), window - min(24_000, math.ceil(window / 4))
+        )
     provider = {
         "name": _VIBE_PROVIDER,
         "api_base": f"{base}/v1",
