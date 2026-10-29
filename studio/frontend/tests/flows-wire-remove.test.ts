@@ -79,6 +79,6 @@ test("each wire draws its own × at its midpoint on hover or selection, and a se
   assert.match(del, /deleteElements\(\{ edges: \[\{ id \}\] \}\)/);
   assert.match(del, /aria-label="Remove wire"/);
   const curved = readSrc("features/flows/editor/flow-edge.tsx");
-  assert.match(curved, /<WireDelete[\s\S]*show=\{hover \|\| !!selected\}/);
+  assert.match(curved, /<WireDelete[\s\S]*show=\{deletable !== false && \(hover \|\| !!selected\)\}/, "no × on a wire that cannot be removed");
   assert.match(curved, /\{selected && <WireHalo path=\{path\} \/>\}/);
 });
