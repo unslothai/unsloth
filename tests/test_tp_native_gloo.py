@@ -630,6 +630,7 @@ def _case_tp_fsdp2_writer(
     world,
     tmp,
     head_only = False,
+    compiled = False,
 ):
     """dp 2 x tp 2: the collective saves name one writer for the model, not one per tp group."""
     import importlib
@@ -645,11 +646,14 @@ def _case_tp_fsdp2_writer(
     if not native._supports_ignored_params(native._fsdp_api()[2]):
         return {"unsupported": "torch 2.7+"}
     native.shard_model(model, native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"]))
+    unwrapped_model = model
+    if compiled:
+        model = torch.compile(model, backend = "eager")
     res = {"writer_rank": save.mesh_writer_rank(model)}
     with save.fsdp2_gathered(model) as writer:
         res["writer"] = writer
         if writer:
-            for name, param in model.named_parameters():
+            for name, param in unwrapped_model.named_parameters():
                 torch.testing.assert_close(param, expected[name])
     state = native.native_full_state_dict(model)
     res["full_keys"] = len(state)
@@ -1203,12 +1207,13 @@ def test_tp_x_fsdp2_refuses_trainable_head_norms():
         assert res["error"] and "trainable per-head norms" in res["error"], res
 
 
+@pytest.mark.parametrize("compiled", [False, True])
 @pytest.mark.parametrize("head_only", [False, True])
-def test_tp2_x_fsdp2_dp2_saves_from_one_writer(head_only):
+def test_tp2_x_fsdp2_dp2_saves_from_one_writer(head_only, compiled):
     """A frozen tp weight's mesh is its own tp group: the writer must not follow it (two writers,
     two concurrent writes of the same optimizer.pt / scheduler.pt and two Hub pushes)."""
     skip_unsupported("llama")
-    results = _spawn("tp_fsdp2_writer", 4, head_only = head_only)
+    results = _spawn("tp_fsdp2_writer", 4, head_only = head_only, compiled = compiled)
     if "unsupported" in results[0]:
         pytest.skip("torch < 2.7: tensor parallel x FSDP2 is refused")
     assert [r["writer_rank"] for r in results] == [0, 0, 0, 0], results

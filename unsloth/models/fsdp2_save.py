@@ -112,8 +112,8 @@ def mesh_writer_rank(model):
     if isinstance(model, torch.nn.Module):
         # TP and FSDP meshes are orthogonal slices of the same root mesh. Select
         # the whole DP x TP slice, keeping any pipeline dimensions fixed.
-        tp_mesh = model.__dict__.get("_unsloth_tp_mesh")
-        dp_mesh = model.__dict__.get("_unsloth_tp_dp_mesh")
+        tp_mesh = getattr(model, "_unsloth_tp_mesh", None)
+        dp_mesh = getattr(model, "_unsloth_tp_dp_mesh", None)
         if tp_mesh is not None and dp_mesh is not None:
             from torch.distributed.device_mesh import _mesh_resources
 
