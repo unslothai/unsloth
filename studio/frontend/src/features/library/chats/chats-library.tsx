@@ -92,6 +92,7 @@ import { CardGrid } from "../components/library-cards";
 import { LIST_ROW_GAP } from "../components/library-list";
 import type { LibraryView } from "../settings-store";
 import {
+  CHAT_CARD_ROW_MIN,
   ChatCard,
   ChatListHeader,
   type ChatDestination,
@@ -1109,7 +1110,7 @@ export function ChatsLibrary({
           list ? (
             <div className={cn("mt-1 flex flex-col", LIST_ROW_GAP)}>{shownEntries.map(entryRow)}</div>
           ) : (
-            <CardGrid>{shownEntries.map(entryRow)}</CardGrid>
+            <CardGrid minRowHeight={CHAT_CARD_ROW_MIN}>{shownEntries.map(entryRow)}</CardGrid>
           )
         ) : (
           groups.map((group) => (
@@ -1124,7 +1125,7 @@ export function ChatsLibrary({
                   {group.items.map((chat) => chatRow(chat, group.bucket?.kind))}
                 </div>
               ) : (
-                <CardGrid>{group.items.map((chat) => chatRow(chat, group.bucket?.kind))}</CardGrid>
+                <CardGrid minRowHeight={CHAT_CARD_ROW_MIN}>{group.items.map((chat) => chatRow(chat, group.bucket?.kind))}</CardGrid>
               )}
             </section>
           ))
@@ -1187,7 +1188,7 @@ export function ChatsLibrary({
       );
     }
     return (
-      <CardGrid>
+      <CardGrid minRowHeight={CHAT_CARD_ROW_MIN}>
         <button
           type="button"
           onClick={() => setMovingIntoNew({ kind: "section", chats: [] })}
@@ -1233,7 +1234,7 @@ export function ChatsLibrary({
             ))}
           </div>
         ) : (
-          <CardGrid>
+          <CardGrid minRowHeight={CHAT_CARD_ROW_MIN}>
             {sectionProjects.map((project) => (
               <ProjectCard key={project.id} project={project} stats={stats.get(project.id)} showTile={false} />
             ))}
@@ -1282,7 +1283,7 @@ export function ChatsLibrary({
       );
     }
     return (
-      <CardGrid>
+      <CardGrid minRowHeight={CHAT_CARD_ROW_MIN}>
         {!embedded && (
           <button
             type="button"

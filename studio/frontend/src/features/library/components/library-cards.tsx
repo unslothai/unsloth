@@ -356,14 +356,23 @@ export function Masonry<T>({
   );
 }
 
-export function CardGrid({ children }: { children: ReactNode }) {
+export function CardGrid({
+  children,
+  minRowHeight,
+}: {
+  children: ReactNode;
+  minRowHeight?: string;
+}) {
   const container = useRef<HTMLDivElement>(null);
   const columns = useCardColumns(container);
   return (
     <div
       ref={container}
       className={cn("grid gap-x-5", CARD_ROW_GAP)}
-      style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
+      style={{
+        gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+        gridAutoRows: minRowHeight ? `minmax(${minRowHeight}, auto)` : undefined,
+      }}
     >
       {children}
     </div>

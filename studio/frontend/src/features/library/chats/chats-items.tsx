@@ -82,9 +82,12 @@ const CARD = cn(
   RAISED_SURFACE,
   CARD_SHADOW,
   // min-h-0 min-w-0: content must not size the card, or one long card grows its whole tab.
-  // The corner menu overlays the text on hover, so the text keeps the full width.
-  "group/chat relative flex min-h-0 min-w-0 cursor-pointer items-start gap-2 self-stretch rounded-2xl p-4 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
+  "group/chat relative flex min-h-0 min-w-0 cursor-pointer flex-col gap-2.5 self-stretch rounded-2xl px-5 py-5 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
 );
+
+// Fits the fullest card (bare icon, two-line title, two-line footer); rows grow past it, never to a square.
+export const CHAT_CARD_ROW_MIN =
+  "calc(var(--spacing) * 20 + 2.75 * var(--text-ui-12p5) + 3 * var(--text-ui-11p5))";
 import {
   type ChatContents,
   type ChatSort,
@@ -560,9 +563,9 @@ function ChatMenu({
 const TILE =
   "flex size-9 shrink-0 items-center justify-center rounded-md bg-muted text-foreground/70 transition-colors group-hover/chat:bg-primary/10 group-hover/chat:text-primary";
 const TILE_ICON = "size-5";
-// Cards are narrow at five per row, so they mark the kind with a bare icon on the title's first line.
+// Grid cards show the kind icon on its own, without the tile box rows use.
 const CARD_ICON =
-  "mt-px size-4 shrink-0 text-muted-foreground transition-colors group-hover/chat:text-primary";
+  "size-5 shrink-0 text-foreground/70 transition-colors group-hover/chat:text-primary";
 
 function ChatTile({
   chat,
@@ -1182,50 +1185,54 @@ export function ChatCard({
       }
       className={cn(CARD, selected && "ring-2 ring-foreground")}
     >
-      {showTile && <ChatTile chat={chat} bare />}
-      <div className={CARD_TEXT}>
-        <div className={CARD_TITLE_ROW}>
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              if (selecting) actions.toggleSelected(chat.id, event.shiftKey);
-              else actions.open(chat);
-            }}
-            className={CARD_TITLE}
-          >
-            {/* Buttons ignore line-clamp, so clamp an inner span. */}
-            <span className="line-clamp-2">{chatTitle(chat, t)}</span>
-          </button>
-          <ChatBadges chat={chat} marksOnly={showTile} />
-        </div>
-        <CardFooter
-          meta={location}
-          date={formatDate(chatTime(chat, actions.dateField), actions.dateField, times, locale, t)}
-          className={selecting ? "pe-7" : undefined}
-        />
+      <div className={cn("flex items-center gap-2", !showTile && TILELESS_ROW)}>
+        {showTile && <ChatTile chat={chat} bare />}
+        <ChatBadges chat={chat} marksOnly={showTile} />
       </div>
       <ChatMenu chat={chat} archived={archived} variant="card" />
-      <SelectBox chat={chat} visible={selecting} className="absolute bottom-3.5 end-4 flex" />
+      <SelectBox chat={chat} visible={selecting} className="absolute bottom-5 end-4 flex" />
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          if (selecting) actions.toggleSelected(chat.id, event.shiftKey);
+          else actions.open(chat);
+        }}
+        className={cn(CARD_TITLE, !showTile && TILELESS_TITLE)}
+      >
+        {/* Buttons ignore line-clamp, so clamp an inner span. */}
+        <span className="line-clamp-2">{chatTitle(chat, t)}</span>
+      </button>
+      <CardFooter
+        meta={location}
+        date={formatDate(chatTime(chat, actions.dateField), actions.dateField, times, locale, t)}
+        className={selecting ? "pe-7" : undefined}
+      />
     </div>
   );
 }
 
 function CardFooter({ meta, date, className }: { meta?: ReactNode; date: string; className?: string }) {
   return (
-    <div className={cn("flex min-w-0 flex-col items-start gap-0.5 text-ui-11p5 text-muted-foreground", className)}>
+    <div
+      className={cn(
+        "mt-auto flex min-w-0 flex-col items-start gap-1 text-ui-11p5 text-muted-foreground",
+        className,
+      )}
+    >
       {meta && <span className="w-full min-w-0 truncate">{meta}</span>}
       <span className="truncate">{date}</span>
     </div>
   );
 }
 
+// Without a tile, the empty marks row collapses and the title clears the corner menu.
+const TILELESS_ROW = "empty:hidden pe-8";
+const TILELESS_TITLE = "pe-6";
 const TILELESS_ROW_NAME = "min-h-13";
 
-const CARD_TEXT = "flex min-w-0 flex-1 flex-col gap-1.5";
-const CARD_TITLE_ROW = "flex min-w-0 items-start gap-2 [&>svg]:mt-0.5";
 const CARD_TITLE =
-  "block min-w-0 flex-1 rounded-md text-left font-medium text-ui-13 leading-snug text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-ring";
+  "block w-full rounded-md text-left font-medium text-ui-12p5 leading-snug text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-ring";
 
 export function GroupHeading({
   children,
@@ -1416,28 +1423,26 @@ export function ProjectCard({
       onClick={() => actions.viewProject(project.id)}
       className={CARD}
     >
-      {showTile && <CollectionTile icon={Folder02Icon} bare />}
-      <div className={CARD_TEXT}>
-        <div className={CARD_TITLE_ROW}>
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              actions.viewProject(project.id);
-            }}
-            className={CARD_TITLE}
-          >
-            <span className="line-clamp-2">{project.name}</span>
-          </button>
-          {actions.favoriteProjects.has(project.id) && <FavoriteMark />}
-          {pinned && <PinMark />}
-        </div>
-        <CardFooter
-          meta={chatCount(stats?.chats ?? 0, t)}
-          date={formatDate(projectTime(project, stats, actions.dateField), actions.dateField, {}, locale, t)}
-        />
+      <div className={cn("flex items-center gap-2", !showTile && TILELESS_ROW)}>
+        {showTile && <CollectionTile icon={Folder02Icon} bare />}
+        {actions.favoriteProjects.has(project.id) && <FavoriteMark />}
+        {pinned && <PinMark />}
       </div>
       <ProjectMenu project={project} variant="card" />
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          actions.viewProject(project.id);
+        }}
+        className={cn(CARD_TITLE, !showTile && TILELESS_TITLE)}
+      >
+        <span className="line-clamp-2">{project.name}</span>
+      </button>
+      <CardFooter
+        meta={chatCount(stats?.chats ?? 0, t)}
+        date={formatDate(projectTime(project, stats, actions.dateField), actions.dateField, {}, locale, t)}
+      />
     </div>
   );
 }
@@ -1667,27 +1672,25 @@ export function SectionCard({
       onClick={() => actions.viewSection(section.id)}
       className={CARD}
     >
-      {showTile && <CollectionTile icon={LayerIcon} bare />}
-      <div className={CARD_TEXT}>
-        <div className={CARD_TITLE_ROW}>
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              actions.viewSection(section.id);
-            }}
-            className={CARD_TITLE}
-          >
-            <span className="line-clamp-2">{section.name}</span>
-          </button>
-          {actions.favoriteSections.has(section.id) && <FavoriteMark />}
-        </div>
-        <CardFooter
-          meta={sectionCountLabel(stats, t)}
-          date={formatDate(sectionTime(section, stats, actions.dateField), actions.dateField, {}, locale, t)}
-        />
+      <div className={cn("flex items-center gap-2", !showTile && TILELESS_ROW)}>
+        {showTile && <CollectionTile icon={LayerIcon} bare />}
+        {actions.favoriteSections.has(section.id) && <FavoriteMark />}
       </div>
       <SectionMenu section={section} variant="card" />
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          actions.viewSection(section.id);
+        }}
+        className={cn(CARD_TITLE, !showTile && TILELESS_TITLE)}
+      >
+        <span className="line-clamp-2">{section.name}</span>
+      </button>
+      <CardFooter
+        meta={sectionCountLabel(stats, t)}
+        date={formatDate(sectionTime(section, stats, actions.dateField), actions.dateField, {}, locale, t)}
+      />
     </div>
   );
 }
