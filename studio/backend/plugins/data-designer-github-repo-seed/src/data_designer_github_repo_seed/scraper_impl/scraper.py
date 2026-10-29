@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Scraper orchestration: issues, PRs, discussions, commits, releases, etc.
-
-Resumable via state file. Writes JSONL shards under data/{repo}/{resource}.jsonl.
-"""
+"""Resumable GitHub resource scraper (issues, PRs, discussions, ...); writes JSONL shards per repo."""
 
 from __future__ import annotations
 

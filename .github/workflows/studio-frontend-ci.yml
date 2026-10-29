@@ -116,6 +116,9 @@ jobs:
   build:
     name: Frontend build + bundle sanity
     runs-on: ubuntu-latest
+    env:
+      # A release published mid-run puts an update card over the controls the scripts click.
+      UNSLOTH_DISABLE_UPDATE_CHECK: '1'
     # Must stay above the browser install step's own 33m bound so the step timeout fires first.
     timeout-minutes: 40
     defaults:
@@ -596,6 +599,9 @@ jobs:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Frontend unit tests (Windows)
     runs-on: windows-latest
+    env:
+      # A release published mid-run puts an update card over the controls the scripts click.
+      UNSLOTH_DISABLE_UPDATE_CHECK: '1'
     # The steps measured ~15m30s, so 15 always cut off the Firefox step.
     timeout-minutes: 30
     defaults:

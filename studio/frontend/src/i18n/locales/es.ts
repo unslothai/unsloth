@@ -629,6 +629,38 @@ export const es = {
     compactEmpty: "Aún no hay nada que compactar",
     compactUnsupported: "La compactación requiere un modelo GGUF o MLX compatible con herramientas",
   },
+  halloween: {
+    navLabel: "Truco o trato…",
+    title: "¡¿Truco o trato?!",
+    description:
+      "Hemos preparado algunos sustos para Unsloth, disponibles hasta finales de octubre.",
+    chooseTheme: "Elige un tema terrorífico",
+    spookyGreetings: "Saludos terroríficos",
+    spookyGreetingsDescription:
+      "El perezoso recibe los chats nuevos con un susto.",
+    decorations: "Arañas y murciélagos",
+    decorationsDescription:
+      "Telarañas en las esquinas y alguna araña o murciélago de vez en cuando con un tema de Halloween.",
+    surprise: "¡Truco o trato!",
+    surpriseDescription: "Deja que el perezoso elija un tema por ti.",
+    themesTitle: "Temas terroríficos",
+    back: "Atrás",
+    footer: "Unsloth vuelve a la normalidad a medianoche del 1 de noviembre.",
+    removeNow: "Quitar ahora",
+    hideFromSidebar: "Ocultar de la barra lateral",
+    greeting: {
+      pumpkins: "Las calabazas ya están talladas. ¿Qué sigue?",
+      brewing: "¡A preparar la poción!",
+      trickOrTreat: "¿Truco o trato?",
+      manor: "Te damos la bienvenida a la mansión",
+      manorName: "Te damos la bienvenida a la mansión, {name}",
+      happyHalloween: "¡Feliz Halloween!",
+      happyHalloweenName: "¡Feliz Halloween, {name}!",
+      spirits: "Los espíritus están escuchando…",
+      mysteries: "¿Qué misterios descubriremos esta noche?",
+      conjure: "¿Qué puedo conjurar para ti?",
+    },
+  },
   welcome: {
     goodToSeeYou: "Me alegra verte",
     goodToSeeYouName: "Me alegra verte, {name}",
@@ -792,6 +824,8 @@ export const es = {
       guidedTour: "Recorrido guiado",
       help: "Ayuda",
       logOut: "Cerrar sesión",
+      logOutNeedsPassword: "Define una contraseña en Ajustes > Acceso remoto antes de cerrar sesión para poder volver a entrar.",
+      logOutFailed: "No se pudo cerrar sesión de forma segura. Inténtalo de nuevo en un momento.",
       shutdown: "Apagar",
     },
     commandPalette: {
@@ -937,6 +971,11 @@ export const es = {
   },
   settings: {
     accounts: {
+      signsInAs: "Inicia sesión como {username}",
+      signsInAsOwner: "Inicia sesión como {alias} o {username}",
+      signInName: "Tu nombre de inicio de sesión",
+      signInNameDescription: "El nombre que escribes para iniciar sesión cuando esta instalación tiene más de una cuenta. unsloth también funciona siempre. Déjalo vacío para usar solo unsloth.",
+      signInNameSave: "Guardar nombre",
       title: "Cuentas",
       description: "Crea cuentas privadas de Unsloth. Los nuevos usuarios inician sesión con un código de configuración de un solo uso y eligen una contraseña.",
       username: "Nombre de usuario",
@@ -1077,7 +1116,7 @@ export const es = {
       lastVisited: "Última visitada",
     },
     tabs: {
-      sandbox: "Sandbox",
+      sandbox: "Seguridad",
       accounts: "Cuentas",
       general: "General",
       profile: "Perfil",
@@ -1361,7 +1400,7 @@ export const es = {
       },
     },
     sandbox: {
-      title: "Sandbox",
+      title: "Seguridad",
       description: "Si las llamadas a herramientas de Python y Terminal se ejecutan dentro de un sandbox del sistema en este equipo.",
       docs: "Documentación",
       docsLabel: "Abrir la documentación del sandbox",
@@ -1416,7 +1455,7 @@ export const es = {
       installingRuntime: "Instalando…",
       installRuntimeFailed: "No se pudo instalar el runtime.",
       installRuntimeError: "No se pudo iniciar la instalación del runtime.",
-      unsupportedArch: "El sandbox de Windows (MXC) solo funciona en Windows x64, así que no está disponible en este PC.",
+      unsupportedArch: "El sandbox de Windows (MXC) solo funciona en Windows x64 y ARM64, así que no está disponible en este PC.",
       builtinNeedsUpdate: "El contenedor integrado de Windows necesita la compilación {required} o posterior, y este PC usa {current}. Instala la última actualización de Windows para usarlo sin un paso de administrador, o activa el sandbox alternativo de abajo.",
       unsupportedBuild: "El sandbox de Windows (MXC) necesita Windows 11 24H2 (compilación 26100) o posterior, así que no está disponible en este PC.",
       permissionLabel: "Permisos de herramientas",
@@ -1436,6 +1475,7 @@ export const es = {
       managedNote: "El propietario de este servidor de Unsloth configura el sandbox del sistema.",
     },
     debugging: {
+      description: "Lee los registros de Unsloth sin salir de la aplicación.",
       logSection: "Archivo de registro",
       source: "Archivo de registro",
       sourceHint: "Los ejecutores de modelos escriben sus propios registros, así que un fallo al cargar o al generar suele explicarse ahí y no en el registro del servidor.",
@@ -2112,8 +2152,8 @@ export const es = {
       uploadPhoto: "Subir foto",
       removePhoto: "Quitar",
       pictureOptions: "Opciones de la foto de perfil",
-      greetingSloth: "Perezoso en el saludo",
-      greetingSlothDescription: "Muestra el perezoso en el saludo del chat.",
+      greetingSloth: "Saludo",
+      greetingSlothDescription: "Mostrar el saludo en los chats nuevos.",
       noPicture: "Sin foto de perfil",
       noneLabel: "Ninguno",
       stats: {
@@ -2203,6 +2243,12 @@ export const es = {
         classic: "Clásica",
         minimal: "Minimalista",
         moreThemes: "Más temas",
+        halloween: "Halloween",
+      },
+      trickOrTreat: {
+        label: "Truco o trato",
+        description:
+          "Temas de Halloween y saludos terroríficos, hasta el 1 de noviembre.",
       },
       custom: {
         chatWidth: {
@@ -2336,7 +2382,8 @@ export const es = {
         "Monitorea el hardware y el almacenamiento de este servidor de Unsloth.",
       liveUpdates: "Actualizaciones en vivo",
       floatingWindow: "Ventana flotante",
-      disableOverlay: "Desactivar superposición",
+      showFloatingWindow: "Mostrar ventana flotante",
+      showFloatingWindowDescription: "Mantén a la vista el uso de CPU, RAM y GPU sobre Unsloth.",
       liveMonitor: {
         title: "Monitor en vivo",
         apiTitle: "Monitor de API",
@@ -2360,7 +2407,7 @@ export const es = {
         gpuUnusableDetail: "Detectada, pero PyTorch no puede usarla",
         detailedView: "Vista detallada",
         detailedViewDescription:
-          "Muestra la carga de la CPU y la carga, temperatura y consumo de cada GPU en la ventana flotante y aquí.",
+          "Muestra la carga de la CPU y la carga, temperatura y consumo de cada GPU en la ventana flotante.",
         cpuLoad: "Carga de CPU",
         gpuLoad: "Carga de GPU",
         temperature: "Temperatura",
@@ -2394,6 +2441,10 @@ export const es = {
         used: "{value} en uso",
         free: "Libre: {value}",
         total: "{value} en total",
+        usedOf: "{used} en uso de {total}",
+        segmentUsed: "En uso por la GPU",
+        segmentSystem: "En uso por el sistema",
+        segmentAvailable: "Disponible",
       },
       llamaBackend: {
         title: "Motor de inferencia GGUF",
@@ -2523,6 +2574,10 @@ export const es = {
           hideDetailsAction: "Ocultar detalles",
           clearAction: "Borrar cachés",
           clearOneAction: "Borrar",
+          showFolders: "Mostrar carpetas",
+          hideFolders: "Ocultar carpetas",
+          previousLocations: "Incluye ubicaciones anteriores. El botón Borrar principal afecta a la carpeta de caché actual. Los botones de modelo borran solo la copia seleccionada.",
+          clearModelDescription: "Esto elimina solo esta copia en caché. Se volverá a descargar cuando sea necesario.",
           clearingAction: "Borrando...",
           confirmTitle: "¿Borrar los archivos en caché?",
           confirmDescription: "Esto libera unos {size}.",
@@ -2774,11 +2829,6 @@ export const es = {
       autoScrollManual: "Manual",
       autoScrollKeywords:
         "desplazamiento desplazar automático seguir abajo saltar transmisión generar vista bloquear scroll autoscroll follow",
-      scrollToBottomButton: "Botón para ir al final",
-      scrollToBottomButtonDescription:
-        "Muestra un botón para volver al último mensaje después de desplazarte hacia arriba.",
-      scrollToBottomButtonKeywords:
-        "desplazar final abajo saltar último flecha botón ocultar scroll bottom button",
       replyNotification: "Avisar cuando termine una respuesta",
       replyNotificationDescription:
         "Muestra una notificación del sistema cuando termina una respuesta mientras Unsloth está minimizado o en segundo plano.",
@@ -2800,9 +2850,8 @@ export const es = {
         "detalles velocidad tokens estadísticas capas descarga verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Editar respuesta en las respuestas",
       inlineEditResponseDescription: "Mostrar Editar respuesta en cada respuesta, en lugar de en el menú Más.",
-      modelDisclaimer: "Mostrar aviso del modelo",
-      modelDisclaimerDescription:
-        'Muestra "Los LLM pueden cometer errores" bajo el cuadro de chat.',
+      composerAtBottom: "Cuadro de texto abajo",
+      composerAtBottomDescription: "Empieza los chats nuevos con el cuadro de texto abajo en lugar de en el centro.",
       projectAttachments: "Compartir archivos en todo el proyecto",
       projectAttachmentsDescription:
         "Comparte los nuevos archivos adjuntos con todos los chats del proyecto.",
@@ -3176,6 +3225,7 @@ export const es = {
       readDocs: "Leer la documentación de la API",
       noAccess: "Aún no hay acceso a la API.",
       accessTokens: "Tokens de acceso",
+      quickstartTitle: "Inicio rápido",
       columnName: "Nombre",
       columnToken: "Token",
       columnCreated: "Creado",
@@ -3316,8 +3366,9 @@ export const es = {
         loadError: "No se pudieron cargar los ajustes de la API de decisiones.",
         sendsTo: "Las solicitudes se envían a {provider}.",
         connectionMissing: "Esta conexión ya no existe o no tiene modelos de decisiones. Elige otro modelo.",
-        addConnection: "Para usar un modelo de decisiones alojado, añade TypeSafe, Liquid AI u OpenRouter en Conexiones.",
-        openConnections: "Abrir Conexiones",
+        addConnection: "Para usar un modelo de decisiones alojado, añádelo en ",
+        connectionsLink: "Conexiones",
+        addConnectionSuffix: ".",
       },
       mcp: {
         title: "Acceso de agentes (MCP)",
@@ -4264,8 +4315,6 @@ export const es = {
       preparingResources: "> Preparando modelo y conjunto de datos...",
       gettingReady:
         "> Estamos dejando todo listo para tu ejecución...",
-      waitingForFirstStep:
-        "> {message} | esperando el primer paso... ({step})",
       resumingTraining: "Reanudando entrenamiento...",
       startingTraining: "iniciando entrenamiento...",
       dataset: "Conjunto de datos",

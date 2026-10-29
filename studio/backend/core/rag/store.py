@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unified SQLite store: relational chunks + FTS5 lexical + sqlite-vec dense.
-
-Module-level functions each take a ``conn`` the caller opens and closes. Inserts
-are incremental: ``add_chunks`` appends one document's rows without rebuilding the
-scope. Scope ("kb_<id>" / "thread_<id>") is a column on every table and the vec0
-partition key.
-"""
+"""Unified SQLite store (chunks, FTS5, sqlite-vec); caller-opened conn; add_chunks appends
+incrementally; scope kb_<id>/thread_<id> is the vec0 partition key."""
 
 from __future__ import annotations
 
@@ -17,6 +12,7 @@ import os
 import re
 import sqlite3
 import struct
+import sys
 import threading
 import uuid
 from collections import OrderedDict
@@ -54,6 +50,17 @@ def _scopes(scope) -> list[str]:
 
 def _f32(vector) -> bytes:
     """Pack a vector into float32 bytes for vec0."""
+    np = sys.modules.get("numpy")
+    if (
+        np is not None
+        and type(vector) is np.ndarray
+        and vector.ndim == 1
+        and vector.dtype == np.float32
+        and vector.dtype.isnative
+        and not np.isnan(vector).any()
+    ):
+        # float32 -> float -> 'f' is exact, so the buffer is the packed bytes; NaN keeps the struct path.
+        return vector.tobytes()
     return struct.pack(f"{len(vector)}f", *(float(x) for x in vector))
 
 
@@ -515,18 +522,7 @@ def delete_document(
     commit: bool = True,
 ) -> None:
     """Remove a document and all its chunks (+ fts + vec rows)."""
-    ids = [
-        r["id"]
-        for r in conn.execute(
-            "SELECT id FROM chunks WHERE document_id=?", (document_id,)
-        ).fetchall()
-    ]
-    has_vec = rag_db.vec_table_exists(conn)
-    for chunk_id in ids:
-        conn.execute("DELETE FROM chunks_fts WHERE chunk_id=?", (chunk_id,))
-        if has_vec:
-            conn.execute("DELETE FROM chunks_vec WHERE chunk_id=?", (chunk_id,))
-    conn.execute("DELETE FROM chunks WHERE document_id=?", (document_id,))
+    rag_db._delete_document_chunks(conn, document_id)
     conn.execute("DELETE FROM documents WHERE id=?", (document_id,))
     if commit:
         conn.commit()
@@ -831,6 +827,7 @@ def _search_dense(conn: sqlite3.Connection, scope, vector, k: int, embedding_mod
     kept: dict[str, list[tuple[str, float]]] = {}
     fetches = dict.fromkeys(scopes, max(k * 3, k + 10))
     pending = list(scopes)
+    query = _f32(vector) if pending else b""
     while pending:
         widen: list[str] = []
         for s in pending:
@@ -839,7 +836,7 @@ def _search_dense(conn: sqlite3.Connection, scope, vector, k: int, embedding_mod
             rows = conn.execute(
                 "SELECT chunk_id, distance FROM chunks_vec "
                 "WHERE scope=? AND embedding MATCH ? AND k=? ORDER BY distance",
-                (s, _f32(vector), fetch),
+                (s, query, fetch),
             ).fetchall()
             kept[s] = _drop_incompatible(
                 conn,

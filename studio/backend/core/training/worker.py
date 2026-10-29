@@ -234,6 +234,38 @@ def _effective_training_load_in_4bit(
     return effective_training_load_in_4bit(config, model_load_target, hf_token)
 
 
+def _training_weight_prefetch(config, trainer, hf_token, event_queue):
+    """Resolve only the ordinary SFT checkpoint; uncertain routes keep the existing sequential load."""
+    try:
+        from .model_weight_prefetch import ModelWeightPrefetch, prefetch_repo
+        from utils.hf_cache_settings import get_hf_cache_paths
+        from utils.hardware import dataset_map_num_proc
+
+        repo = prefetch_repo(
+            config,
+            trainer,
+            load_in_4bit = lambda: _effective_training_load_in_4bit(
+                config, _resolve_cached_model_load_name(config), hf_token
+            ),
+            capabilities = sys.modules.get("unsloth.device_type"),
+            offline = _model_offline_mode_enabled(),
+            formatting_can_fork = (
+                not config.get("dataset_streaming", False) and (dataset_map_num_proc() or 1) > 1
+            ),
+        )
+        if repo is not None:
+            return ModelWeightPrefetch(
+                repo,
+                token = hf_token,
+                cache_dir = get_hf_cache_paths().hub_cache,
+                emit = event_queue.put,
+                should_stop = lambda: trainer.should_stop,
+            )
+    except Exception as error:  # noqa: BLE001
+        logger.info("Skipping model checkpoint prefetch: %s", error)
+    return None
+
+
 def _drop_model_pin(config: dict) -> str:
     config["model_snapshot_path"] = None
     return config["model_name"]
@@ -3848,7 +3880,6 @@ def run_mlx_training_process(
                 if security_error:
                     event_queue.put({"type": "error", **security_error, "ts": time.time()})
                 else:
-                    _download_decision_checkpoint(event_queue, config)
                     from core.training.decision_trainer import run_decision_training
                     run_decision_training(event_queue, stop_queue, config)
             else:
@@ -4687,7 +4718,6 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     if config.get("is_decision", False):
         try:
-            _download_decision_checkpoint(event_queue, config)
             from core.training.decision_trainer import run_decision_training
             run_decision_training(event_queue, stop_queue, config)
         except Exception as exc:
@@ -4880,7 +4910,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 return
 
         _send_status(event_queue, "Loading and formatting dataset...")
-        dataset, eval_dataset = _load_training_dataset()
+        from .model_weight_prefetch import prepare_dataset_with_prefetch
+
+        dataset, eval_dataset = prepare_dataset_with_prefetch(
+            _load_training_dataset,
+            _training_weight_prefetch(config, trainer, hf_token, event_queue),
+        )
 
         if dataset is None or trainer.should_stop:
             if trainer.should_stop:
@@ -5505,6 +5540,9 @@ def _create_embedding_progress_callback(
     """TrainerCallback that reports embedding training progress to the parent. ``should_stop`` is
     polled in on_train_begin and on_step_end, so a stop signal arriving mid-run is seen."""
     from transformers import TrainerCallback
+    from core.training.startup_progress import TrainingStartupProgress
+
+    startup = TrainingStartupProgress()
 
     class _EmbeddingProgressCallback(TrainerCallback):
         _start_step = 0
@@ -5514,10 +5552,17 @@ def _create_embedding_progress_callback(
             self._start_step = state.global_step
             if state.global_step > 0:
                 self._training_start_time = time.time()
-            # Progress events carry an empty status, else the parent keeps showing "Starting...".
             if should_stop():
                 return
-            _send_status(event_queue, "Training in progress...")
+            _send_status(event_queue, startup.begin(args, state))
+
+        def on_step_begin(self, args, state, control, **kwargs):
+            if not should_stop() and (message := startup.step_begin()):
+                _send_status(event_queue, message)
+
+        def on_substep_end(self, args, state, control, **kwargs):
+            if not should_stop() and (message := startup.substep_end()):
+                _send_status(event_queue, message)
 
         def on_log(
             self,
@@ -5568,7 +5613,7 @@ def _create_embedding_progress_callback(
                     "grad_norm": logs.get("grad_norm"),
                     "num_tokens": getattr(state, "num_input_tokens_seen", None),
                     "eval_loss": logs.get("eval_loss"),
-                    "status_message": "",
+                    "status_message": "" if should_stop() else startup.log(logs) or "",
                     "ts": time.time(),
                 }
             )
@@ -5578,6 +5623,8 @@ def _create_embedding_progress_callback(
                 logger.info("Embedding training: stop at step %d", state.global_step)
                 control.should_training_stop = True
                 return control
+            if message := startup.step_end(state):
+                _send_status(event_queue, message)
 
     return _EmbeddingProgressCallback()
 

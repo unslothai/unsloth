@@ -3529,9 +3529,9 @@ pub fn start_backend(
     Ok(generation)
 }
 
-async fn generic_backend_health_ok(port: u16) -> bool {
+async fn generic_backend_health_ok(port: u16, timeout: Duration) -> bool {
     let started = std::time::Instant::now();
-    let client = match crate::loopback_http::client(Duration::from_secs(2)) {
+    let client = match crate::loopback_http::client(timeout) {
         Ok(client) => client,
         Err(error) => {
             warn!("Could not build backend validation client: {}", error);
@@ -3611,6 +3611,8 @@ async fn generic_backend_health_ok(port: u16) -> bool {
 
 /// Doubling backoff: each probe costs two requests against a busy backend.
 const PORT_VALIDATION_RETRY_MIN: Duration = Duration::from_millis(250);
+/// The health watchdog's per-request budget: warm-up right after TAURI_PORT can hold the GIL past 2s.
+pub(crate) const PORT_VALIDATION_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const PORT_VALIDATION_RETRY_MAX: Duration = Duration::from_secs(5);
 
 async fn validate_candidate_port(
@@ -3650,16 +3652,24 @@ async fn validate_candidate_port(
             break false;
         }
         attempts += 1;
+        // Never past the deadline: the answer would be discarded anyway.
+        let budget = PORT_VALIDATION_PROBE_TIMEOUT
+            .min(deadline.saturating_duration_since(std::time::Instant::now()));
         let ok = if let Some(owner) = owner.clone() {
             matches!(
-                crate::desktop_backend_owner::probe_owned_backend_state(owner, Some(port), false)
-                    .await,
+                crate::desktop_backend_owner::probe_owned_backend_state_with_timeout(
+                    owner,
+                    Some(port),
+                    false,
+                    budget,
+                )
+                .await,
                 crate::desktop_backend_owner::OwnedBackendProbe::Verified(
                     crate::desktop_backend_owner::VerifiedOwnedBackend { port: verified_port, .. }
                 ) if verified_port == port
             )
         } else {
-            generic_backend_health_ok(port).await
+            generic_backend_health_ok(port, budget).await
         };
         if ok {
             // A late success must not emit server-port after server-start-timeout.
@@ -5869,6 +5879,27 @@ mod managed_cli_working_dir_tests {
         assert_eq!(
             std::fs::canonicalize(out.trim()).unwrap(),
             std::fs::canonicalize(&expected).unwrap()
+        );
+    }
+}
+
+#[cfg(test)]
+mod port_validation_budget_tests {
+    #[test]
+    fn port_validation_probes_use_the_validation_budget() {
+        let src = include_str!("process.rs").replace("\r\n", "\n");
+        let start = src
+            .find("async fn validate_candidate_port(")
+            .expect("validate_candidate_port moved; update this guard");
+        let body = &src[start..];
+        let body = &body[..body.find("\n}\n").expect("could not find the function end")];
+        assert!(body.contains("PORT_VALIDATION_PROBE_TIMEOUT"));
+        assert!(body.contains("probe_owned_backend_state_with_timeout("));
+        assert!(body.contains("generic_backend_health_ok(port, budget)"));
+        assert!(!body.contains("probe_owned_backend_state(owner"));
+        assert!(
+            super::PORT_VALIDATION_PROBE_TIMEOUT >= std::time::Duration::from_secs(10),
+            "keep the validation budget at least the health watchdog's"
         );
     }
 }

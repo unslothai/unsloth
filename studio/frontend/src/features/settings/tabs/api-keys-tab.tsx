@@ -45,6 +45,7 @@ import { SettingsSection } from "../components/settings-section";
 import { ApiExamplesPanel } from "../components/api-example-tabs";
 import { useApiTunnelPref } from "../components/usage-examples";
 import { usePublishAccessUrls } from "../hooks/use-publish-access-urls";
+import { useFreshApiKeyStore } from "../stores/fresh-api-key-store";
 
 function expiryDays(key: ApiKey): number | null {
   if (!key.expires_at) return null;
@@ -64,6 +65,12 @@ export function ApiKeysTab() {
   const [revoking, setRevoking] = useState(false);
   const [regenerate, setRegenerate] = useState(false);
   const [revealed, setRevealed] = useState<string | null>(null);
+  // The examples read the store, not `revealed`: that dies with this tab and on Done.
+  const freshKey = useFreshApiKeyStore((s) => s.key);
+  const reveal = (raw: string) => {
+    setRevealed(raw);
+    useFreshApiKeyStore.getState().setKey(raw);
+  };
   const [useTunnel, setUseTunnel] = useApiTunnelPref();
   // Owner-only routes, as the Remote & LAN tab is.
   usePublishAccessUrls(isOwner);
@@ -147,9 +154,10 @@ export function ApiKeysTab() {
           revokeTarget.name,
           expiryDays(revokeTarget),
         );
-        setRevealed(created.key);
+        reveal(created.key);
       }
       await revokeApiKey(revokeTarget.id);
+      useFreshApiKeyStore.getState().forgetIfRevoked(revokeTarget.key_prefix);
       await load();
       setRevokeTarget(null);
     } catch (cause) {
@@ -218,7 +226,7 @@ export function ApiKeysTab() {
             >
               <CreateKeyForm
                 onCreated={(raw) => {
-                  setRevealed(raw);
+                  reveal(raw);
                   void load();
                 }}
                 onError={setActionError}
@@ -276,7 +284,7 @@ export function ApiKeysTab() {
       </section>
 
       <ApiExamplesPanel
-        apiKey={revealed}
+        apiKey={freshKey}
         useTunnel={useTunnel}
         onUseTunnelChange={setUseTunnel}
         keylessScope={keyless.scope}
@@ -286,7 +294,7 @@ export function ApiKeysTab() {
 
       {/* Installation-wide, so owner-only routes. */}
       <SettingsSection title="Access & monitoring">
-        {isOwner ? <McpAccessSection apiKey={revealed} /> : null}
+        {isOwner ? <McpAccessSection apiKey={freshKey} /> : null}
         {isOwner ? <KeylessApiAccessLink /> : null}
         <MonitorLink hideHeading={true} />
       </SettingsSection>

@@ -3279,6 +3279,7 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
 }
 
 _SKIP_PYTHON_DEPS=false
+_SETUP_VENV_CHANGED=false
 _SKIP_VERSION_CHECK=false
 # Set here so an exported value from the caller cannot reach it.
 _OFFLINE_FAST_PATH=false
@@ -3398,6 +3399,8 @@ fi
 if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     install_python_stack
     _setup_rerun_if_replaced
+    # After the handoff: a replaced copy precompiles on UNSLOTH_SETUP_RERUN, this one on the flag.
+    _SETUP_VENV_CHANGED=true
 else
     step "python" "dependencies up to date"
     verbose_substep "python deps check: installed=$_PKG_NAME@${INSTALLED_VER:-unknown} latest=${LATEST_VER:-unknown}"
@@ -5485,6 +5488,24 @@ _print_llama_gpu_notes() {
 }
 
 _frontend_bg_join
+
+# ── Precompile bytecode ── (opt-in: a whole-venv compile per update cost more than lazy compile on import; never fatal)
+_setup_bytecode_opted_out() {
+    local _sbo _sbo_out=0
+    for _sbo in "${UV_COMPILE_BYTECODE:-}" "${UNSLOTH_STUDIO_COMPILE_BYTECODE:-}"; do
+        case "$(printf '%s' "$_sbo" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in
+            0|false|no|off) return 0 ;;
+            1|true|yes|on) _sbo_out=1 ;;
+        esac
+    done
+    return "$_sbo_out"
+}
+if { [ "${_SETUP_VENV_CHANGED:-false}" = true ] || [ "${UNSLOTH_SETUP_RERUN:-}" = 1 ]; } \
+    && [ "${_COLAB_NO_VENV:-false}" != true ] && [ -x "$VENV_DIR/bin/python" ] \
+    && [ -f "$SCRIPT_DIR/precompile_bytecode.py" ] && ! _setup_bytecode_opted_out; then
+    step "python" "precompiling bytecode..."
+    "$VENV_DIR/bin/python" -I "$SCRIPT_DIR/precompile_bytecode.py" </dev/null || true
+fi
 
 # ── Footer ──
 if [ "$_LLAMA_ONLY" = "1" ]; then
