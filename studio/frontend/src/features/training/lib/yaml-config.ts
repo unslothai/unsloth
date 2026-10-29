@@ -2,6 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  GRPO_FORMAT_WARMUP_MIN_CONTEXT,
+  GRPO_FORMAT_WARMUP_STEPS,
+} from "@/config/training";
+import {
   GRPO_VARIANTS,
   type GrpoRewardSelection,
   type GrpoPythonRewardIsolation,
@@ -184,7 +188,8 @@ const numOrNull = (v: unknown): number | null | undefined =>
  * fields with the wrong type are dropped so the current value stays. */
 export function parseYamlRlSettings(text: string): YamlRlSettings {
   const parsed = yaml.load(text) as Record<string, unknown> | null;
-  return parseRlSection(parsed?.rl);
+  const training = parsed?.training as Record<string, unknown> | undefined;
+  return parseRlSection(parsed?.rl, training?.max_seq_length);
 }
 
 /** A saved run's objective and RL settings. The stored config keeps them as `objective`,
@@ -193,14 +198,17 @@ export function parseRunConfigRlSettings(
   config: Record<string, unknown>,
 ): YamlRlSettings {
   const settings = config.rl_settings;
-  return parseRlSection({
-    ...(settings !== null && typeof settings === "object" ? settings : {}),
-    objective: config.objective,
-    rewards: config.reward_specs,
-  });
+  return parseRlSection(
+    {
+      ...(settings !== null && typeof settings === "object" ? settings : {}),
+      objective: config.objective,
+      rewards: config.reward_specs,
+    },
+    config.max_seq_length,
+  );
 }
 
-function parseRlSection(rl: unknown): YamlRlSettings {
+function parseRlSection(rl: unknown, context?: unknown): YamlRlSettings {
   if (rl == null || typeof rl !== "object" || Array.isArray(rl)) {
     return { trainingObjective: "sft" };
   }
@@ -257,6 +265,14 @@ function parseRlSection(rl: unknown): YamlRlSettings {
     "grpoFormatWarmupSteps",
     isNum(r.format_warmup_steps) ? r.format_warmup_steps : undefined,
   );
+  // An omitted count gets the backend's default, not the store's 0; a written 0 stays.
+  if (
+    out.grpoReasoningFormat === true &&
+    out.grpoFormatWarmupSteps === undefined &&
+    !(isNum(context) && context < GRPO_FORMAT_WARMUP_MIN_CONTEXT)
+  ) {
+    out.grpoFormatWarmupSteps = GRPO_FORMAT_WARMUP_STEPS;
+  }
   if (typeof r.mask_truncated_completions === "boolean") {
     out.grpoMaskTruncatedCompletions = r.mask_truncated_completions;
   }
