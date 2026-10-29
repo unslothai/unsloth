@@ -2424,7 +2424,7 @@ def _convert_into_gguf_directory(
     gguf_directory,
     conversion_staging,
 ):
-    """Run the HF to GGUF conversion and put its files in `gguf_directory`. With a staging folder the converter writes beside the destination; without one it keeps the bare-name CWD placement."""
+    """Convert to GGUF and place the files in `gguf_directory`; without a staging folder the converter writes to the CWD."""
     print("Unsloth: Preparing converter script...")
     with use_local_gguf():
         converter_path, supported_text_archs, supported_vision_archs = (
@@ -2479,7 +2479,7 @@ def _convert_into_gguf_directory(
 
 
 def _gguf_conversion_staging(gguf_directory):
-    """A private folder inside `gguf_directory` for the converter's output, or None. `convert_to_gguf` resolves a bare name against the process CWD, so the intermediate GGUF used to be written there and then moved, which is a full copy whenever the CWD and the output folder sit on different filesystems (a Kaggle export redirected to /tmp, a Studio export folder on another drive). Written here instead, the move below is a rename. A hidden subfolder rather than the output folder itself, so a partial file from a failed conversion never sits in the output folder under its final name, and the cleanup is one rmtree. Returns `(staging, created_gguf_directory)`; on any failure `(None, False)` and the caller keeps the old CWD placement."""
+    """`(staging, created_gguf_directory)`: a hidden folder inside `gguf_directory` for the converter output, so placing it is a rename even when the CWD is on another filesystem, and a failed conversion is one rmtree. `(None, False)` on failure keeps the CWD placement."""
     import tempfile
 
     created = False
@@ -2501,7 +2501,7 @@ _GGUF_CONVERTER_SUFFIX_CHARS = 40
 
 
 def _staged_conversion_fits_path_limit(staging, model_name):
-    """False on Windows when a converter output inside `staging` could pass MAX_PATH. The staging folder adds about 31 characters to the intermediate's path, so a destination near the limit that the old CWD placement handled would fail inside the converter; such an export keeps the old placement instead."""
+    """False on Windows when a converter output inside `staging` could pass MAX_PATH, so a deep destination keeps the CWD placement that worked before."""
     if not IS_WINDOWS:
         return True
     try:
@@ -2519,7 +2519,7 @@ def _remove_empty_directory(directory):
 
 
 def _place_gguf_output(src, dst):
-    """Move one converter output to its final name. `os.replace` is a rename on one filesystem, and unlike `os.rename` it also replaces an existing file on Windows, where `shutil.move` would fall back to a full copy. Anything it refuses (another filesystem, a directory at `dst`, a held file) goes through `shutil.move` exactly as before."""
+    """`os.replace` is a rename that also overwrites on Windows; anything it refuses (cross-device, directory at `dst`, held file) falls back to `shutil.move`."""
     if os.path.abspath(src) == os.path.abspath(dst):
         return
     try:
