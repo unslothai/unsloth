@@ -17,6 +17,9 @@ type Status = Pick<
   | "model_load_progress"
 >;
 
+const QUANTIZATION_NOTE =
+  "Downloaded files are reused; 4-bit conversion runs in memory each time.";
+
 const PHASE_MESSAGE =
   /^(?:Loading base model\.\.\.|Training\.\.\.|Preparing \(.*\)\.\.\.)$/;
 const TERMINAL_STATUSES = new Set(["completed", "stopped", "error"]);
@@ -86,13 +89,15 @@ export function diffusionTrainingProgress(status: Status | null) {
     if (status?.in_model_load && !downloading && (measured || stage)) {
       return {
         preparing: true,
-        title: stage === "quantizing" ? "Loading weights and converting to 4-bit"
+        title: stage === "quantizing" ? "Loading model and converting to 4-bit"
           : stage === "conditioning" ? "Loading text encoders and image encoder"
           : "Loading training model weights",
         detail: note ?? (measured
-          ? `${load.label} · ${load.done.toLocaleString()} / ${load.total.toLocaleString()} ${load.unit} loaded${stage === "quantizing" ? ". Includes 4-bit conversion; downloaded weights are reused." : "."}`
+          ? stage === "quantizing"
+            ? `${load.done.toLocaleString()} of ${load.total.toLocaleString()} ${load.unit === "tensors" ? "weight tensors" : load.unit} processed. ${QUANTIZATION_NOTE}`
+            : `${load.label} · ${load.done.toLocaleString()} / ${load.total.toLocaleString()} ${load.unit} loaded.`
           : stage === "quantizing"
-            ? "Downloaded weights are reused. The 4-bit conversion runs in memory each time."
+            ? QUANTIZATION_NOTE
             : "Waiting for the model loader to report progress. Training has not started yet."),
         count: measured ? `${Math.floor(load.done / load.total * 100)}%` : null,
         percent: measured ? load.done / load.total * 100 : null,

@@ -189,10 +189,11 @@ test("successful tensor loading gives measured progress and explains 4-bit conve
     model_load_stage: "quantizing",
     model_load_progress: { done: 28, total: 62, unit: "tensors", label: "Training model weights" },
   });
-  assert.equal(progress.title, "Loading weights and converting to 4-bit");
+  assert.equal(progress.title, "Loading model and converting to 4-bit");
   assert.equal(progress.percent, 28 / 62 * 100);
   assert.equal(progress.count, "45%");
-  assert.match(progress.detail!, /downloaded weights are reused/);
+  assert.equal(progress.detail,
+    "28 of 62 weight tensors processed. Downloaded files are reused; 4-bit conversion runs in memory each time.");
 });
 
 test("loading counts yield to downloads, preparation, training and terminal states", () => {
