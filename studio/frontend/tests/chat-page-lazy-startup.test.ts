@@ -127,12 +127,26 @@ test("the preload follows main.tsx for the single-user Desktop app", () => {
 
 test("a failed chat page load stays inside the chat area and retries", () => {
   const root = readSrc("app/routes/__root.tsx");
-  assert.match(root, /function lazyChatPage\(\) \{\s*return lazy\(/);
-  assert.match(root, /<LazyImportBoundary\s+key=\{page\.attempt\}/);
+  const attempt = root.slice(
+    root.indexOf("function chatPageAttempt("),
+    root.indexOf("function ChatPage("),
+  );
+  assert.match(attempt, /loadedChatPage\(\) \?\?\s*lazy</);
+  assert.match(attempt, /\(\) => \(\{ default: ChatPageLoadFailure \}\)/);
+  assert.match(root, /setPage\(\(\) => chatPageAttempt\(\)\)/);
   assert.match(
     root,
-    /<Suspense fallback=\{<RouteFallback \/>\}>\s*<Page \{\.\.\.props\} \/>/,
+    /<Suspense fallback=\{<RouteFallback \/>\}>\s*<Page \{\.\.\.props\} onRetry=\{retry\} \/>/,
   );
   const loader = readSrc("features/chat/load-chat-page.ts");
   assert.match(loader, /chatPageModule = null;\s*throw error;/);
+});
+
+test("a crash inside the chat page is not caught as a load failure", () => {
+  const root = readSrc("app/routes/__root.tsx");
+  const page = root.slice(
+    root.indexOf("function ChatPage("),
+    root.indexOf("// Mounted persistently below"),
+  );
+  assert.doesNotMatch(page, /Boundary/);
 });

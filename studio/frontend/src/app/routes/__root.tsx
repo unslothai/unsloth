@@ -3,10 +3,7 @@
 
 import { ImageViewer } from "@/components/image-viewer";
 import { useAppShellReadySignal } from "@/components/app-readiness";
-import {
-  LazyImportBoundary,
-  LazyImportFailure,
-} from "@/components/lazy-import-boundary";
+import { LazyImportFailure } from "@/components/lazy-import-boundary";
 import { AppSidebar } from "@/components/app-sidebar";
 import { CommandPalette } from "@/components/command-palette";
 import { SpookyDecorations } from "@/features/halloween/spooky-decorations";
@@ -80,6 +77,7 @@ import {
 } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
 import {
+  type ComponentType,
   lazy,
 
   type ReactNode,
@@ -167,10 +165,8 @@ function RouteBoundary({
   );
 }
 
-// New lazy() per attempt: lazy() caches a rejection forever.
-function lazyChatPage() {
-  return lazy(() => loadChatPage().then((m) => ({ default: m.ChatPage })));
-}
+type ChatPageProps = { search: ChatSearch; active: boolean };
+type ChatPageAttemptProps = ChatPageProps & { onRetry: () => void };
 
 function ChatPageLoadFailure({
   active,
@@ -197,28 +193,28 @@ function ChatPageLoadFailure({
   );
 }
 
-function ChatPage(props: { search: ChatSearch; active: boolean }) {
-  // Kept until a failure: swapping component type would remount the page and drop its state.
-  const [page, setPage] = useState(() => ({
-    attempt: 0,
-    Page: loadedChatPage() ?? lazyChatPage(),
-  }));
-  const retry = useCallback(() => {
-    setPage((current) => ({
-      attempt: current.attempt + 1,
-      Page: loadedChatPage() ?? lazyChatPage(),
-    }));
-  }, []);
-  const { Page } = page;
+// A failed import resolves to the failure panel (not a throw), so a crash inside the page still
+// reaches the route boundary; a new lazy() per attempt since lazy() caches its result.
+function chatPageAttempt(): ComponentType<ChatPageAttemptProps> {
   return (
-    <LazyImportBoundary
-      key={page.attempt}
-      fallback={<ChatPageLoadFailure active={props.active} onRetry={retry} />}
-    >
-      <Suspense fallback={<RouteFallback />}>
-        <Page {...props} />
-      </Suspense>
-    </LazyImportBoundary>
+    loadedChatPage() ??
+    lazy<ComponentType<ChatPageAttemptProps>>(() =>
+      loadChatPage().then(
+        (m) => ({ default: m.ChatPage }),
+        () => ({ default: ChatPageLoadFailure }),
+      ),
+    )
+  );
+}
+
+function ChatPage(props: ChatPageProps) {
+  // Kept until a failure: swapping component type would remount the page and drop its state.
+  const [Page, setPage] = useState(chatPageAttempt);
+  const retry = useCallback(() => setPage(() => chatPageAttempt()), []);
+  return (
+    <Suspense fallback={<RouteFallback />}>
+      <Page {...props} onRetry={retry} />
+    </Suspense>
   );
 }
 
