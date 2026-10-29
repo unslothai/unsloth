@@ -1957,6 +1957,27 @@ def build_xformers_block_causal_mask(
     return mask
 
 
+def _fill_packed_block_mask(
+    block: torch.Tensor,
+    sliding_window: Optional[int] = None,
+    is_causal: bool = True,
+) -> torch.Tensor:
+    length = block.shape[0]
+    windowed = sliding_window is not None and sliding_window > 0 and length > sliding_window
+    if not is_causal and not windowed:
+        return block.zero_()
+    if is_causal and not windowed:
+        return block.triu_(1)
+    if windowed and not is_causal:
+        return block.tril_(-sliding_window)
+    keep = (
+        torch.ones((length, length), dtype = torch.bool, device = block.device)
+        .triu_(1 - sliding_window)
+        .tril_(0)
+    )
+    return block.masked_fill_(keep, 0.0)
+
+
 def packed_block_mask(
     length: int,
     *,
@@ -1966,15 +1987,11 @@ def packed_block_mask(
     is_causal: bool = True,
 ) -> torch.Tensor:
     """Additive (length, length) mask of one packed segment: causal and / or sliding window."""
-    block = torch.zeros((length, length), dtype = dtype, device = device)
-    if is_causal:
-        upper = torch.triu(torch.ones((length, length), device = device), diagonal = 1).bool()
-        block = block.masked_fill(upper, float("-inf"))
-    if sliding_window is not None and sliding_window > 0 and length > sliding_window:
-        idx = torch.arange(length, device = device)
-        dist = idx.unsqueeze(1) - idx.unsqueeze(0)
-        block = block.masked_fill(dist >= sliding_window, float("-inf"))
-    return block
+    windowed = sliding_window is not None and sliding_window > 0 and length > sliding_window
+    if not is_causal and not windowed:
+        return torch.zeros((length, length), dtype = dtype, device = device)
+    block = torch.full((length, length), float("-inf"), dtype = dtype, device = device)
+    return _fill_packed_block_mask(block, sliding_window = sliding_window, is_causal = is_causal)
 
 
 def packed_segment_lengths(
@@ -2023,10 +2040,8 @@ def build_sdpa_packed_attention_mask(
     for length in lengths:
         if length <= 0:
             continue
-        mask[offset : offset + length, offset : offset + length] = packed_block_mask(
-            length,
-            dtype = dtype,
-            device = device,
+        _fill_packed_block_mask(
+            mask[offset : offset + length, offset : offset + length],
             sliding_window = sliding_window,
             is_causal = is_causal,
         )
