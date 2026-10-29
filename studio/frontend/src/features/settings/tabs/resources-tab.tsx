@@ -115,13 +115,6 @@ function formatGb(value: number | null | undefined): string {
   return `${safe.toFixed(digits)} GB`;
 }
 
-function formatDiskSize(diskGb: number | null | undefined): string {
-  if (isFiniteNumber(diskGb) && diskGb >= 1000) {
-    return `${(diskGb / 1000).toFixed(2)} TB`;
-  }
-  return formatGb(diskGb);
-}
-
 // RAM/VRAM are binary (GiB, like nvidia-smi); disk is decimal GB.
 function formatGiB(value: number | null | undefined): string {
   const safe = isFiniteNumber(value) ? Math.max(0, value) : 0;
@@ -175,40 +168,46 @@ function MetricTile({
   const percentKnown = isFiniteNumber(percent);
   const safePercent = clampPercent(percent);
   return (
-    <div className="flex min-w-0 flex-col gap-3 rounded-xl border border-border/60 bg-card px-5 py-4 dark:border-transparent">
-      <div className="flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-1">
-        <div className="flex shrink-0 flex-col gap-0.5">
+    <div className="flex min-w-0 flex-col gap-3 rounded-xl border border-border/60 bg-card px-6 py-5 dark:border-transparent">
+      {/* The reading (44.6 GiB / 64 GiB) is the headline; the percent is a pill beside the label. */}
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <div className="flex min-w-0 items-center justify-between gap-3">
           <span className="text-ui-12 text-muted-foreground">{label}</span>
           {showUsage ? (
             <span
               className={cn(
-                "font-heading text-ui-21 font-semibold leading-tight tracking-[-0.02em] tabular-nums",
-                usageValueClass(percentKnown ? safePercent : null),
+                "shrink-0 rounded-full px-2 py-1 font-mono text-ui-12 leading-none font-semibold tabular-nums",
+                percentKnown
+                  ? usagePillClass(safePercent)
+                  : "bg-muted text-muted-foreground",
               )}
             >
               {percentKnown ? formatPercent(safePercent) : "--"}
             </span>
           ) : null}
         </div>
-        <div className="ml-auto flex min-w-0 flex-col items-end gap-0.5 text-right">
-          <span
-            title={value}
-            className="max-w-full truncate text-ui-12 tabular-nums text-foreground"
-          >
-            {value}
+        <span
+          title={value}
+          className={cn(
+            "truncate font-mono text-ui-14 font-medium leading-tight tabular-nums",
+            showUsage
+              ? usageValueClass(percentKnown ? safePercent : null)
+              : "text-foreground",
+          )}
+        >
+          {value}
+        </span>
+        <span
+          title={detail}
+          className="truncate text-ui-11 text-muted-foreground"
+        >
+          {detail}
+        </span>
+        {extraDetail ? (
+          <span className="whitespace-pre-line text-ui-11 text-muted-foreground">
+            {extraDetail}
           </span>
-          <span
-            title={detail}
-            className="max-w-full truncate text-ui-11 text-muted-foreground"
-          >
-            {detail}
-          </span>
-          {extraDetail ? (
-            <span className="whitespace-pre-line text-ui-11 text-muted-foreground">
-              {extraDetail}
-            </span>
-          ) : null}
-        </div>
+        ) : null}
       </div>
       {showUsage && (
         <Progress
@@ -580,7 +579,7 @@ export function ResourcesTab() {
     metrics.diskUsed - modelsDiskGb - cachesDiskGb,
   );
   const cacheValue = (diskGb: number) =>
-    cache.inventory ? formatDiskSize(diskGb) : t("common.loading");
+    cache.inventory ? formatGb(diskGb) : t("common.loading");
   const storageSegments: StorageSegment[] = [
     ...(metrics.modelsDisk && modelsDiskGb === 0
       ? []
@@ -604,14 +603,14 @@ export function ResourcesTab() {
       key: "other",
       label: t("settings.resources.storage.segmentOther"),
       bytes: otherDiskGb,
-      value: formatDiskSize(otherDiskGb),
+      value: formatGb(otherDiskGb),
       color: STORAGE_COLORS.other,
     },
     {
       key: "free",
       label: t("settings.resources.storage.segmentFree"),
       bytes: metrics.diskFree,
-      value: formatDiskSize(metrics.diskFree),
+      value: formatGb(metrics.diskFree),
       color: STORAGE_COLORS.free,
     },
   ];
@@ -719,13 +718,13 @@ export function ResourcesTab() {
           <MetricTile
             label={t("settings.resources.liveMonitor.disk")}
             value={hostReading(
-              `${formatDiskSize(metrics.diskUsed)} / ${formatDiskSize(metrics.diskTotal)}`,
+              `${formatGb(metrics.diskUsed)} / ${formatGb(metrics.diskTotal)}`,
             )}
             detail={
               hostUnread
                 ? hostUnreadDetail
                 : t("settings.resources.liveMonitor.free", {
-                    value: formatDiskSize(metrics.diskFree),
+                    value: formatGb(metrics.diskFree),
                   })
             }
             percent={hostUnread ? null : metrics.diskPercent}
@@ -734,13 +733,13 @@ export function ResourcesTab() {
             <MetricTile
               label={t("settings.resources.liveMonitor.modelsDisk")}
               value={hostReading(
-                `${formatDiskSize(metrics.modelsDiskUsed)} / ${formatDiskSize(metrics.modelsDisk.total_gb)}`,
+                `${formatGb(metrics.modelsDiskUsed)} / ${formatGb(metrics.modelsDisk.total_gb)}`,
               )}
               detail={
                 hostUnread
                   ? hostUnreadDetail
                   : t("settings.resources.liveMonitor.free", {
-                      value: formatDiskSize(metrics.modelsDisk.free_gb),
+                      value: formatGb(metrics.modelsDisk.free_gb),
                     })
               }
               percent={hostUnread ? null : metrics.modelsDiskPercent}
@@ -1171,8 +1170,8 @@ export function ResourcesTab() {
         <StorageOverview
           label={t("settings.resources.storage.systemDisk")}
           heading={t("settings.resources.storage.systemUsed", {
-            used: formatDiskSize(metrics.diskUsed),
-            total: formatDiskSize(metrics.diskTotal),
+            used: formatGb(metrics.diskUsed),
+            total: formatGb(metrics.diskTotal),
           })}
           action={
             <Button
