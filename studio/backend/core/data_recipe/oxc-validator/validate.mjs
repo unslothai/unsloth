@@ -28,6 +28,10 @@ const OXLINT_MIN_TIMEOUT_MS = 1_000;
 const TOOL_DIR = dirname(fileURLToPath(import.meta.url));
 // Lint with the shipped empty config only: never one found next to or above the snippets.
 const OXLINT_CONFIG_PATH = join(TOOL_DIR, "oxlintrc.json");
+// Windows cannot run the extensionless .bin/oxlint shim (spawn only tries .com/.exe there) and
+// refuses the .cmd one without a shell, so run oxlint's bin entry with this Node instead.
+const IS_WINDOWS = process.platform === "win32";
+const OXLINT_ENTRY = join(TOOL_DIR, "node_modules", "oxlint", "bin", "oxlint");
 
 function mapLang(value) {
   const normalized = String(value || "").trim().toLowerCase();
@@ -400,8 +404,11 @@ function runLintBatch(entries, budgetMs) {
       writeFileSync(filePath, entry.code, "utf8");
     }
 
-    const oxlintBin = join(TOOL_DIR, "node_modules", ".bin", "oxlint");
+    const oxlintBin = IS_WINDOWS
+      ? process.execPath
+      : join(TOOL_DIR, "node_modules", ".bin", "oxlint");
     const oxlintArgs = [
+      ...(IS_WINDOWS ? [OXLINT_ENTRY] : []),
       "--config",
       OXLINT_CONFIG_PATH,
       "--disable-nested-config",

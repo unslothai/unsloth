@@ -85,6 +85,24 @@ def test_the_wrapper_kills_oxlint_against_the_remaining_caller_budget():
 
 
 @real_oxlint
+def test_windows_launches_oxlint_through_its_bin_entry():
+    # Windows cannot spawn the extensionless .bin/oxlint shim and refuses the .cmd one without a
+    # shell, so validate.mjs runs the package's own bin entry with Node there.
+    source = validators._OXC_RUNNER_PATH.read_text(encoding = "utf-8")
+    entry = re.search(r"const OXLINT_ENTRY = join\(TOOL_DIR, ([^)]*)\);", source)
+    assert entry, "validate.mjs must name oxlint's bin entry for Windows"
+    parts = [part.strip().strip('"') for part in entry.group(1).split(",")]
+    package_dir = validators._OXC_TOOL_DIR / "node_modules" / "oxlint"
+    package = json.loads((package_dir / "package.json").read_text(encoding = "utf-8"))
+    bin_field = package["bin"]
+    bin_path = bin_field["oxlint"] if isinstance(bin_field, dict) else bin_field
+    assert validators._OXC_TOOL_DIR.joinpath(*parts) == (package_dir / bin_path).resolve(
+        strict = False
+    )
+    assert "process.execPath" in source
+
+
+@real_oxlint
 @pytest.mark.parametrize("depth", [0, 1, 2])
 @pytest.mark.parametrize("config_name", ["oxlint.config.ts", ".oxlintrc.json"])
 def test_oxlint_never_loads_a_config_planted_around_the_snippets(
