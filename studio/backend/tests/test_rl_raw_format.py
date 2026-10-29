@@ -182,6 +182,20 @@ def test_rl_is_refused_for_an_audio_model_without_the_audio_flag(trainer, tmp_pa
     assert "audio models" in (trainer.training_progress.error or "")
 
 
+def test_grpo_is_refused_on_an_audio_dataset_without_the_audio_flag(trainer, tmp_path):
+    # An audio-capable model reads as text-only when the request leaves the audio flag off.
+    path = tmp_path / "grpo.jsonl"
+    path.write_text(
+        json.dumps({"prompt": "q", "answer": "a", "clip": "turn.wav"}) + "\n", encoding = "utf-8"
+    )
+    trainer.is_audio_vlm = False
+    trainer._audio_type = None
+    assert (
+        trainer.load_and_format_dataset(None, local_datasets = [str(path)], objective = "grpo") is None
+    )
+    assert "audio datasets" in (trainer.training_progress.error or "")
+
+
 def test_grpo_still_runs_for_a_vision_model_on_text_data(trainer, tmp_path):
     path = tmp_path / "grpo.jsonl"
     path.write_text(json.dumps({"prompt": "q", "answer": "a"}) + "\n", encoding = "utf-8")
