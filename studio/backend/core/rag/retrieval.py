@@ -156,16 +156,21 @@ def retrieve_hybrid(
     model_name: str | None = None,
     mode: str = "hybrid",
     lexical_query: str | None = None,
+    lexical_k: int | None = None,
+    dense_k: int | None = None,
 ) -> list[Hit]:
-    """lexical_query changes only the FTS5 leg; the dense leg always encodes the natural-language query."""
+    """lexical_query changes only the FTS5 leg; the dense leg always encodes the natural-language query.
+    lexical_k / dense_k size the legs (default TOP_K_LEXICAL / TOP_K_DENSE): fused output never exceeds their sum."""
     k = k if k is not None else config.TOP_K_HYBRID
     k = int(k)  # tool-call / scope top_k may arrive as a float; LIMIT + slice need int
     if mode == "lexical":
         return retrieve_lexical(conn, scope, query, k, match_query = lexical_query)
     if mode == "dense":
         return retrieve_dense(conn, scope, query, k, model_name = model_name)
-    lexical = retrieve_lexical(conn, scope, query, config.TOP_K_LEXICAL, match_query = lexical_query)
-    dense = retrieve_dense(conn, scope, query, config.TOP_K_DENSE, model_name = model_name)
+    lexical = retrieve_lexical(
+        conn, scope, query, lexical_k or config.TOP_K_LEXICAL, match_query = lexical_query
+    )
+    dense = retrieve_dense(conn, scope, query, dense_k or config.TOP_K_DENSE, model_name = model_name)
     return _rrf([lexical, dense], config.RRF_K, k)
 
 
