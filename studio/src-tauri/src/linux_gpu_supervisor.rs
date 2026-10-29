@@ -349,6 +349,8 @@ impl Shared {
     /// The child has its own process group, so both PID-directed and group-directed signals
     /// reach it exactly once through this watcher.
     fn on_interrupt(&self, signal: libc::c_int) {
+        // A following SIGTERM is a repeat even when the first request was INT/HUP/QUIT.
+        self.terminations.fetch_add(1, Ordering::SeqCst);
         let current = self.current.lock().unwrap_or_else(|e| e.into_inner());
         self.stopping.store(true, Ordering::SeqCst);
         if let Some(pid) = current.pid {
