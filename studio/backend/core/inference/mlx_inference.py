@@ -5901,8 +5901,13 @@ class MLXInferenceBackend:
 
         self._model_fusion.close()
         if self._ane_prefill["active"] and self._model is not None:
-            # The Neural Engine worker can hold its last request's program past the model.
-            _ane_prefill_zoo().release_ane_prefill(self._model)
+            # The Neural Engine worker can hold its last request's program past the model; a failed release must not
+            # stop the unload.
+            try:
+                _ane_prefill_zoo().release_ane_prefill(self._model)
+            except Exception as exc:
+                logger.warning("MLX Neural Engine prefill release failed: %s", exc)
+            self._ane_prefill = _ane_prefill_status(False, None)
         if model_name in self.models:
             del self.models[model_name]
         self._speculative_draft = None

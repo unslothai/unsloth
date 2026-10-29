@@ -62,6 +62,7 @@ def _stub_inference_scopes(module):
         call = None,
         *,
         int8_prefill = None,
+        ane_prefill = None,
         on_error = None,
         _modules = None,
     ):
@@ -73,7 +74,13 @@ def _stub_inference_scopes(module):
                     continue
                 if opt_in and opt_in[0] and os.environ.get(opt_in[0]) != "1":
                     continue
-                args = (int8_prefill,) if name == "nax_quantized_linear" else ()
+                args = (
+                    (int8_prefill,)
+                    if name == "nax_quantized_linear"
+                    else (ane_prefill,)
+                    if name == "ane_prefill_mlp"
+                    else ()
+                )
                 try:
                     stack.enter_context(getattr(module, name)(model, *args))
                 except Exception as error:
@@ -5353,6 +5360,16 @@ def test_ane_prefill_is_pinned_inside_int8_released_on_unload_and_reloads_on_cha
         ("ane_exit", active),
         ("int8_exit", False),
     ] + ([("release", None)] if active else [])
+    if active:
+        # A release that raises still finishes the unload.
+        def broken_release(model):
+            raise RuntimeError("ane")
+
+        mlx_inference_patches.release_ane_prefill = broken_release
+        backend._model, backend.models["m"] = object(), {}
+        backend._ane_prefill = mlx_inference._ane_prefill_status(True, backend._model)
+        backend.unload_model("m")
+        assert backend._model is None and not backend._ane_prefill["active"]
     entry = {"mlx_kv_quant_requested": "auto", "mlx_ane_prefill_requested": requested}
     load = lambda on: LoadRequest(model = "m", model_path = "m", mlx_ane_prefill = on)
     be = SimpleNamespace(active_model_name = "m", models = {"m": entry})
