@@ -51,7 +51,7 @@ const lowDetailSelector = (s: { transform: [number, number, number] }) =>
   s.transform[2] < 0.45;
 
 function SuperCardViewImpl({ data }: NodeProps<RfNode>) {
-  const { cardId, title, memberIds, inputs, outputs } =
+  const { cardId, title, color, memberIds, inputs, outputs } =
     data as unknown as SuperCardData;
   const rollup = useRuntimeStore(
     useShallow((s) => rollUpStatus(memberIds.map((id) => s.nodes[id]?.status))),
@@ -79,7 +79,7 @@ function SuperCardViewImpl({ data }: NodeProps<RfNode>) {
     >
       <NodeCardHeader
         icon={Layers01Icon}
-        accent="#8b5cf6"
+        accent={color ?? "#8b5cf6"}
         title={title}
         subtitle={`${steps} ${steps === 1 ? "block" : "blocks"}${progress}`}
       >

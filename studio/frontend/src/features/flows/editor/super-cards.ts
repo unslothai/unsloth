@@ -28,6 +28,8 @@ export interface SuperCard {
 export interface SuperCardData {
   cardId: string;
   title: string;
+  /** The colour of a group folded into the card, if any. */
+  color?: string;
   memberIds: string[];
   /** Frames, notes and reroutes folded in with the blocks, where they sit; they move with the card. */
   folded: { id: string; x: number; y: number }[];
@@ -235,10 +237,15 @@ export function applySuperCards(
     groupCard.set(group, seen === undefined || seen === card ? card : null);
   }
   // Things inside a folded frame fold too (a recipe's notes sit below its blocks).
-  const areas: [string, Box][] = [...boxes];
+  // Folded frames first: a note in a frame belongs to that frame's card even where
+  // another card's blocks overlap it.
+  const areas: [string, Box][] = [];
+  const colors = new Map<string, string>();
   for (const [group, card] of groupCard) {
     if (!card) continue;
     owner.set(GROUP_PREFIX + group, card);
+    const color = graph.groups[group]?.color;
+    if (color && !colors.has(card)) colors.set(card, color);
     const rect = graph.groups[group]?.rect;
     if (rect)
       areas.push([
@@ -251,6 +258,7 @@ export function applySuperCards(
         },
       ]);
   }
+  areas.push(...boxes);
   for (const n of nodes) {
     if (graph.nodes[n.id] || n.id.startsWith(GROUP_PREFIX)) continue;
     const x = n.position.x + (n.measured?.width ?? 0) / 2;
@@ -339,6 +347,7 @@ export function applySuperCards(
     const data: SuperCardData = {
       cardId: card.id,
       title: card.title,
+      color: colors.get(card.id),
       memberIds: card.members,
       folded: nodes.flatMap((n) =>
         owner.get(n.id) === card.id && !graph.nodes[n.id]

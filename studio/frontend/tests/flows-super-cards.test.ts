@@ -150,6 +150,8 @@ test("a closed card shows the wires that cross into it as ports and hides its gr
   };
   assert.deepEqual(data.memberIds, ["tpl", "img"]);
   assert.deepEqual(data.folded, [{ id: "group:g", x: 280, y: -40 }]);
+  // The folded group's colour carries onto the card.
+  assert.equal((card?.data as { color?: string }).color, "#8b5cf6");
   assert.deepEqual(
     data.inputs.map((p) => p.label),
     ["Panel script · Values"],
@@ -404,4 +406,28 @@ test("notes and reroutes drawn among a card's blocks fold with it", () => {
   assert.deepEqual(members?.get("rr1"), { x: 500, y: 100 });
   assert.deepEqual(members?.get("note:n1"), { x: 320, y: 100 });
   assert.equal(out.edges.find((e) => e.id === "w1")?.target, "super:sc1");
+});
+
+test("a note in one card's folded frame stays with that card where another card's blocks overlap it", () => {
+  useDocStore.getState().load(comic());
+  select("tpl", "img");
+  combineSelection();
+  select("view", "raw");
+  combineSelection();
+  const out = view([
+    {
+      id: "note:edge",
+      type: "flowNote",
+      position: { x: 910, y: 100 },
+      data: { noteId: "edge" },
+    },
+  ]);
+  const folded = (id: string) =>
+    (
+      out.nodes.find((n) => n.id === id)?.data as unknown as {
+        folded: { id: string }[];
+      }
+    ).folded.map((f) => f.id);
+  assert.ok(folded("super:sc1").includes("note:edge"));
+  assert.ok(!folded("super:sc2").includes("note:edge"));
 });
