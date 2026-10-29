@@ -23283,9 +23283,8 @@ class LlamaCppBackend:
                 return _dflash_drafter_breaks_on_images(model_path, dflash_draft_path, projector)
 
             _unloadable_mtp_draft_path: Optional[str] = None
-            # Every download runs before the teardown, without the lock, so a failed or cancelled
-            # fetch leaves the resident model serving. Sidecar fetches record their outcome on self,
-            # so the resident server's flags are put back until the teardown commits.
+            # Downloads run before the teardown so a failed or cancelled fetch keeps the resident model;
+            # sidecar fetches write flags on self, so the resident's come back until the teardown commits.
             _resident_sidecar_flags = (
                 self._dspark_sidecar_absent,
                 self._dflash_sidecar_absent,
