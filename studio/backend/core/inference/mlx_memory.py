@@ -55,6 +55,9 @@ _QUANT_SCORE_DTYPE_SIZE = 4
 
 _QUANT_SCORE_LIVE = 1.0
 
+# mlx's unfused attention holds the scores and their softmax at the model's width.
+_UNFUSED_SCORE_LIVE = 2
+
 _WIDTH_NAMES = {"float64": "f64", "float32": "f32", "bfloat16": "bf16", "float16": "f16"}
 
 _CACHE_BOUND_ATTRS = ("max_size", "chunk_size")
@@ -999,7 +1002,42 @@ def _compute_bytes(
             total += _widest_quantized_scores(n_ctx, quant_boundary, prefill_chunk) * score
         else:
             total += max(row * n_ctx, (n_ctx + 1) * score)
+    elif not any(entry.get("bound_spec") for entry in plan) and not _attention_fuses(
+        widths, dtype_size, prefill_chunk
+    ):
+        # Windowed models are skipped: the config's head_dim need not be the full-context layers' width.
+        score = heads * dtype_size * _UNFUSED_SCORE_LIVE
+        total += _widest_quantized_scores(n_ctx, 0, prefill_chunk) * score
     return int(total)
+
+
+def _attention_fuses(widths, dtype_size: int, prefill_chunk: int) -> bool:
+    """Whether mlx fuses a full-width prefill chunk; elsewhere it materializes the scores."""
+    heads, kv_heads, head_dim, value_dim = (*widths[2:], 0, 0, 0, 0)[:4]
+    if not (heads and kv_heads and head_dim):
+        return True
+    try:
+        import mlx.core as mx
+
+        from unsloth_zoo.mlx.attention import fused_kernel_exists
+    except Exception:
+        return True
+    try:
+        dtype = mx.float32 if dtype_size == 4 else mx.bfloat16
+        cached = prefill_chunk + 1
+
+        # zoo reads only shapes and dtypes; a group of one makes the scales the cache's width.
+        def cache(width):
+            scales = mx.zeros((1, kv_heads, cached, width), dtype = dtype)
+            return scales, scales, scales
+
+        queries = mx.zeros((1, heads, prefill_chunk, head_dim), dtype = dtype)
+        return bool(
+            fused_kernel_exists(queries, cache(head_dim), cache(value_dim or head_dim), 1, "causal")
+        )
+    except Exception as exc:
+        logger.debug("MLX estimate cannot route the attention: %s", exc)
+        return True
 
 
 def _load_is_refused(model_dir: str, config: dict, load_in_4bit: bool) -> Optional[str]:
