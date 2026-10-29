@@ -97,7 +97,6 @@ def test_the_device_scope_ends_with_the_block():
 
 
 def test_mover_restores_the_source_weight_and_keeps_the_bias_on_the_host(caplog):
-    # The mover path on a host "device": the bookkeeping is the same as for a card.
     a, b = _dit(), _dit()
     _quant(a)
     log = logging.getLogger("nq-test")
