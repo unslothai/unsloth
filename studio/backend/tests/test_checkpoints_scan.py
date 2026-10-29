@@ -450,7 +450,6 @@ def test_scan_checkpoints_reads_history_once_for_many_fallback_runs(tmp_path, mo
 
     assert {name: metadata["base_model"] for name, _, metadata in models} == expected
     assert len(opened) == 1
-    # Each history row's config is parsed at most once per scan; the run folders' own config.json reads add one each.
     assert len(parsed) <= 12 + len(models)
 
 

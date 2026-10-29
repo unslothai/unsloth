@@ -42,8 +42,6 @@ def _checkpoint_sort_key(checkpoint_path: Path) -> tuple[int, int, str]:
 
 
 class _History:
-    """Run history for one checkpoint listing: one connection, each query run at most once."""
-
     def __init__(self) -> None:
         self._conn = None
         self._dirs: Optional[list] = None
@@ -56,7 +54,6 @@ class _History:
         return self._conn.execute(sql).fetchall()
 
     def dir_rows(self) -> list:
-        """(model_name, output_dir), newest first."""
         if self._dirs is None:
             self._dirs = [
                 (row["model_name"], row["output_dir"])
