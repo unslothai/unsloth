@@ -6910,3 +6910,202 @@ def test_the_checkpoint_discount_removes_only_the_checkpoints():
         without = backend._slots_that_fit_on_gpu(*args, ctx_checkpoints = 0, **kw)
         assert with_ckpts == without
     assert without[1] is False and without[2] < 8
+
+
+# Auto context under the MoE cache: a model no card holds (Flash-Next UD-Q4_K_XL, 111 GB, on a 32 GB card)
+# took the 8192 offload fallback. With --moe-cache-mib auto only the dense part and the KV are on the card.
+_NOFIT_CARD = [(0, 30_000, 32_000)]
+
+
+def _nofit_cache_launch(
+    tmp_path,
+    monkeypatch,
+    *,
+    env = None,
+    ram_gib = 256,
+    moe = True,
+    kv_per_token = 64 * 1024,
+    memory = _NOFIT_CARD,
+    prepare = None,
+    **load_kwargs,
+):
+    monkeypatch.delenv("UNSLOTH_MOE_CACHE_AUTO_CTX", raising = False)
+    for k, v in (env or {}).items():
+        monkeypatch.setenv(k, v)
+    backend, gguf = _moe_backend(tmp_path, size_gib = 100, memory = memory, moe = moe)
+    backend._context_length = 262144
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(ctx) * kv_per_token
+    backend._available_system_memory_mib = lambda: int(ram_gib * 1024)
+    if moe:
+        backend._gguf_tensor_scan = lambda _path: ("qwen3moe", {}, int(95 * _GIB))
+        full_caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+        full_caps.update(_CACHE_CAPS_ON)
+        backend.probe_server_capabilities = lambda _binary = None: full_caps
+    else:
+        backend._gguf_tensor_scan = lambda _path: ("llama", {}, 0)
+    if prepare is not None:
+        prepare(backend)
+    load_kwargs.setdefault("n_ctx", 0)
+    return _launch(backend, gguf, **load_kwargs)["cmd"]
+
+
+def _ctx(cmd):
+    return int(cmd[cmd.index("-c") + 1])
+
+
+def test_auto_context_under_the_moe_cache_is_not_the_offload_fallback(
+    tmp_path, monkeypatch, _moe_cache_host
+):
+    # The share is under the admission band here, so the cache is asked for by name.
+    cmd = _nofit_cache_launch(tmp_path, monkeypatch, env = {"UNSLOTH_MOE_CACHE": "on"})
+    assert _has_moe_cache(cmd), cmd
+    assert 8192 < _ctx(cmd) <= 32768, cmd
+
+
+def test_the_moe_cache_auto_context_kill_switch_keeps_the_fallback(
+    tmp_path, monkeypatch, _moe_cache_host
+):
+    cmd = _nofit_cache_launch(
+        tmp_path, monkeypatch, env = {"UNSLOTH_MOE_CACHE_AUTO_CTX": "0", "UNSLOTH_MOE_CACHE": "on"}
+    )
+    assert _has_moe_cache(cmd), cmd
+    assert _ctx(cmd) == 8192, cmd
+
+
+def test_an_explicit_context_under_the_moe_cache_is_kept(tmp_path, monkeypatch, _moe_cache_host):
+    assert _ctx(_nofit_cache_launch(tmp_path, monkeypatch, n_ctx = 8192)) == 8192
+
+
+def test_the_fit_split_also_gets_the_context_back(tmp_path, monkeypatch, _moe_cache_host):
+    # 64 GiB of RAM cannot hold 95 GiB of experts pinned: no cache, the --fit split. It still
+    # offloads experts first, so the KV stays on the card.
+    cmd = _nofit_cache_launch(tmp_path, monkeypatch, ram_gib = 64)
+    assert not _has_moe_cache(cmd), cmd
+    assert _ctx(cmd) > 8192, cmd
+
+
+def test_a_dense_model_keeps_the_offload_fallback(tmp_path, monkeypatch, _moe_cache_host):
+    assert _ctx(_nofit_cache_launch(tmp_path, monkeypatch, moe = False)) == 8192
+
+
+def test_the_moe_cache_auto_context_stops_where_the_kv_no_longer_fits(
+    tmp_path, monkeypatch, _moe_cache_host
+):
+    # 1 MiB of KV per token: 5 GiB dense + 2 GiB cache floor leave room for well under 32768.
+    cmd = _nofit_cache_launch(tmp_path, monkeypatch, kv_per_token = 1024 * 1024)
+    assert 8192 < _ctx(cmd) < 32768, cmd
+
+
+def test_the_raised_context_prices_the_spill_micro_batch_compute_buffer(
+    tmp_path, monkeypatch, _moe_cache_host
+):
+    # 10 MiB of compute buffer per micro-batch token: 5 GiB at 512, 20 GiB at the spill 2048. The
+    # 5 GiB dense part, 20 GiB of compute and 256 KiB of KV per token fit 30000 MiB only up to
+    # (30000 - 25600) * 4 = 17600 tokens, even with no expert floor.
+    def prepare(backend):
+        backend._estimate_compute_buffer_bytes = lambda n_ubatch = 512, **k: (
+            int(n_ubatch or 512) * 10 * 1024 * 1024
+        )
+        backend._compute_buffer_ctx_bytes = lambda *a, **k: 0
+
+    cmd = _nofit_cache_launch(
+        tmp_path,
+        monkeypatch,
+        env = {"UNSLOTH_MOE_CACHE": "on", "UNSLOTH_MOE_SPILL_UBATCH": "on"},
+        kv_per_token = 256 * 1024,
+        prepare = prepare,
+    )
+    assert _ubatch_values(cmd)[-1:] == ["2048"], cmd
+    assert 8192 <= _ctx(cmd) <= 17600, cmd
+
+
+def test_the_spill_planner_is_priced_at_the_raised_context(tmp_path, monkeypatch, _moe_cache_host):
+    # Smart offload pins its plan with --fit off, so KV it was not told about is unpriced.
+    seen = []
+
+    def prepare(backend):
+        plan = backend._planned_tensor_spill
+
+        def spy(inputs, **kw):
+            seen.append(dict(inputs or {}))
+            return plan(inputs, **kw)
+
+        backend._planned_tensor_spill = spy
+
+    cmd = _nofit_cache_launch(
+        tmp_path,
+        monkeypatch,
+        env = {"UNSLOTH_SMART_OFFLOAD": "1"},
+        ram_gib = 64,
+        kv_per_token = 256 * 1024,
+        prepare = prepare,
+    )
+    assert _ctx(cmd) > 8192, cmd
+    assert seen and seen[-1]["n_ctx"] == _ctx(cmd), (seen, cmd)
+    assert seen[-1]["kv_cache_bytes"] == _ctx(cmd) * 256 * 1024
+
+
+def test_the_drafter_reserve_is_priced_at_the_raised_context(
+    tmp_path, monkeypatch, _moe_cache_host
+):
+    # A DSpark sidecar borrows the target's tensors, so the planner carries its reserve in
+    # --fit-target; 16 KiB of draft KV per token. The spawn reprices it off the argv's -c.
+    priced = []
+
+    def prepare(backend):
+        caps = backend.probe_server_capabilities()
+        caps.update(
+            supports_dspark = True,
+            supports_fit_target = True,
+            supports_fit_ctx = True,
+            spec_draft_n_max_flag = "--spec-draft-n-max",
+        )
+        backend._get_gguf_size_bytes = lambda path: (
+            int(1 * _GIB) if "dspark" in str(path) else int(100 * _GIB)
+        )
+        backend._estimate_mtp_overhead_bytes = lambda n_ctx, **kw: (
+            int(1 * _GIB) + max(0, int(n_ctx)) * 16 * 1024
+        )
+        reserve = backend._sidecar_fit_reserve_mib
+
+        def spy(draft_bytes, *a, **kw):
+            priced.append(int(draft_bytes))
+            return reserve(draft_bytes, *a, **kw)
+
+        backend._sidecar_fit_reserve_mib = spy
+
+    draft = tmp_path / "dspark-model-Q8_0.gguf"
+    draft.write_bytes(b"draft")
+    cmd = _nofit_cache_launch(
+        tmp_path,
+        monkeypatch,
+        prepare = prepare,
+        speculative_type = "dspark",
+        dspark_draft_path = str(draft),
+    )
+    assert _ctx(cmd) > 8192 and "--fit-target" in cmd, cmd
+    # The planner's reserve and the spawn's agree: both at the launched context.
+    assert len(priced) >= 2 and set(priced) == {priced[-1]}, priced
+
+
+def test_a_multi_gpu_host_keeps_the_offload_fallback(tmp_path, monkeypatch, _moe_cache_host):
+    # The expert floor and the KV are priced for one card; a split is left as it was.
+    two = [(0, 30_000, 32_000), (1, 30_000, 32_000)]
+    assert _ctx(_nofit_cache_launch(tmp_path, monkeypatch, memory = two)) == 8192
+
+
+def test_a_shared_memory_igpu_keeps_the_offload_fallback(tmp_path, monkeypatch, _moe_cache_host):
+    # A Vulkan iGPU (total 0) is the host pool itself: the experts and the KV share it.
+    monkeypatch.delenv("UNSLOTH_MOE_CACHE_AUTO_CTX", raising = False)
+    backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, 30_000, 0)])
+    backend._get_gguf_size_bytes = lambda _path: int(100 * _GIB)
+    backend._n_layers = 40
+    backend._n_experts = 256
+    backend._leading_dense_block_count = 0
+    backend._context_length = 262144
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(ctx) * 256 * 1024
+    backend._available_system_memory_mib = lambda: 30_000
+    backend._gguf_tensor_scan = lambda _path: ("qwen3moe", {}, int(95 * _GIB))
+    assert _ctx(_launch(backend, gguf, n_ctx = 0)["cmd"]) == 8192
