@@ -110,8 +110,16 @@ def context_parallel_options(config) -> tuple:
     return size, backend, rotate_method
 
 
-# Their Ulysses forwards (utils/ulysses_deepseek.py) build their own sliding / compressed masks.
-_ULYSSES_OWN_MASK_MODEL_TYPES = ("deepseek_v32", "deepseek_v4")
+# Their Ulysses forwards (utils/ulysses_deepseek.py) build their own sliding / compressed masks, so
+# only these layer types and the window are exempt; chunked attention and softcap still refuse.
+_ULYSSES_OWN_MASK_LAYER_TYPES = {
+    "deepseek_v32": ("deepseek_sparse_attention",),
+    "deepseek_v4": (
+        "sliding_attention",
+        "compressed_sparse_attention",
+        "heavily_compressed_attention",
+    ),
+}
 
 
 def _unsupported_attention(config, backend = "ring") -> Optional[str]:
@@ -124,9 +132,14 @@ def _unsupported_attention(config, backend = "ring") -> Optional[str]:
     for c in configs:
         if c is None:
             continue
-        if backend == "ulysses" and getattr(c, "model_type", None) in _ULYSSES_OWN_MASK_MODEL_TYPES:
-            continue
+        own_mask = (
+            _ULYSSES_OWN_MASK_LAYER_TYPES.get(getattr(c, "model_type", None))
+            if backend == "ulysses"
+            else None
+        )
         layer_types = getattr(c, "layer_types", None)
+        if own_mask and layer_types:
+            layer_types = [t for t in layer_types if t not in own_mask]
         if layer_types and any(t not in allowed for t in layer_types):
             kinds = sorted({t for t in layer_types if t not in allowed})
             hint = (
@@ -137,9 +150,10 @@ def _unsupported_attention(config, backend = "ring") -> Optional[str]:
             return f"{', '.join(kinds)} layers{hint}"
         # Any positive window, even with use_sliding_window off: Unsloth's masks read it directly.
         sliding_window = getattr(c, "sliding_window", None)
-        if (isinstance(sliding_window, int) and sliding_window > 0) or getattr(
-            c, "use_sliding_window", None
-        ) is True:
+        if not own_mask and (
+            (isinstance(sliding_window, int) and sliding_window > 0)
+            or getattr(c, "use_sliding_window", None) is True
+        ):
             return "sliding window attention"
         if getattr(c, "attention_chunk_size", None):
             return "chunked attention"
