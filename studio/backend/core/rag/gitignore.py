@@ -130,6 +130,53 @@ def parse(text: str, base: str) -> list[Rule]:
     return rules
 
 
+class Matcher:
+    """``is_ignored`` compiled once: one regex per run of same-``negate`` rules; last matching run wins."""
+
+    __slots__ = ("_dir_plan", "_file_plan")
+
+    def __init__(self, rules: "tuple[Rule, ...] | list[Rule]"):
+        self._dir_plan = _plan(rules)
+        self._file_plan = _plan([rule for rule in rules if not rule.dir_only])
+
+    def is_ignored(self, rel: str, is_dir: bool) -> bool:
+        for negate, matcher in self._dir_plan if is_dir else self._file_plan:
+            if isinstance(matcher, Rule):
+                if matcher.base:
+                    prefix = matcher.base + "/"
+                    if not rel.startswith(prefix) or not matcher.regex.match(rel[len(prefix) :]):
+                        continue
+                elif not matcher.regex.match(rel):
+                    continue
+            elif not matcher.match(rel):
+                continue
+            return not negate
+        return False
+
+
+def _plan(rules) -> "tuple[tuple[bool, re.Pattern[str] | Rule], ...]":
+    runs: list[tuple[bool, list]] = []
+    for rule in rules:
+        if rule.regex.groupindex:
+            # Named groups (the atomic "*" emulation) would clash inside one regex: kept alone.
+            runs.append((rule.negate, [rule]))
+            continue
+        body = rule.regex.pattern[1:]
+        alternative = re.escape(rule.base + "/") + body if rule.base else body
+        if runs and runs[-1][0] == rule.negate and isinstance(runs[-1][1][0], str):
+            runs[-1][1].append(alternative)
+        else:
+            runs.append((rule.negate, [alternative]))
+    plan = []
+    for negate, members in reversed(runs):
+        if isinstance(members[0], str):
+            body = "(?:" + ")|(?:".join(members) + ")"
+            plan.append((negate, re.compile(f"^(?:{body})", re.DOTALL)))
+        else:
+            plan.append((negate, members[0]))
+    return tuple(plan)
+
+
 def is_ignored(rel: str, is_dir: bool, rules: tuple[Rule, ...]) -> bool:
     """Whether `rel` (posix, relative to the scan root) is ignored; the last matching rule wins."""
     ignored = False

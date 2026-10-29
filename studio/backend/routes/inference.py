@@ -1673,6 +1673,7 @@ try:
         detect_dspark_file,
         detect_mtp_file,
         load_model_defaults,
+        shared_hub_model_info,
     )
     from utils.native_path_leases import (
         NativePathLeaseError,
@@ -1737,6 +1738,7 @@ except ImportError:
         detect_dspark_file,
         detect_mtp_file,
         load_model_defaults,
+        shared_hub_model_info,
     )
     from utils.native_path_leases import (
         NativePathLeaseError,
@@ -18668,6 +18670,12 @@ async def _load_model_impl(
                     account_access.join_resident("chat")
                 if request._advertised_id:
                     backend._openai_advertised_id = request._advertised_id
+                _requires_rc = await asyncio.to_thread(
+                    _resolve_loaded_trust_remote_code,
+                    backend.active_model_name,
+                    _model_info,
+                    inference_config,
+                )
                 return LoadResponse(
                     engine = request.engine,
                     engine_parallelism = request.engine_parallelism,
@@ -18708,9 +18716,7 @@ async def _load_model_impl(
                     chat_template_override = _model_info.get("chat_template_override_requested"),
                     chat_template_override_reason = _model_info.get("chat_template_override_reason"),
                     inference = inference_config,
-                    requires_trust_remote_code = _resolve_loaded_trust_remote_code(
-                        backend.active_model_name, _model_info, inference_config
-                    ),
+                    requires_trust_remote_code = _requires_rc,
                     supports_reasoning = _sf_supports_reasoning,
                     reasoning_style = _sf_reasoning_style,
                     reasoning_effort_levels = _sf_flags.get("reasoning_effort_levels", []),
@@ -18732,7 +18738,7 @@ async def _load_model_impl(
         # Offline guard skips soft-failed network checks before the worker starts; off-loop, as its DNS/HEAD can take seconds.
 
         def _resolve_config():
-            with _hf_offline_if_unreachable_for(model_identifier):
+            with _hf_offline_if_unreachable_for(model_identifier), shared_hub_model_info():
                 return ModelConfig.from_identifier(
                     model_id = model_identifier,
                     hf_token = request.hf_token,
@@ -19503,7 +19509,8 @@ async def _load_model_impl(
         _sf_flags, _ = _sf_rendered_features(backend, _model_info)
 
         # Persist trust_remote_code so a retry/rollback doesn't send false for a custom-code model.
-        _requires_rc = _resolve_loaded_trust_remote_code(
+        _requires_rc = await asyncio.to_thread(
+            _resolve_loaded_trust_remote_code,
             config.identifier,
             None,
             inference_config,
@@ -19887,7 +19894,7 @@ async def validate_model(
         _caller_is_owner = _owner_session(fastapi_request)
 
         def _resolve_config():
-            with _hf_offline_if_unreachable_for(model_identifier):
+            with _hf_offline_if_unreachable_for(model_identifier), shared_hub_model_info():
                 return ModelConfig.from_identifier(
                     model_id = model_identifier,
                     hf_token = request.hf_token,
