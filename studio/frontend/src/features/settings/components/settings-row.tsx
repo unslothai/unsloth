@@ -53,7 +53,6 @@ export function SettingsRow({
             {icon}
           </span>
         ) : null}
-        {/* Every row's text and control share these caps, so descriptions wrap on one line down the page. */}
         <div className="flex min-w-0 w-full max-w-[calc(28rem*var(--ui-space-scale,1))] flex-col gap-0.5">
           <span className="text-sm font-medium text-foreground">
             {label}
