@@ -1031,7 +1031,9 @@ MEDIA_HEADER_ROW = "grid h-full min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(max
 def _media_header_actions(header: str) -> str:
     """The children a page hands MediaHeaderActions, which places them in the row's third column."""
     opened = header.split("<MediaHeaderActions", 1)
-    assert len(opened) == 2, "the media header no longer renders its links through MediaHeaderActions"
+    assert (
+        len(opened) == 2
+    ), "the media header no longer renders its links through MediaHeaderActions"
     children = opened[1].split("</MediaHeaderActions>", 1)
     assert len(children) == 2, "MediaHeaderActions is no longer closed inside the header"
     return children[0]
