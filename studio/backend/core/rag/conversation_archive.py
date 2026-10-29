@@ -2290,6 +2290,26 @@ def recall(
     forced: bool = False,
 ) -> Optional[tuple[str, list[dict]]]:
     """Lexical first, since recall is mostly exact match; no relevance floor, as weak matches beat none."""
+    with retrieval.query_vector_memo():
+        return _recall(
+            thread_id,
+            query,
+            top_k = top_k,
+            branch_messages = branch_messages,
+            extra_queries = extra_queries,
+            forced = forced,
+        )
+
+
+def _recall(
+    thread_id: str,
+    query: str,
+    *,
+    top_k: Optional[int] = None,
+    branch_messages: Optional[list[dict]] = None,
+    extra_queries: Optional[list[str]] = None,
+    forced: bool = False,
+) -> Optional[tuple[str, list[dict]]]:
     query = (query or "").strip()
     if not thread_id or not query or not enabled():
         return None

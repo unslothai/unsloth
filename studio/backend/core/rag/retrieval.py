@@ -6,6 +6,8 @@ kept so callers can apply a similarity floor."""
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import logging
 import sqlite3
 from dataclasses import dataclass
@@ -13,6 +15,23 @@ from dataclasses import dataclass
 from . import config, embeddings, reembed, store
 
 logger = logging.getLogger(__name__)
+
+_query_vectors: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "rag_query_vectors", default = None
+)
+
+
+@contextlib.contextmanager
+def query_vector_memo():
+    """Within the block, each (model, query) is encoded once; a nested entry shares the outer memo."""
+    if _query_vectors.get() is not None:
+        yield
+        return
+    token = _query_vectors.set({})
+    try:
+        yield
+    finally:
+        _query_vectors.reset(token)
 
 
 @dataclass
@@ -58,11 +77,18 @@ def retrieve_dense(
 ) -> list[Hit]:
     k = k or config.TOP_K_DENSE
     effective = model_name or config.effective_embedding_model()
-    # Take identity from the encode, not the process: a concurrent ST failure may have swapped it.
-    vectors, identity = embeddings.encode_with_identity(
-        [query], model_name = effective, normalize = True
-    )
-    vec = vectors[0]
+    memo = _query_vectors.get()
+    key = (effective, query)
+    if memo is not None and key in memo:
+        vec, identity = memo[key]
+    else:
+        # Take identity from the encode, not the process: a concurrent ST failure may have swapped it.
+        vectors, identity = embeddings.encode_with_identity(
+            [query], model_name = effective, normalize = True
+        )
+        vec = vectors[0]
+        if memo is not None:
+            memo[key] = (vec, identity)
     _warn_once_on_untagged(conn)
     try:
         reembed.start_after_backend_change(identity)
