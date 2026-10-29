@@ -1741,6 +1741,11 @@
         "kind": "def",
         "signature": "body: str, p: int, n: int"
       },
+      "_loads_call_object": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
       "_marker_inside_leading_envelope": {
         "decorators": [],
         "kind": "def",
@@ -2342,6 +2347,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "text: str, start: int=0, enabled_tool_names=None"
+      },
+      "_loads_wrapped_call": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
       },
       "_marker_coverage": {
         "decorators": [],

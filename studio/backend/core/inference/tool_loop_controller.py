@@ -648,6 +648,22 @@ def _mcp_tool_search_specs(arguments: Any) -> list:
         return []
 
 
+def _relaxed_arguments(raw_args: str, properties: Any) -> "dict | None":
+    """The object near-JSON arguments spell, kept only when it names a declared argument."""
+    from core.inference.relaxed_json import relaxed_json_object  # noqa: PLC0415 -- failure path only
+
+    repaired = relaxed_json_object(raw_args)
+    if not repaired:
+        return None
+    if (
+        isinstance(properties, Mapping)
+        and properties
+        and not any(k in properties for k in repaired)
+    ):
+        return None
+    return repaired
+
+
 def coerce_tool_arguments(
     raw_args: Any,
     *,
@@ -673,6 +689,13 @@ def coerce_tool_arguments(
             # Must not raise: this runs before the budget gate, so a raise aborts the whole turn.
             pass
         if heal:
+            # Near-JSON (single quotes, a trailing comma, True/None, an object encoded as a string) is the
+            # object it spells; wrapping it whole would run the tool on the call's own source text.
+            repaired = _relaxed_arguments(raw_args, properties)
+            if repaired is not None:
+                return CoercedArguments(
+                    coerce_arguments_by_schema(repaired, properties, repair = heal), True
+                )
             # Text that opens like JSON but fails to parse is a truncated object, not a bare string;
             # wrapping it whole would pass the fragment as the argument value.
             key = (

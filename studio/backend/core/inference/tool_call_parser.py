@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 # Qwen/Hermes, Qwen3.5 XML and Gemma 4 live in core.tool_healing; this module adds the rest
 from core import tool_healing as _tool_healing
+from core.inference.relaxed_json import relaxed_json_object
 
 # Shared with tool_healing so every markerless parse path applies the same guard; wrapped and marker forms are unaffected.
 _markerless_promotable = _tool_healing._markerless_promotable
@@ -2334,6 +2335,15 @@ def parse_tool_calls_from_text(
     )
 
 
+def _loads_call_object(text: str):
+    """A wrapped call's JSON object: strict first; near-JSON a model sampled (single quotes, a trailing comma,
+    True/None, unquoted keys) only when strict fails. None when neither reads it as an object."""
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return relaxed_json_object(text)
+
+
 def _parse_tool_call_json(
     content: str,
     *,
@@ -2349,9 +2359,8 @@ def _parse_tool_call_json(
         # Strict: a body that never closed ``<tool_call>`` is truncated; trailing prose is tolerated.
         if not allow_incomplete and not content[end + 1 :].lstrip().startswith("</tool_call>"):
             continue
-        try:
-            obj = json.loads(content[brace_start : end + 1])
-        except (json.JSONDecodeError, ValueError):
+        obj = _loads_call_object(content[brace_start : end + 1])
+        if not isinstance(obj, dict):
             continue
         name = obj.get("name", "")
         args = obj.get("arguments")
@@ -2619,8 +2628,16 @@ def _parse_llama3_python_tag(
                 try:
                     obj, end_offset = decoder.raw_decode(content[brace:])
                 except (json.JSONDecodeError, ValueError):
-                    cursor = brace + 1
-                    continue
+                    close = _balanced_brace_end(content, brace)
+                    obj = (
+                        relaxed_json_object(content[brace : close + 1])
+                        if close is not None
+                        else None
+                    )
+                    if obj is None:
+                        cursor = brace + 1
+                        continue
+                    end_offset = close + 1 - brace
                 if not isinstance(obj, dict):
                     cursor = brace + end_offset
                     continue
@@ -2781,7 +2798,7 @@ def _parse_mistral_tool_calls(
         end = _balanced_brace_end(content, k)
         if end is not None:
             try:
-                obj = json.loads(content[k : end + 1])
+                obj = _loads_call_object(content[k : end + 1])
                 if isinstance(obj, dict) and obj.get("name"):
                     _consume_mistral_call(content[k : end + 1], out, id_offset)
                     return out
@@ -2809,11 +2826,7 @@ def _parse_mistral_tool_calls(
         end = _balanced_brace_end(content, after_name)
         if end is None:
             break
-        try:
-            args = json.loads(content[after_name : end + 1])
-        except (json.JSONDecodeError, ValueError):
-            pos = content.find(_MISTRAL_TRIGGER, end + 1)
-            continue
+        args = _loads_call_object(content[after_name : end + 1])
         if not isinstance(args, dict):
             pos = content.find(_MISTRAL_TRIGGER, end + 1)
             continue
@@ -2894,10 +2907,7 @@ def _parse_mistral_array(
 
 
 def _consume_mistral_call(obj_text: str, out: list[dict], id_offset: int) -> None:
-    try:
-        obj = json.loads(obj_text)
-    except (json.JSONDecodeError, ValueError):
-        return
+    obj = _loads_call_object(obj_text)
     if not isinstance(obj, dict):
         return
     name = obj.get("name") or ""
@@ -3710,11 +3720,7 @@ def _parse_deepseek_tool_calls(
         brace_end = _balanced_brace_end(body, json_start)
         if brace_end is None:
             break
-        try:
-            args = json.loads(body[json_start : brace_end + 1])
-        except (json.JSONDecodeError, ValueError):
-            pos = brace_end + 1
-            continue
+        args = _loads_call_object(body[json_start : brace_end + 1])
         if not isinstance(args, dict):
             pos = brace_end + 1
             continue
@@ -3767,11 +3773,7 @@ def _parse_deepseek_tool_calls(
             if not body.startswith(_DEEPSEEK_CALL_END, after):
                 pos = brace_end + 1
                 continue
-        try:
-            args = json.loads(body[json_start : brace_end + 1])
-        except (json.JSONDecodeError, ValueError):
-            pos = brace_end + 1
-            continue
+        args = _loads_call_object(body[json_start : brace_end + 1])
         if not isinstance(args, dict):
             pos = brace_end + 1
             continue
@@ -3980,11 +3982,7 @@ def _parse_kimi_section_body(
                 break
             pos = nxt
             continue
-        try:
-            args = json.loads(body[json_start : brace_end + 1])
-        except (json.JSONDecodeError, ValueError):
-            pos = brace_end + 1
-            continue
+        args = _loads_call_object(body[json_start : brace_end + 1])
         if not isinstance(args, dict):
             pos = brace_end + 1
             continue
