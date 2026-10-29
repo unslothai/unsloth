@@ -425,7 +425,9 @@ def test_a_recipe_with_mcp_servers_needs_the_flows_mcp_approval():
 
     jobs: list = []
     ctx = _Ctx(_routes(jobs), params = {RECIPE_PARAM: _compiled(doc), "mode": "preview", "rows": 2})
-    ctx.refuse["mcp"] = "Recipe Dataset only runs when the Studio owner starts this flow in Unsloth Studio"
+    ctx.refuse["mcp"] = (
+        "Recipe Dataset only runs when the Studio owner starts this flow in Unsloth Studio"
+    )
     with pytest.raises(FlowNodeError, match = "Studio owner"):
         asyncio.run(data.recipe_group(ctx))
     assert jobs == [], "no job starts without the approval"
