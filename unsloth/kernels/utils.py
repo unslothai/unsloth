@@ -1498,11 +1498,13 @@ def _quant_state_dtype(quant_state):
 
 # Max GEMV decode rows per compute capability, from end-to-end decode A/Bs (#2798). Fixed, not timed, so
 # decoding is reproducible; others dequantize. UNSLOTH_GEMV_MAX_ROWS overrides where the Triton GEMV runs.
-# T4 stops at 3: on Colab T4 eager decode (Qwen3-4B, Llama-3.2-3B bnb-4bit), batch 4 runs 15-30% faster
-# through the bitsandbytes gemm_4bit below with per-token NLL as close to an fp32 reference, while batch 2
-# runs ~40% slower there (host bound) and batch 3 is a tie.
-_GEMV_ROWS_BY_ARCH = {(7, 5): 3, (8, 0): 2, (8, 9): 4, (12, 0): 4}
+_GEMV_ROWS_BY_ARCH = {(7, 5): 4, (8, 0): 2, (8, 9): 4, (12, 0): 4}
 _GEMV_ROWS_CAP = {}
+# Rows from which the bitsandbytes gemm_4bit below takes over from the GEMV wherever it applies. On Colab T4
+# eager decode (Qwen3-4B, Llama-3.2-3B bnb-4bit) batch 4 runs 13-30% faster there with per-token NLL as
+# close to an fp32 reference, while batch 2 runs ~40% slower (host bound) and batch 3 is a tie.
+_GEMV_ROWS_BNB_FROM_BY_ARCH = {(7, 5): 4}
+_GEMV_ROWS_BNB_FROM = {}
 
 
 def _gemv_rows_cap(device):
@@ -1511,6 +1513,7 @@ def _gemv_rows_cap(device):
     if cap is None:
         if "UNSLOTH_GEMV_MAX_ROWS" in os.environ:
             cap = _GEMV_MAX_ROWS
+            bnb_from = cap + 1
         else:
             try:
                 # ROCm reports gfx versions here (gfx1200 is (12, 0)), so the table is CUDA only.
@@ -1518,6 +1521,8 @@ def _gemv_rows_cap(device):
             except Exception:
                 arch = None
             cap = min(_GEMV_MAX_ROWS, _GEMV_ROWS_BY_ARCH.get(arch, 1))
+            bnb_from = _GEMV_ROWS_BNB_FROM_BY_ARCH.get(arch, cap + 1)
+        _GEMV_ROWS_BNB_FROM[index] = bnb_from
         _GEMV_ROWS_CAP[index] = cap
     return cap
 
@@ -1592,6 +1597,13 @@ def _gemv_rows(X, W, quant_state, out):
     M = X.shape[0]
     # First, so rows above the cap cost the dequantize path nothing.
     if not 2 <= M <= _gemv_rows_cap(X.device) or W.device != X.device:
+        return None
+    # Only where the bitsandbytes branch will run; compiled graphs keep the GEMV.
+    if (
+        not _is_compiling()
+        and M >= _GEMV_ROWS_BNB_FROM.get(X.device.index, M + 1)
+        and _bnb_gemm_4bit_ok(X, W, quant_state)
+    ):
         return None
     eager = (
         not _is_compiling()
