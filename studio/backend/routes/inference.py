@@ -15910,6 +15910,8 @@ async def _preflight_native_audio_placement(
             load_in_4bit = False,
             max_seq_length = request.max_seq_length,
             required_override_gb = required_gb,
+            # One card: past it, fallback_all lets the branch below weigh every card after the handoff.
+            max_gpus = 1,
         )
         post_handoff_free_gb = None
         if required_gb is None:
