@@ -370,7 +370,6 @@ def trained_system_prompt(config: dict) -> str:
 
 def _hub_revision(dataset: dict, token: Any) -> Optional[str]:
     from huggingface_hub import HfApi
-
     return HfApi().dataset_info(str(dataset["ref"]), token = token).sha
 
 

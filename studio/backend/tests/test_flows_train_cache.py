@@ -62,7 +62,10 @@ def _flow(prompt = "q1", **tune):
             node("tune", "train.finetune", base_model = "unsloth/Qwen3-0.6B", **tune),
             node("chat", "train.chat_checkpoint", prompt = prompt),
         ],
-        [edge("data", "dataset", "tune", "dataset"), edge("tune", "checkpoint", "chat", "checkpoint")],
+        [
+            edge("data", "dataset", "tune", "dataset"),
+            edge("tune", "checkpoint", "chat", "checkpoint"),
+        ],
     )
 
 

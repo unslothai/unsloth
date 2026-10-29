@@ -729,7 +729,11 @@ def test_chat_with_checkpoint_asks_with_the_trained_system_prompt(monkeypatch):
     def chat(**params):
         ctx = _Ctx(lambda m, p, q, b: {})
         ctx.inputs = {
-            "checkpoint": {"kind": "checkpoint", "name": "run-1", "system_prompt": "Answer in SQL."},
+            "checkpoint": {
+                "kind": "checkpoint",
+                "name": "run-1",
+                "system_prompt": "Answer in SQL.",
+            },
             "prompt": "list users",
         }
         ctx.params = {"max_tokens": 8, **params}
@@ -750,6 +754,15 @@ def test_chat_with_checkpoint_asks_with_the_trained_system_prompt(monkeypatch):
 def test_the_checkpoint_carries_the_one_system_prompt_training_used():
     grpo = {"objective": "grpo", "rl_system_prompt": "Use <answer> tags."}
     assert training.trained_system_prompt(grpo) == "Use <answer> tags."
-    sft = {"custom_format_mapping": {"q": "user", "a": "assistant", "__system_prompt": " Answer in SQL. "}}
+    sft = {
+        "custom_format_mapping": {
+            "q": "user",
+            "a": "assistant",
+            "__system_prompt": " Answer in SQL. ",
+        }
+    }
     assert training.trained_system_prompt(sft) == "Answer in SQL."
-    assert training.trained_system_prompt({"custom_format_mapping": {"s": "system", "q": "user"}}) == ""
+    assert (
+        training.trained_system_prompt({"custom_format_mapping": {"s": "system", "q": "user"}})
+        == ""
+    )
