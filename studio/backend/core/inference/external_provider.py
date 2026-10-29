@@ -795,7 +795,7 @@ def _apply_minimax_reasoning_controls(
     enable_thinking: Optional[bool],
     reasoning_effort: Optional[str],
 ) -> None:
-    """M3.1-Flash takes reasoning_effort and 400s on thinking off; M3 can turn thinking off; M2.x always thinks."""
+    """M3.1-Flash 400s on thinking off; M3 can disable it; M2.x always thinks."""
     body["reasoning_split"] = True
     normalized = model.strip().lower()
     if normalized.startswith("minimax-m3.1"):
@@ -1782,7 +1782,7 @@ class ExternalProviderClient:
         if stream and self.provider_type in _USAGE_STREAM_OPTION_PROVIDERS:
             body["stream_options"] = {"include_usage": True}
         if max_tokens is not None:
-            # Newer OpenAI models (gpt-4o, gpt-5.x) reject max_tokens; MiniMax counts thinking against max_tokens.
+            # Newer OpenAI models reject max_tokens; MiniMax counts thinking against it.
             if self.provider_type in ("openai", "minimax"):
                 body["max_completion_tokens"] = max_tokens
             else:

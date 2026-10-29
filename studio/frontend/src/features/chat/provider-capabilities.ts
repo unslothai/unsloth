@@ -655,7 +655,7 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   },
   qwen: OPENAI_COMPAT_BASE,
   zai: { ...OPENAI_COMPAT_BASE, presencePenalty: false },
-  // MiniMax pins temperature/top_p server-side; the backend omits them too.
+  // Fixed server-side; the backend omits them too.
   minimax: {
     temperature: false,
     topP: false,
@@ -926,7 +926,6 @@ function withReasoningEffortStyle(caps: ReasoningCaps): ExternalReasoningCapabil
   };
 }
 
-// M3.1-Flash always thinks with a tunable depth; M3 can turn thinking off; M2.x always thinks.
 function resolveMiniMaxReasoningCapabilities(modelId: string): ExternalReasoningCapabilities {
   if (modelId.startsWith("minimax-m3.1")) {
     return withReasoningEffortStyle({
