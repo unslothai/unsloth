@@ -88,7 +88,11 @@ def doc_needs(doc: dict) -> dict:
         if node.get("type") == GENERATE_TYPE and not node.get("disabled")
     }
     for group in doc.get("groups") or []:
-        if group.get("kind") == "recipe" and group.get("id") in running and uses_mcp(group.get("config")):
+        if (
+            group.get("kind") == "recipe"
+            and group.get("id") in running
+            and uses_mcp(group.get("config"))
+        ):
             need["mcp"] = True
     return need
 
