@@ -59,13 +59,12 @@ def _plan(sql, args = ()):
 
 def test_resumed_later_subquery_searches_the_index(db):
     plan = _plan(_EXISTS)
-    assert f"SEARCH newer USING INDEX {_INDEX}" in plan
+    # SQLite >= 3.53 prints "SEARCH newer EXISTS USING INDEX".
+    assert "SEARCH newer" in plan and f"USING INDEX {_INDEX}" in plan
     assert "SCAN newer" not in plan
 
 
 def test_other_training_run_queries_keep_their_plans(db):
-    # Partial index: queries without the subquery's status list cannot use it, so their row order
-    # on equal started_at is what it was.
     for sql, args in (
         ("SELECT * FROM training_runs WHERE output_dir = ? ORDER BY started_at DESC", ("x",)),
         (

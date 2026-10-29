@@ -381,9 +381,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_run_id ON training_metrics(run_id)")
-    # The history's "resumed later" check looks for a newer run in the same output dir per row, a
-    # full scan per row without this. Partial on that check's exact status list, so only that
-    # subquery can use it: every other training_runs query keeps its plan and its order on ties.
+    # Partial on the resumed_later subquery's exact status list so no other query (or its tie order) changes plan.
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_training_runs_resumed_later "
         "ON training_runs(output_dir, started_at) "
