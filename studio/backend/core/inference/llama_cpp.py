@@ -3077,6 +3077,19 @@ def _note_gguf_metadata_read(gguf_path: str) -> bool:
         return True
 
 
+# ``{%- set clear_thinking = clear_thinking if clear_thinking is defined else false -%}``
+_KEEPS_REPLAYED_REASONING_RE = re.compile(
+    r"set\s+clear_thinking\s*=\s*clear_thinking\s+if\s+clear_thinking\s+is\s+defined\s+else\s+false\b"
+)
+
+
+def template_replays_reasoning_by_default(chat_template: Optional[str]) -> bool:
+    """GLM-5.x: ``clear_thinking`` defaults to false, so the template renders every replayed turn's
+    reasoning. Only the Claude Desktop gateway acts on this (it keeps that reasoning in history so
+    llama-server can reuse its prompt cache); other clients keep the upstream default."""
+    return bool(chat_template and _KEEPS_REPLAYED_REASONING_RE.search(chat_template))
+
+
 def detect_reasoning_flags(
     chat_template: Optional[str],
     model_identifier: Optional[str] = None,
@@ -4555,6 +4568,23 @@ def _strip_flag_pairs(args: Iterable[str], flags: frozenset[str]) -> list[str]:
 # common_params defaults in the bundled llama.cpp runtime.
 _DEFAULT_LLAMA_N_BATCH = 2048
 _DEFAULT_LLAMA_N_UBATCH = 512
+_ENV_DEFAULT_N_BATCH = "UNSLOTH_LLAMA_DEFAULT_N_BATCH"
+_ENV_DEFAULT_N_UBATCH = "UNSLOTH_LLAMA_DEFAULT_N_UBATCH"
+
+
+def _env_positive_int(name: str) -> Optional[int]:
+    """Positive int from env ``name`` (clamped to 65536), or None when unset/invalid."""
+    raw = os.environ.get(name, "").strip()
+    if not raw.isdigit() or int(raw) < 1:
+        return None
+    return min(int(raw), 65536)
+
+
+def _launcher_batch_default(value: Optional[int], env_name: str) -> Optional[int]:
+    """Per-load ``value`` when set, else the opt-in env default (or None)."""
+    return value if value is not None else _env_positive_int(env_name)
+
+
 # Non-causal image decoding needs one image chunk per micro-batch; limits from clip.cpp.
 _MMPROJ_NON_CAUSAL_IMAGE_TOKENS = {
     "gemma4v": 1120,
@@ -8908,6 +8938,11 @@ class LlamaCppBackend:
     @property
     def preserve_thinking_default(self) -> bool:
         return self._preserve_thinking_default
+
+    @property
+    def replays_reasoning_by_default(self) -> bool:
+        """The loaded template renders replayed reasoning unless told not to (GLM-5.x)."""
+        return template_replays_reasoning_by_default(getattr(self, "_chat_template", None))
 
     @property
     def reasoning_default(self) -> bool:
@@ -13364,6 +13399,7 @@ class LlamaCppBackend:
         over a static ceiling: available is a snapshot, and llama-server spends
         seconds loading weights, so another app can take memory inside that
         window. Budgeting all of it would re-create the failure this avoids.
+
         """
         from utils.hardware import is_apple_silicon
 
@@ -28081,6 +28117,10 @@ class LlamaCppBackend:
                 if self.is_embedding_gguf:
                     cmd.append("--embedding")
 
+                # Opt-in env defaults for -b / -ub when the load leaves them unset;
+                # per-load fields and pass-through extras still win.
+                n_batch = _launcher_batch_default(n_batch, _ENV_DEFAULT_N_BATCH)
+                n_ubatch = _launcher_batch_default(n_ubatch, _ENV_DEFAULT_N_UBATCH)
                 # emitted before user extras so a pass-through -b / -ub still last-wins-overrides
                 if n_batch is not None:
                     # -b < --parallel and -b 1 both GGML_ASSERT, so the batch floor is max(slots, 2).

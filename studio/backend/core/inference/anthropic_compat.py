@@ -147,11 +147,31 @@ def _tool_error_content(content: Union[str, list]) -> Union[str, list]:
     return content if content.startswith("Error:") else f"Error: {content}"
 
 
+_BILLING_HEADER_PREFIX = "x-anthropic-billing-header:"
+
+
+def _without_billing_header(text: str) -> str:
+    """Drop Claude Code's ``x-anthropic-billing-header: cc_version=…; cch=…;`` system line.
+
+    It is accounting for Anthropic's API, not instructions, and its ``cch`` hash changes on every
+    request. Templates render tools before the system text, so keeping it made each prompt differ
+    from the previous one right after the tool list and llama-server re-prefilled everything after it
+    (tens of thousands of tokens per Claude Desktop message).
+    """
+    if _BILLING_HEADER_PREFIX not in text:
+        return text
+    kept = [
+        line for line in text.split("\n") if not line.lstrip().startswith(_BILLING_HEADER_PREFIX)
+    ]
+    return "\n".join(kept).strip("\n")
+
+
 def anthropic_messages_to_openai(
     messages: list[dict],
     system: Optional[Union[str, list]] = None,
     preserve_thinking: bool = False,
     tool_result_images: bool = True,
+    strip_billing_header: bool = False,
 ) -> list[dict]:
     """Convert Anthropic messages + system to OpenAI-format message dicts.
 
@@ -172,7 +192,10 @@ def anthropic_messages_to_openai(
 
     if system:
         if isinstance(system, str):
-            result.append({"role": "system", "content": system})
+            if strip_billing_header:
+                system = _without_billing_header(system)
+            if system:
+                result.append({"role": "system", "content": system})
         elif isinstance(system, list):
             parts = []
             for block in system:
@@ -180,6 +203,8 @@ def anthropic_messages_to_openai(
                     parts.append(block["text"])
                 elif isinstance(block, str):
                     parts.append(block)
+            if strip_billing_header:
+                parts = [text for text in map(_without_billing_header, parts) if text]
             if parts:
                 result.append({"role": "system", "content": "\n".join(parts)})
 
