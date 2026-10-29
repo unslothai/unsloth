@@ -59,7 +59,7 @@ def _f32(vector) -> bytes:
         and vector.dtype.isnative
         and not np.isnan(vector).any()
     ):
-        # A float32 survives the float round trip exactly (NaN payloads aside), so its buffer is the packed bytes.
+        # float32 -> float -> 'f' is exact, so the buffer is the packed bytes; NaN keeps the struct path.
         return vector.tobytes()
     return struct.pack(f"{len(vector)}f", *(float(x) for x in vector))
 
@@ -827,7 +827,6 @@ def _search_dense(conn: sqlite3.Connection, scope, vector, k: int, embedding_mod
     kept: dict[str, list[tuple[str, float]]] = {}
     fetches = dict.fromkeys(scopes, max(k * 3, k + 10))
     pending = list(scopes)
-    # Packed once: every scope and widening pass binds the same query bytes.
     query = _f32(vector) if pending else b""
     while pending:
         widen: list[str] = []

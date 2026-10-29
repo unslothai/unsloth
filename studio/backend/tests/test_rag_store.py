@@ -596,8 +596,7 @@ def test_a_legacy_archive_still_gets_two_different_ends(rag_home, rag_conn):
 
 
 def test_dense_packs_float32_rows_without_struct_and_the_query_once(rag_conn, monkeypatch):
-    """An ST embedder hands float32 numpy rows: their buffer is the packed vector, and the
-    query bytes are the same for every scope, so packing per scope is wasted work."""
+    """float32 numpy rows store their buffer; a multi-scope query packs once."""
     np = pytest.importorskip("numpy")
     texts = ["alpha alpha", "hotel golf", "alpha bravo"]
     for i, scope in enumerate(("kb_a", "kb_b", "kb_c")):
@@ -619,5 +618,4 @@ def test_dense_packs_float32_rows_without_struct_and_the_query_once(rag_conn, mo
     ranked = store.search_dense(rag_conn, ["kb_a", "kb_b", "kb_c"], query, 9)
     as_list = store.search_dense(rag_conn, ["kb_a", "kb_b", "kb_c"], query.tolist(), 9)
     assert ranked == as_list and ranked[0][1] > 0.99
-    # The list query packs once for all three scopes; the float32 row never reaches struct.
     assert len(packs) == 1
