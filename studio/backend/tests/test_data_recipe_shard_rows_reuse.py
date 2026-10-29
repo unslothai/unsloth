@@ -25,7 +25,6 @@ duckdb = pytest.importorskip("duckdb")
 
 @pytest.fixture
 def metadata_queries(monkeypatch):
-    """Counts footer metadata queries across every connection the reader opens."""
     calls = []
     real_connect = duckdb.connect
 
@@ -49,7 +48,7 @@ def metadata_queries(monkeypatch):
 
 
 def _settle(monkeypatch):
-    # Files written by the test are seconds old at most; treat every stat as settled.
+    # Test files are seconds old; treat every stat as settled.
     monkeypatch.setattr(manager_module, "_SHARD_ROWS_SETTLE_NS", 0, raising = False)
 
 
@@ -102,26 +101,22 @@ def test_pages_follow_every_shard_change(tmp_path, metadata_queries, monkeypatch
         _write(tmp_path, i, range(i * 5, i * 5 + 5))
     assert _page(tmp_path, offset, limit) == _fresh_page(tmp_path, offset, limit)
 
-    # A batch landing mid run.
     _write(tmp_path, 3, range(15, 22))
     assert _page(tmp_path, offset, limit) == _fresh_page(tmp_path, offset, limit)
     assert _page(tmp_path, offset, limit)["total"] == 22
 
-    # A shard rewritten in place at the same size with other values.
     path = tmp_path / "batch_file_00001.parquet"
     size = path.stat().st_size
     _write(tmp_path, 1, [9, 8, 7, 6, 5])
     assert path.stat().st_size == size
     assert _page(tmp_path, offset, limit) == _fresh_page(tmp_path, offset, limit)
 
-    # A shard rewritten with more rows, mtime pinned back to the old value.
     stat = path.stat()
     _write(tmp_path, 1, range(200, 209))
     os.utime(path, ns = (stat.st_atime_ns, stat.st_mtime_ns))
     assert _page(tmp_path, offset, limit) == _fresh_page(tmp_path, offset, limit)
     assert _page(tmp_path, offset, limit)["total"] == 26
 
-    # A shard deleted, then a dot-prefixed one DuckDB's glob also matches.
     (tmp_path / "batch_file_00000.parquet").unlink()
     assert _page(tmp_path, offset, limit) == _fresh_page(tmp_path, offset, limit)
     pd.DataFrame({"a": [-1], "text": ["dot"]}).to_parquet(tmp_path / "._x.parquet", index = False)
@@ -140,7 +135,7 @@ def test_emptied_dir_is_not_served_from_cache(tmp_path, metadata_queries, monkey
 def test_added_shard_is_seen_when_the_dir_stamps_do_not_move(
     tmp_path, metadata_queries, monkeypatch
 ):
-    # FAT on Windows, for one, leaves a directory's mtime alone when an entry is added.
+    # FAT leaves a directory's mtime alone when an entry is added.
     _settle(monkeypatch)
     real_stat_key = manager_module._stat_key
 
