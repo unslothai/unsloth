@@ -1285,7 +1285,10 @@ class MultiLoraExperts(nn.Module):
         slot = torch.where(adapter_ids < 0, U, adapter_ids).to(index.device).unsqueeze(1)
         key = (torch.where(valid, index, 0) * Ug + torch.where(valid, slot, U)).reshape(-1)
         order = torch.argsort(key, stable = True)
-        offs_pair = torch.cumsum(torch.bincount(key, minlength = E * Ug), 0).to(torch.int32)
+        # Fixed-size counts: bincount's output size depends on the data, so it syncs on CUDA and breaks a compiled graph.
+        counts = torch.zeros(E * Ug, dtype = torch.int32, device = key.device)
+        counts.scatter_add_(0, key, torch.ones_like(key, dtype = torch.int32))
+        offs_pair = torch.cumsum(counts, 0, dtype = torch.int32)
         offs_expert = offs_pair.view(E, Ug)[:, -1].contiguous()
         with torch.autocast(device_type = hidden_states.device.type, enabled = False):
             x = torch.where(

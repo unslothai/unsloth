@@ -276,6 +276,8 @@ def test_input_major_grouped_mm_experts_match_their_lone_peft_run(
 
 @pytest.mark.parametrize("mode", MODES)
 def test_autocast_matches_the_lone_run(base, monkeypatch, mode):
+    if DEVICE == "cuda" and not torch.cuda.is_bf16_supported(including_emulation = False):
+        pytest.skip("no bfloat16 autocast on this GPU")
     _use_mode(monkeypatch, mode)
     model, _ = _batched(base)
     ids = _ids()
@@ -643,12 +645,15 @@ def test_grouped_under_torch_compile(monkeypatch, dtype):
     _need_grouped(dtype)
     monkeypatch.delenv("UNSLOTH_MULTI_LORA_MOE_GROUPED", raising = False)
     T, k, E = 16, 2, 5
-    ids = torch.tensor([0, 1, 2, -1] * 4)
-    experts = _wrapped(_StaticExperts(E, H = 24, I = 16).to(dtype), RANKS, ALPHAS, False, ids)
+    ids = torch.tensor([0, 1, 2, -1] * 4, device = DEVICE)
+    experts = _wrapped(_StaticExperts(E, H = 24, I = 16).to(DEVICE, dtype), RANKS, ALPHAS, False, ids)
     index, weights = _routes(T, k, E)
     index[0, -1] = 0
+    index, weights = index.to(DEVICE), weights.to(DEVICE)
     hidden = (
-        torch.randn(T, 24, generator = torch.Generator().manual_seed(2)).to(dtype).requires_grad_()
+        torch.randn(T, 24, generator = torch.Generator().manual_seed(2))
+        .to(DEVICE, dtype)
+        .requires_grad_()
     )
     weights = weights.to(dtype)
     eager = experts(hidden, index, weights)
