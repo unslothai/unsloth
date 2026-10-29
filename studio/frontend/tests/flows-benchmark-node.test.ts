@@ -43,6 +43,7 @@ test("Benchmark keeps task, scorer, rows and model up front and scores into thre
     inputs.map((p: { id: string; type: string; optional: boolean }) => [p.id, p.type, p.optional]),
     [
       ["checkpoint", "checkpoint", true],
+      ["model", "model", true],
       ["dataset", "dataset", true],
     ],
   );

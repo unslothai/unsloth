@@ -1670,9 +1670,11 @@ NODE_SPECS: list[dict] = [
         "train.benchmark",
         "Benchmark",
         "data",
-        "Score a checkpoint or a model on held-out rows or an lm-eval task. Runs also show on the Benchmarks Evals tab.",
+        "Score a checkpoint or a model on held-out rows or an lm-eval task. lm-eval tasks score a GGUF: wire "
+        "Fine-tune into Export Model (GGUF) and Export Model into Model. Runs also show on the Benchmarks Evals tab.",
         inputs = [
             inp("checkpoint", "checkpoint", "Checkpoint", optional = True),
+            inp("model", "model", "Model", optional = True),
             inp("dataset", "dataset", "Rows to score", optional = True),
         ],
         outputs = [
