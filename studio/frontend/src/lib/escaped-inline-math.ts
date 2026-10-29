@@ -481,14 +481,7 @@ function escapedMathRanges(markdown: string): EscapedMathRange[] {
   return ranges.sort((left, right) => left.start - right.start);
 }
 
-/**
- * False only when no escaped math node can exist, so the parse can be skipped. The tokenizer's body
- * is the raw text between an opening `\$` and the first closing one with no brace left open, on
- * one line, at most MAX_BODY_LENGTH long, and must pass looksLikeEscapedInlineMath; currency
- * masking only rewrites a `$` with no backslash before it, which no classifier pattern reads.
- * Every such pair is tried, so this is a superset;
- * past PAIR_BUDGET pairs it answers true and the parse decides, as before.
- */
+/** False only when no `\$` pair can tokenize as math; past PAIR_BUDGET pairs it defers to the parse. */
 export function mayHoldEscapedInlineMath(markdown: string): boolean {
   const budget = { pairs: PAIR_BUDGET };
   for (

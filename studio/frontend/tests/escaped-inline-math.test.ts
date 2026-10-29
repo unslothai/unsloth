@@ -301,7 +301,6 @@ test("escaped currency with no math pair skips the parse, every rewrite still ru
     assert.notEqual(normalizeEscapedInlineMath(markdown), markdown, markdown);
     assert.equal(mayHoldEscapedInlineMath(markdown), true, markdown);
   }
-  // A body over the tokenizer's length cap, or broken by a line ending, cannot be math.
   assert.equal(mayHoldEscapedInlineMath(`\\$${"x_".repeat(101)}\\$`), false);
   assert.equal(mayHoldEscapedInlineMath("\\$x\n\\$"), false);
 });
