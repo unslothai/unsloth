@@ -494,3 +494,31 @@ def test_every_setting_reaches_a_valid_training_request():
                      eval_steps = 0.05, early_stopping_patience = 2, random_seed = 7)
     TrainingStartRequest.model_validate(body)
     TrainingStartRequest.model_validate(_hub_body(objective = "grpo", epsilon_high = 0.28, max_prompt_length = 64))
+
+
+def test_hub_eval_split_survives_the_hold_out(monkeypatch):
+    monkeypatch.setattr("hub.utils.host_paths.cache_reference", lambda p: f"cache:{p}")
+    monkeypatch.setattr("core.training.account_jobs.managed_account", lambda: False)
+    splits = []
+
+    def load_rows(dataset, token, end):
+        splits.append(dataset.get("split"))
+        return ROWS if dataset.get("split") == "train" else ROWS[:5]
+
+    monkeypatch.setattr(training, "_load_rows", load_rows)
+    started = []
+    ctx = _Ctx(_recipe_routes(started), holdout_percent = 10, eval_split = "test", eval_steps = 0.1)
+    ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/data", "split": "train"}}
+    with pytest.raises(RuntimeError, match = "started"):
+        asyncio.run(training.finetune(ctx))
+    assert splits == ["train", "test"]
+    evals = next(rows for name, rows in _uploads(ctx).items() if name.endswith("-test-eval.jsonl"))
+    assert len(evals) == 5 and len(started[0]["local_eval_datasets"]) == 1
+
+
+def test_one_column_for_two_rl_roles_is_refused():
+    with pytest.raises(FlowNodeError, match = "own column"):
+        training.rl_roles({"prompt_column": "q", "answer_column": "q"}, "grpo")
+    with pytest.raises(FlowNodeError, match = "own column"):
+        training.rl_roles({"prompt_column": "p", "chosen_column": "c", "rejected_column": "c"}, "dpo")
+    assert training.rl_roles({"prompt_column": "p", "chosen_column": "c"}, "dpo") == {"p": "prompt", "c": "chosen"}

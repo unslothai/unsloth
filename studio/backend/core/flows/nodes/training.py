@@ -115,6 +115,7 @@ async def finetune(ctx: NodeContext) -> dict:
     for key, value in TRAIN_PAGE_BATCH.items():
         config.setdefault(key, value)
     holdout = None
+    source = dataset
     percent = int(ctx.params.get("holdout_percent") or 0)
     if percent > 0:
         dataset, holdout = await holdout_split(
@@ -123,6 +124,10 @@ async def finetune(ctx: NodeContext) -> dict:
         # The split already covers only the sliced rows; slicing the train half again would shrink it.
         config.pop("dataset_slice_start", None)
         config.pop("dataset_slice_end", None)
+        eval_split = str(ctx.params.get("eval_split") or "").strip()
+        if source.get("source") == "hf" and eval_split and config["eval_steps"] > 0:
+            # The train half is now a local upload, so the Hub eval split has to travel the same way.
+            config["local_eval_datasets"] = [await hub_eval_upload(ctx, source, eval_split)]
     if dataset.get("source") == "hf":
         config["hf_dataset"] = dataset["ref"]
         if dataset.get("subset"):
@@ -345,7 +350,10 @@ def rl_roles(params: dict, objective: str) -> dict:
     else:
         named["chosen"] = params.get("chosen_column")
         named["rejected"] = params.get("rejected_column")
-    return {str(col).strip(): role for role, col in named.items() if str(col or "").strip()}
+    roles = {role: str(col).strip() for role, col in named.items() if str(col or "").strip()}
+    if len(set(roles.values())) < len(roles):
+        raise FlowNodeError("Each role needs its own column")
+    return {col: role for role, col in roles.items()}
 
 
 def rl_config(params: dict, objective: str, config: dict) -> list[dict]:
@@ -567,6 +575,21 @@ async def holdout_split(
     holdout = await upload_rows(ctx, [rows[i] for i in held_ids], f"{tag}-holdout")
     holdout.update({"percent": percent, "seed": seed, "row_ids": held_ids, "of_rows": len(rows)})
     return train, holdout
+
+
+async def hub_eval_upload(ctx: NodeContext, dataset: dict, split: str) -> str:
+    from core.flows.nodes.data import upload_rows
+    from core.training.account_jobs import account_hf_token
+
+    token = account_hf_token(getattr(ctx.caller, "hf_token", None))
+    try:
+        rows = await asyncio.to_thread(_load_rows, {**dataset, "split": split}, token, None)
+    except FlowNodeError:
+        raise
+    except Exception as exc:
+        raise FlowNodeError(f"Could not read the evaluation split {split!r}: {exc}") from None
+    name = str(dataset.get("ref") or "dataset").replace("/", "-")
+    return (await upload_rows(ctx, rows, f"{name}-{split}-eval"))["ref"]
 
 
 @handler("train.export")
