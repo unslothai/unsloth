@@ -315,3 +315,26 @@ def test_step_runs_on_the_model_device(monkeypatch):
     cuda1 = torch.device("cuda", 1)
     assert seen == [("enter", cuda1), ("step", cuda1), ("exit", cuda1)]
     assert D.decode_forward(None, types.SimpleNamespace(device = torch.device("cpu"))) is None
+
+
+def test_device_moves_release_the_fused_caches():
+    # The caches hold the re-homed weight buffers: after .to() the old device's copy must be freeable.
+    import weakref
+
+    D = _driver()
+    inner = torch.nn.Linear(4, 4)
+    model = torch.nn.Sequential(inner)
+    held = torch.zeros(8)
+    ref = weakref.ref(held)
+    D._track_moves(inner)
+    inner.__dict__[D._PLAN] = ("plan", held)
+    inner.__dict__[D._HOMES] = {0: (held,)}
+    del held
+    assert ref() is not None
+    model.to(torch.float64)
+    assert D._PLAN not in inner.__dict__ and D._HOMES not in inner.__dict__
+    assert ref() is None
+    assert inner.weight.dtype == torch.float64
+    D._track_moves(inner)  # idempotent
+    model.to(torch.float32)
+    assert inner.weight.dtype == torch.float32

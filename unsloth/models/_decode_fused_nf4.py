@@ -8,6 +8,7 @@ decode step of a sequence builds a plan; any check that fails leaves that sequen
 path. Building a plan moves each call site's NF4 weights (q|k|v, gate|up) into one buffer and
 points the projections' weight / absmax tensors at views of it, so no memory is added."""
 
+import functools
 import os
 
 import torch
@@ -16,7 +17,7 @@ from . import _decode_graphs
 from ..kernels import nf4_decode_fused as F
 from ..kernels import utils as KU
 
-__all__ = ["requested", "decode_forward", "rehome_site", "STATS"]
+__all__ = ["requested", "decode_forward", "rehome_site", "release", "STATS"]
 
 ENV = "UNSLOTH_DECODE_FUSED_NF4"
 # Steps / layers that ran fused, and why the last plan was refused (tests and diagnostics).
@@ -35,6 +36,26 @@ _PLAN_CACHES = ("_unsloth_nf4_plan", "_unsloth_gemv_plan", "_unsloth_gemv_rows")
 
 def requested():
     return os.environ.get(ENV, "0") in ("1", "force")
+
+
+def release(model):
+    """Drops the fused plan and site caches, which hold the re-homed weight buffers."""
+    for module in model.modules():
+        d = module.__dict__
+        d.pop(_PLAN, None)
+        d.pop(_HOMES, None)
+    _decode_graphs.invalidate(model)
+
+
+def _apply_releasing(model, fn, *args, **kwargs):
+    # .to() / .cpu() / .half() (and the export offload): the old device's buffers must be freeable.
+    release(model)
+    return type(model)._apply(model, fn, *args, **kwargs)
+
+
+def _track_moves(model):
+    if "_apply" not in model.__dict__:
+        model.__dict__["_apply"] = functools.partial(_apply_releasing, model)
 
 
 class _Refused:
@@ -169,6 +190,7 @@ def _site(model, key, kind, projs, K):
         ):
             return "LoRA ranks / scales / dtypes differ"
         lora = [(l[0], l[1]) for l in loras]
+    _track_moves(model)
     homes = model.__dict__.setdefault(_HOMES, {})
     home = homes.get(key)
     if home is None or not _homed(home, Ws, states):
