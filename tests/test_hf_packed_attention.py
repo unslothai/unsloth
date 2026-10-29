@@ -1715,7 +1715,15 @@ def test_shared_forward_with_mixed_head_dims_compiles(monkeypatch):
 
         return run
 
-    def gqa_sdpa(module, q, k, v, mask, scaling = None, **kwargs):
+    def gqa_sdpa(
+        module,
+        q,
+        k,
+        v,
+        mask,
+        scaling = None,
+        **kwargs,
+    ):
         out = torch.nn.functional.scaled_dot_product_attention(
             q, k, v, attn_mask = mask, scale = scaling, enable_gqa = True
         )
