@@ -8,6 +8,9 @@ uv installs without .pyc, so the first launch paid for compiling every module `i
 loads. studio/precompile_bytecode.py runs compileall over site-packages (and an editable checkout)
 after setup.sh / setup.ps1 changed the venv. uv itself is left alone: no installer sets
 UV_COMPILE_BYTECODE, because a uv compile failure or timeout fails the install command (#5983).
+
+On Windows it is opt-in (UNSLOTH_STUDIO_COMPILE_BYTECODE=1): Defender scans every .pyc the update
+writes, which made updates slower than Python's lazy compile on first import.
 """
 
 from __future__ import annotations
@@ -68,6 +71,9 @@ def _clean_env(monkeypatch):
         "SOURCE_DATE_EPOCH",
     ):
         monkeypatch.delenv(name, raising = False)
+    if os.name == "nt":
+        # Windows needs the opt-in for the helper to compile at all.
+        monkeypatch.setenv("UNSLOTH_STUDIO_COMPILE_BYTECODE", "1")
 
 
 def _tree(root: Path) -> Path:
@@ -215,14 +221,21 @@ def test_setup_sh_block_never_fails_and_runs_only_after_a_deps_pass(
 
 @pytest.mark.skipif(PWSH is None or BASH is None, reason = "needs PowerShell")
 @pytest.mark.parametrize(
-    "opt_out, expect_call",
+    "switches, expect_call",
     [
-        (None, True),
-        (("UV_COMPILE_BYTECODE", "False"), False),
-        (("UNSLOTH_STUDIO_COMPILE_BYTECODE", "off"), False),
+        # Off by default on Windows: Defender scans every .pyc the update writes.
+        ({}, False),
+        ({"UNSLOTH_STUDIO_COMPILE_BYTECODE": "1"}, True),
+        ({"UNSLOTH_STUDIO_COMPILE_BYTECODE": " On "}, True),
+        ({"UV_COMPILE_BYTECODE": "true"}, True),
+        ({"UNSLOTH_STUDIO_COMPILE_BYTECODE": "maybe"}, False),
+        ({"UV_COMPILE_BYTECODE": "False"}, False),
+        ({"UNSLOTH_STUDIO_COMPILE_BYTECODE": "off"}, False),
+        # A false always wins over a true.
+        ({"UNSLOTH_STUDIO_COMPILE_BYTECODE": "1", "UV_COMPILE_BYTECODE": "0"}, False),
     ],
 )
-def test_setup_ps1_block_never_fails(tmp_path, opt_out, expect_call):
+def test_setup_ps1_block_never_fails(tmp_path, switches, expect_call):
     lines = _lines(SETUP_PS1)
     start = _index(lines, r"^\$_pycPython = ")
     footer = next(i for i, line in enumerate(lines) if line == "# Footer")
@@ -268,8 +281,7 @@ def test_setup_ps1_block_never_fails(tmp_path, opt_out, expect_call):
         }
     else:
         env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)}
-    if opt_out:
-        env[opt_out[0]] = opt_out[1]
+    env.update(switches)
     result = run_pwsh(
         [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
         env = env,
@@ -283,6 +295,51 @@ def test_setup_ps1_block_never_fails(tmp_path, opt_out, expect_call):
     ]
     assert [line for line in result.stdout.splitlines() if line.strip()] == expected
     assert marker.exists() is expect_call
+
+
+def test_helper_is_off_by_default_on_windows(tmp_path, monkeypatch):
+    _clean_env(monkeypatch)
+    monkeypatch.delenv("UNSLOTH_STUDIO_COMPILE_BYTECODE", raising = False)
+    helper = _helper()
+    # raising=False: on a helper without the Windows default this compiles and the assert fails.
+    monkeypatch.setattr(helper, "_IS_WINDOWS", True, raising = False)
+    _tree(tmp_path)
+    before = _snapshot(tmp_path)
+    assert helper.main([str(tmp_path)]) == 0
+    assert _snapshot(tmp_path) == before, "Windows must not precompile without the opt-in"
+
+
+@pytest.mark.parametrize(
+    "switches, compiles",
+    [
+        ({"UNSLOTH_STUDIO_COMPILE_BYTECODE": "1"}, True),
+        ({"UNSLOTH_STUDIO_COMPILE_BYTECODE": "TRUE"}, True),
+        ({"UV_COMPILE_BYTECODE": "yes"}, True),
+        ({"UNSLOTH_STUDIO_COMPILE_BYTECODE": ""}, False),
+        ({"UNSLOTH_STUDIO_COMPILE_BYTECODE": "1", "UV_COMPILE_BYTECODE": "0"}, False),
+    ],
+)
+def test_helper_windows_opt_in(tmp_path, monkeypatch, switches, compiles):
+    _clean_env(monkeypatch)
+    monkeypatch.delenv("UNSLOTH_STUDIO_COMPILE_BYTECODE", raising = False)
+    for name, value in switches.items():
+        monkeypatch.setenv(name, value)
+    helper = _helper()
+    monkeypatch.setattr(helper, "_IS_WINDOWS", True, raising = False)
+    pkg = _tree(tmp_path)
+    assert helper.main([str(tmp_path)]) == 0
+    assert len(_pycs(pkg)) == (2 if compiles else 0)
+
+
+def test_helper_is_on_by_default_off_windows(tmp_path, monkeypatch):
+    """Linux, macOS and WSL keep the post-install compile unless opted out."""
+    _clean_env(monkeypatch)
+    monkeypatch.delenv("UNSLOTH_STUDIO_COMPILE_BYTECODE", raising = False)
+    helper = _helper()
+    monkeypatch.setattr(helper, "_IS_WINDOWS", False, raising = False)
+    pkg = _tree(tmp_path)
+    assert helper.main([str(tmp_path)]) == 0
+    assert len(_pycs(pkg)) == 2
 
 
 def test_helper_compiles_a_tree_and_is_idempotent(tmp_path, monkeypatch):

@@ -10113,12 +10113,16 @@ if (-not $llamaCppIsLink -and (
 
 Complete-FrontendBuildBackground
 
-# ── Precompile bytecode ── (uv installs without .pyc; only after a dependency pass, never fatal)
+# ── Precompile bytecode ── (opt-in on Windows; only after a dependency pass, never fatal)
+# Off by default: Defender scans every .pyc written during the update, which cost more than
+# Python's own lazy compile on first import. UNSLOTH_STUDIO_COMPILE_BYTECODE=1 turns it on.
 $_pycPython = Join-Path $VenvDir 'Scripts\python.exe'
 $_pycHelper = Join-Path $PSScriptRoot 'precompile_bytecode.py'
-$_pycOptedOut = @(@($env:UV_COMPILE_BYTECODE, $env:UNSLOTH_STUDIO_COMPILE_BYTECODE) |
-    Where-Object { $_ -and (@('0', 'false', 'no', 'off') -contains $_.Trim().ToLowerInvariant()) }).Count -gt 0
-if (($script:SetupVenvChanged -or $env:UNSLOTH_SETUP_RERUN -eq '1') -and -not $_pycOptedOut -and
+$_pycSwitches = @(@($env:UV_COMPILE_BYTECODE, $env:UNSLOTH_STUDIO_COMPILE_BYTECODE) |
+    Where-Object { $_ } | ForEach-Object { $_.Trim().ToLowerInvariant() })
+$_pycOptedOut = @($_pycSwitches | Where-Object { @('0', 'false', 'no', 'off') -contains $_ }).Count -gt 0
+$_pycOptedIn = @($_pycSwitches | Where-Object { @('1', 'true', 'yes', 'on') -contains $_ }).Count -gt 0
+if (($script:SetupVenvChanged -or $env:UNSLOTH_SETUP_RERUN -eq '1') -and $_pycOptedIn -and -not $_pycOptedOut -and
     (Test-Path -LiteralPath $_pycPython -PathType Leaf) -and
     (Test-Path -LiteralPath $_pycHelper -PathType Leaf)) {
     step "python" "precompiling bytecode..."
