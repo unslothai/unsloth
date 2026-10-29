@@ -1008,7 +1008,8 @@ def test_write_codex_subagent_bridge_keeps_parent_credentials_out(tmp_path, monk
         "codex_home": str(tmp_path / "child"),
         "bypass_permissions": False,
     }
-    assert path.stat().st_mode & 0o077 == 0
+    # POSIX mode bits: Windows reports 0o666 for any writable file, whatever the open mode.
+    assert os.name == "nt" or path.stat().st_mode & 0o077 == 0
     profile = _parse_toml((tmp_path / "child" / "unsloth_api.config.toml").read_text())
     assert profile["model"] == local["id"]
     assert profile["model_provider"] == start._CODEX_PROFILE
@@ -1037,7 +1038,8 @@ def test_write_codex_parent_overlay_preserves_user_state_and_instructions(tmp_pa
     assert instructions.startswith("Keep my existing instructions.\n")
     assert start._CODEX_SUBAGENT_ROUTING_INSTRUCTIONS in instructions
     assert not (overlay / "AGENTS.md").exists()
-    assert (overlay / "AGENTS.override.md").stat().st_mode & 0o077 == 0
+    # POSIX mode bits: Windows reports 0o666 for any writable file, whatever the open mode.
+    assert os.name == "nt" or (overlay / "AGENTS.override.md").stat().st_mode & 0o077 == 0
     assert (source / "AGENTS.override.md").read_text() == "Keep my existing instructions.\n"
 
 
@@ -3429,6 +3431,10 @@ def test_no_launch_output_is_parseable(fake_studio):
     assert any(ln.startswith("export CODEX_HOME=") for ln in lines)
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = "inline NAME=value assignments are POSIX; on Windows --no-launch prints PowerShell",
+)
 def test_no_launch_last_line_is_self_contained(fake_studio, tmp_path):
     # People copy just the last line, so it must inline every session env var.
     result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
@@ -3448,6 +3454,10 @@ def test_no_launch_last_line_is_self_contained(fake_studio, tmp_path):
     assert assignments["UNSLOTH_STUDIO_AUTH_TOKEN"].startswith("sk-unsloth-")
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = "inline NAME=value assignments are POSIX; on Windows --no-launch prints PowerShell",
+)
 def test_no_launch_claude_last_line_blanks_conflicting_auth(fake_studio):
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
@@ -5011,7 +5021,8 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
         ),
     )
     cmd = captured["command"]
-    assert cmd[1] == "run"
+    # Windows launches through this interpreter (`python -X utf8 ...`), so "run" follows a longer head.
+    assert cmd[1 if os.name != "nt" else cmd.index("run")] == "run"
     assert "--disable-tools" in cmd and "--no-cloudflare" in cmd
     assert "--reasoning" not in cmd
     assert captured["kwargs"]["env"]["LLAMA_ARG_REASONING"] == "auto"
@@ -5026,7 +5037,11 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
     assert cmd[cmd.index("-p") + 1] == "8888"
     assert returned_base == "http://127.0.0.1:8888"
     assert start.LoadOptions().load_in_4bit is True and "--no-load-in-4bit" not in cmd
-    assert captured["kwargs"].get("start_new_session") is True
+    # Detached from this console either way: a new session on POSIX, a new process group on Windows.
+    if os.name == "nt":
+        assert captured["kwargs"]["creationflags"] & start.subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        assert captured["kwargs"].get("start_new_session") is True
     assert server.pid == 4321
     output = capsys.readouterr().out
     assert "Starting Unsloth server\n" in output
@@ -7784,7 +7799,7 @@ def test_connect_pi_as_subagent_preserves_cloud_parent(fake_studio, tmp_path, yo
     assert result.exit_code == 0, result.output
     command = _launch_command(result.output)
     assert command[:2] == ["pi", "--extension"]
-    assert command[2].endswith("unsloth_cli/pi_subagent.ts")
+    assert Path(command[2]).as_posix().endswith("unsloth_cli/pi_subagent.ts")
     assert ("--approve" in command) is yolo
     assert "--provider" not in command
     assert "--model" not in command
@@ -9475,6 +9490,9 @@ def test_non_codex_agents_keep_the_studio_private_root(monkeypatch, tmp_path):
     assert start._ephemeral_session_prefix("claude", None) == "unsloth-claude-"
 
 
+@pytest.mark.skipif(
+    os.name == "nt", reason = "a 0o500 mode does not make a directory unwritable on Windows"
+)
 def test_session_config_falls_back_when_existing_temp_root_is_unwritable(monkeypatch, tmp_path):
     # mkdir(exist_ok = True) succeeds on an existing unwritable root, so the lock fails first.
     agents = tmp_path / "agents"
@@ -9543,6 +9561,9 @@ def test_probe_env_carries_install_dirs_and_restores_path(monkeypatch, tmp_path)
     assert os.environ.get("PATH") == before
 
 
+@pytest.mark.skipif(
+    os.name == "nt", reason = "a 0o500 mode does not make a directory unwritable on Windows"
+)
 def test_session_config_falls_back_when_studio_auth_root_is_unwritable(monkeypatch, tmp_path):
     readonly = tmp_path / "readonly"
     readonly.mkdir(mode = 0o500)
