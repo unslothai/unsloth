@@ -31,9 +31,24 @@ export const FLAVOR_THEME_IDS = [
   "cotton-candy",
 ] as const;
 
+export const HALLOWEEN_THEME_IDS = [
+  "pumpkin",
+  "black-cat",
+  "trick-or-treat",
+  "candycorn",
+  "bloody-valentine",
+  "hexberry",
+  "alien",
+  "ghost-ship",
+  "the-thing",
+  "midnight-haunt",
+  "gothic",
+] as const;
+
 export const COLOR_THEME_IDS = [
   ...UNSLOTH_THEME_IDS,
   ...FLAVOR_THEME_IDS,
+  ...HALLOWEEN_THEME_IDS,
 ] as const;
 
 export type ColorThemeId = (typeof COLOR_THEME_IDS)[number];
@@ -394,10 +409,183 @@ export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
       surface: "#221a29",
     },
   },
+  pumpkin: {
+    name: "Pumpkin",
+    light: {
+      accent: "#b84800",
+      background: "#fff3e3",
+      foreground: "#3a1a00",
+      surface: "#ffe7c9",
+    },
+    dark: {
+      accent: "#ff7a00",
+      background: "#1f0f02",
+      foreground: "#ffeedd",
+      surface: "#2b1606",
+    },
+  },
+  "trick-or-treat": {
+    name: "Trick or Treat",
+    light: {
+      accent: "#8f5c00",
+      background: "#fffae6",
+      foreground: "#2e1f00",
+      surface: "#fff0c4",
+    },
+    dark: {
+      accent: "#ffc400",
+      background: "#1a0b24",
+      foreground: "#fff4d6",
+      surface: "#251135",
+    },
+  },
+  "bloody-valentine": {
+    name: "Bloody Valentine",
+    light: {
+      accent: "#c4001f",
+      background: "#fff0f2",
+      foreground: "#3a0510",
+      surface: "#ffe0e6",
+    },
+    dark: {
+      accent: "#ff1f43",
+      background: "#1f0307",
+      foreground: "#ffe3e8",
+      surface: "#2c070d",
+    },
+  },
+  alien: {
+    name: "Alien",
+    light: {
+      accent: "#007a33",
+      background: "#eefff4",
+      foreground: "#032a12",
+      surface: "#dafbe6",
+    },
+    dark: {
+      accent: "#00ff6a",
+      background: "#02130a",
+      foreground: "#d6ffe6",
+      surface: "#051e10",
+    },
+  },
+  "ghost-ship": {
+    name: "Ghost Ship",
+    light: {
+      accent: "#00756a",
+      background: "#ecfffb",
+      foreground: "#03302a",
+      surface: "#d4f8f0",
+    },
+    dark: {
+      accent: "#00e5c8",
+      background: "#021716",
+      foreground: "#d9fff8",
+      surface: "#042420",
+    },
+  },
+  "the-thing": {
+    name: "The Thing",
+    light: {
+      accent: "#0062a8",
+      background: "#eef8ff",
+      foreground: "#04233a",
+      surface: "#dcefff",
+    },
+    dark: {
+      accent: "#3dbcff",
+      background: "#04121f",
+      foreground: "#e0f3ff",
+      surface: "#081c2e",
+    },
+  },
+  "midnight-haunt": {
+    name: "Full Moon",
+    light: {
+      accent: "#2f45d6",
+      background: "#f0f3ff",
+      foreground: "#0c1442",
+      surface: "#dfe5ff",
+    },
+    dark: {
+      accent: "#6f86ff",
+      background: "#060a24",
+      foreground: "#e3e8ff",
+      surface: "#0b1236",
+    },
+  },
+  gothic: {
+    name: "Goth",
+    light: {
+      accent: "#5b21b6",
+      background: "#f7f5f7",
+      foreground: "#1c1519",
+      surface: "#ece8ed",
+    },
+    dark: {
+      accent: "#a78bfa",
+      background: "#0b0a0d",
+      foreground: "#f1ecf2",
+      surface: "#141217",
+    },
+  },
+  hexberry: {
+    name: "Hexberry",
+    light: {
+      accent: "#c2187a",
+      background: "#fff2f8",
+      foreground: "#33061f",
+      surface: "#ffe2f0",
+    },
+    dark: {
+      accent: "#ff4fae",
+      background: "#14060f",
+      foreground: "#ffe6f3",
+      surface: "#1f0a18",
+    },
+  },
+  candycorn: {
+    name: "Candycorn",
+    light: {
+      accent: "#b8520a",
+      background: "#fffaf0",
+      foreground: "#2b1a05",
+      surface: "#fff0d6",
+    },
+    dark: {
+      accent: "#ffc72c",
+      background: "#14100a",
+      foreground: "#ffffff",
+      surface: "#1e170d",
+    },
+  },
+  "black-cat": {
+    name: "Coven",
+    light: {
+      accent: "#6a1fd6",
+      background: "#f6f1ff",
+      foreground: "#120a1c",
+      surface: "#ebe0ff",
+    },
+    dark: {
+      accent: "#a259ff",
+      background: "#08060b",
+      foreground: "#f3eaff",
+      surface: "#110d16",
+    },
+  },
 };
 
 const COLOR_THEME_ID_SET: ReadonlySet<string> = new Set(COLOR_THEME_IDS);
 
 export function isColorThemeId(value: unknown): value is ColorThemeId {
   return typeof value === "string" && COLOR_THEME_ID_SET.has(value);
+}
+
+export type HalloweenThemeId = (typeof HALLOWEEN_THEME_IDS)[number];
+
+const HALLOWEEN_THEME_ID_SET: ReadonlySet<string> = new Set(HALLOWEEN_THEME_IDS);
+
+export function isHalloweenThemeId(value: unknown): value is HalloweenThemeId {
+  return typeof value === "string" && HALLOWEEN_THEME_ID_SET.has(value);
 }

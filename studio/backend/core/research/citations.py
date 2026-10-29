@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Rewriting Deep Research report citations to the sources actually gathered.
-
-A local model invents URLs, renumbers references, and appends its own source list. Every
-citation is canonicalized against the run's catalogs, and anything that does not resolve to a
-gathered web source or document chunk is stripped rather than shown as supported.
-"""
+"""Rewrites Deep Research citations to gathered sources; invented or unresolved ones are stripped."""
 
 from __future__ import annotations
 

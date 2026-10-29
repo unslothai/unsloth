@@ -96,6 +96,12 @@ import {
 } from "@/features/audio/workflows";
 /* eslint-enable no-restricted-imports */
 import { cn } from "@/lib/utils";
+import {
+  hideTrickOrTreatRow,
+  useHalloweenSeasonEnd,
+  useTrickOrTreatVisible,
+} from "@/features/halloween/halloween-store";
+import { TrickOrTreatDialog } from "@/features/halloween/trick-or-treat-dialog";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
 import { copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { isTauri } from "@/lib/api-base";
@@ -108,6 +114,7 @@ import { NAV_FLYOUT_INTENT, NAV_TOOLTIP_INTENT } from "@/lib/hover-intent";
 import {
   Archive03Icon,
   Cancel01Icon,
+  CandyIcon,
   BadgeInfoIcon,
   ChefHatIcon,
   CloudIcon,
@@ -123,7 +130,7 @@ import {
   Folder02Icon,
   FlimSlateIcon,
   HelpCircleIcon,
-  Image03Icon,
+  Image01Icon,
   InformationCircleIcon,
   LibrariesIcon,
   Logout05Icon,
@@ -274,7 +281,9 @@ import { videoNavHint } from "@/config/hardware-verdict";
 import {
   AUTH_SESSION_ENDING_EVENT,
   clearAuthTokens,
+  fetchAuthStatus,
   logout,
+  markDesktopSignedOut,
   useIsAccountOwner,
 } from "@/features/auth";
 import { TOUR_OPEN_EVENT, getTourId, useTourAvailable } from "@/features/tour";
@@ -1321,6 +1330,9 @@ export function AppSidebar() {
   const settingsShortcutLabel = useShortcutLabel("openSettings");
   const keyboardShortcutsLabel = useShortcutLabel("openKeyboardShortcuts");
   const isOwner = useIsAccountOwner();
+  const showTrickOrTreat = useTrickOrTreatVisible();
+  const [trickOrTreatOpen, setTrickOrTreatOpen] = useState(false);
+  useHalloweenSeasonEnd();
   const { pathname, search, href } = useRouterState({
     select: (s) => ({
       pathname: s.location.pathname,
@@ -3378,7 +3390,7 @@ export function AppSidebar() {
       },
     },
     images: {
-      icon: Image03Icon,
+      icon: Image01Icon,
       label: t("shell.navigation.images"),
       active: pathname === "/images" || pathname.startsWith("/images/"),
       onClick: () => {
@@ -4307,23 +4319,41 @@ export function AppSidebar() {
     </>
   );
 
-  useShortcut(
-    "logOut",
-    () => {
-      // Desktop signs out through the OS account menu, not here.
-      if (isTauri) return;
-      void (async () => {
-        if (!window.dispatchEvent(new Event(AUTH_SESSION_ENDING_EVENT, { cancelable: true }))) return;
-        try {
-          await logout();
-        } catch {
-          clearAuthTokens();
-        }
-        void navigate({ to: "/login" });
-      })();
-    },
-    { enabled: !isTauri },
-  );
+  async function signOut() {
+    // Multi-account Desktop signs back in with a password, and the seeded one was never shown.
+    if (isTauri && isOwner) {
+      // Unknown is not "no password to lose": stay signed in rather than risk a lockout.
+      const status = await fetchAuthStatus().catch(() => null);
+      if (!status) {
+        toast.error(t("shell.navigation.logOutFailed"));
+        return;
+      }
+      if (status.login_mode === "multi" && status.requires_password_change) {
+        toast.error(t("shell.navigation.logOutNeedsPassword"));
+        useSettingsDialogStore.getState().openDialog("remote-lan");
+        return;
+      }
+    }
+    if (!window.dispatchEvent(new Event(AUTH_SESSION_ENDING_EVENT, { cancelable: true }))) return;
+    // Marker before the revoke, else a relaunch or failing request signs straight back in.
+    if (isTauri) {
+      try {
+        await markDesktopSignedOut();
+      } catch {
+        toast.error(t("shell.navigation.logOutFailed"));
+        return;
+      }
+    }
+    // Best-effort revocation; ignore network errors so the local clear still runs.
+    try {
+      await logout();
+    } catch {
+      clearAuthTokens();
+    }
+    void navigate({ to: "/login" });
+  }
+
+  useShortcut("logOut", () => void signOut());
 
   /** Filing a pinned chat takes its pin, else Pinned keeps drawing it. */
   function fileChatsInSection(chatIds: string[], sectionId: string | null) {
@@ -6206,6 +6236,35 @@ export function AppSidebar() {
                   </NavItem>
                 );
               })}
+              {showTrickOrTreat && (
+                <NavItem
+                  icon={CandyIcon}
+                  label={t("halloween.navLabel")}
+                  active={trickOrTreatOpen}
+                  testId="nav-row-trick-or-treat"
+                  className="group/halloween-item relative"
+                  onClick={() => setTrickOrTreatOpen(true)}
+                >
+                  <button
+                    type="button"
+                    aria-label={t("halloween.hideFromSidebar")}
+                    data-testid="nav-row-trick-or-treat-hide"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      hideTrickOrTreatRow();
+                    }}
+                    className="sidebar-row-action pr-2.5! group-hover/halloween-item:opacity-100 group-hover/halloween-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto group-data-[collapsible=icon]:hidden"
+                  >
+                    <span className="sidebar-row-action-glyph">
+                      <HugeiconsIcon
+                        icon={Cancel01Icon}
+                        strokeWidth={1.75}
+                        className="size-4"
+                      />
+                    </span>
+                  </button>
+                </NavItem>
+              )}
               {/* Unpinned destinations, behind one row. */}
               {overflowNavIds.length > 0 && (
                 <SidebarMenuItem>
@@ -6370,6 +6429,10 @@ export function AppSidebar() {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+        <TrickOrTreatDialog
+          open={trickOrTreatOpen}
+          onOpenChange={setTrickOrTreatOpen}
+        />
 
         {/* Pinned, the user's sections and Projects, in the order they were dragged into.
             Recents stays last, under them all. */}
@@ -6828,23 +6891,10 @@ export function AppSidebar() {
                   </DropdownMenuItem>
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
-              {!isTauri && (
-                <DropdownMenuItem
-                  onSelect={async () => {
-                    if (!window.dispatchEvent(new Event(AUTH_SESSION_ENDING_EVENT, { cancelable: true }))) return;
-                    // Best-effort revocation; ignore network errors so the local clear still runs.
-                    try {
-                      await logout();
-                    } catch {
-                      clearAuthTokens();
-                    }
-                    void navigate({ to: "/login" });
-                  }}
-                >
-                  <HugeiconsIcon icon={Logout05Icon} strokeWidth={1.75} className="size-icon" />
-                  <span>{t("shell.navigation.logOut")}</span>
-                </DropdownMenuItem>
-              )}
+              <DropdownMenuItem onSelect={() => void signOut()}>
+                <HugeiconsIcon icon={Logout05Icon} strokeWidth={1.75} className="size-icon" />
+                <span>{t("shell.navigation.logOut")}</span>
+              </DropdownMenuItem>
               {!isTauri && (
                 <DropdownMenuItem onSelect={() => setShutdownOpen(true)}>
                   <HugeiconsIcon icon={PowerIcon} strokeWidth={1.75} className="size-icon" />

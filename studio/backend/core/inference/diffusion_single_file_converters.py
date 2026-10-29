@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Original-layout (ComfyUI / reference repo) single files -> diffusers state dicts for Krea 2 and
-HunyuanImage 2.1, which diffusers ships without a single-file converter.
-
-Rules only rename, split rows or reorder whole rows, never columns: ``diffusion_comfy_quant`` traces
-each int8 / fp8 row (and GGUF block) back to its source and refuses anything else. Unknown keys raise.
-No module-level torch import: ``diffusion.py`` imports this on every load.
-"""
+"""Krea 2 / HunyuanImage 2.1 single files to diffusers; row-wise renames and splits only, never
+columns; unknown keys raise; no module-level torch import"""
 
 from __future__ import annotations
 

@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Turn a forwarded route's failure into an MCP ToolError the agent can act on. Unsloth Studio routes fail in several shapes (``{"detail"}`` on /api, the OpenAI envelope on /v1, gpu_busy three ways, a 200 that carries ``_deferred_error`` or ``status: "error"``, an NDJSON error line), and every message is scrubbed of host paths before it leaves.
-
-A failure the agent can branch on starts with a tag, ``[<code> k=v] <message>``, such as ``[gpu_busy retry_after=12]`` or ``[not_loaded kind=image]``. A plain refusal has no tag."""
+"""Route failures as MCP ToolError, host paths scrubbed; leading [code k=v] tag marks actionable codes"""
 
 from __future__ import annotations
 

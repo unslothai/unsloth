@@ -1,21 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-S3 dataset loader.
-
-Downloads dataset files (parquet / json / jsonl / csv) from an AWS S3 bucket
-to a local temp directory so the existing local-file dataset path can consume
-them. boto3 is an optional dependency installed on the first S3 load if missing.
-
-Audio keys download too, keeping their prefix-relative layout, and audio values in
-JSON/JSONL/CSV manifests are rewritten to the local paths (``datasets.Audio`` opens path
-strings verbatim). Parquet manifests are not rewritten: their paths must already resolve.
-
-The S3 config dict mirrors ``models.training.S3Config.model_dump()`` (snake_case
-keys): bucket, region, prefix, access_key_id, secret_access_key, use_iam_role.
-Credentials are read once to build the client and never logged or persisted.
-"""
+"""S3 dataset download to a local temp dir; boto3 is optional and installed on first S3 load if
+missing; audio paths in JSON/JSONL/CSV manifests rewritten to local; parquet paths must already
+resolve; credentials never logged or persisted"""
 
 from __future__ import annotations
 

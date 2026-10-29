@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""diffusers' ``postprocess(output_type="pil")`` uint8 conversion on the device instead of numpy on the host.
-
-Stock runs ``(x * 255).round().astype("uint8")`` over host float32 copies, which stalls under host load. Same IEEE ops
-on clamped [0, 1] values, so bit-identical; anything else takes the stock path. A decoded image with NaN raises instead
-of saving blank. Kill switch: ``UNSLOTH_DIFFUSION_DEVICE_POSTPROCESS=0``.
-"""
+"""Device-side uint8 postprocess for output_type pil, bit-identical to stock numpy; other cases take
+the stock path; NaN raises instead of saving blank"""
 
 from __future__ import annotations
 

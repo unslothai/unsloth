@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Call-time checks against the pipeline that actually runs a request.
-
-Load-time eligibility is judged on the base pipe, but a request may run a DIFFERENT pipeline over the same denoiser:
-an image workflow built with ``from_pipe`` (FLUX.1 img2img / inpaint), the video I2V class swap, LTX-2.5's condition
-pipe. First-Block-Cache hooks live on the shared denoiser and need the RUNNER to open ``cache_context``; FLUX.1's
-``FluxPipeline`` does, ``FluxImg2ImgPipeline`` / ``FluxInpaintPipeline`` (diffusers 0.41) do not, so an engaged cache
-raised "No cache context is set" on the first img2img step. These helpers answer for the runner.
-"""
+"""Call-time checks on the request's runner; FBCache needs that runner to open cache_context."""
 
 from __future__ import annotations
 

@@ -1,29 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GGUF dequant accelerator for the light-compile (``default``) diffusion path.
-
-Profiling showed ~70-80% of EAGER GGUF denoise CUDA time is the per-forward weight dequant:
-every ``GGUFLinear.forward`` calls ``dequantize_gguf_tensor`` -> ``dequantize_blocks_Q4_K``, a
-~20-op pure-PyTorch chain, once per linear per step.
-
-``install_compiled_dequant`` swaps ``dequantize_gguf_tensor`` for ``torch.compile(orig,
-dynamic=True)``, which Inductor fuses into a few kernels. Measured 1.24-1.64x warm at a small
-compile (~7.5-10.4s), zero extra VRAM (weights stay quantized). ``dynamic=True`` is key: the
-dequant inputs are the fixed-shape WEIGHT tensors, so it compiles once and never recompiles on a
-resolution change. ``forward_native`` resolves the function as a module global, so replacing the
-module attribute reroutes every linear.
-
-The ``default`` tier's lever (block stays eager), and ``max``'s where the block cannot compile (ROCm). NOT used
-when ``max`` compiles the block: that graph fuses the dequant inline, and a separate compiled dequant would break it.
-
-The swap goes through the shared reversible patch backend; ``uninstall_*`` restores the exact
-original so a later bit-identical ``off`` load runs stock dequant. Kill-switch:
-``UNSLOTH_DIFFUSION_GGUF_COMPILE_DEQUANT=0``. torch / diffusers imported lazily.
-
-(A weight-buffer accelerator was removed: neutral end-to-end, since the CUDA caching allocator
-already serves the per-forward cast from its pool. See outputs/arch_patch/SUMMARY.md.)
-"""
+"""Compiles GGUF dequant with dynamic=True for the default tier and for max where the block cannot
+compile; never where max compiles the block (would break it); torch and diffusers imported
+lazily; UNSLOTH_DIFFUSION_GGUF_COMPILE_DEQUANT=0 disables."""
 
 from __future__ import annotations
 
