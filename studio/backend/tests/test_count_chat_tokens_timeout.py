@@ -12,8 +12,7 @@ import core.inference.llama_cpp as llama_cpp
 from core.inference.checkpoint import fit_checkpoint_context
 from core.inference.context_window import fit_rolling_context
 
-# The reporter's llama-server: 11.1 s to tokenize a 1.68M-token prompt, about 600,000 characters a
-# second.
+# The reporter's llama-server: 11.1 s to tokenize a 1.68M-token prompt.
 SERVER_CHARS_PER_S = 600_000
 
 
@@ -24,8 +23,7 @@ class _Backend(llama_cpp.LlamaCppBackend):
 
 
 def _slow_llama_server(clients: list):
-    """A llama-server stand-in that takes SERVER_CHARS_PER_S to render or tokenize, and times out
-    whenever the client's timeout is shorter than that."""
+    """Renders and tokenizes at SERVER_CHARS_PER_S; times out when the client's read timeout is shorter."""
 
     class _Resp:
         status_code = 200
@@ -113,7 +111,6 @@ def test_a_long_transcript_is_counted_rather_than_timing_out(backend):
     assert counted > 1_000_000
     timeout = backend.clients[-1].timeout
     assert timeout.read > 10
-    # Only the wait for the answer grows.
     assert (timeout.connect, timeout.write, timeout.pool) == (10, 10, 10)
 
 

@@ -7918,9 +7918,7 @@ class CountAborted(Exception):
     __slots__ = ()
 
 
-# llama-server renders and tokenizes on one thread: the reporter's CPU took 11.1 s for a 1.68M-token
-# prompt, about 600,000 characters a second (#15800). A fixed 10 s timed out every count of a long
-# transcript, so the fit sent it unfitted. A sixth of that rate still catches a stuck server.
+# Single-threaded render + tokenize ran ~600K chars/s on the #15800 reporter's CPU; a sixth of that still catches a hang.
 _COUNT_TIMEOUT_FLOOR_S = 10.0
 _COUNT_TIMEOUT_CHARS_PER_S = 100_000
 
@@ -40718,7 +40716,6 @@ class LlamaCppBackend:
 
         try:
             with httpx.Client(
-                # Only the wait for the render or tokenize grows; connecting and sending do not.
                 timeout = httpx.Timeout(
                     _COUNT_TIMEOUT_FLOOR_S, read = _count_timeout(messages, system_text, tools)
                 ),
@@ -40804,7 +40801,6 @@ class LlamaCppBackend:
                         # Not a template failure. Must precede the generic except.
                         raise
                     except httpx.TimeoutException:
-                        # Not a template failure either: a long prompt outlasted the timeout.
                         if strict:
                             raise RuntimeError(
                                 "llama-server timed out counting the prompt"
