@@ -2405,7 +2405,7 @@ export const ru = {
         unsloth: "Unsloth",
         otherApps: "Другие приложения",
         otherInUse: "Прочее",
-        otherInUseHint: "Включает KV-кэш Unsloth и обучение: драйвер не сообщает VRAM по приложениям.",
+        otherInUseHint: "Всё занятое, кроме весов модели, включая KV-кэш Unsloth, его контекст GPU и обучение.",
         freeLabel: "Свободно",
         unslothApp: "Приложение Unsloth Studio",
         unslothShare: "Показывать долю Unsloth",

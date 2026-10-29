@@ -2496,7 +2496,7 @@ export const he = {
         unsloth: "Unsloth",
         otherApps: "אפליקציות אחרות",
         otherInUse: "שימוש אחר",
-        otherInUseHint: "כולל את מטמון ה-KV של Unsloth וכל אימון: מנהל ההתקן לא מדווח VRAM לפי אפליקציה.",
+        otherInUseHint: "כל מה שבשימוש מלבד משקלי המודל, כולל מטמון ה-KV של Unsloth, הקשר ה-GPU שלו וכל אימון.",
         freeLabel: "פנוי",
         unslothApp: "אפליקציית Unsloth Studio",
         unslothShare: "הצגת החלק של Unsloth",

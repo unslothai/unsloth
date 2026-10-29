@@ -2394,7 +2394,7 @@ export const ar = {
         unsloth: "Unsloth",
         otherApps: "تطبيقات أخرى",
         otherInUse: "استخدام آخر",
-        otherInUseHint: "يشمل ذاكرة KV المؤقتة في Unsloth وأي تدريب جارٍ: لا يبلّغ برنامج التشغيل عن VRAM لكل تطبيق.",
+        otherInUseHint: "كل ما هو قيد الاستخدام عدا أوزان النموذج، بما في ذلك ذاكرة KV المؤقتة في Unsloth وسياق GPU الخاص به وأي تدريب جارٍ.",
         freeLabel: "متاح",
         unslothApp: "تطبيق Unsloth Studio",
         unslothShare: "إظهار حصة Unsloth",

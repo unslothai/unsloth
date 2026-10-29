@@ -2570,7 +2570,7 @@ export const sv = {
         unsloth: "Unsloth",
         otherApps: "Andra appar",
         otherInUse: "Övrig användning",
-        otherInUseHint: "Inkluderar Unsloths KV-cache och eventuell träning: drivrutinen rapporterar inte VRAM per app.",
+        otherInUseHint: "Allt som används utöver modellvikterna, inklusive Unsloths KV-cache, dess GPU-kontext och eventuell träning.",
         freeLabel: "Ledigt",
         unslothApp: "Unsloth Studio-appen",
         unslothShare: "Visa Unsloths andel",

@@ -2298,7 +2298,7 @@ export const it = {
         unsloth: "Unsloth",
         otherApps: "Altre app",
         otherInUse: "Altro uso",
-        otherInUseHint: "Include la cache KV di Unsloth e qualsiasi addestramento: il driver non riporta la VRAM per app.",
+        otherInUseHint: "Tutto ciò che è in uso oltre ai pesi del modello, inclusi la cache KV di Unsloth, il suo contesto GPU e qualsiasi addestramento.",
         freeLabel: "Libera",
         unslothApp: "App Unsloth Studio",
         unslothShare: "Mostra la quota di Unsloth",

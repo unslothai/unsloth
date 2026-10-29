@@ -2400,7 +2400,7 @@ export const hi = {
         unsloth: "Unsloth",
         otherApps: "अन्य ऐप्स",
         otherInUse: "अन्य उपयोग",
-        otherInUseHint: "इसमें Unsloth का KV कैश और कोई भी ट्रेनिंग शामिल है: ड्राइवर हर ऐप का VRAM नहीं बताता।",
+        otherInUseHint: "मॉडल वेट्स के अलावा उपयोग में सब कुछ, जिसमें Unsloth का KV कैश, उसका GPU कॉन्टेक्स्ट और कोई भी ट्रेनिंग शामिल है।",
         freeLabel: "खाली",
         unslothApp: "Unsloth Studio ऐप",
         unslothShare: "Unsloth का हिस्सा दिखाएं",

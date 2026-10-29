@@ -2410,7 +2410,7 @@ export const ptBR = {
         unsloth: "Unsloth",
         otherApps: "Outros apps",
         otherInUse: "Outro uso",
-        otherInUseHint: "Inclui o cache KV do Unsloth e qualquer treinamento: o driver não informa a VRAM por app.",
+        otherInUseHint: "Tudo o que está em uso além dos pesos do modelo, incluindo o cache KV do Unsloth, seu contexto de GPU e qualquer treinamento.",
         freeLabel: "Livre",
         unslothApp: "App do Unsloth Studio",
         unslothShare: "Mostrar a parte do Unsloth",
