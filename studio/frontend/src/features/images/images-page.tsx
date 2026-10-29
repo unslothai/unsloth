@@ -7185,7 +7185,7 @@ export function ImagesPage({
                 <p className="text-sm">
                   {status?.loaded || external
                     ? "Enter a prompt and hit Generate."
-                    : "Select a diffusion model to load"}
+                    : "Select image model to create an image"}
                 </p>
               </div>
             )}
