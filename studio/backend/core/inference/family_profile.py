@@ -57,6 +57,10 @@ class FamilyProfile:
     # int8 name tokens left dense on top of the generic M = 1 tokens (``_int_mm`` needs M > 16, or a measured quality
     # lever). Baked into published int8 artifacts.
     int8_exclude_tokens: tuple[str, ...] = ()
+    # The part of ``int8_exclude_tokens`` that a STREAMED inference build quantises anyway (the denoiser's bytes cross
+    # PCIe every step): published artifacts, training and resident builds keep the baked list. Read only inside
+    # ``diffusion_transformer_quant.int8_text_stream_scope``. ``UNSLOTH_DIFFUSION_INT8_TEXT_STREAM=0`` keeps them dense.
+    int8_runtime_quant_tokens: tuple[str, ...] = ()
     # Name tokens left dense for EVERY transformer-quant scheme (int8 / fp8 / mxfp8 / nvfp4), on top of the int8
     # tokens above. For layers whose quantisation error is measured to dominate the image delta regardless of the
     # scheme (FLUX.3: per-token modulations, the 20480-wide text projection, the text-stream per-mode blocks).

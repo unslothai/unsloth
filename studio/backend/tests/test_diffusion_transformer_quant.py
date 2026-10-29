@@ -904,18 +904,36 @@ def test_exclude_tokens_for_scheme():
     assert exclude_tokens_for_scheme(TQ_MXFP8) == ()
 
 
-def test_exclude_tokens_for_scheme_family():
-    # Qwen-Image never pads its text stream, so short prompts hit M < 16 in torch._int_mm.
+def test_exclude_tokens_for_scheme_family(monkeypatch):
+    # Qwen-Image's text stream runs at M = prompt tokens, under torch._int_mm's floor of 16 for short prompts: the
+    # published artifacts keep it dense (the baked list); a streamed qwen-image build quantises and pads it.
     from core.inference.diffusion_transformer_quant import (
+        INT8_TEXT_STREAM_ENV,
         _INT8_EXCLUDE_NAME_TOKENS,
         _QWENIMAGE_INT8_EXCLUDES,
         exclude_tokens_for_scheme,
     )
 
+    monkeypatch.delenv(INT8_TEXT_STREAM_ENV, raising = False)
     for fam in ("qwen-image", "qwen-image-edit"):
         assert (
-            exclude_tokens_for_scheme(TQ_INT8, fam)
+            exclude_tokens_for_scheme(TQ_INT8, fam, baked = True)
             == _INT8_EXCLUDE_NAME_TOKENS + _QWENIMAGE_INT8_EXCLUDES
+        )
+    assert (
+        exclude_tokens_for_scheme(TQ_INT8, "qwen-image-edit")
+        == _INT8_EXCLUDE_NAME_TOKENS + _QWENIMAGE_INT8_EXCLUDES
+    )
+    # a resident build is unchanged; a streamed one quantises (and pads) the text stream bar txt_in
+    assert (
+        exclude_tokens_for_scheme(TQ_INT8, "qwen-image")
+        == _INT8_EXCLUDE_NAME_TOKENS + _QWENIMAGE_INT8_EXCLUDES
+    )
+    from core.inference.diffusion_transformer_quant import int8_text_stream_scope
+
+    with int8_text_stream_scope(True):
+        assert exclude_tokens_for_scheme(TQ_INT8, "qwen-image") == _INT8_EXCLUDE_NAME_TOKENS + (
+            "txt_in",
         )
     for token in ("txt_in", "add_q_proj", "to_add_out", "txt_mlp"):
         assert token in _QWENIMAGE_INT8_EXCLUDES
@@ -1160,12 +1178,31 @@ def test_pad_and_exclude_sets_never_overlap():
             ), f"{family}: {pad_token!r} is both padded and excluded"
 
 
-def test_only_minimax_h3_pads_today():
-    """Only MiniMax-H3 pads: other published int8 checkpoints bake the exclusion set into metadata."""
-    from core.inference.diffusion_transformer_quant import TQ_INT8, pad_tokens_for_scheme
+def test_only_minimax_h3_pads_today(monkeypatch):
+    """Only MiniMax-H3 pads its own tokens: other published int8 checkpoints bake the exclusion set into metadata.
+    A streamed qwen-image build pads exactly the text stream it quantises on top of its artifacts; resident builds and
+    the kill switch pad nothing new."""
+    from core.inference.diffusion_transformer_quant import (
+        INT8_TEXT_STREAM_ENV,
+        TQ_INT8,
+        pad_tokens_for_scheme,
+        runtime_quant_tokens_for_scheme,
+    )
 
+    from core.inference.diffusion_transformer_quant import int8_text_stream_scope
+
+    monkeypatch.delenv(INT8_TEXT_STREAM_ENV, raising = False)
+    # resident builds pad nothing new; a streamed qwen-image build pads its runtime-quantised text stream
     for family in ("qwen-image", "qwen-image-edit", "hunyuanvideo-1.5", "hunyuanvideo-1.5-720p"):
         assert pad_tokens_for_scheme(TQ_INT8, family) == ()
+    with int8_text_stream_scope(True):
+        assert pad_tokens_for_scheme(TQ_INT8, "qwen-image") == runtime_quant_tokens_for_scheme(
+            TQ_INT8, "qwen-image"
+        )
+        assert pad_tokens_for_scheme(TQ_INT8, "qwen-image")
+        monkeypatch.setenv(INT8_TEXT_STREAM_ENV, "0")
+        assert pad_tokens_for_scheme(TQ_INT8, "qwen-image") == ()
+    monkeypatch.delenv(INT8_TEXT_STREAM_ENV)
     assert pad_tokens_for_scheme(TQ_INT8, "z-image") == ()
     assert pad_tokens_for_scheme(TQ_INT8, None) == ()
 

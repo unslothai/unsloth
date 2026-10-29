@@ -6,6 +6,8 @@ torchao imported lazily; probes best-effort, GGUF fallback"""
 
 from __future__ import annotations
 
+import contextlib as _contextlib
+import contextvars as _contextvars
 import inspect as _inspect
 import os as _os
 import re as _re
@@ -71,6 +73,47 @@ _INT8_FAMILY_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = _profile_table(
 )
 _QWENIMAGE_INT8_EXCLUDES = _INT8_FAMILY_EXCLUDE_NAME_TOKENS["qwen-image"]
 
+# The baked tokens inference int8 quantises anyway (``FamilyProfile.int8_runtime_quant_tokens``), and ONLY inside
+# ``int8_text_stream_scope(True)``: the in-place build of a STREAMED denoiser, where those bytes cross PCIe every step.
+# A resident build, training, artifacts and every call outside the scope keep the list above, so a hosted checkpoint
+# still validates (its exclusions are a superset) and gets its dense leftovers quantised at load inside the scope
+# (``quantize_runtime_leftovers``). The scope reaches the prequant-cache key, so a resident and a streamed build of
+# one checkpoint never share an entry.
+_INT8_FAMILY_RUNTIME_QUANT_TOKENS: dict[str, tuple[str, ...]] = _profile_table(
+    "int8_runtime_quant_tokens", quant = True
+)
+INT8_TEXT_STREAM_ENV = "UNSLOTH_DIFFUSION_INT8_TEXT_STREAM"
+_TEXT_STREAM_SCOPE: "_contextvars.ContextVar[bool]" = _contextvars.ContextVar(
+    "unsloth_int8_text_stream", default = False
+)
+
+
+@_contextlib.contextmanager
+def int8_text_stream_scope(streamed: bool):
+    """Quantise the family's runtime tokens for the build / cache lookup / cache write inside, when ``streamed``."""
+    token = _TEXT_STREAM_SCOPE.set(bool(streamed))
+    try:
+        yield
+    finally:
+        _TEXT_STREAM_SCOPE.reset(token)
+
+
+def int8_text_stream_enabled() -> bool:
+    return (_os.environ.get(INT8_TEXT_STREAM_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def runtime_quant_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tuple[str, ...]:
+    """Baked int8 exclusions this build quantises anyway; () outside ``int8_text_stream_scope(True)``, when off, for
+    other schemes and other families."""
+    if scheme != TQ_INT8 or not _TEXT_STREAM_SCOPE.get() or not int8_text_stream_enabled():
+        return ()
+    return _INT8_FAMILY_RUNTIME_QUANT_TOKENS.get(str(family or "").strip().lower(), ())
+
 
 # ALL-scheme PER-FAMILY exclusions (``FamilyProfile.quant_exclude_tokens``): unlike the int8 table above, these also
 # apply to fp8 / mxfp8 / nvfp4, whose scaled_mm paths otherwise quantise every eligible Linear.
@@ -91,10 +134,15 @@ _INT8_FAMILY_PAD_NAME_TOKENS: dict[str, tuple[str, ...]] = _profile_table(
 
 
 def pad_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tuple[str, ...]:
-    """int8 only, and disjoint from the exclude tokens since excluded Linears are never quantised."""
+    """int8 only, and disjoint from the exclude tokens since excluded Linears are never quantised. A streamed build's
+    runtime-quantised text stream is padded too: it runs at M = prompt tokens, and a compiled torchao int8 Linear raises in ``_int_mm``
+    below 17 rows (eager falls back to an fp32 matmul, the native W8A8 path to a dense one)."""
     if scheme != TQ_INT8:
         return ()
-    return _INT8_FAMILY_PAD_NAME_TOKENS.get(str(family or "").strip().lower(), ())
+    key = str(family or "").strip().lower()
+    tokens = _INT8_FAMILY_PAD_NAME_TOKENS.get(key, ())
+    runtime = tuple(t for t in runtime_quant_tokens_for_scheme(scheme, key) if t not in tokens)
+    return tokens + runtime
 
 
 def apply_small_m_padding(
@@ -335,7 +383,12 @@ def apply_zero_row_guard(
     return wrapped
 
 
-def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tuple[str, ...]:
+def exclude_tokens_for_scheme(
+    scheme: str,
+    family: Optional[str] = None,
+    *,
+    baked: bool = False,
+) -> tuple[str, ...]:
     """Name tokens to exclude from quantisation for ``scheme`` (optionally family-specific). int8
     (M>16) skips the M=1 modulation / conditioning-embedder projections
     (_INT8_EXCLUDE_NAME_TOKENS) plus per-family small-M text streams
@@ -343,13 +396,16 @@ def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tupl
     ``family=None`` preserves the historical behaviour. Shared by the runtime path and the
     offline prequant builder so they never drift (else an int8 checkpoint bakes the small-M
     projections and crashes at the first denoise on Flux / Qwen). ``FamilyProfile.quant_exclude_tokens`` applies
-    to every scheme."""
+    to every scheme. A streamed build (``int8_text_stream_scope``) drops ``runtime_quant_tokens_for_scheme``; ``baked``
+    keeps the published-artifact list even there (training, native W8A8, ComfyUI import)."""
     key = str(family or "").strip().lower()
     every_scheme = _FAMILY_QUANT_EXCLUDE_NAME_TOKENS.get(key, ())
     if scheme == TQ_INT8:
-        return (
-            _INT8_EXCLUDE_NAME_TOKENS + _INT8_FAMILY_EXCLUDE_NAME_TOKENS.get(key, ()) + every_scheme
-        )
+        family_tokens = _INT8_FAMILY_EXCLUDE_NAME_TOKENS.get(key, ())
+        runtime = () if baked else runtime_quant_tokens_for_scheme(scheme, key)
+        if runtime:
+            family_tokens = tuple(t for t in family_tokens if t not in runtime)
+        return _INT8_EXCLUDE_NAME_TOKENS + family_tokens + every_scheme
     return every_scheme
 
 
@@ -1808,10 +1864,11 @@ def _quantize_native(
     try:
         from .diffusion_native_quant import apply_native_weight_quant
 
-        # require_bf16 keeps the fp32 linears some DiTs deliberately hold (Wan, Hunyuan) at full precision.
+        # require_bf16 keeps the fp32 linears some DiTs deliberately hold (Wan, Hunyuan) at full precision. The baked
+        # list: the W8A8 Linear's own small-M branch (dense below 17 rows) would recompile a dynamic text length.
         filter_fn = make_filter_fn(
             min_features,
-            exclude_name_tokens = exclude_tokens_for_scheme(scheme, family) + ("lora_",),
+            exclude_name_tokens = exclude_tokens_for_scheme(scheme, family, baked = True) + ("lora_",),
             require_bf16 = True,
         )
         if not apply_native_weight_quant(
@@ -1837,6 +1894,76 @@ def _quantize_native(
     except Exception as exc:  # noqa: BLE001 - a partial swap is reported by transformer_is_quantised
         _warn(logger, f"{scheme} (weight-only)", exc)
         return None
+
+
+def quantize_runtime_leftovers(
+    transformer: Any,
+    scheme: str,
+    family: Optional[str],
+    baked_excludes: Any,
+    *,
+    min_features: int = DEFAULT_MIN_LINEAR_FEATURES,
+    device: Any = None,
+    logger: Any = None,
+) -> int:
+    """Quantise the dense Linears an artifact baked under ``baked_excludes`` that this runtime quantises
+    (``runtime_quant_tokens_for_scheme``), with the in-place build's own config, so a hosted checkpoint renders like a
+    fresh build without a republish. A host-placed Linear is quantised on ``device`` (CUDA) and moved back.
+    Returns the count; 0 when nothing applies."""
+    runtime = runtime_quant_tokens_for_scheme(scheme, family)
+    if not runtime or not isinstance(baked_excludes, (list, tuple)):
+        return 0
+    tokens = tuple(t for t in runtime if t in baked_excludes)
+    if not tokens:
+        return 0
+    import time
+
+    import torch
+    from torchao.quantization import quantize_
+
+    from .diffusion_quant_pad import is_quantized_linear
+
+    keep = make_filter_fn(
+        min_features,
+        exclude_name_tokens = exclude_tokens_for_scheme(scheme, family) + ("lora_",),
+        require_bf16 = True,
+    )
+    targets = [
+        (name, module)
+        for name, module in transformer.named_modules()
+        if isinstance(module, torch.nn.Linear)
+        and any(tok in name.lower() for tok in tokens)
+        and not is_quantized_linear(module)
+        and keep(module, name)
+    ]
+    if not targets:
+        return 0
+    work = None
+    try:
+        work = torch.device(device) if device is not None else None
+    except Exception:  # noqa: BLE001 - an unparsable device quantises in place
+        work = None
+    if work is not None and work.type != "cuda":
+        work = None
+    config = _make_quant_config(scheme)
+    t0 = time.perf_counter()
+    for _name, module in targets:
+        home = module.weight.device
+        hop = work is not None and home.type == "cpu"
+        if hop:
+            module.to(work)
+        quantize_(module, config)
+        if hop:
+            module.to(home)
+    if logger is not None:
+        logger.info(
+            "diffusion.transformer_quant: quantised %d %s Linear(s) the artifact kept dense (%s) in %.1f s",
+            len(targets),
+            scheme,
+            ", ".join(tokens),
+            time.perf_counter() - t0,
+        )
+    return len(targets)
 
 
 def _first_weight_dtype(module: Any) -> Any:

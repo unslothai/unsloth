@@ -263,11 +263,28 @@ _QWEN_REDUCTION_RACE_ARCHS: tuple[tuple[int, int], ...] = _REDUCTION_RACE_ARCHS 
 # --- Shared FamilyProfile data (see family_profile.FamilyProfile) ---
 
 # int8 PER-FAMILY exclusions, on top of diffusion_transformer_quant._INT8_EXCLUDE_NAME_TOKENS. Qwen-Image MMDiT runs
-# every TEXT-stream Linear at M = actual prompt tokens (unpadded, unlike FLUX's 512-token T5), so a short prompt falls
-# under _int_mm's M floor of 16 and the denoise crashes. bf16 there costs ~nothing. Baked into the published int8
-# artifacts of qwen-image / qwen-image-edit, so it moves only with a rebuild and republish.
+# every TEXT-stream Linear at M = actual prompt tokens (unpadded, unlike FLUX's 512-token T5), and the empty negative
+# of every true-CFG render is ~6 rows: under _int_mm's floor of 16 a COMPILED torchao int8 Linear raises (eager falls
+# back to an fp32 matmul, the native W8A8 Linear to a dense one). Baked into the published int8 artifacts of
+# qwen-image / qwen-image-edit and kept by training and resident builds; a streamed qwen-image build quantises and
+# pads part of it (below).
 _QWENIMAGE_INT8_EXCLUDES = (
     "txt_in",
+    "add_q_proj",
+    "add_k_proj",
+    "add_v_proj",
+    "to_add_out",
+    "txt_mlp",
+)
+# What a STREAMED qwen-image (t2i) int8 build quantises anyway (FamilyProfile.int8_runtime_quant_tokens), row-padded
+# to 32 so the compiled GEMM never sees M < 17. The text stream is 6.3 of the 31.7 GiB int8 DiT, which a streamed load
+# uploads every step: Qwen-Image-2512, RTX PRO 6000, 1024^2, 20 steps, 16 GiB budget: 12.90 -> 10.43 s/image, 33.3 ->
+# 26.7 GiB H2D per step. A resident build keeps it dense (int8 there measured +1.4% s/image, and LPIPS-alex vs bf16
+# over 16 calibration prompts 0.0765 -> 0.0900 on 2512 and 0.059 -> 0.077 on Qwen-Image: paired ties that lean worse).
+# txt_in stays dense everywhere: quantising it too scored 0.110 / 0.086, the latter worse with its CI clear of 0.
+# UNSLOTH_DIFFUSION_INT8_TEXT_STREAM=0 keeps the streamed text stream dense too. The edit / layered siblings are
+# unmeasured.
+_QWENIMAGE_TEXT_STREAM_INT8 = (
     "add_q_proj",
     "add_k_proj",
     "add_v_proj",
@@ -865,6 +882,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         label = "Qwen-Image",
         profile = FamilyProfile(
             int8_exclude_tokens = _QWENIMAGE_INT8_EXCLUDES,
+            int8_runtime_quant_tokens = _QWENIMAGE_TEXT_STREAM_INT8,
             scheme_deny = _QWENIMAGE_SCHEME_DENY,
             train_scheme_deny = _QWENIMAGE_TRAIN_SCHEME_DENY,
             auto_prefer = _GATED_AUTO_PREFER,
