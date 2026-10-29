@@ -696,10 +696,10 @@ def _pin_world(monkeypatch, budget_bytes):
 @pytest.mark.parametrize(
     "budget,te_gb,dit_gb,expected",
     [
-        (60, 27, 20, None),  # both fit: the stock decision
-        (40, 27, 20, False),  # the conditioner alone fits, not beside the streamed denoiser
-        (20, 27, 20, None),  # the conditioner would not pin anyway
-        (15, 10, 20, False),  # the denoiser alone exceeds the budget: its blocks still get it first
+        (60, 27, 20, None),
+        (40, 27, 20, False),
+        (20, 27, 20, None),
+        (15, 10, 20, False),
     ],
 )
 def test_conditioner_pin_yields_to_a_streamed_denoiser(monkeypatch, budget, te_gb, dit_gb, expected):
