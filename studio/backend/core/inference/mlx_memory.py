@@ -954,8 +954,7 @@ def _dequantized_row_bytes(widths, dtype_size: int, kv_bits, kv_group_size, pref
         return None
     try:
         dtype = mx.float32 if dtype_size == 4 else mx.bfloat16
-        # The route reads the cache length: a causal chunk never fuses over fewer keys than
-        # queries, and every chunk after the first attends to more keys than it adds (#15935).
+        # A causal chunk never fuses over fewer keys than queries; later chunks see more (#15935).
         cached = prefill_chunk + 1
 
         def rows(width):
