@@ -27,14 +27,17 @@ class _Module:
 class _Recorder(mem._GroupPinner):
     """Records when its pin ran instead of pinning; ``hold`` keeps it busy until set."""
 
-    def __init__(self, name, log, hold = None):
+    def __init__(self, name, log, hold = None, fast = False):
         super().__init__(_Module(name), [_Group()], None, None)
         self.name = name
         self.log = log
         self.hold = hold
+        self.fast = fast
 
     def _run(self):
         self.log.append(("start", self.name))
+        if self.fast:
+            self.pinned = 64 << 30
         if self.hold is not None:
             self.hold.wait(10)
         self.log.append(("end", self.name))
@@ -46,9 +49,12 @@ def _late(by, *names):
     return tuple(by[n].module if n in by else _Module(n) for n in names)
 
 
-def _pipe(log, holds):
+def _pipe(log, holds, fast = False):
     pipe = _Pipe()
-    pinners = [_Recorder(name, log, holds.get(name)) for name in ("transformer", "transformer_2", "text_encoder")]
+    pinners = [
+        _Recorder(name, log, holds.get(name), fast)
+        for name in ("transformer", "transformer_2", "text_encoder")
+    ]
     setattr(pipe, mem._PENDING_PINS_ATTR, pinners)
     return pipe, {p.name: p for p in pinners}
 
@@ -132,3 +138,36 @@ def test_a_stop_while_the_late_expert_waits_releases_its_groups(monkeypatch):
     assert ("start", "transformer_2") not in log
     hold.set()
     mem.stop_background_pins(pipe)
+
+
+def test_fast_pins_run_the_late_expert_beside_the_others_and_the_render_waits_for_it(monkeypatch):
+    monkeypatch.delenv(mem.LATE_EXPERT_PIN_ENV, raising = False)
+    monkeypatch.setattr(mem, "_LATE_PIN_PROBE_S", 0.05)
+    log: list = []
+    hold = threading.Event()
+    pipe, by = _pipe(log, {"transformer": hold, "text_encoder": hold}, fast = True)
+    mem.defer_late_expert_pins(pipe, _late(by, "transformer_2"))
+    mem.start_background_pins(pipe)
+    deadline = time.time() + 5
+    while ("end", "transformer_2") not in log and time.time() < deadline:
+        time.sleep(0.02)
+    assert ("end", "transformer_2") in log and ("end", "transformer") not in log
+    assert not by["transformer_2"].late
+    hold.set()
+    mem.finish_background_pins(pipe, include_late = False)
+    assert not any(p._thread.is_alive() for p in by.values())
+
+
+def test_slow_pins_keep_the_late_expert_behind_the_others(monkeypatch):
+    monkeypatch.delenv(mem.LATE_EXPERT_PIN_ENV, raising = False)
+    monkeypatch.setattr(mem, "_LATE_PIN_PROBE_S", 0.05)
+    log: list = []
+    hold = threading.Event()
+    pipe, by = _pipe(log, {"transformer": hold})
+    mem.defer_late_expert_pins(pipe, _late(by, "transformer_2"))
+    mem.start_background_pins(pipe)
+    time.sleep(0.4)
+    assert ("start", "transformer_2") not in log and by["transformer_2"].late
+    hold.set()
+    mem.finish_background_pins(pipe)
+    assert log.index(("start", "transformer_2")) > log.index(("end", "transformer"))

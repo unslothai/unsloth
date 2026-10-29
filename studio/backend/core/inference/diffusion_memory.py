@@ -6764,11 +6764,28 @@ class _GroupPinner:
                 self._thread.start()
 
     def _entry(self) -> None:
+        import time
+
+        began = time.perf_counter()
         for dep in self.after:
             dep.start()
-            while not dep.join(0.25):
-                if self._stop.is_set():
-                    break
+        while self.after and not self._stop.is_set():
+            if all(dep.join(0) for dep in self.after):
+                break
+            elapsed = time.perf_counter() - began
+            # Fast pins are bound by the copy and register, not the disk: pinning beside the others wins there,
+            # and overlapping the render only moves the register cost into the encode (G4: +1.1 s).
+            rate = sum(dep.pinned for dep in self.after) / elapsed
+            if elapsed >= _LATE_PIN_PROBE_S and rate >= _LATE_PIN_PARALLEL_BPS:
+                self.late = False
+                if self.logger is not None:
+                    self.logger.info(
+                        "diffusion.memory: host weights pin at %.1f GiB/s; %s pins beside the others",
+                        rate / 2**30,
+                        self.label,
+                    )
+                break
+            time.sleep(0.1)
         if self._stop.is_set():
             for event in self._done.values():
                 event.set()
@@ -6996,8 +7013,11 @@ def finish_background_pins(pipe: Any, cancel: Any = None, include_late: bool = T
     import time
 
     start = time.perf_counter()
-    for pinner in list(getattr(pipe, _PENDING_PINS_ATTR, None) or ()):
+    pinners = list(getattr(pipe, _PENDING_PINS_ATTR, None) or ())
+    for pinner in pinners:
         pinner.start()
+    # Late pinners last: one may still turn early until the pinners before it finish.
+    for pinner in sorted(pinners, key = lambda p: bool(getattr(p, "late", False))):
         if not include_late and getattr(pinner, "late", False):
             continue
         # Polled so a cancelled request leaves now; the pin itself keeps running for the next render.
@@ -7009,11 +7029,14 @@ def finish_background_pins(pipe: Any, cancel: Any = None, include_late: bool = T
 
 # "0": a two-expert denoiser's second expert pins beside the other weights, before the first render.
 LATE_EXPERT_PIN_ENV = "UNSLOTH_VIDEO_LATE_EXPERT_PIN"
+_LATE_PIN_PROBE_S = 0.5
+_LATE_PIN_PARALLEL_BPS = 3 << 30
 
 
 def defer_late_expert_pins(pipe: Any, late_modules: Any, logger: Any = None) -> int:
-    """Pin ``late_modules`` after the other pinners of ``pipe``; the render waits only for those, and a late group's
-    onload still waits for its own pin. A returning Wan2.2-A14B load read all three from disk at once (47.8 s)."""
+    """Pin ``late_modules`` after the other pinners of ``pipe`` when pinning is disk-bound; the render waits only for
+    those, and a late group's onload still waits for its own pin. A returning Wan2.2-A14B load read both experts and
+    the encoder from disk at once, and its first render waited 47.8 s for all three (A100)."""
     if _env_off(LATE_EXPERT_PIN_ENV):
         return 0
     late_ids = {id(m) for m in late_modules or () if m is not None}
