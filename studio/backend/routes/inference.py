@@ -11360,7 +11360,7 @@ async def _maybe_auto_switch_model(
                         param = "model",
                     ),
                 ) from None
-        # Resolver hits and idle-stash restores alike: the load carries this account's approval of the code on disk.
+        # Stash restores too: the load carries this account's approval of the code on disk.
         remote_code_fingerprint = (
             None
             if target_is_gguf
