@@ -240,12 +240,16 @@ def _run() -> None:
 
 
 def _connect(db_file: str) -> sqlite3.Connection:
-    from storage import rag_db
+    from storage import rag_db, sqlite_gate
 
-    conn = sqlite3.connect(db_file, timeout = 5)
-    conn.enable_load_extension(True)
-    rag_db.sqlite_vec.load(conn)
-    conn.enable_load_extension(False)
+    conn = sqlite_gate.connect(db_file, timeout = 5)
+    try:
+        conn.enable_load_extension(True)
+        rag_db.sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
+    except BaseException:
+        conn.close()
+        raise
     return conn
 
 

@@ -279,3 +279,15 @@ def test_a_database_without_the_epoch_table_still_serves(rag_conn, monkeypatch):
     assert got == _search(rag_conn, "kb_a", q, 5, monkeypatch, False)
     assert not vec_cache._entries
     assert math.isfinite(got[0][1])
+
+
+def test_the_builder_opens_and_closes_through_the_connection_gate(monkeypatch, tmp_path):
+    from core.rag import vec_cache
+    from storage import sqlite_gate
+
+    opened = []
+    real = sqlite_gate.connect
+    monkeypatch.setattr(sqlite_gate, "connect", lambda *a, **kw: opened.append(a) or real(*a, **kw))
+    conn = vec_cache._connect(str(tmp_path / "x.db"))
+    assert isinstance(conn, sqlite_gate.GatedConnection) and len(opened) == 1
+    conn.close()
