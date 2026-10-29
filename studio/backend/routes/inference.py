@@ -11360,13 +11360,13 @@ async def _maybe_auto_switch_model(
                         param = "model",
                     ),
                 ) from None
-        # Only code this account approved in the UI resolves here; the load passes that approval on.
+        # Resolver hits and idle-stash restores alike: the load carries this account's approval of the code on disk.
         remote_code_fingerprint = (
-            await asyncio.to_thread(
+            None
+            if target_is_gguf
+            else await asyncio.to_thread(
                 approved_local_fingerprint, current_subject, override_id, target_id
             )
-            if resolved is not None and not target_is_gguf
-            else None
         )
         key = _switch_key(override_id, variant)
         _note_switch_waiter(key, 1)

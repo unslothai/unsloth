@@ -10391,7 +10391,9 @@ def _custom_code_checkpoint(root):
     (path / "config.json").write_text(
         '{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "auto_map": {"AutoModel": "modeling.MyModel"}}'
     )
-    (path / "modeling.py").write_text(_CUSTOM_CODE)
+    (path / "modeling.py").write_bytes(
+        _CUSTOM_CODE.encode()
+    )  # write_text turns \n into \r\n on Windows
     return path
 
 
@@ -10420,8 +10422,11 @@ def test_a_custom_code_checkpoint_is_switchable_only_with_its_approval(tmp_path)
     assert resolver.local_servable_model(info) == (False, ())
 
 
+@pytest.mark.parametrize("via_stash", [False, True])
 @pytest.mark.parametrize("approved", [True, False])
-def test_an_approved_custom_code_target_loads_with_its_approval(monkeypatch, tmp_path, approved):
+def test_an_approved_custom_code_target_loads_with_its_approval(
+    monkeypatch, tmp_path, approved, via_stash
+):
     from utils.security.consent import evaluate_remote_code_consent_for_targets
 
     path = str(_custom_code_checkpoint(tmp_path))
@@ -10432,7 +10437,7 @@ def test_an_approved_custom_code_target_loads_with_its_approval(monkeypatch, tmp
 
     _wire_on(
         monkeypatch,
-        resolves_to = (path, None, "org/CustomCode"),
+        resolves_to = None if via_stash else (path, None, "org/CustomCode"),
         backend = _FakeBackend(None),
         recorder = _load,
     )
@@ -10443,7 +10448,14 @@ def test_an_approved_custom_code_target_loads_with_its_approval(monkeypatch, tmp
     )
     if approved:
         _approve_custom_code("tester")
-    _run_hook("org/CustomCode")
+    if via_stash:
+        # An idle unload of the API-loaded model, restored by a request that names no model.
+        monkeypatch.setattr(kw, "_inflight", 0)
+        monkeypatch.setattr(kw, "_last_unloaded_model", (path, None, "org/CustomCode"))
+        monkeypatch.setattr(kw, "_last_unloaded_mlx", True)
+        _run_hook(inference_route._RELOAD_ONLY_MODEL)
+    else:
+        _run_hook("org/CustomCode")
 
     assert [c.model_path for c in calls] == [path]
     assert calls[0].trust_remote_code is approved
