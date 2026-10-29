@@ -2093,8 +2093,6 @@ class TestTheResultIsFittedAsItIsReplayed:
 
 class TestAPruneReadsTheRecordOnce:
     def test_the_rewrite_reuses_the_identity_it_already_read(self, tmp_path, monkeypatch):
-        """The prune already read the record, header included, under the same lock, so the
-        rewrite takes the identity from there instead of reading the whole record again."""
         for n in range(tools._SPILL_KEEP + 5):
             tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
         root = tmp_path / tools._SPILL_DIR
@@ -2119,9 +2117,7 @@ class TestAPruneReadsTheRecordOnce:
     def test_a_record_forgotten_during_the_prune_does_not_get_its_identity_back(
         self, tmp_path, monkeypatch
     ):
-        """Removing a sandbox drops the record without the spill lock. The rewrite then writes no
-        identity, as a fresh read would give, so a directory recreated at that path is not
-        refused as someone else's."""
+        """Sandbox removal drops the record without the spill lock; a recreated directory must not inherit it."""
         for n in range(tools._SPILL_KEEP + 5):
             tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
         root = tmp_path / tools._SPILL_DIR
@@ -2155,7 +2151,6 @@ class TestAPruneReadsTheRecordOnce:
         assert len(_spills(root)) == tools._SPILL_KEEP
 
     def test_a_spill_whose_content_no_longer_matches_is_not_deleted(self, tmp_path, monkeypatch):
-        """Listing goes by stamp alone; the digest still decides the delete."""
         for n in range(tools._SPILL_KEEP + 1):
             tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
         root = tmp_path / tools._SPILL_DIR

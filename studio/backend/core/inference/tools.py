@@ -20984,8 +20984,7 @@ def _prune_spills_locked(target_dir: str, root: str) -> None:
             if _unlink_verified_spill(root, path, owned):
                 removed.add(path)
         # Manifest follows the files: a name left after its file is gone would still count as owned.
-        # Removing a sandbox drops its record without this lock, so the identity read above is
-        # reused only while the record is still there; a recreated directory must not inherit it.
+        # Sandbox removal drops the record without this lock; a recreated directory must not inherit it.
         if not os.path.exists(_spill_record_path(root)):
             identity = None
         _write_spill_manifest(
