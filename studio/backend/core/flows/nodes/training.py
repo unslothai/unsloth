@@ -686,7 +686,9 @@ def _eval_rows(dataset: dict, token: Any, split: str) -> list[dict]:
     """The whole evaluation split: those rows are scored, not held out, so the hold-out cap doesn't apply."""
     from datasets import load_dataset
 
-    loaded = load_dataset(str(dataset["ref"]), dataset.get("subset") or None, split = split, token = token)
+    loaded = load_dataset(
+        str(dataset["ref"]), dataset.get("subset") or None, split = split, token = token
+    )
     return _jsonable(loaded.to_list())
 
 

@@ -580,7 +580,11 @@ def test_hub_eval_split_survives_the_hold_out(monkeypatch):
         return ROWS if dataset.get("split") == "train" else ROWS[:5]
 
     monkeypatch.setattr(training, "_load_rows", load_rows)
-    monkeypatch.setattr(training, "_eval_rows", lambda dataset, token, split: load_rows({**dataset, "split": split}, token, None))
+    monkeypatch.setattr(
+        training,
+        "_eval_rows",
+        lambda dataset, token, split: load_rows({**dataset, "split": split}, token, None),
+    )
     started = []
     ctx = _Ctx(_recipe_routes(started), holdout_percent = 10, eval_split = "test", eval_steps = 0.1)
     ctx.inputs = {
@@ -773,6 +777,10 @@ def test_the_evaluation_split_is_not_held_to_the_hold_out_cap(monkeypatch):
     import datasets
 
     big = datasets.Dataset.from_dict({"q": list(range(training.HOLDOUT_MAX_ROWS + 5))})
-    monkeypatch.setattr(datasets, "load_dataset", lambda *a, split = None, **k: big if split == "test" else pytest.fail(split))
+    monkeypatch.setattr(
+        datasets,
+        "load_dataset",
+        lambda *a, split = None, **k: big if split == "test" else pytest.fail(split),
+    )
     rows = training._eval_rows({"ref": "org/data"}, None, "test")
     assert len(rows) == training.HOLDOUT_MAX_ROWS + 5
