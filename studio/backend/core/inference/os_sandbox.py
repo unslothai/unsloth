@@ -41,10 +41,10 @@ def _pip_prefix_lib_dirs() -> tuple[str, ...]:
         scheme = sysconfig.get_preferred_scheme("prefix")
     else:
         scheme = "nt" if os.name == "nt" else "posix_prefix"
-    paths = sysconfig.get_paths(scheme, vars = {"base": os.sep, "platbase": os.sep})
-    return tuple(
-        dict.fromkeys(os.path.relpath(paths[key], os.sep) for key in ("purelib", "platlib"))
-    )
+    # A bare separator base turns nt's "{base}/Lib" into a UNC path that relpath rejects.
+    base = os.path.join(os.path.abspath(os.sep), "prefix")
+    paths = sysconfig.get_paths(scheme, vars = {"base": base, "platbase": base})
+    return tuple(dict.fromkeys(os.path.relpath(paths[key], base) for key in ("purelib", "platlib")))
 
 
 _PIP_PREFIX_LIB_DIRS = _pip_prefix_lib_dirs()

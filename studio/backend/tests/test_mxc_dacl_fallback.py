@@ -6,6 +6,7 @@ import base64
 import os
 import shutil
 import sys
+import sysconfig
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -561,6 +562,8 @@ def test_mxc_workloads_install_into_and_import_from_the_session_packages(tmp_pat
     pythonpath = env["PYTHONPATH"].split(os.pathsep)
     assert pythonpath[0] == "/shim"
     assert pythonpath[-1] == packages
+    site = sysconfig.get_path("purelib", vars = {"base": packages, "platbase": packages})
+    assert os.path.normcase(site) in map(os.path.normcase, pythonpath)
     assert "PATH" not in env, "a second PATH beside Path is ambiguous on Windows"
     assert env["Path"].split(os.pathsep)[0] == "/windows/system32"
     assert os.path.join(packages, "Scripts") in env["Path"].split(os.pathsep)
