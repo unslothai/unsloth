@@ -18311,6 +18311,8 @@ class LlamaCppBackend:
             total_ram_mib = self._total_system_memory_mib()
             if total_ram_mib is None:
                 return None
+            if self._host_offload_fits_without_gpus(argv, total_ram_mib):
+                return None
             probed = self._get_gpu_memory(binary)
             # an igpu and a MIG/vGPU line report total 0, leaving the ceiling unknown
             if any(total <= 0 for _idx, _free, total in probed):
@@ -18323,6 +18325,22 @@ class LlamaCppBackend:
         except Exception as e:  # noqa: BLE001 -- a probe that failed is not a verdict
             logger.debug("Host-RAM preflight failed for the route: %s", e)
         return None
+
+    def _host_offload_fits_without_gpus(self, argv: list[str], total_ram_mib: int) -> bool:
+        """Whole GGUF fits RAM less headroom: every credit (VRAM, lazy read) only lowers the
+        priced bytes, so no GPU probe can warn. False when unsure or opted out (that path logs)."""
+        if self._host_offload_warning_opted_out():
+            return False
+        model_path = _extra_args_device(argv, self._ARGV_MODEL)
+        if not model_path:
+            return False
+        try:
+            model_bytes = self._get_gguf_size_bytes(model_path)
+        except Exception:  # noqa: BLE001
+            return False
+        return 0 < model_bytes and model_bytes / (1024 * 1024) <= (
+            total_ram_mib - _HOST_RAM_HEADROOM_MIB
+        )
 
     # Each ask may take several 15s Hub calls, so the route hands its verdict to the load.
     # Taken once by its own load; the TTL only covers a route ask no load came for.
