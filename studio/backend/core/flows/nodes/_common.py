@@ -536,6 +536,7 @@ async def _chat_body(
     thinking: bool,
     seed: Optional[int],
     stream: bool,
+    sampling: Optional[dict] = None,
 ) -> dict:
     cancel_id = f"flow-{uuid.uuid4().hex[:24]}"
     body: dict[str, Any] = {
@@ -550,6 +551,7 @@ async def _chat_body(
     }
     if seed is not None:
         body["seed"] = int(seed)
+    body.update(sampling or {})
 
     _register_chat_cancel(ctx, cancel_id)
     return body
@@ -574,6 +576,7 @@ async def llm_text(
     thinking: bool = False,
     seed: Optional[int] = None,
     stream_port: Optional[str] = "text",
+    sampling: Optional[dict] = None,
 ) -> str:
     from core.flows import caller as flow_caller
     from state.tool_policy import tools_force_disabled
@@ -590,6 +593,7 @@ async def llm_text(
         thinking = thinking,
         seed = seed,
         stream = bool(stream_port),
+        sampling = sampling,
     )
     ctx.check_cancelled()
     if not stream_port:
@@ -713,6 +717,7 @@ async def llm_json(
     images: Optional[list[dict]] = None,
     on_text: Optional[Callable[[str], None]] = None,
     retry_bad_json: bool = True,
+    sampling: Optional[dict] = None,
 ) -> Any:
     """``on_text`` streams the answer: it is called with the raw JSON written so far after every chunk.
     ``retry_bad_json = False`` raises on an unparsable answer instead of asking again (servers without
@@ -731,6 +736,7 @@ async def llm_json(
         thinking = False,
         seed = seed,
         stream = on_text is not None,
+        sampling = sampling,
     )
     body["response_format"] = {
         "type": "json_schema",

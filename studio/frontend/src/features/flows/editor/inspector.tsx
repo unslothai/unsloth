@@ -25,6 +25,8 @@ import {
   PlayIcon,
 } from "./icon-data";
 import { nodeIcon } from "./icons";
+import { LLM_SETTINGS_NODES, withoutPanelParams } from "./llm-settings";
+import { LlmSettingsPanel } from "./llm-settings-panel";
 import { NodeIconTile } from "./node-card";
 import { NodeHistory } from "./node-history";
 import { rerollNode, runToNode } from "./node-actions";
@@ -103,7 +105,10 @@ function InspectorImpl() {
   const inLoop = useDocStore(
     (s) => !!nodeId && loopMembers(Object.values(s.graph.nodes)).has(nodeId),
   );
-  const spec = useCatalogStore((s) => (node ? s.specs[node.type] : undefined));
+  const fullSpec = useCatalogStore((s) =>
+    node ? s.specs[node.type] : undefined,
+  );
+  const spec = withoutPanelParams(fullSpec);
   const [viewed, setViewed] = useState<Record<string, unknown> | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const color =
@@ -291,6 +296,9 @@ function InspectorImpl() {
         </section>
         {spec.type.startsWith("trigger.") && (
           <TriggerPanel nodeId={node.id} kind={spec.type} />
+        )}
+        {fullSpec && LLM_SETTINGS_NODES.has(spec.type) && (
+          <LlmSettingsPanel node={node} spec={fullSpec} />
         )}
         <NodeOutputs nodeId={node.id} spec={spec} />
         {viewed && (

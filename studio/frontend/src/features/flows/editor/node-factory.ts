@@ -13,6 +13,7 @@ import {
   outHandle,
   wouldCreateCycle,
 } from "./connection-rules";
+import { newCardParams } from "./llm-settings";
 
 export const NODE_DRAG_MIME = "application/x-unsloth-flow-node";
 
@@ -22,7 +23,8 @@ export function createNode(
 ): FlowNode | null {
   const spec = getSpec(type);
   if (!spec) return null;
-  return { id: newId("n"), type, v: spec.v, params: defaultParams(spec), pos };
+  const params = newCardParams(type, defaultParams(spec));
+  return { id: newId("n"), type, v: spec.v, params, pos };
 }
 
 export interface ConnectRequest {
