@@ -7,12 +7,27 @@ import contextlib
 import subprocess
 import sys
 import threading
+import types
 from typing import Iterator
 
 _SEM_FAILCRITICALERRORS = 0x0001
-_error_mode_lock = threading.Lock()
-_error_mode_holders = 0
-_error_mode_before = 0
+
+
+def _process_error_mode_state() -> types.ModuleType:
+    """One per process, not per module copy: the installer loads this file as
+    backend.utils.subprocess_compat while the backend loads it as utils.subprocess_compat."""
+    name = "_unsloth_windows_error_mode"
+    state = sys.modules.get(name)
+    if state is None:
+        fresh = types.ModuleType(name)
+        fresh.lock = threading.Lock()
+        fresh.held = {}  # holder token -> the flags it needs
+        fresh.before = 0  # the mode before the first holder entered
+        state = sys.modules.setdefault(name, fresh)
+    return state
+
+
+_ERROR_MODE = _process_error_mode_state()
 
 
 def windows_hidden_subprocess_kwargs() -> dict[str, object]:
@@ -37,12 +52,19 @@ def windows_hidden_subprocess_kwargs() -> dict[str, object]:
     return kwargs
 
 
+def _apply_held_error_mode(kernel32) -> None:
+    flags = 0
+    for held in _ERROR_MODE.held.values():
+        flags |= held
+    kernel32.SetErrorMode(_ERROR_MODE.before | flags)
+
+
 @contextlib.contextmanager
-def windows_loader_error_boxes_suppressed() -> Iterator[None]:
+def windows_loader_error_boxes_suppressed(flags: int = _SEM_FAILCRITICALERRORS) -> Iterator[None]:
     """Hold around a test-launch: the child inherits SEM_FAILCRITICALERRORS, so a missing DLL
     exits 0xC0000135 instead of blocking on a modal box until someone dismisses it. The mode is
-    process-wide, so concurrent holders share one change and the last one out restores it."""
-    global _error_mode_holders, _error_mode_before
+    process-wide, so every holder (the installer's too) shares one record: the mode is the one
+    before the first holder plus every current holder's flags, and the last one out restores it."""
     if sys.platform != "win32":
         yield
         return
@@ -52,15 +74,15 @@ def windows_loader_error_boxes_suppressed() -> Iterator[None]:
     except Exception:  # noqa: BLE001 -- best effort; the launch still runs
         yield
         return
-    with _error_mode_lock:
-        if _error_mode_holders == 0:
-            mode = kernel32.GetErrorMode() | _SEM_FAILCRITICALERRORS
-            _error_mode_before = kernel32.SetErrorMode(mode)
-        _error_mode_holders += 1
+    token = object()
+    with _ERROR_MODE.lock:
+        if not _ERROR_MODE.held:
+            _ERROR_MODE.before = kernel32.GetErrorMode()
+        _ERROR_MODE.held[token] = flags
+        _apply_held_error_mode(kernel32)
     try:
         yield
     finally:
-        with _error_mode_lock:
-            _error_mode_holders -= 1
-            if _error_mode_holders == 0:
-                kernel32.SetErrorMode(_error_mode_before)
+        with _ERROR_MODE.lock:
+            del _ERROR_MODE.held[token]
+            _apply_held_error_mode(kernel32)

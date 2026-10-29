@@ -23,7 +23,7 @@ _STATUS_DLL_NOT_FOUND = 0xC0000135
 @pytest.fixture
 def error_mode(monkeypatch):
     """A fake kernel32 on win32; ``state["value"]`` is the process error mode."""
-    state = {"value": 0x8000, "sets": 0}
+    state = {"value": 0x8000}
 
     class _Kernel32:
         def GetErrorMode(self):
@@ -31,12 +31,13 @@ def error_mode(monkeypatch):
 
         def SetErrorMode(self, value):
             previous, state["value"] = state["value"], value
-            state["sets"] += 1
             return previous
 
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(ctypes, "WinDLL", lambda _name: _Kernel32(), raising = False)
-    return state
+    yield state
+    # A failed test can leave a holder behind; the record is process-wide.
+    subprocess_compat._ERROR_MODE.held.clear()
 
 
 def _record_mode(
@@ -71,7 +72,6 @@ def test_nested_holders_keep_the_bit_until_the_last_one_leaves(error_mode):
     assert error_mode["value"] == 0x8001
     inner.__exit__(None, None, None)
     assert error_mode["value"] == 0x8000
-    assert error_mode["sets"] == 2
 
 
 def test_concurrent_holders_never_see_the_bit_cleared(error_mode):
@@ -106,6 +106,45 @@ def test_off_windows_the_mode_is_untouched(monkeypatch):
     )
     with subprocess_compat.windows_loader_error_boxes_suppressed():
         pass
+
+
+def _installer_and_backend_helpers():
+    installer = bk._installer_module()
+    # The installer loads its own copy of this module; the record must still be one per process.
+    assert sys.modules["backend.utils.subprocess_compat"] is not subprocess_compat
+    return (
+        installer._windows_error_mode_suppressed,
+        subprocess_compat.windows_loader_error_boxes_suppressed,
+    )
+
+
+def test_installer_leaving_first_keeps_the_backend_probes_bit(error_mode):
+    installer_scope, backend_scope = _installer_and_backend_helpers()
+    install = installer_scope()
+    probe = backend_scope()
+    install.__enter__()
+    probe.__enter__()
+    assert error_mode["value"] == 0x8003
+    install.__exit__(None, None, None)
+    # The install's crash-box flags go; the probe still holds SEM_FAILCRITICALERRORS.
+    assert error_mode["value"] == 0x8001
+    with backend_scope():
+        assert error_mode["value"] == 0x8001
+    probe.__exit__(None, None, None)
+    assert error_mode["value"] == 0x8000
+
+
+def test_backend_probe_leaving_first_keeps_the_installers_flags(error_mode):
+    installer_scope, backend_scope = _installer_and_backend_helpers()
+    probe = backend_scope()
+    install = installer_scope()
+    probe.__enter__()
+    install.__enter__()
+    probe.__exit__(None, None, None)
+    assert error_mode["value"] == 0x8003
+    install.__exit__(None, None, None)
+    # Nothing left set for good, SEM_NOGPFAULTERRORBOX included.
+    assert error_mode["value"] == 0x8000
 
 
 def test_server_runnable_probe_launches_with_the_bit_and_reads_dll_not_found(
