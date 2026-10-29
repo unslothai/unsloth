@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Vision-model helpers for ingestion: figure captioning and scanned-page OCR.
-
-Both turn pixels into indexable text and are a no-op (never raise) without a loaded
-vision model. They reuse the chat model's vision endpoint, so it must be served with
-``--ubatch-size`` >= one image's tokens (some encoders, e.g. Gemma, attend
-non-causally and abort otherwise); Unsloth's vision chat already requires this."""
+"""Figure captioning and scanned-page OCR for ingestion; no-op (never raises) without a loaded
+vision model; chat endpoint needs --ubatch-size >= the tokens of one image."""
 
 from __future__ import annotations
 

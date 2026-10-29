@@ -1,18 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Keep the turns the rolling context window evicts, and hand them back on request.
-
-Each evicted turn is indexed into a per-thread RAG scope, reusing the store, chunker, embedder and
-hybrid retrieval that back attached documents. The stored transcript is never touched; this is only
-a search index over turns the projection cannot carry.
-
-Two properties are load-bearing and easy to break. The archive is CUMULATIVE: nothing is cleared or
-re-scoped per compaction, so the fifth compaction can still find what the first evicted (on MRCR v2
-over 11 compaction events, cumulative scored 0.450 against 0.058 for latest-compaction-only). And
-nothing here may break a chat: every entry point no-ops on failure, because the alternative to a
-degraded archive is a working conversation, not an error.
-"""
+"""Search index over evicted turns in a per-thread RAG scope; transcript untouched; cumulative,
+never reset per compaction; entry points no-op on failure."""
 
 from __future__ import annotations
 
@@ -2272,8 +2262,17 @@ def _candidates(conn, scope: str, query: str, model, fetch: int, thread_id: str)
     if len(hits) < fetch:
         try:
             seen = {hit.chunk_id for hit in hits}
+            # Legs sized to the fetch: at the default 30 each, widening past 60 reads as an exhausted archive.
+            legs = max(fetch, config.TOP_K_LEXICAL, config.TOP_K_DENSE)
             for hit in retrieval.retrieve_hybrid(
-                conn, scope, query, k = fetch, model_name = model, mode = "hybrid"
+                conn,
+                scope,
+                query,
+                k = fetch,
+                model_name = model,
+                mode = "hybrid",
+                lexical_k = legs,
+                dense_k = legs,
             ):
                 if hit.chunk_id not in seen:
                     hits.append(hit)
@@ -2300,6 +2299,26 @@ def recall(
     forced: bool = False,
 ) -> Optional[tuple[str, list[dict]]]:
     """Lexical first, since recall is mostly exact match; no relevance floor, as weak matches beat none."""
+    with retrieval.query_vector_memo():
+        return _recall(
+            thread_id,
+            query,
+            top_k = top_k,
+            branch_messages = branch_messages,
+            extra_queries = extra_queries,
+            forced = forced,
+        )
+
+
+def _recall(
+    thread_id: str,
+    query: str,
+    *,
+    top_k: Optional[int] = None,
+    branch_messages: Optional[list[dict]] = None,
+    extra_queries: Optional[list[str]] = None,
+    forced: bool = False,
+) -> Optional[tuple[str, list[dict]]]:
     query = (query or "").strip()
     if not thread_id or not query or not enabled():
         return None

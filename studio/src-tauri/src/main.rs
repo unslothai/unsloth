@@ -1437,6 +1437,10 @@ fn setup_unix_termination_signals(app: &tauri::App) -> Result<(), Box<dyn std::e
             // Exit regardless of cleanup success, or SIGTERM leaves the app running and the backend
             // orphaned.
             let cleanup_and_exit = |app: &tauri::AppHandle, exit_code: i32| {
+                // No visibility read: it waits on the UI thread, and a hung UI must not block the reap.
+                if let Some(window) = app.get_window("main") {
+                    let _ = window.hide();
+                }
                 let cleanup = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     cleanup_child_processes(app)
                 }));
@@ -1558,7 +1562,7 @@ enum TerminationConfirmation {
 
 /// Atomically attach AppKit to a visible confirmation or reserve the guard for a new one.
 #[cfg(target_os = "macos")]
-fn begin_or_attach_termination(requires_confirmation: bool) -> TerminationConfirmation {
+fn begin_or_attach_termination(needs_quit_thread: bool) -> TerminationConfirmation {
     let mut state = lock_quit_confirmation_state();
     if state.termination_reply_pending {
         return TerminationConfirmation::Duplicate;
@@ -1567,7 +1571,7 @@ fn begin_or_attach_termination(requires_confirmation: bool) -> TerminationConfir
         state.termination_reply_pending = true;
         return TerminationConfirmation::Attached;
     }
-    if !requires_confirmation {
+    if !needs_quit_thread {
         return TerminationConfirmation::Now;
     }
     state.in_progress = true;
@@ -1581,75 +1585,72 @@ fn take_pending_termination_reply() -> bool {
     std::mem::take(&mut state.termination_reply_pending)
 }
 
-/// Renderer closing overlay. Reaping takes up to ~18s on Windows (probes, shutdown requests,
-/// CTRL_BREAK waits), during which the window would look frozen.
-const APP_CLOSING_EVENT: &str = "app-closing";
-
-const APP_CLOSING_CANCELLED_EVENT: &str = "app-closing-cancelled";
-
-/// A guard rather than paired emits, so early returns and unwinds always retract the overlay.
-struct ClosingOverlay<E: Fn(&str)> {
-    emit: E,
-    retract: bool,
+/// A guard so an unwinding reap, which leaves the app up, brings back the window it hid.
+struct HiddenForQuit<S: FnOnce()> {
+    show: Option<S>,
 }
 
-impl<E: Fn(&str)> ClosingOverlay<E> {
-    fn raise(emit: E) -> Self {
-        emit(APP_CLOSING_EVENT);
-        Self {
-            emit,
-            retract: true,
-        }
-    }
-
+impl<S: FnOnce()> HiddenForQuit<S> {
     fn keep(mut self) {
-        self.retract = false;
+        self.show = None;
     }
 }
 
-impl<E: Fn(&str)> Drop for ClosingOverlay<E> {
+impl<S: FnOnce()> Drop for HiddenForQuit<S> {
     fn drop(&mut self) {
-        if self.retract {
-            (self.emit)(APP_CLOSING_CANCELLED_EVENT);
+        if let Some(show) = self.show.take() {
+            show();
         }
     }
 }
 
-/// Windows only. Skips windows nobody can see (tray quit, `--hidden` start); a minimized window
-/// counts as visible. `None` means no main window; an unreadable visibility raises the overlay.
-fn quit_raises_the_overlay(
-    windows: bool,
+/// Minimized counts as visible; an unreadable visibility hides. Hidden (tray, `--hidden`) is left alone.
+fn main_window_needs_hiding(
     main_window_visible: impl FnOnce() -> Option<Result<bool, String>>,
 ) -> bool {
-    if !windows {
-        return false;
-    }
     match main_window_visible() {
         None => false,
         Some(Ok(visible)) => visible,
         Some(Err(error)) => {
-            warn!("Could not read the main window visibility ({error}); covering the quit anyway");
+            warn!("Could not read the main window visibility ({error}); hiding it anyway");
             true
         }
     }
 }
 
-/// Confirm, cover, reap; returns whether to exit. Blocking parts are injected so the order is
-/// testable. The overlay goes up after the confirm dialogs, never before, and before the reap.
+/// The hide only lands once the event loop runs again: never call this on the main thread before blocking it.
+fn hide_main_window_for_quit(app: &tauri::AppHandle) -> bool {
+    let hide = main_window_on_screen(app);
+    // Not get_webview_window: that is None while browser views are children of the window.
+    if let Some(window) = app.get_window("main").filter(|_| hide) {
+        let _ = window.hide();
+        browser_webview::window_changed(app, None);
+    }
+    hide
+}
+
+fn main_window_on_screen(app: &tauri::AppHandle) -> bool {
+    main_window_needs_hiding(|| {
+        app.get_window("main")
+            .map(|window| window.is_visible().map_err(|e| e.to_string()))
+    })
+}
+
+/// Confirm, hide, reap, in that order; returns whether to exit.
 fn quit_sequence(
     confirm: impl Fn() -> bool,
-    cover: impl FnOnce() -> bool,
+    hide: impl FnOnce() -> bool,
     reap: impl FnOnce(),
-    emit: impl Fn(&str),
+    show: impl FnOnce(),
 ) -> bool {
     if !confirm() {
         return false;
     }
     // Asked after the confirmations, so a declined quit never does the blocking visibility read.
-    let overlay = cover().then(|| ClosingOverlay::raise(emit));
+    let hidden = hide().then(|| HiddenForQuit { show: Some(show) });
     reap();
-    if let Some(overlay) = overlay {
-        overlay.keep();
+    if let Some(hidden) = hidden {
+        hidden.keep();
     }
     true
 }
@@ -1688,21 +1689,9 @@ where
                             && confirm_quit_with_unsaved_transcript(&app)
                             && confirm_quit_during_downloads(&app)
                     },
-                    || {
-                        quit_raises_the_overlay(
-                            // Windows only: there stop_backend's serial budgets made the window
-                            // look frozen.
-                            cfg!(target_os = "windows"),
-                            || {
-                                app.get_window("main")
-                                    .map(|window| window.is_visible().map_err(|e| e.to_string()))
-                            },
-                        )
-                    },
+                    || hide_main_window_for_quit(&app),
                     || cleanup_child_processes(&app),
-                    |event| {
-                        let _ = app.emit(event, ());
-                    },
+                    || show_main_window(&app),
                 )
             }));
             let proceed = result.as_ref().copied().unwrap_or(false);
@@ -1782,7 +1771,8 @@ extern "C-unwind" fn application_should_terminate(
     let Some(app) = TERMINATE_APP_HANDLE.get() else {
         return NS_TERMINATE_NOW;
     };
-    match begin_or_attach_termination(quit_requires_confirmation(app)) {
+    // NSTerminateNow reaps in RunEvent::Exit, which blocks the main thread with the window still up.
+    match begin_or_attach_termination(quit_requires_confirmation(app) || main_window_on_screen(app)) {
         TerminationConfirmation::Now => NS_TERMINATE_NOW,
         TerminationConfirmation::Attached => NS_TERMINATE_LATER,
         TerminationConfirmation::Duplicate => NS_TERMINATE_CANCEL,
@@ -2332,6 +2322,8 @@ fn main() {
             long_paths::windows_long_paths_status,
             long_paths::enable_windows_long_paths,
             desktop_auth::desktop_auth,
+            desktop_auth::desktop_mark_signed_out,
+            desktop_auth::desktop_clear_signed_out,
             desktop_update_policy::check_desktop_manual_update,
             desktop_update_policy::desktop_update_policy,
             desktop_updater::check_desktop_update,
@@ -2404,6 +2396,8 @@ fn main() {
             if let Err(error) = desktop_backend_owner::ensure_installed_studio_root_id() {
                 warn!("Desktop backend ownership id unavailable: {error}");
             }
+            // After the staged-update reconcile, so the preflight's `-h` overlaps the webview load.
+            preflight::start_launch_cli_probe();
             #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
@@ -3102,170 +3096,98 @@ media-src 'self' https:"
         );
     }
 
-    #[test]
-    fn a_quit_that_reaches_exit_covers_the_reap() {
+    fn record_quit(
+        confirmed: bool,
+        hides: bool,
+        reap: impl FnOnce(),
+    ) -> (std::thread::Result<bool>, Vec<&'static str>) {
         let events = std::cell::RefCell::new(Vec::new());
-
-        let quitting = quit_sequence(
-            || true,
-            || true,
-            || events.borrow_mut().push("reap".to_string()),
-            |event| events.borrow_mut().push(event.to_string()),
-        );
-
-        assert!(quitting);
-        assert_eq!(events.into_inner(), ["app-closing", "reap"]);
-    }
-
-    #[test]
-    fn a_quit_with_nothing_to_cover_reaps_without_asking_for_an_overlay() {
-        let events = std::cell::RefCell::new(Vec::new());
-
-        let quitting = quit_sequence(
-            || true,
-            || false,
-            || events.borrow_mut().push("reap".to_string()),
-            |event| events.borrow_mut().push(event.to_string()),
-        );
-
-        assert!(
-            quitting,
-            "the overlay is presentation, not part of quitting"
-        );
-        assert_eq!(
-            events.into_inner(),
-            ["reap"],
-            "window-close and tray paths can bypass the overlay entirely, and a tray quit with no \
-             window on screen must not emit it"
-        );
-    }
-
-    #[test]
-    fn a_declined_quit_never_raises_the_overlay() {
-        let events = std::cell::RefCell::new(Vec::new());
-
-        let quitting = quit_sequence(
-            || false,
-            || true,
-            || events.borrow_mut().push("reap".to_string()),
-            |event| events.borrow_mut().push(event.to_string()),
-        );
-
-        assert!(!quitting, "a declined confirmation must not reach the exit");
-        assert!(
-            events.into_inner().is_empty(),
-            "the confirmations are dialogs, and an overlay behind one would claim the app \
-             is closing while it asks whether to keep going"
-        );
-    }
-
-    #[test]
-    fn a_declined_quit_never_asks_whether_the_window_is_visible() {
-        let asked = std::cell::Cell::new(false);
-
-        let quitting = quit_sequence(
-            || false,
-            || {
-                asked.set(true);
-                true
-            },
-            || panic!("a declined quit must not reap"),
-            |_| panic!("a declined quit must not emit"),
-        );
-
-        assert!(!quitting);
-        assert!(
-            !asked.get(),
-            "the window question is only worth asking once the quit is committed"
-        );
-    }
-
-    #[test]
-    fn a_panicking_reap_takes_the_overlay_back_down() {
-        let events = std::cell::RefCell::new(Vec::new());
-
-        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             quit_sequence(
-                || true,
-                || true,
-                || panic!("the reap panicked"),
-                |event| events.borrow_mut().push(event.to_string()),
+                || confirmed,
+                || {
+                    events.borrow_mut().push("hide");
+                    hides
+                },
+                || {
+                    events.borrow_mut().push("reap");
+                    reap();
+                },
+                || events.borrow_mut().push("show"),
             )
         }));
+        (result, events.into_inner())
+    }
 
-        assert!(unwound.is_err());
+    #[test]
+    fn a_quit_that_reaches_exit_hides_the_window_before_the_reap() {
+        let (quitting, events) = record_quit(true, true, || {});
+
+        assert!(quitting.unwrap());
         assert_eq!(
-            events.into_inner(),
-            ["app-closing", "app-closing-cancelled"],
-            "a panicking reap leaves the app up, so the overlay cannot cover it"
+            events,
+            ["hide", "reap"],
+            "the reap is the whole of the wait, so the window must be gone before it starts"
         );
     }
 
     #[test]
-    fn a_panicking_reap_with_nothing_to_cover_stays_silent() {
-        let events = std::cell::RefCell::new(Vec::new());
+    fn a_quit_with_no_window_on_screen_still_reaps() {
+        let (quitting, events) = record_quit(true, false, || {});
 
-        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            quit_sequence(
-                || true,
-                || false,
-                || panic!("the reap panicked"),
-                |event| events.borrow_mut().push(event.to_string()),
-            )
-        }));
+        assert!(quitting.unwrap(), "hiding is presentation, not part of quitting");
+        assert_eq!(events, ["hide", "reap"]);
+    }
 
-        assert!(unwound.is_err());
+    #[test]
+    fn a_declined_quit_never_hides_the_window() {
+        let (quitting, events) =
+            record_quit(false, true, || panic!("a declined quit must not reap"));
+
+        assert!(!quitting.unwrap(), "a declined confirmation must not reach the exit");
         assert!(
-            events.into_inner().is_empty(),
-            "nothing was raised, so the unwind has nothing to retract: a cancel here would \
-             be the guard half-armed"
+            events.is_empty(),
+            "the confirmations are dialogs over the window, and the window question is only \
+             worth asking once the quit is committed"
         );
     }
 
     #[test]
-    fn a_quit_with_the_window_hidden_raises_no_overlay() {
-        assert!(
-            !quit_raises_the_overlay(true, || Some(Ok(false))),
-            "there is no frozen window to explain when no window is on screen"
+    fn a_panicking_reap_brings_the_hidden_window_back() {
+        let (quitting, events) = record_quit(true, true, || panic!("the reap panicked"));
+
+        assert!(quitting.is_err());
+        assert_eq!(
+            events,
+            ["hide", "reap", "show"],
+            "a panicking reap leaves the app up, so it cannot stay invisible"
         );
     }
 
     #[test]
-    fn a_minimized_window_still_gets_the_overlay() {
-        assert!(quit_raises_the_overlay(true, || Some(Ok(true))));
-    }
+    fn a_panicking_reap_never_shows_a_window_it_did_not_hide() {
+        let (quitting, events) = record_quit(true, false, || panic!("the reap panicked"));
 
-    #[test]
-    fn a_quit_with_no_main_window_at_all_raises_no_overlay() {
-        assert!(
-            !quit_raises_the_overlay(true, || None),
-            "a window that does not exist cannot be looking frozen"
+        assert!(quitting.is_err());
+        assert_eq!(
+            events,
+            ["hide", "reap"],
+            "a tray quit with the window already hidden must not pop it up on unwind"
         );
     }
 
     #[test]
-    fn an_unreadable_window_visibility_still_gets_the_overlay() {
+    fn only_a_window_on_screen_needs_hiding() {
+        assert!(main_window_needs_hiding(|| Some(Ok(true))), "minimized counts as visible");
+        assert!(!main_window_needs_hiding(|| Some(Ok(false))));
         assert!(
-            quit_raises_the_overlay(true, || Some(Err("no window handle".to_string()))),
-            "an emit into a hidden window costs nothing, and an unexplained frozen window \
-             is the failure this exists to fix"
+            !main_window_needs_hiding(|| None),
+            "a window that does not exist has nothing to hide"
         );
-    }
-
-    #[test]
-    fn the_window_visibility_is_never_read_off_windows() {
-        let asked = std::cell::Cell::new(false);
-
-        let raised = quit_raises_the_overlay(false, || {
-            asked.set(true);
-            Some(Ok(true))
-        });
-
-        assert!(!raised, "only Windows shows the freeze this covers");
         assert!(
-            !asked.get(),
-            "the getter blocks on a round trip to the event loop, and nothing off Windows \
-             raises an overlay to spend it on"
+            main_window_needs_hiding(|| Some(Err("no window handle".to_string()))),
+            "hiding a hidden window costs nothing, and a frozen window left up is the failure \
+             this exists to fix"
         );
     }
 

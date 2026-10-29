@@ -10,12 +10,7 @@
 # GNU Affero General Public License for more details.
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-"""Load NVIDIA ModelOpt FP8 checkpoints through transformers' fp8 quantizer.
-
-ModelOpt per-tensor FP8 equals transformers' static fp8 format except for scale names
-(``weight_scale`` / ``input_scale`` vs ``weight_scale_inv`` / ``activation_scale``), so the
-config block is rewritten to ``quant_method: fp8`` and the scales renamed via ``key_mapping``.
-"""
+"""ModelOpt FP8 checkpoints load via transformers' fp8 quantizer; scale names remapped by key_mapping."""
 
 import fnmatch
 import functools

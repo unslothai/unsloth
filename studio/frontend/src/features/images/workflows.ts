@@ -2,16 +2,16 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  ArrowExpand01Icon,
+  AiImageIcon,
   Edit03Icon,
-  ImageUpload01Icon,
   MagicWand01Icon,
-  SparklesIcon,
   ZoomInAreaIcon,
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 // Relative with .ts: the node tests import this file and cannot resolve @/.
-import { AiPaintbrushIcon } from "../../lib/ai-paintbrush-icon.ts";
+import { ExpandArrowsIcon } from "../../lib/expand-icons.ts";
+import { ImagesIcon } from "../../lib/hugeicons-derived.ts";
+import { PaintbrushIcon } from "../../lib/paintbrush-icon.ts";
 
 export type WorkflowId =
   | "create"
@@ -37,7 +37,7 @@ export const WORKFLOW_TABS: Array<{
     heading: "Create images",
     requires: null,
     // Not the pencil: that is the sidebar's New chat icon.
-    icon: SparklesIcon,
+    icon: AiImageIcon,
     hint: "Generate a new image from a prompt",
   },
   {
@@ -57,14 +57,14 @@ export const WORKFLOW_TABS: Array<{
   {
     id: "inpaint",
     label: "Inpaint",
-    icon: AiPaintbrushIcon,
+    icon: PaintbrushIcon,
     requires: "inpaint",
     hint: "Regenerate a painted region",
   },
   {
     id: "extend",
     label: "Extend",
-    icon: ArrowExpand01Icon,
+    icon: ExpandArrowsIcon,
     requires: "outpaint",
     hint: "Grow the canvas and fill the edges",
   },
@@ -78,7 +78,7 @@ export const WORKFLOW_TABS: Array<{
   {
     id: "reference",
     label: "Reference",
-    icon: ImageUpload01Icon,
+    icon: ImagesIcon,
     requires: "reference",
     hint: "Generate guided by a reference image",
   },
