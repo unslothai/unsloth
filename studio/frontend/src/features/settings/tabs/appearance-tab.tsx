@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// Keep the background settings UI in this lazy tab, outside the chat startup barrel.
+// eslint-disable-next-line no-restricted-imports
+import { ChatBackgroundControls } from "@/features/chat-background/controls";
 import { useEffect, useRef } from "react";
 import { Switch } from "@/components/ui/switch";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
@@ -95,6 +98,7 @@ export function AppearanceTab() {
         </SettingsRow>
       </SettingsSection>
 
+      <ChatBackgroundControls />
       <SettingsSection title={t("settings.appearance.custom.preferencesTitle")}>
         <SettingsRow label={t("settings.appearance.custom.uiFont.label")}>
           <div className={FONT_CONTROL_CLASS}>

@@ -5,6 +5,34 @@ import type { DeepPartialMessageTree } from "../types";
 import { en } from "./en.ts";
 
 export const ru = {
+  chatBackground: {
+    title: "Фоновое изображение",
+    description: "Локальное изображение для рабочего пространства. JPEG, PNG или WebP, до 20 МиБ. Текст автоматически остаётся читаемым.",
+    upload: "Загрузить изображение",
+    replace: "Заменить изображение",
+    remove: "Удалить фон",
+    reset: "Сбросить настройки",
+    effect: "Эффект",
+    none: "Нет",
+    dither: "Дизеринг",
+    ascii: "ASCII",
+    halftone: "Полутон",
+    scanlines: "Строки развёртки",
+    visibility: "Видимость",
+    blur: "Размытие изображения",
+    position: "Положение",
+    positionValue: "По горизонтали {x}%, по вертикали {y}%",
+    newChat: "Новый чат",
+    conversation: "Переписка",
+    prompt: "Что вы хотите изучить?",
+    response: "Переписка остаётся хорошо видимой на фоне.",
+    storageError: "Не удалось сохранить фон. Проверьте хранилище браузера.",
+    fileError: "Выберите изображение JPEG, PNG или WebP меньше 20 МиБ.",
+    dimensionsError: "Выберите изображение меньше 40 мегапикселей.",
+    decodeError: "Не удалось прочитать изображение. Попробуйте другой файл.",
+    effectError: "Не удалось применить эффект. Выберите Нет или другое изображение.",
+  },
+
   linkMenu: {
     openInBrowser: "Открыть в браузере Unsloth",
     openExternal: "Открыть во внешнем браузере",

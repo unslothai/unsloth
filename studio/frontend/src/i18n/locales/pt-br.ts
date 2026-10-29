@@ -5,6 +5,34 @@ import type { DeepPartialMessageTree } from "../types";
 import { en } from "./en.ts";
 
 export const ptBR = {
+  chatBackground: {
+    title: "Imagem de fundo",
+    description: "Uma imagem local para seu espaço de trabalho. JPEG, PNG ou WebP, até 20 MiB. O texto permanece legível automaticamente.",
+    upload: "Enviar imagem",
+    replace: "Substituir imagem",
+    remove: "Remover fundo",
+    reset: "Redefinir ajustes",
+    effect: "Efeito",
+    none: "Nenhum",
+    dither: "Pontilhamento",
+    ascii: "ASCII",
+    halftone: "Meio-tom",
+    scanlines: "Linhas de varredura",
+    visibility: "Visibilidade",
+    blur: "Desfoque da imagem",
+    position: "Posição",
+    positionValue: "Horizontal {x}%, vertical {y}%",
+    newChat: "Novo chat",
+    conversation: "Conversa",
+    prompt: "O que você gostaria de explorar?",
+    response: "Sua conversa continua legível sobre o fundo.",
+    storageError: "Não foi possível salvar o fundo. Verifique o armazenamento do navegador.",
+    fileError: "Escolha uma imagem JPEG, PNG ou WebP menor que 20 MiB.",
+    dimensionsError: "Escolha uma imagem menor que 40 megapixels.",
+    decodeError: "Não foi possível ler a imagem. Tente outro arquivo.",
+    effectError: "Não foi possível criar o efeito. Escolha Nenhum ou outra imagem.",
+  },
+
   linkMenu: {
     openInBrowser: "Abrir no navegador do Unsloth",
     openExternal: "Abrir no navegador externo",

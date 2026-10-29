@@ -5,6 +5,34 @@ import type { DeepPartialMessageTree } from "../types";
 import { en } from "./en.ts";
 
 export const zhCN = {
+  chatBackground: {
+    title: "背景图片",
+    description: "用于工作区的本地图片。支持 JPEG、PNG 或 WebP，最大 20 MiB。自动保持文字清晰可读。",
+    upload: "上传图片",
+    replace: "替换图片",
+    remove: "移除背景",
+    reset: "重置调整",
+    effect: "效果",
+    none: "无",
+    dither: "抖动",
+    ascii: "ASCII",
+    halftone: "半色调",
+    scanlines: "扫描线",
+    visibility: "可见度",
+    blur: "图片模糊",
+    position: "位置",
+    positionValue: "水平 {x}%，垂直 {y}%",
+    newChat: "新聊天",
+    conversation: "对话",
+    prompt: "你想探索什么？",
+    response: "背景上的对话依然清晰可读。",
+    storageError: "无法保存背景。请检查浏览器存储空间。",
+    fileError: "请选择小于 20 MiB 的 JPEG、PNG 或 WebP 图片。",
+    dimensionsError: "请选择小于 4000 万像素的图片。",
+    decodeError: "无法读取图片。请尝试其他文件。",
+    effectError: "无法生成效果。请选择“无”或其他图片。",
+  },
+
   linkMenu: {
     openInBrowser: "在 Unsloth 浏览器中打开",
     openExternal: "在外部浏览器中打开",

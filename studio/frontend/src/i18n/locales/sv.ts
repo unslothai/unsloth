@@ -2,6 +2,34 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export const sv = {
+  chatBackground: {
+    title: "Bakgrundsbild",
+    description: "En lokal bild för din arbetsyta. JPEG, PNG eller WebP, högst 20 MiB. Texten förblir automatiskt läsbar.",
+    upload: "Ladda upp bild",
+    replace: "Byt bild",
+    remove: "Ta bort bakgrund",
+    reset: "Återställ justeringar",
+    effect: "Effekt",
+    none: "Ingen",
+    dither: "Dithering",
+    ascii: "ASCII",
+    halftone: "Raster",
+    scanlines: "Skanningslinjer",
+    visibility: "Synlighet",
+    blur: "Bildoskärpa",
+    position: "Position",
+    positionValue: "Horisontellt {x} %, vertikalt {y} %",
+    newChat: "Ny chatt",
+    conversation: "Konversation",
+    prompt: "Vad vill du utforska?",
+    response: "Konversationen förblir tydlig mot bakgrunden.",
+    storageError: "Det gick inte att spara bakgrunden. Kontrollera webbläsarens lagringsutrymme.",
+    fileError: "Välj en JPEG-, PNG- eller WebP-bild under 20 MiB.",
+    dimensionsError: "Välj en bild mindre än 40 megapixlar.",
+    decodeError: "Det gick inte att läsa bilden. Prova en annan fil.",
+    effectError: "Det gick inte att skapa effekten. Välj Ingen eller en annan bild.",
+  },
+
   linkMenu: {
     openInBrowser: "Öppna i Unsloth-webbläsaren",
     openExternal: "Öppna i extern webbläsare",

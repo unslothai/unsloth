@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { resetChatBackground, useBackgroundStore } from "@/features/chat-background";
 import { Button } from "@/components/ui/button";
 import {
   Command,
@@ -1026,7 +1027,9 @@ export function ResetCustomizationButton() {
   const resetAll = useAppearanceCustomStore((s) => s.resetAll);
   const interfaceScale = useInterfaceScaleStore((s) => s.scale);
   const resetInterfaceScale = useInterfaceScaleStore((s) => s.reset);
+  const background = useBackgroundStore((s) => s.value);
   const pristine =
+    background === null &&
     isDefaultCustomization(customization) &&
     interfaceScale === INTERFACE_SCALE_RANGE.default;
   return (
@@ -1036,6 +1039,7 @@ export function ResetCustomizationButton() {
       size="sm"
       disabled={pristine}
       onClick={() => {
+        void resetChatBackground();
         resetAll();
         resetInterfaceScale();
       }}
