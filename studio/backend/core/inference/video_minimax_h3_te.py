@@ -427,7 +427,12 @@ def h3_te_pin_yields(
     try:
         import os
 
-        if str(os.environ.get(H3_TE_PIN_YIELD_ENV, "")).strip().lower() in ("0", "off", "false", "no"):
+        if str(os.environ.get(H3_TE_PIN_YIELD_ENV, "")).strip().lower() in (
+            "0",
+            "off",
+            "false",
+            "no",
+        ):
             return None
         if text_encoder is None or streamed_denoiser is None:
             return None
@@ -439,7 +444,6 @@ def h3_te_pin_yields(
             return None
         if logger is not None:
             from .diffusion_memory import _pin_budget_mib
-
             logger.info(
                 "video.h3_te_stream: the conditioner (%.1f GB) streams from pageable memory so the streamed "
                 "denoiser (%.1f GB) can pin first (%s MiB pinnable)",

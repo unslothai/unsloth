@@ -689,7 +689,9 @@ def _pin_world(monkeypatch, budget_bytes):
     sizes = {}
     monkeypatch.setattr(te, "_module_payload_bytes", lambda m: sizes[id(m)])
     monkeypatch.setattr(te, "_host_payload_bytes", lambda m: sizes[id(m)])
-    monkeypatch.setattr(te, "h3_te_pin_allowed", lambda payload = 0, device = None: payload <= budget_bytes)
+    monkeypatch.setattr(
+        te, "h3_te_pin_allowed", lambda payload = 0, device = None: payload <= budget_bytes
+    )
     return te, sizes
 
 
@@ -702,7 +704,9 @@ def _pin_world(monkeypatch, budget_bytes):
         (15, 10, 20, False),
     ],
 )
-def test_conditioner_pin_yields_to_a_streamed_denoiser(monkeypatch, budget, te_gb, dit_gb, expected):
+def test_conditioner_pin_yields_to_a_streamed_denoiser(
+    monkeypatch, budget, te_gb, dit_gb, expected
+):
     te, sizes = _pin_world(monkeypatch, budget * 10**9)
     enc, dit = object(), object()
     sizes[id(enc)], sizes[id(dit)] = te_gb * 10**9, dit_gb * 10**9

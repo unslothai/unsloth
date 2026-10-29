@@ -10797,7 +10797,6 @@ class VideoBackend:
                     if text_encoder_quant_engaged is not None:
                         # Stream the conditioner, not rotate it; denoiser sizing assumes rotation; None keeps rotation.
                         from .video_minimax_h3_te import h3_te_pin_yields, stream_h3_text_encoder
-
                         te_module = getattr(pipe, "text_encoder", None)
                         te_streamed = stream_h3_text_encoder(
                             manager,
