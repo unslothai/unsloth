@@ -121,7 +121,14 @@ export function MemoryBar({ segments }: { segments: MemorySegment[] }) {
   );
 }
 
-export function MemoryLegend({ segments }: { segments: MemorySegment[] }) {
+export function MemoryLegend({
+  segments,
+  noModels = false,
+}: {
+  segments: MemorySegment[];
+  /** Model split is on with nothing loaded: say so, or the toggle looks dead. */
+  noModels?: boolean;
+}) {
   const t = useT();
   const label = (segment: MemorySegment) => {
     switch (segment.kind) {
@@ -149,7 +156,20 @@ export function MemoryLegend({ segments }: { segments: MemorySegment[] }) {
             {formatGiB(segment.gb)}
           </span>
         </div>
-      ))}
+      )).flatMap((row, index) =>
+        noModels && index === 0
+          ? [
+              row,
+              <div
+                key="no-models"
+                className="ps-4 italic first-letter:uppercase"
+                data-testid="monitor-no-models"
+              >
+                {t("settings.resources.liveMonitor.noModelLoaded")}
+              </div>,
+            ]
+          : [row],
+      )}
     </div>
   );
 }

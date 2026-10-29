@@ -879,7 +879,12 @@ export function ResourcesTab() {
                       : "settings.resources.liveMonitor.ram",
                   )}
                   readout={`${formatGiB(metrics.ramUsed)} / ${formatGiB(metrics.ramTotal)}`}
-                  footer={<MemoryLegend segments={ramSegments} />}
+                  footer={
+                    <MemoryLegend
+                      segments={ramSegments}
+                      noModels={!discreteVram && breakdown?.models.length === 0}
+                    />
+                  }
                 >
                   <MemoryBar segments={ramSegments} />
                 </MeterRow>
@@ -890,7 +895,12 @@ export function ResourcesTab() {
                 <MeterRow
                   label={t("settings.resources.liveMonitor.vram")}
                   readout={`${formatGiB(metrics.vramUsed)} / ${formatGiB(metrics.vramTotal)}`}
-                  footer={<MemoryLegend segments={vramSegments} />}
+                  footer={
+                    <MemoryLegend
+                      segments={vramSegments}
+                      noModels={breakdown?.models.length === 0}
+                    />
+                  }
                 >
                   <MemoryBar segments={vramSegments} />
                 </MeterRow>

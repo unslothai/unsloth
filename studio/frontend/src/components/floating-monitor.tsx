@@ -120,6 +120,9 @@ function DetailBar({
 
 const MonitorLoadedModels = lazy(() => import("./monitor-loaded-models"));
 
+const BACKGROUND_DRAG_EXCLUDED =
+  'button, a, input, select, textarea, [role="button"], [data-testid="floating-monitor-resize"]';
+
 const RESIZE_HANDLES: { edge: string; edges: ResizeEdges; className: string }[] = [
   { edge: "w", edges: { x: -1, y: 0 }, className: "inset-y-0 left-0 w-1.5 cursor-ew-resize" },
   { edge: "e", edges: { x: 1, y: 0 }, className: "inset-y-0 right-0 w-1.5 cursor-ew-resize" },
@@ -332,11 +335,30 @@ function FloatingMonitorPanel({
         {...{ [FIND_PORTAL_ATTRIBUTE]: "" }}
         ref={monitorRef}
         onPointerDownCapture={() => raisePanel("resource-monitor")}
+        // The whole card is a grip; controls, resize edges and the grip itself keep their own pointer.
+        onPointerDown={(event) => {
+          if (
+            event.target instanceof Element &&
+            event.target.closest(BACKGROUND_DRAG_EXCLUDED)
+          ) {
+            return;
+          }
+          // A classic scrollbar sits inside the scroller's box but right of its client area.
+          const target = event.target as HTMLElement;
+          if (event.nativeEvent.offsetX > target.clientWidth && target.clientWidth > 0) {
+            return;
+          }
+          startDrag(event);
+        }}
+        onPointerMove={updateDrag}
+        onPointerUp={finishDrag}
+        onPointerCancel={finishDrag}
+        onLostPointerCapture={finishDrag}
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         className={cn(
-          "settings-surface bg-background group/monitor pointer-events-auto absolute flex max-h-full w-64 max-w-full cursor-default select-none flex-col overflow-hidden rounded-2xl border border-border/70 p-3 shadow-border ring-0",
+          "settings-surface bg-background group/monitor pointer-events-auto absolute flex max-h-full w-64 max-w-full cursor-grab select-none active:cursor-grabbing flex-col overflow-hidden rounded-2xl border border-border/70 p-3 shadow-border ring-0",
           layout ? "top-0 left-0" : "right-0 bottom-0",
         )}
         data-testid="floating-monitor"
@@ -468,7 +490,12 @@ function FloatingMonitorPanel({
               footer={
                 (ramSegments || unifiedRow) && (
                   <>
-                    {ramSegments && <MemoryLegend segments={ramSegments} />}
+                    {ramSegments && (
+                      <MemoryLegend
+                        segments={ramSegments}
+                        noModels={!discreteVram && breakdown?.models.length === 0}
+                      />
+                    )}
                     {unifiedRow && !ramSegments && (
                       <div className="flex justify-between gap-2">
                         <span>{t("settings.resources.liveMonitor.gpuInUse")}</span>
@@ -519,7 +546,12 @@ function FloatingMonitorPanel({
                           {deviceLabel}
                         </div>
                       )}
-                      {vramSegments && <MemoryLegend segments={vramSegments} />}
+                      {vramSegments && (
+                        <MemoryLegend
+                          segments={vramSegments}
+                          noModels={breakdown?.models.length === 0}
+                        />
+                      )}
                     </>
                   )
                 }
