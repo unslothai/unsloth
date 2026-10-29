@@ -630,7 +630,9 @@ def _mac_budget_inputs(monkeypatch, *, recommended, available):
     )
 
 
-def test_metal_budget_counts_reclaimable_memory_up_to_the_device_ceiling(monkeypatch):
+def test_metal_budget_counts_reclaimable_memory_up_to_the_device_ceiling(
+    monkeypatch, real_apple_metal_budget
+):
     from core.inference.llama_cpp import LlamaCppBackend
 
     # Max's 512 GB Mac Studio, measured with GLM-5.3-Flash UD-Q6_K_XL loaded at 1M context:
