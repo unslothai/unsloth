@@ -187,18 +187,24 @@ function pump(): void {
   send(build());
 }
 
-/** Routes the canvas wires off the main thread whenever nodes or edges change. Bus mode only. */
+/**
+ * Routes the canvas wires off the main thread whenever nodes or edges change. Bus mode only.
+ * While `paused` (a drag or resize) nothing is routed: the moved card's wires follow it as plain
+ * steps and the rest hold still, then one pass runs on release.
+ */
 export const WireRouterController = memo(function WireRouterController({
   scope,
+  paused = false,
 }: {
   scope: string;
+  paused?: boolean;
 }) {
   const store = useStoreApi<RfNode, RfEdge>();
   const nodesKey = useStore((s) => routingKey(s.nodes));
   const edges = useStore((s) => s.edges);
 
   useEffect(() => {
-    if (!edges) return;
+    if (!edges || paused) return;
     pending = () => ({
       id: ++nextId,
       scope,
@@ -206,7 +212,7 @@ export const WireRouterController = memo(function WireRouterController({
       ...buildRequest(store.getState().nodeLookup, store.getState().edges),
     });
     pump();
-  }, [nodesKey, edges, scope, store]);
+  }, [nodesKey, edges, scope, store, paused]);
 
   useEffect(
     () => () => {

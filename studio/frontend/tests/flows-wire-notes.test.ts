@@ -44,5 +44,5 @@ test("the router never sees a note, so a note on the straight path does not bend
   const src = readFileSync(new URL("../src/features/flows/editor/wire-routing.tsx", import.meta.url), "utf8");
   assert.match(src, /node\.hidden \|\| !isWireObstacle\(node\.type\)/);
   assert.match(src, /useStore\(\(s\) => routingKey\(s\.nodes\)\)/);
-  assert.match(src, /\[nodesKey, edges, scope, store\]/);
+  assert.match(src, /\[nodesKey, edges, scope, store(, paused)?\]/);
 });

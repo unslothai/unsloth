@@ -632,7 +632,9 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
           className="!rounded-lg !border !border-white/10 !shadow-none"
         />
         <SelectedNodeToolbar readOnly={readOnly} />
-        {bus && <WireRouterController scope={flowId ?? ""} />}
+        {bus && (
+          <WireRouterController scope={flowId ?? ""} paused={drag !== null} />
+        )}
       </ReactFlow>
     </div>
   );
