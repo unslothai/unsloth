@@ -272,7 +272,7 @@ def test_shared_qkv_kill_switch(quantized, monkeypatch):
 
 def test_shared_qkv_census_needs_the_int8_swap(quantized):
     A.install_strided_attention(quantized)
-    assert A.shared_qkv_count(quantized) == 0  # no int8 GEMM swap installed on these Linears
+    assert A.shared_qkv_count(quantized) == 0
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "int8 GEMM swap needs CUDA")
@@ -292,7 +292,6 @@ def test_shared_qkv_on_the_int8_swap_is_bit_identical_on_cuda():
     A.install_strided_attention(model)
     if not A.shared_qkv_count(model):
         pytest.skip("fused rotation kernel not armed on this device")
-    # enough rows for the swap (diffusion_int8_gemm._MIN_ROWS)
     inputs = _inputs(n_text = 16, n_video = 48, n_audio = 8)
     inputs = {
         k: (v.to("cuda", torch.bfloat16) if torch.is_floating_point(v) else v.to("cuda"))

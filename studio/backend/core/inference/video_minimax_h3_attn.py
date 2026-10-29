@@ -117,7 +117,6 @@ def strided_processor_class() -> Any:
                 query, key, value = attn.to_qkv(hidden_states).chunk(3, dim = -1)
             else:
                 if self._unsloth_shared_qkv:
-                    # streamed placements keep the three projections (their onload is per block)
                     qkv = int8_gemm.shared_rotq_linears(hidden_states, (attn.to_q, attn.to_k, attn.to_v))
                 if qkv is not None:
                     query, key, value = qkv
