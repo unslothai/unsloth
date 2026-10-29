@@ -19,6 +19,16 @@ export interface QuickAddState {
 
 const NODES_HIDDEN_KEY = "unsloth_flows_nodes_hidden";
 
+const DRAWER_OPEN_KEY = "unsloth_flows_runs_open";
+
+function storedDrawerOpen(): boolean {
+  try {
+    return globalThis.localStorage?.getItem(DRAWER_OPEN_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
 function storedPaletteOpen(): boolean {
   try {
     return globalThis.localStorage?.getItem(NODES_HIDDEN_KEY) !== "true";
@@ -65,7 +75,8 @@ export const useUiStore = create<UiState>((set, get) => ({
   selectedEdges: [],
   inspectorNodeId: null,
   quickAdd: null,
-  drawerOpen: false,
+  // Opened only by the user, and remembered: a run never opens it.
+  drawerOpen: storedDrawerOpen(),
   drawerTab: "run",
   paletteOpen: storedPaletteOpen(),
   snapToGrid: false,
@@ -88,8 +99,14 @@ export const useUiStore = create<UiState>((set, get) => ({
   },
   openInspector: (nodeId) => set({ inspectorNodeId: nodeId }),
   setQuickAdd: (quickAdd) => set({ quickAdd }),
-  setDrawer: (open, tab) =>
-    set((s) => ({ drawerOpen: open, drawerTab: tab ?? s.drawerTab })),
+  setDrawer: (open, tab) => {
+    set((s) => ({ drawerOpen: open, drawerTab: tab ?? s.drawerTab }));
+    try {
+      globalThis.localStorage?.setItem(DRAWER_OPEN_KEY, String(open));
+    } catch {
+      // No storage: the choice lasts until reload.
+    }
+  },
   togglePalette: () => {
     const paletteOpen = !get().paletteOpen;
     set({ paletteOpen });

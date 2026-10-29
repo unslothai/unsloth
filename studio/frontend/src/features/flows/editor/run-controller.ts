@@ -148,7 +148,6 @@ export async function runFlow(options: RunOptions = {}): Promise<void> {
       pinned: pinsForRun(docState.graph.nodeOrder),
     });
     useRuntimeStore.getState().startRun(run_id);
-    useUiStore.getState().setDrawer(true, "run");
     attachRun(run_id, 0);
   } catch (error) {
     toast.error(

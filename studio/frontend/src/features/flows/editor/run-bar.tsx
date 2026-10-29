@@ -9,7 +9,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { memo, useState } from "react";
+import { Spinner } from "@/components/ui/spinner";
+import type { RunStatus } from "../types";
+import { memo, useEffect, useRef, useState } from "react";
 import { useDocStore } from "../stores/doc-store";
 import { useRuntimeStore } from "../stores/runtime-store";
 import { useUiStore } from "../stores/ui-store";
@@ -37,6 +39,67 @@ const DRAWER_CLEARANCE = "calc(16.25rem + 0.75rem)";
 
 /** Run and the flow's other actions, floating bottom centre the way Recipe Studio's
  *  RunValidateFloatingControls do, so the window corners stay clear. */
+// Status colour of the latest run: the dot and the one-off outline pulse when it ends.
+const STATUS_INK: Partial<Record<RunStatus, string>> = {
+  completed: "var(--color-emerald-500)",
+  failed: "var(--destructive)",
+  interrupted: "var(--destructive)",
+  cancelled: "var(--muted-foreground)",
+};
+const BUSY: ReadonlySet<RunStatus> = new Set([
+  "queued",
+  "running",
+  "cancelling",
+]);
+
+/** Toggles the run drawer; shows the latest run's state and pulses once when a run ends. */
+function RunsButton({
+  status,
+  open,
+}: { status: RunStatus | null; open: boolean }) {
+  const busy = !!status && BUSY.has(status);
+  const ink = status ? STATUS_INK[status] : undefined;
+  const [pulse, setPulse] = useState(false);
+  const was = useRef(busy);
+  useEffect(() => {
+    if (was.current && !busy && ink) {
+      setPulse(true);
+      const timer = window.setTimeout(() => setPulse(false), 2400);
+      was.current = busy;
+      return () => window.clearTimeout(timer);
+    }
+    was.current = busy;
+  }, [busy, ink]);
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      className={`corner-squircle${pulse ? " flows-runs-pulse" : ""}`}
+      style={
+        ink ? ({ "--flows-pulse": ink } as React.CSSProperties) : undefined
+      }
+      aria-pressed={open}
+      title={open ? "Hide runs" : "Show runs"}
+      onClick={() => useUiStore.getState().setDrawer(!open, "run")}
+      data-testid="flows-runs"
+      data-run-status={status ?? "none"}
+    >
+      {busy ? (
+        <Spinner className="size-3.5" />
+      ) : (
+        <span
+          className="size-2 rounded-full"
+          style={{
+            background: ink ?? "var(--muted-foreground)",
+            opacity: ink ? 1 : 0.5,
+          }}
+        />
+      )}
+      Runs
+    </Button>
+  );
+}
+
 function RunBarImpl({
   onPlay,
   onApp,
@@ -150,17 +213,7 @@ function RunBarImpl({
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-        {!drawerOpen && runStatus && (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => useUiStore.getState().setDrawer(true, "run")}
-            className="corner-squircle capitalize"
-          >
-            Run: {runStatus}
-          </Button>
-        )}
+        <RunsButton status={runStatus} open={drawerOpen} />
       </div>
       <RunDialog
         open={dialog === "run"}
