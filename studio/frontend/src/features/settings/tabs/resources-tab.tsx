@@ -161,14 +161,14 @@ function MetricTile({
   const percentKnown = isFiniteNumber(percent);
   const safePercent = clampPercent(percent);
   return (
-    <div className="flex min-w-0 flex-col gap-3 rounded-xl border border-border/60 bg-card px-6 py-5 dark:border-transparent">
+    <div className="flex min-w-0 flex-col gap-3 rounded-xl border border-border/60 bg-card px-5 py-5 dark:border-transparent">
       <div className="flex min-w-0 flex-col gap-0.5">
         <div className="flex min-w-0 items-center justify-between gap-3">
           <span className="text-ui-12 text-muted-foreground">{label}</span>
           {showUsage ? (
             <span
               className={cn(
-                "shrink-0 rounded-full px-2 py-1 font-mono text-ui-12 leading-none font-semibold tabular-nums",
+                "shrink-0 rounded-full px-2 py-1 font-mono text-ui-12 leading-none tabular-nums",
                 percentKnown
                   ? usagePillClass(safePercent)
                   : "bg-muted text-muted-foreground",
