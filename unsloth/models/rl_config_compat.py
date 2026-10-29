@@ -20,7 +20,9 @@ cache file can import it behind a try/except without pulling in torch.
 Three outcomes per unrecognised argument: TRL documented a rename and the new
 name exists, so the value is moved across; TRL removed the field, so it is
 dropped and reported by name with TRL's advice; anything else is dropped with
-a warning.
+a warning. A field a newer TRL added is the exception: when the value only asks
+for what the installed TRL already does (`SFTConfig(loss_type = "nll")` on TRL
+< 0.23.0), it is dropped quietly, and any other value names the TRL it needs.
 
 That last case means `GRPOConfig(learnign_rate = 3e-4)` now warns instead of
 raising `TypeError`. The trade is accepted: a typo is still surfaced loudly,
@@ -36,6 +38,7 @@ __all__ = [
     "filter_config_init_kwargs",
     "TRANSFORMERS_CONFIG_RENAMES",
     "TRANSFORMERS_REMOVED_FIELD_ADVICE",
+    "TRL_ADDED_FIELDS",
     "TRL_CONFIG_RENAMES",
     "TRL_REMOVED_FIELD_ADVICE",
 ]
@@ -71,6 +74,21 @@ TRL_REMOVED_FIELD_ADVICE = {
     "use_logits_to_keep": "the DPO trainer no longer uses this setting",
     "padding_value": "this value is no longer configurable",
 }
+
+
+# Fields a newer TRL added, keyed by (config, field): the first version with the
+# field, and the values that only restate what an older TRL already does. Only
+# consulted for arguments the installed config rejects.
+TRL_ADDED_FIELDS = {
+    # SFTConfig gained `loss_type` in TRL 0.23.0; before that SFT always used plain NLL.
+    ("SFTConfig", "loss_type"): ("0.23.0", ("nll",)),
+}
+
+
+def _added_field(config_class, key):
+    """`(version, no-op values)` if a newer TRL added `key` to this config, else None."""
+    config_name = getattr(config_class, "__name__", None)
+    return TRL_ADDED_FIELDS.get((config_name, key))
 
 
 # transformers 5 removals (MIGRATION_GUIDE_V5.md; its `warmup_step` is a typo for warmup_steps).
@@ -350,10 +368,21 @@ def filter_config_init_kwargs(
                 )
             continue
 
+        added = _added_field(config_class, key) if verdict == "unknown" else None
         if verdict == "retired":
             notify(
                 f"Unsloth: `{key}` is not supported by the installed "
                 f"{removal_source(key)}'s {config_name} and will be IGNORED - {detail}."
+            )
+        elif added is not None:
+            version, noop_values = added
+            # Asking an older TRL for what it already does needs no warning.
+            if isinstance(value, str) and value in noop_values:
+                continue
+            notify(
+                f"Unsloth: `{key}` needs TRL >= {version} for {config_name}, and "
+                f"the installed TRL is older, so `{key} = {value!r}` will be IGNORED. "
+                f"Upgrade TRL to use it."
             )
         else:
             notify(
