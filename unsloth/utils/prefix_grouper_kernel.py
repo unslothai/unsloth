@@ -181,46 +181,8 @@ def build_seg_info_multigroup(
     group_meta : list of dicts with 'base', 'P', 'prefix_last_index', 'suffix_slices'
         (flat offsets), enough to build the completion index map.
     """
-    group_of_list = []
-    is_prefix_list = []
-    suffix_of_list = []
-    group_meta = []
-
-    base = 0
-    suffix_counter = 0
-    sig_parts = []
-    for gid, (P, R_list) in enumerate(group_specs):
-        # Prefix.
-        group_of_list.append(torch.full((P,), gid, dtype = torch.long, device = device))
-        is_prefix_list.append(torch.ones(P, dtype = torch.bool, device = device))
-        suffix_of_list.append(torch.full((P,), -1, dtype = torch.long, device = device))
-        prefix_last_index = base + P - 1
-        suffix_slices = []
-        cursor = base + P
-        for r in R_list:
-            group_of_list.append(torch.full((r,), gid, dtype = torch.long, device = device))
-            is_prefix_list.append(torch.zeros(r, dtype = torch.bool, device = device))
-            suffix_of_list.append(torch.full((r,), suffix_counter, dtype = torch.long, device = device))
-            suffix_slices.append((cursor, cursor + r))
-            cursor += r
-            suffix_counter += 1
-        group_meta.append(
-            {
-                "base": base,
-                "P": P,
-                "prefix_last_index": prefix_last_index,
-                "suffix_slices": suffix_slices,
-            }
-        )
-        sig_parts.append((P, tuple(R_list)))
-        base = cursor
-
-    group_of_kv = torch.cat(group_of_list)
-    is_prefix = torch.cat(is_prefix_list)
-    suffix_of_kv = torch.cat(suffix_of_list)
-    group_of_kv, is_prefix, suffix_of_kv, T, T_pad = _pad_labels(
-        group_of_kv, is_prefix, suffix_of_kv, device
-    )
+    labels, T, T_pad, group_meta, sig_parts = _seg_labels_host(group_specs)
+    group_of_kv, is_prefix, suffix_of_kv = _labels_to_device(labels, T_pad, device)
     sig = ("multi", T_pad, tuple(sig_parts))
     seg = PrefixSegInfo(
         group_of_kv = group_of_kv,
@@ -231,6 +193,62 @@ def build_seg_info_multigroup(
         T_pad = T_pad,
     )
     return seg, group_meta
+
+
+def _seg_labels_host(group_specs):
+    """CPU int64 [3, T_pad] rows (group_of_kv, is_prefix, suffix_of_kv), pad sentinels
+    included, plus T, T_pad, group_meta and signature parts."""
+    group_meta = []
+    sig_parts = []
+    seg_lens = []
+    seg_group = []
+    seg_prefix = []
+    seg_suffix = []
+    base = 0
+    suffix_counter = 0
+    if not group_specs:
+        torch.cat([])  # the empty-list error the per-segment build raised
+    for gid, (P, R_list) in enumerate(group_specs):
+        seg_lens.append(P)
+        seg_group.append(gid)
+        seg_prefix.append(1)
+        seg_suffix.append(-1)
+        suffix_slices = []
+        cursor = base + P
+        for r in R_list:
+            seg_lens.append(r)
+            seg_group.append(gid)
+            seg_prefix.append(0)
+            seg_suffix.append(suffix_counter)
+            suffix_slices.append((cursor, cursor + r))
+            cursor += r
+            suffix_counter += 1
+        group_meta.append(
+            {
+                "base": base,
+                "P": P,
+                "prefix_last_index": base + P - 1,
+                "suffix_slices": suffix_slices,
+            }
+        )
+        sig_parts.append((P, tuple(R_list)))
+        base = cursor
+    T = base
+    T_pad = _pad_len(T)
+    labels = torch.empty((3, T_pad), dtype = torch.long, device = "cpu")
+    lens = torch.tensor(seg_lens, dtype = torch.long, device = "cpu")
+    per_seg = torch.tensor([seg_group, seg_prefix, seg_suffix], dtype = torch.long, device = "cpu")
+    labels[:, :T] = torch.repeat_interleave(per_seg, lens, dim = 1, output_size = T)
+    labels[0, T:] = _PAD_GROUP
+    labels[1, T:] = 0
+    labels[2, T:] = _PAD_GROUP
+    return labels, T, T_pad, group_meta, sig_parts
+
+
+def _labels_to_device(labels, T_pad, device):
+    """One host->device copy; each returned tensor gets its own storage."""
+    moved = labels.to(device)
+    return moved[0].clone(), moved[1].to(torch.bool), moved[2].clone()
 
 
 # Block-mask cache, keyed on (signature, device): the mask depends only on per-token labels and T.
