@@ -1722,7 +1722,7 @@ NODE_SPECS: list[dict] = [
                 "string_list",
                 list(LORA_TARGET_MODULES),
                 "Target Modules",
-                help = "Layers LoRA trains, one per line; all-linear trains every linear layer. CPT adds embed_tokens and lm_head.",
+                help = "Layers LoRA trains, one per line; all-linear trains every linear layer. CPT adds embed_tokens and lm_head when neither is listed; list one to train only that one.",
                 show_when = {**LORA, "task": ["text", "audio", "embedding"]},
                 **adv("LoRA Settings"),
             ),

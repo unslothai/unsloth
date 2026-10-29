@@ -566,3 +566,8 @@ def test_hub_hold_out_streams_a_late_slice_and_caps_unknown_sizes(monkeypatch):
 
 def test_a_zero_learning_rate_reaches_the_training_api():
     assert _hub_body(learning_rate = 0)["learning_rate"] == "0"
+
+
+def test_cpt_keeps_a_single_listed_embedding_target():
+    body = _hub_body(training_type = "cpt", target_modules = ["q_proj", "lm_head"])
+    assert body["target_modules"] == ["q_proj", "lm_head"]
