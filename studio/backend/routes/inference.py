@@ -14728,13 +14728,14 @@ def _mlx_estimate_drafter(
     offload_route: Optional[dict] = None,
     baseline: Optional[dict] = None,
 ):
-    """``((path, builtin), fitted context, speculates)`` of an MLX load of *request*: the drafter it
-    would attach, chosen as the load chooses it, and whether it speculates at all (so loads through mlx-vlm)."""
+    """``((path, builtin), fitted context, speculates, stretched)`` of an MLX load of *request*: the drafter it
+    would attach, chosen as the load chooses it, whether it speculates at all (so loads through mlx-vlm), and
+    whether that drafter fits only by spending the prompt cache's share."""
     from core.inference import mlx_speculative
     from core.inference.mlx_inference import mlx_drafter_fit
 
     if not _mlx_estimate_speculates(request, model_dir):
-        return None, None, False
+        return None, None, False, False
     mode = mlx_speculative.mlx_spec_mode(request.speculative_type)
     resolution = mlx_speculative.resolve_speculation(
         request.speculative_type,
@@ -14743,8 +14744,9 @@ def _mlx_estimate_drafter(
         target_name = model_identifier,
         allowed = _discoverable_drafters(model_identifier),
     )
-    for source in resolution.sources:
-        attaches, fitted = mlx_drafter_fit(
+
+    def fit(source, **kwargs):
+        return mlx_drafter_fit(
             model_dir,
             ceiling,
             request.max_seq_length or None,
@@ -14752,11 +14754,20 @@ def _mlx_estimate_drafter(
             load_in_4bit = load_in_4bit,
             costless = mode == "auto",
             baseline = baseline,
+            **kwargs,
             **(offload_route or {}),
         )
+
+    for source in resolution.sources:
+        attaches, fitted = fit(source)
         if attaches:
-            return (source.path, source.builtin), fitted, True
-    return None, None, True
+            return (source.path, source.builtin), fitted, True, False
+    # Like the load: a chosen mode with none that fits attaches the first MLX's own cap admits.
+    for source in resolution.sources if mode != "auto" else ():
+        attaches, fitted = fit(source, reserve = False)
+        if attaches is not False:
+            return (source.path, source.builtin), fitted, True, True
+    return None, None, True, False
 
 
 class _MlxLoadEstimate(NamedTuple):
@@ -14765,6 +14776,7 @@ class _MlxLoadEstimate(NamedTuple):
     offloadable: tuple
     retains_history: bool
     offloaded: bool = False
+    cache_room: Optional[int] = None
 
 
 def _mlx_load_estimate(
@@ -14797,7 +14809,7 @@ def _mlx_load_estimate(
     offload, offloadable, offload_baseline = _mlx_estimate_offload(
         request, config, model_identifier, model_dir, load_in_4bit, kv_bits
     )
-    drafter, fitted_ctx, speculates = _mlx_estimate_drafter(
+    drafter, fitted_ctx, speculates, stretched = _mlx_estimate_drafter(
         request,
         model_identifier,
         model_dir,
@@ -14807,19 +14819,32 @@ def _mlx_load_estimate(
         offload_baseline,
     )
     route = {**({"vision": True} if speculates else {}), **offload}
-    if not named_ctx and drafter is None:
+    if not named_ctx and fitted_ctx is None:
         fitted_ctx = _mlx_estimate_fitted_context(config, model_dir, load_in_4bit, kv_bits, **route)
     priced_ctx = named_ctx or fitted_ctx or _mlx_estimate_ceiling(model_dir)
     if not priced_ctx:
         return "unsizable", None
+    priced = dict(n_ctx = priced_ctx, kv_bits = kv_bits, load_in_4bit = load_in_4bit, **route)
     breakdown = mlx_memory_breakdown(
-        model_dir,
-        n_ctx = priced_ctx,
-        kv_bits = kv_bits,
-        load_in_4bit = load_in_4bit,
-        **route,
-        **({} if drafter is None else {"drafter": drafter}),
+        model_dir, **priced, **({} if drafter is None else {"drafter": drafter})
     )
+    cache_room = None
+    if breakdown is None and drafter is not None:
+        # A chosen drafter attaches even where it cannot be sized: price the rest of the load.
+        breakdown = mlx_memory_breakdown(model_dir, **priced)
+    elif stretched:
+        from types import SimpleNamespace
+
+        from core.inference.mlx_inference import mlx_prompt_cache_room
+
+        # The load caps the prompt cache to what MLX's own cap leaves beside this drafter.
+        cache_room = mlx_prompt_cache_room(
+            model_dir,
+            priced_ctx,
+            SimpleNamespace(path = drafter[0], builtin = drafter[1]),
+            load_in_4bit = load_in_4bit,
+            **offload,
+        )
     if breakdown is None:
         return "unsizable", None
     retains_history = (
@@ -14827,7 +14852,7 @@ def _mlx_load_estimate(
         or mlx_vlm_snapshot_store_available()
     )
     return None, _MlxLoadEstimate(
-        breakdown, fitted_ctx, offloadable, retains_history, "offload" in offload
+        breakdown, fitted_ctx, offloadable, retains_history, "offload" in offload, cache_room
     )
 
 
@@ -14854,6 +14879,8 @@ def _mlx_chat_need(
                 mlx_memory_budget(retains_history = True),
             )
             reserve = max(0, (without or 0) - (within or 0))
+            if estimate.cache_room is not None:
+                reserve = min(reserve, estimate.cache_room)
     except Exception as exc:
         logger.info("MLX load of %s left unpriced: %s", model_identifier, exc)
         return None
