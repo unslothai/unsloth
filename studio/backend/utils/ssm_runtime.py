@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Auto-install the SSM/Mamba kernels a hybrid model lazy-imports during ``from_pretrained``;
-the inference-path counterpart of the training worker's install.
-"""
+"""Auto-installs SSM/Mamba kernels that hybrid models lazy-import during from_pretrained."""
 
 from __future__ import annotations
 

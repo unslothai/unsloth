@@ -140,6 +140,48 @@ def test_grpo_is_refused_on_image_columns_without_the_image_flag(trainer, tmp_pa
     assert "image dataset" in (trainer.training_progress.error or "")
 
 
+def test_grpo_is_refused_on_an_image_column_with_any_name(trainer, tmp_path):
+    path = tmp_path / "grpo.jsonl"
+    path.write_text(
+        json.dumps({"prompt": "q", "answer": "a", "photo": "cat.png"}) + "\n", encoding = "utf-8"
+    )
+    trainer.is_vlm = False
+    assert (
+        trainer.load_and_format_dataset(None, local_datasets = [str(path)], objective = "grpo") is None
+    )
+    assert "image dataset" in (trainer.training_progress.error or "")
+
+
+def test_image_columns_are_found_by_feature_type_not_name():
+    from datasets import Dataset, Features, Image, Sequence, Value
+
+    features = Features(
+        {"scan": Image(), "frames": Sequence(Image()), "image_caption": Value("string")}
+    )
+    rows = {
+        "scan": [{"bytes": None, "path": "missing.png"}],
+        "frames": [[]],
+        "image_caption": ["a cat"],
+    }
+    dataset = Dataset.from_dict(rows, features = features)
+    assert sorted(tmod._image_columns(dataset)) == ["frames", "scan"]
+
+
+@pytest.mark.parametrize("objective", ["grpo", "dpo"])
+def test_rl_is_refused_for_an_audio_model_without_the_audio_flag(trainer, tmp_path, objective):
+    path = tmp_path / "rows.jsonl"
+    path.write_text(
+        json.dumps({"prompt": "q", "answer": "a", "chosen": "a", "rejected": "b"}) + "\n",
+        encoding = "utf-8",
+    )
+    trainer._audio_type = "whisper"
+    assert (
+        trainer.load_and_format_dataset(None, local_datasets = [str(path)], objective = objective)
+        is None
+    )
+    assert "audio models" in (trainer.training_progress.error or "")
+
+
 def test_grpo_still_runs_for_a_vision_model_on_text_data(trainer, tmp_path):
     path = tmp_path / "grpo.jsonl"
     path.write_text(json.dumps({"prompt": "q", "answer": "a"}) + "\n", encoding = "utf-8")

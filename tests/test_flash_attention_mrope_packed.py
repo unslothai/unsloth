@@ -82,3 +82,124 @@ def test_flash_attention_forward_keeps_one_row_unpacked(patched, monkeypatch):
     assert calls == []
     assert torch.isfinite(out).all()
     torch.testing.assert_close(out, ref, atol = 2e-2, rtol = 2e-2)
+
+
+fa_integration = pytest.importorskip("transformers.integrations.flash_attention")
+
+from unsloth.import_fixes import (  # noqa: E402
+    _packed_row_varlen_kwargs,
+    fix_transformers_flash_attention_mrope_packed_rows,
+)
+
+
+@pytest.fixture
+def packed_rows(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        fa_integration,
+        "_flash_attention_forward",
+        lambda q, k, v, mask, *a, **kw: calls.append(kw) or q,
+    )
+    fix_transformers_flash_attention_mrope_packed_rows()
+    return fa_integration._flash_attention_forward, calls
+
+
+def _query(length):
+    return torch.zeros(1, length, 2, 8)
+
+
+def test_packed_row_with_mrope_ids_gets_its_document_boundaries(packed_rows):
+    forward, calls = packed_rows
+    lengths = torch.tensor([3, 5], dtype = torch.int32)
+    q = _query(8)
+    forward(q, q, q, None, position_ids = _mrope(8), packed_seq_lengths = lengths)
+    assert calls[-1]["cu_seq_lens_q"].tolist() == [0, 3, 8]
+    assert calls[-1]["cu_seq_lens_k"].tolist() == [0, 3, 8]
+    assert calls[-1]["max_length_q"] == calls[-1]["max_length_k"] == 5
+
+
+def test_every_other_call_is_passed_through_unchanged(packed_rows):
+    forward, calls = packed_rows
+    lengths = torch.tensor([3, 5], dtype = torch.int32)
+    q = _query(8)
+    flat = torch.tensor([[0, 1, 2, 0, 1, 2, 3, 4]])
+    cases = [
+        (q, None, {"position_ids": _mrope(8)}),  # not an Unsloth packed row
+        (
+            q,
+            None,
+            {"position_ids": flat, "packed_seq_lengths": lengths},
+        ),  # 2D ids already mark starts
+        (q, torch.ones(1, 8), {"position_ids": _mrope(8), "packed_seq_lengths": lengths}),
+        (
+            torch.zeros(2, 8, 2, 8),
+            None,
+            {"position_ids": _mrope(8, 2), "packed_seq_lengths": lengths},
+        ),
+        (
+            _query(9),
+            None,
+            {"position_ids": _mrope(9), "packed_seq_lengths": lengths},
+        ),  # rows not covered
+        (
+            q,
+            None,
+            {"position_ids": _mrope(8), "packed_seq_lengths": lengths, "cu_seq_lens_q": "caller"},
+        ),
+    ]
+    for query, mask, kwargs in cases:
+        forward(query, query, query, mask, **dict(kwargs))
+        assert calls[-1] == kwargs
+
+
+def test_packed_rows_patch_is_idempotent(packed_rows):
+    forward, _ = packed_rows
+    fix_transformers_flash_attention_mrope_packed_rows()
+    assert fa_integration._flash_attention_forward is forward
+
+
+def test_helper_ignores_rows_without_packed_lengths():
+    assert _packed_row_varlen_kwargs(_query(4), None, {"position_ids": _mrope(4)}) is None
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "flash-attn needs CUDA")
+def test_packed_documents_do_not_see_each_other_under_flash_attention():
+    pytest.importorskip("flash_attn")
+    from transformers.integrations.flash_attention import flash_attention_forward
+
+    fix_transformers_flash_attention_mrope_packed_sequence()
+    fix_transformers_flash_attention_mrope_packed_rows()
+
+    class _Attention(torch.nn.Module):
+        is_causal = True
+        layer_idx = 0
+
+        def __init__(self):
+            super().__init__()
+            self.config = type("C", (), {"_attn_implementation": "flash_attention_2"})()
+
+    torch.manual_seed(0)
+    first, second, heads, dim = 48, 32, 4, 64
+    total = first + second
+    q, k, v = (
+        torch.randn(1, heads, total, dim, device = "cuda", dtype = torch.bfloat16) for _ in range(3)
+    )
+    positions = torch.cat([torch.arange(first), torch.arange(second)]).cuda()
+    out, _ = flash_attention_forward(
+        _Attention(),
+        q,
+        k,
+        v,
+        None,
+        position_ids = positions.view(1, 1, total).expand(3, 1, total),
+        packed_seq_lengths = torch.tensor([first, second], dtype = torch.int32),
+    )
+
+    def alone(s, e):
+        return torch.nn.functional.scaled_dot_product_attention(
+            q[:, :, s:e], k[:, :, s:e], v[:, :, s:e], is_causal = True
+        ).transpose(1, 2)
+
+    torch.testing.assert_close(
+        out, torch.cat([alone(0, first), alone(first, total)], dim = 1), atol = 2e-2, rtol = 2e-2
+    )

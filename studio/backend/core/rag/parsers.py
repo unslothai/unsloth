@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Document parsing -> list[Page], one dispatch with lazy optional deps.
-
-PDFs keep per-page boundaries (``page_number``); txt/md/docx/html return a single
-page. ``parse(path, want_images=True)`` also returns embedded images. Heavy imports
-are lazy, so importing this module never fails on a missing dep.
-"""
+"""Document parsing to list[Page]; PDFs keep per-page page_number, txt/md/docx/html give one page;
+deps are lazy so importing never fails on a missing one."""
 
 from __future__ import annotations
 
@@ -273,6 +269,8 @@ class _Stripper(HTMLParser):
                 self._lists[-1][2].append(item)
                 self._label = f"\ue000{self.nonce}.{len(self.labels)}\ue001 "
                 self.labels.append("")
+        elif tag == "input" and (dict(attrs).get("type") or "").lower() in ("checkbox", "radio"):
+            self.handle_data(" ☒ " if "checked" in dict(attrs) else " ☐ ")
         elif tag in _HTML_BOX_TAGS and not self._skip and not self._pre:
             self._line.append(" ")
         elif tag == "tspan" and not self._skip and any(k in ("x", "y") for k, _ in attrs):
@@ -438,6 +436,51 @@ def _pdf_markdown(doc, pages: range | None = None) -> list[str] | None:
     return [str(c.get("text") or "") for c in chunks]
 
 
+def _pdf_form_field_lines(page) -> list[str]:
+    import fitz
+
+    try:
+        widgets = list(page.widgets())
+    except Exception as exc:  # noqa: BLE001 - a malformed field must not fail the whole PDF
+        logger.warning("skipping form fields on PDF page %d: %s", page.number + 1, exc)
+        return []
+    tooltip_owners: dict[str, set[str]] = {}
+    for widget in widgets:
+        tooltip = " ".join((widget.field_label or "").split())
+        tooltip_owners.setdefault(tooltip, set()).add(widget.field_name)
+    fields = {}
+    for widget in widgets:
+        shown = dict(c for c in widget.choice_values or [] if isinstance(c, (list, tuple)))
+        value = widget.field_value
+        value = ", ".join(
+            shown.get(part, part)
+            for part in (value if isinstance(value, list) else [value])
+            if isinstance(part, str)
+        )
+        radio = widget.field_type == fitz.PDF_WIDGET_TYPE_RADIOBUTTON
+        # Kids of one field share its /V; the widget's own /AS says which kid is ticked.
+        unchecked = (radio or widget.field_type == fitz.PDF_WIDGET_TYPE_CHECKBOX) and (
+            value == "Off" or page.parent.xref_get_key(widget.xref, "AS") == ("name", "/Off")
+        )
+        password = (
+            widget.field_type == fitz.PDF_WIDGET_TYPE_TEXT
+            and widget.field_flags & fitz.PDF_TX_FIELD_IS_PASSWORD
+        )
+        _, flags = page.parent.xref_get_key(widget.xref, "F")
+        hidden = widget.field_display in (1, 3) or (
+            flags.isdigit() and int(flags) & fitz.PDF_ANNOT_IS_INVISIBLE
+        )
+        if not widget.field_name or not value.strip() or unchecked or password or hidden:
+            continue
+        # A radio widget's /TU tooltip names one option, not the group's selected value.
+        tooltip = "" if radio else " ".join((widget.field_label or "").split())
+        label = tooltip or widget.field_name
+        if tooltip and len(tooltip_owners[tooltip]) > 1:
+            label = f"{tooltip} ({widget.field_name})"
+        fields[widget.field_name] = f"{label}: {value}"
+    return list(fields.values())
+
+
 def _pdf(
     source: str | bytes,
     want_images: bool,
@@ -455,6 +498,10 @@ def _pdf(
             raise ValueError("encrypted PDF requires a password")
         total_pages = doc.page_count
         page_numbers = range(total_pages if max_pages is None else min(total_pages, max_pages))
+        # Read before pymupdf4llm, which bakes the widgets into page content.
+        form_fields = (
+            {n: _pdf_form_field_lines(doc[n]) for n in page_numbers} if doc.is_form_pdf else {}
+        )
         if not config.PDF_MARKDOWN:
             md = None
         elif max_pages is None:
@@ -493,6 +540,7 @@ def _pdf(
                     break
             if needs_ocr:
                 text = plain
+            text = "\n".join(filter(None, [text, *form_fields.get(page_number, [])]))
             pages.append(Page(text, page_number + 1, len(text), needs_ocr = needs_ocr))
             if want_images:
                 for img in page.get_images(full = True):

@@ -430,17 +430,29 @@ export const BUDGET = {
   // with startup code (chat-settings-api, sidebar-organization-keys) split into their own eager chunks, plus the
   // mount hook and store wiring: +3,074 B raw / +2,025 B transfer (6,958,762 -> 6,961,836 B raw, 2,099,260 ->
   // 2,101,285 B transfer against 9c397197e0, Node 24, 106 -> 109 chunks). Raised by that growth.
-  // DPO, ORPO and GRPO in Studio (#12601): +29,510 B raw / +9,218 B transfer over main's budget at the e3d92b48e
-  // merge (the RL strings in the eager catalog, the RL settings and role mapping in the eager training store),
-  // carried onto main's budget at each later merge of main.
-  // Python rewards (#12995): +4,260 B raw / +1,341 B transfer over #12601 (the isolation switch, Start
-  // gating and per-reward Try it errors in the eager rewards section and catalog), measured at 2fe7715056.
-  // Sample answers (#12999): +1,158 B raw / +347 B transfer over #12995 (the card's loading, waiting
-  // and error strings in the eager catalog), measured at 7eb8c86831.
-  // Format warm-up (#13000): +1,797 B raw / +590 B transfer over #12999 (the reasoning-format switch,
-  // warm-up row and their strings in the eager prompt section and catalog), measured at 93c5927c2c.
-  transferBytes: 2_114_706,
-  rawBytes: 7_013_354,
+  // Mermaid, node-forge and js-yaml load on first use: -998.5 KB raw / -260.1 KB transfer against 4e673d32e.
+  // Lowered by that, so the headroom stays what it was and a regression of that size fails here.
+  // Full Access from a tool approval card (#15485: per-chat grant store and the card's confirm dialog) adds
+  // 5,293 B raw / 1,953 B transfer to the eager chat chunk (5,940,337 -> 5,945,630 B raw, 1,835,497 ->
+  // 1,837,450 B transfer against 8222149ee, Node 24, 85 chunks). Raised by that growth.
+  // The Trick or treat row (#15678) merged in between, unmeasured, and adds 29,984 B raw / 10,952 B transfer
+  // (5,942,150 -> 5,972,134 B raw, 1,836,750 -> 1,847,702 B transfer, ed9857c0c3 -> 39b8a6ce13, Node 24,
+  // 85 chunks): its color themes are read by the theme store at startup, and loading its dialog on first
+  // open saves 3 KB transfer but adds five startup chunks. Raised by that growth.
+  // DPO, ORPO and GRPO in Studio (#12601): +29,272 B raw / +9,131 B transfer over main at fa7ad0d60 (5,984,705 ->
+  // 6,013,977 B raw, 1,845,111 -> 1,854,242 B transfer, Node 26, 78 chunks): the RL strings in the eager catalog
+  // and the RL settings and role mapping in the eager training store. Raised by that growth.
+  // Python rewards (#12995): +4,199 B raw / +1,422 B transfer over #12601 (6,013,977 -> 6,018,176 B raw,
+  // 1,854,242 -> 1,855,664 B transfer, Node 26): the isolation switch, Start gating and per-reward Try it
+  // errors in the eager rewards section and catalog. Raised by that growth.
+  // Sample answers (#12999): +1,165 B raw / +339 B transfer over #12995 (6,018,176 -> 6,019,341 B raw,
+  // 1,855,664 -> 1,856,003 B transfer, Node 26): the sample card's strings in the eager catalog and the
+  // run's objective in the run-config override. Raised by that growth.
+  // Format warm-up (#13000): +1,971 B raw / +734 B transfer over #12999 (6,019,341 -> 6,021,312 B raw,
+  // 1,856,003 -> 1,856,737 B transfer, Node 26): the reasoning-format and warm-up strings in the eager catalog
+  // and their defaults in the training store. Raised by that growth.
+  transferBytes: 1_861_399,
+  rawBytes: 6_026_049,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.

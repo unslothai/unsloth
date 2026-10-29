@@ -16,7 +16,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   AttachmentIcon,
-  FileDatabaseIcon,
+  FileSearchIcon,
   Folder02Icon,
   FolderAttachmentIcon,
   PlusSignIcon,
@@ -1343,7 +1343,7 @@ export function ThreadDocumentsBar({
         {/* Keyed per mode: the strip's observers attach on mount, and this one has no strip. */}
         <ChatFilesPanel
           key="kb"
-          icon={FileDatabaseIcon}
+          icon={FileSearchIcon}
           title={activeKbName ? `Knowledge base: ${activeKbName}` : "Knowledge base"}
           onClose={() => setRagPanelHidden(true)}
           closeLabel="Hide files"
@@ -1421,7 +1421,7 @@ export function ThreadDocumentsBar({
       {kbDialog}
       <ChatFilesPanel
         key="files"
-        icon={FileDatabaseIcon}
+        icon={FileSearchIcon}
         title="Chat with files"
         titleSuffix="(RAG)"
         count={countSuffix}

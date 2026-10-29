@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Keep the host's filesystem layout inside the host. For an ``sk-unsloth`` API key every host
-path in an inventory payload is replaced by an opaque reference, stable for the life of the
-server so a client can still group rows. Output encoding, not an authorization decision.
-"""
+"""Swaps host paths for stable opaque refs under sk-unsloth keys; encoding only, not authorization."""
 
 from __future__ import annotations
 

@@ -778,6 +778,9 @@ jobs:
   ui-indicator:
     name: Loaded-models indicator (cross-browser)
     runs-on: ubuntu-latest
+    env:
+      # A release published mid-run puts an update card over the controls the scripts click.
+      UNSLOTH_DISABLE_UPDATE_CHECK: '1'
     # Own job: three engines would push later ui-smoke steps past its limit. Stubs the
     # /status reads, so no model or GPU is needed, but a real browser layout is.
     timeout-minutes: 30

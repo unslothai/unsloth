@@ -646,14 +646,180 @@ _CURATED_REMOTE_VLM_TYPES = frozenset(
 _FALLBACK_AUDIO_MODEL_TYPES = frozenset({"csm", "whisper"})
 
 
+_VLM_MAPPING_ATTRS = (
+    "MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES",
+    "MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES",
+)
+_AUDIO_MAPPING_ATTRS = (
+    "MODEL_FOR_CTC_MAPPING_NAMES",
+    "MODEL_FOR_SPEECH_SEQ_2_SEQ_MAPPING_NAMES",
+    "MODEL_FOR_AUDIO_CLASSIFICATION_MAPPING_NAMES",
+    "MODEL_FOR_TEXT_TO_WAVEFORM_MAPPING_NAMES",
+    "MODEL_FOR_TEXT_TO_SPECTROGRAM_MAPPING_NAMES",
+    "MODEL_FOR_AUDIO_XVECTOR_MAPPING_NAMES",
+)
+
+
+_READ_ONLY_DICT_METHODS = frozenset({"items", "keys", "values", "get", "copy"})
+
+
+def _modeling_auto_source_path() -> Optional[str]:
+    """modeling_auto.py of the transformers an import would load now, found without importing it."""
+    import importlib.util
+
+    package = sys.modules.get("transformers")
+    try:
+        if package is not None:
+            locations = list(getattr(package, "__path__", None) or [])
+        else:
+            spec = importlib.util.find_spec("transformers")
+            locations = list(spec.submodule_search_locations or []) if spec is not None else []
+    except (ImportError, ValueError, AttributeError):
+        return None
+    if len(locations) != 1:
+        return None
+    path = os.path.join(locations[0], "models", "auto", "modeling_auto.py")
+    return path if os.path.isfile(path) else None
+
+
+def _transformers_enables_torch() -> bool:
+    """True only when transformers surely enables torch (installed, USE_TORCH / USE_TF, declared
+    floor), decided from metadata. False keeps the import path, so no-torch installs still get the
+    curated fallback."""
+    import importlib.metadata
+    import importlib.util
+
+    # transformers 4.x honours these; `import unsloth` sets USE_TF=0, which leaves torch on.
+    true_values = {"1", "ON", "YES", "TRUE"}
+    if os.environ.get("USE_TORCH", "AUTO").upper() not in true_values | {"AUTO"}:
+        return False
+    if os.environ.get("USE_TF", "AUTO").upper() in true_values:
+        return False
+    try:
+        from packaging.requirements import Requirement
+        from packaging.version import Version
+
+        if importlib.util.find_spec("torch") is None:
+            return False
+        torch_version = Version(importlib.metadata.version("torch"))
+        requirements = [Requirement(r) for r in importlib.metadata.requires("transformers") or []]
+    except Exception:  # noqa: BLE001
+        return False
+    # Floors only: ceilings are not runtime gates (4.52 declares torch<2.7, runs on newer torch).
+    floors = [
+        spec
+        for r in requirements
+        if r.name == "torch"
+        for spec in r.specifier
+        if spec.operator in (">=", ">")
+    ]
+    if not floors:
+        return False
+    return all(spec.contains(torch_version, prereleases = True) for spec in floors)
+
+
+def _mapping_names_from_source(path: str) -> Optional[Dict[str, dict]]:
+    """The wanted *_MAPPING_NAMES from modeling_auto.py's source via ast, without importing torch.
+    None (caller imports) unless each is bound once at module level to a literal and never
+    rebound or mutated."""
+    import ast
+
+    wanted = frozenset(_VLM_MAPPING_ATTRS + _AUDIO_MAPPING_ATTRS)
+    try:
+        with open(path, encoding = "utf-8") as fh:
+            tree = ast.parse(fh.read())
+    except (OSError, SyntaxError, ValueError, UnicodeDecodeError, MemoryError, RecursionError):
+        return None
+    found: Dict[str, dict] = {}
+    for node in tree.body:
+        if not (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id in wanted
+        ):
+            continue
+        value = node.value
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "OrderedDict"
+            and len(value.args) == 1
+            and not value.keywords
+        ):
+            value = value.args[0]
+        try:
+            literal = ast.literal_eval(value)
+            mapping = dict(literal)
+        except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+            return None
+        if node.targets[0].id in found or not all(isinstance(k, str) for k in mapping):
+            return None
+        found[node.targets[0].id] = mapping
+    # Unmentioned names read as {} like getattr(..., None) (VISION_2_SEQ is gone in 5.x), unless
+    # __getattr__, a star import or globals() could create them.
+    mentioned = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and n.id in wanted}
+    for node in ast.walk(tree):
+        if (
+            (isinstance(node, ast.FunctionDef) and node.name == "__getattr__")
+            or (isinstance(node, ast.ImportFrom) and any(a.name == "*" for a in node.names))
+            or (isinstance(node, ast.Name) and node.id in ("globals", "vars", "setattr", "exec"))
+        ):
+            if wanted - set(found):
+                return None
+    if not found:
+        return None
+    for name in wanted - set(found):
+        if name in mentioned:
+            return None
+        found[name] = {}
+    stores: Dict[str, int] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id in wanted and not isinstance(node.ctx, ast.Load):
+            stores[node.id] = stores.get(node.id, 0) + 1
+        elif isinstance(node, (ast.Attribute, ast.Subscript)):
+            base = node.value
+            if (
+                isinstance(base, ast.Name)
+                and base.id in wanted
+                and not (
+                    isinstance(node.ctx, ast.Load)
+                    and (isinstance(node, ast.Subscript) or node.attr in _READ_ONLY_DICT_METHODS)
+                )
+            ):
+                return None
+        elif isinstance(node, (ast.Global, ast.Nonlocal)) and wanted.intersection(node.names):
+            return None
+        elif isinstance(node, (ast.Import, ast.ImportFrom)) and any(
+            (alias.asname or alias.name) in wanted for alias in node.names
+        ):
+            return None
+    if any(stores.get(name, 0) != (1 if name in mentioned else 0) for name in wanted):
+        return None
+    return found
+
+
 def _build_detection_sets():
     """Reads static name dicts from the transformers registry only; no model loads and no code runs."""
     try:
-        from transformers.models.auto import modeling_auto as _ma
+        source_path = (
+            None
+            if "transformers.models.auto.modeling_auto" in sys.modules
+            or not _transformers_enables_torch()
+            else _modeling_auto_source_path()
+        )
+        from_source = _mapping_names_from_source(source_path) if source_path else None
+        if from_source is not None:
 
-        def _names(attr):
-            d = getattr(_ma, attr, None)
-            return dict(d) if d else {}
+            def _names(attr):
+                d = from_source[attr]
+                return dict(d) if d else {}
+
+        else:
+            from transformers.models.auto import modeling_auto as _ma
+            def _names(attr):
+                d = getattr(_ma, attr, None)
+                return dict(d) if d else {}
 
         itt = _names("MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES")
         v2s = _names("MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES")
@@ -661,14 +827,7 @@ def _build_detection_sets():
         vlm_classes = set(itt.values()) | set(v2s.values())
 
         audio_types: set = set()
-        for attr in (
-            "MODEL_FOR_CTC_MAPPING_NAMES",
-            "MODEL_FOR_SPEECH_SEQ_2_SEQ_MAPPING_NAMES",
-            "MODEL_FOR_AUDIO_CLASSIFICATION_MAPPING_NAMES",
-            "MODEL_FOR_TEXT_TO_WAVEFORM_MAPPING_NAMES",
-            "MODEL_FOR_TEXT_TO_SPECTROGRAM_MAPPING_NAMES",
-            "MODEL_FOR_AUDIO_XVECTOR_MAPPING_NAMES",
-        ):
+        for attr in _AUDIO_MAPPING_ATTRS:
             audio_types |= set(_names(attr))
         audio_types |= set(_FALLBACK_AUDIO_MODEL_TYPES)
 
@@ -2448,7 +2607,10 @@ def detect_dspark_file(
 def _registered_custom_model_root(path: str) -> Optional[Path]:
     try:
         from storage.studio_db import list_scan_folders
-        folders = list_scan_folders()
+        from utils.paths import studio_db_path
+        from utils.scan_memo import memoized
+
+        folders = memoized(("scan_folders", str(studio_db_path())), list_scan_folders)
     except Exception:
         return None
     candidate = Path(os.path.abspath(Path(path).expanduser()))

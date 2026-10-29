@@ -1,58 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pre-warmed ``torch.compile`` cache for the diffusion denoiser (Mega-cache).
-
-The regional compile of the repeated denoiser block pays a one-time 25-58s compile on
-the FIRST image after a load. This lets that cost be paid ONCE (by the distributor ahead
-of time or the user on first run) and reused on every later load via torch's portable
-Mega-cache (``save_cache_artifacts`` / ``load_cache_artifacts``, torch >= 2.7).
-
-PORTABILITY IS NOT UNIVERSAL: an artifact is only valid for the SAME torch/Triton/CUDA
-build, GPU arch, and model graph (family, dtype, quant, attention backend, compile
-kwargs, shape bucket, quant variant, graph kill switches). torch validates these on load;
-a mismatch yields no hit, not an error. Hence
-an EXACT-MATCH fingerprint with SILENT FALLBACK to local compile (a miss is normal), and
-per-arch bundles keyed by the full fingerprint. See
-``outputs/compile_cache/DISTRIBUTION.md``.
-
-GGUF loads participate too (fingerprinted ``quant="gguf"``, a different compiled graph
-than the dense family): ``torch.compile`` mode="default" runs clean over diffusers'
-GGUF dequant path (measured on torch 2.10 / diffusers 0.39), but the cold warmup is
-HEAVY at batched shapes -- ~159 s first-pass wall on a 12B-class 4-step model at
-batch 32, up to ~655 s on a 20B CFG-batched model at 1024px -- which is exactly the
-cost this bundle amortises to once-ever. Batched generation registers every distinct
-(width, height, batch) chunk shape it runs via ``register_shape`` so a static-compile
-bundle grows to cover the batch sizes actually used, OOM-backoff halves included.
-
-Lifecycle (around ``_compile_repeated_blocks``): ``begin`` builds the fingerprint, points
-``TORCHINDUCTOR_CACHE_DIR`` at a per-key dir, and loads a matching bundle (before the
-first compiled forward); ``save`` writes the bundle + manifest after the warmup forward
-(on by default, a hit skips the rewrite); ``restore`` resets the inductor dir on unload.
-All env-gated and best-effort; torch imported lazily.
-
-DISK: LRU keys are evicted past ``UNSLOTH_DIFFUSION_COMPILE_CACHE_MAX_GB``, never one open here or used in the last hour.
-
-The generate path calls ``save_async``, not ``save``: the write is pure bookkeeping for
-the NEXT process, so making a user wait on it buys them nothing. Measured on a B200
-(Z-Image-Turbo, speed=max, torch 2.11): a 42.7 MB bundle costs 0.088 s to serialise plus
-0.033 s to write, a 71.1 MB one 0.130 s plus 0.057 s, so roughly 2.6 ms per MB, and the
-docstring's batched-GGUF bundles are far larger than either. ``save`` itself is unchanged
-and still synchronous, for tests and for anyone who needs the write to have happened by
-the time the call returns.
-
-ON-DISK LAYOUT, per key dir: ``manifest.json`` plus one or more ``bundle-<sha16>.bin``.
-The bundle is CONTENT-ADDRESSED and the manifest names the one it is paired with, so the
-manifest is the single commit point: a save writes a file no reader is using, then
-publishes the manifest naming it, then collects the bundles no manifest names. Killed
-anywhere in between, what is on disk is still a matching pair, either the old one (the
-new bundle is an orphan) or the new one. That matters because a save runs on a daemon
-thread that interpreter exit can kill mid-write: writing one fixed ``cache.bin`` in place
-would leave the old manifest paired with a new bundle, and the sha256 check on load would
-then throw away a warm start that was perfectly good. Manifests without a ``bundle`` key
-are pre-content-addressing and name ``cache.bin``, so old bundles keep hitting; the format
-version is deliberately NOT bumped, since bumping it is what would invalidate them.
-"""
+"""Torch Mega-cache of denoiser compile; exact-match fingerprint, a mismatch yields a miss not an
+error; best-effort; manifest is the commit point over content-addressed bundles; old cache.bin
+manifests stay valid, format version not bumped; LRU never evicts open or last-hour keys"""
 
 from __future__ import annotations
 
@@ -270,6 +221,7 @@ _GRAPH_SWITCHES = {
     "UNSLOTH_DIFFUSION_INT8_GEMM": "auto",
     "UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT": "on",
     "UNSLOTH_DIFFUSION_INT8_GEMM_STREAMED": "on",
+    "UNSLOTH_DIFFUSION_INT8_GEMM_UNLISTED": "auto",
     "UNSLOTH_DIFFUSION_INT8_ROTQUANT": "auto",
     "UNSLOTH_DIFFUSION_INT8_ROTQUANT_UNLISTED": "auto",
     "UNSLOTH_DIFFUSION_INT8_FUSED": "on",

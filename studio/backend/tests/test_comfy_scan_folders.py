@@ -357,7 +357,7 @@ def test_split_local_checkpoint_path(tmp_path):
 
 
 def test_media_pick_of_one_file_in_a_multi_file_folder(tmp_path):
-    from core.inference.diffusion import resolve_local_single_file
+    from core.inference.diffusion_local_files import resolve_local_single_file
     from core.inference.media_locality import normalized_pick
     from core.inference.media_model_index import MediaModelPick
 

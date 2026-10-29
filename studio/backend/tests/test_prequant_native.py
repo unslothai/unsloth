@@ -146,6 +146,34 @@ def test_native_rebuild_matches_torchao_unflatten(tmp_path, monkeypatch):
 
 @needs_helpers
 @needs_int8tensor
+def test_int8_constructor_signature_is_read_once_not_per_weight(tmp_path, monkeypatch):
+    sd = {f"blk{i}.q.weight": _int8_tensor(seed = i) for i in range(4)}
+    path = _write(tmp_path / "M-INT8.safetensors", sd)
+    monkeypatch.setenv(pn.NATIVE_REBUILD_ENV, "0")
+    stock = ps.load_prequant_safetensors(str(path))["state_dict"]
+    monkeypatch.delenv(pn.NATIVE_REBUILD_ENV)
+    target = _API["Int8Tensor"].__new__
+    real, calls = inspect.signature, []
+
+    def counting(obj, *args, **kwargs):
+        if obj is target:
+            calls.append(obj)
+        return real(obj, *args, **kwargs)
+
+    monkeypatch.setattr(inspect, "signature", counting)
+    cached = getattr(pn, "_constructor_params", None)
+    if cached is not None:
+        cached.cache_clear()
+    for _ in range(2):
+        native = ps.load_prequant_safetensors(str(path))
+        assert native["reader"] == "native"
+        for key in sd:
+            assert _same(_canon(native["state_dict"][key]), _canon(stock[key])), key
+    assert len(calls) == 1
+
+
+@needs_helpers
+@needs_int8tensor
 def test_mapped_read_is_the_same_tensors_as_a_copied_read(tmp_path):
     sd = {"blk.q.weight": _int8_tensor(), "blk.f.weight": _fp8_tensor(), "x": torch.arange(4.0)}
     path = _write(tmp_path / "M-INT8.safetensors", sd)

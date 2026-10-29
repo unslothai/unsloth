@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Copy a gallery image or clip into a chat project's folder.
-
-Files land in ``<project root>/sandbox/{images,videos,audio}``, where the project's chats run their
-tools. It is a copy, so the gallery keeps its item.
-"""
+"""Copies a gallery item (not moves) into <project root>/sandbox/{images,videos,audio} for chat tools"""
 
 from __future__ import annotations
 

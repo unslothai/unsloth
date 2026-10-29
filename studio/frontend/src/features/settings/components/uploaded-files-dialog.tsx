@@ -19,6 +19,7 @@ import {
   fetchChatAttachmentBlob,
   isTextAttachmentName,
   listChatAttachments,
+  prepareChatAttachmentDeletion,
 } from "@/features/chat";
 import {
   type UploadedDocument,
@@ -315,6 +316,7 @@ function chatAttachmentRow(att: ChatAttachmentRecord): UploadedFileRow {
       });
     },
     remove: async () => {
+      await prepareChatAttachmentDeletion(att.id);
       await deleteChatAttachment(att.messageId, att.id);
       // Patch any loaded runtime copy so a later sync cannot write the attachment back.
       emitChatAttachmentDeleted({
