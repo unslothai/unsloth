@@ -450,8 +450,7 @@ function RootLayout() {
       : DEFAULT_DOCUMENT_TITLE;
   }, [documentTitle]);
 
-  // Desktop mounts this root before the backend port and sign-in exist; a request sent then
-  // stays on the placeholder port for every retry. Always true on the web.
+  // Desktop mounts this root before the port exists; authFetch retries keep the URL it started with.
   const desktopShellReady = useDesktopShellReady();
 
   // Settings predating the server override map live only locally; backfill once after auth.
