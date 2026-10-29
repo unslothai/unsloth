@@ -17,7 +17,7 @@ MAX_CHUNK_SIZE = 20000
 _MIN_BREAK_RATIO = 0.6
 _CACHE_DIR = LazyPath(unstructured_seed_cache_root)
 _WHITESPACE = re.compile(r"\s+")
-# Same matches as \n{3,}, which re scans at every offset; a literal lead lets it jump between newlines (~20x).
+# Same matches as \n{3,}, but the literal prefix lets re skip to each newline instead of trying every offset.
 _BLANK_LINE_RUN = re.compile(r"\n\n\n+")
 # Bump when chunk output changes so cached Parquet seeds are rebuilt.
 _CHUNKER_VERSION = 2

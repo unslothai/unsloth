@@ -31,24 +31,6 @@ def _previous_normalize(text):
     return re.sub(r"\n{3,}", "\n\n", normalized).strip()
 
 
-def test_blank_line_runs_use_the_literal_led_pattern():
-    assert chunking._BLANK_LINE_RUN.pattern == r"\n\n\n+"
-    calls = []
-
-    class _Spy:
-        def sub(self, repl, text):
-            calls.append(text)
-            return chunking.re.sub(r"\n{3,}", repl, text)
-
-    original = chunking._BLANK_LINE_RUN
-    chunking._BLANK_LINE_RUN = _Spy()
-    try:
-        assert chunking.normalize_unstructured_text("a\r\n\r\n\r\nb") == "a\n\nb"
-    finally:
-        chunking._BLANK_LINE_RUN = original
-    assert calls == ["a\n\n\nb"]
-
-
 def test_normalize_matches_previous_output():
     rng = random.Random(0)
     alphabet = ["\n", "\n", "\r", "\r\n", "a", " ", "\t", "\x85", " ", "é", "\n\n\n"]
@@ -56,5 +38,9 @@ def test_normalize_matches_previous_output():
     cases += [
         "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 60))) for _ in range(20000)
     ]
+    old = re.compile(r"\n{3,}")
     for text in cases:
         assert chunking.normalize_unstructured_text(text) == _previous_normalize(text), repr(text)
+        assert [m.span() for m in chunking._BLANK_LINE_RUN.finditer(text)] == [
+            m.span() for m in old.finditer(text)
+        ], repr(text)
