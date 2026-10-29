@@ -9,7 +9,12 @@ from core.inference import external_provider as ep
 from core.inference.providers import get_base_url, get_provider_info, list_available_providers
 
 
-def _capture(monkeypatch, provider_type, model, thread_id = None) -> dict:
+def _capture(
+    monkeypatch,
+    provider_type,
+    model,
+    thread_id = None,
+) -> dict:
     captured: dict = {}
 
     def handler(request):
