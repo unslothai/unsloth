@@ -36,6 +36,7 @@ def cache_key(
     model: Optional[dict],
     seed: Optional[int],
     flow_params: Optional[dict] = None,
+    extra: Any = None,
 ) -> str:
     material = {
         "c": CACHE_VERSION,
@@ -48,4 +49,6 @@ def cache_key(
     }
     if flow_params is not None:
         material["f"] = _value_identity(flow_params)
+    if extra is not None:
+        material["x"] = extra
     return hashlib.sha256(canonical(material).encode()).hexdigest()

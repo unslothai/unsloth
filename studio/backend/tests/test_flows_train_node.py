@@ -709,3 +709,47 @@ def test_chat_with_checkpoint_turns_the_adapter_back_on_after_a_benchmark(monkey
     asyncio.run(benchmark_judge())
     assert server["use_adapter"] is False
     assert asyncio.run(training.chat_checkpoint(ctx)) == {"text": "SELECT 1;"}
+
+
+def test_chat_with_checkpoint_asks_with_the_trained_system_prompt(monkeypatch):
+    from types import SimpleNamespace
+
+    from studio_mcp import loading, trained_models
+
+    async def noop(*a, **k):
+        return None
+
+    async def resolve_by(*a, **k):
+        return SimpleNamespace(ref = "/out/run-1", is_lora = True)
+
+    monkeypatch.setattr(loading, "load_llm", noop)
+    monkeypatch.setattr(trained_models, "resolve_by", resolve_by)
+    asked = []
+
+    def chat(**params):
+        ctx = _Ctx(lambda m, p, q, b: {})
+        ctx.inputs = {
+            "checkpoint": {"kind": "checkpoint", "name": "run-1", "system_prompt": "Answer in SQL."},
+            "prompt": "list users",
+        }
+        ctx.params = {"max_tokens": 8, **params}
+        ctx.resident, ctx.set_status = {}, lambda *a, **k: None
+
+        async def llm_text(**k):
+            asked.append(k["system"])
+            return "ok"
+
+        ctx.llm_text = llm_text
+        asyncio.run(training.chat_checkpoint(ctx))
+
+    chat()
+    chat(system_prompt = "Be brief.")
+    assert asked == ["Answer in SQL.", "Be brief."]
+
+
+def test_the_checkpoint_carries_the_one_system_prompt_training_used():
+    grpo = {"objective": "grpo", "rl_system_prompt": "Use <answer> tags."}
+    assert training.trained_system_prompt(grpo) == "Use <answer> tags."
+    sft = {"custom_format_mapping": {"q": "user", "a": "assistant", "__system_prompt": " Answer in SQL. "}}
+    assert training.trained_system_prompt(sft) == "Answer in SQL."
+    assert training.trained_system_prompt({"custom_format_mapping": {"s": "system", "q": "user"}}) == ""

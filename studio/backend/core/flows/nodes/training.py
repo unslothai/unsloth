@@ -14,7 +14,7 @@ from typing import Any, Optional
 
 from core.flows.nodes._common import FLOW_CHAT_CONTEXT, as_text, note_loaded, poll_job, strip_think
 from core.flows.nodes.data import recipe_artifact
-from core.flows.registry import FlowNodeError, NodeContext, handler
+from core.flows.registry import FlowNodeError, NodeContext, cache_hook, handler
 
 POLL_S = 5.0
 BUSY_WAIT_S = 180.0
@@ -248,12 +248,12 @@ async def finetune(ctx: NodeContext) -> dict:
     if holdout:
         metrics["train_rows"] = dataset.get("rows")
         metrics["holdout_rows"] = holdout["rows"]
+    checkpoint = {"kind": "checkpoint", "name": run, "base_model": config["model_name"]}
+    system = trained_system_prompt(config)
+    if system:
+        checkpoint["system_prompt"] = system
     return {
-        "checkpoint": {
-            "kind": "checkpoint",
-            "name": run,
-            "base_model": config["model_name"],
-        },
+        "checkpoint": checkpoint,
         "metrics": metrics,
         "holdout": holdout,
     }
@@ -355,6 +355,78 @@ def drafter_request(params: dict) -> dict:
         "learning_rate": float(lr) if lr not in (None, "") and float(lr) > 0 else None,
         "draft_steps": int(params.get("drafter_draft_steps") or 3),
     }
+
+
+def trained_system_prompt(config: dict) -> str:
+    """The one system message every training row got, when the run set one: the GRPO prompt, or
+    the SFT mapping's system prompt. A per-row system column has no single value to reuse."""
+    if config.get("objective") == "grpo" and config.get("rl_system_prompt"):
+        return str(config["rl_system_prompt"])
+    mapping = config.get("custom_format_mapping")
+    if isinstance(mapping, dict) and isinstance(mapping.get("__system_prompt"), str):
+        return mapping["__system_prompt"].strip()
+    return ""
+
+
+def _hub_revision(dataset: dict, token: Any) -> Optional[str]:
+    from huggingface_hub import HfApi
+
+    return HfApi().dataset_info(str(dataset["ref"]), token = token).sha
+
+
+def _content_hash(path: str) -> str:
+    import glob
+    import hashlib
+    import os
+
+    digest = hashlib.sha256()
+    for file in sorted(glob.glob(path)) if "*" in path else [path]:
+        digest.update(os.path.basename(file).encode() + b"\0")
+        with open(file, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                digest.update(chunk)
+    return digest.hexdigest()
+
+
+async def finetune_cache_material(ctx: NodeContext) -> Optional[dict]:
+    """What the dataset holds now, so a cached adapter is reused only for the same rows.
+    None (an unreachable Hub, a missing file) means train again rather than guess."""
+    from core.flows.nodes.data import local_seed_path, recipe_artifact
+    from core.training.account_jobs import account_hf_token
+
+    dataset = ctx.inputs.get("dataset")
+    if not isinstance(dataset, dict) or not dataset.get("ref"):
+        return None
+    if dataset.get("source") == "hf":
+        token = account_hf_token(getattr(ctx.caller, "hf_token", None))
+        sha = await asyncio.to_thread(_hub_revision, dataset, token)
+        return {"hub": sha} if sha else None
+    if dataset.get("source") == "recipe" and not recipe_artifact(dataset["ref"]):
+        # A recipe job id names one run's rows and is never reused.
+        return {"job": str(dataset["ref"])}
+    return {"sha256": await asyncio.to_thread(_content_hash, local_seed_path(dataset["ref"]))}
+
+
+async def finetune_cache_valid(ctx: NodeContext, outputs: dict) -> bool:
+    """A cached run is only reusable while its adapter folder (and held-out file) still exist."""
+    from studio_mcp import checkpoints
+
+    from core.flows.nodes.data import local_seed_path
+
+    name = (outputs.get("checkpoint") or {}).get("name") if isinstance(outputs, dict) else None
+    if not name:
+        return False
+    try:
+        await checkpoints.resolve(ctx.caller, name)
+        holdout = outputs.get("holdout")
+        if isinstance(holdout, dict) and holdout.get("ref"):
+            local_seed_path(holdout["ref"])
+    except Exception:
+        return False
+    return True
+
+
+cache_hook("train.finetune", material = finetune_cache_material, valid = finetune_cache_valid)
 
 
 def rl_roles(params: dict, objective: str) -> dict:
@@ -720,9 +792,12 @@ async def chat_checkpoint(ctx: NodeContext) -> dict:
         prompt = as_text(ctx.inputs.get("prompt")) or str(ctx.params.get("prompt") or "")
         if not prompt.strip():
             raise FlowNodeError("The prompt is empty")
+        system = str(ctx.params.get("system_prompt") or "").strip() or str(
+            checkpoint.get("system_prompt") or ""
+        )
         text = await ctx.llm_text(
             model = None,
-            system = "",
+            system = system,
             prompt = prompt,
             max_tokens = int(ctx.params.get("max_tokens") or 512),
             seed = ctx.seed,

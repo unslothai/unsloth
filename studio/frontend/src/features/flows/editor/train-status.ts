@@ -101,6 +101,7 @@ export function trainView(input: {
     const held = num(done.holdout_rows);
     const start = num(done.reward_start);
     const parts = [
+      status === "cached" ? "Reused, not retrained" : null,
       progressText(done),
       start !== null && num(done.reward) !== null ? `from ${start.toFixed(2)}` : null,
       train !== null && held !== null ? `${train} trained / ${held} held out` : null,

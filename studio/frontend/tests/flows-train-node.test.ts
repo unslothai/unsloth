@@ -220,3 +220,17 @@ test("drafter fields show only for SFT with the drafter on, LoRA fields only for
   assert.ok(visible({ offload_layers: "auto" }).includes("offload_vram_gb"));
   assert.ok(!visible({ offload_layers: "count" }).includes("offload_vram_gb"));
 });
+
+test("a reused adapter says it was not retrained", () => {
+  const outputs = {
+    checkpoint: { kind: "checkpoint", name: "run" },
+    metrics: { loss: 1.2, steps: 60, total: 60 },
+  };
+  const cached = trainView({ ...base, status: "cached", outputs });
+  assert.equal(cached.state, "adapter_ready");
+  assert.match(String(cached.detail), /^Reused, not retrained/);
+  assert.doesNotMatch(
+    String(trainView({ ...base, status: "done", outputs }).detail),
+    /Reused/,
+  );
+});
