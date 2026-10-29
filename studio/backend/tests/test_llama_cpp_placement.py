@@ -2762,8 +2762,7 @@ def test_the_route_precheck_only_refuses_what_the_launch_would(tmp_path, monkeyp
 
 
 def test_the_route_precheck_skips_the_gpu_probe_when_the_file_fits_in_ram(tmp_path, monkeypatch):
-    """A GGUF no bigger than RAM less headroom cannot warn whatever the GPUs hold, so the
-    route answers without the GPU probe (an nvidia-smi run plus a Python child)."""
+    """A GGUF within RAM less headroom cannot warn, so the route skips the GPU probe."""
     backend, gguf = _offload_backend(
         tmp_path, gguf_gb = 4, free_mib = 20_000, avail_mib = 10_000, monkeypatch = monkeypatch
     )
@@ -2777,7 +2776,7 @@ def test_the_route_precheck_skips_the_gpu_probe_when_the_file_fits_in_ram(tmp_pa
     backend._get_gpu_memory = probe
     assert backend.host_offload_warning_for_intent(_load_intent(gguf)) is None
     assert calls == []
-    # An extra -m is last-wins at launch, so its file is the one priced.
+    # -m is last-wins at launch.
     big = tmp_path / "big.gguf"
     big.write_bytes(b"x")
     backend._get_gguf_size_bytes = lambda path: int((100 if path == str(big) else 4) * 1024**3)
@@ -2858,7 +2857,7 @@ def test_the_route_precheck_answers_as_the_full_preflight(
                     )
                     assert got == expected, (opt_out, override_model, size, discount)
                     warned += expected is not None
-    # Rows the full path can price must reach a warning, or the grid compares only Nones.
+    # Else the grid compares only Nones.
     if rows in ([(0, 1, 1)], [(0, 20_000, 24_000)], [(0, 20_000, 24_000), (1, 7_000, 8_192)]):
         assert warned
 
