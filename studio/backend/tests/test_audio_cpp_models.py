@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.inference import audio_cpp_backend, audio_cpp_files, audio_cpp_music
+from core.inference import audio_cpp_backend, audio_cpp_failures, audio_cpp_files, audio_cpp_music
 from core.inference import audio_cpp_models as acm
 from core.inference.audio_cpp_models import (
     AUDIO_CPP_REPO,
@@ -882,6 +882,31 @@ def test_the_folder_name_never_names_a_variant(hub):
     assert "not found" in model.unsupported
     anime = acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", "v4.1-anime/Q8_0", network = False)
     assert anime.unsupported is None and anime.variant.key == "v4.1-anime/Q8_0"
+
+
+def test_a_published_file_the_runtime_cannot_load_is_never_offered(hub):
+    # VibeVoice's q4-ios fails at load with "quantized tensor byte size mismatch".
+    folder = "VibeVoice-1.5B-GGUF"
+    spec = {"family": "vibevoice", "tasks": ["tts"]}
+    snap = _snapshot(hub)
+    paths = {
+        name: _put(
+            snap,
+            f"{folder}/vibevoice-1.5b-{name}.gguf",
+            _gguf_bytes(family = "vibevoice", spec = spec) + b"\0" * pad,
+        )
+        for name, pad in (("bf16", 300), ("q8_0", 200), ("q4-ios", 100))
+    }
+    model = acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", network = False)
+    assert [v.key for v in model.variants] == ["Q8_0", "BF16"]
+    assert model.unsupported is None
+    # An out-of-memory failure on Q8_0 must not recommend it as the smaller variant.
+    assert audio_cpp_failures.smaller_variants(model) == []
+    # A saved or requested Q4 is refused, not swapped for another variant.
+    q4 = acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", "Q4", network = False)
+    assert "not found" in q4.unsupported
+    local = acm.resolve(str(paths["q4-ios"]), network = False)
+    assert "cannot be loaded" in local.unsupported
 
 
 MIOCODEC_Q8 = "MioCodec-25Hz-44.1kHz-v2-GGUF/miocodec-25hz-44khz-v2-q8_0.gguf"

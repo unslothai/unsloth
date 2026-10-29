@@ -1584,6 +1584,17 @@ _PREFERRED_SCOPES = ("turbo", "english", "tiny")
 _SKIP_FILE_RE = re.compile(
     r"(^|/)(readme[^/]*|license[^/]*|\.gitattributes|[^/]*\.(md|mp4|mp3|wav|png|jpe?g|gif))$", re.I
 )
+# Published GGUFs audio.cpp cannot load, by file name. VibeVoice's q4-ios stores its rank-3
+# ConvTranspose weights as Q4_K, whose 256-value blocks cannot hold the 10-value rows the
+# runtime dequantizes ("quantized tensor byte size mismatch"); no runtime spec lists it.
+_UNLOADABLE_FILES = {
+    "vibevoice-1.5b-q4-ios.gguf": "This VibeVoice Q4 build cannot be loaded by audio.cpp. "
+    "Use the Q8_0 or BF16 variant.",
+}
+
+
+def _unloadable_reason(path: str) -> Optional[str]:
+    return _UNLOADABLE_FILES.get(Path(path).name.lower())
 
 
 def _is_quant(word: str) -> bool:
@@ -1634,6 +1645,7 @@ def _single_file_variants(files: Sequence[RepoFile], folder: str) -> list[AudioC
         if f.path.lower().endswith(".gguf")
         and "mmproj" not in f.path.lower()
         and "imatrix" not in f.path.lower()
+        and _unloadable_reason(f.path) is None
     ]
     rows = []
     for gguf in ggufs:
@@ -2627,7 +2639,9 @@ def _resolve_uncached(
     unsupported = policy.unsupported
     if not variants:
         unsupported = (
-            unsupported or "This repository does not publish every file this model package needs."
+            unsupported
+            or next((r for f in ggufs if (r := _unloadable_reason(f.path))), None)
+            or "This repository does not publish every file this model package needs."
         )
         variants = [AudioCppVariant(quant_label(ggufs[0].path), (ggufs[0],), ggufs[0].path)]
     default = variants[0]
