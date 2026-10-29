@@ -1107,6 +1107,16 @@ class TestAnthropicPassthroughHealingText:
 
         asyncio.run(_run())
 
+    def test_call_quoted_inside_cut_call_is_not_runnable(self, monkeypatch):
+        async def _run():
+            cut = '<tool_call><function=lookup><parameter=q>run [TOOL_CALLS]lookup[ARGS]{"q": "rm"} li'
+            data = await self._drive(monkeypatch, _upstream_message(cut, finish_reason = "length"))
+            assert [b["type"] for b in data["content"]] == ["text"]
+            assert data["content"][0]["text"] == cut
+            assert data["stop_reason"] == "max_tokens"
+
+        asyncio.run(_run())
+
 
 class TestAnthropicEmitterHealing:
     def _events(

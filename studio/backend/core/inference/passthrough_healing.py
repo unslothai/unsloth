@@ -190,15 +190,23 @@ def heal_openai_message_events(
     content = msg.get("content")
     if not isinstance(content, str) or not _has_heal_signal(content):
         return None
-    parsed, spans = parse_tool_calls_from_text(
-        content, allow_incomplete = allow_incomplete, with_spans = True
+    parsed, spans = parse_tool_calls_from_text(content, allow_incomplete = True, with_spans = True)
+    # A strict parse alone would promote calls quoted inside a rejected unfinished call.
+    closed = (
+        None
+        if allow_incomplete
+        else set(parse_tool_calls_from_text(content, allow_incomplete = False, with_spans = True)[1])
     )
     tool_schemas = _tool_schemas_by_name(tools) if tools is not None else None
     events: list = []
     pos = 0
     call_count = 0
     for call, (start, end) in zip(parsed, spans):
-        promoted = _promote([call], allowed_tools, id_offset = call_count, tool_schemas = tool_schemas)
+        promoted = (
+            _promote([call], allowed_tools, id_offset = call_count, tool_schemas = tool_schemas)
+            if closed is None or (start, end) in closed
+            else None
+        )
         if promoted:
             if content[pos:start]:
                 events.append(("text", content[pos:start]))
