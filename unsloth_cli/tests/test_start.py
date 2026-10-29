@@ -1007,7 +1007,8 @@ def test_write_codex_subagent_bridge_keeps_parent_credentials_out(tmp_path, monk
         "codex_home": str(tmp_path / "child"),
         "bypass_permissions": False,
     }
-    assert path.stat().st_mode & 0o077 == 0
+    # POSIX mode bits: Windows reports 0o666 for any writable file, whatever the open mode.
+    assert os.name == "nt" or path.stat().st_mode & 0o077 == 0
     profile = _parse_toml((tmp_path / "child" / "unsloth_api.config.toml").read_text())
     assert profile["model"] == local["id"]
     assert profile["model_provider"] == start._CODEX_PROFILE
@@ -1036,7 +1037,8 @@ def test_write_codex_parent_overlay_preserves_user_state_and_instructions(tmp_pa
     assert instructions.startswith("Keep my existing instructions.\n")
     assert start._CODEX_SUBAGENT_ROUTING_INSTRUCTIONS in instructions
     assert not (overlay / "AGENTS.md").exists()
-    assert (overlay / "AGENTS.override.md").stat().st_mode & 0o077 == 0
+    # POSIX mode bits: Windows reports 0o666 for any writable file, whatever the open mode.
+    assert os.name == "nt" or (overlay / "AGENTS.override.md").stat().st_mode & 0o077 == 0
     assert (source / "AGENTS.override.md").read_text() == "Keep my existing instructions.\n"
 
 
