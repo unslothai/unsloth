@@ -318,33 +318,27 @@ def _parquet_preview_slice(files: list[Path], preview_size: int):
         features = Features.from_arrow_schema(schema)
         arrow_schema = features.arrow_schema
         wanted = min(preview_size, total_rows)
-        tables = []
+        tables, decoded_rows = [], 0
+        # Decode every page, as the full load does, so damage past the preview rows still fails here.
+        # Batches stay inside one row group: spanning ones held far more than the full load on images.
         for path in files:
-            if wanted <= 0:
-                break
             # A file object, so the handle is closed here (Windows would keep the file locked otherwise).
             with open(path, "rb") as handle:
-                parquet_file = pq.ParquetFile(handle)
-                for batch in parquet_file.iter_batches(batch_size = wanted, use_threads = False):
-                    table = table_cast(pa.Table.from_batches([batch]), arrow_schema)
-                    tables.append(table.slice(0, wanted))
-                    wanted -= tables[-1].num_rows
-                    if wanted <= 0:
-                        break
-        table = pa.concat_tables(tables).combine_chunks()
-        if table.num_rows != min(preview_size, total_rows):
-            return None
-        # Decode every page once, as the full load does, so a file damaged past the preview rows
-        # still fails the preview (the full load below then raises its own error). Batches are
-        # dropped as they go, so memory stays near one batch and nothing is written to the cache.
-        decoded_rows = 0
-        for path in files:
-            with open(path, "rb") as handle:
                 parquet_file = pq.ParquetFile(handle, pre_buffer = False, buffer_size = 1 << 20)
-                for batch in parquet_file.iter_batches(batch_size = 8192, use_threads = False):
-                    decoded_rows += batch.num_rows
-        if decoded_rows != total_rows:
+                metadata = parquet_file.metadata
+                for index in range(metadata.num_row_groups):
+                    batch_size = max(1, min(8192, metadata.row_group(index).num_rows))
+                    for batch in parquet_file.iter_batches(
+                        batch_size = batch_size, row_groups = [index], use_threads = False
+                    ):
+                        decoded_rows += batch.num_rows
+                        if wanted > 0:
+                            table = pa.Table.from_batches([batch.slice(0, wanted)])
+                            tables.append(table_cast(table, arrow_schema))
+                            wanted -= tables[-1].num_rows
+        if decoded_rows != total_rows or wanted > 0:
             return None
+        table = pa.concat_tables(tables).combine_chunks()
         # The full load writes its rows under the features' own Arrow schema (list child names included).
         table = table.cast(arrow_schema)
         return Dataset(InMemoryTable(table), info = DatasetInfo(features = features)), total_rows
