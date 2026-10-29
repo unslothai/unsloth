@@ -677,7 +677,11 @@ def test_chat_with_checkpoint_turns_the_adapter_back_on_after_a_benchmark(monkey
         # Like the inference server: the adapter switch sticks until a request sets it again.
         if body.get("use_adapter") is not None:
             server["use_adapter"] = body["use_adapter"]
-        yield {"choices": [{"delta": {"content": "SELECT 1;" if server["use_adapter"] else "Sure! ```sql"}}]}
+        yield {
+            "choices": [
+                {"delta": {"content": "SELECT 1;" if server["use_adapter"] else "Sure! ```sql"}}
+            ]
+        }
 
     async def noop(*a, **k):
         return None
