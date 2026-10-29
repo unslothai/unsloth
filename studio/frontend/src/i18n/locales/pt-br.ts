@@ -5009,7 +5009,7 @@ export const ptBR = {
       isolationRequired: "Sandbox do sistema obrigatório",
       isolationAuto: "Automático",
       isolationRequiredHint: "As recompensas Python só rodam dentro do sandbox do sistema; Iniciar e Testar as recusam quando este sistema não tem um.",
-      isolationAutoWarning: "Sem sandbox do sistema, as recompensas Python rodam só com proteções de software. Elas não impedem uma recompensa de ler seus arquivos, gravar fora da pasta dela ou usar a rede.",
+      isolationAutoWarning: "Sem sandbox do sistema, as recompensas Python rodam só com proteções de software. Elas não impedem uma recompensa de ler seus arquivos ou gravar fora da pasta dela. Nenhuma das duas opções limita a rede: uma recompensa pode acessar a internet e os serviços desta máquina.",
       scoreNone: "sem nota",
       summary: {
         regexWhole: "A resposta inteira corresponde ao padrão",

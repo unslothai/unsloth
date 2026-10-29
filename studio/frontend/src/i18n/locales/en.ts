@@ -5055,7 +5055,7 @@ export const en = {
       isolationRequired: "OS sandbox required",
       isolationAuto: "Auto",
       isolationRequiredHint: "Python rewards run only inside the OS sandbox; Start and Try it refuse them when this system has none.",
-      isolationAutoWarning: "With no OS sandbox on this system, Python rewards then run with software safeguards only. Those do not stop a reward from reading your files, writing outside its folder or using the network.",
+      isolationAutoWarning: "With no OS sandbox on this system, Python rewards then run with software safeguards only. Those do not stop a reward from reading your files or writing outside its folder. Neither setting limits the network: a reward can reach the internet and services on this machine.",
       scoreNone: "no score",
       summary: {
         regexWhole: "Whole reply matches the pattern",

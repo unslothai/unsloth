@@ -4875,7 +4875,7 @@ export const zhCN = {
       isolationRequired: "必须使用系统沙箱",
       isolationAuto: "自动",
       isolationRequiredHint: "Python 奖励只在系统沙箱中运行；本系统没有沙箱时，开始训练和试运行都会拒绝。",
-      isolationAutoWarning: "本系统没有系统沙箱时，Python 奖励只靠软件防护运行。这无法阻止奖励读取你的文件、在其文件夹外写入或使用网络。",
+      isolationAutoWarning: "本系统没有系统沙箱时，Python 奖励只靠软件防护运行。这无法阻止奖励读取你的文件或在其文件夹外写入。两种设置都不限制网络：奖励可以访问互联网和本机上的服务。",
       scoreNone: "无分数",
       summary: {
         regexWhole: "整个回复匹配该模式",

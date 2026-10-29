@@ -5050,7 +5050,7 @@ export const it = {
       isolationRequired: "Sandbox del sistema obbligatoria",
       isolationAuto: "Automatico",
       isolationRequiredHint: "Le ricompense Python girano solo nella sandbox del sistema; Avvia e Prova le rifiutano se questo sistema non ne ha una.",
-      isolationAutoWarning: "Senza sandbox del sistema, le ricompense Python girano solo con protezioni software. Queste non impediscono a una ricompensa di leggere i tuoi file, scrivere fuori dalla sua cartella o usare la rete.",
+      isolationAutoWarning: "Senza sandbox del sistema, le ricompense Python girano solo con protezioni software. Queste non impediscono a una ricompensa di leggere i tuoi file o scrivere fuori dalla sua cartella. Nessuna delle due impostazioni limita la rete: una ricompensa può raggiungere internet e i servizi di questo computer.",
       scoreNone: "nessun punteggio",
       summary: {
         regexWhole: "L'intera risposta corrisponde al pattern",

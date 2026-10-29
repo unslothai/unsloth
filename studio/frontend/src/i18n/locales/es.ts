@@ -5048,7 +5048,7 @@ export const es = {
       isolationRequired: "Sandbox del sistema obligatorio",
       isolationAuto: "Automático",
       isolationRequiredHint: "Las recompensas Python solo se ejecutan dentro del sandbox del sistema; Iniciar y Probar las rechazan si este sistema no tiene uno.",
-      isolationAutoWarning: "Sin sandbox del sistema, las recompensas Python se ejecutan solo con protecciones de software. Estas no impiden que una recompensa lea tus archivos, escriba fuera de su carpeta o use la red.",
+      isolationAutoWarning: "Sin sandbox del sistema, las recompensas Python se ejecutan solo con protecciones de software. Estas no impiden que una recompensa lea tus archivos o escriba fuera de su carpeta. Ninguno de los dos ajustes limita la red: una recompensa puede acceder a internet y a los servicios de este equipo.",
       scoreNone: "sin puntuación",
       summary: {
         regexWhole: "La respuesta completa coincide con el patrón",

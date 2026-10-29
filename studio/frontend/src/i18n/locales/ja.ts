@@ -4923,7 +4923,7 @@ export const ja = {
       isolationRequired: "OS サンドボックス必須",
       isolationAuto: "自動",
       isolationRequiredHint: "Python 報酬は OS サンドボックス内でのみ実行されます。このシステムにない場合、開始と試行は拒否されます。",
-      isolationAutoWarning: "このシステムに OS サンドボックスがない場合、Python 報酬はソフトウェアの保護だけで実行されます。報酬がファイルを読む、フォルダー外に書き込む、ネットワークを使うことは防げません。",
+      isolationAutoWarning: "このシステムに OS サンドボックスがない場合、Python 報酬はソフトウェアの保護だけで実行されます。報酬がファイルを読む、フォルダー外に書き込むことは防げません。どちらの設定でもネットワークは制限されず、報酬はインターネットやこのマシン上のサービスにアクセスできます。",
       scoreNone: "スコアなし",
       summary: {
         regexWhole: "返答全体がパターンに一致",

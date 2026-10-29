@@ -5283,7 +5283,7 @@ export const sv = {
       isolationRequired: "OS-sandlåda krävs",
       isolationAuto: "Automatiskt",
       isolationRequiredHint: "Python-belöningar körs bara i OS-sandlådan; Starta och Prova vägrar dem när systemet saknar en.",
-      isolationAutoWarning: "Utan OS-sandlåda på systemet körs Python-belöningar då bara med mjukvaruskydd. De hindrar inte en belöning från att läsa dina filer, skriva utanför sin mapp eller använda nätverket.",
+      isolationAutoWarning: "Utan OS-sandlåda på systemet körs Python-belöningar då bara med mjukvaruskydd. De hindrar inte en belöning från att läsa dina filer eller skriva utanför sin mapp. Ingen av inställningarna begränsar nätverket: en belöning kan nå internet och tjänster på den här datorn.",
       scoreNone: "ingen poäng",
     },
     prompt: {

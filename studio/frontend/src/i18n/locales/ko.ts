@@ -4964,7 +4964,7 @@ export const ko = {
       isolationRequired: "OS 샌드박스 필수",
       isolationAuto: "자동",
       isolationRequiredHint: "Python 보상은 OS 샌드박스 안에서만 실행됩니다. 이 시스템에 샌드박스가 없으면 시작과 테스트가 거부됩니다.",
-      isolationAutoWarning: "이 시스템에 OS 샌드박스가 없으면 Python 보상은 소프트웨어 보호만으로 실행됩니다. 이 보호로는 보상이 파일을 읽거나, 폴더 밖에 쓰거나, 네트워크를 쓰는 것을 막지 못합니다.",
+      isolationAutoWarning: "이 시스템에 OS 샌드박스가 없으면 Python 보상은 소프트웨어 보호만으로 실행됩니다. 이 보호로는 보상이 파일을 읽거나 폴더 밖에 쓰는 것을 막지 못합니다. 어느 설정도 네트워크는 제한하지 않으므로 보상이 인터넷과 이 컴퓨터의 서비스에 접근할 수 있습니다.",
       scoreNone: "점수 없음",
       summary: {
         regexWhole: "답변 전체가 패턴과 일치",

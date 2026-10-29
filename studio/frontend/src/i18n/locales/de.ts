@@ -5049,7 +5049,7 @@ export const de = {
       isolationRequired: "OS-Sandbox erforderlich",
       isolationAuto: "Automatisch",
       isolationRequiredHint: "Python-Belohnungen laufen nur in der OS-Sandbox; Start und Ausprobieren lehnen sie ab, wenn dieses System keine hat.",
-      isolationAutoWarning: "Ohne OS-Sandbox auf diesem System laufen Python-Belohnungen dann nur mit Software-Schutzmaßnahmen. Diese hindern eine Belohnung nicht daran, deine Dateien zu lesen, außerhalb ihres Ordners zu schreiben oder das Netzwerk zu nutzen.",
+      isolationAutoWarning: "Ohne OS-Sandbox auf diesem System laufen Python-Belohnungen dann nur mit Software-Schutzmaßnahmen. Diese hindern eine Belohnung nicht daran, deine Dateien zu lesen oder außerhalb ihres Ordners zu schreiben. Keine der beiden Einstellungen begrenzt das Netzwerk: Eine Belohnung kann das Internet und Dienste auf diesem Rechner erreichen.",
       scoreNone: "kein Wert",
       summary: {
         regexWhole: "Ganze Antwort passt zum Muster",

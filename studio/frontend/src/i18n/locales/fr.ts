@@ -5060,7 +5060,7 @@ export const fr = {
       isolationRequired: "Sandbox du système requis",
       isolationAuto: "Automatique",
       isolationRequiredHint: "Les récompenses Python ne s’exécutent que dans le sandbox du système ; Démarrer et Essayer les refusent si ce système n’en a pas.",
-      isolationAutoWarning: "Sans sandbox du système, les récompenses Python s’exécutent alors avec de simples protections logicielles. Elles n’empêchent pas une récompense de lire vos fichiers, d’écrire hors de son dossier ou d’utiliser le réseau.",
+      isolationAutoWarning: "Sans sandbox du système, les récompenses Python s’exécutent alors avec de simples protections logicielles. Elles n’empêchent pas une récompense de lire vos fichiers ou d’écrire hors de son dossier. Aucun des deux réglages ne limite le réseau : une récompense peut joindre Internet et les services de cette machine.",
       scoreNone: "pas de score",
       summary: {
         regexWhole: "Toute la réponse correspond au motif",
