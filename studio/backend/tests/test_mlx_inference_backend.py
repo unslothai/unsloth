@@ -5319,11 +5319,13 @@ def test_int8_prefill_is_the_outermost_scope_of_generation_pinned_off_when_inact
 
 @pytest.mark.parametrize("requested,available", [(True, True), (True, False), (False, True)])
 def test_ane_prefill_is_pinned_inside_int8_released_on_unload_and_reloads_on_change(
-    mlx_inference_patches, requested, available
+    monkeypatch, mlx_inference_patches, requested, available
 ):
     from core.inference import mlx_inference
     from models.inference import LoadRequest
     from routes.inference import _mlx_runtime_settings_match
+
+    _install_fake_mlx(monkeypatch)
 
     events = _int8_zoo(mlx_inference_patches)
 
