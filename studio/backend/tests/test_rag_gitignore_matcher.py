@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The compiled .gitignore matcher a linked-folder scan uses gives the rule-by-rule answer, with
-one regex match per run of rules instead of one per rule."""
+"""The compiled .gitignore Matcher agrees with rule-by-rule matching."""
 
 from __future__ import annotations
 
@@ -83,7 +82,6 @@ def test_matcher_agrees_with_rule_by_rule_matching():
             assert matcher.is_ignored(rel, is_dir) is expected, (rel, is_dir)
             checked += 1
             ignored += expected
-    # Both answers are exercised.
     assert 0.1 < ignored / checked < 0.9
 
 

@@ -132,10 +132,7 @@ def parse(text: str, base: str) -> list[Rule]:
 
 
 class Matcher:
-    """``is_ignored`` for one rule list, compiled once. Each run of adjacent rules that share
-    ``negate`` becomes one regex over the whole relative path, so a path costs one match per run
-    instead of one per rule; files get a plan without the directory-only rules. The last run that
-    matches decides, as the last matching rule does."""
+    """``is_ignored`` compiled once: one regex per run of same-``negate`` rules; last matching run wins."""
 
     __slots__ = ("_dir_plan", "_file_plan")
 
@@ -159,7 +156,6 @@ class Matcher:
 
 
 def _plan(rules) -> "tuple[tuple[bool, re.Pattern[str] | Rule], ...]":
-    """(negate, matcher) runs, last rule first."""
     runs: list[tuple[bool, list]] = []
     for rule in rules:
         pattern = rule.regex.pattern
