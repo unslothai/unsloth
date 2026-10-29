@@ -2380,8 +2380,7 @@ def load_prequantized_transformer(
             quantize_runtime_leftovers,
         )
 
-        # Before the padding (it reparents Linears): what the artifact baked dense and this runtime quantises. Each
-        # Linear is right either way, so a failure keeps the rest dense rather than dropping the artifact.
+        # Must run before padding (it reparents Linears); a failure keeps the artifact, leftovers stay dense.
         try:
             quantize_runtime_leftovers(
                 transformer,

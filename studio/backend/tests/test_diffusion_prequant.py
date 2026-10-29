@@ -2890,7 +2890,6 @@ def _qwen_int8_ckpt():
     from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
 
     ckpt = _good_ckpt(scheme = "int8")
-    # a published qwen-image artifact: built under the baked list, so its text stream is dense
     ckpt["metadata"].update(
         {
             "family": "qwen-image",
@@ -2917,7 +2916,6 @@ def test_load_tops_up_the_dense_text_stream_of_a_baked_artifact(monkeypatch, tmp
     )
     ckpt = _qwen_int8_ckpt()
     t = _load(monkeypatch, tmp_path, ckpt, scheme = "int8")
-    # the baked list covers the runtime one, so the artifact still validates and loads
     assert t is not None
     assert len(seen) == 1
     scheme, family, baked, kw = seen[0]
@@ -2933,7 +2931,6 @@ def test_load_survives_a_failed_top_up(monkeypatch, tmp_path):
         raise RuntimeError("no torchao")
 
     monkeypatch.setattr(tq, "quantize_runtime_leftovers", boom)
-    # each Linear is right dense too: a failed top-up keeps the artifact rather than falling back to a dense download
     assert _load(monkeypatch, tmp_path, _qwen_int8_ckpt(), scheme = "int8") is not None
 
 
@@ -2944,8 +2941,6 @@ def test_kill_switch_refuses_an_artifact_built_with_the_int8_text_stream(monkeyp
     )
 
     ckpt = _qwen_int8_ckpt()
-    # a streamed build (or a future artifact baked under the runtime list) quantises the text stream; a resident build
-    # or the switch off wants it dense, so the artifact must not load (the runtime rebuilds it dense instead)
     from core.inference.diffusion_transformer_quant import int8_text_stream_scope
 
     with int8_text_stream_scope(True):
@@ -2953,7 +2948,6 @@ def test_kill_switch_refuses_an_artifact_built_with_the_int8_text_stream(monkeyp
             exclude_tokens_for_scheme("int8", "qwen-image")
         )
         assert _load(monkeypatch, tmp_path, ckpt, scheme = "int8") is not None
-    # a resident build never takes a streamed build's int8 text stream
     assert _load(monkeypatch, tmp_path, ckpt, scheme = "int8") is None
     monkeypatch.setenv(INT8_TEXT_STREAM_ENV, "0")
     with int8_text_stream_scope(True):

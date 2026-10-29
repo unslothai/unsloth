@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Qwen-Image's int8 text stream: a STREAMED in-place build quantises the text-stream Linears the published artifacts,
-training and resident builds keep dense (``FamilyProfile.int8_runtime_quant_tokens`` inside
-``int8_text_stream_scope``), behind ``UNSLOTH_DIFFUSION_INT8_TEXT_STREAM``. CPU-only."""
+"""Qwen-Image streamed int8 text stream (``int8_text_stream_scope``). CPU-only."""
 
 from __future__ import annotations
 
@@ -27,7 +25,6 @@ _UNSCOPED = {
 @pytest.fixture(autouse = True)
 def _default_switch(monkeypatch, request):
     monkeypatch.delenv(tq.INT8_TEXT_STREAM_ENV, raising = False)
-    # Most tests describe a STREAMED build; the placement gate has its own tests below.
     if request.node.name in _UNSCOPED:
         yield
         return
@@ -36,8 +33,6 @@ def _default_switch(monkeypatch, request):
 
 
 def test_resident_build_is_main():
-    # outside the scope (resident builds, training, artifacts, planners) nothing changes: no runtime tokens, the
-    # baked exclusions, no extra padding
     assert tq.runtime_quant_tokens_for_scheme(TQ_INT8, "qwen-image") == ()
     assert exclude_tokens_for_scheme(TQ_INT8, "qwen-image") == exclude_tokens_for_scheme(
         TQ_INT8, "qwen-image", baked = True
@@ -78,8 +73,6 @@ def test_streamed_scope_does_not_leak_into_other_threads():
 
 
 def test_load_wraps_lookup_build_and_write_in_the_placement_scope():
-    # the in-place pipeline build is the one place that opens the scope, keyed on the plan's placement, around the
-    # cache read, the quantise and the cache write (so the cache key carries the decision)
     import inspect
 
     from core.inference import diffusion
@@ -99,16 +92,13 @@ def test_runtime_exclusions_drop_the_text_stream():
     tokens = exclude_tokens_for_scheme(TQ_INT8, "qwen-image")
     for token in _TEXT_STREAM:
         assert token not in tokens
-    # txt_in stays dense, and so does every generic small-M token
     assert "txt_in" in tokens
     assert set(tq._INT8_EXCLUDE_NAME_TOKENS) <= set(tokens)
     assert tq.runtime_quant_tokens_for_scheme(TQ_INT8, "qwen-image") == _TEXT_STREAM
-    # the family lookup normalises like every other table
     assert exclude_tokens_for_scheme(TQ_INT8, " Qwen-Image ") == tokens
 
 
 def test_baked_list_is_unchanged():
-    # published artifacts and training keep the historical list
     assert (
         exclude_tokens_for_scheme(TQ_INT8, "qwen-image", baked = True)
         == tq._INT8_EXCLUDE_NAME_TOKENS + tq._QWENIMAGE_INT8_EXCLUDES
@@ -161,7 +151,6 @@ def test_training_keeps_the_baked_list():
 
 
 def test_compile_switch_follows_the_kill_switch(monkeypatch):
-    # a build with the dense text stream must never be served to a process that quantises it (and back)
     from core.inference import diffusion_compile_cache as cc
 
     assert "UNSLOTH_DIFFUSION_INT8_TEXT_STREAM" in cc._GRAPH_SWITCHES
@@ -198,7 +187,6 @@ def _tiny_qwen_like(torch):
             super().__init__()
             self.txt_in = nn.Linear(d, d)
             self.transformer_blocks = nn.ModuleList([Block(d), Block(d)])
-            # under min_features: never quantised
             self.small = nn.Linear(64, 64)
 
     return Model().to(torch.bfloat16)
@@ -226,7 +214,6 @@ def test_leftovers_quantise_exactly_the_text_stream():
     for name, kind in kinds.items():
         quantised = kind not in ("Parameter", "Tensor")
         assert quantised == (name in text), name
-    # a second pass finds nothing left (idempotent: already-quantised Linears are skipped)
     assert tq.quantize_runtime_leftovers(model, TQ_INT8, "qwen-image", baked) == 0
     after = model.transformer_blocks[0].attn.add_q_proj(x)
     assert after.shape == before.shape
@@ -239,7 +226,6 @@ def test_leftovers_noop_cases(monkeypatch):
     torch = pytest.importorskip("torch")
     pytest.importorskip("torchao")
     baked = list(exclude_tokens_for_scheme(TQ_INT8, "qwen-image", baked = True))
-    # artifact built under the runtime list (nothing dense to top up), no metadata, other scheme / family
     assert (
         tq.quantize_runtime_leftovers(
             _tiny_qwen_like(torch), TQ_INT8, "qwen-image", ["norm", "txt_in"]
@@ -268,7 +254,6 @@ def test_leftovers_ignore_a_non_cuda_work_device():
 
 
 def test_local_prequant_cache_key_follows_the_switch(monkeypatch):
-    # a cached build from before this change (dense text stream) must not be served as the new one, nor back
     pytest.importorskip("torch")
     from core.inference import diffusion_prequant_cache as pc
 
@@ -290,5 +275,4 @@ def test_local_prequant_cache_key_follows_the_switch(monkeypatch):
     off, off_tokens = key()
     assert on != off
     assert "add_q_proj" in off_tokens and "add_q_proj" not in on_tokens
-    # a placement switch between loads never reuses the other placement's build; resident keys exactly as before
     assert resident != on and resident == off and resident_tokens == off_tokens

@@ -9817,9 +9817,7 @@ class DiffusionBackend:
                                     else {}
                                 )
                                 engaged: list[str] = []
-                                # Text-stream int8 only where the denoiser streams (its bytes cross PCIe every step); a
-                                # resident build stays as before. The scope reaches the prequant-cache key, so the two
-                                # placements never share an entry.
+                                # Text-stream int8 only when streamed; the scope is part of the prequant-cache key.
                                 with int8_text_stream_scope(not keeps_resident):
                                     cached_scheme = (
                                         self._pipeline_quant_from_cache(

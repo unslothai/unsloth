@@ -73,12 +73,8 @@ _INT8_FAMILY_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = _profile_table(
 )
 _QWENIMAGE_INT8_EXCLUDES = _INT8_FAMILY_EXCLUDE_NAME_TOKENS["qwen-image"]
 
-# The baked tokens inference int8 quantises anyway (``FamilyProfile.int8_runtime_quant_tokens``), and ONLY inside
-# ``int8_text_stream_scope(True)``: the in-place build of a STREAMED denoiser, where those bytes cross PCIe every step.
-# A resident build, training, artifacts and every call outside the scope keep the list above, so a hosted checkpoint
-# still validates (its exclusions are a superset) and gets its dense leftovers quantised at load inside the scope
-# (``quantize_runtime_leftovers``). The scope reaches the prequant-cache key, so a resident and a streamed build of
-# one checkpoint never share an entry.
+# Applied ONLY inside ``int8_text_stream_scope(True)`` (streamed builds); hosted artifacts still validate since their
+# exclusions are a superset. The scope is part of the prequant-cache key.
 _INT8_FAMILY_RUNTIME_QUANT_TOKENS: dict[str, tuple[str, ...]] = _profile_table(
     "int8_runtime_quant_tokens", quant = True
 )
@@ -90,7 +86,6 @@ _TEXT_STREAM_SCOPE: "_contextvars.ContextVar[bool]" = _contextvars.ContextVar(
 
 @_contextlib.contextmanager
 def int8_text_stream_scope(streamed: bool):
-    """Quantise the family's runtime tokens for the build / cache lookup / cache write inside, when ``streamed``."""
     token = _TEXT_STREAM_SCOPE.set(bool(streamed))
     try:
         yield
@@ -108,8 +103,7 @@ def int8_text_stream_enabled() -> bool:
 
 
 def runtime_quant_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tuple[str, ...]:
-    """Baked int8 exclusions this build quantises anyway; () outside ``int8_text_stream_scope(True)``, when off, for
-    other schemes and other families."""
+    """Baked int8 exclusions quantised anyway; () outside ``int8_text_stream_scope(True)``."""
     if scheme != TQ_INT8 or not _TEXT_STREAM_SCOPE.get() or not int8_text_stream_enabled():
         return ()
     return _INT8_FAMILY_RUNTIME_QUANT_TOKENS.get(str(family or "").strip().lower(), ())
@@ -134,9 +128,7 @@ _INT8_FAMILY_PAD_NAME_TOKENS: dict[str, tuple[str, ...]] = _profile_table(
 
 
 def pad_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tuple[str, ...]:
-    """int8 only, and disjoint from the exclude tokens since excluded Linears are never quantised. A streamed build's
-    runtime-quantised text stream is padded too: it runs at M = prompt tokens, and a compiled torchao int8 Linear raises in ``_int_mm``
-    below 17 rows (eager falls back to an fp32 matmul, the native W8A8 path to a dense one)."""
+    """int8 only, disjoint from the exclude tokens; includes a streamed build's runtime-quantised text stream."""
     if scheme != TQ_INT8:
         return ()
     key = str(family or "").strip().lower()
@@ -396,8 +388,7 @@ def exclude_tokens_for_scheme(
     ``family=None`` preserves the historical behaviour. Shared by the runtime path and the
     offline prequant builder so they never drift (else an int8 checkpoint bakes the small-M
     projections and crashes at the first denoise on Flux / Qwen). ``FamilyProfile.quant_exclude_tokens`` applies
-    to every scheme. A streamed build (``int8_text_stream_scope``) drops ``runtime_quant_tokens_for_scheme``; ``baked``
-    keeps the published-artifact list even there (training, native W8A8, ComfyUI import)."""
+    to every scheme. Streamed builds drop runtime tokens; ``baked`` keeps the published-artifact list."""
     key = str(family or "").strip().lower()
     every_scheme = _FAMILY_QUANT_EXCLUDE_NAME_TOKENS.get(key, ())
     if scheme == TQ_INT8:
@@ -1864,8 +1855,7 @@ def _quantize_native(
     try:
         from .diffusion_native_quant import apply_native_weight_quant
 
-        # require_bf16 keeps the fp32 linears some DiTs deliberately hold (Wan, Hunyuan) at full precision. The baked
-        # list: the W8A8 Linear's own small-M branch (dense below 17 rows) would recompile a dynamic text length.
+        # require_bf16 keeps deliberate fp32 linears (Wan, Hunyuan). Baked list: W8A8's small-M branch would recompile.
         filter_fn = make_filter_fn(
             min_features,
             exclude_name_tokens = exclude_tokens_for_scheme(scheme, family, baked = True) + ("lora_",),
@@ -1907,9 +1897,8 @@ def quantize_runtime_leftovers(
     logger: Any = None,
 ) -> int:
     """Quantise the dense Linears an artifact baked under ``baked_excludes`` that this runtime quantises
-    (``runtime_quant_tokens_for_scheme``), with the in-place build's own config, so a hosted checkpoint renders like a
-    fresh build without a republish. A host-placed Linear is quantised on ``device`` (CUDA) and moved back.
-    Returns the count; 0 when nothing applies."""
+    (``runtime_quant_tokens_for_scheme``); host-placed Linears are quantised on ``device`` and moved back. Returns the
+    count."""
     runtime = runtime_quant_tokens_for_scheme(scheme, family)
     if not runtime or not isinstance(baked_excludes, (list, tuple)):
         return 0

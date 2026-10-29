@@ -82,7 +82,6 @@ def _snapshot() -> dict:
         for scheme in schemes:
             variant_repos = [r for r in repos if tq.convrot_prequant_variant_repo(scheme, name, r)]
             row[scheme] = {
-                # the published-artifact list; a streamed build drops runtime_quant (and pads it)
                 "exclude": list(tq.exclude_tokens_for_scheme(scheme, name, baked = True)),
                 "runtime_quant": _streamed(tq.runtime_quant_tokens_for_scheme, scheme, name),
                 "pad": list(tq.pad_tokens_for_scheme(scheme, name)),
