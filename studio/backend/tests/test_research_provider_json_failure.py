@@ -16,8 +16,7 @@ from storage import studio_db
 from .test_research_no_evidence import _claimed_run, research_home
 
 
-# Strata's prompt-and-validate server emits this SSE envelope after rejecting the
-# generated object (serve/server.py, structured_output_failed).
+# SSE envelope from Strata's prompt-and-validate server (serve/server.py).
 JSON_FAILURE = {
     "error": {
         "type": "structured_output_failed",
@@ -84,7 +83,7 @@ def test_provider_json_failure_preserves_research_and_finishes(
         [
             [_content(json.dumps({"action": "search", **plan[0]}))],
             rejected,
-            rejected,  # The optional synthesis audit can fail validation too.
+            rejected,
             [_content(REPORT)],
         ]
     )

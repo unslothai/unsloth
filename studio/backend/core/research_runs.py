@@ -1924,9 +1924,7 @@ class ResearchSupervisor:
                                     and isinstance(error, dict)
                                     and error.get("code") == "structured_output_failed"
                                 ):
-                                    # Prompt-and-validate providers reject malformed JSON before
-                                    # delivering it. Use the same plan/evidence fallbacks as a
-                                    # malformed reply, discarding any rejected partial output.
+                                    # Provider-rejected JSON takes the malformed-reply fallback.
                                     await self._check_active(run["id"])
                                     logger.warning(
                                         "research.structured_output_failed run_id=%s phase=%s",
