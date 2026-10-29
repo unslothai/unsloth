@@ -312,7 +312,8 @@ def _build(model, X):
     plan.hidden = hidden
     with _decode_graphs._no_inference_tensors():
         plan.residual = torch.empty(hidden, dtype = torch.float32, device = device)
-        plan.xg = torch.empty(hidden, dtype = X.dtype, device = device)
+        # Unnormalized h * g: fp16 can overflow it before the consuming site applies rstd.
+        plan.xg = torch.empty(hidden, dtype = torch.float32, device = device)
         plan.ss = (
             torch.zeros(hidden, dtype = torch.float32, device = device),
             torch.zeros(hidden, dtype = torch.float32, device = device),

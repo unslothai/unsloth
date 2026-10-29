@@ -115,7 +115,7 @@ _CHECKS = textwrap.dedent(
             q_out = torch.empty(NH * D, dtype = dt, device = device)
             residual = emb.float().clone()
             ss = (torch.zeros(H, device = device), torch.zeros(H, device = device))
-            xg = torch.empty(H, dtype = dt, device = device)
+            xg = torch.empty(H, dtype = torch.float32, device = device)  # as the driver allocates it
             act = torch.empty(I, dtype = dt, device = device)
 
             # qkv, layer 0: norm in the loop over the embedding, RoPE, K / V into cache row `slot`.
@@ -171,6 +171,19 @@ _CHECKS = textwrap.dedent(
                          head_dim = D)
             y = Wqkv @ rms64(residual, lnf)
             assert rel(q_out, rot(y[: NH * D].view(NH, D), c64, s64).reshape(-1)) < tol, ("q scaled", dt, rank)
+
+            if dt == torch.float16:
+                # h * g above the fp16 range before rstd is applied: xg must hold it (finite after the norm).
+                residual.fill_(40000.0)
+                big = torch.full((H,), 2.0, dtype = dt, device = device)
+                n3 = F.fused_site(o, attn, epi = F.EPI_RESNORM, residual = residual, ss_out = ss[1], xg_out = xg,
+                                  next_norm_weight = big, capability = CAP, eps = EPS)
+                assert torch.isfinite(xg).all(), "xg overflowed"
+                F.fused_site(gu, xg, act, epi = F.EPI_SWIGLU, pre = F.PRE_SCALED, ss_in = ss[1], n_ss = n3,
+                             capability = CAP, eps = EPS)
+                gy = Wgu @ rms64(residual, big)
+                act_ref = torch.nn.functional.silu(gy[:I]) * gy[I:]
+                assert torch.isfinite(act).all() and rel(act, act_ref) < tol, ("big residual", rank)
     print("FUSED OK")
     """
 )
