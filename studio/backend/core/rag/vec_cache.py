@@ -70,15 +70,18 @@ def _key(db_file: str, scope: str, dim: int) -> tuple:
 
 
 def read_epoch(conn: sqlite3.Connection, scope: str) -> tuple | None:
+    """(scope epoch, global epoch, newest chunk rowid in the scope): equal tuples mean equal vectors."""
     try:
-        got = dict(
+        return tuple(
             conn.execute(
-                "SELECT scope, n FROM rag_vec_epoch WHERE scope IN (?, ?)", (scope, GLOBAL_SCOPE)
-            ).fetchall()
+                "SELECT COALESCE((SELECT n FROM rag_vec_epoch WHERE scope=?), 0), "
+                "COALESCE((SELECT n FROM rag_vec_epoch WHERE scope=?), 0), "
+                "COALESCE((SELECT max(rowid) FROM chunks WHERE scope=?), 0)",
+                (scope, GLOBAL_SCOPE, scope),
+            ).fetchone()
         )
     except sqlite3.Error:
         return None
-    return got.get(scope, 0), got.get(GLOBAL_SCOPE, 0)
 
 
 def _make_entry(np, epoch, rowids, chunk_ids, blob: bytes, dim: int) -> _Entry:
@@ -166,8 +169,11 @@ def _search_entry(np, entry: _Entry, vector, fetch: int):
     return [(entry.chunk_ids[i], 1.0 - float(scores[i])) for i in order], n
 
 
-def note_append(db_file: str, scope: str, before, after, rowids, chunk_ids, vectors) -> None:
-    """After a committed pure append: extend the entry in place iff this writer alone moved the epoch."""
+def note_append(
+    db_file: str, scope: str, before, after, appended: int, rowids, chunk_ids, vectors
+) -> None:
+    """After a committed pure append: extend the entry iff this writer's rows are the only change since
+    ``before``. ``appended``: chunks rows in the scope newer than before's max rowid, read under the write lock."""
     if not enabled() or before is None or after is None or not rowids:
         return
     np = _np()
@@ -180,11 +186,7 @@ def note_append(db_file: str, scope: str, before, after, rowids, chunk_ids, vect
             entry = _entries.get(key)
             if entry is None:
                 return
-            if (
-                after[1] != before[1]
-                or after[0] - before[0] != len(rowids)
-                or entry.epoch != before
-            ):
+            if after[:2] != before[:2] or appended != len(rowids) or entry.epoch != before:
                 _publish(key, None)
                 return
         rows = np.asarray(vectors, dtype = np.float32).reshape(len(rowids), dim)

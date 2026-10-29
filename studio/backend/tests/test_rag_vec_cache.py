@@ -117,7 +117,7 @@ def test_every_writer_moves_the_epoch(rag_conn, monkeypatch):
     e0 = epoch()
     _add(rag_conn, "kb_a", "d1", _vectors(3))
     e1 = epoch()
-    assert e1[0] == e0[0] + 3
+    assert e1[:2] == e0[:2] and e1[2] > e0[2]
     monkeypatch.setattr(config, "effective_embedding_model", lambda fresh = False: "m")
     assert store.replace_document_vectors(
         rag_conn, "d1", None, ["d1:0", "d1:1", "d1:2"], _vectors(3, seed = 1), "m2", "m"
@@ -127,7 +127,7 @@ def test_every_writer_moves_the_epoch(rag_conn, monkeypatch):
     source = dict(rag_conn.execute("SELECT * FROM documents WHERE id='d1'").fetchone())
     store.copy_documents(rag_conn, [(source, None)], "kb_b", thread_id = "t")
     rag_conn.commit()
-    assert epoch("kb_b")[0] > 0
+    assert epoch("kb_b")[2] > 0
     store.delete_document(rag_conn, "d1")
     assert epoch()[0] > e2[0]
     # Width change: no chunks row moves, the global epoch does.
@@ -147,7 +147,7 @@ def test_append_extends_the_entry_without_a_rebuild(rag_conn, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "writer", ["reembed", "copy_into", "delete_doc", "delete_scope", "raw_sql"]
+    "writer", ["reembed", "copy_into", "delete_doc", "delete_scope", "raw_sql", "raw_sql_insert"]
 )
 def test_no_stale_answer_after_any_write(rag_conn, monkeypatch, writer):
     _add(rag_conn, "kb_a", "d1", _vectors(40))
@@ -171,6 +171,21 @@ def test_no_stale_answer_after_any_write(rag_conn, monkeypatch, writer):
     elif writer == "delete_scope":
         for doc in ("d1", "d2"):
             store.delete_document(rag_conn, doc)
+    elif writer == "raw_sql_insert":
+        # An older build appending rows never calls note_append; the scope's newest rowid still moves.
+        other = rag_db.get_connection()
+        try:
+            other.execute(
+                "INSERT INTO chunks(id, document_id, scope, chunk_index, text) "
+                "VALUES('d2:99', 'd2', 'kb_a', 99, 'x')"
+            )
+            other.execute(
+                "INSERT INTO chunks_vec(scope, chunk_id, embedding) VALUES('kb_a', 'd2:99', ?)",
+                (np.asarray(q, dtype = np.float32).tobytes(),),
+            )
+            other.commit()
+        finally:
+            other.close()
     else:
         # An older build deleting rows knows nothing of the cache; the triggers still fire.
         other = rag_db.get_connection()
@@ -249,7 +264,6 @@ def test_fallbacks_answer_like_vec0(rag_conn, monkeypatch, mode):
 
 def test_a_database_without_the_epoch_table_still_serves(rag_conn, monkeypatch):
     for name in (
-        "rag_vec_epoch_chunk_insert",
         "rag_vec_epoch_chunk_delete",
         "rag_vec_epoch_document_model",
         "rag_vec_epoch_document_delete",

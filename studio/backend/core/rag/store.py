@@ -192,7 +192,7 @@ def delete_kb(
                 for r in conn.execute("SELECT id FROM documents WHERE scope=?", (scope,)).fetchall()
             ]
             for doc_id in doc_ids:
-                delete_document(conn, doc_id, commit = False)
+                delete_document(conn, doc_id, commit=False)
         conn.execute("DELETE FROM knowledge_bases WHERE id=?", (kb_id,))
         if commit:
             conn.commit()
@@ -398,7 +398,7 @@ def add_chunks(
     document_id: str,
     chunks,
     vectors,
-    regions = None,
+    regions=None,
 ) -> None:
     """Incrementally index one document's chunks into chunks + FTS5 + vec0.
     ``vectors`` parallels ``chunks``; optional ``regions`` (also parallel) holds
@@ -443,7 +443,12 @@ def add_chunks(
                 (scope, chunk_id, _f32(vector)),
             ).lastrowid
         )
-    epoch_after = vec_cache.read_epoch(conn, scope) if epoch_before is not None else None
+    epoch_after = appended = None
+    if epoch_before is not None:
+        epoch_after = vec_cache.read_epoch(conn, scope)
+        appended = conn.execute(
+            "SELECT count(*) FROM chunks WHERE scope=? AND rowid > ?", (scope, epoch_before[2])
+        ).fetchone()[0]
     # Another writer's width change may have marked this document while it was encoding.
     rag_db.restore_dropped_identity(conn, document_id)
     conn.commit()
@@ -454,6 +459,7 @@ def add_chunks(
             scope,
             epoch_before,
             epoch_after,
+            appended,
             vec_rowids,
             [f"{document_id}:{chunk.chunk_index}" for chunk in chunks[: len(vec_rowids)]],
             vectors[: len(vec_rowids)],
@@ -492,7 +498,7 @@ def replace_document_vectors(
             or len(vectors) != len(current)
             or not current
             # Uncached, under the write lock: old-width vectors would drop every row the new model wrote.
-            or config.effective_embedding_model(fresh = True) != model_name
+            or config.effective_embedding_model(fresh=True) != model_name
         ):
             conn.rollback()
             return False
@@ -584,7 +590,7 @@ def _remember_vec_rowids(conn: sqlite3.Connection, document_id: str, rowids: lis
         _vec_rowids[key] = rowids
         _vec_rowids.move_to_end(key)
         while len(_vec_rowids) > _VEC_ROWIDS_MAX:
-            _vec_rowids.popitem(last = False)
+            _vec_rowids.popitem(last=False)
 
 
 def _donor_vectors_by_rowid(conn: sqlite3.Connection, source: dict, chunk_ids) -> list | None:
@@ -673,15 +679,15 @@ def copy_documents(
     for source, stored_path in documents:
         document_id = create_document(
             conn,
-            scope = scope,
-            filename = source["filename"],
-            sha256 = source["sha256"],
-            thread_id = thread_id,
-            status = source["status"],
-            stored_path = stored_path,
-            embedding_model = source["embedding_model"],
-            created_at = source["created_at"],
-            commit = False,
+            scope=scope,
+            filename=source["filename"],
+            sha256=source["sha256"],
+            thread_id=thread_id,
+            status=source["status"],
+            stored_path=stored_path,
+            embedding_model=source["embedding_model"],
+            created_at=source["created_at"],
+            commit=False,
         )
         document_ids[source["id"]] = document_id
         conn.execute(
@@ -859,7 +865,7 @@ def _search_dense(conn: sqlite3.Connection, scope, vector, k: int, embedding_mod
                 widen.append(s)
         pending = widen
     out = [hit for s in scopes for hit in kept[s]]
-    out.sort(key = lambda t: t[1], reverse = True)
+    out.sort(key=lambda t: t[1], reverse=True)
     return out[:k]
 
 
