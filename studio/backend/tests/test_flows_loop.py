@@ -378,3 +378,5 @@ async def test_identical_seed_rows_reuse_one_upload_across_runs(monkeypatch):
     # Round 1 is all fresh rows in both runs: one upload, the same seed dataset for both.
     assert names.count("loop-loop-round-1") == 1
     assert seen[0] == seen[2]
+    split = lambda rs: rs.nodes["loop"].outputs["history"]["split"]
+    assert split(on) and split(on) == split(off)

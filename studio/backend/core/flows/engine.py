@@ -2280,6 +2280,10 @@ class FlowEngine:
                 "target": target,
                 "feedback": feed,
                 "continue": bool(carry),
+                # Same id, same test rows: runs that share it are scored on the same split.
+                "split": hashlib.sha256(json.dumps(test_rows, sort_keys = True, default = str).encode()).hexdigest()[:12]
+                if test_rows
+                else None,
             },
             "checkpoint": best["checkpoint"] if best else None,
         }
