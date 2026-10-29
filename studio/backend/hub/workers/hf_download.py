@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import signal
 import sys
 import threading
@@ -223,6 +224,8 @@ def _retry_metadata_fetch(repo_id: str, fetch, *, label: str):
 
 
 _RESOLVED_COMMITS: dict[str, str] = {}
+# huggingface_hub's REGEX_COMMIT_HASH: only a full sha is taken as already resolved.
+_COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
 
 
 def _model_info_with_retry(repo_id: str, hf_token: str | None):
@@ -243,6 +246,37 @@ def _model_info_with_retry(repo_id: str, hf_token: str | None):
     if isinstance(commit, str) and commit:
         _RESOLVED_COMMITS[repo_id] = commit
     return info
+
+
+def _pinned_revision(repo_type: RepoType, repo_id: str, commit) -> dict:
+    """``snapshot_download`` kwargs fetching the commit the manifest was planned from, so a branch moving
+    between the metadata read and the download cannot hand back other files. A raw sha also lets
+    huggingface_hub >= 1.x skip its own repo_info call. A sha revision leaves refs/main unwritten, and loads by
+    repo id (offline too) resolve through it, so it is written here as an unpinned download would."""
+    if not isinstance(commit, str) or not _COMMIT_SHA.fullmatch(commit):
+        return {}
+    from hub.utils.snapshot_reuse import repo_cache_dir
+
+    ref = repo_cache_dir(repo_type, repo_id) / "refs" / "main"
+    try:
+        if ref.read_text(encoding = "utf-8") == commit:
+            return {"revision": commit}
+    except (OSError, UnicodeDecodeError):
+        pass
+    try:
+        ref.parent.mkdir(parents = True, exist_ok = True)
+        tmp = ref.with_name(f"main.{os.getpid()}.{threading.get_ident()}.tmp")
+        tmp.write_text(commit, encoding = "utf-8")
+        os.replace(tmp, ref)
+    except OSError as e:
+        # huggingface_hub also only warns when the ref cannot be written; without the ref the pin is dropped
+        # so the download records refs/main itself as before.
+        print(
+            f"Could not record refs/main for {repo_id} ({e}); downloading unpinned.",
+            file = sys.stderr,
+        )
+        return {}
+    return {"revision": commit}
 
 
 def _rebuild_header_only_ggufs(
@@ -686,6 +720,7 @@ def _download_snapshot(
         ignore_patterns = ignore_patterns,
         max_workers = _file_workers(mode),
         tqdm_class = tqdm_class,
+        **_pinned_revision("model", repo_id, getattr(info, "sha", None)),
     )
     if info is None:
         _recover_manifest_after_download(
@@ -835,6 +870,11 @@ def _download_gguf_variant(
         allow_patterns = targets,
         max_workers = _file_workers(mode),
         tqdm_class = tqdm_class,
+        **(
+            {}
+            if metadata_unavailable
+            else _pinned_revision("model", repo_id, _RESOLVED_COMMITS.get(repo_id))
+        ),
     )
     _verify_completed_download(
         "model",
@@ -936,6 +976,7 @@ def _download_scoped_snapshot(
         allow_patterns = files,
         max_workers = _file_workers(mode),
         tqdm_class = tqdm_class,
+        **_pinned_revision("model", repo_id, getattr(info, "sha", None)),
     )
     if info is None:
         # With no metadata there is no manifest, and snapshot_download RETURNS AN EXISTING SNAPSHOT FOLDER when repo_info also fails, flipping the job to complete with no weights.
