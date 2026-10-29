@@ -357,6 +357,10 @@ def compile_flow(doc: dict) -> Plan:
                 issue(f"{spec['title']} needs its {port['label']} input connected", node_id = nid)
             )
 
+    for nid in executable:
+        if specs[nid]["type"] == BENCHMARK:
+            errors.extend(_check_benchmark(nid, nodes, specs, inputs))
+
     output_names: dict[str, str] = {}
     for nid in nodes:
         if nid in executable and specs[nid]["type"] == "output.result":
@@ -405,6 +409,31 @@ def compile_flow(doc: dict) -> Plan:
         flow_edges = flow_edges,
         warnings = warnings,
     )
+
+
+BENCHMARK = "train.benchmark"
+EXPORT = "train.export"
+
+
+def _check_benchmark(nid: str, nodes: dict, specs: dict, inputs: dict) -> list[dict]:
+    wired = inputs.get(nid, {})
+    if "checkpoint" in wired and "model" in wired:
+        return [issue("Benchmark scores one model: wire its Checkpoint or its Model, not both", node_id = nid)]
+    task = str((nodes[nid].get("params") or {}).get("task") or "Recipe held-out")
+    if task == "Recipe held-out":
+        return []
+    if "checkpoint" in wired:
+        return [
+            issue(
+                f"{task} is an lm-eval task, and lm-eval scores a GGUF, not a Fine-tune checkpoint. Put Export "
+                "Model (Format GGUF) between them and wire it into Benchmark's Model, or set Task to Recipe held-out",
+                node_id = nid,
+            )
+        ]
+    for src, _port in wired.get("model", []):
+        if specs[src]["type"] == EXPORT and str((nodes[src].get("params") or {}).get("format") or "gguf") != "gguf":
+            return [issue(f"{task} scores a GGUF: set Export Model's Format to GGUF", node_id = nid)]
+    return []
 
 
 def _topo(

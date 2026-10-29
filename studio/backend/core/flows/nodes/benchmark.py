@@ -57,8 +57,47 @@ def _short(value: Any) -> Any:
     return value
 
 
+async def _load_export(ctx: NodeContext, model: dict) -> tuple[str, bool]:
+    """Load an Export Model output by its export name (a GGUF loads as its folder plus quant)."""
+    from studio_mcp import loading, trained_models
+
+    from core.flows.nodes._common import FLOW_CHAT_CONTEXT
+
+    name = str(model["repo"])
+    deadline = time.monotonic() + 3600
+    ctx.set_status("loading_model", f"Loading {name}")
+    try:
+        trained = await trained_models.resolve_by(
+            deadline, ctx.caller, model = None, checkpoint = None, export = name, kind = "llm",
+            variant = model.get("variant") or None,
+        )
+        await loading.load_llm(
+            ctx.caller,
+            None,
+            model = trained.ref,
+            variant = trained.gguf_variant,
+            max_seq_length = FLOW_CHAT_CONTEXT,
+            load_in_4bit = True,
+            hf_token = None,
+            kind = "llm",
+            is_lora = trained.is_lora,
+            deadline = deadline,
+        )
+        note_loaded(ctx, "llm", trained.ref)
+    except FlowNodeError:
+        raise
+    except Exception as exc:
+        raise FlowNodeError(f"Could not load {name}: {exc}") from None
+    ctx.resident.clear()
+    ctx.set_status("running")
+    return name, bool(trained.is_lora)
+
+
 async def _load_target(ctx: NodeContext) -> tuple[str, bool]:
     """Load what is being scored; (label, is_lora)."""
+    wired = ctx.inputs.get("model")
+    if isinstance(wired, dict) and wired.get("repo"):
+        return await _load_export(ctx, wired)
     checkpoint = ctx.inputs.get("checkpoint")
     name = checkpoint.get("name") if isinstance(checkpoint, dict) else None
     if name:
@@ -247,7 +286,8 @@ async def _lm_eval(ctx: NodeContext, task: str, label: str, is_lora: bool, max_r
 
     if is_lora:
         raise FlowNodeError(
-            "lm-eval tasks score a GGUF. Export the checkpoint to GGUF and pick it as the model, or use Recipe held-out"
+            "lm-eval tasks score a GGUF. Wire Fine-tune into Export Model (GGUF) and Export Model into this "
+            "Benchmark's Model, or use Recipe held-out"
         )
     try:
         _slots, status = await loading._resident(ctx.caller)
@@ -306,6 +346,11 @@ async def _as_dataset(ctx: NodeContext, rows: list[dict], name: str) -> dict:
     return await upload_rows(ctx, rows, name)
 
 
+def _rounded(score: Any) -> Any:
+    # A 0..1 fraction to two decimals of a percent: 0.6067 reads as 60.67% wherever it lands.
+    return round(score, 4) if isinstance(score, float) else score
+
+
 @handler("train.benchmark")
 async def benchmark(ctx: NodeContext) -> dict:
     task = TASKS.get(str(ctx.params.get("task") or ""), RECIPE_TASK)
@@ -327,7 +372,7 @@ async def benchmark(ctx: NodeContext) -> dict:
             "task": task,
             "model": label,
             "metric": found["metric"],
-            "score": found["score"],
+            "score": _rounded(found["score"]),
             "base_score": found["base_score"],
             "passed": found["passed"],
             "scored": found["scored"],
@@ -337,4 +382,4 @@ async def benchmark(ctx: NodeContext) -> dict:
     )
     failures = await _as_dataset(ctx, found["failures"], f"{tag}-failures")
     failures["preview"] = [{k: _short(v) for k, v in r.items()} for r in found["failures"][:MAX_ROWS]]
-    return {"score": found["score"], "results": results, "failures": failures}
+    return {"score": _rounded(found["score"]), "results": results, "failures": failures}
