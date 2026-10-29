@@ -1685,10 +1685,12 @@ class FlowEngine:
 
         for nid in ready:
             slot, repo = model_of(nid)
-            if not repo or (
-                (rs.resident.get(slot) or "").lower() == repo
-                and load_of(nid) == loaded_with(slot, repo)
-            ):
+            resident = (rs.resident.get(slot) or "").lower()
+            if not repo:
+                # A card on the loaded model with its own load settings goes first only if they match the load.
+                if load_of(nid) is None or (resident and load_of(nid) == loaded_with(slot, resident)):
+                    return nid
+            elif resident == repo and load_of(nid) == loaded_with(slot, repo):
                 return nid
         counts: dict[tuple, int] = {}
         for nid in ready:
