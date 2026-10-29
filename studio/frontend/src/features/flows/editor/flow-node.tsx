@@ -178,7 +178,7 @@ function OutputValues({
     }
     if (typeof value === "number" || typeof value === "boolean") {
       return (
-        <Badge variant="secondary" className="font-mono text-ui-11">
+        <Badge variant="secondary" className="text-ui-11 tabular-nums">
           {String(value)}
         </Badge>
       );

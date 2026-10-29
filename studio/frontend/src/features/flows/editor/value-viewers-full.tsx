@@ -148,7 +148,7 @@ export function TableViewer({
                   <td
                     key={column.id}
                     className={`whitespace-nowrap px-2 py-1 text-foreground ${
-                      column.type === "number" ? "text-right font-mono" : ""
+                      column.type === "number" ? "text-right tabular-nums" : ""
                     }`}
                   >
                     {formatCell(row[column.id])}
@@ -390,7 +390,7 @@ export function TensorViewer({
   const stats = useMemo(() => numericStats(tensor.data), [tensor]);
   return (
     <div className="flex flex-col gap-1.5" data-testid="flows-tensor-viewer">
-      <p className="font-mono text-ui-11 text-muted-foreground">
+      <p className="text-ui-11 text-muted-foreground tabular-nums">
         shape [{tensor.shape.join(", ")}]
         {tensor.dtype ? ` ${tensor.dtype}` : ""}
         {tensor.axes?.length ? ` (${tensor.axes.join(", ")})` : ""}

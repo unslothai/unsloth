@@ -146,7 +146,7 @@ const TimelineRow = memo(function TimelineRow({
             className="h-1 w-24"
           />
         )}
-        <span className="w-14 text-right font-mono text-ui-11 text-muted-foreground">
+        <span className="w-14 text-right text-ui-11 text-muted-foreground tabular-nums">
           {duration(rt, now)}
         </span>
       </button>
@@ -244,7 +244,7 @@ function Outputs() {
     <div className="flex flex-col gap-3 p-3">
       {structured.map((item) => (
         <section key={item.key} className="flex flex-col gap-1">
-          <h4 className="font-mono text-ui-11 text-muted-foreground">{item.label}</h4>
+          <h4 className="text-ui-11 text-muted-foreground">{item.label}</h4>
           <StructuredOutput value={item.value} />
         </section>
       ))}
