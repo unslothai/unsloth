@@ -231,7 +231,6 @@ def test_setup_sh_block_never_fails_and_runs_only_after_a_deps_pass(
         ({"UNSLOTH_STUDIO_COMPILE_BYTECODE": "maybe"}, False),
         ({"UV_COMPILE_BYTECODE": "False"}, False),
         ({"UNSLOTH_STUDIO_COMPILE_BYTECODE": "off"}, False),
-        # A false always wins over a true.
         ({"UNSLOTH_STUDIO_COMPILE_BYTECODE": "1", "UV_COMPILE_BYTECODE": "0"}, False),
     ],
 )
