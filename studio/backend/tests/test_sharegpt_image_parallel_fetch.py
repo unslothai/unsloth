@@ -175,7 +175,6 @@ def test_local_only_dataset_starts_no_threads(monkeypatch, workers, tmp_path):
 
 
 def test_concurrent_fetches_are_capped_on_many_core_hosts(monkeypatch):
-    # A 192 core host would otherwise open 64 requests at once to one image host or the Hub.
     monkeypatch.setattr(utils.hardware, "safe_thread_num_proc", lambda desired = None: 64)
     fetch = _SlowFetch(delay = 0.05)
     monkeypatch.setattr(format_conversion, "_fetch_row_image", fetch)
