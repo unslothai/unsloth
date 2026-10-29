@@ -82,7 +82,7 @@ const CARD = cn(
   RAISED_SURFACE,
   CARD_SHADOW,
   // min-h-0 min-w-0: content must not size the card, or one long card grows its whole tab.
-  "group/chat relative flex min-h-0 min-w-0 cursor-pointer flex-col gap-2.5 self-stretch rounded-2xl px-5 py-5 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
+  "group/chat relative flex min-h-0 min-w-0 cursor-pointer flex-col gap-2.5 self-stretch rounded-xl px-5 py-5 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
 );
 
 // Fits the fullest card (bare icon, two-line title, two-line footer); rows grow past it, never to a square.
@@ -565,7 +565,7 @@ const TILE =
 const TILE_ICON = "size-5";
 // Grid cards show the kind icon on its own, without the tile box rows use.
 const CARD_ICON =
-  "size-5 shrink-0 text-foreground/70 transition-colors group-hover/chat:text-primary";
+  "size-4.5 shrink-0 text-foreground/70 transition-colors group-hover/chat:text-primary";
 
 function ChatTile({
   chat,

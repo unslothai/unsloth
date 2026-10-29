@@ -23,7 +23,8 @@ import {
   Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ArrowDownUpIcon, Columns2Icon, GitBranchIcon } from "lucide-react";
+import { Columns2Icon, GitBranchIcon } from "lucide-react";
+import { SortIcon } from "@/lib/sort-icon";
 import type { ReactNode } from "react";
 import { ROUND_BUTTON, SortRadio, ToolbarTip, VIEW_OPTIONS } from "../components/library-toolbar";
 import type { LibraryView } from "../settings-store";
@@ -267,7 +268,7 @@ export function SortMenu<K extends string>({
             type="button"
             className="flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3 text-ui-14 text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-open:bg-muted data-open:text-foreground dark:text-foreground/70"
           >
-            <ArrowDownUpIcon strokeWidth={1.75} className="size-[calc(16px*var(--ui-space-scale,1))]" />
+            <HugeiconsIcon icon={SortIcon} strokeWidth={1.75} className="size-[calc(16px*var(--ui-space-scale,1))]" />
             {current ? t(current.label) : t("library.toolbar.sort")}
           </button>
         </DropdownMenuTrigger>

@@ -22,7 +22,7 @@ import {
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ArrowDownUpIcon } from "lucide-react";
+import { SortIcon } from "@/lib/sort-icon";
 import { memo, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { HubCapabilityFilter } from "../lib/model-capabilities";
 import type {
@@ -531,7 +531,8 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             )}
             triggerContent={
               <span className="flex items-center gap-1">
-                <ArrowDownUpIcon
+                <HugeiconsIcon
+                  icon={SortIcon}
                   strokeWidth={1.75}
                   className="size-3.5 shrink-0"
                 />
@@ -557,7 +558,8 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             )}
             triggerContent={
               <span className="flex items-center gap-1">
-                <ArrowDownUpIcon
+                <HugeiconsIcon
+                  icon={SortIcon}
                   strokeWidth={1.75}
                   className="size-3.5 shrink-0"
                 />
