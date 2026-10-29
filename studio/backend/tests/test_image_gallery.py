@@ -701,7 +701,6 @@ def test_parameters_chunk_carries_the_encoded_caption():
 
 
 def _batch(n = 4):
-    # distinct, non-uniform pixels so each PNG's deflate stream differs
     return [
         Image.frombytes("RGB", (32, 24), bytes((i * 7 + j) % 256 for j in range(32 * 24 * 3)))
         for i in range(n)

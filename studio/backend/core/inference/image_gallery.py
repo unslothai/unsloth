@@ -213,8 +213,7 @@ def save_many(items: Iterable[tuple[Any, dict[str, Any]]]) -> Iterator[dict[str,
             pending[id(image)] = (image, recipe, pool.submit(_png_bytes, image, recipe))
         futures = [entry[2] for entry in pending.values()]
         _ahead.pending = pending
-        # Back-to-back writes can share an mtime (Windows stamps from a ~15.6 ms clock tick), and the gallery sorts
-        # by mtime: each file is kept strictly newer than the one before, as the encode between writes did.
+        # The gallery sorts by mtime and back-to-back writes can tie (Windows ~15.6 ms tick): keep each strictly newer.
         _ahead.floor_ns = None
         try:
             for image, meta in items:
