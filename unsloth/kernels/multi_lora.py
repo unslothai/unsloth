@@ -862,6 +862,8 @@ _ZOO_GROUPED = (
     "_selective_dequant_plan",
     "_grouped_mm_with_backward_fix",
     "_grouped_mm_supported_on",
+    "weighted_unpermute",
+    "combine_permuted_moe_outputs",
 )
 
 
@@ -1197,8 +1199,8 @@ class MultiLoraExperts(nn.Module):
         Ug = U + 1
         dtype = self._compute_dtype(hidden_states)
         # Route = expert * Ug + adapter, slot U for rows of no adapter (zero factors) and for dropped routes
-        # (expert id outside [0, E): zero input and weight, so they add exactly 0 and nothing can overflow or
-        # turn a gradient NaN); sorted, each expert's rows stay contiguous.
+        # (expert id outside [0, E): they read a zero row and get weight 0, so they add exactly 0 and nothing can
+        # overflow or turn a gradient NaN); sorted, each expert's rows stay contiguous.
         index = top_k_index.long()
         valid = (index >= 0) & (index < E)
         slot = torch.where(adapter_ids < 0, U, adapter_ids).to(index.device).unsqueeze(1)
@@ -1218,27 +1220,42 @@ class MultiLoraExperts(nn.Module):
                 (base.gate_up_proj, base.down_proj), counts, T * k
             )
         with torch.autocast(device_type = hidden_states.device.type, enabled = False):
-            x = torch.where(
-                valid.reshape(-1)[order].unsqueeze(1), hidden_states[order // k].to(dtype), 0
+            rows = torch.where(valid.reshape(-1)[order], order // k, T)
+            x = torch.cat(
+                [
+                    hidden_states.to(dtype),
+                    hidden_states.new_zeros(1, hidden_states.shape[1], dtype = dtype),
+                ]
             )
+            x = x[rows]
             h = self._project(
                 moe_utils, "gate_up_proj", x, offs_expert, offs_pair, counts, plan, dtype
             )
             gate, up = h.chunk(2, dim = -1)
+            inter = base.act_fn(gate) * up
+            # From here on as Unsloth Zoo's MoE forward combines routes: its gate-gradient identity when enabled,
+            # then its fused weighted unpermute (deterministic fallback without Triton).
+            weights = torch.where(valid, top_k_weights, 0).reshape(-1)[order]
+            gategrad = getattr(moe_utils, "_moe_gategrad_enabled", lambda: False)()
+            gategrad = gategrad and hasattr(moe_utils, "_MoEGateGradIdentity")
+            gategrad = gategrad and top_k_weights.requires_grad and inter.dtype != torch.float16
+            if gategrad:
+                raw = weights.float() if weights.dtype == torch.float16 else weights
+                floored = torch.where(raw >= 0, raw.clamp(min = 1e-12), raw.clamp(max = -1e-12))
+                weights = raw + (floored - raw).detach()
+                inter = moe_utils._MoEGateGradIdentity.apply(inter, weights)
+                weights = weights.detach()
             y = self._project(
-                moe_utils,
-                "down_proj",
-                base.act_fn(gate) * up,
-                offs_expert,
-                offs_pair,
-                counts,
-                plan,
-                dtype,
+                moe_utils, "down_proj", inter, offs_expert, offs_pair, counts, plan, dtype
             )
-            y = y * torch.where(valid, top_k_weights, 0).reshape(-1)[order].unsqueeze(1)
-            # Deterministic unpermute: each route back to its own slot, then a sum over the k routes.
-            out = y.new_zeros(T * k, y.shape[1]).index_copy(0, order, y)
-            return out.view(T, k, -1).sum(1).to(hidden_states.dtype)
+            out = moe_utils.weighted_unpermute(
+                y, order, weights, T, k, out_dtype = hidden_states.dtype
+            )
+            if out is None:
+                out = moe_utils.combine_permuted_moe_outputs(
+                    y * weights.unsqueeze(-1), order, T, k, out_dtype = hidden_states.dtype
+                )
+            return out
 
     def forward(self, hidden_states: torch.Tensor, *args):
         batch = next(iter(self.adapters.values())).batch
