@@ -18,7 +18,9 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { memo, useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import { uploadAsset } from "../api";
-import type { MediaValue, ModelChoice, ParamSpec } from "../types";
+import type { MediaValue, ParamSpec } from "../types";
+import { modelChoiceOf } from "./model-choice";
+import { FlowModelPicker } from "./model-picker-field";
 import { DiceIcon, Upload01Icon } from "./icon-data";
 import { MediaThumb, isMediaValue } from "./media";
 import { pickOptions } from "./remote-options";
@@ -86,38 +88,8 @@ function JsonField({
   );
 }
 
-let modelSuggestions: Promise<string[]> | null = null;
-function loadModelSuggestions(): Promise<string[]> {
-  modelSuggestions ??= authFetch("/api/models/list")
-    .then(async (response) => {
-      if (!response.ok) return [];
-      const body = (await response.json()) as {
-        models?: { id?: string; name?: string }[];
-        default_models?: string[];
-      };
-      const ids = new Set<string>();
-      for (const model of body.models ?? []) {
-        const id = model.id ?? model.name;
-        if (id && !id.startsWith("/")) ids.add(id);
-      }
-      for (const id of body.default_models ?? []) ids.add(id);
-      return [...ids].slice(0, 400);
-    })
-    .catch(() => []);
-  return modelSuggestions;
-}
-
 function ModelField({ spec, value, onChange }: FieldProps) {
-  const choice = (value ?? null) as ModelChoice | null;
-  const listId = useId();
-  const [suggestions, setSuggestions] = useState<string[]>([]);
-  useEffect(() => {
-    let alive = true;
-    void loadModelSuggestions().then((ids) => alive && setSuggestions(ids));
-    return () => {
-      alive = false;
-    };
-  }, []);
+  const choice = modelChoiceOf(value);
   return (
     <div className="flex flex-col gap-1.5">
       <label className="flex items-center gap-2 text-ui-12 text-muted-foreground">
@@ -130,28 +102,11 @@ function ModelField({ spec, value, onChange }: FieldProps) {
         Use the loaded {spec.model_kind ?? ""} model
       </label>
       {choice !== null && (
-        <>
-          <Input
-            value={choice.repo}
-            list={listId}
-            placeholder="org/model (Hugging Face repo)"
-            onChange={(e) => onChange({ ...choice, repo: e.target.value })}
-            className={FIELD}
-          />
-          <datalist id={listId}>
-            {suggestions.map((id) => (
-              <option key={id} value={id} />
-            ))}
-          </datalist>
-          <Input
-            value={choice.variant ?? ""}
-            placeholder="Variant / quant (optional, e.g. Q4_K_M)"
-            onChange={(e) =>
-              onChange({ ...choice, variant: e.target.value || null })
-            }
-            className={FIELD}
-          />
-        </>
+        <FlowModelPicker
+          kind={spec.model_kind ?? "chat"}
+          choice={choice}
+          onChange={onChange}
+        />
       )}
     </div>
   );
