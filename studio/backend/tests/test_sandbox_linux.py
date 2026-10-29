@@ -291,13 +291,15 @@ def test_a_host_jvm_initialises_its_security_properties_inside_the_jail(tmp_path
     assert f"user.home = {tmp_path}" in properties, properties
 
 
-def test_pip_gets_a_writable_target_inside_the_workdir(prepared):
+def test_pip_gets_a_writable_prefix_inside_the_workdir(prepared):
     argv = prepared.argv
     packages = os.path.join(prepared.workdir, sandbox_linux.SESSION_PACKAGES_RELPATH)
-    assert argv[argv.index("PIP_TARGET") + 1] == packages
+    assert argv[argv.index("PIP_PREFIX") + 1] == packages
+    assert argv[argv.index("PIP_IGNORE_INSTALLED") + 1] == "1"
+    assert "PIP_TARGET" not in argv
     pythonpath = argv[argv.index("PYTHONPATH") + 1].split(os.pathsep)
-    assert packages in pythonpath
     assert pythonpath[-1] == packages
+    assert sysconfig.get_path("purelib", vars = {"base": packages, "platbase": packages}) in pythonpath
 
 
 def test_system_directories_are_bound_whole_and_never_file_by_file(prepared):

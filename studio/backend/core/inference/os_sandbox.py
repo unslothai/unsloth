@@ -15,6 +15,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import sysconfig
 import threading
 import time
 from dataclasses import dataclass, field
@@ -35,6 +36,23 @@ PROFILE_VERSION = "unsloth-sandbox-v1"
 SESSION_PACKAGES_RELPATH = ".unsloth-packages"
 
 
+def _pip_prefix_lib_dirs() -> tuple[str, ...]:
+    if sys.version_info >= (3, 10):
+        scheme = sysconfig.get_preferred_scheme("prefix")
+    else:
+        scheme = "nt" if os.name == "nt" else "posix_prefix"
+    paths = sysconfig.get_paths(scheme, vars = {"base": os.sep, "platbase": os.sep})
+    return tuple(dict.fromkeys(os.path.relpath(paths[key], os.sep) for key in ("purelib", "platlib")))
+
+
+_PIP_PREFIX_LIB_DIRS = _pip_prefix_lib_dirs()
+
+
+def session_package_paths(packages: str) -> list[str]:
+    # The bare folder keeps packages from chats that installed with pip --target importable.
+    return [*(os.path.join(packages, path) for path in _PIP_PREFIX_LIB_DIRS), packages]
+
+
 def with_session_packages(env: dict, workdir: str) -> dict:
     """Reuse existing session packages without letting their binaries shadow PATH."""
     packages = os.path.join(workdir, SESSION_PACKAGES_RELPATH)
@@ -43,10 +61,10 @@ def with_session_packages(env: dict, workdir: str) -> dict:
     updated = dict(env)
     # Block a planted usercustomize.py; in safe mode the trusted sitecustomize shim stays first on PYTHONPATH.
     updated["PYTHONNOUSERSITE"] = "1"
-    # pip --target puts console scripts in Scripts on Windows and bin elsewhere.
+    # pip puts console scripts in Scripts on Windows and bin elsewhere.
     scripts = "Scripts" if os.name == "nt" else "bin"
     for key, value in (
-        ("PYTHONPATH", packages),
+        ("PYTHONPATH", os.pathsep.join(session_package_paths(packages))),
         ("PATH", os.path.join(packages, scripts)),
     ):
         updated[key] = os.pathsep.join(part for part in (updated.get(key, ""), value) if part)
