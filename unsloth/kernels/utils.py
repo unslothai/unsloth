@@ -1498,7 +1498,10 @@ def _quant_state_dtype(quant_state):
 
 # Max GEMV decode rows per compute capability, from end-to-end decode A/Bs (#2798). Fixed, not timed, so
 # decoding is reproducible; others dequantize. UNSLOTH_GEMV_MAX_ROWS overrides where the Triton GEMV runs.
-_GEMV_ROWS_BY_ARCH = {(7, 5): 4, (8, 0): 2, (8, 9): 4, (12, 0): 4}
+# T4 stops at 3: on Colab T4 eager decode (Qwen3-4B, Llama-3.2-3B bnb-4bit), batch 4 runs 15-30% faster
+# through the bitsandbytes gemm_4bit below with per-token NLL as close to an fp32 reference, while batch 2
+# runs ~40% slower there (host bound) and batch 3 is a tie.
+_GEMV_ROWS_BY_ARCH = {(7, 5): 3, (8, 0): 2, (8, 9): 4, (12, 0): 4}
 _GEMV_ROWS_CAP = {}
 
 

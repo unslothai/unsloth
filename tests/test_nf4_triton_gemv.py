@@ -334,7 +334,7 @@ def test_larger_decode_batches_still_dequantize(monkeypatch):
 @pytest.mark.parametrize(
     "arch, env, wins",
     [
-        ((7, 5), None, {2: True, 3: True, 4: True}),
+        ((7, 5), None, {2: True, 3: True, 4: False}),
         ((8, 9), None, {2: True, 4: True}),
         ((12, 0), None, {2: True, 4: True}),
         ((8, 0), None, {2: True, 3: False, 4: False}),
