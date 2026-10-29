@@ -67,7 +67,6 @@ const KINDS = [
 function randomGraph(seed: number) {
   const r = rng(seed);
   const pick = <T>(xs: T[]): T => xs[Math.floor(r() * xs.length)] as T;
-  // Prototype names and ids with no config exercise the object lookup the scan does.
   const ids = Array.from(
     { length: 2 + Math.floor(r() * 30) },
     (_, i) => `n${i}`,
@@ -82,7 +81,6 @@ function randomGraph(seed: number) {
   const count = Math.floor(r() * ids.length * 2);
   for (let i = 0; i < count; i++) {
     const source = pick(ids);
-    // Self loops and repeated pairs both occur in the store's edge array.
     const target = r() < 0.08 ? source : pick(ids);
     edges.push({ id: `e${i}`, source, target });
   }
@@ -122,8 +120,7 @@ test("the adjacency index is built once per edges array and a status is a shared
     x: { id: "x", kind: "llm", name: "x" },
     y: { id: "y", kind: "sampler", name: "y" },
   };
-  // Typing in a node replaces the configs object; an unchanged status must stay the same value,
-  // or every node would re-render on every keystroke.
+  // Configs change per keystroke; an unchanged status must keep its identity or every node re-renders.
   const before = nodeConnectionStatus(
     "x",
     configs.x as never,

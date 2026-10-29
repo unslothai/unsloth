@@ -28,7 +28,6 @@ type Adjacency = Map<string, string[]>;
 // One index per edges array, shared by every node: the store replaces the array on each change.
 const adjacencyByEdges = new WeakMap<readonly Edge[], Adjacency>();
 
-/** For each node, the node at the other end of each edge touching it, in edge order. */
 export function edgeAdjacency(edges: readonly Edge[]): Adjacency {
   let adjacency = adjacencyByEdges.get(edges);
   if (adjacency) {
@@ -83,7 +82,6 @@ const localProviderKeyByConfigs = new WeakMap<
   string
 >();
 
-/** Names of the local model providers, in config order, as one comparable string. */
 export function localProviderNamesKey(
   configs: Record<string, NodeConfig>,
 ): string {
