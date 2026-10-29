@@ -87,9 +87,8 @@ function permissionUi(
       },
       "lucide-react": {
         ChevronDown: "ChevronDown",
-        Hand: "Hand",
-        ShieldCheck: "ShieldCheck",
       },
+      "@/lib/hugeicons-derived": { HandIcon: "HandIcon", ShieldCheckIcon: "ShieldCheckIcon" },
       "radix-ui": {
         DropdownMenu: {
           Item: "DropdownMenuPrimitive.Item",
