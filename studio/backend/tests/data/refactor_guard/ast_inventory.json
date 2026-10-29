@@ -1108,6 +1108,7 @@
       "_BARE_JSON_NAME_RE": "'\"name\"\\\\s*:\\\\s*\"([^\"]+)\"' flags=32",
       "_BLOCKED_BODY_MASK_RUN_RE": "'\\ue000+' flags=32",
       "_DEEPSEEK_BEGIN_RE": "'<｜(?:tool▁calls▁begin|tool_calls_begin|tool calls begin|tool\\\\\\\\_calls\\\\\\\\_begin|tool▁calls)｜>' flags=32",
+      "_DEEPSEEK_GLUE_GAP_STOP_RE": "'[`<>\\\\[\\\\]{}]' flags=32",
       "_DEEPSEEK_R1_CLOSE_RE": "'```[\\\\s\\\\r\\\\n]*<｜tool▁call▁end｜>' flags=32",
       "_EMBEDDED_MARKER_RE": "'<｜(?:tool▁calls▁begin|tool_calls_begin|tool calls begin|tool\\\\\\\\_calls\\\\\\\\_begin|tool▁calls)｜>|<\\\\|tool_calls_section_begin\\\\|>|<\\\\|tool_call_begin\\\\|>' flags=32",
       "_FENCE_ONLY_RE": "'[\\\\w.\\\\-]*[ \\\\t]*\\\\n?[ \\\\t]*`{3,}[a-zA-Z0-9_+-]*' flags=32",
@@ -1198,6 +1199,7 @@
       "re.compile('<tool_call>|<function(?:=|\\\\s+name=\")|<\\\\|tool_call>|<\\\\|python_tag\\\\|>(?=\\\\s*(?:\\\\{|[A-Za-z_][\\\\w.]*\\\\())')": 1,
       "re.compile('<｜tool▁call▁begin｜>(?=\\\\s*function|\\\\s*$).*$', re.DOTALL)": 1,
       "re.compile('[\\\\w.\\\\-]*[ \\\\t]*\\\\n?[ \\\\t]*`{3,}[a-zA-Z0-9_+-]*')": 1,
+      "re.compile('[`<>\\\\[\\\\]{}]')": 1,
       "re.compile('\\\\[TOOL_CALLS\\\\](?=\\\\s*(?:[\\\\[{]|[A-Za-z_][\\\\w.\\\\-]*(?:[\\\\[{]|\\\\s*$))|\\\\s*$).*$', re.DOTALL)": 1,
       "re.compile('\\\\[TOOL_CALLS\\\\]\\\\s*[\\\\w\\\\.\\\\-]+\\\\s*(?:\\\\[ARGS\\\\])?\\\\s*\\\\{.*?\\\\}', re.DOTALL)": 1,
       "re.compile('\\\\[TOOL_CALLS\\\\]\\\\s*\\\\[.*?\\\\](?:\\\\s*</s>)?', re.DOTALL)": 1,
@@ -1355,6 +1357,9 @@
         "kind": "assign"
       },
       "_DEEPSEEK_END": {
+        "kind": "assign"
+      },
+      "_DEEPSEEK_GLUE_GAP_STOP_RE": {
         "kind": "assign"
       },
       "_DEEPSEEK_OPEN_ALT": {
@@ -1795,6 +1800,11 @@
         "kind": "def",
         "signature": "content: str, *, id_offset: int=0, enabled_tool_names: Optional[set]=None"
       },
+      "_parse_deepseek_envelope": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, begin: 're.Match', *, id_offset: int, allow_incomplete: bool"
+      },
       "_parse_deepseek_tool_calls": {
         "decorators": [],
         "kind": "def",
@@ -1814,6 +1824,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "content: str, *, id_offset: int, allow_incomplete: bool=True"
+      },
+      "_parse_glued_deepseek_envelopes": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, pos: int, *, id_offset: int"
       },
       "_parse_kimi_section_body": {
         "decorators": [],
@@ -2327,6 +2342,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "text: str"
+      },
+      "_glued_call_objects": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, pos: int, end: int"
       },
       "_in_code": {
         "decorators": [],

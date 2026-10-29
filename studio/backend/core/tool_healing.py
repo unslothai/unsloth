@@ -770,6 +770,44 @@ def marker_coverage(content: str) -> list[tuple[int, int]]:
     return _marker_coverage(content, _build_markers(content))
 
 
+def _glued_call_objects(content: str, pos: int, end: int):
+    """Call objects glued after a parsed one inside the same ``<tool_call>``, up to its paired close at
+    ``end``: ``[(start, name, arguments_json)]``, or None unless every object between is a strict
+    ``{"name": .., "arguments"|"parameters": {..}}`` and only whitespace separates them and the close.
+    Braces are matched outside JSON strings, so a ``}{`` or closing tag inside an argument never splits
+    a call; the window is this marker's own coverage, so the scan stays linear."""
+    close_m = _TC_END_TAG_RE.search(content, pos, end)
+    if close_m is None or close_m.end() != end:
+        return None
+    window = content[pos : close_m.start()]
+    out = []
+    i = 0
+    n = len(window)
+    while True:
+        while i < n and window[i] in " \t\r\n":
+            i += 1
+        if i >= n:
+            break
+        if window[i] != "{":
+            return None
+        obj_end = _balanced_brace_end(window, i)
+        if obj_end is None:
+            return None
+        try:
+            obj = json.loads(window[i : obj_end + 1])
+        except (json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(obj, dict):
+            return None
+        g_name = obj.get("name")
+        g_args = obj.get("arguments") if "arguments" in obj else obj.get("parameters")
+        if not isinstance(g_name, str) or not g_name or not isinstance(g_args, dict):
+            return None
+        out.append((pos + i, g_name, json.dumps(g_args)))
+        i = obj_end + 1
+    return out or None
+
+
 def parse_tool_calls_from_text(
     content: str,
     *,
@@ -848,6 +886,16 @@ def parse_tool_calls_from_text(
         close_m = close_re.match(content, span_end + ws)
         if close_m:
             span_end = close_m.end()
+        glued = None
+        if allow_incomplete and kind == "json" and close_m is None and name:
+            glued = _glued_call_objects(content, span_end, coverage[idx][1])
+        if glued:
+            # Heal: several call objects glued inside one closed tag; the spans tile up to the close.
+            parsed_items.append((start, glued[0][0], name, arguments))
+            for g_idx, (g_start, g_name, g_args) in enumerate(glued):
+                g_end = glued[g_idx + 1][0] if g_idx + 1 < len(glued) else coverage[idx][1]
+                parsed_items.append((g_start, g_end, g_name, g_args))
+            continue
         parsed_items.append((start, span_end, name, arguments))
 
     func_starts = [

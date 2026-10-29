@@ -3677,16 +3677,61 @@ def _parse_deepseek_tool_calls(
     allow_incomplete: bool = True,
 ) -> list[dict]:
     """R1 wraps arguments in a json fence, V3.x does not; the five opener variants follow llama.cpp."""
-    out: list[dict] = []
     begin = _DEEPSEEK_BEGIN_RE.search(content)
     if not begin:
-        return out
+        return []
+    out, end_pos = _parse_deepseek_envelope(
+        content, begin, id_offset = id_offset, allow_incomplete = allow_incomplete
+    )
+    # Auto-Heal only: a model that closes its envelope and opens another runs both, but only once the
+    # first envelope parses strictly, and only closed, strictly parsed envelopes follow it.
+    if (
+        out
+        and allow_incomplete
+        and end_pos >= 0
+        and _DEEPSEEK_BEGIN_RE.search(content, end_pos + len(_DEEPSEEK_END)) is not None
+        and _parse_deepseek_envelope(content, begin, id_offset = 0, allow_incomplete = False)[0]
+    ):
+        out.extend(
+            _parse_glued_deepseek_envelopes(
+                content, end_pos + len(_DEEPSEEK_END), id_offset = id_offset + len(out)
+            )
+        )
+    return out
+
+
+# Code, think tags or other markup between two envelopes: the later one is quoted, not a call.
+_DEEPSEEK_GLUE_GAP_STOP_RE = re.compile(r"[`<>\[\]{}]")
+
+
+def _parse_glued_deepseek_envelopes(content: str, pos: int, *, id_offset: int) -> list[dict]:
+    """Closed envelopes after the first, separated by whitespace or plain prose only. Linear: each
+    envelope is scanned once and the walk stops at the first gap or envelope that does not qualify."""
+    out: list[dict] = []
+    while True:
+        nxt = _DEEPSEEK_BEGIN_RE.search(content, pos)
+        if nxt is None or _DEEPSEEK_GLUE_GAP_STOP_RE.search(content, pos, nxt.start()):
+            return out
+        calls, end_pos = _parse_deepseek_envelope(
+            content, nxt, id_offset = id_offset + len(out), allow_incomplete = False
+        )
+        if not calls:
+            return out
+        out.extend(calls)
+        pos = end_pos + len(_DEEPSEEK_END)
+
+
+def _parse_deepseek_envelope(
+    content: str, begin: "re.Match", *, id_offset: int, allow_incomplete: bool
+) -> "tuple[list[dict], int]":
+    """Calls in the envelope opened by ``begin`` and the index of its close (-1 when unclosed)."""
+    out: list[dict] = []
     scan_start = begin.end()
     # Search outside JSON strings: an argument may contain the literal end token.
     end_pos = _find_outside_json_strings(content, _DEEPSEEK_END, scan_start)
     # Strict mode: an unclosed envelope is truncated; reject, don't heal to EOF.
     if not allow_incomplete and end_pos < 0:
-        return out
+        return out, end_pos
     scan_end = end_pos if end_pos >= 0 else len(content)
     body = content[scan_start:scan_end]
 
@@ -3739,7 +3784,7 @@ def _parse_deepseek_tool_calls(
             )
         pos = close_m.end() if close_m else brace_end + 1
     if out:
-        return out
+        return out, end_pos
 
     pos = 0
     while pos < len(body):
@@ -3788,7 +3833,7 @@ def _parse_deepseek_tool_calls(
             )
         # Seeking the end marker could land on a later call's and skip the one between.
         pos = brace_end + 1
-    return out
+    return out, end_pos
 
 
 def _parse_glm_tool_calls(
