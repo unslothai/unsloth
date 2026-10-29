@@ -770,12 +770,15 @@ def marker_coverage(content: str) -> list[tuple[int, int]]:
     return _marker_coverage(content, _build_markers(content))
 
 
-def _loads_wrapped_call(text: str) -> dict:
+def _loads_wrapped_call(text: str, *, relaxed: bool = True) -> dict:
     """A wrapped call's JSON object; near-JSON a model sampled (single quotes, a trailing comma, True/None,
-    unquoted keys) is read only after strict JSON fails. Raises ValueError when neither reads an object."""
+    unquoted keys) is read only after strict JSON fails and only when healing is on. Raises ValueError
+    when neither reads an object."""
     try:
         return json.loads(text)
     except (json.JSONDecodeError, ValueError):
+        if not relaxed:
+            raise
         from core.inference.relaxed_json import relaxed_json_object  # noqa: PLC0415 -- failure path only
 
         obj = relaxed_json_object(text)
@@ -834,7 +837,9 @@ def parse_tool_calls_from_text(
                 continue
         try:
             if kind == "json":
-                obj = _loads_wrapped_call(content[m.end() - 1 : brace_end + 1])
+                obj = _loads_wrapped_call(
+                    content[m.end() - 1 : brace_end + 1], relaxed = allow_incomplete
+                )
                 name = obj.get("name", "")
                 # Accept "parameters" (Llama-3.2) and "args" (TML Inkling) as aliases.
                 arguments = obj.get("arguments")

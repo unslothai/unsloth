@@ -1614,7 +1614,7 @@
       "_consume_mistral_call": {
         "decorators": [],
         "kind": "def",
-        "signature": "obj_text: str, out: list[dict], id_offset: int"
+        "signature": "obj_text: str, out: list[dict], id_offset: int, *, relaxed: bool=True"
       },
       "_decoded_key": {
         "decorators": [],
@@ -1744,7 +1744,7 @@
       "_loads_call_object": {
         "decorators": [],
         "kind": "def",
-        "signature": "text: str"
+        "signature": "text: str, *, relaxed: bool=True"
       },
       "_marker_inside_leading_envelope": {
         "decorators": [],
@@ -2351,7 +2351,7 @@
       "_loads_wrapped_call": {
         "decorators": [],
         "kind": "def",
-        "signature": "text: str"
+        "signature": "text: str, *, relaxed: bool=True"
       },
       "_marker_coverage": {
         "decorators": [],

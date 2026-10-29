@@ -139,3 +139,30 @@ def test_well_formed_call_is_identical():
     assert parse_tool_calls_from_text(text, enabled_tool_names = ENABLED)[0]["function"][
         "arguments"
     ] == json.dumps(WANT)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "<tool_call>\n{'name': 'search_docs', 'arguments': {'query': 'rope scaling'}}\n</tool_call>",
+        '<tool_call>\n{"name": "search_docs", "arguments": {"query": "rope scaling",}}\n</tool_call>',
+        "<|python_tag|>{'name': 'search_docs', 'parameters': {'query': 'rope scaling'}}",
+        "[TOOL_CALLS]search_docs[ARGS]{'query': 'rope scaling'}",
+    ],
+)
+def test_auto_heal_off_does_not_repair(text):
+    # Auto-Heal off (allow_incomplete=False) is llama-server's strict path: near-JSON is not a call.
+    assert len(_parsed(text)) == 1
+    assert (
+        parse_tool_calls_from_text(text, enabled_tool_names = ENABLED, allow_incomplete = False) == []
+    )
+
+
+def test_python_tag_unbalanced_braces_stay_linear():
+    import time
+
+    text = "<|python_tag|>" + "{" * 20000
+    t0 = time.perf_counter()
+    assert _parsed(text) == []
+    # Brace-matching every ``{`` to the end was O(n^2): about 150 s here, against well under a second.
+    assert time.perf_counter() - t0 < 10
