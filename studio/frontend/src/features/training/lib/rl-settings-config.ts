@@ -111,7 +111,8 @@ export function parseRlSection(rl: unknown, context?: unknown): YamlRlSettings {
   }
   set(
     "grpoFormatWarmupSteps",
-    isNum(r.format_warmup_steps) ? r.format_warmup_steps : undefined,
+    // The backend's range: anything else would only fail at Start.
+    intInRange(r.format_warmup_steps, 0, 1000) ?? undefined,
   );
   // An omitted count gets the backend's default, not the store's 0; a written 0 stays.
   if (

@@ -132,3 +132,17 @@ test("a GRPO YAML with the reasoning format and no warm-up count gets the notebo
     undefined,
   );
 });
+
+test("an imported warm-up count outside the backend's range is dropped", () => {
+  const yaml = (steps: string) =>
+    `training:\n  max_seq_length: 2048\nrl:\n  objective: grpo\n  reasoning_format: true\n  format_warmup_steps: ${steps}\n`;
+  for (const bad of ["-5", "2.5", "5000"]) {
+    // Dropped, so the reasoning format's default applies instead.
+    assert.equal(
+      parseYamlRlSettings(yaml(bad)).grpoFormatWarmupSteps,
+      100,
+      bad,
+    );
+  }
+  assert.equal(parseYamlRlSettings(yaml("1000")).grpoFormatWarmupSteps, 1000);
+});
