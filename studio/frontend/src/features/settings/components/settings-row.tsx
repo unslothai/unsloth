@@ -33,7 +33,7 @@ export function SettingsRow({
   destructive?: boolean;
   className?: string;
   below?: ReactNode;
-  /** Lets a control that shows a value it must not clip (a folder path) pass the shared cap. */
+  /** Skips the control width cap, for values that must not clip. */
   wideControl?: boolean;
 }) {
   return (
