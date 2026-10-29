@@ -286,7 +286,7 @@ _MIRROR_WHL = "https://mirror.example/whl"
         (True, "2.14.0+xpu", "", "", _PYTORCH_WHL, f"{_PYTORCH_WHL}/xpu"),
         (True, "2.13.0+cu130", "cpu", "", _PYTORCH_WHL, f"{_PYTORCH_WHL}/cpu"),
         (True, "2.13.0", "", "", _PYTORCH_WHL, None),
-        # A mirror or explicit index may well carry a Windows build.
+        # Mirrors and explicit indexes stay pinned.
         (True, "2.13.0+cu130", "", "", _MIRROR_WHL, f"{_MIRROR_WHL}/cu130"),
         (True, "2.13.0+cu130", "", f"{_MIRROR_WHL}/cu130", _PYTORCH_WHL, f"{_MIRROR_WHL}/cu130"),
         # Not a CUDA leaf, though it starts with "cu".
@@ -307,8 +307,7 @@ def test_windows_cuda_takes_torchao_unpinned(
 
 
 def test_a_windows_cuda_update_leaves_the_installed_torchao_alone(monkeypatch):
-    """The untagged wheel the first run installs must satisfy the next run, or every update
-    force-reinstalls it after a resolve the cu leaf can never answer."""
+    """The untagged wheel the first run installs must satisfy the next run's tag check."""
     mod = _load_module(monkeypatch)
     monkeypatch.setattr(mod, "IS_WINDOWS", True)
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
