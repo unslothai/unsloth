@@ -1265,10 +1265,14 @@ class MultiLoraExperts(nn.Module):
             )
         if self.mode is None:
             self._choose_mode(hidden_states, args, _adapter_groups(batch))
-        # Under torch.compile, grouped GEMM only traces in bfloat16 (its meta checks the dtype on every device).
-        if self.mode == "grouped" and not (
-            torch.compiler.is_compiling() and self._compute_dtype(hidden_states) != torch.bfloat16
-        ):
+        grouped = self.mode == "grouped"
+        if grouped and torch.compiler.is_compiling():
+            # Grouped GEMM only traces in bfloat16 (its meta checks the dtype on every device).
+            grouped = self._compute_dtype(hidden_states) == torch.bfloat16
+        elif grouped:
+            # With one adapter's tokens there is nothing to fuse: its own pass is the same work in fewer groups.
+            grouped = sum(u is not None for u, _ in _adapter_groups(batch)) >= 2
+        if grouped:
             if not torch.compiler.is_compiling():
                 MULTI_LORA_MOE_STATS["grouped_calls"] += 1
             # Every adapter's factors are in the graph, so absent adapters get exact zero grads.

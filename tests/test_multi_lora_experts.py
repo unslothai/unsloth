@@ -451,7 +451,7 @@ def test_grouped_matches_a_float64_oracle(monkeypatch, rslora, present):
             )
 
 
-@pytest.mark.parametrize("U", [1, 3])
+@pytest.mark.parametrize("U", [2, 3])
 def test_grouped_is_one_pass_on_zoo_gemms(monkeypatch, U):
     """Every adapter in one pass: 2 base GEMMs through Zoo's base path and 4 LoRA grouped GEMMs, whatever U is."""
     _need_grouped()
@@ -481,6 +481,26 @@ def test_grouped_is_one_pass_on_zoo_gemms(monkeypatch, U):
     monkeypatch.setattr(moe_utils, "_grouped_mm_with_backward_fix", count("lora", lora_mm))
     experts(hidden, index, weights)
     assert calls == {"base": 2, "lora": 4}
+
+
+def test_one_present_adapter_runs_its_own_pass(monkeypatch):
+    """A batch with one adapter's tokens has nothing to fuse: that call runs per adapter, with the same result."""
+    _need_grouped()
+    monkeypatch.delenv("UNSLOTH_MULTI_LORA_MOE_GROUPED", raising = False)
+    T, k, E = 24, 2, 5
+    index, weights = _routes(T, k, E)
+    hidden = torch.randn(T, 20, generator = torch.Generator().manual_seed(2))
+    experts = _wrapped(_Experts(E), RANKS, ALPHAS, False, torch.tensor([0, 1, 2, -1] * 6))
+    experts(hidden, index, weights)
+    assert experts.mode == "grouped"
+    ml.set_multi_lora_batch(experts, torch.tensor([1, -1] * 12))
+    before = dict(ml.MULTI_LORA_MOE_STATS)
+    out = experts(hidden, index, weights)
+    assert ml.MULTI_LORA_MOE_STATS["per_adapter_calls"] == before["per_adapter_calls"] + 1
+    assert ml.MULTI_LORA_MOE_STATS["grouped_calls"] == before["grouped_calls"]
+    torch.testing.assert_close(
+        out, experts._grouped(hidden, index, weights, torch.tensor([1, -1] * 12))
+    )
 
 
 def test_grouped_engages_and_the_switch_turns_it_off(base, monkeypatch):
