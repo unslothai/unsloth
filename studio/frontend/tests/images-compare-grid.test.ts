@@ -431,7 +431,8 @@ test("the Images page (its own lazy chunk) renders the panel and loops cells thr
   const root = readSrc("app/routes/__root.tsx");
   assert.match(root, /lazy\(\(\) =>\s*import\("@\/features\/images"\)/);
   assert.match(page, /for \(let i = 0; i < runTotal; i\+\+\)/);
-  assert.match(page, /generateDiffusionImage\(compareRequest\(compare, i, baseSeed, \{/);
+  assert.match(page, /return compareRequest\(compare, i, baseSeed, \{/);
+  assert.match(page, /generateDiffusionImage\(requestFor\(i\)\)/);
   assert.match(page, /compare\?\.onImages\(i, res\.images\)/);
   // The lost-response branch also reports the cell, from the records the gallery gained.
   assert.match(page, /compare\?\.onImages\(i, galleryCache\.images\.filter\(\(image\) => !knownIds\.has\(image\.id\)\)\)/);

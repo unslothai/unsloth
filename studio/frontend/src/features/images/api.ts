@@ -531,6 +531,69 @@ export async function cancelDiffusionGeneration(
   );
 }
 
+export type ImageQueueStatus = "queued" | "running" | "done" | "failed" | "cancelled";
+
+/** One job in the server's image generation queue (GET /images/queue). */
+export interface ImageQueueJob {
+  id: string;
+  status: ImageQueueStatus;
+  /** 0-based place among the queued jobs; null once started. */
+  position: number | null;
+  prompt: string;
+  width: number;
+  height: number;
+  /** null follows the loaded model's default. */
+  steps: number | null;
+  seed: number | null;
+  batch_size: number;
+  workflow: string | null;
+  loras: string[];
+  created_at: number;
+  started_at: number | null;
+  finished_at: number | null;
+  error: string | null;
+  image_ids: string[];
+}
+
+export async function enqueueDiffusionImage(body: DiffusionGenerateRequest): Promise<ImageQueueJob> {
+  // No retry: a re-sent POST queues the run twice.
+  return parseJson(
+    await authFetch(
+      "/api/inference/images/queue",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+      { retryNetworkErrors: false },
+    ),
+  );
+}
+
+export async function listDiffusionQueue(): Promise<ImageQueueJob[]> {
+  return (await parseJson<{ jobs: ImageQueueJob[] }>(await authFetch("/api/inference/images/queue"))).jobs;
+}
+
+export async function cancelDiffusionQueueJob(id: string): Promise<ImageQueueJob> {
+  return parseJson(
+    await authFetch(`/api/inference/images/queue/${encodeURIComponent(id)}/cancel`, { method: "POST" }),
+  );
+}
+
+export async function moveDiffusionQueueJob(id: string, index: number): Promise<ImageQueueJob[]> {
+  const res = await authFetch(`/api/inference/images/queue/${encodeURIComponent(id)}/move`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ index }),
+  });
+  return (await parseJson<{ jobs: ImageQueueJob[] }>(res)).jobs;
+}
+
+export async function clearDiffusionQueue(): Promise<ImageQueueJob[]> {
+  const res = await authFetch("/api/inference/images/queue", { method: "DELETE" });
+  return (await parseJson<{ jobs: ImageQueueJob[] }>(res)).jobs;
+}
+
 export async function unloadDiffusionModel(): Promise<DiffusionStatus> {
   return parseJson(await authFetch("/api/inference/images/unload", { method: "POST" }));
 }
