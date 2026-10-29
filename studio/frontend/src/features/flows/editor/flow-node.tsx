@@ -300,8 +300,8 @@ function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
           {flowOuts.length > 0 && <NodePorts inputs={[]} outputs={flowOuts} />}
           {Body ? <Body node={node} /> : null}
           {fields && <NodeFieldRows rows={fields.rows} />}
-          {fields && <NodeDisclosure sections={fields.long} />}
           {LLM_SETTINGS_NODES.has(node.type) && <LlmReloadHint node={node} />}
+          {fields && <NodeDisclosure sections={fields.long} />}
           {(runtime.outputs ||
             runtime.partial ||
             runtime.text ||
