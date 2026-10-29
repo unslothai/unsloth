@@ -5,7 +5,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import { useLocale, useT, type TranslationKey } from "@/i18n";
 import { useLibraryProjectLabels } from "./use-library-project-labels";
 import {
-  FilterHorizontalIcon,
+  FilterMailIcon,
   Folder01Icon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
@@ -106,7 +106,7 @@ export function LibraryToolbar({
             className="h-10 gap-2 rounded-full"
             aria-label={t("settings.data.library.filterSort")}
           >
-            <HugeiconsIcon icon={FilterHorizontalIcon} className="size-4 shrink-0" />
+            <HugeiconsIcon icon={FilterMailIcon} className="size-4 shrink-0" />
             {projects
               ? t(TYPE_LABELS[filters.type])
               : filters.sort === "default"

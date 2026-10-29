@@ -151,7 +151,6 @@ import {
   ZapIcon,
   PanelLeftIcon,
   LeftToRightListBulletIcon,
-  ArrowUpDownIcon,
   LayerIcon,
   ApiIcon,
   Clock01Icon,
@@ -171,7 +170,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { ArrowRightIcon, GitBranchIcon } from "lucide-react";
+import { ArrowDownUpIcon, ArrowRightIcon, GitBranchIcon } from "lucide-react";
 import { ForkIcon } from "@/lib/fork-icon";
 import {
   Link,
@@ -4397,7 +4396,7 @@ export function AppSidebar() {
     return (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
-          <HugeiconsIcon icon={ArrowUpDownIcon} strokeWidth={1.75} className="size-icon" />
+          <ArrowDownUpIcon strokeWidth={1.75} className="size-icon" />
           <span className="min-w-0 flex-1 truncate">{config.label}</span>
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent {...sidebarSubmenuOffsets} className="unsloth-plus-menu sidebar-row-menu sidebar-menu w-44">

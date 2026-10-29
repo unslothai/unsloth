@@ -132,7 +132,6 @@ import { cn, formatCompact } from "@/lib/utils";
 import type { VramFitStatus } from "@/lib/vram";
 import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
 import {
-  ArrowUpDownIcon,
   Cancel01Icon,
   DashboardCircleIcon,
   Flag01Icon,
@@ -152,6 +151,7 @@ import { Copy01Icon } from "@/lib/copy-icon";
 import { useT } from "@/i18n";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ArrowDownUpIcon } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import {
   type Dispatch,
@@ -5992,8 +5992,7 @@ export function HubModelPicker({
   );
   const sortTriggerContent = (label: ReactNode) => (
     <span className="flex items-center gap-1">
-      <HugeiconsIcon
-        icon={ArrowUpDownIcon}
+      <ArrowDownUpIcon
         strokeWidth={1.75}
         className="size-3.5 shrink-0 text-foreground"
       />
