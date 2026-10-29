@@ -262,6 +262,20 @@ def test_startup_output_auto_start_on_wildcard_does_not_say_tunnel_off(capsys, m
     assert "Cloudflare tunnel: OFF" not in out
 
 
+def test_startup_output_auto_start_on_wildcard_keeps_a_ready_tunnel_url(capsys, monkeypatch):
+    import run
+
+    monkeypatch.setattr(run, "_verify_global_reachability", lambda *a, **k: None)
+    monkeypatch.setattr(run, "_localhost_ipv6_mismatch_url", lambda *a, **k: None)
+    monkeypatch.setattr(run, "_is_wsl_nat", lambda: False)
+    monkeypatch.setattr(run, "_cloudflare_url", "https://ready.trycloudflare.com")
+    monkeypatch.setattr(run, "_cloudflare_requested", False)
+    monkeypatch.setattr(run, "_cloudflare_flag", None)
+
+    run._emit_startup_output("0.0.0.0", 8000, "0.0.0.0", remote_access_starting = True)
+    assert "https://ready.trycloudflare.com" in capsys.readouterr().out
+
+
 def test_startup_output_emits_disabled_notice(capsys, monkeypatch):
     import run
 

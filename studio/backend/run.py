@@ -642,7 +642,7 @@ def _emit_startup_output(
             _print_wsl_windows_hint(port)
         _verify_global_reachability(display_host, port, wsl_nat = wsl_nat)
         # --cloudflare is refused alongside --ssl-certfile
-        if _url_scheme == "http" and not remote_access_starting:
+        if _url_scheme == "http" and (not remote_access_starting or _cloudflare_url):
             _print_cloudflare_line(loopback_host = _loopback_bind_host_for(host))
     _emit_tool_policy_notice(lan_addresses[0] if lan_addresses else host, False, enable_tools)
     print_studio_stop_hint()
