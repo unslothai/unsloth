@@ -450,6 +450,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
     }: { nodes: RfNode[]; edges: RfEdge[] }) => {
       const ids = {
         nodes: [] as string[],
+        // removeElements keeps a deleted reroute's own wires out of this, so it can heal.
         edges: rfEdges.map((e) => e.id),
         groups: [] as string[],
         notes: [] as string[],

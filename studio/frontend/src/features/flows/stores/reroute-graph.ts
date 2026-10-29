@@ -161,6 +161,7 @@ export function syncRerouteEdges<G extends RerouteGraph>(
       place(derived.get(id) as FlowEdge);
     }
   }
+  // Only a new wire lands at the end: a split keeps its far half's id, and healing reuses it.
   for (const edge of derived.values()) if (!edges[edge.id]) place(edge);
   const unchanged =
     edgeOrder.length === graph.edgeOrder.length &&

@@ -5,12 +5,13 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { Command } from "cmdk";
 import { useEffect, useMemo, useRef } from "react";
 import { useCatalogStore } from "../stores/catalog-store";
+import { useDocStore } from "../stores/doc-store";
 import { useUiStore } from "../stores/ui-store";
 import type { NodeSpec } from "../types";
 import { compatibleSpecs } from "./connection-rules";
 import { nodeIcon } from "./icons";
 import { addNodeConnected } from "./node-factory";
-import { REROUTE_TYPE } from "./reroutes";
+import { REROUTE_TYPE, rerouteCanFeed } from "./reroutes";
 
 export function QuickAdd() {
   const quickAdd = useUiStore((s) => s.quickAdd);
@@ -22,7 +23,18 @@ export function QuickAdd() {
   const options = useMemo((): { spec: NodeSpec; port?: string }[] => {
     if (!catalog || !quickAdd) return [];
     if (!quickAdd.from) return catalog.nodes.map((spec) => ({ spec }));
-    const matches = compatibleSpecs(catalog.nodes, quickAdd.from);
+    const { from } = quickAdd;
+    const graph = useDocStore.getState().graph;
+    // Out of a reroute: any input the whole chain could feed, not just its first input's type.
+    const matches =
+      from.side === "out" && from.kind === "data" && graph.reroutes[from.nodeId]
+        ? catalog.nodes.flatMap((spec) => {
+            const port = spec.inputs.find((p) =>
+              rerouteCanFeed(graph, from.nodeId, p),
+            );
+            return port ? [{ spec, port: port.id }] : [];
+          })
+        : compatibleSpecs(catalog.nodes, from);
     const exactType = quickAdd.from.port?.type;
     return matches.sort((a, b) => {
       const score = (m: { spec: NodeSpec; port: string }) => {

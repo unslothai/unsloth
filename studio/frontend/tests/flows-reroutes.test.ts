@@ -440,6 +440,13 @@ test("a reroute never adds a second copy of a wire a multi input already has", (
     /already/,
   );
   assert.deepEqual(plain(), ["a:src.text->out.value"]);
+  // The store refuses it too, whoever calls it.
+
+  useDocStore.getState().connectWire(
+    { id: "wx", source: "r1", source_port: "out", target: "out", target_port: "value" },
+    false,
+  );
+  assert.deepEqual(plain(), ["a:src.text->out.value"]);
   // Rerouting a single input's own wire is still allowed: it replaces the direct edge.
   fresh();
   useDocStore.getState().addReroute({ id: "r2", pos: [300, 10] });
@@ -449,4 +456,26 @@ test("a reroute never adds a second copy of a wire a multi input already has", (
     null,
   );
   assert.equal(plain().length, 1);
+});
+
+test("an empty reroute into an `any` input connects, and Quick Add offers what the whole chain could feed", async () => {
+  fresh([]);
+  useDocStore.getState().addReroute({ id: "r1", pos: [300, 10] });
+  assert.equal(
+    tryConnect({ source: "r1", sourceHandle: REROUTE_OUT_HANDLE, target: "out", targetHandle: inHandle("value") }),
+    null,
+  );
+  const { rerouteCanFeed } = await import("../src/features/flows/editor/reroutes.ts");
+  const text = { id: "t", label: "t", type: "text" } as never;
+  const json = { id: "j", label: "j", type: "json" } as never;
+  const image = { id: "i", label: "i", type: "image" } as never;
+  assert.equal(rerouteCanFeed(graph(), "r1", text), true);
+  useDocStore.getState().load(
+    doc([node("jg", "json.get", [600, 0]), node("src", "input.text", [0, 0])], []),
+  );
+  useDocStore.getState().addReroute({ id: "r2", pos: [300, 10] });
+  tryConnect({ source: "r2", sourceHandle: REROUTE_OUT_HANDLE, target: "jg", targetHandle: inHandle("json") });
+  assert.equal(rerouteCanFeed(graph(), "r2", text), true, "a text output feeds json and text");
+  assert.equal(rerouteCanFeed(graph(), "r2", image), false);
+  assert.equal(rerouteCanFeed(graph(), "r2", json), true);
 });

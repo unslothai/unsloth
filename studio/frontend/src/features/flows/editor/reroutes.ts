@@ -75,6 +75,34 @@ function chainRoot(graph: DocGraph, rerouteId: string): string {
   return cursor;
 }
 
+/** Typed inputs an empty chain would reach, its current consumers plus `extra`. */
+function chainReach(graph: DocGraph, rerouteId: string, extra: PortRef[]): PortSpec[] {
+  return [...rerouteDownstream(graph, chainRoot(graph, rerouteId)), ...extra]
+    .map((ref) => portSpec(graph, ref, "in"))
+    .filter((port): port is PortSpec => !!port && port.type !== "any");
+}
+
+/** Some one output type could feed every port (no typed port at all is no constraint). */
+function feedable(ports: PortSpec[]): boolean {
+  return (
+    ports.length === 0 ||
+    ports.some((type) => ports.every((port) => typesCompatible(type, port)))
+  );
+}
+
+/** Whether a new input `port` could hang off this reroute's output. */
+export function rerouteCanFeed(
+  graph: DocGraph,
+  rerouteId: string,
+  port: PortSpec,
+): boolean {
+  if (port.type === "flow") return false;
+  const source = portSpec(graph, rerouteUpstream(graph, rerouteId), "out");
+  if (source) return typesCompatible(source, port);
+  const reach = chainReach(graph, rerouteId, []);
+  return port.type === "any" || feedable([...reach, port]);
+}
+
 export interface RerouteRequest {
   source: string;
   sourceHandle: string;
@@ -144,11 +172,8 @@ export function checkRerouteConnection(
   }
   const source = portSpec(graph, upstream, "out");
   if (!source && fromReroute) {
-    // An empty chain needs one output type that could feed every input it would reach.
-    const reach = [...rerouteDownstream(graph, chainRoot(graph, req.source)), ...targets]
-      .map((ref) => portSpec(graph, ref, "in"))
-      .filter((port): port is PortSpec => !!port && port.type !== "any");
-    if (!reach.some((type) => reach.every((port) => typesCompatible(type, port)))) {
+    const reach = chainReach(graph, req.source, targets);
+    if (!feedable(reach)) {
       const [first] = reach;
       const clash = reach.find((port) => !typesCompatible(first, port)) ?? first;
       return {

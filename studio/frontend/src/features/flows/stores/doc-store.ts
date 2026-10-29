@@ -626,12 +626,21 @@ export const useDocStore = create<DocState>((set, get) => {
             }
           }
         }
-        return {
-          graph: syncRerouteEdges(
-            { ...g, wires, wireOrder, edges, edgeOrder },
-            g.wireOrder,
-          ),
-        };
+        const graph = syncRerouteEdges(
+          { ...g, wires, wireOrder, edges, edgeOrder },
+          g.wireOrder,
+        );
+        // A multi input keeps every edge, so a rerouted wire must not repeat one already there.
+        const seen = new Map<string, string>();
+        for (const id of graph.edgeOrder) {
+          const e = graph.edges[id];
+          if (e.kind !== "data") continue;
+          const key = `${e.source}\u0000${e.source_port}\u0000${e.target}\u0000${e.target_port}`;
+          const other = seen.get(key);
+          if (other && (graph.wires[id] || graph.wires[other])) return null;
+          seen.set(key, id);
+        }
+        return { graph };
       }),
 
     insertFragment: (fragment) =>
