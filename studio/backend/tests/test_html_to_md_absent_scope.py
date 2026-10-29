@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""html_to_markdown(main_content=True) skips the <article> / <main> scope pass when the tag
-never appears in the page: that pass can only find nothing. Output must equal running it."""
+"""A scope pass whose tag never appears is skipped; output must equal running it."""
 
 from __future__ import annotations
 
@@ -53,7 +52,6 @@ def _convert(html, **kwargs):
 def test_skipping_an_absent_scope_renders_what_running_it_renders(monkeypatch, name, span):
     got = _convert(PAGES[name], max_span_chars = span)
     with monkeypatch.context() as m:
-        # a pattern that always matches makes every scope pass run, as before the skip
         m.setattr(h2m, "_ARTICLE_START", re.compile(""))
         m.setattr(h2m, "_MAIN_START", re.compile(""))
         expected = _convert(PAGES[name], max_span_chars = span)
