@@ -206,6 +206,8 @@ def test_load_then_status_and_guards(env):
     assert status["gguf_filename"] == GGUF and status["model_kind"] == "gguf"
     assert status["workflows"] == ["txt2img"]
     assert status["mlx"]["precision"] == "float16" and status["mlx"]["text_encoder_bits"] == 4
+    assert status["supports_lora"] is False
+    assert status["lora_unavailable_reason"] == "The MLX engine does not apply LoRAs yet."
     assert runtime.builds[0]["model_config"] == "z-image-turbo"
     model_dir = Path(runtime.builds[0]["model_path"])
     for sub in ("text_encoder", "tokenizer", "vae"):

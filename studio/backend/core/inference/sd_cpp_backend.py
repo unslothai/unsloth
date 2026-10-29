@@ -5420,6 +5420,9 @@ class SdCppDiffusionBackend:
                 "For transparent output on the native engine, raise Guidance above 1 (upstream uses 6)."
             )
         conditioning["notes"] = notes
+        lora_reason = diffusion_lora.lora_unavailable_reason(
+            engine = "sd_cpp", family = state.family.name, model_kind = "gguf", transformer_quant = None
+        )
 
         return {
             "loaded": True,
@@ -5449,12 +5452,8 @@ class SdCppDiffusionBackend:
             "transformer_cache": None,
             "resolved": state.resolved,
             "engine": "sd_cpp",
-            "supports_lora": diffusion_lora.supports_lora(
-                engine = "sd_cpp",
-                family = state.family.name,
-                model_kind = "gguf",
-                transformer_quant = None,
-            ),
+            "supports_lora": lora_reason is None,
+            "lora_unavailable_reason": lora_reason,
             "supports_controlnet": False,
             "supports_negative_prompt": state.family.name not in _EMBEDDED_GUIDANCE_FAMILIES,
             "negative_prompt_min_guidance": _negative_prompt_guidance_threshold(state.family),

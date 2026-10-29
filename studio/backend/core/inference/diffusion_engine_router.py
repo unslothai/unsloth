@@ -558,9 +558,7 @@ def _refuse_lora_fallback(
 
     if supports_lora(engine = choice, family = fam.name, model_kind = "gguf", transformer_quant = None):
         return
-    via = (
-        "the native sd.cpp engine" if choice == ENGINE_SD_CPP else "the diffusers engine on a GGUF"
-    )
+    via = "the native sd.cpp engine" if choice == ENGINE_SD_CPP else "the diffusers engine"
     raise ValueError(
         "LoRA adapters are not supported on the MLX engine yet, and this load would fall back to "
         f"{via}, which cannot apply them here either. Load it without LoRA adapters."

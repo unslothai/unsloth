@@ -587,13 +587,31 @@ def test_a_lora_load_declines_mlx_under_default_routing(monkeypatch, value, gguf
 
 
 @pytest.mark.parametrize("sd_cpp_off", [False, True])
-def test_a_forced_mlx_lora_load_with_no_lora_capable_fallback_is_refused_before_the_switch(
+def test_a_forced_mlx_lora_load_falls_back_to_diffusers_which_applies_them_to_the_gguf(
     monkeypatch, sd_cpp_off
 ):
     _apple(monkeypatch)
     monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX", "1")
     if sd_cpp_off:
         monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP", "0")
+    fam = detect_family("z-image")
+    kw = dict(model_kind = "gguf", gguf_filename = "z-image-turbo-Q4_K_M.gguf", with_loras = True)
+    assert r.predict_engine(fam, **kw) == ENGINE_DIFFUSERS
+    r.select_and_activate_engine(fam, **kw)
+    assert r.active_engine_name() == ENGINE_DIFFUSERS
+
+
+@pytest.mark.parametrize("sd_cpp_off", [False, True])
+def test_a_forced_mlx_lora_load_with_no_lora_capable_fallback_is_refused_before_the_switch(
+    monkeypatch, sd_cpp_off
+):
+    from core.inference import diffusion_lora
+
+    _apple(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX", "1")
+    if sd_cpp_off:
+        monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP", "0")
+    monkeypatch.setattr(diffusion_lora, "supports_lora", lambda **_: False)
     fam = detect_family("z-image")
     kw = dict(model_kind = "gguf", gguf_filename = "z-image-turbo-Q4_K_M.gguf", with_loras = True)
     r._active_engine_name = ENGINE_MLX

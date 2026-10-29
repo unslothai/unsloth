@@ -1573,6 +1573,7 @@ class MlxDiffusionBackend:
                 "conditioning": None,
             }
         from core.inference.diffusion_conditioning import conditioning_capabilities
+        from core.inference.diffusion_lora import lora_unavailable_reason
         from hub.utils.gguf import extract_quant_token
 
         conditioning = conditioning_capabilities(state.family, ["txt2img"])
@@ -1582,6 +1583,9 @@ class MlxDiffusionBackend:
             guided = bool(self._rt().supports_guidance(state.model))
         except Exception:  # noqa: BLE001
             guided = False
+        lora_reason = lora_unavailable_reason(
+            engine = ENGINE_NAME, family = state.family.name, model_kind = "gguf", transformer_quant = None
+        )
         return {
             "loaded": True,
             "repo_id": state.repo_id,
@@ -1614,7 +1618,8 @@ class MlxDiffusionBackend:
                 "dense_bits": state.dense_bits,
                 "timings": dict(state.timings),
             },
-            "supports_lora": False,
+            "supports_lora": lora_reason is None,
+            "lora_unavailable_reason": lora_reason,
             "supports_controlnet": False,
             "supports_negative_prompt": guided,
             # CFG, and with it the negative prompt, engages only above guidance 1 (cache_text_encodings, generate).
