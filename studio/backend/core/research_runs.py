@@ -832,11 +832,13 @@ def _bounded_synthesis_evidence(
     # Split evenly: a per-note floor lets early notes eat the budget and drop later steps entirely.
     separator = "\n\n"
     available = max(0, max_chars - len(separator) * (len(notes) - 1))
-    base, remainder = divmod(available, len(notes))
+    limits = [0] * len(notes)
+    for position, index in enumerate(sorted(range(len(notes)), key = lambda i: len(notes[i]))):
+        limits[index] = min(len(notes[index]), available // (len(notes) - position))
+        available -= limits[index]
     suffix = "\n[Evidence truncated]"
     bounded = []
-    for index, note in enumerate(notes):
-        limit = base + (1 if index < remainder else 0)
+    for note, limit in zip(notes, limits):
         if len(note) <= limit:
             bounded.append(note)
         elif limit <= len(suffix):
@@ -2381,13 +2383,11 @@ class ResearchSupervisor:
             if web_evidence or rag_evidence or mcp_evidence:
                 completed_steps += 1
             title = str(step.get("title") or "Recovered research step")
-            notes.append(
-                f"### {title} ({action})\nInput: {argument}\nResult:\n{web_evidence}\n\n"
-                f"Knowledge base:\n{rag_evidence}{mcp_evidence}"
-            )
-            decision_notes.append(
-                f"### {title} ({action})\nInput: {argument}\nResult:\n{web_evidence}"
-            )
+            heading = f"### {title} ({action})\nInput: {argument}"
+            notes.append(f"{heading}\nResult:\n{web_evidence}")
+            if rag_evidence or mcp_evidence:
+                notes.append(f"{heading}\nKnowledge base:\n{rag_evidence}{mcp_evidence}")
+            decision_notes.append(f"{heading}\nResult:\n{web_evidence}")
 
         start_position = (
             max(
@@ -2695,16 +2695,11 @@ class ResearchSupervisor:
             mcp_evidence = _mcp_evidence(
                 [source for source in rag_sources if source.get("kind") == "mcp"]
             )
-            note = (
-                f"### {action['title']} ({action['action']})\n"
-                f"Input: {argument}\nResult:\n{result[:12000]}\n\n"
-                f"Knowledge base:\n{rag_result[:6000]}{mcp_evidence}"
-            )
-            notes.append(note)
-            decision_notes.append(
-                f"### {action['title']} ({action['action']})\n"
-                f"Input: {argument}\nResult:\n{result[:12000]}"
-            )
+            heading = f"### {action['title']} ({action['action']})\nInput: {argument}"
+            notes.append(f"{heading}\nResult:\n{result[:12000]}")
+            if rag_result or mcp_evidence:
+                notes.append(f"{heading}\nKnowledge base:\n{rag_result[:6000]}{mcp_evidence}")
+            decision_notes.append(f"{heading}\nResult:\n{result[:12000]}")
             clean_result = strip_result_for_model(result, "web_search")
             if step_failed:
                 step_error = _preferred_step_error(step_error, clean_result[:500])
