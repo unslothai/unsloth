@@ -2450,7 +2450,6 @@ export const en = {
         memory: "Memory",
         gpuInUse: "GPU in use",
         availableForModels: "Available for models",
-        gpuCount: "{count} GPUs",
         refreshRate: "Refresh rate",
         refreshRateDescription: "How often the floating monitor reads memory and GPU usage while it is open.",
         refreshEvery: "Every {seconds} s",

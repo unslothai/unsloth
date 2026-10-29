@@ -2386,7 +2386,6 @@ export const ar = {
         memory: "الذاكرة",
         gpuInUse: "مستخدمة بواسطة GPU",
         availableForModels: "متاحة للنماذج",
-        gpuCount: "{count} وحدات GPU",
         refreshRate: "معدل التحديث",
         refreshRateDescription: "عدد مرات قراءة الشاشة العائمة لاستخدام الذاكرة وGPU أثناء فتحها.",
         refreshEvery: "كل {seconds} ث",

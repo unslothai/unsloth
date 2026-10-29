@@ -2366,7 +2366,6 @@ export const ja = {
         memory: "メモリ",
         gpuInUse: "GPU 使用中",
         availableForModels: "モデルに使用可能",
-        gpuCount: "{count} 基の GPU",
         refreshRate: "更新間隔",
         refreshRateDescription: "フローティングモニターを開いている間、メモリと GPU の使用量を読み取る頻度です。",
         refreshEvery: "{seconds} 秒ごと",

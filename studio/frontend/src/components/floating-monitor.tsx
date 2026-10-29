@@ -13,7 +13,9 @@ import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page/lib/find-attribut
 
 import { useMonitorOverlayStore } from "@/features/settings";
 import { monitorRefreshMs } from "./monitor-refresh";
+import { vramCards } from "./monitor-cards";
 import {
+  CardRows,
   formatGiB,
   MeterRow,
   MemoryBar,
@@ -229,7 +231,6 @@ function FloatingMonitorPanel({
     : 0;
   const devices = memoryDisplay.usageDevices;
   const memoryTotals = gpuMemoryTotalsGb(devices);
-  const vramTotal = memoryTotals.total;
   const hasSharedPool = memoryTotals.shared > 0;
   // No dedicated pool (Apple unified memory): the shared total alone is the capacity.
   const unifiedPool = hasSharedPool && memoryTotals.dedicated === 0;
@@ -238,14 +239,7 @@ function FloatingMonitorPanel({
   const resolvedVramUsed = resolveGpuVramUsedGb(memoryDisplay.usageGpu);
   const vramUsageKnown = resolvedVramUsed !== null;
   const vramUsed = resolvedVramUsed ?? 0;
-  const vramPercent = clampPercent(
-    vramUsageKnown && vramTotal > 0 ? (vramUsed / vramTotal) * 100 : 0,
-  );
   const unknownLabel = t("settings.resources.environment.unknown");
-  const deviceLabel =
-    devices.length > 1
-      ? t("settings.resources.liveMonitor.gpuCount", { count: devices.length })
-      : (devices[0]?.name ?? undefined);
 
   const showDetails = useMonitorOverlayStore((state) => state.showDetails);
   const storedDetailMetrics = useMonitorOverlayStore(
@@ -270,6 +264,14 @@ function FloatingMonitorPanel({
     unifiedPool &&
     memoryDisplay.sharedDevices.length === 0;
   const discreteVram = hasGpu && devices.length > 0 && !unifiedRow;
+  const vram = vramCards(devices, memoryDisplay.usageGpu);
+  const cardsUsedKnown = vram.usedGb !== null;
+  const cardsUsed = vram.usedGb ?? 0;
+  const cardsPercent = clampPercent(
+    cardsUsedKnown && vram.totalGb > 0 ? (cardsUsed / vram.totalGb) * 100 : 0,
+  );
+  const cardLabel =
+    vram.cards.length === 1 ? (vram.cards[0]?.name ?? undefined) : undefined;
 
   const showShare = useMonitorOverlayStore((state) => state.showUnslothShare);
   const showBreakdown = useMonitorOverlayStore(
@@ -300,8 +302,8 @@ function FloatingMonitorPanel({
     : null;
   // On a discrete GPU the models are what Unsloth holds in VRAM.
   const vramShare =
-    wantsModels && discreteVram && vramUsageKnown && !hasSharedPool
-      ? memoryShare(vramUsed, vramTotal, modelsGb)
+    wantsModels && discreteVram && cardsUsedKnown
+      ? memoryShare(cardsUsed, vram.totalGb, modelsGb)
       : null;
   const vramSegments = vramShare ? memorySegments(vramShare, breakdown) : null;
   const ramAmount = ramKnown
@@ -530,20 +532,13 @@ function FloatingMonitorPanel({
               <MeterRow
                 testId="floating-monitor-vram"
                 label={t("settings.resources.liveMonitor.vram")}
-                readout={`${vramUsageKnown ? formatGiB(vramUsed) : "--"} / ${
-                  hasSharedPool && !unifiedPool
-                    ? t("settings.resources.environment.vramWithShared", {
-                        vram: formatGiB(memoryTotals.dedicated),
-                        shared: formatGiB(memoryTotals.shared),
-                      })
-                    : formatGiB(vramTotal)
-                }`}
+                readout={`${cardsUsedKnown ? formatGiB(cardsUsed) : "--"} / ${formatGiB(vram.totalGb)}`}
                 footer={
-                  (deviceLabel || vramSegments) && (
+                  (cardLabel || vramSegments || vram.rows.length > 0) && (
                     <>
-                      {deviceLabel && (
-                        <div className="truncate" title={deviceLabel}>
-                          {deviceLabel}
+                      {cardLabel && (
+                        <div className="truncate" title={cardLabel}>
+                          {cardLabel}
                         </div>
                       )}
                       {vramSegments && (
@@ -552,6 +547,7 @@ function FloatingMonitorPanel({
                           noModels={breakdown?.models.length === 0}
                         />
                       )}
+                      {vram.rows.length > 0 && <CardRows rows={vram.rows} />}
                     </>
                   )
                 }
@@ -559,7 +555,7 @@ function FloatingMonitorPanel({
                 {vramSegments ? (
                   <MemoryBar segments={vramSegments} />
                 ) : (
-                  <UsageBar percent={vramUsageKnown ? vramPercent : null} />
+                  <UsageBar percent={cardsUsedKnown ? cardsPercent : null} />
                 )}
               </MeterRow>
             )}

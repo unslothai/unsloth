@@ -2357,7 +2357,6 @@ export const zhCN = {
         memory: "内存",
         gpuInUse: "GPU 占用",
         availableForModels: "可用于模型",
-        gpuCount: "{count} 个 GPU",
         refreshRate: "刷新频率",
         refreshRateDescription: "浮动监视器打开时读取内存和 GPU 使用情况的频率。",
         refreshEvery: "每 {seconds} 秒",

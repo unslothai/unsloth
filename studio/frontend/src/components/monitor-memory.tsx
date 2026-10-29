@@ -7,6 +7,7 @@ import { Progress } from "@/components/ui/progress";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import type { ReactNode } from "react";
+import type { CardUsage } from "./monitor-cards";
 import type { MemorySegment } from "./monitor-share";
 
 export function usageIndicatorClass(percent: number): string {
@@ -63,11 +64,17 @@ export function MeterRow({
   );
 }
 
-export function UsageBar({ percent }: { percent: number | null }) {
+export function UsageBar({
+  percent,
+  className = "h-1.5",
+}: {
+  percent: number | null;
+  className?: string;
+}) {
   return (
     <Progress
       value={percent ?? 0}
-      className="h-1.5 rounded-full bg-muted"
+      className={cn("rounded-full bg-muted", className)}
       indicatorClassName={usageIndicatorClass(percent ?? 0)}
     />
   );
@@ -170,6 +177,34 @@ export function MemoryLegend({
             ]
           : [row],
       )}
+    </div>
+  );
+}
+
+/** One thin bar per GPU, under the combined VRAM bar. */
+export function CardRows({ rows }: { rows: CardUsage[] }) {
+  return (
+    <div className="space-y-1.5 pt-0.5" data-testid="monitor-gpu-cards">
+      {rows.map((row) => {
+        const percent =
+          row.usedGb !== null && row.totalGb > 0
+            ? Math.min(100, (row.usedGb / row.totalGb) * 100)
+            : null;
+        return (
+          <div key={row.key} className="space-y-0.5">
+            <div className="flex justify-between gap-2">
+              <span className="min-w-0 truncate" title={row.name}>
+                {row.name}
+              </span>
+              <span className="shrink-0 font-mono tabular-nums">
+                {row.usedGb === null ? "--" : formatGiB(row.usedGb)} /{" "}
+                {formatGiB(row.totalGb)}
+              </span>
+            </div>
+            <UsageBar percent={percent} className="h-1" />
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -2417,7 +2417,6 @@ export const fr = {
         memory: "Mémoire",
         gpuInUse: "Utilisée par le GPU",
         availableForModels: "Disponible pour les modèles",
-        gpuCount: "{count} GPU",
         refreshRate: "Fréquence d'actualisation",
         refreshRateDescription: "Fréquence à laquelle le moniteur flottant lit l'utilisation de la mémoire et du GPU lorsqu'il est ouvert.",
         refreshEvery: "Toutes les {seconds} s",

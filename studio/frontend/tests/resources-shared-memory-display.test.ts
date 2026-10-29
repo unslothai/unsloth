@@ -34,7 +34,8 @@ test("a pool with no dedicated VRAM shows the shared total alone, with its headr
     floatingMonitor,
     /hasSharedPool && memoryTotals\.dedicated === 0/,
   );
-  assert.match(floatingMonitor, /hasSharedPool && !unifiedPool/);
+  // The floating VRAM row counts dedicated cards only, so it never prints a "VRAM + shared" total.
+  assert.doesNotMatch(floatingMonitor, /environment\.vramWithShared/);
   assert.match(
     floatingMonitor,
     /formatGiB\(memoryDisplay\.unifiedAvailableGb\)/,

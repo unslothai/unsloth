@@ -87,6 +87,7 @@ import {
   unslothPoolGb,
 } from "@/components/monitor-share";
 import { useLoadedModels } from "@/features/loaded-models/use-loaded-models";
+import { vramCards } from "@/components/monitor-cards";
 import {
   Select,
   SelectContent,
@@ -658,8 +659,13 @@ export function ResourcesTab() {
           shared: formatGiB(metrics.vramShared),
         })
       : formatGiB(unifiedPool ? metrics.vramShared : metrics.vramTotal);
+  // Dedicated cards only: an iGPU beside them borrows system RAM and would blank the total.
+  const vram = vramCards(memoryDisplay.usageDevices, memoryDisplay.usageGpu);
   const discreteVram =
-    hasGpu && !unifiedPool && !memoryDisplay.sharedOnly && metrics.vramShared === 0;
+    hasGpu &&
+    !unifiedPool &&
+    !memoryDisplay.sharedOnly &&
+    vram.cards.some((card) => card.shared_memory !== true && card.unified_memory !== true);
   const models = modelShares(loadedModels);
   const processMb =
     systemInfo.memory?.process_tree_used_mb ?? systemInfo.memory?.process_used_mb;
@@ -681,8 +687,8 @@ export function ResourcesTab() {
     ? memorySegments(ramShare, discreteVram ? null : breakdown)
     : null;
   const vramShare =
-    wantsModels && discreteVram && metrics.vramUsageKnown
-      ? memoryShare(metrics.vramUsed ?? 0, metrics.vramTotal, modelsGb)
+    wantsModels && discreteVram && vram.usedGb !== null
+      ? memoryShare(vram.usedGb, vram.totalGb, modelsGb)
       : null;
   const vramSegments = vramShare ? memorySegments(vramShare, breakdown) : null;
   const shareCardClass =
@@ -894,7 +900,7 @@ export function ResourcesTab() {
               <div className={shareCardClass}>
                 <MeterRow
                   label={t("settings.resources.liveMonitor.vram")}
-                  readout={`${formatGiB(metrics.vramUsed)} / ${formatGiB(metrics.vramTotal)}`}
+                  readout={`${formatGiB(vram.usedGb)} / ${formatGiB(vram.totalGb)}`}
                   footer={
                     <MemoryLegend
                       segments={vramSegments}

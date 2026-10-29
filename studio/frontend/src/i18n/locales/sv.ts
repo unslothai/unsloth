@@ -2562,7 +2562,6 @@ export const sv = {
         memory: "Minne",
         gpuInUse: "Används av GPU",
         availableForModels: "Tillgängligt för modeller",
-        gpuCount: "{count} GPU:er",
         refreshRate: "Uppdateringsfrekvens",
         refreshRateDescription: "Hur ofta den flytande monitorn läser minnes- och GPU-användning medan den är öppen.",
         refreshEvery: "Var {seconds} s",

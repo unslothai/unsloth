@@ -2392,7 +2392,6 @@ export const hi = {
         memory: "मेमोरी",
         gpuInUse: "GPU द्वारा उपयोग में",
         availableForModels: "मॉडल के लिए उपलब्ध",
-        gpuCount: "{count} GPU",
         refreshRate: "रीफ़्रेश दर",
         refreshRateDescription: "खुला रहने पर फ़्लोटिंग मॉनिटर कितनी बार मेमोरी और GPU उपयोग पढ़ता है।",
         refreshEvery: "हर {seconds} से.",
