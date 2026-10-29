@@ -2,13 +2,22 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import itertools
+import sys
+from types import ModuleType
 
 import pytest
 
 from core.training.diffusion_load_progress import report_model_load_progress
 
 
-def test_real_sharded_model_counts_loaded_tensors_and_preserves_weights(tmp_path, monkeypatch):
+@pytest.fixture
+def diffusers_available():
+    pytest.importorskip("diffusers")
+
+
+def test_real_sharded_model_counts_loaded_tensors_and_preserves_weights(
+    tmp_path, monkeypatch, diffusers_available
+):
     import torch
     from diffusers import FluxTransformer2DModel
     from diffusers.models import model_loading_utils
@@ -44,7 +53,9 @@ def test_real_sharded_model_counts_loaded_tensors_and_preserves_weights(tmp_path
 
 
 @pytest.mark.parametrize("fail", [False, True])
-def test_quantized_tensor_is_counted_only_after_success_and_hooks_restore(fail):
+def test_quantized_tensor_is_counted_only_after_success_and_hooks_restore(
+    fail, diffusers_available
+):
     import torch
     from diffusers.models import model_loading_utils as loading
 
@@ -87,7 +98,7 @@ def test_quantized_tensor_is_counted_only_after_success_and_hooks_restore(fail):
     assert events[-1]["total"] == 2
 
 
-def test_component_counter_works_when_library_bars_are_disabled():
+def test_component_counter_works_when_library_bars_are_disabled(diffusers_available):
     from diffusers.utils import logging
 
     original = logging.tqdm
@@ -112,14 +123,15 @@ def test_component_counter_works_when_library_bars_are_disabled():
     assert logging.tqdm is original
 
 
-def test_no_callback_leaves_library_untouched():
-    from diffusers.models import model_loading_utils
-    original = model_loading_utils.load_model_dict_into_meta
+def test_no_callback_does_not_import_diffusers(monkeypatch):
+    monkeypatch.setitem(sys.modules, "diffusers.models", None)
     with report_model_load_progress(None):
-        assert model_loading_utils.load_model_dict_into_meta is original
+        pass
 
 
-def test_unsupported_loader_api_falls_back_without_blocking_training(monkeypatch):
+def test_unsupported_loader_api_falls_back_without_blocking_training(
+    monkeypatch, diffusers_available
+):
     from diffusers.models import model_loading_utils as loading
 
     original = loading.load_model_dict_into_meta
@@ -128,3 +140,40 @@ def test_unsupported_loader_api_falls_back_without_blocking_training(monkeypatch
     with report_model_load_progress(events.append):
         assert loading.load_model_dict_into_meta is original
     assert events == []
+
+
+@pytest.mark.parametrize(
+    "missing", ["package", "stub", "model_loading_utils", "modeling_utils", "logging"]
+)
+def test_optional_diffusers_imports_do_not_block_training(monkeypatch, missing):
+    # Isolate from cached real submodules so the stub case also runs on ML hosts.
+    for name in tuple(sys.modules):
+        if name == "diffusers" or name.startswith("diffusers."):
+            monkeypatch.delitem(sys.modules, name)
+    diffusers = ModuleType("diffusers")
+    monkeypatch.setitem(sys.modules, "diffusers", None if missing == "package" else diffusers)
+    if missing not in ("package", "stub"):
+        diffusers.__path__ = []
+        for name, members in (
+            ("models", ("model_loading_utils", "modeling_utils")),
+            ("utils", ("logging",)),
+        ):
+            module = ModuleType(f"diffusers.{name}")
+            module.__path__ = []
+            monkeypatch.setitem(sys.modules, module.__name__, module)
+            setattr(diffusers, name, module)
+            for member in members:
+                if member != missing:
+                    setattr(module, member, ModuleType(f"{module.__name__}.{member}"))
+
+    events = []
+    with report_model_load_progress(events.append):
+        events.append("loader ran")
+    assert events == ["loader ran"]
+
+    # Only observer imports are optional; failures from the loader must propagate.
+    failure = ImportError("model dependency missing")
+    with pytest.raises(ImportError) as caught:
+        with report_model_load_progress(events.append):
+            raise failure
+    assert caught.value is failure

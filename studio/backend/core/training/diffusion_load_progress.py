@@ -23,9 +23,14 @@ def report_model_load_progress(on_event):
         yield
         return
 
-    from diffusers.models import model_loading_utils as loading
-    from diffusers.models import modeling_utils
-    from diffusers.utils import logging as diffusion_logging
+    try:
+        from diffusers.models import model_loading_utils as loading
+        from diffusers.models import modeling_utils
+        from diffusers.utils import logging as diffusion_logging
+    except ImportError:
+        # Optional loader internals may be absent in older versions or test stubs.
+        yield
+        return
     from transformers.utils import logging as transformer_logging
 
     try:
