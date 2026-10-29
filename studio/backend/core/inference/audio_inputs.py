@@ -601,7 +601,7 @@ def resolve_source(ref: dict[str, Any]) -> Source:
         path = audio_gallery.owned_audio_path(source_id) if _valid_id(source_id) else None
         if path is None:
             raise AudioInputError(404, "That clip is no longer in your history.")
-        meta = audio_gallery._read_meta(audio_gallery._sidecar_path(source_id)) or {}
+        meta = audio_gallery._read_meta(audio_gallery._sidecar_path(source_id, path.parent)) or {}
         prompt = " ".join(str(meta.get("prompt") or "").split())
         return Source("clip", source_id, path, (prompt[:60] or "Clip"))
     from core.inference import audio_voices

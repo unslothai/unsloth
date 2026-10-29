@@ -72,7 +72,7 @@ def save(
                 pass
         raise
     _prune_to_cap()
-    return _record(audio_id, meta)
+    return _record(audio_id, meta, directory = directory)
 
 
 def save_file(
@@ -107,7 +107,7 @@ def save_file(
         raise
     if prune:
         _prune_to_cap()
-    return _record(audio_id, meta)
+    return _record(audio_id, meta, directory = directory)
 
 
 # /v1/audio/speech persists every call, so cap the gallery to avoid filling the disk.
@@ -345,11 +345,12 @@ def owned_audio_path(audio_id: str, directory: Optional[Path] = None) -> Optiona
 
 
 def owned_source_path(audio_id: str) -> Optional[Path]:
-    if owned_audio_path(audio_id) is None:
+    directory = gallery_dir()
+    if owned_audio_path(audio_id, directory) is None:
         return None
-    path = _source_path(audio_id)
+    path = _source_path(audio_id, directory)
     try:
-        path.resolve().relative_to(gallery_dir().resolve())
+        path.resolve().relative_to(directory.resolve())
     except ValueError:
         return None
     return path if path.is_file() else None

@@ -1117,3 +1117,12 @@ def test_delete_takes_the_hidden_original_from_the_same_folder_when_the_folder_m
     assert gallery.delete(edit["id"]) is True
     _gone_from_old_kept_in_new(old, new, edit["id"])
     _gone_from_old_kept_in_new(old, new, source["id"])
+
+
+def test_owned_source_path_stays_in_the_folder_it_checked(monkeypatch, tmp_path):
+    source = tmp_path / "source.wav"
+    source.write_bytes(_wav())
+    kept = gallery.save(_wav(), _meta(), source)
+    old, new = _relocate_after_first_call(monkeypatch, tmp_path, [kept])
+    (new / f"{kept['id']}.source.wav").write_bytes(_wav())
+    assert gallery.owned_source_path(kept["id"]) == old / f"{kept['id']}.source.wav"
