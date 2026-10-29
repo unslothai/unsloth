@@ -186,12 +186,8 @@ def _serialize_preview_value(value):
 
 
 class _DecodedPreviewRows:
-    """A preview Dataset whose rows decode once per request.
-
-    Detection, preview formatting and serialization each read the same few rows, and every
-    read of an Image or Audio cell decodes it again. Rows read by integer index or iteration
-    come from a per-request cache (a fresh dict each time, as the Dataset returns); everything
-    else, ``map``, ``features``, ``column_names``, column access, is the Dataset's own."""
+    """Rows by int index / iteration decode once per request (detectors re-read the same
+    rows and every read re-decodes Image/Audio cells); everything else is the Dataset's."""
 
     def __init__(self, dataset):
         self._dataset = dataset
@@ -200,7 +196,6 @@ class _DecodedPreviewRows:
     def _row(self, index):
         row = self._rows.get(index)
         if row is None:
-            # A failed decode is not cached: the next read raises again, as it does uncached.
             row = self._rows[index] = self._dataset[index]
         return dict(row) if isinstance(row, dict) else row
 
