@@ -44,11 +44,19 @@ export function chatPreloadScript(files: string[]): string {
   return `(function () {
   try {
     var path = location.pathname;
+    // Mirrors main.tsx: hasAuthToken() and getPostAuthRoute() === "/chat", where the single-user
+    // Desktop app goes to Chat even with a password change pending.
+    var singleUserDesktop =
+      ("__TAURI__" in window ||
+        "__TAURI_INTERNALS__" in window ||
+        location.protocol === "tauri:") &&
+      localStorage.getItem("unsloth.auth-login-mode.v1") !== "multi";
     var landsOnChat =
       path === "/chat" ||
       (path === "/" &&
-        localStorage.getItem("unsloth_auth_token") &&
-        localStorage.getItem("unsloth_auth_must_change_password") === null);
+        Boolean(localStorage.getItem("unsloth_auth_token")) &&
+        (singleUserDesktop ||
+          localStorage.getItem("unsloth_auth_must_change_password") === null));
     if (!landsOnChat) return;
     var files = ${JSON.stringify(files)};
     for (var i = 0; i < files.length; i++) {

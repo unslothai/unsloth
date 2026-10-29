@@ -21,7 +21,7 @@ import {
 import { fetchDeviceType } from "./config/env";
 import { refreshSession } from "./features/auth/api";
 import { getPostAuthRoute, hasAuthToken } from "./features/auth/session";
-import { loadChatPage } from "./features/chat/load-chat-page";
+import { loadChatPage, prefetchChatPage } from "./features/chat/load-chat-page";
 import {
   applyInterfaceScaleBeforeFirstPaint,
   useInterfaceScaleStore,
@@ -98,6 +98,13 @@ function renderApp(): void {
       <App />
     </StrictMode>,
   );
+  // Any other first screen: fetch Chat once that screen has had its first frame, so opening it
+  // later does not wait.
+  if (!chatPageAtStart) {
+    window.requestAnimationFrame(() => {
+      window.setTimeout(prefetchChatPage, 0);
+    });
+  }
 }
 
 const localeInitialization = initializeLocale();
@@ -112,25 +119,6 @@ if (typeof localeInitialization !== "string" || isTauri || chatPageAtStart) {
   ]).then(renderApp);
 } else {
   renderApp();
-}
-
-// Any other first screen: fetch Chat once the browser is idle, so opening it later does not wait.
-if (!chatPageAtStart) {
-  const prefetchChatPage = () => {
-    loadChatPage().catch(() => undefined);
-  };
-  const whenIdle = () => {
-    if (typeof window.requestIdleCallback === "function") {
-      window.requestIdleCallback(prefetchChatPage, { timeout: 5000 });
-    } else {
-      window.setTimeout(prefetchChatPage, 1000);
-    }
-  };
-  if (document.readyState === "complete") {
-    whenIdle();
-  } else {
-    window.addEventListener("load", whenIdle, { once: true });
-  }
 }
 
 fetchDeviceType().catch(() => undefined);

@@ -4,6 +4,7 @@
 "use client";
 
 import { ArtifactCard } from "@/features/chat";
+import { appSessionStartedAt } from "@/lib/app-session-start";
 import {
   type ToolCallMessagePartComponent,
   useAuiState,
@@ -13,7 +14,6 @@ import { BrowserIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { memo } from "react";
 import { isToolCallRunning } from "./tool-arg-text";
-import { appSessionStartedAt } from "@/lib/app-session-start";
 
 type RenderHtmlArgs = Record<string, unknown> & {
   code?: string;

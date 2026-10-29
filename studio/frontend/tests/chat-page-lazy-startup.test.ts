@@ -3,7 +3,7 @@
 
 // ChatPage loads on first use so other screens start without it; a start on Chat preloads it.
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -18,7 +18,9 @@ function sources(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const path = join(dir, name);
     if (statSync(path).isDirectory()) return sources(path);
-    return /\.(ts|tsx)$/.test(name) && !/\.(test|check)\.tsx?$/.test(name) ? [path] : [];
+    return /\.(ts|tsx)$/.test(name) && !/\.(test|check)\.tsx?$/.test(name)
+      ? [path]
+      : [];
   });
 }
 
@@ -32,24 +34,46 @@ test("nothing imports the chat page statically", () => {
 });
 
 test("the chat route validates its search without loading the chat page", () => {
-  assert.match(readSrc("features/chat/index.ts"), /validateChatSearch[^;]*from "\.\/chat-search"/);
-  assert.match(readSrc("features/chat/load-chat-page.ts"), /import\("\.\/chat-page"\)/);
+  assert.match(
+    readSrc("features/chat/index.ts"),
+    /validateChatSearch[^;]*from "\.\/chat-search"/,
+  );
+  assert.match(
+    readSrc("features/chat/load-chat-page.ts"),
+    /import\("\.\/chat-page"\)/,
+  );
 });
 
 test("the vite build registers the chat preload", () => {
-  const config = readFileSync(new URL("../vite.config.ts", import.meta.url), "utf8");
+  const config = readFileSync(
+    new URL("../vite.config.ts", import.meta.url),
+    "utf8",
+  );
   assert.match(config, /chatPagePreload\(\)/);
 });
 
-function preloadsFor(path: string, storage: Record<string, string>): string[] {
+function preloadsFor(
+  path: string,
+  storage: Record<string, string>,
+  desktop = false,
+): string[] {
   const appended: string[] = [];
+  const window: Record<string, unknown> = desktop
+    ? { __TAURI_INTERNALS__: {} }
+    : {};
   const context = {
-    location: { pathname: path },
+    window,
+    location: { pathname: path, protocol: desktop ? "tauri:" : "http:" },
     localStorage: { getItem: (key: string) => storage[key] ?? null },
     document: {
-      createElement: () => ({}) as { rel?: string; href?: string; crossOrigin?: string },
+      createElement: () =>
+        ({}) as { rel?: string; href?: string; crossOrigin?: string },
       head: {
-        appendChild: (link: { rel?: string; href?: string; crossOrigin?: string }) => {
+        appendChild: (link: {
+          rel?: string;
+          href?: string;
+          crossOrigin?: string;
+        }) => {
           assert.equal(link.rel, "modulepreload");
           assert.equal(link.crossOrigin, "");
           appended.push(link.href as string);
@@ -57,7 +81,10 @@ function preloadsFor(path: string, storage: Record<string, string>): string[] {
       },
     },
   };
-  vm.runInNewContext(chatPreloadScript(["/assets/a.js", "/assets/b.js"]), context);
+  vm.runInNewContext(
+    chatPreloadScript(["/assets/a.js", "/assets/b.js"]),
+    context,
+  );
   return appended;
 }
 
@@ -68,8 +95,35 @@ test("the preload runs only where the app lands on Chat", () => {
   assert.deepEqual(preloadsFor("/", signedIn), files);
   // "/" without a session goes to login, and a pending password change goes there first.
   assert.deepEqual(preloadsFor("/", {}), []);
-  assert.deepEqual(preloadsFor("/", { ...signedIn, unsloth_auth_must_change_password: "1" }), []);
+  assert.deepEqual(
+    preloadsFor("/", { ...signedIn, unsloth_auth_must_change_password: "1" }),
+    [],
+  );
   for (const path of ["/login", "/hub", "/studio", "/chatty", "/chat/x"]) {
     assert.deepEqual(preloadsFor(path, signedIn), [], path);
   }
+});
+
+test("the preload follows main.tsx for the single-user Desktop app", () => {
+  const files = ["/assets/a.js", "/assets/b.js"];
+  const pending = {
+    unsloth_auth_token: "t",
+    unsloth_auth_must_change_password: "1",
+  };
+  // Single-user Desktop lands on Chat even with a password change pending; multi-user does not.
+  assert.deepEqual(preloadsFor("/", pending, true), files);
+  assert.deepEqual(
+    preloadsFor(
+      "/",
+      { ...pending, "unsloth.auth-login-mode.v1": "multi" },
+      true,
+    ),
+    [],
+  );
+  assert.deepEqual(preloadsFor("/", { unsloth_auth_token: "t" }, true), files);
+  assert.deepEqual(preloadsFor("/", {}, true), []);
+  assert.deepEqual(
+    preloadsFor("/login", { unsloth_auth_token: "t" }, true),
+    [],
+  );
 });

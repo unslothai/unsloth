@@ -29,3 +29,8 @@ export function loadChatPage(): Promise<ChatPageModule> {
 export function loadedChatPage(): ChatPageModule["ChatPage"] | null {
   return loadedModule?.ChatPage ?? null;
 }
+
+/** Starts the fetch early (after the first screen, on hover or focus of a Chat link); a failure is left for the mount. */
+export function prefetchChatPage(): void {
+  loadChatPage().catch(() => undefined);
+}
