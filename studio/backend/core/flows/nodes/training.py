@@ -726,6 +726,7 @@ async def chat_checkpoint(ctx: NodeContext) -> dict:
             prompt = prompt,
             max_tokens = int(ctx.params.get("max_tokens") or 512),
             seed = ctx.seed,
+            use_adapter = True if trained.is_lora else None,
         )
     finally:
         # Put back the chat model the adapter replaced: a Data Recipe step on the next run needs it loaded.

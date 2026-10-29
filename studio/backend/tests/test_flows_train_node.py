@@ -662,3 +662,46 @@ def test_a_zero_learning_rate_reaches_the_training_api():
 def test_cpt_keeps_a_single_listed_embedding_target():
     body = _hub_body(training_type = "cpt", target_modules = ["q_proj", "lm_head"])
     assert body["target_modules"] == ["q_proj", "lm_head"]
+
+
+def test_chat_with_checkpoint_turns_the_adapter_back_on_after_a_benchmark(monkeypatch):
+    from types import SimpleNamespace
+
+    from core.flows import caller as flow_caller
+    from core.flows.nodes import _common
+    from studio_mcp import loading, trained_models
+
+    server = {"use_adapter": True}
+
+    async def stream_sse(caller, path, body):
+        # Like the inference server: the adapter switch sticks until a request sets it again.
+        if body.get("use_adapter") is not None:
+            server["use_adapter"] = body["use_adapter"]
+        yield {"choices": [{"delta": {"content": "SELECT 1;" if server["use_adapter"] else "Sure! ```sql"}}]}
+
+    async def noop(*a, **k):
+        return None
+
+    async def resolve_by(*a, **k):
+        return SimpleNamespace(ref = "/out/run-1", is_lora = True)
+
+    monkeypatch.setattr(flow_caller, "stream_sse", stream_sse)
+    monkeypatch.setattr(_common, "ensure_model", noop)
+    monkeypatch.setattr(_common, "chat_model_name", lambda ctx: "m")
+    monkeypatch.setattr(loading, "load_llm", noop)
+    monkeypatch.setattr(trained_models, "resolve_by", resolve_by)
+    ctx = _Ctx(lambda m, p, q, b: {})
+    ctx.inputs = {"checkpoint": {"kind": "checkpoint", "name": "run-1"}, "prompt": "list users"}
+    ctx.params = {"max_tokens": 8}
+    ctx.resident, ctx.set_status = {}, lambda *a, **k: None
+    ctx.on_cancel = ctx.text_delta = lambda *a, **k: None
+    ctx.check_cancelled = lambda: None
+    ctx.llm_text = lambda **k: _common.llm_text(ctx, **k)
+
+    async def benchmark_judge():
+        async for _ in stream_sse(None, "/v1/chat/completions", {"use_adapter": False}):
+            pass
+
+    asyncio.run(benchmark_judge())
+    assert server["use_adapter"] is False
+    assert asyncio.run(training.chat_checkpoint(ctx)) == {"text": "SELECT 1;"}

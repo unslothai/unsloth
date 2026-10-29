@@ -574,6 +574,7 @@ async def llm_text(
     thinking: bool = False,
     seed: Optional[int] = None,
     stream_port: Optional[str] = "text",
+    use_adapter: Optional[bool] = None,
 ) -> str:
     from core.flows import caller as flow_caller
     from state.tool_policy import tools_force_disabled
@@ -591,6 +592,9 @@ async def llm_text(
         seed = seed,
         stream = bool(stream_port),
     )
+    if use_adapter is not None:
+        # The server keeps the last request's adapter switch (a Benchmark judge turns it off), so say it every time.
+        body["use_adapter"] = use_adapter
     ctx.check_cancelled()
     if not stream_port:
         with tools_force_disabled():
