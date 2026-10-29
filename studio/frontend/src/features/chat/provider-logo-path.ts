@@ -13,6 +13,7 @@ const HUB_PROVIDER_IDS = new Map([
   ["qwen", "qwen"],
   ["qwencloud", "qwen"],
   ["zai", "zai-org"],
+  ["minimax", "minimax"],
 ]);
 
 const HUB_LOGO_PATHS = new Map(

@@ -655,6 +655,15 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   },
   qwen: OPENAI_COMPAT_BASE,
   zai: { ...OPENAI_COMPAT_BASE, presencePenalty: false },
+  // MiniMax pins temperature/top_p server-side; the backend omits them too.
+  minimax: {
+    temperature: false,
+    topP: false,
+    topK: false,
+    minP: false,
+    repetitionPenalty: false,
+    presencePenalty: false,
+  },
   huggingface: OPENAI_COMPAT_BASE,
   // OpenRouter silently drops unsupported params, so surface every knob.
   openrouter: ALL_SUPPORTED,
@@ -915,6 +924,24 @@ function withReasoningEffortStyle(caps: ReasoningCaps): ExternalReasoningCapabil
     supportsReasoningOff: caps.supportsReasoningOff,
     reasoningEffortLevels: caps.reasoningEffortLevels,
   };
+}
+
+// M3.1-Flash always thinks with a tunable depth; M3 can turn thinking off; M2.x always thinks.
+function resolveMiniMaxReasoningCapabilities(modelId: string): ExternalReasoningCapabilities {
+  if (modelId.startsWith("minimax-m3.1")) {
+    return withReasoningEffortStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: false,
+      reasoningEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+    });
+  }
+  if (modelId === "minimax-m3") {
+    return withEnableThinkingStyle({ supportsReasoning: true, supportsReasoningOff: true });
+  }
+  if (modelId.startsWith("minimax-m2")) {
+    return withEnableThinkingStyle({ supportsReasoning: true, reasoningAlwaysOn: true });
+  }
+  return withEnableThinkingStyle();
 }
 
 function resolveKimiReasoningCapabilities(modelId: string): ExternalReasoningCapabilities {
@@ -1273,6 +1300,8 @@ export function getExternalReasoningCapabilities(
         ? table
         : (catalogCapabilities("mistral", normalizedModel) ?? table);
     }
+    case "minimax":
+      return resolveMiniMaxReasoningCapabilities(modelForMatching);
     case "gemini": {
       // Compat gateways drop native thinkingConfig, so hide the ladder.
       if (isGeminiCustomOpenAICompatBase(options?.baseUrl)) {
