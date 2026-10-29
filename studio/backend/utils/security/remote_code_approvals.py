@@ -161,6 +161,34 @@ def lookup(subject: str, target_key: str) -> Optional[StoredApproval]:
     )
 
 
+def approved_local_fingerprint(subject: str, approved_as: str, load_dir: str) -> Optional[str]:
+    """The consent fingerprint of *load_dir*'s remote code when *subject* approved that exact
+    code as *approved_as* under the current ruleset, else None. Only an external auto_map repo
+    is fetched; the rest is read from disk."""
+    from utils.security.consent import _fingerprint_target_key
+    from utils.security.remote_code_scan import (
+        RemoteCodeUnscannable,
+        remote_code_fingerprint,
+        repo_remote_code_files,
+    )
+
+    stored = lookup(subject, approval_target_key([approved_as]))
+    if stored is None or stored.scanner_version != SCANNER_VERSION:
+        return None
+    try:
+        files = repo_remote_code_files(load_dir)
+    except RemoteCodeUnscannable:
+        return None
+
+    def keyed(target):
+        key = _fingerprint_target_key(target)
+        return remote_code_fingerprint({f"{key}\0{name}": body for name, body in files.items()})
+
+    if not files or keyed(approved_as) != stored.fingerprint:
+        return None
+    return keyed(load_dir)
+
+
 def record(
     subject: str,
     target_key: str,
