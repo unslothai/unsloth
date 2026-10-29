@@ -236,16 +236,23 @@ def test_grpo_without_rewards_is_refused():
 
 
 def test_reward_ceiling_is_the_best_weighted_sum():
-    assert training.reward_ceiling(
-        [{"name": "exact-answer", "weight": 1.0}, {"name": "soft-xml-format", "weight": 1.0}]
-    ) == 2.5
+    assert (
+        training.reward_ceiling(
+            [{"name": "exact-answer", "weight": 1.0}, {"name": "soft-xml-format", "weight": 1.0}]
+        )
+        == 2.5
+    )
     # A negative weight's best is its rule's lowest score.
     assert training.reward_ceiling([{"name": "numeric-close", "weight": -1.0}]) == 2.0
     assert training.reward_ceiling([{"name": "no-such-reward", "weight": 1.0}]) is None
 
 
 def test_reward_history_reads_the_status_rl_log():
-    payload = {"metric_history": {"rl": [{"step": 1, "reward": 0.25}, {"step": 2, "kl": 0.1}, {"step": 3, "reward": 1.5}]}}
+    payload = {
+        "metric_history": {
+            "rl": [{"step": 1, "reward": 0.25}, {"step": 2, "kl": 0.1}, {"step": 3, "reward": 1.5}]
+        }
+    }
     assert training.reward_history(payload) == [0.25, 1.5]
     assert training.reward_metrics([0.25, 1.5], 2.5) == {
         "reward": 1.5,
@@ -254,6 +261,7 @@ def test_reward_history_reads_the_status_rl_log():
         "reward_max": 2.5,
     }
     assert training.reward_history({}) == [] and training.reward_metrics([], 2.5) == {}
+
 
 def test_one_column_for_both_roles_is_refused():
     ctx = _Ctx(_recipe_routes([]), prompt_column = "q", response_column = "q")
@@ -357,6 +365,7 @@ def test_grpo_steps_take_one_whole_prompt_group_unless_the_batch_is_set():
     config = {}
     training.rl_config({}, "dpo", config)
     assert "batch_size" not in config
+
 
 def test_a_coded_route_error_reaches_the_node_as_its_message():
     from core.flows.caller import route_detail

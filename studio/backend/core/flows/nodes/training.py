@@ -297,11 +297,19 @@ def reward_ceiling(rewards: list[dict]) -> Optional[float]:
 
 
 def reward_history(payload: Any) -> list:
-    rl = ((payload or {}).get("metric_history") or {}).get("rl") if isinstance(payload, dict) else None
+    rl = (
+        ((payload or {}).get("metric_history") or {}).get("rl")
+        if isinstance(payload, dict)
+        else None
+    )
     if not isinstance(rl, list):
         return []
     return downsample(
-        [round(float(e["reward"]), 4) for e in rl if isinstance(e, dict) and isinstance(e.get("reward"), (int, float))]
+        [
+            round(float(e["reward"]), 4)
+            for e in rl
+            if isinstance(e, dict) and isinstance(e.get("reward"), (int, float))
+        ]
     )
 
 

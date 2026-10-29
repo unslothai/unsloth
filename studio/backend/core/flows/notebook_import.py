@@ -416,9 +416,7 @@ def read_notebook(data: bytes, name: str = "notebook.ipynb") -> tuple[Optional[d
         if tune.get("grpo_variant") not in (None, "dapo", "dr_grpo", "bnpo", "grpo", "gspo"):
             report["approximated"].append(f"Loss type {tune.pop('grpo_variant')}: Studio uses DAPO")
     report["imported"] = [f"Model {found['model']}", f"Dataset {found['dataset']}"] + [
-        f"{k} = {v}"
-        for k, v in tune.items()
-        if k not in ("base_model", "rewards", "system_prompt")
+        f"{k} = {v}" for k, v in tune.items() if k not in ("base_model", "rewards", "system_prompt")
     ]
     if rewards:
         report["imported"].append(
