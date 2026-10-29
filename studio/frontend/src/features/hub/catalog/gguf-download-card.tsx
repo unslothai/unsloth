@@ -1336,7 +1336,15 @@ export function GgufDownloadCard({
           <button
             type="button"
             disabled={downloadAction.disabled || assets.checking}
-            onClick={() => downloadingThisVariant ? downloadAction.onClick() : void assets.request(downloadAction.onClick)}
+            onClick={() => {
+              if (downloadingThisVariant) {
+                downloadAction.onClick();
+                return;
+              }
+              // The default follows live free memory; pin it so the card keeps this transfer.
+              if (selectedQuant) handleSelectVariant(selectedQuant);
+              void assets.request(downloadAction.onClick);
+            }}
             aria-label={
               selectedScopedLive ? "Downloading" : downloadAction.ariaLabel
             }

@@ -33,7 +33,9 @@ type Card = {
   GgufDownloadCard: (props: Record<string, unknown>) => StubElement;
 };
 
-function loadCard(): Card {
+function loadCard(
+  useState?: (initial: unknown) => [unknown, (next: unknown) => void],
+): Card {
   const noop = () => undefined;
   const anyExport = new Proxy({}, { get: () => noop });
   return loadWithStubs<Card>(
@@ -47,10 +49,12 @@ function loadCard(): Card {
         useCallback: (fn: unknown) => fn,
         useEffect: noop,
         useMemo: (read: () => unknown) => read(),
-        useState: (initial: unknown) => [
-          typeof initial === "function" ? initial() : initial,
-          noop,
-        ],
+        useState:
+          useState ??
+          ((initial: unknown) => [
+            typeof initial === "function" ? initial() : initial,
+            noop,
+          ]),
       },
       "react/jsx-runtime": stubJsxRuntime(),
       "@/lib/gguf-fit": ggufFit,
@@ -90,7 +94,11 @@ function loadCard(): Card {
         useMediaCompanionBytes: () => new Map(),
       },
       "./use-download-card-state": {
-        useDownloadCardState: () => ({ starting: false }),
+        useDownloadCardState: () => ({
+          starting: false,
+          ariaLabel: "Download",
+          onClick: noop,
+        }),
       },
       "./delete-impact": { DeleteImpactSummary: noop, useDeleteImpact: noop },
       "./use-delete-confirm-action": {
@@ -100,7 +108,7 @@ function loadCard(): Card {
       "../hooks/use-online-status": { useOnlineStatus: () => true },
       "../stores/hf-token-store": { useHfTokenStore: () => null },
       "./use-required-assets-download": {
-        useRequiredAssetsDownload: () => ({ checking: false }),
+        useRequiredAssetsDownload: () => ({ checking: false, request: noop }),
       },
       "../download-manager/hub-plan-progress": anyExport,
       "@/components/model-memory-bar": anyExport,
@@ -210,4 +218,35 @@ test("an over-budget quant on a Mac points at the Metal budget, not the VRAM Bud
     (trigger?.type as (props: unknown) => unknown)(trigger?.props),
   ).flatMap((node) => [node.props.children].flat());
   assert.ok(tooltip.some((child) => String(child).includes("VRAM Budget")));
+});
+
+test("starting a download pins the recommended quant so a moving Metal budget keeps the transfer on the card", () => {
+  const writes: unknown[] = [];
+  const tree = loadCard((initial) => [
+    typeof initial === "function" ? initial() : initial,
+    (next) => writes.push(next),
+  ]).GgufDownloadCard({
+    repoId: "unsloth/Qwen3-8B-GGUF",
+    isActive: false,
+    activeQuant: null,
+    isLoadingThisModel: false,
+    gpuGb: 24,
+    gpuCount: 1,
+    systemRamGb: 9,
+    unifiedLoadBudgetGb: 7.5,
+  });
+  const download = elements(tree).find(
+    (node) => node.type === "button" && node.props["aria-label"] === "Download",
+  );
+  assert.ok(download);
+  (download.props.onClick as () => void)();
+  assert.ok(
+    writes.some(
+      (write) =>
+        typeof write === "object" &&
+        write !== null &&
+        (write as { quant?: string }).quant === "Q4_K_M" &&
+        (write as { userPicked?: boolean }).userPicked === true,
+    ),
+  );
 });
