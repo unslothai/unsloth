@@ -498,7 +498,7 @@ def convert_to_vlm_format(
         uses_dynamic = False
 
     def _convert_single_sample(sample, fetched = None):
-        """Image may be a PIL Image, local path, URL, or bare filename. ``fetched`` is the URL's image if already downloaded."""
+        """Image may be a PIL Image, local path, URL, or bare filename; ``fetched`` = the URL's already-downloaded image."""
         image_data = sample[image_column]
 
         if isinstance(image_data, str):
@@ -609,7 +609,7 @@ def convert_to_vlm_format(
     PROBE_SIZE = 200
     MAX_FAIL_RATE = 0.3
 
-    # Images the probe downloaded, by row; the conversion below reuses them instead of fetching them again.
+    # Successful probe downloads by row, reused by the conversion.
     probe_images = {}
 
     if has_urls and total > PROBE_SIZE:
@@ -629,7 +629,7 @@ def convert_to_vlm_format(
         def _probe_sample(index, sample):
             url = sample[image_column]
             if isinstance(url, str) and url.startswith(("http://", "https://")):
-                # Only a successful download is kept: a failed one is retried by the conversion.
+                # A failed download is not kept, so the conversion retries it.
                 probe_images[index] = _fetch_row_image(url)
             return _convert_single_sample(sample, probe_images.get(index))
 
