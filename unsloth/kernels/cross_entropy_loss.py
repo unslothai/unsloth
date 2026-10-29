@@ -20,6 +20,7 @@ from .utils import (
     triton_cast,
     torch_gpu_device,
     is_cdna,
+    max_num_warps,
 )
 from .rope_embedding import _eviction_hints_ok
 from transformers.models.llama.modeling_llama import logger
@@ -174,7 +175,8 @@ def _chunked_forward_config_at(device_type, index, vocab_size):
         config = _CHUNKED_FORWARD_CONFIGS.get(capability)
         if config is not None and (config[2] is None or vocab_size <= config[2]):
             return config[0], config[1]
-    return MAX_FUSED_SIZE, (16 if is_cdna() else 32)
+    # 16 on wave64 AMD (gfx906 / gfx908 / gfx90a too): 32 warps would be 2048 threads, past the 1024 limit.
+    return MAX_FUSED_SIZE, max_num_warps()
 
 
 def _chunked_forward_config(device, vocab_size):
@@ -419,6 +421,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
             BLOCK_SIZE, num_warps = calculate_settings(vocab_size)
             if is_cdna():
                 num_warps = num_warps // 2
+            num_warps = min(num_warps, max_num_warps())
             logsumexp = torch.empty(n_rows, dtype = torch.float32, device = device)
 
             with torch_gpu_device(device):
