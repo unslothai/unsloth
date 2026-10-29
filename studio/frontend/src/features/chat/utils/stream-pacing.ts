@@ -141,10 +141,12 @@ export async function* withTrailingPublish<T>(
       if (pending) {
         // A read is in flight: return() would queue behind it, so do not hold the caller's exit on it.
         const inFlight = pending;
-        void inFlight.then(
-          () => iterator.return?.(),
-          () => undefined,
-        ).catch(() => undefined);
+        void inFlight
+          .then(
+            () => iterator.return?.(),
+            () => undefined,
+          )
+          .catch(() => undefined);
       } else {
         await iterator.return?.();
       }

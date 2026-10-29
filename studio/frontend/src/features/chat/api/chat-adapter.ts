@@ -8488,6 +8488,8 @@ export function createOpenAIStreamAdapter(
               }
 
               if (assistantContent.length > 0) {
+                // A replay delta skips the gate, so its publish must clear the held text too.
+                canPublish.published();
                 yield {
                   content: assistantContent,
                   metadata: {

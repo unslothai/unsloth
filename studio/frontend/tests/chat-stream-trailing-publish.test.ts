@@ -153,7 +153,13 @@ function consume(source: AsyncIterable<string>, clock: Clock) {
     }
     published.push({ text, frame: frameNo }); // the adapter's final yield
   })();
-  return { published, done, get text() { return text; } };
+  return {
+    published,
+    done,
+    get text() {
+      return text;
+    },
+  };
 }
 
 test("held text is published on the next frame without waiting for another chunk", async () => {
@@ -163,7 +169,10 @@ test("held text is published on the next frame without waiting for another chunk
 
     source.push("a", "b", "c");
     await settle();
-    assert.deepEqual(run.published.map((p) => p.text), ["a"]);
+    assert.deepEqual(
+      run.published.map((p) => p.text),
+      ["a"],
+    );
 
     clock.frame();
     await settle();
@@ -208,7 +217,8 @@ test("at most one paced publish per frame, and text and order are unchanged", as
 
     const paced = run.published.slice(0, -1);
     const perFrame = new Map<number, number>();
-    for (const p of paced) perFrame.set(p.frame, (perFrame.get(p.frame) ?? 0) + 1);
+    for (const p of paced)
+      perFrame.set(p.frame, (perFrame.get(p.frame) ?? 0) + 1);
     for (const [frame, count] of perFrame) {
       assert.ok(count <= 1, `frame ${frame} published ${count} times`);
     }
@@ -254,7 +264,11 @@ test("a publish the gate did not pace clears the held text", async () => {
     assert.equal(gate(2), false);
     assert.ok(gate.heldUntilReopen(), "refused text is held");
     gate.published();
-    assert.equal(gate.heldUntilReopen(), null, "a forced publish already showed it");
+    assert.equal(
+      gate.heldUntilReopen(),
+      null,
+      "a forced publish already showed it",
+    );
   });
 });
 
@@ -286,11 +300,23 @@ test("an early exit cancels the pending frame and does not wait on an in-flight 
     assert.equal(clock.framesQueued(), 1);
     // The consumer leaves (Stop / thread switch) while a read is in flight.
     await iterator.return(undefined);
-    assert.equal(clock.framesQueued(), 0, "the pending frame was not cancelled");
-    assert.equal(source.returned, 0, "return waits for the in-flight read, off the exit path");
+    assert.equal(
+      clock.framesQueued(),
+      0,
+      "the pending frame was not cancelled",
+    );
+    assert.equal(
+      source.returned,
+      0,
+      "return waits for the in-flight read, off the exit path",
+    );
     source.push("c");
     await settle();
-    assert.equal(source.returned, 1, "the source is closed once its read settles");
+    assert.equal(
+      source.returned,
+      1,
+      "the source is closed once its read settles",
+    );
   });
 });
 
@@ -313,11 +339,36 @@ test("the adapter loop publishes held text when the gate reopens", () => {
     "const stream = withTrailingPublish(sourceStream, canPublish);",
   );
   const loop = adapter.indexOf("for await (const chunk of stream) {");
-  assert.ok(gate !== -1 && wrap > gate && loop > wrap, "the stream is not wrapped");
+  assert.ok(
+    gate !== -1 && wrap > gate && loop > wrap,
+    "the stream is not wrapped",
+  );
   const head = adapter.slice(loop, loop + 700);
   assert.match(
     head,
     /if \(chunk === TRAILING_PUBLISH\) \{\s*if \(canPublish\(streamedChars\)\) \{\s*yield \{\s*content: liveAssistantContent\(\)/,
     "the trailing publish must go through the gate",
   );
+});
+
+test("every live publish in the loop is paced or clears the held text", () => {
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  const start = adapter.indexOf("for await (const chunk of stream) {");
+  const end = adapter.indexOf("} catch (streamError) {", start);
+  assert.ok(start !== -1 && end > start, "the stream loop moved");
+  const loop = adapter.slice(start, end);
+  const yields = [...loop.matchAll(/yield \{\s*content:/g)];
+  assert.ok(
+    yields.length >= 7,
+    `expected the live yields, found ${yields.length}`,
+  );
+  for (const match of yields) {
+    const before = loop.slice(Math.max(0, match.index - 240), match.index);
+    // An unpaced publish that leaves `held` set is repeated, unchanged, on the next frame.
+    assert.ok(
+      before.includes("canPublish.published();") ||
+        /if \(canPublish\(streamedChars\)\) \{\s*$/.test(before),
+      `a live yield neither paced nor marked published: ${loop.slice(match.index, match.index + 60)}`,
+    );
+  }
 });
