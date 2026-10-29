@@ -100,6 +100,7 @@ function fastest(markdown: string): number {
 }
 
 // Every block after an unmatched `$$` merges into one; that merge must not rescan the growing block.
+// Rescanning costs hundreds of times the unmerged split; the bound leaves room for loaded runners.
 test("blocks merged after a stray $$ cost about as much as unmerged ones", () => {
   const body = paragraphs(3000);
   const stray = `Bash keeps the shell PID in $$ here.\n\n${body}`;
@@ -108,7 +109,7 @@ test("blocks merged after a stray $$ cost about as much as unmerged ones", () =>
   const merged = fastest(stray);
   const split = fastest(body);
   assert.ok(
-    merged < split * 4 + 20,
+    merged < split * 10 + 50,
     `merged split ${merged.toFixed(1)}ms vs ${split.toFixed(1)}ms unmerged`,
   );
 });
