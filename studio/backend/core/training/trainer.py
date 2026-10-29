@@ -5023,6 +5023,7 @@ class UnslothTrainer:
                     and getattr(rl_tokenizer, "chat_template", None)
                 ):
                     self.tokenizer.chat_template = rl_tokenizer.chat_template
+                from core.training.rl import rl_lengths
                 from core.training.rl_format import run_format_warmup, warmup_steps_to_run
 
                 warmup_steps = warmup_steps_to_run(
@@ -5041,6 +5042,11 @@ class UnslothTrainer:
                         on_step = lambda step, steps: self._update_progress(
                             status_message = f"Format warm-up: step {step} of {steps}..."
                         ),
+                        max_completion_length = rl_lengths(
+                            "grpo",
+                            int(config_args.get("max_seq_length") or 2048),
+                            rl_settings or {},
+                        )[1],
                     )
                     if self.should_stop:
                         self._update_progress(

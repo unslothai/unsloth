@@ -5,6 +5,8 @@ import {
   DEFAULT_HYPERPARAMS,
   GRPO_DEFAULT_REWARDS,
   GRPO_DEFAULT_SYSTEM_PROMPT,
+  GRPO_FORMAT_WARMUP_MIN_CONTEXT,
+  GRPO_FORMAT_WARMUP_STEPS,
   GRPO_REASONING_REWARDS,
   GRPO_REASONING_SYSTEM_PROMPT,
   LR_DEFAULT_DECISION_FULL,
@@ -1793,6 +1795,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               : {}),
             ...(sameRewards ? { grpoRewards: [...newRewards] } : {}),
             ...(grpoReasoningFormat ? { grpoEnableThinking: false } : {}),
+            ...(!grpoReasoningFormat
+              ? { grpoFormatWarmupSteps: 0 }
+              : state.grpoFormatWarmupSteps === 0 &&
+                  state.contextLength >= GRPO_FORMAT_WARMUP_MIN_CONTEXT
+                ? { grpoFormatWarmupSteps: GRPO_FORMAT_WARMUP_STEPS }
+                : {}),
           });
         },
         setGrpoFormatWarmupSteps: (grpoFormatWarmupSteps) =>

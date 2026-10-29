@@ -148,6 +148,10 @@ export const GRPO_DEFAULT_SYSTEM_PROMPT =
   "Respond in the following format:\n<reasoning>\n...\n</reasoning>\n<answer>\n...\n</answer>";
 
 // Matches SYSTEM_PROMPT in studio/backend/core/training/rl_format.py (Qwen3 (4B) GRPO notebook).
+// The notebooks' pre fine-tune length; the backend's WARMUP_MIN_SEQ_LENGTH is the context floor.
+export const GRPO_FORMAT_WARMUP_STEPS = 100;
+export const GRPO_FORMAT_WARMUP_MIN_CONTEXT = 2048;
+
 export const GRPO_REASONING_SYSTEM_PROMPT =
   "You are given a problem.\nThink about the problem and provide your working out.\nPlace it between <start_working_out> and <end_working_out>.\nThen, provide your solution between <SOLUTION></SOLUTION>";
 

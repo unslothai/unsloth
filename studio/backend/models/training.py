@@ -3,7 +3,7 @@
 
 """Pydantic schemas for Training API"""
 
-from core.training.rl_format import WARMUP_MIN_SEQ_LENGTH
+from core.training.rl_format import WARMUP_DEFAULT_STEPS, WARMUP_MIN_SEQ_LENGTH
 import math
 import re
 from pathlib import Path, PureWindowsPath
@@ -763,11 +763,12 @@ class TrainingStartRequest(BaseModel):
         False,
         description = "Use the GRPO notebooks' reasoning chat template and answer format (for base models)",
     )
-    grpo_format_warmup_steps: int = Field(
-        0,
+    grpo_format_warmup_steps: Optional[int] = Field(
+        None,
         ge = 0,
         le = 1000,
-        description = "SFT steps on formatted examples before GRPO, so the model already writes the tags. 0 skips it.",
+        description = "SFT steps on formatted examples before GRPO, so the model already writes the tags. "
+        "0 skips it; null runs the notebooks' 100 when the reasoning format is on and the context fits.",
     )
     grpo_python_reward_isolation: Literal["required", "auto"] = Field(
         "required",
@@ -873,6 +874,14 @@ class TrainingStartRequest(BaseModel):
     @model_validator(mode = "after")
     def _validate_objective(self) -> "TrainingStartRequest":
         objective = getattr(self, "objective", "sft")
+        if self.grpo_format_warmup_steps is None:
+            self.grpo_format_warmup_steps = (
+                WARMUP_DEFAULT_STEPS
+                if objective == "grpo"
+                and self.grpo_reasoning_format
+                and self.max_seq_length >= WARMUP_MIN_SEQ_LENGTH
+                else 0
+            )
         if objective == "sft":
             return self
         if getattr(self, "training_type", None) == "Continued Pretraining":

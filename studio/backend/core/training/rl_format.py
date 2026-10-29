@@ -29,6 +29,8 @@ WARMUP_SPLIT = "cot"
 WARMUP_LEARNING_RATE = 2e-4
 # Its shortest examples are ~800 tokens and only those under half the context are kept.
 WARMUP_MIN_SEQ_LENGTH = 2048
+# The notebooks pre fine-tune for about this many steps before GRPO.
+WARMUP_DEFAULT_STEPS = 100
 
 
 def _jinja_string(text: str) -> str:
@@ -87,8 +89,11 @@ def build_warmup_dataset(
     max_seq_length: int,
     rows: int,
     dataset = None,
+    max_completion_length: Optional[int] = None,
 ):
-    """Formatted rows that fit in half the context, like the notebooks. ``rows`` caps how many get tokenized."""
+    """Formatted rows that fit in half the context, like the notebooks, and whose answer fits the
+    GRPO completion cap, so the warm-up never teaches answers GRPO will cut off. ``rows`` caps how
+    many get tokenized."""
     from datasets import Dataset, load_dataset
 
     if dataset is None:
@@ -101,17 +106,27 @@ def build_warmup_dataset(
         answer = str(row.get("expected_answer") or "").strip()
         if not answer or not _is_number(answer):
             continue
-        text = tokenizer.apply_chat_template(
-            warmup_messages(row.get("problem") or "", row.get("generated_solution") or "", answer),
-            tokenize = False,
+        messages = warmup_messages(
+            row.get("problem") or "", row.get("generated_solution") or "", answer
         )
-        if len(tokenizer(text, add_special_tokens = False)["input_ids"]) <= limit:
+        if max_completion_length and _token_count(tokenizer, messages[-1]["content"]) > (
+            max_completion_length
+        ):
+            continue
+        text = tokenizer.apply_chat_template(messages, tokenize = False)
+        if _token_count(tokenizer, text) <= limit:
             texts.append(text)
     if not texts:
+        cap = f" with answers under {max_completion_length} tokens" if max_completion_length else ""
         raise ValueError(
-            f"No format warm-up examples fit in {limit} tokens; raise the max sequence length."
+            f"No format warm-up examples fit in {limit} tokens{cap}; raise the max sequence "
+            "length or the max completion length."
         )
     return Dataset.from_dict({"text": texts})
+
+
+def _token_count(tokenizer, text: str) -> int:
+    return len(tokenizer(text, add_special_tokens = False)["input_ids"])
 
 
 def warmup_steps_to_run(rl_settings: Optional[dict], objective: str, resuming: bool) -> int:
@@ -147,6 +162,7 @@ def run_format_warmup(
     should_stop: Callable[[], bool] = lambda: False,
     dataset = None,
     on_step: Optional[Callable[[int, int], None]] = None,
+    max_completion_length: Optional[int] = None,
 ) -> Optional[dict]:
     """Runs ``steps`` SFT steps on the warm-up set before GRPO. Returns the trainer's final metrics."""
     from trl import SFTConfig, SFTTrainer
@@ -157,7 +173,11 @@ def run_format_warmup(
     accum = int(config_args.get("gradient_accumulation_steps") or 1)
     max_seq_length = int(config_args.get("max_seq_length") or 2048)
     train_dataset = build_warmup_dataset(
-        tokenizer, max_seq_length, rows = max(steps * batch * accum * 2, 64), dataset = dataset
+        tokenizer,
+        max_seq_length,
+        rows = max(steps * batch * accum * 2, 64),
+        dataset = dataset,
+        max_completion_length = max_completion_length,
     )
     logger.info(f"Format warm-up: {steps} SFT steps on {len(train_dataset)} examples\n")
 

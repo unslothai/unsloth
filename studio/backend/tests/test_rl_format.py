@@ -95,6 +95,38 @@ def test_warmup_rows_are_capped():
     assert len(build_warmup_dataset(_tok(), 400, rows = 1, dataset = ROWS)) == 1
 
 
+def test_warmup_answers_fit_the_grpo_completion_cap():
+    # The notebook's cap is the context minus the prompt, which every warm-up answer fits; a
+    # tighter cap keeps only the examples whose answer GRPO would not cut off.
+    long_answer = {"problem": "q", "generated_solution": "step " * 60, "expected_answer": "5"}
+    rows = [ROWS[0], long_answer, ROWS[3]]
+    assert len(build_warmup_dataset(_tok(), 400, rows = 10, dataset = rows)) == 3
+    kept = build_warmup_dataset(_tok(), 400, rows = 10, dataset = rows, max_completion_length = 20)
+    assert len(kept) == 2 and all("step step" not in t for t in kept["text"])
+    with pytest.raises(ValueError, match = "max completion length"):
+        build_warmup_dataset(_tok(), 400, rows = 10, dataset = [long_answer], max_completion_length = 20)
+
+
+def test_the_default_completion_cap_fits_every_warmup_example():
+    from core.training.rl import rl_lengths
+    for context in (2048, 4096, 8192):
+        assert rl_lengths("grpo", context, {})[1] >= context // 2
+
+
+@pytest.mark.parametrize(
+    "kw, steps",
+    [
+        (dict(grpo_reasoning_format = True), 100),
+        (dict(grpo_reasoning_format = True, max_seq_length = 1024), 0),
+        (dict(), 0),
+        (dict(grpo_reasoning_format = True, grpo_format_warmup_steps = 0), 0),
+        (dict(grpo_reasoning_format = True, grpo_format_warmup_steps = 30), 30),
+    ],
+)
+def test_the_reasoning_format_defaults_to_the_notebooks_warmup(kw, steps):
+    assert _request(**kw).grpo_format_warmup_steps == steps
+
+
 def test_nothing_fits_is_a_clear_error():
     with pytest.raises(ValueError, match = "max sequence length"):
         build_warmup_dataset(_tok(), max_seq_length = 4, rows = 10, dataset = ROWS)
@@ -198,3 +230,14 @@ def test_the_run_shows_warmup_progress_as_step_n_of_m():
 
     source = inspect.getsource(trainer)
     assert 'status_message = f"Format warm-up: step {step} of {steps}..."' in source
+
+
+def test_the_run_fits_the_warmup_to_its_grpo_completion_cap():
+    import inspect
+
+    from core.training import trainer
+
+    source = inspect.getsource(trainer)
+    call = source[source.index("run_format_warmup(\n") :]
+    call = call[: call.index("\n                    )\n")]
+    assert "max_completion_length = rl_lengths(" in call and "rl_settings" in call

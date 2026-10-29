@@ -60,3 +60,19 @@ test("picking a base model turns the reasoning format on, as the notebooks do", 
     setAuthFetchHandler(null);
   }
 });
+
+test("the reasoning format turns on the notebooks' 100-step format warm-up", () => {
+  store.getState().reset();
+  store.getState().setGrpoReasoningFormat(true);
+  assert.equal(store.getState().grpoFormatWarmupSteps, 100);
+  // The user's own count stays; switching the format off runs no warm-up.
+  store.getState().setGrpoFormatWarmupSteps(30);
+  store.getState().setGrpoReasoningFormat(true);
+  assert.equal(store.getState().grpoFormatWarmupSteps, 30);
+  store.getState().setGrpoReasoningFormat(false);
+  assert.equal(store.getState().grpoFormatWarmupSteps, 0);
+  // Below the warm-up's context floor it stays off rather than block Start.
+  store.getState().setContextLength(1024);
+  store.getState().setGrpoReasoningFormat(true);
+  assert.equal(store.getState().grpoFormatWarmupSteps, 0);
+});
