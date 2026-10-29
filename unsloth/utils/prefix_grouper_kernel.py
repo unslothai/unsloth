@@ -10,8 +10,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""GRPO PrefixGrouper FlexAttention kernel, prefix stored once; self-contained (no temp dir
-dependency); imported lazily only when prefix_seg_info is set, so default-off never imports it."""
+"""GRPO PrefixGrouper FlexAttention kernel: shared prefix stored once. Imported lazily."""
 
 from __future__ import annotations
 
@@ -26,19 +25,18 @@ from torch.nn.attention.flex_attention import (
     flex_attention,
 )
 
-# Many distinct segment lengths: at the default recompile_limit (8) the kernel silently reuses a
-# mismatched specialisation.
+# At the default recompile_limit (8) the kernel silently reuses a mismatched specialisation.
 torch._dynamo.config.recompile_limit = max(getattr(torch._dynamo.config, "recompile_limit", 8), 256)
 torch._dynamo.config.accumulated_recompile_limit = max(
     getattr(torch._dynamo.config, "accumulated_recompile_limit", 256), 2048
 )
 
 
-# dynamic=True is required: T changes almost every GRPO batch, and dynamic=False recompiles per T (~14s each).
+# dynamic=True: T changes almost every batch; static recompiles per T (~14 s each).
 _flex_attention_compiled = torch.compile(flex_attention, dynamic = True)
 _create_block_mask_compiled = torch.compile(create_block_mask, dynamic = True)
 
-# fp32 needs 32/32 for a ~1e-6 floor (two disjoint key runs stress online softmax); bf16 128/64 is ~5x faster; 128/128 OOMs Triton on B200.
+# fp32 needs 32/32 for a ~1e-6 floor; bf16 128/64 is ~5x faster; 128/128 OOMs Triton on B200.
 _FP32_BLOCK_M = int(os.environ.get("PG_FLEX_BLOCK_M", "32"))
 _FP32_BLOCK_N = int(os.environ.get("PG_FLEX_BLOCK_N", "32"))
 _BF16_BLOCK_M = int(os.environ.get("PG_FLEX_BF16_BLOCK_M", "128"))
@@ -56,7 +54,6 @@ def _kernel_options_for_dtype(dtype, one_stage = False):
     return options
 
 
-# Backward-compat constant (fp32 default).
 _FLEX_KERNEL_OPTIONS = {"BLOCK_M": _FP32_BLOCK_M, "BLOCK_N": _FP32_BLOCK_N}
 
 # The compiled backward asserts unless T is a multiple of 128; pad tokens are fully masked and sliced off.
@@ -70,27 +67,9 @@ def _pad_len(T: int) -> int:
 
 @dataclass
 class PrefixSegInfo:
-    """Per-flat-token segment metadata driving the shared-prefix block mask.
+    """Per-token labels for the block mask, padded to T_pad (multiple of 128); pad tokens see nothing.
 
-    The label tensors are 1-D of length ``T_pad`` (>= real ``T``, padded up to a multiple
-    of 128 so the backward kernel compiles). Positions ``[T:T_pad)`` are pad tokens
-    (group/suffix == _PAD_GROUP) that attend to nothing.
-
-    Attributes
-    ----------
-    group_of_kv : LongTensor [T_pad]
-        Group id per flat token (0..num_groups-1); _PAD_GROUP for pad tokens.
-    is_prefix : BoolTensor [T_pad]
-        True iff the token is a prefix token of its group (False for pad).
-    suffix_of_kv : LongTensor [T_pad]
-        Suffix id per flat token; -1 for prefix, _PAD_GROUP for pad. Suffix ids are
-        globally unique across groups.
-    signature : hashable
-        Cache key for the block mask (depends only on the labels + T_pad).
-    T : int
-        Real flat sequence length (Q/K/V of this length are padded internally).
-    T_pad : int
-        Padded length (multiple of 128) at which the block mask is built.
+    suffix_of_kv is -1 for prefix tokens and globally unique across groups.
     """
 
     group_of_kv: torch.Tensor
@@ -119,8 +98,7 @@ def _pad_labels(group_of_kv, is_prefix, suffix_of_kv, device):
 
 
 def build_seg_info_from_layout(layout, device: Optional[torch.device] = None) -> PrefixSegInfo:
-    """Build PrefixSegInfo for ONE group from an object with ``.flat_ids``, ``.P`` and
-    ``.suffix_slices`` (used by the parity test / oracle helpers)."""
+    """PrefixSegInfo for one group (parity test / oracle helper)."""
     if device is None:
         device = layout.flat_ids.device
     T = int(layout.flat_ids.shape[1])
@@ -150,19 +128,7 @@ def build_seg_info_from_layout(layout, device: Optional[torch.device] = None) ->
 def build_seg_info_multigroup(
     group_specs: List[Tuple[int, List[int]]], device: torch.device
 ) -> Tuple[PrefixSegInfo, List[dict]]:
-    """Build PrefixSegInfo for several shared-prefix groups packed block-diagonally.
-
-    Parameters
-    ----------
-    group_specs : list of (P_g, [R_{g,0}, R_{g,1}, ...])
-        For each group: prefix length and the list of suffix lengths.
-
-    Returns
-    -------
-    seg : PrefixSegInfo
-    group_meta : list of dicts with 'base', 'P', 'prefix_last_index', 'suffix_slices'
-        (flat offsets), enough to build the completion index map.
-    """
+    """group_specs: [(P_g, [R_g0, R_g1, ...])]. Returns (seg, per-group flat offsets)."""
     group_of_list = []
     is_prefix_list = []
     suffix_of_list = []
@@ -172,7 +138,6 @@ def build_seg_info_multigroup(
     suffix_counter = 0
     sig_parts = []
     for gid, (P, R_list) in enumerate(group_specs):
-        # Prefix.
         group_of_list.append(torch.full((P,), gid, dtype = torch.long, device = device))
         is_prefix_list.append(torch.ones(P, dtype = torch.bool, device = device))
         suffix_of_list.append(torch.full((P,), -1, dtype = torch.long, device = device))
@@ -222,18 +187,10 @@ _BLOCK_MASK_CACHE: Dict[Tuple, BlockMask] = {}
 
 
 def _make_mask_mod(group_of_kv, is_prefix, suffix_of_kv):
-    """Return a mask_mod closure over the (device) label tensors.
+    """Same group and causal, and kv is a prefix token or in q's own suffix.
 
-    keep(q, kv) = same_group AND
-        ( is_prefix[kv]  AND kv <= q                     # causal within/ into prefix
-          OR ( suffix_of_kv[kv] == suffix_of_kv[q]       # same suffix ...
-               AND (not is_prefix[q])                    # q is a suffix token ...
-               AND kv <= q ) )                           # ... causal within it
-
-    The single ``kv <= q`` guard on the is_prefix branch gives BOTH prefix-causal
-    behaviour (a prefix q sees only earlier prefix tokens) AND full-prefix-visibility for
-    suffixes (every prefix index < every suffix index in a group, so kv <= q always holds
-    for a suffix q vs a prefix kv of its group), matching the SDPA oracle exactly.
+    Every prefix index precedes every suffix index of its group, so the one ``kv <= q`` guard
+    gives prefix-causal and full-prefix visibility for suffixes, matching the SDPA oracle.
     """
 
     def mask_mod(b, h, q_idx, kv_idx):
@@ -252,22 +209,13 @@ def get_block_mask(
     device: torch.device,
     compile_mask: bool = True,
 ) -> BlockMask:
-    """Return a cached BlockMask for the segment signature (built once, reused).
-
-    CRITICAL: the block mask is cached and shared across BOTH the no-grad old/ref logprob
-    forward (which runs under torch.inference_mode) and the grad training forward. If the
-    mask were first built under inference_mode, its tensors would be INFERENCE tensors that
-    "cannot be saved for backward" when reused in the grad forward. We therefore build the
-    mask with inference mode explicitly DISABLED, so the same cached BlockMask is a normal
-    tensor usable by autograd. (The mask depends only on integer labels; it needs no grad.)
-    """
+    """Cached BlockMask per (signature, device), shared by the no-grad and grad forwards."""
     key = (seg.signature, str(device))
     bm = _BLOCK_MASK_CACHE.get(key)
     if bm is not None:
         return bm
 
-    # Move labels to the Q device (sharded models), outside inference mode: an inference tensor
-    # captured by mask_mod could not be saved for backward.
+    # Outside inference mode: the no-grad pass builds it first, and backward must save it.
     # torch 2.7 Inductor emits a ZeroDivisionError when the first compiled mask is one 128 block.
     compile_mask = compile_mask and seg.T_pad > _PAD_MULTIPLE
     builder = _create_block_mask_compiled if compile_mask else create_block_mask
@@ -283,7 +231,6 @@ def get_block_mask(
             KV_LEN = seg.T_pad,
             device = device,
         )
-    # FIFO bound: GRPO lengths change nearly every step, so evict the oldest to cap GPU pins.
     if len(_BLOCK_MASK_CACHE) >= 8:
         _BLOCK_MASK_CACHE.pop(next(iter(_BLOCK_MASK_CACHE)))
     _BLOCK_MASK_CACHE[key] = bm
@@ -330,7 +277,6 @@ def _run_flex(
             kernel_options = _kernel_options_for_dtype(qp.dtype, one_stage),
         )
     else:
-        # Eager path (fp64 parity): dense scores, no kernel_options.
         out = flex_attention(
             qp,
             kp,
@@ -435,23 +381,9 @@ def flex_shared_prefix_attention(
     block_mask: Optional[BlockMask] = None,
     compiled: bool = True,
 ) -> torch.Tensor:
-    """Shared-prefix attention via FlexAttention.
-
-    Parameters
-    ----------
-    Q, K, V : Tensor [1, T, n_heads, head_dim]
-        (Q has n_heads, K/V have n_kv_heads for GQA).
-    prefix_seg_info : PrefixSegInfo
-    scale : optional float, softmax scale (defaults to 1/sqrt(head_dim)).
-    block_mask : optional precomputed BlockMask (else built/cached from seg info).
-
-    Returns
-    -------
-    Tensor [1, T, n_heads, head_dim], identical semantics to the SDPA oracle branch.
-    """
+    """Q [1, T, n_heads, D], K / V [1, T, n_kv_heads, D] -> [1, T, n_heads, D]."""
     assert Q.dim() == 4 and Q.shape[0] == 1, f"expected [1,T,H,D], got {tuple(Q.shape)}"
     device = Q.device
-    # FlexAttention wants [B, H, T, D].
     q = Q.transpose(1, 2)  # [1, n_heads, T, D]
     k = K.transpose(1, 2)  # [1, n_kv_heads, T, D]
     v = V.transpose(1, 2)
@@ -477,7 +409,6 @@ def flex_shared_prefix_attention(
             block_mask = get_block_mask(prefix_seg_info, device, compile_mask = compiled)
         one_stage = compiled and key in _ONE_STAGE_KEYS
         out = _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad, one_stage)
-    # Back to [1, T, n_heads, D].
     return out.transpose(1, 2).contiguous()
 
 
