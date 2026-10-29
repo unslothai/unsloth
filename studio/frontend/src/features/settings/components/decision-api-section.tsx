@@ -417,17 +417,25 @@ export function DecisionApiSection({
   ) : null;
 
   if (!settings) {
-    return error ? (
+    return (
       <section
         data-settings-label={t("settings.apiKeys.decisionApi.title")}
         className="flex min-w-0 max-w-full flex-col gap-4"
       >
         {header}
         <div>
-          {errorLine}
+          {errorLine ?? (
+            <p
+              role="status"
+              className="flex items-center gap-2 py-3 text-xs text-muted-foreground"
+            >
+              <Spinner />
+              {t("settings.apiKeys.decisionApi.loading")}
+            </p>
+          )}
         </div>
       </section>
-    ) : null;
+    );
   }
 
   const current = settings.models.find((m) => m.name === settings.model);
@@ -750,17 +758,18 @@ export function DecisionApiSection({
 
           {connections?.length === 0 && !settings.modelLocked ? (
             <p className="pb-3 text-xs text-muted-foreground">
-              {t("settings.apiKeys.decisionApi.addConnection")}{" "}
+              {t("settings.apiKeys.decisionApi.addConnection")}
               <button
                 type="button"
-                className="font-medium text-foreground underline underline-offset-2 hover:text-primary"
+                className="text-foreground underline underline-offset-2 hover:text-primary"
                 // openDialog, not setActiveTab: the API page shows this card with no dialog open.
                 onClick={() =>
                   useSettingsDialogStore.getState().openDialog("connections")
                 }
               >
-                {t("settings.apiKeys.decisionApi.openConnections")}
+                {t("settings.apiKeys.decisionApi.connectionsLink")}
               </button>
+              {t("settings.apiKeys.decisionApi.addConnectionSuffix")}
             </p>
           ) : null}
         </div>

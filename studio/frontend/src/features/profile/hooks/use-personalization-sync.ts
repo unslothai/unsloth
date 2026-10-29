@@ -228,10 +228,16 @@ export function usePersonalizationSync(enabled: boolean): void {
     }
     let cancelled = false;
     const localeHydrationController = new AbortController();
+    const customizationBeforeLoad =
+      useAppearanceCustomStore.getState().customization;
     void (async () => {
       try {
         const remote = await loadPersonalization();
         if (cancelled) return;
+        // Changed while the request was in flight: a newer local edit, which the server must not overwrite.
+        const editedDuringLoad =
+          useAppearanceCustomStore.getState().customization !==
+          customizationBeforeLoad;
         if (remote.saved) {
           // Legacy records return server defaults for missing fields: keep and re-push the local value.
           // A record with <field>Saved=true still wins.
@@ -266,10 +272,12 @@ export function usePersonalizationSync(enabled: boolean): void {
             remote.version,
             PERSONALIZATION_VERSION,
           );
-          const localCustomization = latestCustomizationRef.current;
+          const localCustomization =
+            useAppearanceCustomStore.getState().customization;
           const keepLocalCustomization =
-            remote.customizationSaved === false &&
-            !isDefaultCustomization(localCustomization);
+            editedDuringLoad ||
+            (remote.customizationSaved === false &&
+              !isDefaultCustomization(localCustomization));
           const keepLocalChatWidth =
             remote.chatWidthSaved === false ||
             remote.appearance.customization?.chatWidth === undefined;

@@ -237,7 +237,7 @@ export function UpdateBanner({
                   </Button>
                   <Button
                     size="sm"
-                    variant="dark"
+                    variant="primary"
                     className="-mr-1 rounded-full text-ui-13"
                     onClick={onInstall}
                     disabled={installDisabled}
@@ -259,7 +259,7 @@ export function UpdateBanner({
                   </Button>
                   <Button
                     size="sm"
-                    variant="dark"
+                    variant="primary"
                     className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
                     onClick={onInstall}
                     disabled={installDisabled}

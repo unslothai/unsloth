@@ -158,6 +158,7 @@ from .diffusion_memory import (
     reclaim_offload_host_memory,
     refine_memory_plan_for_components,
     applied_plan,
+    defer_late_expert_pins,
     finish_background_pins,
     release_pinned_host_memory,
     request_background_pins,
@@ -229,7 +230,11 @@ from .diffusion import (
     _restore_step_cache_after_layer_split,
     _step_cache_dropped_by_layer_split,
 )
-from .diffusion_native_quant import native_quant_reason
+from .diffusion_native_quant import (
+    native_quant_on_device_enabled,
+    native_quant_reason,
+    quantise_host_linears_on,
+)
 from .diffusion_batched import is_oom_error
 from .diffusion_block_graph import compile_pipe_below_offload_hooks
 from .diffusion_offload_prefetch import (
@@ -3770,6 +3775,20 @@ def _stage_denoiser_for_quant(
         if logger is not None:
             logger.warning("video.transformer_quant: staging on the card failed (%s)", exc)
         return []
+
+
+def _host_quant_device(target: Any) -> Any:
+    try:
+        import torch
+        if (
+            getattr(target, "device", None) != "cuda"
+            or not torch.cuda.is_available()
+            or not native_quant_on_device_enabled()
+        ):
+            return None
+        return torch.device(getattr(target, "torch_device", None) or "cuda")
+    except Exception:  # noqa: BLE001 -- the host build is slower, never wrong
+        return None
 
 
 def _unstage_modules(modules: list) -> None:
@@ -9456,21 +9475,30 @@ class VideoBackend:
             and (dense_transformer_supported(target) or native_scheme is not None)
         ):
             engaged = []
+            # An offloaded DiT goes back to the host anyway: build every linear on the card, one at a time.
+            host_quant_device = (
+                _host_quant_device(target) if video_offload and native_scheme else None
+            )
             for view in views:
                 # Quantise on the card: on the host int8 packing took 59 s (Wan2.2-5B) to 154 s (LTX-2) of the load.
-                staged = _stage_denoiser_for_quant(
-                    getattr(view, "transformer", None), target, logger = logger
+                staged = (
+                    []
+                    if host_quant_device is not None
+                    else _stage_denoiser_for_quant(
+                        getattr(view, "transformer", None), target, logger = logger
+                    )
                 )
                 scheme = None
                 try:
-                    scheme = quantize_transformer(
-                        view,
-                        target,
-                        mode = native_scheme or transformer_quant,
-                        family = fam.name,
-                        logger = logger,
-                        **native_kwargs,
-                    )
+                    with quantise_host_linears_on(host_quant_device):
+                        scheme = quantize_transformer(
+                            view,
+                            target,
+                            mode = native_scheme or transformer_quant,
+                            family = fam.name,
+                            logger = logger,
+                            **native_kwargs,
+                        )
                 finally:
                     # A declined quant can roll back to the bf16 offload plan, which must not start with dense blocks staged.
                     if staged and (video_offload or scheme is None):
@@ -10203,6 +10231,8 @@ class VideoBackend:
             effective_speed,
             transformer_quant_engaged or "off",
         )
+        if fam.is_moe:
+            defer_late_expert_pins(pipe, (getattr(pipe, "transformer_2", None),), logger)
         start_background_pins(pipe)
         if cast_writes is not None:
             pipe._unsloth_cast_writes = cast_writes
@@ -11866,7 +11896,9 @@ class VideoBackend:
                 # First: on a fresh thread, un-indexed device calls resolve to the default card.
                 self._state_device_target(state)
                 # A render racing the post-load pinner ran every later render slower; the wait is usually over.
-                waited = finish_background_pins(getattr(state, "pipe", None), cancel)
+                waited = finish_background_pins(
+                    getattr(state, "pipe", None), cancel, include_late = False
+                )
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
                 if waited >= 1.0:
