@@ -4,7 +4,7 @@ import test from "node:test";
 import { readSrcAsync } from "./helpers/kit.ts";
 
 const BOUNDED_TEXT_COLUMN =
-  /<div className="[^"]*w-full[^"]*max-w-\[calc\(28rem\*var\(--ui-space-scale,1\)\)\][^"]*flex-col[^"]*">\s*<span className="text-sm font-medium text-foreground">/;
+  /<div className="[^"]*w-full[^"]*max-w-\[calc\(32rem\*var\(--ui-space-scale,1\)\)\][^"]*flex-col[^"]*">\s*<span className="text-sm font-medium text-foreground">/;
 
 test("settings row titles and descriptions share a bounded text column", async () => {
   const source = await readSrcAsync(
