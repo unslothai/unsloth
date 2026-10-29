@@ -160,7 +160,6 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
             designer.set_run_config(RunConfig.model_validate(run_config_raw))
 
         if execution_type == "preview":
-            # One OXC validator process for the job's batches, closed with the job.
             with oxc_validator_session():
                 results = designer.preview(builder, num_records = rows)
             analysis = (

@@ -410,7 +410,7 @@ function runLintBatch(entries, budgetMs, startedAtMs) {
       "json",
       tempDir,
     ];
-    // The budget runs from when this request arrived: process start for a one-shot run.
+    // Budget runs from request arrival (process start for a one-shot run).
     const timeoutMs = Math.floor(
       budgetMs - OXLINT_BUDGET_MARGIN_MS - (performance.now() - startedAtMs),
     );
@@ -600,15 +600,14 @@ async function main() {
   process.stdout.write(validatePayload(payload, 0));
 }
 
-// --serve: one request per line, {"id", "payload"}, answered in order with {"id", "result"} or
-// {"id", "error"}. Nothing outlives a request: every one is the same work a one-shot run does.
+// --serve: one {"id", "payload"} per line, answered in order with {"id", "result"|"error"}.
+// Nothing outlives a request.
 const SERVE_MAX_LINE_CHARS = 64 * 1024 * 1024;
 
 let servedRequests = 0;
 
 function serveLine(line) {
-  // The first request is charged for Node's own start, as a one-shot run is: the caller's
-  // deadline started before this process could read anything.
+  // The caller's deadline started before Node did, so the first request pays for startup.
   const startedAtMs = servedRequests++ === 0 ? 0 : performance.now();
   let id = null;
   let reply;
@@ -623,7 +622,7 @@ function serveLine(line) {
 }
 
 function serve() {
-  // A closed stdin ends the loop, which is how a dead or finished caller stops this process.
+  // A closed stdin (caller done or dead) ends the process.
   const parentPid = process.ppid;
   if (process.platform !== "win32") {
     setInterval(() => {

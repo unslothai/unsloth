@@ -167,7 +167,7 @@ def _count_launches(monkeypatch):
     real_popen, real_run = validators.subprocess.Popen, validators.subprocess.run
 
     def counting_popen(*args, **kwargs):
-        # subprocess.run starts its process through Popen too: count only the workers.
+        # subprocess.run goes through Popen too.
         if "--serve" in args[0]:
             launches["popen"] += 1
         return real_popen(*args, **kwargs)
@@ -189,7 +189,7 @@ def test_one_worker_answers_every_batch_exactly_like_a_process_per_batch(monkeyp
     rng = random.Random(seed)
     batches = _parity_batches(rng)
     expected = {batch: json.dumps(_run_batch(batch)) for batch in batches}
-    # Repeats in a shuffled order: an answer may depend on nothing an earlier request left behind.
+    # Shuffled repeats: no answer may depend on an earlier request.
     order = batches + rng.sample(batches, len(batches) // 2)
     rng.shuffle(order)
 
@@ -227,9 +227,10 @@ def test_the_worker_ends_with_its_session():
     assert validators._OXC_SESSION is None
 
 
+@pytest.mark.skipif(
+    validators.resolve_node_executable() is None, reason = "needs Node to start the stub worker"
+)
 def test_a_worker_past_its_deadline_is_killed_and_the_batch_times_out(monkeypatch, tmp_path):
-    if validators.resolve_node_executable() is None:
-        pytest.skip("needs Node")
     silent = tmp_path / "silent.mjs"
     silent.write_text("process.stdin.resume();\n", encoding = "utf-8")
     monkeypatch.setattr(validators, "_OXC_RUNNER_PATH", silent)

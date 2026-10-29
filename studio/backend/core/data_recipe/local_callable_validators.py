@@ -222,9 +222,8 @@ def _build_oxc_validation_function(lang: str, validation_mode: str, code_shape: 
     return _validator
 
 
-# A job's batches share one Node process (``validate.mjs --serve``) instead of starting one per
-# batch: startup was ~99% of a 10 row syntax batch. Same requests, same answers; anything the
-# worker cannot answer is sent through the one-shot run instead.
+# One Node process (``validate.mjs --serve``) per job instead of per batch: startup was ~99% of
+# a 10 row syntax batch. Anything the worker cannot answer falls back to the one-shot run.
 _OXC_WORKER_MAX_LINE_BYTES = 64 * 1024 * 1024
 _OXC_WORKER_MAX_FAILURES = 3
 _OXC_WORKER_ENV = "UNSLOTH_OXC_PERSISTENT_WORKER"
@@ -260,7 +259,7 @@ class _OxcWorker:
         try:
             while True:
                 line = stdout.readline(_OXC_WORKER_MAX_LINE_BYTES + 1)
-                # EOF, or a reply over the bound: either way this worker is done.
+                # EOF or an oversized reply.
                 if not line.endswith(b"\n"):
                     break
                 self._replies.put(line)
@@ -279,8 +278,7 @@ class _OxcWorker:
         self._next_id += 1
         request_id = self._next_id
         line = f'{{"id": {request_id}, "payload": {request_text}}}\n'.encode("utf-8")
-        # The write shares the deadline: a Node that never reads would otherwise block it, and
-        # with it the session lock, forever. A timed-out worker is killed, which ends the write.
+        # Bounded by the deadline: a Node that never reads would hold the session lock forever.
         deadline = time.monotonic() + _OXC_TIMEOUT_S
         write_errors: list[BaseException] = []
         writer = threading.Thread(
@@ -346,13 +344,13 @@ class _OxcWorkerSession:
             or len(request_text) > _OXC_WORKER_MAX_LINE_BYTES // 2
         ):
             return _WORKER_UNUSED
-        # A concurrent caller runs one-shot rather than queueing behind this one.
+        # Concurrent callers run one-shot instead of queueing.
         if not self._lock.acquire(blocking = False):
             return _WORKER_UNUSED
         try:
             if self._closed:
                 return _WORKER_UNUSED
-            # The env carries the account's temp dir, so a different one needs its own process.
+            # The env carries the account's temp dir.
             key = (node_executable, tuple(sorted(env.items())))
             if self._worker is not None and self._worker.key != key:
                 self._drop_worker(kill = False)
@@ -392,9 +390,8 @@ _OXC_SESSION: _OxcWorkerSession | None = None
 
 @contextmanager
 def oxc_validator_session():
-    """OXC batches validated inside this block share one Node process, closed when it exits.
+    """OXC batches inside this block share one Node process (off: UNSLOTH_OXC_PERSISTENT_WORKER=0).
 
-    Outside one (or with UNSLOTH_OXC_PERSISTENT_WORKER=0) every batch starts its own process.
     A killed caller closes the worker's stdin, which ends it on every platform.
     """
     global _OXC_SESSION
