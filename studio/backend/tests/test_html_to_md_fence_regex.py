@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""_fence_for picks the code fence for every drained <pre>. It used to walk the block one
-character at a time in Python, which was ~14% of converting an RFC page; it must find the
-backtick runs without iterating the text and pick exactly the fence the walk picked."""
+"""_fence_for must not walk a <pre> one character at a time, and must pick the fence the walk picked."""
 
 from __future__ import annotations
 
@@ -19,7 +17,6 @@ from core.inference._html_to_md import _fence_for, html_to_markdown
 
 
 def _walking_fence_for(raw: str) -> str:
-    """The fence rule as the per-character walk computed it."""
     longest = run = 0
     for char in raw:
         run = run + 1 if char == "`" else 0
@@ -35,6 +32,7 @@ class _NoIterStr(str):
 def test_fence_for_does_not_walk_the_block():
     raw = _NoIterStr("x = 1\n" * 1000 + "s = '````'\n")
     assert _fence_for(raw) == "`````"
+    assert _fence_for(_NoIterStr("x = 1\n" * 1000)) == "```"
 
 
 def test_fence_for_matches_the_walk():
