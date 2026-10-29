@@ -40,7 +40,7 @@ _preview_swap_generation = 0
 _preview_swap_inflight = 0
 _last_active = time.monotonic()
 # _last_active minus scheduled runs and their swaps: one run must not make the next look attended.
-_last_attended = _last_active
+_last_attended = float("-inf")
 _unattended: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "keepwarm_unattended", default = False
 )
