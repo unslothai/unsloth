@@ -6750,7 +6750,10 @@ class _GroupPinner:
         self._done = {id(g): threading.Event() for g in groups}
         self._stop = threading.Event()
         self._lock = threading.Lock()
-        self._thread = threading.Thread(target = self._run, name = "unsloth-offload-pin", daemon = True)
+        # Pinners that must finish first; ``late`` = the render does not wait for this one.
+        self.after: list = []
+        self.late = False
+        self._thread = threading.Thread(target = self._entry, name = "unsloth-offload-pin", daemon = True)
         self._started = False
         for group in groups:
             setattr(group, _BG_PIN_ATTR, self)
@@ -6760,6 +6763,18 @@ class _GroupPinner:
             if not self._started:
                 self._started = True
                 self._thread.start()
+
+    def _entry(self) -> None:
+        for dep in self.after:
+            dep.start()
+            while not dep.join(0.25):
+                if self._stop.is_set():
+                    break
+        if self._stop.is_set():
+            for event in self._done.values():
+                event.set()
+            return
+        self._run()
 
     def wait(self, group: Any) -> None:
         import threading
@@ -6977,18 +6992,53 @@ def start_background_pins(pipe: Any) -> int:
     return len(pinners)
 
 
-def finish_background_pins(pipe: Any, cancel: Any = None) -> float:
+def finish_background_pins(pipe: Any, cancel: Any = None, include_late: bool = True) -> float:
     """Blocks until deferred pinners finish, since a render overlapping one runs measurably slower."""
     import time
 
     start = time.perf_counter()
     for pinner in list(getattr(pipe, _PENDING_PINS_ATTR, None) or ()):
         pinner.start()
+        if not include_late and getattr(pinner, "late", False):
+            continue
         # Polled so a cancelled request leaves now; the pin itself keeps running for the next render.
         while not pinner.join(0.25):
             if cancel is not None and cancel.is_set():
                 return time.perf_counter() - start
     return time.perf_counter() - start
+
+
+# "0": a two-expert denoiser's second expert pins beside the other weights, before the first render.
+LATE_EXPERT_PIN_ENV = "UNSLOTH_VIDEO_LATE_EXPERT_PIN"
+
+
+def defer_late_expert_pins(pipe: Any, late_modules: Any, logger: Any = None) -> int:
+    """Pin ``late_modules`` after every other pinner of ``pipe``, and keep the render from waiting for them.
+
+    Pinning reads the host copies from disk on a returning load, and all pinners share that disk: Wan2.2-A14B's
+    first render waited 47.8 s for both experts and the encoder. The low-noise expert first runs after the
+    high-noise steps, and its group onloads still wait for their own pins."""
+    if _env_off(LATE_EXPERT_PIN_ENV):
+        return 0
+    late_ids = {id(m) for m in late_modules or () if m is not None}
+    pending = list(getattr(pipe, _PENDING_PINS_ATTR, None) or ())
+    late = [p for p in pending if id(p.module) in late_ids]
+    early = [p for p in pending if id(p.module) not in late_ids]
+    if not late or not early:
+        return 0
+    for pinner in late:
+        pinner.after = list(early)
+        pinner.late = True
+    if logger is not None:
+        logger.info(
+            "diffusion.memory: %d late expert(s) (%.1f GiB) pin after the other %d pinner(s) (%.1f GiB); "
+            "the first render waits for those only",
+            len(late),
+            sum(p.outstanding_bytes() for p in late) / 2**30,
+            len(early),
+            sum(p.outstanding_bytes() for p in early) / 2**30,
+        )
+    return len(late)
 
 
 def stop_background_pins(pipe: Any, timeout: Optional[float] = 30.0) -> None:
