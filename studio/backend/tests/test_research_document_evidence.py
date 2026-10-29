@@ -124,18 +124,14 @@ def _synthesis_prompt(monkeypatch, knowledge_base) -> str:
     return prompts[-1]
 
 
-def test_every_step_keeps_its_top_document_passage_in_the_report_prompt(
-    research_home, monkeypatch
-):
+def test_every_step_keeps_its_top_document_passage_in_the_report_prompt(research_home, monkeypatch):
     prompt = _synthesis_prompt(monkeypatch, _knowledge_base_results)
 
     assert all(f"manual-fact-{step}" in prompt for step in range(STEPS))
     assert all(f"web-{step}-0" in prompt for step in range(STEPS))
 
 
-def test_web_results_keep_their_room_when_the_documents_match_nothing(
-    research_home, monkeypatch
-):
+def test_web_results_keep_their_room_when_the_documents_match_nothing(research_home, monkeypatch):
     prompt = _synthesis_prompt(
         monkeypatch, lambda _step: "No matching chunks were found in the knowledge base."
     )
