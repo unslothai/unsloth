@@ -176,11 +176,25 @@ test("Automatic gets its default pick only once devices are cached", () => {
   });
 });
 
-test("a failed device cache warm is retried once", async () => {
-  fetchResults = [null, { status: "ready" }, { status: "ready" }];
+test("a device cache warm that left no devices is retried once", async () => {
+  const ready = {
+    status: "ready",
+    inference_gpu: { backend: "rocm", available: true },
+  };
+  const vulkanPending = {
+    status: "ready",
+    inference_gpu: { backend: "vulkan", available: false },
+  };
+  snapshot = ready;
+  fetchResults = [null, ready, ready];
   await hooks.ensureGpuDeviceCache();
   assert.equal(fetchResults.length, 1);
-  fetchResults = [{ status: "ready" }, { status: "ready" }];
+  snapshot = vulkanPending;
+  fetchResults = [vulkanPending, vulkanPending, ready];
+  await hooks.ensureGpuDeviceCache();
+  assert.equal(fetchResults.length, 1);
+  snapshot = ready;
+  fetchResults = [ready, ready];
   await hooks.ensureGpuDeviceCache();
   assert.equal(fetchResults.length, 1);
 });

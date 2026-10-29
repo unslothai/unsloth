@@ -447,9 +447,9 @@ export function gpuDeviceCacheReady(): boolean {
 }
 
 export async function ensureGpuDeviceCache(): Promise<void> {
-  // A failed or timed-out fetch leaves the cache cold, and Automatic would then load with no default pick.
-  if ((await fetchSystemInfo()) === null) {
-    await fetchSystemInfo();
+  // A failed fetch, or Vulkan discovery still pending, leaves Automatic loading with no default pick.
+  if ((await fetchSystemInfo()) === null || !gpuDeviceCacheReady()) {
+    await fetchSystemInfo({ force: true });
   }
 }
 
