@@ -23,12 +23,49 @@ STREAM_ENCODE_ENV = "UNSLOTH_STUDIO_VIDEO_STREAM_ENCODE"
 STREAM_CHAIN_ENV = "UNSLOTH_STUDIO_VIDEO_STREAM_ENCODE_CHAIN"
 QUEUE_DEPTH = 8
 _STOP = object()
+# Kill switch: "0" compares the streamed frames with one whole-chunk np.array_equal again (as before).
+STREAM_COMPARE_ENV = "UNSLOTH_STUDIO_VIDEO_STREAM_COMPARE_SLICED"
+# uint64 words per compare slice (1 MiB of frames): its bool scratch is 128 KiB, far under numpy's 4 MiB
+# hugepage madvise, so the compare never faults in a transparent huge page.
+_COMPARE_WORDS = 1 << 17
 
 STATS = {"streamed": 0, "fallback": 0, "last": ""}
 
 
 def stream_encode_enabled() -> bool:
     return os.environ.get(STREAM_ENCODE_ENV, "").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _sliced_compare_enabled() -> bool:
+    return os.environ.get(STREAM_COMPARE_ENV, "").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _frames_equal(a: Any, b: Any, scratch: Any) -> bool:
+    """``np.array_equal(a, b)`` for uint8 arrays, slice by slice into ``scratch`` (bool, ``_COMPARE_WORDS`` long).
+
+    np.array_equal allocates a bool array the size of the chunk (tens of MB per H3 chunk), which numpy madvises
+    for huge pages; on a host whose memory is fragmented by pinned weights each of its faults runs direct
+    reclaim + compaction that fails (H3 1344x768 on an A100-40: a 124-frame compare took 115-152 s). Here
+    nothing is allocated per slice."""
+    import numpy as np
+
+    if a.shape != b.shape or a.dtype != b.dtype:
+        return False
+    if not (a.flags.c_contiguous and b.flags.c_contiguous):
+        return bool(np.array_equal(a, b))
+    a = a.reshape(-1)
+    b = b.reshape(-1)
+    words = a.size // 8
+    if words:
+        a64 = a[: words * 8].view(np.uint64)
+        b64 = b[: words * 8].view(np.uint64)
+        for start in range(0, words, _COMPARE_WORDS):
+            stop = min(words, start + _COMPARE_WORDS)
+            out = scratch[: stop - start]
+            np.equal(a64[start:stop], b64[start:stop], out = out)
+            if not out.all():
+                return False
+    return bool(np.array_equal(a[words * 8 :], b[words * 8 :]))
 
 
 def _expose_inner(wrapper: Any, original: Any) -> Any:
@@ -303,10 +340,17 @@ class StreamEncode:
         import numpy as np
 
         final = video_frames.numpy()
+        scratch = np.empty(_COMPARE_WORDS, dtype = np.bool_) if _sliced_compare_enabled() else None
         start = 0
         for host in streamed:
             # numpy, not torch.equal: torch's parallel compare costs seconds on a loaded many-core host.
-            if not np.array_equal(host.numpy(), final[start : start + len(host)]):
+            ours, theirs = host.numpy(), final[start : start + len(host)]
+            same = (
+                np.array_equal(ours, theirs)
+                if scratch is None
+                else _frames_equal(ours, theirs, scratch)
+            )
+            if not same:
                 self.invalidate("frames differ")
                 return False
             start += len(host)
