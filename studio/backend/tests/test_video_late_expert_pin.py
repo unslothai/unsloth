@@ -171,3 +171,16 @@ def test_slow_pins_keep_the_late_expert_behind_the_others(monkeypatch):
     hold.set()
     mem.finish_background_pins(pipe)
     assert log.index(("start", "transformer_2")) > log.index(("end", "transformer"))
+
+
+def test_copied_bytes_count_per_tensor_before_the_group_is_placed(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(mem, "_registered_pin", lambda src, device = None: src)
+    pinner = _Recorder("transformer", [])
+    with ThreadPoolExecutor(2) as pool:
+        futures = [pinner._submit(pool, torch.zeros(1024, dtype = torch.uint8)) for _ in range(3)]
+        for f in futures:
+            f.result()
+    assert pinner.copied == 3 * 1024 and pinner.pinned == 0

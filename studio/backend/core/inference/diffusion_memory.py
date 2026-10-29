@@ -6746,6 +6746,7 @@ class _GroupPinner:
         self.device = device
         self.logger = logger
         self.pinned = 0
+        self.copied = 0
         self.waited_s = 0.0
         self._done = {id(g): threading.Event() for g in groups}
         self._stop = threading.Event()
@@ -6775,7 +6776,7 @@ class _GroupPinner:
             elapsed = time.perf_counter() - began
             # Fast pins are bound by the copy and register, not the disk: pinning beside the others wins there,
             # and overlapping the render only moves the register cost into the encode (G4: +1.1 s).
-            rate = sum(dep.pinned for dep in self.after) / elapsed
+            rate = sum(max(dep.copied, dep.pinned) for dep in self.after) / elapsed
             if elapsed >= _LATE_PIN_PROBE_S and rate >= _LATE_PIN_PARALLEL_BPS:
                 self.late = False
                 if self.logger is not None:
@@ -6834,6 +6835,15 @@ class _GroupPinner:
             and src.numel() > 0
             and not src.is_pinned()
         ]
+
+    def _submit(self, pool: Any, src: Any) -> Any:
+        future = pool.submit(_registered_pin, src, self.device)
+        future.add_done_callback(functools.partial(self._count_copy, int(src.nbytes)))
+        return future
+
+    def _count_copy(self, nbytes: int, future: Any) -> None:
+        if not future.cancelled():
+            self.copied += nbytes
 
     @staticmethod
     def _fast_result(future: Any, src: Any) -> Any:
@@ -6917,7 +6927,7 @@ class _GroupPinner:
                         (
                             tensor,
                             src,
-                            pool.submit(_registered_pin, src, self.device),
+                            self._submit(pool, src),
                         )
                         for tensor, src in self._unpinned(group)
                     ]
@@ -7029,7 +7039,7 @@ def finish_background_pins(pipe: Any, cancel: Any = None, include_late: bool = T
 
 # "0": a two-expert denoiser's second expert pins beside the other weights, before the first render.
 LATE_EXPERT_PIN_ENV = "UNSLOTH_VIDEO_LATE_EXPERT_PIN"
-_LATE_PIN_PROBE_S = 0.5
+_LATE_PIN_PROBE_S = 0.2
 _LATE_PIN_PARALLEL_BPS = 3 << 30
 
 
