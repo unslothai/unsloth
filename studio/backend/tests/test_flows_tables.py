@@ -354,7 +354,7 @@ async def test_rows_to_dataset_saves_every_row_of_a_big_table(monkeypatch):
 
     sent = []
 
-    async def fake_upload(_ctx, rows, name):
+    async def fake_upload(_ctx, rows, name, **_):
         sent.append(rows)
         return {"kind": "dataset"}
 
