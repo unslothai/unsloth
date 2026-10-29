@@ -36,6 +36,12 @@ def stdio_names(recipe: Any) -> list[str]:
     return [str(p.get("name")) for p in providers or [] if is_stdio(p)]
 
 
+def uses_mcp(recipe: Any) -> bool:
+    """True when the recipe would call MCP servers (a tool profile names one), which Flows gates like any MCP use."""
+    providers = recipe.get("mcp_providers") if isinstance(recipe, dict) else None
+    return any(isinstance(p, dict) and p.get("name") for p in providers or [])
+
+
 def missing_seed(recipe: Any) -> str | None:
     """Why the recipe cannot run yet when its file seed came without the file (a shared recipe), else None."""
     seed = recipe.get("seed_config") if isinstance(recipe, dict) else None

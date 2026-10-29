@@ -162,7 +162,11 @@ async def recipe_group(ctx: NodeContext) -> dict:
     if not isinstance(compiled, dict):
         raise FlowNodeError("Put this step inside a Data Recipe group")
     body = runnable_recipe(compiled.get("recipe"))
-    from core.flows.recipe_share import missing_seed
+    from core.flows.recipe_share import missing_seed, uses_mcp
+
+    # Same boundary as every other MCP use in Flows: the owner, in Unsloth Studio, with MCP approved.
+    if uses_mcp(body) and (refused := ctx.capability_refusal("mcp")):
+        raise FlowNodeError(refused)
 
     if not isinstance(ctx.inputs.get("seed"), dict) and (seed := missing_seed(body)):
         raise FlowNodeError(seed)

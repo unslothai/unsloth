@@ -404,3 +404,31 @@ def test_sharing_keeps_a_full_hf_seed_path(client):
     ).json()
     assert exported["recipe"]["seed_config"]["source"]["path"] == path
     assert "hf_xxx" not in json.dumps(exported)
+
+
+def test_a_recipe_with_mcp_servers_needs_the_flows_mcp_approval():
+    from core.flows import capabilities
+
+    with_web = copy.deepcopy(SQL)
+    with_web["recipe"]["mcp_providers"] = [HTTP]
+    with_web["recipe"]["tool_configs"] = [
+        {"tool_alias": "web", "providers": [HTTP["name"]], "max_tool_call_turns": 3}
+    ]
+    with_web["recipe"]["columns"][4]["tool_alias"] = "web"
+    doc = _flow(with_web)
+    assert capabilities.doc_needs(doc)["mcp"] is True
+    assert capabilities.doc_needs(_flow())["mcp"] is False
+    step = next(n for n in doc["nodes"] if n["type"] == "recipe.generate")
+    step["disabled"] = True
+    assert capabilities.doc_needs(doc)["mcp"] is False, "a disabled step runs nothing"
+    step["disabled"] = False
+
+    jobs: list = []
+    ctx = _Ctx(_routes(jobs), params = {RECIPE_PARAM: _compiled(doc), "mode": "preview", "rows": 2})
+    ctx.refuse["mcp"] = "Recipe Dataset only runs when the Studio owner starts this flow in Unsloth Studio"
+    with pytest.raises(FlowNodeError, match = "Studio owner"):
+        asyncio.run(data.recipe_group(ctx))
+    assert jobs == [], "no job starts without the approval"
+    ctx.refuse.clear()
+    asyncio.run(data.recipe_group(ctx))
+    assert [p["name"] for p in jobs[0]["recipe"]["mcp_providers"]] == [HTTP["name"]]
