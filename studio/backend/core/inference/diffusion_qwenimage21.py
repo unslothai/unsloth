@@ -90,7 +90,6 @@ class _Layout:
         "_segments",
         "_vlm_text",
         "_tails",
-        "_valid",
         "__weakref__",
     )
 
@@ -114,7 +113,6 @@ def _build_layout(model: Any, mod: Any, img_mask: Any, shapes: list, device: Any
     lay._segments = None
     lay._vlm_text = {}
     lay._tails = None
-    lay._valid = None
     return lay
 
 
@@ -184,16 +182,6 @@ def _eager_fast(model: Any) -> bool:
     return active(model)
 
 
-def _all_valid(lay: _Layout, mask: Any) -> bool:
-    """Every text key of this render is valid; one host read per mask tensor."""
-    held = lay._valid
-    if held is not None and held[0]() is mask:
-        return held[1]
-    valid = bool(mask.bool().all())
-    lay._valid = (weakref.ref(mask), valid)
-    return valid
-
-
 def _tails(lay: _Layout) -> tuple:
     """The decode rows of the RoPE table and modulation mask; one view per layout, so a graph replay can tell by
     identity that its copy is current."""
@@ -215,13 +203,12 @@ def _cached_core(
     rotary_emb: Any,
     modulation_mask: Any,
     layer_cache: Any,
-    drop_mask: bool = False,
     broadcast_modulation: bool = False,
 ) -> Any:
     """One decode step from the prefix KV cache. Reads no host value off the device, so it records as a CUDA graph;
     the eager step and the graph run this same code. ``layer_cache(i)`` returns block ``i``'s cache entry.
-    ``drop_mask``: every key is valid, so attention runs unmasked. ``broadcast_modulation``: every row is a target
-    row, so the blocks read the sampled-t modulation row broadcast (the same values torch.where would gather)."""
+    ``broadcast_modulation``: every row is a target row, so the blocks read the sampled-t modulation row broadcast,
+    the values torch.where would gather."""
     import torch
 
     batch_size = hidden_states.shape[0]
@@ -237,7 +224,7 @@ def _cached_core(
     modulation = model.modulation(temb)
 
     attention_mask = None
-    if encoder_hidden_states_mask is not None and not drop_mask:
+    if encoder_hidden_states_mask is not None:
         joint_key_valid = torch.ones(batch_size, total, dtype = torch.bool, device = device)
         joint_key_valid[:, text_positions] = encoder_hidden_states_mask.bool()[:, vlm_text]
         attention_mask = joint_key_valid[:, None, None, :]
@@ -273,18 +260,11 @@ def _cached_step(
     kv_cache: Any,
 ) -> Any:
     rotary_emb, modulation_mask = _tails(lay)
-    fast = _eager_fast(model)
-    drop_mask = (
-        fast
-        and encoder_hidden_states_mask is not None
-        and _all_valid(lay, encoder_hidden_states_mask)
-    )
-    broadcast = fast and lay.tail_all_target
-    if fast:
+    broadcast = lay.tail_all_target and _eager_fast(model)
+    if broadcast:
         from .diffusion_qwenimage21_eager import STATS
 
-        STATS["mask_dropped"] += int(drop_mask)
-        STATS["mod_broadcast"] += int(broadcast)
+        STATS["mod_broadcast"] += 1
     return _cached_core(
         model,
         text_dtype,
@@ -300,7 +280,6 @@ def _cached_step(
         rotary_emb,
         modulation_mask,
         kv_cache.get_layer,
-        drop_mask = drop_mask,
         broadcast_modulation = broadcast,
     )
 
@@ -612,12 +591,6 @@ def _make_forward(mod: Any, stock: Any) -> Any:
             )
             cache_write_slice = slice(0, prefix_len) if kv_cache_mode == "extract" else None
             block_key_valid = joint_key_valid
-            if (
-                joint_key_valid is not None
-                and _eager_fast(self)
-                and _all_valid(lay, encoder_hidden_states_mask)
-            ):
-                block_key_valid = None
 
         compact_kv = compact_kv_enabled()
         for index_block, block in enumerate(self.transformer_blocks):

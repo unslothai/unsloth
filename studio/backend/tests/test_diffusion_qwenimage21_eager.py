@@ -44,13 +44,14 @@ def _armed(m):
     return m
 
 
-@pytest.mark.parametrize("case", [{}, {"cond": (4, 4)}, {"batch": 2, "pad": 3}])
-def test_broadcast_modulation_and_the_eager_qkv_are_bit_identical(case, monkeypatch):
+@pytest.mark.parametrize(
+    "case", [{}, {"cond": (4, 4)}, {"batch": 2, "pad": 3}, {"batch": 2, "cond": (4, 8), "pad": 2}]
+)
+def test_broadcast_modulation_and_the_eager_qkv_are_bit_identical(case):
     m = _model()
     inp = _valid(_inputs(**case)) if not case.get("pad") else _inputs(**case)
     ref = _render(m, inp)
     _armed(m)
-    monkeypatch.setattr(q, "_all_valid", lambda lay, mask: False)
     before = dict(e.STATS)
     got = _render(m, inp)
     for a, b in zip(ref, got):
@@ -58,28 +59,14 @@ def test_broadcast_modulation_and_the_eager_qkv_are_bit_identical(case, monkeypa
     assert e.STATS["mod_broadcast"] > before["mod_broadcast"]
 
 
-def test_an_all_valid_text_mask_is_dropped_and_matches_stock():
+def test_a_demoted_load_runs_stock_outside_a_pending_background_compile():
     m = _model()
-    inp = _valid(_inputs())
-    ref = _render(m, inp)
     _armed(m)
-    before = e.STATS["mask_dropped"]
-    got = _render(m, inp)
-    assert e.STATS["mask_dropped"] > before
-    for a, b in zip(ref, got):
-        torch.testing.assert_close(a, b, rtol = 1e-5, atol = 1e-6)
-
-
-def test_padded_text_keeps_its_mask():
-    m = _model()
-    inp = _inputs(batch = 2, pad = 3)
-    ref = _render(m, inp)
-    _armed(m)
-    before = e.STATS["mask_dropped"]
-    got = _render(m, inp)
-    assert e.STATS["mask_dropped"] == before
-    for a, b in zip(ref, got):
-        assert torch.equal(a, b)
+    inp = _inputs()
+    before = e.STATS["mod_broadcast"]
+    e.demote(types.SimpleNamespace(transformer = m))
+    _render(m, inp)
+    assert e.STATS["mod_broadcast"] == before
 
 
 def test_state_rules(monkeypatch):

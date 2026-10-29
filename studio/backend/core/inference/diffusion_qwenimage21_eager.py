@@ -2,9 +2,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Qwen-Image-2.1 renders that run eager while the deferred speed profile waits: q/k RMSNorm + RoPE in one Triton
-kernel (stock rounding, the RoPE bit-identical), the all-valid text mask dropped so SDPA runs its unmasked kernel,
-and broadcast modulation on decode steps (bit-identical). Never on a compiled call or an explicit speed ``off``;
-kill switch UNSLOTH_DIFFUSION_Q21_EAGER_FAST=0"""
+kernel (stock rounding steps; the fp32 sum of squares may differ in its last bit) and broadcast modulation on
+decode steps (bit-identical). Never on a compiled call or an explicit speed ``off``; kill switch
+UNSLOTH_DIFFUSION_Q21_EAGER_FAST=0"""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ _LOCK = threading.Lock()
 _STOCK: dict = {}
 _FAILED = [False]
 _FUSION: dict = {}
-STATS = {"qk_fused": 0, "mask_dropped": 0, "mod_broadcast": 0}
+STATS = {"qk_fused": 0, "mod_broadcast": 0}
 
 
 def disabled() -> bool:
@@ -353,8 +353,8 @@ def install_for_pipe(pipe: Any, logger: Any = None) -> bool:
     set_state(transformer, EAGER)
     if logger is not None:
         logger.info(
-            "diffusion.q21_eager: renders before the deferred compile run the fused q/k RMSNorm + RoPE, "
-            "unmasked attention when every text token is valid, and broadcast modulation"
+            "diffusion.q21_eager: renders before the deferred compile run the fused q/k RMSNorm + RoPE "
+            "and broadcast modulation"
         )
     return True
 
