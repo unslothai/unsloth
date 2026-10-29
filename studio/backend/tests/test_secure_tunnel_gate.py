@@ -246,6 +246,22 @@ def test_startup_output_emits_tool_notice_on_network_bind(capsys, monkeypatch):
     assert "follow each request's enable_tools" in out
 
 
+def test_startup_output_auto_start_on_wildcard_does_not_say_tunnel_off(capsys, monkeypatch):
+    import run
+
+    monkeypatch.setattr(run, "_verify_global_reachability", lambda *a, **k: None)
+    monkeypatch.setattr(run, "_localhost_ipv6_mismatch_url", lambda *a, **k: None)
+    monkeypatch.setattr(run, "_is_wsl_nat", lambda: False)
+    monkeypatch.setattr(run, "_cloudflare_url", None)
+    monkeypatch.setattr(run, "_cloudflare_requested", False)
+    monkeypatch.setattr(run, "_cloudflare_flag", None)
+
+    run._emit_startup_output("0.0.0.0", 8000, "0.0.0.0", remote_access_starting = True)
+    out = capsys.readouterr().out
+    assert "PUBLIC Cloudflare URL" in out
+    assert "Cloudflare tunnel: OFF" not in out
+
+
 def test_startup_output_emits_disabled_notice(capsys, monkeypatch):
     import run
 
