@@ -73,7 +73,7 @@ test("the sibling link keeps its icon where the square button puts it and trails
   );
   assert.match(
     LINK,
-    /\{iconArrow && \(\s*<>[\s\S]{0,200}<span className="hidden min-w-0 truncate text-ui-13 font-medium @\[50rem\]:inline">\s*\{label\}\s*<\/span>\s*<ArrowRightIcon className="size-3\.5 shrink-0 opacity-60" \/>/,
+    /\{iconArrow && \(\s*<>[\s\S]{0,200}<span className="hidden min-w-0 truncate text-ui-13 font-medium @\[50rem\]:inline \[\[data-media-header-tight\]_&\]:hidden">\s*\{label\}\s*<\/span>\s*<ArrowRightIcon className="size-3\.5 shrink-0 opacity-60" \/>/,
   );
   for (const page of [IMAGES, VIDEO]) {
     assert.match(
@@ -83,13 +83,19 @@ test("the sibling link keeps its icon where the square button puts it and trails
   }
 });
 
-test("media headers centre Create / Train and hide their links as a group when they do not fit", () => {
+test("media headers keep their links beside Create / Train, hiding them only when both cannot fit or on a tablet", () => {
   const actions = readSrc("components/media-header-actions.tsx");
-  assert.match(actions, /setFits\(group\.scrollWidth <= room\)/);
-  assert.match(actions, /inert=\{!fits \|\| undefined\}/);
-  assert.match(actions, /!fits && "invisible"/);
+  // Full, then compact (pill padding and link labels), then hidden.
+  assert.match(actions, /grid\.toggleAttribute\(MEDIA_HEADER_TIGHT_ATTR, step > 0\)/);
+  assert.match(actions, /if \(width === undefined \|\| width <= room\)/);
+  assert.match(actions, /step === 2 && "hidden"/);
+  assert.match(actions, /@max-\[40rem\]:hidden/);
   for (const page of [IMAGES, VIDEO, readSrc("features/audio/audio-page.tsx")]) {
-    assert.match(page, /<div className="grid h-full min-w-0 grid-cols-\[1fr_auto_1fr\]">/);
+    assert.match(
+      page,
+      /<div className="grid h-full min-w-0 grid-cols-\[minmax\(0,1fr\)_auto_minmax\(max-content,1fr\)\]">/,
+    );
+    assert.match(page, /<div data-media-header-centre className="pointer-events-auto col-start-2/);
     assert.match(page, /<MediaHeaderActions /);
   }
 });

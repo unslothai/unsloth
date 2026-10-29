@@ -1951,8 +1951,8 @@ export function AudioPage({
             />
           </div>
         </div>
-        <div className="grid h-full min-w-0 grid-cols-[1fr_auto_1fr]">
-          <div className="pointer-events-auto col-start-2 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)]">
+        <div className="grid h-full min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(max-content,1fr)]">
+          <div data-media-header-centre className="pointer-events-auto col-start-2 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)]">
             {workflowTab.createTrain ? (
               <PillTabs
                 ariaLabel="Page mode"
@@ -1967,7 +1967,7 @@ export function AudioPage({
                   void navigateSelf({ to: "/studio" });
                 }}
                 fit={true}
-                className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
+                className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11 [[data-media-header-tight]_&]:[&>button]:px-3 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
                 tabs={[
                   {
                     value: "create",
@@ -1999,8 +1999,8 @@ export function AudioPage({
             )}
             <LibraryPageLink
               tab="audio"
-              labelClassName="hidden @[50rem]:inline"
-              arrowClassName="hidden @[50rem]:block"
+              labelClassName="hidden @[50rem]:inline [[data-media-header-tight]_&]:hidden"
+              arrowClassName="hidden @[50rem]:block [[data-media-header-tight]_&]:hidden"
             />
           </MediaHeaderActions>
         </div>
