@@ -40,3 +40,10 @@ test("Start asks the same isolation check for its refusal", async () => {
     setAuthFetchHandler(null);
   }
 });
+
+test("the Auto warning says neither isolation setting limits the network", async () => {
+  const { en } = await import("../src/i18n/locales/en.ts");
+  const text = en.rl.rewards.isolationAutoWarning;
+  assert.ok(!text.includes("or using the network"), text);
+  assert.match(text, /Neither setting limits the network/);
+});

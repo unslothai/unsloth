@@ -73,7 +73,6 @@ import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
 import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { LayersIcon } from "lucide-react";
 
 const POLL_MS = 3000;
 
@@ -100,13 +99,6 @@ function usagePillClass(percent: number | null): string {
     return "bg-amber-500/10 text-amber-600 dark:text-amber-400";
   }
   return "bg-control-accent/10 text-control-accent";
-}
-
-function usageValueClass(percent: number | null): string {
-  if (!isFiniteNumber(percent)) return "text-muted-foreground/70";
-  if (percent >= 90) return "text-[#df4530] dark:text-[#ef5b40]";
-  if (percent >= 70) return "text-amber-600 dark:text-amber-400";
-  return "text-foreground";
 }
 
 function formatGb(value: number | null | undefined): string {
@@ -168,20 +160,18 @@ function MetricTile({
   const percentKnown = isFiniteNumber(percent);
   const safePercent = clampPercent(percent);
   return (
-    <div className="flex min-w-0 flex-col gap-3 rounded-xl border border-border/60 bg-card px-6 py-5 dark:border-transparent">
+    <div className="flex min-w-0 flex-col gap-3 rounded-xl border border-border/60 bg-card px-6 pt-5 pb-6 dark:border-transparent">
       <div className="flex min-w-0 flex-col gap-0.5">
         <div className="flex min-w-0 items-center justify-between gap-3">
           <span className="text-ui-12 text-muted-foreground">{label}</span>
-          {showUsage ? (
+          {showUsage && percentKnown ? (
             <span
               className={cn(
-                "shrink-0 rounded-full px-2 py-1 font-mono text-ui-12 leading-none font-semibold tabular-nums",
-                percentKnown
-                  ? usagePillClass(safePercent)
-                  : "bg-muted text-muted-foreground",
+                "-my-1 shrink-0 rounded-full px-2 py-1 font-mono text-ui-12 leading-none tabular-nums",
+                usagePillClass(safePercent),
               )}
             >
-              {percentKnown ? formatPercent(safePercent) : "--"}
+              {formatPercent(safePercent)}
             </span>
           ) : null}
         </div>
@@ -189,8 +179,8 @@ function MetricTile({
           title={value}
           className={cn(
             "truncate font-mono text-ui-14 font-medium leading-tight tabular-nums",
-            showUsage
-              ? usageValueClass(percentKnown ? safePercent : null)
+            showUsage && !percentKnown
+              ? "text-muted-foreground/70"
               : "text-foreground",
           )}
         >
@@ -663,26 +653,15 @@ export function ResourcesTab() {
         </div>
         {/* Top edge on the h1's cap top (text-xl at leading 1.4; Hellix: 0.322em). */}
         <div className="mt-[calc(var(--text-xl)*0.322)] flex min-w-0 flex-wrap items-center gap-2">
-          <Button
-            variant={isOpen ? "secondary" : "outline"}
-            size="sm"
-            className="gap-1.5 h-8 text-xs rounded-full px-3"
-            onClick={() => setIsOpen(!isOpen)}
-          >
-            <LayersIcon className="size-3.5" />
-            {isOpen
-              ? t("settings.resources.disableOverlay")
-              : t("settings.resources.floatingWindow")}
-          </Button>
-
-          <div className="flex h-8 shrink-0 items-center gap-2 rounded-full border border-border/60 px-2.5 text-xs font-medium text-foreground">
+          <label className="flex h-9 shrink-0 items-center gap-2 rounded-full border border-border/60 px-3.5 text-xs font-medium text-foreground">
             <span>{t("settings.resources.liveUpdates")}</span>
             <Switch
+              className="scale-[0.88]"
               aria-label={t("settings.resources.liveUpdates")}
               checked={liveUpdates}
               onCheckedChange={setLiveUpdates}
             />
-          </div>
+          </label>
         </div>
       </header>
 
@@ -799,40 +778,6 @@ export function ResourcesTab() {
             percent={metrics.vramUsageKnown ? metrics.vramPercent : null}
           />
         </div>
-        <SettingsRow
-          label={t("settings.resources.liveMonitor.detailedView")}
-          description={t(
-            "settings.resources.liveMonitor.detailedViewDescription",
-          )}
-        >
-          <Switch
-            aria-label={t("settings.resources.liveMonitor.detailedView")}
-            checked={showDetails}
-            onCheckedChange={setShowDetails}
-          />
-        </SettingsRow>
-        {showDetails && (
-          <div className="flex flex-wrap gap-x-5 gap-y-2 pb-3">
-            {MONITOR_DETAIL_METRICS.map((metric) => {
-              const label = t(`settings.resources.liveMonitor.${metric}`);
-              return (
-                <label
-                  key={metric}
-                  className="flex cursor-pointer items-center gap-2 text-xs font-medium text-foreground"
-                >
-                  <Checkbox
-                    checked={detailMetrics.has(metric)}
-                    onCheckedChange={(checked) =>
-                      setDetailMetric(metric, checked === true)
-                    }
-                    aria-label={label}
-                  />
-                  {label}
-                </label>
-              );
-            })}
-          </div>
-        )}
       </SettingsSection>
 
       <SettingsSection title={t("settings.resources.gpu.title")}>
@@ -1152,6 +1097,53 @@ export function ResourcesTab() {
         ) : (
           <div className="py-3 text-sm text-muted-foreground">
             {gpuUnknown ? gpuUnknownLabel : t("settings.resources.gpu.noGpu")}
+          </div>
+        )}
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.resources.floatingWindow")}>
+        <SettingsRow
+          label={t("settings.resources.showFloatingWindow")}
+          description={t("settings.resources.showFloatingWindowDescription")}
+        >
+          <Switch
+            aria-label={t("settings.resources.showFloatingWindow")}
+            checked={isOpen}
+            onCheckedChange={setIsOpen}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.resources.liveMonitor.detailedView")}
+          description={t(
+            "settings.resources.liveMonitor.detailedViewDescription",
+          )}
+        >
+          <Switch
+            aria-label={t("settings.resources.liveMonitor.detailedView")}
+            checked={showDetails}
+            onCheckedChange={setShowDetails}
+          />
+        </SettingsRow>
+        {showDetails && (
+          <div className="flex flex-wrap gap-x-5 gap-y-2 pb-3">
+            {MONITOR_DETAIL_METRICS.map((metric) => {
+              const label = t(`settings.resources.liveMonitor.${metric}`);
+              return (
+                <label
+                  key={metric}
+                  className="flex cursor-pointer items-center gap-2 text-xs font-medium text-foreground"
+                >
+                  <Checkbox
+                    checked={detailMetrics.has(metric)}
+                    onCheckedChange={(checked) =>
+                      setDetailMetric(metric, checked === true)
+                    }
+                    aria-label={label}
+                  />
+                  {label}
+                </label>
+              );
+            })}
           </div>
         )}
       </SettingsSection>

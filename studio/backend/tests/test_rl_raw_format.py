@@ -176,6 +176,17 @@ def test_image_paths_are_found_anywhere_in_a_text_column():
     assert tmod._image_columns(Dataset.from_dict({"prompt": ["see figure.pdf"]})) == []
 
 
+def test_rows_left_out_of_a_capped_dataset_are_not_scanned():
+    from datasets import Dataset
+
+    texts = ["plain"] * 50 + ["cat.png"]
+    dataset = Dataset.from_dict({"asset": texts})
+    assert tmod._image_columns(dataset) == ["asset"]
+    # Non-contiguous, so datasets keeps an indices mapping instead of slicing the table.
+    assert tmod._image_columns(dataset.select(range(0, 50, 2))) == []
+    assert tmod._image_columns(dataset.select([50, 0])) == ["asset"]
+
+
 @pytest.mark.parametrize("objective", ["grpo", "dpo"])
 def test_rl_is_refused_for_an_audio_model_without_the_audio_flag(trainer, tmp_path, objective):
     path = tmp_path / "rows.jsonl"

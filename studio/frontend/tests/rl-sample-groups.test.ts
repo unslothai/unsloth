@@ -28,3 +28,22 @@ test("no selection follows the newest group; a trimmed one falls to the oldest k
   assert.equal(shownIndex(groups, null), groups.length - 1);
   assert.equal(shownIndex(groups, 1), 0);
 });
+
+test("a browsed sample stays put across many polls that each trim", () => {
+  // Replays a long run: the user parks on seq 5, then every poll adds two groups.
+  let groups = range(1, KEEP_GROUPS);
+  const selected = 5;
+  for (let poll = 0; poll < 40; poll++) {
+    const next = groups[groups.length - 1].seq + 1;
+    groups = keepNewest(groups, range(next, next + 1), selected);
+    assert.equal(
+      groups[shownIndex(groups, selected)].seq,
+      selected,
+      `poll ${poll}`,
+    );
+    assert.ok(groups.length <= KEEP_GROUPS + 1);
+  }
+  // Back to following the newest: the parked group is let go on the next trim.
+  groups = keepNewest(groups, range(1000, 1001), null);
+  assert.ok(!groups.some((g) => g.seq === selected));
+});

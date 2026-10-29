@@ -1116,7 +1116,7 @@ export const es = {
       lastVisited: "Última visitada",
     },
     tabs: {
-      sandbox: "Sandbox",
+      sandbox: "Seguridad",
       accounts: "Cuentas",
       general: "General",
       profile: "Perfil",
@@ -1400,7 +1400,7 @@ export const es = {
       },
     },
     sandbox: {
-      title: "Sandbox",
+      title: "Seguridad",
       description: "Si las llamadas a herramientas de Python y Terminal se ejecutan dentro de un sandbox del sistema en este equipo.",
       docs: "Documentación",
       docsLabel: "Abrir la documentación del sandbox",
@@ -1475,6 +1475,7 @@ export const es = {
       managedNote: "El propietario de este servidor de Unsloth configura el sandbox del sistema.",
     },
     debugging: {
+      description: "Lee los registros de Unsloth sin salir de la aplicación.",
       logSection: "Archivo de registro",
       source: "Archivo de registro",
       sourceHint: "Los ejecutores de modelos escriben sus propios registros, así que un fallo al cargar o al generar suele explicarse ahí y no en el registro del servidor.",
@@ -2381,7 +2382,8 @@ export const es = {
         "Monitorea el hardware y el almacenamiento de este servidor de Unsloth.",
       liveUpdates: "Actualizaciones en vivo",
       floatingWindow: "Ventana flotante",
-      disableOverlay: "Desactivar superposición",
+      showFloatingWindow: "Mostrar ventana flotante",
+      showFloatingWindowDescription: "Mantén a la vista el uso de CPU, RAM y GPU sobre Unsloth.",
       liveMonitor: {
         title: "Monitor en vivo",
         apiTitle: "Monitor de API",
@@ -2827,11 +2829,6 @@ export const es = {
       autoScrollManual: "Manual",
       autoScrollKeywords:
         "desplazamiento desplazar automático seguir abajo saltar transmisión generar vista bloquear scroll autoscroll follow",
-      scrollToBottomButton: "Botón para ir al final",
-      scrollToBottomButtonDescription:
-        "Muestra un botón para volver al último mensaje después de desplazarte hacia arriba.",
-      scrollToBottomButtonKeywords:
-        "desplazar final abajo saltar último flecha botón ocultar scroll bottom button",
       replyNotification: "Avisar cuando termine una respuesta",
       replyNotificationDescription:
         "Muestra una notificación del sistema cuando termina una respuesta mientras Unsloth está minimizado o en segundo plano.",
@@ -3370,8 +3367,9 @@ export const es = {
         loadError: "No se pudieron cargar los ajustes de la API de decisiones.",
         sendsTo: "Las solicitudes se envían a {provider}.",
         connectionMissing: "Esta conexión ya no existe o no tiene modelos de decisiones. Elige otro modelo.",
-        addConnection: "Para usar un modelo de decisiones alojado, añade TypeSafe, Liquid AI u OpenRouter en Conexiones.",
-        openConnections: "Abrir Conexiones",
+        addConnection: "Para usar un modelo de decisiones alojado, añádelo en ",
+        connectionsLink: "Conexiones",
+        addConnectionSuffix: ".",
       },
       mcp: {
         title: "Acceso de agentes (MCP)",
@@ -5048,7 +5046,7 @@ export const es = {
       isolationRequired: "Sandbox del sistema obligatorio",
       isolationAuto: "Automático",
       isolationRequiredHint: "Las recompensas Python solo se ejecutan dentro del sandbox del sistema; Iniciar y Probar las rechazan si este sistema no tiene uno.",
-      isolationAutoWarning: "Sin sandbox del sistema, las recompensas Python se ejecutan solo con protecciones de software. Estas no impiden que una recompensa lea tus archivos, escriba fuera de su carpeta o use la red.",
+      isolationAutoWarning: "Sin sandbox del sistema, las recompensas Python se ejecutan solo con protecciones de software. Estas no impiden que una recompensa lea tus archivos o escriba fuera de su carpeta. Ninguno de los dos ajustes limita la red: una recompensa puede acceder a internet y a los servicios de este equipo.",
       scoreNone: "sin puntuación",
       summary: {
         regexWhole: "La respuesta completa coincide con el patrón",

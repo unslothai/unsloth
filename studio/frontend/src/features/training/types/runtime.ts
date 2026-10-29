@@ -45,7 +45,7 @@ export interface TrainingStatusResponse {
     grad_norm_steps?: number[];
     eval_loss?: number[];
     eval_steps?: number[];
-    rl?: Array<Record<string, number>>;
+    rl?: Array<{ step: number } & Record<string, number | null>>;
   } | null;
 }
 
@@ -76,7 +76,7 @@ export interface TrainingProgressPayload {
   num_tokens: number | null;
   eval_loss: number | null;
   /** DPO/ORPO/GRPO log values keyed as TRL logs them (reward, kl, rewards/margins, ...). */
-  rl_metrics?: Record<string, number> | null;
+  rl_metrics?: Record<string, number | null> | null;
 }
 
 export interface TrainingSeriesPoint {
@@ -86,7 +86,8 @@ export interface TrainingSeriesPoint {
 
 export interface RlMetricPoint {
   step: number;
-  values: Record<string, number>;
+  // null: a reward that scored nothing that step, kept so its series shows the gap.
+  values: Record<string, number | null>;
 }
 
 export interface TrainingRuntimeState {

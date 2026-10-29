@@ -669,6 +669,8 @@ def test_try_it_start_and_training_refuse_in_the_same_plain_words(monkeypatch):
     assert "still run" not in text and "tool calls" not in text and "within a minute" not in text
     assert "sudo apt-get install -y bubblewrap`, then try again." in text
     assert 'grpo_python_reward_isolation: "auto"' in text
+    # The OS sandbox confines files and processes; neither mode confines the network.
+    assert "using the network" not in text and "Neither setting limits the network." in text
 
     monkeypatch.setattr(
         os_sandbox,

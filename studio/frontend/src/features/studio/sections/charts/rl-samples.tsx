@@ -101,6 +101,9 @@ export function RlSamplesCard({
   const [loaded, setLoaded] = useState(false);
   const [pollError, setPollError] = useState<string | null>(null);
   const lastSeq = useRef(0);
+  // Read by the poll, which outlives renders.
+  const selectedSeqRef = useRef<number | null>(null);
+  selectedSeqRef.current = selectedSeq;
 
   useEffect(() => {
     setGroups([]);
@@ -120,7 +123,7 @@ export function RlSamplesCard({
         setPollError(null);
         if (fresh.length > 0) {
           lastSeq.current = fresh[fresh.length - 1].seq;
-          setGroups((prev) => keepNewest(prev, fresh));
+          setGroups((prev) => keepNewest(prev, fresh, selectedSeqRef.current));
         }
       } catch (err) {
         // Shown, and retried on the next tick while training.

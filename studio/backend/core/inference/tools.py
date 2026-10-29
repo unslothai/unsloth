@@ -20871,18 +20871,20 @@ def _spill_full_output(
         return None, True
 
 
-def _spill_files(root: str, directory: str, owned: "set[str]") -> "list[str]":
-    """The spills in one directory: the ones ``owned`` records this process having written.
-    Everything else there is the user's, whatever it is called. Links are never spills."""
+def _spill_files(root: str, directory: str, owned: "dict[str, tuple[str, str]]") -> "list[str]":
+    """The spills in one directory, by stamp only: hashing every kept spill on each prune costs up to
+    the whole byte cap, and `_unlink_verified_spill` checks the digest before anything is deleted."""
     try:
         names = os.listdir(directory)
     except OSError:
         return []
-    return [
-        path
-        for path in (os.path.join(directory, name) for name in names)
-        if _is_recorded_spill(root, path, owned)
-    ]
+    spills = []
+    for name in names:
+        path = os.path.join(directory, name)
+        recorded = owned.get(os.path.relpath(path, root).replace(os.sep, "/"))
+        if recorded is not None and recorded[0] == _spill_stamp(path):
+            spills.append(path)
+    return spills
 
 
 def _unlink_verified_spill(root: str, path: str, owned: "dict[str, tuple[str, str]]") -> bool:
@@ -20990,6 +20992,9 @@ def _prune_spills_locked(target_dir: str, root: str) -> None:
             if _unlink_verified_spill(root, path, owned):
                 removed.add(path)
         # Manifest follows the files: a name left after its file is gone would still count as owned.
+        # Sandbox removal drops the record without this lock; a recreated directory must not inherit it.
+        if not os.path.exists(_spill_record_path(root)):
+            identity = None
         _write_spill_manifest(
             root,
             {
@@ -20997,6 +21002,7 @@ def _prune_spills_locked(target_dir: str, root: str) -> None:
                 for name, stamp in owned.items()
                 if os.path.join(root, *name.split("/")) not in removed
             },
+            identity = identity,
         )
         # Remove emptied scopes so cleanup does not see the sandbox as non-empty.
         for name in sorted(os.listdir(root)):

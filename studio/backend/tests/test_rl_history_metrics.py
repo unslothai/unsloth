@@ -131,3 +131,26 @@ def test_sse_replay_sends_each_step_its_own_rl_metrics(monkeypatch):
             replayed.setdefault(data["step"], data.get("rl_metrics"))
     assert replayed[1] == {"reward": 1.0}
     assert replayed[2] == {"reward": 2.0}
+
+
+def test_a_reward_that_scored_nothing_keeps_its_series(db):
+    from core.training.rl import rl_log_metrics
+
+    _run()
+    logs = {"reward": 0.0, "reward_std": 0.0, "rewards/r/mean": float("nan"), "kl": float("nan")}
+    rl = rl_log_metrics(logs)
+    assert rl == {"reward": 0.0, "reward_std": 0.0, "rewards/r/mean": None}
+    studio_db.insert_metrics_batch("r1", [{"step": 1, "rl": rl}])
+    assert studio_db.get_run_metrics("r1")["rl_history"] == [
+        {"step": 1, "reward": 0.0, "reward_std": 0.0, "rewards/r/mean": None}
+    ]
+
+
+def test_a_step_where_every_reward_scored_nothing_is_flagged():
+    from core.training.rl import rl_unscored_step
+
+    nan = float("nan")
+    assert rl_unscored_step({"reward": 0.0, "rewards/a/mean": nan, "rewards/b/mean": nan})
+    assert not rl_unscored_step({"reward": 0.5, "rewards/a/mean": nan, "rewards/b/mean": 0.5})
+    # DPO logs rewards/chosen, never a per-reward mean.
+    assert not rl_unscored_step({"rewards/chosen": nan, "loss": 0.1})
