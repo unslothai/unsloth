@@ -77,9 +77,8 @@ const countClosingTags = (block: string, tagName: string): number => {
   return matches ? matches.length : 0;
 };
 
-// `$$` pairs in the last merged block, kept as it grows: a run of n dollars holds n >> 1 pairs,
-// and a block's trailing run continues into whatever is appended. Rescanning the whole block
-// per appended token made a reply after a stray `$$` quadratic.
+// Incremental `$$` count (a run of n holds n >> 1; the trailing run continues into appends):
+// rescanning the growing block per token is quadratic after a stray `$$`.
 interface DollarPairs {
   closed: number;
   run: number;
