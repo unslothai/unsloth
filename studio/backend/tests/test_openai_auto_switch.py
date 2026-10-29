@@ -10391,9 +10391,10 @@ def _custom_code_checkpoint(root):
     (path / "config.json").write_text(
         '{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "auto_map": {"AutoModel": "modeling.MyModel"}}'
     )
-    (path / "modeling.py").write_bytes(
-        _CUSTOM_CODE.encode()
-    )  # write_text turns \n into \r\n on Windows
+    # Bytes: write_text turns \n into \r\n on Windows.
+    (path / "modeling.py").write_bytes(_CUSTOM_CODE.encode())
+    (path / "layers").mkdir()
+    (path / "layers" / "helper.py").write_bytes(_CUSTOM_CODE.encode())
     return path
 
 
@@ -10406,7 +10407,10 @@ def _approve_custom_code(subject, code = _CUSTOM_CODE):
         subject,
         "org/customcode",
         commit_sha = None,
-        fingerprint = remote_code_fingerprint({"org/customcode\0modeling.py": code}),
+        # Hub keys use "/" on every OS.
+        fingerprint = remote_code_fingerprint(
+            {"org/customcode\0modeling.py": code, "org/customcode\0layers/helper.py": _CUSTOM_CODE}
+        ),
         max_severity = None,
     )
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import pathlib
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -180,11 +181,17 @@ def approved_local_fingerprint(subject: str, approved_as: str, load_dir: str) ->
     except RemoteCodeUnscannable:
         return None
 
-    def keyed(target):
+    def keyed(target, name_of = str):
         key = _fingerprint_target_key(target)
-        return remote_code_fingerprint({f"{key}\0{name}": body for name, body in files.items()})
+        return remote_code_fingerprint(
+            {f"{key}\0{name_of(name)}": body for name, body in files.items()}
+        )
 
-    if not files or keyed(approved_as) != stored.fingerprint:
+    # The approval fingerprinted Hub paths ("a/b.py"); the worker keys local ones ("a\\b.py" on Windows).
+    if (
+        not files
+        or keyed(approved_as, lambda n: pathlib.PurePath(n).as_posix()) != stored.fingerprint
+    ):
         return None
     return keyed(load_dir)
 
