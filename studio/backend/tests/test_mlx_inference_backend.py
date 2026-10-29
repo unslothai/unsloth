@@ -4912,7 +4912,7 @@ def test_an_explicit_speculative_mode_loads_through_mlx_vlm_and_attaches_what_fi
         mlx_inference, "mlx_drafter_fit", lambda *a, **k: fits.append(a[1:4]) or (True, 4096)
     )
     monkeypatch.setattr(drafters, "companion_drafter", lambda path, target: SimpleNamespace())
-    spent, rooms = [], {"/drafter": 123, "/cheap": 500}
+    spent, rooms = [], {"/drafter": 123, "/cheap": 500, "/unused": 0}
     monkeypatch.setattr(
         mlx_inference,
         "mlx_prompt_cache_room",
@@ -4965,13 +4965,14 @@ def test_an_explicit_speculative_mode_loads_through_mlx_vlm_and_attaches_what_fi
     )
     backend._prompt_cache(), backend._vlm_prompt_cache_store()
     assert sized in ([123, 123], [123])  # the second only where this mlx-vlm builds the store
-    # Where a cheaper drafter of that kind failed to build, the room is the one any of them leaves.
+    # The room is the attached drafter's: not one that failed to build, nor one never tried.
     cheap = mlx_speculative.DrafterSource("dflash", "/cheap", False)
+    unused = mlx_speculative.DrafterSource("dflash", "/unused", False)
     resolve, build = mlx_speculative.resolve_speculation, drafters.companion_drafter
     monkeypatch.setattr(
         mlx_speculative,
         "resolve_speculation",
-        lambda *_a, **_k: mlx_speculative.SpecResolution("dflash", (cheap, source)),
+        lambda *_a, **_k: mlx_speculative.SpecResolution("dflash", (cheap, source, unused)),
     )
     monkeypatch.setattr(
         drafters,
@@ -4980,8 +4981,10 @@ def test_an_explicit_speculative_mode_loads_through_mlx_vlm_and_attaches_what_fi
         if path == "/cheap"
         else build(path, target),
     )
+    spent.clear()
     backend.load_model(config, max_seq_length = 0, speculative_type = "dflash")
     assert backend._speculative_draft.drafter is not None and backend._prompt_cache_room == 123
+    assert spent == [(8192, source)]
     monkeypatch.setattr(mlx_speculative, "resolve_speculation", resolve)
     monkeypatch.setattr(drafters, "companion_drafter", build)
     room.append(False)

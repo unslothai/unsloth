@@ -5641,19 +5641,19 @@ class MLXInferenceBackend:
             _served_ctx = _fitted_ctx
         self._served_context = _served_ctx
         # A stretched drafter spent the prompt cache's share: cap the cache to what is left beside it.
-        _rooms = [
-            mlx_prompt_cache_room(
-                model_dir, _served_ctx, source, load_in_4bit = load_in_4bit, **_offloaded
+        if (
+            _priceable
+            and _stretched
+            and getattr(self._speculative_draft, "drafter", None) is not None
+        ):
+            self._prompt_cache_room = mlx_prompt_cache_room(
+                model_dir, _served_ctx, _stretched[-1], load_in_4bit = load_in_4bit, **_offloaded
             )
-            for source in _stretched
-            if _priceable and source.kind == spec_kind
-        ]
-        if _rooms := [room for room in _rooms if room is not None]:
-            self._prompt_cache_room = min(_rooms)
-            logger.info(
-                "MLX prompt cache holds at most %.2f GB beside the chosen drafter",
-                self._prompt_cache_room / 1e9,
-            )
+            if self._prompt_cache_room is not None:
+                logger.info(
+                    "MLX prompt cache holds at most %.2f GB beside the chosen drafter",
+                    self._prompt_cache_room / 1e9,
+                )
         # Classified now so a cache the model cannot attend over is refused here, not on a token.
         (
             self._kv_quant,

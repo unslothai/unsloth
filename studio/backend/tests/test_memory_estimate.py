@@ -848,6 +848,17 @@ class TestEstimateMemoryRoute:
                 else mlx_memory.MlxMemoryBreakdown(1, 0, 0, 1, 1, n_ctx = n_ctx)
             ),
         )
+        rooms, estimates, load_estimate = [], [], ri._mlx_load_estimate
+        monkeypatch.setattr(
+            mlx_inference,
+            "mlx_prompt_cache_room",
+            lambda d, n_ctx, source, **_: rooms.append((n_ctx, source.path)) or 7,
+        )
+        monkeypatch.setattr(
+            ri,
+            "_mlx_load_estimate",
+            lambda *a: (result := load_estimate(*a), estimates.append(result[1]))[0],
+        )
         assert _estimate(model_path = "org/model", speculative_type = "mtp").context_fitted == 12288
         for pinned in (4096, 16384, 65536):
             _estimate(model_path = "org/model", speculative_type = "mtp", max_seq_length = pinned)
@@ -875,6 +886,9 @@ class TestEstimateMemoryRoute:
             (24576, ("/big", True)),
             (24576, None),
         ]
+        # Only a drafter that spent the prompt cache's share caps the cache admission charges.
+        assert rooms == [(16384, "/big"), (12288, "/big"), (24576, "/big")]
+        assert [e.cache_room for e in estimates if e and e.cache_room] == [7, 7, 7]
 
     def test_a_drafter_attaches_where_its_priced_fit_holds_and_a_pin_fits_whole(self, monkeypatch):
         import core.inference.mlx_inference as mlx_inference

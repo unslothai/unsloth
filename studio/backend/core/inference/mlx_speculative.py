@@ -409,20 +409,18 @@ def build_draft(
             unfit.append(source)
         elif ok is not None:  # priced, and the drafter would shrink it
             reason = AUTO_CONTEXT_COST
-    roomy = []
-    for source in unfit:
-        ok, context = stretch(source) if stretch else (False, None)
-        if ok is not False:
-            roomy.append((source, context))
-    if roomy:
-        reason = DRAFTER_INCOMPATIBLE if incompatible else resolution.reason
-    for source, context in roomy:
+    # Priced one at a time, so the last source stretch admitted is the one that attaches.
+    for source in unfit if stretch else ():
+        ok, context = stretch(source)
+        if ok is False:
+            continue
         logger.warning(
             "MLX drafter %s (%s) fits only in the prompt cache's share; attaching it as chosen",
             source.path,
             source.kind,
         )
         if (drafter := build(source)) is not None:
+            reason = DRAFTER_INCOMPATIBLE if incompatible else resolution.reason
             return _draft(drafter, resolution.copies, draft_n_max), source.kind, reason, context
     if resolution.copies and resolution.mode != "auto":  # auto copies only alongside a drafter
         return _draft(None, True, draft_n_max), "ngram", reason, None
