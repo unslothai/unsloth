@@ -276,6 +276,7 @@ def test_a_long_reward_log_is_a_trailing_mean_so_start_and_end_are_not_one_noisy
     assert history[0] == 1.25 and history[-1] == 2.5
     assert len(history) == training.HISTORY_POINTS and max(history) <= 2.5
 
+
 def test_one_column_for_both_roles_is_refused():
     ctx = _Ctx(_recipe_routes([]), prompt_column = "q", response_column = "q")
     with pytest.raises(FlowNodeError, match = "different columns"):
