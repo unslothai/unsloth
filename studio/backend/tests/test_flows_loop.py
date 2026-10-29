@@ -344,6 +344,15 @@ async def test_continue_off_starts_every_round_from_the_base_model():
     assert rs.nodes["loop"].outputs["history"]["continue"] is False
 
 
+@run_async
+async def test_a_loop_that_raises_fails_the_run():
+    eng, _, _ = _engine()
+    rs = await _run(eng, loop_doc(rounds = 2, target = "high"))
+    assert rs.status == "failed"
+    assert rs.nodes["loop"].status == "failed"
+    assert "Loop failed" in rs.nodes["loop"].error
+
+
 def test_fine_tune_continues_a_wired_checkpoint_as_an_adapter(monkeypatch):
     from core.flows.nodes import training
 

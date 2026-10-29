@@ -1765,14 +1765,19 @@ class FlowEngine:
             ctx = NodeContextImpl(self, rs, nid, spec, params, inputs, seed, iteration)
             try:
                 await self._rounds(rs, nid, env, ctx, iteration)
-            except (FlowNodeError, FlowCancelled) as exc:
+            except (FlowCancelled, asyncio.CancelledError):
+                env.values[nid] = SKIPPED
+                rs.set_status(nid, "cancelled")
+                self._record(rs, nid, "cancelled", None, None, iteration)
+            except Exception as exc:
                 env.values[nid] = SKIPPED
                 if rs.cancelled:
                     rs.set_status(nid, "cancelled")
                 else:
-                    rs.node(nid).error = str(exc)
+                    if not isinstance(exc, FlowNodeError):
+                        logger.exception("flows: %s (%s) failed", nid, spec["type"])
+                    rs.node(nid).error = str(exc) if isinstance(exc, FlowNodeError) else f"{spec['title']} failed: {exc}"
                     rs.set_status(nid, "failed")
-                    rs.ever_failed.add(nid)
                 self._record(rs, nid, rs.node(nid).status, None, rs.node(nid).error, iteration)
             return
 
