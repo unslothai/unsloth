@@ -633,11 +633,12 @@ def _load_rows(
             loaded = loaded.select(range(min(start, stop), stop))
     if len(loaded) > HOLDOUT_MAX_ROWS:
         raise _too_many(len(loaded))
+    return _jsonable(loaded.to_list())
+
+
+def _jsonable(rows: list[dict]) -> list[dict]:
     # Timestamps and decimals in unused columns would stop the JSONL upload; NaN and inf become null.
-    return [
-        json.loads(json.dumps(row, default = str), parse_constant = lambda _: None)
-        for row in loaded.to_list()
-    ]
+    return [json.loads(json.dumps(row, default = str), parse_constant = lambda _: None) for row in rows]
 
 
 async def holdout_split(
@@ -681,13 +682,21 @@ async def holdout_split(
     return train, holdout
 
 
+def _eval_rows(dataset: dict, token: Any, split: str) -> list[dict]:
+    """The whole evaluation split: those rows are scored, not held out, so the hold-out cap doesn't apply."""
+    from datasets import load_dataset
+
+    loaded = load_dataset(str(dataset["ref"]), dataset.get("subset") or None, split = split, token = token)
+    return _jsonable(loaded.to_list())
+
+
 async def hub_eval_upload(ctx: NodeContext, dataset: dict, split: str) -> str:
     from core.flows.nodes.data import upload_rows
     from core.training.account_jobs import account_hf_token
 
     token = account_hf_token(getattr(ctx.caller, "hf_token", None))
     try:
-        rows = await asyncio.to_thread(_load_rows, {**dataset, "split": split}, token, None)
+        rows = await asyncio.to_thread(_eval_rows, dataset, token, split)
     except FlowNodeError:
         raise
     except Exception as exc:
