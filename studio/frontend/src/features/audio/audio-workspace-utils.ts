@@ -6,12 +6,13 @@ import {
   AUDIO_CPP_SEP_AUDIO_TYPE,
   AUDIO_CPP_TTS_AUDIO_TYPE,
   audioCppDisplayName,
+  audioCppNameForFileStem,
   isAudioCppFolderId,
 } from "./audio-cpp-catalog";
 
 export function audioModelLabel(id: string): string {
   if (isAudioCppFolderId(id)) return audioCppDisplayName(id);
-  if (!/^(?:[a-zA-Z]:[\\/]|[\\/]|~)/.test(id)) return id;
+  if (!/^(?:[a-zA-Z]:[\\/]|[\\/]|~)/.test(id)) return audioCppNameForFileStem(id) ?? id;
   const leaf = id.split(/[\\/]/).filter(Boolean).pop() ?? id;
   return leaf.replace(/_\d{10,}$/, "");
 }

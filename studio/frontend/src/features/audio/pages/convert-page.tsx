@@ -122,7 +122,7 @@ function ConvertInputs({
       </div>
 
       {caps && caps.modes.length > 1 ? (
-        <div className="grid gap-1.5">
+        <div className="grid gap-2">
           <span className="text-ui-13 font-medium text-foreground">
             The recording is
           </span>
@@ -145,7 +145,7 @@ function ConvertInputs({
       ) : null}
 
       {pitchSupport.show ? (
-        <div className="grid gap-1.5">
+        <div className="grid gap-2">
           {pitchSupport.auto ? (
             <FieldLabel
               htmlFor="convert-pitch-auto"
@@ -163,7 +163,7 @@ function ConvertInputs({
           {pitchSupport.auto &&
           convert.pitchAuto &&
           !pitchSupport.shiftWithAuto ? (
-            <p className="text-ui-11p5 leading-snug text-muted-foreground">
+            <p className="text-ui-12 leading-normal text-muted-foreground">
               Turn off to set the pitch shift yourself.
             </p>
           ) : (
@@ -206,7 +206,7 @@ function SourceTextField({
     convert.sourceStatus.phase !== "uploading";
   if (convert.style !== "target") return null;
   return (
-    <div className="grid gap-1.5">
+    <div className="grid gap-2">
       <div className="flex items-center justify-between gap-2">
         <FieldLabel
           htmlFor={CONVERT_SOURCE_TEXT_FIELD_ID}
@@ -251,7 +251,7 @@ function SourceTextField({
           </Button>
         </p>
       ) : (
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-ui-12 leading-normal text-muted-foreground">
           Taking the target's style rebuilds the delivery from these words.
         </p>
       )}
@@ -322,7 +322,7 @@ export function ConvertFooter({
       ? (convert.switchNotice?.before ?? null)
       : null;
   return (
-    <div className="flex w-full max-w-sm flex-col items-center gap-1.5">
+    <div className="flex w-full flex-col items-center gap-1.5">
       <TtsFooter
         {...props}
         prompt="convert"
@@ -332,7 +332,7 @@ export function ConvertFooter({
         handleGenerate={convert.handleGenerate}
       />
       {notice ? (
-        <p className="text-center text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-center text-ui-12 leading-normal text-muted-foreground">
           {notice}
         </p>
       ) : null}

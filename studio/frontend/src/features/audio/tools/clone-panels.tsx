@@ -48,7 +48,7 @@ export function PanelSection({
       <div className="grid gap-0.5">
         <h3 className="text-ui-13 font-medium text-foreground">{title}</h3>
         {hint ? (
-          <p className="text-ui-11p5 leading-snug text-muted-foreground">
+          <p className="text-ui-12 leading-normal text-muted-foreground">
             {hint}
           </p>
         ) : null}
@@ -61,7 +61,7 @@ export function PanelSection({
 const qwen3TimbrePanel: AudioToolPanel<TimbreOnlyValue> = {
   ...qwen3TimbreLogic,
   Component: ({ value, onChange, disabled }) => (
-    <div className="grid gap-1.5">
+    <div className="grid gap-2">
       <FieldLabel
         htmlFor="clone-timbre-only"
         className="flex items-center justify-between gap-3 text-ui-13 font-medium text-foreground"
@@ -74,7 +74,7 @@ const qwen3TimbrePanel: AudioToolPanel<TimbreOnlyValue> = {
           onCheckedChange={(timbreOnly) => onChange({ timbreOnly })}
         />
       </FieldLabel>
-      <p className="text-ui-11p5 leading-snug text-muted-foreground">
+      <p className="text-ui-12 leading-normal text-muted-foreground">
         Copies the sound of the voice without the clip's words, so no transcript
         is needed. Usually a little less close to the original.
       </p>
@@ -266,7 +266,7 @@ const f5SpeedDialectPanel: AudioToolPanel<SpeedDialectValue> = {
         onChange={(speed) => onChange({ ...value, speed })}
       />
       {specs.some((spec) => spec.name === "dialect") ? (
-        <div className="grid gap-1.5">
+        <div className="grid gap-2">
           <FieldLabel
             htmlFor="clone-dialect"
             className="text-ui-13 font-medium text-foreground"

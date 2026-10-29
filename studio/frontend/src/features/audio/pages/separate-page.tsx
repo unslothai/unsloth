@@ -49,7 +49,7 @@ import {
 } from "../separation-stems";
 import { useAudioSeparateStore } from "../stores/audio-separate-store";
 import { AudioToolPanels } from "../tools/tool-panel-host";
-import { TtsFooter, TtsRailFields } from "./tts-workspace";
+import { EmptyPreview, TtsFooter, TtsRailFields } from "./tts-workspace";
 
 export function separateOutputStems(
   family: string | null | undefined,
@@ -77,7 +77,7 @@ function StemChips({ stems }: { stems: readonly string[] }) {
   return (
     <div className="grid gap-1">
       <span className="text-ui-13 font-medium text-foreground">Outputs</span>
-      <p className="text-ui-11p5 leading-snug text-muted-foreground">
+      <p className="text-ui-12 leading-normal text-muted-foreground">
         {stems.map(stemLabel).join(" · ")}
       </p>
     </div>
@@ -124,12 +124,12 @@ function SeparateInputs({
       </div>
       {outputs ? <StemChips stems={outputs} /> : null}
       {pageModelLoaded ? null : (
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-ui-12 leading-normal text-muted-foreground">
           Loading a separation model replaces the model in the main slot.
         </p>
       )}
       {pageModelLoaded && separate.cpuWarning ? (
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-ui-12 leading-normal text-muted-foreground">
           {separate.cpuWarning}
         </p>
       ) : null}
@@ -207,7 +207,7 @@ export function SeparateFooter({
   const ready =
     props.ttsLoaded && props.blocker === null && props.busy === null;
   return (
-    <div className="flex w-full max-w-sm flex-col items-center gap-1.5">
+    <div className="flex w-full flex-col items-center gap-1.5">
       <TtsFooter
         {...props}
         generationPresentation={presentation}
@@ -218,7 +218,7 @@ export function SeparateFooter({
         handleGenerate={separate.handleGenerate}
       />
       {ready && !presentation && !props.error ? (
-        <p className="text-center text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-center text-ui-12 leading-normal text-muted-foreground">
           {separate.willReload
             ? "Reloads the model with the new overlap first (a few seconds). "
             : ""}
@@ -495,13 +495,14 @@ export function SeparateOutput({
             </Button>
           </div>
         ) : (
-          <div className="grid justify-items-center gap-3">
-            <p className="text-ui-13 text-muted-foreground">
-              {modelReady
+          <EmptyPreview
+            workflow="separate"
+            text={
+              modelReady
                 ? "Stems land here. Add a track and press Generate."
-                : "Stems land here. Load a separation model, add a track, and press Generate."}
-            </p>
-            {picks.length > 0 ? (
+                : "Stems land here. Load a separation model, add a track, and press Generate."
+            }
+            actions={picks.length > 0 ? (
               <div
                 className="flex flex-wrap justify-center gap-2"
                 aria-label="Recommended models"
@@ -519,25 +520,25 @@ export function SeparateOutput({
                 ))}
               </div>
             ) : null}
-          </div>
+          />
         )}
       </div>
       {groups.length > 0 ? (
-        <div className="flex shrink-0 flex-col gap-2">
-          <div className="flex items-center justify-between">
-            <span className="text-ui-11p5 font-medium text-muted-foreground">
+        <div className="mt-6 flex shrink-0 flex-col gap-1">
+          <div className="flex items-center justify-between pr-6 pl-3">
+            <span className="text-ui-12 font-medium text-muted-foreground">
               History
             </span>
-            <Button
-              variant="ghost"
-              size="sm"
+            <button
+              type="button"
               onClick={() => void handleClearGallery()}
+              className="rounded-full text-ui-12 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               Clear all
-            </Button>
+            </button>
           </div>
           <div
-            className="hover-scrollbar flex max-h-40 flex-col gap-1 overflow-y-auto py-1"
+            className="hover-scrollbar flex max-h-52 flex-col gap-1 overflow-y-auto py-1"
             onScroll={(event) => {
               const el = event.currentTarget;
               if (
@@ -566,7 +567,7 @@ export function SeparateOutput({
                       if (first) selectClip(first.id);
                     }}
                     aria-current={current ? "true" : undefined}
-                    className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-ui-13"
+                    className="flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2 text-left text-ui-13"
                   >
                     <HugeiconsIcon
                       icon={AiSpeechIcon}

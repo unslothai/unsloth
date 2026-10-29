@@ -243,14 +243,14 @@ export function TranscriptGallery({
     }
   };
   return (
-    <div className="flex shrink-0 flex-col gap-2">
-      <div className="flex items-center justify-between">
+    <div className="flex shrink-0 flex-col gap-1">
+      <div className="flex items-center justify-between pl-3">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
               variant="ghost"
               size="sm"
-              className="px-0 text-ui-11p5 text-muted-foreground"
+              className="px-0 text-ui-12 font-medium text-muted-foreground"
             >
               {archived ? "Archived transcripts" : "History"}
             </Button>
@@ -265,17 +265,17 @@ export function TranscriptGallery({
           </DropdownMenuContent>
         </DropdownMenu>
         {!archived && records.length > 0 && (
-          <Button
-            variant="ghost"
-            size="sm"
+          <button
+            type="button"
             onClick={() => setConfirmingClear(true)}
+            className="rounded-full text-ui-12 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             Clear all
-          </Button>
+          </button>
         )}
       </div>
       <div
-        className="hover-scrollbar flex max-h-40 flex-col gap-1 overflow-y-auto"
+        className="hover-scrollbar flex max-h-52 flex-col gap-1 overflow-y-auto"
         onScroll={(event) => {
           const el = event.currentTarget;
           if (el.scrollTop + el.clientHeight >= el.scrollHeight - 40)
@@ -293,7 +293,7 @@ export function TranscriptGallery({
             <button
               type="button"
               aria-current={currentId === record.id ? "true" : undefined}
-              className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-ui-13"
+              className="flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2 text-left text-ui-13"
               onClick={() => {
                 if (canSelect()) onSelect(record);
               }}

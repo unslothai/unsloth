@@ -43,6 +43,8 @@ export function Waveform({
   controlRef,
   onPositionChange,
   onError,
+  size = "default",
+  hidePlay = false,
 }: {
   /** 0..1; null draws a flat placeholder while decoding. */
   peaks: readonly number[] | null;
@@ -55,7 +57,12 @@ export function Waveform({
   controlRef?: Ref<WaveformControl>;
   onPositionChange?: (seconds: number, playing: boolean) => void;
   onError?: () => void;
+  /** `lg` is a taller track with a larger play button. */
+  size?: "default" | "lg";
+  /** The host draws its own play button through `controlRef` (the clip card's header). */
+  hidePlay?: boolean;
 }) {
+  const large = size === "lg";
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playing, setPlaying] = useState(false);
   const [position, setPosition] = useState(0);
@@ -118,6 +125,7 @@ export function Waveform({
       peaks={peaks}
       fraction={fraction}
       label={label}
+      className={large ? "h-[calc(56px*var(--ui-space-scale,1))]" : undefined}
       valueNow={position}
       valueMax={duration}
       disabled={!src}
@@ -142,24 +150,38 @@ export function Waveform({
   );
 
   return (
-    <div className={cn("flex items-center gap-2", className)}>
-      <Button
-        type="button"
-        variant="muted"
-        size="icon"
-        className="size-[calc(32px*var(--ui-space-scale,1))] shrink-0"
-        aria-label={playing ? `Pause ${label}` : `Play ${label}`}
-        disabled={!src}
-        onClick={toggle}
-      >
-        {playing ? (
-          <HugeiconsIcon icon={PauseIcon} className="size-3.5" />
-        ) : (
-          <PlayIcon className="size-3.5" />
-        )}
-      </Button>
+    <div className={cn("flex items-center", large ? "gap-3" : "gap-2", className)}>
+      {hidePlay ? null : (
+        <Button
+          type="button"
+          variant="muted"
+          size="icon"
+          className={cn(
+            "shrink-0",
+            large
+              ? "size-[calc(44px*var(--ui-space-scale,1))]"
+              : "size-[calc(32px*var(--ui-space-scale,1))]",
+          )}
+          aria-label={playing ? `Pause ${label}` : `Play ${label}`}
+          disabled={!src}
+          onClick={toggle}
+        >
+          {playing ? (
+            <HugeiconsIcon icon={PauseIcon} className={large ? "size-4.5" : "size-3.5"} />
+          ) : (
+            <PlayIcon className={large ? "size-4.5" : "size-3.5"} />
+          )}
+        </Button>
+      )}
       {overlay !== undefined || tailS > 0 ? (
-        <div className="relative flex h-[calc(32px*var(--ui-space-scale,1))] min-w-0 flex-1">
+        <div
+          className={cn(
+            "relative flex min-w-0 flex-1",
+            large
+              ? "h-[calc(56px*var(--ui-space-scale,1))]"
+              : "h-[calc(32px*var(--ui-space-scale,1))]",
+          )}
+        >
           {slider}
           {tailS > 0 ? (
             <div
@@ -256,7 +278,7 @@ export function WaveformBars({
   );
 }
 
-/** Holds the width of "duration / duration", so starting playback never narrows the bars beside it. */
+/** Holds the width of "duration / duration", so starting playback never narrows the bars beside it; start-aligned so the time hugs the bars. */
 export function PlaybackTime({
   position,
   duration,
@@ -265,7 +287,7 @@ export function PlaybackTime({
   duration: number;
 }) {
   return (
-    <span className="grid shrink-0 justify-items-end font-mono text-ui-11 tabular-nums text-muted-foreground">
+    <span className="grid shrink-0 justify-items-start font-mono text-ui-11 tabular-nums text-muted-foreground">
       <span aria-hidden="true" className="invisible col-start-1 row-start-1">
         {formatSeconds(duration)}
         <span className="px-0.5">/</span>
@@ -312,7 +334,7 @@ export function WaveformBarGlyphs({
     <div
       ref={boxRef}
       aria-hidden="true"
-      className="flex size-full justify-center gap-[2px]"
+      className="flex size-full justify-between"
     >
       {Array.from({ length: count }, (_, index) => {
         const peak = levels ? (levels[index] ?? 0) : 0;

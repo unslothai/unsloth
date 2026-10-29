@@ -85,7 +85,7 @@ function EditInputs({
         />
       </div>
 
-      <div className="grid gap-1.5" data-tour="audio-edit-transcript">
+      <div className="grid gap-2" data-tour="audio-edit-transcript">
         <div className="flex items-center justify-between gap-2">
           <FieldLabel
             htmlFor={EDIT_TRANSCRIPT_FIELD_ID}
@@ -137,7 +137,7 @@ function EditInputs({
             </Button>
           </p>
         ) : (
-          <p className="text-ui-11p5 leading-snug text-muted-foreground">
+          <p className="text-ui-12 leading-normal text-muted-foreground">
             {EDIT_COPY.transcriptHint}
           </p>
         )}
@@ -213,13 +213,13 @@ function EditInputs({
             onChange={(pitchSteps) => setDelivery({ pitchSteps })}
             commitWhileDragging
           />
-          <p className="text-ui-11p5 leading-snug text-muted-foreground">
+          <p className="text-ui-12 leading-normal text-muted-foreground">
             {EDIT_COPY.pitchHint}
           </p>
         </div>
       ) : null}
       {adapter?.family === "vevo2" ? (
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-ui-12 leading-normal text-muted-foreground">
           {EDIT_COPY.vevo2SwitchNote}
         </p>
       ) : null}

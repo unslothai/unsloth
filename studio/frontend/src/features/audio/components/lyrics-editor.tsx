@@ -55,7 +55,7 @@ export function LyricsEditor({
     });
   };
   return (
-    <div className="grid gap-1.5">
+    <div className="grid gap-2">
       <div className="flex min-w-0 items-center justify-between gap-2">
         <FieldLabel
           htmlFor={id}

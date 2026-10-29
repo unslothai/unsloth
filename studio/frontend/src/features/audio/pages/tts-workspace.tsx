@@ -30,7 +30,8 @@ import {
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
-import { StopIcon } from "@/lib/media-control-icons";
+import { PauseIcon, StopIcon } from "@/lib/media-control-icons";
+import { PlayIcon } from "lucide-react";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { addAudioClipToProject, type AudioGalleryClip } from "../api";
@@ -45,6 +46,7 @@ import {
 import { TTS_MAX_TOKENS } from "../audio-workspace-constants";
 import { audioModelLabel, formatClipDuration } from "../audio-workspace-utils";
 import {
+  CLIP_ICON_COLUMN,
   ClipCard,
   type ClipSendHandlers,
   ClipSendToMenu,
@@ -60,8 +62,9 @@ import type { AudioHostState } from "../hooks/audio-host-state";
 import type { AudioGallery } from "../hooks/use-audio-gallery";
 import type { AudioModelSlot } from "../hooks/use-audio-model-slot";
 import type { SpeechGeneration } from "../hooks/use-speech-generation";
+import { useRowPreview } from "../hooks/use-row-preview";
 import { historyRows, variationSiblings } from "../music/variation-groups";
-import type { AudioWorkflowId } from "../workflows";
+import { type AudioWorkflowId, audioWorkflowTab } from "../workflows";
 
 export interface GenerateAction {
   label: string;
@@ -105,7 +108,7 @@ export function BlockerNote({
   const [first, ...rest] = blocker.actions ?? [];
   if (!first) {
     return (
-      <p id={id} className="text-center text-ui-11p5 leading-snug text-muted-foreground">
+      <p id={id} className="text-center text-ui-12 leading-normal text-muted-foreground">
         {blocker.reason}
       </p>
     );
@@ -113,7 +116,7 @@ export function BlockerNote({
   return (
     <p
       id={id}
-      className="flex flex-wrap items-center justify-center gap-x-1.5 text-ui-11p5 leading-snug text-muted-foreground"
+      className="flex flex-wrap items-center justify-center gap-x-1.5 text-ui-12 leading-normal text-muted-foreground"
     >
       <span className="sr-only">{blocker.reason}</span>
       <Button
@@ -220,42 +223,6 @@ export function TtsRailFields({
     : allAudioOptionSpecs;
   return (
     <>
-      {/* Field inlined: its label needs a form control, and PillTabs is a tablist. */}
-      <div className="grid gap-1.5">
-        <span className="text-ui-13 font-medium text-foreground">
-          Load model into
-        </span>
-        <PillTabs
-          ariaLabel="Load model into"
-          value={audioDevice === "cpu" ? "cpu" : "auto"}
-          disabled={busy !== null}
-          onValueChange={(value) => {
-            const next = value === "cpu" ? "cpu" : "auto";
-            if (next === audioDevice) return;
-            // MiniMax needs CUDA; the backend refusal cannot save an already-ejected model.
-            if (next === "cpu" && status?.audio_type === "minimax_music3") {
-              toast.info(
-                "MiniMax Music 3 needs a GPU, so it cannot be held in CPU RAM.",
-              );
-              return;
-            }
-            setAudioDeviceState(next);
-            if (ttsLoaded) handleEject();
-          }}
-          fit={true}
-          className="h-[calc(30px*var(--ui-space-scale,1))] self-start [&>button]:h-[calc(30px*var(--ui-space-scale,1))] [&>button]:px-6"
-          tabs={[
-            { value: "auto", label: "GPU when available" },
-            { value: "cpu", label: "CPU RAM" },
-          ]}
-        />
-        {/* Phrased as the next load: another client may have loaded the model on the other device. */}
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
-          {audioDevice === "cpu"
-            ? "New loads go into system RAM instead of the GPU. Slower to generate, and no GPU memory is used."
-            : "New loads use the GPU when there is one, and the CPU otherwise."}
-        </p>
-      </div>
       {inputs ?? (
         <Field
           label={musicGeneration ? "Lyrics" : "Text"}
@@ -281,18 +248,58 @@ export function TtsRailFields({
         </Field>
       )}
       {toolPanels}
-      {musicGeneration || samplingControls || audioOptionSpecs.length > 0 ? (
-        <AdvancedDisclosure
-          open={advancedOpen}
-          onOpenChange={setAdvancedOpen}
-          description={
-            musicGeneration
-              ? "Generation length and model options. Changes apply to the next audio clip."
-              : samplingControls
-                ? "Generation sampling. Changes apply to the next audio clip."
-                : "Model options. Changes apply to the next audio clip."
-          }
-        >
+      {/* Always shown: where the model loads is an advanced choice on every audio page. */}
+      <AdvancedDisclosure
+        open={advancedOpen}
+        onOpenChange={setAdvancedOpen}
+        description={
+          musicGeneration
+            ? "Generation length and model options. Changes apply to the next audio clip."
+            : samplingControls
+              ? "Generation sampling. Changes apply to the next audio clip."
+              : audioOptionSpecs.length > 0
+                ? "Model options. Changes apply to the next audio clip."
+                : "Where the model loads. Changes apply to the next load."
+        }
+      >
+        {/* Fields keep the rail's own spacing; the shared disclosure packs its children tighter. */}
+        <div className="flex flex-col gap-6">
+          {/* Field inlined: its label needs a form control, and PillTabs is a tablist. */}
+          <div className="grid gap-2">
+            <span className="text-ui-13 font-medium text-foreground">
+              Load model into
+            </span>
+            <PillTabs
+              ariaLabel="Load model into"
+              value={audioDevice === "cpu" ? "cpu" : "auto"}
+              disabled={busy !== null}
+              onValueChange={(value) => {
+                const next = value === "cpu" ? "cpu" : "auto";
+                if (next === audioDevice) return;
+                // MiniMax needs CUDA; the backend refusal cannot save an already-ejected model.
+                if (next === "cpu" && status?.audio_type === "minimax_music3") {
+                  toast.info(
+                    "MiniMax Music 3 needs a GPU, so it cannot be held in CPU RAM.",
+                  );
+                  return;
+                }
+                setAudioDeviceState(next);
+                if (ttsLoaded) handleEject();
+              }}
+              fit={true}
+              className="h-[calc(30px*var(--ui-space-scale,1))] self-start [&>button]:h-[calc(30px*var(--ui-space-scale,1))] [&>button]:px-6"
+              tabs={[
+                { value: "auto", label: "GPU when available" },
+                { value: "cpu", label: "CPU RAM" },
+              ]}
+            />
+            {/* Phrased as the next load: another client may have loaded the model on the other device. */}
+            <p className="text-ui-12 leading-normal text-muted-foreground">
+              {audioDevice === "cpu"
+                ? "New loads go into system RAM instead of the GPU. Slower to generate, and no GPU memory is used."
+                : "New loads use the GPU when there is one, and the CPU otherwise."}
+            </p>
+          </div>
           {!musicGeneration && samplingControls ? (
             <ParamSlider
               label="Temperature"
@@ -361,8 +368,8 @@ export function TtsRailFields({
               ) : null}
             </>
           ) : null}
-        </AdvancedDisclosure>
-      ) : null}
+        </div>
+      </AdvancedDisclosure>
     </>
   );
 }
@@ -402,7 +409,7 @@ export function TtsFooter({
     loadNote?: string | null;
   }) {
   return (
-    <div className="flex w-full max-w-sm flex-col gap-2">
+    <div className="flex w-full flex-col gap-2.5">
       {busy === "generating" && generationPresentation ? (
         <>
           <output
@@ -425,15 +432,15 @@ export function TtsFooter({
         </>
       ) : null}
       {loadNote && !generationPresentation ? (
-        <p className="text-center text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-center text-ui-12 leading-normal text-muted-foreground">
           {loadNote}
         </p>
       ) : null}
-      <div className="flex flex-wrap items-center justify-center gap-2">
+      <div className="flex items-center gap-2">
         {secondaryAction}
         <Button
           className={cn(
-            "relative z-10 text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100",
+            "relative z-10 flex-1 text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100",
             // Same Stop as Images: outline, neutral hover. Destructive is for deleting, not for stopping.
             generationPresentation && "hover:bg-muted dark:hover:bg-muted",
           )}
@@ -469,7 +476,10 @@ export function TtsFooter({
               {generationPresentation.actionLabel}
             </>
           ) : (
-            "Generate"
+            <>
+              Generate
+              <ShortcutHint label={shortcutLabel} />
+            </>
           )}
         </Button>
       </div>
@@ -488,14 +498,69 @@ export function TtsFooter({
   );
 }
 
-function ClipBadge({ text }: { text: string | null | undefined }) {
-  if (!text) return null;
+/** The key combo, quiet inside the action button so it reads as a hint, not a second label. */
+export function ShortcutHint({ label }: { label: string }) {
+  return (
+    <kbd
+      aria-hidden="true"
+      className="ml-2 font-sans text-ui-11p5 font-normal opacity-55"
+    >
+      {label}
+    </kbd>
+  );
+}
+
+/** The preview before the first clip: what lands here, and a way to start. */
+export function EmptyPreview({
+  workflow,
+  title,
+  text,
+  actions,
+}: {
+  workflow: AudioWorkflowId;
+  title?: string;
+  text: string;
+  actions?: ReactNode;
+}) {
+  const tab = audioWorkflowTab(workflow);
+  return (
+    <div className="grid w-full max-w-md justify-items-center gap-5 text-center">
+      <span className="flex size-[calc(52px*var(--ui-space-scale,1))] items-center justify-center rounded-2xl bg-wash-5 text-muted-foreground">
+        <HugeiconsIcon
+          icon={tab.icon}
+          strokeWidth={1.5}
+          className="size-[calc(24px*var(--ui-space-scale,1))]"
+        />
+      </span>
+      <div className="grid gap-1.5">
+        <h2 className="text-ui-17 text-foreground">{title ?? tab.heading}</h2>
+        <p className="text-balance text-ui-13 leading-normal text-muted-foreground">
+          {text}
+        </p>
+      </div>
+      {actions}
+    </div>
+  );
+}
+
+/** A history row's second line: model · time, with any extra detail in its tooltip. */
+function HistoryRowMeta({
+  model,
+  time,
+  badge,
+}: {
+  model: string;
+  time: string;
+  badge: string | null | undefined;
+}) {
+  const extra = badge && badge !== model ? badge : null;
+  // Only model · time shows; anything extra (Clone's reference clip) is in the tooltip.
   return (
     <span
-      title={text}
-      className="max-w-[40%] shrink-0 truncate rounded-full bg-muted px-2 py-0.5 text-ui-11 text-muted-foreground"
+      className="truncate text-ui-11p5 text-muted-foreground"
+      title={extra ?? undefined}
     >
-      {text}
+      {model} · {time}
     </span>
   );
 }
@@ -538,6 +603,7 @@ export function TtsOutput({
   selectedPlayer,
   useAgainLabel = "Use text again",
   showCopyText = true,
+  workflow,
 }: Pick<
   AudioGallery,
   | "srcById"
@@ -622,6 +688,12 @@ export function TtsOutput({
       return next;
     });
   const siblings = variationSiblings(clips, selectedClip?.id ?? null);
+  const rowPreview = useRowPreview(srcById, active);
+  const tab = audioWorkflowTab(workflow);
+  // The player is the selected clip's expanded row, so the list below leaves it out.
+  const listRows = historyRows(clips, openGroups).filter(
+    ({ clip, header }) => header || !selectedClip || clip.id !== selectedClip.id,
+  );
   const clipMenu = (clip: AudioGalleryClip, variant: "row" | "toolbar") => (
     <GalleryItemMenu
       variant={variant}
@@ -685,12 +757,49 @@ export function TtsOutput({
       <output aria-live="polite" aria-atomic="true" className="sr-only">
         {announcement}
       </output>
-      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4">
+      {/* One "Clips" card, top-anchored: header, the player as its expanded top row, then the list.
+          Chip, play button and every row's icon share one 40px column, and all titles share one edge. */}
+      <section
+        aria-label={clips.length > 0 ? "Clips" : tab.heading}
+        className="elevated-card flex min-h-0 w-full flex-col bg-card p-2 pb-3"
+      >
+        <header className="flex items-center gap-3 px-3 pt-2 pb-3">
+          <span
+            className={cn(
+              "grid shrink-0 place-items-center rounded-full bg-wash-6 text-muted-foreground",
+              CLIP_ICON_COLUMN,
+            )}
+          >
+            <HugeiconsIcon
+              icon={tab.icon}
+              strokeWidth={1.5}
+              className="size-[calc(18px*var(--ui-space-scale,1))]"
+            />
+          </span>
+          <h2 className="min-w-0 flex-1 truncate text-ui-14 font-medium text-foreground">
+            {clips.length > 0 ? "Clips" : (emptyTitle ?? tab.heading)}
+            {clips.length > 0 ? (
+              <span className="ms-2 rounded-full bg-wash-8 px-2 py-0.5 align-middle font-sans text-ui-11 font-normal tabular-nums text-muted-foreground">
+                {clips.length}
+                {hasMore ? "+" : ""}
+              </span>
+            ) : null}
+          </h2>
+          {clips.length > 0 ? (
+            <button
+              type="button"
+              onClick={() => void handleClearGallery()}
+              className="me-8 shrink-0 rounded-full text-ui-12 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              Clear all
+            </button>
+          ) : null}
+        </header>
         {pending ? (
           <PendingClipCard {...pending} />
         ) : selectedClip ? (
           <div
-            className="flex w-full max-w-xl flex-col gap-2"
+            className="flex w-full shrink-0 flex-col gap-2"
             onErrorCapture={(event) => {
               // Only this clip's link: source players and a previous selection's late errors are not ours to retry.
               const media = event.target;
@@ -753,36 +862,20 @@ export function TtsOutput({
             }
           />
         ) : (
-          <div className="grid justify-items-center gap-3">
-            {emptyTitle ? (
-              <div className="grid gap-1 text-center">
-                <h2 className="text-ui-14 font-medium text-foreground">{emptyTitle}</h2>
-                <p className="text-ui-13 text-muted-foreground">{emptyText}</p>
-              </div>
-            ) : (
-              <p className="text-ui-13 text-muted-foreground">{emptyText}</p>
-            )}
-            {emptyActions}
+          // Empty: the hint and suggestions sit under the title, on the same text edge.
+          <div className="grid gap-3 ps-[calc(64px*var(--ui-space-scale,1))] pe-3 pb-3">
+            <p className="text-ui-13 leading-normal text-muted-foreground">
+              {emptyText}
+            </p>
+            {emptyActions ? (
+              <div className="[&>div]:justify-start">{emptyActions}</div>
+            ) : null}
           </div>
         )}
-      </div>
-      {clips.length > 0 ? (
-        <div className="flex shrink-0 flex-col gap-2">
-          <div className="flex items-center justify-between">
-            <span className="text-ui-11p5 font-medium text-muted-foreground">
-              History
-            </span>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => void handleClearGallery()}
-            >
-              Clear all
-            </Button>
-          </div>
+      {listRows.length > 0 ? (
           <div
             {...historyReorder.stripProps}
-            className="hover-scrollbar flex max-h-40 flex-col gap-1 overflow-y-auto py-1"
+            className="hover-scrollbar mt-2 flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto border-t border-wash-6 pt-2"
             onScroll={(event) => {
               const el = event.currentTarget;
               if (
@@ -793,7 +886,7 @@ export function TtsOutput({
               }
             }}
           >
-            {historyRows(clips, openGroups).map(({ clip, header, nested }) =>
+            {listRows.map(({ clip, header, nested }) =>
               header ? (
                 <VariationGroupRow
                   key={`group:${header.groupId}`}
@@ -808,8 +901,8 @@ export function TtsOutput({
                   key={clip.id}
                   {...historyReorder.tileProps(clip.id)}
                   className={cn(
-                    "group relative flex items-center gap-1 rounded-md pr-1 transition-colors hover:bg-muted",
-                    clip.id === selectedId && "bg-muted",
+                    "group relative flex items-center gap-1 rounded-md ps-3 pe-1 transition-colors hover:bg-wash-3",
+                    clip.id === selectedId && "bg-wash-3 hover:bg-wash-3",
                     historyReorder.draggingId === clip.id && "opacity-40",
                     nested && "ml-4",
                   )}
@@ -817,23 +910,56 @@ export function TtsOutput({
                   {historyReorder.cue?.id === clip.id && (
                     <StripDropLine axis="y" edge={historyReorder.cue.edge} />
                   )}
+                  {/* Plays the row in place; the clip in the preview stays where it is. */}
+                  <button
+                    type="button"
+                    aria-label={
+                      rowPreview.playingId === clip.id
+                        ? `Pause ${clip.prompt}`
+                        : `Play ${clip.prompt}`
+                    }
+                    onClick={() => void rowPreview.toggle(clip.id)}
+                    className="relative mx-1.5 grid size-7 shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-wash-8 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    {rowPreview.playingId === clip.id ? (
+                      <HugeiconsIcon
+                        icon={PauseIcon}
+                        className="size-3.5 text-foreground"
+                      />
+                    ) : (
+                      <>
+                        <HugeiconsIcon
+                          icon={AiSpeechIcon}
+                          className={cn(
+                            "size-3.5 transition-opacity group-hover:opacity-0 group-has-[:focus-visible]:opacity-0 pointer-coarse:opacity-0",
+                            clip.id === selectedId && "text-foreground",
+                          )}
+                        />
+                        <PlayIcon className="absolute size-3.5 opacity-0 transition-opacity group-hover:opacity-100 group-has-[:focus-visible]:opacity-100 pointer-coarse:opacity-100" />
+                      </>
+                    )}
+                  </button>
                   <button
                     type="button"
                     onClick={() => selectClip(clip.id)}
                     aria-current={clip.id === selectedId ? "true" : undefined}
-                    className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-ui-13"
+                    className="flex min-w-0 flex-1 items-center gap-3 py-2.5 pr-3 ps-2 text-left"
                   >
-                    <HugeiconsIcon
-                      icon={AiSpeechIcon}
-                      className="size-3.5 shrink-0 text-muted-foreground"
-                    />
-                    <span className="min-w-0 flex-1 truncate">
-                      {clip.prompt}
-                    </span>
-                    <ClipBadge text={clipBadge?.(clip, "history")} />
-                    <span className="hidden min-w-0 max-w-[45%] shrink truncate text-ui-11p5 text-muted-foreground @[30rem]:block">
-                      {audioModelLabel(clip.model)} ·{" "}
-                      {formatRelativeShort(clip.created_at)}
+                    {/* Two lines: the title gets the full width; model, time and any reference sit below it. */}
+                    <span className="grid min-w-0 flex-1 gap-0.5">
+                      <span
+                        className={cn(
+                          "truncate text-ui-13",
+                          clip.id === selectedId && "font-medium",
+                        )}
+                      >
+                        {clip.prompt}
+                      </span>
+                      <HistoryRowMeta
+                        model={audioModelLabel(clip.model)}
+                        time={formatRelativeShort(clip.created_at)}
+                        badge={clipBadge?.(clip, "history")}
+                      />
                     </span>
                     <span className="shrink-0 font-mono text-ui-11p5 tabular-nums text-muted-foreground">
                       {formatClipDuration(clip.duration_s)}
@@ -851,8 +977,8 @@ export function TtsOutput({
               ),
             )}
           </div>
-        </div>
       ) : null}
+      </section>
     </>
   );
 }

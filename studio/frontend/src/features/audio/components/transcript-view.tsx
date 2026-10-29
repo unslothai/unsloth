@@ -149,7 +149,7 @@ function SpeakerChip({
             }
           }}
         />
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-ui-12 leading-normal text-muted-foreground">
           Renames every line by this speaker.
         </p>
         <div className="flex justify-end gap-2">
@@ -239,7 +239,7 @@ export function TranscriptView({
   return (
     <>
       {!source ? null : audio.status === "missing" ? (
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-ui-12 leading-normal text-muted-foreground">
           The audio for this transcript is no longer available. Timestamps still
           export.
         </p>
@@ -271,7 +271,7 @@ export function TranscriptView({
             className="[&>button]:px-3"
           />
           {tabsHint ? (
-            <p className="text-ui-11p5 leading-snug text-muted-foreground">
+            <p className="text-ui-12 leading-normal text-muted-foreground">
               {tabsHint}
             </p>
           ) : null}

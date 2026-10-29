@@ -56,8 +56,10 @@ import { formatTimestamp } from "../transcript-model";
 import type { TranscriptProgress } from "../transcript-stream";
 import {
   BlockerNote,
+  EmptyPreview,
   GenerateActions,
   type GenerateBlocker,
+  ShortcutHint,
 } from "./tts-workspace";
 import { ArrowUpIcon } from "lucide-react";
 
@@ -79,7 +81,7 @@ function SwitchRow({
 }) {
   const id = `transcribe-${name}`;
   return (
-    <div className="grid gap-1.5">
+    <div className="grid gap-2">
       <FieldLabel
         htmlFor={id}
         className="flex items-center justify-between gap-3 text-ui-13 font-medium text-foreground"
@@ -106,7 +108,7 @@ function SwitchRow({
       </FieldLabel>
       <p
         id={`${id}-hint`}
-        className="text-ui-11p5 leading-snug text-muted-foreground"
+        className="text-ui-12 leading-normal text-muted-foreground"
       >
         {value.hint}
         {value.suggestSpeakersModel && onUseSpeakersModel ? (
@@ -385,13 +387,16 @@ export function TranscribeOutput({
             <p className="text-ui-13 text-muted-foreground">{transcriptError}</p>
           </div>
         ) : busy !== "transcribing" ? (
-          <p className="text-ui-13 text-muted-foreground">
-            Record or upload audio to transcribe. Completed transcripts are saved
-            to history.
-          </p>
+          <div className="flex flex-1 items-center justify-center">
+            <EmptyPreview
+              workflow="transcribe"
+              title="Transcribe"
+              text="Record or upload audio to transcribe. Completed transcripts are saved to history."
+            />
+          </div>
         ) : null}
       </div>
-      <div className="shrink-0 pt-4">
+      <div className="shrink-0 pt-6">
         <TranscriptGallery
           autoSelect={!transcript && !transcribedName && busy === null}
           active={active && mode === "transcribe"}
@@ -459,7 +464,7 @@ export function TranscribeFooter({
           ? "Stopping…"
           : "Transcribing…";
   return (
-    <div className="flex w-full max-w-sm flex-col gap-2">
+    <div className="flex w-full flex-col gap-2.5">
       {working ? (
         <>
           <output
@@ -479,9 +484,9 @@ export function TranscribeFooter({
           />
         </>
       ) : null}
-      <div className="flex flex-wrap items-center justify-center gap-2">
+      <div className="flex items-center gap-2">
         <Button
-          className="relative z-10 mx-auto text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+          className="relative z-10 flex-1 text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
           onClick={running ? onStop : onTranscribe}
           disabled={running ? stopping : busy !== null || blocker !== null}
           variant={running ? "destructive" : "dark"}
@@ -503,7 +508,10 @@ export function TranscribeFooter({
           ) : busy === "loading" ? (
             "Loading model…"
           ) : (
-            "Transcribe"
+            <>
+              Transcribe
+              <ShortcutHint label={shortcutLabel} />
+            </>
           )}
         </Button>
       </div>
@@ -512,7 +520,7 @@ export function TranscribeFooter({
       ) : notice && !running ? (
         <p
           id="transcribe-notice"
-          className="text-center text-ui-11p5 leading-snug text-muted-foreground"
+          className="text-center text-ui-12 leading-normal text-muted-foreground"
         >
           {notice}
         </p>
