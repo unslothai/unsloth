@@ -21,7 +21,6 @@ def frame_threads_enabled() -> bool:
 
 @functools.lru_cache(maxsize = 1)
 def _cpu_runs_x264_avx512() -> bool:
-    """True when libx264's runtime dispatch would pick its AVX-512 kernels (F+CD+BW+DQ+VL, OS-enabled)."""
     if platform.machine().lower() not in ("x86_64", "amd64", "x64"):
         return False
     try:
@@ -34,19 +33,14 @@ def _cpu_runs_x264_avx512() -> bool:
 
 
 def x264_options() -> dict:
-    """Options for every frame-threaded libx264 stream Studio opens (the stock export and the streamed one).
-
-    libx264's AVX-512 kernels (core 165, as bundled with PyAV) read uninitialised heap memory, so the same frames give
-    different bytes depending on what that thread's allocator held before: the first encode in a process is fresh
-    memory and reproducible, later ones are not. Capped at AVX2 the output depends only on the frames. Applied only
-    where AVX-512 would be chosen, so every "AVX2" level is one this CPU has."""
+    """libx264 options for both encode paths: its AVX-512 kernels (core 165, PyAV) read uninitialised heap memory, so
+    later encodes in a process are not reproducible; capping at AVX2 makes output depend only on the frames."""
     if os.environ.get(X264_ASM_CAP_ENV, "").strip().lower() in ("0", "false", "no", "off"):
         return {}
     return {"x264-params": "asm=AVX2"} if _cpu_runs_x264_avx512() else {}
 
 
 def add_x264_stream(container: Any, fps: int, width: int, height: int) -> Any:
-    """The libx264 video stream both encode paths open, so a streamed mp4 is byte-identical to the stock one."""
     stream = container.add_stream("libx264", rate = int(fps), options = x264_options() or None)
     stream.width = int(width)
     stream.height = int(height)

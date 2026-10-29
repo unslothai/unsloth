@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The streamed mp4 is byte for byte the stock export on every render in a process, not only the first.
-
-libx264's AVX-512 kernels read uninitialised heap memory, so on an AVX-512 host the same frames encoded twice (or on
-two threads) gave different mp4s once the allocator had history. A 208 px wide clip (13 MBs, so the lowres rows end
-mid-vector) hits it within a few encodes."""
+"""Streamed mp4 == stock export on every render in a process (libx264 AVX-512 heap reads); 208 px wide hits it."""
 
 from __future__ import annotations
 
@@ -46,7 +42,6 @@ def _streamed(frames, audio):
     session = vse.StreamEncode(_Vae(), None, _FPS, audio_sample_rate = rate)
     session._decoded = True
     pixels = frames.permute(0, 3, 1, 2).float() / 255
-    # chunked like the Wan decoder (1 frame, then 4 per latent step), encoded on the session's own thread
     for start, stop in [(0, 1)] + [(i, i + 4) for i in range(1, _N, 4)]:
         session._push_uint8(pixels[start:stop])
     if audio is None:
