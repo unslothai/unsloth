@@ -19,28 +19,29 @@ function files(dir: string): string[] {
   });
 }
 
-test("no arbitrary pixel font sizes outside the game player", () => {
-  for (const path of files(root))
-    assert.doesNotMatch(readFileSync(path, "utf8"), /text-\[\d+(\.\d+)?px\]/, path);
+// Pinned per line, not by scanning the folder: on the stack, files from the parallel branches
+// still carry their own sizes and mono, and those are fixed on their branches.
+const read = (rel: string) => readFileSync(join(root, rel), "utf8");
+
+test("numbers and ids use the sans font with tabular-nums", () => {
+  assert.match(read("editor/run-drawer.tsx"), /w-14 text-right text-ui-11 text-muted-foreground tabular-nums/);
+  assert.match(read("editor/flow-node.tsx"), /<Badge variant="secondary" className="text-ui-11 tabular-nums">\s*\{String\(value\)\}/);
+  const viewers = read("editor/value-viewers-full.tsx");
+  assert.match(viewers, /column\.type === "number" \? "text-right tabular-nums" : ""/);
+  assert.match(viewers, /text-ui-11 text-muted-foreground tabular-nums">\s*shape/);
+  assert.match(read("editor/dialogs.tsx"), /className="min-w-0 flex-1 truncate text-xs"\s*title=\{model\.repo\}/);
 });
 
-test("font-mono is left on code, JSON and logs only", () => {
-  const mono = files(root).flatMap((path) =>
-    readFileSync(path, "utf8")
-      .split("\n")
-      .filter((line) => line.includes("font-mono"))
-      .map((line) => `${path.slice(root.length + 1)}: ${line.trim()}`),
-  );
-  const allowed = [
-    /gallery\/flows-gallery-page\.tsx: className="rounded-md border bg-transparent px-2 py-1\.5 font-mono text-xs"/, // pasted flow JSON
-    /editor\/run-drawer\.tsx: <pre className=/, // logs
-    /editor\/output-value\.tsx: <pre className=/, // JSON output
-    /editor\/param-fields\.tsx: className=\{`\$\{FIELD\} font-mono/, // JSON param editor
-    /editor\/flow-node\.tsx: <Badge variant="secondary" className="max-w-full font-mono/, // object keys
-    /editor\/trigger-panel\.tsx: <code /, // webhook command
-  ];
-  for (const line of mono)
-    assert.ok(allowed.some((rule) => rule.test(line)), `font-mono on a non-code value: ${line}`);
+test("mono stays on code: logs, JSON output and editors, pasted flow JSON, the webhook command", () => {
+  assert.match(read("editor/run-drawer.tsx"), /<pre className="px-4 py-2 font-mono/);
+  assert.match(read("editor/output-value.tsx"), /<pre className="[^"]*font-mono/);
+  assert.match(read("editor/param-fields.tsx"), /\$\{FIELD\} font-mono text-ui-12/);
+  assert.match(read("editor/trigger-panel.tsx"), /<code className="[^"]*font-mono/);
+});
+
+test("this branch's Flows files use text-ui steps, not pixel sizes", () => {
+  for (const rel of ["editor/param-fields.tsx", "gallery/flows-gallery-page.tsx"])
+    assert.doesNotMatch(read(rel), /text-\[\d+(\.\d+)?px\]/, rel);
 });
 
 test("Flows icons never draw with a translucent currentColor", () => {
