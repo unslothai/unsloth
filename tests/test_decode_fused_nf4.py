@@ -1,0 +1,278 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+"""Fused batch-1 NF4 decode (UNSLOTH_DECODE_FUSED_NF4): each call site against an fp64 oracle of the
+bitsandbytes weights, in the Triton interpreter (CPU) and on a GPU; the weight re-homing keeps every
+projection's values and leaves one buffer per site."""
+
+from __future__ import annotations
+
+import importlib.util
+import os
+import pathlib
+import subprocess
+import sys
+import textwrap
+import types
+
+import pytest
+import torch
+
+from real_accelerator import has_real_cuda
+
+REPO = pathlib.Path(__file__).resolve().parents[1]
+
+_CHECKS = textwrap.dedent(
+    """
+    import importlib, os, sys, types
+    import torch
+    root, device = sys.argv[1], sys.argv[2]
+    negative = len(sys.argv) > 3
+    import triton
+    from packaging.version import Version
+    zoo = types.ModuleType("unsloth_zoo"); zoo.__path__ = []
+    zoo_utils = types.ModuleType("unsloth_zoo.utils"); zoo_utils.Version = Version
+    sys.modules["unsloth_zoo"] = zoo; sys.modules["unsloth_zoo.utils"] = zoo_utils
+    pkg = types.ModuleType("nfk"); pkg.__path__ = [os.path.join(root, "unsloth", "kernels")]
+    sys.modules["nfk"] = pkg
+    F = importlib.import_module("nfk.nf4_decode_fused")
+    import bitsandbytes.functional as BF
+
+    H, NH, D, NKV, I, R, L = 256, 2, 64, 1, 512, 8, 16
+    EPS = 1e-5
+    CAP = (8, 0)
+
+    def quant(n, k, g):
+        W = (torch.randn(n, k, generator = g) / k ** 0.5).to(device)
+        q, s = BF.quantize_4bit(W.to(torch.bfloat16), quant_type = "nf4", compress_statistics = True)
+        return q, s
+
+    def dequant64(q, s):
+        n, k = s.shape
+        p = q.view(torch.uint8).reshape(-1)
+        nib = torch.stack((p >> 4, p & 15), dim = -1).reshape(-1).long()
+        a = s.state2.code[s.absmax.long()] * s.state2.absmax.repeat_interleave(s.state2.blocksize)[: s.absmax.numel()]
+        a = a + s.offset
+        w = s.code.double()[nib].reshape(-1, s.blocksize) * a.double()[:, None]
+        return w.reshape(n, k)
+
+    def site(kind, shapes, K, g, rank = 0):
+        qs = [quant(n, K, g) for n in shapes]
+        packed = torch.cat([q.reshape(-1) for q, _ in qs])
+        absmax = torch.cat([s.absmax for _, s in qs])
+        absmax2 = torch.cat([s.state2.absmax for _, s in qs])
+        offs = [s.offset.reshape(()).float() for _, s in qs]
+        offs += [offs[-1]] * (3 - len(offs))
+        bounds = list(torch.tensor(shapes).cumsum(0).tolist())
+        lora = None
+        if rank:
+            lora = [((torch.randn(rank, K, generator = g) / K ** 0.5).to(device),
+                     (torch.randn(n, rank, generator = g) / rank).to(device)) for n in shapes]
+        s0 = qs[0][1]
+        st = F.FusedSite(kind, packed, absmax, s0.code.float(), bounds, K, s0.blocksize, code2 = s0.state2.code.float(),
+                         absmax2 = absmax2, seg_offset = torch.stack(offs).contiguous(), blocksize2 = s0.state2.blocksize,
+                         lora = lora, scaling = 0.5)
+        W64 = torch.cat([dequant64(q, s) for q, s in qs])
+        if rank:
+            A = torch.cat([a for a, _ in lora]).double()
+            B = torch.block_diag(*[b for _, b in lora]).double()
+            W64 = W64 + 0.5 * B @ A
+        if negative:
+            st.seg_offset = st.seg_offset.flip(0).contiguous()
+        return st, W64
+
+    def rel(a, ref):
+        return ((a.double() - ref).abs().max() / ref.abs().max()).item()
+
+    def rot(x, c, s):
+        h = x.shape[-1] // 2
+        x1, x2 = x[..., :h], x[..., h:]
+        return torch.cat((x1 * c[:h] - x2 * s[:h], x2 * c[h:] + x1 * s[h:]), dim = -1)
+
+    def rms64(h, w):
+        h = h.double()
+        return h * torch.rsqrt(h.pow(2).mean() + EPS) * w.double()
+
+    for dt, tol in ((torch.bfloat16, 2e-2), (torch.float16, 4e-3)):
+        for rank in (0, R):
+            g = torch.Generator().manual_seed(7 + rank)
+            qkv, Wqkv = site("qkv", [NH * D, NKV * D, NKV * D], H, g, rank)
+            o, Wo = site("o", [H], NH * D, g, rank)
+            gu, Wgu = site("gate_up", [I, I], H, g, rank)
+            down, Wd = site("down", [H], I, g, rank)
+            ln1 = (1 + 0.1 * torch.randn(H, generator = g)).to(dt).to(device)
+            ln2 = (1 + 0.1 * torch.randn(H, generator = g)).to(dt).to(device)
+            lnf = (1 + 0.1 * torch.randn(H, generator = g)).to(dt).to(device)
+            emb = torch.randn(H, generator = g).to(dt).to(device)
+            ang = torch.arange(L)[:, None].double() * (1.0 / 10000 ** (torch.arange(0, D, 2).double() / D))[None]
+            ang = torch.cat((ang, ang), -1)
+            cos, sin = ang.cos().to(dt).to(device), ang.sin().to(dt).to(device)
+            pos_i, slot_i = 5, 9
+            pos = torch.tensor([pos_i], device = device)
+            slot = torch.tensor([slot_i], device = device)
+            paged = torch.zeros((L, 2, 1, NKV, D), dtype = dt, device = device)
+            kc, vc = paged[:, 0], paged[:, 1]
+            q_out = torch.empty(NH * D, dtype = dt, device = device)
+            residual = emb.float().clone()
+            ss = (torch.zeros(H, device = device), torch.zeros(H, device = device))
+            xg = torch.empty(H, dtype = dt, device = device)
+            act = torch.empty(I, dtype = dt, device = device)
+
+            # qkv, layer 0: norm in the loop over the embedding, RoPE, K / V into cache row `slot`.
+            F.fused_site(qkv, residual, q_out, epi = F.EPI_ROPE_KV, pre = F.PRE_INLOOP, capability = CAP,
+                         norm_weight = ln1, eps = EPS, k_cache = kc, v_cache = vc,
+                         cache_strides = (kc.stride(2), kc.stride(0)), cos = cos, sin = sin, pos = pos, slot = slot,
+                         head_dim = D)
+            xn = rms64(emb, ln1)
+            y = Wqkv @ xn
+            c64, s64 = cos[pos_i].double(), sin[pos_i].double()
+            qr = rot(y[: NH * D].view(NH, D), c64, s64).reshape(-1)
+            kr = rot(y[NH * D : NH * D + NKV * D].view(NKV, D), c64, s64)
+            vr = y[NH * D + NKV * D :].view(NKV, D)
+            assert rel(q_out, qr) < tol, ("q", dt, rank, rel(q_out, qr))
+            assert rel(kc[slot_i, 0], kr) < tol, ("k", dt, rank, rel(kc[slot_i, 0], kr))
+            assert rel(vc[slot_i, 0], vr) < tol, ("v", dt, rank)
+            assert kc[slot_i - 1].abs().max() == 0 and kc[pos_i].abs().max() == 0, "cache row must be `slot`"
+            if rank:
+                assert int(qkv.counter.item()) == 0, "the shrink counter must re-arm"
+
+            # o: residual add in place, xg = h * ln2, sum(h^2) partials.
+            attn = torch.randn(NH * D, generator = g).to(dt).to(device)
+            h_before = residual.clone()
+            n1 = F.fused_site(o, attn, epi = F.EPI_RESNORM, residual = residual, ss_out = ss[1], xg_out = xg,
+                              next_norm_weight = ln2, capability = CAP, eps = EPS)
+            h_ref = h_before.double() + Wo @ attn.double()
+            assert rel(residual, h_ref) < tol, ("o", dt, rank)
+            torch.testing.assert_close(ss[1][:n1].sum().double(), residual.double().pow(2).sum(), rtol = 1e-4, atol = 0)
+            # One rounding of h * ln2 (the interpreter's bf16 cast may truncate: 1 ulp).
+            ulp = 2.0 ** -7 if dt == torch.bfloat16 else 2.0 ** -10
+            torch.testing.assert_close(xg.float(), residual * ln2.float(), rtol = ulp, atol = 1e-6)
+
+            # gate_up: norm from the partials, SwiGLU.
+            F.fused_site(gu, xg, act, epi = F.EPI_SWIGLU, pre = F.PRE_SCALED, ss_in = ss[1], n_ss = n1,
+                         capability = CAP, eps = EPS)
+            gy = Wgu @ rms64(residual, ln2)
+            act_ref = torch.nn.functional.silu(gy[:I]) * gy[I:]
+            assert rel(act, act_ref) < tol, ("gate_up", dt, rank, rel(act, act_ref))
+
+            # down, then the final norm from its partials.
+            h_before = residual.clone()
+            n2 = F.fused_site(down, act, epi = F.EPI_RESNORM, residual = residual, ss_out = ss[0], xg_out = xg,
+                              next_norm_weight = lnf, capability = CAP, eps = EPS)
+            assert rel(residual, h_before.double() + Wd @ act.double()) < tol, ("down", dt, rank)
+            out = torch.empty(H, dtype = dt, device = device)
+            F.final_norm(residual, ss[0], n2, lnf, EPS, out)
+            assert rel(out, rms64(residual, lnf)) < tol, ("final", dt, rank)
+
+            # Layer 1's qkv over xg with the norm scaled from the down partials.
+            F.fused_site(qkv, xg, q_out, epi = F.EPI_ROPE_KV, pre = F.PRE_SCALED, ss_in = ss[0], n_ss = n2,
+                         capability = CAP, eps = EPS, k_cache = kc, v_cache = vc,
+                         cache_strides = (kc.stride(2), kc.stride(0)), cos = cos, sin = sin, pos = pos, slot = slot,
+                         head_dim = D)
+            y = Wqkv @ rms64(residual, lnf)
+            assert rel(q_out, rot(y[: NH * D].view(NH, D), c64, s64).reshape(-1)) < tol, ("q scaled", dt, rank)
+    print("FUSED OK")
+    """
+)
+
+
+def _run(device, negative = False):
+    pytest.importorskip("triton")
+    pytest.importorskip("bitsandbytes")
+    env = dict(os.environ)
+    if device == "cpu":
+        env["TRITON_INTERPRET"] = "1"
+    else:
+        env.pop("TRITON_INTERPRET", None)
+    argv = [sys.executable, "-c", _CHECKS, str(REPO), device] + (["break"] if negative else [])
+    return subprocess.run(argv, env = env, capture_output = True, text = True, timeout = 1200)
+
+
+@pytest.mark.parametrize("negative_control", [False, True])
+def test_call_sites_match_fp64_in_the_interpreter(negative_control):
+    proc = _run("cpu", negative_control)
+    if negative_control:
+        assert proc.returncode != 0 and "AssertionError" in proc.stderr, proc.stdout + proc.stderr
+    else:
+        assert proc.returncode == 0 and "FUSED OK" in proc.stdout, proc.stdout + proc.stderr
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA GPU")
+def test_call_sites_match_fp64_on_gpu():
+    proc = _run("cuda")
+    assert proc.returncode == 0 and "FUSED OK" in proc.stdout, proc.stdout + proc.stderr
+
+
+def _driver():
+    """unsloth/models/_decode_fused_nf4.py loaded by path, its kernel / utils imports stubbed."""
+    root = REPO / "unsloth"
+    pkg = types.ModuleType("dfn")
+    pkg.__path__ = []
+    models = types.ModuleType("dfn.models")
+    models.__path__ = [str(root / "models")]
+    kernels = types.ModuleType("dfn.kernels")
+    kernels.__path__ = []
+    kernels.nf4_decode_fused = types.ModuleType("dfn.kernels.nf4_decode_fused")
+    kernels.utils = types.ModuleType("dfn.kernels.utils")
+    saved = {k: sys.modules.get(k) for k in ("dfn", "dfn.models", "dfn.kernels")}
+    sys.modules.update({"dfn": pkg, "dfn.models": models, "dfn.kernels": kernels})
+    sys.modules["dfn.kernels.nf4_decode_fused"] = kernels.nf4_decode_fused
+    sys.modules["dfn.kernels.utils"] = kernels.utils
+    spec = importlib.util.spec_from_file_location(
+        "dfn.models._decode_fused_nf4", root / "models" / "_decode_fused_nf4.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    for key, value in saved.items():
+        if value is None:
+            sys.modules.pop(key, None)
+    return module
+
+
+def test_rehome_keeps_values_and_shares_one_buffer():
+    BF = pytest.importorskip("bitsandbytes.functional")
+    D = _driver()
+    g = torch.Generator().manual_seed(0)
+    Ws, states, before = [], [], []
+    for n in (128, 64, 64):
+        q, s = BF.quantize_4bit(
+            torch.randn(n, 256, generator = g).to(torch.bfloat16),
+            quant_type = "nf4",
+            compress_statistics = True,
+        )
+        W = torch.nn.Parameter(q, requires_grad = False)
+        W.quant_state = s
+        s._unsloth_gemv_plan = object()
+        Ws.append(W)
+        states.append(s)
+        before.append(BF.dequantize_4bit(q.clone(), s).clone())
+    old = [W.data_ptr() for W in Ws]
+    packed, absmax, absmax2 = D.rehome_site(Ws, states)
+    assert all(W.data_ptr() != p for W, p in zip(Ws, old))
+    assert len({W.untyped_storage().data_ptr() for W in Ws}) == 1
+    assert Ws[0].data_ptr() == packed.data_ptr()
+    assert absmax.numel() == sum(s.absmax.numel() for s in states)
+    step = states[0].absmax.numel() * absmax.element_size()
+    assert states[1].absmax.data_ptr() == absmax.data_ptr() + step
+    assert (
+        states[2].state2.absmax.untyped_storage().data_ptr() == absmax2.untyped_storage().data_ptr()
+    )
+    assert all("_unsloth_gemv_plan" not in s.__dict__ for s in states)
+    for W, s, ref in zip(Ws, states, before):
+        assert torch.equal(BF.dequantize_4bit(W.data, s), ref)
+    ptrs = tuple(
+        (W.data_ptr(), s.absmax.data_ptr(), s.state2.absmax.data_ptr()) for W, s in zip(Ws, states)
+    )
+    home = (packed, absmax, absmax2, ptrs)
+    assert D._homed(home, Ws, states)
+    Ws[1].data = Ws[1].data.clone()
+    assert not D._homed(home, Ws, states)
+
+
+def test_off_unless_requested(monkeypatch):
+    D = _driver()
+    monkeypatch.delenv("UNSLOTH_DECODE_FUSED_NF4", raising = False)
+    assert not D.requested()
+    for value, expected in (("0", False), ("1", True), ("force", True), ("yes", False)):
+        monkeypatch.setenv("UNSLOTH_DECODE_FUSED_NF4", value)
+        assert D.requested() is expected

@@ -595,7 +595,9 @@ def decode_step(
     s["slot"].fill_(seq_len)
 
     autocast = _autocast_state()
-    key = (bsz, device, autocast, torch.is_inference_mode_enabled())
+    # The fused 4bit decode (UNSLOTH_DECODE_FUSED_NF4) records other launches: its own steps.
+    fused = os.environ.get("UNSLOTH_DECODE_FUSED_NF4", "0")
+    key = (bsz, device, autocast, torch.is_inference_mode_enabled(), fused)
     step = state.graphs.get(key)
     if step is None:
         if len(state.graphs) >= MAX_GRAPHS:
