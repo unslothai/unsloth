@@ -1160,18 +1160,18 @@ class MultiLoraExperts(nn.Module):
         return _ExpertWeights(getattr(base, name), input_major, dtype)
 
     def _compute_dtype(self, hidden_states: torch.Tensor) -> torch.dtype:
-        """As Unsloth Zoo's MoE forward: half activations run as they are, then autocast, then half (or quantized)
-        weights set the dtype; float32 everywhere stays float32."""
+        """As Unsloth Zoo's MoE forward: a half activation runs as it is, half stacks set the dtype, quantized ones
+        take Zoo's ``moe_compute_dtype``; float32 stacks stay float32 even under autocast (grouped GEMM is not
+        autocast-cast)."""
         if hidden_states.dtype in _HALF:
             return hidden_states.dtype
-        device_type = hidden_states.device.type
-        if torch.is_autocast_enabled(device_type):
-            return torch.get_autocast_dtype(device_type)
         param = self.base_layer.gate_up_proj
+        if param.dtype in _HALF:
+            return param.dtype
         if _is_quantized(param):
-            qdtype = getattr(getattr(param, "quant_state", None), "dtype", None)
-            return qdtype if qdtype in _HALF else torch.bfloat16
-        return param.dtype if param.dtype in _HALF else hidden_states.dtype
+            from unsloth_zoo.temporary_patches.moe_utils import moe_compute_dtype
+            return moe_compute_dtype(hidden_states)
+        return hidden_states.dtype
 
     def _grouped_unsupported(self, hidden_states: torch.Tensor, args) -> Optional[str]:
         """Why the grouped path cannot run these experts, or None."""
@@ -1239,7 +1239,11 @@ class MultiLoraExperts(nn.Module):
                 ]
             )
         err = (got - ref).abs().max().item()
-        tol = 5e-2 if self._compute_dtype(hidden_states) in _HALF else 1e-3
+        # Under autocast the per-adapter path may itself run in half precision (Zoo's CPU fallback does).
+        half = self._compute_dtype(hidden_states) in _HALF or torch.is_autocast_enabled(
+            hidden_states.device.type
+        )
+        tol = 5e-2 if half else 1e-3
         if err <= tol * max(ref.abs().max().item(), 1e-6):
             return None
         return f"the grouped probe differs by {err:.3g}"
