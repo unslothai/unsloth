@@ -257,6 +257,10 @@ from ._utils import (
     resolve_attention_implementation,
     requests_flex_attention,
     _EXPLICIT_FLEX_ATTR,
+    _config_prefers_flex_attention,
+    _config_set,
+    _iter_attention_configs,
+    _text_attention_configs,
     _get_text_only_config,
     _is_family_text_decoder,
     _config_get,
@@ -388,6 +392,7 @@ import warnings
 from typing import Optional, Tuple, List, Union
 import re, inspect, sys
 import contextlib
+import threading
 
 try:
     from huggingface_hub.utils import get_token
@@ -1527,6 +1532,77 @@ class _EagerDecodeSteps:
         return False
 
 
+# Gemma 3 picks flex_attention on sm80+ for training. One token per step through it runs flex's eager
+# math fallback in every layer: gemma-3-1b-it on an L4 decoded at 150-230 ms/token, against 56 ms/token
+# on its non-flex path (zoo's SDPA kernel), which cards without flex already run. So generate() uses
+# that path and training keeps flex. UNSLOTH_FLEX_ATTENTION_GENERATE=1 keeps flex for generate too.
+_FLEX_GENERATE_ENV_VAR = "UNSLOTH_FLEX_ATTENTION_GENERATE"
+_FLEX_GENERATE_LOCK = threading.Lock()
+
+
+def _flex_generate_configs(model):
+    """The decoder attention configs to move off flex_attention for one generate(), else []."""
+    if os.environ.get(_FLEX_GENERATE_ENV_VAR, "0") == "1":
+        return []
+    config = getattr(model, "config", None)
+    if config is None or not _config_prefers_flex_attention(config):
+        return []
+    base = model.get_base_model() if hasattr(model, "get_base_model") else model
+    if getattr(base, _EXPLICIT_FLEX_ATTR, False) or getattr(model, _EXPLICIT_FLEX_ATTR, False):
+        return []
+    return [
+        c
+        for c in _text_attention_configs(config)
+        if _config_get(c, "_attn_implementation", None) == "flex_attention"
+    ]
+
+
+class _NonFlexGenerate:
+    """One generate() call of a model whose decoder Unsloth put on flex_attention: its decoder
+    attention configs read "eager" (Gemma 3's patched attention then runs SDPA, as on cards without
+    flex), restored on exit. Reference counted per model, so overlapping calls restore once."""
+
+    def __init__(self, model):
+        self.model = model
+        self.active = False
+
+    def __enter__(self):
+        state = self.model.__dict__
+        with _FLEX_GENERATE_LOCK:
+            depth = state.get("_unsloth_non_flex_generate", 0)
+            if depth == 0:
+                configs = _flex_generate_configs(self.model)
+                if not configs:
+                    return self
+                # Every config in the tree, parents first: the transformers setter also writes
+                # sub-configs, so restoring in this order leaves each one as it was.
+                saved = [
+                    (c, field, _config_get(c, field, None))
+                    for c in _iter_attention_configs(self.model.config)
+                    for field in ("_attn_implementation", "attn_implementation")
+                    if _config_get(c, field, None) is not None
+                ]
+                for c in configs:
+                    _config_set(c, "_attn_implementation", "eager")
+                state["_unsloth_non_flex_generate_saved"] = saved
+            state["_unsloth_non_flex_generate"] = depth + 1
+            self.active = True
+        return self
+
+    def __exit__(self, *exc):
+        if not self.active:
+            return False
+        state = self.model.__dict__
+        with _FLEX_GENERATE_LOCK:
+            depth = state.get("_unsloth_non_flex_generate", 1) - 1
+            state["_unsloth_non_flex_generate"] = depth
+            if depth == 0:
+                state.pop("_unsloth_non_flex_generate", None)
+                for c, field, value in state.pop("_unsloth_non_flex_generate_saved", ()):
+                    _config_set(c, field, value)
+        return False
+
+
 def _compiles_decode(model):
     if unsloth_decode_compile is None:
         return False
@@ -2153,7 +2229,13 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     decode_scope = _CompileDecodeOnRepeat(self) if compile_decode else contextlib.nullcontext()
     eager_scope = _EagerDecodeSteps(self) if _eager_decodes(self) else contextlib.nullcontext()
     try:
-        with decode_scope, eager_scope, _get_inference_mode_context_manager(self), autocaster:
+        with (
+            _NonFlexGenerate(self),
+            decode_scope,
+            eager_scope,
+            _get_inference_mode_context_manager(self),
+            autocaster,
+        ):
             output = self._old_generate(*args, **kwargs)
     finally:
         _clear_generation_caches(self)
