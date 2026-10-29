@@ -5946,18 +5946,6 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	font-size: calc(0.75rem * var(--ui-font-scale, 1));
 }
 
-/* Flows inks are Studio's chart tokens; darken them a touch on light. */
-.flows-editor {
-	--flows-port-mix: 86%;
-}
-.dark .flows-editor {
-	--flows-port-mix: 100%;
-}
-/* A Nodes panel item is armed: the pane places it on click. */
-.flows-armed .react-flow__pane {
-	cursor: copy;
-}
-
 /* Radix hides the select viewport scrollbar (the viewport is the scroller
    so menu corners stay rounded); restore the app's thin one. The inline
    scrollbar-width on the viewport handles Firefox. */

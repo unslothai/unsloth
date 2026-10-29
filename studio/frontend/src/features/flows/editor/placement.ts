@@ -20,8 +20,8 @@ export function stopPlacement(): void {
 
 /** The snap step, equal to the canvas dot gap so snapped cards sit on the dots. */
 export const GRID = 20;
-// A new card's top-left sits this far up-left of the pointer, so the pointer lands on its header.
-const GRAB: [number, number] = [130, 20];
+/** Where the pointer holds a new card, from its top-left in flow units: on the header's icon. */
+export const GRAB: [number, number] = [27, 27];
 
 export function snapPoint(
   [x, y]: [number, number],

@@ -15,6 +15,7 @@ import { nodeIcon } from "./icons";
 import { NodeIconTile } from "./node-card";
 import { CATEGORY_TONES } from "./node-tones";
 import { stopPlacement, togglePlacement, usePlacement } from "./placement";
+import { PlacementGhost } from "./placement-ghost";
 
 type Ghost = { spec: NodeSpec; color: string; x: number; y: number };
 const DRAG_SLOP = 5;
@@ -217,14 +218,7 @@ function PaletteImpl({
         Click a node, then click the canvas to place it (Esc to stop). Drag
         to drop one, or double-click the canvas to search.
       </p>
-      {ghost && (
-        <div
-          className="pointer-events-none fixed z-[1000] flex w-56 items-center gap-2.5 rounded-xl border border-border bg-card px-3 py-1.5 opacity-90 shadow-md"
-          style={{ left: ghost.x + 8, top: ghost.y + 8 }}
-        >
-          <PaletteRowBody spec={ghost.spec} color={ghost.color} />
-        </div>
-      )}
+      {ghost && <PlacementGhost spec={ghost.spec} x={ghost.x} y={ghost.y} />}
     </div>
   );
 }

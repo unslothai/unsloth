@@ -9,10 +9,8 @@ import { memo, useEffect, useState } from "react";
 import { useCatalogStore } from "../stores/catalog-store";
 import { useUiStore } from "../stores/ui-store";
 import type { RfNode } from "./derive-rf";
-import { nodeIcon } from "./icons";
-import { NodeIconTile } from "./node-card";
 import { addNodeConnected } from "./node-factory";
-import { CATEGORY_TONES } from "./node-tones";
+import { PlacementGhost } from "./placement-ghost";
 import { placementPosition, stopPlacement, usePlacement } from "./placement";
 import {
   CenterFocusIcon,
@@ -135,16 +133,7 @@ function ArmedPlacement() {
         </span>
       </Panel>
       {pointer && spec && (
-        <div
-          className="pointer-events-none fixed z-[1000] flex items-center gap-2 rounded-xl border border-border bg-card px-2.5 py-1.5 text-sm font-semibold opacity-80 shadow-md"
-          style={{ left: pointer.x + 12, top: pointer.y + 12 }}
-        >
-          <NodeIconTile
-            icon={nodeIcon(spec.icon)}
-            tone={CATEGORY_TONES[spec.category]}
-          />
-          {spec.title}
-        </div>
+        <PlacementGhost spec={spec} x={pointer.x} y={pointer.y} />
       )}
     </>
   );

@@ -1,0 +1,11 @@
+/* Flows inks are Studio's chart tokens; darken them a touch on light. */
+.flows-editor {
+	--flows-port-mix: 86%;
+}
+.dark .flows-editor {
+	--flows-port-mix: 100%;
+}
+/* A Nodes panel item is armed: the pane places it on click. */
+.flows-armed .react-flow__pane {
+	cursor: copy;
+}
