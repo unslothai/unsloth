@@ -1734,6 +1734,9 @@ def _discard_video_clip(path: str) -> None:
         pass
 
 
+_SPEECH_REPLY_SYSTEM_PROMPT = "Respond with interleaved text and audio."
+
+
 def _zoo_declares_multimodal(model_name, hf_token = None) -> bool:
     """unsloth_zoo's verdict from mlx-vlm's own configs, for families the transformers registry
     does not know (an audio-only speech model, a tower under another name)."""
@@ -3584,6 +3587,27 @@ def _stream_until_cancelled(stream_generate, cancel_event, *args, **kwargs):
         yield from stream_generate(*args, prompt_progress_callback = check, **kwargs)
     except _PrefillStopped:
         return
+
+
+@contextmanager
+def _slots_until_cancelled(model, cancel_event):
+    """mlx-vlm's ``generate_audio`` takes no stop hook; LFM3 samples through ``stream_slots``, so end that loop."""
+    slots = getattr(model, "stream_slots", None)
+    if cancel_event is None or slots is None:
+        yield
+        return
+
+    def until_cancelled(*args, **kwargs):
+        for slot in slots(*args, **kwargs):
+            if cancel_event.is_set():
+                return
+            yield slot
+
+    model.stream_slots = until_cancelled
+    try:
+        yield
+    finally:
+        del model.stream_slots
 
 
 class LogprobsUnsupported(ValueError):
@@ -5696,6 +5720,9 @@ class MLXInferenceBackend:
             "is_audio": _audio_type is not None and _audio_type != "audio_vlm",
             "audio_type": _audio_type,
             "has_audio_input": is_audio_input_type(_audio_type),
+            # Answers a spoken question in its own voice (LFM3-Audio / LFM3-Omni).
+            "speaks": _audio_type == "audio_vlm"
+            and getattr(self._model, "joint_audio_text_generation", False) is True,
             "has_video_input": is_vision and _mlx_reads_video(self._processor),
             "context_length": _served_ctx,
             # Matches llama.cpp requested_n_ctx; served window alone cannot tell if a size was asked for.
@@ -7724,11 +7751,13 @@ class MLXInferenceBackend:
         cancel_event = None,
         stop = None,
         extra_audio_arrays = None,
+        speak = False,
         **_sampler,
     ):
         """Audio-input chat (omni models): waveform in, incremental text deltas out (the audio route
         forwards deltas, unlike the snapshot-diffing text/vision paths). Greedy, so the worker's
-        sampler kwargs go unused."""
+        sampler kwargs go unused. ``speak`` answers in the model's own voice instead: the reply
+        text, then one ``{"speech": <base64 wav>, "sample_rate": ...}`` item."""
         entry = self.models.get(self.active_model_name) or {}
         if entry.get("audio_type") != "audio_vlm":
             raise RuntimeError(
@@ -7739,6 +7768,12 @@ class MLXInferenceBackend:
         # mlx-vlm silently drops all but the first clip; the route refuses this earlier.
         if extra_audio_arrays:
             raise RuntimeError("This MLX model takes one audio file per message.")
+
+        if speak:
+            yield from self._speak_audio_reply(
+                messages, system_prompt, audio_array, max_new_tokens, use_adapter, cancel_event
+            )
+            return
 
         from mlx_vlm import stream_generate as vlm_stream
 
@@ -7856,6 +7891,76 @@ class MLXInferenceBackend:
                 yield tail
         if stopped:
             self._mark_stopped()
+
+    def _speak_audio_reply(
+        self,
+        messages,
+        system_prompt,
+        audio_array,
+        max_new_tokens,
+        use_adapter,
+        cancel_event = None,
+    ):
+        """One spoken question answered in interleaved text and speech, not streamed."""
+        import base64
+
+        from mlx_vlm.generate import generate_audio
+
+        if not (self.models.get(self.active_model_name) or {}).get("speaks"):
+            raise RuntimeError("The loaded model cannot answer in speech.")
+        # The model card's prompt for speech chat; a user prompt still applies after it.
+        system = "\n\n".join(p for p in (_SPEECH_REPLY_SYSTEM_PROMPT, system_prompt) if p)
+        prompt = _render_registered_vlm_prompt(
+            self._processor,
+            self._model,
+            messages_with_attached_image(
+                alternating_turns(messages),
+                system_prompt = system,
+                image = 0,
+                audio = audio_array,
+            ),
+            num_images = 0,
+            num_audios = 1,
+        )
+        max_new_tokens = self._generation_limit(
+            prompt, max_new_tokens, audio = [audio_array], cap = UNSET_GENERATION_BUDGET
+        )
+        with (
+            self._generation_lock,
+            _temporary_mlx_adapter_state(self._model, use_adapter),
+            ExitStack() as generation_scope,
+        ):
+            self._release_vlm_snapshots()
+            generation_scope.enter_context(self._generation_scopes("vision", "audio"))
+            generation_scope.enter_context(_slots_until_cancelled(self._model, cancel_event))
+            result = generate_audio(
+                self._model,
+                self._processor,
+                prompt,
+                audio = [audio_array],
+                generation_mode = "interleaved",
+                max_tokens = max_new_tokens,
+            )
+            cancelled = cancel_event is not None and cancel_event.is_set()
+            # Nothing to encode once stopped, nor for a reply that ended before its first speech frame.
+            spoke = not cancelled and result.audio is not None and result.audio.size > 0
+            wav = result.to_wav_bytes() if spoke else None
+        self.last_generation_stats = _build_generation_stats(
+            result.prompt_tokens,
+            result.prompt_tps,
+            result.generation_tokens,
+            result.generation_tps,
+            finish_reason = result.finish_reason,
+        )
+        if cancelled:
+            return
+        if result.text:
+            yield result.text
+        if spoke:
+            yield {
+                "speech": base64.b64encode(wav).decode("ascii"),
+                "sample_rate": result.sample_rate,
+            }
 
     def generate_with_adapter_control(
         self,

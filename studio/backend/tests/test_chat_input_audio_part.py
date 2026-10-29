@@ -763,3 +763,41 @@ def test_extra_clips_join_the_latest_user_turn_in_order():
     single = messages_with_attached_image(history, structured_content = True, image = 0, audio = "a")
     assert single[-1]["content"][0] == {"type": "audio", "audio": "a"}
     assert len(single[-1]["content"]) == 2
+
+
+@pytest.mark.parametrize(("stream", "stop"), [(True, None), (False, None), (True, ["HALT"])])
+def test_a_spoken_question_gets_a_spoken_reply(monkeypatch, stream, stop):
+    import json
+    from types import SimpleNamespace
+
+    seen = {}
+
+    def _generate(**kwargs):
+        seen.update(kwargs)
+        yield from ("Paris.", {"speech": "UklGRg==", "sample_rate": 24000})
+
+    backend = SimpleNamespace(active_model_name = "m", generate_audio_input_response = _generate)
+    backend.models = {"m": {"is_mlx": True, "has_audio_input": True, "speaks": True}}
+    idle = SimpleNamespace(is_loaded = False)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: idle)
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_decode_audio_clips", lambda clips: [[0.0]])
+    body = {"model": "m", "messages": [{"role": "user", "content": ""}], "audio_base64": AUDIO_B64}
+    body.update(modalities = ["text", "audio"], stream = stream, **({"stop": stop} if stop else {}))
+    with _route_client() as client:
+        response = client.post("/chat/completions", json = body)
+
+    if stop:
+        assert response.status_code == 400 and not seen
+        assert "Stop sequences do not apply" in response.text
+        return
+    assert "transcribes" not in (seen["system_prompt"] or "")
+    audio = {"data": "UklGRg==", "format": "wav", "sample_rate": 24000}
+    if not stream:
+        message = response.json()["choices"][0]["message"]
+        assert (message["content"], message["audio"], seen["speak"]) == ("Paris.", audio, True)
+        return
+    events = [json.loads(l[6:]) for l in response.text.splitlines() if l.startswith("data: {")]
+    deltas = [event["choices"][0]["delta"] for event in events]
+    assert "".join(d.get("content") or "" for d in deltas) == "Paris."
+    assert [d["audio"] for d in deltas if "audio" in d] == [audio] and seen["speak"] is True

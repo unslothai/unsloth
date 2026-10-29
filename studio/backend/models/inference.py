@@ -1579,6 +1579,9 @@ class _InferenceRuntimeFields(BaseModel):
         description = "Audio codec or native generation architecture.",
     )
     has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
+    speaks: bool = Field(
+        False, description = "Whether model can answer a spoken question in its own voice"
+    )
     audio_family: Optional[str] = Field(
         None, description = "Loader family of an audio GGUF model (e.g. kokoro_tts, minimax_music3)."
     )
@@ -2880,6 +2883,17 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Base64-encoded audio (wav/mp3/ogg/flac/m4a) for audio-input models",
     )
+    modalities: Optional[List[Literal["text", "audio"]]] = Field(
+        None,
+        description = (
+            'Output modalities, as OpenAI\'s. ["text", "audio"] asks a model that speaks (status '
+            "speaks) to answer the spoken question in audio_base64 in its own voice as well: the "
+            "reply text, then message.audio / delta.audio {data: base64 wav, format: wav, "
+            "sample_rate}. The model samples the reply its own way, so sampling settings do not "
+            "apply and stop sequences are refused; max_tokens and usage count speech frames as "
+            "well as text tokens; a streamed reply arrives whole, as one text delta and one audio delta."
+        ),
+    )
     extra_audio_base64: Optional[List[str]] = Field(
         None,
         description = (
@@ -3668,6 +3682,7 @@ class ChoiceDelta(BaseModel):
     content: Optional[str] = None
     reasoning_content: Optional[str] = None
     tool_calls: Optional[list[dict]] = None
+    audio: Optional[dict] = None
 
 
 OpenAIFinishReason = Literal["stop", "length", "tool_calls", "content_filter", "function_call"]
@@ -3704,6 +3719,7 @@ class CompletionMessage(BaseModel):
     refusal: Optional[str] = None
     reasoning_content: Optional[str] = None
     tool_calls: Optional[list[dict]] = None
+    audio: Optional[dict] = None
 
 
 class CompletionChoice(BaseModel):

@@ -841,6 +841,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "audio_type",
                         "has_audio_input",
                         "has_video_input",
+                        "speaks",
                         "audio_family",
                         "audio_options",
                         "gguf_variant",
@@ -1944,6 +1945,8 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
                 backend, "stop", "generate_audio_input_response"
             ):
                 audio_kwargs["stop"] = cmd["stop"]
+            if cmd.get("speak"):
+                audio_kwargs["speak"] = True
             generator = backend.generate_audio_input_response(**audio_kwargs, **extra_audio_kwargs)
 
         logger.info("Starting audio input generation for request_id=%s", request_id)
@@ -1953,6 +1956,12 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
                 logger.info("Audio input generation cancelled for request %s", request_id)
                 break
 
+            if isinstance(text_chunk, dict):
+                # A spoken reply's waveform, sent once after its text.
+                _send_response(
+                    resp_queue, {"type": "speech", "request_id": request_id, **text_chunk}
+                )
+                continue
             _send_response(
                 resp_queue,
                 {
