@@ -1698,6 +1698,72 @@ def test_traced_packed_probes_take_symbolic_head_dims(monkeypatch, in_graph):
     assert all(type(x) is int for _, key in keys for x in key if isinstance(x, int))
 
 
+def test_shared_forward_with_mixed_head_dims_compiles(monkeypatch):
+    """One compiled forward shared by layers with different head_dim (Gemma4 style), under the
+    allow_unspec_int_on_nn_module setting unsloth_zoo enables: the head dim turns symbolic after the
+    second layer even with dynamic = None, and the probes must still get plain ints."""
+    from torch._dynamo.testing import CompileCounter
+
+    if not hasattr(torch._dynamo.config, "allow_unspec_int_on_nn_module"):
+        pytest.skip("torch without allow_unspec_int_on_nn_module keeps module ints static")
+    keys = []
+
+    def probe(name):
+        def run(*key):
+            keys.append((name, key))
+            return False
+
+        return run
+
+    def gqa_sdpa(module, q, k, v, mask, scaling = None, **kwargs):
+        out = torch.nn.functional.scaled_dot_product_attention(
+            q, k, v, attn_mask = mask, scale = scaling, enable_gqa = True
+        )
+        return out.transpose(1, 2), None
+
+    class Attn(torch.nn.Module):
+        def __init__(self, heads, kv_heads, head_dim):
+            super().__init__()
+            self.head_dim, self.is_causal = head_dim, True
+            self.num_key_value_groups = heads // kv_heads
+            self.q_proj = torch.nn.Linear(64, heads * head_dim, bias = False)
+            self.k_proj = torch.nn.Linear(64, kv_heads * head_dim, bias = False)
+
+        def forward(self, h, mask, psl):
+            shape = (*h.shape[:-1], -1, self.head_dim)
+            q = self.q_proj(h).view(shape).transpose(1, 2)
+            k = self.k_proj(h).view(shape).transpose(1, 2)
+            return hpa._sdpa_packed_varlen(self, q, k, k, mask, packed_seq_lengths = psl)[0]
+
+    hpa._ORIG_SDPA[0] = gqa_sdpa
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    _block_flag(monkeypatch, True)
+    monkeypatch.setattr(hpa, "_static_window", lambda *args: None)
+    monkeypatch.setattr(hpa, "_VARLEN_IN_GRAPH", {})
+    monkeypatch.setattr(hpa, "_LEAVES_BLOCK", {})
+    monkeypatch.setattr(hpa, "_varlen_in_graph_probe", probe("varlen"))
+    monkeypatch.setattr(hpa, "_leaves_block_probe", probe("leaves"))
+    torch.manual_seed(0)
+    layers = [Attn(4, 2, 16), Attn(2, 1, 32), Attn(4, 2, 16), Attn(2, 1, 32)]
+    lengths = [2, 5, 4]
+    h = torch.randn(1, sum(lengths), 64)
+    mask, psl = _block_causal(lengths), torch.tensor(lengths, dtype = torch.int32)
+    torch._dynamo.reset()
+    torch._dynamo.utils.counters.clear()
+    counter = CompileCounter()
+    with torch._dynamo.config.patch(allow_unspec_int_on_nn_module = True):
+        compiled = torch.compile(Attn.forward, backend = counter, fullgraph = True)
+        for layer in layers:
+            out = compiled(layer, h, mask, psl)
+            shape = (*h.shape[:-1], -1, layer.head_dim)
+            q = layer.q_proj(h).view(shape).transpose(1, 2)
+            k = layer.k_proj(h).view(shape).transpose(1, 2)
+            torch.testing.assert_close(out, gqa_sdpa(layer, q, k, k, mask)[0])
+    assert sum(torch._dynamo.utils.counters["graph_break"].values()) == 0
+    assert {key[3] for name, key in keys if name == "leaves"} == {16, 32}
+    assert all(type(x) is int for _, key in keys for x in key if isinstance(x, int))
+
+
 @_CUDA
 @_TORCH_VARLEN_HOST
 @pytest.mark.parametrize("window", [None, 4])
