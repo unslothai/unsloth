@@ -585,7 +585,7 @@ export function DebuggingTab() {
         title={t("settings.debugging.logSection")}
         description={t("settings.debugging.sourceHint")}
       >
-        <SettingsRow label={t("settings.debugging.source")}>
+        <SettingsRow label={t("settings.debugging.source")} wideControl={true}>
           <Select
             value={sourceId ?? ""}
             onValueChange={(value) => setSourceId(value || null)}
@@ -629,7 +629,7 @@ export function DebuggingTab() {
             </SelectContent>
           </Select>
         </SettingsRow>
-        <SettingsRow label={t("settings.debugging.mode")}>
+        <SettingsRow label={t("settings.debugging.mode")} wideControl={true}>
           <div className="flex items-center gap-2">
             <div
               role="radiogroup"
