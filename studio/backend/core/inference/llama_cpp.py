@@ -2237,8 +2237,8 @@ def _archive_and_recall(
                 break
             attempt_k = max(1, attempt_k // 2)
 
-        # One encode per query across the retries and the widenings inside each recall.
-        with query_vector_memo():
+        # Retries re-ask the same queries: encode each once and reuse lexical passes and branch checks.
+        with query_vector_memo(), conversation_archive.recall_session():
             for index, k in enumerate(attempts):
                 recall = build_conversation_recall(
                     conversation,
