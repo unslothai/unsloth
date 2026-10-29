@@ -19,14 +19,13 @@ BODIES = json.loads(
     (Path(__file__).parent / "fixtures" / "training_api_job_bodies.json").read_text()
 )
 FILE_ID = "file-0123456789abcdef0123456789abcdef"
+UPLOADED = Path(f"/uploads/{FILE_ID}.jsonl")
 OPENAI_FIELDS = {"model", "hyperparameters", "seed", "suffix"}
 
 
 @pytest.fixture(autouse = True)
 def uploaded_file(monkeypatch):
-    monkeypatch.setattr(
-        openai_fine_tuning, "_find_file", lambda file_id: Path(f"/uploads/{file_id}.jsonl")
-    )
+    monkeypatch.setattr(openai_fine_tuning, "_find_file", lambda file_id: UPLOADED)
 
 
 def _request(body: dict) -> TrainingStartRequest:
@@ -41,7 +40,7 @@ def test_generated_body_is_accepted_with_its_settings(name):
     body = BODIES[name]
     request = _request(body)
     assert request.model_name == body["model"]
-    assert request.local_datasets == [f"/uploads/{FILE_ID}.jsonl"]
+    assert request.local_datasets == [str(UPLOADED)]
     assert request.num_epochs == body["hyperparameters"]["n_epochs"]
     assert request.batch_size == body["hyperparameters"]["batch_size"]
     assert request.random_seed == body["seed"]

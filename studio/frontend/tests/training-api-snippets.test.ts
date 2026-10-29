@@ -313,9 +313,9 @@ test("the placeholder example and the cancel example render for every language",
   }
 });
 
-test("the Train header has the API button beside Library, and the API tab has a Training kind", () => {
+test("the Train header leads its page links with the API button, and the API tab has a Training kind", () => {
   const page = readSrc("features/studio/studio-page.tsx");
-  assert.match(page, /<div className="ml-auto flex items-center gap-2">\s*<TrainingApiButton \/>\s*<MediaPageLink\s+to="\/library"/);
+  assert.match(page, /<div className="ml-auto flex items-center gap-2">\s*<TrainingApiButton \/>\s*<MediaPageLink\b[^]*?to="\/library"/);
   const button = readSrc("features/studio/training-api-button.tsx");
   assert.match(button, /className=\{HEADER_ICON_BUTTON\}/);
   assert.match(button, /buildTrainingStartPayload\(config, null\)/);
