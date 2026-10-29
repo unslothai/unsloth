@@ -417,6 +417,43 @@ def test_mcp_public_transport_dials_loopback_once_the_owner_allows_it(monkeypatc
     assert seen == ["http://127.0.0.1:8321/mcp"]
 
 
+def test_mcp_public_transport_falls_back_to_the_next_localhost_address(monkeypatch):
+    import http.server
+
+    class NoContent(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(204)
+            self.end_headers()
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), NoContent)
+    port = server.server_address[1]
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+    resolve = socket.getaddrinfo
+
+    def localhost_ipv6_first(host, *args, **kwargs):
+        if host == "localhost":
+            return [
+                (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", port, 0, 0)),
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port)),
+            ]
+        return resolve(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", localhost_ipv6_first)
+    monkeypatch.setattr(
+        managed_provider_url_settings, "get_managed_private_provider_urls_allowed", lambda: True
+    )
+
+    async def check():
+        async with mcp_client._public_http_client_factory() as client:
+            return (await client.get(f"http://localhost:{port}/mcp")).status_code
+
+    try:
+        assert asyncio.run(check()) == 204
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_mcp_cache_and_failure_cooloffs_are_private():
     for account in ACCOUNTS:
         run_as(account, mcp_client.cache_tools, "same", [{"name": account.username}])
