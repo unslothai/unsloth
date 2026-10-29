@@ -1,22 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Family evidence for a Hub single-file pick whose id and filename name no family.
-
-Fine-tunes ship under their own names (``Laxhar/noobai-XL-Vpred-1.0``,
-``OnomaAIResearch/Illustrious-xl-early-release-v0``), so the name matcher answers None and the pick
-is refused as an unknown family although the checkpoint states what it is: its safetensors header
-holds a whole SDXL checkpoint (UNet, both text encoders, VAE). Only that is read: the picked file's
-header, and only for whole-pipeline families (SDXL), whose checkpoint is self-contained; a
-transformer-only family resolves its base and defaults from the name. A pipeline pick needs no
-evidence here: a remote one loads only from trusted (named) repos, and a local folder is already
-read through its ``model_index.json``.
-
-Evidence is advisory. ``prefetch_for_pick`` (the routes, user-initiated requests only) re-reads the
-header off the Hub on every request; ``cached_family`` hands that verdict, or a cached copy's header,
-to the network-free ``detect_family_for_pick``. The load opens the downloaded file itself, and that
-stays the authoritative check.
-"""
+"""Family evidence from a Hub safetensors header (SDXL only); advisory, the load check stays final;
+remote pipeline picks need no evidence (trusted repos); detect_family_for_pick is network-free;
+prefetch_for_pick only for user requests."""
 
 from __future__ import annotations
 

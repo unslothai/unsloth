@@ -1133,6 +1133,21 @@ class ManagedEngine:
             for message in messages
         ]
 
+    def _reply_cap_in_window(self, messages, system_prompt, limit, params):
+        """vLLM and SGLang refuse prompt + max_tokens past the window, where llama-server stops at it."""
+        try:
+            prompt = self.count_tokens(
+                messages,
+                system_prompt,
+                enable_thinking = params.get("enable_thinking"),
+                reasoning_effort = params.get("reasoning_effort"),
+                preserve_thinking = params.get("preserve_thinking"),
+            )[0]
+        except Exception:
+            # An estimate would cut a fitting reply short; the engine judges the cap itself.
+            return limit
+        return max(1, min(limit, self.context - prompt))
+
     def count_tokens(
         self,
         messages,
@@ -1184,7 +1199,7 @@ class ManagedEngine:
             raise ValueError(
                 "Tools and adapter comparisons are not supported by this optional engine profile."
             )
-        if params.get("video"):
+        if params.get("videos"):
             raise ValueError(
                 "Video input is not yet supported by the Unsloth managed engine transport."
             )
@@ -1267,7 +1282,11 @@ class ManagedEngine:
         # -1 or full context leaves no room for the prompt; let the engine budget it.
         limit = params.get("max_new_tokens") or 0
         if limit > 0 and (not self.context or limit < self.context):
-            payload["max_tokens"] = limit
+            payload["max_tokens"] = (
+                self._reply_cap_in_window(messages, system_prompt, limit, params)
+                if self.context and not request_images
+                else limit
+            )
         payload.update(
             self.reasoning_fields(
                 params.get("enable_thinking"),

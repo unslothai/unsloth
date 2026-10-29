@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { hasChatFullAccess, withChatFullAccess } from "../utils/chat-full-access";
+
 import { attachedMediaUnavailableReason } from "../lib/attached-media-gate";
 import { readGenerationProgress } from "../lib/generation-progress";
 import { externalModelLabel } from "../lib/external-model-label";
@@ -2288,7 +2290,7 @@ export async function buildLocalTokenCountExtras(
         checkpoint: state.params.checkpoint,
       }),
       isMlx: state.loadedIsMlx === true,
-      isManagedEngine: state.loadedEngine === "vllm",
+      isManagedEngine: state.loadedEngine !== "auto",
       autoCompactEnabled: state.autoCompactEnabled,
     }),
   };
@@ -2724,6 +2726,8 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "mlxKvQuantNote",
   "mlxInt8Prefill",
   "loadedMlxInt8PrefillRequested",
+  "mlxAnePrefill",
+  "loadedMlxAnePrefillRequested",
   "mlxPleOffload",
   "mlxExpertOffload",
   "loadedMlxPleOffloadRequested",
@@ -2817,6 +2821,7 @@ function queuedResolvedModelFromStore(
           audioType: activeModel.audioType,
           hasAudioInput: activeModel.hasAudioInput,
           hasVideoInput: activeModel.hasVideoInput,
+          speaks: activeModel.speaks,
         }
       : null,
   };
@@ -3697,6 +3702,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       cache_type_kv: config.kvCacheDtype,
       mlx_kv_quant: config.mlxKvQuant ?? null,
       mlx_int8_prefill: config.mlxInt8Prefill ?? false,
+      mlx_ane_prefill: config.mlxAnePrefill ?? false,
       mlx_ple_offload: config.mlxPleOffload ?? null,
       mlx_expert_offload: config.mlxExpertOffload ?? null,
       speculative_type: effectiveSpeculativeType,
@@ -4348,6 +4354,7 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
               audioType: status.audio_type ?? null,
               hasAudioInput: status.has_audio_input ?? false,
               hasVideoInput: status.has_video_input ?? false,
+              speaks: status.speaks ?? false,
             },
           },
         };
@@ -4970,6 +4977,7 @@ export function createOpenAIStreamAdapter(
               ),
             }
         : liveRuntime;
+      runtime = withChatFullAccess(runtime, liveRuntime.chatFullAccessGrants, resolvedThreadId);
       const { params } = runtime;
       const sandboxSessionId = await resolveSandboxSessionId(
         resolvedThreadId,
@@ -5482,10 +5490,11 @@ export function createOpenAIStreamAdapter(
           ? shownBrowserChat()
           : undefined;
       // A first turn files its handles under "__default" and autosave re-keys them mid-run, so resolve per use.
-      const liveThreadKey = (owner: () => void) =>
-        threadKey === "__default"
-          ? useChatRuntimeStore.getState().runKeyForOwner(threadKey, owner)
-          : threadKey;
+      const liveThreadKey = (owner: () => void) => {
+        const key = threadKey === "__default" ? useChatRuntimeStore.getState().runKeyForOwner(threadKey, owner) : threadKey;
+        if (key !== "__default") useChatRuntimeStore.getState().adoptChatFullAccessRun(cancelId, key);
+        return key;
+      };
 
       // Per-run token so a delayed stop POST can't match the next run.
       const cancelId =
@@ -5519,7 +5528,7 @@ export function createOpenAIStreamAdapter(
       const isMlxForCompaction =
         !isExternalModelId(params.checkpoint) && runtime.loadedIsMlx === true;
       const isManagedEngineForCompaction =
-        !isExternalModelId(params.checkpoint) && runtime.loadedEngine === "vllm";
+        !isExternalModelId(params.checkpoint) && runtime.loadedEngine !== "auto";
       // Taken once, so a retried request still carries it and the next turn does not.
       const compactNow =
         takeThreadCompactionRequest(resolvedThreadId) &&
@@ -6111,6 +6120,8 @@ export function createOpenAIStreamAdapter(
               ...part,
               afterToolCalls: 0,
             })) ?? []);
+      // A spoken reply's audio, kept apart from the text so the player renders on its own.
+      let spokenReplyPart: { type: "text"; text: string } | null = null;
       const buildAssistantContent = (rawText: string) => {
         const positionedTools = toolCallParts
           .map((part, index) => {
@@ -6152,6 +6163,7 @@ export function createOpenAIStreamAdapter(
           }
         }
         assembled.push(...runs[boundaries.length]);
+        if (spokenReplyPart) assembled.push(spokenReplyPart);
 
         pinGeminiThoughtReplayParts(assembled, geminiThoughtParts);
         pinGeminiAnswerReplayParts(assembled, geminiAnswerParts);
@@ -6811,6 +6823,10 @@ export function createOpenAIStreamAdapter(
             };
           }
 
+          const turnAudioBase64 = findLatestUserAudioBase64(
+            currentTurnMessages,
+            !queuedRunSettings && !continuation,
+          );
           return {
             model: params.checkpoint,
             messages: outboundMessages,
@@ -6842,10 +6858,10 @@ export function createOpenAIStreamAdapter(
               : { seed: params.seed }),
             // Turn-scoped: a stale screenshot here made the backend refuse every later text turn's durable run.
             image_base64: findLatestUserImageBase64(currentTurnMessages),
-            audio_base64: findLatestUserAudioBase64(
-              currentTurnMessages,
-              !queuedRunSettings && !continuation,
-            ),
+            audio_base64: turnAudioBase64,
+            ...(activeModel?.speaks && turnAudioBase64
+              ? { modalities: ["text", "audio"] }
+              : {}),
             extra_audio_base64:
               findLatestUserExtraAudioBase64(currentTurnMessages),
             video_base64: findLatestUserVideoBase64(currentTurnMessages),
@@ -7384,7 +7400,9 @@ export function createOpenAIStreamAdapter(
                           // Resolved per action: a first turn is re-keyed from "__default" to its id.
                           scope: liveThreadKey(serverCancel),
                           userText,
-                          fullAccess: bypassPermissions,
+                          fullAccess: (bypassPermissions && runtime.chatFullAccessPreviousMode === null) || hasChatFullAccess(
+                            useChatRuntimeStore.getState().chatFullAccessGrants, liveThreadKey(serverCancel), cancelId,
+                          ),
                           temporary: browserTemporary,
                           signal: runSignal,
                         });
@@ -7583,6 +7601,7 @@ export function createOpenAIStreamAdapter(
                         toolConfirmationScopeId,
                         confirmationThreadKey === "__default" ? "" : confirmationThreadKey,
                         toolEvent.image_disclosure as ImageDisclosure | undefined,
+                        cancelId,
                       );
                   }
                 } else if (toolEvent.type === "tool_end") {
@@ -7828,6 +7847,18 @@ export function createOpenAIStreamAdapter(
               )?.extra_content;
               // State reaches the message only via a yield, so pace previews but never state changes.
               let replayStateChanged = false;
+              const spokenAudio = (
+                chunk.choices?.[0]?.delta as
+                  | { audio?: { data?: unknown } }
+                  | undefined
+              )?.audio?.data;
+              if (typeof spokenAudio === "string" && spokenAudio) {
+                spokenReplyPart = {
+                  type: "text",
+                  text: `<audio-player src="data:audio/wav;base64,${spokenAudio}" />`,
+                };
+                replayStateChanged = true;
+              }
               let geminiReplayStateChanged = false;
               let geminiThoughtSignature: string | undefined;
               let capturedGeminiThoughtPart = false;
@@ -8952,6 +8983,7 @@ export function createOpenAIStreamAdapter(
         abortSignal.removeEventListener("abort", forwardAbort);
         // Resolve once: the clears below drop the owner the lookup keys on.
         const cleanupKey = liveThreadKey(serverCancel);
+        useChatRuntimeStore.getState().clearUnadoptedChatFullAccessRun(cancelId);
         const confirmStore = useChatRuntimeStore.getState();
         for (const part of toolCallParts) {
           confirmStore.clearToolConfirmation(part.toolCallId);

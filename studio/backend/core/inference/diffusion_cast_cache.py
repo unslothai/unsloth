@@ -163,10 +163,6 @@ def _cast_bytes(shards: list) -> Optional[int]:
     return total if seen else None
 
 
-def _all_wide(shards: list) -> bool:
-    return _cast_bytes(shards) is not None
-
-
 def _fit_budget(cands: list, logger: Any = None) -> list:
     """A set over the LRU budget would evict its own entries every load. Greedy largest-first, so it is deterministic."""
     budget = _cache.max_cache_bytes()
@@ -579,10 +575,41 @@ class _Reader:
                 return src
         return None
 
+    def _kept_copy(self, ref: Any, name: str) -> Any:
+        """While ``ref`` is onloaded: the host copy its device copy was uploaded from (top-level group or keep-cpu offload)."""
+        live = ref.data if hasattr(ref, "data") else ref
+        device = getattr(live, "device", None)
+        if device is None or device.type == "cpu":
+            return None
+        src = None
+        try:
+            from .diffusion_memory import TOP_GROUP_HOST_ATTR, offload_host_copy
+            for group in self.groups:
+                top = getattr(group, TOP_GROUP_HOST_ATTR, None)
+                if isinstance(top, dict) and ref in top:
+                    src = top.get(ref)
+                    break
+            if src is None:
+                src = offload_host_copy(self.module, name, ref)
+        except Exception:  # noqa: BLE001 - no kept copy: wait for the host as before
+            return None
+        src = src.data if hasattr(src, "data") else src
+        if (
+            src is None
+            or getattr(src, "device", None) is None
+            or src.device.type != "cpu"
+            or src.dtype != live.dtype
+            or tuple(src.shape) != tuple(live.shape)
+        ):
+            return None
+        return src
+
     def tensor(self, name: str) -> Any:
         while True:
             ref = _resolve_ref(self.module, name)
             host = self._host_copy(ref)
+            if host is None:
+                host = self._kept_copy(ref, name)
             if host is not None:
                 return host.data if hasattr(host, "data") else host
             tensor = ref.data if hasattr(ref, "data") else ref

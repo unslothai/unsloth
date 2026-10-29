@@ -170,10 +170,12 @@ from .diffusion_flux3 import REFERENCE_AREA as FLUX3_REFERENCE_AREA
 from .diffusion_small_host import (
     INT8_DENOISER_NAMES,
     decide_small_host,
+    download_first_enabled as small_host_download_first,
     engaged_on as small_host_engaged_on,
     host_commit_mib,
     host_ram_mib,
     resolve_snapshot_dir,
+    spill_capacity_mib,
     stored_components,
     torch_dtype_map as small_host_torch_dtype_map,
 )
@@ -963,41 +965,6 @@ def _set_pinned_lora_scales(pipe: Any, weights: dict) -> bool:
     return True
 
 
-def resolve_local_single_file(model_path: str) -> Optional[str]:
-    """The sole single-file checkpoint basename in a local ``model_path`` directory that is NOT a
-    diffusers pipeline (no ``model_index.json`` or FLUX.3 ``modular_model_index.json``) and holds exactly one ``.safetensors`` file, else
-    None.
-
-    The On-Device scanner advertises a bare single-file safetensors directory as a text-to-image
-    model, but the local picker starts it as a ``pipeline`` with no filename, so a pipeline load
-    400s on the missing ``model_index.json``. The images load route uses this to reinterpret such a
-    pick as a ``single_file`` load of the sole checkpoint. A real pipeline dir, or an ambiguous one
-    (0 or more than 1 ``.safetensors``), returns None and loads unchanged. A PEFT LoRA adapter
-    folder is also skipped. Never raises.
-    """
-    try:
-        root = Path(model_path).expanduser()
-        if not root.is_dir() or any(
-            (root / index).is_file() for index in ("model_index.json", FLUX3_INDEX)
-        ):
-            return None
-        # A PEFT adapter folder is not a base checkpoint; skip it so validation 400s before eviction
-        if (root / "adapter_config.json").is_file():
-            return None
-
-        checkpoints = [
-            p.name
-            for p in root.iterdir()
-            if p.is_file()
-            and p.suffix.lower() == ".safetensors"
-            and p.stem.lower() != "adapter_model"
-            and not is_appledouble_metadata(p)
-        ]
-    except OSError:
-        return None
-    return checkpoints[0] if len(checkpoints) == 1 else None
-
-
 def split_local_checkpoint_path(model_path: str) -> Optional[tuple[str, str]]:
     """``(dir, name)`` when ``model_path`` is one local ``.safetensors`` file, else None."""
     try:
@@ -1164,7 +1131,19 @@ def _compile_shape_dims(
     iw, ih = init_pil.size
     if getattr(family, "layer_count", 0):
         return _layered_canvas(family, (iw, ih))
+    if getattr(family, "pipeline_class", None) == "FluxKontextPipeline":
+        return _kontext_render_size((iw, ih))
     return int(iw), int(ih)
+
+
+def _kontext_render_size(size: tuple[int, int]) -> tuple[int, int]:
+    """FluxKontextPipeline renders at max_area at the source's aspect whatever size it is given, as ComfyUI does."""
+    iw, ih = size
+    ratio = float(iw) / float(max(1, ih))
+    area = 1024 * 1024
+    width = round((area * ratio) ** 0.5) // 16 * 16
+    height = round((area / ratio) ** 0.5) // 16 * 16
+    return int(width), int(height)
 
 
 def _layered_canvas(family: Any, size: tuple[int, int]) -> tuple[int, int]:
@@ -3358,6 +3337,22 @@ def _peak_model_identity(
             base_revision = f"{base_revision}:{weights}"
         identity += f"+{base}@{base_revision}"
     return identity
+
+
+def _small_host_fetch(
+    pipeline_cls: Any,
+    repo: Any,
+    pipe_kwargs: dict,
+    local_dir: Optional[str],
+    local_files_only: bool,
+) -> Optional[Callable[[], Any]]:
+    """``from_pretrained``'s own download, run before the small-host decision; None offline or with a staged snapshot."""
+    if local_files_only or local_dir or not isinstance(repo, str) or _is_local_path(repo):
+        return None
+    download = getattr(pipeline_cls, "download", None)
+    if not callable(download):
+        return None
+    return lambda: download(repo, **pipe_kwargs)
 
 
 def _conditioning_cache_hits(pipe: Any) -> int:
@@ -9286,6 +9281,13 @@ class DiffusionBackend:
                                         target,
                                         dtype,
                                         lora_active = _has_active_lora(loras),
+                                        fetch = _small_host_fetch(
+                                            pipeline_cls,
+                                            fetch_base,
+                                            pipe_kwargs,
+                                            _base_local_dir,
+                                            local_files_only,
+                                        ),
                                     )
                                     if small_host is not None and small_host.engaged:
                                         pipe_kwargs["torch_dtype"] = small_host_torch_dtype_map(
@@ -9605,6 +9607,13 @@ class DiffusionBackend:
                                     target,
                                     dtype,
                                     lora_active = _has_active_lora(loras),
+                                    fetch = _small_host_fetch(
+                                        pipeline_cls,
+                                        fetch_base,
+                                        pipe_kwargs,
+                                        _base_local_dir,
+                                        local_files_only,
+                                    ),
                                 )
                                 if small_host is not None and small_host.engaged:
                                     pipe_kwargs["torch_dtype"] = small_host_torch_dtype_map(
@@ -10122,6 +10131,9 @@ class DiffusionBackend:
                         audit = load_audit,
                         logger = logger,
                     )
+                    if speed_deferred:
+                        from .diffusion_qwenimage21_eager import install_for_pipe as q21_eager
+                        q21_eager(pipe, logger)
                     # fp16-only cards: a guarded family stays float16; patch its overflow sites.
                     from .diffusion_fp16_guard import family_fp16_guard, install_fp16_guard
 
@@ -10410,7 +10422,10 @@ class DiffusionBackend:
                         plan = prefer_whole_module_offload(
                             pipe, plan, logger = logger, steps = plan_steps
                         )
-                        headroom = plan.estimates.get("measured_runtime_headroom_mib")
+                        streamed_headroom = plan.estimates.get("measured_streamed_headroom_mib")
+                        headroom = streamed_headroom or plan.estimates.get(
+                            "measured_runtime_headroom_mib"
+                        )
                         if headroom and (
                             plan.resident_transformer_mib or plan.resident_text_encoder_mib
                         ):
@@ -10427,6 +10442,7 @@ class DiffusionBackend:
                                 plan.estimates.get("measured_learned_cfg_off", False),
                                 plan.estimates.get("measured_dense_bf16", False),
                                 plan.estimates.get("measured_small_host_int8", False),
+                                bool(streamed_headroom),
                             )
                             setattr(pipe, DECODE_LEND_ATTR, decode_lend_from_plan(plan))
 
@@ -11989,10 +12005,30 @@ class DiffusionBackend:
         return unified_memory_shortfall_message(plan, family = fam.name)
 
     def _small_host_decision(
-        self, source: Any, pipe_kwargs: dict, target: Any, dtype: Any, *, lora_active: bool
+        self,
+        source: Any,
+        pipe_kwargs: dict,
+        target: Any,
+        dtype: Any,
+        *,
+        lora_active: bool,
+        fetch: Optional[Callable[[], Any]] = None,
     ) -> Any:
-        """Small-host decision for a pipeline load; raises its refusal, None without a local snapshot."""
+        """Small-host decision for a pipeline load; raises its refusal, None without a local snapshot.
+        ``fetch`` downloads what ``from_pretrained`` would when the snapshot holds no weights yet."""
         snapshot = resolve_snapshot_dir(source, hub_cache_dir())
+        if (
+            fetch is not None
+            and small_host_download_first()
+            and (snapshot is None or not stored_components(snapshot))
+        ):
+            fetched = fetch()
+            snapshot = resolve_snapshot_dir(fetched, None) if fetched else snapshot
+            if snapshot is not None:
+                logger.info(
+                    "diffusion.small_host: downloaded the weights before the host-RAM decision (%s)",
+                    snapshot,
+                )
         if snapshot is None:
             return None
         comps = {
@@ -12011,6 +12047,7 @@ class DiffusionBackend:
             lora_active = lora_active,
             host_commit_mib = host_commit_mib(),
             pread_libraries = ("transformers",) if pread_available() else (),
+            spill_free_mib = spill_capacity_mib(),
         )
         if decision.engaged or decision.refuse:
             logger.info(
@@ -12021,6 +12058,13 @@ class DiffusionBackend:
             )
         elif decision.available_mib is not None:
             logger.info("diffusion.small_host: engaged=False (%s)", decision.reason)
+        if decision.int8_spill:
+            logger.info(
+                "diffusion.small_host: int8 denoiser spills to a memory-mapped scratch file (host estimate %d MiB "
+                "instead of %d MiB)",
+                decision.spill_route_host_mib,
+                decision.route_host_mib,
+            )
         if decision.refuse:
             raise RuntimeError(decision.refuse)
         return decision
@@ -12046,6 +12090,7 @@ class DiffusionBackend:
             mark,
             prepare_streamed_encoder_,
             quantize_int8_weight_,
+            spill_dir,
         )
 
         device = target.torch_device
@@ -12067,16 +12112,29 @@ class DiffusionBackend:
             else:
                 # pageable: pinning rounds blocks to powers of two (11.3 GB of FLUX.1 int8 held 18 GB pinned)
                 act_int8 = int8_act_family(fam) and int8_act_device_ok(device)
-                stats = quantize_int8_weight_(
-                    module,
-                    compute_dtype = dtype,
-                    work_device = device,
-                    keep_device = "cpu",
-                    act_int8 = act_int8,
-                )
+                spill_to = spill_dir() if getattr(decision, "int8_spill", False) else None
+                try:
+                    stats = quantize_int8_weight_(
+                        module,
+                        compute_dtype = dtype,
+                        work_device = device,
+                        keep_device = "cpu",
+                        act_int8 = act_int8,
+                        spill_dir = spill_to,
+                    )
+                except OSError as exc:
+                    if spill_to is None:
+                        raise
+                    # in-RAM route does not fit: no fallback
+                    raise RuntimeError(
+                        f"Not enough system RAM to load this model, and the int8 scratch file in {spill_to} "
+                        f"could not be created ({exc}). Point UNSLOTH_DIFFUSION_SMALL_HOST_SPILL_DIR at a disk "
+                        f"with {decision.route_host_mib / 1024 + 2:.0f} GB free."
+                    ) from exc
                 info["components"][name] = (
                     f"int8 weights ({stats['int8_bytes'] >> 20} MiB, {stats['linears']} linears"
                     + (", int8 activations" if act_int8 else "")
+                    + (", memory-mapped scratch file" if stats.get("spilled_bytes") else "")
                     + ")"
                 )
             if load_token is not None:
@@ -12911,6 +12969,9 @@ class DiffusionBackend:
     def _engage_deferred_profile(self, state: _LoadState) -> None:
         """Runs the deferred speed profile at the 3rd generation under _generate_lock; the flag clears first so it never retries."""
         object.__setattr__(state, "speed_deferred", False)
+        from .diffusion_qwenimage21_eager import demote
+
+        demote(getattr(state, "pipe", None))
         from . import diffusion_autoopt as autoopt
 
         target = self._state_device_target(state)
@@ -14435,6 +14496,22 @@ class DiffusionBackend:
                 with self._lock:
                     # Sole clear of published progress, on every exit.
                     self._gen = None
+
+    @contextmanager
+    def generation_waiter(self, cancel: threading.Event):
+        with self._generation_cancel_lock:
+            self._queued_generate_cancels.add(cancel)
+        try:
+            yield
+        finally:
+            with self._generation_cancel_lock:
+                self._queued_generate_cancels.discard(cancel)
+
+    def generation_holder(self) -> Optional[object]:
+        with self._generation_cancel_lock:
+            if self._active_generate_cancel is not None:
+                return self._active_generate_cancel
+        return self._generate_lock if self._generate_lock.locked() else None
 
     def generate_progress(self) -> dict[str, Any]:
         """Live per-step progress for an in-flight generation (lock-free read)."""

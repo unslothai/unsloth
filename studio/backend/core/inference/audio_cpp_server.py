@@ -1,18 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One ``audiocpp_server`` child process serving one audio.cpp model.
-
-Shared by the dictation sidecar (speech to text) and the audio worker (speech and
-music), which each own an instance. The server is bound to 127.0.0.1 on an
-ephemeral port and configured with exactly one model under a per-launch random id,
-so the readiness probe can tell our child from any other process that won the bind
-race: it must answer ``/health`` and list that id in ``/v1/models``.
-
-Binary discovery mirrors whisper.cpp's: ``AUDIOCPP_SERVER_PATH`` (the binary),
-``UNSLOTH_AUDIO_CPP_PATH`` (an install dir), the managed ``<UNSLOTH_HOME>/audio.cpp``
-tree ``install_audio_cpp_prebuilt.py`` writes, then PATH.
-"""
+"""One audiocpp_server child per model on 127.0.0.1 with a random per-launch id; ready only if
+/health answers and /v1/models lists that id (so a bind-race rival fails). Binary:
+AUDIOCPP_SERVER_PATH, UNSLOTH_AUDIO_CPP_PATH, <UNSLOTH_HOME>/audio.cpp (from
+install_audio_cpp_prebuilt.py), then PATH."""
 
 from __future__ import annotations
 

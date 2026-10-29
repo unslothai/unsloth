@@ -479,3 +479,82 @@ def test_lora_refused_and_status_reports_the_int8_route():
         types.SimpleNamespace(_unsloth_small_host = {"components": {"transformer": "cast on device"}})
     )
     assert not _small_host_int8(object())
+
+
+def _decide_with_fetch(
+    tmp_path,
+    monkeypatch,
+    *,
+    weights_cached,
+    fetch_result = "dl",
+):
+    """The pipeline decision on ``tmp_path`` (a config-only or a full snapshot) with a counting ``fetch``."""
+    from core.inference import diffusion as dif
+
+    full = tmp_path / "dl"
+    full.mkdir()
+    monkeypatch.setattr(dif, "host_ram_mib", lambda: (13 * 1024, 11 * 1024))
+    monkeypatch.setattr(dif, "host_commit_mib", lambda: None)
+    monkeypatch.setattr(dif, "pread_available", lambda: False)
+    monkeypatch.setattr(
+        dif,
+        "stored_components",
+        lambda snapshot: dict(QWEN_GGUF_COMPANIONS)
+        if (weights_cached or str(snapshot) == str(full))
+        else {},
+    )
+    calls = []
+
+    def fetch():
+        calls.append(1)
+        return str(full) if fetch_result == "dl" else fetch_result
+
+    d = dif.DiffusionBackend()._small_host_decision(
+        str(tmp_path),
+        {"transformer": object()},
+        types.SimpleNamespace(device = "cuda"),
+        torch.float16,
+        lora_active = False,
+        fetch = fetch,
+    )
+    return d, calls
+
+
+def test_a_config_only_snapshot_downloads_before_the_decision(tmp_path, monkeypatch):
+    monkeypatch.delenv(sh.DOWNLOAD_FIRST_ENV, raising = False)
+    d, calls = _decide_with_fetch(tmp_path, monkeypatch, weights_cached = False)
+    assert calls == [1]
+    assert d is not None and d.engaged
+
+
+def test_cached_weights_decide_without_a_download(tmp_path, monkeypatch):
+    monkeypatch.delenv(sh.DOWNLOAD_FIRST_ENV, raising = False)
+    d, calls = _decide_with_fetch(tmp_path, monkeypatch, weights_cached = True)
+    assert calls == [] and d.engaged
+
+
+@pytest.mark.parametrize("raw", ["0", "off", "false", "no"])
+def test_download_first_kill_switch(tmp_path, monkeypatch, raw):
+    monkeypatch.setenv(sh.DOWNLOAD_FIRST_ENV, raw)
+    d, calls = _decide_with_fetch(tmp_path, monkeypatch, weights_cached = False)
+    assert calls == []
+    assert not d.engaged
+
+
+def test_small_host_fetch_only_for_an_online_unstaged_hub_load():
+    from core.inference import diffusion as dif
+
+    seen = []
+
+    class _Pipe:
+        @classmethod
+        def download(cls, repo, **kwargs):
+            seen.append((repo, sorted(kwargs)))
+            return "/snap"
+
+    kw = {"torch_dtype": torch.float16, "transformer": object()}
+    fetch = dif._small_host_fetch(_Pipe, "org/model", kw, None, False)
+    assert fetch() == "/snap" and seen == [("org/model", ["torch_dtype", "transformer"])]
+    assert dif._small_host_fetch(_Pipe, "org/model", kw, None, True) is None
+    assert dif._small_host_fetch(_Pipe, "org/model", kw, "/staged", False) is None
+    assert dif._small_host_fetch(object, "org/model", kw, None, False) is None

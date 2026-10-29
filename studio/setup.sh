@@ -1999,8 +1999,15 @@ _packaged_frontend_available() {
 _install_oxc_runtime() {
 # Skip when the user opted out of Node (NODE_SOURCE=skip): there is no suitable
 # Node, so do not run npm install against an unsuitable/absent system Node.
-if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null; then
+if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null \
+    && [ -f "$_OXC_DIR/package-lock.json" ] && [ -f "$_OXC_DIR/install-stamp.mjs" ] \
+    && node "$_OXC_DIR/install-stamp.mjs" check >/dev/null 2>&1; then
+    verbose_substep "oxc validator runtime up to date"
+    cd "$SCRIPT_DIR"
+elif [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null; then
     cd "$_OXC_DIR"
+    # Gone before npm touches the tree, so an interrupted install is never trusted.
+    rm -f "$_OXC_DIR/node_modules/.unsloth-install-stamp.json" 2>/dev/null || :
     _OXC_INSTALL_LOG=$(mktemp)
     _CAPTURE_LOG="$_OXC_INSTALL_LOG"
     # `|| _oxc_install_rc=$?` keeps this off `set -e`'s exit path so the hint branch
@@ -2019,6 +2026,7 @@ if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev
         setup_fail "$_oxc_install_rc" "OXC validator dependency installation failed (exit code $_oxc_install_rc)"
     fi
     rm -f "$_OXC_INSTALL_LOG"
+    [ "$_NPM_INSTALL" != ci ] || node "$_OXC_DIR/install-stamp.mjs" write >/dev/null 2>&1 || :
     cd "$SCRIPT_DIR"
 elif [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ]; then
     # No npm on PATH: skip rather than abort; the backend Node resolver degrades
@@ -3279,6 +3287,7 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
 }
 
 _SKIP_PYTHON_DEPS=false
+_SETUP_VENV_CHANGED=false
 _SKIP_VERSION_CHECK=false
 # Set here so an exported value from the caller cannot reach it.
 _OFFLINE_FAST_PATH=false
@@ -3398,6 +3407,8 @@ fi
 if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     install_python_stack
     _setup_rerun_if_replaced
+    # After the handoff: a replaced copy precompiles on UNSLOTH_SETUP_RERUN, this one on the flag.
+    _SETUP_VENV_CHANGED=true
 else
     step "python" "dependencies up to date"
     verbose_substep "python deps check: installed=$_PKG_NAME@${INSTALLED_VER:-unknown} latest=${LATEST_VER:-unknown}"
@@ -5485,6 +5496,24 @@ _print_llama_gpu_notes() {
 }
 
 _frontend_bg_join
+
+# ── Precompile bytecode ── (opt-in: a whole-venv compile per update cost more than lazy compile on import; never fatal)
+_setup_bytecode_opted_out() {
+    local _sbo _sbo_out=0
+    for _sbo in "${UV_COMPILE_BYTECODE:-}" "${UNSLOTH_STUDIO_COMPILE_BYTECODE:-}"; do
+        case "$(printf '%s' "$_sbo" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in
+            0|false|no|off) return 0 ;;
+            1|true|yes|on) _sbo_out=1 ;;
+        esac
+    done
+    return "$_sbo_out"
+}
+if { [ "${_SETUP_VENV_CHANGED:-false}" = true ] || [ "${UNSLOTH_SETUP_RERUN:-}" = 1 ]; } \
+    && [ "${_COLAB_NO_VENV:-false}" != true ] && [ -x "$VENV_DIR/bin/python" ] \
+    && [ -f "$SCRIPT_DIR/precompile_bytecode.py" ] && ! _setup_bytecode_opted_out; then
+    step "python" "precompiling bytecode..."
+    "$VENV_DIR/bin/python" -I "$SCRIPT_DIR/precompile_bytecode.py" </dev/null || true
+fi
 
 # ── Footer ──
 if [ "$_LLAMA_ONLY" = "1" ]; then

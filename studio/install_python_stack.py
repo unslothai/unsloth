@@ -7187,7 +7187,6 @@ WINDOWS_ARM64_SKIP_PACKAGES = {
     "librosa",
     "openai-whisper",
     "torch-c-dlpack-ext",
-    "pytorch_tokenizers",
     "hf_transfer",
     "xformers",
 }
@@ -9139,8 +9138,7 @@ def _build_pip_cmd(args: tuple[str, ...]) -> list[str]:
         # By canonical project name: pip refuses `--upgrade-package mlx` beside `mlx==0.32.3` as a double
         # requirement where uv does not.
         def _project(requirement: str) -> str:
-            # _requirement_name stops at "==" and "@"; a range (mlx-vlm>=0.4.4,<=0.7.9) needs the
-            # rest.
+            # _requirement_name stops at "==" and "@", not at a range specifier.
             return _canonical_package_name(
                 re.split(r"[<>=!~;\[ ]", _requirement_name(requirement), maxsplit = 1)[0]
             )
@@ -10268,7 +10266,7 @@ def _has_working_git() -> bool:
 _MLX_PINS: tuple[str, ...] = ("mlx==0.32.4", "mlx-metal==0.32.4")
 # A range, like mlx-vlm: 0.32 requires Python 3.11, so Python 3.10 resolves 0.31.3.
 _MLX_LM_SPEC = "mlx-lm>=0.31.3,<=0.32.2"
-_MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<=0.7.9"
+_MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<=0.7.11"
 # Exact: llguidance.mlx / llguidance.hf are the API grammar_constraint.py binds to.
 _LLGUIDANCE_PIN = "llguidance==1.8.0"
 _MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PINS) + (
@@ -11374,7 +11372,7 @@ def _diffusers_release_target() -> "str | None":
 
 def _diffusers_release_behind() -> bool:
     """Resident diffusers older than diffusers-pin.txt's ``==``; a git / zip / checkout build is judged on
-    release numbers (the main build's 0.41.0.dev0 is current), an index prerelease is not."""
+    its release number (0.41.0.dev0 reads as 0.41.0), an index prerelease is not."""
     target = _diffusers_release_target()
     installed = _installed_distribution_version("diffusers")
     if target is None or installed is None:
@@ -12443,8 +12441,7 @@ def install_python_stack() -> int:
         )
 
     # 11b. The pinned Diffusers release, after every other requirements file and on every path.
-    # Stands down once 11c's build is resident (main reports 0.41.0.dev0, never ==0.40.0), else every
-    # update would install the release then main again.
+    # Stands down while 11c's main build is pinned and resident, else every update reinstalls both.
     if not _skip_step(
         REQ_ROOT / "diffusers-pin.txt",
         "diffusers pin",

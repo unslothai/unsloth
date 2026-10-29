@@ -4685,7 +4685,8 @@ def test_the_vision_path_is_profiled():
     source = (_REPO_ROOT / "studio" / "backend" / "core" / "inference" / "inference.py").read_text(
         encoding = "utf-8"
     )
-    assert "markup_for_tokenizer(processor)" in source
+    vision = source.split("def _generate_vision_response(", 1)[1].split("\n    def ", 1)[0]
+    assert "self._apply_chat_template_for_generation(" in vision
     assert "neutralize_control_markup_in_messages(vision_messages)" not in source
 
 
@@ -4793,9 +4794,10 @@ def test_every_direct_renderer_carries_the_profile():
     backend = _REPO_ROOT / "studio" / "backend" / "core" / "inference"
     inference_src = (backend / "inference.py").read_text(encoding = "utf-8")
     mlx_src = (backend / "mlx_inference.py").read_text(encoding = "utf-8")
-    assert "markup_for_tokenizer(processor)" in inference_src
+    # The audio renders also carry a client tool catalogue, which needs the same sweep.
+    assert "neutralize_for_render(processor, audio_messages, tools)" in inference_src
     assert "markup_for_tokenizer(tokenizer)" in inference_src
-    assert "markup_for_tokenizer(processor)" in mlx_src
+    assert "neutralize_for_render(processor, messages, tools)" in mlx_src
     for source in (inference_src, mlx_src):
         assert "neutralize_control_markup_in_messages(messages)" not in source
         assert "neutralize_control_markup_in_messages(audio_messages)" not in source

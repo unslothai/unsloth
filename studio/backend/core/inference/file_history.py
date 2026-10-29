@@ -1,17 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Per-chat history of the files tool calls change, so /rewind can put them back.
-
-Blobs are content addressed under the account's ``file_history/objects`` and indexed in a SQLite
-file next to them (WAL, one short transaction per tool call, always on the tool's worker thread,
-never the event loop). The index keeps the last stored image of every file in a folder, so the
-image a python or terminal call overwrites is already stored when the call starts: the stat walk
-those tools already take is diffed against it, and only files whose (mtime, size) moved are read.
-
-Execution state is not tracked: processes, installed packages and anything outside the chat's
-folder stay as they are after a rewind.
-"""
+"""Per-chat file history for /rewind; index work always on the tool's worker thread, never the event
+loop; processes and packages not restored"""
 
 from __future__ import annotations
 

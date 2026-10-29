@@ -94,6 +94,7 @@ from core.inference.tool_call_parser import (
 from core.inference.tool_loop_controller import (
     BROWSER_TOOL_NAMES,
     REPEATABLE_TOOL_NAMES,
+    TRUNCATED_TOOL_TURN_MESSAGE,
     ToolLoopController,
     _WORKSPACE_READ_TOOLS,
     _reruns_after_new_work,
@@ -648,11 +649,19 @@ def _is_rehearsal_prefix(stripped: str, active_tools: list[dict]) -> bool:
 
 def _held_rehearsal_tail_len(text: str, active_tools: list[dict]) -> int:
     """Holds a trailing bare tool name back while its [ARGS] may still arrive, including a bare-Gemma call:NAME{ prefix that the signal scan misses until its brace."""
+    # A tail longer than every NAME[ARGS] cannot be a prefix, so the scan stops there (CJK has no spaces).
+    limit = max(
+        (len(name) for name in _gguf_active_tool_names(active_tools) if isinstance(name, str)),
+        default = 0,
+    ) + len("[ARGS]")
     i = len(text)
-    while i > 0 and not text[i - 1].isspace():
+    stop = max(0, i - limit - 1)
+    while i > stop and not text[i - 1].isspace():
         i -= 1
     tail = text[i:]
-    held = len(tail) if tail and _is_rehearsal_prefix(tail, active_tools) else 0
+    held = (
+        len(tail) if tail and len(tail) <= limit and _is_rehearsal_prefix(tail, active_tools) else 0
+    )
     return max(
         held, held_bare_gemma_tail_len(text, lambda: set(_gguf_active_tool_names(active_tools)))
     )
@@ -1267,6 +1276,7 @@ class LlamaChatMixin:
         sandbox_level: Optional[str] = None,
         compact_context: bool = False,
         website_policy: Optional[dict] = None,
+        live_permissions = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -1316,6 +1326,10 @@ class LlamaChatMixin:
         permission_mode, bypass_permissions = normalize_tool_permissions(
             permission_mode, bypass_permissions
         )
+        from state.tool_approvals import LiveToolPermissions, bind_permission_upgrade
+
+        if live_permissions is None:
+            live_permissions = LiveToolPermissions(session_id, cancel_event)
         sandbox_level = normalize_sandbox_level(sandbox_level)
         stream_tool_execution = account_tool_stream(stream_tool_execution)
 
@@ -3203,6 +3217,29 @@ class LlamaChatMixin:
                             yield _meta
                         return
 
+                # A cut turn runs no call, siblings included: a healed tail may be half a rewrite.
+                if _iter_finish_reason in ("length", "content_filter"):
+                    for _pid, _pname in provisional_started_tool_calls.items():
+                        if _pid not in resolved_provisional_tool_call_ids:
+                            resolved_provisional_tool_call_ids.add(_pid)
+                            yield {
+                                "type": "tool_end",
+                                "tool_name": _pname,
+                                "tool_call_id": _pid,
+                                "result": TRUNCATED_TOOL_TURN_MESSAGE,
+                                "provenance": provisional_tool_provenance(_pname),
+                            }
+                    # Empty status resets the route cursor; send only text not already streamed.
+                    display = _strip_tool_markup(cumulative_display, final = True, force = True)
+                    notice = display[len(_last_emitted) :] + ("\n\n" if display else "")
+                    yield {"type": "status", "text": ""}
+                    yield {
+                        "type": "content",
+                        "text": notice + TRUNCATED_TOOL_TURN_MESSAGE,
+                    }
+                    yield _build_metadata_event(_iter_usage, _iter_timings, _iter_finish_reason)
+                    return
+
                 # ── Execute tool calls ──
                 # Progress made: reset stall counters and restore thinking.
                 _length_continuations = 0
@@ -3369,6 +3406,9 @@ class LlamaChatMixin:
                     # Bypass wins here too, so a direct internal caller with both
                     # flags never prompts. "auto" pauses only high-risk calls; "off"
                     # pauses only a high-risk python/terminal call without OS isolation.
+                    permission_mode, bypass_permissions = live_permissions.apply(
+                        permission_mode, bypass_permissions
+                    )
                     needs_confirm = needs_tool_confirmation(
                         confirm_tool_calls = bool(confirm_tool_calls),
                         bypass_permissions = bypass_permissions,
@@ -3395,6 +3435,9 @@ class LlamaChatMixin:
                     approval_id = new_approval_id() if needs_confirm else ""
                     decision_slot = (
                         begin_tool_decision(session_id, approval_id) if needs_confirm else None
+                    )
+                    bind_permission_upgrade(
+                        decision_slot, live_permissions, eligible = image_share is None
                     )
                     if needs_confirm:
                         note_host_access(approval_id, decision.tool_name, decision.arguments)
@@ -3431,6 +3474,11 @@ class LlamaChatMixin:
                         )
                         # Read before decision_slot is dropped in the deny branch.
                         _decision_reason = decision_reason(decision_slot)
+                        permission_mode, bypass_permissions = live_permissions.apply(
+                            permission_mode, bypass_permissions
+                        )
+                        if bypass_permissions:
+                            strict_isolation = False
                         if _decision is not None and _decision != "deny":
                             # tool_approved first: the route forwards it before retaking the model slot.
                             yield decision.tool_approved_event(approval_id)

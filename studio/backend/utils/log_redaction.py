@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Mask credentials in log text before it leaves the process.
-
-Nothing redacts secrets today: loggers/handlers.py:filter_sensitive_data only masks native path leases, and raw output (faulthandler dumps, uvicorn, third party prints) never passes through a structlog processor at all. The log viewer invites users to copy lines into a bug report, so the masking happens on read.
-
-Every pattern is anchored on a known credential prefix or a key name. There is deliberately NO generic "long high entropy string" rule: that would eat sha256 blob digests, HF revisions, snapshot paths and GGUF tensor names, exactly the content someone opened the log to read.
-"""
+"""Masks credentials in logs on read; anchored on known prefixes or key names, never generic entropy."""
 
 from __future__ import annotations
 
