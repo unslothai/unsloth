@@ -42,3 +42,11 @@ test("font-mono is left on code, JSON and logs only", () => {
   for (const line of mono)
     assert.ok(allowed.some((rule) => rule.test(line)), `font-mono on a non-code value: ${line}`);
 });
+
+test("Flows icons never draw with a translucent currentColor", () => {
+  for (const path of files(root)) {
+    const src = readFileSync(path, "utf8");
+    for (const icon of src.match(/<HugeiconsIcon\b[^>]*?\/>/gs) ?? [])
+      assert.doesNotMatch(icon, /text-[a-z-]+(-\d+)?\/\d+/, `${path}: ${icon}`);
+  }
+});

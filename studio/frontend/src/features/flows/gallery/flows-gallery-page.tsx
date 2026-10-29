@@ -130,11 +130,11 @@ function FlowCard({
               className="h-full w-full object-cover"
             />
           ) : (
+            // Opaque colour, dimmed as one layer: a translucent currentColor darkens where strokes overlap.
             <HugeiconsIcon
               icon={kind.icon}
               size={42}
-              strokeWidth={1.2}
-              className="text-foreground/40"
+              className="text-muted-foreground opacity-60"
             />
           )}
         </div>
