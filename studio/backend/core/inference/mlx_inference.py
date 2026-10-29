@@ -1152,7 +1152,7 @@ def mlx_resolve_drafter_offload(model_dir, knobs, drafter, *, auto: bool, **pric
 
     room = mlx_resolve_offload(model_dir, knobs, drafter = drafter, **priced)
     if not auto:
-        # A chosen drafter may spend the prompt cache's share; room it still does not fit in would only slow the load.
+        # Room a chosen drafter does not fit even under MLX's own cap would only slow the load.
         if "auto" in knobs and fits(room, reserve = False) is False:
             return mlx_resolve_offload(model_dir, knobs, **priced), None
         return room, None
@@ -2897,8 +2897,7 @@ def mlx_prompt_cache_room(
     offload = None,
     prefill_chunk = None,
 ):
-    """Bytes MLX's own cap leaves beside an mlx-vlm load of *model_dir* and *source*'s drafter at
-    *n_ctx*: what the prompt cache may still hold once that drafter spent its share. None where unsized."""
+    """Bytes MLX's own cap leaves the prompt cache beside *source*'s drafter at *n_ctx*; None where unsized."""
     budget = mlx_memory_budget(retains_history = False)
     if budget is None or not n_ctx or not model_dir:
         return None
@@ -5641,8 +5640,7 @@ class MLXInferenceBackend:
             logger.info("MLX context fitted to %d tokens from %d", _fitted_ctx, _served_ctx or 0)
             _served_ctx = _fitted_ctx
         self._served_context = _served_ctx
-        # Stretched sources are priced only once none fits beside the prompt cache, so a drafter of
-        # their kind spent its share: the cache keeps what MLX's own cap leaves beside any it may be.
+        # A stretched drafter spent the prompt cache's share: cap the cache to what is left beside it.
         _rooms = [
             mlx_prompt_cache_room(
                 model_dir, _served_ctx, source, load_in_4bit = load_in_4bit, **_offloaded

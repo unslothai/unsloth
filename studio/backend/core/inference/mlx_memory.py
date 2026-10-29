@@ -1527,8 +1527,7 @@ def mlx_headroom(
     drafter: Optional[tuple] = None,
     offload: Optional[tuple] = None,
 ) -> Optional[int]:
-    """Bytes of ``budget_bytes`` a load at ``n_ctx`` leaves free, measured as ``mlx_fit_outcome``
-    measures a fit; None where it cannot be sized."""
+    """Bytes of ``budget_bytes`` a load at ``n_ctx`` leaves free (as ``mlx_fit_outcome`` prices it), None if unsized."""
     sizing = _size_load(model_dir, kv_bits, prefill_chunk, load_in_4bit, vision, drafter, offload)
     priced = None if sizing is None else _priced_at(sizing, max(int(n_ctx or 0), MLX_KV_BLOCK))
     if priced is None:
