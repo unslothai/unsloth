@@ -223,7 +223,9 @@ function placeReroutes(
     // Left to right, a bus wire runs level out of its port and turns after the reroute; a curve, or
     // a wire down to the next row, goes straight across.
     const cy = upright
-      ? (sy + ty) / 2
+      ? ctx.direction === "TB"
+        ? sy + (ty - sy) * t
+        : (sy + ty) / 2
       : ctx.direction !== "TB" && (ctx.wireStyle === "bus" || ends.length > 1)
         ? sy
         : sy + (ty - sy) * t;
