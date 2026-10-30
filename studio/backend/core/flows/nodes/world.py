@@ -467,14 +467,20 @@ async def _mayor(ctx: NodeContext, state: dict) -> dict:
         system, prompt = mayor_prompt(state)
     except CityError as exc:
         raise FlowNodeError(str(exc)) from exc
-    raw = await ctx.llm_json(
-        model = ctx.params.get("model"),
-        system = system,
-        prompt = prompt,
-        schema = MAYOR_SCHEMA,
-        temperature = 0.7,
-        max_tokens = 600,
-    )
+    try:
+        raw = await ctx.llm_json(
+            model = ctx.params.get("model"),
+            system = system,
+            prompt = prompt,
+            schema = MAYOR_SCHEMA,
+            temperature = 0.7,
+            max_tokens = 600,
+            retry_bad_json = False,
+        )
+    except FlowNodeError as exc:
+        if exc.status is not None:
+            raise
+        raw = None
     return {"reply": {"mayor": validate_mayor(raw, state)}}
 
 
