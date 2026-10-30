@@ -167,7 +167,6 @@ def test_t2i_streamed_figure_is_its_own_and_below_the_edit_figure(monkeypatch):
     assert dm._MEASURED_STREAMED_IMAGE_PEAK_MIB["qwen-image"] == 2560
     assert dm._MEASURED_STREAMED_IMAGE_PEAK_MIB["qwen-image-edit"] == 3824
     m = dm.measured_image_runtime_mib
-    # scales with pixels like every seed, and the resident (whole-render) seed is untouched
     assert m("qwen-image", "default", streamed = True, width = 1328, height = 1328) > STREAMED_HEADROOM
     assert m("qwen-image", "default", streamed = True, width = 1328, height = 1328) < m(
         "qwen-image-edit", "default", streamed = True, width = 1328, height = 1328
@@ -182,7 +181,6 @@ def test_t2i_streamed_kill_switch_restores_the_borrowed_figure(monkeypatch):
     assert m("qwen-image", "default", streamed = True) == EDIT_STREAMED_HEADROOM
     assert m("qwen-image", "default") == RESIDENT_HEADROOM
     assert m("qwen-image-edit", "default", streamed = True) == EDIT_STREAMED_HEADROOM
-    # the broader switches still win over it
     monkeypatch.setenv(dm.MEASURED_ACTIVATION_STREAMED_ENV, "0")
     assert m("qwen-image", "default", streamed = True) == RESIDENT_HEADROOM
     monkeypatch.setenv(dm.MEASURED_ACTIVATION_QWEN_IMAGE_ENV, "0")
@@ -201,7 +199,6 @@ def test_t2i_figure_keeps_more_resident_than_the_borrowed_one(pipe, monkeypatch,
     assert old.estimates["measured_streamed_headroom_mib"] == EDIT_STREAMED_HEADROOM
     gained = new.resident_transformer_mib - old.resident_transformer_mib
     assert gained == EDIT_STREAMED_HEADROOM - STREAMED_HEADROOM
-    # the slack and the window are still reserved; only the activation figure shrank
     assert new.resident_transformer_mib + STREAMED_HEADROOM + WINDOW + LOADED["vae"][
         0
     ] + dm._resident_dit_slack_mib(memory) == int(memory.free_mib)
