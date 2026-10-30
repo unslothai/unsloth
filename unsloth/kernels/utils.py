@@ -1921,8 +1921,10 @@ def matmul_lora(
             XA = torch_matmul(X, A.t().to(dtype))
         B = B.t().to(dtype)
         if out is None:
-            out = torch.empty((X.shape[0], B.shape[1]), dtype = dtype, device = X.device)
-        addmm_(out, XA, B, alpha = s, beta = 0)
+            # Functional with beta = 0: an empty buffer mutated in place breaks block compiles (aliasing).
+            out = torch.addmm(XA.new_zeros(1), XA, B, beta = 0, alpha = s)
+        else:
+            addmm_(out, XA, B, alpha = s, beta = 0)
         W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
         addmm_(out, X, W.t())
         A = None

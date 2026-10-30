@@ -356,8 +356,11 @@ def _shared_lora_backward(X, dYs, As, Bs, S, dX_out):
         d_Bs.append(d_B)
         start += r
     del AX, dA
-    dX = torch.empty_like(X) if dX_out is None else dX_out
-    addmm_(dX, dB, A_rows, alpha = S, beta = 0)
+    if dX_out is None:
+        dX = torch.addmm(dB.new_zeros(1), dB, A_rows, beta = 0, alpha = S)
+    else:
+        dX = dX_out
+        addmm_(dX, dB, A_rows, alpha = S, beta = 0)
     return d_As, d_Bs, dX
 
 
@@ -1243,8 +1246,7 @@ class LoRA_W(torch.autograd.Function):
 
         if LORA_FUSED_PASSES and mask is None:
             # dX starts as the rank-r term; the base GEMM accumulates onto it in its epilogue.
-            dX = torch.empty((dY.shape[0], A.shape[0]), dtype = dY.dtype, device = dY.device)
-            addmm_(dX, y_dB, A.t(), alpha = S, beta = 0)
+            dX = torch.addmm(y_dB.new_zeros(1), y_dB, A.t(), beta = 0, alpha = S)
             W = fast_dequantize(W.t(), W_quant, dtype = dY.dtype)
             addmm_(dX, dY, W.t())
             del W
