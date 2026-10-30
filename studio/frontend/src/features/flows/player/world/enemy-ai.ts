@@ -343,6 +343,8 @@ export interface Brain {
   agents: Agent[];
   byId: Map<string, Agent>;
   clock: number;
+  /** Newest noise seq stepped so far: a hostile added later starts past it. */
+  noiseSeq: number;
   cover: Int32Array;
   coverLen: number;
   influence: Float32Array;
@@ -366,6 +368,7 @@ export function createBrain(
     agents: [],
     byId: new Map(),
     clock: 0,
+    noiseSeq: 0,
     cover: new Int32Array(MAX_COVER),
     coverLen: 0,
     influence: new Float32Array(grid.width * grid.height),
@@ -442,7 +445,7 @@ export function addAgent(
     lastAt: Number.NEGATIVE_INFINITY,
     seen: false,
     heard: false,
-    heardSeq: 0,
+    heardSeq: b.noiseSeq,
     health: ENEMY_HEALTH,
     ready: 0,
     guard,
@@ -871,6 +874,7 @@ export function brainStep(
   noises: readonly Noise[],
 ): void {
   b.clock += dt;
+  for (const n of noises) if (n.seq > b.noiseSeq) b.noiseSeq = n.seq;
   for (const a of b.agents) {
     const down = (c.enemies[a.id]?.down ?? 0) > c.clock;
     if (down) {
