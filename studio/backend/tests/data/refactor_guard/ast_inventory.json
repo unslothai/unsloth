@@ -1223,9 +1223,6 @@
       "BUDGET_EXHAUSTED_NUDGE": {
         "kind": "assign"
       },
-      "DUPLICATE_CALL_NUDGE": {
-        "kind": "assign"
-      },
       "INTENT_SIGNAL": {
         "kind": "assign"
       },
