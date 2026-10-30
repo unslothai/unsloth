@@ -234,3 +234,14 @@ def test_the_lease_is_free_before_the_tab_sees_the_run_end(bench, monkeypatch):
     assert client.post("/api/benchmarks/llama-bench/run", json = {}).status_code == 200
     assert _wait(client)["status"] == "done"
     assert seen[0] == "running"
+
+
+def test_a_run_waits_out_a_load_that_passed_the_fence_first(bench, monkeypatch):
+    client, _, unloads = bench
+    monkeypatch.setattr(benchmarks_routes, "_loads_in_flight", {None: 1})
+    res = client.post("/api/benchmarks/llama-bench/run", json = {})
+    assert res.status_code == 409 and res.json()["detail"]["error"] == "model_loading"
+    assert unloads == [] and benchmarks_routes._lease is None
+    monkeypatch.setattr(benchmarks_routes, "_loads_in_flight", {})
+    assert client.post("/api/benchmarks/llama-bench/run", json = {}).status_code == 200
+    _wait(client)

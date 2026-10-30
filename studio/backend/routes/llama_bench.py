@@ -158,6 +158,15 @@ def _claim_lease(holder: str) -> None:
                     "Stop it or let it finish first.",
                 },
             )
+        if benchmarks._loads_pending(holder):
+            # It passed the fence before this lease and would reload the server under llama-bench.
+            raise HTTPException(
+                status_code = 409,
+                detail = {
+                    "error": "model_loading",
+                    "message": "A model is loading. Start the run once it finishes.",
+                },
+            )
         benchmarks._lease = {"holder": holder, "kind": KIND, "expires": float("inf"), "outside": 0}
 
 
