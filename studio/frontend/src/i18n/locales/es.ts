@@ -5062,6 +5062,11 @@ export const es = {
         none: "Sin prompt de sistema",
         custom: "Personalizado",
       },
+      presetHints: {
+        notebook: "Pide el razonamiento en <reasoning> y la respuesta en <answer>, las etiquetas que leen las recompensas incluidas.",
+        none: "No envía mensaje de sistema, así que las recompensas de etiquetas no puntúan hasta que el modelo escriba las etiquetas por sí mismo.",
+        custom: "Escribe el tuyo. Mantén las etiquetas que pide en línea con tus recompensas.",
+      },
       systemPrompt: "Prompt de sistema",
       previewTitle: "Lo que ve el modelo, fila 1",
       system: "system",

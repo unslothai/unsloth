@@ -2,14 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { SectionField } from "@/components/section-box";
-import { PICKER_TRIGGER_CLASS } from "@/components/resource-picker/picker-focus";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-} from "@/components/ui/select";
+import { SegmentedTabsList } from "@/components/segmented-tabs";
 import { Switch } from "@/components/ui/switch";
+import { Tabs } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { GRPO_DEFAULT_SYSTEM_PROMPT } from "@/config/training";
 import {
@@ -30,8 +25,6 @@ import { ParamsRow } from "../params-section-controls";
 import { RL_PANEL_CLASS } from "./rl-panel";
 
 type Preset = "notebook" | "none" | "custom";
-
-const PRESETS: Preset[] = ["notebook", "none", "custom"];
 
 function presetOf(prompt: string): Preset {
   if (prompt === GRPO_DEFAULT_SYSTEM_PROMPT) {
@@ -108,33 +101,25 @@ export function PromptFormatSection(): ReactElement {
           />
         }
       >
-        <div className="flex flex-col gap-2">
-          <Select value={active} onValueChange={choose}>
-            <SelectTrigger
-              aria-label={`${t("rl.prompt.presetLabel")}: ${presetLabel(active)}`}
-              className={cn(
-                PICKER_TRIGGER_CLASS,
-                "w-full justify-between @md/train-section:w-[calc(240px*var(--ui-space-scale,1))]",
-              )}
-            >
-              <span className="truncate font-medium text-foreground">
-                {presetLabel(active)}
-              </span>
-            </SelectTrigger>
-            <SelectContent
-              position="popper"
-              side="bottom"
-              align="start"
-              sideOffset={8}
-              className="rounded-xl ring-0"
-            >
-              {PRESETS.map((option) => (
-                <SelectItem key={option} value={option}>
-                  {presetLabel(option)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+        <div className="flex flex-col gap-3">
+          {/* The same control and hint line as the Objective picker in the Train setup. */}
+          <div className="flex flex-col gap-1.5">
+            <Tabs value={active} onValueChange={choose} className="contents">
+              <SegmentedTabsList
+                value={active}
+                ariaLabel={t("rl.prompt.presetLabel")}
+                size="compact"
+                options={[
+                  { value: "notebook", label: presetLabel("notebook") },
+                  { value: "none", label: presetLabel("none") },
+                  { value: "custom", label: presetLabel("custom") },
+                ]}
+              />
+            </Tabs>
+            <p className="text-ui-11p5 leading-ui-15 text-muted-foreground/85">
+              {t(`rl.prompt.presetHints.${active}`)}
+            </p>
+          </div>
           {showEditor && (
             <Textarea
               rows={6}
