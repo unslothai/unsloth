@@ -213,11 +213,7 @@ def test_generate_enters_the_scope():
     assert "_NonFlexGenerate(self)" in source
 
 
-def test_real_generate_prefills_on_flex_and_decodes_off_flex():
-    # A tiny Gemma 3 under transformers' generate() with a static cache: the prefill forward gets a
-    # flex BlockMask, every decode forward a dense tensor mask on the non-flex path, and the ids match
-    # SDPA end to end (left padding, prompt longer than the sliding window), so the decode steps read
-    # the KV cache the flex prefill wrote.
+def _tiny_gemma3():
     from transformers import Gemma3ForCausalLM, Gemma3TextConfig
 
     torch.manual_seed(0)
@@ -233,7 +229,10 @@ def test_real_generate_prefills_on_flex_and_decodes_off_flex():
         max_position_embeddings = 256,
     )
     config._attn_implementation = "flex_attention"
-    model = Gemma3ForCausalLM(config).eval()
+    return Gemma3ForCausalLM(config).eval()
+
+
+def _record_paths(model, layer):
     seen = []
 
     def hook(module, args, kwargs):
@@ -241,17 +240,31 @@ def test_real_generate_prefills_on_flex_and_decodes_off_flex():
         mask = kwargs.get("attention_mask")
         seen.append((model.config._attn_implementation, hidden.shape[1], type(mask).__name__))
 
-    model.model.layers[0].self_attn.register_forward_pre_hook(hook, with_kwargs = True)
+    layer.self_attn.register_forward_pre_hook(hook, with_kwargs = True)
+    return seen
+
+
+def _generate_kwargs(new_tokens = 5):
     ids = torch.randint(0, 128, (2, 20))
     mask = torch.ones_like(ids)
     mask[0, :3] = 0
-    kw = dict(
+    return dict(
         input_ids = ids,
         attention_mask = mask,
-        max_new_tokens = 5,
+        max_new_tokens = new_tokens,
         do_sample = False,
         cache_implementation = "static",
     )
+
+
+def test_real_generate_prefills_on_flex_and_decodes_off_flex():
+    # A tiny Gemma 3 under transformers' generate() with a static cache: the prefill forward gets a
+    # flex BlockMask, every decode forward a dense tensor mask on the non-flex path, and the ids match
+    # SDPA end to end (left padding, prompt longer than the sliding window), so the decode steps read
+    # the KV cache the flex prefill wrote.
+    model = _tiny_gemma3()
+    seen = _record_paths(model, model.model.layers[0])
+    kw = _generate_kwargs()
     try:
         with _NonFlexGenerate(model):
             out = model.generate(**kw)
@@ -262,3 +275,41 @@ def test_real_generate_prefills_on_flex_and_decodes_off_flex():
     assert model.config._attn_implementation == "flex_attention"
     model.config._attn_implementation = "sdpa"
     assert torch.equal(out, model.generate(**kw))
+
+
+@pytest.mark.parametrize("base_patched", [False, True], ids = ["peft-only", "peft-and-base"])
+def test_lora_generate_routes_each_step(base_patched):
+    # Unsloth patches generate() on the PeftModel. PeftModelForCausalLM.generate hands off to the base
+    # model, whose loop calls the base model's prepare_inputs_for_generation, so the scope must route
+    # there too, with or without a second (nested) scope on the base model's own generate().
+    peft = pytest.importorskip("peft")
+    model = _tiny_gemma3()
+    seen = _record_paths(model, model.model.layers[0])
+    lora = peft.get_peft_model(model, peft.LoraConfig(r = 4, target_modules = ["q_proj", "v_proj"]))
+
+    def scoped(target):
+        original = target.generate
+
+        def generate(self, *args, **kwargs):
+            with _NonFlexGenerate(self):
+                return original(*args, **kwargs)
+
+        target.generate = types.MethodType(generate, target)
+
+    if base_patched:
+        scoped(model)
+    scoped(lora)
+    kw = _generate_kwargs()
+    try:
+        out = lora.generate(**kw)
+    except Exception as e:  # flex_attention unavailable on this CPU build
+        pytest.skip(f"flex_attention generate failed on CPU: {e!r}")
+    assert seen[0] == ("flex_attention", 20, "BlockMask")
+    assert seen[1:] == [("eager", 1, "Tensor")] * 4
+    assert model.config._attn_implementation == "flex_attention"
+    for m in (lora, model, lora.base_model):
+        assert "prepare_inputs_for_generation" not in m.__dict__
+        assert not [k for k in m.__dict__ if k.startswith("_unsloth_non_flex")]
+    model.config._attn_implementation = "sdpa"
+    del lora.__dict__["generate"]
+    assert torch.equal(out, lora.generate(**kw))

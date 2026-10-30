@@ -1636,14 +1636,29 @@ class _NonFlexGenerate:
                 state["_unsloth_non_flex_generate_configs"] = configs
                 state["_unsloth_non_flex_generate_owner"] = threading.get_ident()
                 self.steps = 0
-                prepare = getattr(self.model, "prepare_inputs_for_generation", None)
-                if prepare is not None:
-                    # Restored on exit: PEFT installs its own on the base model during generate().
-                    state["_unsloth_non_flex_generate_prepare"] = (
-                        "prepare_inputs_for_generation" in state,
-                        state.get("prepare_inputs_for_generation"),
+                # The generate loop calls prepare_inputs_for_generation on the transformers model that
+                # runs it: for a PEFT model that is the base model (PeftModelForCausalLM.generate hands
+                # off to it), not the wrapper generate() was called on. Wrap both; each is restored on
+                # exit, including an instance attribute that was already there.
+                targets = [self.model]
+                base = self.model.get_base_model() if hasattr(self.model, "get_base_model") else None
+                if base is not None and base is not self.model:
+                    targets.append(base)
+                wrapped = []
+                for target in targets:
+                    prepare = getattr(target, "prepare_inputs_for_generation", None)
+                    if prepare is None:
+                        continue
+                    wrapped.append(
+                        (
+                            target,
+                            "prepare_inputs_for_generation" in target.__dict__,
+                            target.__dict__.get("prepare_inputs_for_generation"),
+                        )
                     )
-                    self.model.prepare_inputs_for_generation = self._wrap_prepare(prepare)
+                    target.prepare_inputs_for_generation = self._wrap_prepare(prepare)
+                if wrapped:
+                    state["_unsloth_non_flex_generate_prepare"] = wrapped
                 else:
                     state["_unsloth_non_flex_generate_pinned"] = True
                     self._set(True)
@@ -1666,13 +1681,11 @@ class _NonFlexGenerate:
                 state.pop("_unsloth_non_flex_generate_configs", None)
                 state.pop("_unsloth_non_flex_generate_owner", None)
                 state.pop("_unsloth_non_flex_generate_pinned", None)
-                prepare = state.pop("_unsloth_non_flex_generate_prepare", None)
-                if prepare is not None:
-                    had, previous = prepare
+                for target, had, previous in state.pop("_unsloth_non_flex_generate_prepare", ()):
                     if had:
-                        state["prepare_inputs_for_generation"] = previous
+                        target.__dict__["prepare_inputs_for_generation"] = previous
                     else:
-                        state.pop("prepare_inputs_for_generation", None)
+                        target.__dict__.pop("prepare_inputs_for_generation", None)
                 for c, field, value in state.pop("_unsloth_non_flex_generate_saved", ()):
                     _config_set(c, field, value)
         return False
