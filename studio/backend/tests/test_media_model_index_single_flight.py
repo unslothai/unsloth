@@ -241,3 +241,27 @@ def test_a_build_overtaken_by_an_invalidation_is_not_cached(monkeypatch, invalid
     assert results == [["old"]]
     assert index_after == ["new"]
     assert len(calls) == 2
+
+
+def test_a_build_waiting_on_a_thread_that_asks_the_index_does_not_deadlock(monkeypatch):
+    """A waiter gives up on a build that never finishes and scans on its own, so a builder that hands work to a
+    helper thread asking the index cannot lock both threads."""
+    monkeypatch.setattr(index, "_JOIN_TIMEOUT_S", 0.2)
+    calls = []
+
+    def build(task):
+        calls.append(1)
+        if len(calls) == 1:
+            box = []
+            helper = threading.Thread(
+                target = lambda: box.append(index.available_media_model_ids(TASK))
+            )
+            helper.start()
+            helper.join(5)
+            assert not helper.is_alive() and box == [["helper"]]
+        return {"helper": index.MediaModelPick("helper", "/models/helper", None, None)}
+
+    monkeypatch.setattr(index, "_build_index", build)
+    index.invalidate_index()
+    assert index.available_media_model_ids(TASK) == ["helper"]
+    assert len(calls) == 2

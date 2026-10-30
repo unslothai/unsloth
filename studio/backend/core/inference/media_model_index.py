@@ -342,6 +342,10 @@ def _mark_ambiguous_builds(index: dict[str, MediaModelPick]) -> dict[str, MediaM
     }
 
 
+# Far above a full scan; past it a caller scans on its own instead of waiting on a stuck build.
+_JOIN_TIMEOUT_S = 120.0
+
+
 class _Build:
     """One in-flight index build that callers arriving for the same key wait on."""
 
@@ -390,7 +394,10 @@ def _cached_index(task: str) -> dict[str, MediaModelPick]:
                 owner = False
         if not owner:
             # Started no earlier than the last invalidation and finishes after this call: no older than a ttl hit.
-            build.done.wait()
+            if not build.done.wait(_JOIN_TIMEOUT_S):
+                # Never wait forever on another thread's scan (a builder that waits on this thread would deadlock):
+                # scan here, as every caller did before builds were shared.
+                return _mark_ambiguous_builds(_build_index(task))
             if build.result is not None:
                 return build.result
             continue  # that build raised: run one here, as a caller arriving alone would
