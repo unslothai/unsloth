@@ -588,6 +588,24 @@ def test_lora_targets_follow_the_latest_assignment_of_a_constant():
     assert read("TARGETS = 'all-linear'", f"TARGETS = {_SEVEN}") == []
 
 
+def test_lora_scalars_follow_an_unresolved_reassignment():
+    def read(*assignments, peft_args):
+        nb = _nb(
+            "\n".join(assignments) + "\n"
+            "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B')\n"
+            f"model = FastLanguageModel.get_peft_model(model, r = 16{peft_args})",
+            "dataset = load_dataset('mlabonne/FineTome-100k', split = 'train')",
+        )
+        doc, report = notebook_import.read_notebook(nb, "Qwen3_(4B).ipynb")
+        assert doc is not None
+        return [line for line in report["approximated"] if "dropout" in line or "rslora" in line]
+
+    # A computed value replaces the earlier default, so it must not read as that default.
+    assert len(read("DROP = 0", "DROP = pick_dropout()", peft_args = ", lora_dropout = DROP")) == 1
+    assert len(read("RS = False", "RS = pick_rslora()", peft_args = ", use_rslora = RS")) == 1
+    assert read("DROP = 0", peft_args = ", lora_dropout = DROP") == []
+
+
 def test_embedding_lora_targets_compare_against_embedding_defaults():
     def read(targets):
         nb = _nb(
