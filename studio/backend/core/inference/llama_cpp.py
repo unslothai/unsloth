@@ -134,6 +134,8 @@ from core.inference.llama_server_args import (
     fit_target_margin_in,
     MANAGED_DIO_FLAGS,
     no_reserve_requires_dio,
+    keep_resident_lock_applicable,
+    keep_resident_lock_flags,
     load_mode_support,
     resolve_launch_load_mode,
     resolve_effective_load_state,
@@ -2187,6 +2189,7 @@ def _archive_and_recall(
     try:
         from core.inference.tools import build_conversation_recall
         from core.rag import conversation_archive
+        from core.rag.retrieval import query_vector_memo
 
         if not conversation_archive.enabled():
             return result
@@ -2234,48 +2237,50 @@ def _archive_and_recall(
                 break
             attempt_k = max(1, attempt_k // 2)
 
-        for index, k in enumerate(attempts):
-            recall = build_conversation_recall(
-                conversation,
-                thread_id,
-                style = style,
-                top_k = k,
-                branch_messages = branch_messages,
-            )
-            if not recall:
-                result["counts"] = counts
-                return result
-
-            candidate = _inject_recall(conversation, recall, style)
-            if candidate is None:
-                result["counts"] = counts
-                return result
-
-            grew = None
-            if count_tokens is not None and recall_budget_tokens > 0:
-                try:
-                    grew = count_tokens(candidate["conversation"]) - count_tokens(conversation)
-                except Exception:
-                    grew = None
-            if grew is not None and grew > recall_budget_tokens:
-                logger.info(
-                    "conversation_recall.over_budget grew=%s budget=%s top_k=%s",
-                    grew,
-                    recall_budget_tokens,
-                    k,
+        # Retries re-ask the same queries: encode each once and reuse lexical passes and branch checks.
+        with query_vector_memo(), conversation_archive.recall_session():
+            for index, k in enumerate(attempts):
+                recall = build_conversation_recall(
+                    conversation,
+                    thread_id,
+                    style = style,
+                    top_k = k,
+                    branch_messages = branch_messages,
                 )
-                if index + 1 < len(attempts):
-                    continue
-                logger.info(
-                    "conversation_recall.dropped_over_budget budget=%s", recall_budget_tokens
-                )
-                result["counts"] = counts
-                return result
+                if not recall:
+                    result["counts"] = counts
+                    return result
 
-            result["conversation"] = candidate["conversation"]
-            result["events"] = candidate["events"]
-            result["anchored"] = candidate["anchored"]
-            break
+                candidate = _inject_recall(conversation, recall, style)
+                if candidate is None:
+                    result["counts"] = counts
+                    return result
+
+                grew = None
+                if count_tokens is not None and recall_budget_tokens > 0:
+                    try:
+                        grew = count_tokens(candidate["conversation"]) - count_tokens(conversation)
+                    except Exception:
+                        grew = None
+                if grew is not None and grew > recall_budget_tokens:
+                    logger.info(
+                        "conversation_recall.over_budget grew=%s budget=%s top_k=%s",
+                        grew,
+                        recall_budget_tokens,
+                        k,
+                    )
+                    if index + 1 < len(attempts):
+                        continue
+                    logger.info(
+                        "conversation_recall.dropped_over_budget budget=%s", recall_budget_tokens
+                    )
+                    result["counts"] = counts
+                    return result
+
+                result["conversation"] = candidate["conversation"]
+                result["events"] = candidate["events"]
+                result["anchored"] = candidate["anchored"]
+                break
 
         counts["recalled_chunks"] = int(recall.get("sources") or 0)
         result["counts"] = counts
@@ -4017,6 +4022,9 @@ _TP_UNMEASURED_CTX = 4096
 
 # Auto offload context when no GPU subset holds the model; prefers a chat-useful size, kept separate from _FIT_MIN_CTX (search and Apple floor).
 _AUTO_OFFLOAD_CTX = 8192
+
+# Auto context on unified memory; 65536 is the floor unsloth start agents need.
+_APPLE_AUTO_CTX = 65536
 
 # Must stay >= fit search floor or the Auto re-check flips --fit off (test pins it). amd-smi vs HIP VRAM totals differing over 10% are different scopes.
 _AMD_SMI_TOTAL_TOLERANCE = 0.10
@@ -18323,6 +18331,8 @@ class LlamaCppBackend:
             total_ram_mib = self._total_system_memory_mib()
             if total_ram_mib is None:
                 return None
+            if self._host_offload_fits_without_gpus(argv, total_ram_mib):
+                return None
             probed = self._get_gpu_memory(binary)
             # an igpu and a MIG/vGPU line report total 0, leaving the ceiling unknown
             if any(total <= 0 for _idx, _free, total in probed):
@@ -18335,6 +18345,22 @@ class LlamaCppBackend:
         except Exception as e:  # noqa: BLE001 -- a probe that failed is not a verdict
             logger.debug("Host-RAM preflight failed for the route: %s", e)
         return None
+
+    def _host_offload_fits_without_gpus(self, argv: list[str], total_ram_mib: int) -> bool:
+        """Whole GGUF fits RAM less headroom: every credit (VRAM, lazy read) only lowers the
+        priced bytes, so no GPU probe can warn. False when unsure or opted out (that path logs)."""
+        if self._host_offload_warning_opted_out():
+            return False
+        model_path = _extra_args_device(argv, self._ARGV_MODEL)
+        if not model_path:
+            return False
+        try:
+            model_bytes = self._get_gguf_size_bytes(model_path)
+        except Exception:  # noqa: BLE001
+            return False
+        return 0 < model_bytes and model_bytes / (1024 * 1024) <= (
+            total_ram_mib - _HOST_RAM_HEADROOM_MIB
+        )
 
     # Each ask may take several 15s Hub calls, so the route hands its verdict to the load.
     # Taken once by its own load; the TTL only covers a route ask no load came for.
@@ -23166,9 +23192,8 @@ class LlamaCppBackend:
             _pv_diffusion_unpinnable = bool(
                 _paravirtual_cpu_forced and not self.diffusion_split_supported()
             )
-            _preflight_model_path = None
-            self._pending_variant_fallback = None
-            if hf_repo and (_vulkan_ordinal_pin or _cpu_only_pin or _pv_diffusion_unpinnable):
+            if hf_repo:
+                # Resolve repo casing once so the GGUF and companions share one cache entry.
                 _resolved_repo = _resolve_repo_id_casing(hf_repo)
                 if _resolved_repo != hf_repo:
                     logger.info(
@@ -23177,6 +23202,9 @@ class LlamaCppBackend:
                         hf_repo,
                     )
                     hf_repo = _resolved_repo
+            _preflight_model_path = None
+            self._pending_variant_fallback = None
+            if hf_repo and (_vulkan_ordinal_pin or _cpu_only_pin or _pv_diffusion_unpinnable):
                 with _hf_offline_if_unreachable():
                     _preflight_model_path = self._download_gguf(
                         hf_repo = hf_repo,
@@ -23255,6 +23283,150 @@ class LlamaCppBackend:
                     )
                     raise ValueError(_early_non_chat)
 
+            # Resolve the canonical MTP mode once; it decides which drafter is downloaded and launched.
+            _spec_canon = _canonicalize_spec_mode(speculative_type) or "auto"
+            # #11308: DFlash2 + --split-mode tensor aborts at startup (ggml-org/llama.cpp#27819) and the
+            # route falls back to layer split, so Auto prefers a loadable MTP sidecar on tensor instead.
+            # _estimate_gguf_required_gb mirrors this.
+            _auto_tensor_split = _spec_canon == "auto" and _effective_tensor_parallel(
+                extra_args, tensor_parallel
+            )
+
+            def _auto_dflash_blocked_by_tensor() -> bool:
+                if (
+                    _auto_tensor_split
+                    and mtp_draft_path
+                    and not _extra_args_mtp_draft_path(extra_args, env = _child_spec_env(extra_args))
+                ):
+                    try:
+                        from utils.models.gguf_metadata import read_gguf_nextn_predict_layers
+                        return bool(
+                            _launch_caps(binary).get("mtp_token")
+                            and not (read_gguf_nextn_predict_layers(model_path) or 0) > 0
+                            and _mtp_drafter_loads_standalone(mtp_draft_path)
+                        )
+                    except Exception:
+                        return False
+                return False
+
+            def _dflash_breaks_on_images() -> bool:
+                if not dflash_draft_path or disable_vision or extra_args_disable_mmproj(extra_args):
+                    return False
+                try:
+                    projector = self._resolve_launch_mmproj_path(
+                        model_path = model_path, mmproj_path = mmproj_path, extra_args = extra_args
+                    )
+                except Exception:
+                    return False
+                return _dflash_drafter_breaks_on_images(model_path, dflash_draft_path, projector)
+
+            _unloadable_mtp_draft_path: Optional[str] = None
+            # Downloads run before the teardown so a failed or cancelled fetch keeps the resident model;
+            # sidecar fetches write flags on self, so the resident's come back until the teardown commits.
+            _resident_sidecar_flags = (
+                self._dspark_sidecar_absent,
+                self._dflash_sidecar_absent,
+                self._dflash_retry_needed,
+            )
+            self._dflash_retry_needed = False
+            model_path = _preflight_model_path
+            try:
+                if hf_repo:
+                    # Scope HF_HUB_OFFLINE to the download block only when DNS is dead.
+                    with _hf_offline_if_unreachable():
+                        if model_path is None:
+                            # Revalidate the carried file before skipping download resolution.
+                            model_path = self._verified_cached_gguf(intent, hf_repo, hf_variant)
+                            if model_path:
+                                logger.info("Reusing verified cached GGUF: %s", model_path)
+                        if model_path is None:
+                            model_path = self._download_gguf(
+                                hf_repo = hf_repo,
+                                hf_variant = hf_variant,
+                                hf_token = hf_token,
+                                cancel_event = download_cancel_event,
+                            )
+                        # Vision off does not skip the fetch: an mmproj may be an audio encoder instead.
+                        if (
+                            is_vision
+                            and not mmproj_path
+                            and not extra_args_disable_mmproj(extra_args)
+                        ):
+                            mmproj_path = self._download_mmproj(
+                                hf_repo = hf_repo,
+                                hf_token = hf_token,
+                                cancel_event = download_cancel_event,
+                                near_path = model_path,
+                            )
+                        # Fetch the separate MTP drafter; no size gate (helps even sub-3B).
+                        # The MTP/ fallback is qwen4exp only, whose GGUFs carry no head.
+                        if (
+                            not mtp_draft_path
+                            and _spec_canon in ("auto", "mtp", "mtp+ngram")
+                            and not _extra_args_set_spec_type(extra_args)
+                        ):
+                            mtp_draft_path = self._download_mtp(
+                                hf_repo = hf_repo,
+                                hf_token = hf_token,
+                                cancel_event = download_cancel_event,
+                                near_path = model_path,
+                                allow_nested = self._gguf_path_wants_nested_mtp(model_path),
+                            )
+                        # "auto" is included: DSpark is the default whenever the repo
+                        # ships a sidecar. Repos without one no-op, exactly like the
+                        # MTP fetch above, so this costs one listing and no download.
+                        if (
+                            not dspark_draft_path
+                            and _spec_canon in ("auto", "dspark")
+                            and not _extra_args_set_spec_type(extra_args)
+                        ):
+                            dspark_draft_path = self._download_dspark(
+                                hf_repo = hf_repo,
+                                hf_token = hf_token,
+                                cancel_event = download_cancel_event,
+                                near_path = model_path,
+                                binary = binary,
+                                caps_probe = _launch_caps,
+                            )
+                        # Auto fetch stands down once DSpark resolves (it wins the promotion), using the same
+                        # capability-aware 'resolved'. An explicit 'dflash' still fetches.
+                        if (
+                            not dflash_draft_path
+                            and _spec_canon in ("auto", "dflash")
+                            and not _auto_dflash_blocked_by_tensor()
+                            and not self._dspark_wins_auto(
+                                binary = binary,
+                                dspark_draft_path = dspark_draft_path,
+                                spec_canon = _spec_canon,
+                                extra_args = extra_args,
+                            )
+                            and not _extra_args_set_spec_type(extra_args)
+                        ):
+                            dflash_draft_path = self._download_dflash(
+                                hf_repo = hf_repo,
+                                hf_token = hf_token,
+                                cancel_event = download_cancel_event,
+                                near_path = model_path,
+                                binary = binary,
+                            )
+                elif gguf_path:
+                    if not Path(gguf_path).is_file():
+                        raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
+                    model_path = gguf_path
+                else:
+                    raise ValueError("Either gguf_path or hf_repo must be provided")
+            finally:
+                _load_sidecar_flags = (
+                    self._dspark_sidecar_absent,
+                    self._dflash_sidecar_absent,
+                    self._dflash_retry_needed,
+                )
+                (
+                    self._dspark_sidecar_absent,
+                    self._dflash_sidecar_absent,
+                    self._dflash_retry_needed,
+                ) = _resident_sidecar_flags
+
             # The probe can take a moment on a slow Hub, so re-read the cancel flag rather
             # than tearing down a healthy server for a load that was called off.
             if _load_cancelled():
@@ -23294,142 +23466,15 @@ class LlamaCppBackend:
                 self._variant_fallback_warning = None
             # Reset at the teardown, not where the binary resolves: early bails keep the old server.
             self._launch_binary_revision = self._binary_revision(binary)
-            # Cleared per load: a local-file load never reaches the DFlash fetch.
-            self._dflash_retry_needed = False
-
-            # ── Phase 2: download (NO lock held, so cancel can proceed) ──
-            # Resolve the canonical MTP mode once; it decides which drafter is downloaded and launched.
-            _spec_canon = _canonicalize_spec_mode(speculative_type) or "auto"
-            # #11308: DFlash2 + --split-mode tensor aborts at startup (ggml-org/llama.cpp#27819) and the
-            # route falls back to layer split, so Auto prefers a loadable MTP sidecar on tensor instead.
-            # _estimate_gguf_required_gb mirrors this.
-            _auto_tensor_split = _spec_canon == "auto" and _effective_tensor_parallel(
-                extra_args, tensor_parallel
-            )
-
-            def _auto_dflash_blocked_by_tensor() -> bool:
-                if (
-                    _auto_tensor_split
-                    and mtp_draft_path
-                    and not _extra_args_mtp_draft_path(extra_args, env = _child_spec_env(extra_args))
-                ):
-                    try:
-                        from utils.models.gguf_metadata import read_gguf_nextn_predict_layers
-                        return bool(
-                            _launch_caps(binary).get("mtp_token")
-                            and not (read_gguf_nextn_predict_layers(model_path) or 0) > 0
-                            and _mtp_drafter_loads_standalone(mtp_draft_path)
-                        )
-                    except Exception:
-                        return False
-                return False
-
-            def _dflash_breaks_on_images() -> bool:
-                if not dflash_draft_path or disable_vision or extra_args_disable_mmproj(extra_args):
-                    return False
-                try:
-                    projector = self._resolve_launch_mmproj_path(
-                        model_path = model_path, mmproj_path = mmproj_path, extra_args = extra_args
-                    )
-                except Exception:
-                    return False
-                return _dflash_drafter_breaks_on_images(model_path, dflash_draft_path, projector)
-
-            _unloadable_mtp_draft_path: Optional[str] = None
-            # Scope HF_HUB_OFFLINE to the download block only when DNS is dead.
-            if hf_repo:
-                # Resolve repo casing once so the GGUF and companions share one cache entry.
-                _resolved_repo = _resolve_repo_id_casing(hf_repo)
-                if _resolved_repo != hf_repo:
-                    logger.info(
-                        "Using cached repo_id casing '%s' for requested '%s'",
-                        _resolved_repo,
-                        hf_repo,
-                    )
-                    hf_repo = _resolved_repo
-                with _hf_offline_if_unreachable():
-                    model_path = _preflight_model_path
-                    if model_path is None:
-                        # Revalidate the carried file before skipping download resolution.
-                        model_path = self._verified_cached_gguf(intent, hf_repo, hf_variant)
-                        if model_path:
-                            logger.info("Reusing verified cached GGUF: %s", model_path)
-                    if model_path is None:
-                        model_path = self._download_gguf(
-                            hf_repo = hf_repo,
-                            hf_variant = hf_variant,
-                            hf_token = hf_token,
-                            cancel_event = download_cancel_event,
-                        )
-                    if self._pending_variant_fallback:
-                        hf_variant, self._variant_fallback_warning = self._pending_variant_fallback
-                        # Replayed by the respawn and a variant-less Apply, which would re-download.
-                        intent = replace(intent, hf_variant = hf_variant)
-                    # Vision off does not skip the fetch: an mmproj may be an audio encoder instead.
-                    if is_vision and not mmproj_path and not extra_args_disable_mmproj(extra_args):
-                        mmproj_path = self._download_mmproj(
-                            hf_repo = hf_repo,
-                            hf_token = hf_token,
-                            cancel_event = download_cancel_event,
-                            near_path = model_path,
-                        )
-                    # Fetch the separate MTP drafter; no size gate (helps even sub-3B).
-                    # The MTP/ fallback is qwen4exp only, whose GGUFs carry no head.
-                    if (
-                        not mtp_draft_path
-                        and _spec_canon in ("auto", "mtp", "mtp+ngram")
-                        and not _extra_args_set_spec_type(extra_args)
-                    ):
-                        mtp_draft_path = self._download_mtp(
-                            hf_repo = hf_repo,
-                            hf_token = hf_token,
-                            cancel_event = download_cancel_event,
-                            near_path = model_path,
-                            allow_nested = self._gguf_path_wants_nested_mtp(model_path),
-                        )
-                    # "auto" is included: DSpark is the default whenever the repo
-                    # ships a sidecar. Repos without one no-op, exactly like the
-                    # MTP fetch above, so this costs one listing and no download.
-                    if (
-                        not dspark_draft_path
-                        and _spec_canon in ("auto", "dspark")
-                        and not _extra_args_set_spec_type(extra_args)
-                    ):
-                        dspark_draft_path = self._download_dspark(
-                            hf_repo = hf_repo,
-                            hf_token = hf_token,
-                            cancel_event = download_cancel_event,
-                            near_path = model_path,
-                            binary = binary,
-                            caps_probe = _launch_caps,
-                        )
-                    # Auto fetch stands down once DSpark resolves (it wins the promotion), using the same
-                    # capability-aware 'resolved'. An explicit 'dflash' still fetches.
-                    if (
-                        not dflash_draft_path
-                        and _spec_canon in ("auto", "dflash")
-                        and not _auto_dflash_blocked_by_tensor()
-                        and not self._dspark_wins_auto(
-                            binary = binary,
-                            dspark_draft_path = dspark_draft_path,
-                            spec_canon = _spec_canon,
-                            extra_args = extra_args,
-                        )
-                        and not _extra_args_set_spec_type(extra_args)
-                    ):
-                        dflash_draft_path = self._download_dflash(
-                            hf_repo = hf_repo,
-                            hf_token = hf_token,
-                            cancel_event = download_cancel_event,
-                            near_path = model_path,
-                            binary = binary,
-                        )
-            elif gguf_path:
-                if not Path(gguf_path).is_file():
-                    raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
-                model_path = gguf_path
-            else:
-                raise ValueError("Either gguf_path or hf_repo must be provided")
+            (
+                self._dspark_sidecar_absent,
+                self._dflash_sidecar_absent,
+                self._dflash_retry_needed,
+            ) = _load_sidecar_flags
+            if hf_repo and self._pending_variant_fallback:
+                hf_variant, self._variant_fallback_warning = self._pending_variant_fallback
+                # Replayed by the respawn and a variant-less Apply, which would re-download.
+                intent = replace(intent, hf_variant = hf_variant)
 
             # Set identifier early so _read_gguf_metadata can use it (DeepSeek).
             self._model_identifier = model_identifier
@@ -26147,7 +26192,7 @@ class LlamaCppBackend:
                             extra_args,
                             binary = binary,
                             requested_load_mode = load_mode,
-                            supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                            supports_load_mode = load_mode_support(server_caps),
                             settings = _mem_settings,
                             layers_fixed = _caller_owns_budget or _paravirtual_cpu_forced,
                             mtp_may_engage = _mtp_will_engage,
@@ -26326,9 +26371,7 @@ class LlamaCppBackend:
                                         extra_args,
                                         binary = binary,
                                         requested_load_mode = load_mode,
-                                        supports_load_mode = bool(
-                                            server_caps.get("supports_load_mode")
-                                        ),
+                                        supports_load_mode = load_mode_support(server_caps),
                                         settings = _mem_settings,
                                         layers_fixed = _caller_owns_budget or _paravirtual_cpu_forced,
                                         mtp_may_engage = False,
@@ -26407,7 +26450,7 @@ class LlamaCppBackend:
                             max_available_ctx = min(_metal_floor_ctx, native_ctx_for_cap)
                             _apple_ctx_unmeasured = True
                         if not explicit_ctx:
-                            effective_ctx = max_available_ctx
+                            effective_ctx = min(max_available_ctx, _APPLE_AUTO_CTX)
                         elif _apple_ctx_unmeasured:
                             # Never publish a ceiling below the launched context.
                             max_available_ctx = max(max_available_ctx, effective_ctx)
@@ -26523,9 +26566,10 @@ class LlamaCppBackend:
                                 and _vram_fit_ctx
                                 and min(_FIT_MIN_CTX, effective_ctx)
                                 <= _vram_fit_ctx
-                                < effective_ctx
+                                < max_available_ctx
                             ):
-                                effective_ctx = max_available_ctx = _vram_fit_ctx
+                                max_available_ctx = _vram_fit_ctx
+                                effective_ctx = min(effective_ctx, _vram_fit_ctx)
                         # Unmeasured floors still rely on llama.cpp's fitter.
                         _metal_full_offload_pinned = bool(
                             _apple_measured_ceiling is not None
@@ -28979,7 +29023,7 @@ class LlamaCppBackend:
                 # Armed here, not at load start: rows from before the Hub download are stale.
                 _arm_load_probe_memo()
                 _mem_dio_possible = no_reserve_requires_dio(
-                    supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                    supports_load_mode = load_mode_support(server_caps),
                     gpu_offload_confirmed = True,
                 )
                 # NOT gated on the toggle: the answer is this launch's recorded placement
@@ -29029,7 +29073,7 @@ class LlamaCppBackend:
                 )
                 _mem_managed, _mem_extras = apply_model_memory_policy(
                     extra_args,
-                    supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                    supports_load_mode = load_mode_support(server_caps),
                     weights_in_host_memory = _mem_host_resident,
                     gpu_offload_confirmed = _mem_gpu_offload_confirmed,
                     env = _fit_load_mode_env_view,
@@ -29185,6 +29229,19 @@ class LlamaCppBackend:
                     and is_vulkan_backend
                     and not self._vulkan_probe_answered(binary)
                 )
+                # An unknown build gets no lock, so none is owed either.
+                self._memory_mlock_applicable = keep_resident_lock_applicable(
+                    self._memory_mlock_applicable, load_mode_support(server_caps)
+                )
+                if (
+                    _mem_should_mlock
+                    and _mem_host_resident
+                    and load_mode_support(server_caps) is None
+                ):
+                    logger.info(
+                        "Model Memory: skipping page-lock, the llama-server --help "
+                        "probe was inconclusive and newer builds reject --mlock."
+                    )
                 if _mem_should_mlock and not _mem_host_resident:
                     logger.info(
                         "Model Memory: skipping page-lock, the weights are fully "
@@ -30632,19 +30689,20 @@ class LlamaCppBackend:
                             )
                             # With --fit off, -ngl defaults to every layer, so the host-resident verdict may no longer hold.
                             if _mem_should_mlock and not _mem_host_resident:
-                                _run.extend(
-                                    ["--load-mode", "mmap+mlock"]
-                                    if server_caps.get("supports_load_mode")
-                                    else ["--mlock"]
+                                _retry_lock = keep_resident_lock_flags(
+                                    load_mode_support(server_caps)
                                 )
+                                _run.extend(_retry_lock)
                                 _mem_host_resident = True
-                                self._memory_mlock_applicable = True
-                                self._memory_policy_active = True
-                                logger.info(
-                                    "Model Memory: re-applying the page-lock for "
-                                    "the --fit on retry; the full-offload "
-                                    "prediction did not hold."
-                                )
+                                # An unknown build gets no lock, so none is owed either.
+                                self._memory_mlock_applicable = bool(_retry_lock)
+                                if _retry_lock:
+                                    self._memory_policy_active = True
+                                    logger.info(
+                                        "Model Memory: re-applying the page-lock for "
+                                        "the --fit on retry; the full-offload "
+                                        "prediction did not hold."
+                                    )
                             run_cmd = _run
                             self._record_memory_state(_run, env)
                             _did_fit_retry = True
@@ -31472,7 +31530,7 @@ class LlamaCppBackend:
                         if _retry_host_resident and not _mem_host_resident:
                             _retry_managed, _ = apply_model_memory_policy(
                                 extra_args,
-                                supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                                supports_load_mode = load_mode_support(server_caps),
                                 # Not the requested load mode: the first launch
                                 # emitted it and this call only ADDS, so a second
                                 # copy would land after the extras and mark
@@ -31488,7 +31546,9 @@ class LlamaCppBackend:
                                 # flag. Nothing is stripped, so kept extras survive.
                                 cmd.extend(_retry_managed)
                             _mem_host_resident = _retry_host_resident
-                            self._memory_mlock_applicable = _retry_host_resident
+                            self._memory_mlock_applicable = keep_resident_lock_applicable(
+                                _retry_host_resident, load_mode_support(server_caps)
+                            )
                             # Stays active if it already was: the flag also
                             # covers extras this policy touched and env it
                             # scrubbed, neither of which the respawn undoes.
@@ -33863,7 +33923,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _pid_start_identity(pid: int) -> str:
-        """True when the parent still runs, so the server is not orphaned; uncertainty reads as alive so a live server is never mistakenly reaped"""
+        """Process start time as a string ('' when unknown); a recycled PID will not match it."""
         try:
             import psutil
             try:
@@ -33884,7 +33944,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _pid_parent_is_alive(pid: int) -> bool:
-        """Reaps only true orphans so a second backend cannot kill a live server; recycled PIDs are rejected by start time and name; SIGKILL becomes SIGTERM on Windows"""
+        """True when the parent still runs, so the server is not orphaned; uncertainty reads as alive."""
         try:
             import psutil
 
@@ -33909,7 +33969,7 @@ class LlamaCppBackend:
             if ppid <= 1:
                 return False
             return Path(f"/proc/{ppid}").exists()
-        return False
+        return True  # no psutil and no /proc: unknown
 
     @staticmethod
     def _unlink_pidfile(path: Path) -> None:
@@ -33942,7 +34002,6 @@ class LlamaCppBackend:
             return 0  # never our own pid; leave the record alone
 
         if cls._pid_parent_is_alive(pid):
-            # Kills only Unsloth-root or env-override servers, gathering all candidates first so a failed scan kills none; a positive count arms the VRAM settle wait
             return 0
 
         # Parent is gone: candidate orphan. Reject a PID recycled to something else.
@@ -34158,7 +34217,6 @@ class LlamaCppBackend:
 
             # -- Ownership check, orphan check, kill ---------------------------
             for pid, binary, kill in candidates:
-                # atexit: log streams may be closed, so log nothing; stdlib loggers need raiseExceptions off, while the except covers structlog; neither alone is enough
                 if not _is_signalable_pid(pid):
                     continue
                 # Ownership: exact match OR binary under a known root.
@@ -34981,13 +35039,9 @@ class LlamaCppBackend:
         return True
 
     def _start_mtp_crash_watchdog(self) -> None:
-        """Background poll that recovers on an MTP crash even when no request
-        observes it (direct proxy endpoints, or nothing in flight).
-
-        Armed only for a live MTP launch; the no-MTP reload disarms it, so it
-        can't loop.
-        """
-        if not self._mtp_runtime_fallback_active:
+        """Recover a llama-server that dies with no request watching. Never armed by a non-MTP
+        recovery reload, so a server that keeps dying can't loop."""
+        if not self._mtp_runtime_fallback_active and getattr(_AUTO_RECOVERY_LOAD, "active", False):
             return
         proc = self._process
         if proc is None:
@@ -35003,7 +35057,7 @@ class LlamaCppBackend:
             while not stop.wait(1.0):
                 if proc.poll() is not None:
                     if not stop.is_set():
-                        self._maybe_recover_from_mtp_crash()
+                        self._maybe_recover_from_mtp_crash() or self._respawn_if_dead()
                     return
 
         t = threading.Thread(target = _watch, daemon = True, name = "mtp-crash-watchdog")
@@ -35202,7 +35256,8 @@ class LlamaCppBackend:
 
             try:
                 # trust_env=False: an HTTP proxy can 503 for 127.0.0.1 and hang the load.
-                resp = httpx.get(url, timeout = 2.0, trust_env = False)
+                # Shared context: httpx otherwise loads the CA bundle on every probe.
+                resp = httpx.get(url, timeout = 2.0, trust_env = False, verify = _local_ssl_context())
                 if resp.status_code == 200:
                     # A cancel during the 2s probe must not publish the dropped model.
                     if cancelled is not None and cancelled():

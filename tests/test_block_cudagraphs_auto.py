@@ -9,6 +9,7 @@ stubbed, so this runs on CPU."""
 import importlib.util
 import os
 import sys
+import types
 
 import pytest
 import torch
@@ -190,6 +191,52 @@ def test_auto_after_on_new_shapes_past_the_cap_turn_graphs_off(monkeypatch):
     assert bc._CUDAGRAPH_STATE["off"] == "shapes"
     assert released
     assert _step(layers, calls) == ["plain", "plain"]
+
+
+def test_auto_graphed_compile_owns_only_its_compile_ids(monkeypatch):
+    # The graphed region auto mode compiles once graphs turn on must use the owning backend too:
+    # a foreign reduce-overhead function first called inside the block is not ours.
+    from torch._guards import CompileContext, CompileId, compile_context
+
+    layers, calls, compiles, _ = _harness(monkeypatch)
+    monkeypatch.setattr(
+        torch._TorchCompileInductorWrapper, "__call__", lambda self, gm, inputs, **kw: gm
+    )
+    manager = types.SimpleNamespace(ids_to_funcs = {}, id_to_compile_id = {})
+    monkeypatch.setattr(bc, "_tree_manager", lambda device: manager)
+    block_cid = CompileId(frame_id = 1, frame_compile_id = 0)
+    foreign_cid = CompileId(frame_id = 2, frame_compile_id = 0)
+
+    def register(cid):
+        i = len(manager.ids_to_funcs)
+        manager.ids_to_funcs[i] = None
+        manager.id_to_compile_id[i] = cid
+
+    def fake_compile(fn, **kwargs):
+        compiles.append("graphs")
+        backend = kwargs.get("backend")
+
+        def run(*args, **kw):
+            calls.append("graphs")
+            if not manager.ids_to_funcs:  # first call records the block's tree function
+                with compile_context(CompileContext(block_cid)):
+                    if backend is not None:
+                        backend("gm", [])
+                register(block_cid)
+                register(foreign_cid)  # foreign region behind a graph break, first call
+            return fn(*args, **kw)
+
+        return run
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+    for _ in range(4):
+        assert "graphs" not in _step(layers, calls)
+    assert bc._CUDAGRAPH_STATE["auto"]["decision"] == "on"
+    assert not manager.ids_to_funcs
+    assert _step(layers, calls) == ["graphs", "graphs"]
+    assert compiles == ["plain", "graphs"]
+    assert bc._CUDAGRAPH_STATE["ours"] == {block_cid}
+    assert bc._pool_release_verdict([manager], bc._CUDAGRAPH_STATE["ours"]) == "foreign"
 
 
 def test_auto_packed_rows_keep_graphs_off(monkeypatch):

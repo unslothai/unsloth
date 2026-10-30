@@ -254,6 +254,12 @@ const FIELDS: FieldCase[] = [
     same: true,
     different: false,
   },
+  {
+    key: "mlxAnePrefill",
+    statusKey: "mlx_ane_prefill_requested",
+    same: true,
+    different: false,
+  },
   { key: "mlxPleOffload", statusKey: "mlx_offload", same: 0.5, different: "off", wrap: offloadRequest("ple") },
   {
     key: "mlxExpertOffload",

@@ -1111,7 +1111,7 @@ export const ar = {
       lastVisited: "آخر ما تمت زيارته",
     },
     tabs: {
-      sandbox: "وضع الحماية",
+      sandbox: "الأمان",
       accounts: "الحسابات",
       general: "عام",
       profile: "الملف الشخصي",
@@ -1395,7 +1395,7 @@ export const ar = {
       },
     },
     sandbox: {
-      title: "وضع الحماية",
+      title: "الأمان",
       description: "ما إذا كانت استدعاءات أدوات Python والطرفية تعمل داخل وضع حماية نظام التشغيل على هذا الكمبيوتر.",
       docs: "التوثيق",
       docsLabel: "فتح توثيق وضع الحماية",
@@ -1471,6 +1471,7 @@ export const ar = {
       managedNote: "يُعدّ مالك خادم Unsloth هذا وضع حماية نظام التشغيل.",
     },
     debugging: {
+      description: "اقرأ سجلات Unsloth دون مغادرة التطبيق.",
       logSection: "ملف السجل",
       source: "ملف السجل",
       sourceHint: "تكتب مشغّلات النماذج سجلاتها الخاصة، لذا غالبًا ما يكون سبب فشل التحميل أو التوليد موضّحًا فيها لا في سجل الخادم.",
@@ -2126,8 +2127,8 @@ export const ar = {
       uploadPhoto: "رفع صورة",
       removePhoto: "إزالة",
       pictureOptions: "خيارات صورة الملف الشخصي",
-      greetingSloth: "الكسلان في التحية",
-      greetingSlothDescription: "إظهار الكسلان في تحية المحادثة.",
+      greetingSloth: "التحية",
+      greetingSlothDescription: "إظهار التحية في المحادثات الجديدة.",
       noPicture: "لا توجد صورة ملف شخصي",
       noneLabel: "بلا",
       stats: {
@@ -2355,7 +2356,8 @@ export const ar = {
       description: "راقب عتاد خادم Unsloth هذا ومساحة تخزينه.",
       liveUpdates: "التحديثات المباشرة",
       floatingWindow: "نافذة عائمة",
-      disableOverlay: "تعطيل التراكب",
+      showFloatingWindow: "إظهار النافذة العائمة",
+      showFloatingWindowDescription: "أبقِ استخدام المعالج والذاكرة ووحدة الرسوميات ظاهرًا فوق Unsloth.",
       liveMonitor: {
         title: "المراقبة المباشرة",
         apiTitle: "مراقبة API",
@@ -2794,11 +2796,6 @@ export const ar = {
       autoScrollManual: "يدوي",
       autoScrollKeywords:
         "تمرير تلقائي متابعة أسفل قفز بث إنشاء تثبيت scroll autoscroll follow",
-      scrollToBottomButton: "زر التمرير إلى الأسفل",
-      scrollToBottomButtonDescription:
-        "إظهار زر للعودة إلى أحدث رسالة بعد التمرير لأعلى.",
-      scrollToBottomButtonKeywords:
-        "تمرير أسفل أحدث سهم زر إخفاء scroll bottom button",
       replyNotification: "الإشعار عند انتهاء الرد",
       replyNotificationDescription:
         "إظهار إشعار من النظام عند انتهاء الرد بينما يكون Unsloth مصغرًا أو في الخلفية.",
@@ -2820,9 +2817,8 @@ export const ar = {
         "تفاصيل سرعة رموز إحصاءات طبقات ذاكرة verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "تعديل الرد في الردود",
       inlineEditResponseDescription: "إبقاء تعديل الرد على كل رد بدلًا من قائمة المزيد.",
-      modelDisclaimer: "إظهار إخلاء مسؤولية النموذج",
-      modelDisclaimerDescription:
-        'إظهار عبارة "LLMs can make mistakes" أسفل مربع المحادثة.',
+      composerAtBottom: "حقل الكتابة في الأسفل",
+      composerAtBottomDescription: "ابدأ المحادثات الجديدة وحقل الكتابة أسفل الصفحة بدلًا من منتصفها.",
       projectAttachments: "مشاركة الملفات عبر المشروع",
       projectAttachmentsDescription:
         "أتِح مرفقات الدردشة الجديدة لكل دردشة في المشروع.",
@@ -3189,6 +3185,7 @@ export const ar = {
       readDocs: "قراءة وثائق API",
       noAccess: "لا يوجد وصول إلى API بعد.",
       accessTokens: "توكنات الوصول",
+      quickstartTitle: "البدء السريع",
       columnName: "الاسم",
       columnToken: "التوكن",
       columnCreated: "تاريخ الإنشاء",
@@ -3328,8 +3325,9 @@ export const ar = {
         loadError: "تعذّر تحميل إعدادات واجهة القرارات.",
         sendsTo: "تُرسَل الطلبات إلى {provider}.",
         connectionMissing: "هذا الاتصال لم يعد موجودًا أو لا يحتوي على نماذج قرارات. اختر نموذجًا آخر.",
-        addConnection: "لاستخدام نموذج قرارات مستضاف، أضف TypeSafe أو Liquid AI أو OpenRouter في الاتصالات.",
-        openConnections: "فتح الاتصالات",
+        addConnection: "لاستخدام نموذج قرارات مستضاف، أضفه في ",
+        connectionsLink: "الاتصالات",
+        addConnectionSuffix: ".",
       },
       mcp: {
         title: "وصول الوكلاء (MCP)",
@@ -3466,6 +3464,8 @@ export const ar = {
   },
   studio: {
     goToLibrary: "الانتقال إلى المكتبة",
+    imageTraining: "تدريب الصور",
+    goToImageTraining: "تدريب LoRA للصور",
     routeTitle: "تدريب",
     wizard: {
       modelTitle: "النموذج",

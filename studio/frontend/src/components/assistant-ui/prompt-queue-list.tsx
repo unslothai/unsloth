@@ -4,11 +4,11 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   CornerDownRightIcon,
-  GripVerticalIcon,
   ListEndIcon,
 } from "lucide-react";
 import {
   Delete02Icon,
+  DragDropVerticalIcon,
   Edit03Icon,
   MoreHorizontalIcon,
 } from "@hugeicons/core-free-icons";
@@ -338,7 +338,7 @@ export function PromptQueueList({
                         move(item.id, targets[event.key]);
                       }}
                     >
-                      <GripVerticalIcon className="size-4" />
+                      <HugeiconsIcon icon={DragDropVerticalIcon} strokeWidth={1.75} className="size-4" />
                     </TooltipIconButton>
                     <ListEndIcon
                       className="hidden size-4 shrink-0 text-muted-foreground/60 sm:block"

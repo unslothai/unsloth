@@ -77,16 +77,29 @@ const countClosingTags = (block: string, tagName: string): number => {
   return matches ? matches.length : 0;
 };
 
-const countDoubleDollars = (str: string): number => {
-  let count = 0;
-  for (let i = 0; i < str.length - 1; i += 1) {
-    if (str[i] === "$" && str[i + 1] === "$") {
-      count += 1;
-      i += 1;
+// Incremental `$$` count (a run of n holds n >> 1; the trailing run continues into appends):
+// rescanning the growing block per token is quadratic after a stray `$$`.
+interface DollarPairs {
+  closed: number;
+  run: number;
+}
+
+const appendDollarPairs = (state: DollarPairs, str: string): void => {
+  let { closed, run } = state;
+  for (let i = 0; i < str.length; i += 1) {
+    if (str.charCodeAt(i) === 36) {
+      run += 1;
+    } else if (run > 0) {
+      closed += run >> 1;
+      run = 0;
     }
   }
-  return count;
+  state.closed = closed;
+  state.run = run;
 };
+
+const hasOddDollarPairs = (state: DollarPairs): boolean =>
+  ((state.closed + (state.run >> 1)) & 1) === 1;
 
 const lineEndingPattern = /\r\n|\r/g;
 
@@ -97,6 +110,7 @@ const mergeTokensIntoBlocks = (tokens: Token[]): string[] => {
   const mergedBlocks: string[] = [];
   const htmlStack: string[] = [];
   let previousTokenWasCode = false;
+  const lastBlockDollars: DollarPairs = { closed: 0, run: 0 };
 
   for (const token of tokens) {
     const currentBlock = token.raw;
@@ -104,6 +118,7 @@ const mergeTokensIntoBlocks = (tokens: Token[]): string[] => {
 
     if (htmlStack.length > 0) {
       mergedBlocks[mergedBlocksLen - 1] += currentBlock;
+      appendDollarPairs(lastBlockDollars, currentBlock);
 
       const trackedTag = htmlStack.at(-1) as string;
       const newOpenTags = countNonSelfClosingOpenTags(currentBlock, trackedTag);
@@ -132,17 +147,20 @@ const mergeTokensIntoBlocks = (tokens: Token[]): string[] => {
       }
     }
 
-    if (mergedBlocksLen > 0 && !previousTokenWasCode) {
-      const previousBlock = mergedBlocks[mergedBlocksLen - 1];
-      const prevDollarCount = countDoubleDollars(previousBlock);
-
-      if (prevDollarCount % 2 === 1) {
-        mergedBlocks[mergedBlocksLen - 1] = previousBlock + currentBlock;
-        continue;
-      }
+    if (
+      mergedBlocksLen > 0 &&
+      !previousTokenWasCode &&
+      hasOddDollarPairs(lastBlockDollars)
+    ) {
+      mergedBlocks[mergedBlocksLen - 1] += currentBlock;
+      appendDollarPairs(lastBlockDollars, currentBlock);
+      continue;
     }
 
     mergedBlocks.push(currentBlock);
+    lastBlockDollars.closed = 0;
+    lastBlockDollars.run = 0;
+    appendDollarPairs(lastBlockDollars, currentBlock);
 
     if (token.type !== "space") {
       previousTokenWasCode = token.type === "code";

@@ -1112,7 +1112,7 @@ export const ja = {
       lastVisited: "前回開いたタブ",
     },
     tabs: {
-      sandbox: "サンドボックス",
+      sandbox: "セキュリティ",
       accounts: "アカウント",
       general: "一般",
       profile: "プロフィール",
@@ -1396,7 +1396,7 @@ export const ja = {
       },
     },
     sandbox: {
-      title: "サンドボックス",
+      title: "セキュリティ",
       description: "このコンピューターで Python とターミナルのツール呼び出しを OS サンドボックス内で実行するかどうか。",
       docs: "ドキュメント",
       docsLabel: "サンドボックスのドキュメントを開く",
@@ -1472,6 +1472,7 @@ export const ja = {
       managedNote: "OS サンドボックスは、この Unsloth サーバーの所有者が設定します。",
     },
     debugging: {
+      description: "アプリを離れずに Unsloth のログを確認できます。",
       logSection: "ログファイル",
       source: "ログファイル",
       sourceHint: "モデルランナーはそれぞれ独自のログを書き出すため、読み込みや生成の失敗の理由は、サーバーログではなくそちらに記録されていることがよくあります。",
@@ -2096,8 +2097,8 @@ export const ja = {
       avatarShape: "プロフィール写真の形状",
       avatarShapeCircle: "円形",
       avatarShapeRounded: "角丸",
-      greetingSloth: "挨拶にナマケモノを表示",
-      greetingSlothDescription: "チャットの挨拶にナマケモノを表示します。",
+      greetingSloth: "あいさつ",
+      greetingSlothDescription: "新しいチャットにあいさつを表示します。",
       chooseSloth: "またはナマケモノのプロフィール画像を選択",
       noPicture: "プロフィール画像なし",
       noneLabel: "なし",
@@ -2334,7 +2335,8 @@ export const ja = {
       description: "この Unsloth サーバーのハードウェアとストレージを監視します。",
       liveUpdates: "リアルタイム更新",
       floatingWindow: "フローティングウィンドウ",
-      disableOverlay: "オーバーレイを無効化",
+      showFloatingWindow: "フローティングウィンドウを表示",
+      showFloatingWindowDescription: "CPU・RAM・GPU の使用状況を Unsloth の上に表示し続けます。",
       liveMonitor: {
         title: "リアルタイムモニター",
         apiTitle: "API モニター",
@@ -2779,11 +2781,6 @@ export const ja = {
       autoScrollManual: "手動",
       autoScrollKeywords:
         "スクロール 自動スクロール 追従 下 ジャンプ ストリーミング 生成 固定 scroll autoscroll follow",
-      scrollToBottomButton: "一番下へスクロールボタン",
-      scrollToBottomButtonDescription:
-        "上にスクロールしたときに、最新のメッセージへ戻るボタンを表示します。",
-      scrollToBottomButtonKeywords:
-        "スクロール 一番下 最新 矢印 ボタン 非表示 scroll bottom button",
       replyNotification: "応答完了時に通知",
       replyNotificationDescription:
         "Unsloth が最小化またはバックグラウンドにあるときに応答が完了すると、システム通知を表示します。",
@@ -2805,8 +2802,8 @@ export const ja = {
         "詳細 速度 トークン 統計 レイヤー オフロード verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "応答に応答の編集を表示",
       inlineEditResponseDescription: "応答の編集を「その他」メニューではなく、各応答に表示します。",
-      modelDisclaimer: "モデルの免責事項を表示",
-      modelDisclaimerDescription: 'チャットボックスの下に "LLMs can make mistakes" と表示します。',
+      composerAtBottom: "入力欄を下に表示",
+      composerAtBottomDescription: "新しいチャットで入力欄を中央ではなくページ下部に表示します。",
       projectAttachments: "プロジェクト全体でファイルを共有",
       projectAttachmentsDescription:
         "新しく添付したファイルをプロジェクト内のすべてのチャットで利用できるようにします。",
@@ -3163,6 +3160,7 @@ export const ja = {
       readDocs: "API ドキュメントを読む",
       noAccess: "アクセストークンはまだありません。",
       accessTokens: "アクセストークン",
+      quickstartTitle: "クイックスタート",
       columnName: "名前",
       columnToken: "トークン",
       columnCreated: "作成",
@@ -3299,8 +3297,9 @@ export const ja = {
         loadError: "判定 API の設定を読み込めませんでした。",
         sendsTo: "リクエストは {provider} に送信されます。",
         connectionMissing: "この接続は存在しないか、判定モデルがありません。別のモデルを選んでください。",
-        addConnection: "ホスト型の判定モデルを使うには、接続で TypeSafe、Liquid AI、OpenRouter のいずれかを追加してください。",
-        openConnections: "接続を開く",
+        addConnection: "ホスト型の判定モデルを使うには、",
+        connectionsLink: "接続",
+        addConnectionSuffix: "で追加してください。",
       },
       mcp: {
         title: "エージェントアクセス (MCP)",
@@ -3434,6 +3433,8 @@ export const ja = {
   },
   studio: {
     goToLibrary: "ライブラリへ移動",
+    imageTraining: "画像トレーニング",
+    goToImageTraining: "画像 LoRA をトレーニング",
     routeTitle: "トレーニング",
     wizard: {
       modelTitle: "モデル",

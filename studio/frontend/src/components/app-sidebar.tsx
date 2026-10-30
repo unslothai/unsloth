@@ -118,7 +118,6 @@ import {
   BadgeInfoIcon,
   ChefHatIcon,
   CloudIcon,
-  CpuIcon,
   CursorInfo02Icon,
   DashboardCircleIcon,
   DashboardSquareEditIcon,
@@ -134,6 +133,7 @@ import {
   InformationCircleIcon,
   LibrariesIcon,
   Logout05Icon,
+  Moon02Icon,
   MoreHorizontalIcon,
   MoreVerticalIcon,
   Search01Icon,
@@ -159,6 +159,7 @@ import {
 import { Copy01Icon } from "@/lib/copy-icon";
 import {
   AiSpeechIcon,
+  ChipIcon,
   MessageCircleIcon,
   TestTubeOutlineIcon,
   withNoticeDot,
@@ -170,7 +171,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { ArrowRightIcon, GitBranchIcon, Moon } from "lucide-react";
+import { ArrowRightIcon, GitBranchIcon } from "lucide-react";
 import { ForkIcon } from "@/lib/fork-icon";
 import {
   Link,
@@ -248,6 +249,7 @@ import {
   removeCustomSectionWithUndo,
   sectionKeyLanding,
   useSectionDrag,
+  prefetchChatPage,
 } from "@/features/chat";
 import {
   imeOwnsInputKeydown,
@@ -365,7 +367,7 @@ const SETTINGS_TAB_MENU_ITEMS: Record<
 > = {
   profile: { icon: UserCircleIcon, labelKey: "settings.tabs.profile" },
   appearance: { icon: BrushCleaningIcon, labelKey: "settings.tabs.appearance" },
-  resources: { icon: CpuIcon, labelKey: "settings.tabs.resources" },
+  resources: { icon: ChipIcon, labelKey: "settings.tabs.resources" },
   chat: { icon: MessageCircleIcon, labelKey: "settings.tabs.chat" },
   connections: { icon: CloudIcon, labelKey: "settings.tabs.connections" },
 };
@@ -5948,6 +5950,8 @@ export function AppSidebar() {
                     if (chatDisabled) return;
                     openNewChat(null);
                   }}
+                  onPointerEnter={prefetchChatPage}
+                  onFocus={prefetchChatPage}
                   className={cn(
                     "flex min-w-0 items-center gap-[calc(6px*var(--ui-space-scale,1))] select-none transition-opacity",
                     chatDisabled && "pointer-events-none",
@@ -6072,6 +6076,7 @@ export function AppSidebar() {
                   : t("shell.navigation.newChat")
               }
               spinner={anyChatRunning && !isChatRoute}
+              onIntent={prefetchChatPage}
               // On every route: the waiting row can be folded away, behind Show more, or scrolled off.
               waiting={
                 anyChatWaiting
@@ -6799,7 +6804,7 @@ export function AppSidebar() {
                         ref={anchorRef as React.Ref<HTMLDivElement>}
                         onSelect={(e) => { e.preventDefault(); toggleTheme(); }}
                       >
-                        {isDark ? <HugeiconsIcon icon={Sun03Icon} strokeWidth={1.75} className="size-icon" /> : <Moon strokeWidth={1.75} className="size-icon" />}
+                        {isDark ? <HugeiconsIcon icon={Sun03Icon} strokeWidth={1.75} className="size-icon" /> : <HugeiconsIcon icon={Moon02Icon} strokeWidth={1.75} className="size-icon" />}
                         <span>
                           {isDark
                             ? t("shell.navigation.lightMode")

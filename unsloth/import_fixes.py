@@ -11555,6 +11555,140 @@ def fix_torchao_pytree_register_constant():
     return True
 
 
+# Newest torchao release whose Python API supports each torch minor (pytorch/ao#2919); newer torch has no ceiling.
+_TORCHAO_NEWEST_FOR_TORCH = {
+    (2, 4): (0, 12),
+    (2, 5): (0, 12),
+    (2, 6): (0, 13),
+    (2, 7): (0, 15),
+    (2, 8): (0, 16),
+}
+
+# What importing transformers / peft pulls from torchao at module scope (transformers 5 quantizer_torchao, peft lora).
+_TORCHAO_IMPORT_TIME_MODULES = (
+    "torchao",
+    "torchao.quantization",
+    "torchao.prototype.safetensors.safetensors_support",
+)
+
+# "<torchao>|<torch>" metadata versions; the subprocess sitecustomize hides torchao only on an exact match.
+_TORCHAO_DISABLED_ENV = "UNSLOTH_TORCHAO_DISABLED_FOR"
+
+TORCHAO_DISABLED_FOR_OLD_TORCH = False
+
+
+def _release_pair(version_string):
+    match = re.match(r"\s*(\d+)\.(\d+)", str(version_string))
+    return (int(match.group(1)), int(match.group(2))) if match else None
+
+
+def _is_torchao_torch_skew_error(error):
+    """Only torch's own missing-name wording; any other torchao failure stays visible."""
+    message = str(error)
+    if isinstance(error, AttributeError):
+        return message.startswith("module 'torch") and "has no attribute" in message
+    if isinstance(error, ImportError):
+        return "cannot import name" in message and "from 'torch" in message
+    return False
+
+
+def _hide_torchao_from_dependents():
+    """Make torchao read as not installed, as `disable_torchaudio_if_cuda_mismatched` does."""
+    for name in [n for n in list(sys.modules) if n == "torchao" or n.startswith("torchao.")]:
+        sys.modules.pop(name, None)
+    # find_spec returns None and `import torchao` raises ModuleNotFoundError: every guard takes its no-torchao branch.
+    sys.modules["torchao"] = None
+    # Libraries imported before unsloth cached the answer.
+    for module_name, flag_names in (
+        ("transformers.utils.import_utils", ("_torchao_available",)),
+        ("transformers.utils", ()),
+        ("peft.import_utils", ()),
+        ("diffusers.utils.import_utils", ("_torchao_available",)),
+    ):
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        for flag_name in flag_names:
+            if hasattr(module, flag_name):
+                try:
+                    setattr(module, flag_name, False)
+                except Exception:
+                    pass
+        check = getattr(module, "is_torchao_available", None)
+        if check is None:
+            continue
+        try:
+            check.cache_clear()
+        except AttributeError:
+            pass
+        try:
+            setattr(module, "is_torchao_available", lambda *args, **kwargs: False)
+        except Exception:
+            pass
+
+
+def disable_torchao_if_torch_too_old():
+    """Treat a torchao built for a newer torch as not installed instead of failing `import unsloth`.
+
+    unsloth_zoo's uncapped `torchao>=0.13.0` resolves 0.18 on torch 2.6, whose import reads
+    `torch.float4_e2m1fn_x2` (torch 2.7+). Disables only on a real missing torch name.
+    """
+    global TORCHAO_DISABLED_FOR_OLD_TORCH
+    if TORCHAO_DISABLED_FOR_OLD_TORCH:
+        _hide_torchao_from_dependents()
+        return True
+    try:
+        if "torchao" in sys.modules or importlib.util.find_spec("torchao") is None:
+            return False
+        torchao_version = importlib_version("torchao")
+        torchao_release = _release_pair(torchao_version)
+        import torch
+
+        torch_version = str(torch.__version__)
+        newest = _TORCHAO_NEWEST_FOR_TORCH.get(_release_pair(torch_version))
+    except Exception:
+        return False
+    if newest is None or torchao_release is None or torchao_release <= newest:
+        return False
+    reason = None
+    for module_name in _TORCHAO_IMPORT_TIME_MODULES:
+        try:
+            importlib.import_module(module_name)
+        except Exception as error:
+            if _is_torchao_torch_skew_error(error):
+                reason = str(error).split("\n", 1)[0]
+                break
+            if isinstance(error, ModuleNotFoundError) and str(
+                getattr(error, "name", "")
+            ).startswith("torchao"):
+                # An older torchao without this submodule: nothing imports it there.
+                continue
+            return False
+    if reason is None:
+        return False
+    TORCHAO_DISABLED_FOR_OLD_TORCH = True
+    _hide_torchao_from_dependents()
+    try:
+        os.environ[_TORCHAO_DISABLED_ENV] = (
+            f"{importlib_version('torchao')}|{importlib_version('torch')}"
+        )
+    except Exception:
+        pass
+    # unsloth_zoo needs torchao>=0.13, so below that only a newer torch is installable.
+    remedy = (
+        f'    pip install "torchao<{newest[0]}.{newest[1] + 1}"\nor a newer torch.'
+        if newest >= (0, 13)
+        else '    pip install --upgrade "torch>=2.6"'
+    )
+    print(
+        f"Unsloth: torchao=={torchao_version} does not support torch=={torch_version} "
+        f"({reason}), so torchao is disabled for this process and everything that does "
+        f"not use it keeps working. QAT, torchao float8 and torchao-quantized checkpoints "
+        f"need a torchao that matches this torch:\n{remedy}"
+    )
+    return True
+
+
 # vLLM inspects architectures in a separate process that imports torchao itself, never sees a
 # parent monkey-patch, and fails the same way. sitecustomize is the one hook reaching a process
 # we do not launch: site imports it at startup off the inherited PYTHONPATH. A .pth would need
@@ -11614,8 +11748,9 @@ def _subprocess_sitecustomize_source():
     every subprocess. Ours runs the next one on sys.path first, then the fix.
     """
     return '''"""Written by unsloth. Makes `import torchao` survive a torch that
-predates the symbols torchao 0.18 imports unconditionally, in processes
-unsloth did not launch (notably vLLM's model-architecture inspector)."""
+predates the symbols torchao 0.18 imports unconditionally, or hides a torchao
+the parent disabled, in processes unsloth did not launch (notably vLLM's
+model-architecture inspector)."""
 import os
 import sys
 
@@ -11796,6 +11931,15 @@ class _TorchaoImportHook:
 # module object alive here: the finder below outlives this file's execution.
 _SELF = sys.modules.get(__name__)
 _chain_to_the_real_sitecustomize()
+# The parent disabled a torchao too new for its torch; hide it here only for the same torchao and torch.
+try:
+    _expected = os.environ.get("UNSLOTH_TORCHAO_DISABLED_FOR")
+    if _expected:
+        import importlib.metadata as _md
+        if _expected == "%s|%s" % (_md.version("torchao"), _md.version("torch")):
+            sys.modules["torchao"] = None
+except Exception:
+    pass
 try:
     sys.meta_path.insert(0, _TorchaoImportHook())
 except Exception:
@@ -11890,12 +12034,30 @@ def _torch_really_has(F, name):
     return not getattr(symbol, "__unsloth_placeholder__", False)
 
 
+def _child_torchao_symbol_fix_needed():
+    if importlib.util.find_spec("torchao") is None:
+        return False
+    try:
+        if Version(importlib_version("torchao")) < Version("0.18.0"):
+            return False
+        import torch.nn.functional as F
+
+        # Our own in-process patches do not count as torch having the symbols.
+        return not (
+            all(_torch_really_has(F, n) for n in _TORCHAO_TORCH_SYMBOLS)
+            and _aten_grouped_mm_library is None
+            and not _torch_op_is_missing("aten", "_grouped_mm")
+        )
+    except Exception:
+        return False
+
+
 def propagate_torchao_fix_to_subprocesses():
     """Make the torchao fix apply to child processes too.
 
-    A no-op unless the fix is needed: returns early when torchao is absent,
-    old enough to guard its own import, or when torch already has the symbols.
-    Nothing is written and PYTHONPATH is untouched on a healthy pair.
+    A no-op unless the symbol fix is needed (torchao 0.18+ on a torch missing its
+    symbols) or `disable_torchao_if_torch_too_old` disabled torchao here. Nothing is
+    written and PYTHONPATH is untouched on a healthy pair.
 
     The generated file inlines the symbol fix rather than importing unsloth: a
     sitecustomize runs at the start of every subprocess on the machine, so an
@@ -11907,24 +12069,7 @@ def propagate_torchao_fix_to_subprocesses():
 
     Returns the directory added to PYTHONPATH, or None.
     """
-    if importlib.util.find_spec("torchao") is None:
-        return None
-    try:
-        if Version(importlib_version("torchao")) < Version("0.18.0"):
-            return None
-    except Exception:
-        return None
-    try:
-        import torch.nn.functional as F
-
-        # Nothing to do only when both the functional symbols and the aten op are missing; our own in-process patches do not count.
-        if (
-            all(_torch_really_has(F, n) for n in _TORCHAO_TORCH_SYMBOLS)
-            and _aten_grouped_mm_library is None
-            and not _torch_op_is_missing("aten", "_grouped_mm")
-        ):
-            return None  # this torch is new enough; nothing to do
-    except Exception:
+    if not TORCHAO_DISABLED_FOR_OLD_TORCH and not _child_torchao_symbol_fix_needed():
         return None
 
     try:
@@ -11956,9 +12101,9 @@ def propagate_torchao_fix_to_subprocesses():
     if directory not in parts:
         os.environ["PYTHONPATH"] = os.pathsep.join([directory] + parts)
         logger.info(
-            "Unsloth: torchao %s needs torch symbols this torch lacks. Added "
-            "a sitecustomize to PYTHONPATH so subprocesses (vLLM's model "
-            "inspector) can import torchao too.",
+            "Unsloth: torchao %s does not match this torch. Added a "
+            "sitecustomize to PYTHONPATH so subprocesses (vLLM's model "
+            "inspector) get the same torchao fix.",
             importlib_version("torchao"),
         )
     return directory

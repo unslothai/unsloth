@@ -16,6 +16,8 @@ LARGE = (14336, 4096)  # Llama-3.1-8B MLP: 112 MiB in bf16
 
 @pytest.fixture
 def route(monkeypatch):
+    # NVIDIA routing; on ROCm the direct path is off and every call keeps the compiled path.
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
     monkeypatch.setattr(F8, "_fp8_rowwise_backend", lambda device: "scaled_mm")
     monkeypatch.setattr(F8, "_FP8_ROWWISE_DIRECT", True)
 
