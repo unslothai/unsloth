@@ -9988,6 +9988,17 @@ def _project_workdir_for(session_id: "str | None") -> "str | None":
     return _get_project_workdir(session_id)
 
 
+def session_runs_in_user_folder(session_id: "str | None") -> bool:
+    """Whether this session's code tools run in the owner's chosen project folder, resolved as the executor does."""
+    if not session_id or not session_id.startswith(_PROJECT_SESSION_PREFIX):
+        return False
+    try:
+        workdir = _project_workdir_for(session_id)
+        return bool(workdir) and _is_user_project_folder(session_id, workdir)
+    except Exception:
+        return False
+
+
 def _get_project_workdir(session_id: str) -> str | None:
     # Host project paths are single-user only; managed accounts use their sandbox.
     if not is_owner_context():

@@ -5632,6 +5632,37 @@ def _full_access_tip(code_tools: list[str]) -> str:
     )
 
 
+def _project_folder_tip(tool_names) -> str:
+    """The tool schemas say "sandbox" outside Full access, so models deny a chosen folder they can reach."""
+    readers = [name for name in ("terminal", "python") if name in tool_names]
+    if not readers:
+        return ""
+    # Named: told only "a tool call", small models list the folder and then web-search how to read a file.
+    reader = " or ".join(readers) + " tool"
+    web = "; web_search cannot see them" if "web_search" in tool_names else ""
+    return (
+        "This chat belongs to a project, and the current working directory is the folder the "
+        'user chose for it, so "my project" and "my files" mean the files there. When asked '
+        f"about the project or its files, list and read them with the {reader} first{web}. "
+        "Do not say you cannot see them or ask the user to upload or paste them. Use relative "
+        "paths."
+    )
+
+
+async def _tools_run_in_user_folder(payload, tools) -> bool:
+    """Whether this request's code tools will run in the owner's chosen project folder."""
+    session_id = getattr(payload, "session_id", None)
+    names = {
+        (tool.get("function") or {}).get("name") for tool in tools or () if isinstance(tool, dict)
+    }
+    # Only these can read the folder, which is what the sentence asks for.
+    if not session_id or not names.intersection({"terminal", "python"}):
+        return False
+    from core.inference.tools import session_runs_in_user_folder
+
+    return await asyncio.to_thread(session_runs_in_user_folder, session_id)
+
+
 # Avoid the word 'greetings': small models then greet instead of researching.
 _TOOL_RESEARCH_TIP = (
     "Deep Research is turned on for this conversation. For factual questions or requests "
@@ -5736,8 +5767,9 @@ def _build_tool_action_nudge(
     model_name: str,
     full_access: bool = False,
     full_access_only: bool = False,
+    user_folder: bool = False,
 ) -> str:
-    """full_access_only keeps just the Full access sentence and skills catalog, not the general guidance."""
+    """full_access_only keeps just the environment sentences (Full access, project folder) and skills catalog, not the general guidance."""
     tool_names = {
         (tool.get("function") or {}).get("name")
         for tool in tools
@@ -5765,10 +5797,13 @@ def _build_tool_action_nudge(
         can_run_scripts = bool({"python", "terminal"} & tool_names),
         compact = compact,
     )
+    folder_tip = _project_folder_tip(tool_names) if user_folder else ""
     if full_access_only:
         tips = []
         if full_access and has_code:
             tips.append(_full_access_tip(code_tools))
+        if folder_tip:
+            tips.append(folder_tip)
         if has_skills:
             tips.append(skill_tip)
         return " ".join(tip for tip in tips if tip)
@@ -5790,6 +5825,8 @@ def _build_tool_action_nudge(
         tool_tip_parts.append(_TOOL_CODE_TIP)
         if full_access:
             tool_tip_parts.append(_full_access_tip(code_tools))
+        if folder_tip:
+            tool_tip_parts.append(folder_tip)
     if has_artifact:
         tool_tip_parts.append(_TOOL_ARTIFACT_TIP)
     if has_research:
@@ -28431,6 +28468,7 @@ async def _proxy_to_external_provider(
                 tools = studio_tool_payloads,
                 model_name = model,
                 full_access = bool(payload.bypass_permissions),
+                user_folder = await _tools_run_in_user_folder(payload, studio_tool_payloads),
                 full_access_only = True,
             )
             chat_messages = _append_to_codex_instructions(chat_messages, _codex_nudge)
@@ -28801,6 +28839,7 @@ async def _proxy_to_external_provider(
             tools = external_studio_tools,
             model_name = model,
             full_access = bool(payload.bypass_permissions),
+            user_folder = await _tools_run_in_user_folder(payload, external_studio_tools),
             full_access_only = True,
         )
         # The compaction nudge is not part of the general nudge: once the thread has an archive
@@ -31664,6 +31703,7 @@ async def produce_openai_chat_completions(
                 tools = tools_to_use,
                 model_name = model_name,
                 full_access = bool(payload.bypass_permissions),
+                user_folder = await _tools_run_in_user_folder(payload, tools_to_use),
             )
 
             # Nudge the model to ground in attached documents instead of memory.
@@ -33669,6 +33709,7 @@ async def produce_openai_chat_completions(
             tools = _sf_tools_to_use,
             model_name = model_name,
             full_access = bool(payload.bypass_permissions),
+            user_folder = await _tools_run_in_user_folder(payload, _sf_tools_to_use),
         )
 
         # RAG nudge, mirroring the GGUF path.
@@ -41489,6 +41530,7 @@ async def _mlx_count_chat_tokens(
                 tools = _tools_to_use,
                 model_name = public_model_id(active) or payload.model,
                 full_access = bool(payload.bypass_permissions),
+                user_folder = await _tools_run_in_user_folder(payload, _tools_to_use),
             ),
             _tools_to_use,
             rag_scope = payload.rag_scope,
@@ -41884,6 +41926,7 @@ async def chat_count_tokens(
                     tools = tools_to_use,
                     model_name = _llama_public_model_id(llama_backend, payload.model),
                     full_access = bool(payload.bypass_permissions),
+                    user_folder = await _tools_run_in_user_folder(payload, tools_to_use),
                 ),
                 tools_to_use,
                 rag_scope = payload.rag_scope,
@@ -42076,6 +42119,8 @@ async def _anthropic_in_process_count(
     fields = _anthropic_chat_fields(
         payload, reads_images = bool(entry.get("is_vision")), server_tools = server_tools
     )
+    # The completion sends it too (anthropic_messages builds its ChatCompletionRequest with it).
+    fields["session_id"] = payload.session_id
     return JSONResponse(
         content = {"input_tokens": await _anthropic_chat_count(fields, request, current_subject)}
     )
@@ -42659,6 +42704,7 @@ async def anthropic_count_tokens(
             tools = openai_tools,
             model_name = _llama_public_model_id(llama_backend, payload.model),
             full_access = _count_full_access,
+            user_folder = await _tools_run_in_user_folder(payload, openai_tools),
         )
         openai_messages = _append_to_system_message(openai_messages, _count_nudge)
 
@@ -43828,6 +43874,7 @@ async def anthropic_messages(
             tools = openai_tools,
             model_name = model_name,
             full_access = _full_access,
+            user_folder = await _tools_run_in_user_folder(payload, openai_tools),
         )
 
         if _nudge:

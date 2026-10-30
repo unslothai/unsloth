@@ -24,6 +24,7 @@ from routes.inference import (
     _append_to_codex_instructions,
     _build_tool_action_nudge,
     _full_access_tip,
+    _project_folder_tip,
     _select_request_tools,
 )
 
@@ -285,6 +286,95 @@ def test_full_access_tip_needs_a_code_tool():
     nudge = _build_tool_action_nudge(tools = _WEB_ONLY, model_name = "test-8B", full_access = True)
     assert "where Unsloth Studio is running" not in nudge
     assert nudge == _build_tool_action_nudge(tools = _WEB_ONLY, model_name = "test-8B")
+
+
+_FOLDER_MARKER = "the current working directory is the folder the user chose for it"
+
+
+@pytest.mark.parametrize("full_access", [False, True], ids = ["sandboxed", "full_access"])
+def test_a_chosen_project_folder_is_named_in_every_mode(full_access):
+    """In Ask/Approve for me the tools run in the user's folder (_prepare_tool_launch's
+    user_working_folder), yet the schemas still say sandbox: without this sentence a model
+    answers "What project/files?", as reported on Reddit. Full access runs there too."""
+    plain = _build_tool_action_nudge(
+        tools = _CODE_TOOLS, model_name = "test-8B", full_access = full_access
+    )
+    nudge = _build_tool_action_nudge(
+        tools = _CODE_TOOLS, model_name = "test-8B", full_access = full_access, user_folder = True
+    )
+    assert _FOLDER_MARKER not in plain
+    assert _FOLDER_MARKER in nudge
+    assert "list and read them with the terminal or python tool first" in nudge
+    assert "ask the user to upload or paste them" in nudge
+    # Additive: nothing the nudge said before is dropped.
+    assert nudge == plain + " " + _project_folder_tip({"python", "terminal"})
+    assert ("where Unsloth Studio is running" in nudge) == full_access
+
+
+@pytest.mark.parametrize("names", [{"web_search"}, {"edit_file"}, {"web_search", "edit_file"}])
+def test_the_folder_sentence_needs_a_tool_that_can_read(names):
+    """Neither web_search nor edit_file can list or read the folder, so the sentence would ask
+    for a look the model cannot take."""
+    tools = [t for t in ALL_TOOLS if t["function"]["name"] in names]
+    nudge = _build_tool_action_nudge(tools = tools, model_name = "test-8B", user_folder = True)
+    assert _FOLDER_MARKER not in nudge
+    assert nudge == _build_tool_action_nudge(tools = tools, model_name = "test-8B")
+
+
+@pytest.mark.parametrize(
+    ("names", "reader", "web"),
+    [
+        ({"terminal"}, "with the terminal tool first", False),
+        ({"python", "edit_file"}, "with the python tool first", False),
+        ({"python", "terminal", "web_search"}, "with the terminal or python tool first", True),
+    ],
+)
+def test_the_folder_sentence_names_the_tools_that_can_read(names, reader, web):
+    """Told only "a tool call", Qwen3.5-4B listed the folder and then web-searched how to read
+    app.py until it gave up with an empty answer."""
+    tip = _project_folder_tip(names)
+    assert reader in tip
+    assert ("web_search cannot see them" in tip) == web
+
+
+@pytest.mark.parametrize("full_access", [False, True], ids = ["sandboxed", "full_access"])
+def test_the_studio_tool_loop_paths_carry_the_folder_sentence(full_access):
+    """External providers and Codex run python/terminal in the same workdir, with only the
+    environment sentences."""
+    only = _build_tool_action_nudge(
+        tools = _CODE_TOOLS,
+        model_name = "test-8B",
+        full_access = full_access,
+        full_access_only = True,
+        user_folder = True,
+    )
+    assert _FOLDER_MARKER in only
+    assert "Tools are available when they materially improve" not in only
+    assert ("where Unsloth Studio is running" in only) == full_access
+
+
+def test_every_nudge_call_site_passes_the_folder_flag():
+    """Structural on purpose: the eight call sites are completions and counts on different
+    backends, and one that drops the flag silently loses the sentence or skews the count."""
+    import ast
+    from pathlib import Path
+
+    import routes.inference as inference
+
+    tree = ast.parse(Path(inference.__file__).read_text(encoding = "utf-8"))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "_build_tool_action_nudge"
+    ]
+    assert len(calls) >= 8
+    for call in calls:
+        assert "user_folder" in {kw.arg for kw in call.keywords}, ast.unparse(call)
+
+
+def test_count_request_carries_the_session():
+    assert _count_request(session_id = "project-p1").session_id == "project-p1"
 
 
 def test_full_access_tip_needs_tools_at_all():
