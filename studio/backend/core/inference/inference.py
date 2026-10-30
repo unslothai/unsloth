@@ -855,7 +855,7 @@ def _diffusion_frame_relay(
     return on_frame
 
 
-# o200k_harmony's special tokens: the only <|...|> forms the gpt-oss harmony stream can leak.
+# o200k_harmony's non-reserved special tokens (tokenizer_config.json added_tokens_decoder).
 _HARMONY_PROTOCOL_TOKEN_RE = re.compile(
     r"<\|(?:start|end|message|channel|constrain|return|call|startoftext|endoftext|endofprompt)\|>"
 )
@@ -3689,8 +3689,7 @@ class InferenceBackend:
     ) -> str:
         """Strip leaked response-boundary tokens after streaming."""
         if self._is_gpt_oss_model():
-            # Strip harmony protocol tokens (e.g. <|return|>) that leak past HarmonyTextStreamer; only that
-            # vocabulary, so a literal like <|im_end|> the model writes in an answer is kept.
+            # Harmony vocabulary only: a literal <|im_end|> in an answer is content.
             text = _HARMONY_PROTOCOL_TOKEN_RE.sub("", text)
             return text.strip()
 
