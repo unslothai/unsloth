@@ -3,6 +3,7 @@
 
 export {
   hasSeparateStreamingEvalSplit,
+  sftLearningRate,
   useTrainingConfigStore,
 } from "./stores/training-config-store";
 export {
@@ -66,10 +67,40 @@ export type {
   ModelConfigResponse,
 } from "./api/models-api";
 export type {
+  RlMetricPoint,
   TrainingPhase,
   TrainingViewData,
   TrainingSeriesPoint,
 } from "./types/runtime";
+export {
+  deleteReward,
+  exportReward,
+  importReward,
+  listRewards,
+  previewRewards,
+} from "./api/rewards-api";
+export type { RewardRecord } from "./api/rewards-api";
+export { effectiveSystemPrompt } from "./lib/rl-system-prompt";
+export { previewCell, useRlWorkspaceStore } from "./stores/rl-workspace-store";
+export { rlChartKeys } from "./lib/rl-chart-keys";
+export {
+  RL_IGNORE,
+  RL_REQUIRED_ROLES,
+  RL_ROLES,
+  effectiveTrainingObjective,
+  missingRlRoles,
+  rlObjectiveSupported,
+  resolveRlMapping,
+  syncRlMapping,
+} from "./lib/rl-roles";
+export type { RlObjective, RlRole } from "./lib/rl-roles";
+export {
+  formatScore,
+  readRewardHead,
+  ruleTags,
+  summarizeRule,
+} from "./lib/reward-summary";
+export type { RewardSummary, RuleType } from "./lib/reward-summary";
 export type {
   TrainingRunSummary,
   TrainingRunListResponse,

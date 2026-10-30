@@ -11,6 +11,7 @@ import base64
 import binascii
 import hashlib
 import json
+import math
 import logging
 import os
 import platform
@@ -380,6 +381,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # DPO/ORPO/GRPO metrics for the History charts, one JSON object per step; NULL for SFT.
+    metric_cols = {row[1] for row in conn.execute("PRAGMA table_info(training_metrics)").fetchall()}
+    if "rl_json" not in metric_cols:
+        conn.execute("ALTER TABLE training_metrics ADD COLUMN rl_json TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_run_id ON training_metrics(run_id)")
     # Partial on the resumed_later subquery's exact status list so no other query (or its tie order) changes plan.
     conn.execute(
@@ -1650,8 +1655,9 @@ def finish_run(
 
 _INSERT_METRICS_SQL = """
     INSERT INTO training_metrics
-        (run_id, step, loss, learning_rate, grad_norm, eval_loss, epoch, num_tokens, elapsed_seconds)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (run_id, step, loss, learning_rate, grad_norm, eval_loss, epoch, num_tokens, elapsed_seconds,
+         rl_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(run_id, step) DO UPDATE SET
         loss = COALESCE(excluded.loss, loss),
         learning_rate = COALESCE(excluded.learning_rate, learning_rate),
@@ -1659,7 +1665,8 @@ _INSERT_METRICS_SQL = """
         eval_loss = COALESCE(excluded.eval_loss, eval_loss),
         epoch = COALESCE(excluded.epoch, epoch),
         num_tokens = COALESCE(excluded.num_tokens, num_tokens),
-        elapsed_seconds = COALESCE(excluded.elapsed_seconds, elapsed_seconds)
+        elapsed_seconds = COALESCE(excluded.elapsed_seconds, elapsed_seconds),
+        rl_json = COALESCE(excluded.rl_json, rl_json)
 """
 
 
@@ -1677,6 +1684,7 @@ def _insert_metrics_rows(conn: sqlite3.Connection, run_id: str, metrics: list[di
                 m.get("epoch"),
                 m.get("num_tokens"),
                 m.get("elapsed_seconds"),
+                json.dumps(m["rl"]) if m.get("rl") else None,
             )
             for m in metrics
         ],
@@ -1902,7 +1910,7 @@ def get_run_metrics(id: str) -> dict:
         rows = conn.execute(
             """
             SELECT step, loss, learning_rate, grad_norm, eval_loss, epoch,
-                   num_tokens, elapsed_seconds
+                   num_tokens, elapsed_seconds, rl_json
             FROM training_metrics
             WHERE run_id = ?
             ORDER BY step
@@ -1921,6 +1929,7 @@ def get_run_metrics(id: str) -> dict:
         eval_step_history: list[int] = []
         final_epoch: float | None = None
         final_num_tokens: int | None = None
+        rl_history: list[dict] = []
 
         for row in rows:
             step = row["step"]
@@ -1941,6 +1950,19 @@ def get_run_metrics(id: str) -> dict:
                 final_epoch = row["epoch"]
             if row["num_tokens"] is not None:
                 final_num_tokens = row["num_tokens"]
+            if step > 0 and row["rl_json"]:
+                try:
+                    values = json.loads(row["rl_json"])
+                except (json.JSONDecodeError, TypeError):
+                    values = None
+                if isinstance(values, dict):
+                    # Starlette won't render NaN/inf, which a diverging run can log.
+                    clean = {
+                        k: float(v)
+                        for k, v in values.items()
+                        if isinstance(v, (int, float)) and math.isfinite(v)
+                    }
+                    rl_history.append({"step": step, **clean})
 
         return {
             "step_history": step_history,
@@ -1954,6 +1976,7 @@ def get_run_metrics(id: str) -> dict:
             "eval_step_history": eval_step_history,
             "final_epoch": final_epoch,
             "final_num_tokens": final_num_tokens,
+            "rl_history": rl_history,
         }
     finally:
         conn.close()

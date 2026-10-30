@@ -443,8 +443,11 @@ export const BUDGET = {
   // 1,849,311 -> 1,849,948 B transfer against b80df648bf, one machine and build, Node 22, 85 chunks both): the app
   // provider reports a ready renderer through the setting's API module at startup, plus the setting's strings in
   // the eager English catalog and its search rows. Raised by that.
-  transferBytes: 1_850_410,
-  rawBytes: 5_991_390,
+  // DPO, ORPO and GRPO in Studio (#12601): +28,688 B raw / +9,032 B transfer over main at 4089c57a82 (5,373,852 ->
+  // 5,402,540 B raw, 1,661,918 -> 1,670,950 B transfer, Node 26, 78 chunks): the RL strings in the eager catalog
+  // and the RL settings and role mapping in the eager training store. Raised by that growth.
+  transferBytes: 1_859_442,
+  rawBytes: 6_020_078,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.

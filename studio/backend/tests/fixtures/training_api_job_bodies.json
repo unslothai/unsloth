@@ -211,6 +211,50 @@
     "max_grad_value": 2,
     "train_on_completions": true
   },
+  "grpo": {
+    "model": "unsloth/Qwen3-0.6B",
+    "hyperparameters": {
+      "n_epochs": 3,
+      "batch_size": 4
+    },
+    "seed": 3407,
+    "suffix": "my run",
+    "learning_rate": "0.0002",
+    "load_in_4bit": false,
+    "max_seq_length": 4096,
+    "gradient_accumulation_steps": 2,
+    "warmup_steps": 5,
+    "weight_decay": 0.001,
+    "optim": "adamw_8bit",
+    "lr_scheduler_type": "linear",
+    "packing": false,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0,
+    "target_modules": [
+      "q_proj",
+      "v_proj"
+    ],
+    "gradient_checkpointing": "unsloth",
+    "train_on_completions": false,
+    "objective": "grpo",
+    "rl_beta": 0,
+    "rl_max_prompt_length": 512,
+    "rl_system_prompt": "Think, then answer.",
+    "grpo_num_generations": 4,
+    "grpo_max_completion_length": 256,
+    "grpo_temperature": 1,
+    "grpo_enable_thinking": false,
+    "grpo_variant": "dapo",
+    "grpo_mask_truncated_completions": true,
+    "grpo_epsilon_high": 0.28,
+    "grpo_rewards": [
+      {
+        "name": "exact-answer",
+        "weight": 1
+      }
+    ]
+  },
   "example": {
     "model": "unsloth/Qwen3-0.6B",
     "hyperparameters": {

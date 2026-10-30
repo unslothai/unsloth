@@ -54,6 +54,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable, Union
 from datasets import Dataset
 from core.training.eval_dataset import evaluation_enabled
+from core.training.rl import rl_log_metrics
 from utils.datasets.audio_decode import ensure_audio_decoding
 from utils.datasets.tokenizer_fingerprint import install_tokenizer_fingerprint
 from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
@@ -125,6 +126,12 @@ _CPT_EMBEDDING_TARGETS = ("embed_tokens", "lm_head")
 
 # Streaming eval has no __len__, so cap it or an unbounded eval iterates the whole source on every eval step.
 STREAMING_EVAL_MAX_SAMPLES = 500
+
+
+def _optimizer_overrides(training_args) -> dict:
+    """Explicit clipping and AdamW betas; unset keeps each branch's own default."""
+    keys = ("max_grad_norm", "adam_beta1", "adam_beta2")
+    return {k: float(training_args[k]) for k in keys if training_args.get(k) is not None}
 
 
 def _build_report_targets(training_args) -> list[str] | str:
@@ -312,6 +319,145 @@ _AUDIO_SNIFF_ROWS = 16
 _AUDIO_COLUMN_KEYWORDS = ("audio", "speech", "wav", "waveform", "sound")
 
 
+_IMAGE_PATH_PATTERN = r"(?i)\.(png|jpe?g|webp|gif|bmp|tiff|svg)(\?[^\s]*)?\s*$"
+
+
+def _string_column_has_image_paths(dataset, name: str) -> Optional[bool]:
+    """Every row of an Arrow string column, vectorised; None when the column is not one."""
+    try:
+        import pyarrow as pa
+        import pyarrow.compute as pc
+
+        column = dataset.data.column(name)
+        if not (pa.types.is_string(column.type) or pa.types.is_large_string(column.type)):
+            return None
+        indices = getattr(dataset, "_indices", None)
+        if indices is not None:
+            # A select() or shuffle() view: only its rows, not the whole backing table.
+            column = column.take(indices.column(0))
+        return bool(pc.any(pc.match_substring_regex(column, _IMAGE_PATH_PATTERN)).as_py())
+    except Exception:  # noqa: BLE001 - not an Arrow-backed dataset
+        return None
+
+
+# Chat content blocks carrying an image: Studio's own, OpenAI chat and OpenAI responses.
+_IMAGE_BLOCK_TYPES = ("image", "image_url", "input_image")
+
+
+def _holds_image_blocks(value) -> bool:
+    if isinstance(value, dict):
+        value = [value]  # one message per cell, as the RL formatter reads it
+    if not isinstance(value, list):
+        return False
+    for message in value:
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, list) and any(
+            isinstance(part, dict)
+            and part.get("type") in _IMAGE_BLOCK_TYPES
+            and (part.get("image") is not None or part.get("image_url") is not None)
+            for part in content
+        ):
+            return True
+    return False
+
+
+def _arrow_may_hold_images(array) -> bool:
+    """Vectorised and conservative: False only when no value could pass the per-row image checks."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    kind = array.type
+    if pa.types.is_struct(kind):
+        names = {field.name for field in kind}
+        if {"bytes", "path"} <= names:  # the undecoded Image layout
+            return True
+        return any(_arrow_may_hold_images(array.field(i)) for i in range(kind.num_fields))
+    if pa.types.is_list(kind) or pa.types.is_large_list(kind) or pa.types.is_fixed_size_list(kind):
+        return _arrow_may_hold_images(array.flatten())
+    if pa.types.is_string(kind) or pa.types.is_large_string(kind):
+        return bool(
+            pc.any(pc.match_substring_regex(array, _IMAGE_PATH_PATTERN)).as_py()
+            or pc.any(pc.is_in(array, pa.array(_IMAGE_BLOCK_TYPES))).as_py()  # a block's "type"
+        )
+    if pa.types.is_binary(kind) or pa.types.is_large_binary(kind):
+        return array.null_count < len(array)
+    return False
+
+
+def _nested_column_has_images(dataset, name: str) -> Optional[bool]:
+    """Every row of a non-string Arrow column, through the same checks as the row sample; None when not Arrow-backed."""
+    try:
+        column = dataset.data.column(name)
+        indices = getattr(dataset, "_indices", None)
+        if indices is not None:
+            column = column.take(indices.column(0))
+        candidate = any(_arrow_may_hold_images(chunk) for chunk in column.chunks)
+    except Exception:  # noqa: BLE001 - not an Arrow-backed dataset
+        return None
+    feature = (getattr(dataset, "features", None) or {}).get(name)
+    if not candidate or hasattr(feature, "decode"):
+        # Audio and other media features are the audio check's; Image ones were found by type.
+        return False
+    from utils.datasets.format_detection import _holds_images, _is_image_value
+
+    # Raw Arrow rows, so nothing is decoded on the way.
+    rows = dataset.select_columns([name]).with_format("arrow")
+    for batch in rows.iter(batch_size = 1000):
+        if any(
+            _is_image_value(v) or _holds_images(v) or _holds_image_blocks(v)
+            for v in batch.column(name).to_pylist()
+        ):
+            return True
+    return False
+
+
+def _image_columns(dataset) -> list:
+    """Columns holding images, by feature type or by value; a column name alone does not count."""
+
+    def is_image_feature(feature) -> bool:
+        from datasets import Image
+
+        if isinstance(feature, Image):
+            return True
+        if isinstance(feature, (list, tuple)):
+            return bool(feature) and is_image_feature(feature[0])
+        inner = getattr(feature, "feature", None)  # Sequence / List
+        return inner is not None and is_image_feature(inner)
+
+    found = []
+    try:
+        features = getattr(dataset, "features", None) or {}
+        found = [name for name, feature in features.items() if is_image_feature(feature)]
+    except Exception:  # noqa: BLE001 - datasets missing or a mapping that is not a features dict
+        pass
+    names = [n for n in getattr(dataset, "column_names", None) or [] if n not in found]
+    # Images can start at any row, so Arrow columns are scanned whole; only other datasets are sampled.
+    sampled = []
+    for name in names:
+        whole = _string_column_has_image_paths(dataset, name)
+        if whole is None:
+            whole = _nested_column_has_images(dataset, name)
+        if whole:
+            found.append(name)
+        elif whole is None:
+            sampled.append(name)
+    try:
+        import itertools
+
+        from utils.datasets.format_detection import _holds_images, _is_image_value
+
+        rows = [r for r in itertools.islice(iter(dataset), 100) if isinstance(r, dict)]
+        for name in sampled:
+            if any(
+                _is_image_value(v) or _holds_images(v) or _holds_image_blocks(v)
+                for v in (r.get(name) for r in rows)
+            ):
+                found.append(name)
+    except Exception:  # noqa: BLE001 - the checks above still stand
+        pass
+    return found
+
+
 def _dataset_has_audio_column(dataset) -> Optional[bool]:
     """Checks the Audio feature or row values, not column names; None when undecidable, and the caller keeps refusing unless False."""
     try:
@@ -386,6 +532,22 @@ def normalize_gradient_checkpointing(value) -> Union[str, bool]:
         return value
     logger.warning(f"Invalid gradient_checkpointing value: {value}, defaulting to 'unsloth'")
     return "unsloth"
+
+
+def grpo_completion_rows(prompts: int, rl_args) -> int:
+    """Completion rows one GRPO epoch trains: TRL's sampler drops a trailing partial group of
+    prompts, and each kept prompt becomes num_generations rows."""
+    generations = int(getattr(rl_args, "num_generations", 1) or 1)
+    group = (getattr(rl_args, "generation_batch_size", None) or 0) // generations
+    if group > 0:
+        prompts -= prompts % group
+    return prompts * generations
+
+
+def grpo_global_batch(rl_args) -> int:
+    """Rows per micro-step over every process: grpo_completion_rows counts the whole dataset."""
+    world = int(getattr(rl_args, "world_size", 1) or 1)
+    return int(rl_args.per_device_train_batch_size) * max(world, 1)
 
 
 def _ignored_adapter_settings(
@@ -521,6 +683,7 @@ class UnslothTrainer:
 
         self.is_cpt = False
         self.is_vlm = False
+        self.model_has_vision = False
         self.is_audio = False
         self.is_audio_vlm = False
         self._audio_type = None
@@ -611,6 +774,7 @@ class UnslothTrainer:
             if not self.is_audio
             else False
         )
+        self.model_has_vision = vision
         self.is_vlm = not self.is_audio_vlm and vision and is_dataset_image
         self._detect_diffusion_lm(lookup_name, hf_token, local_files_only, model_revision)
 
@@ -994,6 +1158,7 @@ class UnslothTrainer:
                     grad_norm = grad_norm,
                     num_tokens = num_tokens,
                     eval_loss = logs.get("eval_loss", None),
+                    rl_metrics = rl_log_metrics(logs),
                     is_run_summary = is_run_summary,
                     offload = trainer_ref._offload_snapshot(),
                     status_message = "" if trainer_ref.should_stop else startup.log(logs) or "",
@@ -1016,6 +1181,14 @@ class UnslothTrainer:
 
     def _attach_early_stopping(self, training_args):
         from core.training.early_stopping import attach_early_stopping
+        if getattr(self, "training_objective", "sft") == "grpo":
+            # GRPO's group-centred loss sits near zero whatever the reward: it cannot rank checkpoints.
+            if training_args.get("early_stopping_patience"):
+                self._record_warning(
+                    "Early stopping is off for GRPO: its eval loss does not track reward."
+                )
+            self._early_stopping = None
+            return
         self._early_stopping = attach_early_stopping(
             self.trainer,
             training_args.get("early_stopping_patience"),
@@ -1092,6 +1265,7 @@ class UnslothTrainer:
 
         if extra_args:
             config.update(extra_args)
+        config.update(_optimizer_overrides(training_args))
 
         return config
 
@@ -1309,6 +1483,7 @@ class UnslothTrainer:
                 if not self.is_audio
                 else False
             )
+            self.model_has_vision = vision
             self.is_vlm = not self.is_audio_vlm and vision and is_dataset_image
             self._detect_diffusion_lm(metadata_name, hf_token, local_files_only, model_revision)
             self.model_name = model_name
@@ -1818,6 +1993,8 @@ class UnslothTrainer:
                     use_gradient_checkpointing
                 )
 
+            # Before get_peft_model: afterwards every LoRA model has a peft_config.
+            self._continues_adapter = bool(use_lora and getattr(self.model, "peft_config", None))
             if not use_lora:
                 if use_gradient_checkpointing != self._use_gradient_checkpointing:
                     logger.warning(
@@ -3192,6 +3369,9 @@ class UnslothTrainer:
         hf_token: Optional[str] = None,
         max_train_rows: Optional[int] = None,
         max_train_rows_seed: int = 3407,
+        objective: str = "sft",
+        rl_keep_columns: tuple = (),
+        rl_system_prompt: Optional[str] = None,
     ) -> Optional[tuple]:
         """hf_token must reach every load_dataset call; otherwise gated datasets read the ambient
         HF_TOKEN."""
@@ -3224,7 +3404,8 @@ class UnslothTrainer:
             has_separate_eval_source = False
             # Not `eval_steps > 0`: inf and NaN pass that and codec-encode a split later discarded.
             eval_enabled = evaluation_enabled(eval_steps)
-            raw_text_mode = is_cpt or format_type == "raw"
+            # RL rows are built from column roles, whatever format the SFT settings name.
+            raw_text_mode = objective == "sft" and (is_cpt or format_type == "raw")
             dataset_loaded_from_cache = False
 
             def _load_selected_cached_dataset(
@@ -3701,6 +3882,22 @@ class UnslothTrainer:
                     "has an audio column, so training cannot fall back to the text path. "
                     "Re-download the model or provide a token, then retry."
                 )
+            if objective != "sft" and (
+                self._audio_type
+                or self.is_audio_vlm
+                or any(
+                    _dataset_has_audio_column(d) is True
+                    for d in (dataset, eval_dataset)
+                    if d is not None
+                )
+            ):
+                # Not the request's audio flag: the audio preprocessing below would hand the RL
+                # formatter ASR or TTS rows, and the formatter drops audio columns. An audio-capable
+                # model on a text dataset still trains on the text.
+                raise ValueError(
+                    f"{objective.upper()} is not available for audio models or audio datasets "
+                    "yet; use SFT."
+                )
             # Every audio branch below, and the VLM path, casts an Audio column and reads its array.
             if self._audio_type or self.is_audio_vlm:
                 if not ensure_audio_decoding():
@@ -3812,6 +4009,39 @@ class UnslothTrainer:
 
             _raise_if_empty_train_split(dataset, "")
 
+            if objective in ("dpo", "orpo") and (self.is_vlm or self.model_has_vision):
+                # TRL's preference batches carry no token_type_ids, which Gemma 3-style
+                # multimodal forwards require in training, text-only datasets included.
+                raise ValueError(
+                    f"{objective.upper()} is not available for vision-language models yet; "
+                    "use SFT or GRPO."
+                )
+            if objective != "sft" and (
+                self.is_vlm
+                or any(_image_columns(d) for d in (dataset, eval_dataset) if d is not None)
+            ):
+                # The prompts carry no image parts and the media columns are dropped, so the run
+                # would quietly train (or evaluate) on text only.
+                raise ValueError(
+                    f"{objective.upper()} on an image dataset is not available yet; use SFT, or a "
+                    "dataset without image columns."
+                )
+            if objective != "sft" and self.diffusion_lm_profile:
+                # Text-diffusion models train with their own denoising objective, not TRL's RL trainers.
+                raise ValueError(
+                    f"{objective.upper()} is not available for text-diffusion models; use SFT."
+                )
+            if objective != "sft":
+                return self._format_rl_dataset(
+                    dataset,
+                    eval_dataset,
+                    objective = objective,
+                    custom_format_mapping = custom_format_mapping,
+                    keep_columns = rl_keep_columns,
+                    system_prompt = rl_system_prompt,
+                    split_eval = eval_enabled and not has_separate_eval_source,
+                )
+
             # ========== FORMAT FIRST ==========
             logger.info(f"Formatting dataset with format_type='{format_type}'...\n")
 
@@ -3898,6 +4128,45 @@ class UnslothTrainer:
         finally:
             if s3_download is not None:
                 s3_download.cleanup()
+
+    def _format_rl_dataset(
+        self,
+        dataset,
+        eval_dataset,
+        *,
+        objective: str,
+        custom_format_mapping: Optional[Dict[str, Any]],
+        keep_columns: tuple,
+        split_eval: bool,
+        system_prompt: Optional[str] = None,
+    ) -> tuple:
+        """Shape rows for DPO/ORPO/GRPO; TRL applies the chat template itself."""
+        from core.training.rl import format_rl_dataset
+
+        num_proc = dataset_map_num_proc(None)
+        formatted, roles = format_rl_dataset(
+            dataset, objective, custom_format_mapping, keep_columns, num_proc, system_prompt
+        )
+        if eval_dataset is not None:
+            eval_dataset, _ = format_rl_dataset(
+                eval_dataset,
+                objective,
+                custom_format_mapping,
+                keep_columns,
+                num_proc,
+                system_prompt,
+            )
+        elif split_eval:
+            split_result = self._resolve_eval_split_from_dataset(formatted)
+            if split_result is not None:
+                formatted, eval_dataset = split_result
+        _raise_if_empty_train_split(formatted, "after formatting")
+        mapped = ", ".join(f"{column} -> {role}" for role, column in roles.items())
+        self._update_progress(
+            status_message = f"Dataset ready ({len(formatted):,} samples, {objective.upper()}: {mapped})"
+        )
+        logger.info(f"{objective.upper()} dataset ready ({len(formatted)} rows; {mapped})\n")
+        return ({"dataset": formatted, "detected_format": objective, "success": True}, eval_dataset)
 
     def _auto_detect_eval_split_from_hf(
         self,
@@ -4685,7 +4954,8 @@ class UnslothTrainer:
                 "output_dir": output_dir,
                 "report_to": _build_report_targets(training_args),
                 "disable_tqdm": _hf_stdout_progress_disabled(),
-                "include_num_input_tokens_seen": True,
+                # DPO/ORPO/GRPO batches have no input_ids, so token tracking only warns every step.
+                "include_num_input_tokens_seen": training_args.get("objective", "sft") == "sft",
                 # Config boundary: None lets the shared policy size workers from affinity/cgroups.
                 "dataset_num_proc": dataset_map_num_proc(
                     1
@@ -4820,6 +5090,8 @@ class UnslothTrainer:
                         f"Sequence packing: {'enabled' if packing_enabled else 'disabled'}\n"
                     )
 
+            config_args.update(_optimizer_overrides(training_args))
+
             # Audio codec overrides - BiCodec/DAC use the text SFTTrainer path
             if self._audio_type == "bicodec":
                 config_args["packing"] = False
@@ -4873,22 +5145,62 @@ class UnslothTrainer:
 
             # Plain-text single-pass runs tokenize in DataLoader workers; other runs keep eager .map().
             self._online_prewarm_batches = 0
-            online_decision = self._configure_online_tokenization(
-                config_args = config_args,
-                dataset = dataset,
-                eval_dataset = eval_dataset,
-                training_args = training_args,
-                data_collator = data_collator,
-                raw_text_mode = raw_text_mode,
-                is_deepseek_ocr = is_deepseek_ocr,
-            )
-            if online_decision.enabled:
-                eval_dataset = self._online_eval_dataset
+            objective = training_args.get("objective", "sft")
+            self.training_objective = objective
+            if objective == "sft":
+                online_decision = self._configure_online_tokenization(
+                    config_args = config_args,
+                    dataset = dataset,
+                    eval_dataset = eval_dataset,
+                    training_args = training_args,
+                    data_collator = data_collator,
+                    raw_text_mode = raw_text_mode,
+                    is_deepseek_ocr = is_deepseek_ocr,
+                )
+                if online_decision.enabled:
+                    eval_dataset = self._online_eval_dataset
 
             logger.info(f"The configuration is: {config_args}")
 
             logger.info("Training configuration prepared\n")
-            if self.is_audio_vlm and not raw_text_mode:
+            if objective != "sft":
+                from core.training.rl import build_rl_trainer
+                from transformers import ProcessorMixin
+
+                rl_tokenizer = self.tokenizer
+                if isinstance(rl_tokenizer, ProcessorMixin) and hasattr(rl_tokenizer, "tokenizer"):
+                    rl_tokenizer = rl_tokenizer.tokenizer
+                # RL rows are conversations and TRL applies the chat template: base models need one.
+                templated = get_training_chat_template(
+                    rl_tokenizer, self.model_name, "chatml_messages"
+                )
+                if templated is not rl_tokenizer:
+                    if rl_tokenizer is self.tokenizer:
+                        self.tokenizer = templated
+                    rl_tokenizer = templated
+                # GRPO renders prompts through processing_class, which is the processor restored below.
+                if (
+                    rl_tokenizer is not self.tokenizer
+                    and not getattr(self.tokenizer, "chat_template", None)
+                    and getattr(rl_tokenizer, "chat_template", None)
+                ):
+                    self.tokenizer.chat_template = rl_tokenizer.chat_template
+                logger.info(f"Configuring {objective.upper()} trainer\n")
+                self.trainer = build_rl_trainer(
+                    objective,
+                    model = self.model,
+                    tokenizer = rl_tokenizer,
+                    train_dataset = dataset["dataset"] if isinstance(dataset, dict) else dataset,
+                    eval_dataset = eval_dataset,
+                    config_args = config_args,
+                    settings = training_args.get("rl_settings") or {},
+                    reward_specs = training_args.get("reward_specs") or [],
+                    on_warning = self._record_warning,
+                    continues_adapter = getattr(self, "_continues_adapter", False),
+                )
+                if rl_tokenizer is not self.tokenizer:
+                    self.trainer.processing_class = self.tokenizer
+            elif self.is_audio_vlm and not raw_text_mode:
                 # Audio VLM: raw Dataset, processing_class=processor.tokenizer; image VLM: dict wrapper.
                 train_dataset = dataset["dataset"] if isinstance(dataset, dict) else dataset
                 processing_class = (
@@ -5024,7 +5336,7 @@ class UnslothTrainer:
             is_cpt = training_args.get("is_cpt", False)
             train_on_responses_enabled = (
                 False
-                if (is_cpt or raw_text_mode or user_labels)
+                if (is_cpt or raw_text_mode or user_labels or objective != "sft")
                 else training_args.get("train_on_completions", False)
             )
 
@@ -5184,17 +5496,24 @@ class UnslothTrainer:
                 if num_samples is None:
                     num_samples = len(train_dataset_obj)
                 batch_size = training_args.get("batch_size", 2)
+                grad_accum = training_args.get("gradient_accumulation_steps", 4)
+                if objective == "grpo":
+                    # Unsloth may resize the batch for num_generations: read the trainer's args.
+                    rl_args = self.trainer.args
+                    num_samples = grpo_completion_rows(num_samples, rl_args)
+                    batch_size = grpo_global_batch(rl_args)
+                    grad_accum = rl_args.gradient_accumulation_steps
                 total_steps = self._calculate_total_steps(
                     num_samples,
                     batch_size,
-                    training_args.get("gradient_accumulation_steps", 4),
+                    grad_accum,
                     training_args.get("num_epochs", 3),
                     max_steps,
                 )
 
             self._update_progress(total_steps = total_steps)
             # Fail fast on an invalid first batch (empty/float input_ids) vs a step-1 crash.
-            preflight_error = self._preflight_first_batch()
+            preflight_error = self._preflight_first_batch() if objective == "sft" else None
             if preflight_error:
                 logger.error(preflight_error)
                 self._update_progress(error = preflight_error, is_training = False)
@@ -5246,6 +5565,10 @@ class UnslothTrainer:
 
             config["unsloth_training_method"] = method
             config["unsloth_load_in_4bit"] = trained_in_4bit
+            # Separate key: readers infer 4-bit loading from unsloth_training_method.
+            objective = getattr(self, "training_objective", "sft")
+            if objective != "sft":
+                config["unsloth_training_objective"] = objective.upper()
             logger.info(f"Patching adapter_config.json with unsloth_training_method='{method}'")
 
             with open(config_path, "w", encoding = "utf-8") as f:
