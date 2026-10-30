@@ -162,3 +162,107 @@ def test_dense_and_segment_paths_probe_without_cudnn_when_training(monkeypatch):
             training = training,
         )
     assert flags == [True, True, False, False]
+
+
+_POLICIES = {
+    "all": ("FLASH_ATTENTION", "EFFICIENT_ATTENTION", "MATH", "CUDNN_ATTENTION"),
+    "math": ("MATH",),
+    "math_cudnn": ("MATH", "CUDNN_ATTENTION"),
+    "efficient_math_cudnn": ("EFFICIENT_ATTENTION", "MATH", "CUDNN_ATTENTION"),
+    "cudnn": ("CUDNN_ATTENTION",),
+}
+
+
+def _policy(name):
+    from torch.nn.attention import SDPBackend
+    if not hasattr(SDPBackend, "CUDNN_ATTENTION"):
+        pytest.skip("torch has no cuDNN SDPA backend")
+    return [getattr(SDPBackend, b) for b in _POLICIES[name]]
+
+
+def _flags():
+    cuda = torch.backends.cuda
+    return (
+        cuda.flash_sdp_enabled(),
+        cuda.mem_efficient_sdp_enabled(),
+        cuda.math_sdp_enabled(),
+        cuda.cudnn_sdp_enabled(),
+    )
+
+
+def _expected(name):
+    """The caller's own set with cuDNN dropped; a cuDNN-only policy is left as is."""
+    names = _POLICIES[name]
+    keep_cudnn = names == ("CUDNN_ATTENTION",)
+    return (
+        "FLASH_ATTENTION" in names,
+        "EFFICIENT_ATTENTION" in names,
+        "MATH" in names,
+        keep_cudnn,
+    )
+
+
+@pytest.mark.parametrize("name", list(_POLICIES))
+def test_training_pin_keeps_caller_backend_policy(monkeypatch, name):
+    """sdpa_kernel([MATH]) around a training step must stay math on SM100, not regain flash."""
+    from torch.nn.attention import sdpa_kernel
+
+    seen = []
+    monkeypatch.setattr(
+        F, "scaled_dot_product_attention", lambda q, k, v, **kw: seen.append(_flags()) or q
+    )
+    monkeypatch.setattr(ad, "_NO_CUDNN_TRAINING", frozenset({None}))
+    Q = torch.randn(1, 2, 6, 8).as_subclass(_CudaLooking)
+    with sdpa_kernel(_policy(name)):
+        before = _flags()
+        ad._training_sdpa(Q, Q, Q, is_causal = True)
+        ad._rerouted_sdpa(Q, Q, Q, is_causal = True)
+        assert _flags() == before
+    assert seen == [_expected(name)] * 2
+
+
+@pytest.mark.parametrize("name", ["all", "math_cudnn", "cudnn"])
+def test_gqa_probe_uses_the_callers_cudnn_free_set(monkeypatch, name):
+    from torch.nn.attention import sdpa_kernel
+
+    probed = []
+    monkeypatch.setattr(ad, "_sdpa_gqa_state_now", lambda *a: probed.append(_flags()) or True)
+    Q = torch.randn(1, 4, 6, 8).as_subclass(_CudaLooking)
+    K = torch.randn(1, 2, 6, 8).as_subclass(_CudaLooking)
+    with sdpa_kernel(_policy(name)):
+        ad._sdpa_takes_gqa(Q, K, False, True, K, 0.0, no_cudnn = True)
+    assert probed == [_expected(name)]
+
+
+@pytest.mark.parametrize("name", ["all", "math", "math_cudnn"])
+def test_compiled_training_pin_keeps_caller_backend_policy(monkeypatch, name):
+    """Traced, the pin is read under the caller's sdpa_kernel at trace time, with no graph break."""
+    from torch._dynamo.utils import counters
+    from torch.nn.attention import sdpa_kernel
+
+    pinned = []
+    real = ad._sdpa_kernel
+
+    def recording(backends):
+        pinned.append(tuple(backends))
+        return real(backends)
+
+    monkeypatch.setattr(ad, "_sdpa_kernel", recording)
+    monkeypatch.setattr(ad, "_avoids_cudnn", lambda q, training: bool(training))
+    torch._dynamo.reset()
+    counters.clear()
+
+    def f(q):
+        return ad._training_sdpa(q, q, q, is_causal = True)
+
+    policy = _policy(name)
+    c = torch.compile(f, backend = "eager", fullgraph = True, dynamic = True)
+    with sdpa_kernel(policy):
+        for L in (5, 9, 16):
+            q = torch.randn(1, 2, L, 8, requires_grad = True)
+            c(q).sum().backward()
+    assert dict(counters["graph_break"]) == {}
+    expected = tuple(b for b in ad._XFORMERS_LIKE_BACKENDS if b in policy)
+    # A cuDNN-free policy has nothing to drop: no pin at all.
+    assert set(pinned) == ({expected} if any("CUDNN" in str(b) for b in policy) else set())
+    torch._dynamo.reset()
