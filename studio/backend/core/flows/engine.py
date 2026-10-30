@@ -1567,7 +1567,12 @@ class FlowEngine:
                     },
                 )
                 rs.prefetch_load = (slot, params["model"]["repo"])
-                await _common.ensure_model(ctx, spec["model_kind"], params.get("model"))
+                # The load the step itself will ask for, so a kept-alongside model is not loaded with other settings.
+                options = await asyncio.to_thread(model_settings.card_load_kwargs, params)
+                if options:
+                    await _common.ensure_model(ctx, spec["model_kind"], params.get("model"), options)
+                else:
+                    await _common.ensure_model(ctx, spec["model_kind"], params.get("model"))
                 rs.prefetch_load = None
                 rs.prefetched += 1
         except asyncio.CancelledError:
