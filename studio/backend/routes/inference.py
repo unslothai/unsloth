@@ -15971,6 +15971,8 @@ async def _preflight_native_audio_placement(
             load_in_4bit = False,
             max_seq_length = request.max_seq_length,
             required_override_gb = required_gb,
+            # Past one card, fallback_all lets the branch below weigh every card after the handoff.
+            max_gpus = 1,
         )
         post_handoff_free_gb = None
         if required_gb is None:
@@ -15990,7 +15992,11 @@ async def _preflight_native_audio_placement(
             if not fitting:
                 refusal = ValueError(
                     "No single GPU has enough free memory for this native audio model. "
-                    "Select a GPU with enough free memory and try again."
+                    + (
+                        "Free GPU memory and try again."
+                        if audio_type == "minimax_music3"
+                        else "Free GPU memory, or load it into CPU RAM, and try again."
+                    )
                 )
                 if audio_type in AUDIO_CPP_AUDIO_TYPES and audio_cpp_model is not None:
                     from core.inference.audio_cpp_failures import (
