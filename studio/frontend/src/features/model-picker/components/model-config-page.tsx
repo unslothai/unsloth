@@ -148,7 +148,7 @@ import {
   selectResidentEstimateSettings,
 } from "../model-config/resident-memory-request";
 import { useMemoryEstimate } from "../hooks/use-memory-estimate";
-import { useInt8PrefillAvailable } from "../hooks/use-int8-prefill-available";
+import { usePrefillOptionAvailable } from "../hooks/use-int8-prefill-available";
 import {
   fetchLoadModelOverride,
   fromApiOverride,
@@ -1606,6 +1606,8 @@ function MlxAdvancedSettings({
   servedByMlx,
   int8PrefillAvailable,
   onInt8PrefillChange,
+  anePrefillAvailable,
+  onAnePrefillChange,
   offloadable,
   offloadDecided,
   offloadNotes,
@@ -1620,6 +1622,8 @@ function MlxAdvancedSettings({
   servedByMlx: boolean;
   int8PrefillAvailable: boolean;
   onInt8PrefillChange: (checked: boolean) => void;
+  anePrefillAvailable: boolean;
+  onAnePrefillChange: (checked: boolean) => void;
   offloadable: readonly MlxOffloadablePart[];
   offloadDecided: Record<MlxOffloadablePart, number | null> | null;
   offloadNotes: Record<MlxOffloadablePart, string | null>;
@@ -1688,6 +1692,26 @@ function MlxAdvancedSettings({
             className="shrink-0"
             checked={config.mlxInt8Prefill ?? false}
             onCheckedChange={onInt8PrefillChange}
+          />
+        </div>
+      )}
+      {servedByMlx && (anePrefillAvailable || config.mlxAnePrefill) && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS}>Neural Engine Prefill</span>
+            <span className="shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground dark:bg-muted">
+              Exp
+            </span>
+            <InfoHint>
+              Reads long prompts faster by running part of each layer on the
+              Neural Engine beside the GPU. Answers can change slightly. Loading
+              takes longer the first time while it measures this Mac.
+            </InfoHint>
+          </div>
+          <Switch
+            className="panel-switch shrink-0"
+            checked={config.mlxAnePrefill ?? false}
+            onCheckedChange={onAnePrefillChange}
           />
         </div>
       )}
@@ -2664,14 +2688,23 @@ export function ModelConfigPage({
     platformDeviceType,
     platformChatOnlyReason,
   );
-  const int8PrefillAvailable = useInt8PrefillAvailable(
+  const prefillOptionPath =
     servedByMlx &&
-      !(target.meta.nativePathToken ?? (isActiveModel ? activeNativePathToken : null))
+    !(target.meta.nativePathToken ?? (isActiveModel ? activeNativePathToken : null))
       ? target.id
-      : null,
+      : null;
+  const int8PrefillAvailable = usePrefillOptionAvailable(
+    "int8",
+    prefillOptionPath,
+    hfToken || null,
+  );
+  const anePrefillAvailable = usePrefillOptionAvailable(
+    "ane",
+    prefillOptionPath,
     hfToken || null,
   );
   const [int8PrefillConfirmOpen, setInt8PrefillConfirmOpen] = useState(false);
+  const [anePrefillConfirmOpen, setAnePrefillConfirmOpen] = useState(false);
   // Read live: the sidebar copy stays mounted while collapsed.
   const advancedPreference = useSyncExternalStore(
     subscribeAdvancedSettingsOpen,
@@ -2695,6 +2728,9 @@ export function ModelConfigPage({
   const [initialMlxInt8Prefill] = useState(
     () => configState.mlxInt8Prefill ?? false,
   );
+  const [initialMlxAnePrefill] = useState(
+    () => configState.mlxAnePrefill ?? false,
+  );
   const [initialMlxOffload] = useState(
     () => configState.mlxPleOffload != null || configState.mlxExpertOffload != null,
   );
@@ -2702,6 +2738,7 @@ export function ModelConfigPage({
   // and a width that starts applying then has to surface.
   const autoOpenForMlxKvQuant = servedByMlx && initialMlxKvQuant != null;
   const autoOpenForMlxInt8Prefill = servedByMlx && initialMlxInt8Prefill;
+  const autoOpenForMlxAnePrefill = servedByMlx && initialMlxAnePrefill;
   const autoOpenForMlxOffload = servedByMlx && initialMlxOffload;
   // Opened to change one field: show its section for this visit, leaving the saved switch alone.
   const [revealForFocus, setRevealForFocus] = useState(focusField != null);
@@ -2711,6 +2748,7 @@ export function ModelConfigPage({
       (autoOpenAdvanced ||
         autoOpenForMlxKvQuant ||
         autoOpenForMlxInt8Prefill ||
+        autoOpenForMlxAnePrefill ||
         autoOpenForMlxOffload));
   const toggleAdvanced = (open: boolean) => {
     setRevealForFocus(false);
@@ -4266,6 +4304,12 @@ export function ModelConfigPage({
                         ? setInt8PrefillConfirmOpen(true)
                         : update({ mlxInt8Prefill: false })
                     }
+                    anePrefillAvailable={anePrefillAvailable}
+                    onAnePrefillChange={(checked) =>
+                      checked
+                        ? setAnePrefillConfirmOpen(true)
+                        : update({ mlxAnePrefill: false })
+                    }
                     offloadable={memoryEstimate.estimate?.mlxOffloadable ?? []}
                     offloadDecided={mlxOffloadDecidedNow}
                     offloadNotes={mlxOffloadNotes}
@@ -4454,6 +4498,34 @@ export function ModelConfigPage({
               onClick={() => {
                 update({ mlxInt8Prefill: true });
                 setInt8PrefillConfirmOpen(false);
+              }}
+            >
+              Turn on
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog
+        open={anePrefillConfirmOpen}
+        onOpenChange={setAnePrefillConfirmOpen}
+      >
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Turn on Neural Engine Prefill?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Long prompts are read faster, but the model&apos;s answers will
+              change slightly. The first load on this Mac takes longer while it
+              measures whether this helps; when it does not, the model runs as
+              before. You can turn it off at any time.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                update({ mlxAnePrefill: true });
+                setAnePrefillConfirmOpen(false);
               }}
             >
               Turn on

@@ -42,6 +42,7 @@ export interface ApiModelOverride {
   mlx_kv_bits?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   mlx_int8_prefill?: boolean;
+  mlx_ane_prefill?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   mlx_ple_offload?: "off" | number | null;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -357,6 +358,7 @@ export function fromApiOverride(
     tensorParallel: override.tensor_parallel ?? local.tensorParallel,
     disableVision: override.disable_vision ?? local.disableVision,
     mlxInt8Prefill: override.mlx_int8_prefill ?? local.mlxInt8Prefill,
+    mlxAnePrefill: override.mlx_ane_prefill ?? local.mlxAnePrefill,
     mlxPleOffload: override.mlx_ple_offload ?? local.mlxPleOffload,
     mlxExpertOffload: override.mlx_expert_offload ?? local.mlxExpertOffload,
     loadIn4bit: override.load_in_4bit ?? local.loadIn4bit,
@@ -456,6 +458,9 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   }
   if (config.mlxInt8Prefill) {
     payload.mlx_int8_prefill = true;
+  }
+  if (config.mlxAnePrefill) {
+    payload.mlx_ane_prefill = true;
   }
   if (config.loadIn4bit === false) {
     payload.load_in_4bit = false;

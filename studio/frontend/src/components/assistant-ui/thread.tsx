@@ -68,6 +68,7 @@ import { attachWheelHoverSuppression } from "@/components/assistant-ui/thread-wh
 import { threadHasResearchMessage } from "@/components/assistant-ui/thread-research-presence";
 import {
   THREAD_GUTTER_CHANGE_EVENT,
+  syncThreadGutter,
   watchThreadGutter,
 } from "@/components/assistant-ui/thread-gutter";
 import { observeThreadWidthSteps } from "@/components/assistant-ui/thread-width-steps";
@@ -432,9 +433,6 @@ import {
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  FolderAttachmentIcon,
-  Folder01Icon,
-  FolderAddIcon,
   Image03Icon,
   McpServerIcon,
   Refresh01Icon,
@@ -449,9 +447,11 @@ import {
   PlusSignIcon,
   Cancel01Icon,
 } from "@hugeicons/core-free-icons";
+import { FolderAddIcon, FolderAttachmentIcon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { StopIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 import { RefreshGlyph } from "@/lib/refresh-icon";
 import { useNavigate } from "@tanstack/react-router";
 import {
@@ -2130,7 +2130,8 @@ export const Thread: FC<{
     return attachWheelHoverSuppression(viewportEl);
   }, [viewportEl]);
 
-  useEffect(() => {
+  // Layout effect: a remounted viewport must be shifted before its first paint.
+  useLayoutEffect(() => {
     if (!viewportEl) return;
     return watchThreadGutter(viewportEl);
   }, [viewportEl]);
@@ -2597,6 +2598,8 @@ const ThreadComposerDock: FC<{
     const resizeObserver = new ResizeObserver(() => apply());
     let observedFooter: Element | null = null;
     const apply = () => {
+      // Can fire before the gutter's observer; unshifted, the composer lands a scrollbar off-centre.
+      syncThreadGutter(viewport);
       // The footer is the real column box: WebKit's both-edges gutter reserves 2x the scrollbar on the right, clientWidth 1x.
       const footer = childWithClass(viewport, "aui-thread-viewport-footer");
       if (footer && footer !== observedFooter) {
@@ -7085,7 +7088,7 @@ const ComposerToolsMenu: FC<{
     projects: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
-          <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
+          <HugeiconsIcon icon={ProjectIcon} strokeWidth={2} />
           Projects
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent className="unsloth-plus-menu w-[calc(232px*var(--ui-space-scale,1))]">
@@ -7100,7 +7103,7 @@ const ComposerToolsMenu: FC<{
                 key={project.id}
                 onSelect={() => openProject(project.id)}
               >
-                <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
+                <HugeiconsIcon icon={ProjectIcon} strokeWidth={2} />
                 <span className="truncate">{project.name}</span>
               </DropdownMenuItem>
             ))
