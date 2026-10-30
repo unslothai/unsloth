@@ -63,7 +63,7 @@ class _Store:
         cap = len(self.rowids)
         if need <= cap:
             return self
-        new = _Store(np, max(need, cap + cap // 2 + 16), self.mat.shape[1])
+        new = _Store(np, max(need, cap + cap // 4 + 16), self.mat.shape[1])
         new.mat[:n] = self.mat[:n]
         new.rowids[:n] = self.rowids[:n]
         new.ids[:n] = self.ids[:n]
