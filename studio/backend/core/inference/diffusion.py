@@ -14851,20 +14851,21 @@ def _lora_load_block_reason(pipe: Any) -> Optional[str]:
     if _small_host_int8(pipe):
         return (
             "LoRA is not available on this load: system RAM was too small for the dense model, so Unsloth "
-            "stored the transformer as int8 weights (small-host route), which cannot carry adapters. Load the "
-            "model with the LoRA selected (Unsloth then keeps the dense transformer), or use a host with more RAM."
+            "stored the transformer as int8 weights (small-host route), which cannot carry adapters. Use a host "
+            "with more RAM, or name the LoRA in the API load request (Unsloth then keeps the dense transformer)."
         )
     if comfy_block_runtime_layers(getattr(pipe, "transformer", None)):
         return (
             "LoRA is not available on this load: the ComfyUI file's nvfp4 / mxfp8 layers run on their own "
-            "quantized Linears, which cannot carry adapters. Load the file with the LoRA selected (Unsloth then "
-            "dequantizes those layers), or set UNSLOTH_DIFFUSION_COMFY_NVFP4=0 / UNSLOTH_DIFFUSION_COMFY_MXFP8=0."
+            "quantized Linears, which cannot carry adapters. Set UNSLOTH_DIFFUSION_COMFY_NVFP4=0 / "
+            "UNSLOTH_DIFFUSION_COMFY_MXFP8=0, or name the LoRA in the API load request (Unsloth then dequantizes "
+            "those layers)."
         )
     if fp8_stored_layers(getattr(pipe, "transformer", None)):
         return (
             "LoRA is not available on this load: the file's fp8 layers are stored as fp8 and widened per layer "
-            "(this GPU has no fp8 GEMM), which cannot carry adapters. Load the file with the LoRA selected "
-            "(Unsloth then widens those layers at load), or set UNSLOTH_DIFFUSION_FP8_STORAGE=0."
+            "(this GPU has no fp8 GEMM), which cannot carry adapters. Set UNSLOTH_DIFFUSION_FP8_STORAGE=0, or name "
+            "the LoRA in the API load request (Unsloth then widens those layers at load)."
         )
     return None
 
