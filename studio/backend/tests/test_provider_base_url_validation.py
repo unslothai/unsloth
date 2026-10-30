@@ -124,8 +124,7 @@ def _for_test_hosts(fake):
 
 
 def test_a_lookup_from_another_thread_is_not_counted(monkeypatch):
-    """The routing the counting tests rely on: a concurrent lookup for some other host goes to the
-    real resolver and never reaches the fake."""
+    """Other hosts' lookups go to the real resolver, so the fake never counts them."""
     import threading
 
     calls = []
@@ -446,8 +445,7 @@ def test_private_targets_blocked_only_with_the_opt_in(url, monkeypatch):
     assert validate_provider_base_url(url) == url
 
     monkeypatch.setenv(BLOCK_PRIVATE_ENV, "1")
-    # Names resolve to loopback; conftest blocks real resolution, and IP
-    # literals never reach the resolver.
+    # Names resolve to loopback because conftest blocks real resolution; IP literals skip it.
     monkeypatch.setattr(
         socket,
         "getaddrinfo",

@@ -65,8 +65,7 @@ def test_full_access_descriptions_drop_the_isolation_claim(tool):
 
 
 def test_full_access_schemas_keep_name_and_parameters():
-    """Only the description changes: a differing name or schema would break the
-    dispatcher and every caller that matches on them."""
+    """Only descriptions may differ; a changed name or schema breaks dispatcher matching."""
     for sandboxed, full in (
         (PYTHON_TOOL, PYTHON_TOOL_FULL_ACCESS),
         (TERMINAL_TOOL, TERMINAL_TOOL_FULL_ACCESS),
@@ -97,8 +96,7 @@ def test_the_substitutions_land_on_every_platform(monkeypatch, platform, tool_na
     # remaps missing-parent paths onto the workdir; the split is per tool, not per OS.
     if tool_name == "python":
         assert "absolute paths under a directory that exists do resolve" in full
-        # Missing convention prefix keeps the suffix and overwrites; any other missing parent
-        # keeps only the basename and raises if that name is taken.
+        # Convention prefixes overwrite; other missing parents raise if the basename is taken.
         assert "the rest of the path is kept relative to the working directory" in full
         assert "replacing any file already sitting there" in full
         assert "only the base name is kept" in full
@@ -129,8 +127,7 @@ def test_the_substitutions_land_on_every_platform(monkeypatch, platform, tool_na
 
 
 def test_python_full_access_description_still_omits_the_shell():
-    """Same reason as the sandboxed one: naming a shell there points a model at
-    subprocess/os.system instead of the terminal tool."""
+    """Naming a shell would send the model to subprocess/os.system, not the terminal tool."""
     assert "shell" not in _desc(PYTHON_TOOL_FULL_ACCESS).lower()
 
 
@@ -147,8 +144,7 @@ def test_full_access_drops_the_local_desktop_promise(monkeypatch):
 
 
 def test_terminal_full_access_keeps_the_shell_note():
-    """The shell note is platform-derived and applies in either mode; dropping
-    it on Windows brings back the cmd/bash confusion it exists to prevent."""
+    """Platform-derived shell note must stay in both modes, else cmd/bash confusion returns."""
     for marker in ("cmd, not bash", "bash (Git for Windows)"):
         assert (marker in _desc(TERMINAL_TOOL)) == (marker in _desc(TERMINAL_TOOL_FULL_ACCESS))
 
@@ -256,8 +252,7 @@ def test_the_tip_names_only_the_selected_code_tools(enabled, expected):
 
 
 def test_full_access_only_returns_the_sentence_alone():
-    """The Codex studio-tools path has never carried the general tool nudge, so
-    it takes the Full access sentence without the date or the base guidance."""
+    """Codex studio tools never got the general nudge, so they get just the Full access tip."""
     only = _build_tool_action_nudge(
         tools = _CODE_TOOLS, model_name = "test-8B", full_access = True, full_access_only = True
     )
@@ -280,8 +275,7 @@ def test_full_access_only_is_empty_when_it_does_not_apply(kwargs):
 
 
 def test_full_access_tip_needs_a_code_tool():
-    """web_search alone runs nothing locally, so the sandbox sentence would be
-    noise (and false)."""
+    """web_search alone runs nothing locally, so a sandbox sentence would be false noise."""
     nudge = _build_tool_action_nudge(tools = _WEB_ONLY, model_name = "test-8B", full_access = True)
     assert "where Unsloth Studio is running" not in nudge
     assert nudge == _build_tool_action_nudge(tools = _WEB_ONLY, model_name = "test-8B")
@@ -349,8 +343,7 @@ def test_count_request_leaves_other_modes_alone(mode):
 
 
 def test_count_request_selection_matches_the_completion():
-    """The whole point of carrying the flag: the counted tool list is the one
-    the completion will render."""
+    """Counted tool list must match the one the completion renders, carrying the flag."""
     counted = asyncio.run(
         _select_request_tools(
             _count_request(permission_mode = "full"), tools_on = True, mcp_allowed = False
@@ -371,21 +364,8 @@ def _sandbox_site_dir():
     reason = "root ignores a mode-500 directory",
 )
 def test_the_mkdir_clause_promises_an_attempt_not_a_created_directory(tmp_path):
-    """The unrewritten mkdir path is an attempt, and the clause may not promise more.
-
-    Full access keeps _SANDBOX_SITE_DIR on PYTHONPATH, so ``os.makedirs`` is
-    wrapped -- but ``_makedirs`` calls ``_remap`` alone, so outside a convention
-    prefix nothing is rewritten and the real host path is what the syscall gets.
-    A process that cannot create that path (a non-root write under a root-owned
-    directory, a read-only mount) raises instead, creating nothing anywhere. The
-    subprocess below is that measurement, not an assumption about os.makedirs:
-    the same shim the model runs under, a mode-500 parent, and a check that
-    neither the host path nor a workdir fallback appeared.
-
-    The clause is held to the standard the rest of this comment block already
-    keeps -- see the convention-prefix branch, which names /mnt/data only inside
-    a conditional and never categorically.
-    """
+    """The mkdir clause promises only an attempt: os.makedirs is wrapped, but _makedirs calls only
+    _remap, so an unwritable path outside convention prefixes raises and creates nothing."""
     import subprocess
 
     workdir = tmp_path / "work"

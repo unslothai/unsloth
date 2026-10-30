@@ -739,10 +739,8 @@ def _rss_anon_bytes():
 
 
 def test_a_many_layer_nvfp4_fallback_load_that_fits_is_not_refused(tmp_path, monkeypatch):
-    """No nvfp4 runtime: every layer is nibble-swapped, its scales untiled, then dequantized, and the
-    swapped codes and plain scales are freed again before the next layer. Free host RAM is modelled
-    from this process's own anonymous RSS, with room for the dense weights plus 10% and one chunk of
-    dequantization intermediates: the load fits and must not be refused for copies already released."""
+    """Without an nvfp4 runtime, each layer is dequantized then freed; free RAM is this process's
+    RssAnon, and the charge is dense plus 10% and one chunk, so a fitting load is not refused."""
     import core.inference.diffusion_single_file_converters as conv
     import core.inference.diffusion_small_host as small_host
 
@@ -869,12 +867,9 @@ print("PEAK " + json.dumps({"seen": seen, "growth": growth}))
 
 @pytest.mark.parametrize("fmt", ["nvfp4", "mxfp8"])
 def test_block_dequant_is_checked_for_its_peak_intermediates(fmt):
-    """The fallback dequantization builds int32 / float32 intermediates several times the bf16 output; the
-    check before it must cover the measured peak, not only the output.
-
-    Measured in a fresh process: RssAnon is process-wide, and in a long-lived pytest worker the
-    allocator state and threads left by earlier tests added a steady ~7 MB to every reading (CI saw
-    0.88 of a growth that measures 0.98-1.07 on its own, for the same torch build)."""
+    """Fallback dequant builds int32/float32 intermediates several times the bf16 output, so check
+    the peak, not the output; measure in a fresh process, since earlier tests in one pytest
+    worker add ~7 MB of RssAnon."""
     import subprocess
     import sys
     from pathlib import Path
@@ -1014,12 +1009,9 @@ def _host_peak_in_a_fresh_process(kind):
 
 @pytest.mark.parametrize("kind", ["int8_convrot", "fp8"])
 def test_int8_fp8_dequant_is_checked_for_its_float32_peak(kind):
-    """int8 / fp8 dequantization holds float32 codes and their float32 product together (and ConvRot's
-    float32 matmul result); the check before it must cover the measured peak, not only the output.
-
-    In a fresh process for the reason given on test_block_dequant_is_checked_for_its_peak_intermediates:
-    in a pytest worker the readings carry whatever earlier tests left behind (CI saw 237.7 MB of growth
-    against a 201.3 MB charge for int8_convrot, which measures under the charge on its own)."""
+    """int8/fp8 dequant holds float32 codes and their product (plus ConvRot's float32 matmul), so
+    the check must cover that peak; run in a fresh process, since worker readings carry earlier
+    tests' memory."""
     if _rss_anon_bytes() is None:
         pytest.skip("needs /proc/self/status RssAnon")
     seen, growth = _host_peak_in_a_fresh_process(kind)
@@ -1027,9 +1019,8 @@ def test_int8_fp8_dequant_is_checked_for_its_float32_peak(kind):
 
 
 def test_a_load_under_the_floor_is_checked_once_its_allocations_reach_it(block_file, monkeypatch):
-    """File and estimate both under the floor (the estimate assumed the mxfp8 runtime keeps every layer),
-    but the runtime filter rejects them all and they are dequantized: once those allocations reach the
-    floor the check must run."""
+    """File and estimate sit under the floor, but the mxfp8 runtime filter rejects every layer, so
+    they are dequantized; the check must still run once allocations reach it."""
     import os
 
     conv = _tight_host(monkeypatch, headroom_mib = 0)

@@ -1051,15 +1051,13 @@ class _MarkdownRenderer(HTMLParser):
         self._emit_replay(f"\n\n{fence}\n{raw}\n{fence}\n\n")
 
     def _drain_blockquote(self) -> None:
-        """Pop the innermost quote and emit it prefixed. Not used by ``flush_pending``,
-        which re-nests into the parent stack instead of emitting."""
+        """Pop the innermost quote and emit it prefixed; flush_pending re-nests it instead."""
         prefixed = self._prefix_blockquote("".join(self._bq_stack.pop()))
         if prefixed:
             self._emit_replay("\n\n" + prefixed + "\n\n")
 
     def _emit_replay(self, text: str) -> None:
-        """Emit a flushed buffer's own output, which must not be teed as a heading
-        a second time (the raw text was teed when it entered the buffer)."""
+        """Flushed buffer output is not teed again; the raw text was teed on entry."""
         was, self._replaying = self._replaying, True
         try:
             self._emit(text)
@@ -1288,8 +1286,7 @@ class _MarkdownRenderer(HTMLParser):
         depth: int,
         own_tag: bool = False,
     ) -> None:
-        """Judge and emit every buffered header at or below *depth*. Only the
-        innermost frame can be the one its own ``</header>`` closed."""
+        """Emit buffered headers at or below depth; own-tag closes only the innermost frame."""
         closed_by_own_tag = own_tag
         while self._header_stack and self._header_stack[-1].depth >= depth:
             self._finalize_nested_buffers(self._header_stack[-1])
@@ -2129,9 +2126,7 @@ def _line_is_boilerplate(line: str) -> bool:
 
 
 def _fence_state(line: str, fence: int) -> int:
-    """Fence width after *line*, 0 outside a block. Every pass over rendered text
-    must agree with ``_fence_for``: a block opened with a longer fence is closed
-    only by a run at least as long, so a literal ``` inside it is content."""
+    """Fence width after a line, 0 outside a block; every pass must agree with _fence_for."""
     stripped = line.strip()
     if len(stripped) < 3 or stripped.count("`") != len(stripped):
         return fence
@@ -2333,18 +2328,14 @@ _BACKTICK_RUN = re.compile(r"`+")
 
 
 def _fence_for(raw: str) -> str:
-    """Fence long enough to survive backticks in *raw*, as CommonMark requires:
-    a literal ``` line inside the block would otherwise close it early."""
+    """Must outrun backtick runs in raw (CommonMark), or a literal fence line closes it early."""
     if "`" not in raw:
         return "```"
     return "`" * max(3, max(map(len, _BACKTICK_RUN.findall(raw))) + 1)
 
 
 def _visible_len(line: str) -> int:
-    """Length of *line* without Markdown link destinations. A tracking URL is not
-    prose: a card holding one [Read](/x?<300 bytes>) otherwise scored 339 visible
-    characters off 4 and displaced the article. Linear: once a destination fails to
-    close, the rest are answered from one table instead of a rescan each."""
+    """Visible length without Markdown link destinations: a tracking URL is not prose; scan is linear."""
     if "[" not in line and "\\" not in line:
         return len(line)
     total, i, n = 0, 0, len(line)
@@ -2388,9 +2379,7 @@ def _visible_len(line: str) -> int:
 
 
 def _destination_ends(line: str) -> dict:
-    """End of the destination scan from each reachable position, for scans that close. All scans
-    step over the same positions, so a scan from p closes where the paren-depth prefix sum first
-    drops below its value at p."""
+    """Where a scan from each position closes: the paren-depth prefix sum first drops below its start."""
     steps: list[int] = []
     sums: list[int] = []
     depth, k, n = 0, 0, len(line)

@@ -756,9 +756,7 @@ def set_flags(
 
 
 def move(video_id: str, after_id: Optional[str]) -> Optional[dict[str, Any]]:
-    """Move an active video to just after ``after_id`` (None = front) and return its record.
-
-    None if the id is not an owned, active video. Raises KeyError if ``after_id`` is not on the shelf."""
+    """Moves an active video after after_id (None: front); KeyError if after_id is off the shelf."""
     with gallery_flags.exclusive(gallery_dir()):
         if owned_video_path(video_id) is None:
             return None

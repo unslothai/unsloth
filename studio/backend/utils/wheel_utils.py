@@ -171,9 +171,8 @@ _UNSLOTH_PREBUILT_EXTRA_CELLS: dict[tuple[str, str], frozenset[str]] = {
     ("linux_aarch64", "2.12"): frozenset({"cp311", "cp312", "cp313"}),
 }
 
-# Extra cells that carry only some packages. On Linux torch 2.10 to 2.12 ours replace upstream's
-# causal-conv1d / mamba-ssm (205 / 351 MB, every arch and -lineinfo); upstream flash-attn 2.8.1 is
-# already smaller there than ours, so it keeps resolving upstream.
+# Extra cells carrying only some packages: on Linux torch 2.10 to 2.12 ours replace upstream
+# causal-conv1d and mamba-ssm; upstream flash-attn 2.8.1 is smaller than ours, so it stays upstream.
 _UNSLOTH_PREBUILT_EXTRA_CELL_PREFIXES: dict[str, frozenset[str]] = {
     "linux_x86_64": frozenset({"causal_conv1d", "mamba_ssm"}),
     "linux_aarch64": frozenset({"causal_conv1d", "mamba_ssm"}),
@@ -286,11 +285,9 @@ def unsloth_prebuilt_wheel_url(*, filename_prefix: str, env: dict[str, str] | No
     return f"{UNSLOTH_PREBUILT_RELEASE_BASE_URL}/{UNSLOTH_PREBUILT_RELEASE_TAG}/{filename}"
 
 
-# The cells the pinned upstream releases publish (causal-conv1d v1.6.1.post4, mamba-ssm v2.3.1,
-# identical for both): (platform, CUDA major, cxx11abi) -> torch minors, each for cp310-cp313.
-# Read from the two release asset lists; anything else (CUDA 13 before torch 2.9, aarch64 before
-# 2.7, an abiFALSE torch after 2.6, any interpreter outside cp310-cp313) is a URL that 404s in
-# front of the source fallback, so it resolves to nothing instead.
+# Cells the pinned releases (causal-conv1d v1.6.1.post4, mamba-ssm v2.3.1) publish for cp310-cp313;
+# anything else (CUDA 13 before torch 2.9, aarch64 before 2.7, abiFALSE torch after 2.6) would 404
+# ahead of the source fallback, so it resolves to nothing.
 _UPSTREAM_SSM_PINS = {
     "causal_conv1d": CAUSAL_CONV1D_PACKAGE_VERSION,
     "mamba_ssm": MAMBA_SSM_PACKAGE_VERSION,

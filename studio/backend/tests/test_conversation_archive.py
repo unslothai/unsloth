@@ -2085,9 +2085,8 @@ def test_the_gap_worker_never_queues_behind_another_embedder_user(conn, monkeypa
 
     encoded = threading.Event()
 
-    # Queue behind the other user's lock, then encode outside it. Holding it across real() made
-    # the worker take the same non-reentrant lock again inside encode, so once the gap reopened it
-    # hung for good and stalled the next test on that xdist worker until pytest-timeout fired.
+    # Queue behind the other user's lock, then encode outside it; holding it across real() re-took
+    # the non-reentrant lock inside encode and hung the xdist worker until pytest-timeout.
     def locked(texts, **kwargs):
         with lock:
             time.sleep(0.5)
@@ -2486,8 +2485,7 @@ def test_each_archived_turn_records_its_position(conn):
 
 
 def test_re_embedding_a_turn_keeps_its_place(conn, monkeypatch):
-    """Re-embedding walks the whole archive, so a fresh ordinal here would renumber the
-    entire conversation into the order its vectors were rebuilt."""
+    """Re-embedding walks the archive, so a new ordinal would renumber turns in rebuild order."""
     from core.rag import embeddings
 
     # Patch embedding_identity too: archive_turns short-circuits on the expected identity.
@@ -2698,9 +2696,8 @@ def test_the_archive_query_keeps_the_negation_that_carries_the_question(conn):
 
 
 def test_re_embedding_a_turn_archived_before_ordinals_leaves_it_unnumbered(conn, monkeypatch):
-    """A NULL ordinal predates the column. Allocating one on re-embed would move the
-    conversation's OLDEST turn behind every numbered one, and the renderer would then
-    read it as the later, superseding statement."""
+    """A NULL ordinal predates the column; allocating one on re-embed would move the oldest turn
+    behind every numbered one, so the renderer reads it as the later, superseding statement."""
     from core.rag import embeddings
 
     identity = {"name": "st:model-a"}
@@ -2878,8 +2875,7 @@ def test_two_turns_stamped_alike_are_quoted_whole_and_not_interleaved(conn, monk
 
 
 def test_the_sql_candidate_order_agrees_with_the_python_recall_order(conn):
-    """SQL and Python order turns separately; the SQL LIMIT picks candidates, so drift silently
-    drops turns."""
+    """SQL and Python order turns separately; SQL LIMIT picks candidates, so drift drops turns."""
     import types
 
     scope = store.conversation_archive_scope(THREAD)
@@ -3013,8 +3009,7 @@ def test_merging_two_recall_queries_still_lists_legacy_turns_first(conn):
 
 
 def test_merging_two_recall_queries_keeps_one_turns_chunks_in_order(conn, monkeypatch):
-    """Both queries hit the same long turn, so every source carries the same `turn` and a
-    stable sort would quote it in query order -- tail first."""
+    """Both queries hit the same turn, so a stable sort would quote its chunks tail first."""
     monkeypatch.setattr(config, "CHUNK_TOKENS", 30)
     monkeypatch.setattr(config, "CHUNK_OVERLAP", 0)
     body = (
@@ -3056,9 +3051,8 @@ def test_merging_two_recall_queries_keeps_legacy_turns_in_the_order_they_were_sa
 
 
 def test_both_recall_paths_order_by_the_same_key():
-    """The single-query path reads snake_case columns and the merge reads camelCase keys;
-    they are only the same key while both call `_order_key`.
-    """
+    """The single-query path reads snake_case columns and the merge reads camelCase keys; they match
+    only while both call `_order_key`."""
     from core.rag import conversation_archive
     for ordinal in (None, 0, 4):
         for created in ("", "2026-01-01T00:00:00Z"):
@@ -3232,8 +3226,7 @@ def test_an_overlapping_anchor_query_does_not_shrink_the_recall(conn):
 
 
 def test_a_shouted_question_filters_as_well_as_a_typed_one(conn):
-    """A shouted question with no lower case would make every word an identifier; the rule needs
-    contrast."""
+    """All-caps text makes every word an identifier, so the rule needs lower-case contrast."""
     for index in range(6):
         _archive(_turn(f"Set {VARIABLE} to 42{index}.", f"Understood. {VARIABLE} is 42{index}."))
     _archive(
@@ -3380,9 +3373,8 @@ def test_a_re_embed_does_not_swallow_a_repeat_evicted_later(conn, monkeypatch):
 
 
 def test_two_evicted_copies_of_a_thrice_said_turn_are_both_archived(conn):
-    """A set of live texts cannot count. Three identical turns with two evicted and one
-    still in the prompt looked entirely live, so only one copy was ever written and the
-    archive was a turn short of what was actually said."""
+    """A set of live texts cannot count: three identical turns, two evicted and one still in the
+    prompt, looked live, so only one copy was archived and a turn went missing."""
     repeat = _turn("set ZQXVARA123 to 1", "ok")
     mid = _turn("set ZQXVARA123 to 2", "ok")
     other = _turn("something else about ZQXVARA123", "fine")
@@ -3453,8 +3445,7 @@ def test_the_write_budget_is_every_seat_when_the_caller_says_nothing(conn):
 
 
 def test_an_out_of_order_eviction_still_numbers_turns_in_conversation_order(conn):
-    """Archive order is not conversation order: a pinned or newest-group turn is evicted after later
-    ones."""
+    """Archive order is not conversation order: pinned or newest-group turns are evicted late."""
     conversation = (
         _turn("the standing instruction about pelicans", "Understood.")
         + _turn("the middle turn about pelicans", "Noted.")
@@ -3574,9 +3565,8 @@ def _report_then_correction(sent_report):
     ids = ["python-off", "python-on"],
 )
 def test_a_turn_sent_with_an_attachment_keeps_its_place(conn, sent_report):
-    """The stored row keeps the document under `attachments` while the request inlines it (after the python
-    tool's path note when that is on). Read without them, the turn took the fallback ordinal and came back
-    as the latest turn, superseding the correction that followed it."""
+    """Stored rows keep the document under attachments but requests inline it after the python path
+    note; without that text the turn got a fallback ordinal and superseded the correction."""
     wire = _report_then_correction(sent_report)
 
     assert conversation_archive.archive_turns(THREAD, wire[:4], live = wire[4:]) == 2
@@ -3620,8 +3610,7 @@ def test_a_tool_only_attachment_keeps_its_place_with_the_python_tool_on(conn):
 
 
 def test_an_attachment_turn_numbered_past_the_end_converges_on_the_next_compaction(conn):
-    """Archives written before the fold hold the attachment turn after every later one; the next eviction
-    of that turn moves it back to its seat."""
+    """Pre-fold archives put the attachment turn last; its next eviction re-seats it."""
     wire = _report_then_correction(_REPORT)
     conversation_archive.archive_turns(THREAD, wire[:4], live = wire[4:])
     scope = store.conversation_archive_scope(THREAD)
@@ -3636,9 +3625,8 @@ def test_an_attachment_turn_numbered_past_the_end_converges_on_the_next_compacti
 
 
 def test_recall_without_a_request_branch_keeps_an_attachment_turn(conn):
-    """The branch filter's stored-transcript fallback reads the same rows: without the attachment text,
-    the archived turn looked rolled back and no query could return it. Studio always passes its branch,
-    so this covers other callers only, and only without the python tool's notes."""
+    """Without attachment text, the branch filter's fallback marks the turn rolled back, so no query
+    finds it; Studio passes its branch, so only other callers without python notes hit it."""
     wire = _report_then_correction(_REPORT)
     conversation_archive.archive_turns(THREAD, wire[:4], live = wire[4:])
 
@@ -4647,8 +4635,7 @@ def test_an_audio_reply_is_replayed_as_the_sentinel_the_request_carried():
 
 
 def test_the_branch_seed_scores_an_in_order_run_not_a_set(conn):
-    """The branch seed must score an in-order run, not a set, so a sibling with the same texts
-    cannot win."""
+    """The branch seed must score an in-order run, not a set, so same-text siblings cannot win."""
     from storage import studio_db
 
     studio_db.upsert_chat_thread(

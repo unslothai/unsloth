@@ -193,8 +193,7 @@ def test_offloaded_denoiser_declines(monkeypatch):
 
 
 def test_pre_hook_stays_last(monkeypatch):
-    """A hook registered after the cache (dynamic text dims installs at compile time) must still run first, so the
-    conditioning blocks run inside its scope."""
+    """A hook added after the cache must run first, so conditioning blocks run inside its scope."""
     cls = _flux3()
     monkeypatch.delenv(cb.COND_BLOCKS_ENV, raising = False)
     model = _tiny(cls)

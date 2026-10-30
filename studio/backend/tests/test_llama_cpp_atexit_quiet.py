@@ -30,9 +30,7 @@ class _Unterminable:
 
 
 class _RecordingLogger:
-    """Stands in for the module logger, which is a structlog bound logger rather
-    than a stdlib one -- caplog never sees it, so an assertion against caplog would
-    hold however loudly this warned."""
+    """Stands in for the module logger, which is structlog, so caplog never sees warnings from it."""
 
     def __init__(self):
         self.warnings = []
@@ -100,9 +98,8 @@ def test_a_logger_that_raises_does_not_escape_the_atexit_handler(monkeypatch):
 
 
 def test_the_atexit_handler_quiets_stdlib_loggers_too(monkeypatch, capsys):
-    """Other libraries install stdlib loggers that fire during teardown, and those
-    print their own traceback about a closed handler rather than raising, so the
-    except above never sees them."""
+    """Stdlib loggers from other libraries fire during teardown and print their own traceback about
+    a closed handler instead of raising, so the except above never sees them."""
     stream = io.StringIO()
     handler = logging.StreamHandler(stream)
     stream.close()
@@ -169,9 +166,8 @@ class _UnkillableProcess(_StubbornProcess):
 
 
 def test_an_unkillable_server_is_still_reported(monkeypatch):
-    """The second wait raises from inside the handler it was raised from, so it is
-    not caught there and escapes. If the warning came after it, the one case an
-    operator most needs to see would be reported by nothing at all."""
+    """The second wait raises from inside the handler, so nothing catches it; the warning must come
+    first or an unkillable server goes unreported."""
     recorder = _RecordingLogger()
     monkeypatch.setattr(mod, "logger", recorder)
     backend = _stub()
@@ -186,8 +182,7 @@ def test_an_unkillable_server_is_still_reported(monkeypatch):
 
 
 def test_the_handler_leaves_raise_exceptions_as_it_found_it(monkeypatch):
-    """Only atexit gets the quiet treatment; a live run must still surface a
-    broken logging handler."""
+    """Only atexit is quieted; a live run must still surface a broken logging handler."""
     monkeypatch.setattr(logging, "raiseExceptions", True)
     backend = _stub()
     backend._process = _Unterminable()

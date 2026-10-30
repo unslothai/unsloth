@@ -399,8 +399,7 @@ def _download_app(monkeypatch, tmp_path: Path, jobs_route):
 
 
 def test_download_link_is_minted_over_the_bearer_and_used_without_one(monkeypatch, tmp_path: Path):
-    """The URL is fetched without a header, so it carries a signed capability rather than the
-    session token, which download history would keep."""
+    """Download history would keep a session token, so the URL carries a signed capability."""
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
@@ -918,8 +917,7 @@ def test_minting_refuses_a_run_whose_shards_are_gone(tmp_path: Path, monkeypatch
 
 
 def test_minting_is_refused_for_a_keyless_caller(monkeypatch, tmp_path: Path):
-    """The capability outlives the setting that admitted the caller, so a keyless request may not
-    mint one. Same refusal the signed gallery-video links make."""
+    """Keyless callers cannot mint one: the capability outlives the setting that admitted them."""
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
@@ -936,8 +934,7 @@ def test_minting_is_refused_for_a_keyless_caller(monkeypatch, tmp_path: Path):
 
 
 def test_download_link_outlasts_the_native_save_dialog():
-    """The chooser opens before the request, so a link expiring while it sits open 401s after the
-    destination was picked."""
+    """The save chooser opens before the request, so _DOWNLOAD_LINK_TTL must outlast it."""
     jobs_route = pytest.importorskip("routes.data_recipe.jobs")
 
     assert jobs_route._DOWNLOAD_LINK_TTL >= 15 * 60
@@ -1044,9 +1041,8 @@ def test_jsonl_reader_preserves_hugging_face_image_struct_bytes(tmp_path: Path):
 
 
 def test_a_row_is_not_mistaken_for_an_image(tmp_path: Path):
-    """to_preview_jsonable's Hugging Face image detection matches any mapping carrying `bytes` or
-    `path`, and a row is one. Passing whole rows in replaced every column, labels included, with a
-    single JPEG preview payload."""
+    """to_preview_jsonable's image detection matches any mapping with bytes or path, and a row is
+    one, so passing whole rows replaced every column (labels included) with a JPEG preview."""
     pyarrow = pytest.importorskip("pyarrow")
     import pyarrow.parquet as pyarrow_parquet
     from PIL import Image

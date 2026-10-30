@@ -173,9 +173,7 @@ def test_the_extra_devices_pipeline_overhead_is_charged(monkeypatch):
 
 
 def test_the_launch_charges_the_pipeline_overhead_per_extra_device():
-    """max(0, n - 1), so a single-GPU load adds nothing, and ungated by whether
-    llama.cpp keeps the pipeline -- the per-device context is there either way,
-    which is why the placement's own term is ungated too."""
+    """max(0, n - 1) per extra device: one GPU adds nothing; the per-device context exists regardless."""
     from core.inference.llama_cpp import LlamaCppBackend as B
     import inspect
 
@@ -237,16 +235,13 @@ def test_the_cpu_drafters_decode_graph_is_charged_to_host_ram(monkeypatch):
 
 @pytest.mark.parametrize("weights,kv", [(None, 512 * MIB), (0, 512 * MIB), (3 * GIB, None)])
 def test_an_unpriceable_cpu_drafter_abstains(weights, kv):
-    """A drafter that is there but cannot be sized is exactly the case that must
-    not be silently charged as zero."""
+    """A drafter that is present but cannot be sized must abstain, not count as zero."""
     stub = _DraftStub(weights, kv)
     assert stub._cpu_resident_draft_bytes(8192, drafter_path = "d.gguf") is None
 
 
 def test_the_cpu_drafter_flips_a_fit_that_only_looked_like_one(monkeypatch):
-    """20 GiB of target onto an 8 GiB card with 16 GiB of RAM: the 12 GiB spill
-    clears the 2 GiB headroom and the fit reads as real. Add the 2.5 GiB drafter
-    ``-ngld 0`` leaves resident in host RAM and it does not."""
+    """20 GiB on 8 GiB + 16 GiB RAM looks fit; a 2.5 GiB drafter kept in host RAM (-ngld 0) breaks it."""
     monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
     stub = _Stub(16 * 1024)
 
@@ -264,9 +259,7 @@ def test_the_cpu_drafter_flips_a_fit_that_only_looked_like_one(monkeypatch):
 
 
 def test_the_launch_charges_the_cpu_pinned_drafter_to_the_fit():
-    """The budget nulls the drafter path before its weights are sized, so the
-    fit has to keep its own copy. Checked at the source, like the other launch
-    ordering invariants here: the call site sits inside load_model's fit try."""
+    """The budget nulls the drafter path before its weights are sized, so the fit keeps its own copy."""
     from core.inference.llama_cpp import LlamaCppBackend as B
     import inspect
 
@@ -394,8 +387,7 @@ def test_the_launch_charges_the_fitters_margin_only_when_fit_stays_on():
     assert "fit_target_delta_mib=_fit_target_delta_mibifuse_fitelse0.0" in call
     assert "supports_fit_target=use_fitand" in call
     assert "fit_target_margin_in(_fit_extras,_fit_env)or0.0" in call
-    # Studio's per-card margins replace it only while Studio owns the margin: the
-    # fitter really runs on this launch's --fit, with no pass-through --fit-target.
+    # Studio owns the margin only when the fitter runs on --fit with no --fit-target.
     assert "if_fitter_runsanduse_fit" in call
     assert "fit_target_margin_in(_fit_extras,_fit_env)isNoneelseNone" in call
     assert "fit_margin_mib=_fit_margins_by_idxor_fit_margin_mib" in call
@@ -592,8 +584,7 @@ def test_a_hand_typed_flag_still_wins_by_last_arg(toggles):
 
 
 def test_the_cpu_fallback_drops_the_fits_load_mode(monkeypatch):
-    """A CPU replay runs on no GPU, so the VRAM half of the fit is void and the
-    whole model has to come out of host RAM. mmap is what makes that survivable."""
+    """CPU replay voids VRAM; the model comes from host RAM, and mmap makes that survivable."""
     from core.inference import llama_cpp as lc
     from unittest import mock
 
@@ -759,8 +750,7 @@ def test_a_pass_through_placement_override_voids_the_vram_credit(extras, monkeyp
 
 @pytest.mark.parametrize("extras", PLACEMENT_OVERRIDES)
 def test_an_override_still_takes_none_when_host_ram_holds_the_whole_load(extras, monkeypatch):
-    """The credit is dropped, not the answer: 8 GiB against 64 GiB of RAM is
-    resident wherever these flags put it, so the pick stands."""
+    """Credit dropped, not the answer: 8 GiB is resident in 64 GiB RAM wherever flags put it."""
     assert (
         _mode("linux", "nvidia_discrete", 8 * GIB, 64 * 1024, monkeypatch, extra_args = extras)
         == FIT_MODE
@@ -810,17 +800,13 @@ def test_an_inherited_gpu_layer_count_voids_the_vram_credit(value, monkeypatch):
 
 @pytest.mark.parametrize("value", ["-1", "auto", "AUTO", "", "   "])
 def test_an_inherited_default_gpu_layer_count_keeps_the_fit(value, monkeypatch):
-    """-1 / "auto" IS llama.cpp's default (common/common.h, llama-model.cpp), so
-    the fitter still runs and still owns the placement this fit priced. An empty
-    value never reaches placement at all: std::stoi throws and the child dies."""
+    """-1 or auto IS llama.cpp's default, so the fitter keeps placement; empty makes std::stoi throw."""
     monkeypatch.setenv("LLAMA_ARG_N_GPU_LAYERS", value)
     assert _mode("linux", "nvidia_discrete", 8 * GIB, 4 * 1024, monkeypatch) == FIT_MODE
 
 
 def test_the_launch_hands_the_fit_the_extras_the_child_will_get():
-    """The predicate is only worth anything if the call site feeds it. Checked at
-    the source, like the fallback ordering tests above, because reaching this call
-    needs a real GPU probe."""
+    """The predicate matters only if the call site feeds it; checked at source, no GPU probe."""
     from core.inference.llama_cpp import LlamaCppBackend as B
     import inspect
 
@@ -872,8 +858,7 @@ def test_an_inherited_device_selection_voids_the_vram_credit(monkeypatch):
 def test_a_narrowing_device_pass_through_voids_the_vram_credit(
     hw, extras, gpu_indices, expected, monkeypatch
 ):
-    """A narrowing --device replaces the whole device list, so the VRAM credit cannot cover dropped
-    cards."""
+    """Narrowing --device replaces the device list: VRAM credit can't cover dropped cards."""
     assert (
         _mode(
             "linux",
@@ -889,9 +874,7 @@ def test_a_narrowing_device_pass_through_voids_the_vram_credit(
 
 
 def test_the_device_narrowing_is_counted_against_what_the_fit_credits(monkeypatch):
-    """Not against what was DETECTED: a launch already pinned to one card is not
-    narrowed by an extras `--device` naming one, and voiding there would abstain on
-    a fit that still holds."""
+    """Not against what was DETECTED: a pinned single card is not narrowed by an extras --device."""
     for extras, expected in ((["--device", "CUDA0"], FIT_MODE), ([], FIT_MODE)):
         assert (
             _mode(
@@ -934,9 +917,7 @@ def _multi(footprint, avail_mib, monkeypatch, **kwargs):
     ],
 )
 def test_a_starving_split_voids_the_pooled_vram_credit(extras, monkeypatch):
-    """18 GiB across 2x12 GiB fits the pool but not one card, and RAM is far too
-    small to hold the spill. Crediting both cards anyway would emit the no-mmap
-    flag for weights that then have nowhere pageable to live."""
+    """18 GiB on 2x12 GiB fits the pool, not one card; crediting both emits no-mmap with nowhere to page."""
     assert _multi(18 * GIB, 4 * 1024, monkeypatch, extra_args = extras) is None
 
 
@@ -965,8 +946,7 @@ def test_a_split_that_starves_nobody_keeps_the_fit(extras, monkeypatch):
 
 
 def test_a_starving_split_is_a_no_op_on_a_single_gpu(monkeypatch):
-    """--split-mode none confines the model to one card, which is where a
-    single-GPU load already put it."""
+    """--split-mode none keeps the model on one card, as a single-GPU load already does."""
     assert (
         _mode(
             "linux",
@@ -1060,8 +1040,7 @@ def test_a_restated_vulkan_pin_keeps_the_fit(extras, monkeypatch):
 
 
 def test_a_replaced_cuda_pin_is_still_judged_by_count(monkeypatch):
-    """Only Vulkan gets the exact match: CUDA/ROCm ordinals are assigned after a
-    visibility mask this launch has not written, so there is no name to compare."""
+    """Only Vulkan matches by name; CUDA/ROCm ordinals follow a mask this launch never wrote."""
     monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
     assert (
         LlamaCppBackend._fit_derived_load_mode(
@@ -1142,9 +1121,7 @@ def test_a_discrete_rocm_card_keeps_its_vram_next_to_an_apu(monkeypatch):
 
 
 def test_an_apu_only_rocm_host_still_loses_the_whole_credit(monkeypatch):
-    """The case the union exists for: counting the shared pool as VRAM AND as the
-    RAM the spill comes from would fit the model twice into memory holding it once.
-    """
+    """Counting the shared pool as VRAM and as spill RAM fits the model twice; it sits in one memory."""
     rows = [(0, 24 * 1024)]
     assert _mixed_rocm(20 * GIB, 4 * 1024, {0}, rows, monkeypatch) is None
 
@@ -1200,8 +1177,7 @@ def test_a_cpu_only_kv_cache_is_charged_to_host_ram_alone(extras, env, monkeypat
     ],
 )
 def test_an_offloaded_kv_cache_is_still_pooled(extras, env, monkeypatch):
-    """The same load with the cache where llama.cpp puts it by default. Charging
-    it to host RAM anyway would abstain on a fit that is really there."""
+    """Default KV cache placement; charging host RAM would wrongly abstain on a real fit."""
     assert (
         _mode(
             "linux",
@@ -1218,9 +1194,7 @@ def test_an_offloaded_kv_cache_is_still_pooled(extras, env, monkeypatch):
 
 
 def test_a_cpu_only_kv_cache_is_not_charged_twice(monkeypatch):
-    """Host-only, like the pinned projector: counted ONCE in the footprint and
-    charged to RAM, not added on top of it. 8 + 12 GiB into 32 GiB of RAM (30
-    after headroom) fits; double-counting the cache would make it 32 and fail."""
+    """Host-only cache counted once: 8 + 12 GiB fits 32 GiB RAM (30 after headroom); twice fails."""
     assert (
         _mode(
             "linux",
@@ -1236,8 +1210,7 @@ def test_a_cpu_only_kv_cache_is_not_charged_twice(monkeypatch):
 
 
 def test_a_tensor_split_charges_the_replicated_compute_buffer():
-    """Check that the fit charges the same per-device buffer as _plan_tensor_parallel.
-    This source check avoids requiring a multi-GPU probe."""
+    """Fit charges the same per-device buffer as _plan_tensor_parallel; checked at source."""
     from core.inference.llama_cpp import LlamaCppBackend as B
     import inspect
 
@@ -1255,9 +1228,7 @@ def test_a_tensor_split_charges_the_replicated_compute_buffer():
 
 
 def test_a_tensor_split_pays_the_buffer_on_every_device():
-    """Each device of a tensor split reserves the whole single-GPU compute buffer
-    (Qwen3 8B across two GPUs: 128 MiB on each at ubatch 512, 512 MiB at 2048), so
-    the fit's per-device multiplication is the whole difference from a layer lump."""
+    """Each device of a tensor split reserves a whole compute buffer (Qwen3 8B: 128 MiB at ubatch 512)."""
     b = LlamaCppBackend()
     b._vocab_size = 151936
     b._embedding_length = 4096
@@ -1349,9 +1320,8 @@ def test_the_cpu_projector_retry_voids_the_fit_it_was_proved_against():
 
 
 def test_the_cpu_projector_retry_drops_the_fits_load_mode():
-    """The projector respawn changes placement, so the fit's conclusion goes with
-    it, like the --fit on, arch-crash and no-flash retries. Checked at the source,
-    like those, because this arm only runs behind a real projector startup crash."""
+    """Projector respawn changes placement, so the fit's conclusion is dropped there too, as in the
+    other retries; checked at source, as that arm needs a projector startup crash."""
     from core.inference.llama_cpp import LlamaCppBackend as B
     import inspect
 
@@ -1439,9 +1409,7 @@ def test_an_inherited_loader_mode_wins_over_the_fits_pick():
 
 
 def test_an_unpriced_projector_is_the_difference_between_a_fit_and_an_oom(monkeypatch):
-    """The premise behind pricing an inherited projector: 18 GiB of weights fit a
-    20 GiB card, and the same load with a 3 GiB projector the child loads from
-    LLAMA_ARG_MMPROJ does not."""
+    """18 GiB of weights fit a 20 GiB card; a 3 GiB LLAMA_ARG_MMPROJ projector makes it not fit."""
     monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
     stub = _Stub(1024)
     rows = [(0, 20 * 1024)]
@@ -1627,9 +1595,7 @@ def test_an_unreadable_adapter_abstains(tmp_path, monkeypatch):
 
 
 def test_adapter_flags_really_reach_the_child():
-    """Premise test (holds either way): the fit only has to price these because the
-    pass-through layer lets them through. It is a denylist, and none of the four
-    adapter flags is on it."""
+    """Premise, true either way: the denylist does not name the four adapter flags, so they pass."""
     from core.inference.llama_server_args import validate_extra_args
     for flag in ("--lora", "--lora-scaled", "--control-vector", "--control-vector-scaled"):
         assert validate_extra_args([flag, "/a.gguf:0.5"]) == [flag, "/a.gguf:0.5"]
@@ -1736,9 +1702,7 @@ def test_the_recompute_reads_the_argv_not_the_managed_block():
 
 
 def test_the_no_flash_rung_recomputes_the_memory_record():
-    """Reachability at the source, like the strip it sits next to: the arm only
-    runs behind a real signal crash. Whitespace stripped, so a reformat that
-    wraps the call cannot break the pin."""
+    """Checked at source, like the strip beside it: the arm only runs behind a real signal crash."""
     from core.inference.llama_cpp import LlamaCppBackend as B
     import inspect
 
@@ -1833,8 +1797,7 @@ def test_the_crash_path_cpu_fallback_recomputes_the_memory_record():
 
 
 def test_the_replayed_cpu_fallback_recomputes_the_memory_record():
-    """Same, for a request that carries cpu_fallback and rebuilds the replay
-    before anything spawns."""
+    """Same for a cpu_fallback request, which rebuilds the replay before anything spawns."""
     from core.inference.llama_cpp import LlamaCppBackend as B
     import inspect
 
@@ -1885,8 +1848,7 @@ def test_the_no_flash_retry_re_enables_unsloths_own_fitter():
 
 
 def test_the_no_flash_fit_flip_leaves_a_user_fit_alone():
-    """The user's own `--fit off` survives the respawn, in both spellings: theirs wins by
-    last-arg anyway, except where the only `--fit` present is theirs."""
+    """User --fit off survives respawn; last-arg wins, except where theirs is the only --fit."""
     for user_tokens in (["--fit", "off"], ["--fit=off"], ["-fit", "off"]):
         rewrite = _no_flash_fit_rewriter(user_tokens)
         both = rewrite(["llama-server", "--fit", "off", *user_tokens])
@@ -1911,8 +1873,7 @@ def test_an_inherited_fit_off_survives_the_no_flash_retry():
 
 
 def test_the_no_flash_retry_re_places_at_both_respawns():
-    """Both --flash-attn off arms re-enable the fitter, each before its own spawn. Checked
-    at the source because these arms only run behind a real crash."""
+    """Flash-attn-off retries re-enable the fitter; checked at source, as they need a crash."""
     from core.inference.llama_cpp import LlamaCppBackend as B
     import inspect
 
@@ -1939,8 +1900,7 @@ def test_a_fixed_layer_count_keeps_the_no_flash_retry_on_its_placement():
 
 
 def test_the_reserve_holds_for_a_placement_the_fitter_will_not_move():
-    """The other half of the same case, on the estimate rather than the argv: with no
-    re-placement available the reserve prices the padded, f16-floored V."""
+    """No re-placement available: the reserve prices the padded, f16-floored V."""
     from core.inference.llama_cpp import _placement_is_fitter_proof, _reserved_flash_attn_state
 
     assert _reserved_flash_attn_state(True, None, gpu_layers = 20, env = {}) is False

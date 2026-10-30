@@ -146,8 +146,7 @@ def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:
     try:
         with open(trainer_state, encoding = "utf-8-sig") as f:
             state = json.load(f)
-        # Not just the last entry: on a step that also evaluates, the Trainer logs the
-        # eval metrics after the training loss and before it saves the checkpoint.
+        # Not just the last entry: eval metrics follow the loss on an evaluating step.
         for entry in reversed(state.get("log_history") or []):
             if isinstance(entry, dict) and "loss" in entry:
                 return entry["loss"]
@@ -401,9 +400,8 @@ def _hub_model_config(repo_id: str, hf_token: HfTokenArg) -> Optional[dict]:
 
 
 def is_unquantized_full_finetune(checkpoint_path: str, hf_token: HfTokenArg = None) -> bool:
-    """Whether a local or Hub checkpoint is an unquantized full model.
-
-    False when unsure, so the caller keeps the 4-bit load that used to fit."""
+    """Whether a local or Hub checkpoint is an unquantized full model; False when unsure, so the
+    caller keeps the 4-bit load."""
     try:
         is_local = Path(checkpoint_path).exists()
     except OSError:

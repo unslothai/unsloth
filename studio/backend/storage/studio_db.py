@@ -182,9 +182,7 @@ def _ensure_project_workspace(root_path: str) -> str:
 def sandbox_is_referenced_elsewhere(
     session_id: str, exclude_thread_id: "str | None" = None
 ) -> bool:
-    """Whether a surviving chat still shows file cards for this sandbox. Forking clones the message
-    content verbatim, so the fork's cards keep the source chat's session id, and deleting the
-    source's files would leave those cards downloading nothing."""
+    """Forks keep the source's session id in copied cards, so a surviving chat still needs its sandbox."""
     if not session_id:
         return False
     conn = get_connection()
@@ -2316,9 +2314,7 @@ def update_chat_thread(
     settings_write: Optional[dict] = None,
     preserve_title_modified_at: bool = False,
 ) -> Optional[dict]:
-    """Patch a thread. With expected_title, the write only lands while the row still holds that title,
-    so a concurrent rename wins instead of being lost. expected_opening_message_id guards a title
-    derived from that message: if it is gone, the write is rejected rather than expanding deleted text."""
+    """Writes only while expected_title still matches and expected_opening_message_id still exists."""
     allowed = {
         "title": ("title", patch.get("title")),
         "modelType": ("model_type", patch.get("modelType")),
@@ -2947,8 +2943,7 @@ def delete_chat_threads_in(conn: sqlite3.Connection, ids: list[str]) -> tuple[li
     active_research_run_ids = _active_research_run_ids(conn, thread_ids)
     active_chat_run_ids = _active_chat_generation_run_ids(conn, thread_ids)
     _reparent_surviving_forks(conn, thread_ids)
-    # Record the delete even when no row exists yet. A late POST carrying the same unique id
-    # must not recreate a thread after this request has confirmed deletion.
+    # Tombstone even without a row, so a late POST with the same id cannot recreate the thread.
     _tombstone_chat_threads(conn, thread_ids)
     conn.executemany(
         "DELETE FROM chat_attachment_tombstones WHERE thread_id = ?",
@@ -3874,9 +3869,8 @@ def _detach_terminal_generation_for_edit(
     run_id = stored_metadata.get("generationRunId") if isinstance(stored_metadata, dict) else None
     if not isinstance(run_id, str):
         return False
-    # Bind by the stamped run id. Refresh/Reload inserts a new run for a new assistant
-    # id, but create_run stamps created_at itself, so a tab that kept its own Date would
-    # fail a createdAt match (#15004). The run row is the authority.
+    # Bind by the stamped run id, not createdAt: create_run stamps its own created_at, so a tab's
+    # own Date cannot match (issue 15004); the run row is the authority
     row = conn.execute(
         """SELECT id AS run_id, status AS run_status
            FROM chat_generation_runs
@@ -4512,9 +4506,8 @@ _NO_RESEAT = object()
 
 
 def _fork_boundary_reseat(conn, thread_id: str, pruned: set):
-    """Where a fork's divider moves when the message it sits under is pruned: up to the last
-    inherited message that survived, or off entirely. Left on a deleted row it matches nothing
-    and the fork's history loses its close for good. `_NO_RESEAT` means leave it alone."""
+    """Moves a fork's divider to the last surviving inherited message, or off; _NO_RESEAT leaves it
+    alone."""
     if not pruned:
         return _NO_RESEAT
     row = conn.execute(
@@ -4545,9 +4538,7 @@ def _surviving_visible_ancestor(
 
 
 def _reseat_protected_messages(conn, thread_id: str, reseat_parents: dict) -> None:
-    """Point protected messages at the ancestor that survived the prune. Their own rows survive it, the
-    parents they pointed at need not, and a dangling parent makes the whole thread unimportable on
-    the next load rather than just that turn."""
+    """Repoints protected messages at a surviving ancestor, since a dangling parent breaks the thread."""
     for message_id, parent_id in reseat_parents.items():
         row = conn.execute(
             "SELECT parent_id, metadata_json FROM chat_messages WHERE thread_id = ? AND id = ?",
@@ -4652,8 +4643,7 @@ def fork_base_of(src: Mapping) -> str:
 
 
 def _next_fork_title(conn: sqlite3.Connection, base: str) -> str:
-    """Lowest free `base (n)`, n >= 1. Called inside the fork's write lock, so two
-    concurrent forks of one chat cannot pick the same number."""
+    """Lowest free `base (n)`, n >= 1; picked under the write lock so forks cannot collide."""
     taken: set[int] = set()
     for _id, title in _title_family(conn, base):
         match = _FORK_TITLE_SUFFIX.match(title)
@@ -4748,12 +4738,8 @@ def fork_chat_thread(
             title, base = _DEFAULT_CHAT_TITLE, None
         else:
             title = _next_fork_title(conn, base)
-        # Anchor for the "Continued from chat" divider. Not derivable later: copies keep the
-        # source's timestamps and take fresh ids. The last message that PAINTS one, not simply
-        # the last copied: an imported chat can end on a system message, which renders as no row
-        # at all (threadMessageKind), and the divider rides the row it anchors to. Picking it in
-        # the frontend instead would mean reading the whole message list in every row, which is
-        # what the thread's render budget forbids. None when nothing inherited is visible.
+        # Divider anchor: last rendered inherited message (system rows don't render); copies get
+        # fresh ids.
         boundary_row = next(
             (row for row in reversed(ancestry) if row["role"] in _RENDERED_MESSAGE_ROLES), None
         )
@@ -4898,9 +4884,7 @@ def next_message_created_at(thread_id: str, message_id: str) -> Optional[int]:
 
 
 def chat_thread_has_messages(thread_id: str) -> bool:
-    """Whether this thread has any saved message. Existence only, no rows hydrated. A temporary
-    (incognito) chat is never written here, so this is what tells a thread whose turns can be
-    archived from one whose turns must not be."""
+    """Existence check: incognito chats are never written, so this tells archivable threads apart."""
     conn = get_connection()
     try:
         row = conn.execute(
@@ -4983,8 +4967,7 @@ def _attachment_content_parts(attachment: dict) -> list[dict]:
 
 
 def _chat_attachment_text_bytes(attachment: dict) -> Optional[int]:
-    """UTF-8 size of a kept original's extracted text, which the database stores as well. None
-    without an original, whose size already counts its text."""
+    """UTF-8 size of a kept original's extracted text; None without an original."""
     if chat_originals.attachment_sha256(attachment) is None:
         return None
     return sum(
@@ -5023,8 +5006,7 @@ _AUDIO_FORMAT_TYPES = {
 
 
 def _content_part_audio_type(audio: Any) -> Optional[str]:
-    """An audio part's type: its data URL's, its format's, or else its bytes' own header, since a
-    compare chat stores bare base64 with neither."""
+    """Audio type from data URL, format, or the bytes' header; bare base64 carries neither."""
     data = audio
     if isinstance(audio, dict):
         known = _AUDIO_FORMAT_TYPES.get(str(audio.get("format") or "").lower())
@@ -5055,9 +5037,7 @@ def _content_part_audio_type(audio: Any) -> Optional[str]:
 
 
 def _content_part_attachments(content_json: Optional[str]) -> list[dict]:
-    """Managed local blobs stored in content_json, with stable payload ids. Exact duplicate blobs
-    intentionally share one inventory id: deleting it removes every identical copy, avoiding
-    ambiguous index-based addressing."""
+    """Managed blobs in content_json; identical blobs share one id, so deleting one removes all copies."""
     content = _json_loads(content_json, None)
     if not isinstance(content, list):
         return []
@@ -5244,9 +5224,8 @@ def _record_chat_attachment_tombstone(
 
 
 def delete_chat_attachment(message_id: str, attachment_id: str) -> bool:
-    """Remove one stored upload from a message. The tombstone is retained while the thread exists, so
-    pruning and later recreating the same message id cannot restore the deleted upload. If an
-    ordinary attachment id collides with a content-blob id, both are deleted as one managed item."""
+    """Leaves a tombstone while the thread exists, so a recreated message cannot restore the upload;
+    an id colliding with a content-blob id deletes both as one managed item"""
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -5415,9 +5394,7 @@ def get_app_setting(key: str, fallback = None):
 
 
 def get_app_settings(keys: list[str]) -> dict[str, Any]:
-    """Read a set of settings from one SQLite snapshot. Values that form one logical record must not be
-    fetched through separate connections: a concurrent multi-key upsert could leave a reader pairing
-    one save's first field with another save's remaining fields. Missing keys are omitted."""
+    """Reads keys from one snapshot so a concurrent multi-key upsert is never seen half-applied."""
     unique = list(dict.fromkeys(keys))
     if not unique:
         return {}
@@ -6001,9 +5978,7 @@ def list_chat_legacy_imports() -> list[str]:
 
 
 def upsert_chat_legacy_imports(legacy_thread_ids: list[str]) -> tuple[int, int]:
-    """Mark each given legacy thread id as imported. Idempotent. Returns (accepted, inserted): count of
-    deduped non-empty input ids, and count of rows actually new. RETURNING lets callers tell
-    first-time imports from idempotent re-runs without an extra SELECT."""
+    """Marks legacy thread ids as imported, idempotently; returns (accepted, inserted) counts."""
     ids = list(dict.fromkeys(tid for tid in legacy_thread_ids if tid))
     if not ids:
         return 0, 0

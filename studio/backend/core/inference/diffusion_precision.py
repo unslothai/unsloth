@@ -33,9 +33,7 @@ _TE_TORCHAO_MODES = frozenset({TE_QUANT_INT8, TE_QUANT_FP8_DYNAMIC, TE_QUANT_NVF
 # Pipeline attributes that hold a text encoder, in order.
 _TEXT_ENCODER_ATTRS = ("text_encoder", "text_encoder_2", "text_encoder_3")
 
-# int8 degrades on large text encoders unless the quant-sensitive decoder blocks stay bf16. Per-family (skip_first,
-# skip_last) blocks to keep dense (``FamilyProfile.te_int8_skip``, measured hidden-state fidelity); absent families
-# have no schedule clearing the bar, so int8 falls back to fp8.
+# int8 TE needs decoder blocks kept bf16; families without a te_int8_skip schedule fall back to fp8.
 _TE_INT8_SKIP: dict[str, tuple[int, int]] = _profile_table("te_int8_skip")
 
 
@@ -517,9 +515,7 @@ def _te_exclude_tokens(encoder: Any) -> tuple[str, ...]:
 
 
 def _keep_bf16_block_fqns(encoder: Any, skip_first: int, skip_last: int) -> set[str]:
-    """FQNs of decoder blocks to keep bf16: the first ``skip_first`` and last ``skip_last`` of
-    each top-level ``nn.ModuleList`` stack. Structural, so no per-architecture table.
-    Counts live slots only (truncated dead tails are passthroughs)."""
+    """Edge FQNs of each ModuleList stack's first skip_first and last skip_last blocks, live slots only."""
     import torch
 
     from .diffusion_te_truncate import live_slots
@@ -653,9 +649,7 @@ def _cast_fp8(encoder: Any, target: Any) -> None:
 
 
 def _install_dtype_override(cls: type) -> None:
-    """Shadow ``cls.dtype`` with a property preferring the per-instance compute-dtype
-    override ``_cast_fp8`` sets; instances without it keep the original behaviour. Class
-    identity is untouched, applied once per class."""
+    """Property prefers per-instance dtype override from _cast_fp8; instances without it are unchanged."""
     existing = cls.__dict__.get("dtype")
     if getattr(getattr(existing, "fget", None), "_unsloth_te_dtype_override", False):
         return

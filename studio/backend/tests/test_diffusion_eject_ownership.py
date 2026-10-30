@@ -85,8 +85,7 @@ def test_an_active_foreign_generation_still_refuses_the_eject(backend):
 
 
 def test_a_refused_eject_leaves_no_fence_behind(backend, monkeypatch):
-    """Whatever raises, _unload_waiters comes back to zero: a leaked count would make every later
-    load wait out a teardown that is not happening."""
+    """If teardown raises, _unload_waiters must still return to zero or later loads stall."""
     _resident(backend)
     boom = RuntimeError("teardown exploded")
 
@@ -136,8 +135,7 @@ def test_an_eject_arriving_between_the_wait_and_the_lock_is_waited_out(backend, 
             started.set()
         real_wait(*args, **kwargs)
         if calls["waits"] == 1:
-            # Exactly the gap: the eject lands after the wait returned and before the caller can
-            # take _load_cancel_lock.
+            # The race: eject lands after the wait returns, before _load_cancel_lock is taken.
             with backend._load_cancel_lock:
                 backend._unload_waiters += 1
                 backend._load_token += 1
@@ -276,8 +274,7 @@ def test_an_eject_with_no_load_in_flight_holds_nothing(backend):
 
 
 def test_a_generation_turned_away_by_the_load_fence_sleeps_on_it(backend):
-    """The retry waited on _teardown_drained, still SET in that window, so it spun against the
-    very _lock the eject needed."""
+    """Retry waited on _teardown_drained (still set) and spun against the eject's _lock."""
     with backend._load_cancel_lock:
         backend._unload_waiters += 1
         backend._unload_fence_clear.clear()

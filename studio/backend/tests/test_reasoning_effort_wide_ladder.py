@@ -106,8 +106,7 @@ def test_a_model_advertising_no_levels_keeps_the_four_level_behaviour():
 
 
 def test_a_narrow_ladder_does_not_lose_the_gpt_oss_levels():
-    # Advertised levels widen the allowlist rather than replace it, so a level
-    # the scan missed is still forwarded.
+    # Advertised levels widen the allowlist, so a level the scan missed is still forwarded.
     backend = _shim(["high", "max"], architecture = None)
     assert backend._request_reasoning_kwargs(None, "low", None) == {"reasoning_effort": "low"}
     assert backend._request_reasoning_kwargs(None, "max", None) == {"reasoning_effort": "max"}

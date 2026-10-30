@@ -38,9 +38,8 @@ def _no_other_gpu_owner(monkeypatch):
     """
     from core.inference import gpu_arbiter
 
-    # Every correlated global together: acquire_for() in later tests moves the account and epoch
-    # fields with the owner, so restoring only some of them would pair one claim's owner with
-    # another's account in the next test on this worker.
+    # Restore every correlated global together: acquire_for() moves owner, account and epoch as one,
+    # or later tests pair mismatched fields.
     for name, empty in (
         ("_owner", None),
         ("_owner_account", None),
@@ -363,9 +362,8 @@ def test_instance_masks_are_the_union_split_per_detection(tiny_sam3):
 
 
 def test_detailer_budget_moves_only_the_planes_it_keeps(tiny_sam3, monkeypatch):
-    """The Detailer's call (``plane_filter`` + ``max_planes``): the same instances as a plain instance-mask call,
-    bit-identical planes for exactly the detections it keeps (filter first, then the cap, in ``instances`` order),
-    no union mask, and at most ``max_planes`` planes moved off the device."""
+    """Detailer call (plane_filter + max_planes) keeps the instance-mask planes bit-identical,
+    filters before capping, and moves at most max_planes off-device."""
     import torch
     from PIL import Image
 
@@ -1396,8 +1394,7 @@ def test_a_release_timing_out_as_the_call_settles_still_unloads(monkeypatch):
     )
     worker.start()
     assert settled.wait(10)
-    # Timed out on a call that will not see the flag: the handover waits out the tail and unloads, never letting the
-    # next owner in beside the resident weights.
+    # Handover waits out the tail and unloads, so no new owner loads beside resident weights.
     assert segmenter.release("handover", wait = True, timeout = 0.05, handover = True) is True
     worker.join(10)
     assert not segmenter.loaded and segmenter._timer is None and segmenter._release_pending is False
@@ -1512,8 +1509,7 @@ def test_a_call_queued_across_a_handover_stays_off_the_card(tiny_sam3, monkeypat
         while not segmenter._run_lock.locked() and time.monotonic() < deadline:
             time.sleep(0.01)
         time.sleep(0.1)  # the queued call is now blocked on _run_lock
-        # The handover's release waits on the call in flight; it ends, the release takes and drops the lock, and the
-        # new owner goes on to register.
+        # Release waits on the in-flight call, then takes and drops the lock for the new owner.
         releaser = threading.Thread(
             target = lambda: segmenter.release("handover", wait = True, handover = handover)
         )

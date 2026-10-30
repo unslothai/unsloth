@@ -470,9 +470,8 @@ def test_unsupported_comfy_quant_formats_refused_by_name(tmp_path, conf):
 
 
 def _comfy_fp8mixed_qwen3(ref: "torch.nn.Module") -> tuple[dict, dict]:
-    """``ref`` in ComfyUI's fp8mixed text-encoder layout (qwen_3_8b_fp8mixed: float8_e4m3fn and nvfp4 Linears,
-    here with an mxfp8 one too), written by the independent encoder of test_diffusion_comfy_block. Returns the
-    file tensors and the dense weight each quantized key must load as."""
+    """Writes ComfyUI's qwen_3_8b_fp8mixed layout (float8_e4m3fn and nvfp4 Linears, plus mxfp8) via
+    the independent encoder; returns tensors and each key's dense weight."""
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(

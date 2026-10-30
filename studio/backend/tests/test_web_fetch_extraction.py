@@ -2075,8 +2075,7 @@ def test_fetch_url_raw_dns_pinning_proxy_opt_out(
 
     monkeypatch.setattr(tools_mod, "_validate_and_resolve_host", resolve)
     monkeypatch.setattr(urllib.request, "build_opener", fake_build_opener)
-    # Patch the lookups rather than the env: getproxies/proxy_bypass read system
-    # settings on macOS and Windows.
+    # Patch lookups, not env: getproxies/proxy_bypass read system settings on macOS/Windows.
     monkeypatch.setattr(
         urllib.request,
         "getproxies",
@@ -2084,8 +2083,7 @@ def test_fetch_url_raw_dns_pinning_proxy_opt_out(
     )
     monkeypatch.setattr(urllib.request, "proxy_bypass", lambda host: False)
 
-    # No embedded credentials: the web access policy rejects those outright
-    # (see test_fetch_url_raw_rejects_embedded_credentials).
+    # Embedded credentials are refused; see test_fetch_url_raw_rejects_embedded_credentials.
     url = "https://example.com:8443/page?q=1"
     err, body, _content_type = tools_mod._fetch_url_raw(url, proxy_hostname = proxy_hostname)
 
@@ -2665,8 +2663,7 @@ def test_fetch_url_raw_deadline_aborts_slow_body(monkeypatch):
 
 
 def test_read_capped_body_deadline_bounds_a_real_socket_drip():
-    # A buffered read(n) keeps receiving until n bytes arrive, so only a real socket shows
-    # whether a server sending one byte at a time can outlast the deadline.
+    # read(n) waits for n bytes; only a real socket shows a one-byte drip past the deadline.
     import socket
     import threading
     import urllib.request

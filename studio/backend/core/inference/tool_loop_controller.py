@@ -450,8 +450,7 @@ _KNOWN_KEYWORDS = _READ_KEYWORDS | _INERT_KEYWORDS | _UNION_KEYWORDS
 
 
 def _readable(spec: Any) -> bool:
-    """An allowlist, because composition, reference and a later draft's keywords can all move
-    a declaration out of this walk's reach."""
+    """Allowlist: composition, references or newer drafts can move declarations out of reach."""
     return isinstance(spec, Mapping) and spec.keys() <= _KNOWN_KEYWORDS
 
 
@@ -765,8 +764,7 @@ def mcp_display_parts(tool_name: str) -> "tuple[str, str] | None":
 
 
 def provisional_tool_provenance(tool_name: str) -> dict[str, object]:
-    """Provisional-card provenance, MCP display name included so an early or
-    orphaned card (cancel/error before the real tool_start) never shows the id."""
+    """Provisional card provenance with MCP name; an early or orphaned card never shows the id."""
     mcp = mcp_display_parts(tool_name)
     return tool_event_provenance(
         provisional = True,
@@ -1059,9 +1057,8 @@ def _reruns_after_new_work(tool_name: Any) -> bool:
     return tool_name in _WORKSPACE_TOOLS or str(tool_name or "").startswith(_MCP_TOOL_PREFIX)
 
 
-# `sk-unsloth-` + 32 hex (auth/storage.py), cached in the clear so the CLI can reuse it. Masked on
-# the way to the model, which is where it would leave the machine. The mask carries neither prefix,
-# so re-running is a no-op.
+# Cached in the clear for CLI reuse; masked before the model, and the mask has no prefix to
+# re-match.
 _STUDIO_API_KEY_RE = re.compile(
     # 8, not 32: a truncated result can end mid-key. Hex only, so `sk-unsloth-internal-...` survives.
     r"sk-unsloth-[0-9a-fA-F]{8,}"
@@ -1350,8 +1347,7 @@ class ToolLoopController:
             provisional = provisional,
             allowed_tool_names = allowed_tool_names,
         )
-        # The second pass receives an argument mapping, so retain provenance from the first parse,
-        # notably whether a local model's bare argument was healed.
+        # Keep first-parse provenance, e.g. whether a local model's bare argument was healed.
         refreshed.provenance.update(decision.provenance)
         return refreshed
 

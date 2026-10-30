@@ -622,8 +622,7 @@ def test_competing_acquire_blocks_until_register_completes(monkeypatch):
 
 
 def test_evict_chat_cancels_a_chat_load_that_has_not_spawned_yet(monkeypatch):
-    # HF chat loads have no llama-server until the GGUF download ends; the in-flight marker makes
-    # them cancellable.
+    # HF chat loads have no llama-server yet; the in-flight marker makes them cancellable.
     import core.inference as core_inference
     import routes.inference as routes_inference
     from core.inference.llama_cpp import chat_load_in_flight
@@ -753,9 +752,8 @@ def test_the_safetensors_load_yields_a_gpu_it_lost_while_loading():
     load_impl = route_src[route_src.index("async def _load_model_impl") :]
     unsloth_load = load_impl.index("success = await asyncio.to_thread(")
     tail = load_impl[unsloth_load:]
-    # Gated on chat_load_needs_gpu like the GGUF branch: a load that never took the
-    # arbiter has no ownership to lose, and checking against a None owner would 409
-    # every CPU-placed audio load.
+    # Gated on chat_load_needs_gpu like the GGUF branch: a CPU-placed load never took the arbiter,
+    # so a None-owner check would 409 every CPU-placed audio load
     guard = tail.index("if chat_load_needs_gpu and not holds(CHAT):")
     assert "await asyncio.to_thread(backend.unload_model, config.identifier)" in tail[guard:]
     assert tail.index("status_code = 409", guard) > guard
@@ -1050,8 +1048,7 @@ def test_always_identifies_media_by_model_path_not_the_callers_display_label(arb
     with pytest.raises(arb.MultiModelAlwaysRefusal):
         arb.refuse_replacing_media(arb.DIFFUSION, "always", ("org/Flux",))
     assert arb.refuse_replacing_media(arb.DIFFUSION, "always", ("/models/b",)) == []
-    # Both load routes key the gate on the path alone: a display label naming the resident would
-    # pass another repo off as a reload of it.
+    # Both routes gate on path alone: a display label would pass another repo off as a reload.
     for routes in (image_routes, video_routes):
         source = inspect.getsource(routes)
         assert "media_names = (request.model_path,)" in source
@@ -1175,8 +1172,7 @@ def test_a_respawning_chat_server_counts_as_occupied(monkeypatch):
 
 
 def test_a_failed_replacement_gives_the_kept_model_back_its_price(cores, monkeypatch):
-    # The new price is written as the load starts; its failure keeps the old model, which must
-    # not stay priced as the smaller model that never loaded.
+    # New price written at load start; on failure the kept model gets its old price back.
     monkeypatch.setattr(arb, "_media_need_rollback", {}, raising = False)
     old, new = {0: 8000}, {0: 1000}
     arb.acquire_for(arb.DIFFUSION, lambda: None, policy = "fit", need_mib = old)
@@ -1197,8 +1193,7 @@ def test_a_failed_first_load_and_an_unpriced_one_restore_nothing_stale(cores, mo
     arb.restore_media_need(arb.VIDEO)
     assert arb.VIDEO not in arb._media_needs
 
-    # A load that takes no GPU claim reprices nothing, so its failure must not reach back to an
-    # older load's rollback.
+    # No-GPU-claim loads reprice nothing, so their failure must not reach older rollbacks.
     arb.acquire_for(arb.VIDEO, lambda: None, policy = "fit", need_mib = {0: 4096})
     arb.acquire_for(arb.VIDEO, lambda: None, policy = "fit", need_mib = {0: 2048})
     arb.begin_media_load(arb.VIDEO, "fit", ("org/video",), lambda: None)

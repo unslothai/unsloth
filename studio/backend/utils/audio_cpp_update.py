@@ -497,8 +497,7 @@ def _spec_commit(installer, record: dict, repo: str, tag: str) -> Optional[str]:
 
 
 def _backfill_model_specs() -> bool:
-    """Fetch ``model_specs/`` for a managed install made before the installer fetched it. Returns
-    whether the folder was added; never raises."""
+    """Fetches model_specs/ for older managed installs; returns whether added, never raises."""
     from core.inference import audio_cpp_server
     try:
         binary = audio_cpp_server.find_audio_cpp_server_binary()

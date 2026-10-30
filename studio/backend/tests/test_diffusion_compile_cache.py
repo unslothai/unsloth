@@ -349,9 +349,8 @@ def test_restore_inductor_dir(monkeypatch, tmp_path, fake_megacache):
 
 
 def test_the_import_fallback_matches_the_resolver(monkeypatch):
-    """The fallback runs when a CLI entry point reaches this module without studio/backend on
-    sys.path. Narrowed to whitespace it made the same path refused or accepted depending only on
-    sys.path, which is routing that depends on import order. Swept so the copy cannot drift."""
+    """The fallback runs when a CLI entry point imports this module without studio/backend on
+    sys.path; it must match the resolver, or the same path routes by import order."""
     import builtins
     import string
 
@@ -821,8 +820,7 @@ def test_atomic_write_replaces_in_place(tmp_path):
     assert list(tmp_path.iterdir()) == [target]
 
 
-# The manifest is the single commit point and bundles are content-addressed, so a killed save
-# always leaves a MATCHING pair.
+# Content-addressed bundles, one manifest commit point: a killed save leaves a matching pair.
 @pytest.fixture
 def mutable_megacache(monkeypatch):
     """Like ``fake_megacache`` but the artifact bytes can change between saves."""

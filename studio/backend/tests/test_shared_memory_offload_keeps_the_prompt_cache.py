@@ -16,8 +16,7 @@ _VISIBLE_DEVICE_MASKS = ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VI
 
 @pytest.fixture(autouse = True)
 def _no_inherited_gpu_mask(monkeypatch):
-    """The ROCm arm asks about physical ids on a faked torch host. A mask inherited
-    from the shell remaps them onto ids the fake host does not have."""
+    """An inherited GPU mask would remap physical ids onto cards the faked torch host lacks."""
     for _mask in _VISIBLE_DEVICE_MASKS:
         monkeypatch.delenv(_mask, raising = False)
 
@@ -55,8 +54,7 @@ def test_an_igpu_only_target_shares_system_memory():
 
 
 def test_an_unpinned_load_reads_the_detected_list():
-    """The auto-Vulkan arm pins nothing at this point, which is the shape the
-    Strix Halo session ran in."""
+    """Auto-Vulkan with nothing pinned reads the detected list, as the Strix Halo session did."""
     assert _vulkan({0}, [(0, 170079)]) is True
 
 
@@ -118,8 +116,7 @@ def test_an_apu_next_to_a_discrete_card_keeps_the_tuning(monkeypatch):
 
 
 def test_an_unreadable_inventory_fails_closed(monkeypatch):
-    """No torch, so neither unified-memory set can be built. The tuning stays as it
-    is rather than being dropped on a guess."""
+    """With no torch neither unified-memory set can be built; keep tuning rather than guess."""
     monkeypatch.setitem(__import__("sys").modules, "torch", None)
     assert (
         _shares(
@@ -133,8 +130,7 @@ def test_an_unreadable_inventory_fails_closed(monkeypatch):
 
 
 def test_the_vulkan_shared_set_is_not_read_as_physical_ids(monkeypatch):
-    """Vulkan ordinals and HIP ids are different spaces. A ROCm launch must not
-    inherit a shared set that was built from Vulkan's numbering."""
+    """Vulkan ordinals and HIP ids are different spaces; ROCm must not reuse a Vulkan set."""
     monkeypatch.setitem(__import__("sys").modules, "torch", _fake_torch(["gfx1100"]))
     assert (
         _shares(
@@ -151,9 +147,7 @@ def test_a_cuda_host_is_answered_without_touching_the_device(monkeypatch):
     """Answer from torch.version.hip alone: a device probe initialises CUDA and holds ~700 MiB of VRAM."""
 
     class _DeviceProbed(BaseException):
-        """BaseException on purpose: every helper in this family swallows
-        ``Exception`` per device, so an ordinary error would be caught and the
-        test would pass against the very code it exists to catch."""
+        """BaseException on purpose: helpers swallow Exception per device, which would hide the probe."""
 
     def _explode(_ordinal):
         raise _DeviceProbed("probed the CUDA device to answer a Windows-only question")

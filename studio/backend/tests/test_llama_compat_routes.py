@@ -159,8 +159,7 @@ def _teardown():
 
 
 def test_the_reported_probe_sequence_no_longer_returns_html():
-    """THE REGRESSION THIS FILE EXISTS FOR: every probed path answers JSON or 404,
-    never 200 text/html."""
+    """Regression guard: every probed path answers JSON or 404, never 200 text/html."""
     mod = _load()
     with _client(mod) as c:
         for path in ("/props", "/v1/props", "/version"):
@@ -180,8 +179,7 @@ def test_the_reported_probe_sequence_no_longer_returns_html():
 
 
 def test_the_html_fallback_is_what_used_to_answer_these():
-    """The control: without it the test above passes on a build that 404s everything,
-    which would break every deep link into the UI."""
+    """Control: a build that 404s everything would pass the test above and break UI deep links."""
     mod = _load()
     with _client(mod) as c:
         r = c.get("/some-ui-deep-link")
@@ -373,8 +371,7 @@ def test_no_ui_route_or_public_asset_takes_a_forwarded_get_path():
 
 
 def test_no_client_side_ui_route_is_shadowed_by_the_deny_list():
-    """Reads the routes the frontend declares, so a UI page named /metrics fails here
-    rather than 404-ing in the browser."""
+    """Checks frontend routes against the deny-list, so a UI page named /metrics fails here."""
     routes_dir = _BACKEND.parent / "frontend" / "src" / "app" / "routes"
     if not routes_dir.is_dir():
         pytest.skip("frontend sources not present in this checkout")
@@ -391,9 +388,8 @@ def test_no_client_side_ui_route_is_shadowed_by_the_deny_list():
 
 
 def test_the_ollama_surface_is_not_advertised():
-    """Answering /api/tags makes a client select Ollama and then fail on /api/chat.
-    The reporting user's client got 404 here, fell back to OpenAI, and worked, so
-    advertising the pair would have broken the very client this started from."""
+    """Answering /api/tags makes clients select Ollama and then fail on /api/chat; a 404 lets them
+    fall back to OpenAI."""
     mod = _load()
     routes = {r.path for r in mod.router.routes}
     assert "/api/tags" not in routes
@@ -434,8 +430,7 @@ def test_get_on_a_probe_path_still_reaches_the_asset_lookup(tmp_path):
 
 
 def test_props_does_not_pair_an_orchestrator_model_with_llama_server_fields():
-    """With MLX resident the llama backend is unloaded, so reading its fields anyway
-    described a serving model as having no context and no slots."""
+    """With MLX resident the llama backend is unloaded, so its fields must not be reported."""
 
     class _Orchestrator:
         active_model_name = "unsloth/Llama-3.2-3B"
@@ -449,8 +444,7 @@ def test_props_does_not_pair_an_orchestrator_model_with_llama_server_fields():
 
 
 def test_the_probe_paths_are_admitted_under_keyless_inference_scope():
-    """A 401 on /props in front of a surface the scope grants reads as an auth wall
-    over the whole thing and stops discovery."""
+    """A 401 on /props in a keyless-scope surface reads as an auth wall and stops discovery."""
     from utils.keyless_api_access import _INFERENCE_ROUTES
 
     assert ("GET", "/v1/models") in _INFERENCE_ROUTES, "baseline moved; re-derive this"
@@ -821,8 +815,7 @@ def test_the_forwarded_gets_survive_api_only_mode(monkeypatch):
 
 
 def test_a_transient_props_failure_does_not_report_zero_slots():
-    """total_slots 0 beside a model this response advertises as loaded reads as
-    "cannot serve"."""
+    """total_slots 0 beside a model this response advertises as loaded reads as cannot serve."""
     mod = _load(backend = _Backend(props = None, slots = 8))
     with _client(mod) as c:
         body = c.get("/props").json()
@@ -888,8 +881,7 @@ def test_unserved_v1_aliases_404_on_their_real_method(path, method):
 
 
 def test_the_v1_deny_list_never_shadows_a_path_studio_serves():
-    """The drift guard: implementing one of these must fail here rather than let a 404
-    shadow a real route."""
+    """Drift guard: implementing one of these must fail here, not 404-shadow a real route."""
     import os
 
     os.environ.setdefault("TMPDIR", os.environ.get("UNSLOTH_WORKSPACE", "/tmp") + "/temp")
@@ -901,8 +893,7 @@ def test_the_v1_deny_list_never_shadows_a_path_studio_serves():
     from routes.llama_compat import _probe_not_found
 
     def _record(into, path, endpoint):
-        # This module registers its own 404 handlers on exactly these paths, so a naive
-        # walk reports every one of them as served and the guard can never fire.
+        # Own 404 handlers sit on these paths, so a naive walk would report them all as served.
         if path and endpoint is not _probe_not_found:
             into.add(path)
 
@@ -947,8 +938,7 @@ def test_the_slash_and_bare_forms_agree():
 
 
 def _lifespan_app(mod, *, frontend_mounted = False):
-    """An app wired the way main.py wires one: installed at startup, because that is
-    the point both launch paths reach after the frontend decision."""
+    """An app wired as main.py wires it: installed at startup, where both launch paths meet."""
     from contextlib import asynccontextmanager
 
     @asynccontextmanager
@@ -980,8 +970,7 @@ def _directly_added_get_paths(app):
 
 
 def test_the_denials_are_installed_only_when_no_frontend_is_mounted():
-    """So an app already serving a catch-all does not carry a second, dead copy of
-    every engine path. Ordering, not this flag, is what keeps assets reachable."""
+    """Skipped when a frontend is mounted, so no dead engine paths; ordering keeps assets."""
     mod = _load()
     with TestClient(_lifespan_app(mod, frontend_mounted = False)):
         pass
@@ -1024,8 +1013,7 @@ def test_the_slash_form_of_a_denied_path_404s_rather_than_405(method, path):
     ["/completion", "/completion/", "/health", "/tokenize", "/v1/health", "/slots/3"],
 )
 def test_a_get_probe_404s_in_api_only_mode(path):
-    """--api-only mounts no frontend, so the catch-all that supplies the GET 404 is not
-    registered and these answered 405 on method alone."""
+    """--api-only has no frontend catch-all, so GET probes answered 405 instead of 404."""
     mod = _load()
     with _api_only_client(mod) as c:
         r = c.get(path)

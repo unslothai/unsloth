@@ -695,8 +695,7 @@ _SEPARATION_FAMILIES: tuple[AudioCppFamily, ...] = (
 )
 
 
-# Table families newer than some runtimes, so the runtime check spec-derived families get still
-# applies to them.
+# Table families can be newer than some runtimes, so the runtime check still applies to them.
 _RUNTIME_GATED_FAMILIES = frozenset(("mira_tts", "sopro_tts"))
 
 _MULTI_FILE_PACKAGE = "This model ships as a multi-file package Unsloth Studio cannot load yet."
@@ -893,8 +892,7 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
             _opt("semantic_top_k", "int", "Semantic codec top-k sampling limit.", min = 1),
         ),
     ),
-    # Speech to text.
-    # Full context fails past the ~400 s encoder ceiling; windows drop about a third of the words.
+    # Full context fails past ~400 s encoder ceiling; windows drop about a third of words.
     AudioCppFamily(
         "parakeet_tdt",
         "asr",
@@ -1100,11 +1098,8 @@ def family_policy(
     names: Iterable[str] = (),
     label: Optional[str] = None,
 ) -> AudioCppFamily:
-    """What Studio does with ``family``: the table entry, else what its spec says it does.
-
-    ``names`` (repo, folder and file names) pick the Qwen3-TTS package kind, which the family
-    alone does not say: CustomVoice needs a speaker, VoiceDesign designs one, Base only clones.
-    """
+    """Table entry, else the spec; names pick the Qwen3-TTS kind (CustomVoice needs a speaker,
+    VoiceDesign designs one, Base only clones)."""
     if family in _RUNTIME_GATED_FAMILIES and runtime_knows_family(family) is False:
         return AudioCppFamily(
             family,
@@ -2373,8 +2368,7 @@ def request_options(
     request_keys: Optional[frozenset[str]] = None,
     fill: Optional[Iterable[str]] = None,
 ) -> dict:
-    """Recommended defaults (names in ``fill``, never ``voice``; only ``request_keys`` when strict)
-    under the user's own values."""
+    """Defaults for fill names (never voice; request_keys only when strict), under user values."""
     fill = None if fill is None else frozenset(fill)
     defaults = {
         o["name"]: o["default"]
@@ -2748,8 +2742,7 @@ def _request_keys(
     embedded: Optional[dict],
     runtime_first: bool = False,
 ) -> Optional[frozenset[str]]:
-    # v0.9.1 checks the GGUF's embedded v1 contract first; v0.9.2 checks model_specs/ and its
-    # built-in specs first (model_spec/package.cpp).
+    # v0.9.1 checks the GGUF's embedded v1 contract first; v0.9.2 checks model_specs/ first.
     if (
         not runtime_first
         and isinstance(embedded, dict)

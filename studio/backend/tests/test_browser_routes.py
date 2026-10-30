@@ -150,8 +150,7 @@ def test_the_shell_counts_the_pages_requests_and_maps_srcdoc_paths():
 
 
 def test_the_shells_base_follows_the_router_only_without_a_page_base():
-    # A real browser resolves against the document URL when the page has no <base>; checked in
-    # Chromium, as this suite has no browser to run the shell in.
+    # Without a page base, browsers resolve against the document URL (checked in Chromium).
     shell = browser_mod._FRAME_HTML
     assert "ownBase: data.ownBase === true" in shell
     assert "anyOrigin: data.anyOrigin === true" in shell
@@ -772,9 +771,8 @@ def test_fetches_run_in_their_own_pool(monkeypatch):
 
 def test_a_closed_request_cancels_the_fetch(monkeypatch):
     seen = {}
-    # The route returns 499 without waiting for its pool task, so wait on the fetch itself. Draining
-    # the pool with no-ops was not enough: idle workers finish those while the fetch's own thread
-    # has not yet recorded what it saw, and a loaded CI worker read an empty dict (KeyError).
+    # The route returns 499 before its pool task ends, so wait on the fetch itself; draining with
+    # no-ops left a loaded CI worker reading an empty dict (KeyError).
     finished = threading.Event()
 
     def slow_fetch(url, **kwargs):

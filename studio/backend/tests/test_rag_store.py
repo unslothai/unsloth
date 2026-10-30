@@ -342,8 +342,7 @@ def test_gate_counts_a_folder_document_that_outlived_its_folder(rag_conn):
 
 
 def _pasted_prose(words: int) -> str:
-    """Pasted prose must be purely alphabetic; mixed letters and digits short-circuit the identifier
-    test."""
+    """Prose words must be purely alphabetic; a letter-digit mix would hit the identifier check."""
     letters = "abcdefghijklmnopqrstuvwxyz"
     return " ".join(
         letters[index % 26]

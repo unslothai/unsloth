@@ -124,8 +124,7 @@ def _sf_tools_on(payload):
 
 
 class TestRequestStatesToolIntent:
-    """A request that uses the standard OpenAI tool fields has stated its intent,
-    so the launcher default must not answer for it."""
+    """Standard OpenAI tool fields state intent; the launcher default must not answer for it."""
 
     def test_plain_chat_states_nothing(self):
         assert _request_states_tool_intent(_req()) is False
@@ -141,14 +140,12 @@ class TestRequestStatesToolIntent:
         assert _request_states_tool_intent(_req(messages = [_msg(tool_calls = [{}])])) is True
 
     def test_response_format_is_a_contract(self):
-        # The tool loop would break structured output; the GGUF passthrough
-        # already exempts these requests from the policy.
+        # Tool loop would break structured output; GGUF passthrough already exempts them.
         payload = _req(response_format = {"type": "json_object"})
         assert _request_states_tool_intent(payload) is True
 
     def test_empty_tools_reads_as_omitted(self):
-        # bool(payload.tools) is the GGUF router's own reading in
-        # _takes_tool_passthrough; both paths treat [] like an absent catalog.
+        # bool(payload.tools) matches GGUF's _takes_tool_passthrough; [] counts as no catalog.
         assert _request_states_tool_intent(_req(tools = [])) is False
 
 
@@ -170,9 +167,8 @@ class TestLauncherDefaultOnly:
 
 
 class TestSafetensorsGateHonorsStatedIntent:
-    """The safetensors path has no llama-server passthrough to fall back on, so
-    the launcher default must not withdraw tool_choice: "none" or take a client
-    catalog into Unsloth's own loop."""
+    """Safetensors has no llama-server fallback, so the launcher default must not withdraw
+    tool_choice or take a client catalog into the Unsloth loop."""
 
     def test_plain_chat_still_gets_the_default(self):
         set_tool_policy_default(True)

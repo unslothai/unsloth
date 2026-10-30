@@ -350,10 +350,9 @@ def compile_eligible(
     family: Any,
     probe: bool = True,
 ) -> bool:
-    """Whether the denoiser's repeated block should be regionally compiled: CUDA (incl. ROCm) bf16, or fp16 on NVIDIA
-    sm_75+, on a compile-friendly family with inductor available. ``is_gguf`` is kept for compat only.
-    ``probe=False`` never runs the allocating ROCm probe (preflight / status, before eviction): an unprobed install
-    counts as eligible, a recorded failure does not."""
+    """Whether the repeated block is regionally compiled: CUDA or ROCm bf16, or fp16 on NVIDIA
+    sm_75+, compile-friendly family with inductor; probe=False never runs the ROCm probe,
+    unprobed counts eligible, a recorded failure does not."""
     del is_gguf
     if not torch_compile_runtime_available():
         return False
@@ -1226,8 +1225,7 @@ def _compile_repeated_blocks(
                 )
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "int8 fused-dequant gemm", exc)
-        # Registered per-denoiser patches after the int8 GEMM swap (Qwen RoPE, Z-Image fused attention, Q2.1 ConvRot
-        # sharing, which reads the swap's leftovers).
+        # Patches run after the int8 GEMM swap; ConvRot sharing reads the swap's leftovers.
         _install_compile_patches(
             "pre_compile",
             transformer,
@@ -1679,9 +1677,7 @@ def _fused_vae_planned(pipe: Any) -> bool:
 
 
 def _vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
-    """U-Nets always; a DiT only on ``max`` (it costs a 60-70 s slower first render) or with the env forced on.
-
-    Never when the fused eager VAE path engages: it is faster than the compiled decode, with no cold compile."""
+    """U-Nets always; a DiT only in max mode or when the env forces it; never with the fused eager VAE."""
     if _fused_vae_planned(pipe):
         return False
     if _denoiser_unet(pipe) is not None:

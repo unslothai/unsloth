@@ -148,8 +148,7 @@ def test_int_mm_no_graph_break_after_offloaded_install(monkeypatch):
 
 
 def test_int_mm_no_graph_break_after_finalize_early_return(monkeypatch):
-    """_finalize on weights that are on no CUDA card (group offload, CPU) returns early; the GEMM home it resolves
-    must be cached before that return."""
+    """_finalize returns early off CUDA (group offload, CPU), so cache the GEMM home first."""
     model = torch.nn.Linear(2, 3)
     assert fused.resident_cuda_device(model) is None
     assert _intmm_graph_breaks(monkeypatch, lambda: fused._finalize(model)) == 0

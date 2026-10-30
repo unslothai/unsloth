@@ -1046,11 +1046,8 @@ def _remove_thread_rag_data(thread_ids, *, cutoff: "str | None" = None) -> None:
 def _fork_document_cutoff(
     source_thread_id: str, branch_message_id: Optional[str], client_now_ms: int
 ) -> Optional[str]:
-    """Uploads made once the source moved past the fork point stay behind; None at the tip.
-
-    Message times come from the browser's clock and upload times from this server's, so the
-    cutoff is shifted by the skew the fork request itself shows (its browser ``createdAt``
-    against server now)."""
+    """Uploads made after the fork point stay behind (None at the tip); the cutoff is shifted by the
+    browser-to-server clock skew the fork request shows."""
     import time
     from datetime import datetime, timezone
 
@@ -1069,8 +1066,7 @@ def _copy_thread_rag_documents(
     *,
     created_before: Optional[str] = None,
 ) -> bool:
-    """Copy the source's uploads into the fork. False when the fork should warn that some were
-    left behind."""
+    """Copy the source's uploads into the fork; False if some were left behind, so warn."""
     try:
         from core.rag import conversation_archive
         from storage import rag_db
@@ -1098,9 +1094,7 @@ def _copy_thread_rag_documents(
 
 
 async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[str]]":
-    """Drop each thread's sandbox off the event loop. Never raises. Returns how many went and which ids
-    still have files. The chat is the only way to those files, so a caller that never offered the
-    choice can offer it once it knows there was something to keep."""
+    """Remove sandboxes off the event loop, never raising; returns count and ids still holding files."""
     from starlette.concurrency import run_in_threadpool
 
     def _remove() -> "tuple[int, list[str]]":
@@ -1118,8 +1112,7 @@ async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[
             if get_chat_thread(thread_id) is not None:
                 continue
             _drop_file_history(thread_id)
-            # A fork clones the message content, cards and all, so the source
-            # chat's files are still on screen in a chat the user kept.
+            # A fork clones message cards, so the source's files still show in a kept chat.
             if delete_files and sandbox_is_referenced_elsewhere(thread_id):
                 if session_sandbox_has_files(thread_id):
                     kept.append(thread_id)
@@ -1160,9 +1153,8 @@ def list_attachments(
 
 
 def _decode_attachment_base64(payload: str) -> bytes:
-    """Strict base64 decode of a stored payload. Normalizes first: strips whitespace, fixes padding,
-    accepts the URL-safe alphabet. validate=False would silently drop bad characters and serve
-    corrupted bytes, so raise 422."""
+    """Strict base64 decode; validate=False would silently drop bad characters and serve corrupt
+    bytes, so raise 422 instead."""
     import base64
 
     # An imported file part can keep its data URL; base64 has no ':', so this never cuts a payload.

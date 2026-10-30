@@ -755,8 +755,7 @@ def _continuation_body(monkeypatch, provider_type: str, base_url: str) -> dict:
 
 
 def test_self_hosted_providers_get_the_continuation_flags(monkeypatch):
-    """These apply the template themselves, so a trailing assistant turn alone would
-    render closed plus a fresh generation prompt and restart the answer."""
+    """Servers apply the template, so a trailing assistant turn alone would restart the reply."""
     for provider_type in ("llama_cpp", "vllm"):
         body = _continuation_body(monkeypatch, provider_type, "http://local.example/v1")
         assert body["continue_final_message"] is True, provider_type
@@ -872,9 +871,8 @@ def test_kimi_no_search_fallback_requests_usage(monkeypatch):
 
 
 def test_a_type_carried_only_by_the_sse_event_field_is_honoured(monkeypatch):
-    """Only the SSE ``event:`` line carries the type here, and a type-less frame is
-    skipped rather than fatal, so the usage would vanish silently. Built raw, since
-    _openai_sse always repeats the type in data."""
+    """Only the SSE event: line carries the type here; a type-less frame is skipped silently, so
+    usage would vanish. Built raw because _openai_sse repeats the type in data."""
     body = (
         b"event: response.completed\n"
         b'data: {"response":{"usage":{"input_tokens":7,"output_tokens":3}}}\n'

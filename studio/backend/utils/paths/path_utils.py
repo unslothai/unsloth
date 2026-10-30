@@ -551,16 +551,10 @@ def _same_bytes(handle: int, staged: Path, size: int) -> bool:
 
 
 def _stage_for_open(path: Path, root: Optional[Path] = None) -> Path:
-    """A name for *path*'s current file in a private directory, for the OS opener.
-
-    Tool code runs in the sandbox and can swap *path* for a symlink (to an app or a script outside
-    it) between any check and the opener resolving the name. So the file is opened once without
-    following links, and what that open returned is copied into a fresh directory only Studio
-    writes to. That name is what the OS opens. Not a hard link: the OS sandbox refuses a workdir
-    file linked from outside it.
-    O_NOFOLLOW only covers the last component, so a swapped parent is caught by checking where the
-    opened file really is against *root*.
-    """
+    """Stages the file at path for the OS opener: opened once without following links, then copied
+    to a Studio-only dir, since sandboxed tool code can swap in a symlink; not a hard link
+    (sandbox refuses outside links); O_NOFOLLOW covers only the last component, so check the real
+    location against root."""
     import shutil
     import stat as stat_module
     import tempfile
@@ -667,9 +661,8 @@ _PC_CASE_SENSITIVE = 11
 
 
 def macos_volume_ignores_case(path: str) -> bool:
-    """Whether the macOS volume holding ``path`` (or its nearest folder that exists) ignores case,
-    as APFS and HFS+ do unless formatted case-sensitive. True off macOS, where only a test acting
-    as macOS asks."""
+    """Whether the macOS volume of path (or its nearest existing folder) ignores case, as APFS and
+    HFS+ do unless case-sensitive; True off macOS unless a test acts as macOS."""
     if sys.platform != "darwin":
         return True
     probe = path

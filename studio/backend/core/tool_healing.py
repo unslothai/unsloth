@@ -18,8 +18,7 @@ def _normalized_tool_name(name) -> str:
 
 
 def _markerless_promotable(name, enabled_tool_names) -> bool:
-    """True when a bare call named ``name`` may be promoted. ``None`` is name-agnostic;
-    execution-class and MCP names are refused under either gate."""
+    """Bare calls named ``name`` may be promoted; execution-class and MCP names are refused."""
     name = _normalized_tool_name(name)
     if not name:
         return False
@@ -35,9 +34,7 @@ def _markerless_execution_class(name) -> bool:
 
 
 def _markerless_blocked_execution(name, enabled_tool_names) -> bool:
-    """True when ``name`` is enabled but the guard declines its bare span. Unlike a disabled
-    name it keeps its place in a chain; only promotion is lost. For whether the BODY stays
-    opaque, use ``_markerless_execution_class``."""
+    """True for an enabled execution-class name: it keeps its chain place but loses promotion."""
     return _markerless_execution_class(name) and (
         enabled_tool_names is None or name in enabled_tool_names
     )
@@ -235,9 +232,7 @@ _MAX_BRACKET_SCAN_CHARS = 1_000_000
 
 
 def _balanced_json_span(text: str, start: int) -> int | None:
-    """Return the end index of a balanced JSON object opening at ``start``,
-    or ``None`` if the braces don't balance. Honors escapes and strings.
-    """
+    """End index of the balanced JSON object at start, or None; honors escapes and strings."""
     if start >= len(text) or text[start] != "{":
         return None
     # A span only closes on "}"; the streaming path rescans a growing body, and find runs in C.
@@ -678,9 +673,7 @@ def _func_close_index(content: str, body_start: int, body: str) -> int:
 
 
 def _trim_param_value(val: str) -> str:
-    """Trim the single wrapping newline the chat template adds around an XML
-    parameter value, preserving indentation inside VALUE (``str.strip()`` destroyed
-    code/diff argument indentation)."""
+    """Trims only the one wrapping newline; strip() would destroy code and diff indentation."""
     if val.startswith("\n"):
         val = val[1:]
     if val.endswith("\n"):
@@ -746,8 +739,7 @@ def _marker_coverage(content: str, markers) -> list[tuple[int, int]]:
 
 
 def _build_markers(content: str):
-    """JSON/Gemma tool markers as ``(start, brace_end, kind, match)`` in document
-    order; ``brace_end < 0`` marks an unbalanced (to-EOF) open."""
+    """Markers as ``(start, brace_end, kind, match)`` in order; brace_end < 0 means unclosed."""
     markers = []
     candidates = []
     for start_re, gemma, kind in (
@@ -775,9 +767,8 @@ def _build_markers(content: str):
 
 
 def marker_coverage(content: str) -> list[tuple[int, int]]:
-    """Coverage spans of JSON/Gemma tool markers so other parsers can treat markup
-    inside a marker's coverage (even a marker that failed to parse) as that call's
-    data rather than a sibling call."""
+    """Spans of JSON/Gemma tool markers, even a marker that failed to parse, so other parsers treat
+    markup inside as that call's data rather than a sibling call."""
     return _marker_coverage(content, _build_markers(content))
 
 
@@ -1212,9 +1203,8 @@ def strip_outside_think(text: str, strip_segment) -> str:
 
 
 def _strip_gemma_native_spans(text: str, *, final: bool) -> str:
-    """Remove complete Gemma-native spans, brace/quote-balanced so a literal
-    ``<tool_call|>`` in a quoted argument cannot truncate the span. An incomplete
-    span is dropped to EOF when ``final``, else kept (still streaming)."""
+    """Strips complete Gemma-native spans, brace/quote-balanced so an in-argument close tag cannot
+    truncate one; an incomplete span is dropped to EOF when final, else kept."""
     out: list[str] = []
     cursor = 0
     for match in _TC_GEMMA_START_RE.finditer(text):
@@ -1242,8 +1232,7 @@ def _strip_gemma_native_spans(text: str, *, final: bool) -> str:
 
 
 def _gemma_span_ranges(text: str) -> list:
-    """``(start, end)`` of each complete Gemma-native span; same walk as
-    ``_strip_gemma_native_spans`` without stripping."""
+    """(start, end) per complete Gemma-native span, same walk as the strip, without stripping."""
     ranges: list[tuple] = []
     cursor = 0
     for match in _TC_GEMMA_START_RE.finditer(text):

@@ -602,12 +602,8 @@ class TestFitTarget:
 
 
 class TestPerDeviceFitTarget:
-    """On mixed cards a lowered budget's margin is spelled per device.
-
-    One broadcast margin is sized by the largest card when lowering, so on a 48 GB +
-    24 GB host at 30% it asked the 24 GB card to keep about 33 GiB free: more than
-    the card has, so llama.cpp's fitter put nothing on it.
-    """
+    """On mixed cards the margin must be per device: a broadcast one made the 24 GB card keep 33 GiB
+    free."""
 
     _ENV = {"CUDA_DEVICE_ORDER": "PCI_BUS_ID"}
     # 48 GB and 24 GB cards at a 30% budget, legacy path (1024 MiB base).
@@ -685,8 +681,7 @@ class TestPerDeviceFitTarget:
         assert self._spell(cmd = cmd) == cmd
 
     def test_a_raised_budget_gives_each_card_its_own_smaller_margin(self):
-        # Above the default the delta is negative: at 98% the larger card may pack
-        # closer than the smaller one, where broadcast held both to the smaller's.
+        # Above the default, delta is negative: a larger card may pack closer than the smaller.
         import core.inference.llama_cpp as lc
 
         margins = lc.LlamaCppBackend._fit_target_margins_mib(
@@ -734,8 +729,7 @@ class TestPerDeviceFitTarget:
         backend = lc.LlamaCppBackend()
         rows = [(0, 47000, 49140), (1, 24000, 24576)]
         gib = 1024**3
-        # 20 GiB of weights and 4 GiB of RAM. Broadcast credits 12.7 GiB of VRAM (a
-        # 7.3 GiB spill); per card adds the 24 GB card's 6.4 GiB (a 0.9 GiB spill).
+        # Broadcast spills 7.3 GiB to RAM; per-card margins spill only 0.9 GiB.
         kwargs = dict(avail_mib = 4 * 1024, headroom_mib = 0)
         broadcast = backend._fits_without_paging(20 * gib, rows, vram_margin_mib = 33947.0, **kwargs)
         per_card = backend._fits_without_paging(

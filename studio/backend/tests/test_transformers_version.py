@@ -1419,9 +1419,8 @@ class TestProbeTier:
 
 
 class TestProbeGating:
-    """probe=False suppresses sidecar probes (the log-only needs_transformers_5 path); a
-    config saved by transformers 5.x is probed default-first so a new 5.x-only arch is
-    caught without mis-routing a 4.57.x-loadable model onto a sidecar."""
+    """probe=False skips sidecar probes (log-only needs_transformers_5 path); 5.x-saved configs
+    probe default-first so new 5.x-only archs are caught without misrouting 4.57.x models."""
 
     def setup_method(self):
         _probe_tier_cache.clear()
@@ -1472,8 +1471,7 @@ class TestProbeGating:
 
     def test_version_field_probe_stays_default_when_default_parses(self, monkeypatch):
         _shared_setup_1(monkeypatch, self)
-        # A model_type the ambient default ships, so the mapping does not upgrade it before
-        # the version-field probe under test runs.
+        # A default-shipped model_type; the mapping must not upgrade it before the probe runs.
         _config_json_cache[("org/new", None)] = {
             "model_type": "llama",
             "transformers_version": "5.0.0",
@@ -1585,9 +1583,8 @@ class TestProbeGating:
 
 
 class TestLocalCheckpointFilesAppear:
-    """A local checkpoint dir inspected before its files exist must not cache the miss or hit
-    the network, so files written later in the same process are still read (in-progress
-    checkpoints)."""
+    """A local checkpoint dir inspected before its files exist must not cache the miss or hit the
+    network; later-written files are still read."""
 
     def setup_method(self):
         _tokenizer_class_cache.clear()
@@ -1951,8 +1948,7 @@ class TestVenvDirFileIntegrity:
         assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
 
     def test_damage_in_an_unpinned_dependency_is_detected(self, tmp_path: Path):
-        """The whole dir is prepended to sys.path, so a shadowing dep breaks the
-        import just as surely as transformers itself."""
+        """Whole dir is prepended to sys.path: a shadowing dep breaks imports like transformers."""
         venv_dir = self._make_venv(tmp_path / "venv")
         self._make_venv(venv_dir, pkg = "regex", version = "2026.7.19")
         assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
@@ -1971,9 +1967,8 @@ class TestVenvDirFileIntegrity:
         assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
 
     def test_shared_non_runtime_rows_are_ignored(self, tmp_path: Path):
-        """A top-level test/ tree is shared, so one wheel's uninstall deletes
-        another's files. Nothing imports it: the stdlib shadows `test`, and
-        `tests`/`scripts` ship no __init__.py."""
+        """Top-level test/ tree is shared, so one wheel's uninstall deletes another's files; nothing
+        imports it: stdlib shadows test, tests/scripts lack __init__.py."""
         venv_dir = self._make_venv(
             tmp_path / "venv",
             record_extra = ["test/conftest.py,sha256=deadbeef,20650"],
@@ -1981,9 +1976,8 @@ class TestVenvDirFileIntegrity:
         assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
 
     def test_shared_non_runtime_rows_are_ignored_for_our_own_wheels_too(self, tmp_path: Path):
-        """Unreliable ownership is a property of the path, not of the claimant.
-        unsloth_zoo <= 2026.8.5 shipped a top-level tests/ into the same squatted
-        namespace, so exempting only third parties left it reported forever."""
+        """Unreliable ownership is a path property: unsloth_zoo up to 2026.8.5 shipped a top-level
+        tests/ into it, so exempting only third parties left it reported forever."""
         venv_dir = self._make_venv(
             tmp_path / "venv",
             pkg = "unsloth_zoo",
@@ -1992,8 +1986,7 @@ class TestVenvDirFileIntegrity:
         assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("unsloth_zoo==5.3.0",))
 
     def test_our_own_runtime_tree_is_still_checked(self, tmp_path: Path):
-        """Only the shared roots are exempt. A tests/ tree inside our package is
-        ours alone, so damage there still forces the wipe-and-reinstall."""
+        """Only shared roots are exempt: damage in our own tests/ tree still forces a rebuild."""
         venv_dir = self._make_venv(
             tmp_path / "venv",
             pkg = "unsloth_zoo",
@@ -2003,8 +1996,7 @@ class TestVenvDirFileIntegrity:
         assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("unsloth_zoo==5.3.0",))
 
     def test_an_installer_rewritten_file_keeps_its_existence_check(self, tmp_path: Path):
-        """setup.ps1 runs npm install in the installed tree, so the lockfile's
-        recorded size drifts. npm never deletes it, so only the size is dropped."""
+        """setup.ps1's npm install drifts the lockfile size; only the size check is dropped."""
         rel = "studio/backend/core/data_recipe/oxc-validator/package-lock.json"
         venv_dir = self._make_venv(
             tmp_path / "venv",
@@ -2055,8 +2047,7 @@ class TestVenvDirFileIntegrity:
             files = {"other/__init__.py": "o" * 10},
             record_extra = ["shared/mod.py,sha256=beef,999999"],
         )
-        # Two RECORDs disagree on the size; whichever copy landed says nothing
-        # about either, so this is not damage.
+        # Disagreeing RECORD sizes say nothing about either copy, so that is not damage.
         assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
         (venv_dir / "shared" / "mod.py").unlink()
         assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
@@ -2100,8 +2091,7 @@ class TestVenvDirFileIntegrity:
         assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
 
     def test_default_is_package_level_only(self, tmp_path: Path):
-        """The routing predicate keeps the cheap semantics: it runs several times
-        per /validate request with no cache in front of it."""
+        """Routing predicate stays cheap: it runs several times per /validate, uncached."""
         venv_dir = self._make_venv(tmp_path / "venv")
         (venv_dir / "transformers" / "__init__.py").write_text("x")
         assert _venv_dir_is_valid(str(venv_dir), ("transformers==5.3.0",)) is True
@@ -2311,8 +2301,7 @@ class TestTierFromName:
             assert match_fragment in result[1]
 
 
-# Local config.json matching a sidecar set is authoritative; otherwise the HF id in
-# _name_or_path / model_name goes through the name rules.
+# Matching local config.json wins; else the HF id in _name_or_path/model_name uses name rules.
 
 
 class TestLocalConfig530Tier:
@@ -2474,8 +2463,7 @@ class TestLocalConfig530Tier:
 
 
 class TestCheckConfigNeeds530:
-    """_check_config_needs_530 is used in the slow HF-ID fallback path for
-    private or renamed repos whose names don't contain a 5.3 substring."""
+    """Slow HF-ID fallback for private or renamed repos whose names lack a 5.3 substring."""
 
     def setup_method(self):
         _config_json_cache.clear()
@@ -3066,8 +3054,7 @@ class TestLatestTierForces16Bit:
         ), "an installable upgrade (PyPI or main) must force 16-bit sizing for the guard"
 
     def test_validate_offered_upgrade_preserves_custom_code_4bit(self):
-        # An offered (not installed) upgrade must not force 16-bit sizing when an auto_map
-        # fallback loads 4-bit without the install.
+        # An offered-only upgrade must not force 16-bit when auto_map falls back to 4-bit.
         src = self._read("routes/inference.py")
         body = src.split("async def validate_model", 1)[1].split("\nasync def ", 1)[0]
         flip = body.split("Mirror /load's latest-sidecar 16-bit flip", 1)[1].split(
@@ -3116,8 +3103,7 @@ class TestLatestTierForces16Bit:
             "export, chat-unload, and idle-worker teardown failures must raise so "
             "the staged install never swaps under a live worker"
         )
-        # The installer thread owns (and releases) the reservation, shielded from
-        # request cancellation, so a cancelled POST cannot unlock a live swap.
+        # Installer thread owns the reservation; a cancelled POST cannot unlock a live swap.
         assert "asyncio.shield" in body and "end_sidecar_swap()" in body
         # Refuse with in-flight streams; recheck under the gate since the wait can be long.
         assert "other_inference_request_count" in body
@@ -3157,8 +3143,7 @@ class TestLatestTierForces16Bit:
         # Refuse before tearing down the old worker so a lost race keeps the checkpoint.
         loadck = export.split("def load_checkpoint", 1)[1].split("\n    def ", 1)[0]
         assert loadck.index("sidecar_swap_in_progress()") < loadck.index("_shutdown_subprocess()")
-        # The training handshake precedes the VRAM-freeing before_spawn hook, so
-        # losing the race never tears down chat/export for a run that won't spawn.
+        # Training handshake precedes before_spawn; a lost race cannot tear down chat/export.
         assert training.index("self._spawn_in_progress = True") < training.index("before_spawn()")
         # Op-aware for installs (they abort on is_export_active); always refuse for repairs.
         assert (
@@ -3204,8 +3189,7 @@ class TestSidecarSwapReservation:
         assert tv.sidecar_swap_in_progress() is False
 
     def test_foreign_process_lock_file_visible(self, monkeypatch, tmp_path):
-        """A repair in a LIVE worker subprocess is seen (via the lock file) by this
-        process, and its lock is never broken while the owner is alive."""
+        """Repairs in live workers show via the lock file; a live owner's lock is never broken."""
         import os
         import time
 
@@ -3235,9 +3219,8 @@ class TestSidecarSwapReservation:
         assert not lock.exists()
 
     def test_unreadable_pid_lock_uses_age_cutoff(self, monkeypatch, tmp_path):
-        """A lock with no readable owner PID (mid create-before-write, or corrupt) is not
-        reclaimed while fresh -- only after the long cutoff -- so a lock a live owner just
-        created is not stolen before its PID lands."""
+        """A lock with no readable owner PID (mid create-before-write, or corrupt) is reclaimed only
+        after the long age cutoff, so a live owner's new lock is not stolen."""
         import os
         import time
 
@@ -3263,9 +3246,8 @@ class TestSidecarSwapReservation:
 
 
 class TestRecoverStrandedSidecar:
-    """A swap whose activation rename AND rollback both fail strands the previous sidecar
-    at .old with no live dir (its pin marker went with it). Reading the pin self-heals it,
-    but never while a swap legitimately holds the reservation."""
+    """A swap whose activation rename and rollback both fail strands the old sidecar at .old with no
+    live dir; reading the pin self-heals it, but not during a live swap."""
 
     def _setup(self, monkeypatch, tmp_path):
         import utils.transformers_version as tv
@@ -3301,9 +3283,8 @@ class TestRecoverStrandedSidecar:
 
 
 class TestCachedLatestMappingRevalidated:
-    """A cached 'latest' mapping is dropped and re-resolved when the sidecar since broke
-    in-process, so routing self-heals instead of trusting a mapping parsed from a sidecar
-    that no longer exists (which would keep routing latest-only models to a broken tier)."""
+    """A cached 'latest' mapping is dropped and re-resolved once its sidecar breaks in-process, so
+    latest-only models are not routed to a broken tier."""
 
     def test_broken_sidecar_drops_cached_latest_mapping(self, monkeypatch):
         import utils.transformers_version as tv
@@ -3357,9 +3338,8 @@ class TestCachedLatestMappingRevalidated:
 
 
 class TestOverlayRepairsIncompleteSidecar:
-    """Routing self-heals a pinned latest sidecar that is present but incomplete,
-    not only one whose transformers/ dir vanished: workers refuse parent-only
-    repairs, so a sidecar missing a pinned package would fail every load."""
+    """Routing repairs a pinned latest sidecar that is present but incomplete; workers refuse
+    parent-only repairs, so a missing pinned package fails every load."""
 
     def _setup(self, monkeypatch, tmp_path, valid):
         import utils.transformers_version as tv
@@ -3415,8 +3395,7 @@ class TestOverlayRepairsIncompleteSidecar:
             return False
 
         monkeypatch.setattr(tv, "_ensure_venv_t5_latest_exists", _fake_repair)
-        # A failed repair must not route through the broken sidecar, neither on
-        # the failing attempt nor while the backoff suppresses the next attempt.
+        # A failed repair never routes through the broken sidecar, including during backoff.
         assert tv._overlay_transformers_dir("latest") is None
         assert tv._overlay_transformers_dir("latest") is None
         assert called["n"] == 1
@@ -3488,8 +3467,7 @@ class TestKillSwitchBeatsMappingCache:
         import utils.transformers_version as tv
 
         monkeypatch.setitem(tv._config_mapping_cache, "latest", frozenset({"brandnew"}))
-        # The cache is trusted only when the sidecar is intact; hold it intact so this
-        # test isolates the kill switch, not the sidecar-revalidation path.
+        # Hold the sidecar intact so this test isolates the kill switch, not revalidation.
         monkeypatch.setattr(tv, "_latest_sidecar_intact", lambda: True)
         monkeypatch.setenv("UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS", "1")
         assert tv._config_model_types("latest") == frozenset()
@@ -3552,8 +3530,7 @@ class TestRaiseTierForNested:
         assert tv.get_transformers_tier("org/gemma-4-new", probe = False) == "550"
 
     def test_fast_path_folds_nested_tier(self, monkeypatch, tmp_path):
-        """End to end: a local wrapper config on a fixed fast path routes to latest
-        when its nested type only exists in the installed latest sidecar."""
+        """Fast-path wrapper routes to latest when its nested type exists only in the sidecar."""
         import utils.transformers_version as tv
 
         ckpt = tmp_path / "wrapper"
@@ -3640,8 +3617,7 @@ class TestDamagedLatestSidecarRepairHandoff:
     def test_every_sidecar_dir_is_redirected_away_from_the_real_studio_home(
         self, monkeypatch, tmp_path
     ):
-        """Every _VENV_T5 tier dir must be redirected away from the real Studio home, not just the
-        latest."""
+        """Every _VENV_T5 tier dir must be redirected away from the real Studio home."""
         import utils.transformers_version as tv
 
         tiers = [name for name in dir(tv) if name.startswith("_VENV_T5_") and name.endswith("_DIR")]
@@ -3752,8 +3728,7 @@ class TestDamagedLatestSidecarRepairHandoff:
             assert tv._config_model_types("latest") == frozenset({"brandnew"})
 
     def test_repair_backoff_window_never_repeats_the_scan(self, monkeypatch, tmp_path):
-        """A sidecar that cannot be repaired (offline, pip down) must not put a ~25 ms
-        scan on every routing call for the whole backoff window."""
+        """An unrepairable sidecar must not put a scan on every routing call during backoff."""
         _, live, tv = _shared_setup_3(monkeypatch, self, tmp_path)
 
         assert tv._overlay_transformers_dir("latest") is None
@@ -3785,9 +3760,8 @@ class TestDamagedLatestSidecarRepairHandoff:
         assert tv._tier_from_config_mapping({"model_type": "brandnew"}) != "latest"
 
     def test_every_unrepaired_exit_flags_the_damage(self, monkeypatch, tmp_path):
-        """Offline, a child, and a swap already running each return before any repair.
-        Whichever one is taken, the damage has to be recorded, or the cheap predicate
-        keeps reporting the sidecar healthy and nothing ever revisits it."""
+        """Offline, child-process, and swap-in-progress exits return before repair, so each must
+        still record the damage, or the cheap predicate keeps calling the sidecar healthy."""
         import multiprocessing
 
         bailouts = {
@@ -3810,9 +3784,8 @@ class TestDamagedLatestSidecarRepairHandoff:
             assert not tv._latest_sidecar_intact(), name
 
     def test_cached_probe_result_does_not_survive_a_flagged_sidecar(self, monkeypatch, tmp_path):
-        """_probe_tier caches per process. A result cached while the sidecar was healthy
-        must not keep sending workers into it once damage is known, the way the
-        config-mapping cache already refuses to."""
+        """_probe_tier caches per process; a result cached while healthy must not route workers into
+        a flagged sidecar, as the config-mapping cache already refuses."""
         live = self._sidecar(tmp_path / "venv_t5_latest")
         tv, _ = self._patch(monkeypatch, live)
         monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: False)
@@ -3842,9 +3815,8 @@ class TestDamagedLatestSidecarRepairHandoff:
         assert not tv._latest_repair_requested()
 
     def test_kill_switch_frees_the_sidecar_mid_backoff(self, monkeypatch, tmp_path):
-        """The hatch exists for a false positive, so it has to work at the moment one is
-        being hit: with a marker already written and a repair already failed, it must
-        restore routing now rather than one backoff window later."""
+        """The kill switch must work mid-backoff, when a false positive is hit: with a marker armed
+        and a repair failed, it restores routing now, not one window later."""
         _, live, tv = _shared_setup_3(monkeypatch, self, tmp_path)
 
         assert tv._overlay_transformers_dir("latest") is None
@@ -3856,9 +3828,8 @@ class TestDamagedLatestSidecarRepairHandoff:
         assert tv._tier_from_config_mapping({"model_type": "brandnew"}) == "latest"
 
     def test_an_unreadable_file_is_not_reported_as_damage(self, monkeypatch, tmp_path):
-        """A wipe costs a several-hundred-MB re-download, so the scan may only condemn
-        what it can prove: EIO or ESTALE on a flaky mount says the file could not be
-        read, never that it is gone."""
+        """A wipe costs a several-hundred-MB re-download, so the scan condemns only what it can
+        prove: EIO or ESTALE means unreadable, never missing."""
         import errno
 
         live = self._sidecar(tmp_path / "venv_t5_latest")
@@ -3877,8 +3848,7 @@ class TestDamagedLatestSidecarRepairHandoff:
         assert tv._overlay_transformers_dir("latest") is not None
 
     def test_a_deleted_file_is_still_reported_as_damage(self, monkeypatch, tmp_path):
-        """The counterpart: narrowing the caught errors must not blind the scan to a
-        genuinely missing file."""
+        """Narrowing the caught errors must not hide a genuinely missing file from the scan."""
         live = self._sidecar(tmp_path / "venv_t5_latest")
         tv, _ = self._patch(monkeypatch, live)
         (live / "transformers" / "__init__.py").unlink()
@@ -3895,8 +3865,7 @@ class TestDamagedLatestSidecarRepairHandoff:
 
         live = self._sidecar(tmp_path / "venv_t5_latest")
         tv, _ = self._patch(monkeypatch, live)
-        # A repair that cannot complete, so what is observed is the decision itself and
-        # not a rebuild papering over it.
+        # Repair cannot finish, so observe the decision itself, not a rebuild hiding it.
         monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: False)
         self._damage(live)
         tv._request_latest_repair()
@@ -3915,8 +3884,7 @@ class TestDamagedLatestSidecarRepairHandoff:
         assert tv._latest_repair_requested(), "an unreadable scan cannot disprove damage"
 
     def test_a_clean_scan_still_retires_a_stale_marker(self, monkeypatch, tmp_path):
-        """The counterpart: a scan that really did read every row must still clear the
-        marker, or a request left by a lost race loops forever."""
+        """A full read must clear the marker, or a request from a lost race loops forever."""
         live = self._sidecar(tmp_path / "venv_t5_latest")
         tv, _ = self._patch(monkeypatch, live)
         tv._request_latest_repair()
@@ -3925,9 +3893,8 @@ class TestDamagedLatestSidecarRepairHandoff:
         assert not tv._latest_repair_requested()
 
     def test_a_cached_probe_does_not_survive_the_pin_being_deleted(self, monkeypatch, tmp_path):
-        """Deleting the pin takes the repair marker with it, so the marker cannot carry
-        this case. Activation short-circuits on a missing pin before it can signal
-        anything, so a cached latest would fail every retry until the process restarts."""
+        """Deleting the pin also removes the repair marker, and activation returns early on a
+        missing pin, so a cached latest would fail every retry until restart."""
         live = self._sidecar(tmp_path / "venv_t5_latest")
         tv, _ = self._patch(monkeypatch, live)
         import shutil

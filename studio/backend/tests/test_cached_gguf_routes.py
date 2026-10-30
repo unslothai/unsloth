@@ -643,8 +643,7 @@ def test_list_cached_gguf_marks_partial_when_no_snapshot_is_complete(monkeypatch
 
 
 def test_list_cached_gguf_load_id_takes_the_snapshot_holding_a_whole_quant(monkeypatch, tmp_path):
-    """One whole quant beside a half-downloaded one is still a safe load target:
-    the lister behind /gguf-variants trims its offer to the completed subset."""
+    """Whole quant beside a partial one is a safe load target; the lister trims to completed."""
     import os
 
     active = tmp_path / "active"
@@ -692,9 +691,8 @@ def test_list_cached_gguf_load_id_takes_the_snapshot_holding_a_whole_quant(monke
 
 
 def test_a_zero_byte_first_gguf_leaves_the_quant_incomplete(tmp_path):
-    """The resolver takes the lexicographically first file under a label. Skipping a zero-byte one
-    handed the label to the next file, so the quant read complete while the load opened the empty
-    file it names."""
+    """The resolver takes the lexicographically first file per label, so skipping a zero-byte one
+    reads complete while loading an empty file."""
     from hub.utils.inventory_scan import complete_snapshot_variants
     from utils.models.model_config import _find_local_gguf_by_variant
 
@@ -799,9 +797,8 @@ def test_variant_readiness_is_counted_in_the_snapshot_the_row_pinned(monkeypatch
 
 
 def test_a_later_attempts_cancel_marker_does_not_break_the_pinned_quant(monkeypatch, tmp_path):
-    """A marker carries no revision and is rewritten by each attempt, so it belongs to the newest
-    snapshot. The row already attributes it that way; the variants endpoint has to agree, or the
-    one quant the pinned snapshot can load is hidden."""
+    """A cancel marker has no revision and each attempt rewrites it, so it belongs to the newest
+    snapshot; variants must agree or the pinned loadable quant is hidden."""
     import os
 
     from hub.utils import download_manifest
@@ -847,9 +844,8 @@ def test_a_later_attempts_cancel_marker_does_not_break_the_pinned_quant(monkeypa
 
 
 def test_the_pins_excuse_covers_only_the_quants_it_holds(monkeypatch, tmp_path):
-    """The pinned snapshot excuses a revision-less signal because it holds that quant whole. A quant
-    it does not hold is still the cancelled download the marker describes, and hiding that leaves it
-    listed as a plain undownloaded row with nothing to resume or delete."""
+    """The pinned snapshot excuses a revision-less marker only for the quant it holds whole; any
+    other quant is still the cancelled download, so it must not be hidden."""
     import os
 
     from hub.utils import download_manifest
@@ -889,9 +885,8 @@ def test_the_pins_excuse_covers_only_the_quants_it_holds(monkeypatch, tmp_path):
 
 
 def test_a_later_attempts_incomplete_blob_does_not_break_the_pinned_quant(monkeypatch, tmp_path):
-    """blobs/ is repo-wide and each attempt rewrites it, so a retry's .incomplete belongs to the
-    newest snapshot exactly as a cancel marker does. Judging the pinned quant by it hid the one
-    copy that loads."""
+    """blobs/ is repo-wide and rewritten per attempt, so a retry's .incomplete belongs to the newest
+    snapshot; judging the pinned quant by it hid the loadable copy."""
     import os
 
     from hub.utils import download_registry
@@ -991,9 +986,8 @@ def test_a_copy_that_loads_beats_a_bigger_one_that_does_not(monkeypatch, tmp_pat
 
 
 def test_list_cached_gguf_pins_a_snapshot_when_the_default_ref_quant_is_torn(monkeypatch, tmp_path):
-    """The repo id resolving is not enough: refs/main can land on a revision holding half a split
-    while an older one is whole. A client loading the id follows the torn ref and fails with a
-    complete copy one directory away."""
+    """The repo id alone is not enough: refs/main can point at a revision with half a split while an
+    older one is whole, so a client follows the torn ref and fails beside a whole copy."""
     import os
 
     active = tmp_path / "active"
@@ -1327,8 +1321,7 @@ def test_vision_is_not_invented_for_a_copy_that_ships_no_projector(monkeypatch, 
 
 
 def test_metadata_resolves_from_the_snapshot_holding_the_whole_quant(monkeypatch, tmp_path):
-    """The lister and the load take the whole copy, so mtime order alone would read metadata out of
-    a newer half download nothing loads."""
+    """Lister and load pick the whole copy; mtime alone would read a half download's metadata."""
     import os
 
     from hub.utils.gguf import iter_snapshots_preferring_whole
@@ -1406,8 +1399,7 @@ def test_is_hidden_model_hides_validation_probe_everywhere():
     assert models_route._is_hidden_model(
         None, "/hf/models--ggml-org--models/snapshots/abc/tinyllamas/stories260K.gguf"
     )
-    # A Windows-style snapshot path must match too, even on a POSIX interpreter
-    # (the filename check splits on both separators).
+    # Windows paths must match on POSIX too; the filename check splits on both separators.
     assert models_route._is_hidden_model(
         r"C:\Users\u\.cache\huggingface\hub\models--ggml-org--models\snapshots\abc\tinyllamas\stories260K.gguf"
     )
@@ -1834,8 +1826,7 @@ def test_list_cached_gguf_skips_malformed_repo_without_wiping_response(monkeypat
 
 
 def test_list_cached_gguf_skips_repo_with_only_mmproj_gguf(monkeypatch, tmp_path):
-    """A repo whose only ``.gguf`` is an mmproj vision adapter is not a GGUF
-    repo: mmproj is filtered out, leaving zero variants."""
+    """An mmproj-only repo is not a GGUF repo; mmproj is filtered out, leaving zero variants."""
     mmproj_only = _repo(
         "Org/MmprojOnly",
         [
@@ -1853,8 +1844,7 @@ def test_list_cached_gguf_skips_repo_with_only_mmproj_gguf(monkeypatch, tmp_path
 
 
 def test_list_cached_models_includes_repo_with_only_mmproj_gguf(monkeypatch, tmp_path):
-    """A safetensors repo with an auxiliary mmproj adapter still surfaces in
-    cached-models as a normal model."""
+    """A safetensors repo with an auxiliary mmproj still lists as a normal cached model."""
     mmproj_aux = _repo(
         "Org/MmprojAux",
         [
@@ -1941,8 +1931,7 @@ def test_list_cached_models_marks_companion_only_pipeline_partial(monkeypatch, t
 
 
 def test_list_cached_gguf_includes_vision_repo_with_main_gguf_and_mmproj(monkeypatch, tmp_path):
-    """A vision GGUF repo (main weight + mmproj) is a GGUF repo; reported size
-    is the main weight only, since mmproj is filtered at classification."""
+    """Vision GGUF repos stay GGUF; reported size is the main weight since mmproj is filtered."""
     vision_repo = _repo(
         "Org/VisionGguf",
         [
@@ -2005,8 +1994,7 @@ def test_all_hf_cache_scans_uses_shared_inventory(monkeypatch, tmp_path):
 
 
 def test_list_cached_gguf_sorts_newest_first_grouping_by_latest_quant(monkeypatch, tmp_path):
-    """Downloaded is ordered newest-first, and a multi-quant repo is placed by
-    its most recently downloaded quant (``last_modified`` = newest quant)."""
+    """Downloaded sorts newest-first; multi-quant repos sort by their newest last_modified."""
     older = _repo(
         "Org/Older",
         [_gfile("Older-Q4_K_M.gguf", 5_000, 1_000.0)],
@@ -2031,8 +2019,7 @@ def test_list_cached_gguf_sorts_newest_first_grouping_by_latest_quant(monkeypatc
 
 
 def test_list_cached_gguf_dedupe_keeps_newest_timestamp(monkeypatch, tmp_path):
-    """Same repo in two caches with equal size keeps the newest last_modified,
-    regardless of scan order."""
+    """Equal-size duplicates keep the newest last_modified, regardless of scan order."""
     older = _repo("org/dupe", [_gfile("dupe-Q4_K_M.gguf", 5_000, 1_000.0)], tmp_path / "a")
     newer = _repo("org/dupe", [_gfile("dupe-Q4_K_M.gguf", 5_000, 9_000.0)], tmp_path / "b")
     for scans in ([older, newer], [newer, older]):
@@ -2047,9 +2034,8 @@ def test_list_cached_gguf_dedupe_keeps_newest_timestamp(monkeypatch, tmp_path):
 
 
 def test_gguf_variants_mmproj_does_not_mark_quant_downloaded(monkeypatch, tmp_path):
-    """The per-quant 'downloaded' flag is driven by the real weight file in a
-    single snapshot; an mmproj vision adapter (matching a quant label) must
-    not make that quant appear downloaded."""
+    """The per-quant downloaded flag comes from the real weight file in one snapshot; an mmproj
+    adapter matching a quant label must not mark that quant downloaded."""
     variants = [
         SimpleNamespace(
             filename = "model-Q4_K_M.gguf",
@@ -2124,8 +2110,7 @@ def test_gguf_variants_route_scopes_local_probe_to_selected_cache(monkeypatch, t
 
 
 def test_gguf_variants_route_reads_context_from_the_pinned_snapshot(monkeypatch, tmp_path):
-    """Enumeration may be repo wide, but the native context must come from the pinned snapshot
-    or the dialog offers a length the model cannot serve."""
+    """Read context from the pinned snapshot, or the dialog offers a length it cannot serve."""
     snapshot = tmp_path / "active" / "models--org--repo" / "snapshots" / "rev"
     snapshot.mkdir(parents = True)
 
@@ -2146,8 +2131,7 @@ def test_gguf_variants_route_reads_context_from_the_pinned_snapshot(monkeypatch,
 
 
 def test_gguf_variants_route_ignores_a_pin_naming_another_repo(monkeypatch, tmp_path):
-    """Control: a pin naming another repo falls back to the repo id rather than reporting a
-    stranger's metadata."""
+    """A pin naming another repo falls back to the repo id, not a stranger's metadata."""
     other = tmp_path / "active" / "models--org--other" / "snapshots" / "rev"
     other.mkdir(parents = True)
 
@@ -2168,8 +2152,7 @@ def test_gguf_variants_route_ignores_a_pin_naming_another_repo(monkeypatch, tmp_
 
 
 def test_gguf_variants_route_forwards_offline(monkeypatch):
-    """Parity with /api/hub/gguf-variants: without this an unreachable Hub still sends the
-    picker down the remote path."""
+    """Parity with /api/hub/gguf-variants: forward offline or an unreachable Hub goes remote."""
     calls = []
 
     async def scoped_variants(repo_id, **kwargs):
@@ -2213,8 +2196,7 @@ def test_native_context_read_gives_up_when_the_cache_walk_drags(monkeypatch, tmp
     elapsed = time.monotonic() - started
 
     assert result is None
-    # A signature drift here raises inside the broad except and returns instantly, which
-    # would pass every other assertion without walking anything.
+    # A broad except would hide signature drift and pass the other asserts without walking.
     assert visited, "the walk never ran, so this proves nothing"
     assert elapsed < 2
     assert len(visited) < 200
@@ -2336,9 +2318,8 @@ def test_gguf_variants_route_answers_when_a_header_read_never_returns(monkeypatc
 
 
 def test_native_context_read_runs_on_a_daemon_thread(monkeypatch):
-    """A thread pool's workers are joined at interpreter exit, so a read abandoned on a hung
-    mount would hold up shutdown for as long as the mount stays hung (measured: the full
-    length of the read). A daemon thread does not."""
+    """Thread pool workers are joined at interpreter exit, so a read abandoned on a hung mount would
+    block shutdown; a daemon thread does not."""
     observed = {}
     entered = threading.Event()
 
@@ -2371,8 +2352,7 @@ def _drain_context_threads(timeout: float = 5.0) -> None:
 
 
 def test_native_context_reads_stop_starting_once_every_slot_is_stranded(monkeypatch):
-    """Retries against a hung mount must not start a thread apiece; they wait for a slot
-    and give up inside the bound."""
+    """Retries on a hung mount wait for a slot and give up in the bound, not start threads."""
     release = threading.Event()
 
     def stalled(model, *, is_local):
@@ -2420,9 +2400,8 @@ def test_concurrent_native_context_reads_all_keep_their_length(monkeypatch):
 
 
 def test_offline_reads_context_from_the_copy_the_variants_came_from(monkeypatch, tmp_path):
-    """The length has to come from the copy the listing came from. Which copy that is cannot
-    be read off the request: the HF cache answers before local_path, so the service reports
-    it and the route follows."""
+    """The context length must come from the copy the listing came from; the service reports which
+    copy, since the HF cache answers before local_path."""
     context_calls = []
 
     async def scoped_variants(repo_id, **kwargs):
@@ -3275,12 +3254,10 @@ def test_cached_repo_task_gates_an_image_pipeline_on_the_load_path_trust_rule(tm
 
 
 def test_cached_repo_task_never_offers_an_sd_cpp_companion_repo_as_a_model(tmp_path):
-    """The sd-cli text-encoder repos hold no denoiser, so none of them is an Images pick.
-
-    They are unsloth repos, so they clear the trust gate, and an id that resolves to a family
-    would list an unloadable Images row without the companion check. Every image VAE / encoder
-    now comes from a vendor base or an unsloth encoder GGUF, so the set is exactly those GGUFs.
-    """
+    """sd-cli text-encoder repos hold no denoiser, so none is an Images pick; as unsloth repos they
+    clear the trust gate, so a family id would list an unloadable row without the companion
+    check; every image VAE and encoder now comes from a vendor base or an unsloth encoder GGUF,
+    so the set is exactly those GGUFs."""
     from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
 
     companions = sd_cpp_companion_only_repo_ids()
@@ -3308,13 +3285,10 @@ def test_cached_repo_task_never_offers_an_sd_cpp_companion_repo_as_a_model(tmp_p
 
 
 def test_a_companion_mirror_is_listed_but_flagged_so_no_picker_offers_it(monkeypatch, tmp_path):
-    """A task of None does NOT drop the row: it is exactly what an unclassified CHAT repo carries,
-    so the chat picker showed the companion as loadable. Deleting the row instead would hide tens
-    of GB the user can then never find or remove, so the row stays and carries a flag the pickers
-    filter on.
-
-    No image companion repo ships .safetensors any more (the remaining ones are encoder GGUFs, which
-    this listing skips), so a synthetic single-file VAE repo is added to the companion set."""
+    """A None task must not drop the companion row: unclassified chat repos carry None and the chat
+    picker would show it loadable, so keep it with a flag the pickers filter on; deleting it
+    would hide tens of GB. No companion ships .safetensors (encoder GGUFs are skipped), so a
+    synthetic VAE repo joins the set."""
     import core.inference.diffusion_families as families
 
     real = families.sd_cpp_companion_only_repo_ids
@@ -3387,9 +3361,8 @@ def test_cached_repo_task_hides_an_untrusted_video_repo_instead_of_listing_it_un
 
 
 def test_hub_cached_rows_carry_the_task_the_pickers_filter_on(monkeypatch, tmp_path):
-    """The picker's On Device rows come from the /api/hub inventory, not the models API. Without a
-    task on those rows the Images and Video pickers filtered every one of them out, and the chat
-    picker's diffusion routing (which reads the same field) never fired."""
+    """On Device rows come from the /api/hub inventory, so they need a task or the Images and Video
+    pickers drop them and chat diffusion routing never fires."""
     from hub.schemas.inventory import CachedGgufRepo, CachedModelRepo
     from hub.services.models import cache_inventory, catalog_classification
 
@@ -3747,9 +3720,8 @@ def test_the_gguf_picker_and_the_image_loader_agree_on_an_old_diffusers(monkeypa
 
 
 def test_a_cancelled_siblings_resume_survives_the_local_listing(monkeypatch, tmp_path):
-    """A sibling cancelled before any file landed lives only in download state. The disk-only
-    listing is built from the cache, which cannot see it, so the repo reads as holding one quant
-    and the picker collapses it into a single row, taking the sibling's resume with it."""
+    """A sibling cancelled before any file landed lives only in download state, which the disk-only
+    cache listing cannot see; the picker would collapse it and lose its resume."""
     active = tmp_path / "active"
     repo_dir = active / "models--Org--Quant"
     snapshot = repo_dir / "snapshots" / ("d" * 40)
@@ -3778,9 +3750,8 @@ def test_a_cancelled_siblings_resume_survives_the_local_listing(monkeypatch, tmp
 
 
 def test_a_cancelled_sibling_survives_a_failed_remote_listing(monkeypatch, tmp_path):
-    """The expander asks the remote-first route. When the Hub cannot answer, offline or a private
-    repo, the fallback reads the cache, which cannot see a sibling cancelled before any file
-    landed. That is exactly when a resume has nowhere else to surface."""
+    """When the Hub cannot answer (offline or private), the fallback cache read misses a sibling
+    cancelled before any file landed, so its resume has nowhere else to surface."""
     active = tmp_path / "active"
     repo_dir = active / "models--Org--Quant"
     snapshot = repo_dir / "snapshots" / ("d" * 40)
@@ -3806,9 +3777,8 @@ def test_a_cancelled_sibling_survives_a_failed_remote_listing(monkeypatch, tmp_p
 
 
 def test_a_cancelled_siblings_marker_shows_on_the_repo_row(monkeypatch, tmp_path):
-    """A sibling cancelled before any file landed moves neither the repo's bytes nor its mtime,
-    and its own partial flag stays false while another quant is clean. Without a signal of its
-    own on the row, a reader watching for on-disk change cannot see it happen."""
+    """A sibling cancelled before any file landed changes neither bytes nor mtime and keeps its
+    partial flag false, so the row needs its own cancel signal."""
     active = tmp_path / "active"
     repo_dir = active / "models--Org--Quant"
     snapshot = repo_dir / "snapshots" / ("d" * 40)
@@ -3944,9 +3914,8 @@ def test_one_caller_giving_up_leaves_the_scan_for_the_others(monkeypatch):
 
 
 def test_offline_context_follows_the_hf_cache_when_it_answers(monkeypatch, tmp_path):
-    """The HF cache answers before local_path, so with both present the length must come
-    from the cache. Picking local_path on the offline flag alone attached another copy's
-    context to the cache's variants. Real service, no stub."""
+    """With both present the HF cache answers before local_path, so the length must come from it;
+    local_path on the offline flag alone would attach another copy's context."""
     cache_snapshot = tmp_path / "hub" / "models--org--repo" / "snapshots" / "rev"
     cache_snapshot.mkdir(parents = True)
     context_calls = []
@@ -3988,9 +3957,8 @@ def test_offline_context_follows_the_hf_cache_when_it_answers(monkeypatch, tmp_p
 
 
 def test_offline_context_follows_the_cache_the_variants_were_read_from(monkeypatch, tmp_path):
-    """A local_path under a non-active cache scopes the listing to that cache, so the length
-    has to come from there too. Falling back to the repo id walks every cache, active one
-    first, and can attach another copy's context to these variants. Real service, no stub."""
+    """A local_path under a non-active cache scopes the listing there, so the length must come from
+    it; the repo id fallback walks every cache and can attach another's context."""
     legacy_repo = tmp_path / "legacy" / "hub" / "models--org--repo"
     legacy_snapshot = legacy_repo / "snapshots" / "rev"
     legacy_snapshot.mkdir(parents = True)
@@ -4025,9 +3993,8 @@ def test_offline_context_follows_the_cache_the_variants_were_read_from(monkeypat
 
 
 def test_failed_hub_context_follows_the_cache_the_variants_were_read_from(monkeypatch, tmp_path):
-    """When the Hub request fails, the fallback cache that supplied the variants must also
-    supply their context metadata. Otherwise the route searches by repo id and can read a
-    different cache copy first."""
+    """When the Hub request fails, the cache that supplied the variants must also supply their
+    context metadata; a repo id search could read a different cache copy first."""
     legacy_repo = tmp_path / "legacy" / "hub" / "models--org--repo"
     legacy_snapshot = legacy_repo / "snapshots" / "rev"
     legacy_snapshot.mkdir(parents = True)
@@ -4101,8 +4068,7 @@ def test_switching_cache_storage_does_not_join_a_stuck_scan(monkeypatch, tmp_pat
         cache_home[0] = tmp_path / "healthyvol"
         second = asyncio.ensure_future(GV.get_gguf_variants_answer("org/repo", offline = True))
         done, _ = await asyncio.wait({second}, timeout = 1.5)
-        # Measured; now unwedge the old scan, or asyncio.run's executor shutdown joins its
-        # thread and the test sits out the rest of the 5 s wait.
+        # Unwedge the old scan or asyncio.run's executor shutdown joins its thread and stalls.
         wedged.set()
         for task in (stuck, second):
             task.cancel()
@@ -4141,8 +4107,7 @@ def _write_cached_gguf(
     revision: str = "rev",
     size: int = 36,
 ) -> Path:
-    """One real snapshot under *hub_cache*; *mtime* pins which one a repo-wide walk picks,
-    *size* tells two revisions' copies of one filename apart."""
+    """A real snapshot; mtime picks which one a repo walk sees, size tells revisions apart."""
     import os
 
     repo_dir = hub_cache / ("models--" + repo_id.replace("/", "--"))
@@ -4671,8 +4636,7 @@ def test_a_scope_alone_in_state_is_not_an_answer(monkeypatch, tmp_path):
 
 
 def test_a_cancelled_quant_beside_a_scope_still_answers_from_state(monkeypatch, tmp_path):
-    """Dropping scopes must not cost the fallback its reason to exist: a cancelled quant
-    with no snapshot keeps its row, and its resume."""
+    """A cancelled quant with no snapshot keeps its row and resume, even with scopes dropped."""
     repo_dir = tmp_path / "models--org--repo"
     (repo_dir / "snapshots" / "rev").mkdir(parents = True)
 
@@ -4988,9 +4952,8 @@ def test_family_needles_recover_the_repo_id_from_the_hf_cache_directory(tmp_path
 
 
 def test_only_the_first_shard_of_a_split_gguf_is_read_to_classify_a_repo(tmp_path, monkeypatch):
-    """llama.cpp writes the full KV block into shard 1 only, so shards 2..N are both the wrong
-    files to read an architecture from and the expensive ones: a 51-shard repo would cost 51 header
-    reads to answer one question."""
+    """llama.cpp writes the full KV block into shard 1 only, so later shards are wrong to read
+    architecture from and costly; a 51-shard repo would cost 51 header reads."""
     repo_dir = tmp_path / "models--unsloth--Big-GGUF"
     _arch_gguf(repo_dir / "Big-Q4_K_M-00001-of-00003.gguf", "llama")
     for index in ("00002", "00003"):
@@ -5070,8 +5033,7 @@ def test_the_classify_order_is_the_same_wherever_the_folder_lives(tmp_path):
 
 
 def test_a_runnable_media_checkpoint_outranks_a_speech_gguf(tmp_path):
-    """Nothing loads a ``llama-csm`` GGUF, so returning speech the moment it sorts first would
-    hide the runnable denoiser beside it."""
+    """Nothing loads llama-csm GGUFs, so speech must not hide a runnable denoiser beside it."""
     folder = tmp_path / "mixed-speech"
     _arch_gguf(folder / "csm-1b-Q4_0.gguf", "llama-csm")
     _arch_gguf(folder / "flux1-dev-Q4_K_M.gguf", "flux")
@@ -5085,9 +5047,8 @@ def test_a_runnable_media_checkpoint_outranks_a_speech_gguf(tmp_path):
 
 
 def test_a_runnable_chat_checkpoint_outranks_a_speech_gguf(tmp_path):
-    """Ranking speech with the unsupported diffusion archs saved a runnable image/video sibling
-    but not a chat one: a chat GGUF answers ``fallback``, which ``unsupported`` outranked, so a
-    csm + qwen3 folder tagged speech and the gate hid the qwen3. Speech is the last resort now."""
+    """Ranking speech with unsupported diffusion archs hid a runnable chat GGUF (fallback was
+    outranked); speech is now the last resort."""
     folder = tmp_path / "mixed-chat-speech"
     _arch_gguf(folder / "csm-1b-Q4_0.gguf", "llama-csm")
     _arch_gguf(folder / "qwen3-8b-Q4_K_M.gguf", "llama")
@@ -5639,8 +5600,7 @@ def test_cached_model_rows_pins_snapshot_load_id_for_inactive_cache(monkeypatch,
 
 
 def test_cached_model_rows_flags_adapter_repos(monkeypatch, tmp_path):
-    """A cached LoRA must be labelled, or every 'no adapters' filter compares against
-    a key that is never set and offers the adapter as a whole model."""
+    """LoRA repos must be labelled, or the no-adapters filter offers them as whole models."""
     active = tmp_path / "active"
     adapter_snap = active / "models--Org--Lora" / "snapshots" / "rev"
     adapter_snap.mkdir(parents = True)
@@ -6200,9 +6160,8 @@ def test_cached_model_rows_flag_a_selected_modular_pipeline_as_diffusers(monkeyp
 
 
 def test_cached_model_rows_flag_a_diffusion_repo_this_backend_cannot_load(monkeypatch, tmp_path):
-    """An untrusted or unrecognised diffusion repo carries no task, exactly like a chat
-    repo, and its pipeline root has no config for can_chat to read. Without a flag of its
-    own the chat picker offered an ordinary community SDXL checkpoint as a chat model."""
+    """An untrusted or unrecognised diffusion repo has no task or can_chat config, like a chat repo;
+    without a flag the chat picker offered it as a chat model."""
     active = tmp_path / "active"
     repo_dir = active / "models--someuser--my-sdxl-finetune"
     snap = repo_dir / "snapshots" / "rev"
@@ -6328,8 +6287,7 @@ def test_the_real_sesame_bundle_is_classified_as_speech(tmp_path):
 
 
 def test_a_speech_arch_is_the_same_answer_in_every_layer():
-    """The listing classifier, the chat refusal and the media preflight held three separate
-    copies of the set; they read one definition now."""
+    """Listing, chat refusal and media preflight now share one speech-arch definition."""
     from core.inference.diffusion_compat import _SPEECH_GGUF_ARCHS as compat_archs
     from core.inference.llama_cpp import LlamaCppBackend
     from utils.gguf_archs import SPEECH_GGUF_ARCHS

@@ -86,8 +86,7 @@ def _text_of(message: dict) -> str:
 
 
 def _has_non_text_part(message: dict) -> bool:
-    """An upload is never filler. A one-word message with an image attached is a real
-    request, and treating it as a continuation would pin the wrong turn."""
+    """An upload is never filler: a one-word message with an image is a real request."""
     content = message.get("content")
     if not isinstance(content, list):
         return False

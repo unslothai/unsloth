@@ -302,8 +302,7 @@ def test_latency_check_is_graph_replayed_and_repeatable():
 
 @needs_cuda
 def test_compiled_no_graph_break_no_recompile_and_cuda_graph(armed):
-    """One graph and no recompile across token counts (a new prompt length); the op captures in a CUDA graph with
-    replay equal to eager."""
+    """One graph, no recompile across token counts; the CUDA graph replay must equal eager."""
     import torch._dynamo
     from torch._dynamo.utils import counters
 

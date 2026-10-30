@@ -434,9 +434,8 @@ async def _restore_after_swap(swap: _Swap, app: Any) -> None:
         with unattended_activity():
             current = loaded_identity()
             if not _primary_serves(swap.model) and _model_is_loaded(swap.model):
-                # Loaded beside the primary (Keep multiple models loaded with a speech model in it): the primary
-                # was never replaced, so only the task model goes.
-                # Its own task: unloading routes to the slot through a context variable, which must not stick to the loop.
+                # Primary is never replaced; unload runs in its own task so its context variable
+                # cannot stick.
                 await asyncio.ensure_future(
                     _unload_model_impl(UnloadRequest(model_path = swap.model), swap.subject)
                 )
@@ -556,8 +555,7 @@ async def generate_answer(
         producer: Optional[asyncio.Future] = None
         response = None
         try:
-            # The deadline covers the wait for a model load or unload to let go too: one that never
-            # does must not keep the scheduler from every other task.
+            # Also bounds a stuck model load or unload so one wait cannot block other tasks.
             try:
                 await asyncio.wait_for(activity.start(cancel_event), timeout = _RUN_TIMEOUT_SECONDS)
             except TimeoutError:
@@ -646,8 +644,7 @@ async def generate_answer(
                     raise RunFailed("model_busy") from None
                 if allow_switch and not _model_is_loaded(payload.model):
                     raise RunFailed("model_load_failed", _error_text(exc.detail)) from None
-                # A named kept model answered for itself, so its refusal is not "nothing loaded",
-                # unless it was unloaded before the request reached it.
+                # Named kept model's refusal is not nothing-loaded, unless unloaded first.
                 if provider is None and not task.get("model"):
                     named = "model" in payload.model_fields_set
                     if (not named and not _chat_model_loaded()) or (

@@ -165,8 +165,7 @@ def test_ingestion_skips_chunk_write_when_the_document_was_deleted(
 def test_ingestion_skips_an_empty_completion_when_the_document_was_deleted(
     rag_home, stub_embeddings, tmp_path, monkeypatch
 ):
-    """An empty parse takes the other completion path, and must not report a deleted document
-    as indexed or retire the document it was replacing."""
+    """An empty parse must not index a deleted document or retire the one it replaced."""
     path = _write(tmp_path, "empty.txt", "alpha bravo charlie " * 50)
     scope = store.project_scope("P1")
     deleted = {}
@@ -221,8 +220,7 @@ def test_ingestion_dedupe_by_hash(rag_home, stub_embeddings, tmp_path):
 def test_start_ingestion_accepts_precomputed_content_hash(
     rag_home, stub_embeddings, tmp_path, monkeypatch
 ):
-    """A caller that already hashed the file (linked-folder sync) can pass that
-    digest through instead of paying for a second full read of it."""
+    """Linked-folder sync passes a precomputed digest so the file is not fully read twice."""
     path = _write(tmp_path, "doc.txt", "alpha bravo charlie")
     scope = store.kb_scope("K1")
     precomputed = ingestion._sha256_file(path)

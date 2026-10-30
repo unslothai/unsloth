@@ -438,13 +438,9 @@ def select(
     state_images: bool = False,
     audio = None,
 ) -> tuple[Checkpoint, str | None]:
-    """(what serves this request, why Auto did not pick llama.cpp); raises for what nothing here can serve.
-
-    Auto takes llama.cpp when the entry has a GGUF and Studio's llama-server serves decisions, else PyTorch;
-    on Apple Silicon it answers through unsloth-zoo's MLX engine first.
-    Images are read by llama.cpp, and by MLX for a Clef. Audio is heard only by MLX, for a Clef with an audio tower.
-    Laya is always served by PyTorch, a GGUF entry otherwise by llama.cpp.
-    """
+    """Auto picks llama.cpp for a GGUF entry else PyTorch (MLX first on Apple Silicon); Laya is
+    always PyTorch; audio only via MLX for a Clef with an audio tower; raises if nothing can
+    serve."""
     from utils.systemone_settings import get_backend
 
     from .native_worker import request_gap

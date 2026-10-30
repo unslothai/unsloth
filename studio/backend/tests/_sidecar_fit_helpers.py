@@ -288,8 +288,7 @@ def metal_cmd(
     n_ctx = 0,
     **kw,
 ):
-    """A real-fit Metal load with a DSpark sidecar; every GGUF here reads 4 GiB, the
-    sidecar too. Undoes ``monkeypatch`` so a test can load twice."""
+    """Real Metal load with a DSpark sidecar; undoes ``monkeypatch`` so a test can load again."""
     sub = tmp_path / (sub or mode)
     sub.mkdir()
     path = sidecar(sub)

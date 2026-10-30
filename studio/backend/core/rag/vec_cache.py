@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""In-memory per-scope float32 matrices answering dense KNN exactly, in place of vec0's scalar scan.
-
-SQLite stays authoritative: triggers bump ``rag_vec_epoch`` for a scope in the same transaction as any write that
-can change its vectors, and an entry answers only a reader whose snapshot shows the epoch the entry was built at.
-Anything else (miss, stale, over budget, no numpy, any error) returns None and the caller scans vec0."""
+"""Float32 per-scope KNN matrices answering dense KNN exactly; SQLite stays authoritative via
+rag_vec_epoch; a miss, stale, over budget, no numpy or any error returns None so the caller scans
+vec0."""
 
 from __future__ import annotations
 

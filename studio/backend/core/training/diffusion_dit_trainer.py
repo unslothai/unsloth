@@ -400,8 +400,7 @@ def _int8_quantize_base(transformer, family: Optional[str] = None) -> None:
     apply_small_m_padding(transformer, "int8", family)
 
 
-# Small-M linears (conditioning vectors, LTX-2 one-token audio) stay bf16: the float8 / MX casts cost more than the GEMM.
-# final_layer is Krea 2's output projection.
+# Small-M linears stay bf16 (casts outweigh GEMM); final_layer is Krea 2's output projection.
 _LOWP_EXTRA_EXCLUDE_TOKENS = ("final_layer",)
 
 
@@ -480,8 +479,7 @@ def _convert_fp8(transformer, family: Optional[str] = None) -> bool:
 
 
 def _probe_lowp(convert, transformer) -> None:
-    """Tiny converted Linear fwd + bwd so an unverified arch falls back to bf16 at load, not mid-run.
-    48 rows: not a multiple of 16 / 32."""
+    """Tiny fwd+bwd probe on 48 unaligned rows: an unverified arch falls back to bf16 at load."""
     import torch
     import torch.nn as nn
 
@@ -657,9 +655,8 @@ def _apply_mxfp8_training(
     on_event,
     family: Optional[str] = None,
 ) -> bool:
-    """torchao mxfp8 compute for the frozen base (speed only), after add_adapter; never fatal.
-    0.18+ swaps the class to MXFP8Linear, not ``quantize_``: its wrapper drops the bias (pytorch/ao#4846),
-    so on torchao 0.17 biased linears stay bf16."""
+    """Best-effort, never fatal; runs after add_adapter; torchao 0.18+ uses MXFP8Linear (bias
+    dropped, pytorch/ao issue 4846); 0.17 keeps biased linears bf16."""
     try:
         _probe_lowp(_convert_mxfp8, transformer)
         return _convert_mxfp8(transformer, family)
@@ -740,9 +737,8 @@ def _resolve_base_precision(cfg, spec, device) -> str:
                 f"base_precision={mode!r} is not available on this host: torchao is the "
                 "non-functional Windows-ROCm stub. Use base_precision='nf4', 'bf16', or 'auto'."
             )
-        # mxfp8 needs Blackwell (sm100+): its MX GEMM raises at the first training step, after a full dense load.
-        # Re-check here to fail fast for a stale client.
-        # fp8 needs sm89+ (Ada / Hopper / Blackwell): below it the first float8 _scaled_mm raises inside the loop.
+        # mxfp8 needs sm100+ (fails after a full dense load); fp8 needs sm89+ (fails in the training
+        # loop).
         if mode == "fp8" and device == "cuda":
             try:
                 import torch
@@ -1949,8 +1945,7 @@ def _to_unit_tensor(img):
 
 
 def _load_pixel_tensor(path, resolution, center_crop, random_flip, rng):
-    """Load an image -> a normalised [3,H,W] tensor in [-1,1]. Same geometry as the SDXL loader but
-    without the SDXL time-ids (DiT families don't use them)."""
+    """Image to [3,H,W] in [-1,1], SDXL loader geometry; DiT families take no SDXL time-ids."""
     from PIL import Image
 
     cw, ch = _canvas(resolution)
@@ -2107,11 +2102,8 @@ def _load_warm_conditioning(
     device,
     canvases = None,
 ):
-    """Load the FULL conditioning set (caption embeds + latent posterior stats) from the persistent
-    cache. Returns (caption_embeds, latent_cache) on a complete hit, else (None, None) so the
-    caller takes the cold path -- any missing/corrupt entry, and also an in-memory holding that
-    would blow the host budget (the cold path re-decides that with the VAE resident and can fall
-    back to per-step encoding). On success the VAE and text encoders are never loaded."""
+    """Full cache hit returns (caption_embeds, latent_cache), else (None, None) for the cold path;
+    on a hit the VAE and text encoders are never loaded."""
     embeds = []
     for cap in to_encode:
         entry = pcache.get(pcache.text_key(cap))
@@ -2377,8 +2369,7 @@ def run_dit_lora_training(
     pairs = discover_image_caption_pairs(
         cfg.data_dir, instance_prompt = cfg.instance_prompt, caption_column = cfg.caption_column
     )
-    # Resolve num_epochs into a concrete train_steps now the dataset size is known, and rebind cfg so every downstream
-    # read agrees.
+    # Resolve num_epochs to train_steps now the size is known; rebind cfg so all reads agree.
     cfg = replace(
         cfg,
         train_steps = resolve_train_steps(cfg, len(pairs), [p for p, _ in pairs]),
@@ -2485,8 +2476,7 @@ def _train_dit(
             pcache = PersistentConditioningCache(cfg.cond_cache_dir, namespace, cfg.resolution)
         except Exception as exc:  # noqa: BLE001 -- the cache is an optimisation, never fatal
             _emit(on_event, "warning", message = f"conditioning cache disabled: {exc}")
-    # The crop/flip variant plan is seed-deterministic, so persistent keys are stable across runs and the warm check
-    # can run before anything loads.
+    # Seeded crop/flip plan: stable cache keys across runs, so the warm check precedes loads.
     canvases, crop_room = plan_image_canvases(cfg, image_paths)
     plan = _plan_cache_variants(
         len(image_paths),

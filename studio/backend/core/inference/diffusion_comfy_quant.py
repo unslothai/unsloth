@@ -300,8 +300,7 @@ def fp8_stored_by_header(
     name: str = "",
     keep_fp32: Any = (),
 ) -> bool:
-    """Header rule for fp8 layers kept as codes, shared by the host RAM estimate and the planner; the loader can only
-    widen more (charged live)."""
+    """fp8 layers kept as codes: header rule shared by RAM estimate and planner; loader may widen more."""
     return fmt in FP8_FORMATS and len(shape or ()) == 2 and not keeps_fp32(name, keep_fp32)
 
 
@@ -520,9 +519,7 @@ def _dequant(codes: Any, scale: Any, group: int, dtype: Any) -> Any:
     from .diffusion_single_file_converters import charge_host_ram
 
     rows = codes.shape[0]
-    # Peak, not just the output: the float32 codes and their float32 product are live together (8 bytes per
-    # element); ConvRot's batched matmul holds the product, a float32 copy of it and its float32 result (12,
-    # measured); last the product and the output.
+    # Peak: float32 codes and product coexist (8 bytes per element); ConvRot peaks at 12 bytes.
     out_size = torch.empty((), dtype = dtype).element_size()
     charge_host_ram(codes.numel() * max(12 if group else 8, 4 + out_size))
     weight = codes.to(torch.float32) * scale.to(torch.float32).reshape(-1, 1).expand(rows, 1)
@@ -640,9 +637,7 @@ def _fp8_tensor(
     dtype: Any,
     fast_accum: Optional[bool] = None,
 ) -> Optional[Any]:
-    """The torchao fp8 weight a hosted FP8 checkpoint rebuilds into (per-row ``Float8Tensor``, dynamic
-    per-row fp8 activations with the same 1e-12 floor, the plain-torch kernel), built by the same decoder.
-    A per-tensor scale is the per-row layout with every row's scale equal, so it is repeated, not changed."""
+    """Per-row torchao Float8Tensor with 1e-12 activation floor; a per-tensor scale is repeated"""
     import torch
 
     from .diffusion_transformer_quant import _resolve_fast_accum

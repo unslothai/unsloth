@@ -182,8 +182,7 @@ def effective_embedding_model(fresh: bool = False) -> str:
 
 
 def _names_gguf(model: str) -> bool:
-    """True when "gguf" appears as a whole name segment, so plain substrings
-    like "bigguf" don't count."""
+    """True when `gguf` is a whole name segment; substrings like `bigguf` do not count."""
     return "gguf" in re.split(r"[^a-z0-9]+", model.lower())
 
 
@@ -192,8 +191,7 @@ _QUANT_SUFFIX_RE = re.compile(r"(?:-qat)?(?:-q\d+_\d+[a-z]*)?-unquantized$", re.
 
 
 def gguf_repo_candidates(model: str) -> list[str]:
-    """Repos that may hold ``model``'s GGUF, in preference order. Shared by the
-    loader and the settings resolve endpoint so they cannot pick different repos."""
+    """Repos that may hold the GGUF, in preference order; loader and settings must agree."""
     if "RAG_EMBED_GGUF_REPO" in os.environ:
         return [EMBED_GGUF_REPO]
     if _names_gguf(model):

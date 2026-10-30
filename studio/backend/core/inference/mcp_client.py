@@ -314,9 +314,7 @@ def is_stdio(address: str) -> bool:
 
 
 def _split_windows_command_line(address: str) -> list[str]:
-    """Parse a Windows command line using the same backslash/quote rules that
-    subprocess.list2cmdline() writes. This keeps trailing backslashes before a closing quote from
-    being doubled in the resulting argv."""
+    """Parse Windows argv by the rules list2cmdline() writes, so trailing backslashes stay undoubled."""
     parts: list[str] = []
     current: list[str] = []
     in_quotes = False
@@ -373,8 +371,7 @@ def _split_windows_command_line(address: str) -> list[str]:
 
 
 def parse_stdio_command(address: str) -> list[str]:
-    """Split a stdio command line into argv. Shared by route validation and the transport so both
-    agree on quoting (notably Windows backslash paths)."""
+    """Split a stdio command line into argv, shared so validation and transport quote alike."""
     posix = sys.platform != "win32"
     if posix:
         return shlex.split(address, posix = posix)
@@ -401,9 +398,8 @@ def _windows_batch_argument_is_unsafe(argument: str) -> bool:
 
 
 def _session_log_id(url: str) -> str:
-    """A non-secret label for logs. stdio commands can embed credentials in argv (e.g. ``npx server
-    --token sk-...``) and HTTP URLs in their query string, so never log the raw address; use the
-    executable basename (or the host) plus a short digest of the full address instead."""
+    """Non-secret log label: never log the raw address, since argv and query can hold credentials;
+    use the executable basename or host plus a short digest"""
     digest = hashlib.sha256(url.encode()).hexdigest()[:12]
     if not is_stdio(url):
         try:
@@ -473,8 +469,7 @@ def probe_timeout(address: str, use_oauth: bool) -> float:
 
 
 def parse_server_headers(server: dict) -> Optional[dict]:
-    """Parsed headers_json. For stdio servers this dict is the process env instead of HTTP headers
-    (see _client)."""
+    """Parsed headers_json; for stdio servers this dict is the process env, not HTTP headers."""
     raw = server.get("headers_json")
     if not raw:
         return None
@@ -578,8 +573,7 @@ def _launcher_name(command: str) -> str:
 
 
 def _is_node_command(command: str) -> bool:
-    """Whether argv[0] is a Node launcher. Only those need the managed runtime, so a Python or other
-    stdio server keeps the toolchain its own env pinned."""
+    """Whether argv[0] is a Node launcher, the only kind given the managed runtime."""
     return _launcher_name(command) in _NODE_COMMANDS
 
 
@@ -606,8 +600,7 @@ def _runtime_requirements(command: Optional[str]) -> tuple[bool, bool]:
 
 
 def _path_key(env: dict) -> str:
-    """The key holding PATH. Windows env names are case-insensitive, so a config may spell it
-    ``Path``; on POSIX only the exact name counts."""
+    """The env key holding PATH; Windows names are case-insensitive, so match any case there."""
     if _IS_WINDOWS:
         for key in env:
             if key.upper() == "PATH":
@@ -616,8 +609,7 @@ def _path_key(env: dict) -> str:
 
 
 def _stdio_env(headers: Optional[dict], command: Optional[str] = None) -> Optional[dict]:
-    """Process env for a stdio server: its own vars, plus the managed Node bin dir on PATH so ``npx
-    ...`` servers spawn on hosts with no usable system Node."""
+    """Stdio env: own vars plus the managed Node bin on PATH, so npx runs without system Node."""
     env = dict(headers or {})
     for key, value in env.items():
         if not isinstance(key, str) or not isinstance(value, str):
@@ -794,9 +786,8 @@ _CANCEL_UNWIND_TIMEOUT = 2.0
 # With no read cap, a still-open abandoned reply is bounded by retiring its session after the old cap or a pile-up.
 _ABANDONED_REPLY_TIMEOUT = 300.0
 _MAX_ABANDONED_REPLIES = 8
-# An HTTP session idle this long is re-proved with tools/list before the next dispatch: the server may have expired it
-# (MCP says a server MAY terminate a session at any time), and no HTTP transport exposes a liveness probe we can ask
-# instead -- see _transport_dead.
+# Idle HTTP sessions are re-proved with tools/list before the next dispatch, as servers may expire
+# them (MCP lets a server terminate a session at any time) and no HTTP liveness probe exists
 _HTTP_IDLE_RECHECK = 30.0
 _DEFAULT_MAX_SESSIONS = 32
 
@@ -834,9 +825,8 @@ class _ConnectTimeout(asyncio.TimeoutError):
 
 
 def _is_tool_error(exc: BaseException) -> bool:
-    """A tool-level failure (the tool ran and errored) leaves the transport alive, so the session is
-    kept; fastmcp raises ToolError for these. Anything else from call_tool is transport-level.
-    Version-safe (fastmcp 3.0.2 has no dead probe)."""
+    """Version-safe: fastmcp 3.0.2 has no dead probe. ToolError (tool ran and errored) leaves the
+    transport alive, so the session is kept; other call_tool errors are transport-level"""
     try:
         from fastmcp.exceptions import ToolError
     except Exception:  # noqa: BLE001
@@ -855,8 +845,7 @@ def _is_protocol_error(exc: BaseException) -> bool:
         except Exception:  # noqa: BLE001
             continue
         if cls is not None and isinstance(exc, cls):
-            # Only when the server actually sent an error object; a synthetic MCPError with nothing behind it stays
-            # transport-level.
+            # Only when the server sent an error object, not for a synthetic MCPError.
             return getattr(exc, "error", None) is not None
     return False
 
@@ -1087,8 +1076,7 @@ class _McpSession:
         if loop_alive:
 
             async def _shutdown() -> None:
-                # Runs on the loop thread, so it serializes with an aborted connect() that finished anyway and just
-                # published its client.
+                # On the loop thread, it serializes with an aborted connect() that finished.
                 client, self.client = self.client, None
                 if client is not None:
                     await client.__aexit__(None, None, None)
@@ -1354,9 +1342,8 @@ def _drop_session(key: tuple, session: _McpSession) -> None:
 
 
 def _evict_lru_locked() -> list:
-    """Caller holds _mcp_sessions_lock. Evict least-recently-used *idle* sessions until the cache is
-    under the cap. Returns the evicted sessions so the caller can close them OUTSIDE the lock. If
-    every session is busy the cache may transiently overshoot rather than kill an in-flight call."""
+    """Caller holds _mcp_sessions_lock; returns idle LRU victims to close outside it; if every
+    session is busy the cache may overshoot the cap rather than kill an in-flight call"""
     victims: list = []
     if len(_mcp_sessions) < _MAX_SESSIONS:
         return victims
@@ -1477,8 +1464,7 @@ def _cleanup_worker() -> None:
 
 
 def _drain_cleanup_queue() -> tuple[list, Optional[threading.Thread]]:
-    """Take back whatever the worker has not started on yet, plus the worker itself so the caller
-    can wait out the one close already under way."""
+    """Takes back unstarted cleanups and the worker so a caller can wait out the active close."""
     with _mcp_cleanup_lock:
         pending = list(_mcp_cleanup_queue)
         _mcp_cleanup_queue.clear()
@@ -2036,8 +2022,7 @@ def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
 
 
 def _unwind_budget(unwind_timeout: float, timeout: Optional[float], elapsed: float) -> float:
-    """How long a cancelled call may take to unwind: whatever is left of the caller's window, so the
-    wait is never charged on top of an expired deadline."""
+    """A cancelled call's unwind wait is the caller's leftover window, never past a deadline."""
     if not unwind_timeout:
         return 0.0
     if timeout is None:
@@ -2243,11 +2228,8 @@ def _call_session_tool(
         finally:
             if slot is not None:
                 session.posts.settle(slot, abandoned = False)
-            # Remove from the cache and mark defunct BEFORE giving up the borrow, so no other caller can check this
-            # session out after it failed. The order matters more now that HTTP callers do not queue on call_lock:
-            # released first, a concurrent same-scope call could check out the broken transport while it was still
-            # cached, and _release_session can sit closing LRU victims for seconds first. in_flight is still held
-            # here, so the close defers to the release below.
+            # Drop the broken session from the cache before its borrow is released, so no caller
+            # reuses it.
             if discard_session:
                 _drop_session(key, session)
             _release_session(session, defer_close = not ephemeral)

@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Several queued LoRA jobs trained together on one base model with the fused multi-LoRA kernels.
-
-Each member keeps its own dataset, rank, alpha, learning rate, epochs, seed, optimizer and output, and
-reports its own events (``member_run_id``) with the same shapes a lone job sends."""
+"""LoRA jobs trained together on one base via fused multi-LoRA kernels; each member keeps its own
+dataset, rank, alpha, LR, epochs, seed, optimizer and output; events carry member_run_id."""
 
 from __future__ import annotations
 
@@ -244,8 +242,7 @@ def _lone_target_modules(target_modules):
 
 
 def _resolve_targets(model, target_modules) -> list[str]:
-    """Leaf names as PEFT resolves them: an explicit list, the Studio default, or every linear layer
-    except the output head for ``all-linear``."""
+    """PEFT leaf names: a list or the Studio default; all-linear skips only the output head."""
     if isinstance(target_modules, str):
         target_modules = [target_modules]
     target_modules = list(target_modules or [])
@@ -1161,9 +1158,8 @@ def _run(event_queue, stop_queue, config: dict, members: list) -> None:
 def _build_sft_trainer(
     model, tokenizer, config, live, grad_accum, device, event_queue, export, take_messages, stop_all
 ):
-    """TRL's SFTTrainer over the batch: each optimizer step gives every running member its own next
-    window, losses and gradient clipping stay per adapter, and each member keeps its own learning rate
-    schedule (one parameter group each)."""
+    """TRL SFTTrainer over the batch: each step gives members their own window, clipping, and LR
+    schedule."""
     import torch
     from datasets import Dataset
     from torch.utils.data import DataLoader

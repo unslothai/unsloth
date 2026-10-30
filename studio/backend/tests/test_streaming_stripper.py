@@ -151,10 +151,8 @@ def test_repeated_call_is_cached():
 
 
 def test_scan_is_amortized_not_quadratic(monkeypatch):
-    """Prose-only text costs constant work per token: the sentinel scan resumes where it stopped.
-
-    Counts the characters handed to the sentinel scan instead of timing, so it does not depend on how
-    fast the full strip is (a cheaper full strip once made a ratio against it meaningless)."""
+    """Prose-only text costs constant work per token since the sentinel scan resumes; a cheaper full
+    strip once made a ratio against it meaningless, so count characters, not time."""
     scanned = []
     real = tool_call_parser._first_sentinel
 
@@ -184,11 +182,9 @@ _MISSED_BY_THE_CORPUS = (
     # keys on the whole segment, so trimming the segment must not reach it.
     '{\n  "tool_syntax": "call:get_weather{city:Paris}",\n  "note": "example"\n}',
     '[\n  "call:search{q:1}"\n]',
-    # Earlier arms can leave behind a segment that is whole JSON when the untrimmed one
-    # was not, which is the same hazard arrived at from the other side.
+    # Earlier arms can make a segment whole JSON that the untrimmed one was not; same hazard.
     'answer\n[TOOL_CALLS]search[ARGS]{"q":1}{\n  "k": "call:get_weather{c:P}"\n}',
-    # A reasoning closer with no opener makes offset 0 of the segment meaningful, so
-    # nothing may be trimmed off the front of it.
+    # A reasoning closer with no opener makes offset 0 meaningful; trim nothing at the front.
     '\n[TOOL_CALLS]search[ARGS]{"q":1}[/THINK]<function=search>{}</function>',
     '[THINK]r[/THINK]<function name="s">{}</function>[/THINK]tail',
 )
@@ -511,9 +507,8 @@ def _reference_strip_non_final(text, enabled_tool_names = ENABLED):
     ],
 )
 def test_non_final_stripper_matches_the_non_final_strip(text):
-    """The final-answer loop after the tool budget is spent calls the strip with
-    ``final = False``, which leaves the end-of-turn arms off. Sharing the tool loop's
-    instance would silently turn them on, so it gets its own with the flag."""
+    """The final-answer loop calls the strip with final = False, which leaves end-of-turn arms off;
+    sharing the tool loop's instance would turn them on."""
     stripper = StreamingMarkupStripper(ENABLED, seg_final = False)
     for size in range(1, len(text) + 1):
         assert stripper.strip(text[:size]) == _reference_strip_non_final(
@@ -581,8 +576,7 @@ def test_a_replaced_middle_is_not_taken_for_a_continuation():
 
 
 def test_an_append_only_stream_is_still_recognised_as_a_continuation():
-    """Control for the test above: the extra sample must not push the ordinary
-    append-only case onto the slow path, which is the whole point of the class."""
+    """Control: an append-only stream must not fall to the slow path, the point of the class."""
     names = {"a"}
     text = "some prose " * 400
     stripper = StreamingMarkupStripper(names)
@@ -619,9 +613,8 @@ def test_openers_far_past_the_closer_do_not_reopen_the_quadratic_scan():
 
 
 def test_an_unterminated_blocked_body_is_not_rescanned_per_snapshot():
-    """A long blocked call keeps the stripper on its whole-buffer path, so anything quadratic
-    here stalls the display. Counted rather than timed, so it cannot flake: the body scan must
-    not run once per snapshot while the call is still unterminated."""
+    """An unterminated blocked call keeps the stripper on its whole-buffer path, so the body scan
+    must not rerun per snapshot; counted, not timed, so it cannot flake."""
     from core import tool_healing
     from core.inference.tool_call_parser import StreamingMarkupStripper
 

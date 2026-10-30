@@ -12,9 +12,7 @@ from core.inference import context_refusal
 from core.inference.context_window import fit_rolling_context
 
 
-# Measured with gemma-4.jinja and the unsloth/gemma-3-270m-it tokenizer:
-#   empty prompt 16, system prompt 8009, 16,400-newline tool result 557 (8207 estimated),
-#   whole conversation 8629 tokens
+# Token counts measured with gemma-4.jinja back the constants below: empty prompt 16, system 8009.
 _FLOOR = 16
 _SYSTEM = 8009
 _USER = 30
@@ -101,8 +99,7 @@ def test_a_dominant_tool_result_still_gets_the_tool_advice():
 
 
 def test_a_respawn_refit_that_refuses_is_not_lost_when_the_retry_is_refused():
-    """A respawn refit refusal is drained only inside the stream, so a retry refused at the door
-    loses it."""
+    """A respawn refit refusal is drained only in the stream, so a retry refused at the door loses it."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     backend = object.__new__(LlamaCppBackend)

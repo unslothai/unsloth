@@ -32,9 +32,8 @@ def test_h3_measured_diffusers_memory_estimates():
 
 
 def test_the_host_floor_tracks_the_components_the_load_holds():
-    """The VRAM floor is rebuilt from the engaged components; the host floor has to be too, or an
-    80 GB device running the int8 conditioner and the int8 denoiser clears the VRAM check at 55 GB
-    and is then told it needs 150 GB of system RAM for 47.5 GB of weights."""
+    """Host floor must track engaged components like the VRAM floor; else an 80 GB card running int8
+    parts passes VRAM at 55 GB, then needs 150 GB RAM for 47.5 GB of weights."""
     from core.inference.video_minimax_h3 import (
         H3_TEXT_ENCODER_BF16_GB,
         H3_TRANSFORMER_BF16_GB,

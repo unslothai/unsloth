@@ -23,16 +23,10 @@ _ABSOLUTE_GATE = -70.0
 _RELATIVE_GATE = 10.0
 # The K-weighting high-pass rings for well under a second; past this many seconds its impulse response is below float precision.
 _IR_SECONDS = 1.0
-# Every measure walks the audio this many frames at a time, so a 10-minute take never needs
-# full-length float64 copies.
+# Walks audio in _CHUNK-frame slices, so a long take never needs full-length float64 copies.
 _CHUNK = 1 << 18
-# Clipping: at least 3 identical samples in a row at full scale, reached or left by a jump a smooth
-# peak could not make. PCM rounds a clean peak, even a low tone's, to a flat top of L samples, and the
-# curve drops off it by at most about ((L + 1) / (L - 1))**2 quantization steps (3 steps at L = 3,
-# 1 from L = 5 in a sweep of clean tones); a clipped waveform hits the rail at speed. The step used is
-# at most _CLIP_STEP_MAX, so coarse 8-bit steps (1/128) cannot hide an overdriven tone; 8-bit is too
-# coarse to tell a clean low tone's flat top from clipping. 0.99 lets the 8-bit positive rail
-# (127/128) count.
+# 3+ identical full-scale samples reached or left by a jump no smooth peak makes; step capped at
+# _CLIP_STEP_MAX so 8-bit steps cannot hide overdrive; _CLIP_LEVEL 0.99 lets 127/128 count.
 _CLIP_LEVEL = 0.99
 _CLIP_RUN = 3
 _CLIP_EDGE = 2
@@ -50,10 +44,8 @@ def read_wav(path: Path) -> tuple[np.ndarray, int]:
 
 
 def _float_layout(path: Path) -> Optional[tuple[int, int, str, int, int]]:
-    """(rate, channels, dtype, data offset, frames) for an IEEE float WAV, else None.
-
-    ``wave`` reads PCM only; decoding a float WAV to 16-bit PCM clamps every sample past full
-    scale, which would invent clipping and hide the true peak."""
+    """Layout (rate, channels, dtype, data offset, frames) of an IEEE float WAV, else None; wave
+    reads PCM only, and a 16-bit decode would clamp peaks and invent clipping."""
     size = path.stat().st_size
     with open(path, "rb") as f:
         head = f.read(12)
@@ -286,9 +278,8 @@ def _steep_samples(x: np.ndarray, first: np.ndarray, length: np.ndarray, step: f
 
 
 def clipped_samples(data: np.ndarray, step: float = 0.0) -> int:
-    """Samples in runs of at least ``_CLIP_RUN`` identical full-scale samples, per channel, that the
-    waveform reaches or leaves more steeply than a smooth peak could; ``step`` is the quantization
-    step (0 for float audio). Runs are judged a chunk at a time, so memory stays bounded."""
+    """Identical full-scale runs of at least _CLIP_RUN samples per channel, reached or left more
+    steeply than a smooth peak could; step is the quantization step (0 for float)."""
     total = 0
     for channel in range(data.shape[1]):
         x = data[:, channel]
@@ -301,8 +292,7 @@ def clipped_samples(data: np.ndarray, step: float = 0.0) -> int:
             same = np.zeros(len(seg), dtype = bool)
             same[1:] = rail[1:] & rail[:-1] & (seg[1:] == seg[:-1])
             rail, same = rail[lead:], same[lead:]
-            # Each rail sample that does not continue the previous one opens a run; id 0 is the
-            # run carried in from the last chunk.
+            # Each rail sample not continuing a run opens one; id 0 is the carried-in run.
             opens = rail & ~same
             ids = np.cumsum(opens)
             counts = np.bincount(ids[rail], minlength = int(ids[-1]) + 1)
@@ -397,14 +387,12 @@ def _words(text: str) -> list[str]:
     return _UNSPACED.sub(lambda m: f" {m.group(0)} ", folded).split()
 
 
-# The word alignment compares every expected word with every heard one; past this many pairs
-# (about a second of work) there is no score.
+# Alignment compares every expected word with every heard word; past this many pairs, no score.
 _MATCH_MAX_PAIRS = 50_000_000
 
 
 def match_score(expected: str, heard: str) -> Optional[float]:
-    """1 - word error rate after case, punctuation and spacing are normalised, floored at 0.
-    None when the two texts are too long to align."""
+    """1 minus word error rate after normalisation, floored at 0; None when too long to align."""
     ref = _words(expected)
     hyp = _words(heard)
     if not ref:

@@ -204,8 +204,7 @@ def candidates(
     base_repo: Optional[str] = None,
     logger: Any = None,
 ) -> list:
-    """Components at ``source`` that load fp32 shards at float16 / bfloat16, with cache keys. Local reads only; never
-    raises."""
+    """Fp32-shard components at source that load at float16 or bfloat16; local reads only, never raises."""
     if not enabled() or not source:
         return []
     out: list = []

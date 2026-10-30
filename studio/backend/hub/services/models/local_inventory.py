@@ -756,11 +756,9 @@ def _artifact_mirror_rows(
     updated_at: Optional[float] = None,
     active_cache: bool = True,
 ) -> List[LocalModelInfo]:
-    """An artifact mirror (a model's own GGUF / FP8 repo that also holds its base's official diffusers folders) never
-    lists those folders as a pipeline row: they are what a pick of the BASE fetches, a pipeline pick of the repo id is
-    refused, and deletes are whole-repo or per-quant, so a separate row's delete would wipe the quants. A GGUF repo's
-    folders fold into its GGUF row's size; the FP8 repo's row stays partial and flagged, so nothing loads or resumes it
-    as a pipeline. A snapshot with no pipeline index is left exactly as released builds listed it."""
+    """Artifact mirror base folders never form a pipeline row (deletes are whole-repo or per-quant);
+    GGUF folders fold into the GGUF row; FP8 row stays flagged partial; no-index snapshots
+    unchanged"""
     if not _hosts_artifacts(model_id):
         return rows
     snapshot = hf_cache_scan.latest_snapshot_dir(repo_dir)
@@ -798,10 +796,8 @@ def _artifact_mirror_rows(
 def _merge_artifact_mirror_roots(
     rows_by_root: list[tuple[Path, List[LocalModelInfo]]],
 ) -> List[LocalModelInfo]:
-    """The cross-root half of ``_artifact_mirror_rows``, which sees one cache root at a time. When an artifact
-    mirror's GGUF sits in one root and its diffusers folders in another, each root keeps its own row, because a delete
-    is scoped to one root: the GGUF row counts only its own root, and the folders-only row stays partial and flagged as
-    the GGUF's companion prefetch, never a pick. Every other row passes through unchanged."""
+    """Cross-root half of _artifact_mirror_rows: each root keeps its own row since deletes are
+    root-scoped; the folders-only row stays partial and flagged, never a pick"""
     gguf_ids = {
         (row.model_id or "").lower()
         for _root, rows in rows_by_root
@@ -1327,9 +1323,8 @@ async def _collect_models_from_default_sources(
             nested_roots = nested_roots,
         )
         if _inventory_physical_identity(str(folder_path)) in hermes_identities:
-            # Registering ~/.hermes/models was how Hermes downloads were listed before this scan;
-            # the walk lists every download a second time under the same id. Anything else kept
-            # in that folder is still the user's custom row.
+            # Hermes-registered folder: its downloads come from the Hermes scan (the walk would list
+            # each twice); anything else kept there is still a custom row
             staged = {
                 _inventory_physical_identity(row.path) for row in scan_hermes_dir(folder_path)
             }

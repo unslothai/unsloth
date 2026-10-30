@@ -683,9 +683,8 @@ def _modeling_auto_source_path() -> Optional[str]:
 
 
 def _transformers_enables_torch() -> bool:
-    """True only when transformers surely enables torch (installed, USE_TORCH / USE_TF, declared
-    floor), decided from metadata. False keeps the import path, so no-torch installs still get the
-    curated fallback."""
+    """True only when transformers surely enables torch (installed, USE_TORCH/USE_TF, declared
+    floor); False keeps the import path, so no-torch installs get the curated fallback."""
     import importlib.metadata
     import importlib.util
 
@@ -1159,8 +1158,7 @@ _LAZY_MODULE_LOCK = threading.Lock()
 
 
 def _lazy_module_attr(name: str) -> Any:
-    """Build-once accessor. Also for in-module callers, where a bare global read would
-    not reach PEP 562."""
+    """Build-once accessor for in-module callers too; a bare global read would skip PEP 562."""
     with _LAZY_MODULE_LOCK:
         if name not in _LAZY_MODULE_CACHE:
             _LAZY_MODULE_CACHE[name] = _LAZY_MODULE_ATTRS[name]()
@@ -1376,9 +1374,8 @@ def _is_vision_model_or_none(
     ``gguf_variant`` picks the quant out of a directory, so the probe reads the weight
     file the load will open. ``require_image=False`` asks only for a companion projector,
     which is what an audio request needs: audio input rides the same file."""
-    # Local GGUF models are served by llama-server, so multimodal capability comes from a
-    # companion mmproj, not a Transformers config. Do not cache: a projector may be added
-    # beside an existing weight file after it was first inspected.
+    # Local GGUF models are served by llama-server, so multimodal support comes from a companion
+    # mmproj, not a Transformers config; do not cache, as a projector may be added later.
     if is_local_path(model_name):
         local_path = normalize_path(model_name)
         # Same rule as ModelConfig.from_identifier: variant lookup is directory-only, and

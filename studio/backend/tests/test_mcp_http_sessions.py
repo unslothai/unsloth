@@ -64,8 +64,7 @@ def _result(text: str) -> SimpleNamespace:
 
 
 class RecordingClient:
-    """Records what _client() was actually given. The stdio-session fixture drops
-    headers and use_oauth, which is exactly where a credential bug would hide."""
+    """Records _client() args; stdio fixtures drop headers and use_oauth, a credential risk."""
 
     instances: list["RecordingClient"] = []
 
@@ -237,16 +236,14 @@ def test_oauth_http_stays_one_shot(clients):
 
 
 def test_a_shared_session_is_never_built_for_an_oauth_server():
-    """Defence in depth: the routing above is what keeps OAuth out of the cache,
-    so if that ever slips the session must refuse rather than talk to an OAuth
-    server with no credentials."""
+    """Defence in depth: routing keeps OAuth out of the cache, so if that slips the session must
+    refuse rather than contact an OAuth server without credentials."""
     with pytest.raises(ValueError):
         mcp_client._McpSession(HTTP_URL, None, use_oauth = True)
 
 
 def test_http_connect_uses_the_whole_caller_budget(monkeypatch, clients):
-    """Regression: routing HTTP through the shared cache must not import stdio's
-    cold-start cap. Scaled down so the test costs a second, not a minute."""
+    """HTTP connect must use the whole caller budget, not stdio's cold-start connect cap."""
     monkeypatch.setattr(mcp_client, "_STDIO_CONNECT_TIMEOUT", 0.3)
     monkeypatch.setattr(
         mcp_client,
@@ -275,8 +272,7 @@ def test_stdio_connect_keeps_its_cold_start_cap(monkeypatch, clients):
 
 
 def test_connect_timeout_reports_the_window_that_expired(monkeypatch, clients):
-    """It used to report the caller's timeout even when the much tighter connect
-    cap was what fired, which sends anyone debugging it to the wrong knob."""
+    """The connect timeout error must name the window that expired, not the caller's timeout."""
     monkeypatch.setattr(mcp_client, "_STDIO_CONNECT_TIMEOUT", 0.3)
     monkeypatch.setattr(
         mcp_client,
@@ -344,9 +340,8 @@ def _parallel(
 
 
 def test_two_http_calls_in_one_chat_run_concurrently(monkeypatch, clients):
-    """Regression: the shared session must not serialize HTTP. Every JSON-RPC
-    message is its own POST and responses carry request ids, so there is nothing
-    to interleave; before this, a parallel tool batch took twice as long."""
+    """Regression: the shared session must not serialize HTTP, or a parallel tool batch takes twice
+    as long; each JSON-RPC message is its own POST with request ids."""
 
     def _client(
         url,
@@ -366,8 +361,7 @@ def test_two_http_calls_in_one_chat_run_concurrently(monkeypatch, clients):
 
 
 def test_two_stdio_calls_in_one_chat_stay_serialized(monkeypatch, clients):
-    """The counterpart that must not change: one subprocess is one ordered byte
-    stream, so a browser or REPL must not see two calls interleaved."""
+    """Stdio must stay serialized, since one subprocess is one ordered byte stream."""
 
     def _client(
         url,
@@ -419,9 +413,8 @@ def test_concurrent_first_calls_publish_one_session(monkeypatch, clients):
 
 
 def test_oauth_flip_before_connect_blocks_dispatch(clients):
-    """The window: the call read a non-OAuth row, the row flipped, and the route's
-    close found nothing cached and no connect in flight, so it had no generation
-    to bump. Only the config snapshot can reject this call."""
+    """The window: the call read a non-OAuth row, the row flipped, and close found nothing cached or
+    connecting, so no generation was bumped; only the config snapshot can reject it."""
     row = {"is_enabled": 1, "url": HTTP_URL, "headers": None, "use_oauth": 0}
 
     def config_check() -> bool:
@@ -489,8 +482,7 @@ def test_a_raising_config_check_fails_closed(clients):
 
 
 def test_a_transport_failure_is_never_replayed(clients):
-    """The tool may already have run on the server, so a retry could double a
-    side effect. Drop the session; the next call reconnects."""
+    """The tool may already have run, so a transport failure must never be retried."""
     _call(HTTP_URL, scope = SCOPE)
     attempts = []
 
@@ -530,8 +522,7 @@ def test_a_tool_error_keeps_the_session(clients):
 
 
 def test_an_expired_idle_http_session_is_replaced_before_dispatch(monkeypatch, clients):
-    """A server may drop an HTTP session whenever it likes and no HTTP transport
-    exposes a liveness probe, so the only honest check is to ask it."""
+    """No HTTP transport has a liveness probe, so the only honest check is to ask the server."""
     monkeypatch.setattr(mcp_client, "_HTTP_IDLE_RECHECK", 0.0)
     _call(HTTP_URL, scope = SCOPE)
     clients[0].probe_error = True
@@ -589,8 +580,7 @@ def test_a_second_borrower_still_proves_a_session_that_went_idle(monkeypatch, cl
 
 
 def test_closing_many_sessions_does_not_run_serially(monkeypatch, clients):
-    """A popular HTTP server holds a session per chat, and close runs on the
-    request thread during an edit or delete."""
+    """Close runs on the request thread during an edit; many sessions must not close serially."""
     closes = []
     # _close_all batches at _MAX_CLOSE_THREADS, so size the barrier to one batch or it deadlocks.
     together = min(mcp_client._MAX_CLOSE_THREADS, 6)
@@ -619,9 +609,8 @@ def test_closing_many_sessions_does_not_run_serially(monkeypatch, clients):
 
 
 def test_a_slow_but_live_idle_session_survives_the_recheck(monkeypatch, clients):
-    """The recheck exists to catch a session the server dropped. A server that is
-    merely slow to answer tools/list has not dropped anything, and retiring it
-    there would discard exactly the state this cache is for."""
+    """The idle recheck catches only dropped sessions; a server merely slow to answer tools/list has
+    not dropped anything, and retiring it would discard the cached state."""
     monkeypatch.setattr(mcp_client, "_HTTP_IDLE_RECHECK", 0.0)
     monkeypatch.setattr(mcp_client, "_SESSION_LIVENESS_TIMEOUT", 0.2)
     _call(HTTP_URL, scope = SCOPE)
@@ -631,9 +620,8 @@ def test_a_slow_but_live_idle_session_survives_the_recheck(monkeypatch, clients)
 
 
 def test_a_tight_deadline_skips_the_probe_and_still_runs_the_tool(monkeypatch, clients):
-    """The recheck is there to save someone a failed call, so it must not become
-    the reason one fails. tool_call_timeout goes down to 1s, and a probe that
-    quietly eats the whole budget leaves nothing to dispatch with."""
+    """The recheck must not cause a failed call: at a 1s tool_call_timeout a probe eating the budget
+    leaves nothing to dispatch with, so a tight deadline skips it."""
     monkeypatch.setattr(mcp_client, "_HTTP_IDLE_RECHECK", 0.0)
     monkeypatch.setattr(mcp_client, "_SESSION_LIVENESS_TIMEOUT", 0.5)
     _call(HTTP_URL, scope = SCOPE)
@@ -644,9 +632,8 @@ def test_a_tight_deadline_skips_the_probe_and_still_runs_the_tool(monkeypatch, c
 
 
 def test_evicting_another_scope_does_not_run_on_the_callers_deadline(monkeypatch, clients):
-    """Whoever happens to trip the cap is mid tool call. The victim belongs to a
-    different chat and nobody is waiting on it, so its teardown must not be
-    charged to that caller's budget."""
+    """The caller that trips the cap is mid tool call, but the evicted victim belongs to another
+    chat, so its teardown must not be charged to the caller's deadline."""
     tearing_down = threading.Event()
     release = threading.Event()
     closed = threading.Event()
@@ -759,9 +746,8 @@ def test_a_failed_session_is_not_closed_on_the_retry_budget(monkeypatch, clients
 
 
 def test_a_synchronous_close_waits_for_work_already_started(monkeypatch, clients):
-    """close_mcp_sessions promises a server edit, and atexit, that the teardown
-    has happened. Draining the queue does not recall the session the worker had
-    already picked up."""
+    """close_mcp_sessions promises that teardown has happened for server edits and atexit; draining
+    the queue cannot recall a session the worker already picked up."""
     monkeypatch.setattr(mcp_client, "_MAX_SESSIONS", 1)
     gate = threading.Event()
 
@@ -823,8 +809,7 @@ def test_a_surviving_call_does_not_pay_for_the_retirement(monkeypatch, clients):
 
 
 def test_evictions_do_not_spawn_a_thread_each(monkeypatch, clients):
-    """A run of new chat scopes against a server that hangs on shutdown would
-    otherwise leave a cleanup thread per eviction alive for the close timeout."""
+    """Evictions must not spawn a cleanup thread each, even when a server hangs on shutdown."""
     monkeypatch.setattr(mcp_client, "_MAX_SESSIONS", 1)
     release = threading.Event()
 
@@ -871,9 +856,8 @@ def test_a_json_rpc_error_from_the_probe_keeps_the_session(monkeypatch, clients)
 
 
 def test_the_queue_of_pending_closes_is_bounded(monkeypatch, clients):
-    """One worker bounds the cleanup threads but not the queue: a server that
-    hangs on shutdown is closed slower than new chats evict, and every session
-    waiting in the queue still holds its own loop thread and connection."""
+    """One worker bounds cleanup threads, not the queue; a server hanging on shutdown closes slower
+    than chats evict, and each queued session holds a loop thread and connection."""
     monkeypatch.setattr(mcp_client, "_MAX_SESSIONS", 1)
     monkeypatch.setattr(mcp_client, "_MAX_PENDING_CLOSES", 2)
     release = threading.Event()
@@ -905,9 +889,8 @@ def test_the_queue_of_pending_closes_is_bounded(monkeypatch, clients):
 
 
 def test_closing_many_sessions_does_not_spawn_a_thread_each(monkeypatch, clients):
-    """The cache is allowed to overshoot _MAX_SESSIONS while every session in it
-    is busy, so the list close_mcp_sessions is handed has no fixed length, and a
-    shutdown is the worst moment to ask for an unbounded number of threads."""
+    """The cache may overshoot _MAX_SESSIONS while sessions are busy, so the list close_mcp_sessions
+    receives has no fixed length; shutdown must not spawn unbounded close threads."""
     monkeypatch.setattr(mcp_client, "_MAX_CLOSE_THREADS", 3)
     release = threading.Event()
     live = []
@@ -941,8 +924,7 @@ def test_closing_many_sessions_does_not_spawn_a_thread_each(monkeypatch, clients
 
 
 def test_a_slow_probe_still_condemns_a_dirty_session(monkeypatch, clients):
-    """The counterpart that must not change: a session whose last call was
-    abandoned is under suspicion, so silence within the window condemns it."""
+    """An abandoned call makes a session suspect, so silence within the window condemns it."""
     monkeypatch.setattr(mcp_client, "_SESSION_LIVENESS_TIMEOUT", 0.2)
     _call(HTTP_URL, scope = SCOPE)
     clients[0].probe_delay = 0.6
@@ -952,9 +934,8 @@ def test_a_slow_probe_still_condemns_a_dirty_session(monkeypatch, clients):
 
 
 def test_a_failed_session_is_uncached_before_the_borrow_is_released(clients):
-    """HTTP callers do not queue on call_lock, so between releasing the borrow and
-    dropping the key another same-scope call could check the broken transport out
-    and dispatch on it."""
+    """HTTP callers do not queue on call_lock, so between releasing the borrow and dropping the key
+    another same-scope call could check out the broken transport."""
     _call(HTTP_URL, scope = SCOPE)
     key = next(iter(mcp_client._mcp_sessions))
     seen = {}
@@ -1015,9 +996,8 @@ def test_closing_sessions_works_during_interpreter_exit():
 
 
 def test_a_fork_resets_the_inherited_cache(clients):
-    """Only the forking thread survives, so every inherited session's loop thread
-    is gone while its client still reports connected. A child that checked one
-    out would wait on a loop that never runs."""
+    """After a fork only the forking thread survives, so inherited sessions lose their loop thread
+    while the client still reports connected; a child would wait on a dead loop."""
     if not hasattr(mcp_client.os, "register_at_fork"):
         pytest.skip("no register_at_fork on this platform")
     _call(HTTP_URL, scope = SCOPE)

@@ -434,8 +434,7 @@ def test_a_partial_left_by_another_user_is_not_built_on(monkeypatch, tmp_path):
 
 
 def test_an_unopenable_partial_defers_instead_of_failing_the_download(monkeypatch, tmp_path):
-    """EACCES on another account's partial must defer to the stock writer, not fail the download for
-    good."""
+    """EACCES on another user's partial defers to the stock writer, not a failed download."""
     calls, module, partial = _shared_setup_2(monkeypatch, tmp_path)
     partial.write_bytes(b"someone else's")
     real_open = os.open

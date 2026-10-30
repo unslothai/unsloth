@@ -112,8 +112,7 @@ class LoRAEMA:
         self.updates = max(0, int(updates or 0))
 
     def copy_to(self, model: Any) -> dict[str, Any]:
-        """Write the shadow values into ``model``'s params, returning the
-        displaced originals so ``restore`` can undo the swap."""
+        """Write shadow values into params, returning displaced originals for restore to undo."""
         import torch
 
         backup: dict[str, Any] = {}

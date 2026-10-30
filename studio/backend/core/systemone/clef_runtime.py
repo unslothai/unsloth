@@ -40,10 +40,9 @@ class _Events:
 
 
 def _fast_paths(folder: str) -> None:
-    # Clef is a Qwen3.5 backbone: unsloth_zoo ships its gated delta kernels and Triton causal conv
-    # (prefill and decode), so nothing is installed. Where that conv cannot run (switched off, ROCm,
-    # no Triton, an older zoo) it gets the prebuilt causal-conv1d a training run would; a failed
-    # install leaves transformers' torch path, which is slower but right.
+    # Clef is a Qwen3.5 backbone: the unsloth_zoo Triton causal conv is used and nothing is
+    # installed; where it cannot run, the prebuilt causal-conv1d is installed; a failed install
+    # leaves the slower transformers torch path.
     try:
         from utils.ssm_runtime import zoo_triton_causal_conv1d_usable
 

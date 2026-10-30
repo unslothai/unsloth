@@ -143,8 +143,7 @@ def _priced_locally(monkeypatch, gguf_path: str):
 
 
 def _pin_on_disk(monkeypatch):
-    """Pins the on-disk gate both as a bool and as a tri-state, so tests stay independent of the
-    revision."""
+    """Pins the on-disk gate as both a bool and a tri-state, so tests ignore the revision."""
     monkeypatch.setattr(ri, "_estimate_target_is_on_this_disk", lambda _id: True)
     monkeypatch.setattr(
         ri,

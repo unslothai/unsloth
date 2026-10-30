@@ -315,9 +315,8 @@ def _numba_dirs() -> list[Path]:
 
 
 def _matplotlib_dirs() -> list[Path]:
-    """get_cachedir()'s own rules: _get_config_or_cache_dir takes the XDG branch
-    for linux and freebsd only, and otherwise ~/.matplotlib, with win32
-    preferring %LOCALAPPDATA%\\matplotlib when the legacy dir is absent."""
+    """Mirrors matplotlib's get_cachedir(): XDG dir on linux and freebsd only, else ~/.matplotlib;
+    win32 prefers %LOCALAPPDATA%/matplotlib when the legacy dir is absent."""
     configured = _env_dir("MPLCONFIGDIR")
     if configured is not None:
         return [configured]
@@ -768,11 +767,9 @@ def _walk_into(
     ledger: LinkLedger,
     occupancy: Optional[_OccupancyLedger] = None,
 ) -> int:
-    """Sizes every directory on the stack and below it; returns the entries seen.
-
-    A uv or triton cache can hold millions of files, so the loop body is the whole cost: paths
-    stay strings and single-link sizes are summed locally rather than through the ledger.
-    """
+    """Sizes every directory on the stack and below, returning entries seen; paths stay strings and
+    single-link sizes are summed locally, not via the ledger, as uv or triton caches hold
+    millions of files."""
     count = 0
     single = 0
     add = ledger.add

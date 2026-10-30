@@ -285,9 +285,7 @@ def create_run(
 def _unbind_assistant_locked(
     conn: sqlite3.Connection, previous_id: str | None, next_id: str | None
 ) -> None:
-    """Drop the research binding from the reply the run is leaving behind. Both replies would otherwise
-    carry the same run id, and each renders whatever that run is doing now, so the new question's
-    live card would appear twice."""
+    """Unbind the old reply: two replies sharing one run id would each render its live card."""
     if not previous_id or previous_id == next_id:
         return
     row = conn.execute(
@@ -324,9 +322,7 @@ def _stopped_run_locked(conn: sqlite3.Connection, thread_id: str) -> sqlite3.Row
 
 
 def research_spent(thread_id: str) -> bool:
-    """Whether the thread's research is used up, which is what the composer greys out on. The claim
-    itself outlives a stopped run so the same run can be re-pointed, so a held claim alone must not
-    read as spent: after a Stop, research is still on offer."""
+    """Whether research is spent; a held claim alone does not count, since a Stop leaves it on offer."""
     conn = get_connection()
     try:
         claim = conn.execute(
@@ -763,11 +759,9 @@ def approve(run_id: str, revision: int, plan_hash: str) -> str:
 
 
 def request_cancel(run_id: str, expected_attempt: int | None = None) -> str | None:
-    """Stop ``run_id``. With ``expected_attempt``, only if that attempt is still the run's; else None.
-
-    The attempt check shares the cancel's transaction, so a retry or rebind that commits first
-    (both bump retry_count under the same id) can never be cancelled on its predecessor's behalf.
-    """
+    """Cancels run_id only if expected_attempt is still current, else None; the check shares the
+    cancel's transaction, so a newer retry or rebind is never cancelled on its predecessor's
+    behalf"""
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")

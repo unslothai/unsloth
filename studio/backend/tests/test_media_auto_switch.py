@@ -1199,8 +1199,7 @@ def test_a_local_hidream_is_accepted_once_its_encoder_is_cached(
 def test_a_cpu_load_does_not_wait_on_chat_or_the_other_backend(
     flux, enabled, backend, loads, monkeypatch
 ):
-    # A CPU diffusion device releases ownership, so the switch evicts nobody.
-    # Patch both bindings: the drain and the switch each read it.
+    # A CPU diffusion load frees ownership, so nothing is evicted; patch both bindings.
     monkeypatch.setattr(backends, "load_takes_the_gpu", lambda: False)
     monkeypatch.setattr(mas, "load_takes_the_gpu", lambda: False)
     monkeypatch.setattr(backends, "chat_busy", lambda *a, **k: True)
@@ -2055,8 +2054,7 @@ def test_a_cached_single_checkpoint_the_loader_cannot_open_is_not_advertised(cat
 
 
 def test_a_stalled_load_probe_still_answers_inside_the_budget(flux, enabled, backend, monkeypatch):
-    # load_progress can stall on a slow filesystem; timed inside the loop because asyncio.run
-    # joins the executor on exit.
+    # load_progress can stall, so time it in the loop: asyncio.run joins the executor.
     monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.4)
 
     async def _start(

@@ -428,8 +428,7 @@ def _digest(value) -> str:
 
 
 def first_divergence(corpus, mod_name, func_name):
-    """Recompute one function's outputs to localise a digest change; run it on both sides of the
-    revision."""
+    """Outputs per corpus input, to localise a digest change; run on each side of the revision."""
     module = importlib.import_module(mod_name)
     func = getattr(module, func_name)
     return [{"input": text, "output": _drive(func, text)} for text in corpus]

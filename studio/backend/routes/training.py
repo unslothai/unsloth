@@ -424,9 +424,7 @@ def _has_complete_indexed_weights(path: Path, index_name: str, expected_suffix: 
 
 
 def _trainable_local_roots(path: Path, model_name: Optional[str] = None) -> list[Path]:
-    """The snapshot root plus any subdirectory a load reads from. Spark-TTS / BiCodec keep config.json
-    and the weights under <snapshot>/LLM, so probing only the root reports a good cached model as
-    having no trainable weights."""
+    """Snapshot root plus load subdirs: Spark-TTS keeps weights in LLM, which a root-only probe misses."""
     roots = [path]
     if not model_name:
         return roots
@@ -469,10 +467,7 @@ def _has_adapter_metadata(path: Path) -> bool:
 
 
 def _continue_from_adapter_allowed(request: TrainingStartRequest) -> bool:
-    """LoRA / CPT can load a saved adapter as the starting point; full finetune cannot (#13140).
-
-    Only the CUDA trainer keeps an adapter it loaded; the embedding, decision and Apple Silicon
-    (MLX) runners always build a fresh one on top, so those still need a base model."""
+    """LoRA/CPT only (issue 13140); only CUDA reuses a loaded adapter, other runners rebuild on a base."""
     if request.training_type not in ("LoRA/QLoRA", "Continued Pretraining"):
         return False
     if getattr(request, "is_embedding", False) or getattr(request, "is_decision", False):
@@ -2076,11 +2071,8 @@ async def _admit_training_request(
             )
     allow_ambient = via_api_key is not True
     hf_token = hf_token_arg(request.hf_token, allow_ambient_token = allow_ambient)
-    # The local dataset paths were resolved above for existence only; authorize them now that
-    # the caller's token is known, before anything reads them.
-    # Eval paths only while evaluation is on, matching the validation above and the trainer,
-    # which reads them under the same condition: a stale eval path nothing will open must not
-    # refuse an otherwise valid run.
+    # Authorize local dataset paths once the token is known, before anything reads them; eval paths
+    # only while evaluation is on, so a stale unused eval path must not refuse a valid run
     for _local_paths, _label in (
         (request.local_datasets, "dataset"),
         (
@@ -3513,9 +3505,8 @@ def _free_gpu_for_diffusion_training() -> None:
         from core.inference import gpu_arbiter
         from core.inference.diffusion_engine_router import get_active_diffusion_engine
 
-        # The ACTIVE engine, not the diffusers singleton: on a native (sd_cpp) selection the resident sd-server still
-        # holds the GPU, so unloading only the singleton is a no-op.
-        # The mask segmenter sits on torch's card whichever engine renders; one still running refuses the start.
+        # Use the ACTIVE engine: the singleton unload is a no-op while a native sd-server holds the
+        # GPU; the mask segmenter sits on torch's GPU and a still-running one refuses the start
         gpu_arbiter.release_mask_segmenter("diffusion training start")
         diffusion = get_active_diffusion_engine()
         if getattr(diffusion, "runs_off_torch_device", False) is True:
@@ -4567,8 +4558,7 @@ _MAX_CAPTION_CHARS = 2000
 
 
 def _resolve_dataset_folder(name: str, *, must_exist: bool = True) -> Path:
-    """Validate ``name`` (single component, no traversal) and resolve it under the Unsloth
-    datasets root. 404 when a read target is missing."""
+    """Single-component name, no traversal, under datasets root; 404 when a read target is missing."""
     from utils.paths import datasets_root
 
     cleaned = _clean_diffusion_dataset_name(name)
@@ -5003,8 +4993,7 @@ def _detect_image_column(features) -> Optional[str]:
 
 
 def _detect_image_column_from_row(row: dict) -> Optional[str]:
-    """Image column picked from one materialized row, for a streamed dataset that arrives with no
-    feature metadata to inspect."""
+    """Picks the image column from one row, since a streamed dataset has no feature metadata to inspect."""
     try:
         from PIL.Image import Image as PILImage
     except Exception:  # noqa: BLE001 -- no Pillow -> the caller reports "no image column"
@@ -5027,8 +5016,7 @@ def _detect_caption_column(entry: dict, columns: list[str]) -> Optional[str]:
 
 
 def _materialize_hf_dataset(entry: dict, dest: Path, cap: int) -> int:
-    """Stream rows from datasets.load_dataset into ``dest`` as numbered images + optional
-    .txt sidecars. Returns the number of images written."""
+    """Streams datasets.load_dataset rows into dest as numbered images with optional .txt sidecars."""
     from datasets import load_dataset
 
     kwargs = {"split": "train"}

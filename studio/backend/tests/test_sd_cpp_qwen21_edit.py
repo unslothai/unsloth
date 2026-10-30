@@ -267,9 +267,8 @@ def test_native_text_to_image_keeps_the_family_size_bounds(family, width, height
 
 
 def test_a_padded_mask_adds_no_region_and_stays_aligned_with_the_source():
-    """Padding the separate mask with white marked the added border as part of the region to
-    edit. It is padded black, by the same amount as the source, so the region stays where it was
-    drawn."""
+    """Mask padding must be black, by the same amount as the source, not white: white marks the
+    added border as part of the edit region."""
     mask = Image.new("L", (64, 32), 0)
     for x in range(8):
         for y in range(8):
@@ -295,8 +294,7 @@ def test_a_padded_mask_adds_no_region_and_stays_aligned_with_the_source():
 
 
 def test_a_full_fidelity_build_gets_the_images_as_decoded(tmp_path):
-    """A build carrying the upstream reference fixes reads alpha and keeps each image's shape, so
-    neither workaround applies and status reports alpha."""
+    """A full-fidelity build reads alpha and keeps image shapes, so no workaround applies."""
     clear = _png(size = (32, 32), color = (0, 0, 255, 0))
     _w, _h, blobs = bk._native_condition_images(
         FAM, _png(size = (64, 32)), [clear], None, 1024, 512, full_fidelity = True, pad_to_output = True

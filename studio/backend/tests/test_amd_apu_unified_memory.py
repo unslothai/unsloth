@@ -70,8 +70,7 @@ def test_apu_guard_scopes_to_selected_gpu(monkeypatch):
 
 
 def test_apu_guard_honors_hip_visible_devices_mask(monkeypatch):
-    # ROCm resolves ids via HIP first: the mask exposes only the APU as ordinal 0
-    # but physical id 1, so the selection [1] must still match.
+    # HIP's mask shows the APU as ordinal 0 but physical id 1, so [1] must still match.
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
     monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1")
@@ -166,9 +165,7 @@ def _probe(
 
 
 class TestTheRocmProbeReservesHostRamOnAnApu:
-    """ROCm reports no iGPU flag, so before this an APU was sized as a discrete
-    card: no host margin, and an absolute reserve taken off what is really
-    system RAM. The Vulkan probe already did both; this matches it."""
+    """ROCm reports no iGPU flag, so APUs were sized as discrete; the Vulkan probe already handled this."""
 
     def test_an_apu_loses_the_host_reserve_and_reports_no_total(self, monkeypatch):
         assert _probe(monkeypatch, "6.2.0", ["gfx1151:xnack-"]) == [(0, _B200_FREE_MIB - 1024, 0)]
@@ -202,9 +199,7 @@ class TestTheRocmProbeReservesHostRamOnAnApu:
 
 
 class TestTheGateStillFailsOpen:
-    """Every helper in this family answers False rather than raising: they are
-    consulted on the load path, so a bad argument must skip the optimisation,
-    not fail the load."""
+    """Load-path helpers answer False rather than raise, so a bad argument skips the optimisation."""
 
     @pytest.mark.parametrize("gpu_indices", [5, [[0]], "0", [None], object()])
     def test_a_bad_gpu_indices_answers_false(self, monkeypatch, gpu_indices):
@@ -217,9 +212,7 @@ class TestTheGateStillFailsOpen:
 
 
 class TestAmdSdkWheelsCountAsRocm:
-    """AMD SDK / Radeon wheels leave torch.version.hip unset and only encode
-    "rocm" in __version__, which _resolve_visible_physical_ids already handles.
-    The arch map must use the same predicate or an APU goes unrecognised there."""
+    """AMD SDK wheels leave torch.version.hip unset; the arch map must use the same predicate."""
 
     @staticmethod
     def _torch(
@@ -313,8 +306,7 @@ class TestRadeonWheelsWithoutAnArchName:
 
 
 class TestTheProbeTestsDoNotDependOnHostRam:
-    """The shared path caps by available system RAM, so the spoofed profile must
-    pin it or every expectation moves with the runner's memory."""
+    """The shared path caps by available RAM, so the spoofed profile must pin availability."""
 
     def test_the_helper_pins_availability(self, monkeypatch):
         """_probe must survive a runner smaller than the spoofed free figure."""
@@ -335,8 +327,7 @@ class TestTheProbeTestsDoNotDependOnHostRam:
 
 
 class TestTheOptOutHelper:
-    """_unified_memory_opted_out, the #8651 escape hatch. ggml tests presence, not
-    value, so only ABSENCE is off and this decides when to make it absent."""
+    """Decides when to make the var absent: ggml tests presence of the variable, not its value."""
 
     @pytest.mark.parametrize(
         "env,expected",
@@ -399,8 +390,7 @@ _GIB = 1024**3
 
 
 class TestTheUnifiedMemorySwapIsOnlyTakenWhenItPays:
-    """Managed allocation is enabled only when host RAM is the larger pool. Every arm
-    prices weights that outgrow the carve-out, so only the pools decide."""
+    """Managed allocation only when host RAM is the larger pool; the pools alone decide."""
 
     def _host(self, monkeypatch, specs, ram_mib):
         monkeypatch.setitem(sys.modules, "torch", _fake_torch_sized(specs))
@@ -602,9 +592,8 @@ class TestTheDirectIoGateNeedsEveryDeviceRead:
         assert LlamaCppBackend._rocm_classification_answered() is True
 
     def test_one_unreadable_device_declines(self, monkeypatch):
-        """The discrete gfx1100 beside it is exactly the trap: the set comes back
-        empty, the launch looks like two discrete cards, and the unreadable one may
-        be the APU."""
+        """A discrete card beside an unreadable device empties the set and looks like two discrete
+        cards, yet the unreadable one may be the APU."""
         monkeypatch.setitem(sys.modules, "torch", self._torch(["gfx1100", "gfx1151"], raises_on = 1))
         assert LlamaCppBackend._rocm_unified_memory_gpu_ids() == set()
         assert LlamaCppBackend._rocm_classification_answered() is False
@@ -618,7 +607,6 @@ class TestTheDirectIoGateNeedsEveryDeviceRead:
         assert LlamaCppBackend._rocm_classification_answered() is False
 
     def test_non_rocm_torch_declines(self, monkeypatch):
-        """No Windows ROCm wheel, so this is the usual answer on the one platform
-        the DirectIO decision runs on."""
+        """No Windows ROCm wheel exists, so the DirectIO decision declines here."""
         monkeypatch.setitem(sys.modules, "torch", _fake_torch(None, ["sm_90"]))
         assert LlamaCppBackend._rocm_classification_answered() is False

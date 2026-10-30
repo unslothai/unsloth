@@ -331,8 +331,7 @@ def test_the_mtmd_reuse_branch_still_records_the_choice(monkeypatch):
 
 
 def test_stt_unload_can_skip_a_sidecar_that_is_mid_transcription():
-    """The Voice device switch is an early release, not a reclaim: draining a
-    live transcription for 30s and then killing it loses the recording."""
+    """Early release, not reclaim: killing a mid-transcription sidecar loses the recording."""
     import inspect
 
     from core.inference import stt_registry

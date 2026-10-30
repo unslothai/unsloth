@@ -306,9 +306,7 @@ class TestOsKillReturncode:
 
 
 class TestMissingSharedLibrary:
-    """The dynamic loader stops llama-server before it prints anything of its
-    own, so a stock container missing libgomp.so.1 used to be reported as an
-    invalid GGUF or too little memory."""
+    """The loader stops llama-server before it prints, so a missing libgomp.so.1 is not a bad GGUF."""
 
     _LOADER_OUT = (
         "/home/tester/.unsloth/llama.cpp/llama-server: error while loading "
@@ -954,8 +952,7 @@ class TestMacOSLoaderEdgeCases:
 
 
 class TestDiagnosticsDoNotLeak:
-    """The output tail is llama-server's own stdout, and llama-server inherits
-    nearly all of Unsloth's environment."""
+    """The output tail can leak secrets because llama-server inherits Unsloth's environment."""
 
     _OUT = "build: 9415\nenv dump: OPENAI_API_KEY=sk-owner-secret-1234567890\nabort"
 
@@ -1029,8 +1026,7 @@ class TestDyldInstallNames:
 
 
 class TestMacOSSymbolProvenance:
-    """Where dyld expected the symbol decides the remedy: reinstalling the same
-    build cannot make the OS export a symbol it does not have."""
+    """The symbol dyld expected decides the fix: reinstalling cannot make the OS export it."""
 
     def test_a_system_framework_symbol_reads_as_a_too_new_build(self):
         out = (
@@ -1089,8 +1085,7 @@ class TestCommandLineSecrets:
 
 
 class TestClassifierScoping:
-    """The classifier is pure text and runs on every platform, so a macOS
-    diagnosis needs macOS evidence, not an English phrase."""
+    """Pure text classifier runs everywhere, so a macOS diagnosis needs macOS evidence."""
 
     def test_a_bare_symbol_not_found_is_not_a_macos_diagnosis(self):
         out = "plugin loader: Symbol not found in module registry\nexiting"
@@ -1592,9 +1587,7 @@ class TestTheRedactionHolesCodexFound:
 
 
 class TestRejectedArguments:
-    """Argument parsing runs before the model is touched, so these are never a
-    bad GGUF or an OOM. The strings are what the bundled llama-server actually
-    prints, captured from it directly rather than written from memory."""
+    """Argument parsing runs before the model loads, so these are never a bad GGUF or an OOM."""
 
     def test_an_unknown_flag_is_named(self):
         msg = _classify("error: invalid argument: --tempp", "/models/x.gguf", "local/x", 1)
@@ -1756,12 +1749,10 @@ class TestTensorSplitQuantizedKvUnsupported:
         )
 
     def test_a_hard_crash_carrying_it_is_not_retried_as_a_projector_fault(self):
-        """_output_has_nonprojector_diagnostic gates the text-only vision retry.
-        Without the marker a doomed tensor load would also pay that retry."""
+        """Without the marker a doomed tensor load would also pay the text-only vision retry."""
         assert LlamaCppBackend._output_has_nonprojector_diagnostic(self._OUT)
 
     def test_it_is_not_the_signal_crash_the_split_axis_latch_requires(self):
-        """It is LLAMA_LOG_ERROR + return nullptr, so exit 1 with no signal --
-        which is why it needs its own recording path rather than the #6415 one."""
+        """LLAMA_LOG_ERROR exits 1 with no signal, so it needs its own path, not issue 6415."""
         assert not LlamaCppBackend._should_record_tensor_split_abort(1, self._OUT)
         assert not LlamaCppBackend._is_tensor_split_assert(self._OUT)

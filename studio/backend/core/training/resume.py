@@ -297,8 +297,7 @@ def can_resume_run(run: dict, *, resource_cache: Optional[dict[str, bool]] = Non
 
     status = run.get("status")
     if status == "error":
-        # A save-time crash can report final_step == total_steps with no artifacts; checkpoint state alone
-        # decides resumability.
+        # Save-time crash: final_step == total_steps, no artifacts; checkpoints alone decide.
         resume_state_available = has_resume_state(run.get("output_dir"))
     else:
         final_step = run.get("final_step")

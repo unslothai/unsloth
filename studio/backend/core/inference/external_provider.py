@@ -7542,9 +7542,8 @@ class ExternalProviderClient:
         return merged
 
     async def verify_models_endpoint_lightweight(self) -> None:
-        """Confirm GET /models returns 200 without buffering the full response body. Used for
-        providers with enormous catalogs (e.g. OpenRouter, Hugging Face router) where downloading
-        the full JSON would be prohibitive."""
+        """Confirm GET /models returns 200 without buffering the full body, for providers with
+        enormous catalogs (e.g. OpenRouter, Hugging Face router) where buffering is prohibitive."""
         url = f"{self.base_url}/models"
         try:
             async with _client().stream(

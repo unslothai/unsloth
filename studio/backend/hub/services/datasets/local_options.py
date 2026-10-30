@@ -476,9 +476,7 @@ def _one_module(grouped: dict[str, list[PurePosixPath]]) -> Optional[str]:
 
 
 def _blocked_by_compression(name: str, module: str) -> bool:
-    """Whether datasets keeps this file for the chosen builder but cannot decompress it.
-    Its extension filter reads the whole basename, so train.jsonl.zst still looks like
-    json to it, and the build then dies on the missing codec."""
+    """Builder keeps the file but cannot decompress it; train.jsonl.zst looks like json, so build fails."""
     stem, _, suffix = name.rpartition(".")
     if not stem or f".{suffix}".lower() not in _UNREADABLE_COMPRESSION:
         return False
@@ -509,9 +507,7 @@ def _offerable(entries: list[PurePosixPath], snapshot: Path, module: str) -> Opt
 
 
 def _rowless(path: Path, name: str, module: str) -> bool:
-    """Whether the builder would read this file and find no row in it, as it does for a
-    csv holding only its header. That split is dropped, but unlike a file it cannot read
-    at all, datasets still builds the rest of the dataset around it."""
+    """Builder reads it but finds no row (csv with only a header): dropped; the rest still builds."""
     suffixes = PurePosixPath(name).suffixes
     if module not in {"csv", "json"} or (
         suffixes and suffixes[-1].lower() in _COMPRESSION_EXTENSIONS | _UNREADABLE_COMPRESSION
@@ -574,9 +570,8 @@ def _nonempty(snapshot: Path, name: str) -> bool:
 
 
 def _unreadable_metadata(snapshot: Path, name: str) -> bool:
-    """Whether the file is there but _snapshot_metadata_file refused it, for being too big
-    or for pointing out of the cache. The loader still reads it, so we cannot ignore it.
-    An empty file is refused too, but it declares nothing and so blocks nothing."""
+    """Refused by _snapshot_metadata_file (too big or outside the cache) but still read, so it
+    blocks; an empty file is refused too but blocks nothing."""
     return (
         _metadata_present(snapshot, name)
         and _snapshot_metadata_file(snapshot, name) is None

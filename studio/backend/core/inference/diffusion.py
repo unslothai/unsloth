@@ -1891,9 +1891,8 @@ def _dequantize_gguf_outside_linears(
     dtype: Any,
     logger: Any = None,
 ) -> int:
-    """Dequantise GGUF-packed params outside GGUFLinear (only those dequantise per forward; numpy has no bf16, so BF16
-    stays raw bytes too). Qwen-Image-Layered's BF16 addition_t_embedding otherwise fails the first step with 3072 vs
-    6144. A few KB, kept dense at ``dtype``. Returns the count."""
+    """Dequantise GGUF-packed params outside GGUFLinear to dense dtype, returning the count; BF16
+    stays raw (numpy has no bf16), else Qwen-Image-Layered's addition_t_embedding fails."""
     try:
         import torch
         from diffusers.quantizers.gguf.utils import (
@@ -2308,11 +2307,10 @@ def _layer_split_expected(
     plan: Any,
     refine: Optional[Callable[..., Any]] = None,
 ) -> bool:
-    """Whether placement will cut the denoiser across cards: the multi-GPU refinement asked early, with the sizes
-    loaded so far. The speed layer runs before placement, and on a split every block is resident on some card, so it
-    is set up for that (regional compile with fullgraph, int8 kernels, graphs) and not for the one-card offload plan
-    the split replaces. A split declined later lands its one-card fallback, the same path a transient OOM re-plan
-    takes. ``refine``: the backend's own refinement (video declines some families)."""
+    """Whether placement will split the denoiser across cards, given sizes loaded so far; the speed
+    layer is set up for that split, not the one-card plan it replaces. A split declined later
+    falls back to one card, as an OOM re-plan does; refine: backend's own refinement (video
+    declines some families)."""
     if plan is None or getattr(plan, "offload_policy", OFFLOAD_NONE) == OFFLOAD_NONE:
         return False
     try:
@@ -2343,10 +2341,9 @@ def _companion_split_expected(
 
 
 def _native_quant_needs_compile(target: Any, native_scheme: Optional[str], resident: bool) -> bool:
-    """Whether a torchao-free quantised DiT must be compiled like a torchao one: the NVIDIA int8 scheme (W8A8
-    ``torch._int_mm``, chosen for an offload plan) once the DiT stays resident, on one card or split across cards,
-    where eager runs it ~3.5x slower (LTX-2 split: 0.90-0.97 vs 0.26 s/step). ROCm and Apple keep their own native
-    path and its compile policy; a streamed DiT keeps the offload path's."""
+    """Whether a torchao-free quantised DiT on the NVIDIA int8 scheme (W8A8 torch._int_mm) must
+    compile like a torchao one once resident, on one card or split; eager runs it ~3.5x slower.
+    ROCm, Apple and streamed DiTs keep their own compile policy."""
     return (
         native_scheme is not None
         and bool(resident)
@@ -2437,8 +2434,7 @@ def _untiled_decode_shortfall_mib(vae: Any, z: Any) -> Optional[int]:
 
 
 def _untiled_encode_shortfall_mib(vae: Any, x: Any) -> Optional[int]:
-    """MiB short for encoding ``x`` untiled, the decode's rule (free less the VRAM Budget reserve); None off CUDA
-    or on unknown figures."""
+    """MiB short encoding untiled, decode's rule (free less reserve); None off CUDA or unknown."""
     from .diffusion_memory import cuda_reusable_cache_bytes, user_budget_reserve_bytes
     from .diffusion_vae_tiling import FREE_FRACTION, _fused, _geometry, encode_mib_per_latent
 
@@ -2544,10 +2540,9 @@ def _defer_tiling_to_decode(
     restore_vae: Any,
     logger: Any,
 ) -> Any:
-    """Tile verdict with resident offload groups: keep them through the denoise (as ComfyUI does) and decide at each
-    VAE decode / encode, on its own input, whether streaming lets it run untiled (tiling changes pixels, streaming
-    only costs time); groups pin back right after. An untiled encode OOM retries tiled. Wrappers sit on the public
-    ``decode`` / ``encode`` slots, outside compiled regions. Returns the VAE restore extended to drop them."""
+    """Groups stay resident through denoise; per VAE decode/encode, streaming decides if untiled
+    (tiling changes pixels, streaming only costs time), retrying tiled on encode OOM. Wrappers
+    sit on public decode/encode slots outside compiled regions; returns the extended VAE restore."""
     vae = getattr(pipe, "vae", None)
     if (
         vae is None
@@ -2883,9 +2878,8 @@ def _start_peak_probe(state: Any) -> Any:
         if getattr(pipe, "_unsloth_peak_graph_gen", None) is None:
             pipe._unsloth_peak_graph_gen = generation
         if graphs > accounted or generation > pipe._unsloth_peak_graph_gen:
-            # an unrecorded render (cache-served, refused, failed) left graphs allocated, or replaced one in a full
-            # cache (same count): a later peak above that start omits memory a fresh process allocates on its first
-            # render
+            # An unrecorded render (cache-served, refused, failed) that left graphs allocated, or
+            # replaced one in a full cache, would make a later peak omit first-render memory.
             return None
         if not _peak_identity_matches(state, identity):
             # this render runs a configuration the key does not name (a speed tier or step cache that toggled, a VAE
@@ -3045,8 +3039,7 @@ def _tier_request_peak(
 
 
 def _hold_captured_release(state: Any, extra_mib: int) -> int:
-    """At least the release a live CUDA graph was captured over: graphs key on weight addresses, so re-pinning
-    groups would re-capture."""
+    """Floor at a live CUDA graph's capture release: graphs key on weight addresses."""
     pipe = getattr(state, "pipe", None)
     held = getattr(pipe, "_unsloth_captured_release_mib", None)
     if held is None:
@@ -3153,9 +3146,8 @@ def _peak_device_index(state: Any) -> Optional[int]:
 
 
 def _live_peak_identity(state: Any) -> tuple:
-    """The load's learned-peak identity (the canonical configuration captured at load) with every part that can change
-    after the load read from the live state: speed tier, step cache, VAE savers, attention backend. A render records
-    only when this equals the identity."""
+    """The load's learned-peak identity, with post-load parts read from live state (speed tier, step
+    cache, VAE savers, attention backend); renders record only on a match."""
     pipe = getattr(state, "pipe", None)
     family, label, _ = tuple(getattr(pipe, "_unsloth_peak_identity", ("", "", None)))[:3]
     label = with_label_part(
@@ -3412,8 +3404,7 @@ def _record_peak_probe(
             # a capture failed (an absorbed OOM): the peak is the failed attempt's, not the render's need
             return
         if _conditioning_cache_hits(state.pipe) != getattr(probe, "conditioning_hits", 0):
-            # a cached prompt skipped the text encoder: the peak misses that phase, and an unseeded family places
-            # its next load from this value alone
+            # Cached prompt skips text encoder: partial peak an unseeded family places from.
             return
         engaged = getattr(state, "attention_backend", None)
         if not _attention_scaling_known(target, engaged):
@@ -3558,17 +3549,10 @@ def _pipeline_quant_uncompilable_reason(
     model_kind: str,
     probe: bool = False,
 ) -> Optional[str]:
-    """Why a PIPELINE load must keep its dense weights rather than quantise them, or None.
-
-    An uncompiled torchao transformer is ~30x slower than the bf16 it replaced, so converting
-    without a compile is a pessimisation. Both callers ask here: the route preflight, so the refusal
-    lands before the arbiter evicts anything, and the loader, so an automatic request declines to
-    bf16. GGUF is out of scope, substituting dense base weights and falling back to the packed file.
-
-    speed=off is absent on purpose: an engaged quant upgrades it to `default`, and an AUTO request
-    under it is rewritten to off long before either caller.
-
-    ``probe``: only the loader, which owns the evicted card, runs the allocating ROCm compile probe."""
+    """Refusal reason, or None, for a PIPELINE load that would quantise its transformer to
+    uncompiled torchao (~30x slower than bf16): the route preflight asks before eviction, the
+    loader so AUTO declines to bf16; GGUF is out of scope; speed=off is absent on purpose; probe
+    runs only in the loader."""
     if model_kind != "pipeline":
         return None
     # A string compare, not resolve_speed_mode: this runs on the route, where an unvalidated value must not raise.
@@ -3946,8 +3930,7 @@ class DiffusionBackend:
         return self._state is not None
 
     def _pick_device_and_dtype(self, ordinal: Optional[int] = None) -> tuple[str, Any]:
-        """(device, dtype) for the current host. Thin wrapper over the device policy module, kept as
-        a method so tests can still monkeypatch it."""
+        """(device, dtype) via the device policy; a method so tests can monkeypatch it."""
         if ordinal is None:
             target = resolve_diffusion_device_target()
             return target.device, target.dtype
@@ -3985,9 +3968,8 @@ class DiffusionBackend:
         self._teardown_drained.clear()
 
     def _release_teardown_locked(self) -> None:
-        """Release one teardown reservation and wake generations when the last one leaves. Call only
-        while holding ``_lock``. A count is necessary because an unload and a superseding load
-        can both be queued behind the active generation."""
+        """Releases one teardown reservation, waking generations when the last leaves; call with
+        _lock held. A count, since an unload and a superseding load can both queue."""
         assert self._teardown_waiters > 0, "teardown reservation released without an owner"
         self._teardown_waiters -= 1
         if self._teardown_waiters == 0:
@@ -4092,10 +4074,9 @@ class DiffusionBackend:
         te_mode = normalize_te_quant(text_encoder_quant)
         if pinned is None and te_mode is None:
             return
-        # One probe for both checks, asked of the card THIS load will use: on a mixed box the default device can be a
-        # different generation, which would refuse a scheme the selected card supports, or pass one it does not and
-        # fail only after eviction. Scoped, because the route calls this on a pooled thread and the probes below use
-        # argument-less CUDA calls.
+        # One probe for both checks, on this load's card: the default device may be another
+        # generation, refusing a supported scheme or passing one that fails after eviction; scoped
+        # because the route runs it on a pooled thread and the probes use argument-less CUDA calls.
         if model_kind != "pipeline" and not (base_repo or "").strip() and fam is not None:
             # The variant base the loader derives from the pick's name (a FLUX.2 Klein 9B checkpoint), network-free:
             # judged on the family default, the int8 gate would check another variant's encoder file.
@@ -4130,9 +4111,8 @@ class DiffusionBackend:
         text_encoder_files: Optional[Sequence[str]],
         te_mode: Optional[str],
     ) -> tuple[str, ...]:
-        """The encoder slots the supplied files fill, for the preflight: it runs before the load installs the
-        component overrides. Network-free (local files, a cached model index); () when that cannot tell, and the
-        load's own check then refuses a mixed build."""
+        """Encoder slots the supplied files fill, for the preflight (before overrides install);
+        network-free, and () when unknown, so the load's own check refuses a mixed build."""
         if not text_encoder_files or fam is None or te_mode != "int8":
             return ()
         try:
@@ -4357,10 +4337,9 @@ class DiffusionBackend:
         """Pins the calling thread to the resident GPU of the model; every worker must use this, since state.device is un-indexed."""
         target = self._target_for_ordinal(state.family, state.gpu_ordinal)
         apply_diffusion_device_ordinal(target)
-        # And put an AUTOMATIC load back on its own card. generate() runs on a pooled asyncio.to_thread worker, so a
-        # previous pinned model leaves that thread set to its GPU for good; with no ordinal to pin, the bare "cuda"
-        # Generators below would then target that card while these weights sit on the default one. Skipped when the
-        # pin above already set that card.
+        # Re-pin an AUTOMATIC load to its own card: pooled threads keep the GPU of an earlier pinned
+        # model, so bare cuda Generators would target that card while the weights sit on the default
+        # one; skipped when the pin above already set it.
         if state.gpu_ordinal is None or state.placed_ordinal != state.gpu_ordinal:
             pin_cuda_ordinal(state.placed_ordinal)
         return target
@@ -4390,9 +4369,8 @@ class DiffusionBackend:
                 try_to_load_from_cache(repo_id, gguf_filename, cache_dir = cache_dir), str
             )
             if not cached_here:
-                # Same other-root reuse as the pre-quant checkpoint, reached THROUGH that root rather than returned
-                # raw, so the ref still resolves and a republished GGUF is picked up; the blob is reused, and offline
-                # the cached pointer comes back anyway.
+                # Reuse another cache root like the pre-quant checkpoint, through that root rather
+                # than raw, so the ref still resolves and republished GGUFs are picked up.
                 elsewhere = try_to_load_from_cache(repo_id, gguf_filename, cache_dir = None)
                 if isinstance(elsewhere, str) and Path(elsewhere).is_file():
                     try:
@@ -5153,16 +5131,14 @@ class DiffusionBackend:
             base = repo_id  # the full pipeline IS the repo
         else:
             base = _resolve_base_repo(repo_id, base_repo, fam, hf_token, gguf_filename)
-        # Probe the repo the load will FETCH from: refusing the upstream id would reject the gated picks the ungated
-        # mirror rescues, and the swap is pure, so it decides the same here as on the load thread. Only the raise
-        # matters; _run_load recomputes the excused snapshot.
+        # Probe the fetch repo, the ungated mirror where one applies, since the upstream id would
+        # reject gated picks it rescues; only the raise matters, as _run_load recomputes it.
         _assert_base_repo_accessible(
             prefer_ungated_mirror(base, hf_token), hf_token, _base_manifest_name(fam)
         )
-        # Same reasoning for the FLUX.2 size pairing, and this is the only place it can be caught before a teardown:
-        # the loader's own guard opens the downloaded checkpoint, so it fires after ~19 GB of base shards AND after
-        # the resident pipeline was freed. Metadata only, and fails open on anything it cannot read. The UPSTREAM
-        # base, not the mirror: the size tables key on vendor ids.
+        # FLUX.2 size pairing can only be caught here, before teardown: the loader's guard fires
+        # after ~19 GB of base shards and after the resident pipeline is freed. Metadata only, fails
+        # open; upstream base, not the mirror, as size tables key on vendor ids.
         assert_flux2_pick_compatible(fam, repo_id, gguf_filename, base, hf_token)
         # FLUX.3's variant check (distilled vs base, BFL quantized packages) off the header, for the same reason.
         assert_flux3_pick_compatible(fam, repo_id, gguf_filename, hf_token)
@@ -5212,12 +5188,10 @@ class DiffusionBackend:
         # The probes this load adds read the Hub directly; they keep a managed account's False (anonymous) sentinel.
         hub_token = normalize_token(hf_token)
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
-        # Resolved ONCE, here, and carried to the worker: outside it so a bad pick is the route's 400 rather than a
-        # load that dies mid-download, and only once so free VRAM cannot re-rank the choice after the weights land.
-        # Gated on the resolved backend, since XPU / MPS / CPU ignore physical ids and would otherwise 400 a selection
-        # the contract says to drop. Re-ranked only when the caller did not already do it: free VRAM moves between the
-        # route's preflight and here, so resolving twice can approve a scheme against one card and place the weights
-        # on another.
+        # Resolved once, here, so a bad pick is the route's 400 not a mid-download failure and free
+        # VRAM cannot re-rank after weights land; re-rank only if the caller has not, since two
+        # resolutions can split approval and placement across cards; gated on backend since XPU, MPS
+        # and CPU ignore physical ids.
         auto_ordinal = gpu_ordinal is None and not gpu_ids
         if gpu_ordinal is None and gpu_ids:
             gpu_ordinal = (
@@ -5678,11 +5652,10 @@ class DiffusionBackend:
                                 + tuple(repo for repo, _n, _s in te_hub_files)
                             )
                         )
-            # Download outside the lock so unload/an eviction can preempt the pull. The carried snapshot is the
-            # fallback, never the override: it fires only when the estimate came back empty, since the metadata that
-            # fills it is the same call whose failure earned the escape. Without it the load 401s with every byte
-            # already on disk.
-            # Where diffusers' own "Couldn't connect" fallback lands, minus its untimed revision / model_info calls.
+            # Download outside the lock so eviction can preempt it; the carried snapshot is only a
+            # fallback for an empty estimate, from the same call that failed, else the load 401s
+            # with every byte on disk; lands where diffusers' own Couldn't connect fallback does,
+            # minus its untimed revision and model_info calls.
             forced_offline = False
             if not local_files_only and _pick_cached_while_hub_unreachable(
                 fam, kind, kwargs["repo_id"], kwargs.get("gguf_filename"), base, fetch_base
@@ -5803,14 +5776,12 @@ class DiffusionBackend:
             return self._cache_bytes(repo_id)
 
         if loading.base_repo and loading.base_repo == loading.repo_id:
-            # Full pipeline: base IS the repo, so count it once. Summing would add the upstream's stale partial blobs,
-            # the very thing that selects the mirror, to the mirror's live bytes, pushing the bar to 100% / finalizing
-            # mid-download.
+            # Full pipeline (base is the repo): count it once, since summing would add the
+            # upstream's stale partial blobs to the mirror's bytes and reach 100% mid-download.
             downloaded = _companion_progress_bytes(companion or loading.repo_id)
         elif loading.gguf_filename and mirror_hosts_artifacts(loading.repo_id):
-            # A GGUF picked straight from an artifact mirror: the repo is also the companion, and also holds sibling
-            # quants and sample renders the plan never counted. The selected file, the pipeline folders and the
-            # in-flight blobs are what this load downloads.
+            # A GGUF from an artifact mirror: the repo also holds sibling quants and samples, so
+            # count only the selected file, pipeline folders and in-flight blobs.
             downloaded = self._cache_file_bytes(
                 loading.repo_id, loading.gguf_filename
             ) + _companion_progress_bytes(loading.repo_id)
@@ -6619,10 +6590,9 @@ class DiffusionBackend:
                 )
                 # Rebinding before base_filter is ever CALLED, so the loop below reads the answer.
                 include_transformer = bool(include_transformer(companions, transformer_files))
-            # The mirror choice above saw only the companions. Once the verdict may have widened the set to the dense
-            # transformer shards, decide again on the FINAL list: a gated upstream holding the companions but not the
-            # shards must not stay the fetch repo, or the shards 401 for an anonymous user. Recorded for the plan and
-            # the load, which stage and read from this one answer.
+            # The mirror choice saw only the companions, so decide again on the FINAL file list: a
+            # gated upstream holding companions but not the dense shards must not stay the fetch
+            # repo, or the shards 401 for anonymous users; recorded for the plan and load.
             final_files = [
                 s.rfilename
                 for s in base_siblings
@@ -6704,11 +6674,10 @@ class DiffusionBackend:
             return {"entries": [], "total_bytes": 0, "required_bytes": 0, "checkpoint_bytes": 0}
         else:
             base = _resolve_base_repo(repo_id, base_repo, fam, hf_token, gguf_filename)
-        # Reported, not raised. The images page falls back to /images/load on ANY plan failure, so a 400 here would
-        # start the very download this is meant to prevent; carried in the envelope instead, the picker can refuse at
-        # SELECTION time. Metadata only, and None whenever nothing is known to be wrong. The speech verdict belongs
-        # here too, not only on the load preflight: the Images page stages and downloads before it calls load, so a
-        # later refusal arrives after the bytes.
+        # Reported, not raised: a 400 would trigger the /images/load fallback download, so the
+        # verdict rides the envelope and the picker refuses at selection; metadata only, None when
+        # nothing is wrong; speech verdict belongs here too: staging downloads before load, so a
+        # later refusal lands after the bytes.
         incompatible = (
             flux2_pick_mismatch(fam, repo_id, gguf_filename, base, hf_token)
             # The FLUX.3 variant / BFL-package verdict, off the header or the manifest, for the same reason.
@@ -6756,9 +6725,8 @@ class DiffusionBackend:
         replaced = tuple(component_overrides.components) if component_overrides else ()
         if component_overrides is not None and component_overrides.text_encoder_components:
             text_encoder_quant = _te_quant_for_supplied_encoders(text_encoder_quant)
-        # Only a checkpoint that really resolves on the Hub earns the right to drop dense shards
-        # Resolved through the same tri-state the loader uses, so the size the picker SHOWS is the size the load will
-        # actually move on a family whose unset request takes a hosted encoder.
+        # Only a checkpoint that really resolves on the Hub may drop dense shards; the loader's
+        # tri-state makes the shown size accurate where an unset request takes a hosted encoder.
         te_quant_planned, _ = resolve_te_quant_request(
             text_encoder_quant, getattr(fam, "te_quant_auto", None)
         )
@@ -7043,9 +7011,8 @@ class DiffusionBackend:
             "checkpoint_bytes": checkpoint_bytes,
             "incompatible_reason": incompatible,
             "incompatible_code": incompatible_code,
-            # Companion discovery failed, so the file list above is partial. The UI stages what it can and the loader
-            # pulls the rest inline; a caller that must not download at all has to treat this plan as unverified
-            # rather than as nothing missing.
+            # Companion discovery failed so the file list is partial: the UI stages what it can, the
+            # loader pulls the rest; a no-download caller must treat the plan as unverified.
             "plan_failed": bool(plan_failures),
         }
 
@@ -7413,10 +7380,9 @@ class DiffusionBackend:
                         # The same predicate the plan's listing drops these with, so the two cannot drift.
                         if _listing_extra(repo_id, rel):
                             continue
-                    # Dedupe on the path INSIDE the snapshot, so one logical file counts once however many roots hold
-                    # it. The etag would not: each root serves its own revision, so a republished file summed both
-                    # copies and could report finalizing at half the real progress. Works for a no-symlink cache too,
-                    # which stores the file in the snapshot rather than linking to blobs/.
+                    # Dedupe on the path inside the snapshot, not the etag: each root serves its own
+                    # revision, so a republished file was summed twice and reported finalizing at
+                    # half progress; works for no-symlink caches too.
                     _add(f"path:{f.relative_to(snapshot).as_posix()}", f)
             except OSError:
                 pass  # the download is writing this tree under the walk; report what we counted
@@ -7846,8 +7812,7 @@ class DiffusionBackend:
 
     @staticmethod
     def _safetensors_param_count(path: Path) -> int:
-        """Total tensor elements in a safetensors file, read from its JSON header without touching
-        the tensor data. 0 on any read/parse failure."""
+        """Element count from the safetensors header, not the data; 0 on read or parse error."""
         from .diffusion_component_sizes import read_safetensors_header
         try:
             header = read_safetensors_header(path)
@@ -9721,8 +9686,7 @@ class DiffusionBackend:
                         and normalize_transformer_quant(transformer_quant) is not None
                         and (dense_transformer_supported(target) or native_scheme is not None)
                     ):
-                        # The same helper the route preflight asked; probed only for an engaged torchao request
-                        # (a native scheme never reads it).
+                        # Probed only for engaged torchao; native schemes never read it.
                         pipeline_quant_uncompilable = (
                             None
                             if native_scheme is not None
@@ -9986,8 +9950,7 @@ class DiffusionBackend:
                             _refuse_pinned_precision()
 
                     self._raise_if_load_cancelled(_load_token)
-                    # Lazy import (the optimizer's submodules import torch lazily) keeps diffusion.py torch-free to
-                    # import.
+                    # Lazy import keeps diffusion.py torch-free; the optimizer defers torch.
                     from . import diffusion_autoopt as autoopt
 
                     load_audit = autoopt.new_audit(backend = "image", family = fam)
@@ -10161,10 +10124,8 @@ class DiffusionBackend:
                     # The dense fast path sets gguf_filename, but its transformer is dense.
                     gguf_transformer = kind == "gguf" and transformer_quant_engaged is None
 
-                    # Registered patches (diffusion_autoopt.patches), in their original order: the shared and per-arch
-                    # compile-safe fusions on a speed tier (uninstalled on `off`, tracked by eager_patched), then the
-                    # per-pipe installs that gate themselves (Q2.1 fast step, FLUX.2 fused RoPE, ROCm FLUX.1 / FLUX.2
-                    # one-kernel RoPE + AdaLN).
+                    # Order matters: compile-safe fusions on a speed tier first, then per-pipe
+                    # installs that self-gate.
                     autoopt.install_patches(
                         autoopt.STAGE_LOAD_EAGER,
                         pipe = pipe,
@@ -12895,12 +12856,8 @@ class DiffusionBackend:
         quant_baked: bool,
         cancel: threading.Event,
     ) -> None:
-        """Generation-time LoRA handling for a torchao-quantized pipe. The adapters (if any) were
-        baked at load time, before quantize_ + compile, so the module topology is immutable here.
-        Allowed without a reload: weight tweaks on the baked set and disabling any of it (scale 0
-        reproduces the quantized base exactly; set_adapters is value-level, so torch.compile guards
-        absorb it). Anything that would change topology raises a clean 400 telling the client to
-        reload with the new selection."""
+        """Baked adapters allow only weight tweaks and disabling here; any topology change needs a
+        reload."""
         if not quant_baked:
             if not specs:
                 return  # no adapters baked, none requested
@@ -13794,9 +13751,8 @@ class DiffusionBackend:
                     if "control_mode" in call_params and cn_mode is not None:
                         kwargs["control_mode"] = cn_mode
 
-                # Per-forward chunks: the whole job list in ONE forward by default, bounded by an explicit batch_size
-                # cap; the OOM backoff below halves a failed chunk. Layered: one input per forward (the pipeline's
-                # per-prompt layer stride is only right for one).
+                # All jobs in one forward unless batch_size caps it; OOM halves a chunk; layered
+                # runs one per forward
                 chunks = _generation_chunks(state.family, jobs, batch_size, layer_count = layer_count)
 
                 # EFFECTIVE steps: img2img at strength < 1 denoises a fraction of `steps`.
@@ -14412,11 +14368,8 @@ class DiffusionBackend:
                 _note_captured_release(state, guard_release_mib, guard_capture_gen)
                 if static_skip:
                     logger.debug("diffusion.step_skip: %s", static_skip_stats(state.pipe))
-                # Keep progress ACTIVE through the post-denoise work: the route persists the image after this returns,
-                # so a mount probe reading idle would refresh the gallery too early. Persist the warm compile bundle;
-                # a STATIC compile makes new artifacts per (w,h,batch), so register this shape. The write itself is
-                # QUEUED, not performed: nothing in this response depends on it (only the NEXT process reads the
-                # bundle), so save_async hands it to the shared worker and the user stops waiting on it.
+                # Keep progress active through post-denoise work; register each (w,h,batch) shape;
+                # the save is async
                 if aux_pass:
                     pass
                 elif bg_eager:
@@ -15110,9 +15063,7 @@ def _pick_cached_while_hub_unreachable(
 
 
 def _hf_base_model(repo_id: str, hf_token: Optional[str]) -> Optional[str]:
-    """The diffusers base repo from a GGUF repo's ``base_model`` tag, or None. Lets one family entry
-    cover every variant (Turbo/full, schnell/dev, the 2512 Qwen revision). Skipped for local
-    paths; None on any lookup failure."""
+    """Diffusers base repo from a GGUF base_model tag, or None on lookup failure; skipped for local paths"""
     if Path(repo_id).expanduser().exists():
         return None
     try:
@@ -15301,9 +15252,7 @@ def _pipeline_components_from_index(
     explicit_components: Optional[Sequence[str]] = None,
     failures_out: Optional[list] = None,
 ) -> Optional[tuple[frozenset[str], frozenset[str]]]:
-    """Return selected component folders and exact model-index ignores. The manifest is small but
-    authoritative. If it cannot be read, staging retains the prior best-effort listing and
-    resident sizing declines to issue a hard refusal."""
+    """Manifest is authoritative; if unreadable, staging keeps its best-effort listing, no hard refusal."""
     try:
         from huggingface_hub import hf_hub_download
 

@@ -16,8 +16,7 @@ import routes.training as training_routes
 from auth.authentication import authenticated_via_api_key, get_current_subject
 from utils.hardware import hardware as hw
 
-# Clears every streaming precondition but the MLX guard; load_in_4bit off keeps the
-# sidecar probe offline.
+# Clears streaming preconditions but the MLX guard; load_in_4bit off keeps the probe offline.
 _STREAMING_START = {
     "model_name": "unsloth/Llama-3.2-1B-Instruct",
     "training_type": "LoRA/QLoRA",
@@ -163,8 +162,7 @@ def test_rejection_still_fires_once_detection_has_already_run(
 def test_non_streaming_start_detects_before_entering_the_sync_backend(
     monkeypatch, hardware_globals, spawn_calls, client
 ):
-    """An ordinary start reaches a synchronous worker-config build that reads the
-    device, so it must also detect through the route's off-loop handoff."""
+    """An ordinary start reads DEVICE in a sync config build, so detection runs off-loop too."""
     _pretend_cpu_linux(monkeypatch)
     hardware_globals.DEVICE = None
 

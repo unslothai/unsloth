@@ -495,8 +495,7 @@ def test_build_rag_autoinject_fallback_is_thread_first_and_budgeted(rag_conn, mo
     ]
     assert calls[0]["min_dense_score"] is None
     assert calls[0]["top_k"] == 4
-    # 3000 context - 1024 headroom - prompt - 512 overhead leaves room for one
-    # 1600-char passage plus the project hit, not for all four.
+    # Budget leaves room for one 1600-char passage plus the project hit, not all four.
     assert injected.count("x" * 1600) == 1
 
 
@@ -1084,8 +1083,7 @@ def test_build_rag_autoinject_args_carry_user_query(rag_conn):
 
 
 def test_real_ingestion_feeds_whole_document(rag_conn, stub_embeddings, tmp_path):
-    """Drive the real ingestion worker on a multi-paragraph file, then confirm whole-doc
-    injection splices the entire document, not just retrieved chunks."""
+    """Real ingestion feeds whole-document injection the full text, not just retrieved chunks."""
     from core.rag import ingestion
 
     scope = store.thread_scope("t1")

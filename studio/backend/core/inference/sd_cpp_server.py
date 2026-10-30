@@ -68,8 +68,7 @@ _TERMINAL_OK = "completed"
 _TERMINAL_FAIL = "failed"
 _TERMINAL_CANCELLED = "cancelled"
 
-# Grace for the best-effort native cancel to show in job status; without the cap a lost cancel would hold the generate
-# lock until the job ends.
+# Grace for the best-effort native cancel; uncapped, a lost cancel holds the generate lock.
 _CANCEL_GRACE_S = 5.0
 
 
@@ -391,8 +390,7 @@ class SdCppServer:
         return True
 
     def _drain_stdout(self, proc: subprocess.Popen) -> None:
-        """Drain stdout so the pipe never deadlocks; keep a tail for diagnostics and
-        feed each line to the active generation's step callback."""
+        """Drains stdout (no deadlock); keeps a tail, feeds each line to the step callback."""
         try:
             assert proc.stdout is not None
             for raw in proc.stdout:
@@ -430,8 +428,7 @@ class SdCppServer:
         return {int(physical_gpu_id): float(value)}
 
     def stop(self) -> None:
-        """Terminate the server (SIGTERM -> SIGKILL), join the drain, and release the HTTP
-        client + atexit handler. Idempotent."""
+        """SIGTERM then SIGKILL, join the drain, release HTTP client and atexit; idempotent."""
         # Set abort BEFORE taking the lock so a start() readiness wait bails instead of blocking.
         self._abort.set()
         self._stopped = True
@@ -440,9 +437,8 @@ class SdCppServer:
             self._dispose()
 
     def _dispose(self) -> None:
-        """Release per-instance resources (on stop / failed start). The backend never
-        reuses a disposed server, so this closes the pooled httpx client and drops the
-        atexit handler that would otherwise pin every reloaded instance for the session."""
+        """Closes the httpx client and drops the atexit handler, which would pin each reloaded
+        instance; the backend never reuses a disposed server."""
         try:
             atexit.unregister(self.stop)
         except Exception:  # noqa: BLE001

@@ -1106,8 +1106,7 @@ class TestAnthropicMessagesToOpenAI:
         assert parts[1]["type"] == "image_url"
 
     def test_tool_results_fold_into_user_turns_for_a_toolless_template(self):
-        """Gemma 2 / 3 have no `tool` role and check alternation by parity, so a
-        tool message makes llama-server 400 the whole request."""
+        """Gemma 2/3 lack a tool role and check alternation by parity, so tool messages fail."""
         from core.inference.anthropic_compat import fold_tool_results_into_user
 
         msgs = [
@@ -2703,8 +2702,7 @@ class TestAnthropicPassthroughStreamAdapter:
     def test_stream_forwards_reasoning_to_llama_server(
         self, monkeypatch, reasoning_kwargs, expected
     ):
-        """Without this the reasoning request is dropped and the model stays in
-        its load-time default -- thinking can never be switched on."""
+        """Without it the reasoning request is dropped and thinking can never be switched on."""
         import routes.inference as inf_mod
 
         captured = {}
@@ -2816,8 +2814,7 @@ class TestReasoningContentReachesTheClient:
         assert text == "<think>like this</think> is the syntax"
 
     def test_stream_reconstruction_closes_before_same_chunk_content(self):
-        """One chunk can carry the final reasoning fragment AND content; the
-        closing tag must land between them, not after."""
+        """One chunk can carry final reasoning and content; the closing tag goes between them."""
         from core.inference.anthropic_compat import AnthropicPassthroughEmitter
 
         emitter = AnthropicPassthroughEmitter(reasoning_as_thinking = False)
@@ -2857,8 +2854,7 @@ class TestReasoningContentReachesTheClient:
 
 
 class TestAnthropicReasoningArgs:
-    """`/v1/messages` must accept Anthropic's `thinking` block and the
-    x-unsloth reasoning fields instead of silently swallowing them."""
+    """Accepts the thinking block and x-unsloth reasoning fields instead of ignoring them."""
 
     @staticmethod
     def _payload(**kwargs):
@@ -2913,8 +2909,7 @@ class TestAnthropicReasoningArgs:
         assert payload.resolved_enable_thinking() is True
 
     def test_replayed_thinking_blocks_are_accepted(self):
-        """Anthropic's tool-use protocol makes clients replay thinking blocks
-        with tool results. Rejecting them 422s turn 2 of every thinking session."""
+        """Clients replay thinking blocks with tool results; rejecting them 422s turn 2."""
         from core.inference.anthropic_compat import anthropic_messages_to_openai
         from models.inference import AnthropicMessagesRequest
 
@@ -3770,8 +3765,7 @@ class TestAnthropicMessagesToolRouting:
         assert _replay_preserve_thinking(_Backend(), payload, []) is False
 
     def test_server_tool_count_prices_the_restored_failed_result(self, monkeypatch):
-        # The server-tool loop renders a replayed failure with the nudge the model saw, so the
-        # count has to price the same bytes.
+        # The count must price the replayed failure with the same nudge the model saw.
         from core.inference.tool_call_parser import TOOL_ERROR_NUDGE
         from routes.inference import anthropic_count_tokens
 
@@ -4767,8 +4761,7 @@ class TestAnthropicMessagesToolRouting:
 
 
 def test_resumed_session_thinking_and_null_content_do_not_400():
-    # A resumed session replays assistant turns with `thinking` (and sometimes null)
-    # content. Those must be accepted, not 400ed.
+    # Resumed sessions replay thinking or null content; both must be accepted, not 400.
     from pydantic import ValidationError
 
     req = AnthropicMessagesRequest(
@@ -5171,9 +5164,8 @@ def test_parallel_disabled_dropped_call_output_emits_rate_limited_keepalives(mon
 
 
 def test_plain_stream_emits_keepalive_during_prompt_stall(monkeypatch):
-    """No-tool Anthropic stream must emit SSE keepalives while a long prompt
-    prefill blocks next(gen), matching the tool stream (finding 5). The old
-    single unbounded to_thread(next, ...) could sit silent past a proxy idle cap."""
+    """The no-tool Anthropic stream needs SSE keepalives during a long prompt prefill, since an
+    unbounded to_thread(next, ...) could sit silent past a proxy idle cap."""
     import threading as _threading
     import time as _time
 
@@ -5341,8 +5333,7 @@ def _parse_anthropic_sse(lines):
 
 
 def assert_anthropic_stream_conformant(lines):
-    """Checks the Anthropic stream grammar: message_start first, gapless block indices, then
-    message_stop."""
+    """Checks message_start first, gapless block indices, message_stop last."""
     events = _parse_anthropic_sse(lines)
     assert events, "no events emitted"
     assert events[0][0] == "message_start", f"first event was {events[0][0]}"
@@ -5357,8 +5348,7 @@ def assert_anthropic_stream_conformant(lines):
     for name, data in events[1:]:
         assert data.get("type") == name, f"event {name} carries data.type {data.get('type')}"
         if name in ("ping", "tool_result"):
-            # tool_result is Unsloth's own event for a server-executed tool; real
-            # SDKs ignore it, and it must never claim a content block index.
+            # SDKs ignore Unsloth's tool_result event, which must never claim a block index.
             assert "index" not in data, "tool_result must not consume a block index"
             continue
         if name == "content_block_start":
@@ -5468,8 +5458,7 @@ class TestAnthropicStreamGrammar:
         [False, True],
     )
     def test_tool_blocks_keep_the_index_sequence(self, extra_first):
-        """A tool call must take the next index, and text after it another one --
-        whether or not text preceded it."""
+        """A tool call and later text each take the next index, even when text came first."""
         tool = [
             {
                 "type": "tool_start",
@@ -5525,9 +5514,8 @@ class TestAnthropicStreamGrammar:
 
 
 class TestThinkTagSplitAcrossDeltas:
-    """A <think> tag can be cut at any offset by tokenisation, so the emitter
-    holds a trailing partial tag back. Sweeping every split position is the only
-    way to know the hold-back never leaks markup or eats prose."""
+    """A <think> tag can be cut at any offset by tokenisation, so the emitter holds back a partial
+    tag; only sweeping every split proves it never leaks or eats prose."""
 
     TEXT = "<think>abc</think>def"
 
@@ -5555,8 +5543,7 @@ class TestThinkTagSplitAcrossDeltas:
 
     @pytest.mark.parametrize("cut", range(1, len("<think>")))
     def test_a_partial_tag_at_end_of_stream_is_literal_text(self, cut):
-        """The model stopped mid-way through something that looked like a tag;
-        those bytes are output, not markup, and must not be swallowed."""
+        """A partial tag cut at stream end is literal output, not markup, and must be kept."""
         held = "<think>"[:cut]
         blocks = assert_anthropic_stream_conformant(
             _drive_emitter(["answer " + held], {"wrapped": 0, "wraps": []})
@@ -5597,8 +5584,7 @@ class TestWhitespaceOnlyThinkingIsNotABlock:
         assert streamed == reduced
 
     def test_a_trace_that_merely_starts_with_whitespace_is_kept_verbatim(self):
-        """Only an entirely blank trace is dropped; real reasoning keeps its
-        leading newlines so the rendered thought matches the model's output."""
+        """Only a fully blank trace is dropped; real reasoning keeps its leading newlines."""
         trace = "\n\nWorking through it"
         provenance = {"wrapped": 1, "wraps": [{"len": len(trace)}]}
         blocks = assert_anthropic_stream_conformant(
@@ -5886,9 +5872,8 @@ class TestReasoningProvenanceIsBoundToItsSynthesisTurn:
         assert self._norm(streamed) == self._norm(reduced)
 
     def test_a_literal_tag_between_two_genuine_turns_keeps_both_traces(self, monkeypatch):
-        """Three turns: wrap, literal, wrap. Block-order attribution handed the
-        literal middle turn the SECOND wrap and left the third turn's real trace
-        as tagged text."""
+        """Three turns: wrap, literal, wrap; block-order attribution gave the literal turn the
+        second wrap and left the third turn's trace as tagged text."""
         streams = [
             [
                 self._sse({"reasoning_content": "first I check"}),
@@ -5955,8 +5940,7 @@ class TestALiteralTagAfterBlankSpaceIsNotDuplicated:
         assert blocks == [("text", text)]
 
     def test_a_genuine_trace_after_a_blank_line_still_parses(self):
-        """Only the literal branch was doubling; the provenance-backed one
-        already dropped the consumed run."""
+        """Only the literal branch doubled; the provenance branch already dropped the run."""
         provenance = {"wrapped": 1, "wraps": [{"len": 5}]}
         blocks = assert_anthropic_stream_conformant(
             _drive_emitter(["\n\n<think>trace</think>Answer"], provenance)
@@ -6015,8 +5999,7 @@ class TestPreserveThinkingHonoursTheBackendDefault:
         assert resolved is expected
 
     def test_none_and_explicit_false_are_distinguishable(self):
-        """`bool()` made these identical; on a default-true backend they must
-        now resolve to opposite values."""
+        """bool() made None and False identical; on a default-true backend they must differ."""
         from routes.inference import _anthropic_preserve_thinking
 
         backend = self._backend(True)
@@ -6036,8 +6019,7 @@ class TestPreserveThinkingHonoursTheBackendDefault:
     @pytest.mark.parametrize("default", [True, False])
     @pytest.mark.parametrize("override", [None, True, False])
     def test_conversion_and_counting_cannot_drift(self, default, override):
-        """Both routes resolve through the one helper, so the prompt the count
-        prices is the prompt generation renders."""
+        """Both routes share one helper, so the counted prompt is the one generation renders."""
         from routes.inference import _anthropic_preserve_thinking
 
         payload = self._payload(preserve_thinking = override)
@@ -6319,8 +6301,7 @@ def test_a_text_only_anthropic_model_is_not_shown_the_envelope_either():
 
 
 def test_the_anthropic_count_refuses_a_promoted_image_rather_than_undercount():
-    """The count refuses a promoted image, since the template render would undercount its projector
-    tokens."""
+    """The count refuses a promoted image: the template would undercount its projector tokens."""
     import inspect
 
     from routes import inference
@@ -6498,9 +6479,8 @@ def test_promoted_parts_take_the_anthropic_normalizer_off_the_loop():
 
 
 def test_the_anthropic_count_refusal_is_name_aware():
-    """The names are stamped from the calls right before the check, so a client tool
-    whose output merely ends in a valid envelope -- never promoted, suffix stripped --
-    must not turn a countable prompt into a 400."""
+    """Names are stamped from the calls just before the check, so a client tool whose output merely
+    ends in a valid envelope must not turn a countable prompt into a 400."""
     import inspect
     import json
 

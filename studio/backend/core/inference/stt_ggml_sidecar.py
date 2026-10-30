@@ -1070,8 +1070,7 @@ class GgmlSttSidecar:
         port: int,
         route: str = "",
     ) -> bool:
-        """One readiness probe: our child is alive and the responder looks like
-        whisper.cpp's server (its index page and errors identify whisper)."""
+        """Child alive, responder looks like whisper.cpp (index page and errors name whisper)."""
         if process.poll() is not None:
             return False
         try:

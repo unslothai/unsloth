@@ -225,8 +225,7 @@ def _spawn_env(monkeypatch, hf_token, **kwargs):
 
 
 def test_an_api_caller_does_not_borrow_the_backend_hf_token(monkeypatch):
-    """A caller the route marked as not allowed the ambient token gets an anonymous worker, even
-    though the backend process has an HF_TOKEN of its own."""
+    """Denied ambient token, an API caller gets anonymous, never the backend's HF_TOKEN."""
     monkeypatch.setenv("HF_TOKEN", "operator-secret-token")
 
     env = _spawn_env(monkeypatch, None, allow_ambient_token = False)
@@ -491,8 +490,7 @@ def test_a_failed_ambient_lookup_does_not_strand_the_xet_reservation(monkeypatch
 def test_a_failed_ambient_lookup_reports_the_cause_without_the_credential(
     monkeypatch, caplog, cached_hf_login
 ):
-    """The warning has to name the failure to be diagnosable, and a resolver that quoted a token back
-    is exactly the case the existing scrubber exists for."""
+    """The warning names the cause, and a token a resolver quotes back is scrubbed."""
     import huggingface_hub.utils
 
     leaked = "hf_" + "A" * 34

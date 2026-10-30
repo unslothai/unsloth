@@ -1982,8 +1982,7 @@ def _openai_llama_admission_messages_for_estimate(
             # MCP envelope becomes projector images later: strip the base64 and charge images instead.
             head, envelope_images = split_mcp_images(content)
             if envelope_images:
-                # Generation strips the suffix for everyone, so it is never priced
-                # as prompt text.
+                # Generation strips the suffix, so it is never priced as prompt text.
                 estimate_message["content"] = head
                 # Charge only images actually sent: not for text-only models or non-MCP results.
                 _correlated = _resolved.get(_index)
@@ -3162,9 +3161,8 @@ async def _send_stream_with_preheader_cancel(
     from core.inference.llama_keepwarm import mark_response_failed
 
     def _mark_preheader_cancel() -> None:
-        # Cancelled before the upstream response started: the caller ends its 200
-        # stream without serving tokens, so flag it failed or the middleware claims
-        # a preview-owned slot for a request that never used the model.
+        # Cancelled before upstream response: flag it failed, or middleware claims a slot never
+        # used.
         mark_response_failed(getattr(request, "scope", None))
 
     if await _preheader_cancelled(cancel_event, request):
@@ -5056,8 +5054,7 @@ class _TrackedCancel:
     ):
         self.event = event
         self.keys = tuple(_account_cancel_key(k) for k in keys if k)
-        # kind avoids calling embeddings and raw completions chats in the swap prompt.
-        # track_run=False adds cancel keys to a run recorded by another tracker.
+        # track_run=False adds cancel keys to another tracker's run; kind skips embeddings.
         self._active = (
             active_generations.ActiveGeneration(
                 event,
@@ -9431,8 +9428,7 @@ def _external_takes_mcp_images(
             inputs = cached_catalog_model_inputs(namespace, model)
             if inputs is not None:
                 return "image" in inputs
-        # Vision for the family, unknown for this model: an image would be sent to
-        # something that may not take one, and the failure lands mid-run.
+        # Unknown vision for this model: an image could reach one that rejects it mid-run.
         return False
     return True
 
@@ -12232,9 +12228,8 @@ async def load_model_for_preview(
                         _set_preview_resident(request.model_path)
                     else:
                         _set_preview_resident(prior_marker)
-                    # A failed atomic GPU acquisition changes no chat model state. Only
-                    # publish a swap when a load succeeded or the resident identifier
-                    # actually changed during a partial failure.
+                    # Failed GPU acquisition changes no chat state; publish a swap only on load
+                    # success or id change.
                     if loaded_ok or resident_after != loaded:
                         note_preview_swap()
         finally:
@@ -20728,8 +20723,7 @@ async def install_latest_transformers_route(
             end_sidecar_swap()
     if not result["success"]:
         if result.get("latest_version") or result.get("latest_main_version"):
-            # Structured failure so the dialog can update to the newer release
-            # and offer a retry that can actually succeed.
+            # Structured failure, so the dialog updates and offers a retry that can succeed.
             return InstallLatestTransformersResponse(**result, model_unloaded = unloaded_chat["v"])
         if unloaded_chat["v"]:
             # Chat model already gone; structured failure lets the client restore its state.
@@ -21523,8 +21517,7 @@ async def get_sampling_defaults(model: str, current_subject: str = Depends(get_c
     model's recommendation, then the schema default), so the API page's example request shows the
     values a client would actually get. Off-loop: the first read of a model loads its YAML.
     """
-    # A kept model answers its own requests: route as the request path does, so the backend getters
-    # below read that slot rather than the primary.
+    # Kept models route to their own slot, so the backend getters read it, not the primary.
     await _route_to_extra_slot(model)
     return await asyncio.to_thread(_sampling_defaults_for, model)
 
@@ -22499,8 +22492,7 @@ async def _generate_tts_wav(
     # Recheck once a context exists: before the restore, nothing loaded passes everything.
     _raise_if_prompt_leaves_no_speech_budget(text)
 
-    # Created before the backend pick so the GGUF lambda can close over it; the registration
-    # that arms it is below, once the model name is known.
+    # Created before the backend pick so the GGUF lambda can close over it; registered later.
     _audio_cancel = _audio_run_event()
     prompt_for_budget = text
 
@@ -22511,8 +22503,7 @@ async def _generate_tts_wav(
     # GGUF TTS holds a llama-server slot with no admission lease; only the direct counter shows it.
     _direct_llama_tts = bool(llama_backend.is_loaded and getattr(llama_backend, "_is_audio", False))
     if _direct_llama_tts:
-        # Advertised repo id after an auto-switch load, else a clean public id,
-        # never the absolute .gguf path.
+        # Repo id after an auto-switch load, else a clean public id, never the .gguf path.
         model_name = _llama_public_model_id(llama_backend)
         audio_type = getattr(llama_backend, "_audio_type", None)
         supported_audio_types = _GGUF_TTS_AUDIO_TYPES
@@ -22628,10 +22619,7 @@ async def _generate_tts_wav(
     # No claim here: middleware claims on 2xx. Fill recommended sampling and UNSLOTH_SAMPLING_* pins here so TTS gets them; gen lambdas read payload lazily.
     _fill_recommended_sampling_openai(payload, _audio_model_id)
 
-    # TTS holds the model for the whole request, so unregistered a non-forced swap counted zero
-    # generations and tore the model down mid-generation. Both GGUF and subprocess paths observe
-    # the request event. An /audio/run cancel_id (POST /audio/cancel) is registered for the whole
-    # run by _dispatch_audio_run; otherwise the disconnect watcher below is the cancellation source.
+    # TTS holds the model per request; its cancel id is registered for the run, else the watcher.
     with _TrackedCancel(
         _audio_cancel,
         thread_id = getattr(payload, "thread_id", None),
@@ -22641,9 +22629,8 @@ async def _generate_tts_wav(
         # Cancelled while the model was loading: nothing has been generated yet.
         if _audio_cancel.is_set():
             raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
-        # Stop in the UI aborts the fetch and nothing more, and this route has no cancel id to
-        # address, so without watching the disconnect llama-server kept generating for the rest
-        # of the request timeout after the chat had already reported it stopped.
+        # Stop only aborts the fetch; with no cancel id here, watch the disconnect or llama-server
+        # runs on.
         _audio_watcher = asyncio.create_task(_await_disconnect_then_cancel(request, _audio_cancel))
         try:
             with _direct_llama_request(_direct_llama_tts):
@@ -23624,9 +23611,8 @@ async def _dispatch_audio_run(
         # Registry only: each stage records itself as a generation once a model is loaded.
         with _TrackedCancel(cancel, _audio_run_cancel_key(), track_run = False):
             response = await _dispatch_audio_workflow(body, request, current_subject)
-        # Unregistered now, so a later cancel finds nothing to stop. One that arrived while the
-        # clips were being saved still wins: the clips this run made are removed (a source clip
-        # it reused stays) and the run answers 499, as a cancel during generation would.
+        # Unregistered now; a late cancel still removes its own clips (reused sources stay) and
+        # answers 499.
         if cancel.is_set():
             made = [clip.id for clip in response.clips if clip.role != "source"]
             await asyncio.to_thread(_discard_audio_clips, made, created)
@@ -24592,8 +24578,7 @@ async def openai_audio_transcriptions(
                 detail = "This model did not report the language of the audio. Send the "
                 "'language' parameter, or use response_format 'json' or 'text'.",
             )
-        # Same path-free treatment the image route gives its label: sidecar ids are
-        # curated or owner/model today, but the row goes out over the tunnel.
+        # Path-free label, as the image route does: the row goes out over the tunnel.
         _served_model = str(result.get("model") or "")
         api_monitor.relabel(monitor_id, public_model_id(_served_model) or _served_model)
         api_monitor.set_reply(monitor_id, text)
@@ -24601,8 +24586,7 @@ async def openai_audio_transcriptions(
     if fmt == "text":
         return PlainTextResponse(content = text)
     _duration = result.get("duration")
-    # Unlike the language, this is not a guess: duration is None only for a clip that decoded
-    # to no samples, and that clip really is zero seconds.
+    # Not a guess: duration is None only for a sample-less clip, which really is zero seconds.
     duration = float(_duration) if isinstance(_duration, (int, float)) else 0.0
     segments = result.get("segments") or []
     if fmt == "diarized_json":
@@ -27611,8 +27595,7 @@ def _build_external_messages(
         provider_type == "llama_cpp"
         or (provider_type == "vllm" and preserve_thinking is True)
         or _is_kimi_k3(provider_type, model)
-        # Thinking mode with tools answers 400 without it, and ignores it elsewhere
-        # (api-docs.deepseek.com/guides/thinking_mode).
+        # DeepSeek thinking mode with tools answers 400 without it, and ignores it elsewhere.
         or provider_type == "deepseek"
         # Tool turns need the thinking back (platform.minimax.io/docs/api-reference/text-openai-api).
         or provider_type == "minimax"
@@ -28792,9 +28775,8 @@ async def _proxy_to_external_provider(
         _reject_confirm_gate_without_channel(
             payload, _ui_events, monitor_id, _catalog_names(external_studio_tools)
         )
-    # Built before the date, because whether a nudge exists decides whether the server prompt
-    # exemption is worth claiming: _append_to_system_message below displaces that prompt anyway.
-    # Full access disables the sandbox, so the schemas say so; the general nudge stays off this path.
+    # Built before the date: whether a nudge exists decides if the server prompt exemption is
+    # claimed.
     _external_nudge = ""
     if run_studio_tool_loop:
         _external_nudge = _build_tool_action_nudge(
@@ -37285,8 +37267,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             # Must stay the last statement before the try: a raise in between leaks a permanent +1.
             _direct_llama_request_started()
             try:
-                # Same event the relay loop polls, so a forced swap ends the request during prefill
-                # instead of only once headers arrive.
+                # Same event the relay loop polls, so a forced swap ends prefill early.
                 upstream = _LlamaUpstream(llama_backend, "/v1/completions")
                 async with aclosing(
                     upstream.stream_response(client, upstream_body, disconnect_event, request)
@@ -39389,8 +39370,7 @@ class _ResponsesStreamTranslator:
                     },
                 )
             )
-        # Closed copies keep opened=True (snapshotted before reset); the
-        # live state contributes only when a message is currently open.
+        # Closed copies keep opened=True; the live state counts only while a message is open.
         for msg_st in [*self.closed_message_states, self.message_state]:
             if not msg_st["opened"]:
                 continue
@@ -39467,8 +39447,7 @@ class _ResponsesStreamTranslator:
         """In-band ``response.failed`` carrying everything streamed so far."""
         from core.inference.llama_keepwarm import mark_response_failed
 
-        # Built only after the 200 headers, so flag failed: the middleware must
-        # not treat a failed stream as a success.
+        # Built after the 200 headers: flag it failed so middleware does not count a success.
         mark_response_failed(getattr(self.request, "scope", None))
         return self.sse(
             "response.failed",
@@ -39501,8 +39480,7 @@ class _ResponsesStreamTranslator:
             _drop_parallel_tool_call_deltas(chunk_data)
 
         choices = chunk_data.get("choices", [])
-        # A Connection can report a mid-stream error beside a non-empty choices array
-        # (OpenRouter does), so it is checked before choices there.
+        # Errors can come mid-stream beside non-empty choices (OpenRouter); check them first.
         if not choices or (self.connection and chunk_data.get("error")):
             error_message = _monitor_openai_error_message(chunk_data)
             if error_message:
@@ -39537,8 +39515,7 @@ class _ResponsesStreamTranslator:
             # time from the end of the thinking block instead.
             api_monitor.mark_first_token(monitor_id)
             yield from self._reasoning_text_events(reasoning_delta)
-        # Visible text only, never reasoning. Healer events keep their order so text after a
-        # healed call never jumps ahead of its function_call item.
+        # Visible text only; healer events keep order, so text never jumps ahead of its call.
         healer = self.healer
         if healer is not None and not healer.dormant:
             healed_events = []
@@ -39551,8 +39528,7 @@ class _ResponsesStreamTranslator:
                 healed_events = healer.feed(visible_delta)
             visible_delta = ""
             if healed_events:
-                # Not append_reply below: this is where the client first sees
-                # the promoted tool call or its surrounding text.
+                # Promoted calls first reach the client here, not at append_reply below.
                 api_monitor.mark_first_token(monitor_id)
             yield from self._healed_event_sse(healed_events)
         if visible_delta:
@@ -39590,15 +39566,13 @@ class _ResponsesStreamTranslator:
             )
             final_visible = ""
             if events:
-                # Same as the in-loop stamp: this is where the client first sees
-                # the promoted call, and the item only closes several yields later.
+                # Same stamp as the in-loop one: the client first sees the promoted call here.
                 api_monitor.mark_first_token(monitor_id)
             yield from self._healed_event_sse(events)
         if final_visible:
             yield from self._visible_text_events(final_visible)
 
-        # Healing changes a natural stop into tool_calls, but it must not erase
-        # an authoritative truncation or failure reason from the upstream model.
+        # Healing changes a natural stop, but keeps upstream truncation or failure reasons.
         if healer is not None and healer.healed and self.stream_finish_reason in (None, "stop"):
             self.stream_finish_reason = "tool_calls"
 
@@ -40063,8 +40037,7 @@ async def _responses_stream(
             "response_format": chat_req.response_format,
         }
         cancel_event = threading.Event()
-    # An NPU model streams through a provider proxy that keeps its own cancel event, and chat
-    # answers a TTS model with a finished clip rather than a text stream.
+    # NPU streams via a proxy with its own cancel event; TTS gets a finished clip, not text.
     elif (
         not llama_backend.is_loaded
         and isinstance(entry, dict)
@@ -40235,8 +40208,7 @@ async def _responses_stream(
                 client = _llama_stream_client()
                 llama_upstream = _LlamaUpstream(llama_backend, "/v1/chat/completions")
                 try:
-                    # Same event the loop below polls: prefill can run for the whole first-token window,
-                    # and only the send watcher can end it early.
+                    # Same event the loop polls: only the send watcher can end prefill early.
                     async with aclosing(
                         llama_upstream.stream_response(client, body, disconnect_event, request)
                     ) as opening:
@@ -40252,8 +40224,7 @@ async def _responses_stream(
                 except httpx.RequestError as e:
                     logger.error("responses stream: upstream unreachable: %s", e)
                     api_monitor.fail(monitor_id, _friendly_error(e))
-                    # 200 headers already flushed; this is an in-band failure, so the
-                    # middleware must not claim a preview-owned model for it.
+                    # In-band failure after flushed headers, so middleware must not claim it.
                     mark_response_failed(getattr(request, "scope", None))
                     yield _sse(
                         "response.failed",
@@ -43996,8 +43967,7 @@ class _AnthropicToolEventRules:
         self._tool_blocks_emitted = 0
         self._drop_until_tool_end = False
         self._span_guard = _ReasoningSpanGuard(think_provenance)
-        # Last drop-branch keepalive, seeded to stream start so a chatty tool busy past the
-        # stall window still gets one though its events are dropped.
+        # Drop-branch keepalive clock, seeded at stream start so a busy dropped tool still gets one.
         self._last_drop_keepalive = time.monotonic()
 
     def feed(self, event: dict) -> list:
@@ -44007,8 +43977,7 @@ class _AnthropicToolEventRules:
             # a dropped tool still runs and suppresses the stall keepalive.
             return [_OPENAI_PASSTHROUGH_SSE_KEEPALIVE]
         if etype in ("tool_output", "tool_args"):
-            # No Messages equivalent, but they suppress the stall keepalive: send a rate-limited
-            # one instead of going silent past the ~100s proxy cap.
+            # Rate-limited keepalive so a busy tool does not go silent past the ~100s proxy cap.
             _now = time.monotonic()
             if _now - self._last_drop_keepalive >= _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S:
                 self._last_drop_keepalive = _now
@@ -47855,9 +47824,8 @@ async def load_diffusion_model_gated(
         # MLX drives the Apple GPU itself even where torch resolved "cpu": take the arbiter.
         if pending_name == ENGINE_MLX:
             needs_gpu = True
-        # So does the Vulkan sd.cpp build a CPU torch is routed to beside an AMD or Arc card,
-        # unless that build has failed here and the ladder runs the CPU one instead.
-        # A retained managed Vulkan build also renders on the card, whatever this load requested.
+        # Vulkan sd.cpp serves CPU torch on AMD/Arc unless it failed; a retained build always uses
+        # the card.
         vulkan_on_cpu_torch = (
             device == "cpu"
             and off_torch is None
@@ -49761,9 +49729,8 @@ async def unload_diffusion_model(
     else:
         from core.inference.chat_swap_kv import cancel_preparing_loads
 
-        # The POST carrying this token, if it is still in preflight: stopped, or registered (which the
-        # check below then names), before any engine switch or eviction it would run. The engine is
-        # resolved after that settles: a POST that finished switching registered on the new one.
+        # Stop a preflight POST with this token before any switch or eviction, or if already
+        # registered let the check below name it; resolve the engine after.
         await asyncio.to_thread(
             cancel_preparing_loads,
             "image",
@@ -49837,8 +49804,7 @@ async def diffusion_status(
     from hub.utils.host_paths import redact_host_paths
 
     engine = get_active_diffusion_engine()
-    # What active_status() answers, with the load id of the same state, so an unload can name
-    # exactly what this answer shows.
+    # Snapshot status and load ids together so an unload can name exactly what this status shows.
     raw_status, load_id, resident_load_id = await asyncio.to_thread(
         media_load_ids.snapshot_ids, "diffusion", engine, engine.status
     )

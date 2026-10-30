@@ -397,12 +397,9 @@ def _memory_line(output: str) -> list:
 
 
 def _wsl_amd_usable_mib(gpu_ids) -> list[tuple[float, bool]] | None:
-    """(MiB, is an APU) for what each selected AMD GPU can allocate through WSL, or None when
-    Windows cannot say.
-
-    Through DXG the pool HIP reports is the dedicated memory plus a share of the host's RAM, and an
-    allocation past what the host can back hangs instead of failing. So a discrete card keeps its
-    dedicated memory, and an APU adds 80% of the host RAM Windows reports available now."""
+    """Returns (MiB, is an APU) per selected AMD GPU for what it can allocate through WSL, or None
+    when Windows cannot say; a discrete card keeps its dedicated memory, but an APU adds 80% of
+    host RAM available now, since DXG allocations past host capacity hang rather than fail."""
     try:
         import psutil
         import torch
@@ -517,9 +514,7 @@ def _free_port(limit: int | None = _PORT_LIMIT) -> int:
     raise RuntimeError("Could not allocate an inference server port.")
 
 
-# Engine silence, not total startup time: an uncached Hub model downloads inside the engine, and
-# a first load can compile (torch.compile, Triton kernels) for tens of minutes without a line,
-# as a block-FP8 27B did on gfx1151 for over 17 minutes.
+# Measures engine silence, not total startup: a first load can compile unlogged for tens of minutes.
 STARTUP_STALL_S = 3600
 STARTUP_LIMIT_S = 4 * 3600
 

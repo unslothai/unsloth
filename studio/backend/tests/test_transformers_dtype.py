@@ -48,9 +48,8 @@ def test_just_below_boundary_uses_torch_dtype(monkeypatch):
 
 @pytest.mark.parametrize("version", ["4.56.0.dev0", "4.56.0rc1"])
 def test_rename_prerelease_uses_dtype(monkeypatch, version):
-    """A pre-release of the rename version sorts *below* ``4.56.0`` but already
-    accepts (and prefers) ``dtype``; the release-tuple check must not fall back to
-    the legacy name there, or it re-emits the deprecation warning it suppresses."""
+    """A pre-release of the rename version (sorts below 4.56.0) already accepts dtype; the
+    release-tuple check must never fall back to the legacy name or the warning re-emits."""
     _stub_transformers(monkeypatch, version)
     assert _has_torch_dtype_kwarg() is False
 

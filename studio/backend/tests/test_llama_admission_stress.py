@@ -104,8 +104,7 @@ async def test_random_traffic_never_exceeds_the_cache_and_always_drains(seed):
 @pytest.mark.parametrize("seed", range(6))
 @pytest.mark.asyncio
 async def test_new_arrivals_alongside_growing_holders_still_drain(seed):
-    """Reparkers hold the wait line shut, so forgetting to reopen it shows up here as
-    arrivals that are never granted."""
+    """Reparkers hold the wait line shut: forgetting to reopen leaves arrivals never granted."""
     rng = random.Random(1000 + seed)
     capacity = 4
     budget = 4096
@@ -139,8 +138,7 @@ async def test_new_arrivals_alongside_growing_holders_still_drain(seed):
             tokens = rng.randint(1, share),
             budget = budget,
         )
-        # await, never time.sleep: a granted lease is delivered with
-        # loop.call_soon_threadsafe, so a synchronous poll blocks its own delivery.
+        # Await, never time.sleep: a sync poll blocks the call_soon_threadsafe grant delivery.
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             lease = reservation.lease_nowait()

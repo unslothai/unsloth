@@ -292,8 +292,7 @@ def _open_window(module: Any, dev: Any) -> Any:
             module._unsloth_video_graph_gen = generation
     if getattr(module, "_unsloth_video_graph_gen", None) is None:
         module._unsloth_video_graph_gen = generation
-    # graphs a discarded request recorded stay allocated, also one that replaced an evicted graph (same count): a
-    # peak above that start would omit them
+    # Graphs of a discarded request stay allocated; a peak must count them, replacements too.
     module._unsloth_video_graphs_clean = (
         graphs == accounted and generation <= module._unsloth_video_graph_gen
     )
@@ -439,8 +438,7 @@ def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
             if pad is not None:
                 shared = _key_peaks(key)
                 shared[work] = max(extra + pad, shared.get(work, 0))
-                # an unpersistable key keeps this process's table only, where max wins: nothing lower can be stored
-                # later
+                # An unpersistable key keeps only this process's table, where max wins.
                 if stored_key is None:
                     held.append(True)
                 else:

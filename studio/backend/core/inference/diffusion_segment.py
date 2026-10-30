@@ -381,8 +381,7 @@ def _broken(folder: Optional[str], artifact: SegmenterPrequant) -> bool:
 
 
 def _variant_snapshot(variant_id: str) -> Optional[str]:
-    """A cached snapshot of variant ``variant_id`` that Sam3Model can load: its bf16 files, else a pre-quantized file
-    with the configs and tokenizer."""
+    """Cached Sam3Model snapshot: bf16 files, else a pre-quantized file plus configs and tokenizer."""
     path = _cached_snapshot(variant_id)
     if path is not None:
         return path
@@ -421,8 +420,7 @@ def active_variant() -> SegmenterVariant:
 
 
 def model_dir() -> Optional[str]:
-    """The env override when set (a typo'd override is not silently replaced by the cache), else the active
-    variant's cached snapshot."""
+    """Env override if set, so a typo'd path is never replaced by the cache; else the active snapshot."""
     if (os.environ.get(ENV_PATH_OVERRIDE) or "").strip():
         return _override_dir()
     return _resolve_active()[1]
@@ -437,8 +435,7 @@ class _SegmenterSpec:
     revision: Optional[str] = None
     model_file: str = SEGMENTER_WEIGHTS_FILE
     mmproj_file: str = "config.json"
-    # Downloaded instead when a file of this spec is not on the Hub at its revision (a pre-quantized file not
-    # published yet): the variant's bf16 spec.
+    # Falls back to the bf16 spec when the prequant file is not on the Hub at that revision.
     fallback: Optional[str] = None
 
 
@@ -476,8 +473,7 @@ def _resolve_segmenter_id(model_id: Optional[str]) -> str:
 
 
 def describe_download_error(model_id: str, error: object) -> Optional[str]:
-    """A gated variant's refusal names the license to accept; anything else (and any ungated variant, which needs no
-    token) keeps the generic message."""
+    """Only a gated refusal names the license to accept; the rest keep the generic message."""
     try:
         variant = split_spec_id(model_id)[0]
     except KeyError:
@@ -671,9 +667,7 @@ def download_plan(
     *,
     memory_tight: Optional[bool] = None,
 ) -> dict:
-    """What a download of ``variant`` fetches on this host: the spec id, the precision it runs, why, and the bytes.
-    A pre-quantized file only when the variant publishes them (a pinned or "main" prequant revision) and the host
-    would run it; its spec falls back to bf16 when the file is not on the Hub yet."""
+    """Pre-quantized files only when published and runnable here; the spec falls back to bf16 if absent."""
     from core.inference.diffusion_segment_quant import PRECISION_BF16, resolve_precision
 
     offered = {}
@@ -1870,8 +1864,7 @@ def release_segmenter(
     handover: bool = False,
     park: bool = False,
 ) -> bool:
-    """Drop the weights if they were ever loaded. Never creates the segmenter. ``handover`` / ``park``: see
-    MaskSegmenter.release."""
+    """Drops the weights if loaded; never creates the segmenter. See MaskSegmenter.release."""
     segmenter = _segmenter
     if segmenter is None:
         return False

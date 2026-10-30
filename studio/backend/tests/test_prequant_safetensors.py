@@ -164,8 +164,7 @@ def test_a_cached_safetensors_artifact_is_evidence_enough(monkeypatch):
 
 
 def test_the_derived_chain_puts_safetensors_first_and_keeps_the_pickles(monkeypatch):
-    """The preference itself, and the promise that nothing is dropped behind it: an existing
-    .pt-only repo still resolves both of the names it resolves today."""
+    """Safetensors is preferred, and a .pt-only repo still resolves both names."""
     fam = _family(prequant_repos = (("fp8", "unsloth/Model-FP8"),))
     src = pq.resolve_prequant_source(fam, "fp8")
     assert src.candidate_filenames == (
@@ -177,8 +176,7 @@ def test_the_derived_chain_puts_safetensors_first_and_keeps_the_pickles(monkeypa
 
 
 def test_local_scheme_probe_reads_the_header_only(monkeypatch, tmp_path):
-    """The probe must not parse a multi-GB file to learn one string. For safetensors it reads the
-    header, and it must NOT reach the pickle reader on the way."""
+    """The scheme probe reads only the safetensors header, never the pickle reader."""
     path = tmp_path / "local-FP8.safetensors"
     path.write_bytes(b"not really safetensors")
 

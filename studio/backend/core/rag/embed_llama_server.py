@@ -228,8 +228,7 @@ class LlamaServerBackend:
         return {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
 
     def _resolve_binary(self) -> str:
-        """Find llama-server, verify embeddings support, cache it. Raises if
-        missing/unsupported."""
+        """Locates llama-server, checks embeddings support (raises if not), and caches it."""
         if self._binary is not None:
             return self._binary
         from core.inference.llama_cpp import LlamaCppBackend
@@ -288,8 +287,7 @@ class LlamaServerBackend:
 
     @staticmethod
     def _resolve_local_gguf(model: str) -> str | None:
-        """A custom model may be a local .gguf file or a directory holding one;
-        resolve it without the hub. None when the value is not a local path."""
+        """Local .gguf file or directory of one, resolved without the hub; None if not local."""
         from utils.models.model_config import _local_gguf_load_path, colocated_split_shards
         from utils.paths import normalize_path
 
@@ -494,8 +492,7 @@ class LlamaServerBackend:
         # Companion repo, then the naming variants, then the model repo itself.
         repo = desired
         candidates = list(dict.fromkeys([repo, *config.gguf_repo_candidates(model)]))
-        # Only the preferred repo: a file cached under the fallback must not pre-empt a companion repo the
-        # hub can still resolve.
+        # A fallback-cached file must not beat a companion repo the hub can still resolve.
         cached = self._resolve_cached_gguf(desired)
         if cached is not None:
             # Retire the pending marker here, or the model stays cache-only for the life of the install and a
@@ -626,8 +623,7 @@ class LlamaServerBackend:
                     break
                 errors.append(f"{candidate!r}: no .gguf files")
             if filename is None:
-                # Only where the hub failed to NAME a file: a transfer failing on its own (no disk, bad checksum)
-                # must surface.
+                # Only when the hub named no file; a real transfer error must still surface.
                 for candidate in candidates:
                     cached = self._resolve_cached_gguf(candidate, require_variant = False)
                     if cached is not None:
@@ -644,8 +640,7 @@ class LlamaServerBackend:
             from utils.hf_cache_settings import active_hf_hub_cache
 
             cache_dir = active_hf_hub_cache()
-            # Fetch the whole split family, not just the picked shard: -m shard1 makes llama-server open the
-            # siblings itself.
+            # Fetch the whole split family; -m on one shard makes llama-server open the rest.
             downloaded = None
             for name in family:
                 fetched = hf_hub_download(
@@ -802,8 +797,7 @@ class LlamaServerBackend:
         env["LD_LIBRARY_PATH"] = f"{joined}:{existing}" if existing else joined
 
     def _drain_stdout(self, proc: subprocess.Popen) -> None:
-        """Drain the child's stdout so its pipe buffer never deadlocks; keep the
-        tail for crash diagnostics."""
+        """Drains stdout so the pipe cannot deadlock; keeps a tail for crash diagnostics."""
         try:
             for line in proc.stdout:  # type: ignore[union-attr]
                 line = line.rstrip()
@@ -823,8 +817,7 @@ class LlamaServerBackend:
         try:
             self._spawn_once(use_gpu, model_name)
         except RuntimeError:
-            # A shutdown refusal is terminal: the CPU fallback would just spawn into the
-            # same latch and be refused again.
+            # Shutdown refusal is terminal: a CPU fallback would hit the same latch.
             if is_process_shutting_down():
                 raise
             if use_gpu and not config.embed_device_requires_gpu():
@@ -887,8 +880,7 @@ class LlamaServerBackend:
         )
         self._process = proc
         self._on_gpu = use_gpu
-        # child_popen_kwargs() is empty on macOS, so the crash record is the only thing that can reap it
-        # after a force quit.
+        # Empty kwargs on macOS: the crash record alone can reap a force-quit embed server.
         adopt_pid(proc.pid)
         # Recheck after recording the pid: the latch may have been set after the gate above.
         if is_process_shutting_down():
@@ -1045,9 +1037,8 @@ class LlamaServerBackend:
         payload: dict,
         model_name: str | None = None,
     ) -> dict:
-        """POST to the server, restarting once and retrying on a dropped connection
-        (the reaper may have killed us) or a timeout (the bundled build sometimes
-        wedges a request); a fresh server unsticks both."""
+        """POST restarts the server once and retries on a dropped connection (the reaper may have
+        killed it) or a timeout (the bundled build sometimes wedges a request)."""
         with self._operation():
             return self._post_active(path, payload, model_name)
 
@@ -1118,9 +1109,8 @@ class LlamaServerBackend:
         model_name = None,
         normalize = True,
     ):
-        """Embed texts -> (N, dim) float32. ``model_name`` pins which GGUF serves
-        the request, so a Settings change cannot answer it from another model.
-        Normalizes in Python to match the ST backend."""
+        """Embeds texts to (N, dim) float32, normalised in Python like the ST backend; model_name
+        pins which GGUF serves the request so a Settings change cannot answer from another model."""
         self._served_identity_local.value = None
         with self._operation(), self._serve_lock:
             vectors = self._encode_active(texts, normalize = normalize, model_name = model_name)
@@ -1248,8 +1238,7 @@ class LlamaServerBackend:
             self.dim(model_name = model_name)
 
     def token_counter(self, *, model_name = None):
-        """Count tokens via the GGUF's /tokenize so chunk sizing matches the
-        embedder. Cached per text."""
+        """Counts tokens via /tokenize so chunk sizes match the embedder; cached per text."""
 
         @lru_cache(maxsize = 4096)
         def _count(text: str) -> int:

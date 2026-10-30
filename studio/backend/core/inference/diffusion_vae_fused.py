@@ -2177,10 +2177,9 @@ def _install(
 # one tiny decode); the fused decode must match stock within tolerance or the patch is removed.
 # Kill switch ``UNSLOTH_VAE_FUSED_STRUCTURAL=0``.
 STRUCTURAL_ENV = "UNSLOTH_VAE_FUSED_STRUCTURAL"
-# The calibration crop. The trace marks only the norm outputs (cheap at any size), so the crop is sized for the
-# kernels instead: 16 latents keeps every spatial extent a multiple of 16, the same Triton specialisations a full
-# decode uses, so calibrating compiles nothing the real decode would not (an 8-latent crop measured +1.5 to 2 s
-# of extra compiles on a cold Triton cache).
+# Calibration crop sized for the kernels: 16 latents keeps every spatial extent a multiple of 16,
+# the same Triton specialisations a full decode uses; an 8-latent crop added Triton compiles that a
+# full decode would not.
 _PROBE_LATENTS = 16
 _PROBE_FRAMES = 2
 # Calibration verdicts are kept on disk per (class, config, decoder layout, torch, triton, device capability), so a

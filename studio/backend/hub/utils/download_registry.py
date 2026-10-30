@@ -91,8 +91,7 @@ def http_size_ceiling_reason(largest_file_bytes: Optional[int]) -> Optional[str]
 
 
 def humanize_worker_error(text: str, *, largest_file_bytes: Optional[int] = None) -> str:
-    """Name a repo missing on ModelScope, and replace the hub's misleading >50GB dependency
-    error with the transport limit."""
+    """Name a ModelScope-missing repo; swap the misleading >50GB error for the transport limit."""
     missing = modelscope_missing(text)
     if missing:
         return missing

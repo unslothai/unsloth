@@ -101,8 +101,7 @@ def _fake_config():
 
 
 class _RecordingTransformer:
-    """Stands in for LTX2VideoTransformer3DModel: records the kwargs and returns
-    correctly-shaped (video, audio) predictions."""
+    """Stand-in for LTX2VideoTransformer3DModel: records kwargs, returns shaped video and audio."""
 
     def __init__(self):
         self.config = _fake_config()
@@ -117,8 +116,7 @@ class _RecordingTransformer:
 
 @pytest.fixture
 def patched_pack(monkeypatch):
-    """Replace the two diffusers-backed helpers with the identity-shaped equivalents, so the
-    forward contract is testable without importing LTX2Pipeline."""
+    """Identity stand-ins for two diffusers helpers, so the forward runs without LTX2Pipeline."""
 
     def pack(latents, conf):
         b, c, f, h, w = latents.shape
@@ -191,15 +189,13 @@ def test_ltx2_targets_never_select_the_audio_or_cross_modality_streams(name):
 
 @pytest.mark.parametrize("name", NON_VIDEO_STREAM_LINEARS[:16])
 def test_the_generic_default_targets_would_leak_into_the_audio_stream(name):
-    """Why _LTX2_TARGETS is fully qualified: the shared DEFAULT_LORA_TARGETS suffixes match
-    the audio and cross-modality attentions too. If this ever stops being true the
-    qualification is no longer load-bearing and the comment above it is wrong."""
+    """_LTX2_TARGETS is fully qualified: shared DEFAULT_LORA_TARGETS suffixes also hit the audio and
+    cross-modality attentions, so this stays load-bearing."""
     assert _peft_selects(DEFAULT_LORA_TARGETS, name), name
 
 
 def test_generic_default_targets_resolve_to_the_ltx2_set():
-    # normalized() fills the generic DEFAULT_LORA_TARGETS, and those bare suffixes WOULD hit
-    # the audio stream, so the spec's fully-qualified set must win.
+    # Bare DEFAULT_LORA_TARGETS would hit audio, so the qualified LTX-2 set must win.
     cfg = DiffusionLoraConfig(
         base_model = "Lightricks/LTX-2", data_dir = "d", output_dir = "o"
     ).normalized()
@@ -224,8 +220,7 @@ def test_audio_token_count_matches_the_pipeline_formula(num_pixel_frames, fps, e
 
 
 def test_audio_token_count_never_returns_zero():
-    # round() would give 0 for a very short duration, and the transformer indexes the audio
-    # stream unconditionally, so an empty one trips its RoPE.
+    # round() can give 0 for short clips, and an empty audio stream breaks RoPE; floor at 1.
     conf = types.SimpleNamespace(**{**LTX2_CONF, "audio_sampling_rate": 1})
     assert _ltx2_audio_token_count(conf, 1, 24.0) == 1
 
@@ -304,8 +299,7 @@ def test_forward_reports_the_latent_geometry_and_fps(patched_pack):
     tr = _RecordingTransformer()
     _run_forward(tr, f = 1, h = 4, w = 6)
     assert (tr.kwargs["num_frames"], tr.kwargs["height"], tr.kwargs["width"]) == (1, 4, 6)
-    # LTX-2's temporal RoPE coordinate is in SECONDS (frame index / fps), so the fps a still
-    # is trained at decides where on the temporal axis it lands.
+    # Temporal RoPE is in seconds (frame / fps), so the fps a still trains at sets its time.
     assert tr.kwargs["fps"] == _LTX2_TRAIN_FPS == 24.0
 
 
@@ -325,8 +319,7 @@ def test_forward_feeds_the_separate_video_and_audio_text_streams(patched_pack):
         "cpu",
         torch.float32,
     )
-    # The connector emits a DIFFERENT projection per modality; swapping them silently
-    # conditions the video stream on the audio caption embedding.
+    # Each modality has its own projection; swapping them conditions video on audio captions.
     assert torch.equal(tr.kwargs["encoder_hidden_states"], video_emb)
     assert torch.equal(tr.kwargs["audio_encoder_hidden_states"], audio_emb)
     assert torch.equal(tr.kwargs["encoder_attention_mask"], mask)
@@ -341,8 +334,7 @@ class _FakeDist:
 
 
 class _FakeVae:
-    """Mimics AutoencoderKLLTX2Video: per-channel latents_mean / latents_std buffers plus a
-    scaling_factor, and a 5-D encode."""
+    """Mimics AutoencoderKLLTX2Video with per-channel stats and a scaling_factor; 5-D encode."""
 
     def __init__(
         self,
@@ -374,15 +366,13 @@ def test_encode_latents_adds_a_temporal_axis_and_normalises_per_channel():
 def test_encode_latent_stats_returns_the_posterior_affine_pair():
     vae = _FakeVae()
     a, b = _ltx2_encode_latent_stats(vae, torch.zeros(1, 3, 8, 8))
-    # The cache holds (A, B) so a per-step draw is A + B * randn; B must be the SCALED std,
-    # not the raw one, or every cached sample is drawn at the wrong width.
+    # Cache holds (A, B): each step draws A + B randn, with B the scaled std, not the raw one.
     assert torch.allclose(a[0, :, 0, 0, 0], (3.0 - torch.arange(4, dtype = torch.float32)) / 2.0)
     assert torch.allclose(b[0, :, 0, 0, 0], torch.full((4,), 5.0 / 2.0))
 
 
 def test_latent_normalisation_honours_the_scaling_factor():
-    # scaling_factor is 1.0 on the shipped checkpoint, so a version that dropped it would
-    # still pass every other test here.
+    # scaling_factor is 1.0 on the shipped checkpoint, so only this test catches dropping it.
     plain = _ltx2_encode_latents(_FakeVae(scaling_factor = 1.0), torch.zeros(1, 3, 8, 8))
     scaled = _ltx2_encode_latents(_FakeVae(scaling_factor = 2.0), torch.zeros(1, 3, 8, 8))
     assert torch.allclose(scaled, plain * 2.0)
@@ -607,9 +597,8 @@ def test_the_preflight_survives_a_diffusers_that_cannot_import_its_pipeline(monk
 
 
 def test_int8_excludes_the_one_token_audio_stream():
-    """A still feeds a ONE-token audio stream, and torch._int_mm needs M > 16. Without an
-    LTX-2 entry the generic int8 path quantized audio_proj_in / audio_attn* / audio_ff and the
-    first forward raised, after the whole base had been loaded."""
+    """A still feeds a one-token audio stream and torch._int_mm needs M > 16; without an LTX-2
+    entry, generic int8 quantized the audio layers and the first forward raised after load."""
     from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
 
     tokens = exclude_tokens_for_scheme("int8", "ltx-2")
@@ -732,8 +721,7 @@ def test_family_train_infos_offers_the_video_family(dit_train_host):
 
 
 def test_family_train_infos_drops_a_family_this_diffusers_cannot_run(monkeypatch, dit_train_host):
-    """A family whose pipeline class is missing can only 400 at /diffusion/start, and no choice in
-    the UI fixes it, so it must not be offered at all."""
+    """A family whose pipeline class is missing 400s at /diffusion/start, so it is not offered."""
     import core.training.diffusion_train_common as dtc
 
     monkeypatch.setattr(
@@ -781,9 +769,8 @@ def test_editing_the_connectors_invalidates_the_conditioning_cache(tmp_path):
 
 
 def test_an_unrelated_subdirectory_is_still_ignored(tmp_path):
-    """The fingerprint stays cheap: only the components the cached tensors come from are hashed,
-    so a scheduler or transformer edit (which the cache does not depend on) must not invalidate it.
-    """
+    """The fingerprint hashes only the components the cached tensors come from, so a scheduler or
+    transformer edit, which the cache does not depend on, must not invalidate it."""
     from core.training.diffusion_train_extras import source_revision
 
     root = tmp_path / "LTX-2"

@@ -67,8 +67,7 @@ def _responses_sse(events: list[dict]) -> bytes:
 
 
 def _capture_responses_body(monkeypatch, model: str) -> dict:
-    """The outbound /v1/responses body for one model, with the sampling
-    defaults ChatCompletionRequest fills in when the caller sets nothing."""
+    """Outbound /v1/responses body, including ChatCompletionRequest's default sampling fields."""
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -392,9 +391,8 @@ def test_responses_function_call_output_translates_to_delta_tool_calls(monkeypat
 
 
 def test_responses_parallel_function_calls_get_distinct_indices(monkeypatch):
-    """Round 13: parallel function_call items must land on distinct
-    delta.tool_calls[].index slots so index-keyed clients don't collapse the
-    second call into the first."""
+    """Parallel function_call items must get distinct delta.tool_calls[].index slots, or index-keyed
+    clients merge the second call into the first."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         events = [

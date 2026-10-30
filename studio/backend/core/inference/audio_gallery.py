@@ -488,9 +488,7 @@ def set_flags(
 
 
 def move(audio_id: str, after_id: Optional[str]) -> Optional[dict[str, Any]]:
-    """Move an active clip to just after ``after_id`` (None = front) and return its record.
-
-    None if the id is not an owned, active clip. Raises KeyError if ``after_id`` is not in history."""
+    """Moves an owned active clip after after_id (None = front); KeyError if after_id is not in history."""
     directory = gallery_dir()
     with gallery_flags.exclusive(directory):
         if owned_audio_path(audio_id, directory) is None:
@@ -515,11 +513,8 @@ def move(audio_id: str, after_id: Optional[str]) -> Optional[dict[str, Any]]:
 
 
 def delete(audio_id: str, *, cascade: bool = True) -> bool:
-    """Remove both files of an owned pair; True if the WAV existed and was ours. ``cascade=False``
-    keeps the hidden Original even when no other clip plays it.
-
-    WAV first: sidecar-first then failing would lose a clip with no retry, while this
-    leaves at worst an orphan sidecar list_audio ignores."""
+    """Removes an owned pair, WAV first: a failure leaves at most an orphan sidecar list_audio
+    ignores; cascade=False keeps the hidden Original."""
     return _delete_in(gallery_dir(), audio_id, cascade)
 
 

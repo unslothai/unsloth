@@ -2327,8 +2327,7 @@ class TrainingBackend:
             # A completed run keeps its message; reaping a wedged worker must not relabel it.
         if self._batch_members:
             self._finalize_batch_members(status, error_message, clear_output_dir)
-        # Create the row if a start-time create failed; skipped while the pump is mid-create, whose create-
-        # then-finalize records the run instead.
+        # Creates the row if a start-time create failed; a pump mid-create records it instead.
         self._ensure_db_run_created()
         with self._provenance_lock:
             with self._lock:
@@ -2470,9 +2469,8 @@ class TrainingBackend:
         return True
 
     def force_terminate(self, target_proc: "Optional[mp.Process]" = None) -> None:
-        """Force-kill the training subprocess so state can be reset immediately. With
-        ``target_proc``, terminate only that handle and no-op if a new run has replaced
-        it, so the watchdog can never kill a fresh worker."""
+        """Force-kill the subprocess to reset state; with target_proc only that handle is killed,
+        and a superseded run is a no-op so the watchdog can never kill a fresh worker."""
         with self._lock:
             proc = self._proc
             if target_proc is not None and proc is not target_proc:
@@ -3024,8 +3022,7 @@ class TrainingBackend:
             return
 
     def _has_current_resume_checkpoint(self, output_dir, step) -> bool:
-        # A valid checkpoint at the current step means the stop-and-save landed on disk even if the worker
-        # died before confirming it.
+        # A valid checkpoint at this step means the save landed, even if the worker died.
         if not output_dir or not isinstance(step, int) or step <= 0:
             return False
         from core.training.resume import get_resume_checkpoint_path
@@ -3436,9 +3433,7 @@ class TrainingBackend:
             logger.warning("Failed to persist output_dir", exc_info = True)
 
     def _log_training_progress(self) -> None:
-        """One throttled training-status line to the server log (the per-step stream
-        still goes to the UI via SSE): first step, then at most every 30s, plus the
-        final step; resyncs on a new run. Runs on the pump thread."""
+        """Throttled server-log status line: first step, then at most every 30s, plus the final step."""
         p = self._progress
         step = int(p.step or 0)
         if step <= 0:

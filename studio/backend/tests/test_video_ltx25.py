@@ -1302,8 +1302,7 @@ def test_model_offload_holds_the_dit_across_the_stage_boundary_only_when_stage_t
 @pytest.mark.parametrize("fits", [True, False])
 def test_image_to_video_frees_between_stages_only_when_stage_two_does_not_fit(monkeypatch, fits):
     pytest.importorskip("diffusers")  # the image path builds diffusers' LTX2VideoCondition
-    # The condition pipeline has no hook list, so it never offloads at its stage end: pipe's hooks are reset there
-    # when stage 2 would not fit beside the DiT.
+    # Condition pipeline has no hook list; hooks reset at stage end only if stage 2 won't fit.
     monkeypatch.setattr(MS, "companions_fit_beside_denoiser", lambda pipe, companions: fits)
     pipe = _OffloadedPipe(SimpleNamespace(keep_tokens = None))
     cond = _FakePipe(pipe.scheduler)
@@ -2304,8 +2303,7 @@ def test_offloaded_encoder_is_released_after_each_encode_and_reloaded_for_the_ne
 
 
 def test_offloaded_encoder_borrows_only_budget_the_server_leaves(monkeypatch):
-    """A free card is not enough: the plan did not budget the encoder, so it may only use the load's budget minus what
-    the server holds at encode time."""
+    """Free VRAM is not enough: the encoder may use budget the server leaves at encode time."""
     from core.inference import video_ltx25_te_worker as worker
 
     model = _FakeEncoderModel()  # 2 MiB

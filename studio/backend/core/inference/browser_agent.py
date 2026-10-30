@@ -307,8 +307,7 @@ BROWSER_TOOLS = [
 BROWSER_TOOL_NAMES = frozenset(tool["function"]["name"] for tool in BROWSER_TOOLS)
 BROWSER_SCREENSHOT = "browser_screenshot"
 
-# Upper bound on one action, prompts included: a navigation is a fetch of up to 25 s plus settling,
-# and a risky click waits on the user.
+# Action bound incl. prompts: navigation fetch up to 25 s; a risky click waits on the user.
 _ACTION_TIMEOUT_S = 600.0
 _MIN_ACTION_TIMEOUT_S = 30.0
 _MAX_URL_CHARS = 4096
@@ -441,8 +440,7 @@ def _whatwg_path(path: str) -> str:
 
 
 def _redirect_target(url: str) -> Optional[str]:
-    """The page a search engine's redirect link lands on, as the browser tab unwraps it
-    (``unwrapRedirect`` in features/browser/address.ts), or None."""
+    """Page a search redirect resolves to, as the tab unwraps it (unwrapRedirect), or None."""
     try:
         parsed = urlsplit(url)
         # The tab's URL parser maps the host (UTS 46): full-width letters and ideographic dots too.
@@ -641,8 +639,7 @@ def format_result(name: str, result: dict, website_policy: Optional[dict]) -> st
             text[:_MAX_MODEL_CHARS]
             + "\n... (cut here: use browser_find, browser_scroll or a snapshot ref to see more)"
         )
-    # The title and note come from the page too (a selected option's words), so everything but
-    # this tool's own framing goes inside the fence.
+    # Title and note are page text too, so all but this tool's framing goes inside the fence.
     page = []
     if url:
         page.append(f"Page: {title + ' ' if title else ''}<{url}>")

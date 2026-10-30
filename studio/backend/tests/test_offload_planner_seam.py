@@ -86,9 +86,7 @@ class _Stub:
     _drop_tensor_spill = LlamaCppBackend._drop_tensor_spill
 
     def _tensor_spill_layout(self, model_path):
-        """Stand in for the GGUF read: the seam's job is to decline or to hand
-        the planner well-formed inputs, not to parse a file. ``ffn = None``
-        stands for an unreadable model, which must abstain."""
+        """Stub for the GGUF read; ffn = None stands for an unreadable model, which must abstain."""
         if self._ffn_weight_bytes is None or not model_path:
             return None
         n = 64
@@ -237,8 +235,7 @@ def test_an_unpriced_placement_abstains():
     ],
 )
 def test_a_pass_through_placement_override_declines(extra_args):
-    """Pricing a placement the child will not get is the bug class behind most of
-    the load-mode review traffic. Decline instead of modelling the override."""
+    """Pricing a placement the child won't receive is a recurring bug; decline instead."""
     assert _plan(_Stub(), extra_args = extra_args) is None
 
 
@@ -295,8 +292,7 @@ def test_a_moe_load_spills_expert_tensors_not_dense_ffn():
 
 
 def test_lm_head_is_only_spilled_after_ffn():
-    """43% of generation on its own, 16% on top of an already host-bound step, so
-    it is never the first rung."""
+    """lm_head is 43% of generation alone, 16% on a host-bound step, so it is never first."""
     # Single card no longer withholds a pipeline GiB, so free_mib is lower to reach lm_head.
     tight = _plan(_Stub(), model_size = 60 * GIB, kv = 2 * GIB, free_mib = 4608)
     assert tight is not None
@@ -328,9 +324,7 @@ def test_a_floor_that_does_not_fit_emits_no_flags():
 
 
 def test_an_abstaining_plan_emits_no_flags():
-    """Every plan_placement abstention returns a Plan, not None: incomplete
-    layout, unified-memory host, no creditable VRAM, no usable context. None of
-    them may reach the argv."""
+    """plan_placement abstentions return a Plan, not None, so no abstaining case reaches argv."""
     for plan in (
         plan_placement(ModelLayout(), [8 * GIB], 32 * GIB, 4096),
         plan_placement(
@@ -362,8 +356,7 @@ def test_the_measured_cache_floors_the_planners_own_estimate():
 
 
 def test_the_seam_hands_the_planner_studios_cache_size():
-    """The byte-accurate number is computed at the call site and was previously
-    only tested for nonzero. A bigger measured cache has to buy more spill."""
+    """The byte-accurate KV size comes from the call site; a bigger cache must buy more spill."""
     small = _plan(_Stub(), kv = 2 * GIB, free_mib = 14 * 1024)
     large = _plan(_Stub(), kv = 10 * GIB, free_mib = 14 * 1024)
     assert small is not None and large is not None
@@ -395,8 +388,7 @@ def test_the_revocation_is_a_no_op_without_a_plan():
 
 
 def test_the_revocation_is_a_no_op_when_the_argv_never_carried_it():
-    """The -cpu replay builds its own argv; stripping must not append --fit on
-    to a command that never had the plan."""
+    """Stripping must not add --fit to the -cpu replay, whose argv never carried the plan."""
     stub = _Stub()
     stub._spill_plan_flags = ["-ngl", "-1", "--fit", "off", "-ot", FFN_SPILL_PATTERN]
     replay = ["llama-server", "--gpu-layers", "0", "--fit", "off", "--device", "none"]
@@ -455,9 +447,7 @@ def test_a_spill_plan_startup_failure_can_revoke_the_plan():
 
 
 def test_the_revocation_runs_only_on_retries():
-    """Gated on `label`, which is empty only on the first spawn. A retry added
-    later is covered without anyone remembering to strip -- the failure mode that
-    produced most of the review traffic on the load-mode work."""
+    """Gated on label, empty only on the first spawn, so any later retry gets the revocation."""
     src = inspect.getsource(LlamaCppBackend.load_model)
     idx = src.index("def _spawn_and_wait")
     head = src[idx : idx + 1600]
@@ -488,8 +478,7 @@ def test_a_unified_memory_apu_is_declared_to_the_planner():
 
 @pytest.mark.parametrize("extra_args", [["--split-mode", "row"], ["-sm", "row"]])
 def test_tensor_parallel_split_still_declines(extra_args):
-    """-sm row is tensor parallelism: llama.cpp splits each TENSOR across cards
-    instead of handing out rows, so the row model does not describe it."""
+    """-sm row is tensor parallelism, which the row split model does not describe."""
     assert _plan(_Stub(), extra_args = extra_args) is None
     assert _plan(_Stub()) is not None, "not vacuous: the same load plans without it"
 
@@ -499,9 +488,8 @@ def test_tensor_parallel_split_still_declines(extra_args):
     [["--split-mode", "none"], ["-sm", "none"], ["-sm=none"]],
 )
 def test_split_mode_none_plans_against_one_card(extra_args):
-    """-sm none is a device list of ONE, not a reason to decline: llama.cpp keeps
-    only devices[main_gpu] (llama.cpp:288-299). Planning it as a two-card pool was
-    the bug."""
+    """-sm none is a device list of ONE and not a reason to decline: llama.cpp keeps only
+    devices[main_gpu] (llama.cpp:288-299), so plan one card, not a two-card pool."""
     two_cards = [(0, 14 * 1024), (1, 14 * 1024)]
     got = _plan(_Stub(), gpus = two_cards, extra_args = extra_args)
     assert got is not None
@@ -667,9 +655,8 @@ def test_an_inherited_kv_offload_env_is_priced_too(env):
 
 
 def test_the_positive_kv_offload_form_still_plans():
-    """-kvo / --kv-offload is the enabling half of the same paired argument
-    (common/arg.cpp:2402-2409) and argv is last-wins, so a re-enable must not be
-    read as a decline."""
+    """-kvo / --kv-offload is the enabling half of the paired -nkvo argument
+    (common/arg.cpp:2402-2409); argv is last-wins, so a re-enable is not a decline."""
     assert _plan(_Stub(), extra_args = ["-kvo"]) is not None
     assert _plan(_Stub(), extra_args = ["-nkvo", "--kv-offload"]) is not None
     assert _plan(_Stub(), env = {"LLAMA_ARG_KV_OFFLOAD": "1"}) is not None
@@ -689,8 +676,7 @@ def test_an_engaged_draft_charges_the_excluded_mtp_blocks():
 
 
 def test_an_ordinary_model_is_unaffected_by_the_draft_flag():
-    """No excluded blocks, nothing to charge: the flag must not move a plan on a
-    model that has no MTP head."""
+    """No excluded blocks, nothing to charge: the draft flag must not move a non-MTP plan."""
     stub = _Stub()
     assert stub._excluded_bytes == 0
     idle = _plan(stub, free_mib = 14 * 1024, mtp = False)
@@ -834,8 +820,7 @@ def test_a_drive_lettered_scaled_adapter_is_skipped_rather_than_priced():
 
 
 def test_an_unreadable_adapter_abstains():
-    """Engaged but unsized: os.stat fails, so abstain rather than plan a footprint
-    short by an unknown amount. Same answer _fits_without_paging gives."""
+    """Adapter os.stat fails: abstain rather than plan a footprint short by an unknown amount."""
     assert _plan(_Stub(), extra_args = ["--lora", "/no/such/adapter.gguf"]) is None
     assert _plan(_Stub()) is not None, "not vacuous"
 
@@ -858,17 +843,14 @@ def test_an_unsized_inherited_projector_abstains():
 
 
 def test_the_seam_hands_the_planner_the_inherited_projector():
-    """The planner can only charge what the launch path snapshots for it, and the
-    load-mode fit already computes exactly these two values."""
+    """Planner can only charge snapshotted launch values; load-mode fit already computes them."""
     compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
     assert '_spill_inputs["env_mmproj_unsized"]=_fit_env_mmproj_unsized' in compact
     assert '_spill_inputs["env_mmproj_bytes"]=' in compact
 
 
 class _FlatAttentionStub(_Stub):
-    """A layout _per_device_shortfall can actually check: every layer holds a
-    cache, no sliding window, no trailing blocks. The default stub abstains on the
-    per-device test, which hides what a multi-GPU plan does with a flat term."""
+    """Every layer caches, no window, no trailing blocks: the layout _per_device_shortfall can check."""
 
     def _tensor_spill_layout(self, model_path):
         n = 8
@@ -958,9 +940,7 @@ def test_the_flat_mtp_reserve_reaches_the_spill_budget():
 
 
 def test_the_seam_computes_a_per_layer_kv_vector():
-    """The data already existed on the backend (_sliding_window_pattern); it just
-    never crossed into the planner. Only the RATIOS travel: full attention holds
-    the whole context, a window layer its window, ~100x apart at 128K vs 1K."""
+    """Only RATIOS cross to the planner: full attention holds the context, a window layer its window."""
     b = LlamaCppBackend.__new__(LlamaCppBackend)
     b._n_layers = 6
     b._n_kv_heads = 8
@@ -1038,8 +1018,7 @@ def test_swa_weights_follow_the_effective_cache_geometry():
 
 
 def test_the_seam_passes_the_launch_geometry_to_the_kv_vector():
-    """Reachability: the knobs must travel from the launch path, or the two fixes
-    above only hold in a unit test."""
+    """Knobs must travel from the launch path, or the fixes only hold in a unit test."""
     src = inspect.getsource(LlamaCppBackend.load_model)
     call = src[src.index('"kv_layer_weights"') :][:400]
     compact = "".join(call.split())
@@ -1068,9 +1047,7 @@ def test_an_inherited_split_mode_none_declines():
 
 
 def test_a_reconciliation_still_strips_a_non_layer_split_mode_env():
-    """Reachability anchor for the decline above: if load_model ever stops
-    scrubbing the inherited mode, the env form becomes plannable again and this is
-    the test that should fail and say so."""
+    """Anchors the decline: if load_model stops scrubbing an inherited split mode, this must fail."""
     assert "self._reconcile_split_mode_env(env" in inspect.getsource(LlamaCppBackend.load_model)
     compact = "".join(inspect.getsource(LlamaCppBackend._reconcile_split_mode_env).split())
     assert 'if_inherited_smand_inherited_sm!="layer":' in compact
@@ -1128,8 +1105,7 @@ def test_a_cumulative_float32_tensor_split_overflow_declines_instead_of_raising(
 
 
 def test_the_vector_refuses_a_cache_the_estimator_prices_on_another_path():
-    """A window-shaped cache vector must answer nothing for MLA or hybrid caches, which price
-    differently."""
+    """A window vector must refuse MLA and hybrid caches, priced on another path."""
     b = _swa_backend()
     assert b._kv_layer_weights(131072), "the plain SWA model still answers"
 
@@ -1148,8 +1124,7 @@ def test_the_vector_refuses_a_cache_the_estimator_prices_on_another_path():
 
 
 def test_a_recurrent_hybrid_stays_on_the_abstain_path():
-    """With no vector the recurrent abstain in _per_device_shortfall fires, so
-    recurrent_bytes is never silently left unplaced by the device loop."""
+    """No vector: _per_device_shortfall abstains, so recurrent_bytes is never left unplaced."""
     from core.inference.offload_planner import PlanOptions, _per_device_shortfall
 
     layout = ModelLayout(

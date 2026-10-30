@@ -1770,9 +1770,8 @@ def _cuda_device_count() -> int:
 
 
 def cancel_warm_start() -> bool:
-    """Cancel a warm start still launching (it holds the image engine's generation slot until its server is up), for
-    a teardown, a model switch or an unenhanced render that would otherwise wait it out. Never creates the sidecar,
-    never blocks."""
+    """Cancel a warm start still launching (it holds the image engine's generation slot until up),
+    for a teardown, model switch or unenhanced render; never creates the sidecar or blocks."""
     sidecar = _sidecar
     return sidecar is not None and sidecar.cancel_warm_start()
 

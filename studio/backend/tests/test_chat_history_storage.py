@@ -563,9 +563,8 @@ def test_settings_compare_and_set_fences_an_expected_absent_nested_path(tmp_path
 
 
 def test_settings_compare_and_set_leaves_timestamps_alone_for_an_empty_patch(tmp_path, monkeypatch):
-    """An empty patch is not a settings change. Without the same short-circuit the
-    unconditional merge has, it would rewrite updated_at on every key, which reads
-    as a fresh edit to anything watching those timestamps."""
+    """An empty patch is not a settings change: without a short-circuit, the merge would rewrite
+    updated_at on every key, reading as a fresh edit."""
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_settings_merge(
         {"inferenceParams": {"temperature": 0.6}, "autoTitle": True}
@@ -591,9 +590,8 @@ def test_settings_compare_and_set_leaves_timestamps_alone_for_an_empty_patch(tmp
 
 
 def test_settings_compare_and_set_fences_a_model_row_added_after_the_read(tmp_path, monkeypatch):
-    """Normalizing a differently cased model key writes a whole new exact-key row.
-    The subset compare only checks the spelling that was read, so the exact key
-    needs its own absence fence or a newer tab's row is overwritten wholesale."""
+    """Normalizing a cased model key writes a new exact-key row, and the subset compare only sees
+    the read spelling, so it needs an absence fence or a newer row is overwritten."""
     _reset_studio_db(tmp_path, monkeypatch)
     lower = "unsloth/qwen3.8-27b-gguf"
     exact = "unsloth/Qwen3.8-27B-GGUF"
@@ -613,9 +611,8 @@ def test_settings_compare_and_set_fences_a_model_row_added_after_the_read(tmp_pa
 
 
 def test_settings_merge_keeps_each_model_s_remembered_params(tmp_path, monkeypatch):
-    """Per-model memory patches one model at a time, so the merge has to keep the
-    others. Without this, tuning a second model would wipe the first one's settings
-    and the switch back would land on whatever the last edit happened to be."""
+    """Per-model memory patches one model at a time, so the merge must keep the others; otherwise
+    tuning a second model would wipe the first one's remembered settings."""
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_settings_merge(
         {"inferenceParamsByModel": {"qwen": {"temperature": 0.2, "topP": 0.8}}}
@@ -630,9 +627,8 @@ def test_settings_merge_keeps_each_model_s_remembered_params(tmp_path, monkeypat
 
 
 def test_picking_a_preset_can_forget_one_model_s_params(tmp_path, monkeypatch):
-    """A preset pick drops the loaded model's preset-owned keys (#14068); a merge alone cannot
-    remove a key. The forget runs first, so an edit in the same debounced patch starts fresh, and
-    a key it does not name (a Fast mode another tab just set) survives."""
+    """A preset pick drops the loaded model's preset-owned keys (issue 14068) because a merge cannot
+    remove a key; the forget runs first, so a key it does not name survives."""
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_settings_merge(
         {
@@ -1636,8 +1632,7 @@ def test_fork_records_the_last_inherited_message(tmp_path, monkeypatch):
 
 
 def test_the_boundary_skips_a_trailing_message_that_paints_no_row(tmp_path, monkeypatch):
-    """An imported chat can end on a system message, which the thread renders as nothing.
-    Anchoring there would hang the divider off a row that never mounts."""
+    """A trailing system message paints no row, so the divider must not anchor on it."""
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread({**_thread("src"), "title": "Imported"})
     studio_db.sync_chat_messages(

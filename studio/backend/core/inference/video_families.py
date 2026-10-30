@@ -141,9 +141,7 @@ def assert_ltx_pick_supported(
     filename: Optional[str] = None,
     display_repo_id: Optional[str] = None,
 ) -> None:
-    """Name guard for a pick already resolved to ``family``: an LTX family never loads another release's weights
-    (LTX-2.5 never reaches the 2.3 assembly, and the reverse), and a release after 2.5 is refused. A non-LTX family
-    never trips on an LTX token."""
+    """An LTX family never loads another release's weights, and releases after 2.5 are refused."""
     if family not in LTX_FAMILIES:
         return
     found = ltx_pick_version(repo_id, filename, display_repo_id)
@@ -546,9 +544,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             # qwen-image-edit and hunyuanvideo-1.5 have the same small-M shape but each has a PUBLISHED int8
             # checkpoint whose metadata bakes its exclusion set, so they move only with a rebuild and republish.
             int8_pad_tokens = ("context_embedder", "token_refiner"),
-            # The packed sequence runs three modalities through one set of linears, so its activation range is not the
-            # per-family range the fp8 filter was measured against. The trainer refuses both outright; declaring it
-            # here keeps /diffusion/info from advertising a start that is guaranteed to 400.
+            # fp8 and mxfp8 denied for packed sequences (activation range differs from the
+            # per-family range measured); declared so /diffusion/info never advertises a sure 400
             train_scheme_deny = frozenset({"fp8", "mxfp8"}),
             auto_static_skip = (("minimaxai/minimax-h3", (("max", 2), ("steps", 30))),),
         ),
@@ -685,9 +682,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         cudnn_benchmark = False,
         filter_reduction_configs = True,
     ),
-    # LTX-2 (diffusers >= 0.39): ~19B single-stream video DiT generating synchronized audio + video in one pass. The
-    # Gemma3-12B encoder is stored fp32 on the hub (~49 GB download, ~24 GB resident bf16). The base repo carries the
-    # dev config (40 steps, CFG 4).
+    # LTX-2 (diffusers >= 0.39): Gemma3-12B encoder is stored fp32 on the hub, ~49 GB download, ~24
+    # GB resident as bf16
     VideoFamily(
         name = "ltx-2",
         trainable = True,
@@ -799,10 +795,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     VideoFamily(
         name = "wan2.2-t2v-a14b",
         profile = FamilyProfile(
-            # gated: auto leads with nvfp4 only once a passing accuracy-gate record exists for this base and
-            # backend, the rule the image families follow. None exists yet (no bf16 reference was measured; the
-            # hosted NVFP4 experts were only compared with the FP8 build), so auto takes the ladder (int8) here and
-            # nvfp4 stays an explicit pick.
+            # Auto leads with nvfp4 only after a passing accuracy-gate record; none exists yet, so
+            # int8.
             auto_prefer = AutoPrefer(
                 floor = (10, 0),
                 schemes = ("nvfp4", "int8", "fp8", "mxfp8"),
@@ -856,8 +850,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         te_quant_auto = "fp8",
         # same VAE as TI2V-5B
         cudnn_benchmark = False,
-        # no gguf_repo: community GGUFs split the experts; a gguf / single_file pick of either expert loads the pair
-        # (video_moe_pair)
+        # No gguf_repo: GGUFs split experts; any gguf or single_file pick loads the pair.
     ),
     # Wan2.1-T2V-1.3B: 480P only (upstream calls 720P unstable for 1.3B).
     VideoFamily(
@@ -1129,8 +1122,7 @@ def unsupported_video_checkpoint_reason(
         needle = normalize_family_name(str(wan21_checkpoint))
         needles.append(needle)
         name = re.split(r"[/\\]", needle.rstrip("/\\"))[-1]
-        # A leading "fun" is too generic to mark a Fun release unless it names one (version, size, InP, Control); the
-        # other markers are still judged.
+        # A leading fun marks a Fun release only if it names a version, size, InP or Control.
         generic_fun = re.match(r"fun(?![a-z0-9])", name) and not re.match(
             r"fun-(?:v\d|1-3b|14b|inp|control)", name
         )
@@ -1581,13 +1573,7 @@ def validate_video_keyframe_conditioning(
     has_keyframes: bool,
     has_last_frame: bool = False,
 ) -> None:
-    """Raise ``ValueError`` when a checkpoint cannot take the keyframes a request supplies.
-
-    Pure in the family and the MiniMax-H3 partition, which is what lets the generate route judge
-    the checkpoint it is about to SWITCH TO by the same rules the backend applies to the loaded
-    one. Without that, an auto-switch evicts a working pipeline and spends minutes loading a
-    target for a request that was already known to be unservable.
-    """
+    """Raises ValueError if a checkpoint cannot take the keyframes; pure, so auto-switch is pre-checked."""
     if not (has_keyframes or has_last_frame):
         return
     from .video_minimax_h3 import H3_TASK_REFERENCES
@@ -1694,8 +1680,7 @@ _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("wan", 20, 5.0),
     ("hunyuanvideo", 20, 6.0),
 )
-# The Wan and FusionX keys count only in the model / file name, so an owner or folder spelling one cannot outrank the family the
-# checkpoint itself names.
+# Wan and FusionX keys count only in the model or file name, not in owner or folder names.
 _NAME_SEGMENT_DEFAULT_KEYS = frozenset(
     k
     for k, _s, _g in _VIDEO_GENERATION_DEFAULTS
@@ -1759,8 +1744,7 @@ def video_generation_variant(
             if scope is not None and family != scope:
                 continue
             needle = name if key in _NAME_SEGMENT_DEFAULT_KEYS else whole
-            # Match the key as a name segment: reject a preceding ASCII letter so "swan-video" does not false-match
-            # "wan".
+            # A key must not follow an ASCII letter, so swan-video does not match wan.
             if re.search(r"(?<![a-z])" + re.escape(key), needle) or re.search(
                 r"(?<![a-z])" + re.escape(normalize_family_name(key)), normalize_family_name(needle)
             ):

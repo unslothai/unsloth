@@ -2542,10 +2542,9 @@ def _unified_oversize_source() -> str:
 
 
 def unified_capacity_memory(memory: DeviceMemory) -> DeviceMemory:
-    """``memory`` at CAPACITY (free = total), so the verdict does not depend on what is loaded right now.
-
-    On mps the snapshot picks the RAM or working-set view from the CURRENT free reading; re-read RAM here so the
-    same pick is not judged against the smaller working set just because something is resident."""
+    """memory at capacity (free = total), so the verdict ignores what is loaded now; on mps the RAM
+    view is re-read so the pick is not judged against a smaller working set just because
+    something is resident."""
     capacity = replace(memory, free_mib = memory.total_mib)
     if getattr(memory, "device", None) != "mps" or memory.metal_working_set_mib is None:
         return capacity
@@ -4069,11 +4068,9 @@ def refine_plan_from_loaded_weights(
     logger: Any = None,
     **labels: Optional[str],
 ) -> MemoryPlan:
-    """Re-place a streamed ``auto`` load from its LOADED weights; the denoiser has priority over the text encoders.
-
-    The flat plan keeps the encoders resident once their floor fits, and their bytes come out of the denoiser's room.
-    The encoders-streamed plan is taken only when it keeps strictly more of the denoiser resident; plans where the
-    encoders cost nothing are unchanged."""
+    """Re-place a streamed auto load from its loaded weights, denoiser first: the flat plan keeps
+    encoders resident once their floor fits; the encoders-streamed plan is taken only if it keeps
+    strictly more of the denoiser resident."""
     refined = _refine_plan_from_loaded_weights(
         pipe, plan, family = family, speed_mode = speed_mode, logger = logger, **labels
     )
@@ -6868,8 +6865,7 @@ class _GroupPinner:
             return src.pin_memory()
 
     def outstanding_bytes(self) -> int:
-        """Bytes this pinner may still place: its unpinned groups (placed ones already left that sum), within what
-        its byte cap has left."""
+        """Bytes this pinner may still place: unpinned groups, capped by what its byte cap has left."""
         try:
             need = sum(
                 _page_bytes(src.nbytes)
@@ -7067,9 +7063,8 @@ def defer_late_expert_pins(
     late_modules: Any,
     logger: Any = None,
 ) -> int:
-    """Pin ``late_modules`` after the other pinners when disk-bound, so the render waits only for those; a late
-    group's onload still waits for its own pin. Wan2.2-A14B (A100): both experts at once made the first render wait
-    47.8 s."""
+    """When disk-bound, pin late_modules after the other pinners so the render waits only for those;
+    a late group onload still waits for its own pin."""
     if _env_off(LATE_EXPERT_PIN_ENV):
         return 0
     late_ids = {id(m) for m in late_modules or () if m is not None}

@@ -247,9 +247,8 @@ def _chunk_payload(line: str) -> dict[str, Any] | None:
 
 
 def _mint_streamed_card_id(taken: set[str], index: Any) -> str:
-    """The id the client painted an id-less call's card under. ``tool_call_<delta index>``, else the
-    lowest free ``tool_call_<n>``: the client's rule, reproduced so tool_start and tool_end reach
-    the card the stream drew. A card id only; the replayed id stays ``call_<round>_<pos>``."""
+    """Card id for an id-less call: tool_call_<delta index>, else lowest free tool_call_<n>, so
+    tool_end reaches the drawn card; the replayed id stays call_<round>_<pos>"""
     preferred = (
         f"tool_call_{index}" if isinstance(index, int) and not isinstance(index, bool) else ""
     )
@@ -898,9 +897,8 @@ class _Turn:
                         )
 
     def _scan(self, key: Any, text: str) -> tuple[list[str], str]:
-        """``_split_top_level_json_objects(text)``, resuming the scan for ``key``. The same answer
-        as scanning from byte zero, at the cost of the bytes this call added rather than of the
-        whole accumulation."""
+        """Resumes _split_top_level_json_objects(text) for key; same as a full rescan, costing only
+        new bytes."""
         scan = self.scan_by_key.get(key)
         if scan is None:
             scan = _BoundaryScan()
@@ -1243,8 +1241,7 @@ def _openai_compaction_item(event: Any) -> str | None:
 def _with_openai_compaction(
     conversation: list[dict[str, Any]], compaction: tuple[list[dict[str, Any]], str] | None
 ) -> list[dict[str, Any]]:
-    """Later rounds replay an OpenAI Responses compaction item after the messages it covers, or the provider compacts
-    the same history again."""
+    """OpenAI compaction item goes after the messages it covers, else the provider re-compacts."""
     if compaction is None:
         return conversation
     sent, encrypted = compaction
@@ -1747,9 +1744,8 @@ async def stream_with_studio_tools(
                     provenance = _unrun_provenance(call["function"]["name"], round_id),
                 ):
                     yield card_line
-                # The result below has to be replayed with its call: only the call that spent the last slot reaches
-                # assistant_tool_calls further down, so this one would arrive as an orphan role="tool" message and
-                # OpenAI, Anthropic and Gemini all reject that history instead of answering.
+                # Replay the result with its call; orphan tool messages get rejected by OpenAI,
+                # Anthropic, Gemini.
                 exhausted_call = signed_provider_call or decision.as_assistant_tool_call()
                 exhausted_extra = call.get("extra_content")
                 if (

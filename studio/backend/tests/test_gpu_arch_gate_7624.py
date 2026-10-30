@@ -260,9 +260,7 @@ def _fake_torch(
 
 @pytest.fixture
 def rocm_probe_env(tmp_path, monkeypatch):
-    """Force _get_gpu_memory down the torch/ROCm fallback, hermetically.
-    The fake binary lives under tmp_path so a test can plant an install
-    marker there (or not, for the unknown-coverage case)."""
+    """Forces _get_gpu_memory onto the torch/ROCm fallback; the fake binary lives under tmp_path."""
 
     def _no_nvidia_smi(*args, **kwargs):
         raise FileNotFoundError("nvidia-smi")
@@ -381,9 +379,7 @@ class TestTorchCallersStayUnfiltered:
 
 
 class TestArchGateCoexistsWithUnifiedMemory:
-    """Both behaviours share the torch fallback loop and neither may displace
-    the other: the APU keeps its host-RAM reserve and its total-0 reporting,
-    while the unsupported device is still dropped."""
+    """APU reserve and the unsupported-device drop share one torch loop; neither may displace the other."""
 
     def test_apu_reserve_and_arch_gate_together(self, tmp_path, monkeypatch, rocm_probe_env):
         _binary_with_marker(tmp_path, {"mapped_targets": ["gfx1101", "gfx1151"]})
@@ -412,8 +408,7 @@ class TestArchGateCoexistsWithUnifiedMemory:
 
 
 class TestArchCrashRetrySet:
-    """The reactive recovery for markerless / custom-linked builds, where the
-    proactive gate cannot know what the binary covers."""
+    """Reactive recovery for markerless or custom-linked builds the proactive gate cannot see."""
 
     def test_prefers_never_selected_devices(self):
         assert LlamaCppBackend._arch_crash_retry_gpu_ids([0], [0, 1, 2]) == [1, 2]

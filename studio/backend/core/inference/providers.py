@@ -246,8 +246,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "auth_prefix": "Bearer ",
         "notes": "Moonshot API key. China: use base URL https://api.moonshot.cn/v1",
         "model_id_allowlist": re.compile(r"^kimi-(?:k3|k2\.[56])$"),
-        # Reasoning-class: the API rejects custom temperature/top_p ("only 1
-        # is allowed"). Strip both so the server uses its required defaults.
+        # Reasoning-class APIs reject custom temperature/top_p (only 1 is allowed); omit both.
         "body_omit": ("temperature", "top_p"),
     },
     "zai": {

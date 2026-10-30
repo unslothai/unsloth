@@ -355,8 +355,7 @@ def test_a_code_execution_with_run_tools_locally_still_reaches_the_provider(monk
 
 @pytest.mark.parametrize("provider_type", SELF_HOSTED_PROVIDERS)
 def test_a_self_hosted_provider_still_runs_studios_own_web_search(monkeypatch, provider_type):
-    """Shape 2, the PR's primary use case: a self-hosted server has no hosted
-    tools at all, so the same body can only mean Unsloth's local loop."""
+    """Self-hosted servers have no hosted tools, so the request means Unsloth's local loop."""
     assert provider_hosted_tools(provider_type) == frozenset()
     inf = _install(monkeypatch, provider_type)
     with pytest.raises(LoopEntered):
@@ -374,8 +373,7 @@ def test_a_self_hosted_provider_still_runs_studios_own_web_search(monkeypatch, p
     ],
 )
 def test_a_local_only_selection_takes_the_loop_on_a_hosted_provider(monkeypatch, overrides):
-    """Shape 3: one Unsloth-only name (or MCP) is unambiguous, so the feature
-    works on hosted providers too."""
+    """One Unsloth-only or MCP name is unambiguous, so hosted providers also take the loop."""
     # imported inside the function, so patch core.inference.tools, not routes.inference
     monkeypatch.setattr(
         "core.inference.tools.get_enabled_mcp_tools",
@@ -391,8 +389,7 @@ async def _noop_mcp():
 
 
 def test_a_unknown_tool_names_never_read_as_hosted(monkeypatch):
-    """Fails toward the loop, which owns the local catalog, rather than
-    forwarding a name the provider has no tool for."""
+    """Unknown names fail toward the loop, which owns the local catalog, not the provider."""
     from routes.inference import _selects_only_provider_hosted_tools
 
     payload = _payload(enable_tools = True, enabled_tools = ["web_search", "not_a_tool"])
@@ -462,9 +459,8 @@ def test_tool_choice_none_is_not_refused_for_a_prompt_it_can_never_show(monkeypa
 
 
 def test_a_refused_request_does_not_strand_a_running_monitor_entry(monkeypatch):
-    """The refusal lands after api_monitor.start and before the stream generator that
-    would finish it, and a running entry is exempt from trimming, so leaving it open
-    strands /api/inference/monitor in `generating` for good."""
+    """A refusal after api_monitor.start must close its entry, since running entries are exempt from
+    trimming and would strand /api/inference/monitor in generating."""
     from core.inference.api_monitor import ApiMonitor
     from fastapi import HTTPException
 
@@ -533,8 +529,7 @@ def test_b_external_tool_loop_receives_requested_nudge_setting(monkeypatch, nudg
 
 
 def test_b_the_external_and_codex_paths_derive_the_gate_identically():
-    """Both policy constructions must read the same policy expressions off the
-    payload; a divergence would make one path quietly more permissive."""
+    """Both gates must read the same payload expressions, or one path gets more permissive."""
     tree = ast.parse(_ROUTE_SOURCE.read_text(encoding = "utf-8"))
     modes: set[str] = set()
     confirms: set[str] = set()

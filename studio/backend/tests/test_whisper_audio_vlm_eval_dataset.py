@@ -162,8 +162,7 @@ class _FakeAudioDataset:
         return base + list(getattr(self, "_phantom_columns", []))
 
     def cast_column(self, column, feature):
-        """Like cast_column: for a decode_example feature (Audio) the name is not
-        validated, so a missing column is silently ADDED as all-null."""
+        """Real cast_column silently adds a missing column as all-null for Audio features."""
         if column not in self.column_names:
             phantom = _FakeAudioDataset(self._texts, with_audio = False)
             phantom._phantom_columns = list(getattr(self, "_phantom_columns", [])) + [column]
@@ -372,8 +371,7 @@ def test_whisper_cancel_during_eval_preprocessing_leaves_no_eval(audio_trainer):
 def test_audio_vlm_eval_split_with_a_different_audio_column_is_refused(
     audio_trainer, tmp_path, monkeypatch
 ):
-    """audio_vlm_collate_fn reads one recorded audio column for BOTH splits, so an eval split
-    must never redefine it."""
+    """audio_vlm_collate_fn reads one audio column for both splits; eval must not redefine it."""
     audio_trainer._audio_type = None
     audio_trainer.is_audio_vlm = True
     columns = iter(["audio", "speech"])
@@ -429,8 +427,7 @@ def _drive_whisper_branch(
     eval_rows,
     eval_steps = 0.25,
 ):
-    """Drive the real Whisper _train_worker branch; only train() is stubbed, so the asserted
-    args and eval dataset are genuine transformers objects."""
+    """Runs the real Whisper _train_worker; only train() is stubbed, so args are real objects."""
     transformers = pytest.importorskip("transformers")
     torch = pytest.importorskip("torch")
 
@@ -549,8 +546,7 @@ def test_whisper_trainer_branch_normalises_a_numeric_string_cadence(
 
 
 def test_whisper_carve_out_is_skipped_when_the_cadence_is_unusable(audio_trainer, monkeypatch):
-    """The 6% carve-out keys off eval_split, not the cadence, so it used to feature-extract rows
-    for an evaluation the trainer branch then refuses."""
+    """The 6% carve-out keys off eval_split, so no rows are extracted for a refused eval."""
     seen = {}
 
     def fake(
@@ -626,8 +622,7 @@ def test_whisper_cancel_does_not_warn_about_the_eval_file(audio_trainer):
 
 
 def test_cast_column_really_does_not_validate_the_column_name():
-    """Pins the datasets behaviour the explicit column check exists for, so _FakeAudioDataset
-    cannot drift from it."""
+    """Pins the datasets behaviour the explicit column check guards, so the fake cannot drift."""
     datasets = pytest.importorskip("datasets")
 
     ds = datasets.Dataset.from_dict({"path": ["/a.wav"], "text": ["x"]})

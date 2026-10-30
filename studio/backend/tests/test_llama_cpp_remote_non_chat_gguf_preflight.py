@@ -27,9 +27,7 @@ def _gguf_bytes(
     declared_kv: int | None = None,
     general_type: str | None = None,
 ) -> bytes:
-    """A GGUF header as BYTES. ``declared_kv`` overstates the KV count without writing the
-    pairs -- the shape a byte-range prefix of a chat model has: the counts say more is
-    coming and the buffer ends first."""
+    """declared_kv overstates the KV count with no pairs written, as a byte-range prefix does."""
     body = b""
     kv_count = 0
     for key, value in ((b"general.architecture", arch), (b"general.type", general_type)):

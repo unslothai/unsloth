@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Stage cast-cache misses too big for host RAM (e.g. fp32 UMT5 on a 12.7 GB host gets OOM-killed) onto the card.
-
-Each such miss loads alone onto the device (transformers streams per tensor), is written to the cast cache from the
-device tensors and freed; the normal cast-cache read then serves it, same bits. ``UNSLOTH_VIDEO_SMALL_HOST=0`` off,
-``=1`` stages every miss that fits the card.
-"""
+"""Stages cast-cache misses too big for host RAM onto the card, same bits;
+UNSLOTH_VIDEO_SMALL_HOST=0 turns off, =1 stages every miss that fits the card"""
 
 from __future__ import annotations
 
@@ -213,8 +209,7 @@ def stage_misses(
     logger: Any = None,
     cancel_check: Optional[Callable[[], None]] = None,
 ) -> list:
-    """Stage the misses of ``cands`` a dense load would not fit; returns the staged components. Never raises except
-    a cancel."""
+    """Stages cands a dense load would not fit, returning them; never raises except on cancel."""
     if not cands or device is None:
         return []
     try:

@@ -592,8 +592,7 @@ def test_web_search_domain_limits_reach_the_tool_loop(monkeypatch, policy):
     ],
 )
 def test_stop_reason_recorded_without_backend_stats(monkeypatch, kind, stream, expected):
-    # last_generation_stats is MLX-only, so a transformers generation leaves
-    # stats_holder empty; the stop reason must not ride along with it.
+    # Stop reason must be recorded even when MLX-only stats are absent, as on transformers.
     if kind == "tool_loop":
         backend = _ToolLoopBackend(_fixed("done"))
         payload = _request(stream = stream, enable_tools = True)
@@ -691,9 +690,7 @@ def _totals(body):
 
 @pytest.mark.parametrize("tool_loop", [False, True])
 def test_a_non_streaming_reply_reports_the_tokens_it_spent(monkeypatch, tool_loop):
-    """The response model defaults usage to a zero-filled object, so omitting it
-    reports zeros a client cannot tell from a real count. Both non-streaming
-    shapes answer from the same stats the monitor reads."""
+    """Usage comes from the same stats the monitor reads, since an omitted usage reads as zeros."""
     spent = {"prompt_tokens": 11, "completion_tokens": 4, "total_tokens": 15}
     build = _ToolLoopBackend if tool_loop else _ScriptedBackend
     backend = build(_fixed("hello"), stats = {"usage": spent})
@@ -1124,8 +1121,7 @@ def test_cached_prompt_tokens_reach_the_usage_details(monkeypatch):
 
 
 def test_cached_tokens_never_exceed_the_prompt_they_describe(monkeypatch):
-    # Two choices can report different prompt counts (the nudge rebuilds a longer
-    # prompt), so the count and its details must come from the same choice.
+    # Two choices may differ in prompt count, so count and details must come from one choice.
     rich = {
         "usage": {
             "prompt_tokens": 1200,
@@ -1351,9 +1347,7 @@ def _turn(
 
 
 def test_every_tool_loop_turn_is_billed_not_just_the_last():
-    """The turns that produced the tool call spent tokens too, so the reply sums
-    them; only the prompt is the last turn's, since it already carries the
-    earlier results."""
+    """Every tool-loop turn is billed: usage sums across turns, but the prompt is the last turn's."""
     folded = _fold(_turn(100, 20), _turn(160, 30), _turn(220, 5))
 
     assert folded["usage"] == {
@@ -1369,8 +1363,7 @@ def test_every_tool_loop_turn_is_billed_not_just_the_last():
 
 
 def test_a_turn_that_ends_before_reporting_does_not_erase_the_loop():
-    """A cancelled or errored final turn has no counts of its own. Seeding the
-    fold from it would drop everything the loop already spent."""
+    """A turn ending without counts must not seed the fold, or earlier spend is dropped."""
     assert _fold(_turn(100, 20), None, _turn(160, 30))["usage"]["completion_tokens"] == 50
     assert _fold(_turn(100, 20), _turn(160, 30), None)["usage"]["completion_tokens"] == 50
 
@@ -2023,9 +2016,7 @@ _PROCESSOR_TEMPLATE_WITHOUT_TOOLS = (
 
 
 def test_the_image_tool_loop_is_gated_on_the_body_that_renders(monkeypatch):
-    """The loop now runs on a vision model with an attachment, and generation renders
-    through the PROCESSOR template. Classifying its tool support from the tokenizer body
-    started the loop on a model whose prompt carries no schemas at all."""
+    """Tool support must be classified from the processor template that renders, not the tokenizer body."""
     import routes.inference as inf
 
     backend = _VisionToolLoopBackend(_fixed("done"))
@@ -2072,9 +2063,8 @@ def test_the_image_tool_loop_is_gated_on_the_body_that_renders(monkeypatch):
 
 
 def test_a_client_catalog_keeps_an_image_out_of_the_server_loop(monkeypatch):
-    """Letting the loop take a picture must not take the request with it: #10092 routes
-    image-plus-tools to the passthrough so the CALLER's schemas are the ones rendered.
-    Claiming it here answered the client with Unsloth's built-ins instead."""
+    """Image-plus-tools requests go to passthrough (issue 10092) so the schemas the caller sent are
+    the ones rendered; the server loop must not claim them."""
     backend = _VisionToolLoopBackend(_fixed("a plain answer"))
     payload = _request(
         messages = [

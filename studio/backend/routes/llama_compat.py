@@ -401,12 +401,7 @@ def _same_path(a: Optional[str], b: Optional[str]) -> bool:
 
 
 async def _unload_target(model_id: str, row: dict, pinned: bool) -> Optional[str]:
-    """What /unload must be named to stop this row, or None when nothing of it runs.
-
-    /unload matches the resident or loading identifier, not an alias (LM Studio, scan folder,
-    Ollama tag) nor a path-loaded row's listed id, and on a managed install it releases the
-    caller's shared resident before comparing names, so an unrelated row must never reach it.
-    """
+    """The name /unload must use: the resident or loading id, not an alias; never an unrelated row."""
     from core.inference.openai_auto_download import looks_like_quant, split_model_ref
 
     # Another account's resident is not this caller's to name: answering for it would reveal it.
