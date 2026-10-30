@@ -4961,7 +4961,7 @@ export const zhCN = {
       pollError: "无法加载示例回答：{error}",
       loadingAnswers: "正在加载示例回答…",
       waitingFirst: "第一批评分完成后会显示首批回答，之后大约每 15 秒更新一次。",
-      noneKept: "此运行没有示例回答。示例回答只在训练期间保存在内存中，Unsloth Studio 重启后就会消失。",
+      noneKept: "此运行没有示例回答。示例回答只在训练期间保存在内存中，Unsloth 重启后就会消失。",
       newer: "下一个示例",
       showAll: "显示全部",
       showLess: "收起",

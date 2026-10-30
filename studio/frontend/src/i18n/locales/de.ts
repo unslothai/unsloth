@@ -5135,7 +5135,7 @@ export const de = {
       pollError: "Beispielantworten konnten nicht geladen werden: {error}",
       loadingAnswers: "Beispielantworten werden geladen …",
       waitingFirst: "Die ersten Antworten erscheinen, sobald der erste Batch bewertet ist, danach etwa alle 15 Sekunden.",
-      noneKept: "Für diesen Lauf gibt es keine Beispielantworten. Sie werden nur während des Trainings im Speicher gehalten und sind nach einem Neustart von Unsloth Studio weg.",
+      noneKept: "Für diesen Lauf gibt es keine Beispielantworten. Sie werden nur während des Trainings im Speicher gehalten und sind nach einem Neustart von Unsloth weg.",
       newer: "Neueres Beispiel",
       showAll: "Alles zeigen",
       showLess: "Weniger zeigen",

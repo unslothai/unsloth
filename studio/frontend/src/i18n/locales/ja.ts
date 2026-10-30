@@ -5010,7 +5010,7 @@ export const ja = {
       pollError: "回答例を読み込めませんでした: {error}",
       loadingAnswers: "回答例を読み込み中…",
       waitingFirst: "最初のバッチが採点されると最初の回答が表示され、その後はおよそ 15 秒ごとに更新されます。",
-      noneKept: "この実行には回答例がありません。回答例は学習中だけメモリに保持されるため、Unsloth Studio を再起動すると消えます。",
+      noneKept: "この実行には回答例がありません。回答例は学習中だけメモリに保持されるため、Unsloth を再起動すると消えます。",
       newer: "次のサンプル",
       showAll: "すべて表示",
       showLess: "折りたたむ",

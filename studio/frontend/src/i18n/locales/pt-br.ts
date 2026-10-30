@@ -5095,7 +5095,7 @@ export const ptBR = {
       pollError: "Não foi possível carregar as respostas de exemplo: {error}",
       loadingAnswers: "Carregando respostas de exemplo…",
       waitingFirst: "As primeiras respostas aparecem depois que o primeiro lote é pontuado e, depois, a cada 15 segundos mais ou menos.",
-      noneKept: "Nenhuma resposta de exemplo para esta execução. Elas ficam na memória durante o treino, então somem quando o Unsloth Studio reinicia.",
+      noneKept: "Nenhuma resposta de exemplo para esta execução. Elas ficam na memória durante o treino, então somem quando o Unsloth reinicia.",
       newer: "Exemplo mais recente",
       showAll: "Mostrar tudo",
       showLess: "Mostrar menos",

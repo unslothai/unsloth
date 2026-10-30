@@ -5050,7 +5050,7 @@ export const ko = {
       pollError: "예시 답변을 불러오지 못했습니다: {error}",
       loadingAnswers: "예시 답변을 불러오는 중…",
       waitingFirst: "첫 배치가 채점되면 첫 답변이 표시되고, 이후 약 15초마다 갱신됩니다.",
-      noneKept: "이 실행에는 예시 답변이 없습니다. 예시 답변은 학습 중에만 메모리에 보관되므로 Unsloth Studio를 다시 시작하면 사라집니다.",
+      noneKept: "이 실행에는 예시 답변이 없습니다. 예시 답변은 학습 중에만 메모리에 보관되므로 Unsloth를 다시 시작하면 사라집니다.",
       newer: "다음 샘플",
       showAll: "모두 보기",
       showLess: "접기",

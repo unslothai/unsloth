@@ -5353,7 +5353,7 @@ export const sv = {
       pollError: "Det gick inte att läsa in exempelsvar: {error}",
       loadingAnswers: "Läser in exempelsvar …",
       waitingFirst: "De första svaren visas när den första batchen har poängsatts, sedan ungefär var 15:e sekund.",
-      noneKept: "Inga exempelsvar för den här körningen. De finns bara i minnet medan den tränar och försvinner när Unsloth Studio startas om.",
+      noneKept: "Inga exempelsvar för den här körningen. De finns bara i minnet medan den tränar och försvinner när Unsloth startas om.",
       newer: "Nyare exempel",
       showAll: "Visa alla",
       showLess: "Visa mindre",

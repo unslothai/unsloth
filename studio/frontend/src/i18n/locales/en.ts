@@ -5151,7 +5151,7 @@ export const en = {
       pollError: "Could not load sample answers: {error}",
       loadingAnswers: "Loading sample answers…",
       waitingFirst: "The first answers show up after the first batch is scored, then about every 15 seconds.",
-      noneKept: "No sample answers for this run. They are kept in memory while it trains, so they are gone after Unsloth Studio restarts.",
+      noneKept: "No sample answers for this run. They are kept in memory while it trains, so they are gone after Unsloth restarts.",
       newer: "Newer sample",
       showAll: "Show all",
       showLess: "Show less",

@@ -5136,7 +5136,7 @@ export const it = {
       pollError: "Impossibile caricare le risposte di esempio: {error}",
       loadingAnswers: "Caricamento delle risposte di esempio…",
       waitingFirst: "Le prime risposte compaiono dopo la valutazione del primo batch, poi circa ogni 15 secondi.",
-      noneKept: "Nessuna risposta di esempio per questa esecuzione. Restano in memoria durante l’addestramento, quindi spariscono al riavvio di Unsloth Studio.",
+      noneKept: "Nessuna risposta di esempio per questa esecuzione. Restano in memoria durante l’addestramento, quindi spariscono al riavvio di Unsloth.",
       newer: "Esempio successivo",
       showAll: "Mostra tutto",
       showLess: "Mostra meno",

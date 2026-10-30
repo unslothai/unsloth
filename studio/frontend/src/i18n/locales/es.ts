@@ -5134,7 +5134,7 @@ export const es = {
       pollError: "No se pudieron cargar las respuestas de ejemplo: {error}",
       loadingAnswers: "Cargando respuestas de ejemplo…",
       waitingFirst: "Las primeras respuestas aparecen cuando se puntúa el primer lote y luego cada 15 segundos aproximadamente.",
-      noneKept: "No hay respuestas de ejemplo para esta ejecución. Se guardan en memoria mientras entrena, así que desaparecen al reiniciar Unsloth Studio.",
+      noneKept: "No hay respuestas de ejemplo para esta ejecución. Se guardan en memoria mientras entrena, así que desaparecen al reiniciar Unsloth.",
       newer: "Muestra más reciente",
       showAll: "Mostrar todo",
       showLess: "Mostrar menos",
