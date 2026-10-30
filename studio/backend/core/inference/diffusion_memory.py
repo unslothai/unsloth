@@ -3358,12 +3358,17 @@ MEASURED_ACTIVATION_QWEN_EDIT_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_QWEN_
 # "0": Qwen-Image / Qwen-Image-2512 text-to-image places from its learned peak only.
 MEASURED_ACTIVATION_QWEN_IMAGE_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_QWEN_IMAGE"
 # Streamed tier: peak reserved above resident weights AND the prefetch window (the resident seed already pads it).
-# Qwen-Image t2i takes the Edit figure: same DiT class and VAE, half the image tokens (no source latents).
+# Qwen-Image t2i: its own figure. Qwen-Image-2512 on sm_120 (1024^2, 20 steps, true CFG 4, int8 DiT + encoder) under
+# a 16 GiB budget peaked 3.5 GiB (NVML: CUDA context and allocator cache included) above its resident groups, window
+# and VAE, so the Edit figure (3824, x1.15 = 4608) peaked at 12.5 GiB of the 16; 2560 (x1.15 = 3072) at 14.3 GiB.
 _MEASURED_STREAMED_IMAGE_PEAK_MIB: dict[str, int] = {
     "qwen-image-edit": 3824,
-    "qwen-image": 3824,
+    "qwen-image": 2560,
 }
 MEASURED_ACTIVATION_STREAMED_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_STREAMED"
+# "0": Qwen-Image t2i streams with the borrowed Qwen-Image-Edit figure again (the placement before its own figure).
+QWEN_IMAGE_STREAMED_SEED_ENV = "UNSLOTH_DIFFUSION_QWEN_IMAGE_STREAMED_SEED"
+_QWEN_IMAGE_BORROWED_STREAMED_MIB = 3824
 _MEASURED_PEAK_SPEED_MODES = ("default", "max")
 _MEASURED_PEAK_MARGIN = 1.15
 _MEASURED_PEAK_ROUND_MIB = 256
@@ -3535,6 +3540,8 @@ def measured_image_runtime_mib(
         seed = _MEASURED_IMAGE_PEAK_MIB.get(str(family or "").lower())
         if streamed and phase is None and not _env_off(MEASURED_ACTIVATION_STREAMED_ENV):
             seed = _MEASURED_STREAMED_IMAGE_PEAK_MIB.get(str(family or "").lower(), seed)
+            if str(family or "").lower() == "qwen-image" and _env_off(QWEN_IMAGE_STREAMED_SEED_ENV):
+                seed = _QWEN_IMAGE_BORROWED_STREAMED_MIB
         if str(family or "").lower() == "qwen-image-edit" and _env_off(
             MEASURED_ACTIVATION_QWEN_EDIT_ENV
         ):
