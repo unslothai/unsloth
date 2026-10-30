@@ -913,6 +913,109 @@ def test_without_context_parallelism_idle_experts_stall_ddp():
         _moe_spawn(_moe_ddp_worker, 2, False, False)
 
 
+# Per optimizer step, two gradient accumulation micro-batches, the experts each rank routes to.
+# Step 0: 6 and 7 idle everywhere; 4 and 5 used in the second micro-batch only. Step 1: 2 to 5
+# idle everywhere after training at step 0 (AdamW momentum and weight decay would move them).
+# Step 2: 4 to 7 idle everywhere.
+_GA_ROUTES = (
+    (((0, 1), (2, 3)), ((0, 1), (4, 5))),
+    (((6, 7), (0, 1)), ((0, 1), (6, 7))),
+    (((2, 3), (2, 3)), ((0, 1), (2, 3))),
+)
+
+
+def _moe_adamw_worker(rank, world, lora, hook):
+    import copy
+
+    from torch.nn.parallel import DistributedDataParallel
+
+    from unsloth import context_parallel as cp
+
+    block = _complementary_block(lora)
+    reference = copy.deepcopy(block)
+    model = DistributedDataParallel(block, find_unused_parameters = False)
+    adamw = dict(lr = 1e-2, weight_decay = 0.1)
+    optimizer = torch.optim.AdamW([p for p in block.parameters() if p.requires_grad], **adamw)
+    ref_optimizer = torch.optim.AdamW(
+        [p for p in reference.parameters() if p.requires_grad], **adamw
+    )
+    if hook:
+        assert cp.install_idle_expert_grad_hook(optimizer, model)
+        assert cp.install_idle_expert_grad_hook(optimizer, model)  # once per optimizer
+        assert len(optimizer._optimizer_step_pre_hooks) == 1
+    cp._ACTIVE_MANAGER = object()
+    try:
+        for step, micro_routes in enumerate(_GA_ROUTES):
+            optimizer.zero_grad(set_to_none = True)
+            ref_optimizer.zero_grad(set_to_none = True)
+            for micro, routes in enumerate(micro_routes):
+                seed = step * 100 + micro * 10
+                loss = model(_routed_tokens(routes[rank], seed + rank)).pow(2).sum()
+                (loss / len(micro_routes)).backward()
+                cp._ACTIVE_MANAGER = None  # the single-process reference
+                for peer in range(world):
+                    loss = reference(_routed_tokens(routes[peer], seed + peer)).pow(2).sum()
+                    (loss / (world * len(micro_routes))).backward()
+                cp._ACTIVE_MANAGER = object()
+            used = {e for routes in micro_routes for pair in routes for e in pair}
+            before = {n: p.detach().clone() for n, p in block.named_parameters()}
+            optimizer.step()
+            ref_optimizer.step()
+            for (name, got), want in zip(block.named_parameters(), reference.parameters()):
+                if not got.requires_grad:
+                    continue
+                expert = int(name.split(".")[1]) if name.startswith("experts.") else None
+                if hook and expert is not None:
+                    assert (got.grad is None) == (expert not in used), (step, name)
+                if expert is not None and expert not in used:
+                    assert torch.equal(got, before[name]), f"idle {name} moved at step {step}"
+                torch.testing.assert_close(got, want, msg = lambda m: f"{name} step {step}: {m}")
+    finally:
+        cp._ACTIVE_MANAGER = None
+
+
+@pytest.mark.parametrize("lora", [False, True], ids = ["full", "lora_experts"])
+def test_context_parallel_idle_experts_follow_single_process_adamw(lora):
+    """An expert no rank routes to runs on no tokens under CP, so DDP hands it a zero gradient.
+    The optimizer step pre-hook must turn that back into None so AdamW (weight decay, moments,
+    step count) treats it like the single-process run, over gradient accumulation micro-batches
+    where an expert used in only one micro-batch keeps its gradient."""
+    _moe_spawn(_moe_adamw_worker, 2, lora, True)
+
+
+def test_without_the_hook_idle_experts_move_under_adamw():
+    # Negative control: the zero gradients alone decay idle experts and advance their moments.
+    with pytest.raises(Exception, match = "moved at step|not close"):
+        _moe_spawn(_moe_adamw_worker, 2, False, False)
+
+
+def test_idle_expert_hook_is_inert_without_every_expert_blocks_and_when_all_are_routed():
+    from unsloth import context_parallel as cp
+
+    optimizer = torch.optim.AdamW(nn.Linear(2, 2).parameters())
+    assert not cp.install_idle_expert_grad_hook(optimizer, nn.Linear(2, 2))
+    assert not optimizer._optimizer_step_pre_hooks
+    block = _complementary_block(False)
+    cp._ACTIVE_MANAGER = object()
+    try:
+        x = torch.cat([_routed_tokens((e, (e + 1) % 8), e) for e in range(0, 8, 2)], dim = 1)
+        block(x).pow(2).sum().backward()
+        with torch.no_grad():  # a graph-free forward does not count
+            block(_routed_tokens((0, 1), 0))
+    finally:
+        cp._ACTIVE_MANAGER = None
+    assert block._unsloth_cp_expert_tokens.gt(0).all()
+    grads = {n: p.grad.clone() for n, p in block.named_parameters() if p.grad is not None}
+    assert cp.drop_idle_expert_grads([block]) == 0
+    assert "_unsloth_cp_expert_tokens" not in block.__dict__
+    for n, p in block.named_parameters():
+        if n in grads:
+            assert torch.equal(p.grad, grads[n]), n
+    # No counts recorded (CP off): every expert counts as idle, but CP never installs the hook.
+    block(_routed_tokens((0, 1), 0)).pow(2).sum().backward()
+    assert "_unsloth_cp_expert_tokens" not in block.__dict__
+
+
 def test_an_expert_parallel_block_is_not_counted_as_running_every_expert():
     """ep_size > 1 keeps the remote forward (its own expert all-to-all), not the zero-token
     dispatch, so the context parallel MoE refusal must still apply to it."""

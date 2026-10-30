@@ -197,12 +197,16 @@ def _moe_train_dispatch(block, x, topk_idx, topk_weight):
     flat_idx = topk_idx.reshape(-1)
     order = torch.argsort(flat_idx, stable = True)
     sorted_tokens = x[order // top_k]
-    counts = torch.bincount(flat_idx, minlength = len(experts)).tolist()
+    token_counts = torch.bincount(flat_idx, minlength = len(experts))
+    counts = token_counts.tolist()
     # Under context parallelism each rank routes a different shard, so an expert unused here may be
     # used on a peer: run it on no tokens to give it a zero gradient instead of None, or DDP stalls.
-    from ..context_parallel import get_cp_manager
+    from ..context_parallel import get_cp_manager, record_expert_tokens
 
     every_expert = get_cp_manager() is not None
+    if every_expert:
+        # So the optimizer step can drop the zero gradients of experts no rank routed to.
+        record_expert_tokens(block, token_counts)
     outputs = []
     start = 0
     for expert_index, count in enumerate(counts):
