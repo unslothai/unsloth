@@ -212,3 +212,33 @@ def test_the_disk_cap_evicts_the_least_recently_used_scope(rag_conn, monkeypatch
     assert not os.path.exists(first.base + ".usearch")
     hits, scanned = _dense(rag_conn, rows[0], 3)
     assert scanned and hits[0][0] == "d:0"
+
+
+def test_an_exact_entry_that_outgrows_the_budget_moves_to_hnsw(rag_conn, monkeypatch):
+    _add(rag_conn, "kb", "d", _vectors(30))
+    _dense(rag_conn, _vectors(1)[0])
+    assert vec_cache.drain(60)
+    (small,) = vec_cache._entries.values()
+    monkeypatch.setenv("RAG_VEC_CACHE_MB", str(3 * small.nbytes / 2**20))
+    new = _vectors(300, seed = 5)
+    _add(rag_conn, "kb", "e", new)
+    assert vec_cache.drain(60)
+    assert not vec_cache._entries and vec_cache._ann
+    hits, scanned = _dense(rag_conn, new[9], 3)
+    assert not scanned and hits[0][0] == "e:9"
+
+
+def test_a_large_catch_up_rebuilds_without_loading_the_delta(rag_conn, monkeypatch):
+    rows = _vectors(300)
+    _add(rag_conn, "kb", "d", rows)
+    first = _warm(rag_conn, rows[0])
+    vec_cache.clear()
+    monkeypatch.setenv("RAG_VEC_CACHE", "0")
+    _add(rag_conn, "kb", "e", _vectors(4, seed = 13))
+    monkeypatch.setenv("RAG_VEC_CACHE", "1")
+    monkeypatch.setattr(vec_cache, "_delta_limit", lambda n: 2)
+    monkeypatch.setattr(
+        vec_cache, "_delta_since", lambda *a: pytest.fail("loaded the delta before rebuilding")
+    )
+    entry = _warm(rag_conn, rows[0])
+    assert entry.base != first.base and entry.ann.n == 304 and not len(entry.ann.delta_keys)

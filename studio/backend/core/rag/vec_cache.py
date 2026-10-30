@@ -170,7 +170,11 @@ def _publish(
     if entry is None:
         return
     if entry.nbytes > _budget():
-        _too_big[key] = entry.epoch
+        # A scope that outgrew the exact cache through appends moves to HNSW now, not at its next write.
+        if entry.n >= _ann_min_rows() and ann_enabled():
+            _schedule(key)
+        else:
+            _too_big[key] = entry.epoch
         return
     _entries[key] = entry
     _bytes += entry.nbytes
@@ -313,8 +317,13 @@ def _note_ann_append(np, key, before, after, appended, chunk_rowids, rows) -> No
     keys, unit = vec_ann.unit_rows(np, chunk_rowids, rows)
     ann = vec_ann.with_delta(np, entry.ann, keys, unit)
     _ann[key] = _AnnEntry(after, ann, entry.base)
-    if len(ann.delta_keys) > max(20000, ann.n // 20):
+    if len(ann.delta_keys) > _delta_limit(ann.n):
         _schedule(key)
+
+
+def _delta_limit(n: int) -> int:
+    """Most exact delta rows kept beside an index of ``n`` rows before it is rebuilt."""
+    return max(20000, n // 20)
 
 
 def note_append(
@@ -509,11 +518,16 @@ def _build_ann(np, conn, key: tuple, epoch: tuple) -> None:
             break
     if loaded is not None:
         index, meta = loaded
-        keys, unit = _delta_since(np, conn, scope, dim, e[2])
-        if len(keys) <= max(20000, len(index) // 20):
+        # Counted before any vector is read: a large catch-up goes straight to the streamed rebuild.
+        newer = conn.execute(
+            "SELECT count(*) FROM chunks WHERE scope=? AND rowid > ?", (scope, e[2])
+        ).fetchone()[0]
+        if newer <= _delta_limit(len(index)):
+            keys, unit = _delta_since(np, conn, scope, dim, e[2])
             ann = vec_ann.Ann(index, len(index), base + ".usearch", keys, unit, meta)
             _publish_ann(key, _AnnEntry(epoch, ann, base))
             return
+        loaded = index = None
     index = vec_ann.new_index(dim)
     cur = conn.execute(
         # CROSS JOIN keeps vec0 as the outer scan; chunks is probed by its primary key.
