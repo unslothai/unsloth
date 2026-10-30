@@ -296,7 +296,6 @@ def test_images_late_in_a_chat_column_are_found():
 
 def test_a_numeric_or_audio_column_is_not_an_image_column():
     from datasets import Audio, Dataset
-
     dataset = Dataset.from_dict(
         {"score": [[1.0, 2.0]] * 3, "clip": [{"bytes": b"RIFF", "path": None}] * 3}
     ).cast_column("clip", Audio(decode = False))
