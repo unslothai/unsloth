@@ -456,8 +456,8 @@ def share_kv_rows(entries, base):
 
 
 def kv_skeleton(entries):
-    """``entries`` with each in-order KV entry's rows left out (its ``offset`` kept) and recurrent
-    state copied; None when another entry holds rows, as a quantized or wrapped one does."""
+    """``entries`` with in-order KV rows left out (``offset`` kept) and recurrent state copied;
+    None for any other entry (quantized, wrapped)."""
     import mlx.core as mx
 
     classes = (_cache_classes("KVCache"), _cache_classes("RotatingKVCache"))
@@ -477,9 +477,8 @@ def kv_skeleton(entries):
 
 
 def fill_kv_skeleton(skeleton, final):
-    """Point ``skeleton``'s KV entries at the leading rows of ``final``, the same row's cache once
-    it has decoded on; False when ``final`` does not hold them from the first row (a ring that
-    has wrapped)."""
+    """Point ``skeleton``'s KV entries at the leading rows of the same row's ``final`` cache;
+    False when ``final`` does not hold them from row 0 (a wrapped ring)."""
     kv = _cache_classes("KVCache") + _cache_classes("RotatingKVCache")
     if len(final) != len(skeleton):
         return False
@@ -944,10 +943,9 @@ class VLMBatchRowCache:
     and store: ``open`` resumes the longest snapshot ending by the row's boundary and names the
     chunk ends to bank, the boundary and the replay; ``checkpoint`` stores each. With no
     ``store`` the row prefills cold on the same cache layout; ``releases_unserved`` frees what
-    does not serve it, as the single path does. A row takes what is held without copying it.
-    Over the budget a copy would sit beside the row's own decode, so with ``alone`` the row
-    keeps only a skeleton and, if ``alone()`` as it leaves, holds it filled from the cache
-    unsloth-zoo hands back in ``retire``; otherwise it holds nothing."""
+    does not serve it, as the single path does. A row takes what is held uncopied. Over the
+    budget (with ``alone``) a row keeps only a skeleton, filled in ``retire`` from the cache
+    unsloth-zoo hands back if ``alone()`` then; a copy would sit beside its decode."""
 
     def __init__(
         self,
@@ -4955,8 +4953,8 @@ class _VisionBatchSession:
         return plan.think_prefix
 
     def _alone(self, handle):
-        """Whether no other row decodes beside ``handle``'s. Rows that ended this step count until
-        it ends: the speculative stream frees their caches after reporting them."""
+        """No other row decodes beside ``handle``'s; rows ending this step count until it ends,
+        as the speculative stream frees their caches only then."""
         rows, leaving = self._rows, self._leaving
         return lambda: all(other == handle for other in (*rows, *leaving))
 
