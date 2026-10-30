@@ -1070,6 +1070,30 @@ class TestFrontendAssets:
         assert client.get("/assets/missing.js").status_code == 404
         assert "<title>x</title>" in client.get("/some/spa/route").text
 
+    def test_a_service_worker_update_gets_a_worker_that_unregisters_itself(
+        self, tmp_path, main_module
+    ):
+        """Another app's worker left on this origin updates against /sw.js; the app shell would fail
+        that update forever, so the browser gets a worker that retires the registration."""
+        (tmp_path / "index.html").write_text("<!doctype html><title>x</title>")
+        (tmp_path / "real-sw.js").write_text("// shipped", encoding = "utf-8")
+        app = FastAPI()
+        assert main_module.setup_frontend(app, tmp_path)
+        client = TestClient(app, base_url = "http://127.0.0.1:8888", client = ("127.0.0.1", 40000))
+        worker = {"Service-Worker": "script"}
+
+        response = client.get("/sw.js", headers = worker)
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/javascript")
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["service-worker-allowed"] == "/"
+        assert "self.registration.unregister()" in response.text and "fetch" not in response.text
+        assert "unregister()" in client.get("/nested/service-worker.js", headers = worker).text
+        # Page loads and files that exist are untouched.
+        assert "<title>x</title>" in client.get("/sw.js").text
+        assert client.get("/real-sw.js", headers = worker).text == "// shipped"
+        assert client.get("/api/nope", headers = worker).status_code == 404
+
     def test_a_second_setup_frontend_keeps_the_first_assets_mount_winning(
         self, tmp_path, main_module
     ):
