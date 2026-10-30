@@ -281,7 +281,7 @@ function useVideoModels(
 const DEFAULT_GEN = { steps: 8, guidance: 1 };
 
 const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> = [
-  { match: "minimax-h3", steps: 30, guidance: 1 },
+  { match: "minimax-h3", steps: 20, guidance: 1 },
   { match: "cosmos3-nano", steps: 35, guidance: 6 },
   { match: "cosmos3-edge", steps: 20, guidance: 6 },
   // "distilled" before the generic "ltx": the distilled model runs at 8 steps, guidance 1.
