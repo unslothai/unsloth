@@ -25,6 +25,10 @@ overlength rows, and causal loss targets before and after truncation. Position z
 each unpacked row is excluded from loss-target counts. Rows that lose all supervision to
 truncation are distinguished from rows that already had none. Pre-tokenized custom labels
 remain authoritative. Example row numbers refer to the prepared dataset, after filtering.
+When chat rows also retain `input_ids`, those IDs take precedence over the formatted text,
+as they do in training. The report identifies this route and its lack of extra truncation.
+Tokenizer loading applies the training repairs, including reuse of an existing padding
+token. If padding requires model preparation, the audit reports that it is unsupported.
 
 This first version supports unpacked PyTorch causal language-model training. Apple Silicon's
 MLX backend, packed configs and media datasets are refused because their training processors

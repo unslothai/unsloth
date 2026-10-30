@@ -286,6 +286,76 @@ def test_pretokenized_truncation_recomputes_loss_targets(tokenizer, limit):
     assert report["rows_losing_all_loss_to_truncation"] == 1
 
 
+@pytest.mark.parametrize("limit", [2, 128])
+def test_retained_chat_tokens_keep_labels_and_training_truncation_policy(tokenizer, limit):
+    row = chat()
+    row["input_ids"] = tokenizer.apply_chat_template(row["messages"])[:3]
+    row["labels"] = [-100] * len(row["input_ids"])
+    report = audit_dataset(
+        Dataset.from_list([row]),
+        tokenizer,
+        config(max_seq_length = limit, train_on_completions = False),
+    )
+    assert report["format"] == "chatml_messages"
+    assert report["tokens_before_truncation"] == report["tokens_after_truncation"] == 3
+    assert report["rows_without_loss_after_truncation"] == 1
+    assert report["status"] == "issues_found"
+
+
+def test_mixed_chat_labels_follow_training_response_masking(tokenizer):
+    from unsloth_zoo.dataset_utils import train_on_responses_only
+
+    row = chat()
+    row["input_ids"] = tokenizer.apply_chat_template(row["messages"])
+    row["labels"] = row["input_ids"].copy()
+    row["labels"][-2] = -100
+    masker = train_on_responses_only(
+        None,
+        tokenizer = tokenizer,
+        return_function = True,
+    )
+    expected = masker({"input_ids": [row["input_ids"]], "labels": [row["labels"]]})["labels"][0]
+    report = audit_dataset(Dataset.from_list([row]), tokenizer, config())
+    assert report["loss_targets_after_truncation"] == sum(value != -100 for value in expected[1:])
+    assert report["masking"]["applied"]
+
+
+def test_audit_loads_the_training_tokenizer_before_counting(tokenizer, tmp_path):
+    from core.training.dataset_audit import _load_training_tokenizer
+    from unsloth.tokenizer_utils import load_correct_tokenizer
+    from transformers import DataCollatorForLanguageModeling
+
+    tokenizer.add_special_tokens({"additional_special_tokens": ["<pad>"]})
+    tokenizer.save_pretrained(tmp_path)
+    cfg = config(model_name = str(tmp_path), train_on_completions = False)
+    audited = _load_training_tokenizer(cfg)
+    trained = load_correct_tokenizer(str(tmp_path), model_max_length = 128)
+    assert audited.pad_token == trained.pad_token == "<pad>"
+    rows = [{"input_ids": [tokenizer.bos_token_id, tokenizer.eos_token_id]}]
+    expected = DataCollatorForLanguageModeling(trained, mlm = False)(rows)["labels"]
+    report = audit_dataset(Dataset.from_list(rows), audited, cfg)
+    assert report["loss_targets_after_truncation"] == int((expected[:, 1:] != -100).sum()) == 1
+    assert report["status"] == "ok"
+
+
+@pytest.mark.parametrize("metadata", [{"filename": "train.py"}, {"speech": "transcript"}])
+def test_text_metadata_is_not_rejected_as_media(tokenizer, metadata):
+    report = audit_dataset(
+        Dataset.from_list([{**metadata, "text": "hello"}]), tokenizer, config(format_type = "raw")
+    )
+    assert report["format"] == "raw_text"
+    assert report["status"] == "ok"
+
+
+def test_actual_media_is_still_refused(tokenizer):
+    with pytest.raises(ValueError, match = "text datasets only"):
+        audit_dataset(
+            Dataset.from_list([{"image": "sample.png", "text": "hello"}]),
+            tokenizer,
+            config(format_type = "raw"),
+        )
+
+
 def test_packing_is_not_given_unpacked_loss_statistics(tokenizer):
     with pytest.raises(ValueError, match = "packing=False"):
         audit_dataset(Dataset.from_list([chat()]), tokenizer, config(packing = True))
@@ -298,13 +368,22 @@ def test_batch_size_does_not_change_effective_template_or_counts(tokenizer):
     )
 
 
-def test_real_cli_full_audit_uses_only_tokenizer_files(tokenizer, tmp_path):
+@pytest.mark.parametrize("case", ["full_scan", "retained_tokens", "pad_eos", "text_metadata"])
+def test_real_cli_full_audit_uses_only_tokenizer_files(tokenizer, tmp_path, case):
     model = tmp_path / "tokenizer"
+    tokenizer.add_special_tokens({"additional_special_tokens": ["<pad>"]})
     tokenizer.save_pretrained(model)
     data = tmp_path / "train.jsonl"
-    data.write_text(
-        "".join(json.dumps(row) + "\n" for row in [chat()] * 100 + [chat("long " * 100)])
-    )
+    tokenized = chat()
+    tokenized["input_ids"] = tokenizer.apply_chat_template(tokenized["messages"])[:3]
+    tokenized["labels"] = [-100] * len(tokenized["input_ids"])
+    rows = {
+        "full_scan": [chat()] * 100 + [chat("long " * 100)],
+        "retained_tokens": [tokenized],
+        "pad_eos": [{"input_ids": [tokenizer.bos_token_id, tokenizer.eos_token_id]}],
+        "text_metadata": [{"filename": "train.py", "text": "hello"}],
+    }[case]
+    data.write_text("".join(json.dumps(row) + "\n" for row in rows))
     guard = tmp_path / "guard"
     guard.mkdir()
     (guard / "sitecustomize.py").write_text(
@@ -343,7 +422,9 @@ def test_real_cli_full_audit_uses_only_tokenizer_files(tokenizer, tmp_path):
             str(data),
             "--model",
             str(model),
-            "--train-on-completions",
+            "--train-on-completions" if case == "full_scan" else "--no-train-on-completions",
+            "--format-type",
+            "raw" if case == "text_metadata" else "auto",
             "--max-seq-length",
             "32",
             "--full",
@@ -355,9 +436,18 @@ def test_real_cli_full_audit_uses_only_tokenizer_files(tokenizer, tmp_path):
         env = env,
         timeout = 60,
     )
-    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.returncode == (1 if case in ("full_scan", "retained_tokens") else 0), (
+        result.stdout,
+        result.stderr,
+    )
     report = json.loads(result.stdout)
-    assert report["coverage"]["complete"] and report["rows_losing_all_loss_to_truncation"] == 1
+    assert report["coverage"]["complete"]
+    if case == "full_scan":
+        assert report["rows_losing_all_loss_to_truncation"] == 1
+    elif case == "retained_tokens":
+        assert report["loss_targets_after_truncation"] == 0
+    elif case == "pad_eos":
+        assert report["loss_targets_after_truncation"] == 1
     receipts = [json.loads(path.read_text()) for path in guard.glob("*.json")]
     assert len(receipts) >= 2  # CLI parent and tokenizer worker.
     assert all(not receipt["weights"] and not receipt["cuda"] for receipt in receipts)

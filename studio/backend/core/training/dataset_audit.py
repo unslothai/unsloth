@@ -59,38 +59,97 @@ def _length_summary(counts):
     }
 
 
-def _label_rows(tokenizer, model_name, dataset, final_format, completion_only):
+def _label_rows(
+    tokenizer,
+    model_name,
+    dataset,
+    final_format,
+    completion_only,
+    *,
+    retained_tokens = True,
+):
+    from types import SimpleNamespace
+    from trl.trainer.sft_trainer import DataCollatorForLanguageModeling
+    from unsloth_zoo.dataset_utils import sft_prepare_dataset
     from core.training.token_preview_worker import _mask
-    from utils.datasets.pretokenized import _checked_masks
+    from utils.datasets.pretokenized import resolve_completion_only_loss
 
+    user_labels = final_format == "pretokenized" and "labels" in dataset.column_names
+    completion_loss = resolve_completion_only_loss(dataset)
+    trainer = SimpleNamespace(
+        data_collator = DataCollatorForLanguageModeling(
+            pad_token_id = tokenizer.pad_token_id,
+            completion_only_loss = completion_loss,
+        ),
+        completion_only_loss = completion_loss,
+    )
+    if retained_tokens:
+        # Zoo skips tokenization/truncation for retained IDs and selects their actual collator.
+        dataset = sft_prepare_dataset(
+            trainer,
+            dataset,
+            tokenizer,
+            SimpleNamespace(max_length = 1, dataset_num_proc = 1),
+            False,
+            None,
+            "audit",
+        )
     rows = dataset.to_list()
-    ids = [row["input_ids"] for row in rows]
-    custom = "labels" in dataset.column_names
     masking = {"applied": False, "notes": []}
-    if completion_only and not custom and final_format != "raw_text":
-        labels, masking = _mask(tokenizer, model_name, {"input_ids": ids}, final_format)
-    else:
-        labels = [row.get("labels") for row in rows]
-    # Use the same TRL-version-dependent mask policy as pre-tokenized preparation.
-    masks = _checked_masks(dataset.column_names) if final_format == "pretokenized" else ()
-    result = []
-    for row, row_ids, row_labels in zip(rows, ids, labels):
-        if (
-            row_labels is None
-            and final_format == "pretokenized"
-            and not any(
-                name in dataset.column_names for name in ("completion_mask", "assistant_masks")
-            )
-        ):
-            # Zoo selects transformers' LM collator for bare IDs, which masks every pad-token ID.
-            # Custom/response labels use the seq2seq collator and retain EOS even when PAD == EOS.
-            pad_id = tokenizer.pad_token_id
-            row_labels = [token if token != pad_id else -100 for token in row_ids]
-        row_labels = list(row_ids if row_labels is None else row_labels)
-        for name in masks:
-            row_labels = [label if keep else -100 for label, keep in zip(row_labels, row[name])]
-        result.append(row_labels)
-    return result, masking
+    if completion_only and not user_labels and final_format != "raw_text":
+        labels, masking = _mask(
+            tokenizer, model_name, {"input_ids": [row["input_ids"] for row in rows]}, final_format
+        )
+        if masking["applied"]:
+            return [
+                [
+                    old if mask != -100 else -100
+                    for old, mask in zip(row.get("labels", row["input_ids"]), masked)
+                ]
+                for row, masked in zip(rows, labels)
+            ], masking
+    columns = {
+        "input_ids",
+        "attention_mask",
+        "labels",
+        "token_type_ids",
+        "completion_mask",
+        "assistant_masks",
+    }
+    # Collate one row at a time so an unusually long row cannot pad an entire audit batch.
+    return [
+        trainer.data_collator([{key: value for key, value in row.items() if key in columns}])[
+            "labels"
+        ][0].tolist()
+        for row in rows
+    ], masking
+
+
+def _load_training_tokenizer(config):
+    from pathlib import Path
+    from transformers import AutoConfig
+    from unsloth.tokenizer_utils import load_correct_tokenizer
+    from unsloth_zoo.pad_token import fix_pad_token
+
+    source = config.get("tokenizer_source") or config["model_name"]
+    model_config = None
+    if not Path(source).is_dir() or (Path(source) / "config.json").is_file():
+        model_config = AutoConfig.from_pretrained(
+            source, token = config.get("hf_token"), trust_remote_code = False
+        )
+    tokenizer = load_correct_tokenizer(
+        source,
+        model_max_length = config.get("max_seq_length", 2048),
+        token = config.get("hf_token"),
+        trust_remote_code = False,
+        config = model_config,
+    )
+    fix_pad_token(tokenizer, model_config = model_config, allow_add = False)
+    if tokenizer.pad_token_id is None or tokenizer.pad_token_id == tokenizer.eos_token_id:
+        raise ValueError(
+            "The training pad token cannot be resolved without model preparation; this tokenizer cannot be audited yet."
+        )
+    return tokenizer
 
 
 def audit_dataset(
@@ -110,6 +169,7 @@ def audit_dataset(
     from core.training.token_preview_worker import prepare_text_dataset
     from utils.datasets.chat_templates import DEFAULT_ALPACA_TEMPLATE, get_training_chat_template
     from utils.datasets.format_detection import detect_multimodal_dataset
+    from utils.datasets.media import media_columns_hold_media
     from utils.datasets.online_tokenization import resolve_add_special_tokens
     from utils.datasets.pretokenized import prepare_pretokenized_dataset
 
@@ -125,7 +185,8 @@ def audit_dataset(
     if not len(selected):
         raise ValueError("The selected dataset contains no rows.")
     media = detect_multimodal_dataset(selected)
-    if media.get("is_image") or media.get("is_audio") or media.get("is_video"):
+    has_image, has_audio = media_columns_hold_media(selected, media)
+    if has_image or has_audio or media.get("is_video"):
         raise ValueError(
             "Dataset audit currently supports text datasets only; media needs its training processor."
         )
@@ -141,6 +202,7 @@ def audit_dataset(
         raise ValueError("Formatting removed every row; there is no training data to audit.")
     tokenizer = get_training_chat_template(formatting_tokenizer, config["model_name"], final_format)
     pretokenized = final_format == "pretokenized"
+    retained_tokens = "input_ids" in prepared.column_names
     template = (
         None
         if final_format in ("raw_text", "pretokenized")
@@ -150,9 +212,9 @@ def audit_dataset(
             else getattr(formatting_tokenizer, "chat_template", None)
         )
     )
-    first_text = None if pretokenized else prepared[0]["text"]
+    first_text = None if retained_tokens else prepared[0]["text"]
     add_special_tokens = (
-        False if pretokenized else resolve_add_special_tokens(tokenizer, first_text)
+        False if retained_tokens else resolve_add_special_tokens(tokenizer, first_text)
     )
     counts = Counter()
     lengths = Counter()
@@ -163,6 +225,8 @@ def audit_dataset(
         if pretokenized:
             full = prepare_pretokenized_dataset(batch, max_seq_length = None)
             kept = prepare_pretokenized_dataset(full, max_seq_length = max_length)
+        elif retained_tokens:
+            full = kept = batch
         else:
             texts = list(batch["text"])
             full = Dataset.from_dict(dict(tokenizer(texts, add_special_tokens = add_special_tokens)))
@@ -182,6 +246,7 @@ def audit_dataset(
             full,
             final_format,
             config.get("train_on_completions", False),
+            retained_tokens = retained_tokens,
         )
         kept_labels, masking = _label_rows(
             tokenizer,
@@ -189,6 +254,7 @@ def audit_dataset(
             kept,
             final_format,
             config.get("train_on_completions", False),
+            retained_tokens = retained_tokens,
         )
         for offset, (ids, retained, before, after) in enumerate(
             zip(full["input_ids"], kept["input_ids"], full_labels, kept_labels)
@@ -222,6 +288,13 @@ def audit_dataset(
             [
                 *info.get("warnings", []),
                 *([info["dropped_rows_warning"]] if info.get("dropped_rows_warning") else []),
+                *(
+                    [
+                        "Existing input_ids take precedence over formatted text; training leaves them untruncated on this format."
+                    ]
+                    if retained_tokens and not pretokenized
+                    else []
+                ),
                 *masking.get("notes", []),
             ]
         )
@@ -235,6 +308,10 @@ def audit_dataset(
         "model": config["model_name"],
         "tokenizer_source": config.get("tokenizer_source") or config["model_name"],
         "format": final_format,
+        "tokenization": {
+            "source": "input_ids" if retained_tokens else "text",
+            "context_limit_applied": pretokenized or not retained_tokens,
+        },
         "settings": {
             "max_seq_length": max_length,
             "packing": False,
@@ -320,7 +397,6 @@ def _main():
             # A tokenizer-only folder has no model architecture for sidecar config probes.
             if not model_path.is_dir() or (model_path / "config.json").is_file():
                 activate_transformers_for_subprocess(config["model_name"], config.get("hf_token"))
-            from core.training.token_preview_worker import _load_tokenizer
             from utils.models.unsloth_mirror import unsloth_public_mirror
             from datasets import disable_progress_bars
 
@@ -329,7 +405,7 @@ def _main():
                 unsloth_public_mirror(config["model_name"], config.get("load_in_4bit", True))
                 or config["model_name"]
             )
-            tokenizer = _load_tokenizer(config)
+            tokenizer = _load_training_tokenizer(config)
             dataset = load_audit_dataset(config, full = request["full"])
             result = audit_dataset(
                 dataset,
