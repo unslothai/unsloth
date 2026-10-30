@@ -4895,6 +4895,8 @@ export const ja = {
       weight: "重み",
       bundled: "同梱",
       user: "自分の報酬",
+      kindRule: "ルール",
+      kindPython: "Python",
       invalid: "無効",
       tryTitle: "試す",
       tryCompletion: "サンプル回答",
@@ -4941,6 +4943,7 @@ export const ja = {
     prompt: {
       title: "プロンプト形式",
       description: "モデルに書かせる内容",
+      presetHint: "各プロンプトの前に送信されます。報酬はこのプロンプトが求めるタグを読むので、両者を揃えてください。",
       presetLabel: "システムプロンプトのプリセット",
       presets: {
         notebook: "推論 + 回答タグ",
