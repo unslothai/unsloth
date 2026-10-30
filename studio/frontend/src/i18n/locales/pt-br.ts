@@ -4981,6 +4981,8 @@ export const ptBR = {
       weight: "Peso",
       bundled: "Incluída",
       user: "Sua",
+      kindRule: "Regra",
+      kindPython: "Python",
       invalid: "Inválida",
       tryTitle: "Experimente",
       tryCompletion: "Resposta de exemplo",
@@ -5027,6 +5029,7 @@ export const ptBR = {
     prompt: {
       title: "Formato do prompt",
       description: "O que o modelo deve escrever",
+      presetHint: "Enviado antes de cada prompt. Suas recompensas leem as tags que ele pede, então mantenha os dois alinhados.",
       presetLabel: "Predefinição do prompt de sistema",
       presets: {
         notebook: "Tags de raciocínio + resposta",
