@@ -92,17 +92,58 @@ def test_an_unsloth_zoo_without_the_check_keeps_auto(monkeypatch):
     assert u._flex_decoding_unavailable() is False
 
 
+def _select_torch_2_9(options):
+    # torch 2.9 lowering: no BACKEND; flex_decoding unless FORCE_USE_FLEX_ATTENTION.
+    return "main" if options.get("FORCE_USE_FLEX_ATTENTION", False) else "decode"
+
+
+def _select_torch_2_12(options):
+    # torch 2.10 - 2.12: BACKEND plus the legacy knob is rejected; AUTO picks flex_decoding unless forced.
+    if "BACKEND" in options and options.get("FORCE_USE_FLEX_ATTENTION", False):
+        raise ValueError("BACKEND cannot be combined with legacy FORCE_USE_FLEX_ATTENTION")
+    backend = options.get("BACKEND", "AUTO")
+    if backend == "TRITON_DECODE" or (
+        backend == "AUTO" and not options.get("FORCE_USE_FLEX_ATTENTION", False)
+    ):
+        return "decode"
+    return "main"
+
+
+@pytest.mark.parametrize("select", [_select_torch_2_9, _select_torch_2_12])
 @pytest.mark.parametrize("needs_backward", [False, True])
-def test_an_explicit_auto_backend_takes_the_main_kernel_too(monkeypatch, needs_backward):
-    # torch refuses BACKEND together with FORCE_USE_FLEX_ATTENTION, so AUTO becomes TRITON.
+def test_an_explicit_auto_backend_takes_the_main_kernel_too(monkeypatch, needs_backward, select):
+    # BACKEND="TRITON" would not stop flex_decoding on torch 2.9, so AUTO is dropped for the legacy knob.
     opts = _wrapped_call(monkeypatch, True, 1, needs_backward, kernel_options = {"BACKEND": "AUTO"})
-    assert opts == {"BACKEND": "TRITON"}
+    assert opts == {"FORCE_USE_FLEX_ATTENTION": True} and select(opts) == "main"
     opts = _wrapped_call(monkeypatch, False, 1, needs_backward, kernel_options = {"BACKEND": "AUTO"})
-    assert opts == ({"BACKEND": "TRITON"} if needs_backward else {"BACKEND": "AUTO"})
+    if needs_backward:
+        assert opts == {"FORCE_USE_FLEX_ATTENTION": True} and select(opts) == "main"
+    else:
+        assert opts == {"BACKEND": "AUTO"}
     opts = _wrapped_call(
         monkeypatch, True, 1, kernel_options = {"BACKEND": "AUTO", "FORCE_USE_FLEX_ATTENTION": False}
     )
     assert opts == {"BACKEND": "AUTO", "FORCE_USE_FLEX_ATTENTION": False}
+
+
+@pytest.mark.parametrize("needs_backward", [False, True])
+@pytest.mark.parametrize("backend", ["TRITON_DECODE", "FLASH", "TRITON"])
+def test_a_named_backend_in_any_mapping_is_left_alone(monkeypatch, needs_backward, backend):
+    # torch reads kernel_options through dict(); a read-only mapping must not hide its BACKEND.
+    from types import MappingProxyType
+    opts = _wrapped_call(
+        monkeypatch, True, 1, needs_backward, kernel_options = MappingProxyType({"BACKEND": backend})
+    )
+    assert opts == {"BACKEND": backend}
+
+
+def test_an_auto_backend_in_a_read_only_mapping_takes_the_main_kernel(monkeypatch):
+    from types import MappingProxyType
+
+    caller = MappingProxyType({"BACKEND": "AUTO", "PRESCALE_QK": True})
+    opts = _wrapped_call(monkeypatch, True, 1, kernel_options = caller)
+    assert opts == {"FORCE_USE_FLEX_ATTENTION": True, "PRESCALE_QK": True}
+    assert dict(caller) == {"BACKEND": "AUTO", "PRESCALE_QK": True}
 
 
 @pytest.mark.parametrize(
