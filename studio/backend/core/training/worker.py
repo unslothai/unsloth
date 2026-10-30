@@ -2112,6 +2112,42 @@ def _rebind_in_already_imported_modules(*, attr_name: str, old_obj: Any, new_obj
 _TVM_FFI_BROKEN_VERSIONS = ("0.1.10", "0.1.11")
 
 
+def _install_metadata_scan_cache() -> Any:
+    """Share one importlib.metadata.packages_distributions() scan between transformers and TRL.
+
+    Both run it at import, about 0.8 s each on Colab. unsloth/__init__.py does the same for its own
+    import, but this worker imports transformers well before unsloth. The helper is loaded by path:
+    importing it through the package would run unsloth's whole init. Returns the token for
+    uninstall, or None when the helper is missing (an older unsloth) or fails to load.
+    """
+    try:
+        spec = importlib.util.find_spec("unsloth")
+        for root in list(getattr(spec, "submodule_search_locations", None) or ()):
+            path = os.path.join(root, "_import_metadata_cache.py")
+            if not os.path.isfile(path):
+                continue
+            helper_spec = importlib.util.spec_from_file_location(
+                "_unsloth_studio_import_metadata_cache", path
+            )
+            helper = importlib.util.module_from_spec(helper_spec)
+            helper_spec.loader.exec_module(helper)
+            token = helper.install()
+            return None if token is None else (helper, token)
+    except Exception:
+        pass
+    return None
+
+
+def _uninstall_metadata_scan_cache(installed: Any) -> None:
+    if installed is None:
+        return
+    helper, token = installed
+    try:
+        helper.uninstall(token)
+    except Exception:
+        pass
+
+
 def _guard_fla_tilelang() -> None:
     """Default FLA_TILELANG to 0 on ROCm torch and on an apache-tvm-ffi that faults on sm_100."""
     try:
@@ -3982,6 +4018,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         "true" if sys.platform in ("win32", "darwin") else "false"
     )
     os.environ["PYTHONWARNINGS"] = "ignore"  # before imports
+    # Until unsloth is imported below; transformers is first imported well before that.
+    metadata_scan_cache = _install_metadata_scan_cache()
 
     from utils.security.hub_data_files import install as guard_hub_data_files
     from utils.security.dataset_media import allow_dataset_repos, install as guard_dataset_media
@@ -4659,6 +4697,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             }
         )
         return
+    finally:
+        _uninstall_metadata_scan_cache(metadata_scan_cache)
 
     if config.get("offload_layers"):
         from utils.models.diffusion_lm import diffusion_lm_profile_for_model
