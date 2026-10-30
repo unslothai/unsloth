@@ -3695,7 +3695,8 @@ def test_configured_cache_reads_stay_silent():
 
 
 def test_credential_paths_outrank_the_allowlist():
-    """Credential paths outrank the allowlist: /etc is read-silent, but /etc/shadow is not."""
+    """The allowlist must never turn a credential read silent: /etc is read-silent, /etc/shadow is
+    not."""
     from core.inference import tool_path_approval as path_gate
     for path in (
         "/etc/shadow",

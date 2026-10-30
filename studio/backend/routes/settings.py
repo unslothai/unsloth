@@ -1305,7 +1305,9 @@ def _model_memory_response() -> ModelMemoryResponse:
 
 
 def _vram_budget_reload_required(fraction: float) -> bool:
-    """True if a running child launched with a different fraction; same-value re-saves must not nag."""
+    """True when a child is running that was sized against a different budget. Compares against the fraction the
+    child actually launched with, so re-saving the same value does not nag for a reload. Exact equality is
+    fine: both sides come from the same clamp."""
     try:
         from routes.inference import get_llama_cpp_backend
 
@@ -3145,7 +3147,9 @@ def _local_gguf_backend_error(model: str) -> str | None:
 
 
 def _hf_gguf_backend_error(model: str, hf_token: Optional[str]) -> str | None:
-    """409 when no .gguf exists for an HF repo, else embedding saves fail at first index; force skips it."""
+    """409 detail when the llama-server backend would find no .gguf for an HF repo: neither the derived
+    companion repo nor the repo itself has one, so saves that verify as embedding models would fail at
+    first index. ``force`` skips this like HF verification."""
     from pathlib import Path
 
     if Path(model).expanduser().exists():

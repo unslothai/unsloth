@@ -1088,8 +1088,9 @@ def write_startup_marker() -> None:
         import contextlib
         compiled_cache_lock = lambda **kwargs: contextlib.nullcontext()
         LOCK_BUSY, LOCK_HELD = "busy", "held"
-    # Wait out a mid-rmtree holder; publish anyway on timeout, since a missing marker hides the
-    # backend.
+    # A longer budget than a clear takes: publishing behind a holder that is mid-rmtree is the case worth
+    # waiting out. Publishing anyway if the wait runs out is still right, because a marker that never appears
+    # makes this backend invisible.
     with compiled_cache_lock(timeout = 30.0) as lock_state:
         if lock_state == LOCK_HELD:
             _prune_dead_pid_records()

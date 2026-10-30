@@ -512,8 +512,10 @@ _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS = ("image_embedder", "context_embedder_2")
 # Linear over a BATCH-sized input, so M = batch = 1 for a default training run: the same _int_mm floor, reached
 # whatever the audio stream does.
 _LTX2_INT8_EXCLUDES = ("audio", "av_cross_attn", "adaln")
-# Wan untiled decode peak is per latent pixel plus an RGB output term that grows with frames; the
-# decoder runs one latent frame at a time.
+# Untiled decode peaks (video_vae_untiled), measured fp16 on a B200. Wan: per latent pixel (h x w), frame count does not
+# enter (the causal cache decodes one latent frame at a time), plus the (spatial, temporal) RGB output Wan's decode
+# holds about twice (per-frame torch.cat, then clamp); 1021 frames at 1280x704 is 5.2 GiB per fp16 copy. A14B and
+# Wan2.1 share the Wan2.1 VAE (8x spatial), measured <= 0.58 MiB per latent pixel at 480p / 720p.
 _WAN21_VAE_UNTILED = UntiledVae(bytes_per_latent_pixel = 0.6 * 2**20, output_scale = (8, 4))
 # LTX-2 / 2.3 holds every frame: peak per output frame x latent pixel, 0.102-0.105 MiB measured bf16 (B200). LTX-2.5
 # has the same conv decoder layout (vae/ of the Diffusers pack); unmeasured, priced as 2.3.

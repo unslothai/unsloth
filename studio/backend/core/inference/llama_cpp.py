@@ -495,7 +495,9 @@ from utils.first_token_timeout import (
     start_first_token_wait,
 )
 
-# Import from leaf modules, not utils.models: its __init__ pulls in model_config and PyYAML.
+# The leaf module, not utils.models: importing anything from that package runs its __init__,
+# which pulls in model_config and therefore PyYAML. This is the chat backend, imported wherever
+# Unsloth's Python is, so it must not make the whole models package a hard import dependency.
 from utils import gguf_archs as _gguf_archs
 from utils import gguf_names as _gguf_names
 from utils.gguf_archs import (
@@ -1436,7 +1438,9 @@ def _is_blank_fence(matched: str, depth: int = 0) -> bool:
 
 
 def _first_real_artifact(text: str):
-    """First non-skeleton _HAS_ANSWER_ARTIFACT match; a skeleton before a real page does not hide it."""
+    """First _HAS_ANSWER_ARTIFACT match with something in it.
+
+    Every match is inspected, so a skeleton followed by a real page counts."""
     for m in _HAS_ANSWER_ARTIFACT.finditer(text):
         if _is_empty_markup_skeleton(m.group(0)):
             continue
@@ -3001,7 +3005,8 @@ def _extract_model_size_b(model_id: str):
     return extract_model_size_b(model_id)
 
 
-# Weakest to strongest; keep in sync with the frontend REASONING_EFFORT_SCALE constant.
+# Ordered weakest -> strongest. Must stay in sync with REASONING_EFFORT_SCALE in
+# studio/frontend/src/features/chat/provider-capabilities.ts.
 _REASONING_EFFORT_SCALE = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 # Matches Qwen3.8 but not future names such as Qwen3.80.
@@ -9523,8 +9528,9 @@ class LlamaCppBackend:
         tensor_parallel: bool,
         pin_owns_devices: bool = False,
     ) -> Optional[List[float]]:
-        """Discrete-first split for a full-offload mixed Vulkan pin; None when inputs are unpriced
-        or owned."""
+        """The discrete-first split for a full-offload mixed Vulkan pin, or None to
+        leave llama.cpp's own split (the pre-existing behaviour) wherever its inputs
+        cannot be priced or someone else owns the placement."""
         if (
             not shared_gpu_ids
             or spill_inputs is None
@@ -17365,8 +17371,9 @@ class LlamaCppBackend:
         return int((activations + outputs + recurrent) * self._COMPUTE_BUFFER_SAFETY + swa_mask)
 
     def _effective_sliding_window(self) -> int:
-        """Sliding window only when some layer slides, else 0; an unpatterned window that covers the
-        whole context bounds nothing."""
+        """The sliding window when some layer really slides, else 0. Phi-4-mini
+        declares a 262144 window over a 131072 context and no pattern, which bounds
+        nothing."""
         window = getattr(self, "_sliding_window", None) or 0
         if window <= 0:
             return 0
@@ -29819,9 +29826,10 @@ class LlamaCppBackend:
                         _offload_msg += _pageable_note
                     # First notice wins, so amend whatever is already recorded.
                     self._amend_load_warning(_pageable_note)
-                    # Recorded state and snapshot must describe the argv that launches: else the
-                    # reload comparator judges this child against a mode it no longer runs; the
-                    # arch-crash retry restores the snapshot over cmd.
+                    # The recorded state has to describe the argv that launches, or the
+                    # reload comparator judges this child against a mode it no longer
+                    # runs. The snapshot too: the arch-crash retry restores it over
+                    # `cmd`, which now carries the override.
                     self._record_memory_state(cmd, env)
                     _mem_policy_for_cmd = _snapshot_policy_for_cmd()
                 self._record_load_warning(_offload_msg)
@@ -29934,10 +29942,13 @@ class LlamaCppBackend:
                         self._child_gpu_physical_ids = _child_gpu_physical_ids
 
                         self._stdout_lines = []
-                        # Tees llama-server output to a dedicated log under the studio home so a
-                        # post-mortem keeps the full trail beyond the last 50 lines; label (MTP
-                        # fallback) and the attempt index (--fit off retry) keep a same-second
-                        # respawn from truncating the crash log.
+                        # Tee llama-server output to a dedicated log file so a
+                        # post-mortem has the full trail even when the parent only
+                        # kept the last 50 lines. Path is under the studio home.
+                        # ``label`` (MTP fallback) and the attempt index (--fit
+                        # off retry) keep a respawn within the same epoch second
+                        # from truncating the crash log a retry warning just
+                        # pointed the user at.
                         self._llama_log_fh = None
                         try:
                             log_dir = _swa_cache_path().parent / "logs" / "llama-server"
@@ -31740,9 +31751,11 @@ class LlamaCppBackend:
                     if healthy:
                         self._speculative_type = "default"
                         _mtp_active_for_launched_server = False
-                        # The record stores extra_args as what launched, but this server launched
-                        # without the spec group: keep the MTP list only as requested state, so an
-                        # inheriting Apply cannot repeat the crash.
+                        # The record below stores extra_args as what LAUNCHED, but this
+                        # server launched without the spec group. Leaving the MTP list
+                        # there would have the next inheriting Apply pick it back up and
+                        # repeat the crash. Keep it as the requested state only, the way
+                        # the runtime-crash replay does.
                         if _fb_stripped_extras is not None:
                             _pv_suppressed_spec_extra_args = (
                                 _pv_suppressed_spec_extra_args
