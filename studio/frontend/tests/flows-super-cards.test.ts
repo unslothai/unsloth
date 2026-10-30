@@ -19,6 +19,7 @@ const { edgeHandles } = await import(
 );
 const {
   applySuperCards,
+  boxCovers,
   foldLayout,
   multiSelectKeys,
   readSuperCards,
@@ -127,6 +128,35 @@ test("combining two or more selected blocks makes one closed card and selects it
   select("prompt", "raw");
   assert.equal(combineSelection(), "sc2");
   assert.equal(cards()[1].title, "Super card 2");
+});
+
+test("a closed card selected with more blocks is absorbed: cards stay one level deep", () => {
+  useDocStore.getState().load(comic());
+  select("tpl", "img");
+  combineSelection();
+  select("super:sc1");
+  assert.equal(combineSelection(), null, "a card alone is not a new card");
+  select("super:sc1", "view");
+  assert.equal(combineSelection(), "sc2");
+  assert.deepEqual(cards(), [
+    { id: "sc2", title: "Comic panel", members: ["tpl", "img", "view"] },
+  ]);
+});
+
+test("a selection box drawn inside a group leaves the group; one around it takes it", () => {
+  const group = { x: 100, y: 100, width: 400, height: 300 };
+  // Pane at translate(50, 20), zoom 0.5: flow 100 is screen 100.
+  assert.equal(boxCovers({ x: 90, y: 60, width: 220, height: 170 }, [50, 20, 0.5], group), true);
+  assert.equal(boxCovers({ x: 120, y: 90, width: 100, height: 100 }, [50, 20, 0.5], group), false);
+});
+
+test("Cmd/Ctrl drag draws a selection box, and a closed card deletes with its blocks", () => {
+  const src = readFileSync(new URL("../src/features/flows/editor/canvas.tsx", import.meta.url), "utf8");
+  assert.match(src, /selectionKeyCode=\{MULTI_SELECT_KEYS\}/);
+  assert.match(src, /data\.memberIds, \.\.\.data\.folded/);
+  const lib = readFileSync(new URL("../src/features/flows/editor/super-cards.ts", import.meta.url), "utf8");
+  const cardNode = lib.slice(lib.indexOf('type: "flowSuperCard"'), lib.indexOf('dragHandle: ".flow-node-drag"'));
+  assert.doesNotMatch(cardNode, /deletable: false/);
 });
 
 test("a closed card shows the wires that cross into it as ports and hides its group frame", () => {

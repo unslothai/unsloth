@@ -98,14 +98,19 @@ export function superCardTitle(group: {
   return group.kind === "recipe" ? `Recipe: ${group.label}` : group.label;
 }
 
-/** Selected blocks that can go into a new card: real blocks not already in one. */
+/** Selected blocks not already in a card, plus closed cards, which a new card absorbs. */
 export function combinableSelection(
   selected: readonly string[],
   graph: Pick<DocGraph, "nodes">,
   cards: SuperCard[],
 ): string[] {
   const taken = new Set(cards.flatMap((c) => c.members));
-  return selected.filter((id) => graph.nodes[id] && !taken.has(id));
+  const closed = new Set(
+    cards.filter((c) => !c.open).map((c) => SUPER_PREFIX + c.id),
+  );
+  return selected.filter(
+    (id) => (graph.nodes[id] && !taken.has(id)) || closed.has(id),
+  );
 }
 
 /** A whole group (a recipe, a For Each body) takes the group's name; anything else is numbered. */
@@ -133,14 +138,21 @@ export function combineSuperCard(
   id: string,
 ): { editor: Record<string, unknown>; card: SuperCard } | null {
   const cards = readSuperCards(editor, graph);
-  const members = combinableSelection(selected, graph, cards);
-  if (members.length < 2) return null;
+  const picked = combinableSelection(selected, graph, cards);
+  // Cards stay one level deep: a selected card's blocks move into the new one.
+  const absorbed = cards.filter((c) => picked.includes(SUPER_PREFIX + c.id));
+  const members = picked.flatMap(
+    (pick) =>
+      absorbed.find((c) => SUPER_PREFIX + c.id === pick)?.members ?? [pick],
+  );
+  if (picked.length < 2 || members.length < 2) return null;
+  const kept = cards.filter((c) => !absorbed.includes(c));
   const card: SuperCard = {
     id,
-    title: newTitle(graph, members, cards),
+    title: absorbed[0]?.title ?? newTitle(graph, members, kept),
     members,
   };
-  return { editor: writeSuperCards(editor, [...cards, card]), card };
+  return { editor: writeSuperCards(editor, [...kept, card]), card };
 }
 
 export function updateSuperCard(
@@ -364,7 +376,6 @@ export function applySuperCards(
         position: { x: box.x, y: box.y },
         data: data as unknown as RfNode["data"],
         selected: selected.has(SUPER_PREFIX + card.id),
-        deletable: false,
         dragHandle: ".flow-node-drag",
       },
     ];
@@ -509,6 +520,22 @@ export function foldLayout(
   return { request: { ...request, nodes, edges }, unfold };
 }
 
+/** Whether a selection box (screen coords inside the pane) fully covers a flow-space rect. */
+export function boxCovers(
+  box: { x: number; y: number; width: number; height: number },
+  [tx, ty, k]: [number, number, number],
+  rect: { x: number; y: number; width: number; height: number },
+): boolean {
+  const x = (box.x - tx) / k;
+  const y = (box.y - ty) / k;
+  return (
+    rect.x >= x &&
+    rect.y >= y &&
+    rect.x + rect.width <= x + box.width / k &&
+    rect.y + rect.height <= y + box.height / k
+  );
+}
+
 /** Cmd-click on a Mac, Ctrl-click elsewhere (React Flow's own default), plus Shift. */
 export function multiSelectKeys(platform: string): string[] {
   return isApplePlatform(platform) ? ["Meta", "Shift"] : ["Control", "Shift"];
@@ -519,7 +546,10 @@ export function isApplePlatform(platform: string): boolean {
 }
 
 /** A Mac turns Ctrl-click into a right-click, so React Flow never sees it; add or drop the card here. */
-export function toggledSelection(selected: readonly string[], id: string): string[] {
+export function toggledSelection(
+  selected: readonly string[],
+  id: string,
+): string[] {
   return selected.includes(id)
     ? selected.filter((other) => other !== id)
     : [...selected, id];

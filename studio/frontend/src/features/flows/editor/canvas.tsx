@@ -14,9 +14,11 @@ import {
   MiniMap,
   type NodeChange,
   type OnConnectStartParams,
+  type ReactFlowState,
   ReactFlow,
   SelectionMode,
   useReactFlow,
+  useStoreApi,
 } from "@xyflow/react";
 import {
   type DragEvent,
@@ -55,6 +57,8 @@ import {
   isApplePlatform,
   multiSelectKeys,
   SUPER_PREFIX,
+  type SuperCardData,
+  boxCovers,
   superCardDragMembers,
   toggledSelection,
 } from "./super-cards";
@@ -79,6 +83,20 @@ const PLATFORM = typeof navigator === "undefined" ? "" : navigator.platform;
 const MULTI_SELECT_KEYS = multiSelectKeys(PLATFORM);
 const APPLE = isApplePlatform(PLATFORM);
 const FIT_VIEW_OPTIONS = { padding: 0.2, maxZoom: 1.1 };
+
+/** A selection box drawn inside a group touches it; only a box around the whole group takes it. */
+function boxSkips(state: ReactFlowState<RfNode, RfEdge>, id: string): boolean {
+  if (!id.startsWith(GROUP_PREFIX)) return false;
+  const { userSelectionActive, userSelectionRect, transform, nodeLookup } =
+    state;
+  const node = nodeLookup.get(id);
+  if (!userSelectionActive || !userSelectionRect || !node) return false;
+  return !boxCovers(userSelectionRect, transform, {
+    ...node.internals.positionAbsolute,
+    width: node.measured.width ?? 0,
+    height: node.measured.height ?? 0,
+  });
+}
 
 type Size = { width: number; height: number };
 type Positions = Record<string, { x: number; y: number }>;
@@ -142,6 +160,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
   const selectedEdges = useUiStore((s) => s.selectedEdges);
   const snapToGrid = useUiStore((s) => s.snapToGrid);
   const { screenToFlowPosition } = useReactFlow();
+  const store = useStoreApi<RfNode, RfEdge>();
 
   const deriver = useRef<RfDeriver | null>(null);
   deriver.current ??= new RfDeriver();
@@ -206,6 +225,8 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
             });
           }
         } else if (change.type === "select") {
+          if (change.selected && boxSkips(store.getState(), change.id))
+            continue;
           selection ??= { add: new Set(), remove: new Set() };
           (change.selected ? selection.add : selection.remove).add(change.id);
         }
@@ -390,12 +411,18 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
         groups: [] as string[],
         notes: [] as string[],
       };
-      for (const node of rfNodes) {
-        if (node.id.startsWith(GROUP_PREFIX))
-          ids.groups.push(node.id.slice(GROUP_PREFIX.length));
-        else if (node.id.startsWith(NOTE_PREFIX))
-          ids.notes.push(node.id.slice(NOTE_PREFIX.length));
-        else ids.nodes.push(node.id);
+      // A closed super card goes with its blocks and everything folded into it.
+      const removed = rfNodes.flatMap((node) => {
+        if (!node.id.startsWith(SUPER_PREFIX)) return [node.id];
+        const data = node.data as unknown as SuperCardData;
+        return [...data.memberIds, ...data.folded.map((f) => f.id)];
+      });
+      for (const id of removed) {
+        if (id.startsWith(GROUP_PREFIX))
+          ids.groups.push(id.slice(GROUP_PREFIX.length));
+        else if (id.startsWith(NOTE_PREFIX))
+          ids.notes.push(id.slice(NOTE_PREFIX.length));
+        else ids.nodes.push(id);
       }
       useDocStore.getState().removeElements(ids);
       useUiStore.getState().setSelection([], []);
@@ -503,6 +530,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
         connectionMode={ConnectionMode.Strict}
         deleteKeyCode={readOnly ? null : DELETE_KEYS}
         multiSelectionKeyCode={MULTI_SELECT_KEYS}
+        selectionKeyCode={MULTI_SELECT_KEYS}
         onNodeContextMenu={(event, node) => {
           if (!APPLE || !event.ctrlKey) return;
           event.preventDefault();
