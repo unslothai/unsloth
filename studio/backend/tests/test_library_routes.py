@@ -2504,12 +2504,16 @@ class _Launcher:
     def wait(self, timeout = None):
         if self.status is None:
             import subprocess
-
             raise subprocess.TimeoutExpired("xdg-open", timeout)
         return self.status
 
 
-def _linux_desktop(monkeypatch, tmp_path, answers, xdg_status = 0):
+def _linux_desktop(
+    monkeypatch,
+    tmp_path,
+    answers,
+    xdg_status = 0,
+):
     """A Linux desktop session where each D-Bus client exits with its code in *answers* (None:
     not installed) and xdg-open with *xdg_status* (None: still running). Returns the target file
     and every command run, in order."""
