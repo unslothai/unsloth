@@ -43,3 +43,28 @@ test("a resize's sizes reach `measured`, so output wires follow the new right ed
   // Handles moved with the edge: React Flow is asked to re-read them, live and on release.
   assert.match(handler, /requestAnimationFrame\(\(\) => updateNodeInternals\.current\(resized\)\)/);
 });
+
+test("a selected frame stays under unselected cards, so their resize handles stay reachable", () => {
+  const d = doc([], []);
+  d.groups = [frame("outer", [0, 0, 700, 600]), frame("mid", [50, 50, 500, 400]), frame("inner", [100, 100, 300, 200])];
+  useDocStore.getState().load(d);
+  const nodes = new RfDeriver().nodes(useDocStore.getState().graph, new Set(["group:inner"]), null);
+  const z = (id: string) => nodes.find((n) => n.id === `group:${id}`)?.zIndex ?? 0;
+  assert.ok(z("outer") < z("mid") && z("mid") < z("inner"), "nesting order kept");
+  // React Flow's elevateNodesOnSelect adds SELECTED_NODE_Z (1000); a card sits at 0.
+  assert.ok(z("inner") + 1000 < 0);
+});
+
+test("a frame's body lets the pointer through; its header and resize handles take it", () => {
+  const d = doc([], []);
+  d.groups = [frame("g", [0, 0, 400, 300])];
+  useDocStore.getState().load(d);
+  const [g] = new RfDeriver().nodes(useDocStore.getState().graph, new Set(), null);
+  assert.equal((g.style as { pointerEvents?: string }).pointerEvents, "none");
+  assert.equal((g.style as { width?: number }).width, 400);
+  const src = readSrc("features/flows/editor/frame-nodes.tsx");
+  const group = src.slice(src.indexOf("function GroupFrameImpl"), src.indexOf("function NoteFrameImpl"));
+  assert.match(group, /className="flow-group-drag pointer-events-auto /);
+  assert.match(group, /lineClassName=\{`\$\{RESIZER\.lineClassName\} pointer-events-auto`\}/);
+  assert.match(group, /handleClassName=\{`\$\{RESIZER\.handleClassName\} pointer-events-auto`\}/);
+});

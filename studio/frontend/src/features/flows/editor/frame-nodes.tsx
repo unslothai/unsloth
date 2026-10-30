@@ -93,6 +93,8 @@ function GroupFrameImpl({ id, data, selected }: NodeProps<RfNode>) {
         minWidth={200}
         minHeight={120}
         {...RESIZER}
+        lineClassName={`${RESIZER.lineClassName} pointer-events-auto`}
+        handleClassName={`${RESIZER.handleClassName} pointer-events-auto`}
         onResizeEnd={(_, p) =>
           resizeGroup({
             ...group,
@@ -101,7 +103,7 @@ function GroupFrameImpl({ id, data, selected }: NodeProps<RfNode>) {
         }
       />
       <div
-        className="flow-group-drag flex cursor-grab items-center gap-2 border-b px-3 py-2 active:cursor-grabbing"
+        className="flow-group-drag pointer-events-auto flex cursor-grab items-center gap-2 border-b px-3 py-2 active:cursor-grabbing"
         style={{ borderColor: GROUP_EDGE }}
         onDoubleClick={() => setEditing(true)}
       >

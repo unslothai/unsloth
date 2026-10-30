@@ -63,7 +63,8 @@ export function groupDepths(graph: DocGraph): Map<string, number> {
   return depths;
 }
 
-const GROUP_Z = -100;
+// Below a card even when selected: React Flow lifts a selected node by 1000.
+export const GROUP_Z = -2000;
 
 export class RfDeriver {
   private nodeCache = new Map<
@@ -159,7 +160,11 @@ export class RfDeriver {
         position: pos,
         data: { groupId },
         selected: isSelected,
-        style: box ?? { width: group.rect[2], height: group.rect[3] },
+        // Only the header and resize handles take the pointer; the body pans, clicks and box-selects like bare canvas.
+        style: {
+          ...(box ?? { width: group.rect[2], height: group.rect[3] }),
+          pointerEvents: "none",
+        },
         zIndex,
         dragHandle: ".flow-group-drag",
         ...(size ? { measured: size } : {}),
