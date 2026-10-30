@@ -5946,6 +5946,14 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	font-size: calc(0.75rem * var(--ui-font-scale, 1));
 }
 
+/* Flows port colours are 300/400 tints made for a dark canvas; darken them on light. */
+.flows-editor {
+	--flows-port-mix: 68%;
+}
+.dark .flows-editor {
+	--flows-port-mix: 100%;
+}
+
 /* Radix hides the select viewport scrollbar (the viewport is the scroller
    so menu corners stay rounded); restore the app's thin one. The inline
    scrollbar-width on the viewport handles Firefox. */

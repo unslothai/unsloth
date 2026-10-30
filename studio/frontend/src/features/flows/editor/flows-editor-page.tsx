@@ -2,6 +2,15 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import "@xyflow/react/dist/style.css";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyTitle,
+} from "@/components/ui/empty";
+import { Spinner } from "@/components/ui/spinner";
 import { useNavigate } from "@tanstack/react-router";
 import { ReactFlowProvider } from "@xyflow/react";
 import { useReactFlow } from "@xyflow/react";
@@ -73,7 +82,7 @@ function EditorBody({
 
   return (
     <div
-      className="flows-editor dark flex h-full min-h-0 w-full flex-col bg-zinc-950 text-zinc-100"
+      className="flows-editor flex h-full min-h-0 w-full flex-col bg-background text-foreground"
       data-testid="flows-editor"
     >
       <Toolbar
@@ -96,10 +105,12 @@ function EditorBody({
         }
       />
       {readOnly && (
-        <div className="border-b border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-[12px] text-amber-200">
-          This flow uses blocks this version of Unsloth Studio does not know, so
-          it opens read-only. Update Studio to edit or run it.
-        </div>
+        <Alert className="rounded-none border-x-0 border-t-0 py-2">
+          <AlertDescription className="text-xs text-amber-700 dark:text-amber-300">
+            This flow uses blocks this version of Unsloth Studio does not know,
+            so it opens read-only. Update Studio to edit or run it.
+          </AlertDescription>
+        </Alert>
       )}
       {!readOnly && <CapabilityBanner flowId={flowId} />}
       <div className="flex min-h-0 flex-1">
@@ -108,13 +119,15 @@ function EditorBody({
           <div className="relative min-h-0 flex-1">
             <FlowCanvas readOnly={readOnly} />
             {!drawerOpen && runStatus && (
-              <button
+              <Button
                 type="button"
+                variant="outline"
+                size="xs"
                 onClick={() => useUiStore.getState().setDrawer(true, "run")}
-                className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border border-white/10 bg-zinc-900/90 px-3 py-1 text-[12px] capitalize text-zinc-300 shadow-lg hover:bg-zinc-800"
+                className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full capitalize shadow-sm"
               >
                 Run: {runStatus}
-              </button>
+              </Button>
             )}
           </div>
           <RunDrawer />
@@ -168,19 +181,22 @@ export function FlowsEditorPage({ flowId }: { flowId: string }): ReactElement {
 
   if (state.status === "loading") {
     return (
-      <div className="flex h-full flex-1 items-center justify-center bg-zinc-950 text-sm text-zinc-500">
-        Opening flow…
+      <div className="flex h-full flex-1 items-center justify-center gap-2 bg-background text-sm text-muted-foreground">
+        <Spinner /> Opening flow…
       </div>
     );
   }
   if (state.status === "error") {
     return (
-      <div className="flex h-full flex-1 flex-col items-center justify-center gap-2 bg-zinc-950 text-sm text-zinc-400">
-        <p>{state.message}</p>
-        <a href="/flows" className="text-sky-400 hover:underline">
-          Back to flows
-        </a>
-      </div>
+      <Empty className="h-full bg-background">
+        <EmptyHeader>
+          <EmptyTitle>Could not open the flow</EmptyTitle>
+          <EmptyDescription>{state.message}</EmptyDescription>
+        </EmptyHeader>
+        <Button variant="outline" asChild={true}>
+          <a href="/flows">Back to flows</a>
+        </Button>
+      </Empty>
     );
   }
   return (

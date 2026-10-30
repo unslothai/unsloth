@@ -136,7 +136,8 @@ export type ParamKind =
   | "story"
   | "world"
   | "schema"
-  | "lora_list";
+  | "lora_list"
+  | "reward_list";
 
 export interface ParamSpec {
   id: string;
@@ -153,6 +154,13 @@ export interface ParamSpec {
   options_path?: string;
   bindable?: boolean;
   advanced?: boolean;
+  /** Shown only while each named param holds one of these values. */
+  show_when?: Record<string, string[]>;
+  option_labels?: Record<string, string>;
+  /** Heading the param sits under inside Advanced. */
+  group?: string;
+  /** Shown on the label's info button. */
+  help?: string;
 }
 
 export interface PortSpec {
