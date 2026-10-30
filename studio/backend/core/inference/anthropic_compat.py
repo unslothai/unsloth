@@ -34,6 +34,8 @@ def anthropic_tool_use_id(upstream_id = None, prefix = "toolu_") -> str:
 
 
 _WEB_SEARCH_HIT = re.compile(r"^Title: (.*)\nURL: (\S+)", re.MULTILINE)
+# Claude Code's billing line varies per request and would break prefix caching.
+_BILLING_LINE = re.compile(r"\Ax-anthropic-billing-header:[^\n]*(?:\n|\Z)")
 
 
 def web_search_tool_result_content(
@@ -172,7 +174,8 @@ def anthropic_messages_to_openai(
 
     if system:
         if isinstance(system, str):
-            result.append({"role": "system", "content": system})
+            if system := _BILLING_LINE.sub("", system, count = 1):
+                result.append({"role": "system", "content": system})
         elif isinstance(system, list):
             parts = []
             for block in system:
@@ -180,6 +183,11 @@ def anthropic_messages_to_openai(
                     parts.append(block["text"])
                 elif isinstance(block, str):
                     parts.append(block)
+            parts = [
+                kept
+                for part in parts
+                if (kept := _BILLING_LINE.sub("", part, count = 1)) or kept == part
+            ]
             if parts:
                 result.append({"role": "system", "content": "\n".join(parts)})
 

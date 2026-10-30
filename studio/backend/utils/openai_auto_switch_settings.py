@@ -550,6 +550,9 @@ def normalize_model_override(
     if _coerce_bool(payload.get("mlx_int8_prefill")):
         entry["mlx_int8_prefill"] = True
 
+    if _coerce_bool(payload.get("mlx_ane_prefill")):
+        entry["mlx_ane_prefill"] = True
+
     for key in ("mlx_ple_offload", "mlx_expert_offload"):
         value = payload.get(key)
         if value == "off" or (
@@ -702,6 +705,7 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         ("disable_vision", "disable_vision"),
         ("chat_template_override", "chat_template_override"),
         ("mlx_int8_prefill", "mlx_int8_prefill"),
+        ("mlx_ane_prefill", "mlx_ane_prefill"),
         ("mlx_ple_offload", "mlx_ple_offload"),
         ("mlx_expert_offload", "mlx_expert_offload"),
     ):
