@@ -127,6 +127,9 @@ def _name(node: ast.AST) -> Optional[str]:
     return None
 
 
+_MUTATORS = {"append", "extend", "insert", "remove", "pop", "clear", "add", "discard", "update"}
+
+
 class _Reader(ast.NodeVisitor):
     def __init__(self) -> None:
         self.consts: dict[str, Any] = {}
@@ -165,18 +168,37 @@ class _Reader(ast.NodeVisitor):
             return
         self.generic_visit(node)
 
+    def forget(self, name: str) -> None:
+        self.consts.pop(name, None)
+        self.collections.pop(name, None)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        # Any other rebinding (+=, for, with, del, unpacking) leaves a value we cannot resolve.
+        if isinstance(node.ctx, (ast.Store, ast.Del)):
+            self.forget(node.id)
+
+    def visit_Subscript(self, node: ast.Subscript) -> None:
+        if isinstance(node.ctx, (ast.Store, ast.Del)) and isinstance(node.value, ast.Name):
+            self.forget(node.value.id)
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if node.value is not None:
+            self.visit_Assign(ast.Assign(targets = [node.target], value = node.value))
+        else:
+            self.generic_visit(node)
+
     def visit_Assign(self, node: ast.Assign) -> None:
         # The right-hand side reads the old bindings, as Python evaluates it first.
         value = self.value(node.value)
-        self.generic_visit(node)
+        self.visit(node.value)
+        for target in node.targets:
+            self.visit(target)
         if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
             name = node.targets[0].id
-            # A reassignment replaces the earlier value, so a stale scalar or list cannot outrank it.
-            self.collections.pop(name, None)
             if value is not None:
                 self.consts[name] = value
             else:
-                self.consts.pop(name, None)
                 if isinstance(node.value, (ast.List, ast.Tuple, ast.Set)):
                     literal = _literal(node.value)
                     if literal is not _MISSING:
@@ -185,6 +207,12 @@ class _Reader(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call) -> None:
         fn = _name(node.func)
         owner = _name(node.func.value) if isinstance(node.func, ast.Attribute) else None
+        if (
+            fn in _MUTATORS
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+        ):
+            self.forget(node.func.value.id)
         if fn in _UNSUPPORTED:
             self.unsupported.add(_UNSUPPORTED[fn])
         elif fn and fn.endswith("Trainer") and fn not in _SFT_TRAINERS:

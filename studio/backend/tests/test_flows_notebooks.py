@@ -586,6 +586,12 @@ def test_lora_targets_follow_the_latest_assignment_of_a_constant():
     assert len(read(f"TARGETS = {_SEVEN}", "TARGETS = pick_targets()")) == 1
     # And the reverse: a later default list wins over an earlier string.
     assert read("TARGETS = 'all-linear'", f"TARGETS = {_SEVEN}") == []
+    # Augmented assignment, in-place mutation, item assignment and loops change the list too.
+    assert len(read(f"TARGETS = {_SEVEN}", "TARGETS += ['lm_head']")) == 1
+    assert len(read(f"TARGETS = {_SEVEN}", "TARGETS.append('lm_head')")) == 1
+    assert len(read(f"TARGETS = {_SEVEN}", "TARGETS[0] = 'lm_head'")) == 1
+    assert len(read(f"TARGETS = {_SEVEN}", "for TARGETS in [['q_proj']]: pass")) == 1
+    assert read(f"TARGETS: list = {_SEVEN}") == []
 
 
 def test_dataset_call_reads_the_name_it_reassigns():
@@ -612,6 +618,7 @@ def test_lora_scalars_follow_an_unresolved_reassignment():
     # A computed value replaces the earlier default, so it must not read as that default.
     assert len(read("DROP = 0", "DROP = pick_dropout()", peft_args = ", lora_dropout = DROP")) == 1
     assert len(read("RS = False", "RS = pick_rslora()", peft_args = ", use_rslora = RS")) == 1
+    assert len(read("DROP = 0", "DROP += 0.1", peft_args = ", lora_dropout = DROP")) == 1
     assert read("DROP = 0", peft_args = ", lora_dropout = DROP") == []
 
 
