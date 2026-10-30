@@ -32,6 +32,9 @@ def _from_diffusers(module: str, name: str):
     return getattr(loaded, name)
 
 
+_REAL_DEVICE_COUNT = torch.cuda.device_count
+
+
 @pytest.fixture(autouse = True)
 def _env(monkeypatch):
     monkeypatch.delenv(mg.MULTIGPU_ENV, raising = False)
@@ -41,6 +44,12 @@ def _env(monkeypatch):
     monkeypatch.setattr(mg, "_capability", lambda o: None)
     monkeypatch.setattr(mg, "_rocm_torch", lambda: False)
     yield
+
+
+@pytest.fixture
+def real_cuda(monkeypatch):
+    # The fake count makes a CUDA wheel with no GPU report CUDA available; Dynamo and the diffusers import then touch it.
+    monkeypatch.setattr(torch.cuda, "device_count", _REAL_DEVICE_COUNT)
 
 
 def test_one_card_or_the_kill_switch_means_no_selection(monkeypatch):
@@ -453,7 +462,7 @@ def test_boundary_is_inert_on_the_same_card():
     assert torch.equal(vae(x), vae.lin(x))
 
 
-def test_execution_device_reports_the_primary_of_a_split_pipeline(monkeypatch):
+def test_execution_device_reports_the_primary_of_a_split_pipeline(monkeypatch, real_cuda):
     monkeypatch.setattr(mg, "_SPLIT_EVER_PLACED", True)
     DiffusionPipeline = _from_diffusers("diffusers", "DiffusionPipeline")
 
@@ -482,7 +491,7 @@ def test_execution_device_reports_the_primary_of_a_split_pipeline(monkeypatch):
     assert pipe.device == before
 
 
-def test_execution_device_reports_the_primary_of_a_split_modular_pipeline(monkeypatch):
+def test_execution_device_reports_the_primary_of_a_split_modular_pipeline(monkeypatch, real_cuda):
     """ModularPipeline reports its first component's card (the text encoder, on the secondary): step 0 device mismatch."""
     monkeypatch.setattr(mg, "_SPLIT_EVER_PLACED", True)
     import importlib
@@ -2730,8 +2739,20 @@ def test_invalidate_cfg_replica_drops_a_built_replica():
 
 
 @pytest.mark.parametrize("dynamic", [None, False])
-def test_a_warm_signature_never_compiles_on_a_changed_number(dynamic):
+def test_a_warm_signature_never_compiles_on_a_changed_number(dynamic, monkeypatch, real_cuda):
     # A warm call runs beside the other side, so it must never compile (FX tracing is process-wide up to 2.13).
+    # dynamic=False recompiles per number: past the limit Dynamo runs eager and "no compile" proves nothing.
+    cfg = torch._dynamo.config
+    for limit, fail in (
+        ("recompile_limit", "fail_on_recompile_limit_hit"),
+        ("cache_size_limit", None),
+    ):
+        if hasattr(cfg, limit):
+            monkeypatch.setattr(cfg, limit, 64)
+            if fail and hasattr(cfg, fail):
+                monkeypatch.setattr(cfg, fail, True)
+            break
+    torch._dynamo.reset()
     compiles = []
 
     def backend(gm, _example_inputs):
@@ -2764,6 +2785,7 @@ def test_a_warm_signature_never_compiles_on_a_changed_number(dynamic):
             assert len(compiles) == before, (scale, k, s)
         mg._note_warm(warm, sig)
     torch._dynamo.reset()
+    assert compiles
 
 
 def test_warm_signature_keys_on_storage_offset_and_autocast():
