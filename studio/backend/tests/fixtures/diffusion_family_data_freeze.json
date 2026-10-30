@@ -593,6 +593,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -607,6 +608,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -621,6 +623,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -643,6 +646,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -656,6 +660,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -669,6 +674,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": null,
@@ -687,6 +693,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -701,6 +708,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -715,6 +723,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -749,6 +758,10 @@
      "to_add_out",
      "txt_mlp"
     ],
+    "streamed_weight_only": [
+     "img_mod",
+     "txt_mod"
+    ],
     "zero_row": []
    },
    "mxfp8": {
@@ -762,6 +775,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -775,6 +789,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -858,6 +873,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -872,6 +888,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -886,6 +903,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -920,6 +938,10 @@
      "to_add_out",
      "txt_mlp"
     ],
+    "streamed_weight_only": [
+     "img_mod",
+     "txt_mod"
+    ],
     "zero_row": []
    },
    "mxfp8": {
@@ -933,6 +955,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -946,6 +969,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -964,6 +988,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -978,6 +1003,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -992,6 +1018,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -1014,6 +1041,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -1027,6 +1055,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -1040,6 +1069,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "video",
@@ -1058,6 +1088,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -1072,6 +1103,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -1086,6 +1118,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -1108,6 +1141,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -1121,6 +1155,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -1134,6 +1169,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "video",
@@ -1152,6 +1188,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -1166,6 +1203,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -1180,6 +1218,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -1202,6 +1241,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -1215,6 +1255,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -1228,6 +1269,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -1246,6 +1288,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -1260,6 +1303,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -1274,6 +1318,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -1296,6 +1341,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -1309,6 +1355,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -1322,6 +1369,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -1340,6 +1388,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -1354,6 +1403,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -1368,6 +1418,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -1390,6 +1441,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -1403,6 +1455,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -1416,6 +1469,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -1434,6 +1488,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
@@ -1448,6 +1503,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -1462,6 +1518,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -1484,6 +1541,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -1497,6 +1555,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -1510,6 +1569,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -1534,6 +1594,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
@@ -1554,6 +1615,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -1574,6 +1636,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -1601,6 +1664,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -1620,6 +1684,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -1639,6 +1704,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -1663,6 +1729,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
@@ -1683,6 +1750,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -1703,6 +1771,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -1730,6 +1799,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -1749,6 +1819,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -1768,6 +1839,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -1786,6 +1858,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": "INT8 is barely faster than compiled bf16 on a card that holds bf16 and changes image detail",
@@ -1800,6 +1873,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -1814,6 +1888,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -1836,6 +1911,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -1849,6 +1925,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -1862,6 +1939,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -1880,6 +1958,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -1894,6 +1973,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -1908,6 +1988,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -1930,6 +2011,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -1943,6 +2025,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -1956,6 +2039,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -1974,6 +2058,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -1988,6 +2073,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -2002,6 +2088,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -2031,6 +2118,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -2044,6 +2132,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -2057,6 +2146,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": [
      "image_embedder",
      "context_embedder_2"
@@ -2078,6 +2168,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -2092,6 +2183,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -2106,6 +2198,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -2135,6 +2228,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -2148,6 +2242,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -2161,6 +2256,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": [
      "image_embedder",
      "context_embedder_2"
@@ -2182,6 +2278,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -2196,6 +2293,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -2210,6 +2308,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -2232,6 +2331,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -2245,6 +2345,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -2258,6 +2359,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -2276,6 +2378,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -2290,6 +2393,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -2304,6 +2408,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -2326,6 +2431,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -2339,6 +2445,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -2352,6 +2459,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -2370,6 +2478,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -2384,6 +2493,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -2398,6 +2508,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -2423,6 +2534,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -2436,6 +2548,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -2449,6 +2562,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "video",
@@ -2467,6 +2581,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -2481,6 +2596,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": true,
@@ -2495,6 +2611,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -2522,6 +2639,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -2535,6 +2653,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -2548,6 +2667,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "video",
@@ -2566,6 +2686,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": "INT8 is no faster than compiled bf16 on a card that holds bf16 and changes image detail",
@@ -2580,6 +2701,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -2594,6 +2716,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -2616,6 +2739,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -2629,6 +2753,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -2642,6 +2767,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -2660,6 +2786,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -2674,6 +2801,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -2688,6 +2816,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -2714,6 +2843,7 @@
      "token_refiner"
     ],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -2727,6 +2857,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -2740,6 +2871,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "video",
@@ -2762,6 +2894,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
@@ -2780,6 +2913,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": true,
@@ -2798,6 +2932,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -2832,6 +2967,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -2849,6 +2985,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -2866,6 +3003,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -2884,6 +3022,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -2898,6 +3037,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -2912,6 +3052,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -2946,6 +3087,10 @@
      "to_add_out",
      "txt_mlp"
     ],
+    "streamed_weight_only": [
+     "img_mod",
+     "txt_mod"
+    ],
     "zero_row": []
    },
    "mxfp8": {
@@ -2959,6 +3104,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -2972,6 +3118,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -2990,6 +3137,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -3004,6 +3152,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": true,
@@ -3018,6 +3167,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -3052,6 +3202,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -3065,6 +3216,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -3078,6 +3230,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -3096,6 +3249,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -3110,6 +3264,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -3124,6 +3279,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -3152,6 +3308,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -3165,6 +3322,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -3178,6 +3336,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -3196,6 +3355,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -3210,6 +3370,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -3224,6 +3385,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -3252,6 +3414,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -3265,6 +3428,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -3278,6 +3442,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -3296,6 +3461,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -3310,6 +3476,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -3324,6 +3491,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -3346,6 +3514,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -3359,6 +3528,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -3372,6 +3542,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -3390,6 +3561,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -3404,6 +3576,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -3418,6 +3591,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -3440,6 +3614,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -3453,6 +3628,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -3466,6 +3642,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -3484,6 +3661,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -3498,6 +3676,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -3512,6 +3691,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -3534,6 +3714,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -3547,6 +3728,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -3560,6 +3742,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "video",
@@ -3578,6 +3761,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -3592,6 +3776,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -3606,6 +3791,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -3628,6 +3814,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -3641,6 +3828,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -3654,6 +3842,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "video",
@@ -3672,6 +3861,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -3686,6 +3876,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -3700,6 +3891,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -3722,6 +3914,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -3735,6 +3928,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -3748,6 +3942,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "video",
@@ -3766,6 +3961,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -3780,6 +3976,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -3794,6 +3991,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -3816,6 +4014,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -3829,6 +4028,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -3842,6 +4042,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "video",
@@ -3860,6 +4061,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
@@ -3874,6 +4076,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": true,
@@ -3888,6 +4091,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -3919,6 +4123,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -3932,6 +4137,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -3945,6 +4151,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",

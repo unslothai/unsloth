@@ -1222,6 +1222,13 @@ class DiffusionSampleImage(BaseModel):
     seed: Optional[int] = None
 
 
+class DiffusionModelLoadProgress(BaseModel):
+    done: int = Field(ge = 0)
+    total: int = Field(gt = 0)
+    unit: Literal["tensors", "components", "shards"]
+    label: str
+
+
 class DiffusionTrainingPreparation(BaseModel):
     stage: Optional[str] = None
     done: Optional[int] = None
@@ -1255,6 +1262,8 @@ class DiffusionTrainingStatusResponse(BaseModel):
     num_images: Optional[int] = None
     in_model_load: bool = False
     preparation: Optional[DiffusionTrainingPreparation] = None
+    model_load_stage: Optional[Literal["conditioning", "transformer", "quantizing"]] = None
+    model_load_progress: Optional[DiffusionModelLoadProgress] = None
     download_progress: Optional[DiffusionTrainingDownloadProgress] = None
     output_dir: Optional[str] = None
     lora_path: Optional[str] = None
