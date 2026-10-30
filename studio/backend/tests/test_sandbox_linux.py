@@ -304,6 +304,14 @@ def test_pip_gets_a_writable_prefix_inside_the_workdir(prepared):
     )
 
 
+def test_commands_follow_the_prefix_schemes_scripts_dir(monkeypatch):
+    from core.inference import os_sandbox
+
+    monkeypatch.setattr(os_sandbox, "_PIP_PREFIX_SCRIPTS_DIR", os.path.join("local", "bin"))
+    path = sandbox_linux._path(_plan("/w"), "/w/p").split(os.pathsep)
+    assert path == ["/usr/bin", "/w/p/local/bin", "/w/p/bin"]
+
+
 def _wheel(directory, name, version):
     info = f"{name}-{version}.dist-info"
     files = {

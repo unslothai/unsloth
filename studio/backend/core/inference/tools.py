@@ -9096,11 +9096,17 @@ def _host_access_launch(plan, script: "str | None") -> "tuple[tuple, dict, str]"
             env["PYTHONNOUSERSITE"] = "1"
             # Chat-installed CLIs the approved call names resolve too, but only after every system executable.
             # Copies of just those: a tool probing for a command it lacks never reaches the rest of the folder.
-            requested = _requested_chat_clis(
-                os.path.join(packages, "Scripts" if os.name == "nt" else "bin"),
-                script if script is not None else " ".join(map(str, argv)),
-                os.path.join(private, ".unsloth-chat-bin"),
-            )
+            requested = None
+            # Reversed, so the scheme's own scripts dir wins a name clash, as it does on PATH.
+            for scripts in reversed(os_sandbox.session_script_dirs(packages)):
+                requested = (
+                    _requested_chat_clis(
+                        scripts,
+                        script if script is not None else " ".join(map(str, argv)),
+                        os.path.join(private, ".unsloth-chat-bin"),
+                    )
+                    or requested
+                )
             if requested:
                 env["PATH"] = os.pathsep.join(
                     part for part in (env.get("PATH", ""), requested) if part
