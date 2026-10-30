@@ -4957,6 +4957,8 @@ export const ko = {
       weight: "가중치",
       bundled: "기본 제공",
       user: "내 보상",
+      kindRule: "규칙",
+      kindPython: "Python",
       invalid: "유효하지 않음",
       tryTitle: "직접 해 보기",
       tryCompletion: "예시 답변",
@@ -5003,6 +5005,7 @@ export const ko = {
     prompt: {
       title: "프롬프트 형식",
       description: "모델에게 쓰게 할 내용",
+      presetHint: "모든 프롬프트 앞에 전송됩니다. 보상은 이 프롬프트가 요청하는 태그를 읽으므로 둘을 맞춰 두세요.",
       presetLabel: "시스템 프롬프트 프리셋",
       presets: {
         notebook: "추론 + 답변 태그",

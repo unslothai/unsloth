@@ -5112,6 +5112,8 @@ export const he = {
       weight: "משקל",
       bundled: "מובנה",
       user: "שלך",
+      kindRule: "כלל",
+      kindPython: "Python",
       invalid: "לא תקין",
       tryTitle: "נסה",
       tryCompletion: "השלמה לדוגמה",
@@ -5158,6 +5160,7 @@ export const he = {
     prompt: {
       title: "פורמט ההנחיה",
       description: "מה המודל מתבקש לכתוב",
+      presetHint: "נשלח לפני כל פרומפט. התגמולים שלך קוראים את התגיות שהוא מבקש, אז שמור על התאמה ביניהם.",
       presetLabel: "הגדרה קבועה של הנחיית מערכת",
       presets: {
         notebook: "תגיות נימוק + תשובה",
