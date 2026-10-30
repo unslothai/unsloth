@@ -107,7 +107,10 @@ from core.inference.sd_cpp_server import SdCppServer
 from loggers import get_logger
 from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 from utils.account_context import account_thread, current_account_id
-from utils.subprocess_compat import windows_hidden_subprocess_kwargs
+from utils.subprocess_compat import (
+    windows_hidden_subprocess_kwargs,
+    windows_loader_error_boxes_suppressed,
+)
 
 logger = get_logger(__name__)
 
@@ -440,13 +443,14 @@ def _server_binary_runnable(binary: str) -> bool:
     import subprocess
 
     try:
-        proc = subprocess.run(
-            [binary, "--help"],
-            capture_output = True,
-            timeout = 20,
-            env = runtime_env(binary),
-            **windows_hidden_subprocess_kwargs(),
-        )
+        with windows_loader_error_boxes_suppressed():
+            proc = subprocess.run(
+                [binary, "--help"],
+                capture_output = True,
+                timeout = 20,
+                env = runtime_env(binary),
+                **windows_hidden_subprocess_kwargs(),
+            )
     except OSError:
         return False  # cannot exec at all (wrong arch / no execute bit / missing loader)
     except Exception:  # noqa: BLE001 -- don't block on a flaky probe
@@ -484,16 +488,17 @@ def _sd_cpp_probe_output(binary: str, *args: str) -> Optional[str]:
     import subprocess
 
     try:
-        proc = subprocess.run(
-            [binary, *args],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 20,
-            env = runtime_env(binary),
-            **windows_hidden_subprocess_kwargs(),
-        )
+        with windows_loader_error_boxes_suppressed():
+            proc = subprocess.run(
+                [binary, *args],
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 20,
+                env = runtime_env(binary),
+                **windows_hidden_subprocess_kwargs(),
+            )
     except Exception:  # noqa: BLE001 -- cannot exec / timeout: "cannot tell"
         return None
     if proc.returncode != 0:
