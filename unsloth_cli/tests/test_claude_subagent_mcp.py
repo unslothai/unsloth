@@ -108,6 +108,92 @@ def test_failed_local_run_unblocks_the_parent_until_the_next_success(tmp_path):
     assert not marker.exists()
 
 
+def _child_returning(monkeypatch, tmp_path, payload):
+    _stub_env(monkeypatch, tmp_path)
+
+    class Process:
+        pid = 1234
+        returncode = 0
+
+        def communicate(
+            self,
+            input = None,
+            timeout = None,
+        ):
+            return json.dumps(payload), ""
+
+        def poll(self):
+            return self.returncode
+
+    monkeypatch.setattr(bridge.subprocess, "Popen", lambda *a, **k: Process())
+
+
+def test_denied_shell_command_unblocks_the_parent(monkeypatch, tmp_path):
+    marker = tmp_path / "local-agent-failed"
+    _child_returning(
+        monkeypatch,
+        tmp_path,
+        {
+            "type": "result",
+            "is_error": False,
+            "result": "could not run pytest",
+            "permission_denials": [
+                {"tool_name": "Bash", "tool_use_id": "t1", "tool_input": {"command": "pytest"}},
+                {"tool_name": "Bash", "tool_use_id": "t2", "tool_input": {"command": "pytest"}},
+            ],
+        },
+    )
+    run = bridge._with_fallback(bridge.run_local_agent, str(marker))
+    text = run("run the tests", threading.Event())
+    assert marker.exists()
+    assert text.startswith("could not run pytest")
+    assert text.count("- Bash: pytest") == 1
+    assert "unblocked" in text
+
+    _child_returning(monkeypatch, tmp_path, {"is_error": False, "result": "tests passed"})
+    assert run("run the tests", threading.Event()) == "tests passed"
+    assert not marker.exists()
+
+
+def test_denied_non_shell_tool_is_reported_without_unblocking(monkeypatch, tmp_path):
+    marker = tmp_path / "local-agent-failed"
+    marker.touch()
+    _child_returning(
+        monkeypatch,
+        tmp_path,
+        {
+            "is_error": False,
+            "result": "could not edit",
+            "permission_denials": [
+                {"tool_name": "Edit", "tool_use_id": "t1", "tool_input": {"file_path": "/etc/x"}},
+                "garbage",
+            ],
+        },
+    )
+    text = bridge._with_fallback(bridge.run_local_agent, str(marker))("edit", threading.Event())
+    assert not marker.exists()
+    assert "- Edit: /etc/x" in text
+    assert "unblocked" not in text
+
+
+def test_denials_are_reported_without_auto_route(monkeypatch, tmp_path):
+    _child_returning(
+        monkeypatch,
+        tmp_path,
+        {
+            "is_error": False,
+            "result": "could not run it",
+            "permission_denials": [{"tool_name": "PowerShell", "tool_input": {"command": "make"}}],
+        },
+    )
+    text = bridge.run_local_agent("run make")
+    assert "- PowerShell: make" in text
+    assert "unblocked" not in text
+    for denials in (None, "Bash", [{"tool_input": {"command": "pytest"}}]):
+        output = json.dumps({"is_error": False, "result": "OK", "permission_denials": denials})
+        assert bridge._result_text(output) == "OK"
+
+
 def test_main_wraps_both_tools_only_with_auto_route(monkeypatch, tmp_path):
     captured = {}
     monkeypatch.setattr(bridge, "serve", lambda **kwargs: captured.update(kwargs))
