@@ -804,10 +804,16 @@ def test_local_holdout_streams_only_the_slice_and_checks_the_cap_first(tmp_path,
     csv.write_text("q,a\n" + "".join(f"q{i},a{i}\n" for i in range(20)))
     folder = tmp_path / "recipe"
     folder.mkdir()
-    datasets.Dataset.from_dict({"q": [f"q{i}" for i in range(20)]}).to_parquet(str(folder / "a.parquet"))
+    datasets.Dataset.from_dict({"q": [f"q{i}" for i in range(20)]}).to_parquet(
+        str(folder / "a.parquet")
+    )
     real = datasets.load_dataset
 
-    def streamed_only(*a, streaming = False, **k):
+    def streamed_only(
+        *a,
+        streaming = False,
+        **k,
+    ):
         assert streaming, "a whole local file loaded"
         return real(*a, streaming = True, **k)
 
