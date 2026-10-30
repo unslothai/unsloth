@@ -555,7 +555,7 @@ test("each list header's menu carries only what that list is about, as in ChatGP
   assert.match(menu, /<NonModalDropdownMenu\n\s*side="bottom"\n\s*align="start"/);
   assert.doesNotMatch(menu, /className="unsloth-plus-menu w-/);
   assert.match(menu, /icon=\{PanelLeftIcon\}/);
-  assert.match(APP_SIDEBAR, /value: "project", key: "shell\.organize\.byProject", icon: Folder01Icon/);
+  assert.match(APP_SIDEBAR, /value: "project", key: "shell\.organize\.byProject", icon: ProjectIcon/);
   assert.match(APP_SIDEBAR, /value: "list", key: "shell\.organize\.inOneList", icon: LeftToRightListBulletIcon/);
   assert.doesNotMatch(projects, /setSectionHidden|mode: "create"/);
   assert.match(recents, /\{organizeSubmenu\}[\s\S]*shell\.organize\.sortChatsBy/);

@@ -12,8 +12,9 @@ import json
 import os
 import re
 import sys
+import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from typing import Any, Optional
 
@@ -154,19 +155,78 @@ def _engine() -> Optional[str]:
         return None
 
 
-def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
-    """Persist a PIL image with its recipe embedded; return the gallery record."""
-    image_id = uuid.uuid4().hex
-    meta = {
+def _recipe(meta: dict[str, Any]) -> dict[str, Any]:
+    return {
         # A Connection run never touched the local engine.
         "engine": None if meta.get("model_kind") == "connection" else _engine(),
         "generator": _generator(),
         **meta,
         "schema_version": RECIPE_SCHEMA_VERSION,
     }
+
+
+def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
+    """Persist a PIL image with its recipe embedded; return the gallery record."""
+    image_id = uuid.uuid4().hex
+    meta = _recipe(meta)
     # Encoded before the folder is looked up: a Settings move during the encode would otherwise
     # finish first, and the image land in the folder it left.
-    data = _png_bytes(image, meta)
+    data = _encoded_ahead(image, meta)
+    if data is None:
+        data = _png_bytes(image, meta)
+    return _publish(image_id, meta, data)
+
+
+# Pillow releases the GIL while it filters and deflates, so a batch's PNGs encode side by side.
+_MAX_ENCODE_WORKERS = 8
+_ahead = threading.local()
+
+
+def _encoded_ahead(image: Any, meta: dict[str, Any]) -> Optional[bytes]:
+    """The PNG ``save_many`` already encoded from this image and this exact recipe, else None."""
+    pending = getattr(_ahead, "pending", None)
+    entry = pending.pop(id(image), None) if pending else None
+    if entry is None or entry[0] is not image or list(entry[1].items()) != list(meta.items()):
+        return None
+    return entry[2].result()
+
+
+def save_many(items: Iterable[tuple[Any, dict[str, Any]]]) -> Iterator[dict[str, Any]]:
+    """``save`` each (image, meta) in order, with every PNG encoded concurrently up front.
+
+    Each ``save`` still writes its file and builds its record in turn, so the bytes, the gallery
+    order and what a failure leaves behind are those of a plain loop of ``save``."""
+    items = list(items)
+    cpus = getattr(os, "process_cpu_count", os.cpu_count)() or 1
+    workers = min(len(items), cpus, _MAX_ENCODE_WORKERS)
+    # One image object twice would be loaded by two threads at once.
+    if workers < 2 or len({id(image) for image, _ in items}) < len(items):
+        for image, meta in items:
+            yield save(image, meta)
+        return
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers = workers, thread_name_prefix = "gallery-png") as pool:
+        pending = {}
+        for image, meta in items:
+            recipe = _recipe(meta)
+            pending[id(image)] = (image, recipe, pool.submit(_png_bytes, image, recipe))
+        futures = [entry[2] for entry in pending.values()]
+        _ahead.pending = pending
+        # The gallery sorts by mtime and back-to-back writes can tie (Windows ~15.6 ms tick): keep each strictly newer.
+        _ahead.floor_ns = None
+        try:
+            for image, meta in items:
+                yield save(image, meta)
+        finally:
+            if getattr(_ahead, "pending", None) is pending:
+                _ahead.pending = None
+                _ahead.floor_ns = None
+            for future in futures:
+                future.cancel()
+
+
+def _publish(image_id: str, meta: dict[str, Any], data: bytes) -> dict[str, Any]:
     directory = gallery_dir()
     final_path = directory / f"{image_id}.png"
     # Dotted temp (skipped by the *.png glob) then atomic rename: no truncated PNG in the listing.
@@ -180,7 +240,23 @@ def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
         except OSError:
             pass
         raise
+    if getattr(_ahead, "pending", None) is not None:
+        _keep_after_previous(final_path)
     return _record(image_id, meta, directory = directory)
+
+
+def _keep_after_previous(path: Path) -> None:
+    """In a ``save_many`` batch, move ``path``'s mtime 1 us past the previous image's when it is not already later."""
+    try:
+        stat = path.stat()
+        mtime_ns = stat.st_mtime_ns
+        floor = getattr(_ahead, "floor_ns", None)
+        if floor is not None and mtime_ns <= floor:
+            mtime_ns = floor + 1000
+            os.utime(path, ns = (stat.st_atime_ns, mtime_ns))
+        _ahead.floor_ns = mtime_ns
+    except OSError:
+        pass
 
 
 def _record(

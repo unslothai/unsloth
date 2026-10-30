@@ -26,8 +26,8 @@ pub(crate) use version::{
 use backend::{backend_desktop_auth_status, backend_health};
 #[cfg(test)]
 use managed::{
-    begin_launch_cli_probe, install_launch_cli_probe, install_launch_cli_probe_task,
-    launch_cli_probe_task,
+    begin_launch_cli_probe, install_launch_cli_probe, install_launch_cli_probe_like_setup,
+    install_launch_cli_probe_task, launch_cli_probe_task,
 };
 #[cfg(test)]
 use managed::probe_managed_bin;
@@ -1157,6 +1157,77 @@ exit 1
         assert!(matches!(probe_managed_bin(bin.clone()).await, ManagedProbe::Ready { .. }));
         assert_eq!(fs::read_to_string(&calls).unwrap(), "-h\n");
         assert!(matches!(probe_managed_bin(other.bin.clone()).await, ManagedProbe::Stale { .. }));
+
+        remove_managed_capability_cache();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_launch_probe_on_a_cache_miss_answers_the_capability_probe_too() {
+        use std::fs;
+
+        let _cache_guard = MANAGED_CAPABILITY_CACHE_TEST_LOCK.lock().await;
+        let _cache_home = ManagedCapabilityCacheHome::new("launch-capability");
+        remove_managed_capability_cache();
+        let fake = fake_cli(
+            "launch-capability",
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "$0.calls"
+if [ "$1" = "-h" ]; then exit 0; fi
+if [ "$1" = "studio" ] && [ "$2" = "desktop-capabilities" ] && [ "$3" = "--json" ]; then
+  if [ -f "$0.failonce" ]; then rm -f "$0.failonce"; exit 42; fi
+  printf '{"desktop_protocol_version":1,"desktop_manageability_version":2,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_install_ok":true,"version":"2026.8.4"}'
+  exit 0
+fi
+exit 1
+"#,
+        );
+        let bin = fake.bin.clone();
+        let calls = bin.with_extension("calls");
+        let fail_once = bin.with_extension("failonce");
+        let read_calls = || fs::read_to_string(&calls).unwrap_or_default();
+        let capability_calls = || {
+            read_calls()
+                .matches("studio desktop-capabilities --json\n")
+                .count()
+        };
+        let ready = |probe: ManagedProbe| matches!(probe, ManagedProbe::Ready { .. });
+
+        // Miss at launch: asked before any preflight, which then starts no Python.
+        install_launch_cli_probe_like_setup(bin.clone());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while capability_calls() == 0 && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(capability_calls(), 1, "{}", read_calls());
+        assert!(ready(probe_managed_bin(bin.clone()).await));
+        assert_eq!(read_calls().matches("-h\n").count(), 1, "{}", read_calls());
+        assert_eq!(capability_calls(), 1, "{}", read_calls());
+        fs::write(&calls, "").unwrap();
+        assert!(ready(probe_managed_bin(bin.clone()).await));
+        assert_eq!(read_calls(), "-h\n");
+
+        // Hit at launch: `-h` only.
+        fs::write(&calls, "").unwrap();
+        install_launch_cli_probe_like_setup(bin.clone());
+        assert!(ready(probe_managed_bin(bin.clone()).await));
+        assert_eq!(read_calls(), "-h\n");
+
+        // Tree changed after the launch probe: asked again.
+        remove_managed_capability_cache();
+        fs::write(&calls, "").unwrap();
+        install_launch_cli_probe_like_setup(bin.clone());
+        fs::write(fake.dir.join("uv.lock"), "changed").unwrap();
+        assert!(ready(probe_managed_bin(bin.clone()).await));
+        assert_eq!(capability_calls(), 2, "{}", read_calls());
+
+        // A failed launch capability probe: asked again.
+        remove_managed_capability_cache();
+        fs::write(&calls, "").unwrap();
+        fs::write(&fail_once, "").unwrap();
+        install_launch_cli_probe_like_setup(bin.clone());
+        assert!(ready(probe_managed_bin(bin.clone()).await));
+        assert_eq!(capability_calls(), 2, "{}", read_calls());
 
         remove_managed_capability_cache();
     }

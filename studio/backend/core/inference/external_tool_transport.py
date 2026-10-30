@@ -61,9 +61,11 @@ class OAICompatTransport:
         self._initial_message_count: int | None = None
         self._last_tools: list[dict[str, Any]] | None = None
         # Always, as the local GGUF loop does: preserve_thinking hides earlier turns, never this turn's tool rounds.
-        self.preserves_reasoning = client.provider_type in ("llama_cpp", "vllm") or _is_kimi_k3(
-            client.provider_type, model
-        )
+        self.preserves_reasoning = client.provider_type in (
+            "llama_cpp",
+            "vllm",
+            "minimax",
+        ) or _is_kimi_k3(client.provider_type, model)
 
     def stream(
         self,

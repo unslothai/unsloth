@@ -19,7 +19,6 @@ import {
   Cancel01Icon,
   Delete02Icon,
   Download01Icon,
-  FolderExportIcon,
   LayerIcon,
   PencilEdit02Icon,
   PinIcon,
@@ -28,6 +27,7 @@ import {
   Settings02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
+import { FolderExportIcon } from "@/lib/folder-icons";
 import { type IconSvgElement, HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
 import { useFileProjectInSection } from "../hooks/use-file-project-in-section";

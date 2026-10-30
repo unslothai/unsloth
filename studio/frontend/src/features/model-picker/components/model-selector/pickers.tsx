@@ -132,26 +132,26 @@ import { cn, formatCompact } from "@/lib/utils";
 import type { VramFitStatus } from "@/lib/vram";
 import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
 import {
-  Add01Icon,
-  ArrowUpDownIcon,
   Cancel01Icon,
   DashboardCircleIcon,
   Flag01Icon,
   FlimSlateIcon,
-  Folder02Icon,
   HelpCircleIcon,
-  Image03Icon,
+  ImageIcon,
   InformationCircleIcon,
   PinIcon,
+  PlusSignIcon,
   RemoveCircleIcon,
   Search01Icon,
   Settings02Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
+import { Folder02Icon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { useT } from "@/i18n";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { SortIcon } from "@/lib/sort-icon";
 import { useNavigate } from "@tanstack/react-router";
 import {
   type Dispatch,
@@ -593,7 +593,7 @@ const CAPABILITY_BADGES: {
     title: "Generates images",
     tone: "text-pink-700 dark:text-pink-300",
     Glyph: (props) => (
-      <HugeiconsIcon icon={Image03Icon} strokeWidth={1.8} {...props} />
+      <HugeiconsIcon icon={ImageIcon} strokeWidth={1.8} {...props} />
     ),
   },
   {
@@ -5993,7 +5993,7 @@ export function HubModelPicker({
   const sortTriggerContent = (label: ReactNode) => (
     <span className="flex items-center gap-1">
       <HugeiconsIcon
-        icon={ArrowUpDownIcon}
+        icon={SortIcon}
         strokeWidth={1.75}
         className="size-3.5 shrink-0 text-foreground"
       />
@@ -7668,7 +7668,7 @@ export function HubModelPicker({
                           className="shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                         >
                           <HugeiconsIcon
-                            icon={showFolderInput ? Cancel01Icon : Add01Icon}
+                            icon={showFolderInput ? Cancel01Icon : PlusSignIcon}
                             className="size-3"
                           />
                         </button>
