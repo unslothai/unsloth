@@ -196,3 +196,19 @@ def test_rows_another_writer_added_are_never_missed(rag_conn, monkeypatch):
     monkeypatch.setenv("RAG_VEC_CACHE", "1")
     hits, scanned = _dense(rag_conn, new[0], 3)
     assert scanned and hits[0][0] == "e:0"
+
+
+def test_the_disk_cap_evicts_the_least_recently_used_scope(rag_conn, monkeypatch):
+    monkeypatch.setenv("RAG_VEC_ANN_DISK_MB", "0.001")
+    rows = _vectors(300)
+    _add(rag_conn, "kb", "d", rows)
+    first = _warm(rag_conn, rows[0])
+    store.create_document(rag_conn, scope = "kb2", filename = "f", sha256 = "e", document_id = "e")
+    store.add_chunks(rag_conn, "kb2", "e", [_chunk(i) for i in range(300)], _vectors(300, seed = 4))
+    store.search_dense(rag_conn, "kb2", rows[0], 5)
+    assert vec_cache.drain(60)
+    (only,) = vec_cache._ann.values()
+    assert only.base != first.base and os.path.exists(only.base + ".usearch")
+    assert not os.path.exists(first.base + ".usearch")
+    hits, scanned = _dense(rag_conn, rows[0], 3)
+    assert scanned and hits[0][0] == "d:0"

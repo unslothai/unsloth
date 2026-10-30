@@ -119,7 +119,7 @@ class _AnnEntry:
 
 
 _entries: OrderedDict[tuple, _Entry] = OrderedDict()
-_ann: dict[tuple, _AnnEntry] = {}
+_ann: OrderedDict[tuple, _AnnEntry] = OrderedDict()
 _stale_files: set[str] = set()
 _too_big: dict[tuple, int] = {}
 _bytes = 0
@@ -203,6 +203,8 @@ def search(conn, db_file: str, scope: str, vector, fetch: int):
                     ann = None
                     if _too_big.get(key) != epoch:
                         _schedule(key)
+                else:
+                    _ann.move_to_end(key)
         if entry is not None:
             return _search_entry(np, entry, vector, fetch)
         if ann is not None:
@@ -541,30 +543,51 @@ def _build_ann(np, conn, key: tuple, epoch: tuple) -> None:
 def _publish_ann(key: tuple, entry: _AnnEntry) -> None:
     with _lock:
         _ann[key] = entry
-        keep = {e.base for e in _ann.values()}
+        _ann.move_to_end(key)
     for _, base in _saved_generations(key):
-        if base not in keep:
+        if base != entry.base:
             _stale_files.add(base)
-    _stale_files.update(_over_disk_cap(_ann_dir(key[0]), keep))
+    _stale_files.update(_enforce_disk_cap(_ann_dir(key[0]), key))
+    with _lock:
+        keep = {e.base for e in _ann.values()}
     # Windows refuses to delete a file still mapped by a reader: retried at the next publish.
     for base in list(_stale_files):
         if base not in keep and vec_ann.remove_files(base):
             _stale_files.discard(base)
 
 
-def _over_disk_cap(d: str, keep: set) -> list[str]:
-    """Oldest generations past ``RAG_VEC_ANN_DISK_MB`` (default 4096), e.g. left by a replaced database."""
+def _enforce_disk_cap(d: str, newest: tuple) -> list[str]:
+    """Bases to delete so ``d`` fits ``RAG_VEC_ANN_DISK_MB`` (default 4096): unpublished files oldest first, then
+    least recently used published scopes (evicted from ``_ann``), never ``newest``."""
     try:
         cap = float(os.environ.get("RAG_VEC_ANN_DISK_MB", "4096")) * 2**20
-        files = [os.path.join(d, n) for n in os.listdir(d) if n.endswith(".usearch")]
-        files = sorted(files, key = os.path.getmtime, reverse = True)
+        sizes = {
+            os.path.join(d, n[: -len(".usearch")]): os.path.getsize(os.path.join(d, n))
+            for n in os.listdir(d)
+            if n.endswith(".usearch")
+        }
     except (OSError, ValueError):
         return []
-    total, out = 0, []
-    for f in files:
-        total += os.path.getsize(f)
-        if total > cap and f[: -len(".usearch")] not in keep:
-            out.append(f[: -len(".usearch")])
+    total = sum(sizes.values())
+    out = []
+    with _lock:
+        published = [(k, e.base) for k, e in _ann.items()]
+    for base in sorted(
+        set(sizes) - {b for _, b in published}, key = lambda b: os.path.getmtime(b + ".usearch")
+    ):
+        if total <= cap:
+            return out
+        total -= sizes[base]
+        out.append(base)
+    for k, base in published:
+        if total <= cap:
+            break
+        if k == newest:
+            continue
+        with _lock:
+            _ann.pop(k, None)
+        total -= sizes.get(base, 0)
+        out.append(base)
     return out
 
 
