@@ -73,7 +73,6 @@ def _wan_loop(
 
 @pytest.fixture
 def on_cuda(monkeypatch):
-    # the path is CUDA-only; the fakes run on CPU
     monkeypatch.setattr(cb, "_cuda_latent", lambda latent: True)
 
 
@@ -98,9 +97,7 @@ def test_a_compiled_resident_wan_batches_from_step_two_on_every_render(on_cuda):
     status = cb.cfg_batch_status(pipe)
     assert status["compiled_resident"] and status["render_off"] is None and router.disabled is None
     assert status["batched_steps"] == 15 and status["hits"] == 15 and status["misses"] == 0
-    assert (
-        status["plain_pair_s"] is None and status["batched_pair_s"] is None
-    )  # no timing trial ran
+    assert status["plain_pair_s"] is None and status["batched_pair_s"] is None
 
 
 def test_a_new_prompt_negative_and_seed_keep_the_one_path(on_cuda):
@@ -161,7 +158,7 @@ def test_a_doubled_call_compiling_on_a_follow_up_render_ends_batching_after_it(
     )  # every doubled call "compiles" from now on
     del model.calls[:]
     _wan_loop(model)
-    assert model.calls == [1, 1] + [2] * 5  # the render keeps its one path
+    assert model.calls == [1, 1] + [2] * 5
     cb.end_cfg_batch_render(pipe)
     assert "after its warm-up render" in router.disabled
     del model.calls[:]

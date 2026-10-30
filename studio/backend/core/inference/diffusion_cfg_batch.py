@@ -32,9 +32,7 @@ _PER_SAMPLE_LISTS = ("img_shapes",)
 # (embeddings, mask) pairs a branch pads to its own prompt length: padded to the longer one with masked zeros.
 _PADDED_TEXT = (("encoder_hidden_states", "encoder_hidden_states_mask"),)
 
-# Compiled + resident denoisers batched without a timing trial: a measured per-class win, too small for the 8% trial
-# bar and the 0.25 s compute-bound skip. Wan on an L4: -1.4% per pair (2.1-1.3B bf16 832x480x33, 3.05 -> 3.01 s) and
-# -2.2% (2.2-TI2V-5B int8 1280x704x41, 4.15 -> 4.06 s), one more graph (batch 2) in the first render, none after.
+# Compiled + resident, batched with no trial: measured 1-2% win on an L4, below the trial's 8% bar.
 COMPILED_RESIDENT_CLASSES = frozenset({"WanTransformer3DModel"})
 
 _MEASURED_FRACTION = 0.92
@@ -506,7 +504,6 @@ class CfgBatchRouter:
         self.pair_t0: Optional[float] = None
         self.renders = 0  # completed renders: a doubled-batch compile is warm-up only in a shape's trial render
         self.render_compiled: Optional[str] = None
-        # compiled + resident and on COMPILED_RESIDENT_CLASSES: batched from step 2, no trial (see _untimed)
         self.compiled_resident = False
         self.identity: Optional[str] = (
             None  # the load's verdict-store identity (None: verdicts stay per load)
@@ -695,14 +692,11 @@ class CfgBatchRouter:
         return self._plain(args, kwargs)
 
     def _plain_steps(self) -> int:
-        """Plain steps opening every render of a shape: step 1 records the second call's template; the timed path
-        also prices step 2's pair, the compiled resident path batches from step 2."""
+        """Plain steps per render: step 1 records the template; the timed path also prices step 2."""
         return 1 if self.compiled_resident else _PLAIN_STEPS
 
     def _untimed(self, shape: _Shape, latent: Any) -> None:
-        """Compiled + resident: batch without a trial. A trial's doubled samples would compile the batch 2 graph
-        anyway, and the win (1-2% on an L4) is inside the trial's noise; the memory gate and the out-of-memory
-        fallback still apply, and a doubled call compiling after the first render ends batching for the load."""
+        """No trial: it would compile the batch 2 graph anyway and the win is inside its noise."""
         if not _cuda_latent(latent) and cfg_batch_mode() != "force":
             self._shape_off(
                 shape,
