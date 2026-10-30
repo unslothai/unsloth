@@ -408,7 +408,11 @@ def test_plan_goes_stale_when_adapters_change():
 def test_each_site_watches_a_projection_with_lora():
     # LoRA on k / v (or up) only: the first projection has no adapter, the site still needs a watch.
     D = _driver()
-    plain, lora_k, lora_v = object(), types.SimpleNamespace(lora_A = {}), types.SimpleNamespace(lora_A = {})
+    plain, lora_k, lora_v = (
+        object(),
+        types.SimpleNamespace(lora_A = {}),
+        types.SimpleNamespace(lora_A = {}),
+    )
     assert D._site_watch([plain, lora_k, lora_v]) == [lora_k]
     assert D._site_watch([plain, plain]) == []
 
