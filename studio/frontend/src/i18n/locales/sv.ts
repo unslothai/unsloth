@@ -542,7 +542,7 @@ export const sv = {
     inUse: "Mata ut modellen innan du reparerar, återställer eller tar bort dess motor.",
     title: "Inferensmotorer",
     description:
-      "Valfria motorer för lokala text- och visionsmodeller som stöds. Välj en installerad motor i modellens körningsinställningar. Experimentellt.",
+      "Extra motorer för GPU:er (beta). De kan köra modeller snabbare, särskilt vid batchinferens. Installera här och välj sedan i modellens körningsinställningar.",
     picker: "Inferensmotor",
     precision: "Precision",
     precisionAuto: "Modellens standard",
@@ -3044,7 +3044,7 @@ export const sv = {
         "tidsstämpel tid klocka datum när klar svar meddelande timestamp time clock date reply",
       showGenerationDetails: "Genereringsdetaljer",
       showGenerationDetailsDescription:
-        "Visa hastighet och antal token live medan ett svar strömmas, och var en lokal modells lager placerades.",
+        "Visa live hastighet för prompt och svar med antal token, och var en modells lager lästes in.",
       showGenerationDetailsKeywords:
         "detaljer hastighet token statistik lager avlastning verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Redigera svar på svaren",
@@ -3147,7 +3147,7 @@ export const sv = {
         title: "Canvas",
         collapseHtmlBlocks: "Fäll ihop HTML-block",
         collapseHtmlBlocksDescription:
-          "Fäll även ihop HTML-dokument i kodblock när Canvas är av.",
+          "Visa fullständiga HTML-dokument i chatten som ett kort som öppnas i webbläsaren, i stället för som kod.",
         allowNetworkAccess: "Tillåt nätverksåtkomst för Canvas",
         allowNetworkAccessDescription:
           "Låt Canvas läsa in externa skript, stilar, teckensnitt och media. Stäng av för offline-förhandsvisningar.",
@@ -3457,7 +3457,7 @@ export const sv = {
       accessTokenCopied: "Åtkomsttoken har kopierats",
       copyAccessToken: "Kopiera åtkomsttoken",
       copyNow: "Kopiera nu – den visas inte igen.",
-      usageExamples: "Användningsexempel",
+      usageExamples: "Chatt-API",
       usageNoModel:
         "Läs in eller hämta en modell för att se exempel som går att köra. Den här servern har ännu ingen modell att ange.",
       usageTools: "Verktyg",
@@ -4189,9 +4189,9 @@ export const sv = {
       targetModules: "Målmoduler",
       enableLora: "Aktivera LoRA",
       trainWithLora: "Träna med LoRA",
-      stableRank: "Stabil rank",
-      memoryEfficient: "Minneseffektiv",
-      weightDecomposed: "Viktdekomponerad",
+      stableRank: "Rankstabiliserad LoRA",
+      memoryEfficient: "SVD-initierad LoRA",
+      weightDecomposed: "LoRA med multiplikatorer",
       notSupportedAppleSilicon: "Stöds inte på Apple Silicon",
       doraNeedsVisionLayersOff:
         "Stäng av träning av visionslager för att använda DoRA",
@@ -5263,7 +5263,7 @@ export const sv = {
       countMany: "{count} modeller inlästa",
       pillLabel: "{count}. Visa detaljer eller dra för att flytta",
       dragToMove: "Dra för att flytta",
-      dragHandleLabel: "Flytta inlästa modeller. Piltangenterna flyttar den lite i taget.",
+      dragHandleLabel: "Dra för att flytta",
       collapse: "Fäll ihop",
       collapseLabel: "Fäll ihop inlästa modeller",
       close: "Stäng",

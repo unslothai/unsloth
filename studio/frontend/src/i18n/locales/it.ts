@@ -2787,7 +2787,7 @@ export const it = {
         "orario ora data quando terminata risposta messaggio timestamp time clock date reply",
       showGenerationDetails: "Dettagli generazione",
       showGenerationDetailsDescription:
-        "Mostra velocità e token in tempo reale mentre una risposta viene generata, e dove sono stati collocati i livelli di un modello locale.",
+        "Mostra in tempo reale la velocità del prompt e della risposta con il numero di token, e dove sono stati caricati i livelli di un modello.",
       showGenerationDetailsKeywords:
         "dettagli velocità token statistiche livelli scaricamento verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Modifica risposta nelle risposte",
@@ -2921,7 +2921,7 @@ export const it = {
       exportingAction: "Esportazione...",
       exportConversations: "Esporta Recenti e Progetti",
       exportConversationsDescription:
-        "Scarica i Recenti, oppure i Recenti più le chat dei progetti, in Training JSONL, CSV o JSONL ShareGPT, in un unico file o uno per chat. Message JSONL è disponibile solo per singola chat.",
+        "Scarica i Recenti, oppure i Recenti più le chat dei progetti, in Training JSONL, CSV, JSONL ShareGPT o Markdown, in un unico file o uno per chat. Message JSONL è disponibile solo per singola chat.",
       exportConversationsAction: "Esporta",
       exportScopeRecents: "Recenti",
       exportScopeAll: "Recenti + Progetti",
@@ -2929,7 +2929,7 @@ export const it = {
       exportPerChatSuffix: "(uno per chat)",
       importChats: "Importa chat",
       importChatsDescription:
-        "Importa file JSON, JSONL, NDJSON o CSV in Recenti.",
+        "Importa file JSON, JSONL, NDJSON, CSV o Markdown in Recenti.",
       importChatsAction: "Importa",
       importNoConversations: "Nessuna conversazione trovata nel file.",
       importedOneChat: "1 conversazione importata nei Recenti.",
@@ -3186,7 +3186,7 @@ export const it = {
       accessTokenCopied: "Token di accesso copiato",
       copyAccessToken: "Copia il token di accesso",
       copyNow: "Copialo ora: non verrà mostrato di nuovo.",
-      usageExamples: "Esempi d'uso",
+      usageExamples: "API chat",
       usageNoModel:
         "Carica o scarica un modello per vedere esempi eseguibili. Su questo server non è ancora disponibile alcun modello da usare negli esempi.",
       usageTools: "Strumenti",
@@ -4054,9 +4054,9 @@ export const it = {
       targetModules: "Moduli target",
       enableLora: "Attiva LoRA",
       trainWithLora: "Addestra con LoRA",
-      stableRank: "Rank stabile",
-      memoryEfficient: "Efficiente in memoria",
-      weightDecomposed: "Pesi decomposti",
+      stableRank: "LoRA a rango stabilizzato",
+      memoryEfficient: "LoRA inizializzata con SVD",
+      weightDecomposed: "LoRA con moltiplicatori",
       optimization: "Ottimizzazione",
       schedule: "Pianificazione",
       memory: "Memoria",
@@ -5089,7 +5089,7 @@ export const it = {
       countMany: "{count} modelli caricati",
       pillLabel: "{count}. Mostra i dettagli o trascina per spostare",
       dragToMove: "Trascina per spostare",
-      dragHandleLabel: "Sposta i modelli caricati. I tasti freccia lo spostano leggermente.",
+      dragHandleLabel: "Trascina per spostare",
       collapse: "Comprimi",
       collapseLabel: "Comprimi i modelli caricati",
       close: "Chiudi",

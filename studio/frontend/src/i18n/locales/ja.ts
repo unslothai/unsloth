@@ -758,7 +758,7 @@ export const ja = {
     hfToken: {
       label: "HF トークン",
       saved: "保存済み",
-      add: "追加",
+      add: "未設定",
       savedAriaLabel: "Hugging Face トークンは保存済みです",
       addAriaLabel: "Hugging Face トークンを設定",
       savedHint: "トークンは保存済みです。使用時にアクセス権を確認します。",
@@ -1551,7 +1551,7 @@ export const ja = {
       unreadable: "ログファイルを読み取れませんでした。",
       viewLogs: "ログを表示",
       timeout: "ログの取得がタイムアウトしました。サーバーに接続できない可能性があります。",
-      droppedNotice: "一部の行がスキップされました。ログの書き込みが読み取りに追いつきませんでした。",
+      droppedNotice: "一部の行がスキップされました。読み取りがログの書き込みに追いつきませんでした。",
       morePending: "さらに行を読み込み中です。次回の更新時に表示されます。",
       staleSession: "ファイルへのログ出力が無効なため、これは以前のセッションであり更新されません。",
       downloadAllLogs: "すべてのログをダウンロード (.zip)",
@@ -2866,7 +2866,7 @@ export const ja = {
         "タイムスタンプ 時刻 時間 日付 完了 応答 メッセージ timestamp time clock date reply",
       showGenerationDetails: "生成の詳細",
       showGenerationDetailsDescription:
-        "応答の生成中に速度とトークン数をリアルタイムで表示し、ローカルモデルのレイヤーの配置も表示します。",
+        "プロンプトと応答の速度をトークン数とともにリアルタイムで表示し、モデルのレイヤーの読み込み先も表示します。",
       showGenerationDetailsKeywords:
         "詳細 速度 トークン 統計 レイヤー オフロード verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "応答に応答の編集を表示",
@@ -3000,14 +3000,14 @@ export const ja = {
       exportingAction: "エクスポート中...",
       exportConversations: "履歴とプロジェクトをエクスポート",
       exportConversationsDescription:
-        "履歴、または履歴とプロジェクトのチャットを、Training JSONL、CSV、ShareGPT JSONL のいずれかで、一括またはチャットごとにダウンロードします。Message JSONL はチャットごとのみ利用できます。",
+        "履歴、または履歴とプロジェクトのチャットを、Training JSONL、CSV、ShareGPT JSONL、Markdown のいずれかで、一括またはチャットごとにダウンロードします。Message JSONL はチャットごとのみ利用できます。",
       exportConversationsAction: "エクスポート",
       exportScopeRecents: "履歴",
       exportScopeAll: "履歴 + プロジェクト",
       exportCombinedSuffix: "(一括)",
       exportPerChatSuffix: "(チャットごと)",
       importChats: "チャットをインポート",
-      importChatsDescription: "JSON、JSONL、NDJSON、または CSV ファイルを履歴にインポートします。",
+      importChatsDescription: "JSON、JSONL、NDJSON、CSV、または Markdown ファイルを履歴にインポートします。",
       importChatsAction: "インポート",
       importNoConversations: "ファイル内に会話が見つかりませんでした。",
       importedOneChat: "1 件の会話を履歴にインポートしました。",
@@ -3251,7 +3251,7 @@ export const ja = {
       accessTokenCopied: "アクセストークンをコピーしました",
       copyAccessToken: "アクセストークンをコピー",
       copyNow: "今すぐコピーしてください - これは二度と表示されません。",
-      usageExamples: "使用例",
+      usageExamples: "チャット API",
       usageTools: "ツール",
       exampleLanguage: "言語",
       exampleRequest: "リクエスト",
@@ -3630,7 +3630,7 @@ export const ja = {
       hubUnreachable: "Hugging Face に接続できませんでした",
       cantUseDataset: "データセットを使用できません",
       reasonInvalidHubId:
-        "有効な Hugging Face データセット ID を入力してください。形式は repo または owner/repo で、使用できる文字は英字、数字、.、_、- のみです（各部分は最大 96 文字）。",
+        "有効な Hugging Face データセット ID を入力してください。形式は repo または owner/repo で、ピリオドやハイフンを連続させず、末尾に .git を付けないでください（各部分は最大 96 文字）。",
     },
     modelPicker: {
       noun: "モデル",
@@ -3666,7 +3666,7 @@ export const ja = {
       reasonTypeMismatch:
         "このモデルは、前のステップで選択したトレーニングタイプと一致しません。",
       reasonInvalidHubId:
-        "有効な Hugging Face モデル ID を入力してください。形式は repo または owner/repo で、使用できる文字は英字、数字、.、_、- のみです（各部分は最大 96 文字）。",
+        "有効な Hugging Face モデル ID を入力してください。形式は repo または owner/repo で、ピリオドやハイフンを連続させず、末尾に .git を付けないでください（各部分は最大 96 文字）。",
       reasonEmptyId: "モデル ID またはローカルモデルのパスを入力してください。",
       reasonGguf: "GGUF モデルはトレーニングに使用できません。",
       reasonAdapter:
@@ -3955,9 +3955,9 @@ export const ja = {
       targetModules: "ターゲットモジュール",
       enableLora: "LoRA を有効化",
       trainWithLora: "LoRA でトレーニング",
-      stableRank: "Stable Rank",
-      memoryEfficient: "メモリ効率化",
-      weightDecomposed: "重み分解",
+      stableRank: "ランク安定化 LoRA",
+      memoryEfficient: "SVD 初期化 LoRA",
+      weightDecomposed: "乗数付き LoRA",
       notSupportedAppleSilicon: "Apple Silicon ではサポートされていません",
       doraNeedsVisionLayersOff: "DoRA を使うにはビジョンレイヤーの学習をオフにしてください",
       optimization: "最適化",
@@ -4969,7 +4969,7 @@ export const ja = {
       countMany: "{count} 件のモデルを読み込み済み",
       pillLabel: "{count}。詳細を表示、またはドラッグして移動",
       dragToMove: "ドラッグして移動",
-      dragHandleLabel: "読み込み済みモデルを移動します。矢印キーで少しずつ動かせます。",
+      dragHandleLabel: "ドラッグして移動",
       collapse: "折りたたむ",
       collapseLabel: "読み込み済みモデルを折りたたむ",
       close: "閉じる",

@@ -761,7 +761,7 @@ export const fr = {
     hfToken: {
       label: "Token HF",
       saved: "Enregistré",
-      add: "Ajouter",
+      add: "Non défini",
       savedAriaLabel: "Token Hugging Face enregistré",
       addAriaLabel: "Définir le token Hugging Face",
       savedHint:
@@ -1436,7 +1436,7 @@ export const fr = {
           description: "Renommer la discussion en cours",
         },
         forkChat: {
-          label: "Dupliquer la discussion",
+          label: "Bifurquer la discussion",
           description: "Créer une branche à partir du dernier message",
         },
         copyChatAsMarkdown: {
@@ -2919,7 +2919,7 @@ export const fr = {
         "horodatage heure date quand terminé réponse message timestamp time clock date reply",
       showGenerationDetails: "Détails de génération",
       showGenerationDetailsDescription:
-        "Affiche la vitesse et le nombre de jetons en direct pendant une réponse, et où se trouvent les couches d'un modèle local.",
+        "Affiche en direct les vitesses du prompt et de la réponse avec le nombre de jetons, et où les couches d'un modèle ont été chargées.",
       showGenerationDetailsKeywords:
         "détails vitesse jetons statistiques couches déchargement verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Modifier la réponse sur les réponses",
@@ -3054,7 +3054,7 @@ export const fr = {
       exportingAction: "Exportation...",
       exportConversations: "Exporter Récents et Projets",
       exportConversationsDescription:
-        "Télécharger Récents ou Récents plus les discussions de projet au format Training JSONL, CSV ou JSONL ShareGPT, combinés ou par discussion. Message JSONL est disponible uniquement par discussion.",
+        "Télécharger Récents ou Récents plus les discussions de projet au format Training JSONL, CSV, JSONL ShareGPT ou Markdown, combinés ou par discussion. Message JSONL est disponible uniquement par discussion.",
       exportConversationsAction: "Exporter",
       exportScopeRecents: "Récents",
       exportScopeAll: "Récents + Projets",
@@ -3062,7 +3062,7 @@ export const fr = {
       exportPerChatSuffix: "(par discussion)",
       importChats: "Importer des discussions",
       importChatsDescription:
-        "Importez des fichiers JSON, JSONL, NDJSON ou CSV dans Récents.",
+        "Importez des fichiers JSON, JSONL, NDJSON, CSV ou Markdown dans Récents.",
       importChatsAction: "Importer",
       importNoConversations: "Aucune conversation trouvée dans le fichier.",
       importedOneChat: "1 conversation importée dans Récents.",
@@ -3323,7 +3323,7 @@ export const fr = {
       accessTokenCopied: "Jeton d’accès copié",
       copyAccessToken: "Copier le jeton d’accès",
       copyNow: "Copiez le jeton maintenant : il ne sera plus affiché.",
-      usageExamples: "Exemples d'utilisation",
+      usageExamples: "API de chat",
       usageTools: "Outils",
       exampleLanguage: "Langage",
       exampleRequest: "Requête",
@@ -3712,7 +3712,7 @@ export const fr = {
       hubUnreachable: "Impossible de joindre Hugging Face",
       cantUseDataset: "Impossible d'utiliser le jeu de données",
       reasonInvalidHubId:
-        "Saisissez un ID de jeu de données Hugging Face valide : dépôt ou propriétaire/dépôt, composé uniquement de lettres, chiffres, ., _ ou - (96 caractères maximum par partie).",
+        "Saisissez un ID de jeu de données Hugging Face valide : dépôt ou propriétaire/dépôt, sans points ni tirets consécutifs et sans suffixe .git (96 caractères maximum par partie).",
       sourceRecipe: "Recette",
       sourceUpload: "Téléversement",
       sourceLocal: "Local",
@@ -3747,7 +3747,7 @@ export const fr = {
       reasonEmptyId:
         "Saisissez un ID de modèle ou le chemin d'un modèle local.",
       reasonInvalidHubId:
-        "Saisissez un ID de modèle Hugging Face valide : dépôt ou propriétaire/dépôt, composé uniquement de lettres, chiffres, ., _ ou - (96 caractères maximum par partie).",
+        "Saisissez un ID de modèle Hugging Face valide : dépôt ou propriétaire/dépôt, sans points ni tirets consécutifs et sans suffixe .git (96 caractères maximum par partie).",
       reasonGguf: "Les modèles GGUF ne peuvent pas être entraînés.",
       reasonAdapter:
         "Les sorties d'adaptateur ne peuvent pas servir de modèles de base pour l'entraînement.",
@@ -4062,9 +4062,9 @@ export const fr = {
       targetModules: "Modules cibles",
       enableLora: "Activer LoRA",
       trainWithLora: "Entraîner avec LoRA",
-      stableRank: "Rang stable",
-      memoryEfficient: "Économe en mémoire",
-      weightDecomposed: "Poids décomposés",
+      stableRank: "LoRA à rang stabilisé",
+      memoryEfficient: "LoRA initialisé par SVD",
+      weightDecomposed: "LoRA avec multiplicateurs",
       notSupportedAppleSilicon: "Non pris en charge sur Apple Silicon",
       doraNeedsVisionLayersOff: "Désactivez l'entraînement des couches de vision pour utiliser DoRA",
       optimization: "Optimisation",
@@ -5104,7 +5104,7 @@ export const fr = {
       countMany: "{count} modèles chargés",
       pillLabel: "{count}. Afficher les détails ou faire glisser pour déplacer",
       dragToMove: "Faire glisser pour déplacer",
-      dragHandleLabel: "Déplacer les modèles chargés. Les touches fléchées le déplacent légèrement.",
+      dragHandleLabel: "Faire glisser pour déplacer",
       collapse: "Réduire",
       collapseLabel: "Réduire les modèles chargés",
       close: "Fermer",

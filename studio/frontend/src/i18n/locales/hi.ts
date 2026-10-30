@@ -760,7 +760,7 @@ export const hi = {
     hfToken: {
       label: "HF टोकन",
       saved: "सहेजा गया",
-      add: "जोड़ें",
+      add: "सेट नहीं",
       savedAriaLabel: "Hugging Face टोकन सहेजा गया",
       addAriaLabel: "Hugging Face टोकन सेट करें",
       savedHint:
@@ -2890,7 +2890,7 @@ export const hi = {
         "टाइमस्टैम्प समय घड़ी तारीख कब पूरा जवाब संदेश timestamp time clock date reply",
       showGenerationDetails: "जनरेशन विवरण",
       showGenerationDetailsDescription:
-        "जवाब बनते समय लाइव गति और टोकन गिनती दिखाएँ, और लोकल मॉडल की परतें कहाँ रखी गईं।",
+        "टोकन गिनती के साथ प्रॉम्प्ट और जवाब की लाइव गति दिखाएँ, और यह भी कि मॉडल की परतें कहाँ लोड हुईं।",
       showGenerationDetailsKeywords:
         "विवरण गति टोकन आँकड़े परतें verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "जवाबों पर जवाब संपादित करें",
@@ -3024,7 +3024,7 @@ export const hi = {
       exportingAction: "एक्सपोर्ट हो रहा है...",
       exportConversations: "हाल के और प्रोजेक्ट एक्सपोर्ट करें",
       exportConversationsDescription:
-        "हाल के या हाल के और प्रोजेक्ट चैट को Training JSONL, CSV या ShareGPT JSONL के रूप में डाउनलोड करें, एक संयुक्त फ़ाइल में या हर चैट के लिए अलग-अलग। Message JSONL केवल हर चैट के लिए अलग फ़ाइल में उपलब्ध है।",
+        "हाल के या हाल के और प्रोजेक्ट चैट को Training JSONL, CSV, ShareGPT JSONL या Markdown के रूप में डाउनलोड करें, एक संयुक्त फ़ाइल में या हर चैट के लिए अलग-अलग। Message JSONL केवल हर चैट के लिए अलग फ़ाइल में उपलब्ध है।",
       exportConversationsAction: "एक्सपोर्ट करें",
       exportScopeRecents: "हाल के",
       exportScopeAll: "हाल के + प्रोजेक्ट",
@@ -3032,7 +3032,7 @@ export const hi = {
       exportPerChatSuffix: "(प्रति चैट)",
       importChats: "चैट इंपोर्ट करें",
       importChatsDescription:
-        "JSON, JSONL, NDJSON या CSV फ़ाइलों को Recents में इंपोर्ट करें।",
+        "JSON, JSONL, NDJSON, CSV या Markdown फ़ाइलों को Recents में इंपोर्ट करें।",
       importChatsAction: "इंपोर्ट करें",
       importNoConversations: "फ़ाइल में कोई वार्तालाप नहीं मिला।",
       importedOneChat: "1 वार्तालाप हाल के सेक्शन में इंपोर्ट किया गया।",
@@ -3285,7 +3285,7 @@ export const hi = {
       accessTokenCopied: "एक्सेस टोकन कॉपी किया गया",
       copyAccessToken: "एक्सेस टोकन कॉपी करें",
       copyNow: "अभी कॉपी करें। यह दोबारा नहीं दिखाया जाएगा।",
-      usageExamples: "उपयोग उदाहरण",
+      usageExamples: "चैट API",
       usageTools: "टूल",
       exampleLanguage: "भाषा",
       exampleRequest: "अनुरोध",
@@ -3669,7 +3669,7 @@ export const hi = {
       hubUnreachable: "Hugging Face तक नहीं पहुंच सके",
       cantUseDataset: "डेटासेट का उपयोग नहीं किया जा सकता",
       reasonInvalidHubId:
-        "एक मान्य Hugging Face डेटासेट ID दर्ज करें: रेपो या मालिक/रेपो, जिसमें केवल अक्षर, अंक, ., _ या - हों (हर भाग में अधिकतम 96 वर्ण)।",
+        "एक मान्य Hugging Face डेटासेट ID दर्ज करें: रेपो या मालिक/रेपो, जिसमें लगातार पीरियड या हाइफ़न न हों और .git प्रत्यय न हो (हर भाग में अधिकतम 96 वर्ण)।",
       sourceRecipe: "रेसिपी",
       sourceUpload: "अपलोड",
       sourceLocal: "स्थानीय",
@@ -3701,7 +3701,7 @@ export const hi = {
         "यह मॉडल पिछले चरण में चुने गए प्रशिक्षण प्रकार से मेल नहीं खाता।",
       reasonEmptyId: "मॉडल ID या स्थानीय मॉडल पथ दर्ज करें।",
       reasonInvalidHubId:
-        "एक मान्य Hugging Face मॉडल ID दर्ज करें: रेपो या मालिक/रेपो, जिसमें केवल अक्षर, अंक, ., _ या - हों (हर भाग में अधिकतम 96 वर्ण)।",
+        "एक मान्य Hugging Face मॉडल ID दर्ज करें: रेपो या मालिक/रेपो, जिसमें लगातार पीरियड या हाइफ़न न हों और .git प्रत्यय न हो (हर भाग में अधिकतम 96 वर्ण)।",
       reasonGguf: "GGUF मॉडल ट्रेनिंग के लिए उपयोग नहीं किए जा सकते।",
       reasonAdapter:
         "एडेप्टर आउटपुट को बेस ट्रेनिंग मॉडल के रूप में उपयोग नहीं किया जा सकता।",
@@ -4005,9 +4005,9 @@ export const hi = {
       targetModules: "लक्ष्य मॉड्यूल",
       enableLora: "LoRA सक्षम करें",
       trainWithLora: "LoRA के साथ ट्रेन करें",
-      stableRank: "स्थिर Rank",
-      memoryEfficient: "मेमोरी कुशल",
-      weightDecomposed: "भार-विघटित",
+      stableRank: "Rank-स्थिरीकृत LoRA",
+      memoryEfficient: "SVD से आरंभ किया गया LoRA",
+      weightDecomposed: "गुणकों वाला LoRA",
       notSupportedAppleSilicon: "Apple Silicon पर समर्थित नहीं",
       doraNeedsVisionLayersOff: "DoRA उपयोग करने के लिए विज़न लेयर्स ट्रेनिंग बंद करें",
       optimization: "ऑप्टिमाइज़ेशन",
@@ -4416,7 +4416,7 @@ export const hi = {
     sectionBundledHint: "Unsloth के साथ आते हैं। केवल पढ़ने के लिए।",
     linked: "लिंक",
     discardTitle: "बदलाव छोड़ दें?",
-    discardDescription: "{name} में असहेजे बदलाव खो जाएँगे।",
+    discardDescription: "{name} में बिना सहेजे बदलाव खो जाएँगे।",
     discard: "छोड़ें",
     mentions: "कौशल",
     manage: "कौशल प्रबंधित करें",
@@ -5030,7 +5030,7 @@ export const hi = {
       countMany: "{count} मॉडल लोड हैं",
       pillLabel: "{count}. विवरण दिखाएँ, या हिलाने के लिए खींचें",
       dragToMove: "हिलाने के लिए खींचें",
-      dragHandleLabel: "लोड किए गए मॉडल हिलाएँ। एरो कुंजियाँ इसे थोड़ा खिसकाती हैं।",
+      dragHandleLabel: "खिसकाने के लिए खींचें",
       collapse: "समेटें",
       collapseLabel: "लोड किए गए मॉडल समेटें",
       close: "बंद करें",

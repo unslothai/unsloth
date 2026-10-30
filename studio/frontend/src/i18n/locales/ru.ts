@@ -760,7 +760,7 @@ export const ru = {
     hfToken: {
       label: "Токен HF",
       saved: "Сохранён",
-      add: "Добавить",
+      add: "Не задан",
       savedAriaLabel: "Токен Hugging Face сохранён",
       addAriaLabel: "Задать токен Hugging Face",
       savedHint: "Токен сохранён. Доступ проверяется при его использовании.",
@@ -2254,7 +2254,7 @@ export const ru = {
         trainingSteps: "Шаги",
         trainingTokens: "Обработано токенов",
         trainingTime: "Время обучения",
-        bestLoss: "Минимальная функция потерь",
+        bestLoss: "Наименьший loss",
         runSteps: "{steps}",
         runLoss: "loss {loss}",
       },
@@ -2894,7 +2894,7 @@ export const ru = {
         "время метка дата когда завершено ответ сообщение timestamp time clock date reply",
       showGenerationDetails: "Подробности генерации",
       showGenerationDetailsDescription:
-        "Показывать скорость и число токенов в реальном времени во время ответа и где размещены слои локальной модели.",
+        "Показывать в реальном времени скорость обработки промпта и ответа с числом токенов, а также где загружены слои модели.",
       showGenerationDetailsKeywords:
         "подробности скорость токены статистика слои выгрузка verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Изменение ответа в ответах",
@@ -3028,7 +3028,7 @@ export const ru = {
       exportingAction: "Экспорт…",
       exportConversations: "Экспортировать «Недавние» и проекты",
       exportConversationsDescription:
-        "Скачать «Недавние» или «Недавние» вместе с чатами проектов в формате Training JSONL, CSV или ShareGPT JSONL, объединённо или по чатам. Message JSONL доступен только по отдельным чатам.",
+        "Скачать «Недавние» или «Недавние» вместе с чатами проектов в формате Training JSONL, CSV, ShareGPT JSONL или Markdown, объединённо или по чатам. Message JSONL доступен только по отдельным чатам.",
       exportConversationsAction: "Экспорт",
       exportScopeRecents: "Недавние",
       exportScopeAll: "Недавние + проекты",
@@ -3036,7 +3036,7 @@ export const ru = {
       exportPerChatSuffix: "(по чатам)",
       importChats: "Импортировать чаты",
       importChatsDescription:
-        "Импортируйте файлы JSON, JSONL, NDJSON или CSV в Недавние.",
+        "Импортируйте файлы JSON, JSONL, NDJSON, CSV или Markdown в Недавние.",
       importChatsAction: "Импорт",
       importNoConversations: "В файле не найдено диалогов.",
       importedOneChat: "Импортирован 1 диалог в «Недавние».",
@@ -3288,7 +3288,7 @@ export const ru = {
       accessTokenCopied: "Токен доступа скопирован",
       copyAccessToken: "Копировать токен доступа",
       copyNow: "Скопируйте сейчас: он больше не будет показан.",
-      usageExamples: "Примеры использования",
+      usageExamples: "API для чата",
       usageTools: "Инструменты",
       exampleLanguage: "Язык",
       exampleRequest: "Запрос",
@@ -3679,7 +3679,7 @@ export const ru = {
       hubUnreachable: "Не удалось подключиться к Hugging Face",
       cantUseDataset: "Датасет нельзя использовать",
       reasonInvalidHubId:
-        "Введите допустимый ID датасета Hugging Face: repo или owner/repo. Используйте только латинские буквы, цифры, ., _ или - (не более 96 символов в каждой части).",
+        "Введите допустимый ID датасета Hugging Face: repo или owner/repo, без идущих подряд точек или дефисов и без суффикса .git (не более 96 символов в каждой части).",
     },
     modelPicker: {
       noun: "модели",
@@ -3716,7 +3716,7 @@ export const ru = {
       reasonTypeMismatch:
         "Эта модель не соответствует типу обучения, выбранному на предыдущем шаге.",
       reasonInvalidHubId:
-        "Введите допустимый ID модели Hugging Face: repo или owner/repo. Используйте только латинские буквы, цифры, ., _ или - (не более 96 символов в каждой части).",
+        "Введите допустимый ID модели Hugging Face: repo или owner/repo, без идущих подряд точек или дефисов и без суффикса .git (не более 96 символов в каждой части).",
       reasonEmptyId: "Введите ID модели или путь к локальной модели.",
       reasonGguf: "Модели GGUF нельзя использовать для обучения.",
       reasonAdapter:
@@ -4019,9 +4019,9 @@ export const ru = {
       targetModules: "Целевые модули",
       enableLora: "Включить LoRA",
       trainWithLora: "Обучать с LoRA",
-      stableRank: "Стабильный ранг",
-      memoryEfficient: "Экономия памяти",
-      weightDecomposed: "Декомпозиция весов",
+      stableRank: "LoRA со стабилизацией ранга",
+      memoryEfficient: "LoRA с инициализацией SVD",
+      weightDecomposed: "LoRA с множителями",
       notSupportedAppleSilicon: "Не поддерживается на Apple Silicon",
       doraNeedsVisionLayersOff: "Отключите обучение слоёв зрения, чтобы использовать DoRA",
       optimization: "Оптимизация",
@@ -5047,7 +5047,7 @@ export const ru = {
       countMany: "Загружено моделей: {count}",
       pillLabel: "{count}. Показать подробности или перетащить",
       dragToMove: "Перетащите, чтобы переместить",
-      dragHandleLabel: "Переместить панель загруженных моделей. Стрелки сдвигают её понемногу.",
+      dragHandleLabel: "Перетащите, чтобы переместить",
       collapse: "Свернуть",
       collapseLabel: "Свернуть загруженные модели",
       close: "Закрыть",

@@ -761,7 +761,7 @@ export const es = {
     hfToken: {
       label: "Token de HF",
       saved: "Guardado",
-      add: "Añadir",
+      add: "Sin configurar",
       savedAriaLabel: "Token de Hugging Face guardado",
       addAriaLabel: "Configurar token de Hugging Face",
       savedHint: "Token guardado. El acceso se comprueba cuando lo usas.",
@@ -2914,7 +2914,7 @@ export const es = {
         "marca de tiempo hora fecha cuándo terminó respuesta mensaje timestamp time clock date reply",
       showGenerationDetails: "Detalles de generación",
       showGenerationDetailsDescription:
-        "Muestra la velocidad y los tokens en vivo mientras se genera una respuesta, y dónde quedaron las capas de un modelo local.",
+        "Muestra en vivo las velocidades del prompt y de la respuesta con el recuento de tokens, y dónde se cargaron las capas de un modelo.",
       showGenerationDetailsKeywords:
         "detalles velocidad tokens estadísticas capas descarga verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Editar respuesta en las respuestas",
@@ -3049,7 +3049,7 @@ export const es = {
       exportingAction: "Exportando...",
       exportConversations: "Exportar Recientes y Proyectos",
       exportConversationsDescription:
-        "Descarga Recientes, o Recientes más los chats de proyectos, como Training JSONL, CSV o JSONL de ShareGPT, combinados o por chat. Message JSONL solo está disponible por chat.",
+        "Descarga Recientes, o Recientes más los chats de proyectos, como Training JSONL, CSV, JSONL de ShareGPT o Markdown, combinados o por chat. Message JSONL solo está disponible por chat.",
       exportConversationsAction: "Exportar",
       exportScopeRecents: "Recientes",
       exportScopeAll: "Recientes + Proyectos",
@@ -3057,7 +3057,7 @@ export const es = {
       exportPerChatSuffix: "(por chat)",
       importChats: "Importar chats",
       importChatsDescription:
-        "Importa archivos JSON, JSONL, NDJSON o CSV a Recientes.",
+        "Importa archivos JSON, JSONL, NDJSON, CSV o Markdown a Recientes.",
       importChatsAction: "Importar",
       importNoConversations: "No se encontraron conversaciones en el archivo.",
       importedOneChat: "Se importó 1 conversación a Recientes.",
@@ -3241,7 +3241,7 @@ export const es = {
       chatsSection: "Chats y archivos",
       transferSection: "Importar y exportar",
       deletionSection: "Eliminación",
-      archives: "Archivos",
+      archives: "Archivados",
       archiveChatsLabel: "Chats",
       archiveVideosLabel: "Vídeos",
       exportFormatsSummary:
@@ -3316,7 +3316,7 @@ export const es = {
       accessTokenCopied: "Token de acceso copiado",
       copyAccessToken: "Copiar token de acceso",
       copyNow: "Cópialo ahora: no se volverá a mostrar.",
-      usageExamples: "Ejemplos de uso",
+      usageExamples: "API de chat",
       usageTools: "Herramientas",
       exampleLanguage: "Lenguaje",
       exampleRequest: "Solicitud",
@@ -3704,7 +3704,7 @@ export const es = {
       hubUnreachable: "No se pudo acceder a Hugging Face",
       cantUseDataset: "No se puede usar el conjunto de datos",
       reasonInvalidHubId:
-        "Introduce un ID válido de conjunto de datos de Hugging Face: repositorio o propietario/repositorio, usando solo letras, números, ., _ o - (máximo 96 caracteres por parte).",
+        "Introduce un ID válido de conjunto de datos de Hugging Face: repositorio o propietario/repositorio, sin puntos ni guiones consecutivos y sin el sufijo .git (máximo 96 caracteres por parte).",
       sourceRecipe: "Receta",
       sourceUpload: "Subida",
       sourceLocal: "Local",
@@ -3737,7 +3737,7 @@ export const es = {
         "Este modelo no coincide con el tipo de entrenamiento seleccionado en el paso anterior.",
       reasonEmptyId: "Introduce un ID de modelo o una ruta de modelo local.",
       reasonInvalidHubId:
-        "Introduce un ID válido de modelo de Hugging Face: repositorio o propietario/repositorio, usando solo letras, números, ., _ o - (máximo 96 caracteres por parte).",
+        "Introduce un ID válido de modelo de Hugging Face: repositorio o propietario/repositorio, sin puntos ni guiones consecutivos y sin el sufijo .git (máximo 96 caracteres por parte).",
       reasonGguf: "Los modelos GGUF no se pueden usar para entrenar.",
       reasonAdapter:
         "Las salidas de adaptadores no se pueden usar como modelos base de entrenamiento.",
@@ -4050,9 +4050,9 @@ export const es = {
       targetModules: "Módulos objetivo",
       enableLora: "Habilitar LoRA",
       trainWithLora: "Entrenar con LoRA",
-      stableRank: "Rango estable",
-      memoryEfficient: "Eficiente en memoria",
-      weightDecomposed: "Pesos descompuestos",
+      stableRank: "LoRA con rango estabilizado",
+      memoryEfficient: "LoRA inicializado con SVD",
+      weightDecomposed: "LoRA con multiplicadores",
       notSupportedAppleSilicon: "No compatible con Apple Silicon",
       doraNeedsVisionLayersOff: "Desactiva el entrenamiento de las capas de visión para usar DoRA",
       optimization: "Optimización",
@@ -5093,7 +5093,7 @@ export const es = {
       countMany: "{count} modelos cargados",
       pillLabel: "{count}. Mostrar detalles o arrastrar para mover",
       dragToMove: "Arrastra para mover",
-      dragHandleLabel: "Mover los modelos cargados. Las teclas de flecha lo desplazan un poco.",
+      dragHandleLabel: "Arrastra para mover",
       collapse: "Contraer",
       collapseLabel: "Contraer los modelos cargados",
       close: "Cerrar",

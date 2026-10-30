@@ -756,7 +756,7 @@ export const ko = {
     hfToken: {
       label: "HF 토큰",
       saved: "저장됨",
-      add: "추가",
+      add: "설정 안 됨",
       savedAriaLabel: "Hugging Face 토큰이 저장되었습니다",
       addAriaLabel: "Hugging Face 토큰 설정",
       savedHint: "토큰이 저장되었습니다. 사용할 때 접근 권한을 확인합니다.",
@@ -2873,7 +2873,7 @@ export const ko = {
         "타임스탬프 시간 시각 날짜 완료 응답 메시지 timestamp time clock date reply",
       showGenerationDetails: "생성 세부 정보",
       showGenerationDetailsDescription:
-        "응답이 생성되는 동안 속도와 토큰 수를 실시간으로 표시하고, 로컬 모델의 레이어가 어디에 배치되었는지 보여줍니다.",
+        "프롬프트 및 응답 속도와 토큰 수를 실시간으로 표시하고, 모델의 레이어가 어디에 로드되었는지 보여줍니다.",
       showGenerationDetailsKeywords:
         "세부 속도 토큰 통계 레이어 오프로드 verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "응답에 응답 편집 표시",
@@ -3008,7 +3008,7 @@ export const ko = {
       exportingAction: "내보내는 중...",
       exportConversations: "최근 항목 및 프로젝트 내보내기",
       exportConversationsDescription:
-        "최근 항목 또는 최근 항목과 프로젝트 채팅을 Training JSONL, CSV 또는 ShareGPT JSONL로, 통합하거나 채팅별로 다운로드합니다. Message JSONL은 채팅별로만 사용할 수 있습니다.",
+        "최근 항목 또는 최근 항목과 프로젝트 채팅을 Training JSONL, CSV, ShareGPT JSONL 또는 Markdown으로, 통합하거나 채팅별로 다운로드합니다. Message JSONL은 채팅별로만 사용할 수 있습니다.",
       exportConversationsAction: "내보내기",
       exportScopeRecents: "최근 항목",
       exportScopeAll: "최근 항목 + 프로젝트",
@@ -3016,7 +3016,7 @@ export const ko = {
       exportPerChatSuffix: "(채팅별)",
       importChats: "채팅 가져오기",
       importChatsDescription:
-        "JSON, JSONL, NDJSON 또는 CSV 파일을 최근 항목으로 가져옵니다.",
+        "JSON, JSONL, NDJSON, CSV 또는 Markdown 파일을 최근 항목으로 가져옵니다.",
       importChatsAction: "가져오기",
       importNoConversations: "파일에서 대화를 찾을 수 없습니다.",
       importedOneChat: "1개의 대화를 최근 항목으로 가져왔습니다.",
@@ -3265,7 +3265,7 @@ export const ko = {
       accessTokenCopied: "액세스 토큰이 복사되었습니다",
       copyAccessToken: "액세스 토큰 복사",
       copyNow: "지금 복사하세요. 이 토큰은 다시 표시되지 않습니다.",
-      usageExamples: "사용 예시",
+      usageExamples: "채팅 API",
       usageTools: "도구",
       exampleLanguage: "언어",
       exampleRequest: "요청",
@@ -3651,7 +3651,7 @@ export const ko = {
       hubUnreachable: "Hugging Face에 연결하지 못했습니다",
       cantUseDataset: "데이터셋을 사용할 수 없습니다",
       reasonInvalidHubId:
-        "유효한 Hugging Face 데이터셋 ID를 입력하세요. 형식은 repo 또는 owner/repo이며 영문자, 숫자, ., _, -만 사용할 수 있습니다(각 부분 최대 96자).",
+        "유효한 Hugging Face 데이터셋 ID를 입력하세요. 형식은 repo 또는 owner/repo이며, 마침표나 하이픈을 연속으로 쓸 수 없고 .git 접미사를 붙일 수 없습니다(각 부분 최대 96자).",
     },
     modelPicker: {
       noun: "모델",
@@ -3686,7 +3686,7 @@ export const ko = {
       reasonTypeMismatch:
         "이 모델은 이전 단계에서 선택한 학습 유형과 일치하지 않습니다.",
       reasonInvalidHubId:
-        "유효한 Hugging Face 모델 ID를 입력하세요. 형식은 repo 또는 owner/repo이며 영문자, 숫자, ., _, -만 사용할 수 있습니다(각 부분 최대 96자).",
+        "유효한 Hugging Face 모델 ID를 입력하세요. 형식은 repo 또는 owner/repo이며, 마침표나 하이픈을 연속으로 쓸 수 없고 .git 접미사를 붙일 수 없습니다(각 부분 최대 96자).",
       reasonEmptyId: "모델 ID 또는 로컬 모델 경로를 입력하세요.",
       reasonGguf: "GGUF 모델은 학습에 사용할 수 없습니다.",
       reasonAdapter:
@@ -3984,9 +3984,9 @@ export const ko = {
       targetModules: "대상 모듈",
       enableLora: "LoRA 활성화",
       trainWithLora: "LoRA로 학습",
-      stableRank: "안정 랭크",
-      memoryEfficient: "메모리 효율적",
-      weightDecomposed: "가중치 분해",
+      stableRank: "랭크 안정화 LoRA",
+      memoryEfficient: "SVD 초기화 LoRA",
+      weightDecomposed: "승수 적용 LoRA",
       notSupportedAppleSilicon: "Apple Silicon에서는 지원되지 않음",
       doraNeedsVisionLayersOff: "DoRA를 사용하려면 비전 레이어 학습을 끄세요",
       optimization: "최적화",
@@ -5009,7 +5009,7 @@ export const ko = {
       countMany: "모델 {count}개 로드됨",
       pillLabel: "{count}. 세부 정보를 보거나 드래그하여 이동",
       dragToMove: "드래그하여 이동",
-      dragHandleLabel: "로드된 모델 패널을 이동합니다. 방향키로 조금씩 움직일 수 있습니다.",
+      dragHandleLabel: "드래그하여 이동",
       collapse: "접기",
       collapseLabel: "로드된 모델 접기",
       close: "닫기",

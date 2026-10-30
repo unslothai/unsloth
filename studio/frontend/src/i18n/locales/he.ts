@@ -536,7 +536,7 @@ export const he = {
     inUse: "פרוק את המודל לפני תיקון, שחזור או הסרה של המנוע שלו.",
     title: "מנועי הסקה",
     description:
-      "מנועים אופציונליים עבור מודלי טקסט וראייה מקומיים נתמכים. בחר מנוע מותקן בהגדרות ההרצה של המודל. ניסיוני.",
+      "מנועים נוספים עבור GPUs (בטא). הם עשויים להריץ מודלים מהר יותר, במיוחד בהסקה באצוות. התקן כאן, ולאחר מכן בחר בהגדרות ההרצה של המודל.",
     picker: "מנוע הסקה",
     precision: "דיוק",
     precisionAuto: "ברירת המחדל של המודל",
@@ -1096,7 +1096,7 @@ export const he = {
       resetDescription:
         "יצירה מחדש של קוד ההגדרה תחליף את הסיסמה של {username}, תנתק אותו ותבטל את מפתחות ה-API שלו. מסור לו את הקוד החדש כדי שיוכל לבחור סיסמה שוב.",
       deactivate: "השבת",
-      reactivate: "הפעל מחדש",
+      reactivate: "הפעל",
       delete: "מחק חשבון",
       deleteTitle: "למחוק את {username}?",
       deleteDescription:
@@ -2960,7 +2960,7 @@ export const he = {
         "חותמת זמן שעה תאריך מתי הסתיים תשובה הודעה timestamp time clock date reply",
       showGenerationDetails: "פרטי יצירה",
       showGenerationDetailsDescription:
-        "הצגת מהירות ומספר אסימונים בזמן אמת בזמן שתשובה נוצרת, והיכן הוצבו השכבות של מודל מקומי.",
+        "הצגת מהירויות הפרומפט והתשובה בזמן אמת עם מספר האסימונים, והיכן נטענו השכבות של המודל.",
       showGenerationDetailsKeywords:
         "פרטים מהירות אסימונים סטטיסטיקה שכבות verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "עריכת תגובה על גבי התגובות",
@@ -3357,7 +3357,7 @@ export const he = {
       accessTokenCopied: "טוקן הגישה הועתק",
       copyAccessToken: "העתק טוקן גישה",
       copyNow: "העתק כעת - הוא לא יוצג שוב.",
-      usageExamples: "דוגמאות שימוש",
+      usageExamples: "API לצ'אט",
       usageNoModel:
         "טען או הורד מודל כדי לראות דוגמאות הניתנות להרצה. בשרת זה עדיין אין מודל זמין.",
       usageTools: "כלים",
@@ -4066,9 +4066,9 @@ export const he = {
       targetModules: "מודולי יעד (Target Modules)",
       enableLora: "הפעל LoRA",
       trainWithLora: "אמן באמצעות LoRA",
-      stableRank: "דרגה יציבה",
-      memoryEfficient: "חסכוני בזיכרון",
-      weightDecomposed: "פירוק משקולות (Weight-Decomposed)",
+      stableRank: "LoRA עם ייצוב דרגה",
+      memoryEfficient: "LoRA עם אתחול SVD",
+      weightDecomposed: "LoRA עם מכפילים",
       notSupportedAppleSilicon: "אינו נתמך ב-Apple Silicon",
       doraNeedsVisionLayersOff: "כבה את אימון שכבות הראייה כדי להשתמש ב-DoRA",
       optimization: "אופטימיזציה",
@@ -4262,8 +4262,8 @@ export const he = {
       deleteTitle: "למחוק הרצת אימון?",
       deleteDescription:
         "פעולה זו תמחק לצמיתות הרצת אימון זו ואת כל המדדים שלה. פעולה זו אינה ניתנת לביטול.",
-      resumeTraining: "חדש אימון",
-      resuming: "מחדש...",
+      resumeTraining: "המשך אימון",
+      resuming: "ממשיך...",
       deleteRun: "מחק הרצה",
       loss: "Loss",
       steps: "צעדים",
@@ -5116,7 +5116,7 @@ export const he = {
       countMany: "{count} מודלים טעונים",
       pillLabel: "{count}. הצג פרטים, או גרור כדי להזיז",
       dragToMove: "גרור כדי להזיז",
-      dragHandleLabel: "הזז את המודלים הטעונים. מקשי החיצים מזיזים אותו מעט.",
+      dragHandleLabel: "גרור כדי להזיז",
       collapse: "כווץ",
       collapseLabel: "כווץ את המודלים הטעונים",
       close: "סגירה",

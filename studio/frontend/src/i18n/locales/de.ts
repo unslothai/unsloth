@@ -761,7 +761,7 @@ export const de = {
     hfToken: {
       label: "HF-Token",
       saved: "Gespeichert",
-      add: "Hinzufügen",
+      add: "Nicht festgelegt",
       savedAriaLabel: "Hugging Face-Token gespeichert",
       addAriaLabel: "Hugging Face-Token festlegen",
       savedHint:
@@ -2923,7 +2923,7 @@ export const de = {
         "Zeitstempel Uhrzeit Datum wann fertig Antwort Nachricht timestamp time clock date reply",
       showGenerationDetails: "Generierungsdetails",
       showGenerationDetailsDescription:
-        "Tempo und Tokenzahl live anzeigen, während eine Antwort gestreamt wird, und wo die Schichten eines lokalen Modells liegen.",
+        "Prompt- und Antwortgeschwindigkeit live mit Tokenzahlen anzeigen, und wo die Schichten eines Modells geladen wurden.",
       showGenerationDetailsKeywords:
         "Details Geschwindigkeit Token Statistik Schichten Auslagerung verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Antwort bearbeiten bei Antworten",
@@ -3058,7 +3058,7 @@ export const de = {
       exportingAction: "Wird exportiert...",
       exportConversations: "„Zuletzt verwendet“ und Projekte exportieren",
       exportConversationsDescription:
-        "Laden Sie Chats aus „Zuletzt verwendet“ oder zusätzlich auch Projekt-Chats als Training JSONL, CSV oder ShareGPT JSONL herunter, kombiniert oder einzeln pro Chat. Message JSONL ist nur einzeln pro Chat verfügbar.",
+        "Laden Sie Chats aus „Zuletzt verwendet“ oder zusätzlich auch Projekt-Chats als Training JSONL, CSV, ShareGPT JSONL oder Markdown herunter, kombiniert oder einzeln pro Chat. Message JSONL ist nur einzeln pro Chat verfügbar.",
       exportConversationsAction: "Exportieren",
       exportScopeRecents: "Zuletzt verwendet",
       exportScopeAll: "Zuletzt verwendet + Projekte",
@@ -3066,7 +3066,7 @@ export const de = {
       exportPerChatSuffix: "(pro Chat)",
       importChats: "Chats importieren",
       importChatsDescription:
-        "JSON-, JSONL-, NDJSON- oder CSV-Dateien in Zuletzt importieren.",
+        "JSON-, JSONL-, NDJSON-, CSV- oder Markdown-Dateien in Zuletzt importieren.",
       importChatsAction: "Importieren",
       importNoConversations: "Keine Konversationen in der Datei gefunden.",
       importedOneChat: "1 Konversation in „Zuletzt verwendet“ importiert.",
@@ -3323,7 +3323,7 @@ export const de = {
       accessTokenCopied: "Zugriffstoken kopiert",
       copyAccessToken: "Zugriffstoken kopieren",
       copyNow: "Jetzt kopieren - es wird nicht erneut angezeigt.",
-      usageExamples: "Nutzungsbeispiele",
+      usageExamples: "Chat-API",
       usageTools: "Tools",
       exampleLanguage: "Sprache",
       exampleRequest: "Anfrage",
@@ -3422,13 +3422,13 @@ export const de = {
         deviceDescription: "Die GPU antwortet schneller und gibt ihren Speicher frei, wenn das Modell entladen wird.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
-        backend: "Laufzeit",
+        backend: "Laufzeitumgebung",
         backendAuto: "Automatisch",
         backendDescription:
           "Automatisch stellt Clef über llama.cpp bereit, wenn das Modell einen GGUF-Build hat, und weicht sonst auf PyTorch aus. llama.cpp liest auch Bilder.",
         backendDescriptionMlx:
           "Automatisch stellt Clef auf Apple Silicon über MLX bereit und über llama.cpp, wenn nur der GGUF-Build des Modells geladen oder heruntergeladen ist. MLX liest Bilder nur für Clef-Modelle; llama.cpp liest auch Bilder.",
-        backendStatus: "Laufzeit: {backend}",
+        backendStatus: "Laufzeitumgebung: {backend}",
         backendNone: "nicht verfügbar",
         mediaImages: "Liest Text und Bilder.",
         mediaText: "Liest nur Text.",
@@ -3711,7 +3711,7 @@ export const de = {
       hubUnreachable: "Hugging Face ist nicht erreichbar",
       cantUseDataset: "Datensatz kann nicht verwendet werden",
       reasonInvalidHubId:
-        "Geben Sie eine gültige Hugging Face-Datensatz-ID ein: Repository oder Besitzer/Repository, nur mit Buchstaben, Zahlen, ., _ oder - (maximal 96 Zeichen pro Teil).",
+        "Geben Sie eine gültige Hugging Face-Datensatz-ID ein: Repository oder Besitzer/Repository, ohne aufeinanderfolgende Punkte oder Bindestriche und ohne .git-Endung (maximal 96 Zeichen pro Teil).",
       sourceRecipe: "Rezept",
       sourceUpload: "Upload",
       sourceLocal: "Lokal",
@@ -3744,7 +3744,7 @@ export const de = {
         "Dieses Modell entspricht nicht dem im vorherigen Schritt ausgewählten Trainingstyp.",
       reasonEmptyId: "Geben Sie eine Modell-ID oder einen lokalen Modellpfad ein.",
       reasonInvalidHubId:
-        "Geben Sie eine gültige Hugging Face-Modell-ID ein: Repository oder Besitzer/Repository, nur mit Buchstaben, Zahlen, ., _ oder - (maximal 96 Zeichen pro Teil).",
+        "Geben Sie eine gültige Hugging Face-Modell-ID ein: Repository oder Besitzer/Repository, ohne aufeinanderfolgende Punkte oder Bindestriche und ohne .git-Endung (maximal 96 Zeichen pro Teil).",
       reasonGguf: "GGUF-Modelle können nicht trainiert werden.",
       reasonAdapter:
         "Adapterausgaben können nicht als Basismodelle für das Training verwendet werden.",
@@ -4054,9 +4054,9 @@ export const de = {
       targetModules: "Ziel-Module",
       enableLora: "LoRA aktivieren",
       trainWithLora: "Mit LoRA trainieren",
-      stableRank: "Stable Rank",
-      memoryEfficient: "Speichereffizient",
-      weightDecomposed: "Gewichtszerlegt",
+      stableRank: "Rangstabilisierte LoRA",
+      memoryEfficient: "SVD-initialisierte LoRA",
+      weightDecomposed: "LoRA mit Multiplikatoren",
       notSupportedAppleSilicon: "Auf Apple Silicon nicht unterstützt",
       doraNeedsVisionLayersOff: "Training der Vision-Schichten deaktivieren, um DoRA zu nutzen",
       optimization: "Optimierung",
@@ -5094,7 +5094,7 @@ export const de = {
       countMany: "{count} Modelle geladen",
       pillLabel: "{count}. Details anzeigen oder zum Verschieben ziehen",
       dragToMove: "Zum Verschieben ziehen",
-      dragHandleLabel: "Geladene Modelle verschieben. Mit den Pfeiltasten feinjustieren.",
+      dragHandleLabel: "Zum Verschieben ziehen",
       collapse: "Einklappen",
       collapseLabel: "Geladene Modelle einklappen",
       close: "Schließen",

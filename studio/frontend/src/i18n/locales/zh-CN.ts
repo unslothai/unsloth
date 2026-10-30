@@ -755,7 +755,7 @@ export const zhCN = {
     hfToken: {
       label: "HF token",
       saved: "已保存",
-      add: "添加",
+      add: "未设置",
       savedAriaLabel: "Hugging Face token 已保存",
       addAriaLabel: "设置 Hugging Face token",
       savedHint: "Token 已保存。使用时会检查访问权限。",
@@ -2837,7 +2837,7 @@ export const zhCN = {
         "时间戳 时间 时刻 日期 完成 回复 消息 timestamp time clock date reply",
       showGenerationDetails: "生成详情",
       showGenerationDetailsDescription:
-        "在回复生成时实时显示速度和 token 数，并显示本地模型各层的放置位置。",
+        "实时显示提示词和回复速度及 token 数，并显示模型各层的加载位置。",
       showGenerationDetailsKeywords:
         "详情 速度 统计 层 卸载 verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "在回复上显示编辑回复",
@@ -2971,7 +2971,7 @@ export const zhCN = {
       exportingAction: "导出中...",
       exportConversations: "导出最近对话与项目",
       exportConversationsDescription:
-        "将最近对话（或加上项目内对话）导出为 Training JSONL、CSV 或 ShareGPT JSONL，可合并为单个文件或每个对话一个文件。Message JSONL 仅支持每个对话单独导出。",
+        "将最近对话（或加上项目内对话）导出为 Training JSONL、CSV、ShareGPT JSONL 或 Markdown，可合并为单个文件或每个对话一个文件。Message JSONL 仅支持每个对话单独导出。",
       exportConversationsAction: "导出",
       exportScopeRecents: "最近对话",
       exportScopeAll: "最近对话 + 项目",
@@ -2979,7 +2979,7 @@ export const zhCN = {
       exportPerChatSuffix: "（每个对话）",
       importChats: "导入对话",
       importChatsDescription:
-        "将 JSON、JSONL、NDJSON 或 CSV 文件导入到最近对话。",
+        "将 JSON、JSONL、NDJSON、CSV 或 Markdown 文件导入到最近对话。",
       importChatsAction: "导入",
       importNoConversations: "文件中未找到对话。",
       importedOneChat: "已导入 1 个对话到最近对话。",
@@ -3221,7 +3221,7 @@ export const zhCN = {
       accessTokenCopied: "访问 token 已复制",
       copyAccessToken: "复制访问 token",
       copyNow: "请立即复制，此 token 不会再次显示。",
-      usageExamples: "使用示例",
+      usageExamples: "对话 API",
       usageTools: "工具",
       exampleLanguage: "语言",
       exampleRequest: "请求",
@@ -3587,7 +3587,7 @@ export const zhCN = {
       couldntScan: "无法扫描本地数据集",
       someLocationsUnscanned: "无法扫描部分数据集位置。",
       noLocalDatasets:
-        "此设备上还没有数据集。请从模型中心下载数据集、在数据配方中创建数据集，或上传文件。",
+        "此设备上还没有数据集。请从 Hub 下载数据集、在数据配方中创建数据集，或上传文件。",
       openDataRecipes: "打开数据配方",
       searchingHub: "正在搜索 Hugging Face…",
       noDatasetsFound: "未找到数据集。",
@@ -3596,7 +3596,7 @@ export const zhCN = {
       hubUnreachable: "无法连接 Hugging Face",
       cantUseDataset: "无法使用此数据集",
       reasonInvalidHubId:
-        "请输入有效的 Hugging Face 数据集 ID：repo 或 owner/repo。仅可使用字母、数字、.、_ 或 -（每部分最多 96 个字符）。",
+        "请输入有效的 Hugging Face 数据集 ID：repo 或 owner/repo，不能包含连续的句点或连字符，也不能以 .git 结尾（每部分最多 96 个字符）。",
     },
     modelPicker: {
       noun: "模型",
@@ -3628,7 +3628,7 @@ export const zhCN = {
       cantUseModel: "无法使用此模型进行训练",
       reasonTypeMismatch: "此模型与上一步选择的训练类型不匹配。",
       reasonInvalidHubId:
-        "请输入有效的 Hugging Face 模型 ID：repo 或 owner/repo。仅可使用字母、数字、.、_ 或 -（每部分最多 96 个字符）。",
+        "请输入有效的 Hugging Face 模型 ID：repo 或 owner/repo，不能包含连续的句点或连字符，也不能以 .git 结尾（每部分最多 96 个字符）。",
       reasonEmptyId: "请输入模型 ID 或本地模型路径。",
       reasonGguf: "GGUF 模型不能用于训练。",
       reasonAdapter: "适配器输出不能作为基础训练模型。",
@@ -3910,9 +3910,9 @@ export const zhCN = {
       targetModules: "目标模块",
       enableLora: "启用 LoRA",
       trainWithLora: "使用 LoRA 训练",
-      stableRank: "稳定 Rank",
-      memoryEfficient: "节省内存",
-      weightDecomposed: "权重分解",
+      stableRank: "Rank 稳定化 LoRA",
+      memoryEfficient: "SVD 初始化的 LoRA",
+      weightDecomposed: "带乘数的 LoRA",
       notSupportedAppleSilicon: "Apple 芯片暂不支持",
       doraNeedsVisionLayersOff: "关闭视觉层训练以使用 DoRA",
       optimization: "优化",
@@ -4599,7 +4599,7 @@ export const zhCN = {
       tryAgain: "重试",
     },
     sections: {
-      items: "项目",
+      items: "条目",
     },
     breadcrumb: "路径导航",
     searchLibrary: "搜索资料库",
@@ -4920,7 +4920,7 @@ export const zhCN = {
       countMany: "已加载 {count} 个模型",
       pillLabel: "{count}。显示详情，或拖动以移动",
       dragToMove: "拖动以移动",
-      dragHandleLabel: "移动已加载的模型面板。方向键可微调位置。",
+      dragHandleLabel: "拖动以移动",
       collapse: "折叠",
       collapseLabel: "折叠已加载的模型",
       close: "关闭",
