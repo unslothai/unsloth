@@ -35,7 +35,6 @@ def _registry():
             torch.cuda.is_available = is_available
     from unsloth_zoo import tiling_registry
 
-    tiling_registry.set_engine(os.environ.get("UNSLOTH_TILED_ENGINE", "auto"))
     return tiling_registry
 
 

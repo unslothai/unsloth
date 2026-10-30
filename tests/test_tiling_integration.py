@@ -47,12 +47,7 @@ def _model(n = 2):
 def _env(monkeypatch):
     monkeypatch.delenv("UNSLOTH_TILED_MLP", raising = False)
     monkeypatch.delenv("UNSLOTH_TILED_MLP_MODULES", raising = False)
-    set_engine = getattr(registry, "set_engine", None)
-    if set_engine is not None:
-        set_engine("checkpoint")
     yield
-    if set_engine is not None:
-        set_engine(None)
 
 
 @pytest.mark.parametrize(
