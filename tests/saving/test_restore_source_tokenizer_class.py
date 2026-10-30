@@ -44,7 +44,10 @@ def _read(path):
 def test_restores_class_from_local_source(tmp_path):
     restore = _load_restore_helper()
     _write(tmp_path / "base" / "tokenizer_config.json", {"tokenizer_class": "Qwen2Tokenizer"})
-    _write(tmp_path / "out" / "tokenizer_config.json", {"tokenizer_class": "TokenizersBackend", "other": 1})
+    _write(
+        tmp_path / "out" / "tokenizer_config.json",
+        {"tokenizer_class": "TokenizersBackend", "other": 1},
+    )
     tokenizer = types.SimpleNamespace(name_or_path = str(tmp_path / "base"))
 
     restore(tokenizer, tmp_path / "out")
@@ -76,7 +79,9 @@ def test_leaves_specific_classes_alone(tmp_path):
 
     restore(tokenizer, tmp_path / "out")
 
-    assert _read(tmp_path / "out" / "tokenizer_config.json")["tokenizer_class"] == "Qwen3_5Tokenizer"
+    assert (
+        _read(tmp_path / "out" / "tokenizer_config.json")["tokenizer_class"] == "Qwen3_5Tokenizer"
+    )
 
 
 def test_keeps_tokenizers_backend_when_source_has_no_specific_class(tmp_path):
@@ -87,7 +92,9 @@ def test_keeps_tokenizers_backend_when_source_has_no_specific_class(tmp_path):
 
     restore(tokenizer, tmp_path / "out")
 
-    assert _read(tmp_path / "out" / "tokenizer_config.json")["tokenizer_class"] == "TokenizersBackend"
+    assert (
+        _read(tmp_path / "out" / "tokenizer_config.json")["tokenizer_class"] == "TokenizersBackend"
+    )
 
 
 def test_uncached_hub_source_is_a_no_op(tmp_path):
@@ -97,15 +104,22 @@ def test_uncached_hub_source_is_a_no_op(tmp_path):
 
     restore(tokenizer, tmp_path / "out")
 
-    assert _read(tmp_path / "out" / "tokenizer_config.json")["tokenizer_class"] == "TokenizersBackend"
+    assert (
+        _read(tmp_path / "out" / "tokenizer_config.json")["tokenizer_class"] == "TokenizersBackend"
+    )
 
 
 def test_filename_prefix(tmp_path):
     restore = _load_restore_helper()
     _write(tmp_path / "base" / "tokenizer_config.json", {"tokenizer_class": "Qwen2Tokenizer"})
-    _write(tmp_path / "out" / "adapter-tokenizer_config.json", {"tokenizer_class": "TokenizersBackend"})
+    _write(
+        tmp_path / "out" / "adapter-tokenizer_config.json", {"tokenizer_class": "TokenizersBackend"}
+    )
     tokenizer = types.SimpleNamespace(name_or_path = str(tmp_path / "base"))
 
     restore(tokenizer, tmp_path / "out", filename_prefix = "adapter")
 
-    assert _read(tmp_path / "out" / "adapter-tokenizer_config.json")["tokenizer_class"] == "Qwen2Tokenizer"
+    assert (
+        _read(tmp_path / "out" / "adapter-tokenizer_config.json")["tokenizer_class"]
+        == "Qwen2Tokenizer"
+    )
