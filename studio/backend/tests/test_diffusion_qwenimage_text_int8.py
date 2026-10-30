@@ -25,6 +25,7 @@ _UNSCOPED = {
 @pytest.fixture(autouse = True)
 def _default_switch(monkeypatch, request):
     monkeypatch.delenv(tq.INT8_TEXT_STREAM_ENV, raising = False)
+    monkeypatch.delenv(tq.INT8_MODULATION_ENV, raising = False)
     if request.node.name in _UNSCOPED:
         yield
         return
@@ -272,6 +273,8 @@ def test_local_prequant_cache_key_follows_the_switch(monkeypatch):
     with tq.int8_text_stream_scope(False):
         resident, resident_tokens = key()
     monkeypatch.setenv(tq.INT8_TEXT_STREAM_ENV, "0")
+    # The streamed weight-only modulations key separately (test_diffusion_qwenimage_mod_int8.py).
+    monkeypatch.setenv(tq.INT8_MODULATION_ENV, "0")
     off, off_tokens = key()
     assert on != off
     assert "add_q_proj" in off_tokens and "add_q_proj" not in on_tokens

@@ -377,3 +377,45 @@ def test_a_lease_waits_out_a_load_that_passed_the_fence_first(monkeypatch):
     release.set()
     own.join(5)
     assert benchmarks_routes._loads_in_flight == {}
+
+
+def test_a_load_left_running_by_its_client_still_holds_off_a_lease(monkeypatch):
+    import asyncio
+
+    from core.inference.llama_keepwarm import detached_work_hold
+    from routes import inference as inference_routes
+
+    monkeypatch.setattr(benchmarks_routes, "_lease", None)
+    monkeypatch.setattr(benchmarks_routes, "_loads_in_flight", {})
+    monkeypatch.setattr(inference_routes, "_TUNNEL_KEEPALIVE_AFTER_S", 0.01)
+    mine = {"holder": "tab-aaaaaaaa", "kind": "sweep"}
+
+    async def main():
+        finish = asyncio.Event()
+
+        async def slow_load():
+            await finish.wait()
+            return {"ok": True}
+
+        async def endpoint(scope, receive, send):
+            # The padded answer is returned, then the client goes away: the body is never read.
+            await inference_routes._tunnel_safe_json(slow_load(), label = "Model load")
+
+        app = benchmarks_routes.BenchmarkTrafficMiddleware(endpoint)
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/inference/load",
+            "headers": [(b"authorization", b"Bearer t")],
+        }
+        await app(scope, None, None)
+        assert detached_work_hold.get() is None
+        held = benchmarks_routes._loads_pending(mine["holder"])
+        finish.set()
+        await asyncio.sleep(0.05)
+        return held
+
+    assert asyncio.run(main())
+    assert benchmarks_routes._loads_in_flight == {}
+    client = _client()
+    assert client.post("/api/benchmarks/lease", json = mine).status_code == 200

@@ -1721,6 +1721,38 @@ def test_studios_own_runs_do_not_count_as_someone_using_it(monkeypatch):
     assert not keepwarm.idle_for(300)
 
 
+def _freshly_started_keepwarm():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_fresh_llama_keepwarm", llama_keepwarm.__file__)
+    fresh = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fresh)
+    return fresh
+
+
+def test_a_freshly_started_studio_counts_as_away_until_someone_chats():
+    away = scheduler_module._AWAY_SECONDS
+    fresh = _freshly_started_keepwarm()
+    assert fresh.idle_for(away)
+    with fresh.unattended_activity():
+        fresh._note_activity()
+    assert fresh.idle_for(away)
+    fresh._note_pending()
+    assert not fresh.idle_for(away)
+    fresh._note_start()
+    assert not fresh.idle_for(away)
+    fresh._note_end()
+    assert not fresh.idle_for(away)
+
+
+def test_a_model_loaded_right_after_start_counts_as_in_use():
+    fresh = _freshly_started_keepwarm()
+    stamp = fresh.attended_stamp()
+    fresh.note_model_loaded()
+    assert fresh.attended_stamp() != stamp
+    assert not fresh.idle_for(scheduler_module._AWAY_SECONDS)
+
+
 def test_the_idle_loop_noticing_a_swap_does_not_count_as_someone_using_studio(monkeypatch):
     import inspect
     import time

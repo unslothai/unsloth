@@ -2969,9 +2969,14 @@ async def _tunnel_safe_json(coro, *, label: str):
     """Pad a slow call's body; early failures keep their status; a disconnect does not cancel the work."""
     from hub.utils.host_paths import restore_inventory_handles
 
+    from core.inference.llama_keepwarm import detached_work_hold
+
     task = asyncio.ensure_future(coro)
     # Retrieve the exception to avoid 'never retrieved' logs; result() below still raises.
     task.add_done_callback(lambda t: t.cancelled() or t.exception())
+    hold = detached_work_hold.get()
+    if hold is not None:
+        task.add_done_callback(lambda _t, release = hold(): release())
     done, _ = await asyncio.wait({task}, timeout = _TUNNEL_KEEPALIVE_AFTER_S)
     if done:
         # Here rather than at each `return LoadResponse`: the one funnel every answer passes.
@@ -10866,6 +10871,7 @@ async def _maybe_auto_switch_model(
         resolve_trusted_cached_local_gguf,
         warm_index_soon,
     )
+    from utils.security.remote_code_approvals import approved_local_fingerprint
     from core.inference.llama_keepwarm import (
         get_last_unloaded_model,
         inference_lifecycle_gate,
@@ -11372,6 +11378,14 @@ async def _maybe_auto_switch_model(
                         param = "model",
                     ),
                 ) from None
+        # Stash restores too: the load carries this account's approval of the code on disk.
+        remote_code_fingerprint = (
+            None
+            if target_is_gguf
+            else await asyncio.to_thread(
+                approved_local_fingerprint, current_subject, (override_id, target_id), target_id
+            )
+        )
         key = _switch_key(override_id, variant)
         _note_switch_waiter(key, 1)
         waiter_noted = True
@@ -11460,6 +11474,11 @@ async def _maybe_auto_switch_model(
                         )
                         if caller_hf_token:
                             load_kwargs["hf_token"] = caller_hf_token
+                        if remote_code_fingerprint:
+                            load_kwargs["trust_remote_code"] = True
+                            load_kwargs["approved_remote_code_fingerprint"] = (
+                                remote_code_fingerprint
+                            )
                         if beside:
                             load_kwargs["alongside"] = True
                         saved_gpu_ids = load_kwargs.get("gpu_ids")
