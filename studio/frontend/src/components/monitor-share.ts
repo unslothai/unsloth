@@ -35,12 +35,19 @@ export function memoryShare(
   return { unsloth, other: used - unsloth, free: totalGb - used };
 }
 
-/** Loaded models that report a size, largest first. */
+/** Loaded models that report a size, largest first. `gpuOnly`: skip models held in host RAM (VRAM split). */
 export function modelShares(
-  entries: readonly { id: string; name: string; label?: string; residentMib?: number }[],
+  entries: readonly {
+    id: string;
+    name: string;
+    label?: string;
+    residentMib?: number;
+    residentOnHost?: boolean;
+  }[],
+  gpuOnly = false,
 ): ModelShare[] {
   return entries
-    .filter((entry) => (entry.residentMib ?? 0) > 0)
+    .filter((entry) => (entry.residentMib ?? 0) > 0 && !(gpuOnly && entry.residentOnHost))
     .map((entry) => ({
       id: entry.id,
       // "unsloth/Qwen3.5-0.8B-GGUF" -> "Qwen3.5-0.8B-GGUF": the owner only eats the row's width.

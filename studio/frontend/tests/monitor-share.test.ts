@@ -99,3 +99,15 @@ test("on VRAM the rest is unattributed: Unsloth's KV cache and training land the
     assert.match(readSrc(file), /memorySegments\(vramShare, breakdown, false\)/);
   }
 });
+
+test("the VRAM split skips a model held in host RAM, which the RAM bar already counts", () => {
+  const entries = [
+    { id: "gpu", name: "a/On-GPU", residentMib: 4096 },
+    { id: "cpu", name: "a/On-CPU", residentMib: 3072, residentOnHost: true },
+  ];
+  assert.deepEqual(modelShares(entries, true).map((model) => model.id), ["gpu"]);
+  assert.deepEqual(modelShares(entries).map((model) => model.id), ["gpu", "cpu"]);
+  for (const file of ["components/floating-monitor.tsx", "features/settings/tabs/resources-tab.tsx"]) {
+    assert.match(readSrc(file), /modelShares\(loadedModels, discreteVram\)/);
+  }
+});

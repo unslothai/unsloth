@@ -672,3 +672,24 @@ test("an Audio page already on a workflow the model runs is left there", () => {
     label: "Audio",
   });
 });
+
+test("a CPU-run model is marked as held in host RAM, so the VRAM split can skip it", () => {
+  const gguf = (resident_on_gpu: unknown) =>
+    describeInferenceStatus(
+      inferenceStatus({
+        active_model: "unsloth/gemma-3-4b-it-GGUF",
+        is_gguf: true,
+        loaded: ["unsloth/gemma-3-4b-it-GGUF"],
+        resident_mib: 3072,
+        resident_on_gpu,
+      }),
+    )[0];
+  assert.equal(gguf(false).residentOnHost, true);
+  assert.equal(gguf(true).residentOnHost, undefined);
+  // An older server sends no flag: unknown stays counted where it was.
+  assert.equal(gguf(undefined).residentOnHost, undefined);
+  const image = (device: string) =>
+    describeDiffusionStatus({ loaded: true, repo_id: "a/b", resident_mib: 2048, device } as never)[0];
+  assert.equal(image("cpu").residentOnHost, true);
+  assert.equal(image("cuda:0").residentOnHost, undefined);
+});

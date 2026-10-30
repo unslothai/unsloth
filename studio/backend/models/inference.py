@@ -2317,6 +2317,10 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
         None,
         description = "Best-effort memory the resident model holds, in MiB; null when unknown.",
     )
+    resident_on_gpu: Optional[bool] = Field(
+        None,
+        description = "True when resident_mib is GPU buffers, false when it is host RAM (a CPU run); null when unknown.",
+    )
     active_model: Optional[str] = Field(
         None, description = "Currently active model display identifier"
     )

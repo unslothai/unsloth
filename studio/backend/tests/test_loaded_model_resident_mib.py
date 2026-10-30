@@ -167,3 +167,32 @@ def test_a_failing_probe_leaves_the_size_unknown(monkeypatch):
 def test_a_non_gguf_status_is_not_sized_from_llama(monkeypatch):
     backend = SimpleNamespace(is_loaded = True, resident_memory_mib = lambda: 2048)
     assert _run_status(monkeypatch, backend, is_gguf = False).resident_mib is None
+
+
+
+def test_status_says_whether_the_size_is_gpu_buffers_or_host_rss(monkeypatch):
+    # A CPU run on a discrete-GPU host reports RSS; the monitor must not bill it to VRAM.
+    on_gpu = SimpleNamespace(
+        is_loaded = True,
+        resident_memory_mib = lambda: 4096,
+        reclaimable_gpu_memory_gb = lambda: {0: 4.0},
+    )
+    status = _run_status(monkeypatch, on_gpu)
+    assert (status.resident_mib, status.resident_on_gpu) == (4096, True)
+    on_cpu = SimpleNamespace(
+        is_loaded = True,
+        resident_memory_mib = lambda: 3072,
+        reclaimable_gpu_memory_gb = lambda: None,
+    )
+    status = _run_status(monkeypatch, on_cpu)
+    assert (status.resident_mib, status.resident_on_gpu) == (3072, False)
+
+
+def test_an_unknown_size_says_nothing_about_its_pool(monkeypatch):
+    backend = SimpleNamespace(
+        is_loaded = True,
+        resident_memory_mib = lambda: None,
+        reclaimable_gpu_memory_gb = lambda: None,
+    )
+    status = _run_status(monkeypatch, backend)
+    assert (status.resident_mib, status.resident_on_gpu) == (None, None)

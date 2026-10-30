@@ -46,6 +46,8 @@ export type LoadedModelEntry = {
   label?: string;
   servingCheckpoint?: string;
   residentMib?: number;
+  /** `residentMib` is host RAM (a CPU run), so it is not VRAM on a discrete GPU. */
+  residentOnHost?: boolean;
   /** One short line: quantisation, family, device. */
   detail: string;
   /** Only on a `tts` row: the Audio page workflows that run the model, first one first. */
@@ -244,6 +246,7 @@ export function describeInferenceStatus(
         status.is_vision ? "Vision" : null,
       ),
       ...residentMib(status.resident_mib),
+      ...(status.resident_on_gpu === false ? { residentOnHost: true } : {}),
     });
   }
   // /status reports the whole load, so loads started in another tab still show.
@@ -336,6 +339,7 @@ export function describeDiffusionStatus(
       name: status.repo_id,
       ...(status.display_repo_id ? { label: status.display_repo_id } : {}),
       ...residentMib(status.resident_mib),
+      ...(status.device === "cpu" ? { residentOnHost: true } : {}),
       detail: joinDetail(
         status.family,
         // Only when the GGUF ran: a dense fast path replaces it with a torchao build.
@@ -363,6 +367,7 @@ export function describeVideoStatus(
       name: status.repo_id,
       ...(status.display_repo_id ? { label: status.display_repo_id } : {}),
       ...residentMib(status.resident_mib),
+      ...(status.device === "cpu" ? { residentOnHost: true } : {}),
       detail: joinDetail(
         status.family,
         status.model_kind === "gguf" || status.gguf_variant ? "GGUF" : null,
@@ -549,6 +554,7 @@ export function sameLoadedModels(
       entry.sttEngine === other.sttEngine &&
       entry.servingCheckpoint === other.servingCheckpoint &&
       entry.residentMib === other.residentMib &&
+      entry.residentOnHost === other.residentOnHost &&
       (entry.workflows ?? []).join() === (other.workflows ?? []).join()
     );
   });
