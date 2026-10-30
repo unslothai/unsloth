@@ -423,8 +423,7 @@ class MfluxRuntime:
         return model
 
     def apply_loras(self, model: Any, loras: list[tuple[str, float]]) -> None:
-        """Replace the transformer's adapters with ``loras`` ((safetensors path, scale) pairs), unbaked: baking
-        would requantize the converted layers and lose part of the update. An empty list restores the base layers."""
+        """Swap in ``loras`` ((path, scale) pairs) unbaked, since baking requantizes; [] restores the base layers."""
         import mlx.core as mx
         from mflux.models.common.lora.mapping.lora_loader import LoRALoader
         from mflux.models.z_image.weights.z_image_lora_mapping import ZImageLoRAMapping
