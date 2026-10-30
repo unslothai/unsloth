@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Minimal HTML-to-Markdown converter using only the standard library.
-
-Replaces the external ``html2text`` (GPL-3.0) dependency with a ~250-line
-``html.parser.HTMLParser`` subclass. Covers headings, links, bold/italic,
-lists, tables, blockquotes, code blocks, and entity decoding.
-
-``main_content=True`` also applies a readability-style heuristic: scope
-conversion to the page's ``<article>`` (else ``<main>``) subtree when it
-carries substantial text, and strip known boilerplate fragments (skip-links,
-error placeholders, session banners, cookie prompts) from the result.
-"""
+"""Stdlib HTML-to-Markdown (replaces GPL html2text); main_content=True scopes to article/main."""
 
 from __future__ import annotations
 
@@ -345,6 +334,7 @@ _MAX_REPEATED_CELL_CHARS = 200
 _MIN_SCOPE_SPAN_CHARS = 256
 _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
 
+_BLANK_LINE_RUN = re.compile(r"\n\n\n+")
 # citation lists after words use commas or en dashes; hyphens, minuses, and thousands stay exponents
 _CITATION_LIST = re.compile(r"\d+(?:\s*[–,]\s*\d+)+")
 _THOUSANDS = re.compile(r"\d{1,3}(?:,\d{3})+")
@@ -809,6 +799,7 @@ class _MarkdownRenderer(HTMLParser):
         page_span_limit: int | None = None,
     ):
         super().__init__(convert_charrefs = False)
+        self._record: list | None = None
         # parser positions of buttons that carry their heading title, found by _TitleButtonScan
         self.title_buttons: frozenset[tuple[int, int]] = frozenset()
         self._title_scan: _TitleButtonScan | None = None
@@ -1078,7 +1069,7 @@ class _MarkdownRenderer(HTMLParser):
     def _prefix_blockquote(self, content: str) -> str:
         """Prefix every line of *content* with ``> ``."""
         content = re.sub(r"[ \t]+$", "", content, flags = re.MULTILINE)
-        content = re.sub(r"\n{3,}", "\n\n", content).strip()
+        content = _BLANK_LINE_RUN.sub("\n\n", content).strip()
         if not content:
             return ""
         lines = content.split("\n")
@@ -1577,6 +1568,8 @@ class _MarkdownRenderer(HTMLParser):
                 self._close_rendered_tag(section[1])
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self._record is not None:
+            self._record.append((0, (tag, tuple(attrs), *self.getpos())))
         tag = tag.lower()
         if self._title_scan is not None:
             self._title_scan.starttag(tag, attrs, self.getpos())
@@ -1768,6 +1761,8 @@ class _MarkdownRenderer(HTMLParser):
             return
 
     def handle_endtag(self, tag: str) -> None:
+        if self._record is not None:
+            self._record.append((1, tag))
         tag = tag.lower()
         if self._title_scan is not None:
             self._title_scan.endtag(tag)
@@ -1958,6 +1953,8 @@ class _MarkdownRenderer(HTMLParser):
         return self._scope_tags is not None and self._scope_depth == 0
 
     def handle_data(self, data: str) -> None:
+        if self._record is not None:
+            self._record.append((2, data))
         if self._title_scan is not None:
             self._title_scan.data(data)
         if self._text_suppressed():
@@ -1984,6 +1981,8 @@ class _MarkdownRenderer(HTMLParser):
         self._emit(text)
 
     def handle_entityref(self, name: str) -> None:
+        if self._record is not None:
+            self._record.append((3, name))
         text = html.unescape(f"&{name};")
         if self._title_scan is not None:
             self._title_scan.data(text)
@@ -1993,6 +1992,8 @@ class _MarkdownRenderer(HTMLParser):
         self._emit(text)
 
     def handle_charref(self, name: str) -> None:
+        if self._record is not None:
+            self._record.append((4, name))
         text = html.unescape(f"&#{name};")
         if self._title_scan is not None:
             self._title_scan.data(text)
@@ -2000,6 +2001,22 @@ class _MarkdownRenderer(HTMLParser):
             return
         self._count_header_text(text)
         self._emit(text)
+
+    def replay(self, events: list) -> None:
+        """Re-run recorded handler calls in order, restoring ``getpos()`` at each start tag."""
+        start, end, data = self.handle_starttag, self.handle_endtag, self.handle_data
+        for kind, arg in events:
+            if kind == 2:
+                data(arg)
+            elif kind == 0:
+                tag, attrs, self.lineno, self.offset = arg
+                start(tag, list(attrs))
+            elif kind == 1:
+                end(arg)
+            elif kind == 3:
+                self.handle_entityref(arg)
+            else:
+                self.handle_charref(arg)
 
     def flush_pending(self) -> None:
         """Flush open side-buffers into ``_out`` after close(), recovering truncated HTML."""
@@ -2142,7 +2159,20 @@ def _strip_boilerplate_lines(text: str, site_links: SiteLinks | None = None) -> 
             continue
         out.append(line)
     # Collapse blank runs the dropped lines may have left behind.
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+    return _BLANK_LINE_RUN.sub("\n\n", "\n".join(out)).strip()
+
+
+class _TokenLog:
+    """Handler calls of one document, recorded by the first fed pass and replayed by later ones.
+    Sound only while the renderer overrides just these five handlers and reads parser state only
+    via ``getpos()`` in ``handle_starttag``."""
+
+    __slots__ = ("events", "armed")
+
+    def __init__(self, armed: bool) -> None:
+        self.events: list | None = None
+        # record only when html_to_markdown knows another pass follows
+        self.armed = armed
 
 
 def _new_renderer(
@@ -2152,6 +2182,7 @@ def _new_renderer(
     site_links: SiteLinks | None = None,
     span_char_limit: int | None = None,
     header_decisions: list[bool] | None = None,
+    tokens: _TokenLog | None = None,
 ) -> _MarkdownRenderer:
     def build(
         title_buttons: frozenset[tuple[int, int]], scan: _TitleButtonScan | None
@@ -2166,8 +2197,16 @@ def _new_renderer(
         )
         renderer.title_buttons = title_buttons
         renderer._title_scan = scan
-        renderer.feed(source_html)
-        renderer.close()
+        if tokens is None:
+            renderer.feed(source_html)
+            renderer.close()
+        elif tokens.events is None:
+            renderer._record = [] if tokens.armed else None
+            renderer.feed(source_html)
+            renderer.close()
+            tokens.events, renderer._record = renderer._record, None
+        else:
+            renderer.replay(tokens.events)
         renderer.flush_pending()
         return renderer
 
@@ -2202,6 +2241,7 @@ def _select_main_scope_render(
     tag: str,
     site_links: SiteLinks | None,
     span_char_limit: int | None = None,
+    tokens: _TokenLog | None = None,
 ) -> tuple[int, str, int, int]:
     """return the best eligible score, subtree, count, and visible length; cap header credit at retained prose."""
     renderer = _new_renderer(
@@ -2210,6 +2250,7 @@ def _select_main_scope_render(
         strip_header = True,
         site_links = site_links,
         span_char_limit = span_char_limit,
+        tokens = tokens,
     )
     # generated span cells must not lift a scope past the content gate or rank; only span pages pay this second pass
     scoring = (
@@ -2219,6 +2260,7 @@ def _select_main_scope_render(
             strip_header = True,
             span_char_limit = 0,
             header_decisions = renderer.header_decisions,
+            tokens = tokens,
         )
         if renderer._has_generated_spans
         else renderer
@@ -2228,7 +2270,11 @@ def _select_main_scope_render(
     best_visible = 0
     for i, seg in enumerate(renderer.scope_segments):
         rendered = _strip_boilerplate_lines(_cleanup(seg), site_links)
-        scored = _strip_boilerplate_lines(_cleanup(scoring.scope_segments[i]), site_links)
+        scored = (
+            rendered
+            if scoring is renderer
+            else _strip_boilerplate_lines(_cleanup(scoring.scope_segments[i]), site_links)
+        )
         if site_links is not None:
             scored = site_links.clean(scored)
         visible = _visible_chars(scored)
@@ -2249,9 +2295,12 @@ def _select_main_scope_render(
 
 
 def _render_main_document(
-    source_html: str, site_links: SiteLinks | None, span_char_limit: int
+    source_html: str,
+    site_links: SiteLinks | None,
+    span_char_limit: int,
+    tokens: _TokenLog | None = None,
 ) -> tuple[int, str]:
-    renderer = _new_renderer(source_html, None, True, site_links, span_char_limit)
+    renderer = _new_renderer(source_html, None, True, site_links, span_char_limit, tokens = tokens)
     rendered = _strip_boilerplate_lines(_cleanup("".join(renderer._out)), site_links)
     scoring = (
         _new_renderer(
@@ -2260,11 +2309,16 @@ def _render_main_document(
             True,
             span_char_limit = 0,
             header_decisions = renderer.header_decisions,
+            tokens = tokens,
         )
         if renderer._has_generated_spans
         else renderer
     )
-    scored = _strip_boilerplate_lines(_cleanup("".join(scoring._out)), site_links)
+    scored = (
+        rendered
+        if scoring is renderer
+        else _strip_boilerplate_lines(_cleanup("".join(scoring._out)), site_links)
+    )
     if site_links is not None:
         scored = site_links.clean(scored)
     return _visible_chars(scored), rendered
@@ -2275,22 +2329,27 @@ def _visible_chars(text: str) -> int:
     return sum(_visible_len(line) for line in text.split("\n") if line.strip())
 
 
+_BACKTICK_RUN = re.compile(r"`+")
+
+
 def _fence_for(raw: str) -> str:
     """Fence long enough to survive backticks in *raw*, as CommonMark requires:
     a literal ``` line inside the block would otherwise close it early."""
-    longest = run = 0
-    for char in raw:
-        run = run + 1 if char == "`" else 0
-        longest = max(longest, run)
-    return "`" * max(3, longest + 1)
+    if "`" not in raw:
+        return "```"
+    return "`" * max(3, max(map(len, _BACKTICK_RUN.findall(raw))) + 1)
 
 
 def _visible_len(line: str) -> int:
     """Length of *line* without Markdown link destinations. A tracking URL is not
     prose: a card holding one [Read](/x?<300 bytes>) otherwise scored 339 visible
-    characters off 4 and displaced the article. Scanned, so no backtracking."""
+    characters off 4 and displaced the article. Linear: once a destination fails to
+    close, the rest are answered from one table instead of a rescan each."""
+    if "[" not in line and "\\" not in line:
+        return len(line)
     total, i, n = 0, 0, len(line)
     open_bracket = False
+    closes = None
     while i < n:
         if line[i] == "\\":
             total += 2
@@ -2300,15 +2359,22 @@ def _visible_len(line: str) -> int:
             open_bracket = True
         # With no opening bracket, "](" is literal and the parens after it are prose.
         if open_bracket and line[i] == "]" and i + 1 < n and line[i + 1] == "(":
-            # Destinations may hold balanced or escaped parens, so the first ) does not end them.
-            j, depth = i + 2, 1
-            while j < n and depth:
-                char = line[j]
-                if char == "\\":
-                    j += 2
-                    continue
-                depth += (char == "(") - (char == ")")
-                j += 1
+            if closes is None:
+                # Destinations may hold balanced or escaped parens, so the first ) does not end them.
+                j, depth = i + 2, 1
+                while j < n and depth:
+                    char = line[j]
+                    if char == "\\":
+                        j += 2
+                        continue
+                    depth += (char == "(") - (char == ")")
+                    j += 1
+                if depth:
+                    # Unclosed: later candidates would rescan this tail, so index it once.
+                    closes = _destination_ends(line)
+            else:
+                j = closes.get(i + 2, -1)
+                depth = j < 0
             if depth:
                 total += 1
                 i += 1
@@ -2321,8 +2387,41 @@ def _visible_len(line: str) -> int:
     return total
 
 
+def _destination_ends(line: str) -> dict:
+    """End of the destination scan from each reachable position, for scans that close. All scans
+    step over the same positions, so a scan from p closes where the paren-depth prefix sum first
+    drops below its value at p."""
+    steps: list[int] = []
+    sums: list[int] = []
+    depth, k, n = 0, 0, len(line)
+    while k < n:
+        steps.append(k)
+        sums.append(depth)
+        char = line[k]
+        if char == "\\":
+            k += 2
+            continue
+        depth += (char == "(") - (char == ")")
+        k += 1
+    ends: dict = {}
+    first_at: dict = {}  # prefix sum -> earliest later step index
+    sums.append(depth)
+    for m in range(len(steps), -1, -1):
+        if m < len(steps):
+            after = first_at.get(sums[m] - 1)
+            if after is not None:
+                ends[steps[m]] = steps[after - 1] + 1
+        first_at[sums[m]] = m
+    return ends
+
+
 # Scoped conversions shorter than this are rejected as main content, e.g. an empty article stub
 _MIN_MAIN_CONTENT_CHARS = 200
+# absent text = no such tag can tokenize, so that scope finds nothing and its pass is skipped
+_ARTICLE_START = re.compile(r"<article", re.IGNORECASE)
+_MAIN_START = re.compile(r"<main", re.IGNORECASE)
+# absent text = no generated span cells, so a pass needs no span-free scoring re-render
+_SPAN_ATTR = re.compile(r"(?:col|row)span", re.IGNORECASE)
 
 
 def html_to_markdown(
@@ -2340,16 +2439,27 @@ def html_to_markdown(
     rendered = ""
     full_rendered = ""
     if main_content:
-        length, rendered, articles, article_visible = _select_main_scope_render(
-            source_html, "article", site_links, span_limit
-        )
-        if length < _MIN_MAIN_CONTENT_CHARS or articles > 1:
-            main_length, main_rendered, _, main_visible = _select_main_scope_render(
-                source_html, "main", site_links, span_limit
+        has_article = _ARTICLE_START.search(source_html) is not None
+        # without <article> the first pass may be followed by a title rescan or the whole-page pass
+        tokens = _TokenLog(armed = not has_article)
+        if has_article:
+            length, rendered, articles, article_visible = _select_main_scope_render(
+                source_html, "article", site_links, span_limit, tokens
             )
+        else:
+            length, rendered, articles, article_visible = 0, "", 0, 0
+        if length < _MIN_MAIN_CONTENT_CHARS or articles > 1:
+            if _MAIN_START.search(source_html) is not None:
+                main_length, main_rendered, _, main_visible = _select_main_scope_render(
+                    source_html, "main", site_links, span_limit, tokens
+                )
+            else:
+                main_length, main_rendered, main_visible = 0, "", 0
+                # the whole-page pass follows and re-renders span pages to score them
+                tokens.armed = tokens.armed or _SPAN_ATTR.search(source_html) is not None
             if articles > 2 and main_length < _MIN_MAIN_CONTENT_CHARS:
                 main_length, full_rendered = _render_main_document(
-                    source_html, site_links, span_limit
+                    source_html, site_links, span_limit, tokens
                 )
                 main_rendered = full_rendered
                 main_visible = main_length
@@ -2359,7 +2469,9 @@ def html_to_markdown(
                 length, rendered = main_length, main_rendered
         if length < _MIN_MAIN_CONTENT_CHARS:
             if not full_rendered:
-                _, full_rendered = _render_main_document(source_html, site_links, span_limit)
+                _, full_rendered = _render_main_document(
+                    source_html, site_links, span_limit, tokens
+                )
             rendered = full_rendered
     else:
         rendered = _render(source_html, None, site_links = site_links, span_char_limit = span_limit)

@@ -16,20 +16,25 @@ export function SettingsRow({
   description,
   hint,
   icon,
+  iconAlign = "center",
   children,
   destructive,
   className,
   below,
+  wideControl = false,
 }: {
   label: string;
   description?: ReactNode;
   /** Shown on hover; plain text because it doubles as the trigger's aria-label. */
   hint?: string;
   icon?: ReactNode;
+  iconAlign?: "center" | "top";
   children?: ReactNode;
   destructive?: boolean;
   className?: string;
   below?: ReactNode;
+  /** Lets a control that shows a value it must not clip (a folder path) pass the shared cap. */
+  wideControl?: boolean;
 }) {
   return (
     <div
@@ -44,11 +49,11 @@ export function SettingsRow({
     >
       <div className="flex min-w-[calc(11rem*var(--ui-space-scale,1))] flex-1 basis-0 items-center gap-2.5">
         {icon ? (
-          <span className="flex shrink-0 items-center text-foreground">
+          <span className={cn("flex shrink-0 items-center text-foreground", iconAlign === "top" && "self-start")}>
             {icon}
           </span>
         ) : null}
-        <div className="flex min-w-0 w-full max-w-lg flex-col gap-0.5">
+        <div className="flex min-w-0 w-full max-w-[calc(32rem*var(--ui-space-scale,1))] flex-col gap-0.5">
           <span className="text-sm font-medium text-foreground">
             {label}
             {hint ? (
@@ -92,6 +97,8 @@ export function SettingsRow({
           className={cn(
             "flex max-w-full shrink-0",
             !description && "items-center",
+            !wideControl &&
+              "max-w-[min(100%,calc(20rem*var(--ui-space-scale,1)))] [&>*]:max-w-full",
           )}
         >
           {children}

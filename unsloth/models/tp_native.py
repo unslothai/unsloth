@@ -943,6 +943,15 @@ def _check_params4bit(path, weight, style, tp):
         )
 
 
+def quant_state_copy(state, device):
+    """A bitsandbytes QuantState on `device`; `state` itself (QuantState.to moves in place) is left as is."""
+    out = copy.copy(state)
+    if getattr(state, "state2", None) is not None:
+        out.state2 = copy.copy(state.state2)
+    out.to(device)
+    return out
+
+
 def _shard_params4bit(path, base, weight, style, parts, rank, tp):
     """This rank's 4-bit shard (bitwise slice of the 1-GPU weight); double-quant absmax kept as float32."""
     import bitsandbytes as bnb
@@ -986,6 +995,8 @@ def _shard_params4bit(path, base, weight, style, parts, rank, tp):
         bnb_quantized = True,
     )
     new._unsloth_tp_layout = (style, tuple(parts), rank, tp)
+    # The 1-GPU QuantState (absmax still double quantized), on the CPU: tp_replica rebuilds the 1-GPU weight.
+    new._unsloth_tp_quant_state = quant_state_copy(state, "cpu")
     base._parameters["weight"] = new
     if "quant_state" in base.__dict__:
         base.quant_state = local_state
@@ -1044,6 +1055,8 @@ def _input_name(module):
 
 
 def _region_pre_hook(module, args, kwargs):
+    if module.__dict__.get("_unsloth_tp_gathered"):
+        return None  # tp_replica: whole weights in place, the region runs as on one GPU
     group = module._unsloth_tp_group
     for name in (module.__dict__.get("_unsloth_tp_input", "hidden_states"), "hidden_states"):
         if isinstance(kwargs.get(name), torch.Tensor):
@@ -1068,6 +1081,8 @@ def _region_finish(module, y):
 
 
 def _region_post_hook(module, args, output):
+    if module.__dict__.get("_unsloth_tp_gathered"):
+        return None
     if isinstance(output, torch.Tensor):
         return _region_finish(module, output)
     if isinstance(output, (tuple, list)) and output and isinstance(output[0], torch.Tensor):
@@ -1121,6 +1136,9 @@ def _decoder_of(inner):
     return decoder if isinstance(decoder, nn.Module) else None
 
 
+_MISSING = object()
+
+
 def _tp_chain(model):
     """`model` and every wrapper level below it (PeftModel -> LoraModel -> CausalLM -> decoder)."""
     chain, m = [], model
@@ -1160,11 +1178,15 @@ def _default_mesh(model):
     return init_device_mesh(device.type, (dist.get_world_size(),), mesh_dim_names = ("tp",))
 
 
-def _refuse_generate(*args, **kwargs):
-    raise RuntimeError(
-        "Unsloth: generation is not supported on a tensor parallel model in v1; save the adapter "
-        "(save_tp_adapter) and generate on one GPU."
-    )
+def _replica_generate(level, prior):
+    """generate on a tensor parallel level: every rank gathers a whole replica first (tp_replica)."""
+
+    def generate(*args, **kwargs):
+        from .tp_replica import tp_generate
+        return tp_generate(level, prior, args, kwargs)
+
+    generate._unsloth_tp_generate = True
+    return generate
 
 
 def _cache_in_use(past):
@@ -1206,6 +1228,15 @@ def _refuse_cached_forward(module):
     module.__dict__["forward"] = forward_without_cache
 
 
+def _mark_tokenizers(chain):
+    """The tokenizer Unsloth keeps on the model saves once per tensor parallel world (save.py)."""
+    for level in chain:
+        tokenizer = level.__dict__.get("_saved_temp_tokenizer")
+        if tokenizer is not None and hasattr(tokenizer, "__dict__"):
+            from .tp_replica import mark_world_save
+            mark_world_save(tokenizer)
+
+
 def _sync_trainable(model, group, src):
     import torch.distributed as dist
     with torch.no_grad():
@@ -1217,6 +1248,17 @@ def _sync_trainable(model, group, src):
 
 def _set_local_heads(module, region, tp):
     heads, kv_heads = region.heads // tp, region.kv_heads // tp
+    # What tp_replica puts back while a whole replica is gathered.
+    module.__dict__["_unsloth_tp_saved_attrs"] = {
+        name: module.__dict__.get(name, _MISSING)
+        for name in (
+            "num_heads",
+            "num_key_value_heads",
+            "num_attention_heads",
+            "num_kv_heads",
+            "config",
+        )
+    }
     module._unsloth_tp_heads = heads
     module._unsloth_tp_kv_heads = kv_heads
     for name, value, always in (
@@ -1339,10 +1381,12 @@ def apply_tensor_parallel(
         level.__dict__[_TP_FLAG] = info
         level.__dict__["_unsloth_tp_mesh"] = tp_mesh
         level.__dict__["_unsloth_tp_plan"] = tp_plan
+        level.__dict__["_unsloth_tp_root"] = model
         if callable(getattr(level, "generate", None)):
-            level.__dict__["generate"] = _refuse_generate
+            level.__dict__["generate"] = _replica_generate(level, level.__dict__.get("generate"))
         if level is inner or level is decoder:
             _refuse_cached_forward(level)
+    _mark_tokenizers(chain)
     if rank == 0:
         print(
             f"Unsloth: tensor parallel over {tp} ranks: {len(tp_plan.regions)} attention / MLP regions "
@@ -1401,6 +1445,7 @@ def _shard_projection(region, proj, mesh, rank, tp):
             else:
                 _set_dtensor(A, "weight", A.weight, mesh, "shard", in_parts, 1, rank, tp)
                 _set_dtensor(B, "weight", B.weight, mesh, "replicate")
+    module.__dict__["_unsloth_tp_prior_forward"] = module.__dict__.get("forward", _MISSING)
     module._unsloth_tp_style = proj.style
     module._unsloth_tp_local = (
         _tp_lora_parameters  # read by kernels/utils.py get_lora_parameters(_bias)
@@ -2398,6 +2443,96 @@ def _refuse_tp_trainer_args(args, cpu_shards = False):
         )
 
 
+def _tp_fix_train_sampler(sampler, args, dp_size, dp_rank):
+    """Make a Trainer train sampler identical on the tp ranks of one data parallel replica."""
+    from transformers import trainer_pt_utils
+
+    rebalance = getattr(trainer_pt_utils, "BatchRebalanceSampler", None)
+    if rebalance is not None and type(sampler) is rebalance:
+        # Built from the global world size / rank, so tp peers would draw different rows: rebuild over dp.
+        grad_accum = sampler.grad_accum
+        return rebalance(
+            lengths = sampler.lengths,
+            effective_batch_size = args.train_batch_size * grad_accum * dp_size,
+            dp_size = dp_size,
+            grad_accum = grad_accum,
+            shuffle = sampler.shuffle,
+            seed = sampler.seed,
+            rank = dp_rank,
+            drop_last = sampler.drop_last,
+        )
+    if (
+        type(sampler) is trainer_pt_utils.LengthGroupedSampler
+        and getattr(sampler, "generator", None) is None
+    ):
+        # Global torch RNG desyncs across tp peers; own generator seeded seed + epoch keeps resume exact.
+        sampler.__class__ = _tp_length_grouped_sampler_class(type(sampler))
+        sampler.seed = args.data_seed if getattr(args, "data_seed", None) is not None else args.seed
+        sampler.epoch = 0
+        sampler.generator = torch.Generator().manual_seed(sampler.seed)
+    return sampler
+
+
+_TP_LENGTH_GROUPED = {}
+
+
+def _tp_length_grouped_sampler_class(base):
+    cls = _TP_LENGTH_GROUPED.get(base)
+    if cls is None:
+
+        def set_epoch(self, epoch):
+            self.epoch = int(epoch)
+
+        def __iter__(self):
+            self.generator = torch.Generator().manual_seed(self.seed + self.epoch)
+            return base.__iter__(self)
+
+        cls = type(
+            "UnslothTensorParallelLengthGroupedSampler",
+            (base,),
+            {"set_epoch": set_epoch, "__iter__": __iter__, "_unsloth_tp_epoch_seeded": True},
+        )
+        _TP_LENGTH_GROUPED[base] = cls
+    return cls
+
+
+def _tp_forward_set_epoch(data_loader):
+    """BatchSamplerShard has no set_epoch, so on resume the inner sampler would replay epoch 0: forward it."""
+    shard = getattr(data_loader, "batch_sampler", None)
+    inner = getattr(shard, "batch_sampler", None)
+    if shard is None or inner is None or hasattr(shard, "set_epoch"):
+        return
+    from transformers import trainer_pt_utils
+
+    rebalance = getattr(trainer_pt_utils, "BatchRebalanceSampler", None)
+    targets = [
+        x
+        for x in (inner, getattr(inner, "sampler", None))
+        if getattr(type(x), "_unsloth_tp_epoch_seeded", False)
+        or (rebalance is not None and type(x) is rebalance)
+    ]
+    if not targets:
+        return
+
+    def set_epoch(epoch):
+        for target in targets:
+            target.set_epoch(epoch)
+
+    shard.set_epoch = set_epoch
+
+
+def _tp_train_sampler(trainer, dp_size, dp_rank):
+    get_sampler = getattr(trainer, "_get_train_sampler", None)
+    if get_sampler is None:
+        return
+
+    @functools.wraps(get_sampler)
+    def _get_train_sampler(*args, **kwargs):
+        return _tp_fix_train_sampler(get_sampler(*args, **kwargs), trainer.args, dp_size, dp_rank)
+
+    trainer.__dict__["_get_train_sampler"] = _get_train_sampler
+
+
 def tp_trainer_setup(
     model = None,
     phase = "pre",
@@ -2432,6 +2567,7 @@ def tp_trainer_setup(
     ddp_mesh = _ddp_mesh(model)
     dp_size, dp_rank = (dp_mesh.size(), dp_mesh.get_local_rank()) if dp_mesh is not None else (1, 0)
     trainer.accelerator.__dict__[_TP_DATA] = (dp_size, dp_rank)
+    _tp_train_sampler(trainer, dp_size, dp_rank)
     trainer.__dict__["_unsloth_tensor_parallel"] = (
         True  # the generated TRL trainers skip for_inference()
     )
@@ -2530,6 +2666,9 @@ def _dp_average(params, mesh):
     with torch.no_grad():
         for tensors in buckets.values():
             flat = _flatten_dense_tensors(tensors)
+            if flat.dtype == torch.float16:
+                # fp16 sum can overflow past 65504 though the mean is finite.
+                flat = flat.float()
             dist.all_reduce(flat, group = group)
             flat.div_(n)
             for t, value in zip(tensors, _unflatten_dense_tensors(flat, tensors)):
@@ -2824,9 +2963,11 @@ def _install_tp_accelerate_hooks():
             },
         )
         try:
-            return original_data_loader(self, data_loader, *args, **kwargs)
+            prepared = original_data_loader(self, data_loader, *args, **kwargs)
         finally:
             self.__class__ = cls
+        _tp_forward_set_epoch(prepared)
+        return prepared
 
     def clip_grad_norm_(
         self,

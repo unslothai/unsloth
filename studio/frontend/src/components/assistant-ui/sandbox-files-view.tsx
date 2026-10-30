@@ -4,8 +4,8 @@
 import {
   Download01Icon,
   FileEmpty02Icon,
-  FolderOpenIcon,
 } from "@hugeicons/core-free-icons";
+import { FolderOpenIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useState } from "react";
 import { toast } from "sonner";

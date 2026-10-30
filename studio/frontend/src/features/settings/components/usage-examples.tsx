@@ -523,9 +523,11 @@ export function UsageExamples({
   keylessExposure = null,
   agentsExtra = null,
   agentsOnly = false,
+  part = "all",
 }: {
   apiKey?: string | null;
   agentsOnly?: boolean;
+  part?: "all" | "chat";
   agentsExtra?: ReactNode;
   useTunnel: boolean;
   onUseTunnelChange: (next: boolean) => void;
@@ -542,7 +544,7 @@ export function UsageExamples({
   const agentsRef = useRef<HTMLDivElement | null>(null);
   const mcpRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
-    if (agentsOnly) return;
+    if (agentsOnly || part !== "all") return;
     if (scrollTarget !== "api-keys-agents" && scrollTarget !== "api-keys-mcp") return;
     const target = scrollTarget;
     const section = (target === "api-keys-agents" ? agentsRef : mcpRef).current;
@@ -564,7 +566,7 @@ export function UsageExamples({
       window.clearTimeout(timer);
       for (const name of events) window.removeEventListener(name, release);
     };
-  }, [scrollTarget, agentsOnly]);
+  }, [scrollTarget, agentsOnly, part]);
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const secure = usePlatformStore((s) => s.secure);
@@ -838,10 +840,12 @@ export function UsageExamples({
     <section className="flex min-w-0 max-w-full flex-col gap-4">
       {agentsOnly ? null : (
         <>
-          <h2 className="settings-heading flex items-center gap-2 text-base font-semibold font-heading">
-            <HugeiconsIcon icon={MessageCircleIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground" />
-            {t("settings.apiKeys.usageExamples")}
-          </h2>
+          {part === "all" ? (
+            <h2 className="settings-heading flex items-center gap-2 text-base font-semibold font-heading">
+              <HugeiconsIcon icon={MessageCircleIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground" />
+              {t("settings.apiKeys.usageExamples")}
+            </h2>
+          ) : null}
           {/* No model-auto-switch row: ModelAutoSwitchSection renders that setting just below. */}
           {cloudflareUrl ? (
             <div className="flex min-w-0 items-center justify-between gap-2 rounded-full border border-border px-4 py-2">
@@ -901,6 +905,11 @@ export function UsageExamples({
               </button>
             </div>
           ) : null}
+          {model ? null : (
+            <p className="text-ui-11 leading-relaxed text-muted-foreground">
+              {t("settings.apiKeys.usageNoModel")}
+            </p>
+          )}
           <ExampleToggle
             label={t("settings.apiKeys.exampleRequest")}
             variant="toggle"
@@ -911,11 +920,6 @@ export function UsageExamples({
             }))}
             onChange={(next) => pickExample(exampleType(language, next))}
           />
-          {model ? null : (
-            <p className="text-ui-11 leading-relaxed text-muted-foreground">
-              {t("settings.apiKeys.usageNoModel")}
-            </p>
-          )}
           <ExampleCodeBox
             code={snippets[lang]}
             language={shikiLang}
@@ -934,126 +938,124 @@ export function UsageExamples({
           />
         </>
       )}
-      <div ref={agentsRef} className="flex min-w-0 scroll-mt-6 flex-col gap-2.5 pt-2">
-        <div className="flex items-center justify-between gap-3">
-          {agentsOnly ? (
-            <span />
-          ) : (
-            <h2 className="settings-heading flex items-center gap-2 text-base font-semibold font-heading">
-              <HugeiconsIcon icon={BotIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground" />
-              {t("settings.tabs.agents")}
-            </h2>
-          )}
-          {/* Agents is owner-only (settings-tab-visibility.ts): other accounts would land
-              on General, so they get the agent's docs instead. The tab restores its agent
-              from this pref when it mounts. */}
-          {isOwner ? (
-            <button
-              type="button"
-              onClick={() => {
-                setAgentsTabAgent(agent);
-                // Off the API page there is no dialog to switch tabs in.
-                if (agentsOnly) useSettingsDialogStore.getState().openDialog("agents");
-                else useSettingsDialogStore.getState().setActiveTab("agents");
-              }}
-              className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            >
-              {t("settings.apiKeys.openAgentsTab")}
-              <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3" />
-            </button>
-          ) : (
-            <a
-              href={agentDetails.docsUrl}
-              target="_blank"
-              rel="noreferrer"
-              aria-label={t("settings.agents.agentDocs", {
-                agent: agentDetails.name,
-              })}
-              className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            >
-              {t("settings.agents.docs")}
-              <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
-            </a>
-          )}
-        </div>
-        <p className="text-ui-11 leading-relaxed text-muted-foreground">
-          {t("settings.apiKeys.codingAgentsHint")}
-        </p>
-        <div className="@container">
-          <div className="grid grid-cols-1 items-start gap-3 @[34rem]:grid-cols-3">
-            <div className="min-w-0">
-              <Select
-                value={agent}
-                onValueChange={(id) => {
-                  agentPickedByUserRef.current = true;
-                  clickedUnderGgufRef.current = isGguf;
-                  setAgent(id);
-                  setStoredAgent(id);
+      {part === "chat" ? null : (
+        <div ref={agentsRef} className="flex min-w-0 scroll-mt-6 flex-col gap-2.5 pt-2">
+          <div className="flex items-center justify-between gap-3">
+            {agentsOnly ? (
+              <span />
+            ) : (
+              <h2 className="settings-heading flex items-center gap-2 text-base font-semibold font-heading">
+                <HugeiconsIcon icon={BotIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground" />
+                {t("settings.tabs.agents")}
+              </h2>
+            )}
+            {/* Agents is an owner-only tab, so others get the docs. The tab reads this pref on mount. */}
+            {isOwner ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setAgentsTabAgent(agent);
+                  if (agentsOnly) useSettingsDialogStore.getState().openDialog("agents");
+                  else useSettingsDialogStore.getState().setActiveTab("agents");
                 }}
+                className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
-                <SelectTrigger
-                  aria-label={t("settings.agents.agent")}
-                  className="w-full rounded-full"
+                {t("settings.apiKeys.openAgentsTab")}
+                <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3" />
+              </button>
+            ) : (
+              <a
+                href={agentDetails.docsUrl}
+                target="_blank"
+                rel="noreferrer"
+                aria-label={t("settings.agents.agentDocs", {
+                  agent: agentDetails.name,
+                })}
+                className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                {t("settings.agents.docs")}
+                <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+              </a>
+            )}
+          </div>
+          <p className="text-ui-11 leading-relaxed text-muted-foreground">
+            {t("settings.apiKeys.codingAgentsHint")}
+          </p>
+          <div className="@container">
+            <div className="grid grid-cols-1 items-start gap-3 @[34rem]:grid-cols-3">
+              <div className="min-w-0">
+                <Select
+                  value={agent}
+                  onValueChange={(id) => {
+                    agentPickedByUserRef.current = true;
+                    clickedUnderGgufRef.current = isGguf;
+                    setAgent(id);
+                    setStoredAgent(id);
+                  }}
                 >
-                  <SelectValue>
-                    <span className="flex min-w-0 items-center gap-2">
-                      <AgentIcon {...agentDetails} />
-                      <span className="truncate">{agentDetails.name}</span>
-                    </span>
-                  </SelectValue>
-                </SelectTrigger>
-                {/* Seven 36px rows, as on the Agents tab; the rest scroll. */}
-                <SelectContent
-                  align="start"
-                  className="max-h-[min(var(--radix-select-content-available-height),calc(7*2.25rem+0.5rem))] [&_[data-slot=select-scroll-down-button]]:hidden [&_[data-slot=select-scroll-up-button]]:hidden"
-                >
-                  {availableAgents.map((id) => {
-                    const details = detailsFor(id);
-                    return (
-                      <SelectItem key={id} value={id}>
-                        <span className="flex min-w-0 items-center gap-2">
-                          <AgentIcon {...details} />
-                          <span className="truncate">{details.name}</span>
-                          {detectedAgents.includes(id) ? (
-                            <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold text-control-accent">
-                              {t("settings.agents.quickstart.installed")}
-                            </span>
-                          ) : null}
-                        </span>
-                      </SelectItem>
-                    );
-                  })}
-                </SelectContent>
-              </Select>
+                  <SelectTrigger
+                    aria-label={t("settings.agents.agent")}
+                    className="w-full rounded-full"
+                  >
+                    <SelectValue>
+                      <span className="flex min-w-0 items-center gap-2">
+                        <AgentIcon {...agentDetails} />
+                        <span className="truncate">{agentDetails.name}</span>
+                      </span>
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent
+                    align="start"
+                    className="max-h-[min(var(--radix-select-content-available-height),calc(7*2.25rem+0.5rem))] [&_[data-slot=select-scroll-down-button]]:hidden [&_[data-slot=select-scroll-up-button]]:hidden"
+                  >
+                    {availableAgents.map((id) => {
+                      const details = detailsFor(id);
+                      return (
+                        <SelectItem key={id} value={id}>
+                          <span className="flex min-w-0 items-center gap-2">
+                            <AgentIcon {...details} />
+                            <span className="truncate">{details.name}</span>
+                            {detectedAgents.includes(id) ? (
+                              <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold text-control-accent">
+                                {t("settings.agents.quickstart.installed")}
+                              </span>
+                            ) : null}
+                          </span>
+                        </SelectItem>
+                      );
+                    })}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
           </div>
+          <div className="relative min-w-0">
+            <code
+              className="block min-w-0 whitespace-pre-wrap break-all rounded-3xl border border-border bg-background/70 py-2.5 pr-10 pl-4 font-mono text-ui-11 leading-relaxed text-foreground dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]"
+              data-reload-snapshot-sensitive={apiKey ? "" : undefined}
+            >
+              {agentCommand}
+            </code>
+            <button
+              type="button"
+              onClick={handleCopyAgent}
+              className="absolute top-1.5 right-2 flex size-6 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              aria-label={t("settings.apiKeys.copySnippet")}
+            >
+              <HugeiconsIcon
+                icon={copiedAgent ? Tick02Icon : Copy01Icon}
+                className={cn("size-3.5", copiedAgent && "text-control-accent")}
+              />
+            </button>
+          </div>
+          {agent === "vscode" && (
+            <p className="text-ui-11 leading-relaxed text-muted-foreground">
+              {t("settings.agents.vscodeNote")}
+            </p>
+          )}
+          {agentsExtra ? <div ref={mcpRef}>{agentsExtra}</div> : null}
         </div>
-        <div className="relative min-w-0">
-          <code
-            className="block min-w-0 whitespace-pre-wrap break-all rounded-3xl border border-border bg-background/70 py-2.5 pr-10 pl-4 font-mono text-ui-11 leading-relaxed text-foreground dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]"
-            data-reload-snapshot-sensitive={apiKey ? "" : undefined}
-          >
-            {agentCommand}
-          </code>
-          <button
-            type="button"
-            onClick={handleCopyAgent}
-            className="absolute top-1.5 right-2 flex size-6 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            aria-label={t("settings.apiKeys.copySnippet")}
-          >
-            <HugeiconsIcon
-              icon={copiedAgent ? Tick02Icon : Copy01Icon}
-              className={cn("size-3.5", copiedAgent && "text-control-accent")}
-            />
-          </button>
-        </div>
-        {agent === "vscode" && (
-          <p className="text-ui-11 leading-relaxed text-muted-foreground">
-            {t("settings.agents.vscodeNote")}
-          </p>
-        )}
-        {agentsExtra ? <div ref={mcpRef}>{agentsExtra}</div> : null}
-      </div>
+      )}
     </section>
   );
 }

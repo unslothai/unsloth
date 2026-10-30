@@ -7,8 +7,7 @@ import {
   Download01Icon,
   DragDropVerticalIcon,
   FlimSlateIcon,
-  Folder01Icon,
-  Image03Icon,
+  Image01Icon,
   LibrariesIcon,
   MoreHorizontalIcon,
   PencilEdit02Icon,
@@ -16,6 +15,7 @@ import {
   Clock01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 import { Reorder, useDragControls } from "motion/react";
 import { Switch } from "@/components/ui/switch";
 import { AiSpeechIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
@@ -35,10 +35,10 @@ const ITEM_META: Record<
   SidebarNavItemPref["id"],
   { icon: IconSvgElement; labelKey: TranslationKey }
 > = {
-  projects: { icon: Folder01Icon, labelKey: "shell.navigation.projects" },
+  projects: { icon: ProjectIcon, labelKey: "shell.navigation.projects" },
   library: { icon: LibrariesIcon, labelKey: "shell.navigation.library" },
   hub: { icon: DashboardCircleIcon, labelKey: "shell.navigation.hub" },
-  images: { icon: Image03Icon, labelKey: "shell.navigation.images" },
+  images: { icon: Image01Icon, labelKey: "shell.navigation.images" },
   train: { icon: TestTubeOutlineIcon, labelKey: "shell.navigation.train" },
   video: { icon: FlimSlateIcon, labelKey: "shell.navigation.video" },
   audio: { icon: AiSpeechIcon, labelKey: "shell.navigation.audio" },

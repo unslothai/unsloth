@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""In-app browser: pages are fetched here (SSRF-guarded, since most sites refuse framing) and
-rendered in ``/frame``, an opaque-origin sandbox; an injected script routes navigations back here.
-"""
+"""In-app browser: pages fetched with an SSRF guard, rendered in an opaque-origin /frame sandbox."""
 
 from __future__ import annotations
 

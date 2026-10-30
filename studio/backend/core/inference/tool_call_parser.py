@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Backend-neutral tool-call parser shared by GGUF, safetensors, and MLX, so the safetensors + MLX
-agentic loop sees the same call shape llama-server gives GGUF. Formats:
-``<tool_call>{json}</tool_call>`` (Qwen / Hermes);
-``<function=name><parameter=k>v</parameter></function>`` (Qwen3.5 xml);
-``<|python_tag|>NAME.call(k="v", ...)`` and ``<|python_tag|>{"name":..., "parameters":...}``
-(Llama-3); bare ``{"name":..., "parameters":...}`` (Llama-3.2); ``[TOOL_CALLS]`` array /
-``name{json}`` / ``name[ARGS]{json}`` (Mistral v0.3 through Large 3);
-``<|tool_call>call:NAME{k:<|"|>v<|"|>}<tool_call|>`` (Gemma 4); the fullwidth-pipe envelopes of
-DeepSeek R1 / V3 / V3.1; ``<tool_call>NAME<arg_key>..<arg_value>..</tool_call>`` (GLM 4.5-4.7);
-and the ``<|tool_calls_section_begin|>`` form (Kimi K2). Missing closing tags / brackets are
-tolerated: models often truncate mid-stream."""
+"""Backend-neutral tool-call parser for all backends; tolerates missing closing tags from truncation."""
 
 # Lazy annotations keep the standalone python 3.9 import working.
 from __future__ import annotations
@@ -23,6 +13,7 @@ from typing import Any, Optional
 
 # Qwen/Hermes, Qwen3.5 XML and Gemma 4 live in core.tool_healing; this module adds the rest
 from core import tool_healing as _tool_healing
+from core.inference.relaxed_json import relaxed_allowed_at, relaxed_json_object, relaxed_object_end
 
 # Shared with tool_healing so every markerless parse path applies the same guard; wrapped and marker forms are unaffected.
 _markerless_promotable = _tool_healing._markerless_promotable
@@ -394,6 +385,8 @@ _GEMMA_STR_END = '<|"|>'
 _GEMMA_TC_END = "<tool_call|>"
 
 # skip_special_tokens strips the wrapper, so streamed Gemma calls arrive bare.
+# A value OPENED by Gemma's string delimiter (``key:<|"|>``); a literal one inside another quote is data.
+_GEMMA_QUOTED_VALUE_RE = re.compile(r'(?:^|[{,\[])\s*[A-Za-z_][\w.\-]*\s*:\s*<\|"\|>')
 _GEMMA_BARE_TC_RE = re.compile(r"(?<!\w)call\s*:\s*([\w\.\-]+)\s*\{")
 # Partial prefix so the streaming buffer holds it instead of leaking visible text.
 _GEMMA_BARE_TC_PREFIX_RE = re.compile(r"(?<!\w)call\s*(?::\s*[\w\.\-]*)?$")
@@ -1113,6 +1106,18 @@ def _unmask_blocked_bodies(text: str, bodies: list) -> Optional[str]:
     return result if count == len(bodies) else None
 
 
+def _search_from_literal(pattern: re.Pattern, literal: str, text: str, pos: int):
+    """``pattern.search(text, pos)`` for a pattern whose every match starts with ``literal``: the regex is
+    tried only where ``find`` lands, not at every position (a lookbehind still sees the text before)."""
+    at = text.find(literal, pos)
+    while at >= 0:
+        m = pattern.match(text, at)
+        if m:
+            return m
+        at = text.find(literal, at + 1)
+    return None
+
+
 def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] = None) -> str:
     """Strips closed bare call:NAME{...} calls; non-promotable, quoted and unanchored ones stay visible; None strips every anchored closed non-execution call."""
     if _whole_content_is_json_value(text):
@@ -1127,7 +1132,7 @@ def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] 
     floor = blocked_markerless_prefix_end(text, cursor, enabled_tool_names)
     code_spans, code_from = None, 0
     while cursor < n:
-        m = _GEMMA_BARE_TC_RE.search(text, cursor)
+        m = _search_from_literal(_GEMMA_BARE_TC_RE, "call", text, cursor)
         if not m:
             out.append(text[cursor:])
             break
@@ -1403,6 +1408,24 @@ _SENTINEL_MAX_LEN = max(len(sentinel) for sentinel in _STRIP_SENTINELS)
 # Bytes sampled from each end when checking that a buffer continues the previous one.
 _EXTENSION_SAMPLE = 64
 
+# Literals that can change the strip of an open ``prefix + <tool_call>{...`` body (see ``_gate_try_arm``).
+_OPEN_CALL_OPENER = "<tool_call>"
+_OPEN_CALL_TRIGGERS = (
+    "<tool_call",
+    "</tool_call",
+    "<|tool_call",
+    "<function",
+    "[TOOL_CALLS]",
+    "[ARGS]",
+    "<｜",
+    "<think",
+    "</think",
+    "[THINK",
+    "[/THINK",
+)
+_OPEN_CALL_TRIGGER_MAX_LEN = max(len(trigger) for trigger in _OPEN_CALL_TRIGGERS)
+_OPEN_CALL_WS_RE = re.compile(r"\s*")
+
 
 def _promotable_gemma_call_pos(text: str, start: int, enabled_tool_names) -> int:
     """The sentinel find is exact, not a heuristic: sweeping call-free prose per chunk was quadratic."""
@@ -1522,6 +1545,12 @@ class StreamingMarkupStripper:
         "_seen_head",
         "_seen_mid",
         "_seen_tail",
+        "_gate_on",
+        "_gate_out",
+        "_gate_dead",
+        "_gate_from",
+        "_gate_scanned",
+        "_gate_call_ws",
     )
 
     def __init__(
@@ -1552,6 +1581,98 @@ class StreamingMarkupStripper:
         self._seen_head = ""
         self._seen_mid = ""
         self._seen_tail = ""
+        self._gate_on = False
+        self._gate_out = ""
+        # (floor, first) the gate can never arm for; append-only growth cannot undo its reason.
+        self._gate_dead = None
+        self._gate_from = 0
+        self._gate_scanned = 0
+        # Where a ``call`` followed only by whitespace so far resumes its colon check, else -1.
+        self._gate_call_ws = -1
+
+    def _gate_clean(self, text: str) -> bool:
+        """Scan only text appended since the last call (plus an overlap) for anything that could change the strip."""
+        n = len(text)
+        lo = self._gate_scanned - _OPEN_CALL_TRIGGER_MAX_LEN + 1
+        if lo < self._gate_from:
+            lo = self._gate_from
+        for trigger in _OPEN_CALL_TRIGGERS:
+            if text.find(trigger, lo) >= 0:
+                return False
+        at = self._gate_call_ws
+        if at >= 0:
+            at = _OPEN_CALL_WS_RE.match(text, at).end()
+            if at < n:
+                if text[at] == ":":
+                    return False
+                at = -1
+            self._gate_call_ws = at
+        lo = self._gate_scanned - len(_GEMMA_BARE_SENTINEL) + 1
+        found = text.find(_GEMMA_BARE_SENTINEL, lo if lo > self._gate_from else self._gate_from)
+        while found >= 0:
+            at = _OPEN_CALL_WS_RE.match(text, found + len(_GEMMA_BARE_SENTINEL)).end()
+            if at == n:
+                self._gate_call_ws = at
+                break
+            if text[at] == ":":
+                return False
+            found = text.find(_GEMMA_BARE_SENTINEL, found + 1)
+        self._gate_scanned = n
+        return True
+
+    def _gate_try_arm(self, text: str, seg_start: int, out: str, seg_out: str):
+        """Arm when ``text[seg_start:]`` is ``P + <tool_call> + B``: P without ``<``, ``[``, ``{``, ``call\\s*:``;
+        B starting ``\\s*{`` without a trigger or ``call\\s*:``. Then only ``<tool_call>.*$`` matches (the masking
+        walk stops at the opener, GLM needs a name, every other arm needs a ``<`` or ``[`` in P), so the segment
+        strips to P (``seg_final``) or itself, and so do the cut decisions, until a trigger arrives."""
+        key = (self._floor, self._first)
+        if self._gate_dead == key:
+            return
+        start = self._floor + self._first
+        prefix = text[seg_start:start]
+        body = start + len(_OPEN_CALL_OPENER)
+        if (
+            not text.startswith(_OPEN_CALL_OPENER, start)
+            # ``<param`` in the kept head makes the cut depend on later text (``_inside_open_parameter``).
+            or text.find("<param", self._floor, seg_start) >= 0
+            or "<" in prefix
+            or "[" in prefix
+            or "{" in prefix
+            or _has_gemma_bare_trigger(prefix)
+            or len(text) - self._floor > _tool_healing._MAX_BRACKET_SCAN_CHARS
+            # Holding the caller's buffer would make each of its appends a copy; only the final strip is cached.
+            or (self._seg_final and out is text)
+        ):
+            self._gate_dead = key
+            return
+        brace = _OPEN_CALL_WS_RE.match(text, body).end()
+        if brace == len(text):
+            return
+        # Fail closed if the full strip just run disagrees with the reasoning above.
+        if text[brace] != "{" or seg_out != (prefix if self._seg_final else text[seg_start:]):
+            self._gate_dead = key
+            return
+        self._gate_from = body
+        self._gate_scanned = body
+        self._gate_call_ws = -1
+        if not self._gate_clean(text):
+            self._gate_dead = key
+            return
+        self._gate_on = True
+        self._gate_out = out if self._seg_final else ""
+
+    def _gate_hold(self, text: str):
+        """The cached result while the gate holds, else None (and the gate is dropped for this call)."""
+        if len(text) - self._floor > _tool_healing._MAX_BRACKET_SCAN_CHARS or not self._gate_clean(
+            text
+        ):
+            self._gate_on = False
+            self._gate_out = ""
+            self._gate_dead = (self._floor, self._first)
+            return None
+        if self._seg_final:
+            return self._gate_out
+        return text if self._floor_identity else self._floor_out + text[self._floor :]
 
     def _think_block(self, text: str, first: int) -> str:
         """Returns settled, open, or empty (full strip); fires only if the opener is the first sentinel and the body has no other markup, as a closer in args is data."""
@@ -1649,13 +1770,22 @@ class StreamingMarkupStripper:
         if not self._is_extension(text):
             self._reset()
 
+        if self._gate_on:
+            out = self._gate_hold(text)
+            if out is not None:
+                self._note(text)
+                return out
+
         if self._degenerate:
             # Guard on ``_floor``: with nothing settled both arms match, so the check would only add two scans.
-            out = (
-                self._floor_out + self._full_strip(text[self._floor :])
-                if self._floor and not self._needs_whole_buffer(text)
-                else self._full_strip(text)
-            )
+            if self._floor and not self._needs_whole_buffer(text):
+                seg = self._full_strip(text[self._floor :])
+                out = self._floor_out + seg
+                self._gate_try_arm(text, self._floor, out, seg)
+            else:
+                out = self._full_strip(text)
+                if not self._floor:
+                    self._gate_try_arm(text, 0, out, out)
             self._note(text)
             return out
 
@@ -1692,8 +1822,10 @@ class StreamingMarkupStripper:
             out = self._full_strip(text)
             self._note(text)
             return out
-        stripped = tail[:cut] + self._full_strip(tail[cut:]) if cut else self._full_strip(tail)
+        seg = self._full_strip(tail[cut:]) if cut else self._full_strip(tail)
+        stripped = tail[:cut] + seg if cut else seg
         out = self._floor_out + stripped if self._floor else stripped
+        self._gate_try_arm(text, self._floor + cut, out, seg)
         self._note(text)
         return out
 
@@ -2197,12 +2329,120 @@ def parse_tool_calls_from_text(
         return calls
 
     # Gemma wrapper-less ``call:NAME{...}``: markerless, so the same enabled-name gate applies
-    return _parse_gemma_tool_calls(
+    calls = _parse_gemma_tool_calls(
         fallback_content,
         id_offset = id_offset,
         allow_incomplete = allow_incomplete,
         enabled_tool_names = enabled_tool_names,
     )
+    if calls or not allow_incomplete:
+        return calls
+    # Last, and only when nothing parsed: a closed call whose one string argument holds unescaped quotes.
+    return _parse_closed_call_unescaped_quotes(content, id_offset = id_offset)
+
+
+# ``{"name": N, "arguments"|"parameters": {"KEY": "VALUE"}}`` with nothing after VALUE but the closers.
+_ONE_STRING_ARG_CALL_RE = re.compile(
+    r'\A\s*\{\s*"name"\s*:\s*"([\w.\-]+)"\s*,\s*"(?:arguments|parameters)"\s*:\s*'
+    r'\{\s*"([A-Za-z_][\w\-]*)"\s*:\s*"(.*)"\s*\}\s*\}\s*\Z',
+    re.DOTALL,
+)
+# A lost second argument or outer key (``", "key":``, ``", 'key':``, ``", key:``, ``"}, "key":``): the
+# value's end is no longer knowable, so it is refused.
+_SECOND_KEY_RE = re.compile(
+    r'"[\s}\]]*,\s*(?:"[A-Za-z_][\w\-]*"|\'[A-Za-z_][\w\-]*\'|[A-Za-z_][\w\-]*)\s*:'
+)
+
+
+def _escape_bare_quotes(raw: str) -> str:
+    """Escape the ``"`` no backslash escapes. A model that left bare quotes was not JSON-escaping quotes, so a
+    ``\\"`` it wrote next to them is the code's own escape and stays a backslash-quote; other escapes (``\\n``)
+    are JSON's. With no bare quote at all, every escape is JSON's."""
+    tokens: list[str] = []
+    bare = False
+    i, n = 0, len(raw)
+    while i < n:
+        if raw[i] == "\\" and i + 1 < n:
+            tokens.append(raw[i : i + 2])
+            i += 2
+            continue
+        bare = bare or raw[i] == '"'
+        tokens.append(raw[i])
+        i += 1
+    if not bare:
+        return raw
+    return "".join('\\"' if tok == '"' else '\\\\\\"' if tok == '\\"' else tok for tok in tokens)
+
+
+def _parse_closed_call_unescaped_quotes(content: str, *, id_offset: int) -> list[dict]:
+    """A ``<tool_call>`` closed by ``</tool_call>`` whose single string argument (code, a command) holds
+    quotes the model did not escape, so strict JSON and brace matching both lose the call. The closer
+    bounds the body, so the value is everything between its opening quote and the final ``"}}``. Only a
+    single-argument call, outside reasoning and code fences, with no sign of a second argument."""
+    out: list[dict] = []
+    if _TC_JSON_START_RE.search(content) is None:
+        return out
+    think_spans = _tool_healing._think_spans_outside_tool_markup(content)
+    code_spans = _tool_healing._code_spans(content)
+    # Inside another marker's span (an unclosed call before it) the opener is that call's argument data.
+    coverage = _tool_healing.marker_coverage(content)
+    pos = 0
+    while True:
+        start = content.find(_OPEN_CALL_OPENER, pos)
+        if start < 0:
+            return out
+        body_start = start + len(_OPEN_CALL_OPENER)
+        end = content.find("</tool_call>", body_start)
+        if end < 0:
+            return out
+        pos = end + len("</tool_call>")
+        if (
+            any(a <= start < b for a, b in think_spans)
+            or any(a < start < b for a, b in coverage)
+            or _tool_healing._in_code(code_spans, start)
+        ):
+            continue
+        body = content[body_start:end]
+        if _OPEN_CALL_OPENER in body:
+            continue
+        m = _ONE_STRING_ARG_CALL_RE.match(body)
+        if m is None or _SECOND_KEY_RE.search(m.group(3)):
+            continue
+        try:
+            value = json.loads('"' + _escape_bare_quotes(m.group(3)) + '"', strict = False)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        out.append(
+            {
+                "id": f"call_{id_offset + len(out)}",
+                "type": "function",
+                "function": {"name": m.group(1), "arguments": json.dumps({m.group(2): value})},
+            }
+        )
+
+
+def _loads_call_object(text: str, *, relaxed: bool = True):
+    """A wrapped call's JSON object: strict first; near-JSON a model sampled (single quotes, a trailing comma,
+    True/None, unquoted keys) only when strict fails and healing is on. None when neither reads an object."""
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return relaxed_json_object(text) if relaxed else None
+
+
+def _call_object_end(
+    text: str,
+    start: int,
+    relaxed: bool = True,
+) -> "tuple[int | None, bool]":
+    """The call object's closing brace, and whether near-JSON may still be read. A relaxed read matches
+    single-quoted strings too, so a brace in one never ends the call and scanning never resumes inside its
+    argument; an object that never closes that way gets JSON brace matching, strict for the rest of the text."""
+    if relaxed and relaxed_allowed_at(text, start):
+        end = relaxed_object_end(text, start)
+        if end is not None:
+            return end, True
+    return _balanced_brace_end(text, start), False
 
 
 def _parse_tool_call_json(
@@ -2212,17 +2452,17 @@ def _parse_tool_call_json(
     allow_incomplete: bool = True,
 ) -> list[dict]:
     out: list[dict] = []
+    relaxed = allow_incomplete
     for m in _TC_JSON_START_RE.finditer(content):
         brace_start = m.end() - 1
-        end = _balanced_brace_end(content, brace_start)
+        end, relaxed = _call_object_end(content, brace_start, relaxed)
         if end is None:
             continue
         # Strict: a body that never closed ``<tool_call>`` is truncated; trailing prose is tolerated.
         if not allow_incomplete and not content[end + 1 :].lstrip().startswith("</tool_call>"):
             continue
-        try:
-            obj = json.loads(content[brace_start : end + 1])
-        except (json.JSONDecodeError, ValueError):
+        obj = _loads_call_object(content[brace_start : end + 1], relaxed = relaxed)
+        if not isinstance(obj, dict):
             continue
         name = obj.get("name", "")
         args = obj.get("arguments")
@@ -2248,6 +2488,7 @@ def _parse_tool_call_json(
 
 # Identical to the healer's copy; imported so the two cannot drift.
 _trim_param_value = _tool_healing._trim_param_value
+_json_object_body = _tool_healing._json_object_body
 
 
 def _inside_open_parameter(text: str, pos: int) -> bool:
@@ -2329,6 +2570,8 @@ def _parse_function_xml(
         # Strict mode: a dangling parameter means the call was cut off; a closed zero-parameter call stays valid.
         if not allow_incomplete and param_unclosed:
             continue
+        if allow_incomplete and not param_starts:
+            args = _json_object_body(body) or args
 
         out.append(
             {
@@ -2475,6 +2718,8 @@ def _parse_llama3_python_tag(
     # 2. ``<|python_tag|>{json}``; raw_decode peels ``;``-separated objects.
     if not out:
         decoder = json.JSONDecoder()
+        # Relaxed spans already tried never overlap, so every char is brace-matched at most once (no O(n^2)).
+        relaxed_from = 0 if allow_incomplete else len(content)
         idx = content.find(_LLAMA3_PYTHON_TAG)
         while idx >= 0:
             search_from = idx + len(_LLAMA3_PYTHON_TAG)
@@ -2490,8 +2735,16 @@ def _parse_llama3_python_tag(
                 try:
                     obj, end_offset = decoder.raw_decode(content[brace:])
                 except (json.JSONDecodeError, ValueError):
-                    cursor = brace + 1
-                    continue
+                    obj = None
+                    if brace >= relaxed_from and relaxed_allowed_at(content, brace):
+                        close = relaxed_object_end(content, brace)
+                        relaxed_from = len(content) if close is None else close + 1
+                        if close is not None:
+                            obj = relaxed_json_object(content[brace : close + 1])
+                    if obj is None:
+                        cursor = brace + 1
+                        continue
+                    end_offset = close + 1 - brace
                 if not isinstance(obj, dict):
                     cursor = brace + end_offset
                     continue
@@ -2647,14 +2900,15 @@ def _parse_mistral_tool_calls(
     if content[k] == "[":
         return _parse_mistral_array(content, k, id_offset, allow_incomplete = allow_incomplete)
 
+    relaxed = allow_incomplete
     if content[k] == "{":
         # Pre-v11 single ``{"name":...}``; fall through without a ``name`` so v11+ still runs.
-        end = _balanced_brace_end(content, k)
+        end, relaxed = _call_object_end(content, k, relaxed)
         if end is not None:
             try:
-                obj = json.loads(content[k : end + 1])
+                obj = _loads_call_object(content[k : end + 1], relaxed = relaxed)
                 if isinstance(obj, dict) and obj.get("name"):
-                    _consume_mistral_call(content[k : end + 1], out, id_offset)
+                    _consume_mistral_call(content[k : end + 1], out, id_offset, relaxed = relaxed)
                     return out
             except (json.JSONDecodeError, ValueError):
                 pass
@@ -2677,14 +2931,10 @@ def _parse_mistral_tool_calls(
         if after_name >= len(content) or content[after_name] != "{":
             pos = content.find(_MISTRAL_TRIGGER, cur)
             continue
-        end = _balanced_brace_end(content, after_name)
+        end, relaxed = _call_object_end(content, after_name, relaxed)
         if end is None:
             break
-        try:
-            args = json.loads(content[after_name : end + 1])
-        except (json.JSONDecodeError, ValueError):
-            pos = content.find(_MISTRAL_TRIGGER, end + 1)
-            continue
+        args = _loads_call_object(content[after_name : end + 1], relaxed = relaxed)
         if not isinstance(args, dict):
             pos = content.find(_MISTRAL_TRIGGER, end + 1)
             continue
@@ -2752,23 +3002,27 @@ def _parse_mistral_array(
     # Advance past each balanced object instead of rescanning from every ``{`` (ReDoS).
     pos = 0
     blen = len(body)
+    relaxed = allow_incomplete
     while pos < blen:
         brace = body.find("{", pos)
         if brace < 0:
             break
-        end = _balanced_brace_end(body, brace)
+        end, relaxed = _call_object_end(body, brace, relaxed)
         if end is None:
             break  # truncated mid-object: nothing after it can balance
-        _consume_mistral_call(body[brace : end + 1], out, id_offset)
+        _consume_mistral_call(body[brace : end + 1], out, id_offset, relaxed = relaxed)
         pos = end + 1
     return out
 
 
-def _consume_mistral_call(obj_text: str, out: list[dict], id_offset: int) -> None:
-    try:
-        obj = json.loads(obj_text)
-    except (json.JSONDecodeError, ValueError):
-        return
+def _consume_mistral_call(
+    obj_text: str,
+    out: list[dict],
+    id_offset: int,
+    *,
+    relaxed: bool = True,
+) -> None:
+    obj = _loads_call_object(obj_text, relaxed = relaxed)
     if not isinstance(obj, dict):
         return
     name = obj.get("name") or ""
@@ -2889,7 +3143,7 @@ def _parse_gemma_tool_calls(
             code_spans, code_from = None, cursor
         body = content[body_start + 1 : end]
         try:
-            args = _gemma_parse_stripped_body(body)
+            args = _gemma_bare_body_arguments(body)
         except Exception:
             args = {}
         out.append(
@@ -3421,6 +3675,77 @@ def _gemma_strip_quoted_leaves(value: Any) -> Any:
     return value
 
 
+_GEMMA_SLOT = "\ue000"
+_GEMMA_SLOT_RE = re.compile(_GEMMA_SLOT + r"(\d+)" + _GEMMA_SLOT)
+
+
+def _slot_gemma_values(body: str) -> "tuple[str, list[str]]":
+    """``body`` with each ``<|"|>`` value that opens a value outside an ordinary quoted string replaced by a
+    placeholder, and the raw values in order. Quotes open where the quote-less parser opens them."""
+    out: list[str] = []
+    raw: list[str] = []
+    quote = ""
+    prev = ":"
+    i, n = 0, len(body)
+    while i < n:
+        ch = body[i]
+        if quote:
+            if ch == "\\" and i + 1 < n:
+                out.append(body[i : i + 2])
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+        elif prev in ":{[," and body.startswith(_GEMMA_STR_END, i):
+            end = body.find(_GEMMA_STR_END, i + len(_GEMMA_STR_END))
+            if end < 0:
+                out.append(body[i:])
+                break
+            raw.append(body[i + len(_GEMMA_STR_END) : end])
+            out.append(f'"{_GEMMA_SLOT}{len(raw) - 1}{_GEMMA_SLOT}"')
+            i = end + len(_GEMMA_STR_END)
+            prev = '"'
+            continue
+        elif ch in "\"'" and prev in ":{[(,=":
+            quote = ch
+        out.append(ch)
+        if not ch.isspace():
+            prev = ch
+        i += 1
+    return "".join(out), raw
+
+
+def _gemma_bare_body_arguments(body: str) -> dict[str, Any]:
+    """Each ``<|"|>``-quoted value is read raw, every other value as the quote-less parser reads it (single
+    quotes, nesting). A delimiter that does not end up a whole value (a literal one inside another quoted
+    value) keeps the quote-less reading of the whole body."""
+    if _GEMMA_QUOTED_VALUE_RE.search(body) is None or _GEMMA_SLOT in body:
+        return _gemma_parse_stripped_body(body)
+    slotted, raw = _slot_gemma_values(body)
+    used: list[int] = []
+
+    def fill(v: Any) -> Any:
+        if isinstance(v, dict):
+            return {k: fill(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return [fill(x) for x in v]
+        if isinstance(v, str) and _GEMMA_SLOT in v:
+            m = _GEMMA_SLOT_RE.fullmatch(v)
+            if m is None:
+                raise ValueError("delimiter inside a value")
+            used.append(int(m.group(1)))
+            return raw[used[-1]]
+        return v
+
+    try:
+        args = fill(_gemma_parse_stripped_body(slotted))
+    except ValueError:
+        args = None
+    if args is None or sorted(used) != list(range(len(raw))):
+        return _gemma_parse_stripped_body(body)
+    return args
+
+
 def _gemma_parse_stripped_body(body: str) -> dict[str, Any]:
     """Quote-less body: values end at the next top-level ', key:' boundary, so commas in code survive."""
     out: dict[str, Any] = {}
@@ -3548,18 +3873,64 @@ def _parse_deepseek_tool_calls(
     allow_incomplete: bool = True,
 ) -> list[dict]:
     """R1 wraps arguments in a json fence, V3.x does not; the five opener variants follow llama.cpp."""
-    out: list[dict] = []
     begin = _DEEPSEEK_BEGIN_RE.search(content)
     if not begin:
-        return out
+        return []
+    out, end_pos = _parse_deepseek_envelope(
+        content, begin, id_offset = id_offset, allow_incomplete = allow_incomplete
+    )
+    # Auto-Heal only: a model that closes its envelope and opens another runs both, but only once the
+    # first envelope parses strictly, and only closed, strictly parsed envelopes follow it.
+    if (
+        out
+        and allow_incomplete
+        and end_pos >= 0
+        and _DEEPSEEK_BEGIN_RE.search(content, end_pos + len(_DEEPSEEK_END)) is not None
+        and _parse_deepseek_envelope(content, begin, id_offset = 0, allow_incomplete = False)[0]
+    ):
+        out.extend(
+            _parse_glued_deepseek_envelopes(
+                content, end_pos + len(_DEEPSEEK_END), id_offset = id_offset + len(out)
+            )
+        )
+    return out
+
+
+# Code, think tags or other markup between two envelopes: the later one is quoted, not a call.
+_DEEPSEEK_GLUE_GAP_STOP_RE = re.compile(r"[`<>\[\]{}]")
+
+
+def _parse_glued_deepseek_envelopes(content: str, pos: int, *, id_offset: int) -> list[dict]:
+    """Closed envelopes after the first, separated by whitespace or plain prose only. Linear: each
+    envelope is scanned once and the walk stops at the first gap or envelope that does not qualify."""
+    out: list[dict] = []
+    while True:
+        nxt = _DEEPSEEK_BEGIN_RE.search(content, pos)
+        if nxt is None or _DEEPSEEK_GLUE_GAP_STOP_RE.search(content, pos, nxt.start()):
+            return out
+        calls, end_pos = _parse_deepseek_envelope(
+            content, nxt, id_offset = id_offset + len(out), allow_incomplete = False
+        )
+        if not calls:
+            return out
+        out.extend(calls)
+        pos = end_pos + len(_DEEPSEEK_END)
+
+
+def _parse_deepseek_envelope(
+    content: str, begin: "re.Match", *, id_offset: int, allow_incomplete: bool
+) -> "tuple[list[dict], int]":
+    """Calls in the envelope opened by ``begin`` and the index of its close (-1 when unclosed)."""
+    out: list[dict] = []
     scan_start = begin.end()
     # Search outside JSON strings: an argument may contain the literal end token.
     end_pos = _find_outside_json_strings(content, _DEEPSEEK_END, scan_start)
     # Strict mode: an unclosed envelope is truncated; reject, don't heal to EOF.
     if not allow_incomplete and end_pos < 0:
-        return out
+        return out, end_pos
     scan_end = end_pos if end_pos >= 0 else len(content)
     body = content[scan_start:scan_end]
+    relaxed = allow_incomplete
 
     pos = 0
     while pos < len(body):
@@ -3578,14 +3949,10 @@ def _parse_deepseek_tool_calls(
         if json_start >= len(body) or body[json_start] != "{":
             pos = json_start
             continue
-        brace_end = _balanced_brace_end(body, json_start)
+        brace_end, relaxed = _call_object_end(body, json_start, relaxed)
         if brace_end is None:
             break
-        try:
-            args = json.loads(body[json_start : brace_end + 1])
-        except (json.JSONDecodeError, ValueError):
-            pos = brace_end + 1
-            continue
+        args = _loads_call_object(body[json_start : brace_end + 1], relaxed = relaxed)
         if not isinstance(args, dict):
             pos = brace_end + 1
             continue
@@ -3610,7 +3977,7 @@ def _parse_deepseek_tool_calls(
             )
         pos = close_m.end() if close_m else brace_end + 1
     if out:
-        return out
+        return out, end_pos
 
     pos = 0
     while pos < len(body):
@@ -3628,7 +3995,7 @@ def _parse_deepseek_tool_calls(
         if json_start >= len(body) or body[json_start] != "{":
             pos = sep_pos + len(_DEEPSEEK_SEP)
             continue
-        brace_end = _balanced_brace_end(body, json_start)
+        brace_end, relaxed = _call_object_end(body, json_start, relaxed)
         if brace_end is None:
             break
         if not allow_incomplete:
@@ -3638,11 +4005,7 @@ def _parse_deepseek_tool_calls(
             if not body.startswith(_DEEPSEEK_CALL_END, after):
                 pos = brace_end + 1
                 continue
-        try:
-            args = json.loads(body[json_start : brace_end + 1])
-        except (json.JSONDecodeError, ValueError):
-            pos = brace_end + 1
-            continue
+        args = _loads_call_object(body[json_start : brace_end + 1], relaxed = relaxed)
         if not isinstance(args, dict):
             pos = brace_end + 1
             continue
@@ -3659,7 +4022,7 @@ def _parse_deepseek_tool_calls(
             )
         # Seeking the end marker could land on a later call's and skip the one between.
         pos = brace_end + 1
-    return out
+    return out, end_pos
 
 
 def _parse_glm_tool_calls(
@@ -3809,6 +4172,7 @@ def _parse_kimi_section_body(
     """Parse one Kimi K2 section body (between begin / end markers)."""
     out: list[dict] = []
     pos = 0
+    relaxed = allow_incomplete
     while pos < len(body):
         call_start = body.find(_KIMI_CALL_BEGIN, pos)
         if call_start < 0:
@@ -3843,7 +4207,7 @@ def _parse_kimi_section_body(
         if json_start >= len(body) or body[json_start] != "{":
             pos = arg_begin + len(_KIMI_ARG_BEGIN)
             continue
-        brace_end = _balanced_brace_end(body, json_start)
+        brace_end, relaxed = _call_object_end(body, json_start, relaxed)
         if brace_end is None:
             # Skip a malformed call but keep parsing later ones (vLLM recovers them).
             nxt = body.find(_KIMI_CALL_BEGIN, json_start)
@@ -3851,11 +4215,7 @@ def _parse_kimi_section_body(
                 break
             pos = nxt
             continue
-        try:
-            args = json.loads(body[json_start : brace_end + 1])
-        except (json.JSONDecodeError, ValueError):
-            pos = brace_end + 1
-            continue
+        args = _loads_call_object(body[json_start : brace_end + 1], relaxed = relaxed)
         if not isinstance(args, dict):
             pos = brace_end + 1
             continue

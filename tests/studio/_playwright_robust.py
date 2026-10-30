@@ -464,6 +464,12 @@ def is_benign_console_error(msg: str) -> bool:
     return any(p in msg for p in BENIGN_CONSOLE_ERROR_PATTERNS)
 
 
+def is_vite_outdated_dep(response: Any) -> bool:
+    """Vite answers 504 "Outdated Optimize Dep" for a pre-bundle it just replaced, then reloads the page,
+    so it is not a missing asset. Its other 504, "Optimize Deps Processing Error", is a real failure."""
+    return response.status == 504 and response.status_text == "Outdated Optimize Dep"
+
+
 def echo_browser_errors(page: Any, info: Callable[[str], None]) -> list[str]:
     """Prints browser errors live and returns the uncaught ones, so a failure names its real cause."""
     thrown: list[str] = []

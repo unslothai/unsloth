@@ -284,13 +284,15 @@ def _apply_worker_hf_token_environment(config: dict) -> None:
 
 def _build_model_config(config: dict):
     from utils.models import ModelConfig
+    from utils.models.model_config import shared_hub_model_info
 
     model_name = config["model_name"]
-    mc = ModelConfig.from_identifier(
-        model_id = model_name,
-        hf_token = _config_hf_token(config),
-        gguf_variant = config.get("gguf_variant"),
-    )
+    with shared_hub_model_info():
+        mc = ModelConfig.from_identifier(
+            model_id = model_name,
+            hf_token = _config_hf_token(config),
+            gguf_variant = config.get("gguf_variant"),
+        )
     if not mc:
         raise ValueError(f"Invalid model identifier: {model_name}")
     return mc
@@ -775,6 +777,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 load_kwargs["distributed_group"] = config.get("_mlx_distributed_group")
                 load_kwargs["kv_quant"] = config.get("mlx_kv_quant")
                 load_kwargs["int8_prefill"] = bool(config.get("mlx_int8_prefill"))
+                load_kwargs["ane_prefill"] = bool(config.get("mlx_ane_prefill"))
                 load_kwargs["offload"] = tuple(config.get("mlx_offload") or (None, None))
                 load_kwargs["speculative_type"] = config.get("speculative_type")
                 load_kwargs["spec_draft_n_max"] = config.get("spec_draft_n_max")
@@ -841,6 +844,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "audio_type",
                         "has_audio_input",
                         "has_video_input",
+                        "speaks",
                         "audio_family",
                         "audio_options",
                         "gguf_variant",
@@ -863,9 +867,9 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                     if k in _entry
                 }
             )
-            # MLX serves a vision config mlx-lm built as text; the parent must stop accepting images.
-            if model_info["is_mlx"] and _entry.get("is_vision") is False:
-                model_info["is_vision"] = False
+            # MLX decides at load: an mlx-lm text build reads no images, an mlx-vlm-only tower does.
+            if model_info["is_mlx"] and isinstance(_entry.get("is_vision"), bool):
+                model_info["is_vision"] = _entry["is_vision"]
             # Resolved MLX runtime knobs; only the backend knows what it honored.
             model_info.update(
                 {
@@ -882,6 +886,9 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "mlx_int8_prefill",
                         "mlx_int8_prefill_requested",
                         "mlx_int8_prefill_reason",
+                        "mlx_ane_prefill",
+                        "mlx_ane_prefill_requested",
+                        "mlx_ane_prefill_reason",
                         "mlx_offload",
                         "chat_template_override_requested",
                         "chat_template_override_reason",
@@ -1151,10 +1158,10 @@ def _generation_kwargs(backend, cmd: dict, cancel_event) -> dict:
     ):
         if gated in cmd and _backend_declares(backend, gated):
             gen_kwargs[gated] = cmd[gated]
-    if cmd.get("video_base64"):
-        if not _backend_declares(backend, "video"):
+    if cmd.get("videos_base64"):
+        if not _backend_declares(backend, "videos"):
             raise RuntimeError("The loaded backend does not read video.")
-        gen_kwargs["video"] = cmd["video_base64"]
+        gen_kwargs["videos"] = cmd["videos_base64"]
     # Only a raw completion carries these; its batch rows are planned from them.
     for raw in ("prompt_ids", "penalty_window", "grammar", "n_probs"):
         if raw in cmd:
@@ -1267,6 +1274,34 @@ def _handle_resolve_prompt(backend, cmd: dict, resp_queue: Any) -> None:
             reply.update(resolve(cmd.get("prompt")))
         except ValueError as exc:
             reply["error"], reply["invalid"] = str(exc), True
+        except Exception as exc:
+            reply["error"] = str(exc)
+    _send_response(resp_queue, reply)
+
+
+_PROMPT_CACHE_RESUME_METHODS = {
+    "save_prompt_cache": ("save_prompt_cache_for_resume", "directory"),
+    "restore_prompt_cache": ("restore_prompt_cache_for_resume", "manifest"),
+}
+
+
+def _handle_prompt_cache_resume(
+    backend,
+    cmd: dict,
+    resp_queue: Any,
+    busy: bool = False,
+) -> None:
+    """Every outcome answers: the parent otherwise waits out its timeout."""
+    method, argument = _PROMPT_CACHE_RESUME_METHODS[cmd["type"]]
+    reply = {"type": f"{cmd['type']}_response", "request_id": cmd.get("request_id")}
+    run = getattr(backend, method, None)
+    if busy:
+        reply["error"] = "A generation is in progress."
+    elif not callable(run):
+        reply["error"] = "The loaded backend keeps no prompt cache."
+    else:
+        try:
+            reply["result"] = run(cmd.get(argument))
         except Exception as exc:
             reply["error"] = str(exc)
     _send_response(resp_queue, reply)
@@ -1584,12 +1619,30 @@ class _ResidentBatch:
             return
         try:
             for handle, snapshot in self.session.step(waiting):
-                self._report(handle, snapshot)
+                if not isinstance(snapshot, BaseException):
+                    self._report(handle, snapshot)
+                elif not self._fail_row(handle[0], snapshot):
+                    return
         except Exception as exc:
             logger.error("Batched generation error: %s", exc, exc_info = True)
             self._fail_all(exc)
             return
         self._close_if_empty()
+
+    def _fail_row(self, request_id: str, exc: BaseException) -> bool:
+        """Answer a request whose own decode failed, the batch decoding on. False where it gave up the batch."""
+        if request_id not in self._owed:
+            return True
+        logger.error("A batched reply failed: %s", exc, exc_info = exc)
+        stack = "".join(traceback.format_exception(exc, limit = 20))
+        taken_back = self._forget(request_id, withdraw = True)
+        # _forget already dropped it from _owed, so _fail_all would not answer it.
+        _send_response(
+            self.resp_queue, {**_generation_error_payload(request_id, exc), "stack": stack}
+        )
+        if not taken_back:
+            self._fail_all(exc)
+        return taken_back
 
     def _fail_all(self, exc: BaseException) -> None:
         """Give up on the batch: every request in it is owed an error, not silence."""
@@ -1792,12 +1845,13 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
             )
             logger.info("Finished audio separation for request_id=%s", request_id)
             return
-        # Only audio.cpp and Orpheus (voice) models take per-model options; others never see the keyword.
-        extra = {"audio_options": cmd["audio_options"]} if cmd.get("audio_options") else {}
-        # Run fields reach only a backend that takes them: a Speak run on a native TTS model carries a
-        # workflow its backend has no keyword for.
         params = inspect.signature(backend.generate_audio_response).parameters
         takes_any = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+        extra = (
+            {"audio_options": cmd["audio_options"]}
+            if cmd.get("audio_options") and (takes_any or "audio_options" in params)
+            else {}
+        )
         for key in ("workflow", "audio_inputs", "reference_text", "speed", "convert", "edit"):
             if cmd.get(key) is None:
                 continue
@@ -1915,6 +1969,10 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
                 backend, "stop", "generate_audio_input_response"
             ):
                 audio_kwargs["stop"] = cmd["stop"]
+            if cmd.get("speak"):
+                audio_kwargs["speak"] = True
+            if cmd.get("tools") is not None:
+                audio_kwargs["tools"] = cmd["tools"]
             generator = backend.generate_audio_input_response(**audio_kwargs, **extra_audio_kwargs)
 
         logger.info("Starting audio input generation for request_id=%s", request_id)
@@ -1924,6 +1982,11 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
                 logger.info("Audio input generation cancelled for request %s", request_id)
                 break
 
+            if isinstance(text_chunk, dict):
+                _send_response(
+                    resp_queue, {"type": "speech", "request_id": request_id, **text_chunk}
+                )
+                continue
             _send_response(
                 resp_queue,
                 {
@@ -2272,6 +2335,10 @@ def run_inference_process(
                         _handle_count_tokens(backend, cmd, resp_queue)
                 elif cmd_type == "resolve_prompt":
                     _handle_resolve_prompt(backend, cmd, resp_queue)
+                elif cmd_type in _PROMPT_CACHE_RESUME_METHODS:
+                    _handle_prompt_cache_resume(
+                        backend, cmd, resp_queue, busy = bool(batch.rows_in_flight)
+                    )
                 elif cmd_type == "share_object":
                     _handle_share_object(backend, cmd, resp_queue)
                 elif cmd_type == "load":
@@ -2523,6 +2590,9 @@ def run_inference_process(
 
             elif cmd_type == "resolve_prompt":
                 _handle_resolve_prompt(backend, cmd, resp_queue)
+
+            elif cmd_type in _PROMPT_CACHE_RESUME_METHODS:
+                _handle_prompt_cache_resume(backend, cmd, resp_queue)
 
             elif cmd_type == "share_object":
                 _handle_share_object(backend, cmd, resp_queue)

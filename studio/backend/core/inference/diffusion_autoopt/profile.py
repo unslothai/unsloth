@@ -1,18 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Static introspection of a denoiser class, the input the optimizer plans from.
-
-A :class:`ModelProfile` answers, without running the model: which blocks repeat (declared ``_repeated_blocks``,
-Studio's verified list, or discovered via ``_no_split_modules`` + a ModuleList holding >= 2), whether the attention
-goes through diffusers' dispatcher, whether a repeated block merges the text and image streams (static compile on old
-inductors), and a static graph-break screen of each repeated block's ``forward`` source (host syncs, data-dependent
-shapes). Profiles are cached by (class qualname, forward source digest, diffusers version), so a diffusers upgrade or
-a patched forward re-profiles.
-
-The profile only DESCRIBES. Registered families keep the decisions they always had; the plan uses the profile to
-explain a decline and, for a family with no data, to decline a step up front with the reason instead of failing.
-"""
+"""Static denoiser profile (repeated blocks, graph-break screen) that only describes; registered
+families keep their decisions; cached by class, forward digest and diffusers version"""
 
 from __future__ import annotations
 

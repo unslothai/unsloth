@@ -107,7 +107,10 @@ from core.inference.sd_cpp_server import SdCppServer
 from loggers import get_logger
 from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 from utils.account_context import account_thread, current_account_id
-from utils.subprocess_compat import windows_hidden_subprocess_kwargs
+from utils.subprocess_compat import (
+    windows_hidden_subprocess_kwargs,
+    windows_loader_error_boxes_suppressed,
+)
 
 logger = get_logger(__name__)
 
@@ -440,13 +443,14 @@ def _server_binary_runnable(binary: str) -> bool:
     import subprocess
 
     try:
-        proc = subprocess.run(
-            [binary, "--help"],
-            capture_output = True,
-            timeout = 20,
-            env = runtime_env(binary),
-            **windows_hidden_subprocess_kwargs(),
-        )
+        with windows_loader_error_boxes_suppressed():
+            proc = subprocess.run(
+                [binary, "--help"],
+                capture_output = True,
+                timeout = 20,
+                env = runtime_env(binary),
+                **windows_hidden_subprocess_kwargs(),
+            )
     except OSError:
         return False  # cannot exec at all (wrong arch / no execute bit / missing loader)
     except Exception:  # noqa: BLE001 -- don't block on a flaky probe
@@ -484,16 +488,17 @@ def _sd_cpp_probe_output(binary: str, *args: str) -> Optional[str]:
     import subprocess
 
     try:
-        proc = subprocess.run(
-            [binary, *args],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 20,
-            env = runtime_env(binary),
-            **windows_hidden_subprocess_kwargs(),
-        )
+        with windows_loader_error_boxes_suppressed():
+            proc = subprocess.run(
+                [binary, *args],
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 20,
+                env = runtime_env(binary),
+                **windows_hidden_subprocess_kwargs(),
+            )
     except Exception:  # noqa: BLE001 -- cannot exec / timeout: "cannot tell"
         return None
     if proc.returncode != 0:
@@ -1267,42 +1272,61 @@ _ROCM_RUNTIME_SONAMES: tuple[str, ...] = (
 )
 
 
-def rocm_runtime_resolvable() -> Optional[bool]:
-    """Uses ctypes, not ``ldconfig -p``: its cache can omit ROCm libraries the loader still resolves."""
+_ROCM_SONAME_PROBE = (
+    "import ctypes, sys\n"
+    "for name in sys.argv[1:]:\n"
+    "    try:\n"
+    "        ctypes.CDLL(name)\n"
+    "    except OSError:\n"
+    "        print(name)\n"
+)
+_rocm_missing_memo: Optional[tuple[Optional[list[str]]]] = None
+
+
+def _rocm_missing_sonames_fresh() -> Optional[list[str]]:
+    """Fresh process, not in-process ctypes: torch's ROCm wheel already loaded its own sonames here, which sd-cli never sees."""
+    global _rocm_missing_memo
     if os.name != "posix" or sys.platform == "darwin":
         return None
+    if _rocm_missing_memo is not None:
+        return _rocm_missing_memo[0]
+    import subprocess
+
+    from utils.child_stdio import utf8_child_env
+
     try:
-        import ctypes
-    except Exception:  # noqa: BLE001 - no ctypes, so nothing can be established
-        return None
-    for soname in _ROCM_RUNTIME_SONAMES:
-        try:
-            ctypes.CDLL(soname)
-        except OSError:
-            return False
-        except Exception:  # noqa: BLE001 - an unexpected loader failure establishes nothing
-            return None
-    return True
+        # -X utf8 as well: -I ignores the PYTHONIOENCODING utf8_child_env sets.
+        proc = subprocess.run(
+            [sys.executable, "-X", "utf8", "-I", "-c", _ROCM_SONAME_PROBE, *_ROCM_RUNTIME_SONAMES],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            env = utf8_child_env(),
+            timeout = 20,
+        )
+        result = (
+            [line for line in proc.stdout.split() if line in _ROCM_RUNTIME_SONAMES]
+            if proc.returncode == 0
+            else None
+        )
+    except Exception:  # noqa: BLE001 - a probe that cannot run establishes nothing
+        result = None
+    _rocm_missing_memo = (result,)
+    return result
+
+
+def rocm_runtime_resolvable() -> Optional[bool]:
+    """Uses the real loader, not ``ldconfig -p``: its cache can omit ROCm libraries the loader still resolves."""
+    missing = _rocm_missing_sonames_fresh()
+    return None if missing is None else not missing
 
 
 def rocm_runtime_missing_sonames() -> Optional[list[str]]:
     """The ROCm runtime libraries the loader cannot open here: [] when all load, None when it cannot be asked
-    (Windows, macOS, no ctypes, an unexpected loader error), which says nothing either way."""
-    if os.name != "posix" or sys.platform == "darwin":
-        return None
-    try:
-        import ctypes
-    except Exception:  # noqa: BLE001
-        return None
-    missing = []
-    for soname in _ROCM_RUNTIME_SONAMES:
-        try:
-            ctypes.CDLL(soname)
-        except OSError:
-            missing.append(soname)
-        except Exception:  # noqa: BLE001 - an unexpected loader failure establishes nothing
-            return None
-    return missing
+    (Windows, macOS, an unexpected probe failure), which says nothing either way."""
+    missing = _rocm_missing_sonames_fresh()
+    return None if missing is None else list(missing)
 
 
 ACCELERATOR_FALLBACK_CLEAR_HINT = (
@@ -1320,8 +1344,8 @@ def accelerator_fallback_reason(accelerator: Optional[str]) -> str:
         # The loader cannot be asked ahead of time on Windows; a missing DLL is exit 0xC0000135 with no output.
         return (
             "the ROCm build needs the AMD HIP SDK 7.x runtime DLLs (amdhip64_7.dll, hipblas.dll, rocblas.dll) on "
-            "PATH; without them Windows stops it before it prints anything (exit 0xC0000135), or the card's gfx "
-            "target is missing from the prebuilt"
+            "PATH or under HIP_PATH; without them Windows stops it before it prints anything (exit 0xC0000135), or "
+            "the card's gfx target is missing from the prebuilt"
         )
     missing = rocm_runtime_missing_sonames()
     if missing is None:
@@ -1944,6 +1968,9 @@ def accelerator_runtime_failure_state() -> dict:
 
 def clear_accelerator_runtime_failures() -> None:
     """Forget every note (``DELETE /settings/diffusion-accelerator-fallback``). BOTH halves: the in-process mirror would otherwise keep diverting."""
+    global _rocm_missing_memo
+    # Clearing is the retry after fixing the runtime, so re-probe it.
+    _rocm_missing_memo = None
     _accelerator_runtime_failures.clear()
     _persist_accelerator_runtime_failures({})
 
@@ -2087,13 +2114,87 @@ def output_shows_decisive_accelerator_failure(text: Optional[str]) -> bool:
     return any(marker in lowered for marker in _ACCELERATOR_DECISIVE_FAILURE_MARKERS)
 
 
+# Imported by the Windows ROCm bundle but not shipped in it; only the AMD HIP SDK provides it.
+_WINDOWS_ROCM_HOST_DLLS: tuple[str, ...] = ("hipblas.dll",)
+_windows_rocm_skip_logged = False
+
+
+def _on_windows() -> bool:
+    return os.name == "nt"
+
+
+def windows_rocm_build_mode() -> str:
+    """``UNSLOTH_SD_CPP_WINDOWS_ROCM``: ``auto`` (ROCm only if the HIP SDK is found), ``1`` always, ``0`` never."""
+    raw = (os.environ.get("UNSLOTH_SD_CPP_WINDOWS_ROCM", "auto") or "").strip().lower()
+    if raw in ("1", "on", "true", "yes", "force"):
+        return "force"
+    if raw in ("0", "off", "false", "no", "never"):
+        return "off"
+    return "auto"
+
+
+def _windows_dll_search_dirs() -> list[str]:
+    dirs: list[str] = []
+    system_root = os.environ.get("SystemRoot") or os.environ.get("windir") or r"C:\Windows"
+    dirs.append(os.path.join(system_root, "System32"))
+    dirs.append(system_root)
+    dirs.extend(d.strip().strip('"') for d in os.environ.get("PATH", "").split(os.pathsep))
+    try:
+        dirs.extend(_installer_module().windows_hip_sdk_bin_dirs())
+    except Exception as exc:  # noqa: BLE001 -- PATH alone still decides
+        logger.debug("HIP SDK lookup failed: %s", exc)
+    return [d for d in dirs if d]
+
+
+def windows_hip_runtime_missing_dlls() -> Optional[list[str]]:
+    """Missing HIP SDK DLLs, or None off Windows. File search only: loading hipblas.dll here would clash with torch's rocBLAS."""
+    if not _on_windows():
+        return None
+    dirs = _windows_dll_search_dirs()
+    missing = []
+    for dll in _WINDOWS_ROCM_HOST_DLLS:
+        if not any(os.path.isfile(os.path.join(d, dll)) for d in dirs):
+            missing.append(dll)
+    return missing
+
+
+def _hip_sdk_url() -> str:
+    try:
+        return _installer_module().HIP_SDK_URL
+    except Exception:  # noqa: BLE001 -- the log line still names the SDK
+        return "AMD's HIP SDK page"
+
+
+def windows_rocm_build_skipped() -> bool:
+    """Whether a Windows ROCm request goes to Vulkan (HIP SDK missing would fail with 0xC0000135)."""
+    if not _on_windows() or not sd_cpp_vulkan_fallback_enabled():
+        return False
+    mode = windows_rocm_build_mode()
+    if mode == "force":
+        return False
+    if mode == "off":
+        return True
+    return bool(windows_hip_runtime_missing_dlls())
+
+
 def preferred_accelerator(accelerator: Optional[str], card: Optional[str] = None) -> str:
     """``accelerator``, or its fallback once shown unrunnable here. Applied at the TOP of an ensure ladder, so a crashed build is not installed and probed again.
 
-    A function of the stored record only, never of the live host: the loader preflight is applied
-    where the runtime verdict is interpreted, so this stays reproducible."""
+    On Windows a ROCm request starts at Vulkan when ``windows_rocm_build_skipped``."""
+    global _windows_rocm_skip_logged
     chosen = accelerator or "auto"
     klass = _accelerator_class_of(accelerator) or chosen
+    if klass == "rocm" and windows_rocm_build_skipped():
+        if not _windows_rocm_skip_logged:
+            _windows_rocm_skip_logged = True
+            logger.info(
+                "sd_cpp.windows_rocm_skipped: using the Vulkan stable-diffusion.cpp build; the ROCm "
+                "build needs the AMD HIP SDK 7.x runtime (%s), found on neither PATH nor HIP_PATH. "
+                "Install it from %s to use the ROCm build (UNSLOTH_SD_CPP_WINDOWS_ROCM=1 to use it anyway)",
+                ", ".join(windows_hip_runtime_missing_dlls() or _WINDOWS_ROCM_HOST_DLLS),
+                _hip_sdk_url(),
+            )
+        chosen = klass = "vulkan"
     seen: set[str] = set()
     # Walk the ladder (rocm -> vulkan -> cpu) past every rung already shown unrunnable.
     while klass not in seen:
@@ -2376,7 +2477,8 @@ def _native_condition_images(
                 canvas.paste(img, ((canvas.width - iw) // 2, (canvas.height - ih) // 2))
                 img = canvas
         buf = io.BytesIO()
-        img.save(buf, format = "PNG")
+        # Transport only (sd.cpp decodes it back): zlib level 1 is lossless and faster than Pillow's default.
+        img.save(buf, format = "PNG", compress_level = 1)
         blobs.append(buf.getvalue())
     return int(width), int(height), blobs
 
@@ -2476,7 +2578,9 @@ def note_unlaunchable_accelerator_build(
             accelerator,
             fallback_accelerator_for(accelerator),
         )
-        note_accelerator_runtime_failure(accelerator, proven = False, card = card)
+        note_accelerator_runtime_failure(
+            accelerator, proven = accelerator_probe_failure_is_decisive(accelerator), card = card
+        )
     except Exception as exc:  # noqa: BLE001
         logger.debug("could not record the sd.cpp launch failure: %s", exc)
 
@@ -2491,6 +2595,86 @@ def _install_kwargs(accelerator: str) -> dict[str, Any]:
     return kwargs
 
 
+def _unrunnable_build(exc: BaseException) -> bool:
+    try:
+        return isinstance(exc, _installer_module().UnrunnableBuildError)
+    except Exception:  # noqa: BLE001 -- an installer without the probe raises nothing of the kind
+        return False
+
+
+def _install_down_the_ladder(_install: Callable[..., Any], accelerator: str) -> tuple[Any, str]:
+    """Install ``accelerator``, stepping down (rocm -> vulkan -> cpu) while the loader refuses the bundle.
+    Returns ``(path, accelerator installed)``."""
+    current = accelerator
+    tried: set[str] = set()
+    refused: list[str] = []
+
+    def _note_refused(fingerprint: dict) -> None:
+        for klass in refused:
+            note_accelerator_runtime_failure(klass, proven = True, fingerprint = fingerprint)
+
+    while True:
+        try:
+            path = _install(**_install_kwargs(current))
+        except Exception as exc:  # noqa: BLE001
+            if not _unrunnable_build(exc):
+                if refused:
+                    _note_refused(_pin_fingerprint())
+                raise
+            klass = _accelerator_class_of(current)
+            tried.add(klass)
+            refused.append(klass)
+            nxt = fallback_accelerator_for(klass)
+            logger.warning(
+                "sd_cpp.unrunnable_build: %s; %s",
+                exc,
+                f"installing the {nxt} build instead" if nxt else "no fallback build to try",
+            )
+            if not nxt or _accelerator_class_of(nxt) in tried:
+                _note_refused(_pin_fingerprint())
+                raise
+            current = nxt
+            continue
+        # Keyed on the installed build: a fallback may carry a tag other than the pin.
+        if refused:
+            _note_refused(_accelerator_fingerprint(path) if path else _pin_fingerprint())
+        return path, current
+
+
+def _pin_fingerprint() -> dict:
+    try:
+        want = _installer_module()._pinned_tag()
+    except Exception:  # noqa: BLE001
+        want = None
+    return {"bundle": want, **_host_fingerprint()}
+
+
+def _skip_unloadable_rocm(accelerator: str) -> str:
+    """Before any fetch: a stalled or cut-short ~300 MB ROCm download records no strike, so every load would retry it."""
+    klass = _accelerator_class_of(accelerator)
+    nxt = fallback_accelerator_for(klass) if klass == "rocm" else None
+    if not nxt:
+        return accelerator
+    try:
+        # Only the default release is known to need the host runtime; an override may bundle it.
+        inst = _installer_module()
+        if inst._repo() != inst.DEFAULT_REPO or inst._pinned_tag() != inst.DEFAULT_TAG:
+            return accelerator
+        if rocm_runtime_resolvable() is not False:
+            return accelerator
+        if not accelerator_runtime_failed(klass):
+            logger.warning(
+                "sd_cpp.rocm_runtime_absent: %s; installing the %s build instead",
+                accelerator_fallback_reason(klass),
+                nxt,
+            )
+            note_accelerator_runtime_failure(klass, proven = True)
+    except Exception as exc:  # noqa: BLE001 - a failed preflight leaves the request as it was
+        logger.debug("ROCm runtime preflight failed: %s", exc)
+        return accelerator
+    return nxt
+
+
 def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu") -> Optional[str]:
     """Never raises: None means no usable binary and tells the router to fall back to diffusers."""
     found = find_sd_cpp_binary()
@@ -2499,6 +2683,8 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
         return found
     if not allow_install:
         return found
+    # Only once a fetch is due: an installed build may carry its runtime beside the binary.
+    accelerator = _skip_unloadable_rocm(accelerator)
     with _install_lock:
         found = find_sd_cpp_binary()
         usable = bool(found) and _usable_or_discard_managed(found)
@@ -2516,7 +2702,7 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
             if not claimed:
                 return fallback  # something is running in there; retry on a later load
             try:
-                path = _install(**_install_kwargs(accelerator))
+                path, _used = _install_down_the_ladder(_install, accelerator)
                 logger.info("sd-cli installed at %s", path)
                 return str(path)
             except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
@@ -2544,6 +2730,7 @@ def ensure_sd_server_binary(
         return found
     if not allow_install:
         return found
+    accelerator = _skip_unloadable_rocm(accelerator)
     with _install_lock:
         found = find_sd_server_binary()
         usable = bool(found) and _usable_or_discard_managed(found)
@@ -2562,7 +2749,7 @@ def ensure_sd_server_binary(
             if not claimed:
                 return fallback  # something is running in there; retry on a later load
             try:
-                _install(**_install_kwargs(accelerator))  # extracts sd-cli AND sd-server
+                _path, accelerator = _install_down_the_ladder(_install, accelerator)
             except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
                 logger.warning("sd-server auto-install failed: %s", exc)
                 # Also when only the CLI survives: the following ensure_sd_cpp_binary probe would re-download.
@@ -2624,6 +2811,18 @@ class _SdState:
 
     def spawn_env(self) -> Optional[dict[str, str]]:
         return dict(self.child_env) or None
+
+    @property
+    def placed_ordinal(self) -> Optional[int]:
+        """Torch ordinal of ``physical_gpu_id``; without it card-sharing helpers (upsampler) split over all GPUs."""
+        if self.physical_gpu_id is None or self.off_torch_device is not None:
+            return None
+        try:
+            from utils.hardware import get_parent_visible_gpu_ids
+            visible = [int(i) for i in get_parent_visible_gpu_ids()]
+            return visible.index(int(self.physical_gpu_id))
+        except Exception:  # noqa: BLE001
+            return None
 
 
 def _offload_with_device_pin_impl(
@@ -5226,6 +5425,9 @@ class SdCppDiffusionBackend:
                 "For transparent output on the native engine, raise Guidance above 1 (upstream uses 6)."
             )
         conditioning["notes"] = notes
+        lora_reason = diffusion_lora.lora_unavailable_reason(
+            engine = "sd_cpp", family = state.family.name, model_kind = "gguf", transformer_quant = None
+        )
 
         return {
             "loaded": True,
@@ -5255,12 +5457,8 @@ class SdCppDiffusionBackend:
             "transformer_cache": None,
             "resolved": state.resolved,
             "engine": "sd_cpp",
-            "supports_lora": diffusion_lora.supports_lora(
-                engine = "sd_cpp",
-                family = state.family.name,
-                model_kind = "gguf",
-                transformer_quant = None,
-            ),
+            "supports_lora": lora_reason is None,
+            "lora_unavailable_reason": lora_reason,
             "supports_controlnet": False,
             "supports_negative_prompt": state.family.name not in _EMBEDDED_GUIDANCE_FAMILIES,
             "negative_prompt_min_guidance": _negative_prompt_guidance_threshold(state.family),

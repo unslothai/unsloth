@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""
-Anthropic Messages API ↔ OpenAI format translation utilities.
-
-Pure functions plus stateful stream emitters; no FastAPI, no I/O.
-"""
+"""Anthropic Messages <-> OpenAI format translation; pure functions and stream emitters, no I/O."""
 
 from __future__ import annotations
 
@@ -38,6 +34,8 @@ def anthropic_tool_use_id(upstream_id = None, prefix = "toolu_") -> str:
 
 
 _WEB_SEARCH_HIT = re.compile(r"^Title: (.*)\nURL: (\S+)", re.MULTILINE)
+# Claude Code's billing line varies per request and would break prefix caching.
+_BILLING_LINE = re.compile(r"\Ax-anthropic-billing-header:[^\n]*(?:\n|\Z)")
 
 
 def web_search_tool_result_content(
@@ -176,7 +174,8 @@ def anthropic_messages_to_openai(
 
     if system:
         if isinstance(system, str):
-            result.append({"role": "system", "content": system})
+            if system := _BILLING_LINE.sub("", system, count = 1):
+                result.append({"role": "system", "content": system})
         elif isinstance(system, list):
             parts = []
             for block in system:
@@ -184,6 +183,11 @@ def anthropic_messages_to_openai(
                     parts.append(block["text"])
                 elif isinstance(block, str):
                     parts.append(block)
+            parts = [
+                kept
+                for part in parts
+                if (kept := _BILLING_LINE.sub("", part, count = 1)) or kept == part
+            ]
             if parts:
                 result.append({"role": "system", "content": "\n".join(parts)})
 
@@ -696,6 +700,10 @@ class AnthropicStreamEmitter:
             return self._handle_tool_end(event)
         elif etype == "metadata":
             self._usage = event.get("usage", {})
+            return []
+        elif etype == "status" and not event.get("text"):
+            # A new cumulative segment can start without a tool_end (a rejected call).
+            self._prev_text = ""
             return []
         return []
 
@@ -1248,7 +1256,7 @@ class AnthropicPassthroughEmitter:
             events.extend(self._emit_text_delta("</think>"))
         if self._healer is not None:
             # Last-chance heal of any held residue (e.g. an unclosed tool block).
-            for kind, value in self._healer.finalize():
+            for kind, value in self._healer.finalize(promote = self._stop_reason != "max_tokens"):
                 if kind == "text" and value:
                     events.extend(self._emit_text_delta(value))
                 elif kind == "tool_call":

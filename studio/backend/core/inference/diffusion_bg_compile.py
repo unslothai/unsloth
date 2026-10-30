@@ -1,30 +1,31 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Compile a dense denoiser in the background while the user's renders keep running eager.
-
-``arm`` records the first few distinct denoiser inputs of a render run under ``force_eager`` (read by every compile
-guard and CUDA-graph wrapper); ``kick`` replays them through the compiled callable on a daemon thread with CUDA-graph
-capture suppressed, so the next render pays only the capture. A render arriving mid-compile waits for it: a render
-beside the compile was starved to 49-62 s on a B200. Any failure ends the attempt and the next render compiles inline.
-
-Dense denoisers only: torchao ones are ~30x slower eager. Offloaded ones too: no render runs beside the compile,
-so offload hooks see one forward at a time (UNSLOTH_DIFFUSION_BG_COMPILE_OFFLOADED=0 opts out). By default only the deferred
-profile (generation 3, already eager -> compiled) uses it; UNSLOTH_DIFFUSION_BG_COMPILE=1 also moves a load's
-first-render compile (render 1 then differs from render 2 for one seed), =0 disables it.
-"""
+"""Dense denoisers (offloaded too) compile in background while renders run eager; a render mid-
+compile waits for it; any failure ends the attempt and the next render compiles inline;
+UNSLOTH_DIFFUSION_BG_COMPILE=0 disables"""
 
 from __future__ import annotations
 
 import contextlib
 import contextvars
+import hashlib
+import json
 import os
+import re
 import threading
 import time
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 _ENV = "UNSLOTH_DIFFUSION_BG_COMPILE"
 OFFLOADED_ENV = "UNSLOTH_DIFFUSION_BG_COMPILE_OFFLOADED"
+YIELD_ENV = "UNSLOTH_DIFFUSION_BG_COMPILE_YIELD"
+# Seconds of compile a render lets run before it pauses it; unset = this load's fastest eager render.
+SLICE_ENV = "UNSLOTH_DIFFUSION_BG_COMPILE_SLICE_S"
+_SLICE_MAX_S = 30.0
+# A gap between two yield points longer than this compiled a block graph (a cached block call takes milliseconds).
+_GRAPH_SEGMENT_S = 0.25
 _MAX_SAMPLES = 4
 
 # ContextVars, not thread-locals: diffusion_render_thread.run copies the caller's context onto the render thread.
@@ -40,6 +41,14 @@ _NO_RECORD: contextvars.ContextVar[bool] = contextvars.ContextVar(
 _AUXILIARY: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "unsloth_diffusion_auxiliary_pass", default = False
 )
+# The BackgroundCompile whose thread this is (set only on that thread): yield_point's target.
+_ACTIVE: contextvars.ContextVar[Optional["BackgroundCompile"]] = contextvars.ContextVar(
+    "unsloth_diffusion_bg_active", default = None
+)
+
+
+class _Closed(BaseException):
+    """Raised at a yield point once the compile is closed (unload): ends the paused replay."""
 
 
 def enabled() -> bool:
@@ -50,6 +59,249 @@ def enabled() -> bool:
 def offloaded_enabled() -> bool:
     raw = (os.environ.get(OFFLOADED_ENV) or "").strip().lower()
     return raw not in ("0", "false", "no", "off")
+
+
+def yield_enabled() -> bool:
+    raw = (os.environ.get(YIELD_ENV) or "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+WARM_POOL_ENV = "UNSLOTH_DIFFUSION_BG_COMPILE_WARM_POOL"
+_POOL_WARMED = False
+
+
+def warm_compile_pool(logger: Any = None) -> bool:
+    """Start inductor's compile worker pool ahead of the deferred compile."""
+    global _POOL_WARMED
+    if _POOL_WARMED or not enabled():
+        return False
+    raw = (os.environ.get(WARM_POOL_ENV) or "").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    _POOL_WARMED = True
+    try:
+        from . import diffusion_compile_config
+        from torch._inductor.async_compile import AsyncCompile
+
+        diffusion_compile_config.apply()
+        AsyncCompile.warm_pool()
+        AsyncCompile.wakeup()
+    except Exception as exc:  # noqa: BLE001 - the compile warms its own pool as before
+        if logger is not None:
+            logger.debug("diffusion.bg_compile: compile pool warm-up skipped: %s", exc)
+        return False
+    if logger is not None:
+        logger.info(
+            "diffusion.bg_compile: inductor compile workers starting ahead of the deferred compile"
+        )
+    return True
+
+
+def slice_seconds(eager_render_s: Optional[float]) -> float:
+    """Compile seconds a render lets run before it pauses the compile: ``SLICE_ENV`` when set, else the load's
+    fastest eager render (0 when none was timed), clamped to [0, 30]."""
+    raw = (os.environ.get(SLICE_ENV) or "").strip()
+    value: Optional[float] = None
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            value = None
+    if value is None:
+        value = eager_render_s if isinstance(eager_render_s, (int, float)) else 0.0
+    if value != value:  # NaN
+        value = 0.0
+    return max(0.0, min(_SLICE_MAX_S, float(value)))
+
+
+def yield_point() -> None:
+    """Called before a guarded compiled block runs. On a background compile thread with a pause requested, parks
+    here (between two block graphs, never inside a trace) until the render resumes it. Elsewhere a no-op."""
+    bg = _ACTIVE.get()
+    if bg is not None:
+        bg._yield_point()
+
+
+FLOAT_SEEDS_ENV = "UNSLOTH_DIFFUSION_BG_COMPILE_FLOAT_SEEDS"
+FLOAT_SEEDS_FILE = "bg_compile_float_specializations.json"
+_FLOAT_SEEDS_VERSION = 1
+_SYMFLOAT_NAME = re.compile(r"^zf\d+$")
+
+
+def float_seeds_enabled() -> bool:
+    raw = (os.environ.get(FLOAT_SEEDS_ENV) or "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _tensorify_state() -> Any:
+    """dynamo's set of SymFloat names to specialise on a (re)trace, or None on a torch without it."""
+    try:
+        from torch._dynamo.symbolic_convert import TensorifyState
+    except Exception:  # noqa: BLE001 - older / newer torch: nothing to seed
+        return None
+    names = getattr(TensorifyState, "force_specializations", None)
+    if not isinstance(names, set) or not callable(getattr(TensorifyState, "specialize", None)):
+        return None
+    return TensorifyState
+
+
+def _code_digest(code: Any) -> str:
+    """Bytecode plus constants; a nested code object (lambda, genexpr) by its own digest, never its address."""
+    h = hashlib.sha256(code.co_code)
+    for const in code.co_consts:
+        if hasattr(const, "co_code"):
+            h.update(_code_digest(const).encode("utf-8"))
+        else:
+            h.update(repr(const).encode("utf-8"))
+    return h.hexdigest()
+
+
+def _code_signature(module: Any) -> Optional[str]:
+    """The traced code a seed list belongs to: torch build plus every repeated block class's forward bytecode."""
+    try:
+        import torch
+
+        from .diffusion_block_graph import repeated_blocks
+
+        parts = [str(torch.__version__), type(module).__qualname__]
+        for cls in sorted({type(b) for b in repeated_blocks(module)}, key = lambda c: c.__qualname__):
+            code = getattr(getattr(cls, "forward", None), "__code__", None)
+            if code is None:
+                return None
+            name = getattr(code, "co_qualname", code.co_name)
+            parts.append(f"{cls.__module__}.{cls.__qualname__}:{name}:{_code_digest(code)}")
+        if len(parts) < 3:
+            return None
+        return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+    except Exception:  # noqa: BLE001 - no signature, no seeds
+        return None
+
+
+def _modules_signature(modules: Any) -> Optional[str]:
+    modules = list(modules) if isinstance(modules, (list, tuple)) else [modules]
+    sigs = [_code_signature(m) for m in modules]
+    if not sigs or any(s is None for s in sigs):
+        return None
+    return sigs[0] if len(sigs) == 1 else hashlib.sha256("|".join(sigs).encode("utf-8")).hexdigest()
+
+
+def _read_float_seeds(path: Path, signature: str) -> set:
+    try:
+        data = json.loads(path.read_text(encoding = "utf-8"))
+    except Exception:  # noqa: BLE001 - missing / torn file: learn again
+        return set()
+    if not isinstance(data, dict) or data.get("version") != _FLOAT_SEEDS_VERSION:
+        return set()
+    if data.get("signature") != signature:
+        return set()
+    names = data.get("names")
+    if not isinstance(names, list):
+        return set()
+    return {n for n in names if isinstance(n, str) and _SYMFLOAT_NAME.match(n)}
+
+
+def _write_float_seeds(path: Path, signature: str, names: set) -> bool:
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        path.parent.mkdir(parents = True, exist_ok = True)
+        tmp.write_text(
+            json.dumps(
+                {"version": _FLOAT_SEEDS_VERSION, "signature": signature, "names": sorted(names)},
+                indent = 1,
+            ),
+            encoding = "utf-8",
+        )
+        os.replace(tmp, path)
+        return True
+    except Exception:  # noqa: BLE001 - bookkeeping for the next load only
+        with contextlib.suppress(Exception):
+            tmp.unlink()
+        return False
+
+
+def _seed_floats(modules: Any, seed_dir: Optional[Path]) -> tuple[Optional[tuple], int]:
+    """Pre-seed the SymFloat names the last compile of this key learned; returns (keep state, names added)."""
+    if seed_dir is None or not float_seeds_enabled():
+        return None, 0
+    try:
+        state = _tensorify_state()
+        signature = _modules_signature(modules)
+        if state is None or signature is None:
+            return None, 0
+        path = Path(seed_dir) / FLOAT_SEEDS_FILE
+        before = set(state.force_specializations)
+        seeds = _read_float_seeds(path, signature)
+        for name in sorted(seeds - before):
+            state.specialize(name)
+        return (state, path, signature, before, seeds), len(seeds - before)
+    except Exception:  # noqa: BLE001 - no seeds: the compile restarts as before
+        return None, 0
+
+
+def _keep_floats(seeded: Optional[tuple]) -> int:
+    """Save this compile's specialised names if changed; returns how many are new."""
+    if seeded is None:
+        return 0
+    state, path, signature, before, seeds = seeded
+    try:
+        names = {
+            n for n in set(state.force_specializations) - before if _SYMFLOAT_NAME.match(str(n))
+        }
+        names |= seeds & set(state.force_specializations)
+        if names and names != seeds:
+            _write_float_seeds(path, signature, names)
+        return len(names - seeds)
+    except Exception:  # noqa: BLE001 - bookkeeping only
+        return 0
+
+
+class InlineFloatSeeds:
+    """Float seeds for a compile inside a render (video's first clip): ``seed`` at denoise entry, ``keep`` at decode
+    entry, so only the denoiser's names are saved. Never raises."""
+
+    def __init__(
+        self,
+        modules: Any,
+        seed_dir: Any,
+        *,
+        logger: Any = None,
+    ) -> None:
+        self.modules = list(modules) if isinstance(modules, (list, tuple)) else [modules]
+        self.seed_dir = Path(seed_dir) if seed_dir else None
+        self.logger = logger
+        self.float_seeds = 0
+        self.float_seeds_learned = 0
+        self.seeded = False
+        self.kept = False
+        self._seeds: Optional[tuple] = None
+
+    def seed(self) -> int:
+        if self.seeded:
+            return 0
+        self.seeded = True
+        self._seeds, self.float_seeds = _seed_floats(self.modules, self.seed_dir)
+        if self.float_seeds and self.logger is not None:
+            with contextlib.suppress(Exception):
+                self.logger.info(
+                    "diffusion.float_seeds: %d float specialisation(s) pre-seeded for the %s compile",
+                    self.float_seeds,
+                    "/".join(type(m).__name__ for m in self.modules),
+                )
+        return self.float_seeds
+
+    def keep(self) -> None:
+        if not self.seeded or self.kept:
+            return
+        self.kept = True
+        self.float_seeds_learned = _keep_floats(self._seeds)
+        self._seeds = None
+        self.modules = []
+
+    def done(self) -> bool:
+        return self.kept
+
+    def describe(self) -> dict:
+        return {"float_seeds": self.float_seeds, "float_seeds_learned": self.float_seeds_learned}
 
 
 def load_time_enabled() -> bool:
@@ -278,9 +530,13 @@ class BackgroundCompile:
         *,
         logger: Any = None,
         max_samples: int = _MAX_SAMPLES,
+        seed_dir: Any = None,
     ) -> None:
         self.module = module
         self.logger = logger
+        self.seed_dir = Path(seed_dir) if seed_dir else None
+        self.float_seeds = 0
+        self.float_seeds_learned = 0
         self.max_samples = int(max_samples)
         self.samples: list[tuple] = []
         self._keys: set = set()
@@ -294,6 +550,94 @@ class BackgroundCompile:
         self.error: Optional[str] = None
         self.compile_s: Optional[float] = None
         self.eager_generations = 0
+        self._cv = threading.Condition(threading.Lock())
+        self._pause_depth = 0
+        self._parked = False
+        # Bumped when the last pause is released: a parked thread leaves on it even if a new pause is already held.
+        self._release_epoch = 0
+        self.pauses = 0
+        self.paused_s = 0.0
+        self.yield_points = 0
+        # _owe_graph: one graph per resume, so back-to-back renders cannot starve the compile.
+        self.graph_s: Optional[float] = None
+        self._last_yield: Optional[float] = None
+        self._owe_graph = False
+
+    def yields(self) -> bool:
+        return bool(getattr(self.module, "_unsloth_bg_yield", False)) and yield_enabled()
+
+    def pause(
+        self,
+        cancel: Any = None,
+        budget_s: float = 0.0,
+        poll_s: float = 0.05,
+    ) -> tuple[float, bool]:
+        """Let the compile run ``budget_s`` more seconds, then park it at its next yield point. Returns
+        ``(seconds waited, paused)``; ``paused`` means a pause is held and the caller MUST ``resume()``. A compile
+        that ends inside the budget returns ``paused=False`` (the render then runs compiled)."""
+        t0 = time.perf_counter()
+        thread = self._thread
+        if thread is None or thread is threading.current_thread() or not thread.is_alive():
+            return 0.0, False
+        # Ask one graph_s early: the pause lands after the block graph in flight.
+        budget = max(0.0, float(budget_s or 0.0))
+        lead = self.graph_s if self.graph_s is not None else budget
+        deadline = t0 + (0.0 if self._pause_depth else max(0.0, budget - lead))
+        while thread.is_alive() and not (cancel is not None and cancel.is_set()):
+            left = deadline - time.perf_counter()
+            if left <= 0:
+                break
+            thread.join(min(poll_s * 5, left))
+        if not thread.is_alive():
+            return time.perf_counter() - t0, False
+        with self._cv:
+            self._pause_depth += 1
+            self.pauses += 1
+            self._cv.notify_all()
+            while thread.is_alive() and not self._parked:
+                if cancel is not None and cancel.is_set():
+                    break
+                self._cv.wait(poll_s)
+        return time.perf_counter() - t0, True
+
+    def resume(self) -> None:
+        with self._cv:
+            self._pause_depth = max(0, self._pause_depth - 1)
+            if not self._pause_depth:
+                self._release_epoch += 1
+                # the next pause() waits for a fresh park, after the block graph this release owes
+                self._parked = False
+            self._cv.notify_all()
+
+    def _yield_point(self) -> None:
+        self.yield_points += 1
+        if self._closed.is_set():
+            raise _Closed()
+        now = time.perf_counter()
+        if self._last_yield is not None and now - self._last_yield > _GRAPH_SEGMENT_S:
+            seg = now - self._last_yield
+            self.graph_s = seg if self.graph_s is None else 0.5 * (self.graph_s + seg)
+            self._owe_graph = False
+        self._last_yield = now
+        if not self._pause_depth or self._owe_graph:
+            return
+        with self._cv:
+            if not self._pause_depth:
+                return
+            self._parked = True
+            self._cv.notify_all()
+            epoch = self._release_epoch
+            try:
+                while self._release_epoch == epoch and not self._closed.is_set():
+                    self._cv.wait(0.5)
+            finally:
+                self._parked = False
+                end = time.perf_counter()
+                self.paused_s += end - now
+                self._last_yield = end
+                self._owe_graph = True
+        if self._closed.is_set():
+            raise _Closed()
 
     def install(self) -> bool:
         try:
@@ -467,6 +811,7 @@ class BackgroundCompile:
     def _run(self) -> None:
         t0 = time.perf_counter()
         token = _NO_CAPTURE.set(True)
+        _ACTIVE.set(self if self.yields() else None)
         try:
             import torch
 
@@ -474,6 +819,7 @@ class BackgroundCompile:
 
             # torch 2.12+ keeps compile config per context: a fresh thread would compile without the recorded knobs.
             diffusion_compile_config.apply()
+            seeds = self._seed_floats()
             _flatten, _rebuild, graph_key = _cuda_graph_helpers()
             for spec, clones, inference, grad, device in list(self.samples):
                 if self._closed.is_set():
@@ -489,13 +835,24 @@ class BackgroundCompile:
                     from .diffusion_cuda_graph import synchronize_outside_capture
                     synchronize_outside_capture()
             self.compile_s = time.perf_counter() - t0
+            self._keep_floats(seeds)
             self._finish("done")
             if self.logger is not None:
                 self.logger.info(
-                    "diffusion.bg_compile: %s compiled in the background in %.1f s; the next render runs compiled",
+                    "diffusion.bg_compile: %s compiled in the background in %.1f s%s%s; the next render runs compiled",
                     type(self.module).__name__,
                     self.compile_s,
+                    f" ({self.float_seeds} float specialisation(s) pre-seeded)"
+                    if self.float_seeds
+                    else "",
+                    f" (paused {self.pauses}x for renders, {self.paused_s:.1f} s, compiling "
+                    f"{self.compile_s - self.paused_s:.1f} s)"
+                    if self.pauses
+                    else "",
                 )
+        except _Closed:
+            self.compile_s = time.perf_counter() - t0
+            self._finish("failed", "closed before the compile finished")
         except BaseException as exc:  # noqa: BLE001 - never kills the process; the next render compiles inline
             self.compile_s = time.perf_counter() - t0
             self._finish(
@@ -513,10 +870,23 @@ class BackgroundCompile:
             exc.__traceback__ = None
         finally:
             _NO_CAPTURE.reset(token)
+            _ACTIVE.set(None)
+            with self._cv:
+                self._cv.notify_all()
+
+    def _seed_floats(self) -> Optional[tuple]:
+        """Pre-seed the SymFloat specialisations this key's last compile learned; returns what ``_keep_floats`` needs."""
+        seeded, self.float_seeds = _seed_floats(self.module, self.seed_dir)
+        return seeded
+
+    def _keep_floats(self, seeded: Optional[tuple]) -> None:
+        self.float_seeds_learned = _keep_floats(seeded)
 
     def close(self, timeout: Optional[float] = None) -> None:
         """Stop recording and wait for an in-flight compile (it holds the module); used on unload."""
         self._closed.set()
+        with self._cv:
+            self._cv.notify_all()  # a parked compile wakes, sees closed and ends
         self._remove_hook()
         thread = self._thread
         if thread is not None and thread.is_alive() and thread is not threading.current_thread():
@@ -537,6 +907,9 @@ class BackgroundCompile:
             "samples": len(self.samples),
             "compile_s": None if self.compile_s is None else round(self.compile_s, 2),
             "eager_generations": self.eager_generations,
+            "pauses": self.pauses,
+            "paused_s": round(self.paused_s, 2),
+            "float_seeds": self.float_seeds,
             "error": self.error,
         }
 
@@ -573,11 +946,16 @@ def select_module(
     return modules[0] if len(modules) == 1 else None
 
 
-def arm(module: Any, *, logger: Any = None) -> Optional[BackgroundCompile]:
+def arm(
+    module: Any,
+    *,
+    logger: Any = None,
+    seed_dir: Any = None,
+) -> Optional[BackgroundCompile]:
     """A recording ``BackgroundCompile`` on ``module``, or None (disabled / no hook)."""
     if module is None or not enabled():
         return None
-    bg = BackgroundCompile(module, logger = logger)
+    bg = BackgroundCompile(module, logger = logger, seed_dir = seed_dir)
     if not bg.install():
         return None
     return bg

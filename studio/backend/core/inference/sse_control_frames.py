@@ -1,26 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Keep a provider's bytes off Unsloth's own control channel.
-
-Unsloth multiplexes its UI control protocol onto the same SSE stream a provider's
-chunks are relayed on. The chat client picks those frames out structurally: a
-top-level ``type`` of ``tool_start`` / ``tool_end`` / ``tool_output`` /
-``tool_args`` / ``tool_status`` (and the local-runtime ``diffusion_frame`` /
-``reasoning_summary``) becomes a tool card, a badge or a canvas rather than
-assistant text, as does a ``_toolEvent`` / ``_toolStatus`` key stamped inside an
-otherwise ordinary chunk.
-
-Every one of those frames is written by this server. A provider endpoint -- a
-user-configured base_url, so not necessarily one Unsloth or the user controls --
-has no legitimate reason to emit any of them, and a verbatim relay makes its copy
-indistinguishable from ours at the client: a forged card can claim a tool the
-user trusts ran and returned something harmless, carrying
-``provenance: {"source": "local"}``, when nothing ran at all. So strip the
-control vocabulary out of everything that arrives from a provider. The
-``delta.reasoning`` alias Ollama and newer vLLM send is renamed to the canonical
-``reasoning_content``, streamed deltas only. The rest of the chunk stays as it was.
-"""
+"""Strips Unsloth control frames from provider SSE so providers cannot forge tool cards or provenance."""
 
 from __future__ import annotations
 
@@ -119,7 +100,6 @@ def sanitize_provider_sse_line(line: str) -> str | None:
         if key not in forged_keys and not (forged_type and key == "type")
     }
     if not any(key in cleaned for key in _SUBSTANTIVE_KEYS):
-        # A pure control frame with the control stripped out is an empty envelope.
         return None
     return "data: " + json.dumps(cleaned, separators = (",", ":"))
 
@@ -151,7 +131,13 @@ def is_ui_control_sse_line(line: str) -> bool:
 
 def strip_server_executed_tool_call(line: str, pending_call: bool = False) -> str | None:
     """Only for the Unsloth tool-loop path, which strips the server-run call so a client does not rerun it; on a plain proxy calls must pass through untouched."""
-    payload = _sse_payload(line)
+    return _strip_payload_tool_call(line, _sse_payload(line), pending_call)
+
+
+def _strip_payload_tool_call(
+    line: str, payload: dict[str, Any] | None, pending_call: bool
+) -> str | None:
+    """``strip_server_executed_tool_call`` for a line whose payload is already decoded; never mutates it."""
     choices = payload.get("choices") if payload else None
     if not isinstance(choices, list) or not choices:
         return line
@@ -192,9 +178,8 @@ def strip_server_executed_tool_call(line: str, pending_call: bool = False) -> st
     return "data: " + json.dumps(payload, separators = (",", ":"))
 
 
-def _line_offers_tool_call(line: str) -> bool:
+def _payload_offers_tool_call(payload: dict[str, Any] | None) -> bool:
     """Keyed on the key being present, not truthy, so it agrees with the strip."""
-    payload = _sse_payload(line)
     choices = payload.get("choices") if payload else None
     if not isinstance(choices, list):
         return False
@@ -209,33 +194,15 @@ def _line_offers_tool_call(line: str) -> bool:
 
 
 class ServerToolCallStripper:
-    """``strip_server_executed_tool_call`` with the one bit of turn state it needs.
+    """``strip_server_executed_tool_call`` plus turn state; one instance per request.
 
-    A turn whose calls this server runs is not over when the provider says it is, and the
-    provider does not always say "tool_calls": llama.cpp and vLLM finish a structured call
-    on "stop", which the loop runs anyway. Stripping only the call then leaves a caller
-    holding an empty chunk marked ``finish_reason: "stop"``, and a client that ends the
-    turn there never reads the answer the loop is about to stream -- the same lost reply
-    the control-frame gate exists to prevent, arrived at from the other side.
-
-    So remember, per stream, that a call was withheld and no reply has followed it, and
-    treat the "stop" that closes that turn the way "tool_calls" is already treated. The
-    next turn opens with the flag clear, so its own finish_reason is relayed untouched.
-
-    The flag is raised BEFORE the strip reads it, because a provider may co-emit the call
-    and the finish_reason on one line (any non-streamed upstream relayed as a single line
-    does), and the turn boundary is read on every line, because that same line both opens
-    and closes the turn. Getting either wrong leaks the empty "stop" this exists to hold
-    back, or swallows a later turn's legitimate one.
-
-    Blanking the last finish_reason of a stream would leave the caller none at all --
-    openai-node raises "missing finish_reason for choice 0" outright -- so the withheld
-    ones are counted and ``owed_terminal_chunk`` mints a replacement when the loop ends
-    without opening the turn it promised (a spent tool budget, a discarded call, a
-    provider that failed mid-loop).
-
-    One instance per request. The state is per line, not per choice index, which is exact
-    here because the loop reads choice 0 only and this path rejects n > 1 upstream.
+    llama.cpp and vLLM close a structured call on "stop", so once a call is withheld the
+    "stop" closing that turn is blanked like "tool_calls" (else the client ends the turn
+    before the loop's reply). The flag is raised BEFORE the strip and the turn boundary is
+    read on every line, since one line can both carry the call and close the turn.
+    A blanked last finish_reason is owed: openai-node raises "missing finish_reason for
+    choice 0", so ``owed_terminal_chunk`` mints one. State is per line, not per choice:
+    the loop reads choice 0 only and n > 1 is rejected upstream.
     """
 
     def __init__(self) -> None:
@@ -254,22 +221,23 @@ class ServerToolCallStripper:
         self._pending_call = False
 
     def strip(self, line: str) -> str | None:
-        pending = self._pending_call or _line_offers_tool_call(line)
-        out = strip_server_executed_tool_call(line, pending_call = pending)
-        ends_turn = _line_ends_turn(line)
+        payload = _sse_payload(line)
+        pending = self._pending_call or _payload_offers_tool_call(payload)
+        out = _strip_payload_tool_call(line, payload, pending)
+        ends_turn = _payload_ends_turn(payload)
+        out_ends_turn = ends_turn if out is line else (out is not None and _line_ends_turn(out))
         # Turn closed: whatever the loop does next opens a turn whose finish_reason is the caller's to read.
         self._pending_call = pending and not ends_turn
-        if pending or (ends_turn and (out is None or not _line_ends_turn(out))):
-            # Armed on withhold, since a provider may close on [DONE] alone; a removed tool_calls reason with no emitted call is blanked with no debt recorded.
+        if pending or (ends_turn and not out_ends_turn):
+            # Armed on withhold: a provider may close on [DONE] alone.
             self._owes_finish = True
-        if out is not None and _line_ends_turn(out):
+        if out_ends_turn:
             self._owes_finish = False
-        self._remember_envelope(line)
+        self._remember_payload_envelope(payload)
         return out
 
-    def _remember_envelope(self, line: str) -> None:
+    def _remember_payload_envelope(self, payload: dict[str, Any] | None) -> None:
         """Keep the last chunk's identity, so a minted finish matches the stream."""
-        payload = _sse_payload(line)
         if not payload or "choices" not in payload:
             return
         envelope = {
@@ -290,7 +258,10 @@ class ServerToolCallStripper:
 
 def _line_ends_turn(line: str) -> bool:
     """Whether this line carries any finish_reason, i.e. closes the provider's turn."""
-    payload = _sse_payload(line)
+    return _payload_ends_turn(_sse_payload(line))
+
+
+def _payload_ends_turn(payload: dict[str, Any] | None) -> bool:
     choices = payload.get("choices") if payload else None
     if not isinstance(choices, list):
         return False

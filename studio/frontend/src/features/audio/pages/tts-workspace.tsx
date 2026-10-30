@@ -433,9 +433,11 @@ export function TtsFooter({
         {secondaryAction}
         <Button
           className={cn(
-            "relative z-10 text-ui-13 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100",
+            "relative z-10 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100",
             // Same Stop as Images: outline, neutral hover. Destructive is for deleting, not for stopping.
-            generationPresentation && "hover:bg-muted dark:hover:bg-muted",
+            generationPresentation
+              ? "text-ui-13 hover:bg-muted dark:hover:bg-muted"
+              : "h-11 px-8 text-ui-14 bg-control-accent text-control-accent-foreground hover:bg-control-accent/85",
           )}
           onClick={
             generationPresentation?.canStop
@@ -451,7 +453,7 @@ export function TtsFooter({
                 (musicNeedsDescription && !audioInstructions.trim()) ||
                 blocker !== null
           }
-          variant={generationPresentation ? "outline" : "dark"}
+          variant={generationPresentation ? "outline" : "primary"}
           aria-describedby={blocker ? "audio-generate-blocker" : undefined}
           aria-keyshortcuts="Control+Enter Meta+Enter"
           title={
@@ -511,6 +513,7 @@ export function TtsOutput({
   handleDeleteClip,
   fallbackClip,
   handleDownloadFallbackClip,
+  emptyTitle,
   emptyText,
   emptyActions,
   handleClearGallery,
@@ -574,6 +577,7 @@ export function TtsOutput({
       canStop: boolean;
       onStop: () => void;
     } | null;
+    emptyTitle?: string;
     emptyText: string;
     emptyActions?: ReactNode;
     freshClipId: string | null;
@@ -752,7 +756,14 @@ export function TtsOutput({
           />
         ) : (
           <div className="grid justify-items-center gap-3">
-            <p className="text-ui-13 text-muted-foreground">{emptyText}</p>
+            {emptyTitle ? (
+              <div className="grid gap-1 text-center">
+                <h2 className="text-ui-14 font-medium text-foreground">{emptyTitle}</h2>
+                <p className="text-ui-13 text-muted-foreground">{emptyText}</p>
+              </div>
+            ) : (
+              <p className="text-ui-13 text-muted-foreground">{emptyText}</p>
+            )}
             {emptyActions}
           </div>
         )}

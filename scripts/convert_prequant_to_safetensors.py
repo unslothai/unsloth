@@ -140,10 +140,11 @@ def _same(a, b) -> bool:
     if isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor):
         if a.dtype != b.dtype or tuple(a.shape) != tuple(b.shape):
             return False
-        # Raw bytes, not torch.equal: -0.0 == 0.0 and NaN != NaN would otherwise decide.
+        # Raw bytes, not torch.equal: -0.0 == 0.0 and NaN != NaN would otherwise decide. Flattened first:
+        # a 0-dim tensor (nvfp4's per-tensor scale) cannot be viewed as bytes of another element size.
         return a.numel() == 0 or torch.equal(
-            a.detach().contiguous().cpu().view(torch.uint8),
-            b.detach().contiguous().cpu().view(torch.uint8),
+            a.detach().contiguous().cpu().reshape(-1).view(torch.uint8),
+            b.detach().contiguous().cpu().reshape(-1).view(torch.uint8),
         )
     if isinstance(a, tuple) and isinstance(b, tuple):
         return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b, strict = True))

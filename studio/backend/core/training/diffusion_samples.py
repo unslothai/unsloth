@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Fixed-seed preview images during diffusion LoRA training. A round never touches training state:
-fork_rng, private noise generator, a fresh scheduler copy, and force_eager for a compiled model."""
+"""Fixed-seed preview rounds never touch training state: fork_rng, private noise, scheduler copy."""
 
 from __future__ import annotations
 

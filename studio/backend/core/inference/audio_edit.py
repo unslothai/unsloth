@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Checks for an Edit speech request, and the source clip an edit keeps in history.
-
-The client renders the word diff (DotTTS markup or FireRedAudio instructions); each check holds it
-against both transcripts, so a malformed or injected value never reaches the runtime.
-"""
+"""Checks for Edit speech requests (DotTTS markup or FireRedAudio word diffs, verified against both
+transcripts) and the source clip an edit keeps in history, so malformed or injected values never
+reach the runtime."""
 
 from __future__ import annotations
 
@@ -236,9 +234,9 @@ def save_source_clip(
             and meta.get("role") == "source"
             and meta.get("workflow") == "edit"
             and meta.get("source_sha256") == sha
-            and audio_gallery.owned_audio_path(path.stem) is not None
+            and audio_gallery.owned_audio_path(path.stem, directory) is not None
         ):
-            return audio_gallery._record(path.stem, meta)
+            return audio_gallery._record(path.stem, meta, directory = directory)
     with wave.open(str(prepared_path)) as w:
         sample_rate, duration_s = w.getframerate(), round(w.getnframes() / w.getframerate(), 3)
     meta: dict[str, Any] = {

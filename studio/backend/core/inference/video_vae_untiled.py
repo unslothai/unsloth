@@ -180,6 +180,50 @@ def _in_chain(fn: Any, target: Any) -> bool:
     return False
 
 
+# Under model CPU offload the denoiser is still on the card until the VAE's hook runs inside decode. "0" = old behaviour.
+FREE_AFTER_OFFLOAD_ENV = "UNSLOTH_VIDEO_VAE_FREE_AFTER_OFFLOAD"
+
+
+def _free_after_offload_enabled() -> bool:
+    return os.environ.get(FREE_AFTER_OFFLOAD_ENV, "").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def _on_device(module: Any) -> bool:
+    try:
+        first = next(iter(module.parameters()), None)
+    except Exception:  # noqa: BLE001
+        return False
+    return first is not None and first.device.type != "cpu"
+
+
+def run_offload_hook_first(vae: Any, logger: Any = None) -> bool:
+    """Run the VAE's offload pre-hook before the fit check so it sees the decode's free memory (the decode's own hook
+    call then moves nothing). True when the hook ran."""
+    if not _free_after_offload_enabled():
+        return False
+    hook = getattr(vae, "_hf_hook", None)
+    if hook is None or "CpuOffload" not in type(hook).__name__:
+        return False
+    pre_forward = getattr(hook, "pre_forward", None)
+    if not callable(pre_forward):
+        return False
+    prev_model = getattr(getattr(hook, "prev_module_hook", None), "model", None)
+    if not (prev_model is not None and _on_device(prev_model)) and _on_device(vae):
+        return False
+    try:
+        pre_forward(vae)
+    except Exception as exc:  # noqa: BLE001 - the decode's own hook call still moves them
+        if logger is not None:
+            logger.debug("video.vae_untiled: offload hook before the fit check failed (%s)", exc)
+        return False
+    return True
+
+
 def _decode_device(vae: Any, z: Any) -> Any:
     """Where the decode allocates: the latent's card, unless a multi-GPU split put the VAE on another CUDA card (its
     boundary moves the latent there inside this wrapper). An offloaded VAE (weights on the host) keeps the latent's."""
@@ -337,6 +381,7 @@ def install_untiled_decode(
 
     def untiled_when_fits(*args: Any, **kwargs: Any) -> Any:
         try:
+            run_offload_hook_first(vae, logger)
             return gated(*args, **kwargs)
         finally:
             # A failed VAE compile restores its eager decode into this slot; the guarded inner call already runs eager.

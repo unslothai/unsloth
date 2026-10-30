@@ -113,6 +113,35 @@ def _repo_siblings(repo_type: str, repo_id: str, hf_token: HfTokenArg) -> tuple:
     return siblings
 
 
+def repo_siblings_fetched_since(
+    repo_type: str,
+    repo_id: str,
+    hf_token: Optional[str],
+    *,
+    allow_ambient_token: bool,
+    since: float,
+) -> Optional[tuple]:
+    """The size probe's listing if fetched at/after ``since`` with exactly the credential
+    ``model_info(token = hf_token)`` sends and non-empty, else None (caller lists again)."""
+    if hf_token is None:
+        if not allow_ambient_token:
+            return None  # the memo listed anonymously; model_info(token = None) sends the ambient login
+    elif not (isinstance(hf_token, str) and hf_token and hf_token == hf_token.strip()):
+        return None  # hf_token_arg strips or drops it, so the memo may have sent something else
+    key = (
+        str(repo_type),
+        repo_id.lower(),
+        hf_cache_scan.token_fingerprint(
+            hf_token_arg(hf_token, allow_ambient_token = allow_ambient_token)
+        ),
+    )
+    with _repo_siblings_lock:
+        cached = _REPO_SIBLINGS.get(key)
+    if cached is None or cached[1] < since or not cached[0]:
+        return None
+    return cached[0]
+
+
 def largest_download_file_bytes(
     repo_type: str,
     repo_id: str,
@@ -243,7 +272,10 @@ def resolve_requested_use_xet(
 def resolve_auto_use_xet(*, largest_file_bytes: Optional[int] = None) -> tuple[bool, str]:
     """Pick a transport for a download the user left on "Auto". Returns ``(use_xet, reason)``. Server-side on purpose: only the backend can see this machine's RAM, its hf_xet build, and whether Xet has been failing here. Probing IS allowed here, unlike in the capabilities endpoint the UI polls on render, because this runs once per download request and the verdict is memoized."""
     if not resolve_effective_use_xet(True):
-        return (False, "hf_xet is not installed")
+        reason = download_registry.download_transport_unavailable_reason(
+            download_registry.TRANSPORT_XET
+        )
+        return (False, reason or "hf_xet is not installed")
     http_ceiling_reason = download_registry.http_size_ceiling_reason(largest_file_bytes)
     if http_ceiling_reason is not None:
         # Health and RAM preferences cannot select HTTP when the file exceeds its limit.
@@ -1095,7 +1127,7 @@ def _start_stall_watchdog(
     logger,
     on_stall: Callable[[str], None],
 ):
-    """Kill *proc* if its download stops making byte-level progress. Returns a stop event, or ``None`` when no watchdog could be started. SIGKILL rather than a polite signal: the worker traps SIGTERM and exits 130 ("cancelled"), which would record a user cancel and skip the recovery ladder, while an untrapped kill lands as "error", which is what triggers the retry. What survives the kill depends on the transport the retry picks: over HTTP the writer is sequential and the partial genuinely resumes, while over XET it does not, since hf_xet reconstructs a file from offset zero rather than resuming it, so the recovery worker's own ``prepare_cache_for_transport(..., "xet", ...)`` purges the partial on startup and re-fetches the in-flight file. Every file already finalized into a blob is kept either way, and the worker runs ``snapshot_download(max_workers=1)``, so at most one file is ever replayed."""
+    """Kill *proc* if its download stops making byte-level progress. Returns a stop event, or ``None`` when no watchdog could be started. SIGKILL rather than a polite signal: the worker traps SIGTERM and exits 130 ("cancelled"), which would record a user cancel and skip the recovery ladder, while an untrapped kill lands as "error", which is what triggers the retry. What survives the kill depends on the transport the retry picks: over HTTP the writer is sequential and the partial genuinely resumes, while over XET it does not, since hf_xet reconstructs a file from offset zero rather than resuming it, so the recovery worker's own ``prepare_cache_for_transport(..., "xet", ...)`` purges the partial on startup and re-fetches the in-flight file. Every file already finalized into a blob is kept either way, and the worker fetches one file at a time over XET (HTTP overlaps files only where every partial resumes), so at most one file is ever replayed."""
     try:
         from utils.hf_xet_fallback import start_watchdog
     except Exception as exc:  # noqa: BLE001 - degraded unsloth_zoo: keep the old behaviour
@@ -1160,7 +1192,7 @@ def _start_stall_watchdog(
                 child_pid = proc.pid,
                 # Scope the measurement to partials this worker holds open; otherwise the shared helper stays repo-wide, child_pid does nothing, and two concurrent same-transport GGUF variants of one repo reset each other's stall timer. The DATA clock only: before its first byte a variant is still covered by the repo-wide peer-progress check.
                 watch_new_partials_only = True,
-                # The shared 90s zero-byte default assumes a single-file download whose pre-byte phase is one HEAD; snapshot_download(max_workers=1) does a model_info lookup plus one sequential HEAD per file, which for an already-cached repo is the entire job with no byte written.
+                # The shared 90s zero-byte default assumes a single-file download whose pre-byte phase is one HEAD; snapshot_download does a model_info lookup plus one HEAD per file (sequential over XET), which for an already-cached repo is the entire job with no byte written.
                 connect_timeout = 600.0,
                 xet_disabled = False,
             )
