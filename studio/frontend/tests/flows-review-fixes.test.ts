@@ -130,14 +130,17 @@ test("dialogue written while the reader is mid-scene is kept for the next visit"
   assert.ok(visit > 0 && visit < src.indexOf("!requested.current.has(key)"));
 });
 
-test("leaving the editor waits for a successful save, or an explicit Leave anyway", () => {
+test("leaving the editor any way waits for a successful save, or an explicit Leave anyway", () => {
   const src = readSrc("features/flows/editor/flows-editor-page.tsx");
-  const back = src.slice(src.indexOf("onBack={"), src.indexOf("onPlay={"));
-  assert.match(back, /leaveAfterSave\(/);
-  const leave = src.slice(src.indexOf("function leaveAfterSave"), src.indexOf("type LoadState"));
-  assert.match(leave, /flushSave\(\)[\s\S]*?if \(saved === true\) return go\(\);/);
-  assert.match(leave, /label: "Leave anyway", onClick: go/);
+  assert.match(src, /useBlocker\(\{ shouldBlockFn: stayUnlessSaved/);
+  const leave = src.slice(src.indexOf("function stayUnlessSaved"), src.indexOf("type LoadState"));
+  assert.match(leave, /flushSave\(\)[\s\S]*?if \(saved === true\) return false;/);
+  assert.match(leave, /label: "Leave anyway", onClick: \(\) => resolve\(false\)/);
+  assert.match(leave, /onDismiss: \(\) => resolve\(true\)/);
   assert.ok(!leave.includes(".finally("));
+  // The window's back arrow leaves; the toolbar has no back button of its own.
+  const bar = readSrc("features/flows/editor/toolbar.tsx");
+  assert.doesNotMatch(bar, /ArrowLeft01Icon|onBack|All flows/);
 });
 
 test("a second Run click while the first start request is pending is ignored", () => {

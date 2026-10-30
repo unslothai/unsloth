@@ -11,7 +11,6 @@ import { newId, useDocStore } from "../stores/doc-store";
 import { useUiStore } from "../stores/ui-store";
 import { FIT_MIN_ZOOM } from "./canvas-rules";
 import {
-  ArrowLeft01Icon,
   GridViewIcon,
   HierarchySquare02Icon,
   MagnetIcon,
@@ -63,7 +62,7 @@ function IconButton({
   );
 }
 
-function ToolbarImpl({ onBack }: { onBack: () => void }) {
+function ToolbarImpl() {
   const name = useDocStore((s) => s.meta.name);
   const kind = useDocStore((s) => s.meta.kind);
   const canUndo = useDocStore((s) => s.past.length > 0);
@@ -76,7 +75,6 @@ function ToolbarImpl({ onBack }: { onBack: () => void }) {
   return (
     <div className="grid h-12 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 border-border border-b bg-background px-2 text-foreground">
       <div className="flex min-w-0 items-center gap-2">
-        <IconButton icon={ArrowLeft01Icon} label="All flows" onClick={onBack} />
         {/* Sized to the name: the hidden copy sets the width, the input fills it. */}
         <div className="inline-grid min-w-0 max-w-[min(22rem,50vw)] font-semibold text-sm">
           <span

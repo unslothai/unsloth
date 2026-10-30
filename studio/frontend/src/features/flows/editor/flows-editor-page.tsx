@@ -16,7 +16,7 @@ import {
   holdSidebarUnpinned,
   releaseSidebarPinned,
 } from "@/hooks/use-sidebar-pin";
-import { useNavigate } from "@tanstack/react-router";
+import { useBlocker, useNavigate } from "@tanstack/react-router";
 import { ReactFlowProvider } from "@xyflow/react";
 import { useReactFlow } from "@xyflow/react";
 import { type ReactElement, useCallback, useEffect, useState } from "react";
@@ -52,21 +52,25 @@ const SAVE_WAIT_MS = 10_000;
 const BELOW_TITLEBAR =
   "pt-[var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]";
 
-/** Saves, then leaves; a failed or stuck save asks instead of leaving the user stuck. */
-function leaveAfterSave(go: () => void): void {
+/** Whether to stay: saves first, and a failed or stuck save asks instead of leaving the user stuck. */
+function stayUnlessSaved(): Promise<boolean> {
   const wait = new Promise<"stuck">((resolve) =>
     setTimeout(() => resolve("stuck"), SAVE_WAIT_MS),
   );
-  void Promise.race([flushSave(), wait]).then((saved) => {
-    if (saved === true) return go();
-    toast.warning(
-      saved === "stuck" ? "Still saving this flow" : "This flow isn't saved",
-      {
-        description: "Leave anyway and lose the unsaved changes, or stay.",
-        duration: 15_000,
-        action: { label: "Leave anyway", onClick: go },
-      },
-    );
+  return Promise.race([flushSave(), wait]).then((saved) => {
+    if (saved === true) return false;
+    return new Promise<boolean>((resolve) => {
+      toast.warning(
+        saved === "stuck" ? "Still saving this flow" : "This flow isn't saved",
+        {
+          description: "Leave anyway and lose the unsaved changes, or stay.",
+          duration: 15_000,
+          action: { label: "Leave anyway", onClick: () => resolve(false) },
+          onDismiss: () => resolve(true),
+          onAutoClose: () => resolve(true),
+        },
+      );
+    });
   });
 }
 
@@ -90,6 +94,8 @@ function EditorBody({
     return releaseSidebarPinned;
   }, []);
   useAutosave(!readOnly);
+  // Every way out (the window's back arrow, a link, the sidebar, Play) saves first.
+  useBlocker({ shouldBlockFn: stayUnlessSaved, enableBeforeUnload: false });
 
   const dropAt = useCallback(
     (type: string, x: number, y: number) => {
@@ -109,9 +115,7 @@ function EditorBody({
       className={`flows-editor flex h-full min-h-0 w-full flex-col bg-background ${BELOW_TITLEBAR} text-foreground`}
       data-testid="flows-editor"
     >
-      <Toolbar
-        onBack={() => leaveAfterSave(() => void navigate({ to: "/flows" }))}
-      />
+      <Toolbar />
       {readOnly && (
         <Alert className="rounded-none border-x-0 border-t-0 py-2">
           <AlertDescription className="text-xs text-amber-700 dark:text-amber-300">
@@ -133,22 +137,10 @@ function EditorBody({
         {/* Over the whole editor body, not the canvas, so it stays put as panels open. */}
         <RunBar
           onPlay={() =>
-            leaveAfterSave(
-              () =>
-                void navigate({
-                  to: "/flows/$flowId/play",
-                  params: { flowId },
-                }),
-            )
+            void navigate({ to: "/flows/$flowId/play", params: { flowId } })
           }
           onApp={() =>
-            leaveAfterSave(
-              () =>
-                void navigate({
-                  to: "/flows/$flowId/app",
-                  params: { flowId },
-                }),
-            )
+            void navigate({ to: "/flows/$flowId/app", params: { flowId } })
           }
         />
       </div>
