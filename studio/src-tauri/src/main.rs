@@ -2364,9 +2364,10 @@ fn main() {
             webkit_rendering.nvidia_driver_branch,
             webkit_rendering.wayland_session,
         ),
+        webkit_rendering.cpu_painting,
     );
     #[cfg(not(target_os = "linux"))]
-    let gpu_launch = gpu_rendering::LaunchState::new(gpu_setting, false, None, None, None);
+    let gpu_launch = gpu_rendering::LaunchState::new(gpu_setting, false, None, None, None, false);
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
     // GUI apps don't inherit shell dotfile PATH — this spawns the user's
     // login shell to source .zshrc/.bashrc/.profile and sets PATH properly.
@@ -2397,7 +2398,7 @@ fn main() {
         }
         let (major, minor, micro) = webkit_rendering.webkit_version;
         info!(
-            "GPU rendering: setting={} path={} reason={} webkit={major}.{minor}.{micro} env_override={} flag={} supervised={}",
+            "GPU rendering: setting={} path={} reason={} webkit={major}.{minor}.{micro} env_override={} flag={} supervised={} cpu_painting={}",
             gpu_setting.as_str(),
             if webkit_rendering.gpu_path.is_some() { "gpu" } else { "default-or-cpu" },
             webkit_rendering
@@ -2407,6 +2408,7 @@ fn main() {
             webkit_rendering.env_override.unwrap_or("none"),
             gpu_fallback_active,
             gpu_child.supervised,
+            webkit_rendering.cpu_painting,
         );
     }
     #[cfg(windows)]

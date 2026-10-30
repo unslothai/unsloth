@@ -752,26 +752,29 @@
 		0 0 0 1px rgb(230 210 0 / 0.7),
 		0 0 26px -6px rgb(252 238 10 / 0.8),
 		0 2px 8px -2px rgb(0 0 0 / 0.1);
-}
-:root[data-palette="neon-cyberpunk"]:not(.dark)
-	:is(.chat-composer-surface, .unsloth-composer-surface):focus-within {
-	box-shadow:
+	/* A variable so the CPU-paint shadow images can read it. */
+	--composer-focus-shadow:
 		0 0 0 1px rgb(230 210 0 / 0.9),
 		0 0 32px -4px rgb(252 238 10 / 0.9),
 		0 2px 8px -2px rgb(0 0 0 / 0.1);
+}
+:root[data-palette="neon-cyberpunk"]:not(.dark)
+	:is(.chat-composer-surface, .unsloth-composer-surface):focus-within {
+	box-shadow: var(--composer-focus-shadow);
 }
 :root[data-palette="neon-cyberpunk"].dark {
 	--composer-shadow:
 		0 0 0 1px rgb(0 240 255 / 0.35),
 		0 0 28px -8px rgb(0 240 255 / 0.45),
 		0 4px 20px 4px var(--background);
-}
-:root[data-palette="neon-cyberpunk"].dark
-	:is(.chat-composer-surface, .unsloth-composer-surface):focus-within {
-	box-shadow:
+	--composer-focus-shadow:
 		0 0 0 1px rgb(0 240 255 / 0.6),
 		0 0 32px -6px rgb(0 240 255 / 0.55),
 		0 4px 20px 4px var(--background);
+}
+:root[data-palette="neon-cyberpunk"].dark
+	:is(.chat-composer-surface, .unsloth-composer-surface):focus-within {
+	box-shadow: var(--composer-focus-shadow);
 }
 
 
@@ -2411,6 +2414,133 @@ html.dark.render-linux:not(.no-font-smoothing):not([data-chat-font]):not([data-u
 /* WebKitGTK repaints the whole view per keystroke; this blurred shadow made each repaint ~150 ms (#15221). */
 html.tauri.render-linux .media-stage-shadow {
 	box-shadow: none;
+}
+
+/* WebKitGTK's CPU painter re-blurs a box-shadow over its whole area on every repaint, so large
+   surfaces paint the same shadow from a pre-blurred 9-slice image (lib/cpu-paint-shadows.ts).
+   border-image-outset draws outside the box without moving it or being clipped by its overflow.
+   --cpu-*-rest is what stays a box-shadow; until an image is drawn it is the whole shadow. */
+html.tauri.render-linux.webkit-cpu-paint :is([data-slot="dialog-content"], [data-slot="alert-dialog-content"]) {
+	--popup-shadow: var(--cpu-popup-rest);
+	border-image: var(--cpu-popup);
+}
+/* The image is cut for one corner radius. Square dialogs (fullscreen viewers, the phone-width
+   viewport layout) take the square image, and the 2xl phone-width ones their own. */
+html.tauri.render-linux.webkit-cpu-paint
+	:is([data-slot="dialog-content"], [data-slot="alert-dialog-content"]):is([class~="rounded-none"], [class~="rounded-none!"]) {
+	--popup-shadow: var(--cpu-sheet-rest);
+	border-image: var(--cpu-sheet);
+}
+@media (width < 40rem) {
+	html.tauri.render-linux.webkit-cpu-paint
+		:is([data-slot="dialog-content"], [data-slot="alert-dialog-content"])[class*="max-sm:rounded-none"] {
+		--popup-shadow: var(--cpu-sheet-rest);
+		border-image: var(--cpu-sheet);
+	}
+	html.tauri.render-linux.webkit-cpu-paint
+		:is([data-slot="dialog-content"], [data-slot="alert-dialog-content"])[class*="max-sm:rounded-2xl"] {
+		--popup-shadow: var(--cpu-popup-compact-rest);
+		border-image: var(--cpu-popup-compact);
+	}
+}
+/* border-image replaces a sheet's one-sided border line, so it comes back as an inset layer. */
+html.tauri.render-linux.webkit-cpu-paint [data-slot="sheet-content"] {
+	--popup-shadow: var(--cpu-sheet-edge, 0 0 #0000), var(--cpu-sheet-rest);
+	border-width: 0;
+	border-image: var(--cpu-sheet);
+}
+html.tauri.render-linux.webkit-cpu-paint [data-slot="sheet-content"][data-side="right"] {
+	--cpu-sheet-edge: inset 1px 0 0 0 var(--border);
+}
+html.tauri.render-linux.webkit-cpu-paint [data-slot="sheet-content"][data-side="left"] {
+	--cpu-sheet-edge: inset -1px 0 0 0 var(--border);
+}
+html.tauri.render-linux.webkit-cpu-paint [data-slot="sheet-content"][data-side="top"] {
+	--cpu-sheet-edge: inset 0 -1px 0 0 var(--border);
+}
+html.tauri.render-linux.webkit-cpu-paint [data-slot="sheet-content"][data-side="bottom"] {
+	--cpu-sheet-edge: inset 0 1px 0 0 var(--border);
+}
+html.tauri.render-linux.webkit-cpu-paint :is(.chat-composer-surface, .unsloth-composer-surface) {
+	--composer-shadow: var(--cpu-composer-rest);
+	border-image: var(--cpu-composer);
+}
+/* Before the focus glow below, which still shows in the dock as it does without images. */
+html.tauri.render-linux.webkit-cpu-paint .chat-full-view-dock :is(.unsloth-composer-surface) {
+	border-image: none;
+}
+html.tauri.render-linux.webkit-cpu-paint[data-palette="neon-cyberpunk"]
+	:is(.chat-composer-surface, .unsloth-composer-surface):focus-within {
+	box-shadow: var(--cpu-composer-focus-rest);
+	border-image: var(--cpu-composer-focus);
+}
+/* Each image comes with its own leftover box-shadow; the two are published together. */
+@container composer-shell (max-width: 22rem) {
+	html.tauri.render-linux.webkit-cpu-paint :is(.unsloth-composer-surface) {
+		--composer-shadow: var(--cpu-composer-compact-rest);
+		border-image: var(--cpu-composer-compact);
+	}
+	html.tauri.render-linux.webkit-cpu-paint[data-palette="neon-cyberpunk"] :is(.unsloth-composer-surface):focus-within {
+		box-shadow: var(--cpu-composer-focus-compact-rest);
+		border-image: var(--cpu-composer-focus-compact);
+	}
+}
+html.tauri.render-linux.webkit-cpu-paint [data-sonner-toast][data-styled='true'] {
+	--composer-shadow: var(--cpu-toast-rest);
+	border-image: var(--cpu-toast);
+}
+/* Dragging draws a foreground border line, which border-image would hide; it keeps the CSS shadow. */
+html.tauri.render-linux.webkit-cpu-paint.dark .unsloth-files-panel:not([data-dragging="true"]) {
+	--composer-shadow: var(--cpu-files-rest);
+	border-image: var(--cpu-files);
+}
+/* Smooth filtering of the stretched edges cost ~10 fps while scrolling Settings; nearest-neighbour
+   is exact for them, since each edge strip is the same along its length. image-rendering inherits,
+   so the surface's own content gets the default back. */
+html.tauri.render-linux.webkit-cpu-paint
+	:is(
+		[data-slot="dialog-content"],
+		[data-slot="alert-dialog-content"],
+		[data-slot="sheet-content"],
+		.chat-composer-surface,
+		.unsloth-composer-surface,
+		[data-sonner-toast][data-styled='true'],
+		.unsloth-files-panel
+	) {
+	image-rendering: pixelated;
+}
+html.tauri.render-linux.webkit-cpu-paint
+	:is(
+		[data-slot="dialog-content"],
+		[data-slot="alert-dialog-content"],
+		[data-slot="sheet-content"],
+		.chat-composer-surface,
+		.unsloth-composer-surface,
+		[data-sonner-toast][data-styled='true'],
+		.unsloth-files-panel
+	)
+	> *,
+html.tauri.render-linux.webkit-cpu-paint
+	:is(
+		[data-slot="dialog-content"],
+		[data-slot="alert-dialog-content"],
+		[data-slot="sheet-content"],
+		.chat-composer-surface,
+		.unsloth-composer-surface,
+		[data-sonner-toast][data-styled='true'],
+		.unsloth-files-panel
+	)::before,
+html.tauri.render-linux.webkit-cpu-paint
+	:is(
+		[data-slot="dialog-content"],
+		[data-slot="alert-dialog-content"],
+		[data-slot="sheet-content"],
+		.chat-composer-surface,
+		.unsloth-composer-surface,
+		[data-sonner-toast][data-styled='true'],
+		.unsloth-files-panel
+	)::after {
+	image-rendering: auto;
 }
 
 /* Chat font: only applies while a custom chat font is set. Elements with

@@ -443,8 +443,11 @@ export const BUDGET = {
   // 1,849,311 -> 1,849,948 B transfer against b80df648bf, one machine and build, Node 22, 85 chunks both): the app
   // provider reports a ready renderer through the setting's API module at startup, plus the setting's strings in
   // the eager English catalog and its search rows. Raised by that.
-  transferBytes: 1_850_410,
-  rawBytes: 5_991_390,
+  // CPU-paint shadows (#15513) add 307 B raw / 21 B transfer on top (5,979,843 -> 5,980,150 B raw, 1,849,948 ->
+  // 1,849,969 B transfer against b80df648bf, one machine and build, Node 22, 85 chunks both): the shadow runtime
+  // is lazy, so the growth is main.tsx's loader for the Linux desktop app. Raised by that.
+  transferBytes: 1_850_431,
+  rawBytes: 5_991_697,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.
