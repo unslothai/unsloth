@@ -2319,7 +2319,9 @@ class InferenceBackend:
                         # Started inside the lock so a queued request's wait is not billed as prefill.
                         timer.start()
                         # Only the returned sequences carry an exact generated-token count; see generate_stream.
-                        gen_outputs["sequences"] = model.generate(**_supported_generate_kwargs(model, generation_kwargs))
+                        gen_outputs["sequences"] = model.generate(
+                            **_supported_generate_kwargs(model, generation_kwargs)
+                        )
                     except Exception as e:
                         err["msg"] = str(e)
                         stop_streamer.abort()
@@ -2516,7 +2518,9 @@ class InferenceBackend:
                         # Started after the adapter swap so only model.generate() is timed.
                         timer.start()
                         # Only the returned sequences carry an exact generated-token count; see generate_stream.
-                        gen_outputs["sequences"] = model.generate(**_supported_generate_kwargs(model, generation_kwargs))
+                        gen_outputs["sequences"] = model.generate(
+                            **_supported_generate_kwargs(model, generation_kwargs)
+                        )
                     except Exception as e:
                         err["msg"] = str(e)
                         logger.error(f"Audio input generation error in thread: {e}")
@@ -2908,7 +2912,9 @@ class InferenceBackend:
                         # Started after the adapter swap so only model.generate() is timed.
                         timer.start()
                         # Only the returned sequences carry an exact token count.
-                        gen_outputs["sequences"] = model.generate(**_supported_generate_kwargs(model, generation_kwargs))
+                        gen_outputs["sequences"] = model.generate(
+                            **_supported_generate_kwargs(model, generation_kwargs)
+                        )
                     except Exception as e:
                         err["msg"] = str(e)
                         stop_streamer.abort()

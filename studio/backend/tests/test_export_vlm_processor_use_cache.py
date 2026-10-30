@@ -46,7 +46,9 @@ def _stub_auto_processor(monkeypatch, load):
             calls.append((name, kw))
             return load()
 
-    monkeypatch.setitem(sys.modules, "transformers", types.SimpleNamespace(AutoProcessor = AutoProcessor))
+    monkeypatch.setitem(
+        sys.modules, "transformers", types.SimpleNamespace(AutoProcessor = AutoProcessor)
+    )
     return calls
 
 

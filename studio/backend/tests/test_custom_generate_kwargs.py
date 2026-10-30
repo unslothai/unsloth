@@ -22,25 +22,34 @@ def test_regular_model_keeps_all_kwargs():
 
 
 class _TextFirst:
-    def __call__(self, text = None, audio = None, images = None, **kwargs):
+    def __call__(
+        self,
+        text = None,
+        audio = None,
+        images = None,
+        **kwargs,
+    ):
         return text, images
 
 
 class _ImagesFirst:
-    def __call__(self, images = None, text = None, **kwargs):
+    def __call__(
+        self,
+        images = None,
+        text = None,
+        **kwargs,
+    ):
         return images, text
 
 
 def test_text_first_processor_detected():
     from core.inference.inference import _processor_takes_text_first
-
     assert _processor_takes_text_first(_TextFirst()) is True
     assert _processor_takes_text_first(_ImagesFirst()) is False
 
 
 def test_zoo_wrapped_call_still_reads_original_signature():
     from core.inference.inference import _processor_takes_text_first
-
     class _Patched(_TextFirst):
         def __call__(self, *args, **kwargs):
             return super().__call__(*args, **kwargs)
