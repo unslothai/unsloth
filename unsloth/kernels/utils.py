@@ -1819,7 +1819,7 @@ def fast_linear_forward(
         return matmul_lora(X, W, W_quant, lora_A, lora_B, lora_S)
 
     if _is_exl3_quant_state(W_quant):
-        W = _dequantize_for_lora(W, W_quant, transpose = True)
+        W = _dequantize_for_lora(W, W_quant, transpose = True, dtype = X.dtype)
         out = torch_matmul(X, W, out = out)
     elif W_quant is None:
         out = torch_matmul(X, W.t(), out = out)

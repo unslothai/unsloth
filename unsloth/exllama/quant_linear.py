@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import functools
 import torch
 from typing import Any, Optional
 
@@ -203,6 +204,54 @@ def exl3_fast_dequantize(
     return quant_state.dequantize(dtype = dtype, transpose = transpose)
 
 
+def _has_exl3_weights(model):
+    return bool(getattr(model, "_unsloth_exl3_backend", False)) or any(
+        isinstance(getattr(getattr(module, "weight", None), "quant_state", None), Exl3QuantState)
+        for module in model.modules()
+    )
+
+
+def refuse_exl3_inplace_merge(model):
+    if _has_exl3_weights(model):
+        raise ValueError(
+            "Unsloth: EXL3 does not support in-place quantized merges. "
+            "Use save_pretrained_merged(..., save_method='merged_16bit') "
+            "or save_pretrained(...) to save the adapter."
+        )
+
+
+def _patch_peft_exl3_guards():
+    try:
+        from peft.tuners.lora import LoraModel
+    except ImportError:
+        return
+    original_config = LoraModel._check_new_adapter_config
+    if not getattr(original_config, "_unsloth_exl3_guard", False):
+
+        @functools.wraps(original_config)
+        def check_config(self, config):
+            if getattr(config, "use_dora", False) and _has_exl3_weights(self.model):
+                raise ValueError(
+                    "Unsloth: DoRA is not supported on EXL3 weights. "
+                    "Use use_dora=False for LoRA, or load an unquantized base for DoRA."
+                )
+            return original_config(self, config)
+
+        check_config._unsloth_exl3_guard = True
+        LoraModel._check_new_adapter_config = check_config
+
+    original_merge = LoraModel._check_merge_allowed
+    if not getattr(original_merge, "_unsloth_exl3_guard", False):
+
+        @functools.wraps(original_merge)
+        def check_merge(self):
+            refuse_exl3_inplace_merge(self.model)
+            return original_merge(self)
+
+        check_merge._unsloth_exl3_guard = True
+        LoraModel._check_merge_allowed = check_merge
+
+
 class ExllamaV3Linear(torch.nn.Linear):
     """An EXL3 quantized layer that *is* an ``nn.Linear`` for discovery.
 
@@ -227,6 +276,7 @@ class ExllamaV3Linear(torch.nn.Linear):
         bias: Optional[torch.Tensor] = None,
         compute_dtype: torch.dtype = torch.float16,
     ):
+        _patch_peft_exl3_guards()
         # Build the nn.Linear on the meta device so we never allocate the dense
         # [out, in] weight. bias handling is custom (frozen), so tell the parent
         # there is no bias and attach our own below.

@@ -421,9 +421,15 @@ class TestExl3AdapterStamp(unittest.TestCase):
 
         d = tempfile.mkdtemp(prefix = "exl3_adapter_")
         base = self._base()
-        fake = SimpleNamespace(get_base_model = lambda: base)
-        # Wrap a stub save so only the stamp is written.
-        with patch.object(PeftModel, "save_pretrained", lambda self, path, **kw: None):
+        fake = SimpleNamespace(
+            get_base_model = lambda: base, peft_config = {"default": SimpleNamespace()}
+        )
+
+        def save_adapter(self, path, **kw):
+            with open(os.path.join(path, "adapter_config.json"), "w") as f:
+                json.dump({}, f)
+
+        with patch.object(PeftModel, "save_pretrained", save_adapter):
             EL._patch_peft_save_for_exl3_stamp()
             PeftModel.save_pretrained(fake, d)
         self.assertTrue(os.path.isfile(os.path.join(d, EL.EXL3_ADAPTER_STAMP)))

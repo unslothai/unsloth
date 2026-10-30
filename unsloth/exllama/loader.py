@@ -17,6 +17,8 @@
 from __future__ import annotations
 
 import functools
+import inspect
+import re
 import json
 import os
 from dataclasses import dataclass
@@ -30,7 +32,7 @@ from .patcher import (
     patch_transformers_exl3,
     read_exl3_bitrate,
 )
-from .quantize import quantize_to_exl3
+from .quantize import quantize_to_exl3, _preflight_check
 from .utils import is_exllama_available, require_exllama
 
 
@@ -43,6 +45,8 @@ class Exl3LoadPlan:
     was_quantized: bool  # True if we ran a conversion, False if reused/prequant
     source_model: str  # original model id/path requested
     is_exl3: bool = True  # False when the native checkpoint loader should be used
+    source_revision: Optional[str] = None
+    source_provider: str = "huggingface"
 
 
 # Written next to adapter_config.json when an adapter trained on an EXL3 base is
@@ -54,6 +58,8 @@ def set_exl3_source_model_reference(
     model,
     source_model,
     config = None,
+    source_revision = None,
+    source_provider = "huggingface",
 ):
     """Keep PEFT's saved base-model reference pointed at the requested source.
 
@@ -69,8 +75,18 @@ def set_exl3_source_model_reference(
     base.name_or_path = source
     model_config = getattr(base, "config", None)
     if model_config is not None:
-        model_config._name_or_path = source
+        if isinstance(model_config, dict):
+            model_config["_name_or_path"] = source
+            model_config["_commit_hash"] = source_revision
+        else:
+            model_config._name_or_path = source
+            model_config._commit_hash = source_revision
     base._unsloth_exl3_source_model = source
+    base._unsloth_exl3_source_revision = source_revision
+    base._unsloth_exl3_source_provider = source_provider
+    for adapter_config in getattr(model, "peft_config", {}).values():
+        adapter_config.base_model_name_or_path = source
+        adapter_config.revision = source_revision
     if config is not None:
         base._unsloth_exl3_config = config
         _patch_peft_save_for_exl3_stamp()
@@ -88,7 +104,16 @@ def write_exl3_adapter_stamp(model, save_directory):
     exl3_config = {k: v for k, v in config.to_dict().items() if k != "compute_dtype"}
     path = os.path.join(save_directory, EXL3_ADAPTER_STAMP)
     with open(path, "w", encoding = "utf-8") as f:
-        json.dump({"source_model": source, "exl3_config": exl3_config}, f, indent = 2)
+        json.dump(
+            {
+                "source_model": source,
+                "source_revision": getattr(base, "_unsloth_exl3_source_revision", None),
+                "source_provider": getattr(base, "_unsloth_exl3_source_provider", "huggingface"),
+                "exl3_config": exl3_config,
+            },
+            f,
+            indent = 2,
+        )
     return path
 
 
@@ -103,13 +128,49 @@ def _patch_peft_save_for_exl3_stamp():
 
     @functools.wraps(original_save)
     def save_pretrained(self, save_directory, *args, **kwargs):
+        base = self.get_base_model()
+        source = getattr(base, "_unsloth_exl3_source_model", None)
+        if source is not None:
+            for adapter_config in self.peft_config.values():
+                adapter_config.base_model_name_or_path = source
+                adapter_config.revision = getattr(base, "_unsloth_exl3_source_revision", None)
         out = original_save(self, save_directory, *args, **kwargs)
-        if kwargs.get("is_main_process", True):
-            write_exl3_adapter_stamp(self, save_directory)
+        bound = inspect.signature(original_save).bind(self, save_directory, *args, **kwargs)
+        bound.apply_defaults()
+        if bound.arguments.get("is_main_process", True):
+            adapters = bound.arguments.get("selected_adapters")
+            if adapters is None:
+                adapters = self.peft_config
+            for adapter in adapters:
+                directory = (
+                    save_directory
+                    if adapter == "default"
+                    else os.path.join(save_directory, adapter)
+                )
+                if os.path.isfile(os.path.join(directory, "adapter_config.json")):
+                    write_exl3_adapter_stamp(self, directory)
         return out
 
     save_pretrained._unsloth_exl3_stamp = True
     PeftModel.save_pretrained = save_pretrained
+
+
+class _Exl3AdapterRoute(tuple):
+    """Keep the public two-item tuple API while carrying source identity."""
+
+    def __new__(
+        cls,
+        source,
+        config,
+        revision = None,
+        provider = None,
+        adapter_path = None,
+    ):
+        route = super().__new__(cls, (source, config))
+        route.source_revision = revision
+        route.source_provider = provider
+        route.adapter_path = adapter_path
+        return route
 
 
 def read_exl3_adapter_stamp(
@@ -118,33 +179,57 @@ def read_exl3_adapter_stamp(
     token = None,
     revision = None,
     local_files_only = False,
+    cache_dir = None,
+    use_modelscope = False,
 ):
     """``(source_model, Exl3Config)`` for an adapter saved from an EXL3 base, else None."""
     if not isinstance(model_name, str) or not is_exllama_available():
         return None
     path = os.path.expanduser(model_name)
-    if os.path.isdir(path):
-        stamp = os.path.join(path, EXL3_ADAPTER_STAMP)
-        if not os.path.isfile(stamp):
+
+    def adapter_file(filename):
+        if os.path.isdir(path):
+            return os.path.join(path, filename)
+        if os.path.exists(path) or model_name.count("/") != 1:
             return None
-    elif os.path.exists(path) or model_name.count("/") != 1:
-        return None
-    else:
-        try:
-            from huggingface_hub import hf_hub_download
-            stamp = hf_hub_download(
+        if use_modelscope:
+            from modelscope import snapshot_download
+            directory = snapshot_download(
                 model_name,
-                EXL3_ADAPTER_STAMP,
-                token = token,
                 revision = revision,
+                token = token,
                 local_files_only = local_files_only,
+                cache_dir = cache_dir,
+                allow_patterns = [filename],
             )
-        except Exception:
-            return None
+            return os.path.join(directory, filename)
+        from huggingface_hub import hf_hub_download
+
+        return hf_hub_download(
+            model_name,
+            filename,
+            token = token,
+            revision = revision,
+            local_files_only = local_files_only,
+            cache_dir = cache_dir,
+        )
+
     try:
-        with open(stamp, encoding = "utf-8") as f:
+        with open(adapter_file(EXL3_ADAPTER_STAMP), encoding = "utf-8") as f:
             data = json.load(f)
-        return data["source_model"], Exl3Config.from_dict(data.get("exl3_config"))
+        source_revision = data.get("source_revision")
+        if source_revision is None:
+            try:
+                with open(adapter_file("adapter_config.json"), encoding = "utf-8") as f:
+                    source_revision = json.load(f).get("revision")
+            except Exception:
+                pass
+        return _Exl3AdapterRoute(
+            data["source_model"],
+            Exl3Config.from_dict(data.get("exl3_config")),
+            source_revision,
+            data.get("source_provider"),
+        )
     except Exception:
         return None
 
@@ -160,32 +245,51 @@ def resolve_exl3_adapter(
     token = None,
     revision = None,
     local_files_only = False,
+    cache_dir = None,
+    use_modelscope = False,
 ):
-    """Route an EXL3-trained adapter back onto its EXL3 base.
-
-    Returns ``(source_model, load_in_exl3)`` when the adapter carries an EXL3
-    stamp and the request still wants a quantized base, else None.
-    """
+    """Return the saved EXL3 base and settings, retaining the two-item tuple API."""
     if load_in_16bit and not _looks_like_exl3_request(load_in_exl3, quantization_config):
         return None
     stamp = read_exl3_adapter_stamp(
-        model_name, token = token, revision = revision, local_files_only = local_files_only
+        model_name,
+        token = token,
+        revision = revision,
+        local_files_only = local_files_only,
+        cache_dir = cache_dir,
+        use_modelscope = use_modelscope,
     )
     if stamp is None:
         return None
     source_model, config = stamp
     if _looks_like_exl3_request(load_in_exl3, quantization_config):
         # A bare True means "EXL3, as trained"; a bpw or config overrides it.
-        return source_model, (
-            config if load_in_exl3 is True and quantization_config is None else load_in_exl3
-        )
-    if not exl3_is_default_backend(
+        selected = config if load_in_exl3 is True and quantization_config is None else load_in_exl3
+    elif exl3_is_default_backend(
         load_in_4bit = load_in_4bit,
         load_in_8bit = load_in_8bit,
         quantization_config = quantization_config,
     ):
+        selected = config
+    else:
         return None
-    return source_model, config
+    adapter_path = model_name
+    if use_modelscope:
+        adapter_path = _resolve_local_dir(
+            model_name,
+            token = token,
+            revision = revision,
+            local_files_only = local_files_only,
+            cache_dir = cache_dir,
+            use_modelscope = True,
+        )
+    return _Exl3AdapterRoute(
+        source_model,
+        selected,
+        stamp.source_revision,
+        stamp.source_provider,
+        adapter_path,
+    )
 
 
 def _looks_like_exl3_request(load_in_exl3, quantization_config) -> bool:
@@ -285,6 +389,8 @@ def should_use_exl3(
     quantization_config = None,
     load_in_4bit = False,
     load_in_8bit = False,
+    load_in_fp8 = False,
+    fast_inference = False,
 ) -> bool:
     """Decide whether this load should go through the EXL3 backend.
 
@@ -297,8 +403,18 @@ def should_use_exl3(
       :func:`exl3_is_default_backend`) - i.e. EXL3 has replaced bitsandbytes as
       the default quantizer on CUDA when exllamav3 is installed.
     """
-    if _looks_like_exl3_request(load_in_exl3, quantization_config):
+    explicit = _looks_like_exl3_request(load_in_exl3, quantization_config)
+    local_exl3 = isinstance(model_name, str) and is_exl3_model_dir(os.path.expanduser(model_name))
+    if explicit or local_exl3:
+        if fast_inference:
+            raise ValueError(
+                "Unsloth: EXL3 does not support fast_inference / vLLM. Set fast_inference=False."
+            )
+        if load_in_8bit or load_in_fp8:
+            raise ValueError("Unsloth: EXL3 cannot be combined with load_in_8bit or load_in_fp8.")
         return True
+    if fast_inference or load_in_8bit or load_in_fp8:
+        return False
     # Auto-detect an EXL3 checkpoint directory even without an explicit flag.
     if isinstance(model_name, str):
         expanded = os.path.expanduser(model_name)
@@ -363,6 +479,8 @@ def _resolve_local_dir(
     revision = None,
     trust_remote_code = False,
     local_files_only = False,
+    cache_dir = None,
+    use_modelscope = False,
 ) -> str:
     """Return a local directory for ``model_name`` (downloading if a Hub id).
 
@@ -373,13 +491,17 @@ def _resolve_local_dir(
     if os.path.isdir(expanded):
         return expanded
 
-    from huggingface_hub import snapshot_download
+    if use_modelscope:
+        from modelscope import snapshot_download
+    else:
+        from huggingface_hub import snapshot_download
 
     return snapshot_download(
         model_name,
         revision = revision,
         token = token,
         local_files_only = local_files_only,
+        cache_dir = cache_dir,
         # We need the full weights to quantize; ignore only obvious non-weights.
         ignore_patterns = ["*.gguf", "*.pth", "original/*"],
     )
@@ -395,6 +517,8 @@ def prepare_exl3_checkpoint(
     revision = None,
     trust_remote_code = False,
     local_files_only = False,
+    cache_dir = None,
+    use_modelscope = False,
     devices: str = "0",
     calibrate = None,
     is_explicit = None,
@@ -419,7 +543,17 @@ def prepare_exl3_checkpoint(
         revision = revision,
         trust_remote_code = trust_remote_code,
         local_files_only = local_files_only,
+        cache_dir = cache_dir,
+        use_modelscope = use_modelscope,
     )
+    snapshot = os.path.basename(os.path.normpath(local_dir))
+    source_revision = (
+        snapshot
+        if os.path.basename(os.path.dirname(os.path.normpath(local_dir))) == "snapshots"
+        and re.fullmatch(r"[0-9a-fA-F]{40}", snapshot)
+        else revision
+    )
+    source_provider = "modelscope" if use_modelscope else "huggingface"
 
     # A Hub id can resolve to a checkpoint that was already quantized by
     # bitsandbytes/GPTQ/AWQ/HQQ, or to a PEFT adapter repo. The initial routing
@@ -446,6 +580,8 @@ def prepare_exl3_checkpoint(
             config = cfg,
             was_quantized = False,
             source_model = model_name,
+            source_revision = source_revision,
+            source_provider = source_provider,
             is_exl3 = False,
         )
 
@@ -466,6 +602,8 @@ def prepare_exl3_checkpoint(
             config = cfg,
             was_quantized = False,
             source_model = model_name,
+            source_revision = source_revision,
+            source_provider = source_provider,
         )
 
     # An explicit EXL3 request for an architecture ExLlamaV3 does not implement
@@ -508,6 +646,14 @@ def prepare_exl3_checkpoint(
             f"architectures; upgrade exllamav3 for newer ones."
         )
 
+    explicit = (
+        is_explicit
+        if is_explicit is not None
+        else _looks_like_exl3_request(load_in_exl3, quantization_config)
+    )
+    if not _preflight_check(local_dir, cfg, raise_on_error = explicit):
+        return None
+
     checkpoint_dir = quantize_to_exl3(
         local_dir,
         cfg,
@@ -518,6 +664,8 @@ def prepare_exl3_checkpoint(
         config = cfg,
         was_quantized = True,
         source_model = model_name,
+        source_revision = source_revision,
+        source_provider = source_provider,
     )
 
 

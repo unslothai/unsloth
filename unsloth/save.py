@@ -1375,6 +1375,18 @@ def _model_parallel_refuses_save(method):
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
             model = args[0] if args else kwargs.get("model", kwargs.get("self"))
+            import inspect
+
+            save_method = (
+                inspect.signature(fn).bind_partial(*args, **kwargs).arguments.get("save_method")
+            )
+            if (
+                model is not None
+                and isinstance(save_method, str)
+                and save_method.lower().strip() in _TP_IN_PLACE_MERGES
+            ):
+                from .exllama.quant_linear import refuse_exl3_inplace_merge
+                refuse_exl3_inplace_merge(model)
             if model is not None and _is_unsloth_tensor_parallel(model):
                 from .models.tp_replica import collective_applies, tp_collective
                 if collective_applies(model):

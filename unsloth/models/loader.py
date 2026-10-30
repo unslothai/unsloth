@@ -1318,6 +1318,16 @@ class FastLanguageModel(FastLlamaModel):
     ):
         rope_scaling = _fold_rope_parameters(rope_scaling, kwargs)
         quantization_config = kwargs.get("quantization_config", None)
+        if isinstance(dtype, str) and dtype in ("float16", "bfloat16", "float32"):
+            dtype = getattr(torch, dtype)
+        _exl3_default_4bit = load_in_4bit and not load_in_16bit
+        if (
+            isinstance(model_name, str)
+            and model_name.lower().endswith("-bf16")
+            and not os.path.isdir(os.path.expanduser(model_name))
+            and quantization_config is None
+        ):
+            _exl3_default_4bit = False
         # Route EXL3 requests (load_in_exl3, an Exl3Config, or an on-disk EXL3
         # checkpoint) through FastModel. Full finetuning is never EXL3 (its base
         # weights train in full precision).
@@ -1328,22 +1338,31 @@ class FastLanguageModel(FastLlamaModel):
                 model_name,
                 load_in_exl3 = load_in_exl3,
                 quantization_config = quantization_config,
-                load_in_4bit = load_in_4bit,
+                load_in_4bit = _exl3_default_4bit,
                 load_in_8bit = load_in_8bit,
+                load_in_fp8 = load_in_fp8,
+                fast_inference = fast_inference,
             )
             # An adapter trained on an EXL3 base reloads onto that base.
-            or resolve_exl3_adapter(
-                model_name,
-                load_in_exl3 = load_in_exl3,
-                quantization_config = quantization_config,
-                load_in_4bit = load_in_4bit,
-                load_in_8bit = load_in_8bit,
-                load_in_16bit = load_in_16bit,
-                token = token,
-                revision = revision,
-                local_files_only = kwargs.get("local_files_only", False),
+            or (
+                not fast_inference
+                and not load_in_fp8
+                and not load_in_8bit
+                and resolve_exl3_adapter(
+                    model_name,
+                    load_in_exl3 = load_in_exl3,
+                    quantization_config = quantization_config,
+                    load_in_4bit = _exl3_default_4bit,
+                    load_in_8bit = load_in_8bit,
+                    load_in_16bit = load_in_16bit,
+                    token = token,
+                    revision = revision,
+                    local_files_only = kwargs.get("local_files_only", False),
+                    cache_dir = kwargs.get("cache_dir"),
+                    use_modelscope = USE_MODELSCOPE,
+                )
+                is not None
             )
-            is not None
         ):
             token = hf_login(token)
             return FastModel.from_pretrained(
@@ -1375,7 +1394,9 @@ class FastLanguageModel(FastLlamaModel):
                 random_state = random_state,
                 max_lora_rank = max_lora_rank,
                 disable_log_stats = disable_log_stats,
-                load_in_fp8 = False,
+                load_in_fp8 = load_in_fp8,
+                qat_scheme = qat_scheme,
+                on_model_resolved = on_model_resolved,
                 unsloth_tiled_mlp = unsloth_tiled_mlp,
                 text_only = text_only,
                 load_in_exl3 = load_in_exl3,
@@ -2370,12 +2391,17 @@ class FastModel(FastBaseModel):
                 "layers for fake-quantized ones first, so float8 training would convert nothing. Pick one."
             )
         quantization_config = kwargs.get("quantization_config", None)
+        if isinstance(dtype, str) and dtype in ("float16", "bfloat16", "float32"):
+            dtype = getattr(torch, dtype)
+        _exl3_default_4bit = load_in_4bit and not load_in_16bit
+        if (
+            isinstance(model_name, str)
+            and model_name.lower().endswith("-bf16")
+            and not os.path.isdir(os.path.expanduser(model_name))
+            and quantization_config is None
+        ):
+            _exl3_default_4bit = False
 
-        # ------------------------------------------------------------------
-        # EXL3 (ExLlamaV3) backend - Unsloth's default quantization path.
-        # Resolve/quantize to a local EXL3 checkpoint, then load it via the
-        # transformers auto path (bnb disabled). See unsloth/exllama/.
-        # ------------------------------------------------------------------
         from ..exllama import (
             should_use_exl3 as _should_use_exl3,
             resolve_exl3_adapter as _resolve_exl3_adapter,
@@ -2385,33 +2411,43 @@ class FastModel(FastBaseModel):
         # stamp, then attach the adapter once the base is loaded.
         _exl3_adapter = None
         _exl3_base_revision = revision
-        if not full_finetuning:
+        _exl3_use_modelscope = USE_MODELSCOPE
+        if qat_scheme is not None and not full_finetuning:
+            raise ValueError(
+                "Specifying qat_scheme in from_pretrained requires full_finetuning=True; pass it to get_peft_model for LoRA."
+            )
+        if not full_finetuning and not fast_inference and not load_in_fp8 and not load_in_8bit:
             _exl3_adapter_route = _resolve_exl3_adapter(
                 model_name,
                 load_in_exl3 = load_in_exl3,
                 quantization_config = quantization_config,
-                load_in_4bit = load_in_4bit,
+                load_in_4bit = _exl3_default_4bit,
                 load_in_8bit = load_in_8bit,
                 load_in_16bit = load_in_16bit,
                 token = token,
                 revision = revision,
                 local_files_only = kwargs.get("local_files_only", False),
+                cache_dir = kwargs.get("cache_dir"),
+                use_modelscope = USE_MODELSCOPE,
             )
             if _exl3_adapter_route is not None:
-                _exl3_adapter = model_name
+                _exl3_adapter = getattr(_exl3_adapter_route, "adapter_path", None) or model_name
                 model_name, load_in_exl3 = _exl3_adapter_route
-                _exl3_base_revision = None
+                _exl3_base_revision = getattr(_exl3_adapter_route, "source_revision", None)
+                _source_provider = getattr(_exl3_adapter_route, "source_provider", None)
+                if _source_provider is not None:
+                    _exl3_use_modelscope = _source_provider == "modelscope"
 
         _exl3_plan = None
         _exl3_active = False
-        # Full finetuning is incompatible with EXL3's frozen quantized weights;
-        # never route it through EXL3.
         if (not full_finetuning) and _should_use_exl3(
             model_name,
             load_in_exl3 = load_in_exl3,
             quantization_config = quantization_config,
-            load_in_4bit = load_in_4bit,
+            load_in_4bit = _exl3_default_4bit,
             load_in_8bit = load_in_8bit,
+            load_in_fp8 = load_in_fp8,
+            fast_inference = fast_inference,
         ):
             from ..exllama import (
                 require_exllama as _require_exllama,
@@ -2430,7 +2466,15 @@ class FastModel(FastBaseModel):
                 revision = _exl3_base_revision,
                 trust_remote_code = trust_remote_code,
                 local_files_only = kwargs.get("local_files_only", False),
-                devices = (os.environ.get("CUDA_VISIBLE_DEVICES", "").strip() or "0"),
+                cache_dir = kwargs.get("cache_dir"),
+                use_modelscope = _exl3_use_modelscope,
+                devices = str(
+                    int(os.environ["LOCAL_RANK"])
+                    if "LOCAL_RANK" in os.environ
+                    else torch.cuda.current_device()
+                    if torch.cuda.is_available()
+                    else 0
+                ),
                 calibrate = exl3_calibrate,
                 # Preserve implicit-vs-explicit intent for fallback decisions.
                 is_explicit = _exl3_request_is_explicit(load_in_exl3, quantization_config),
@@ -2441,17 +2485,16 @@ class FastModel(FastBaseModel):
             model_name = _exl3_plan.checkpoint_dir
             use_exact_model_name = True
             if _exl3_plan.is_exl3:
-                # Load the prepared EXL3 checkpoint directly (bnb disabled).
+                if dtype is None:
+                    dtype = _exl3_plan.config.compute_dtype
+                    if isinstance(dtype, str) and dtype in ("float16", "bfloat16", "float32"):
+                        dtype = getattr(torch, dtype)
                 _exl3_active = True
                 load_in_4bit = False
                 load_in_8bit = False
                 load_in_fp8 = False
                 quantization_config = None
                 kwargs.pop("quantization_config", None)
-                # Disable grouped-GEMM MoE fusion so each expert stays an individual
-                # quantized layer. Restored after the load (try/finally below).
-                _exl3_prev_moe_grouped = os.environ.get("UNSLOTH_MOE_GROUPED")
-                os.environ["UNSLOTH_MOE_GROUPED"] = "0"
             else:
                 # The snapshot already carries its native quantization metadata.
                 # Keep the native flags and let Transformers load that checkpoint
@@ -3123,6 +3166,7 @@ class FastModel(FastBaseModel):
                 revision = revision,
                 trust_remote_code = trust_remote_code,
                 local_files_only = local_files_only,
+                cache_dir = kwargs.get("cache_dir"),
             )
             is_peft = True
             old_model_name = _exl3_adapter
@@ -3571,6 +3615,9 @@ class FastModel(FastBaseModel):
                 and _adapter_rows > _base_vocab
             )
 
+        if _exl3_active:
+            _exl3_prev_moe_grouped = os.environ.get("UNSLOTH_MOE_GROUPED")
+            os.environ["UNSLOTH_MOE_GROUPED"] = "0"
         try:
             model, tokenizer = FastBaseModel.from_pretrained(
                 model_name = model_name,
@@ -3626,7 +3673,6 @@ class FastModel(FastBaseModel):
             _record_modelscope_repo_id(model, modelscope_repo_id, modelscope_dir)
 
         finally:
-            # Always restore UNSLOTH_MOE_GROUPED, even if the load raises.
             if _exl3_active:
                 if _exl3_prev_moe_grouped is None:
                     os.environ.pop("UNSLOTH_MOE_GROUPED", None)
@@ -3873,7 +3919,13 @@ class FastModel(FastBaseModel):
         model = _mark_full_finetuning(model, full_finetuning)
         if _exl3_active:
             from ..exllama import set_exl3_source_model_reference
-            set_exl3_source_model_reference(model, _exl3_plan.source_model, _exl3_plan.config)
+            set_exl3_source_model_reference(
+                model,
+                _exl3_plan.source_model,
+                _exl3_plan.config,
+                source_revision = _exl3_plan.source_revision,
+                source_provider = _exl3_plan.source_provider,
+            )
         return _mark_requested_float32(model, user_float32), tokenizer
 
 
