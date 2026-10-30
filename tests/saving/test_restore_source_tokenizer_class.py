@@ -13,12 +13,15 @@ class _Logger:
 def _load_restore_helper(hub_path = None):
     source = Path(__file__).parents[2] / "unsloth" / "save.py"
     tree = ast.parse(source.read_text(encoding = "utf-8"))
-    helper = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "_restore_source_tokenizer_class"
-    )
-    module = ast.Module(body = [helper], type_ignores = [])
+    wanted = {
+        "_source_tokenizer_class",
+        "_restore_source_tokenizer_class",
+        "_unsloth_tokenizer_save_pretrained",
+    }
+    nodes = [
+        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted
+    ]
+    module = ast.Module(body = nodes, type_ignores = [])
     ast.fix_missing_locations(module)
     namespace = {
         "json": json,
@@ -27,9 +30,14 @@ def _load_restore_helper(hub_path = None):
         "_resolve_hub_repo_cached_file": lambda *args, **kwargs: hub_path,
         "_tokenizer_cache_dir": lambda tokenizer: None,
         "_tokenizer_revision": lambda tokenizer: None,
+        "_preserve_sentencepiece_tokenizer_assets": lambda *args, **kwargs: None,
+        "_preserve_tokenizer_eos_token": lambda *args, **kwargs: None,
+        "_preserve_repaired_tokenizer_class": lambda *args, **kwargs: None,
     }
     exec(compile(module, str(source), "exec"), namespace)
-    return namespace["_restore_source_tokenizer_class"]
+    restore = namespace["_restore_source_tokenizer_class"]
+    restore.save = namespace["_unsloth_tokenizer_save_pretrained"]
+    return restore
 
 
 def _write(path, config):
@@ -123,3 +131,20 @@ def test_filename_prefix(tmp_path):
         _read(tmp_path / "out" / "adapter-tokenizer_config.json")["tokenizer_class"]
         == "Qwen2Tokenizer"
     )
+
+
+def test_in_place_save_keeps_the_source_class(tmp_path):
+    restore = _load_restore_helper()
+    checkpoint = tmp_path / "checkpoint"
+    _write(checkpoint / "tokenizer_config.json", {"tokenizer_class": "Qwen2Tokenizer"})
+
+    def overwrite_with_generic_class(path, **kwargs):
+        _write(Path(path) / "tokenizer_config.json", {"tokenizer_class": "TokenizersBackend"})
+
+    tokenizer = types.SimpleNamespace(
+        name_or_path = str(checkpoint), original_save_pretrained = overwrite_with_generic_class
+    )
+
+    restore.save(tokenizer, str(checkpoint))
+
+    assert _read(checkpoint / "tokenizer_config.json")["tokenizer_class"] == "Qwen2Tokenizer"
