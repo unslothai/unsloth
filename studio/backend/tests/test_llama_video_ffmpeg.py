@@ -134,6 +134,8 @@ def test_a_load_without_ffprobe_flags_the_missing_tools(tmp_path, monkeypatch):
 
 
 def test_a_load_with_both_tools_does_not_blame_ffmpeg(tmp_path, monkeypatch):
-    backend = _load_with_video_props(tmp_path, monkeypatch, _bin(tmp_path / "bin", "ffmpeg", "ffprobe"))
+    backend = _load_with_video_props(
+        tmp_path, monkeypatch, _bin(tmp_path / "bin", "ffmpeg", "ffprobe")
+    )
     assert backend._has_video_input is True
     assert backend._video_needs_ffmpeg is False
