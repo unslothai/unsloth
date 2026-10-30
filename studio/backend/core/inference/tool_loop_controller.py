@@ -648,6 +648,32 @@ def _mcp_tool_search_specs(arguments: Any) -> list:
         return []
 
 
+def _tool_name_key(name: str) -> str:
+    return name.lower().replace("-", "_")
+
+
+def _canonical_tool_name(name: str, allowed: Collection[str]) -> "str | None":
+    """The one enabled tool a sampled name means when only its case or ``-``/``_`` differ (WEB_SEARCH,
+    web-search). Never an execution-class or MCP tool: those run only under their exact name, so a bare
+    call cannot reach them by a near spelling. None when no tool, or more than one, matches."""
+    # ASCII only: Unicode case folding maps other letters onto ASCII ones (``ſ`` -> ``s``, Kelvin sign -> ``k``).
+    if not name or not name.isascii():
+        return None
+    key = _tool_name_key(name)
+    matches = [tool for tool in allowed if _tool_name_key(tool) == key]
+    if len(matches) != 1:
+        return None
+    match = matches[0]
+    if match in _tool_healing_exec_names() or match.startswith(MCP_TOOL_PREFIX):
+        return None
+    return match
+
+
+def _tool_healing_exec_names() -> "frozenset[str]":
+    from core.tool_healing import EXECUTION_CLASS_TOOL_NAMES  # noqa: PLC0415 -- cycle at import time
+    return EXECUTION_CLASS_TOOL_NAMES
+
+
 def coerce_tool_arguments(
     raw_args: Any,
     *,
@@ -1217,6 +1243,11 @@ class ToolLoopController:
         function = tool_call.get("function")
         function = function if isinstance(function, Mapping) else {}
         tool_name = str(function.get("name") or "").strip()
+        name_healed = False
+        if self._auto_heal_tool_calls and tool_name not in self._allowed_tool_names:
+            canonical = _canonical_tool_name(tool_name, self._allowed_tool_names)
+            if canonical is not None:
+                tool_name, name_healed = canonical, True
         if (
             self._mcp_search
             and tool_name.startswith(MCP_TOOL_PREFIX)
@@ -1236,7 +1267,7 @@ class ToolLoopController:
         key = canonical_tool_call_key(tool_name, arguments)
         mcp = mcp_display_parts(tool_name)
         provenance = tool_event_provenance(
-            healed = coerced.healed,
+            healed = coerced.healed or name_healed,
             forced = forced,
             provisional = provisional,
             mcp_server = mcp[0] if mcp else None,
