@@ -616,12 +616,43 @@ def _install_accelerator_state(self):
         _install_fsdp2_parallelism_config(accelerator.state, manager)
     else:
         _restore_parallelism_config(accelerator.state)
+    _cp_scaler_start(self, accelerator)
     # PEFT makes the Trainer ask DDP for find_unused_parameters, which breaks reentrant checkpointing.
     if getattr(self.args, "ddp_find_unused_parameters", None) in (None, False):
         self.args.ddp_find_unused_parameters = False
         handler = getattr(accelerator, "ddp_handler", None)
         if handler is not None:
             handler.find_unused_parameters = False
+
+
+def _cp_scaler_start(trainer, accelerator) -> None:
+    """float16: start the GradScaler at 2**16 / world, as native FSDP2 and tensor parallel do.
+
+    Context parallel peers share one batch and the Trainer multiplies every rank's loss by the number of
+    processes, so each rank's backward carries world x one GPU's per-token gradient. Over plain DDP or
+    accelerate's FSDP2 the scaler kept 2**16, overflowed where one GPU did not and skipped the first
+    log2(world) steps. Left alone: a user init_scale, a scaler that already started, or one native FSDP2 /
+    tensor parallel already divided (no longer at the default)."""
+    scaler = getattr(accelerator, "scaler", None)
+    if scaler is None or getattr(scaler, "_unsloth_cp_init_scale", False):
+        return
+    try:
+        if not scaler.is_enabled() or getattr(scaler, "_scale", None) is not None:
+            return
+        if float(getattr(scaler, "_init_scale", 0.0)) != 2.0**16:
+            return
+        handler = getattr(accelerator, "scaler_handler", None)
+        user = handler.to_kwargs() if handler is not None and hasattr(handler, "to_kwargs") else {}
+        if "init_scale" in user:
+            return
+        from .models.fsdp2_native import _loss_scale_ranks
+
+        world = _loss_scale_ranks(trainer)
+    except Exception:
+        return
+    if world > 1:
+        scaler._init_scale = 2.0**16 / world
+    scaler._unsloth_cp_init_scale = True
 
 
 def _check_cp_runtime(self, size: int, backend: str) -> None:
