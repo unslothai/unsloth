@@ -5,7 +5,9 @@
 in content whenever its own tool parser does not run (tool_choice "none", the final answer pass)."""
 
 import json
+import random
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -21,6 +23,8 @@ from core.inference.chat_template_helpers import neutralize_control_markup  # no
 from core.inference.tool_call_parser import (  # noqa: E402
     StreamingMarkupStripper,
     TOOL_XML_SIGNALS,
+    _inside_minimax_value,
+    _MinimaxValueIndex,
     parse_tool_calls_from_text,
     strip_tool_markup,
 )
@@ -201,3 +205,49 @@ def test_the_gguf_tool_loop_runs_a_text_block_and_hides_it(monkeypatch, chunk):
     ), snapshots
     assert "Let me look that up." in snapshots[-2]
     assert snapshots[-1] == "It is sunny."
+
+
+def test_the_value_index_answers_like_the_shared_helper():
+    """The parser asks the index, not the per-tag scan; both must agree on every offset."""
+    rng = random.Random(0)
+    pieces = (
+        "<minimax:tool_call>",
+        "</minimax:tool_call>",
+        '<invoke name="python">',
+        "</invoke>",
+        '<parameter name="code">',
+        "<parameter=code>",
+        '<param name="x">',
+        "</parameter>",
+        "</param>",
+        "<param",
+        " ",
+        "\n",
+        "a",
+        "<",
+        ">",
+    )
+    for _ in range(400):
+        text = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 24)))
+        index = _MinimaxValueIndex(text)
+        for pos in range(len(text) + 1):
+            assert index.inside(pos) == _inside_minimax_value(text, pos), (text, pos)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '<parameter name="p">' + "<minimax:tool_call>" * 50000,
+        '<minimax:tool_call><invoke name="python"><parameter name="code">'
+        + '<invoke name="a">' * 50000,
+        '<minimax:tool_call><invoke name="python">' + '<parameter name="p">' * 50000,
+        "<think>a</think>" * 30000 + SEARCH * 3000,
+    ],
+    ids = ["openers_in_a_value", "invokes_in_a_value", "unclosed_params", "think_spans"],
+)
+def test_a_megabyte_of_adversarial_markup_parses_in_linear_time(text):
+    start = time.perf_counter()
+    parse_tool_calls_from_text(text, enabled_tool_names = ENABLED)
+    strip_tool_markup(text, final = True, enabled_tool_names = ENABLED)
+    # Each took 35-90 s with a per-tag scan of the text.
+    assert time.perf_counter() - start < 5.0

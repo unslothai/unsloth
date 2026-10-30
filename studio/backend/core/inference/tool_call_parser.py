@@ -4056,19 +4056,66 @@ def _inside_minimax_value(text: str, pos: int) -> bool:
     )
 
 
+class _MinimaxValueIndex:
+    """``_inside_minimax_value`` over one text in O(log n) per query: the per-tag scans were quadratic on long output."""
+
+    __slots__ = ("_param_starts", "_param_ends", "_param_closers", "_func_closers")
+
+    def __init__(self, text: str):
+        starts: list[int] = []
+        ends: list[int] = []
+        for m in _TC_PARAM_START_RE.finditer(text):
+            starts.append(m.start())
+            # Bounded at the tag's own ">", as the helper's endpos-limited match is.
+            ends.append(text.index(">", m.start()) + 1)
+        self._param_starts = starts
+        self._param_ends = ends
+        self._param_closers = self._positions(text, ("</parameter>", "</param>"))
+        self._func_closers = self._positions(text, (_MINIMAX_INVOKE_CLOSE, _MINIMAX_BLOCK_CLOSE))
+
+    @staticmethod
+    def _positions(text: str, tags) -> list[int]:
+        found: list[int] = []
+        for tag in tags:
+            at = text.find(tag)
+            while at >= 0:
+                found.append(at)
+                at = text.find(tag, at + len(tag))
+        return sorted(found)
+
+    @staticmethod
+    def _any_in(positions: list[int], lo: int, hi: int) -> bool:
+        i = bisect.bisect_left(positions, lo)
+        return i < len(positions) and positions[i] <= hi
+
+    def inside(self, pos: int) -> bool:
+        idx = bisect.bisect_right(self._param_ends, pos) - 1
+        if idx < 0:
+            return False
+        last = self._param_starts[idx]
+        if self._any_in(self._param_closers, last, pos):
+            return False
+        if self._param_closers and self._param_closers[-1] >= pos + 1:
+            return True
+        return not self._any_in(self._func_closers, last, pos)
+
+
 def _minimax_block_spans(text: str) -> list[tuple[int, int, bool]]:
     """``(start, end, closed)`` per ``<minimax:tool_call>`` block; an unclosed block runs to the end of the text."""
     spans: list[tuple[int, int, bool]] = []
+    if _MINIMAX_BLOCK_OPEN not in text:
+        return spans
+    inside = _MinimaxValueIndex(text).inside
     pos = 0
     while True:
         start = text.find(_MINIMAX_BLOCK_OPEN, pos)
         if start < 0:
             return spans
-        if _inside_minimax_value(text, start):
+        if inside(start):
             pos = start + len(_MINIMAX_BLOCK_OPEN)
             continue
         close = text.find(_MINIMAX_BLOCK_CLOSE, start + len(_MINIMAX_BLOCK_OPEN))
-        while close >= 0 and _inside_minimax_value(text, close):
+        while close >= 0 and inside(close):
             close = text.find(_MINIMAX_BLOCK_CLOSE, close + 1)
         if close < 0:
             spans.append((start, len(text), False))
@@ -4089,20 +4136,24 @@ def _parse_minimax_tool_calls(
     if _MINIMAX_BLOCK_OPEN not in content:
         return out
     think_spans = [m.span() for m in _tool_healing._THINK_TAG_RE.finditer(content)]
+    think_starts = [s for s, _ in think_spans]
     stray_close = _unmatched_think_closer(content)
+    inside = _MinimaxValueIndex(content).inside
     for start, end, closed in _minimax_block_spans(content):
-        if any(s <= start < e for s, e in think_spans) or end <= stray_close:
+        # Think spans are disjoint and sorted, so only the last one opening at or before start can hold it.
+        think_idx = bisect.bisect_right(think_starts, start) - 1
+        if (think_idx >= 0 and start < think_spans[think_idx][1]) or end <= stray_close:
             continue
         body_end = end - len(_MINIMAX_BLOCK_CLOSE) if closed else end
         invokes = [
             m
             for m in _MINIMAX_INVOKE_OPEN_RE.finditer(content, start, body_end)
-            if not _inside_minimax_value(content, m.start())
+            if not inside(m.start())
         ]
         for idx, im in enumerate(invokes):
             next_invoke = invokes[idx + 1].start() if idx + 1 < len(invokes) else body_end
             close = content.find(_MINIMAX_INVOKE_CLOSE, im.end(), next_invoke)
-            while close >= 0 and _inside_minimax_value(content, close):
+            while close >= 0 and inside(close):
                 close = content.find(_MINIMAX_INVOKE_CLOSE, close + 1, next_invoke)
             # Strict mode: an invoke without its close tag was cut off; do not heal it.
             if close < 0 and not allow_incomplete:
@@ -4110,11 +4161,8 @@ def _parse_minimax_tool_calls(
             body = content[im.end() : close if close >= 0 else next_invoke]
             args: dict = {}
             param_unclosed = False
-            params = [
-                pm
-                for pm in _TC_PARAM_START_RE.finditer(body)
-                if not _inside_minimax_value(body, pm.start())
-            ]
+            body_inside = _MinimaxValueIndex(body).inside
+            params = [pm for pm in _TC_PARAM_START_RE.finditer(body) if not body_inside(pm.start())]
             for pidx, pm in enumerate(params):
                 next_param = params[pidx + 1].start() if pidx + 1 < len(params) else len(body)
                 raw_val = body[pm.end() : next_param]

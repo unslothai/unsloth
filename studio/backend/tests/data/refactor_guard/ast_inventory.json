@@ -1545,6 +1545,33 @@
       "_MISTRAL_V11_NAME_RE": {
         "kind": "assign"
       },
+      "_MinimaxValueIndex": {
+        "bases": [],
+        "decorators": [],
+        "kind": "class",
+        "methods": {
+          "__init__": {
+            "decorators": [],
+            "signature": "self, text: str"
+          },
+          "_any_in": {
+            "decorators": [
+              "staticmethod"
+            ],
+            "signature": "positions: list[int], lo: int, hi: int"
+          },
+          "_positions": {
+            "decorators": [
+              "staticmethod"
+            ],
+            "signature": "text: str, tags"
+          },
+          "inside": {
+            "decorators": [],
+            "signature": "self, pos: int"
+          }
+        }
+      },
       "_OPEN_CALL_OPENER": {
         "kind": "assign"
       },

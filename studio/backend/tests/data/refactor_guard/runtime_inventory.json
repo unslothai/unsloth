@@ -92,6 +92,7 @@
       "_MISTRAL_THINK_OPEN",
       "_MISTRAL_TRIGGER",
       "_MISTRAL_V11_NAME_RE",
+      "_MinimaxValueIndex",
       "_OPEN_CALL_OPENER",
       "_OPEN_CALL_TRIGGERS",
       "_OPEN_CALL_TRIGGER_MAX_LEN",
