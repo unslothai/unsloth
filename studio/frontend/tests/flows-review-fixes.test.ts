@@ -162,16 +162,19 @@ test("a read-only flow's toolbar cannot edit the document", () => {
   assert.match(page, /<Toolbar readOnly=\{readOnly\} \/>/);
   const bar = readSrc("features/flows/editor/toolbar.tsx");
   assert.match(bar, /<input\s+value=\{name\}\s+readOnly=\{readOnly\}/);
-  for (const label of ["Undo", "Redo", "Tidy up layout", "Group selection", "Add note"]) {
+  for (const label of ["Undo", "Redo", "Tidy up layout", "Group selection", "Add note", "Add reroute"]) {
     const at = bar.indexOf(`label="${label}`);
     assert.ok(at > 0, label);
     assert.match(bar.slice(at, bar.indexOf("/>", at)), /disabled=\{readOnly( \|\||\})/, label);
   }
 });
 
-test("the Reroute palette row takes the theme's text colours", () => {
-  const src = readSrc("features/flows/editor/palette.tsx");
-  const reroute = src.slice(src.indexOf("function RerouteBody"), src.indexOf("function PaletteRowBody"));
-  assert.doesNotMatch(reroute, /zinc-|text-white|bg-white/);
-  assert.match(reroute, /text-muted-foreground hover:bg-muted\/35 hover:text-foreground/);
+test("Reroute is armed from the toolbar beside Group and Note, not the palette", () => {
+  const bar = readSrc("features/flows/editor/toolbar.tsx");
+  const group = bar.indexOf('label="Group selection');
+  const note = bar.indexOf('label="Add note"');
+  const reroute = bar.indexOf('label="Add reroute');
+  assert.ok(group > 0 && group < note && note < reroute);
+  assert.match(bar.slice(reroute, bar.indexOf("/>", reroute)), /togglePlacement\(REROUTE_TYPE\)/);
+  assert.doesNotMatch(readSrc("features/flows/editor/palette.tsx"), /palette-reroute|REROUTE_TYPE/);
 });

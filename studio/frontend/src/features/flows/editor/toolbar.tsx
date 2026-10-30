@@ -11,14 +11,17 @@ import { newId, useDocStore } from "../stores/doc-store";
 import { useUiStore } from "../stores/ui-store";
 import { FIT_MIN_ZOOM } from "./canvas-rules";
 import {
-  GridViewIcon,
+  GroupItemsIcon,
   HierarchySquare02Icon,
   MagnetIcon,
   Redo02Icon,
+  Route01Icon,
   StickyNote01Icon,
   Undo02Icon,
 } from "./icon-data";
 import { autoLayout } from "./layout";
+import { togglePlacement, usePlacement } from "./placement";
+import { REROUTE_TYPE } from "./reroutes";
 import { groupSelection } from "./use-editor-shortcuts";
 
 const SAVE_LABEL: Record<string, string> = {
@@ -68,6 +71,7 @@ function ToolbarImpl({ readOnly = false }: { readOnly?: boolean }) {
   const canUndo = useDocStore((s) => s.past.length > 0);
   const canRedo = useDocStore((s) => s.future.length > 0);
   const saveState = useUiStore((s) => s.saveState);
+  const rerouteArmed = usePlacement((s) => s.armed === REROUTE_TYPE);
   const snap = useUiStore((s) => s.snapToGrid);
   const wireStyle = useUiStore((s) => s.wireStyle);
   const { getInternalNode, getViewport, fitView } = useReactFlow();
@@ -176,7 +180,7 @@ function ToolbarImpl({ readOnly = false }: { readOnly?: boolean }) {
           }}
         />
         <IconButton
-          icon={GridViewIcon}
+          icon={GroupItemsIcon}
           label="Group selection (Shift+G)"
           disabled={readOnly}
           onClick={() => {
@@ -206,6 +210,13 @@ function ToolbarImpl({ readOnly = false }: { readOnly?: boolean }) {
               ],
             });
           }}
+        />
+        <IconButton
+          icon={Route01Icon}
+          label="Add reroute (drop it on a wire to split it)"
+          disabled={readOnly}
+          active={rerouteArmed}
+          onClick={() => togglePlacement(REROUTE_TYPE)}
         />
       </div>
 

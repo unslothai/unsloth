@@ -69,7 +69,7 @@ function FloatingButton({
   );
 }
 
-/** While a Nodes panel item is armed: each click on empty canvas, a group or a note places one;
+/** While a Nodes panel item or the toolbar Reroute is armed: each click on empty canvas, a group or a note places one;
  *  Esc, right-click or leaving the editor stops. Clicks on cards and on controls are left alone. */
 function ArmedPlacement() {
   const armed = usePlacement((s) => s.armed);
