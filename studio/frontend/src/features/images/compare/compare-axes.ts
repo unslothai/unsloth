@@ -48,6 +48,8 @@ export interface CompareContext {
   controlnetEngaged: boolean;
   // Hires CFG makes the refine pass read the negative prompt at any base CFG; no axis varies Hires, so it is grid-wide.
   hiresEngagesNegative?: boolean;
+  // Likewise the Detailer's CFG: the Detailer inherits the main negative prompt; no axis varies it.
+  detailerEngagesNegative?: boolean;
 }
 
 type Value = number | string;
@@ -400,7 +402,10 @@ function cellProblem(plan: CompareGridPlan, ctx: CompareContext): string | null 
 function negativeEngaged(ctx: CompareContext, guidance: number): boolean {
   return (
     ctx.negativeCapable &&
-    (ctx.negativeMinGuidance === null || guidance > ctx.negativeMinGuidance || ctx.hiresEngagesNegative === true)
+    (ctx.negativeMinGuidance === null ||
+      guidance > ctx.negativeMinGuidance ||
+      ctx.hiresEngagesNegative === true ||
+      ctx.detailerEngagesNegative === true)
   );
 }
 
