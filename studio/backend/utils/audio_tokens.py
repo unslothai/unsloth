@@ -77,6 +77,8 @@ AUDIO_TOKEN_MARKERS = (
 AUDIO_TOKENIZER_CONFIG_PATHS = (
     "tokenizer_config.json",
     "LLM/tokenizer_config.json",
+    # transformers 5 tokenizer_configs drop added_tokens_decoder (LFM3-Omni); the processor still names its audio_token.
+    "processor_config.json",
 )
 
 # A codebook tokenizer runs to a few MB, and the inventory scan reads one per repo.
@@ -91,10 +93,12 @@ def may_hold_audio_tokens(raw: str) -> bool:
 
 def classify_audio_tokens(tok_config: dict) -> Optional[str]:
     """The audio_type a parsed tokenizer_config fingerprints, or None."""
-    added = tok_config.get("added_tokens_decoder", {})
-    if not added:
-        return None
+    added = tok_config.get("added_tokens_decoder") or {}
     token_contents = [value.get("content", "") for value in added.values()]
+    if isinstance(tok_config.get("audio_token"), str):
+        token_contents.append(tok_config["audio_token"])
+    if not token_contents:
+        return None
     for audio_type, check_fn in AUDIO_TOKEN_PATTERNS.items():
         if check_fn(token_contents):
             return audio_type
