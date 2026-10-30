@@ -219,22 +219,26 @@ export function parseOptions(raw: unknown): PlanOption[] | null {
   return out;
 }
 
-/** Mind fields after a plan answer (or a failed call: `out` null); empty for classic minds. */
+/** Mind fields after a plan answer (or a failed call: `out` null); empty for classic minds.
+ * `askedSeq` is the mind's `replanSeq` when the call was sent: a replan requested while it
+ * was in flight stays pending. */
 export function lifePlanned(
   mind: NpcMind,
   out: unknown,
   clock: number,
+  askedSeq: number = mind.replanSeq ?? 0,
 ): Partial<NpcMind> {
   const options = parseOptions((out as { options?: unknown } | null)?.options);
+  const seen = (mind.replanSeq ?? 0) === askedSeq;
   if (options)
     return {
       options,
       optionAt: 0,
       optionSince: clock,
       planAt: clock,
-      replan: false,
+      ...(seen ? { replan: false } : {}),
     };
-  return mind.options ? { planAt: clock, replan: false } : {};
+  return mind.options ? { planAt: clock } : {};
 }
 
 const OCCUPATIONS =
@@ -532,7 +536,9 @@ export function applyRatings(
         ...m,
         memory,
         ...(m.since !== undefined ? { since: m.since + importance } : {}),
-        ...(m.options && importance >= 8 ? { replan: true } : {}),
+        ...(m.options && importance >= 8
+          ? { replan: true, replanSeq: (m.replanSeq ?? 0) + 1 }
+          : {}),
       };
   });
   return { ...st, npc };

@@ -182,6 +182,38 @@ test("plan due: classic is once a day; options replan when exhausted early, a no
   );
 });
 
+test("a notable event during an in-flight plan call stays pending after the answer or a failure", () => {
+  const on = L.lifeOf(spec());
+  const sent: Mind = { ...S.emptyMind(), planDay: 0, options: [], planAt: 500 };
+  const askedSeq = sent.replanSeq ?? 0;
+  const noted = S.remember(
+    sent,
+    [{ text: "Go to the pier now, the boat is leaving.", importance: 10 }],
+    600,
+  );
+  assert.equal(noted.replan, true);
+  const answer = { options: [opt({ type: "time", at: 1200 })] };
+  const planned: Mind = {
+    ...noted,
+    ...L.lifePlanned(noted, answer, 610, askedSeq),
+  };
+  assert.equal(planned.options?.length, 1);
+  assert.equal(planned.replan, true);
+  assert.equal(L.planDue(on, planned, 700), true);
+  const failed: Mind = {
+    ...noted,
+    ...L.lifePlanned(noted, null, 610, askedSeq),
+  };
+  assert.equal(failed.replan, true);
+  assert.equal(L.planDue(on, failed, 700), true);
+  const seen: Mind = {
+    ...planned,
+    ...L.lifePlanned(planned, answer, 700, planned.replanSeq ?? 0),
+  };
+  assert.equal(seen.replan, false);
+  assert.equal(L.planDue(on, seen, 800), false);
+});
+
 test("plan cache: miss, store, personal hit, LRU bound and replan bypass", () => {
   const sp = spec();
   const cfg = L.lifeOf(sp);
