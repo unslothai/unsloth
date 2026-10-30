@@ -226,9 +226,10 @@ def heal_openai_message(
     msg: dict,
     allowed_tools: set,
     tools: Optional[list] = None,
+    allow_incomplete: bool = True,
 ) -> bool:
     """Edits in place; only promoted calls' markup is removed, undeclared calls stay byte-intact."""
-    events = heal_openai_message_events(msg, allowed_tools, tools)
+    events = heal_openai_message_events(msg, allowed_tools, tools, allow_incomplete)
     if not events:
         return False
     calls = [value for kind, value in events if kind == "tool_call"]
@@ -511,6 +512,14 @@ class StreamToolCallHealer:
                 if may_parse
                 else ([], [])
             )
+            # A bracket call after a still-open tag block is that block's argument text.
+            if (
+                parsed
+                and self._buffer.startswith("<")
+                and not self._buffer.startswith("<", spans[0][0])
+                and _closed_signal_span(self._buffer) is None
+            ):
+                parsed, spans = [], []
             if not parsed:
                 # Its close tags are gate tokens, so a closed gate means no closed span.
                 closed_span = _closed_signal_span(self._buffer) if may_parse else None
