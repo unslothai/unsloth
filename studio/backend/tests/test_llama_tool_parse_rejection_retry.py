@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""llama-server rejects a reply its tool-call parser cannot read with an error event and drops the text.
-Llama-3.2-1B-Instruct does this for its own ``{"type": "function", "function": NAME, ...}`` form, so the
-round is asked again with tool_choice "none" and Studio's parser reads the raw reply."""
+"""llama-server drops a reply its tool-call parser rejects; Studio re-asks with tool_choice "none" and parses it."""
 
 from __future__ import annotations
 

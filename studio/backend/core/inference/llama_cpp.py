@@ -7515,7 +7515,6 @@ def _llama_chunk_has_generated_output(data: dict) -> bool:
 
 
 def _structured_calls_complete(calls: dict) -> bool:
-    """Every streamed call has a name and JSON-object arguments."""
     for call in calls.values():
         function = call.get("function") or {}
         if not function.get("name", "").strip():
