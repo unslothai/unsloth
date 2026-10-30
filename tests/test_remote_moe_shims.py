@@ -667,16 +667,13 @@ _KIMI_INPLACE = (
 )
 # The same gate written out of place. The in-place add goes through a view, so Kimi's `scores`
 # (later gathered into the routing weights) carries the bias too: keep that.
-_KIMI_OUT_OF_PLACE = (
-    _KIMI_INPLACE[:2]
-    + (
-        (
-            "scores_for_choice = scores.view(bsz * seq_len, -1) + self.e_score_correction_bias.unsqueeze(0)",
-            "scores = scores + self.e_score_correction_bias.unsqueeze(0)\n"
-            "        scores_for_choice = scores.view(bsz * seq_len, -1)",
-        ),
-        ("torch.float32", "torch.float64"),
-    )
+_KIMI_OUT_OF_PLACE = _KIMI_INPLACE[:2] + (
+    (
+        "scores_for_choice = scores.view(bsz * seq_len, -1) + self.e_score_correction_bias.unsqueeze(0)",
+        "scores = scores + self.e_score_correction_bias.unsqueeze(0)\n"
+        "        scores_for_choice = scores.view(bsz * seq_len, -1)",
+    ),
+    ("torch.float32", "torch.float64"),
 )
 
 
@@ -725,7 +722,9 @@ def test_an_in_place_kimi_gate_matches_an_out_of_place_oracle(mode, scoring):
     expected = oracle(x_oracle)
     expected.pow(2).sum().backward()
 
-    block = _kimi_gate_block(f"kimi_inplace_{mode}_{scoring}", _KIMI_INPLACE, scoring, torch.float32)
+    block = _kimi_gate_block(
+        f"kimi_inplace_{mode}_{scoring}", _KIMI_INPLACE, scoring, torch.float32
+    )
     x_block = x.float().requires_grad_()
     out = _checkpointed(block, x_block, mode)
     out.pow(2).sum().backward()
@@ -755,7 +754,13 @@ def test_the_gate_leaves_its_saved_tensors_to_checkpointing():
             super().__init__()
             self.refs = []
 
-        def __torch_dispatch__(self, func, types, args = (), kwargs = None):
+        def __torch_dispatch__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
             out = func(*args, **(kwargs or {}))
             for t in out if isinstance(out, (tuple, list)) else (out,):
                 if isinstance(t, torch.Tensor):
@@ -809,7 +814,6 @@ def _moe_ddp_entry(rank, world, init_file, fn, args):
 
 def _moe_spawn(fn, world, *args):
     import torch.multiprocessing as mp
-
     if "fork" not in mp.get_all_start_methods():
         pytest.skip("needs the fork start method")
     with tempfile.TemporaryDirectory() as d:

@@ -223,7 +223,11 @@ def _model(k3):
     return _KimiForCausalLM(k3).train()
 
 
-def _manager(size, rank, group = None):
+def _manager(
+    size,
+    rank,
+    group = None,
+):
     manager = object.__new__(cp.ContextParallelManager)
     manager.size = size
     manager.backend = "ulysses"
@@ -237,7 +241,7 @@ def _loss(logits, shift_labels, count):
             logits.to(_acc(logits)).flatten(0, 1),
             shift_labels.flatten(),
             ignore_index = -100,
-            reduction = "sum"
+            reduction = "sum",
         )
         / count
     )
@@ -314,7 +318,10 @@ def _shard_local(fn, size, *xs):
 # Deliberately broken copies of ulysses_kimi_delta_forward: each must fail the parity check.
 _BROKEN = {
     "shard_local_scan": (
-        ("out = _kda_scan(q, k, v, g, b.float().sigmoid())", "out = _shard_local(_kda_scan, size, q, k, v, g, b.float().sigmoid())"),
+        (
+            "out = _kda_scan(q, k, v, g, b.float().sigmoid())",
+            "out = _shard_local(_kda_scan, size, q, k, v, g, b.float().sigmoid())",
+        ),
     ),
     "shard_local_conv": tuple(
         (
@@ -323,8 +330,18 @@ _BROKEN = {
         )
         for x in "qkv"
     ),
-    "a_log_of_rank0": (("module.A_log.reshape(-1)[rank * heads : (rank + 1) * heads]", "module.A_log.reshape(-1)[:heads]"),),
-    "dt_bias_of_rank0": (("module.dt_bias.reshape(-1).index_select(0, rows)", "module.dt_bias.reshape(-1)[: heads * dim]"),),
+    "a_log_of_rank0": (
+        (
+            "module.A_log.reshape(-1)[rank * heads : (rank + 1) * heads]",
+            "module.A_log.reshape(-1)[:heads]",
+        ),
+    ),
+    "dt_bias_of_rank0": (
+        (
+            "module.dt_bias.reshape(-1).index_select(0, rows)",
+            "module.dt_bias.reshape(-1)[: heads * dim]",
+        ),
+    ),
     "lower_bound_dropped": (('getattr(module, "gate_lower_bound", None)', "None"),),
     # MLA: keep the zero padded tail of the value heads instead of the real ones.
     "mla_value_tail": (("out[..., :v_dim]", "out[..., head_dim - v_dim :]"),),
@@ -344,7 +361,11 @@ def _install_broken(name):
     setattr(uh, target, namespace[target])
 
 
-def _audit_batch(kind, seed, seq = 13):
+def _audit_batch(
+    kind,
+    seed,
+    seq = 13,
+):
     """Right padded rows of unequal length. "full": every valid token is a label. "seam": labels
     stop one token after the CP=2 seam (position 7), so the label at 6 crosses it and every shard
     from the second on has none."""
@@ -361,7 +382,17 @@ def _audit_batch(kind, seed, seq = 13):
 def _inject_lora(model):
     from peft import LoraConfig, inject_adapter_in_model
 
-    targets = ["q_proj", "k_proj", "v_proj", "f_b_proj", "b_proj", "g_b_proj", "g_proj", "o_proj", "kv_b_proj"]
+    targets = [
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "f_b_proj",
+        "b_proj",
+        "g_b_proj",
+        "g_proj",
+        "o_proj",
+        "kv_b_proj",
+    ]
     model = inject_adapter_in_model(LoraConfig(r = 4, lora_alpha = 8, target_modules = targets), model)
     torch.manual_seed(2)
     for name, param in model.named_parameters():
@@ -418,17 +449,23 @@ def _audit_worker(rank, world, k3, cp_size, kind, lora, broken):
             continue
         dist.all_reduce(param.grad)
         # The CP scan runs in fp32 (as fla does), the reference in fp64.
-        torch.testing.assert_close(param.grad, ref.grad, rtol = 1e-4, atol = 1e-6, msg = lambda m: f"{name}: {m}")
+        torch.testing.assert_close(
+            param.grad, ref.grad, rtol = 1e-4, atol = 1e-6, msg = lambda m: f"{name}: {m}"
+        )
     if not lora:
         assert all(p.grad is not None for p in model.parameters())
     optimizers = [
-        torch.optim.AdamW([p for p in m.parameters() if p.requires_grad], lr = 1e-2, eps = 1e-4, weight_decay = 0.1)
+        torch.optim.AdamW(
+            [p for p in m.parameters() if p.requires_grad], lr = 1e-2, eps = 1e-4, weight_decay = 0.1
+        )
         for m in (model, reference)
     ]
     for optimizer in optimizers:
         optimizer.step()
     for (name, param), ref in zip(model.named_parameters(), reference.parameters()):
-        torch.testing.assert_close(param, ref, rtol = 1e-5, atol = 1e-5, msg = lambda m: f"{name} after AdamW: {m}")
+        torch.testing.assert_close(
+            param, ref, rtol = 1e-5, atol = 1e-5, msg = lambda m: f"{name} after AdamW: {m}"
+        )
 
 
 @pytest.mark.parametrize(
@@ -443,7 +480,16 @@ def _audit_worker(rank, world, k3, cp_size, kind, lora, broken):
         (False, 4, 4, "seam", True),
         (True, 4, 2, "full", True),
     ],
-    ids = ["linear-cp2", "k3-cp2", "linear-cp2-seam", "k3-cp2-seam-lora", "linear-cp2-lora", "k3-cp4", "linear-cp4-seam-lora", "k3-dp2xcp2-lora"],
+    ids = [
+        "linear-cp2",
+        "k3-cp2",
+        "linear-cp2-seam",
+        "k3-cp2-seam-lora",
+        "linear-cp2-lora",
+        "k3-cp4",
+        "linear-cp4-seam-lora",
+        "k3-dp2xcp2-lora",
+    ],
 )
 def test_ulysses_kimi_matches_fp64_reference(k3, world, cp_size, kind, lora):
     """Padded rows of unequal length, a shard without labels, a label across the seam, LoRA with
