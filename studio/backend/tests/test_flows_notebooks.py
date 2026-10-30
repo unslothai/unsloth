@@ -588,6 +588,15 @@ def test_lora_targets_follow_the_latest_assignment_of_a_constant():
     assert read("TARGETS = 'all-linear'", f"TARGETS = {_SEVEN}") == []
 
 
+def test_dataset_call_reads_the_name_it_reassigns():
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B')",
+        "dataset = 'mlabonne/FineTome-100k'\ndataset = load_dataset(dataset, split = 'train')",
+    )
+    doc, report = notebook_import.read_notebook(nb, "Qwen3_(4B).ipynb")
+    assert doc is not None, report
+
+
 def test_lora_scalars_follow_an_unresolved_reassignment():
     def read(*assignments, peft_args):
         nb = _nb(

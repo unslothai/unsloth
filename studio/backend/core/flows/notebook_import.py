@@ -166,9 +166,11 @@ class _Reader(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Assign(self, node: ast.Assign) -> None:
+        # The right-hand side reads the old bindings, as Python evaluates it first.
+        value = self.value(node.value)
+        self.generic_visit(node)
         if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
             name = node.targets[0].id
-            value = self.value(node.value)
             # A reassignment replaces the earlier value, so a stale scalar or list cannot outrank it.
             self.collections.pop(name, None)
             if value is not None:
@@ -179,7 +181,6 @@ class _Reader(ast.NodeVisitor):
                     literal = _literal(node.value)
                     if literal is not _MISSING:
                         self.collections[name] = literal
-        self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
         fn = _name(node.func)
