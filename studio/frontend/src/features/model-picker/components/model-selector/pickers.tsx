@@ -11,6 +11,7 @@ import {
   hubWithdrawsSoleQuant,
   loadPickerGgufVariants,
 } from "./gguf-discovery";
+import { firstIndexByKey } from "./option-index";
 
 import { ModelMemoryBar } from "@/components/model-memory-bar";
 import { shouldRefreshPickerInventoryOnMount } from "@/components/resource-picker/picker-tab-policy";
@@ -131,26 +132,26 @@ import { cn, formatCompact } from "@/lib/utils";
 import type { VramFitStatus } from "@/lib/vram";
 import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
 import {
-  Add01Icon,
-  ArrowUpDownIcon,
   Cancel01Icon,
   DashboardCircleIcon,
   Flag01Icon,
   FlimSlateIcon,
-  Folder02Icon,
   HelpCircleIcon,
-  Image03Icon,
+  ImageIcon,
   InformationCircleIcon,
   PinIcon,
+  PlusSignIcon,
   RemoveCircleIcon,
   Search01Icon,
   Settings02Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
+import { Folder02Icon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { useT } from "@/i18n";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { SortIcon } from "@/lib/sort-icon";
 import { useNavigate } from "@tanstack/react-router";
 import {
   type Dispatch,
@@ -385,22 +386,24 @@ function useRovingModelList({
   const rawListboxId = useId();
   const listboxId = `model-picker-${rawListboxId.replace(/:/g, "")}`;
   const [rovingOptionKey, setRovingOptionKey] = useState<string | null>(null);
+  // Looked up once per row: indexOf here made each render O(N^2).
+  const optionIndexByKey = useMemo(() => firstIndexByKey(optionKeys), [optionKeys]);
 
   const preferredOptionKey =
-    selectedOptionKey && optionKeys.includes(selectedOptionKey)
+    selectedOptionKey && optionIndexByKey.has(selectedOptionKey)
       ? selectedOptionKey
       : (optionKeys[0] ?? null);
   const activeOptionKey =
-    rovingOptionKey && optionKeys.includes(rovingOptionKey)
+    rovingOptionKey && optionIndexByKey.has(rovingOptionKey)
       ? rovingOptionKey
       : preferredOptionKey;
 
   const getOptionDomId = useCallback(
     (optionKey: string) => {
-      const index = optionKeys.indexOf(optionKey);
-      return index === -1 ? undefined : `${listboxId}-option-${index}`;
+      const index = optionIndexByKey.get(optionKey);
+      return index === undefined ? undefined : `${listboxId}-option-${index}`;
     },
-    [listboxId, optionKeys],
+    [listboxId, optionIndexByKey],
   );
 
   const focusOption = useCallback(
@@ -423,7 +426,7 @@ function useRovingModelList({
         return;
       }
 
-      const currentIndex = optionKeys.indexOf(fromOptionKey);
+      const currentIndex = optionIndexByKey.get(fromOptionKey) ?? -1;
       let nextIndex = currentIndex === -1 ? 0 : currentIndex;
       if (direction === "next") {
         if (currentIndex >= optionKeys.length - 1) {
@@ -447,7 +450,7 @@ function useRovingModelList({
       setRovingOptionKey(nextOptionKey);
       focusOption(nextOptionKey);
     },
-    [focusOption, onNavigatePastEnd, onNavigatePastStart, optionKeys],
+    [focusOption, onNavigatePastEnd, onNavigatePastStart, optionIndexByKey, optionKeys],
   );
 
   const getOptionProps = useCallback(
@@ -591,7 +594,7 @@ const CAPABILITY_BADGES: {
     title: "Generates images",
     tone: "text-pink-700 dark:text-pink-300",
     Glyph: (props) => (
-      <HugeiconsIcon icon={Image03Icon} strokeWidth={1.8} {...props} />
+      <HugeiconsIcon icon={ImageIcon} strokeWidth={1.8} {...props} />
     ),
   },
   {
@@ -5995,7 +5998,7 @@ export function HubModelPicker({
   const sortTriggerContent = (label: ReactNode) => (
     <span className="flex items-center gap-1">
       <HugeiconsIcon
-        icon={ArrowUpDownIcon}
+        icon={SortIcon}
         strokeWidth={1.75}
         className="size-3.5 shrink-0 text-foreground"
       />
@@ -7687,7 +7690,7 @@ export function HubModelPicker({
                           className="shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                         >
                           <HugeiconsIcon
-                            icon={showFolderInput ? Cancel01Icon : Add01Icon}
+                            icon={showFolderInput ? Cancel01Icon : PlusSignIcon}
                             className="size-3"
                           />
                         </button>

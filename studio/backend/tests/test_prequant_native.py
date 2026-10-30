@@ -146,6 +146,34 @@ def test_native_rebuild_matches_torchao_unflatten(tmp_path, monkeypatch):
 
 @needs_helpers
 @needs_int8tensor
+def test_int8_constructor_signature_is_read_once_not_per_weight(tmp_path, monkeypatch):
+    sd = {f"blk{i}.q.weight": _int8_tensor(seed = i) for i in range(4)}
+    path = _write(tmp_path / "M-INT8.safetensors", sd)
+    monkeypatch.setenv(pn.NATIVE_REBUILD_ENV, "0")
+    stock = ps.load_prequant_safetensors(str(path))["state_dict"]
+    monkeypatch.delenv(pn.NATIVE_REBUILD_ENV)
+    target = _API["Int8Tensor"].__new__
+    real, calls = inspect.signature, []
+
+    def counting(obj, *args, **kwargs):
+        if obj is target:
+            calls.append(obj)
+        return real(obj, *args, **kwargs)
+
+    monkeypatch.setattr(inspect, "signature", counting)
+    cached = getattr(pn, "_constructor_params", None)
+    if cached is not None:
+        cached.cache_clear()
+    for _ in range(2):
+        native = ps.load_prequant_safetensors(str(path))
+        assert native["reader"] == "native"
+        for key in sd:
+            assert _same(_canon(native["state_dict"][key]), _canon(stock[key])), key
+    assert len(calls) == 1
+
+
+@needs_helpers
+@needs_int8tensor
 def test_mapped_read_is_the_same_tensors_as_a_copied_read(tmp_path):
     sd = {"blk.q.weight": _int8_tensor(), "blk.f.weight": _fp8_tensor(), "x": torch.arange(4.0)}
     path = _write(tmp_path / "M-INT8.safetensors", sd)
@@ -653,6 +681,66 @@ def test_the_converter_writes_a_text_encoder_with_tied_weights(tmp_path):
         assert back["state_dict"][key].dtype == sd[key].dtype and torch.equal(
             back["state_dict"][key].float(), sd[key].float()
         )
+
+
+def _nvfp4_tensor(seed = 0, act_scale = None):
+    nv = pytest.importorskip("torchao.prototype.mx_formats.nvfp4_tensor")
+    g = torch.Generator().manual_seed(seed)
+    w = torch.randn(128, 64, generator = g).to(torch.bfloat16)
+    return nv.NVFP4Tensor.to_nvfp4(
+        w,
+        per_tensor_scale = nv.per_tensor_amax_to_scale(w.abs().max()),
+        is_swizzled_scales = True,
+        act_per_tensor_scale = act_scale,
+        act_quant_kwargs = nv.QuantizeTensorToNVFP4Kwargs(is_swizzled_scales = True),
+    )
+
+
+def test_the_converters_comparison_takes_a_0_dim_scale():
+    """nvfp4 carries 0-dim fp32 per-tensor scales; viewing those as bytes used to raise mid-conversion."""
+    conv = _converter()
+    one = torch.tensor(0.5)
+    assert conv.compare_state_dicts({"s": one}, {"s": one.clone()}) == []
+    assert conv.compare_state_dicts({"s": torch.tensor(0.0)}, {"s": torch.tensor(-0.0)}) == ["s"]
+    w = _nvfp4_tensor()
+    assert conv.compare_state_dicts({"a.w": w}, {"a.w": _nvfp4_tensor()}) == []
+    assert conv.compare_state_dicts({"a.w": w}, {"a.w": _nvfp4_tensor(seed = 1)}) == ["a.w"]
+    assert conv.compare_state_dicts(
+        {"a.w": w}, {"a.w": _nvfp4_tensor(act_scale = torch.tensor(0.25))}
+    ) == ["a.w"]
+
+
+@needs_helpers
+@pytest.mark.parametrize("act_scale", [None, 0.25])
+def test_the_converter_writes_a_bit_identical_nvfp4_artifact(tmp_path, act_scale):
+    nv = pytest.importorskip("torchao.prototype.mx_formats.nvfp4_tensor")
+    weight = _nvfp4_tensor(act_scale = None if act_scale is None else torch.tensor(act_scale))
+    src = tmp_path / "Model-NVFP4.pt"
+    torch.save(
+        {
+            "format": pq.PREQUANT_FORMAT,
+            "metadata": {"scheme": "nvfp4", "component": "transformer"},
+            "state_dict": {
+                "blk.proj.weight": weight,
+                "blk.proj.bias": torch.randn(128, dtype = torch.bfloat16),
+            },
+        },
+        str(src),
+    )
+    conv = _converter()
+    rec = conv.convert(str(src), str(tmp_path / "out"), repo = None, revision = None, sha = None)
+    assert rec["verified_bit_identical"] and rec["scheme"] == "nvfp4" and rec["quantized"] == 1
+    a = pq._load_prequant_checkpoint(str(src), map_location = "cpu")["state_dict"]
+    b = pq._load_prequant_checkpoint(rec["dst"], map_location = "cpu", mmap = True)["state_dict"]
+    got, want = b["blk.proj.weight"], a["blk.proj.weight"]
+    assert type(got) is nv.NVFP4Tensor
+    for attr in ("qdata", "scale", "per_tensor_scale", "act_per_tensor_scale"):
+        x, y = getattr(got, attr), getattr(want, attr)
+        assert (x is None) == (y is None) and (x is None or conv._same(x, y)), attr
+    for attr in ("block_size", "orig_dtype", "is_swizzled_scales", "use_triton_kernel"):
+        assert getattr(got, attr) == getattr(want, attr), attr
+    assert repr(got.act_quant_kwargs) == repr(want.act_quant_kwargs)
+    assert conv.compare_state_dicts(a, b) == []
 
 
 def test_the_converters_comparison_sees_every_kind_of_difference():

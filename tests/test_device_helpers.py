@@ -262,11 +262,11 @@ def test_model_call_sites_use_shared_cache_dispatch():
     assert "torch.cuda.current_device()" not in gemma_source
     assert "get_current_device()" in gemma_source
     assert "torch.cuda.empty_cache()" not in gemma_source
-    assert "clean_gpu_cache()" in gemma_source
+    assert "collect_garbage(after = clean_gpu_cache)" in gemma_source
     assert "torch.cuda.empty_cache()" not in gemma2_source
-    assert "clean_gpu_cache()" in gemma2_source
+    assert "collect_garbage(after = clean_gpu_cache)" in gemma2_source
     assert "torch.cuda.empty_cache()" not in granite_source
-    assert "clean_gpu_cache()" in granite_source
+    assert "collect_garbage(after = clean_gpu_cache)" in granite_source
     # Keyed off cuda alone, the load-retry flush and the optimizer fence were no-ops on NPU / XPU.
     assert "torch.cuda.empty_cache()" not in loader_utils_source
     assert "torch.xpu.empty_cache()" not in loader_utils_source

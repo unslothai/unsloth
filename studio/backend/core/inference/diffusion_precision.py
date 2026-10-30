@@ -1,28 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in low-precision casting of the diffusion pipeline's text encoder(s).
-
-The transformer arrives quantised in the GGUF, but the companion text encoder loads dense
-(bf16) and is often the largest resident component (Qwen3 / T5-XXL / Mistral run to many GB).
-This shrinks it in place, with four backends:
-
-  fp8         - diffusers layerwise casting: 8-bit (e4m3) storage, upcast per layer. ~2x
-                smaller. Any fp8-capable CUDA card (cc >= 8.9).
-  fp8_dynamic - torchao dynamic fp8 COMPUTE (per-row): keeps the matmul in fp8 on the tensor
-                cores (torch._scaled_mm) instead of upcasting. ~2x smaller + speedup; cc >= 8.9.
-  int8        - torchao dynamic int8 COMPUTE (per-token act + per-channel weight, _int_mm),
-                with per-layer keep-bf16 selection. Degrades on large encoders unless the
-                sensitive decoder blocks stay bf16, so applied only for families with a
-                measured schedule (else falls back to fp8). ~2x smaller; cc >= 8.0.
-  nvfp4       - torchao NVFP4 weight-only: 4-bit float storage, two-level microscaling, each
-                weight dequantised to bf16 per forward (no FP4 GEMM). ~3.5x smaller (lowest
-                VRAM) but a steeper quality cost and a slower prompt encode; cc >= 8.0.
-
-All keep norms / embeddings full precision, are a memory-vs-quality tradeoff (off by default),
-and pair well with streamed (group) offload where the text encoder stays resident. Quantify
-the quality cost with scripts/diffusion_quality.py. torch / diffusers / torchao imported lazily.
-"""
+"""Opt-in text-encoder casting: fp8, fp8_dynamic, int8 or nvfp4, norms kept full precision; int8
+falls back to fp8 unless measured; torch, diffusers, torchao imported lazily; off by default"""
 
 from __future__ import annotations
 

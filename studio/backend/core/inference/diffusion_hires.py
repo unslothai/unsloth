@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Hires fix: txt2img, upscale, then refine (img2img at a denoise) in one request.
-
-Defaults follow ComfyUI's 2_pass_txt2img example (1.5x, denoise 0.5, 14 steps). Hires steps is the exact refine
-count, as in ComfyUI (``new_steps = int(steps / denoise)``) and A1111 (``hr_second_pass_steps or steps``).
-"""
+"""Hires fix (txt2img, upscale, img2img refine); hires steps is the exact refine count, as in ComfyUI."""
 
 from __future__ import annotations
 

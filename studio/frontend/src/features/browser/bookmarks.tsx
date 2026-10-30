@@ -26,10 +26,10 @@ import { cn } from "@/lib/utils";
 import {
   ArrowRightDoubleIcon,
   Delete02Icon,
-  Folder01Icon,
-  PencilEdit02Icon,
+  Edit03Icon,
   StarIcon,
 } from "@hugeicons/core-free-icons";
+import { Folder01Icon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, type RefObject, useEffect, useId, useMemo, useRef, useState } from "react";
 import { hostOf } from "./address";
@@ -386,7 +386,7 @@ function BookmarkItem({
         extra={
           <>
             <MenuRow
-              icon={PencilEdit02Icon}
+              icon={Edit03Icon}
               onSelect={() => {
                 editChosen.current = true;
                 setEditing(true);

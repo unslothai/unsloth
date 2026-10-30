@@ -213,7 +213,6 @@ _STOP_NOTICE_INTERVAL = 0.1
 _DISPATCH_POLL_INTERVAL = 0.5
 _DISPATCH_STOP_TIMEOUT = 5.0
 _DISPATCH_IDLE_TIMEOUT = 30.0
-_DISPATCH_DRAIN_TIMEOUT = 5.0
 _CANCELLED_ROWS_GRACE = 5.0
 
 # Transformers TTS only; generous since _ensure_subprocess_alive already catches dead workers.
@@ -275,6 +274,9 @@ _MLX_RUNTIME_MIRROR_FIELDS = (
     "mlx_int8_prefill",
     "mlx_int8_prefill_requested",
     "mlx_int8_prefill_reason",
+    "mlx_ane_prefill",
+    "mlx_ane_prefill_requested",
+    "mlx_ane_prefill_reason",
     "mlx_offload",
     "chat_template_override_requested",
     "chat_template_override_reason",
@@ -404,6 +406,7 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "audio_type": model_info.get("audio_type"),
         "has_audio_input": model_info.get("has_audio_input", False),
         "has_video_input": model_info.get("has_video_input", False),
+        "speaks": model_info.get("speaks", False),
         "context_length": model_info.get("context_length"),
         "native_context_length": model_info.get("native_context_length"),
         "max_context_length": model_info.get("max_context_length"),
@@ -1391,7 +1394,7 @@ class InferenceOrchestrator:
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
         rows: Optional[list] = None,
-        video_b64: Optional[str] = None,
+        videos_b64: Optional[list[str]] = None,
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
         diffusion_frames: bool = False,
@@ -1427,8 +1430,8 @@ class InferenceOrchestrator:
         if response_format is not None:
             cmd["response_format"] = response_format
             cmd["reasoning_is_extracted"] = bool(reasoning_is_extracted)
-        if video_b64:
-            cmd["video_base64"] = video_b64
+        if videos_b64:
+            cmd["videos_base64"] = videos_b64
         if use_adapter is not None:
             cmd["use_adapter"] = use_adapter
         if tools is not None:
@@ -1558,6 +1561,9 @@ class InferenceOrchestrator:
                     yield int(resp.get("row", 0)), resp.get("text", "")
                 else:
                     yield resp.get("text", "")
+            elif rtype == "speech":
+                if rows is None and not stop_sent:
+                    yield {"speech": resp.get("speech"), "sample_rate": resp.get("sample_rate")}
             elif rtype == "diffusion_frame":
                 if frames and rows is None and not stop_sent:
                     yield {
@@ -1696,7 +1702,7 @@ class InferenceOrchestrator:
         stop: Optional[list] = None,
         rows: Optional[list] = None,
         expected_model: Optional[str] = None,
-        video: Optional[str] = None,
+        videos: Optional[list[str]] = None,
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
         diffusion_frames: bool = False,
@@ -1754,7 +1760,7 @@ class InferenceOrchestrator:
             tool_protocol_active = tool_protocol_active,
             seed = seed,
             rows = rows,
-            video_b64 = video,
+            videos_b64 = videos,
             diffusion_frames = diffusion_frames,
             prompt_ids = prompt_ids,
             penalty_window = penalty_window,
@@ -1982,6 +1988,8 @@ class InferenceOrchestrator:
 
     # Bumped at publish, not load start, so a same-model reload mid-install is detected.
     load_generation: int = 0
+    # Cleared at each publish; only an explicit UI load sets it, pinning the model against idle unload.
+    _loaded_by_user_action: bool = False
 
     @_invalidates_gpu_memory("inference load")
     @holds_inference
@@ -2000,6 +2008,7 @@ class InferenceOrchestrator:
         mlx_distributed: bool = False,
         mlx_kv_quant: Optional[str] = None,
         mlx_int8_prefill: bool = False,
+        mlx_ane_prefill: bool = False,
         mlx_offload: tuple = (None, None),
         speculative_type: Optional[str] = None,
         spec_draft_n_max: Optional[int] = None,
@@ -2078,6 +2087,7 @@ class InferenceOrchestrator:
                 else None,
                 "mlx_kv_quant": mlx_kv_quant,
                 "mlx_int8_prefill": bool(mlx_int8_prefill),
+                "mlx_ane_prefill": bool(mlx_ane_prefill),
                 "mlx_offload": tuple(mlx_offload),
                 "speculative_type": speculative_type,
                 "spec_draft_n_max": spec_draft_n_max,
@@ -2293,6 +2303,7 @@ class InferenceOrchestrator:
                             return False
                         self.active_model_name = model_info.get("identifier", model_name)
                         self.load_generation += 1
+                        self._loaded_by_user_action = False
                         # Fresh subprocess holds only this model; a stale name would unload the wrong one.
                         self.models = {}
                         self.models[self.active_model_name] = _mirrored_model_entry(
@@ -2520,6 +2531,7 @@ class InferenceOrchestrator:
                 }
                 self.active_model_name = model
                 self.load_generation += 1
+                self._loaded_by_user_action = False
                 return True
         except Exception:
             self._shutdown_subprocess()
@@ -2844,13 +2856,19 @@ class InferenceOrchestrator:
             }
             # SGLang 0.5.17's /tokenize returns 500 when model_max_length is the 1e30 sentinel.
             estimated = False
+            fit_max_tokens = max_tokens
             if getattr(self, "_managed_engine", None) is not None:
                 try:
                     self.count_chat_tokens(conversation[-1:], "", **count_kwargs)
                 except Exception as exc:
                     logger.info("Fitting the managed engine prompt by estimate: %s", exc)
                     estimated = True
-                    context_length = int(context_length * (1 - _ESTIMATED_FIT_HEADROOM))
+                    if max_tokens and 0 < max_tokens < context_length:
+                        # The cap is sent whole and the bound at most halves the count: fit to half what it leaves.
+                        context_length = (context_length - max_tokens) * 2 // 3
+                        fit_max_tokens = None
+                    else:
+                        context_length = int(context_length * (1 - _ESTIMATED_FIT_HEADROOM))
 
             def _count(fitted):
                 if cancel_event is not None and cancel_event.is_set():
@@ -2888,7 +2906,7 @@ class InferenceOrchestrator:
                 )
             )
             fit_kwargs = dict(
-                max_tokens = max_tokens,
+                max_tokens = fit_max_tokens,
                 count_tokens = _count,
                 anchor_ids = anchor_ids,
                 keeps_boundary = _keeps_compaction_boundary(thread_id),
@@ -2936,7 +2954,7 @@ class InferenceOrchestrator:
                 recall_done = recall_done or not truncation["fits"],
                 recall_budget_tokens = retrieval_budget(
                     context_length,
-                    max_tokens,
+                    fit_max_tokens,
                     truncation.get("prompt_tokens_after") or 0,
                     reply_returns = calls_tools,
                 ),
@@ -3184,7 +3202,7 @@ class InferenceOrchestrator:
         frequency_penalty: float = 0.0,
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
-        video: Optional[str] = None,
+        videos: Optional[list[str]] = None,
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
         diffusion_frames: bool = False,
@@ -3218,7 +3236,7 @@ class InferenceOrchestrator:
             stop = stop,
             response_format = response_format,
             reasoning_is_extracted = reasoning_is_extracted,
-            video = video,
+            videos = videos,
             diffusion_frames = diffusion_frames,
         )
 
@@ -3249,7 +3267,7 @@ class InferenceOrchestrator:
         frequency_penalty: float = 0.0,
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
-        video: Optional[str] = None,
+        videos: Optional[list[str]] = None,
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
     ) -> Generator[Any, None, None]:
@@ -3281,7 +3299,7 @@ class InferenceOrchestrator:
             logit_bias = logit_bias,
             stop = stop,
             rows = rows,
-            video = video,
+            videos = videos,
             response_format = response_format,
             reasoning_is_extracted = reasoning_is_extracted,
         )
@@ -3585,7 +3603,7 @@ class InferenceOrchestrator:
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
         rows: Optional[list] = None,
-        video: Optional[str] = None,
+        videos: Optional[list[str]] = None,
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
         diffusion_frames: bool = False,
@@ -3654,7 +3672,7 @@ class InferenceOrchestrator:
                 stop = stop,
                 rows = rows,
                 expected_model = expected_model,
-                video = video,
+                videos = videos,
                 response_format = response_format,
                 reasoning_is_extracted = reasoning_is_extracted,
                 diffusion_frames = diffusion_frames,
@@ -3702,7 +3720,7 @@ class InferenceOrchestrator:
                 tool_protocol_active = tool_protocol_active,
                 seed = seed,
                 rows = rows,
-                video_b64 = video,
+                videos_b64 = videos,
                 diffusion_frames = diffusion_frames,
                 prompt_ids = prompt_ids,
                 penalty_window = penalty_window,
@@ -4132,8 +4150,11 @@ class InferenceOrchestrator:
         stats_holder: Optional[dict] = None,
         stop = None,
         extra_audio_arrays: Optional[list] = None,
+        speak: bool = False,
+        tools: Optional[list] = None,
     ) -> Generator[str, None, None]:
-        """Audio input generation (e.g. Gemma 3n): streams text tokens."""
+        """Audio input generation (e.g. Gemma 3n): streams text tokens; with ``speak``, then one
+        ``{"speech", "sample_rate"}`` item carrying the spoken reply."""
         yield from self._generate_audio_input_inner(
             audio_array = audio_array,
             audio_type = None,  # worker uses generate_audio_input_response
@@ -4150,6 +4171,8 @@ class InferenceOrchestrator:
             stats_holder = stats_holder,
             stop = stop,
             extra_audio_arrays = extra_audio_arrays,
+            speak = speak,
+            tools = tools,
         )
 
     def _generate_audio_input_inner(
@@ -4169,6 +4192,8 @@ class InferenceOrchestrator:
         stats_holder: Optional[dict] = None,
         stop = None,
         extra_audio_arrays: Optional[list] = None,
+        speak: bool = False,
+        tools: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Shared inner logic for audio input generation (Whisper + ASR). ``stats_holder``: as in
         generate_chat_response, caller-owned and filled on gen_done with the worker's usage /
@@ -4214,6 +4239,10 @@ class InferenceOrchestrator:
                 cmd["use_adapter"] = use_adapter
             if stop:
                 cmd["stop"] = stop
+            if speak:
+                cmd["speak"] = True
+            if tools is not None:
+                cmd["tools"] = tools
 
             read_one, drain, release_mailbox = self._direct_reader(request_id, cancel_event)
             try:

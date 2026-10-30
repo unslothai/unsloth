@@ -1819,14 +1819,11 @@ test("the chat walk's bracket pair is reserved on macOS only", () => {
   assert.equal(defaultBindingFor(walk!, "primary", true), "Mod+Shift+BracketRight");
 });
 
-// The desktop signs out through the OS account menu, so the chord can never fire there.
-test("the logout row is not offered on the desktop build", async () => {
+// The desktop signs out from the sidebar menu too, so its chord is offered there.
+test("the logout row is offered on the desktop build", async () => {
   const logout = SHORTCUT_DEFS.find((def) => def.id === "logOut");
-  assert.equal(logout?.webOnly, true);
-  assert.deepEqual(
-    SHORTCUT_DEFS.filter((def) => def.webOnly).map((def) => def.id),
-    ["logOut"],
-  );
+  assert.equal(logout?.webOnly, undefined);
+  assert.deepEqual(SHORTCUT_DEFS.filter((def) => def.webOnly).map((def) => def.id), []);
   assert.match(KEYBOARD_SHORTCUTS_TAB, /!\(isTauri && def\.webOnly\)/);
 });
 

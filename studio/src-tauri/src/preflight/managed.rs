@@ -1055,6 +1055,182 @@ fn working_directory_reason() -> Option<String> {
     Some(context_reason(&error))
 }
 
+pub(super) struct LaunchCliProbe {
+    bin: PathBuf,
+    started: Instant,
+    handle: tauri::async_runtime::JoinHandle<Result<bool, String>>,
+    capability: Option<LaunchCapabilityProbe>,
+}
+
+type CapabilityProbeResult = Result<Option<DesktopCapability>, String>;
+
+/// The capability answer a launch probe took on a cache miss, with the tree it was asked against.
+struct LaunchCapabilityProbe {
+    fingerprint: ManagedBinFingerprint,
+    answer: tokio::sync::oneshot::Receiver<CapabilityProbeResult>,
+}
+
+type PendingLaunchCliProbe = tokio::sync::oneshot::Receiver<Option<LaunchCliProbe>>;
+
+/// Filled before the setup thread runs, so an early preflight still waits for its spawn.
+static LAUNCH_CLI_PROBE: std::sync::Mutex<Option<PendingLaunchCliProbe>> =
+    std::sync::Mutex::new(None);
+
+const LAUNCH_CLI_PROBE_MAX_AGE: Duration = Duration::from_secs(30);
+
+/// The first preflight for the same CLI reuses a passing `-h` from here. Off the main thread:
+/// finding the CLI touches the disk and the runtime's first use builds it.
+pub(crate) fn start_launch_cli_probe() {
+    let pending = begin_launch_cli_probe();
+    let spawned = std::thread::Builder::new()
+        .name("launch-cli-probe".to_string())
+        .spawn(move || {
+            let probe = crate::process::find_unsloth_binary()
+                .filter(|_| crate::process::managed_cli_context_error().is_none())
+                .map(|bin| {
+                    let miss = capability_cache_miss(&bin);
+                    spawn_launch_cli_probe(bin, miss)
+                });
+            let _ = pending.send(probe);
+        });
+    if let Err(error) = spawned {
+        warn!("Could not start the launch CLI probe: {error}");
+    }
+}
+
+pub(super) fn begin_launch_cli_probe() -> tokio::sync::oneshot::Sender<Option<LaunchCliProbe>> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    if let Ok(mut slot) = LAUNCH_CLI_PROBE.lock() {
+        *slot = Some(receiver);
+    }
+    sender
+}
+
+/// The fingerprint to ask capabilities against, when the cache has no answer for it.
+fn capability_cache_miss(bin: &Path) -> Option<ManagedBinFingerprint> {
+    managed_bin_fingerprint(bin).filter(|fingerprint| read_cached_capability(fingerprint).is_none())
+}
+
+fn spawn_launch_cli_probe(
+    bin: PathBuf,
+    capability_miss: Option<ManagedBinFingerprint>,
+) -> LaunchCliProbe {
+    let probe_bin = bin.clone();
+    let Some(fingerprint) = capability_miss else {
+        let handle =
+            tauri::async_runtime::spawn(async move { run_cli_probe(&probe_bin, &["-h"]).await });
+        return launch_cli_probe_task(bin, handle);
+    };
+    // One task, as in the preflight's own miss, so the two spawns take the launch guard in turn.
+    let (sender, answer) = tokio::sync::oneshot::channel();
+    let handle = tauri::async_runtime::spawn(async move {
+        let (help, capability) = tokio::join!(
+            run_cli_probe(&probe_bin, &["-h"]),
+            probe_cli_capability(&probe_bin)
+        );
+        let _ = sender.send(capability);
+        help
+    });
+    let mut probe = launch_cli_probe_task(bin, handle);
+    probe.capability = Some(LaunchCapabilityProbe {
+        fingerprint,
+        answer,
+    });
+    probe
+}
+
+pub(super) fn launch_cli_probe_task(
+    bin: PathBuf,
+    handle: tauri::async_runtime::JoinHandle<Result<bool, String>>,
+) -> LaunchCliProbe {
+    LaunchCliProbe {
+        bin,
+        started: Instant::now(),
+        handle,
+        capability: None,
+    }
+}
+
+#[cfg(test)]
+pub(super) fn install_launch_cli_probe(bin: PathBuf) {
+    let _ = begin_launch_cli_probe().send(Some(spawn_launch_cli_probe(bin, None)));
+}
+
+/// What `start_launch_cli_probe` hands over for `bin`, including its cache-miss decision.
+#[cfg(test)]
+pub(super) fn install_launch_cli_probe_like_setup(bin: PathBuf) {
+    let miss = capability_cache_miss(&bin);
+    let _ = begin_launch_cli_probe().send(Some(spawn_launch_cli_probe(bin, miss)));
+}
+
+#[cfg(test)]
+pub(super) fn install_launch_cli_probe_task(
+    bin: PathBuf,
+    handle: tauri::async_runtime::JoinHandle<Result<bool, String>>,
+) {
+    let _ = begin_launch_cli_probe().send(Some(launch_cli_probe_task(bin, handle)));
+}
+
+#[derive(Default)]
+struct LaunchProbeReuse {
+    help_passed: bool,
+    /// Only when asked against the tree the preflight sees.
+    capability: Option<DesktopCapability>,
+}
+
+/// The launch probe's reusable answers for `bin`, taken once. Any CLI's probe is awaited:
+/// its spawns hold the runtime launch guard, which a spawn beside them reads as busy.
+async fn take_launch_cli_probe(
+    bin: &Path,
+    fingerprint: Option<&ManagedBinFingerprint>,
+) -> LaunchProbeReuse {
+    let pending = match LAUNCH_CLI_PROBE.lock() {
+        Ok(mut slot) => slot.take(),
+        Err(_) => None,
+    };
+    let Some(pending) = pending else {
+        return LaunchProbeReuse::default();
+    };
+    let Ok(Some(probe)) = pending.await else {
+        return LaunchProbeReuse::default();
+    };
+    let passed = matches!(probe.handle.await, Ok(Ok(true)));
+    if probe.bin != bin {
+        info!(
+            "Managed preflight: launch -h probe was for {:?}, not {:?}; not reused",
+            probe.bin, bin
+        );
+        return LaunchProbeReuse::default();
+    }
+    let age = probe.started.elapsed();
+    let fresh = age <= LAUNCH_CLI_PROBE_MAX_AGE;
+    info!(
+        "Managed preflight: launch -h probe passed={} age={}ms reused={}",
+        passed,
+        age.as_millis(),
+        passed && fresh
+    );
+    if !(passed && fresh) {
+        return LaunchProbeReuse::default();
+    }
+    let mut capability = None;
+    if let Some(launch) = probe.capability {
+        let same_tree = fingerprint == Some(&launch.fingerprint);
+        // Only an answer: a failed or unasked probe is asked again, as on a miss without one.
+        if let Ok(Ok(Some(answer))) = launch.answer.await {
+            capability = same_tree.then_some(answer);
+        }
+        info!(
+            "Managed preflight: launch desktop-capabilities probe reused={}",
+            capability.is_some()
+        );
+    }
+    LaunchProbeReuse {
+        help_passed: true,
+        capability,
+    }
+}
+
 pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
     let started = Instant::now();
 
@@ -1070,8 +1246,36 @@ pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
         };
     }
 
-    // Always run `-h` first: a matching fingerprint does not prove the CLI still launches.
-    match run_cli_probe(&bin, &["-h"]).await {
+    // Fingerprint taken before any probe, so an answer is cached against the tree the CLI read.
+    let fingerprint_before = managed_bin_fingerprint(&bin);
+    let cache_hit = fingerprint_before
+        .as_ref()
+        .is_some_and(|fingerprint| read_cached_capability(fingerprint).is_some());
+
+    // `-h` decides first: a fingerprint does not prove the CLI launches, and a failing `-h` wins over
+    // a capability answer. Awaited before any spawn below, which would find its guard held.
+    let launch = take_launch_cli_probe(&bin, fingerprint_before.as_ref()).await;
+    let launch_help_passed = launch.help_passed;
+    let help_probe = async {
+        if launch_help_passed {
+            Ok(true)
+        } else {
+            run_cli_probe(&bin, &["-h"]).await
+        }
+    };
+
+    // A cache miss overlaps both Python starts; one task, so the spawns take the guard in turn.
+    let (cli_probe, capability_probe) = if cache_hit {
+        (help_probe.await, None)
+    } else if let Some(capability) = launch.capability {
+        drop(help_probe);
+        (Ok(true), Some(Ok(Some(capability))))
+    } else {
+        let (help, capability) = tokio::join!(help_probe, probe_cli_capability(&bin));
+        (help, Some(capability))
+    };
+
+    match cli_probe {
         // The CLI was never asked, so do not report a broken install.
         Err(error) => {
             info!(
@@ -1099,20 +1303,16 @@ pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
         Ok(true) => {}
     }
 
-    // Fingerprint taken before the probe, so the answer is cached against the tree the CLI read.
-    let fingerprint_before = managed_bin_fingerprint(&bin);
-    if let Some(fingerprint) = fingerprint_before.as_ref() {
-        if read_cached_capability(fingerprint).is_some() {
-            info!(
-                "Managed preflight: using cached desktop capability for {:?} in {}ms",
-                bin,
-                started.elapsed().as_millis()
-            );
-            return ManagedProbe::Ready { bin };
-        }
-    }
+    let Some(capability_probe) = capability_probe else {
+        info!(
+            "Managed preflight: using cached desktop capability for {:?} in {}ms",
+            bin,
+            started.elapsed().as_millis()
+        );
+        return ManagedProbe::Ready { bin };
+    };
 
-    let capability = match probe_cli_capability(&bin).await {
+    let capability = match capability_probe {
         Ok(capability) => capability,
         Err(error) => {
             info!(

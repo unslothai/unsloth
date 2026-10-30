@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Boundary validator for user-supplied llama-server pass-through args. Reject only flags Unsloth
-manages (model identity, auth, network, parallel slots). Everything else (sampling, ``-c``,
-``-ngl``, ``--flash-attn``, ``--cache-type-*``, ``--spec-*``, ``--jinja``, ...) is appended after
-Unsloth's auto-set flags so llama.cpp's last-wins parser lets the user override. Ref:
-https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md"""
+"""Rejects only Unsloth-managed flags (model, auth, network, slots); user flags come last and win."""
 
 from __future__ import annotations
 
@@ -588,9 +584,6 @@ MEMORY_ENV_VARS: tuple[str, ...] = (
     "LLAMA_ARG_NO_DIO",
 )
 
-_SHADOWING_FLAGS: frozenset[str] = (
-    _CONTEXT_FLAGS | _CACHE_FLAGS | _SPEC_FLAGS | _TEMPLATE_FLAGS | _SPLIT_SHADOWING_FLAGS
-)
 
 # Shadowing flags that take no value -- strip the flag only, not the next token.
 _BOOLEAN_SHADOWING_FLAGS: frozenset[str] = frozenset(
@@ -1315,15 +1308,39 @@ def strip_context_only(args: Optional[Iterable[str]]) -> Optional[list[str]]:
 MANAGED_DIO_FLAGS: tuple[str, ...] = ("--load-mode", "dio")
 
 
-def no_reserve_requires_dio(*, supports_load_mode: bool, gpu_offload_confirmed: bool) -> bool:
+def no_reserve_requires_dio(
+    *, supports_load_mode: Optional[bool], gpu_offload_confirmed: bool
+) -> bool:
     """Windows keeps a full offload mapping resident, so DirectIO is owed only on confirmed offload and on a build supporting --load-mode."""
-    return sys.platform == "win32" and supports_load_mode and gpu_offload_confirmed
+    return sys.platform == "win32" and bool(supports_load_mode) and gpu_offload_confirmed
+
+
+def load_mode_support(server_caps: Mapping[str, object]) -> Optional[bool]:
+    """--load-mode support from a --help probe; None when the probe failed or listed nothing."""
+    if server_caps.get("supports_load_mode"):
+        return True
+    if server_caps.get("help_probe_ok") and server_caps.get("flags"):
+        return False
+    return None
+
+
+def keep_resident_lock_flags(supports_load_mode: Optional[bool]) -> list[str]:
+    """Page-lock spelling for this build; none when unknown, since newer builds exit on --mlock."""
+    if supports_load_mode is None:
+        return []
+    # mmap+mlock, not bare mlock, matches what --mlock meant with default mmap.
+    return ["--load-mode", "mmap+mlock"] if supports_load_mode else ["--mlock"]
+
+
+def keep_resident_lock_applicable(host_resident: bool, supports_load_mode: Optional[bool]) -> bool:
+    """Whether a missing lock is owed; an unknown build gets none, so a reload must not ask for one."""
+    return bool(host_resident) and supports_load_mode is not None
 
 
 def resolve_launch_load_mode(
     extra_args: Optional[Iterable[str]],
     *,
-    supports_load_mode: bool,
+    supports_load_mode: Optional[bool],
     weights_in_host_memory: bool,
     gpu_offload_confirmed: bool,
     requested_load_mode: Optional[str],
@@ -1355,7 +1372,7 @@ def resolve_launch_load_mode(
 def apply_model_memory_policy(
     extra_args: Optional[Iterable[str]],
     *,
-    supports_load_mode: bool = False,
+    supports_load_mode: Optional[bool] = False,
     weights_in_host_memory: bool = True,
     gpu_offload_confirmed: bool = False,
     env: Optional[Mapping[str, str]] = None,
@@ -1398,9 +1415,9 @@ def apply_model_memory_policy(
     ):
         # On confirmed full offload, Windows streams via dio since the GGUF cannot be partially unmapped; per-model modes still win later.
         managed.extend(MANAGED_DIO_FLAGS)
-    if keep_resident and not no_ram_reserve and weights_in_host_memory:
-        # Before the extras, like the managed block: mmap+mlock, not bare mlock, matches what --mlock meant with default mmap.
-        managed.extend(["--load-mode", "mmap+mlock"] if supports_load_mode else ["--mlock"])
+    lock = keep_resident_lock_flags(supports_load_mode)
+    if keep_resident and not no_ram_reserve and weights_in_host_memory and lock:
+        managed.extend(lock)
         tokens = strip_shadowing_flags(
             tokens,
             strip_context = False,
@@ -1418,7 +1435,7 @@ def apply_model_memory_policy(
 def apply_load_mode_policy(
     extra_args: Optional[Iterable[str]],
     *,
-    supports_load_mode: bool = False,
+    supports_load_mode: Optional[bool] = False,
     weights_in_host_memory: bool = True,
     requested_load_mode: Optional[str] = None,
     settings: Optional[tuple[bool, bool]] = None,
@@ -1447,6 +1464,12 @@ def apply_load_mode_policy(
         logger.info(
             "Model Memory: 'Don't reserve system RAM' drops the requested load mode %r.",
             mode,
+        )
+        return [], tokens
+    if supports_load_mode is None:
+        # Newer builds exit on the legacy flags, so an unknown build gets none.
+        logger.info(
+            "llama-server --help probe was inconclusive; skipping the requested %r mode.", mode
         )
         return [], tokens
     if not supports_load_mode:
@@ -1914,7 +1937,10 @@ def translate_ngram_mod_args(
     while i < len(args):
         _flag, eq, value = args[i].partition("=")
         legacy = _NGRAM_MOD_LEGACY_FLAGS.get(_flag_name(args[i]) or "")
-        if legacy is None or (not eq and i + 1 >= len(args)):
+        # A following flag is not this flag's value; consuming it would orphan that flag's own value.
+        if legacy is None or (
+            not eq and (i + 1 >= len(args) or _flag_name(args[i + 1]) is not None)
+        ):
             out.append(args[i])
             i += 1
             continue

@@ -456,6 +456,61 @@ def test_torch_fallback_without_the_zoo_kernel(monkeypatch):
     assert torch.equal(dequantize_mxfp4_packed(packed, scale, torch.bfloat16), with_zoo)
 
 
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+def test_torch_fallback_runs_ldexp_on_the_operands_gpu(dtype, monkeypatch):
+    # float32 always takes this path (the zoo decoder serves only fp16 / bf16).
+    import contextlib
+    from torch._subclasses.fake_tensor import FakeTensorMode
+    import unsloth.models.mxfp4_compressed_linear as mcl
+
+    current = ["cuda:0"]
+
+    @contextlib.contextmanager
+    def fake_cuda_device(device):
+        previous, current[0] = current[0], str(torch.device(device))
+        try:
+            yield
+        finally:
+            current[0] = previous
+
+    seen = []
+    real_ldexp = torch.ldexp
+
+    def spy_ldexp(x, other, *args, **kwargs):
+        seen.append((str(x.device), current[0]))
+        return real_ldexp(x, other, *args, **kwargs)
+
+    monkeypatch.setattr(torch.cuda, "device", fake_cuda_device)
+    monkeypatch.setattr(torch, "ldexp", spy_ldexp)
+    monkeypatch.setattr(mcl, "_LUT_CACHE", {})
+    monkeypatch.setattr(mcl, "_zoo_mxfp4_dequantize", None)
+    with FakeTensorMode(allow_non_fake_inputs = True):
+        packed = torch.empty(8, 32, dtype = torch.uint8, device = "cuda:1")
+        scale = torch.empty(8, 2, dtype = torch.uint8, device = "cuda:1")
+        out = dequantize_mxfp4_packed(packed, scale, dtype)
+    assert out.shape == (8, 64) and out.dtype == dtype
+    assert seen == [("cuda:1", "cuda:1")]
+    assert current == ["cuda:0"]
+
+
+@pytest.mark.skipif(
+    not has_real_cuda() or torch.cuda.device_count() < 2, reason = "needs two CUDA devices"
+)
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+def test_torch_fallback_on_a_non_current_gpu_matches_cpu(dtype, monkeypatch):
+    import unsloth.models.mxfp4_compressed_linear as mcl
+
+    monkeypatch.setattr(mcl, "_zoo_mxfp4_dequantize", None)
+    packed, scale = _random_packed(64, 128, low = 100, high = 140)
+    want = dequantize_mxfp4_packed(packed, scale, dtype)
+    with torch.cuda.device(0):
+        got = dequantize_mxfp4_packed(packed.to("cuda:1"), scale.to("cuda:1"), dtype)
+        torch.cuda.synchronize(1)
+        assert torch.cuda.current_device() == 0
+    assert got.device == torch.device("cuda:1")
+    assert torch.equal(got.cpu(), want)
+
+
 def test_dtype_casts_keep_the_packed_bytes_and_set_the_decode_dtype():
     module = _filled(32, 64, dtype = torch.float16)
     module.weight_scale.data.clamp_(110, 130)  # stay inside fp16's range

@@ -1500,6 +1500,10 @@ def _quant_state_dtype(quant_state):
 # decoding is reproducible; others dequantize. UNSLOTH_GEMV_MAX_ROWS overrides where the Triton GEMV runs.
 _GEMV_ROWS_BY_ARCH = {(7, 5): 4, (8, 0): 2, (8, 9): 4, (12, 0): 4}
 _GEMV_ROWS_CAP = {}
+# Rows from which bnb gemm_4bit replaces the GEMV. Colab T4 eager decode (Qwen3-4B, Llama-3.2-3B): batch 4
+# 13-30% faster at equal NLL vs fp32; batch 2 ~40% slower (host bound), batch 3 a tie.
+_GEMV_ROWS_BNB_FROM_BY_ARCH = {(7, 5): 4}
+_GEMV_ROWS_BNB_FROM = {}
 
 
 def _gemv_rows_cap(device):
@@ -1508,6 +1512,7 @@ def _gemv_rows_cap(device):
     if cap is None:
         if "UNSLOTH_GEMV_MAX_ROWS" in os.environ:
             cap = _GEMV_MAX_ROWS
+            bnb_from = cap + 1
         else:
             try:
                 # ROCm reports gfx versions here (gfx1200 is (12, 0)), so the table is CUDA only.
@@ -1515,6 +1520,8 @@ def _gemv_rows_cap(device):
             except Exception:
                 arch = None
             cap = min(_GEMV_MAX_ROWS, _GEMV_ROWS_BY_ARCH.get(arch, 1))
+            bnb_from = _GEMV_ROWS_BNB_FROM_BY_ARCH.get(arch, cap + 1)
+        _GEMV_ROWS_BNB_FROM[index] = bnb_from
         _GEMV_ROWS_CAP[index] = cap
     return cap
 
@@ -1574,13 +1581,22 @@ def _bnb_gemm_4bit_ok(X, W, quant_state):
         and _bnb_gemm_4bit_device_ok(X.device)
         # bitsandbytes passes raw pointers to the kernel on X's device.
         and W.device == X.device
+        # Its fp16 kernels load 16 bytes at a time from both pointers.
+        and not (X.data_ptr() & 15 or W.data_ptr() & 15)
         and type(quant_state) is not list
         and quant_state.absmax.device == X.device
         and getattr(quant_state, "quant_type", None) in ("nf4", "fp4")
         # bitsandbytes dequantizes (and warns) itself when K is not a multiple of the blocksize.
         and quant_state.shape[-1] % quant_state.blocksize == 0
-        # matmul_4bit raises for any other nested blocksize.
-        and (not quant_state.nested or quant_state.state2.blocksize == 256)
+        # matmul_4bit raises for any other nested blocksize, a list state2 or a non-tensor offset.
+        and (
+            not quant_state.nested
+            or (
+                type(quant_state.state2) is not list
+                and quant_state.state2.blocksize == 256
+                and isinstance(quant_state.offset, torch_Tensor)
+            )
+        )
     )
 
 
@@ -1589,6 +1605,12 @@ def _gemv_rows(X, W, quant_state, out):
     M = X.shape[0]
     # First, so rows above the cap cost the dequantize path nothing.
     if not 2 <= M <= _gemv_rows_cap(X.device) or W.device != X.device:
+        return None
+    if (
+        not _is_compiling()
+        and M >= _GEMV_ROWS_BNB_FROM.get(X.device.index, M + 1)
+        and _bnb_gemm_4bit_ok(X, W, quant_state)
+    ):
         return None
     eager = (
         not _is_compiling()

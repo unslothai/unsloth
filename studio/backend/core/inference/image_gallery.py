@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Disk-backed persistence for generated images.
-
-Each image is a PNG under ``workspace_root()/images`` with its recipe embedded as PNG text chunks:
-an ``unsloth`` JSON blob (the source of truth) plus an Automatic1111-style ``parameters`` string,
-so a downloaded PNG carries its own settings. The route owns the schema; this only stores files.
-"""
+"""Image PNGs in workspace_root()/images; recipe in an unsloth JSON text chunk (source of truth)"""
 
 from __future__ import annotations
 
@@ -17,8 +12,9 @@ import json
 import os
 import re
 import sys
+import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from typing import Any, Optional
 
@@ -159,19 +155,78 @@ def _engine() -> Optional[str]:
         return None
 
 
-def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
-    """Persist a PIL image with its recipe embedded; return the gallery record."""
-    image_id = uuid.uuid4().hex
-    meta = {
+def _recipe(meta: dict[str, Any]) -> dict[str, Any]:
+    return {
         # A Connection run never touched the local engine.
         "engine": None if meta.get("model_kind") == "connection" else _engine(),
         "generator": _generator(),
         **meta,
         "schema_version": RECIPE_SCHEMA_VERSION,
     }
+
+
+def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
+    """Persist a PIL image with its recipe embedded; return the gallery record."""
+    image_id = uuid.uuid4().hex
+    meta = _recipe(meta)
     # Encoded before the folder is looked up: a Settings move during the encode would otherwise
     # finish first, and the image land in the folder it left.
-    data = _png_bytes(image, meta)
+    data = _encoded_ahead(image, meta)
+    if data is None:
+        data = _png_bytes(image, meta)
+    return _publish(image_id, meta, data)
+
+
+# Pillow releases the GIL while it filters and deflates, so a batch's PNGs encode side by side.
+_MAX_ENCODE_WORKERS = 8
+_ahead = threading.local()
+
+
+def _encoded_ahead(image: Any, meta: dict[str, Any]) -> Optional[bytes]:
+    """The PNG ``save_many`` already encoded from this image and this exact recipe, else None."""
+    pending = getattr(_ahead, "pending", None)
+    entry = pending.pop(id(image), None) if pending else None
+    if entry is None or entry[0] is not image or list(entry[1].items()) != list(meta.items()):
+        return None
+    return entry[2].result()
+
+
+def save_many(items: Iterable[tuple[Any, dict[str, Any]]]) -> Iterator[dict[str, Any]]:
+    """``save`` each (image, meta) in order, with every PNG encoded concurrently up front.
+
+    Each ``save`` still writes its file and builds its record in turn, so the bytes, the gallery
+    order and what a failure leaves behind are those of a plain loop of ``save``."""
+    items = list(items)
+    cpus = getattr(os, "process_cpu_count", os.cpu_count)() or 1
+    workers = min(len(items), cpus, _MAX_ENCODE_WORKERS)
+    # One image object twice would be loaded by two threads at once.
+    if workers < 2 or len({id(image) for image, _ in items}) < len(items):
+        for image, meta in items:
+            yield save(image, meta)
+        return
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers = workers, thread_name_prefix = "gallery-png") as pool:
+        pending = {}
+        for image, meta in items:
+            recipe = _recipe(meta)
+            pending[id(image)] = (image, recipe, pool.submit(_png_bytes, image, recipe))
+        futures = [entry[2] for entry in pending.values()]
+        _ahead.pending = pending
+        # The gallery sorts by mtime and back-to-back writes can tie (Windows ~15.6 ms tick): keep each strictly newer.
+        _ahead.floor_ns = None
+        try:
+            for image, meta in items:
+                yield save(image, meta)
+        finally:
+            if getattr(_ahead, "pending", None) is pending:
+                _ahead.pending = None
+                _ahead.floor_ns = None
+            for future in futures:
+                future.cancel()
+
+
+def _publish(image_id: str, meta: dict[str, Any], data: bytes) -> dict[str, Any]:
     directory = gallery_dir()
     final_path = directory / f"{image_id}.png"
     # Dotted temp (skipped by the *.png glob) then atomic rename: no truncated PNG in the listing.
@@ -185,17 +240,37 @@ def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
         except OSError:
             pass
         raise
-    return _record(image_id, meta)
+    if getattr(_ahead, "pending", None) is not None:
+        _keep_after_previous(final_path)
+    return _record(image_id, meta, directory = directory)
+
+
+def _keep_after_previous(path: Path) -> None:
+    """In a ``save_many`` batch, move ``path``'s mtime 1 us past the previous image's when it is not already later."""
+    try:
+        stat = path.stat()
+        mtime_ns = stat.st_mtime_ns
+        floor = getattr(_ahead, "floor_ns", None)
+        if floor is not None and mtime_ns <= floor:
+            mtime_ns = floor + 1000
+            os.utime(path, ns = (stat.st_atime_ns, mtime_ns))
+        _ahead.floor_ns = mtime_ns
+    except OSError:
+        pass
 
 
 def _record(
     image_id: str,
     meta: dict[str, Any],
     flags: Optional[dict[str, dict[str, Any]]] = None,
+    *,
+    directory: Optional[Path] = None,
 ) -> dict[str, Any]:
+    if directory is None:
+        directory = gallery_dir()
     # flags are library state, not recipe: they come from the sidecar store, never the PNG chunk
     if flags is None:
-        flags = gallery_flags.read(gallery_dir())
+        flags = gallery_flags.read(directory)
     return {
         **meta,
         "id": image_id,
@@ -203,7 +278,7 @@ def _record(
         **gallery_flags.flags_for(flags, image_id),
         # The server's own sort key, so a client re-sort agrees with it (created_at can differ).
         "order_at": gallery_flags.order_rank(
-            flags, image_id, _mtime(gallery_dir() / f"{image_id}.png")
+            flags, image_id, _mtime(directory / f"{image_id}.png")
         ),
     }
 
@@ -212,9 +287,10 @@ def image_path(image_id: str) -> Optional[Path]:
     """Resolve an id to its on-disk PNG, or None if missing / unsafe."""
     if not _ID_RE.match(image_id):
         return None
-    path = gallery_dir() / f"{image_id}.png"
+    directory = gallery_dir()
+    path = directory / f"{image_id}.png"
     try:
-        path.resolve().relative_to(gallery_dir().resolve())
+        path.resolve().relative_to(directory.resolve())
     except ValueError:
         return None
     return path if path.is_file() else None
@@ -294,10 +370,11 @@ def list_images(
 ) -> list[dict[str, Any]]:
     """Pinned first, then mtime; archived selects a shelf, never widens; valid filter runs before paging."""
     try:
-        paths = list(gallery_dir().glob("*.png"))
+        directory = gallery_dir()
+        paths = list(directory.glob("*.png"))
     except OSError:
         return []
-    flags = gallery_flags.read(gallery_dir())
+    flags = gallery_flags.read(directory)
     # Shelf split and pin sort use file stems before any recipe read, keeping the early break intact.
     paths = [p for p in paths if gallery_flags.is_archived(flags, p.stem) == archived]
     paths.sort(
@@ -314,7 +391,7 @@ def list_images(
         meta = _read_meta(path)
         if meta is None:
             continue
-        record = _record(path.stem, meta, flags)
+        record = _record(path.stem, meta, flags, directory = directory)
         if valid is not None and not valid(record):
             continue
         records.append(record)

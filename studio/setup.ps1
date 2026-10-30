@@ -158,6 +158,7 @@ $script:NvidiaLibraryInventoryProbed = $false
 $script:NvidiaLibraryInventory = $null
 # Initialised for Set-StrictMode and for a dot-sourced rerun in the same session.
 $script:OfflineFastPath = $false
+$script:SetupVenvChanged = $false
 $script:CudaToolkitReady = $false
 $script:NvccPath = $null
 $script:CudaToolkitRoot = $null
@@ -3221,6 +3222,21 @@ function Invoke-NpmMirrorRetry {
     return $true
 }
 
+# install-stamp.mjs check/write; any doubt returns $false so setup runs `npm ci`.
+function Invoke-OxcInstallStamp {
+    param([Parameter(Mandatory = $true)][ValidateSet("check", "write")][string]$Mode)
+    $helper = Join-Path $OxcValidatorDir "install-stamp.mjs"
+    if (-not (Test-Path -LiteralPath $helper -PathType Leaf)) { return $false }
+    # Resolved first: a lookup failure must never read an earlier command's exit code as a pass.
+    $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $node) { return $false }
+    try {
+        $global:LASTEXITCODE = 1
+        & $node.Source $helper $Mode *> $null
+        return ($LASTEXITCODE -eq 0)
+    } catch { return $false }
+}
+
 function Show-NpmRegistryHint {
     param([string]$FailureOutput = "")
     if ($FailureOutput) {
@@ -5488,7 +5504,8 @@ if ($NeedNodeForSetup) {
         Remove-Item Env:NODE_PATH -ErrorAction SilentlyContinue
         step "node" "$(node -v) | npm $(npm -v) (isolated)"
 
-        if (-not (Test-Path (Join-Path $FrontendDir "package-lock.json")) -and -not (Get-Command bun -ErrorAction SilentlyContinue)) {
+        # Only the frontend build uses bun (as in setup.sh); OXC-only Node (Desktop) skips it.
+        if (-not (Test-Path (Join-Path $FrontendDir "package-lock.json")) -and -not (Get-Command bun -ErrorAction SilentlyContinue) -and $NeedFrontendBuild) {
             substep "installing bun (faster frontend package installs)..."
             $prevEAP_bun = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
@@ -5623,18 +5640,27 @@ if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip" -and (Get-Command n
     $ErrorActionPreference = "Continue"
     Push-Location $OxcValidatorDir
     $NpmInstallVerb = if (Test-Path "package-lock.json") { "ci" } else { "install" }
-    $oxcInstallExit = Invoke-SetupCommand { npm $NpmInstallVerb @NpmRegistryArgs }
-    if ($oxcInstallExit -ne 0 -and (Invoke-NpmMirrorRetry)) { $oxcInstallExit = 0 }
-    if ($oxcInstallExit -ne 0) {
+    if ($NpmInstallVerb -eq "ci" -and (Invoke-OxcInstallStamp -Mode check)) {
         Pop-Location
         $ErrorActionPreference = $prevEAP_oxc
-        Write-StudioLine "[ERROR] OXC validator npm $NpmInstallVerb failed (exit code $oxcInstallExit)" -ForegroundColor Red
-        Show-NpmRegistryHint -FailureOutput $script:SetupCommandOutput
-        Exit-SetupFailure "OXC validator dependency installation failed (exit code $oxcInstallExit)"
+        step "oxc runtime" "up to date"
+    } else {
+        # Gone before npm touches the tree, so an interrupted install is never trusted.
+        Remove-Item -LiteralPath (Join-Path $OxcValidatorDir "node_modules\.unsloth-install-stamp.json") -Force -ErrorAction SilentlyContinue
+        $oxcInstallExit = Invoke-SetupCommand { npm $NpmInstallVerb @NpmRegistryArgs }
+        if ($oxcInstallExit -ne 0 -and (Invoke-NpmMirrorRetry)) { $oxcInstallExit = 0 }
+        if ($oxcInstallExit -ne 0) {
+            Pop-Location
+            $ErrorActionPreference = $prevEAP_oxc
+            Write-StudioLine "[ERROR] OXC validator npm $NpmInstallVerb failed (exit code $oxcInstallExit)" -ForegroundColor Red
+            Show-NpmRegistryHint -FailureOutput $script:SetupCommandOutput
+            Exit-SetupFailure "OXC validator dependency installation failed (exit code $oxcInstallExit)"
+        }
+        if ($NpmInstallVerb -eq "ci") { $null = Invoke-OxcInstallStamp -Mode write }
+        Pop-Location
+        $ErrorActionPreference = $prevEAP_oxc
+        step "oxc runtime" "installed"
     }
-    Pop-Location
-    $ErrorActionPreference = $prevEAP_oxc
-    step "oxc runtime" "installed"
 } elseif ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip") {
     substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "Yellow"
 }
@@ -8394,6 +8420,7 @@ if (-not $NoTorchMode) {
 substep "running ordered dependency installation..."
 python "$PSScriptRoot\install_python_stack.py"
 $stackExit = $LASTEXITCODE
+$script:SetupVenvChanged = $true
 
 # ── Intel XPU: bitsandbytes must carry XPU kernels ──
 # Only bitsandbytes' XPU library exports the 4-bit kernels; floor 0.50.0 (<=0.49.2 NaNs on AMD).
@@ -10110,6 +10137,24 @@ if (-not $llamaCppIsLink -and (
 }
 
 Complete-FrontendBuildBackground
+
+# ── Precompile bytecode ── (opt-in: a whole-venv compile per update cost more than lazy compile on import; never fatal)
+$_pycPython = Join-Path $VenvDir 'Scripts\python.exe'
+$_pycHelper = Join-Path $PSScriptRoot 'precompile_bytecode.py'
+$_pycSwitches = @(@($env:UV_COMPILE_BYTECODE, $env:UNSLOTH_STUDIO_COMPILE_BYTECODE) |
+    Where-Object { $_ } | ForEach-Object { $_.Trim().ToLowerInvariant() })
+$_pycOptedOut = @($_pycSwitches | Where-Object { @('0', 'false', 'no', 'off') -contains $_ }).Count -gt 0
+$_pycOptedIn = @($_pycSwitches | Where-Object { @('1', 'true', 'yes', 'on') -contains $_ }).Count -gt 0
+if (($script:SetupVenvChanged -or $env:UNSLOTH_SETUP_RERUN -eq '1') -and $_pycOptedIn -and -not $_pycOptedOut -and
+    (Test-Path -LiteralPath $_pycPython -PathType Leaf) -and
+    (Test-Path -LiteralPath $_pycHelper -PathType Leaf)) {
+    step "python" "precompiling bytecode..."
+    $_pycPrevExit = $global:LASTEXITCODE
+    $_pycPrevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & $_pycPython -I $_pycHelper } catch { } finally { $ErrorActionPreference = $_pycPrevEAP }
+    $global:LASTEXITCODE = $_pycPrevExit
+}
 
 # ─────────────────────────────────────────────
 # Footer
