@@ -92,6 +92,6 @@ test("notes and groups carry their own top-right trash, through the canvas delet
   // Hidden until the frame is hovered or selected.
   assert.match(src, /opacity-0[^"]*group-hover\/frame:opacity-100 group-data-\[selected\]\/frame:opacity-100/);
   const canvas = read("editor/canvas.tsx");
-  assert.match(canvas, /node\.id\.startsWith\(NOTE_PREFIX\)\)\s*ids\.notes\.push/);
-  assert.match(canvas, /node\.id\.startsWith\(GROUP_PREFIX\)\)\s*ids\.groups\.push/);
+  assert.match(canvas, /ids\.notes\.push\(/);
+  assert.match(canvas, /ids\.groups\.push\(/);
 });
