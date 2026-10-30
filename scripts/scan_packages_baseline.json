@@ -1757,6 +1757,14 @@
       "evidence_hash": "9240e223b1ffd4e599ec84c457bde659bd1f7e4d075e77b220f592e02b462a22"
     },
     {
+      "package": "botocore",
+      "file": "botocore/httpsession.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L186:         sslkeylogfile = os.environ.get(\"SSLKEYLOGFILE\")\nNetwork: L509:             urllib_response = conn.urlopen( sha256:0eda98c8303e0ece19e6f06f47c67731fd3998866a768f6201f1db7046382940",
+      "evidence_hash": "779cbbbe6d8f2d02b77264bb8a92dd25ec024c900c295656bd7f38620866f600"
+    },
+    {
       "package": "pandas",
       "file": "pandas/tests/io/test_pickle.py",
       "check": "Creates archive with sensitive data AND makes network calls",
@@ -1893,12 +1901,29 @@
     },
     {
       "package": "torch",
+      "file": "torch/testing/_internal/common_utils.py",
+      "check": "Reverse shell / bind shell pattern",
+      "severity": "CRITICAL",
+      "evidence": "L32: import socket sha256:1fa741695d0462a7bcfc84fedf76a070a6501a264813d464e2bd14db86d4b15c",
+      "evidence_hash": "f684586427de42c094d986b8112f0035935ce51b4103415299eefcaf6ae2ca59"
+    },
+    {
+      "package": "torch",
       "file": "torch/_precompile.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
       "evidence": "Obfusc: L1570:     exec(compile(python_code, \"<precompile>\", \"exec\"), module_ns)\nExec: L967: #     exec(open(\"this_file.py\").read(), ns) | L1174: #     exec(open(\"this_file.py\").read(), ns) | L1570:     exec(compile(python_code, \"<precompile>\", \"exec\"), module_ns)",
       "evidence_hash": "ed7c7bfe07302200f8323e8f091a8f6ab06c9607410e31c4f036699fe7dee161",
       "file_sha256": "a8ab839be1e8b555c181a08a8c431185aaf67e8ac00e517590fc8092d0554e46"
+    },
+    {
+      "package": "torch",
+      "file": "torch/_precompile.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L2510:     exec(compile(python_code, \"<precompile>\", \"exec\"), module_ns)\nExec: L1424: #     exec(open(\"this_file.py\").read(), ns) | L1688: #     exec(open(\"this_file.py\").read(), ns) | L1787: #     exec(open(\"this_file.py\").read(), ns) | L2510:     exec(compile(python_code, \"<precompile>\", \"exec\"), module_ns)",
+      "evidence_hash": "405499840698c9eda88f885114134e478927525397c80a3ff92eca28fee03794",
+      "file_sha256": "14b467496f627d973731c8ce3d680332b6d3a4ce4426abcad2b4e9c797dcdbc2"
     },
     {
       "package": "torch",
@@ -1911,12 +1936,38 @@
     },
     {
       "package": "torch",
+      "file": "torch/_inductor/standalone_compile.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L688:     exec(compile(python_code, \"<compile_to_python>\", \"exec\"), namespace)\nExec: L688:     exec(compile(python_code, \"<compile_to_python>\", \"exec\"), namespace)",
+      "evidence_hash": "b694818dd0f2e2fc2eb25389a21ce2426037aa1f7cc0284a8f4bf21dd86cded0",
+      "file_sha256": "7cbf53b62fba291571a75425e892314346ec1cac15a60b7d0c3a0494b6d79e31"
+    },
+    {
+      "package": "torch",
       "file": "torch/_inductor/compile_worker/subproc_pool.py",
       "check": "Anti-analysis/sandbox evasion + suspicious behavior",
       "severity": "HIGH",
       "evidence": "Anti: L860:         time.sleep(3600)\nSubprocess: L212:         self.process = subprocess.Popen( sha256:62f622e5b17b6c6b1656b44c8ba27274f02c68c4f9d35502fb593f1d6a3af55d",
       "evidence_hash": "f760ab1ce9c086051291c29ac4e486575db6f2dac2eddba2ac31ef5c434609d8",
       "file_sha256": "695b5c1df7d0ae710451aa8904c5ef101e0c93de26a591f3e995bb9151d4c0e3"
+    },
+    {
+      "package": "torch",
+      "file": "torch/_inductor/compile_worker/subproc_pool.py",
+      "check": "Anti-analysis/sandbox evasion + suspicious behavior",
+      "severity": "HIGH",
+      "evidence": "Anti: L1030:         time.sleep(3600)\nSubprocess: L234:         self.process = subprocess.Popen( sha256:62f622e5b17b6c6b1656b44c8ba27274f02c68c4f9d35502fb593f1d6a3af55d",
+      "evidence_hash": "f760ab1ce9c086051291c29ac4e486575db6f2dac2eddba2ac31ef5c434609d8",
+      "file_sha256": "5c95bd31af9266d201ebed9cc275a51948b682f6692af4513bbce99e59b2bea5"
+    },
+    {
+      "package": "torch",
+      "file": "torch/_vendor/quack/epilogue/library.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L508:     code = compile(src, f\"<quack-epilogue:{tag}>\", \"exec\")\nExec: L510:     exec(code, ns)",
+      "evidence_hash": "17ac8ee3c15bf16322a88265cb0302d8ef9b78b8839a67bb3d2021d477062188"
     },
     {
       "package": "huggingface-hub",
