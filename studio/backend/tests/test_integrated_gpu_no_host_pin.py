@@ -607,6 +607,22 @@ def test_keep_cpu_weights_follow_the_target_device(
 
 
 @pytest.mark.parametrize("current_integrated, target_integrated", _MIXED)
+def test_native_quant_host_staging_follows_the_target_device(
+    mixed_gpu, pins, current_integrated, target_integrated
+):
+    from core.inference import diffusion_native_quant as nq
+
+    mixed_gpu(current_integrated, target_integrated)
+    mover = nq._HostLinearMover(_TARGET)
+    up = mover._staging("up", 1024)
+    down = mover._staging("down", 512)
+    if target_integrated:
+        assert up is None and down is None and pins == []
+    else:
+        assert up.numel() >= 1024 and down.numel() >= 512 and pins == ["empty", "empty"]
+
+
+@pytest.mark.parametrize("current_integrated, target_integrated", _MIXED)
 def test_pin_planners_follow_the_target_device(
     monkeypatch, mixed_gpu, current_integrated, target_integrated
 ):
