@@ -290,7 +290,7 @@ async def list_models(
 ) -> ModelList:
     """Models this Unsloth Studio can serve: loaded ones and those already downloaded.
     Each entry has the id to pass <<load_model: to load_model | as a generate tool's ``model``>>, its kind and whether it is loaded.
-    ``kind`` is read from the model's task; a model with no task is reported as "llm", which also covers embedding models and unloaded text-to-speech models Unsloth Studio cannot classify yet, <<load_model: , so pass the kind explicitly to load_model>>.
+    ``kind`` is read from the model's task; a model with no task is reported as "llm", which also covers embedding models and unloaded text-to-speech models Unsloth Studio cannot classify yet<<load_model: , so pass the kind explicitly to load_model>>.
     ``loaded_only`` returns just the resident models.
     ``model`` narrows the list to that model (empty when it is not downloaded yet) and adds Unsloth Studio's training defaults for it, which also works for a Hugging Face repo id that is not downloaded (send X-Unsloth-HF-Token for a gated repo).
     ``workflow`` keeps only audio models that run that Unsloth Studio Audio page (their ``audio_workflows``), such as the ids to pass to generate_audio as ``model``.

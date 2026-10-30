@@ -20,7 +20,7 @@ def render(text: Any, tools: Collection[str]) -> Any:
         text,
     )
     # A dropped segment may leave a doubled or trailing space before punctuation.
-    return re.sub(r" {2,}", " ", re.sub(r" +([.,;:)])", r"\1", rendered)).strip()
+    return re.sub(r" {2,}", " ", re.sub(r" +([.,;:)])(?=\s|$)", r"\1", rendered)).strip()
 
 
 def render_schema(schema: Any, tools: Collection[str]) -> Any:
