@@ -20051,8 +20051,7 @@ class LlamaCppBackend:
 
         # Header-rejected basenames, so the search moves past an impostor to the real sidecar.
         rejected: set[str] = set()
-        # An answer is asked at most once per call (the loops below run the picker repeatedly); an empty one, which
-        # is also what a failed model_info returns, is asked again as before.
+        # Once per call; an empty answer (also a failed model_info) is asked again, as before.
         remote_sizes: dict[str, int] = {}
 
         def _remote_sizes() -> dict[str, int]:
@@ -20064,10 +20063,11 @@ class LlamaCppBackend:
         snap = _snapshot_dir_of(near_path) if near_path else None
 
         def _local_sizes(candidates: list[str]) -> dict[str, int]:
-            # A complete snapshot file has the size model_info lists for it.
             sizes: dict[str, int] = {}
+            if snap is None:
+                return sizes
             for name in candidates:
-                if snap is None or "/" in name:
+                if "/" in name:
                     continue
                 try:
                     sizes[name] = (snap / name).stat().st_size
@@ -20114,7 +20114,7 @@ class LlamaCppBackend:
                     )
                 ]
 
-            # On-disk sizes that keep every candidate settle it without the Hub (an unanswered model_info keeps them all too); one that would drop a file asks the Hub as before.
+            # On-disk sizes settle it only when they keep every candidate, as an unanswered model_info does; else ask the Hub.
             kept = _under_bound(_local_sizes(candidates)) if local else None
             if kept is None or len(kept) != len(eligible):
                 kept = _under_bound(_remote_sizes())
@@ -20122,9 +20122,6 @@ class LlamaCppBackend:
                 kept, key = lambda name: dflash_repo_preference_key(name, weight_name, others)
             )
             return files[0] if files else None
-
-        def _pick_dflash_local(candidates: list[str]) -> Optional[str]:
-            return _pick_dflash(candidates, local = True)
 
         def _validated(path: Optional[str]) -> Optional[str]:
             """Returns path only if header says dflash, since a filename test accepts any dflash-*.gguf; else the download spends gigabytes on a file llama-server refuses."""
@@ -20142,7 +20139,9 @@ class LlamaCppBackend:
         cached: Optional[str] = None
         seen_siblings: set[str] = set()
         while near_path and not cancel_event.is_set():
-            sibling = _companion_snapshot_sibling(near_path, _pick_dflash_local)
+            sibling = _companion_snapshot_sibling(
+                near_path, functools.partial(_pick_dflash, local = True)
+            )
             if sibling is None or sibling in seen_siblings:
                 break
             seen_siblings.add(sibling)
