@@ -7,6 +7,7 @@ import pytest
 from fastapi.responses import JSONResponse
 
 from models.inference import AudioRunRequest
+from studio_mcp import audio_runs
 from studio_mcp.tools import audio
 
 from .mcp_harness import bodies, fake_studio, run_tool, sequence
@@ -60,7 +61,7 @@ def test_a_cancel_during_take_two_keeps_take_one_and_sends_no_third(monkeypatch)
     def run(request, body):
         if json.loads(body)["take"] == 1:
             return _take("var-1", seed = 41)
-        assert audio.stop_run("owner", "run-abc12") is False
+        assert audio_runs.stop_run("owner", "run-abc12") is False
         return JSONResponse({"detail": "Audio generation cancelled"}, status_code = 499)
 
     result, studio = _music(monkeypatch, run)
@@ -81,7 +82,7 @@ def test_a_cancel_during_take_two_keeps_take_one_and_sends_no_third(monkeypatch)
 
 def test_a_cancel_as_a_take_ends_stops_before_the_next(monkeypatch):
     def run(request, body):
-        audio.stop_run("owner", "run-abc12")
+        audio_runs.stop_run("owner", "run-abc12")
         return _take("var-1")
 
     result, studio = _music(monkeypatch, run)

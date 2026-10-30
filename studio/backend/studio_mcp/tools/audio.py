@@ -18,7 +18,7 @@ from fastmcp.tools import ToolResult
 from pydantic import Field
 
 from studio_mcp import loading
-from studio_mcp.audio_runs import _CANCELLED, _RUNS, _Run, _forget_old_cancels, stop_run  # noqa: F401
+from studio_mcp.audio_runs import _CANCELLED, _RUNS, _Run, _forget_old_cancels
 from studio_mcp.caller import Caller, current_caller
 from studio_mcp.errors import raise_for_audio, raise_for_route
 from studio_mcp.forward import forward, ndjson_last

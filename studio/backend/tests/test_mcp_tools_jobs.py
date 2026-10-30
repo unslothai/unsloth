@@ -252,9 +252,9 @@ def test_a_status_read_that_stalls_never_holds_a_wait_past_wait_s(monkeypatch, f
 
 
 def test_a_first_read_that_stalls_ends_with_a_retry_hint(monkeypatch):
-    from studio_mcp import jobs
+    from studio_mcp import jobs as job_reads
 
-    monkeypatch.setattr(jobs, "FIRST_READ_S", 0.2)
+    monkeypatch.setattr(job_reads, "FIRST_READ_S", 0.2)
     studio = fake_studio({VIDEO: slow(_video("in_progress", 10), 10)})
     started = time.monotonic()
     result, _studio = run_tool(monkeypatch, studio, "get_job", {"kind": "video", "id": "vid-1"})
