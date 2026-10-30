@@ -31,7 +31,17 @@ def _load():
 
 
 LH = _load()
-_SM80 = has_real_cuda() and torch.cuda.get_device_capability()[0] >= 8
+_ROCM = has_real_cuda() and torch.version.hip is not None and LH._rocm_arch_allowed(0)
+_ENGAGES = has_real_cuda() and (
+    _ROCM or (torch.version.hip is None and torch.cuda.get_device_capability()[0] >= 8)
+)
+
+
+@pytest.fixture(autouse = True)
+def _rocm_opt_in(monkeypatch):
+    # ROCm routes only with UNSLOTH_HD512_ATTENTION=1; the GPU tests below exercise that route.
+    if _ROCM:
+        monkeypatch.setattr(LH, "_ROCM_OPT_IN", [True])
 
 
 def _causal(S):
@@ -200,7 +210,7 @@ def test_kernel_matches_reference(S, heads, kind):
         assert err.mean() <= 0.01 * b.abs().mean() + 2e-3
 
 
-@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+@pytest.mark.skipif(not _ENGAGES, reason = "the router engages on sm80+ or allowlisted ROCm")
 def test_router_engages_on_gemma4_global_call():
     calls, original = _sentinel()
     router = LH._make_router(original)
@@ -215,7 +225,7 @@ def test_router_engages_on_gemma4_global_call():
     assert router(_Module(), q, kv, kv, left_pad[None, None])[0] == "original"
 
 
-@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+@pytest.mark.skipif(not _ENGAGES, reason = "the router engages on sm80+ or allowlisted ROCm")
 def test_router_defers_trainable_additive_mask():
     calls, original = _sentinel()
     router = LH._make_router(original)
@@ -235,7 +245,7 @@ def _cuda_dtype():
     return torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
 
 
-@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+@pytest.mark.skipif(not _ENGAGES, reason = "the router engages on sm80+ or allowlisted ROCm")
 def test_self_check_leaves_global_rng_alone(monkeypatch):
     device, dtype = torch.device("cuda", torch.cuda.current_device()), _cuda_dtype()
     LH._SELF_CHECK.pop((str(device), dtype), None)
@@ -247,7 +257,7 @@ def test_self_check_leaves_global_rng_alone(monkeypatch):
     assert torch.equal(torch.cuda.get_rng_state(device), state)
 
 
-@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+@pytest.mark.skipif(not _ENGAGES, reason = "the router engages on sm80+ or allowlisted ROCm")
 def test_self_check_under_inference_mode():
     device, dtype = torch.device("cuda", torch.cuda.current_device()), _cuda_dtype()
     LH._SELF_CHECK.pop((str(device), dtype), None)
@@ -292,13 +302,15 @@ def test_self_check_stays_out_of_a_non_reentrant_checkpoint(monkeypatch):
     assert _self_check_in_checkpoint(torch.device("cpu"), torch.float32) == (True, 2, True)
 
 
-@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+@pytest.mark.skipif(not _ENGAGES, reason = "the router engages on sm80+ or allowlisted ROCm")
 def test_real_self_check_stays_out_of_a_non_reentrant_checkpoint():
     device, dtype = torch.device("cuda", torch.cuda.current_device()), _cuda_dtype()
     assert _self_check_in_checkpoint(device, dtype) == (True, 2, True)
 
 
-@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+@pytest.mark.skipif(not _ENGAGES, reason = "the router engages on sm80+ or allowlisted ROCm")
+# unsloth.device_type turns torch.compile off on gfx906 unless TORCHDYNAMO_DISABLE=0 is set.
+@pytest.mark.skipif(torch._dynamo.config.disable, reason = "torch.compile is disabled")
 def test_patch_self_checks_so_compiled_graphs_use_the_kernel(monkeypatch):
     from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 
@@ -330,7 +342,7 @@ def test_patch_self_checks_so_compiled_graphs_use_the_kernel(monkeypatch):
     assert LH._SELF_CHECK.get((str(device), dtype)) is True
 
 
-@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+@pytest.mark.skipif(not _ENGAGES, reason = "the router engages on sm80+ or allowlisted ROCm")
 def test_router_defers_autocast_dtype_change():
     calls, original = _sentinel()
     router = LH._make_router(original)
@@ -345,7 +357,7 @@ def test_router_defers_autocast_dtype_change():
     assert LH.LARGE_HEAD_ENGAGED["calls"] == before + 1 and len(calls) == 1
 
 
-@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+@pytest.mark.skipif(not _ENGAGES, reason = "the router engages on sm80+ or allowlisted ROCm")
 def test_router_honours_math_sdpa_selection():
     from torch.nn.attention import SDPBackend, sdpa_kernel
 
@@ -466,7 +478,7 @@ def test_autotune_of_a_new_shape_adds_no_flush_buffer():
     assert torch.cuda.max_memory_allocated() - base < 32 * 1024**2
 
 
-@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+@pytest.mark.skipif(not _ENGAGES, reason = "the router engages on sm80+ or allowlisted ROCm")
 def test_router_falls_back_to_sdpa_on_kernel_oom(monkeypatch):
     calls, original = _sentinel()
     router = LH._make_router(original)
@@ -484,7 +496,7 @@ def test_router_falls_back_to_sdpa_on_kernel_oom(monkeypatch):
     assert LH.LARGE_HEAD_ENGAGED["fallback"] == before + 1 and len(calls) == 1
 
 
-@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+@pytest.mark.skipif(not _ENGAGES, reason = "the router engages on sm80+ or allowlisted ROCm")
 def test_router_skips_the_mask_scan_when_it_cannot_use_the_result(monkeypatch):
     # The scan needs a host sync, and a failed self check makes the result unusable.
     def scan(*args, **kwargs):
@@ -668,7 +680,7 @@ def test_patch_skips_the_fp16_self_check_under_forced_float32(monkeypatch):
     assert installed is True and checked == [(torch.device("cuda", 0), torch.float16)]
 
 
-@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+@pytest.mark.skipif(not _ENGAGES, reason = "the router engages on sm80+ or allowlisted ROCm")
 def test_router_uses_the_kernel_for_masks_made_under_inference_mode():
     # generate() / eval build their masks under inference_mode. Sending those to SDPA repeated the
     # KV heads and kept the dense mask (OOM at 8192 tokens where the kernel fits); they are rescanned
@@ -741,7 +753,7 @@ def _wide_row_stride(shape, dtype, seed):
     return x
 
 
-@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+@pytest.mark.skipif(not _ENGAGES, reason = "the router engages on sm80+ or allowlisted ROCm")
 def test_router_sends_a_wide_row_stride_query_to_sdpa():
     dtype = _cuda_dtype()
     S = 5
@@ -786,7 +798,7 @@ def test_backward_copies_a_wide_row_stride_grad():
     torch.cuda.empty_cache()
 
 
-@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+@pytest.mark.skipif(not _ENGAGES, reason = "the router engages on sm80+ or allowlisted ROCm")
 def test_router_captures_into_a_cuda_graph_with_an_inference_mask():
     # The mask scan syncs the host ("operation not permitted when stream is capturing"), and a graph
     # would replay one scan's verdict for whatever the mask buffer holds later, so capture uses SDPA.
@@ -825,3 +837,132 @@ def test_router_captures_into_a_cuda_graph_with_an_inference_mask():
     assert LH._SELF_CHECK[(str(device), dtype)] is True
     torch.testing.assert_close(masked, eager_masked, atol = 2e-2, rtol = 2e-2)
     torch.testing.assert_close(dense, eager_dense)
+
+
+def _sliding(S, window):
+    i = torch.arange(S)
+    return _causal(S) & (i[:, None] - i[None, :] < window)
+
+
+@pytest.mark.skipif(not _ENGAGES, reason = "the router engages on sm80+ or allowlisted ROCm")
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("heads", [(32, 4), (16, 2), (8, 1), (8, 8)])
+@pytest.mark.parametrize("kind", ["causal", "sliding"])
+def test_kernel_matches_reference_in_both_half_dtypes(dtype, heads, kind):
+    # 131 rows end mid tile; q is read with a non unit last stride.
+    H, HKV = heads
+    torch.manual_seed(H * 7 + HKV)
+    B, S, D = 2, 131, 512
+    allowed = {"causal": _causal(S), "sliding": _sliding(S, 48)}[kind]
+    allowed = allowed.cuda()[None, None].expand(B, 1, S, S)
+    q = torch.randn(B, H, D, S, device = "cuda", dtype = dtype).transpose(-1, -2)
+    k = torch.randn(B, S, HKV, D, device = "cuda", dtype = dtype).transpose(1, 2)
+    v = torch.randn(B, S, HKV, D, device = "cuda", dtype = dtype).transpose(1, 2)
+    grad = torch.randn(B, S, H, D, device = "cuda", dtype = dtype)
+    lo, hi = LH.intervals_from_mask(allowed, B, S)
+
+    ours_in = [x.detach().clone().requires_grad_() for x in (q, k, v)]
+    out = LH.large_head_attention(*ours_in, lo, hi)
+    out.backward(grad)
+    ref_in = [x.detach().float().requires_grad_() for x in (q, k, v)]
+    ref = _reference(*ref_in, allowed)
+    ref.backward(grad.float())
+
+    for a, b in zip([out] + [x.grad for x in ours_in], [ref] + [x.grad for x in ref_in]):
+        assert torch.isfinite(a).all()
+        err = (a.float() - b).abs()
+        assert err.max() <= 0.03 * b.abs().max() + 0.02
+        assert err.mean() <= 0.01 * b.abs().mean() + 2e-3
+
+
+def _fake_rocm(monkeypatch, arch, opted_in):
+    props = type("Props", (), {"gcnArchName": arch})()
+    monkeypatch.setattr(torch.version, "hip", "6.3.0")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(torch.cuda, "get_device_properties", lambda device = None: props)
+    # HIP reports the gfx major as the capability, which the sm80 rule would admit.
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device = None: (9, 0))
+    monkeypatch.setattr(LH, "_ROCM_OPT_IN", [opted_in])
+
+
+@pytest.mark.parametrize(
+    "arch, opted_in, installs",
+    [
+        ("gfx906:sramecc+:xnack-", True, True),
+        ("gfx906:sramecc+:xnack-", False, False),
+        ("gfx90a:sramecc+:xnack-", True, False),
+        ("gfx1100", True, False),
+    ],
+)
+def test_rocm_route_is_opt_in_and_allowlisted(monkeypatch, arch, opted_in, installs):
+    import sys
+
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+    _fake_rocm(monkeypatch, arch, opted_in)
+    monkeypatch.delitem(sys.modules, "unsloth.utils.hf_packed_attention", raising = False)
+    monkeypatch.setattr(LH, "_PATCHED", [False])
+    checked = []
+    monkeypatch.setattr(LH, "_self_check", lambda device, dtype: checked.append(dtype) or True)
+    model = torch.nn.Linear(4, 4)
+    model.head_dim = 512
+    monkeypatch.setattr(model, "parameters", lambda: iter([_FakeParam(torch.float16)]))
+    saved = ALL_ATTENTION_FUNCTIONS["sdpa"]
+    try:
+        assert LH.patch_large_head_attention(model) is installs
+        # Off or ineligible: nothing wraps sdpa and nothing is compiled or autotuned.
+        assert (ALL_ATTENTION_FUNCTIONS["sdpa"] is not saved) is installs
+        assert bool(checked) is installs
+    finally:
+        ALL_ATTENTION_FUNCTIONS["sdpa"] = saved
+    assert LH._measured_faster_on(0) is installs
+
+
+def test_rocm_opt_in_needs_an_explicit_one(monkeypatch):
+    for value, opted_in in ((None, False), ("1", True), ("0", False), ("true", False)):
+        if value is None:
+            monkeypatch.delenv("UNSLOTH_HD512_ATTENTION", raising = False)
+        else:
+            monkeypatch.setenv("UNSLOTH_HD512_ATTENTION", value)
+        LH._enabled.cache_clear()
+        assert LH._rocm_opted_in() is opted_in
+    monkeypatch.delenv("UNSLOTH_HD512_ATTENTION")
+    LH._enabled.cache_clear()
+
+
+def _config_shapes(configs):
+    return [(c.kwargs, c.num_warps, c.num_stages) for c in configs]
+
+
+def test_cuda_gate_and_tiles_ignore_the_rocm_path(monkeypatch):
+    monkeypatch.setattr(torch.version, "hip", None)
+    monkeypatch.setattr(LH, "_ROCM_OPT_IN", [False])
+    assert _config_shapes(LH._fwd_configs()) == [
+        ({"BLOCK_M": 32, "BLOCK_N": 32}, 4, 1),
+        ({"BLOCK_M": 32, "BLOCK_N": 32}, 4, 2),
+        ({"BLOCK_M": 32, "BLOCK_N": 16}, 4, 1),
+        ({"BLOCK_M": 16, "BLOCK_N": 16}, 4, 1),
+    ]
+    assert _config_shapes(LH._bwd_configs()) == [
+        ({"BLOCK_M": 16, "BLOCK_N": 32}, 4, 1),
+        ({"BLOCK_M": 16, "BLOCK_N": 32}, 8, 1),
+        ({"BLOCK_M": 32, "BLOCK_N": 32}, 8, 1),
+        ({"BLOCK_M": 16, "BLOCK_N": 16}, 4, 1),
+    ]
+    for capability, faster in (((8, 0), True), ((9, 0), True), ((7, 5), False)):
+        monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device = None: capability)
+        assert LH._measured_faster_on(0) is faster
+
+
+def test_rocm_tiles_extend_the_cuda_list_on_gfx906_only(monkeypatch):
+    monkeypatch.setattr(torch.version, "hip", None)
+    fwd, bwd = _config_shapes(LH._fwd_configs()), _config_shapes(LH._bwd_configs())
+    _fake_rocm(monkeypatch, "gfx906:sramecc+:xnack-", False)
+    assert _config_shapes(LH._fwd_configs()) == fwd + [
+        ({"BLOCK_M": 64, "BLOCK_N": 16, "waves_per_eu": 1}, 4, 2)
+    ]
+    assert _config_shapes(LH._bwd_configs()) == bwd + [({"BLOCK_M": 64, "BLOCK_N": 32}, 4, 1)]
+    _fake_rocm(monkeypatch, "gfx90a:sramecc+:xnack-", False)
+    assert _config_shapes(LH._fwd_configs()) == fwd
+    assert _config_shapes(LH._bwd_configs()) == bwd
