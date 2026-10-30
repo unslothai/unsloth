@@ -676,25 +676,58 @@ def test_sparse_base_weight_keeps_the_base_then_lora_order_under_export(monkeypa
     torch.testing.assert_close(ep.module()(x), torch.full((1, 2), 3.0))
 
 
-def test_dtensor_base_weight_keeps_the_base_then_lora_order(monkeypatch):
-    # A DTensor carries placements the plain accumulator would drop: keep main's order.
-    _set(monkeypatch, True)
+@pytest.fixture
+def one_rank_mesh(tmp_path):
+    # One-rank gloo group on a file store (no TCP / libuv rendezvous, no environment variables); only a
+    # group this fixture created is destroyed.
     if not isinstance(kernel_utils._LORA_DTENSOR, type):
         pytest.skip("torch.distributed.tensor is not available")
     import torch.distributed as dist
+
+    if not dist.is_available() or not dist.is_gloo_available():
+        pytest.skip("gloo is not available")
     from torch.distributed.device_mesh import init_device_mesh
+
+    created = not dist.is_initialized()
+    if created:
+        store = dist.FileStore(str(tmp_path / "store"), 1)
+        dist.init_process_group("gloo", store = store, rank = 0, world_size = 1)
+    try:
+        yield init_device_mesh("cpu", (1,))
+    finally:
+        if created:
+            dist.destroy_process_group()
+
+
+def test_dtensor_base_weight_keeps_the_base_then_lora_order(one_rank_mesh, monkeypatch):
+    # A DTensor carries placements the plain accumulator would drop: keep main's order.
     from torch.distributed.tensor import Replicate, distribute_tensor
 
-    if not dist.is_initialized():
-        import os
-        import socket
-
-        with socket.socket() as s:
-            s.bind(("127.0.0.1", 0))
-            port = s.getsockname()[1]
-        os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
-        os.environ["MASTER_PORT"] = str(port)
-        dist.init_process_group("gloo", rank = 0, world_size = 1)
-    mesh = init_device_mesh("cpu", (1,))
-    W = distribute_tensor(torch.randn(4, 3), mesh, [Replicate()])
+    _set(monkeypatch, True)
+    W = distribute_tensor(torch.randn(4, 3), one_rank_mesh, [Replicate()])
     assert not kernel_utils._lora_fused_ok(W, None, torch.float32)
+
+
+@pytest.mark.parametrize("placement", ["replicate", "shard0", "shard1"])
+def test_dtensor_activation_keeps_the_base_then_lora_order(placement, one_rank_mesh, monkeypatch):
+    # A DTensor X with plain W / A / B (implicit replication) keeps its value and placement.
+    from torch.distributed.tensor import Replicate, Shard, distribute_tensor
+    from torch.distributed.tensor.experimental import implicit_replication
+
+    g = torch.Generator(device = "cpu").manual_seed(7)
+    X, W = torch.randn(4, 6, generator = g), torch.randn(5, 6, generator = g)
+    A, B = torch.randn(2, 6, generator = g), torch.randn(5, 2, generator = g)
+    pl = {"replicate": Replicate(), "shard0": Shard(0), "shard1": Shard(1)}[placement]
+    Xd = distribute_tensor(X, one_rank_mesh, [pl])
+    out = {}
+    for on in (False, True):
+        _set(monkeypatch, on)
+        with implicit_replication():
+            try:
+                out[on] = kernel_utils.matmul_lora(Xd, W, None, A, B, 2.0)
+            except NotImplementedError as e:
+                if on:
+                    raise
+                pytest.skip(f"main's order needs DTensor ops this torch lacks: {e}"[:200])
+    assert out[True].placements == out[False].placements
+    torch.testing.assert_close(out[True].full_tensor(), out[False].full_tensor())

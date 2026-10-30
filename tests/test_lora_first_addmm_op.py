@@ -225,3 +225,79 @@ def test_custom_op_saves_only_what_the_requested_grads_need():
     (X @ W.t() + 0.5 * (X @ a2.t()) @ b2.t()).square().sum().backward()
     torch.testing.assert_close(a.grad, a2.grad, rtol = 1e-5, atol = 1e-5)
     torch.testing.assert_close(b.grad, b2.grad, rtol = 1e-5, atol = 1e-5)
+
+
+@pytest.mark.parametrize("backend", ["eager", "aot_eager"])
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
+def test_compiled_native_forward_ad_keeps_the_tangent(dtype, backend):
+    # Native forward AD (dual_level / make_dual) inside a compiled function: the op has no forward-mode
+    # rule, so matmul_lora keeps the base-then-LoRA order and the tangent survives.
+    import torch._dynamo
+    import torch.autograd.forward_ad as fwAD
+
+    X, W, A, B = _mk(M = 8, K = 16, N = 12, r = 4, dtype = dtype)
+
+    def tangent(x):
+        with fwAD.dual_level():
+            y = KU.matmul_lora(fwAD.make_dual(x, torch.ones_like(x)), W, None, A, B, 0.5)
+            return fwAD.unpack_dual(y).tangent
+
+    eager = tangent(X)
+    assert eager is not None and eager.abs().max() > 0
+    torch._dynamo.reset()
+    got = torch.compile(tangent, backend = backend, fullgraph = True)(X)
+    assert got is not None
+    tol = dict(rtol = 1e-5, atol = 1e-5) if dtype == torch.float32 else dict(rtol = 2e-2, atol = 2e-2)
+    torch.testing.assert_close(got, eager, **tol)
+
+
+def test_exported_program_stays_transformable():
+    # Export traces outside Dynamo and keeps the functional form: torch.func on the exported module has no
+    # rule for the opaque op (grad raised, jvp returned zeros).
+    if not hasattr(torch, "export"):
+        pytest.skip("torch.export is not available")
+    W, A, B = torch.eye(3), torch.ones(1, 3), torch.ones(3, 1)
+
+    class M(torch.nn.Module):
+        def forward(self, x):
+            return KU.matmul_lora(x, W, None, A, B, 0.5)
+
+    x = torch.ones(2, 3)
+    ep = torch.export.export(M(), (x,), strict = False)
+    assert not any("lora_first_addmm" in str(n.target) for n in ep.graph.nodes)
+    m = ep.module()
+    _, tangent = torch.func.jvp(m, (x,), (torch.ones_like(x),))
+    torch.testing.assert_close(tangent, torch.full((2, 3), 2.5))
+    g = torch.func.grad(lambda x: m(x).sum())(x)
+    torch.testing.assert_close(g, torch.full((2, 3), 2.5))
+
+
+def test_compiled_lora_forward_and_backward_have_no_graph_break():
+    # A compiled LoRA layer (forward + its backward) traces as one graph and still uses the op. On torch
+    # 2.10 / 2.11 Dynamo folds is_exporting() to True, which once reached a banned `layout` read.
+    import torch._dynamo
+    from functorch.compile import make_boxed_func
+    from torch._dynamo.backends.common import aot_autograd
+    from unsloth.kernels import fast_lora
+
+    X, W, A, B = _mk(M = 8, K = 16, N = 12, r = 4, dtype = torch.float32)
+    a, b = torch.nn.Parameter(A.clone()), torch.nn.Parameter(B.clone())
+    seen = []
+
+    def boxed(g, i):
+        # The op sits in the flattened forward / backward graphs AOTAutograd hands to the compilers.
+        seen.extend(str(n.target) for n in g.graph.nodes if n.op == "call_function")
+        return make_boxed_func(g.forward)
+
+    def backend(gm, inputs):
+        return aot_autograd(fw_compiler = boxed, bw_compiler = boxed)(gm, inputs)
+
+    def f(x):
+        return fast_lora.LoRA_W.apply(x.view(1, 8, 16), W, None, a, b, 0.5)
+
+    torch._dynamo.reset()
+    x = X.clone().requires_grad_(True)
+    out = torch.compile(f, backend = backend, fullgraph = True)(x)
+    out.square().sum().backward()
+    assert any("lora_first_addmm" in s for s in seen), seen
+    assert x.grad is not None and a.grad is not None and b.grad is not None

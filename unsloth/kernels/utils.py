@@ -1965,6 +1965,12 @@ try:
 except Exception:
     _LORA_DTENSOR = ()
 _functorch_active = getattr(torch._C, "_are_functorch_transforms_active", lambda: False)
+_is_dynamo_compiling = getattr(torch.compiler, "is_dynamo_compiling", lambda: False)
+
+
+def _forward_ad_active():
+    # Inside torch.autograd.forward_ad.dual_level(); a plain module global, so Dynamo reads it as a constant.
+    return getattr(torch.autograd.forward_ad, "_current_level", -1) >= 0
 
 
 def _lora_fused_ok(W, W_quant, dtype):
@@ -2056,9 +2062,11 @@ def matmul_lora(
     elif (
         A is not None
         and fused
-        # Compiled inside torch.func transforms: the op has no forward-mode or batching rule, and a
-        # traced beta=0 addmm under jvp crashes, so keep the base-then-LoRA order there.
-        and not (_is_compiling() and _functorch_active())
+        # Compiled inside torch.func transforms or native forward-mode AD: the op has no forward-mode or
+        # batching rule, and a traced beta=0 addmm under jvp crashes, so keep the base-then-LoRA order there.
+        and not (_is_compiling() and (_functorch_active() or _forward_ad_active()))
+        # A DTensor operand's placements would be lost in the plain accumulator (W is checked below).
+        and not any(isinstance(t, _LORA_DTENSOR) for t in (X, A, B, XA))
         and _lora_fused_ok(W, W_quant, dtype)
         # A caller's buffer is written before the base GEMM, so it must already be the output and must
         # not share storage with an operand the base GEMM still reads.
@@ -2083,11 +2091,13 @@ def matmul_lora(
             W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
             if not _is_compiling():
                 out = _lora_first_addmm(X, W.t(), XA, B, s)
-            elif _HAS_LORA_FIRST_OP and type(s) in (int, float):
+            elif _HAS_LORA_FIRST_OP and type(s) in (int, float) and _is_dynamo_compiling():
                 out = torch.ops.unsloth.lora_first_addmm(X, W.t(), XA, B, s)
             else:
                 # Traced without the op: functional, since an in-place accumulate onto a buffer the region
                 # saves for backward breaks the block compile (the saved tensor aliases a mutated intermediate).
+                # Export also lands here (it traces outside Dynamo), so torch.func still applies to the
+                # exported program, which has no rule for the opaque op.
                 out = torch.addmm(XA.new_zeros(1), XA, B, beta = 0, alpha = s)
                 out = torch.addmm(out, X, W.t())
         A = None
