@@ -10,13 +10,19 @@ import { useDocStore } from "../stores/doc-store";
 import { useRuntimeStore } from "../stores/runtime-store";
 import { useUiStore } from "../stores/ui-store";
 import { toolbarNodeId } from "./canvas-rules";
-import { Delete02Icon, DiceIcon, Download01Icon, PlayIcon } from "./icon-data";
+import {
+  Delete02Icon,
+  DiceIcon,
+  Download01Icon,
+  PlayIcon,
+  SlidersHorizontalIcon,
+} from "./icon-data";
 import { downloadNodeOutput, rerollNode, runToNode } from "./node-actions";
 
 // Room the one-row toolbar needs above a card.
 const TOOLBAR_ROOM = 48;
 
-/** Actions only; settings live in the inspector. Non-scaling by design: NodeToolbar sits outside the zoomed viewport, so it keeps its screen
+/** Actions, plus the button that opens the block's settings panel. Non-scaling by design: NodeToolbar sits outside the zoomed viewport, so it keeps its screen
  *  size at any zoom while staying anchored to the card. */
 function SelectedNodeToolbarImpl({ readOnly }: { readOnly: boolean }) {
   const nodeId = useUiStore((s) =>
@@ -30,6 +36,9 @@ function SelectedNodeToolbarImpl({ readOnly }: { readOnly: boolean }) {
   const spec = useCatalogStore((s) => (node ? s.specs[node.type] : undefined));
   const hasOutput = useRuntimeStore(
     (s) => !!(nodeId && s.nodes[nodeId]?.outputs),
+  );
+  const settingsOpen = useUiStore(
+    (s) => !!nodeId && s.inspectorNodeId === nodeId,
   );
   const { deleteElements } = useReactFlow();
   // Above the card, or below it when the card's top is too close to the canvas edge to fit it.
@@ -82,6 +91,18 @@ function SelectedNodeToolbarImpl({ readOnly }: { readOnly: boolean }) {
           <HugeiconsIcon icon={Download01Icon} size={12} /> Download
         </Button>
       )}
+      <Button
+        type="button"
+        variant="ghost"
+        size="xs"
+        title="Settings (double-click the block, or press I)"
+        aria-pressed={settingsOpen}
+        data-testid="node-toolbar-settings"
+        className={settingsOpen ? "bg-muted text-foreground" : undefined}
+        onClick={() => useUiStore.getState().toggleInspector(nodeId)}
+      >
+        <HugeiconsIcon icon={SlidersHorizontalIcon} size={12} /> Settings
+      </Button>
       <Button
         type="button"
         variant="ghost"

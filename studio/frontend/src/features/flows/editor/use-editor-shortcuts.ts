@@ -206,6 +206,11 @@ export function useEditorShortcuts(active: boolean): void {
         useUiStore
           .getState()
           .setSelection([...doc.graph.nodeOrder], [...doc.graph.edgeOrder]);
+      } else if (!mod && key === "i") {
+        const ui = useUiStore.getState();
+        const [only, ...rest] = ui.selectedNodes;
+        if (only && !rest.length && doc.graph.nodes[only]) ui.toggleInspector(only);
+        else if (ui.inspectorNodeId) ui.openInspector(null);
       } else if (!mod && key === "f") {
         event.preventDefault();
         void fitView({ padding: 0.2, duration: 300, maxZoom: 1.1 });

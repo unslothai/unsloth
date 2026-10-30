@@ -74,6 +74,8 @@ export interface UiState {
   pendingRun: PendingRun | null;
   setSelection: (nodes: string[], edges: string[]) => void;
   openInspector: (nodeId: string | null) => void;
+  /** Opens the settings panel on `nodeId`, or closes it when it already shows that block. */
+  toggleInspector: (nodeId: string) => void;
   setQuickAdd: (quickAdd: QuickAddState | null) => void;
   setDrawer: (open: boolean, tab?: UiState["drawerTab"]) => void;
   togglePalette: () => void;
@@ -107,15 +109,18 @@ export const useUiStore = create<UiState>((set, get) => ({
     set({
       selectedNodes: nodes,
       selectedEdges: edges,
+      // An open panel follows a single selection; a closed one stays shut until asked for.
       inspectorNodeId:
-        nodes.length === 1
+        nodes.length === 1 && s.inspectorNodeId !== null
           ? nodes[0]
-          : nodes.length === 0
-            ? s.inspectorNodeId
-            : s.inspectorNodeId,
+          : s.inspectorNodeId,
     });
   },
   openInspector: (nodeId) => set({ inspectorNodeId: nodeId }),
+  toggleInspector: (nodeId) =>
+    set((s) => ({
+      inspectorNodeId: s.inspectorNodeId === nodeId ? null : nodeId,
+    })),
   setQuickAdd: (quickAdd) => set({ quickAdd }),
   setDrawer: (open, tab) => {
     set((s) => ({ drawerOpen: open, drawerTab: tab ?? s.drawerTab }));
