@@ -4045,10 +4045,10 @@ _LLAMA_FIT_TARGET_DEFAULT_MIB = 1024.0
 _WINDOWS_SYSMEM_FALLBACK_RESERVE_MIB = _LLAMA_FIT_TARGET_DEFAULT_MIB
 _WINDOWS_SYSMEM_FALLBACK_MAX_FRACTION = 0.125
 
-# Windows + AMD HIP charges system commit for device allocations the process never touches (#16015):
-# warn once the loaded child holds at least this much and the system has less than this left.
-_WINDOWS_HIP_UNTOUCHED_COMMIT_MIN_MIB = 2048
-_WINDOWS_HIP_COMMIT_HEADROOM_WARN_MIB = 4096
+# WDDM backs every GPU allocation with system commit the process never touches (HIP and Vulkan
+# measured, #16015): warn once the child holds at least this much and less than this is left.
+_WINDOWS_GPU_UNTOUCHED_COMMIT_MIN_MIB = 2048
+_WINDOWS_GPU_COMMIT_HEADROOM_WARN_MIB = 4096
 
 
 def _vram_reserve_floor_mib(total_mib: float, *, sysmem_fallback: bool = False) -> float:
@@ -15873,17 +15873,17 @@ class LlamaCppBackend:
         )
 
     @staticmethod
-    def _hip_commit_headroom_message(
+    def _gpu_commit_headroom_message(
         untouched_mib: int, headroom_mib: Optional[int]
     ) -> Optional[str]:
-        """Advisory for commit the Windows AMD driver charges for GPU memory; None while there is room."""
-        if headroom_mib is None or untouched_mib < _WINDOWS_HIP_UNTOUCHED_COMMIT_MIN_MIB:
+        """Advisory for commit Windows reserves for GPU memory; None while there is room."""
+        if headroom_mib is None or untouched_mib < _WINDOWS_GPU_UNTOUCHED_COMMIT_MIN_MIB:
             return None
-        if headroom_mib >= _WINDOWS_HIP_COMMIT_HEADROOM_WARN_MIB:
+        if headroom_mib >= _WINDOWS_GPU_COMMIT_HEADROOM_WARN_MIB:
             return None
         held_gib = untouched_mib / 1024
         return (
-            f"On Windows the AMD GPU driver reserves system commit for the model's GPU memory: "
+            f"On Windows the GPU driver reserves system commit for the model's GPU memory: "
             f"llama-server holds about {held_gib:.1f} GiB of commit it never uses in RAM, and "
             f"only {headroom_mib / 1024:.1f} GiB of commit is left on this system. Studio cannot "
             f"release it, and when the commit limit runs out other apps can fail to start or "
@@ -15893,25 +15893,25 @@ class LlamaCppBackend:
         )
 
     @staticmethod
-    def _windows_hip_commit_notice(pid: Optional[int], binary: Optional[str]) -> Optional[str]:
-        """Measures a loaded HIP child on Windows; never raises, since it only adds a notice."""
+    def _windows_gpu_commit_notice(pid: Optional[int], binary: Optional[str]) -> Optional[str]:
+        """Measures a loaded GPU child on Windows; never raises, since it only adds a notice."""
         if sys.platform != "win32" or not pid:
             return None
         try:
-            if "hip" not in LlamaCppBackend._installed_ggml_backends(binary):
+            if not LlamaCppBackend._installed_ggml_backends(binary) & {"cuda", "hip", "vulkan"}:
                 return None
             import psutil
 
             from .diffusion_memory import _windows_commit_headroom_mib
 
-            mem = psutil.Process(pid).memory_info()
-            # Working set includes mapped file pages, so this undercounts the untouched commit.
-            untouched_mib = max(0, int(mem.private) - int(mem.wset)) // (1024 * 1024)
-            return LlamaCppBackend._hip_commit_headroom_message(
+            mem = psutil.Process(pid).memory_full_info()
+            # uss = private working set; wset would also count mmap'd GGUF pages.
+            untouched_mib = max(0, int(mem.private) - int(mem.uss)) // (1024 * 1024)
+            return LlamaCppBackend._gpu_commit_headroom_message(
                 untouched_mib, _windows_commit_headroom_mib()
             )
         except Exception as e:  # noqa: BLE001 - a failed probe must not fail the load
-            logger.debug("HIP commit headroom check failed: %s", e)
+            logger.debug("GPU commit headroom check failed: %s", e)
             return None
 
     # Skip the wait when the last kill is older than this; the driver has already reclaimed it.
@@ -32360,15 +32360,15 @@ class LlamaCppBackend:
                         ),
                     )
                 elif not intent.cpu_fallback:
-                    # Measured on the healthy child: the commit lands as the GPU buffers are allocated, under every load mode.
-                    _hip_commit_notice = self._windows_hip_commit_notice(
+                    # The commit lands as the GPU buffers are allocated, under every load mode.
+                    _gpu_commit_notice = self._windows_gpu_commit_notice(
                         getattr(self._process, "pid", None), binary
                     )
-                    if _hip_commit_notice:
+                    if _gpu_commit_notice:
                         if self._last_load_warning:
-                            self._amend_load_warning(" " + _hip_commit_notice)
+                            self._amend_load_warning(" " + _gpu_commit_notice)
                         else:
-                            self._record_load_warning(_hip_commit_notice)
+                            self._record_load_warning(_gpu_commit_notice)
                 if not self._publish_healthy():
                     # Teardown began after the 200; publishing would report a model that is gone.
                     _cleanup_cancelled_load("App shut down as the load was completing")
