@@ -2071,7 +2071,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     _clear_generation_caches(self)
     if _uses_flash_attention_for_generation(self.config):
         # Pin the literal "dynamic": None is merged back to the model default, and a static cache still arrives via kwargs or the caller's generation_config (TRL). The kwarg wins, since update runs last; skip it when the caller passed a cache.
-        if kwargs.get("past_key_values") is None:
+        if kwargs.get("past_key_values") is None and not _generate_rejects_cache_fields(self):
             kwargs["cache_implementation"] = "dynamic"
         try:
             with _get_inference_mode_context_manager(self), autocaster:
