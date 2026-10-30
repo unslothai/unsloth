@@ -38,7 +38,8 @@ class MlxCapabilities:
 
 
 _DEFAULT_CAPABILITIES = MlxCapabilities()
-MLX_CAPABILITIES: dict[str, MlxCapabilities] = {"z-image": _DEFAULT_CAPABILITIES}
+# Z-Image applies LoRAs through mflux's unbaked adapters on the converted (quantized) transformer.
+MLX_CAPABILITIES: dict[str, MlxCapabilities] = {"z-image": MlxCapabilities(loras = True)}
 
 
 def mlx_capabilities(family: Optional[str]) -> MlxCapabilities:
@@ -58,15 +59,11 @@ def _positive(value: Any) -> bool:
 
 def load_blocker(
     *,
-    loras: Any = None,
     component_files: Any = None,
     transformer_quant: Optional[str] = None,
     text_encoder_quant: Optional[str] = None,
 ) -> Optional[str]:
-    from core.inference.diffusion_engine_router import has_active_loras
-
-    if has_active_loras(loras):
-        return "LoRA adapters selected at load time need the diffusers engine"
+    """Load options MLX cannot honour. LoRAs are not one: ``mlx_selection`` weighs them per family."""
     if component_files:
         return "separate text-encoder / VAE files need the diffusers engine"
     if _explicit(transformer_quant):

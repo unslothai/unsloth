@@ -678,11 +678,14 @@ def lora_unavailable_reason(
 ) -> Optional[str]:
     """Why ``engine`` cannot apply LoRAs to this build, for the Images page; None when it can.
     Adapters bake before torch.compile for torchao int8/fp8; native sd_cpp is LoRA-capable families only,
-    nvfp4/mxfp8 unsupported, a whole-pipeline GGUF refused, and the MLX engine has no LoRA path."""
+    nvfp4/mxfp8 unsupported, a whole-pipeline GGUF refused, and MLX per its family capabilities."""
     fam = (family or "").lower()
     name = family or "this model"
     if engine == "mlx":
-        return "The MLX engine does not apply LoRAs yet."
+        from .mlx_diffusion_routing import mlx_capabilities
+        if mlx_capabilities(fam).loras:
+            return None
+        return f"The MLX engine does not apply LoRAs to {name} yet."
     if engine == "sd_cpp":
         if any(tok in fam for tok in _NATIVE_LORA_FAMILY_TOKENS):
             return None

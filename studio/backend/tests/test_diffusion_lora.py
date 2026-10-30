@@ -149,7 +149,8 @@ def test_every_build_without_lora_names_a_reason(engine, family, model_kind, qua
 
 def test_lora_unavailable_reason_names_the_cause():
     gguf = dict(model_kind = "gguf", transformer_quant = None)
-    assert "MLX" in dl.lora_unavailable_reason(engine = "mlx", family = "z-image", **gguf)
+    assert dl.lora_unavailable_reason(engine = "mlx", family = "z-image", **gguf) is None
+    assert "MLX" in dl.lora_unavailable_reason(engine = "mlx", family = "flux.1", **gguf)
     assert "qwen-image" in dl.lora_unavailable_reason(engine = "sd_cpp", family = "qwen-image", **gguf)
     assert dl.lora_unavailable_reason(engine = "diffusers", family = "lumina-2", **gguf) is None
     sdxl = dl.lora_unavailable_reason(engine = "diffusers", family = "sdxl", **gguf)
