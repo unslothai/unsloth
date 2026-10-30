@@ -4006,6 +4006,58 @@ def _requests_float32(dtype):
     return dtype is torch.float32
 
 
+def _base_config_dicts(model):
+    """config.json of each base the model names (PEFT base, then _name_or_path), cache first."""
+    names = [
+        getattr(config, "base_model_name_or_path", None)
+        for config in (getattr(model, "peft_config", None) or {}).values()
+    ]
+    names.append(getattr(getattr(model, "config", None), "_name_or_path", None))
+    for name in dict.fromkeys(n for n in names if isinstance(n, str) and n):
+        try:
+            if os.path.isdir(name):
+                path = os.path.join(name, "config.json")
+            else:
+                from huggingface_hub import hf_hub_download
+
+                try:
+                    path = hf_hub_download(name, "config.json", local_files_only = True)
+                except Exception:
+                    path = hf_hub_download(name, "config.json")
+            with open(path, encoding = "utf-8") as f:
+                yield json.load(f)
+        except Exception:
+            continue
+
+
+def _restore_lfm3_audio_release_config(model, save_directory):
+    """LFM3-Audio's remote config saves as text_config / audio_encoder_config, but llama.cpp converts only
+    the release layout (lfm / encoder / depthformer); LoRA leaves the config as released, so the
+    conversion reads the base's own config.json."""
+    path = os.path.join(save_directory, "config.json")
+    try:
+        with open(path, encoding = "utf-8") as f:
+            saved = json.load(f)
+    except (OSError, ValueError):
+        return False
+    if saved.get("model_type") != "lfm3_audio" or "lfm" in saved:
+        return False
+    vocab = (saved.get("text_config") or {}).get("vocab_size")
+    for release in _base_config_dicts(model):
+        if release.get("model_type") != "lfm3_audio" or not isinstance(release.get("lfm"), dict):
+            continue
+        if vocab is not None and release["lfm"].get("vocab_size") != vocab:
+            continue  # resized embeddings: the release config no longer describes these weights
+        with open(path, "w", encoding = "utf-8") as f:
+            json.dump(release, f, indent = 2)
+        return True
+    print(
+        "Unsloth: LFM3-Audio config.json is not in its release layout and the base's could not be read; "
+        "llama.cpp's converter will not recognize it."
+    )
+    return False
+
+
 def _stamp_saved_config_float32(save_directory):
     # save_pretrained writes the resident model's 16-bit dtype, and dtype = "auto" would then
     # cast the float32 tensors back down on load.
@@ -5227,6 +5279,12 @@ def unsloth_save_pretrained_gguf(
         fix_sentencepiece_gguf(save_directory)
     except Exception as e:
         logger.warning(f"Unsloth: fix_sentencepiece_gguf skipped ({type(e).__name__}): {e}")
+    except BaseException:
+        _drop_staged_checkpoint(staged_directory)
+        raise
+
+    try:
+        _restore_lfm3_audio_release_config(self, save_directory)
     except BaseException:
         _drop_staged_checkpoint(staged_directory)
         raise
