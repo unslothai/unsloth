@@ -36,6 +36,11 @@ QK_ROPE_ATTR = "_unsloth_moss_qk_rope"
 # Kill switch for the per-render text-refiner cache (``refine_text``): 0 refines on every step like the reference.
 TEXT_CACHE_ENV = "UNSLOTH_MOSS_TEXT_CACHE"
 DEFAULT_UNCOND_SKIP_LAYERS = (22,)
+# Studio's per-checkpoint negative-branch skip, from the reference workflows: SFT skips nothing, Base skips block 22
+# while sigma is in the first half of the shifted schedule (sigma-percent 0 .. 0.5). 0 restores block 22 on every step.
+REFERENCE_SKIP_ENV = "UNSLOTH_MOSS_REFERENCE_SKIP"
+BASE_UNCOND_SKIP_END = 0.5
+_UNSET = object()
 
 
 def _env_off(name: str) -> bool:
@@ -590,6 +595,32 @@ class MOSSImageScheduler(FlowMatchEulerDiscreteScheduler):
 from diffusers import DiffusionPipeline  # noqa: E402
 
 
+def is_base_checkpoint(identity: Optional[str]) -> bool:
+    """True when a repo id / folder name spells MOSS-Image-Base (separators folded); anything else is the SFT default."""
+    folded = "".join(c for c in str(identity or "").lower() if c.isalnum())
+    return "mossimagebase" in folded
+
+
+def reference_uncond_skip(identity: Optional[str]) -> tuple[tuple[int, ...], float]:
+    """``(uncond_skip_layers, uncond_skip_end)`` Studio renders a checkpoint with. SFT: no skip; Base: block 22 for
+    sigma-percent 0 .. 0.5. ``UNSLOTH_MOSS_REFERENCE_SKIP=0`` gives the official pipeline default, block 22 always."""
+    if _env_off(REFERENCE_SKIP_ENV):
+        return DEFAULT_UNCOND_SKIP_LAYERS, 1.0
+    if is_base_checkpoint(identity):
+        return DEFAULT_UNCOND_SKIP_LAYERS, BASE_UNCOND_SKIP_END
+    return (), 1.0
+
+
+def percent_to_sigma(percent: float, shift: float) -> float:
+    """Sigma at a sampling percent of a discrete-flow schedule (multiplier 1), as ``ModelSamplingDiscreteFlow``."""
+    if percent <= 0.0:
+        return 1.0
+    if percent >= 1.0:
+        return 0.0
+    t = 1.0 - percent
+    return shift * t / (1 + (shift - 1) * t)
+
+
 def _offloaded(module: Any) -> bool:
     """Accelerate / diffusers offload hooks move weights per call: the pre-refined text path calls a submodule outside
     the forward, so an offloaded transformer keeps the reference per-step refine."""
@@ -735,7 +766,9 @@ class MOSSImagePipeline(DiffusionPipeline):
         max_sequence_length = 4096,
         output_type = "pil",
         return_dict = True,
-        uncond_skip_layers = DEFAULT_UNCOND_SKIP_LAYERS,
+        uncond_skip_layers = _UNSET,
+        uncond_skip_start = 0.0,
+        uncond_skip_end = None,
         slg_layers = None,
         slg_scale = 0.0,
         slg_start = 0.0,
@@ -744,12 +777,27 @@ class MOSSImagePipeline(DiffusionPipeline):
         callback_on_step_end: Optional[Callable] = None,
         callback_on_step_end_tensor_inputs = ("latents",),
     ):
-        """Generate images. ``uncond_skip_layers`` (default block 22) skips those zero-based blocks in the negative
-        branch only (two forwards per step); None / () disables it. ``slg_layers`` with ``slg_scale > 0`` adds a third,
-        skipped positive forward and the fp32 correction ``slg_scale * (cond - cond_skip)``. Both are active where
+        """Generate images. ``uncond_skip_layers`` skips those zero-based blocks in the negative branch only (two
+        forwards per step); None / () disables it. Unset, it is block 22 (the official default) unless the loader
+        recorded a checkpoint (``reference_uncond_skip``). ``uncond_skip_start`` / ``uncond_skip_end`` bound that skip
+        in sigma-percent of the shifted schedule (active while ``sigma(end) <= sigma <= sigma(start)``); None takes the
+        checkpoint's end, else 1. ``slg_layers`` with ``slg_scale > 0`` adds a third, skipped positive forward and the
+        fp32 correction ``slg_scale * (cond - cond_skip)``. Both are also gated by
         ``slg_start <= step_index / num_steps < slg_stop``."""
         self._interrupt = False
         depth = len(self.transformer.layers)
+        if uncond_skip_layers is _UNSET:
+            identity = getattr(self, "_unsloth_checkpoint", None)
+            if identity is None:
+                uncond_skip_layers, policy_end = DEFAULT_UNCOND_SKIP_LAYERS, 1.0
+            else:
+                uncond_skip_layers, policy_end = reference_uncond_skip(identity)
+            if uncond_skip_end is None:
+                uncond_skip_end = policy_end
+        if uncond_skip_end is None:
+            uncond_skip_end = 1.0
+        if not 0 <= uncond_skip_start <= uncond_skip_end <= 1:
+            raise ValueError("Require 0 <= uncond_skip_start <= uncond_skip_end <= 1.")
         uncond_skip = _validate_skip_layers(uncond_skip_layers, depth, "uncond_skip_layers")
         slg = _validate_skip_layers(slg_layers, depth, "slg_layers")
         # Tuples, not frozensets: a CUDA graph keys plain values, not objects.
@@ -827,10 +875,22 @@ class MOSSImagePipeline(DiffusionPipeline):
             self.scheduler.set_timesteps(num_inference_steps, device = device)
         timesteps = self.scheduler.timesteps
         num_steps = len(timesteps)
+        uncond_window = None
+        if uncond_skip_kw and (uncond_skip_start > 0 or uncond_skip_end < 1):
+            # One host read per render; the bounds use the schedule's shift, as the reference workflows' SLG node.
+            shift = float(getattr(self.scheduler.config, "shift", 5.0))
+            high = percent_to_sigma(uncond_skip_start, shift)
+            low = percent_to_sigma(uncond_skip_end, shift)
+            uncond_window = [
+                low <= sigma <= high for sigma in self.scheduler.sigmas[:num_steps].tolist()
+            ]
         for step_index, timestep in enumerate(self.progress_bar(timesteps)):
             if self._interrupt:
                 continue
             skip_active = slg_start <= step_index / num_steps < slg_stop
+            uncond_skip_active = skip_active and (
+                uncond_window is None or uncond_window[step_index]
+            )
             # CFG combines fp32 predictions, even when the DiT runs in bf16.
             # return_dict=False: a CUDA-graph replay hands back a tuple, never a dataclass.
             prediction = self.transformer(latents, timestep, **cond_kw, return_dict = False)[
@@ -839,7 +899,7 @@ class MOSSImagePipeline(DiffusionPipeline):
             conditional = prediction
             if do_cfg:
                 skip_kwargs = (
-                    {"skip_layers": uncond_skip_kw} if uncond_skip_kw and skip_active else {}
+                    {"skip_layers": uncond_skip_kw} if uncond_skip_kw and uncond_skip_active else {}
                 )
                 uncond = self.transformer(
                     latents, timestep, **uncond_kw, **skip_kwargs, return_dict = False
@@ -1035,12 +1095,14 @@ def load_moss_image_pipeline(
     local_files_only: bool = False,
     check_cancelled: Optional[Callable[[], None]] = None,
     vae_dtype: Any = None,
+    checkpoint: Optional[str] = None,
 ) -> MOSSImagePipeline:
     """A ready ``MOSSImagePipeline`` for ``repo_id`` (a repo id or a local diffusers folder), on CPU.
 
     Loads safetensors and JSON only, per subfolder; the repo's ``pipeline_moss_image.py`` is never imported.
     ``transformer`` / ``text_encoder`` let a quantised or pre-cast build hand in a component. The VAE decodes in fp32
-    unless ``vae_dtype`` says otherwise (the reference and ComfyUI's MOSS launcher both decode in fp32)."""
+    unless ``vae_dtype`` says otherwise (the reference and ComfyUI's MOSS launcher both decode in fp32). ``checkpoint``
+    (the upstream repo id; else ``repo_id``) picks SFT or Base guidance defaults."""
     check_cancelled = check_cancelled or (lambda: None)
     check_cancelled()
     assert_transformers_supported()
@@ -1075,13 +1137,16 @@ def load_moss_image_pipeline(
     check_cancelled()
     scheduler = MOSSImageScheduler.from_pretrained(repo_id, subfolder = "scheduler", **common)
     logger.info("diffusion.moss_image: assembled pipeline from %s per component", repo_id)
-    return MOSSImagePipeline(
+    pipe = MOSSImagePipeline(
         transformer = transformer,
         scheduler = scheduler,
         text_encoder = text_encoder,
         tokenizer = tokenizer,
         vae = vae,
     )
+    # Which checkpoint this is decides the default negative-branch skip (reference_uncond_skip).
+    pipe._unsloth_checkpoint = str(checkpoint or repo_id)
+    return pipe
 
 
 def in_tree_class(name: str) -> Optional[type]:
