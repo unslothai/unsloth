@@ -1571,6 +1571,13 @@ export const ja = {
         sttQuantDescription:
           "ローカルで実行する STT モデルを選択または検索し、量子化を選びます。",
         sttDeviceLabel: "読み込み先",
+        sttContextLabel: "音声コンテキスト",
+        sttContextAuto: "自動（推奨）",
+        sttContextAutoDescription:
+          "録音ごとにコンテキスト長を調整します。長い音声ほど多くのメモリを使用します。古いランタイムでは、メモリ使用量を減らすために固定サイズの指定が必要な場合があります。「音声」と「文字起こし」の Qwen3-ASR に適用されます。",
+        sttContextFixedDescription:
+          "上限が小さいほどメモリ使用量を抑えられます。録音が上限に収まらない場合は、上限を増やすか「自動」を選択してください。「音声」と「文字起こし」の Qwen3-ASR に適用されます。",
+        sttContextTokens: "{count} トークン",
         sttDeviceAuto: "GPU（利用できる場合）",
         sttDeviceCpu: "CPU メモリ",
         sttDeviceAutoDescription:

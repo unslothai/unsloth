@@ -1573,6 +1573,13 @@ export const ptBR = {
         sttQuantDescription:
           "Escolha ou busque um modelo STT para executar localmente e depois sua quantização.",
         sttDeviceLabel: "Carregar em",
+        sttContextLabel: "Contexto de voz",
+        sttContextAuto: "Auto (recomendado)",
+        sttContextAutoDescription:
+          "Adapta-se a cada gravação, usando mais memória para áudios mais longos. Ambientes de execução antigos podem precisar de um tamanho fixo para reduzir o uso de memória. Aplica-se ao Qwen3-ASR em Voz e Transcrever.",
+        sttContextFixedDescription:
+          "Limites menores usam menos memória. Gravações que ultrapassam o limite precisam de um limite maior ou do modo Auto. Aplica-se ao Qwen3-ASR em Voz e Transcrever.",
+        sttContextTokens: "{count} tokens",
         sttDeviceAuto: "GPU quando disponível",
         sttDeviceCpu: "RAM da CPU",
         sttDeviceAutoDescription:

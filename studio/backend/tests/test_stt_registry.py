@@ -437,7 +437,9 @@ def test_an_implicit_transcribe_load_releases_the_other_engines(monkeypatch):
         ri,
         "_stt_lifecycle",
         lambda: (
-            lambda model, engine, cancel = None, device = None: loaded.append((model, engine)),
+            lambda model, engine, cancel = None, device = None, **options: loaded.append(
+                (model, engine)
+            ),
             lambda *a: [],
         ),
     )
@@ -654,3 +656,18 @@ def test_no_stt_sidecar_points_at_a_settings_path_for_downloads():
         "stt_sidecar.py",
     ):
         assert "Settings, then Voice" not in (inference / name).read_text(encoding = "utf-8"), name
+
+
+@pytest.mark.parametrize("engine", stt_registry.STT_ENGINES)
+def test_registry_forwards_voice_context_only_to_mtmd(monkeypatch, engine):
+    calls = []
+    sidecar = _Sidecar(engine)
+    sidecar.load = lambda *args, **kwargs: calls.append(kwargs)
+    monkeypatch.setattr(stt_registry, "sidecar_for", lambda name: sidecar)
+    monkeypatch.setattr(stt_registry, "_model_is_downloaded", lambda *args: True)
+    monkeypatch.setattr(stt_registry, "unload", lambda *args, **kwargs: [])
+    stt_registry.load("qwen3-asr-0.6b", engine, context_length = 4096)
+    if engine == "mtmd":
+        assert calls[0]["context_length"] == 4096
+    else:
+        assert "context_length" not in calls[0]

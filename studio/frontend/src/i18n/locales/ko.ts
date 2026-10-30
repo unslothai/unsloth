@@ -1568,6 +1568,13 @@ export const ko = {
         sttQuantDescription:
           "로컬에서 실행할 STT 모델을 선택하거나 검색한 다음 양자화를 고르세요.",
         sttDeviceLabel: "로드 위치",
+        sttContextLabel: "음성 컨텍스트",
+        sttContextAuto: "자동 (권장)",
+        sttContextAutoDescription:
+          "녹음마다 컨텍스트 크기를 맞추며, 오디오가 길수록 더 많은 메모리를 사용합니다. 이전 런타임에서는 메모리 사용량을 줄이려면 고정 크기를 지정해야 할 수 있습니다. ‘음성’과 ‘받아쓰기’에서 사용하는 Qwen3-ASR에 적용됩니다.",
+        sttContextFixedDescription:
+          "한도가 작을수록 메모리를 적게 사용합니다. 한도를 초과하는 녹음은 한도를 높이거나 ‘자동’을 선택해야 합니다. ‘음성’과 ‘받아쓰기’에서 사용하는 Qwen3-ASR에 적용됩니다.",
+        sttContextTokens: "{count} 토큰",
         sttDeviceAuto: "GPU(사용 가능할 때)",
         sttDeviceCpu: "CPU RAM",
         sttDeviceAutoDescription:

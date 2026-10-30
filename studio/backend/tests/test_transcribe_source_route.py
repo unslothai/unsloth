@@ -303,3 +303,25 @@ def test_a_source_past_the_connection_limit_is_refused_before_upload(stub, conne
     assert events[-1]["type"] == "error"
     assert "a connection takes" in events[-1]["message"]
     assert not connection and not stub.bytes
+
+
+def test_mtmd_source_keeps_its_context_preference_through_streaming(stub, monkeypatch):
+    calls = []
+    original = stub.transcribe
+
+    def transcribe(*args, **kwargs):
+        calls.append(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(stub, "transcribe", transcribe)
+    with _client(ALICE) as client:
+        response, events = _post(
+            client,
+            model = "qwen3-asr-0.6b",
+            engine = "mtmd",
+            source = {"input_id": _input(ALICE)},
+            context_length = 8192,
+        )
+    assert response.status_code == 200, response.text
+    assert events[-1]["type"] == "complete", events
+    assert calls[0]["context_length"] == 8192

@@ -1685,6 +1685,13 @@ export const he = {
         sttQuantDescription:
           "בחר או חפש מודל STT להרצה מקומית, ואז את הקוונטיזציה שלו.",
         sttDeviceLabel: "טען אל",
+        sttContextLabel: "הקשר קולי",
+        sttContextAuto: "אוטומטי (מומלץ)",
+        sttContextAutoDescription:
+          "מתאים את גודל ההקשר לכל הקלטה, ומשתמש ביותר זיכרון להקלטות ארוכות יותר. בסביבות ריצה ישנות ייתכן שיהיה צורך בגודל קבוע כדי להפחית את השימוש בזיכרון. חל על Qwen3-ASR ב״קול״ וב״תמלול״.",
+        sttContextFixedDescription:
+          "מגבלות קטנות יותר צורכות פחות זיכרון. להקלטות שחורגות מהמגבלה יש לבחור מגבלה גבוהה יותר או מצב אוטומטי. חל על Qwen3-ASR ב״קול״ וב״תמלול״.",
+        sttContextTokens: "{count} טוקנים",
         sttDeviceAuto: "GPU כאשר זמין",
         sttDeviceCpu: "זיכרון RAM של ה-CPU",
         sttDeviceAutoDescription: "השתמש ב-GPU כאשר קיים, וב-CPU במקרים אחרים.",

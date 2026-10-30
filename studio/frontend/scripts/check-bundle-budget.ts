@@ -439,8 +439,12 @@ export const BUDGET = {
   // (5,942,150 -> 5,972,134 B raw, 1,836,750 -> 1,847,702 B transfer, ed9857c0c3 -> 39b8a6ce13, Node 24,
   // 85 chunks): its color themes are read by the theme store at startup, and loading its dialog on first
   // open saves 3 KB transfer but adds five startup chunks. Raised by that growth.
-  transferBytes: 1_849_773,
-  rawBytes: 5_989_442,
+  // Voice context settings (#15810) add 978 B raw / 474 B transfer in the existing eager
+  // settings, chat and English-locale chunks (5,978,111 -> 5,979,089 B raw, 1,849,618 ->
+  // 1,850,092 B transfer, 98b37c2b67 -> 0e967607f9, same Node 24 and dependencies, 85 chunks).
+  // No dependency or startup chunk was added; raised by that growth to preserve main's headroom.
+  transferBytes: 1_850_247,
+  rawBytes: 5_990_420,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.

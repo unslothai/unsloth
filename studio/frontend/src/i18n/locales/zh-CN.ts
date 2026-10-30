@@ -1565,6 +1565,13 @@ export const zhCN = {
         sttQuantDescription:
           "选择或搜索要在本地运行的 STT 模型，再选择其量化。",
         sttDeviceLabel: "加载到",
+        sttContextLabel: "语音上下文",
+        sttContextAuto: "自动（推荐）",
+        sttContextAutoDescription:
+          "根据每段录音调整大小，音频越长，使用的内存越多。旧版运行时可能需要设置固定大小才能减少内存占用。适用于“语音”和“转写”中的 Qwen3-ASR。",
+        sttContextFixedDescription:
+          "上限越小，内存占用越少。如果录音超出上限，请提高上限或选择“自动”。适用于“语音”和“转写”中的 Qwen3-ASR。",
+        sttContextTokens: "{count} 个 token",
         sttDeviceAuto: "有 GPU 时使用 GPU",
         sttDeviceCpu: "CPU 内存",
         sttDeviceAutoDescription: "有 GPU 时使用 GPU，否则使用 CPU。",

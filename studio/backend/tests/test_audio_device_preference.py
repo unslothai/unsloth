@@ -321,6 +321,8 @@ def test_the_mtmd_reuse_branch_still_records_the_choice(monkeypatch):
     sidecar._model_id = "m"
     sidecar._binary_path_revision = 1
     sidecar._active_requests = 0
+    sidecar._context_preference = 0
+    sidecar._context_length = 4096
     monkeypatch.setattr(sidecar, "_process_alive", lambda: True)
     monkeypatch.setattr(sidecar, "_schedule_idle_unload_locked", lambda: None)
     monkeypatch.setattr(stt_mtmd_sidecar, "_training_active", lambda: True)

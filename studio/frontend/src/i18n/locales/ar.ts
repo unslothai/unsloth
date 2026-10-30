@@ -1568,6 +1568,13 @@ export const ar = {
         sttQuantDescription:
           "اختر نموذج STT أو ابحث عنه لتشغيله محليًا، ثم اختر التكميم.",
         sttDeviceLabel: "التحميل إلى",
+        sttContextLabel: "سياق الصوت",
+        sttContextAuto: "تلقائي (موصى به)",
+        sttContextAutoDescription:
+          "يضبط حجم السياق حسب كل تسجيل، ويستخدم ذاكرة أكثر للتسجيلات الأطول. قد تحتاج بيئات التشغيل القديمة إلى حجم ثابت لتقليل استخدام الذاكرة. ينطبق على Qwen3-ASR في «الصوت» و«تفريغ نصي».",
+        sttContextFixedDescription:
+          "تستهلك الحدود الأصغر ذاكرة أقل. تحتاج التسجيلات التي تتجاوز الحد إلى حد أعلى أو الوضع التلقائي. ينطبق على Qwen3-ASR في «الصوت» و«تفريغ نصي».",
+        sttContextTokens: "{count} توكن",
         sttDeviceAuto: "وحدة معالجة الرسومات عند توفرها",
         sttDeviceCpu: "ذاكرة المعالج",
         sttDeviceAutoDescription:
