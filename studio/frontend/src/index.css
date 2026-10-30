@@ -6748,7 +6748,9 @@ html.force-reduced-motion .spooky-still :is(.spooky-spider, .spooky-bat) {
 .wallpaper-preview-composer {
   background: color-mix(in srgb, var(--background) max(92%, calc((1 - var(--wallpaper-safe, 0)) * 100%)), transparent);
   backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
-  box-shadow: inset 0 0 0 1px var(--border);
+  /* An outline over the image instead of a drop shadow, through the composer's one shadow variable. */
+  --composer-shadow: inset 0 0 0 1px var(--border);
+  box-shadow: var(--composer-shadow);
 }
 .wallpaper-preview-prose { background: var(--background); }
 
@@ -6795,4 +6797,4 @@ html:has([data-wallpaper-workspace] > .chat-wallpaper[data-ready]) [data-slot="w
 [data-wallpaper-workspace]:has(> .chat-wallpaper[data-ready]) :is(.hub-page, .hub-page .hub-canvas, [data-wallpaper-page-canvas]) { background: transparent; }
 
 :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready][data-outline="false"]) .unsloth-composer-surface,
-.wallpaper-preview:has(> .chat-wallpaper[data-outline="false"]) .wallpaper-preview-composer { box-shadow: none; }
+.wallpaper-preview:has(> .chat-wallpaper[data-outline="false"]) .wallpaper-preview-composer { --composer-shadow: none; }
