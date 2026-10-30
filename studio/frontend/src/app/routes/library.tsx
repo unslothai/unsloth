@@ -14,7 +14,7 @@ const LibraryPage = lazyRouteComponent(
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/library",
-  staticData: { title: "Library" },
+  staticData: { titleKey: "shell.navigation.library" },
   validateSearch: validateLibrarySearch,
   beforeLoad: () => requireAuth(),
   component: LibraryPage,

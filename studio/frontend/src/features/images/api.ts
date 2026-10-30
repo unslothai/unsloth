@@ -688,6 +688,13 @@ export interface DiffusionTrainingStatus {
   grad_norm?: number | null;
   num_images: number | null;
   in_model_load: boolean;
+  model_load_stage?: "conditioning" | "transformer" | "quantizing" | null;
+  model_load_progress?: {
+    done: number;
+    total: number;
+    unit: "tensors" | "components" | "shards";
+    label: string;
+  } | null;
   preparation?: { stage?: string | null; done?: number | null; total?: number | null } | null;
   download_progress?: { bytes_done: number; bytes_total: number; label?: string; scope?: "active_files" } | null;
   output_dir: string | null;

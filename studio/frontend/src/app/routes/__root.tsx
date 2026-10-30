@@ -98,7 +98,6 @@ import { hasAppMenus, useAppMenuActions } from "../use-app-menu-actions";
 
 declare module "@tanstack/react-router" {
   interface StaticDataRouteOption {
-    title?: string;
     titleKey?: TranslationKey;
     isAuthFlow?: boolean;
   }
@@ -494,9 +493,8 @@ function RootLayout() {
   const matchedTitle = useMatches({
     select: (matches) => {
       for (let i = matches.length - 1; i >= 0; i--) {
-        const { title, titleKey } = matches[i].staticData;
+        const { titleKey } = matches[i].staticData;
         if (titleKey) return t(titleKey);
-        if (title) return title;
       }
       return null;
     },
