@@ -698,11 +698,60 @@ class _StopSequenceStreamer:
 _CUSTOM_GENERATE_REJECTED_KWARGS = ("logits_processor", "stopping_criteria")
 
 
+class _GenerationHalted(Exception):
+    pass
+
+
+class _HaltingStreamer:
+    """Ends a generate that takes no stopping_criteria: put() raises once a cancel or stop event is set."""
+
+    def __init__(self, streamer, events):
+        self.streamer = streamer
+        self.events = events
+
+    def put(self, value):
+        if any(ev.is_set() for ev in self.events):
+            raise _GenerationHalted
+        return self.streamer.put(value)
+
+    def end(self):
+        return self.streamer.end()
+
+    def __getattr__(self, name):
+        return getattr(self.streamer, name)
+
+
 def _supported_generate_kwargs(model, generation_kwargs: dict) -> dict:
-    """Drops kwargs a custom-code generate rejects (no presence penalty or early cancel there)."""
+    """Drops kwargs a custom-code generate rejects (no presence penalty there); cancel and stop
+    sequences move onto the streamer."""
     if not isinstance(getattr(model, "_generation_fields_unsupported", None), dict):
         return generation_kwargs
-    return {k: v for k, v in generation_kwargs.items() if k not in _CUSTOM_GENERATE_REJECTED_KWARGS}
+    kept = {k: v for k, v in generation_kwargs.items() if k not in _CUSTOM_GENERATE_REJECTED_KWARGS}
+    events = [
+        c.ev
+        for c in (generation_kwargs.get("stopping_criteria") or ())
+        if getattr(c, "ev", None) is not None
+    ]
+    if events and kept.get("streamer") is not None:
+        kept["streamer"] = _HaltingStreamer(kept["streamer"], events)
+    return kept
+
+
+def _generate_supported(model, generation_kwargs: dict):
+    """model.generate with _supported_generate_kwargs; None when a cancel or stop ended it early."""
+    try:
+        return model.generate(**_supported_generate_kwargs(model, generation_kwargs))
+    except _GenerationHalted:
+        return None
+
+
+def _refuse_without_generate(model, model_name: str) -> None:
+    # e.g. LFM3-Audio: the text load builds its bare backbone, and chat would fail on the first turn.
+    if not callable(getattr(model, "generate", None)):
+        raise ValueError(
+            f"{model_name} loads as {type(model).__name__}, which cannot generate text. "
+            "Unsloth Studio has no chat path for this architecture yet."
+        )
 
 
 def _processor_takes_text_first(processor) -> bool:
@@ -1315,6 +1364,8 @@ class InferenceBackend:
                 if loaded_profile:
                     self.models[model_name]["diffusion_lm_profile"] = loaded_profile
                     logger.info(f"Loaded text-diffusion model for chat (profile: {loaded_profile})")
+                else:
+                    _refuse_without_generate(model, model_name)
 
             raise_if_offloaded(self.models[model_name]["model"], device_map, "Inference")
             self.models[model_name]["context_length"] = runtime_context_length(
@@ -2317,9 +2368,9 @@ class InferenceBackend:
                         # Started inside the lock so a queued request's wait is not billed as prefill.
                         timer.start()
                         # Only the returned sequences carry an exact generated-token count; see generate_stream.
-                        gen_outputs["sequences"] = model.generate(
-                            **_supported_generate_kwargs(model, generation_kwargs)
-                        )
+                        sequences = _generate_supported(model, generation_kwargs)
+                        if sequences is not None:
+                            gen_outputs["sequences"] = sequences
                     except Exception as e:
                         err["msg"] = str(e)
                         stop_streamer.abort()
@@ -2503,6 +2554,10 @@ class InferenceBackend:
 
             timer = GenerationTimer()
             generation_kwargs["logits_processor"] = with_prefill_boundary_processor(None, timer)
+            # Without it, Stop leaves generate running to max_new_tokens while it holds the lock.
+            stopping_criteria = self._cancel_stopping_criteria(cancel_event)
+            if stopping_criteria is not None:
+                generation_kwargs["stopping_criteria"] = stopping_criteria
             active_stop_token_ids = self._generation_stop_token_ids(model, generation_kwargs)
 
             err: dict[str, str] = {}
@@ -2516,9 +2571,9 @@ class InferenceBackend:
                         # Started after the adapter swap so only model.generate() is timed.
                         timer.start()
                         # Only the returned sequences carry an exact generated-token count; see generate_stream.
-                        gen_outputs["sequences"] = model.generate(
-                            **_supported_generate_kwargs(model, generation_kwargs)
-                        )
+                        sequences = _generate_supported(model, generation_kwargs)
+                        if sequences is not None:
+                            gen_outputs["sequences"] = sequences
                     except Exception as e:
                         err["msg"] = str(e)
                         logger.error(f"Audio input generation error in thread: {e}")
@@ -2910,9 +2965,9 @@ class InferenceBackend:
                         # Started after the adapter swap so only model.generate() is timed.
                         timer.start()
                         # Only the returned sequences carry an exact token count.
-                        gen_outputs["sequences"] = model.generate(
-                            **_supported_generate_kwargs(model, generation_kwargs)
-                        )
+                        sequences = _generate_supported(model, generation_kwargs)
+                        if sequences is not None:
+                            gen_outputs["sequences"] = sequences
                     except Exception as e:
                         err["msg"] = str(e)
                         stop_streamer.abort()
