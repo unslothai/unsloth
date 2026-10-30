@@ -107,7 +107,10 @@ from core.inference.sd_cpp_server import SdCppServer
 from loggers import get_logger
 from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 from utils.account_context import account_thread, current_account_id
-from utils.subprocess_compat import windows_hidden_subprocess_kwargs
+from utils.subprocess_compat import (
+    windows_hidden_subprocess_kwargs,
+    windows_loader_error_boxes_suppressed,
+)
 
 logger = get_logger(__name__)
 
@@ -440,13 +443,14 @@ def _server_binary_runnable(binary: str) -> bool:
     import subprocess
 
     try:
-        proc = subprocess.run(
-            [binary, "--help"],
-            capture_output = True,
-            timeout = 20,
-            env = runtime_env(binary),
-            **windows_hidden_subprocess_kwargs(),
-        )
+        with windows_loader_error_boxes_suppressed():
+            proc = subprocess.run(
+                [binary, "--help"],
+                capture_output = True,
+                timeout = 20,
+                env = runtime_env(binary),
+                **windows_hidden_subprocess_kwargs(),
+            )
     except OSError:
         return False  # cannot exec at all (wrong arch / no execute bit / missing loader)
     except Exception:  # noqa: BLE001 -- don't block on a flaky probe
@@ -484,16 +488,17 @@ def _sd_cpp_probe_output(binary: str, *args: str) -> Optional[str]:
     import subprocess
 
     try:
-        proc = subprocess.run(
-            [binary, *args],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 20,
-            env = runtime_env(binary),
-            **windows_hidden_subprocess_kwargs(),
-        )
+        with windows_loader_error_boxes_suppressed():
+            proc = subprocess.run(
+                [binary, *args],
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 20,
+                env = runtime_env(binary),
+                **windows_hidden_subprocess_kwargs(),
+            )
     except Exception:  # noqa: BLE001 -- cannot exec / timeout: "cannot tell"
         return None
     if proc.returncode != 0:
@@ -1339,8 +1344,8 @@ def accelerator_fallback_reason(accelerator: Optional[str]) -> str:
         # The loader cannot be asked ahead of time on Windows; a missing DLL is exit 0xC0000135 with no output.
         return (
             "the ROCm build needs the AMD HIP SDK 7.x runtime DLLs (amdhip64_7.dll, hipblas.dll, rocblas.dll) on "
-            "PATH; without them Windows stops it before it prints anything (exit 0xC0000135), or the card's gfx "
-            "target is missing from the prebuilt"
+            "PATH or under HIP_PATH; without them Windows stops it before it prints anything (exit 0xC0000135), or "
+            "the card's gfx target is missing from the prebuilt"
         )
     missing = rocm_runtime_missing_sonames()
     if missing is None:
@@ -2119,7 +2124,7 @@ def _on_windows() -> bool:
 
 
 def windows_rocm_build_mode() -> str:
-    """``UNSLOTH_SD_CPP_WINDOWS_ROCM``: ``auto`` (ROCm only if the HIP SDK is on PATH), ``1`` always, ``0`` never."""
+    """``UNSLOTH_SD_CPP_WINDOWS_ROCM``: ``auto`` (ROCm only if the HIP SDK is found), ``1`` always, ``0`` never."""
     raw = (os.environ.get("UNSLOTH_SD_CPP_WINDOWS_ROCM", "auto") or "").strip().lower()
     if raw in ("1", "on", "true", "yes", "force"):
         return "force"
@@ -2134,6 +2139,10 @@ def _windows_dll_search_dirs() -> list[str]:
     dirs.append(os.path.join(system_root, "System32"))
     dirs.append(system_root)
     dirs.extend(d.strip().strip('"') for d in os.environ.get("PATH", "").split(os.pathsep))
+    try:
+        dirs.extend(_installer_module().windows_hip_sdk_bin_dirs())
+    except Exception as exc:  # noqa: BLE001 -- PATH alone still decides
+        logger.debug("HIP SDK lookup failed: %s", exc)
     return [d for d in dirs if d]
 
 
@@ -2147,6 +2156,13 @@ def windows_hip_runtime_missing_dlls() -> Optional[list[str]]:
         if not any(os.path.isfile(os.path.join(d, dll)) for d in dirs):
             missing.append(dll)
     return missing
+
+
+def _hip_sdk_url() -> str:
+    try:
+        return _installer_module().HIP_SDK_URL
+    except Exception:  # noqa: BLE001 -- the log line still names the SDK
+        return "AMD's HIP SDK page"
 
 
 def windows_rocm_build_skipped() -> bool:
@@ -2173,9 +2189,10 @@ def preferred_accelerator(accelerator: Optional[str], card: Optional[str] = None
             _windows_rocm_skip_logged = True
             logger.info(
                 "sd_cpp.windows_rocm_skipped: using the Vulkan stable-diffusion.cpp build; the ROCm "
-                "build needs the AMD HIP SDK runtime (%s) on PATH (UNSLOTH_SD_CPP_WINDOWS_ROCM=1 "
-                "to use it anyway)",
+                "build needs the AMD HIP SDK 7.x runtime (%s), found on neither PATH nor HIP_PATH. "
+                "Install it from %s to use the ROCm build (UNSLOTH_SD_CPP_WINDOWS_ROCM=1 to use it anyway)",
                 ", ".join(windows_hip_runtime_missing_dlls() or _WINDOWS_ROCM_HOST_DLLS),
+                _hip_sdk_url(),
             )
         chosen = klass = "vulkan"
     seen: set[str] = set()
@@ -5408,6 +5425,9 @@ class SdCppDiffusionBackend:
                 "For transparent output on the native engine, raise Guidance above 1 (upstream uses 6)."
             )
         conditioning["notes"] = notes
+        lora_reason = diffusion_lora.lora_unavailable_reason(
+            engine = "sd_cpp", family = state.family.name, model_kind = "gguf", transformer_quant = None
+        )
 
         return {
             "loaded": True,
@@ -5437,12 +5457,8 @@ class SdCppDiffusionBackend:
             "transformer_cache": None,
             "resolved": state.resolved,
             "engine": "sd_cpp",
-            "supports_lora": diffusion_lora.supports_lora(
-                engine = "sd_cpp",
-                family = state.family.name,
-                model_kind = "gguf",
-                transformer_quant = None,
-            ),
+            "supports_lora": lora_reason is None,
+            "lora_unavailable_reason": lora_reason,
             "supports_controlnet": False,
             "supports_negative_prompt": state.family.name not in _EMBEDDED_GUIDANCE_FAMILIES,
             "negative_prompt_min_guidance": _negative_prompt_guidance_threshold(state.family),

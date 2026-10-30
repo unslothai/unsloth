@@ -954,10 +954,12 @@ def _dequantized_row_bytes(widths, dtype_size: int, kv_bits, kv_group_size, pref
         return None
     try:
         dtype = mx.float32 if dtype_size == 4 else mx.bfloat16
+        # A causal chunk never fuses over fewer keys than queries; later chunks see more (#15935).
+        cached = prefill_chunk + 1
 
         def rows(width):
             return mx.quantize(
-                mx.zeros((1, kv_heads, 1, width), dtype = dtype),
+                mx.zeros((1, kv_heads, cached, width), dtype = dtype),
                 group_size = kv_group_size,
                 bits = kv_bits,
             )
@@ -1486,9 +1488,7 @@ def mlx_fit_outcome(
     sizing = _size_load(model_dir, kv_bits, prefill_chunk, load_in_4bit, vision, drafter, offload)
     if sizing is None:
         return "unsizable", None
-    if any(sizing.offload):
-        least, share = mlx_offload_planner().SAFETY_MARGIN
-        budget_bytes = min(budget_bytes - least, budget_bytes / (1 + share))
+    budget_bytes = _fit_budget(sizing, budget_bytes)
     ceiling = max(int(max_ctx or 0), MLX_KV_BLOCK)
     at_ceiling = _priced_at(sizing, ceiling)
     if at_ceiling is None:
@@ -1508,6 +1508,33 @@ def mlx_fit_outcome(
         else:
             high = middle - 1
     return ("no_fit", None) if best is None else ("fitted", (best // MLX_KV_BLOCK) * MLX_KV_BLOCK)
+
+
+def _fit_budget(sizing: _MlxSizing, budget_bytes: int) -> float:
+    if not any(sizing.offload):
+        return budget_bytes
+    least, share = mlx_offload_planner().SAFETY_MARGIN
+    return min(budget_bytes - least, budget_bytes / (1 + share))
+
+
+def mlx_headroom(
+    model_dir: str,
+    *,
+    budget_bytes: int,
+    n_ctx: int,
+    kv_bits: Optional[int] = None,
+    prefill_chunk: Optional[int] = None,
+    load_in_4bit: bool = False,
+    vision: Optional[bool] = None,
+    drafter: Optional[tuple] = None,
+    offload: Optional[tuple] = None,
+) -> Optional[int]:
+    """Bytes of ``budget_bytes`` a load at ``n_ctx`` leaves free (as ``mlx_fit_outcome`` prices it), None if unsized."""
+    sizing = _size_load(model_dir, kv_bits, prefill_chunk, load_in_4bit, vision, drafter, offload)
+    priced = None if sizing is None else _priced_at(sizing, max(int(n_ctx or 0), MLX_KV_BLOCK))
+    if priced is None:
+        return None
+    return max(int(_fit_budget(sizing, budget_bytes) - priced.total_bytes), 0)
 
 
 def mlx_offload_plan(

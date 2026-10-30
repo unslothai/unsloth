@@ -321,3 +321,101 @@ def test_the_refusal_record_survives_a_fallback_from_another_release(
     assert sdmod.read_install_record(root).get("tag") != "master-982-0518b34-ud331c66"
     assert backend.accelerator_runtime_failed("rocm") is True
     assert backend.preferred_accelerator("rocm") == "vulkan"
+
+
+def _dll_dir(path: Path, *dlls: str) -> Path:
+    path.mkdir(parents = True, exist_ok = True)
+    for dll in dlls:
+        (path / dll).write_bytes(b"")
+    return path
+
+
+@pytest.fixture
+def hip_sdk(tmp_path, monkeypatch):
+    """HIP SDK 7.2 as its MSI leaves it: HIP_PATH (with its trailing separator) set, bin dir not on PATH."""
+    program_files = tmp_path / "Program Files"
+    root = program_files / "AMD" / "ROCm" / "7.2"
+    bindir = _dll_dir(root / "bin", "hipblas.dll", "rocblas.dll", "amdhip64_7.dll")
+    monkeypatch.setenv("ProgramFiles", str(program_files))
+    monkeypatch.setenv("HIP_PATH", str(root) + os.sep)
+    monkeypatch.delenv("ROCM_PATH", raising = False)
+    return types.SimpleNamespace(bin = bindir, program_files = program_files)
+
+
+def _rocm_bundle(tmp_path: Path) -> Path:
+    """The upstream win-rocm layout: amdhip64_7.dll beside sd-cli, hipblas.dll left to the SDK."""
+    return _dll_dir(tmp_path / "bundle", _CLI, "stable-diffusion.dll", "amdhip64_7.dll") / _CLI
+
+
+def test_the_hip_sdk_is_found_through_hip_path(hip_sdk):
+    assert sdmod.windows_hip_sdk_bin_dirs() == [str(hip_sdk.bin)]
+
+
+def test_without_hip_path_the_default_location_is_searched_newest_7x_first(hip_sdk, monkeypatch):
+    monkeypatch.delenv("HIP_PATH")
+    rocm = hip_sdk.program_files / "AMD" / "ROCm"
+    older = _dll_dir(rocm / "7.1" / "bin", "hipblas.dll", "amdhip64_7.dll")
+    # A 6.x hipblas.dll binds amdhip64_6.dll, not the bundle's HIP 7 runtime.
+    _dll_dir(rocm / "6.4" / "bin", "hipblas.dll", "amdhip64_6.dll")
+    assert sdmod.windows_hip_sdk_bin_dirs() == [str(hip_sdk.bin), str(older)]
+
+
+def test_no_hip_sdk_finds_nothing(tmp_path, monkeypatch):
+    monkeypatch.setenv("ProgramFiles", str(tmp_path / "Program Files"))
+    monkeypatch.delenv("HIP_PATH", raising = False)
+    monkeypatch.delenv("ROCM_PATH", raising = False)
+    assert sdmod.windows_hip_sdk_bin_dirs() == []
+
+
+def _search_path(env: dict, var: str) -> list[str]:
+    return env[var].split(os.pathsep)
+
+
+def test_the_rocm_bundle_child_gets_the_hip_sdk_after_the_callers_path(tmp_path, hip_sdk):
+    from core.inference import sd_cpp_engine
+
+    binary = _rocm_bundle(tmp_path)
+    var = sd_cpp_engine._lib_path_var()
+    env = sd_cpp_engine.runtime_env(str(binary), {var: "caller-dir"})
+    assert _search_path(env, var) == [str(binary.parent.resolve()), "caller-dir", str(hip_sdk.bin)]
+    probe = sdmod._probe_env(binary)
+    assert _search_path(probe, var)[0] == str(binary.parent)
+    assert _search_path(probe, var)[-1] == str(hip_sdk.bin)
+
+
+def test_other_bundles_and_a_bundled_hipblas_get_no_hip_sdk(tmp_path, hip_sdk):
+    from core.inference import sd_cpp_engine
+
+    vulkan = _dll_dir(tmp_path / "vk", _CLI, "stable-diffusion.dll") / _CLI
+    rocm_with_hipblas = _dll_dir(tmp_path / "full", _CLI, "amdhip64_7.dll", "hipblas.dll") / _CLI
+    var = sd_cpp_engine._lib_path_var()
+    for binary in (vulkan, rocm_with_hipblas):
+        assert sdmod.hip_sdk_dirs_for_bundle(binary.parent) == []
+        env = sd_cpp_engine.runtime_env(str(binary), {var: "caller-dir"})
+        assert str(hip_sdk.bin) not in _search_path(env, var)
+
+
+@pytest.fixture
+def windows_path_only(tmp_path, monkeypatch, backend):
+    system_root = tmp_path / "Windows"
+    (system_root / "System32").mkdir(parents = True)
+    monkeypatch.setenv("SystemRoot", str(system_root))
+    monkeypatch.setenv("PATH", str(_dll_dir(tmp_path / "on-path")))
+    monkeypatch.delenv("UNSLOTH_SD_CPP_WINDOWS_ROCM", raising = False)
+    monkeypatch.setattr(backend, "_on_windows", lambda: True, raising = False)
+    return backend
+
+
+def test_windows_rocm_with_the_hip_sdk_installed_off_path_keeps_rocm(windows_path_only, hip_sdk):
+    assert windows_path_only.windows_hip_runtime_missing_dlls() == []
+    assert windows_path_only.preferred_accelerator("rocm") == "rocm"
+
+
+def test_windows_rocm_without_any_hip_sdk_still_starts_at_vulkan(
+    windows_path_only, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("ProgramFiles", str(tmp_path / "Program Files"))
+    monkeypatch.delenv("HIP_PATH", raising = False)
+    monkeypatch.delenv("ROCM_PATH", raising = False)
+    assert windows_path_only.windows_hip_runtime_missing_dlls() == ["hipblas.dll"]
+    assert windows_path_only.preferred_accelerator("rocm") == "vulkan"

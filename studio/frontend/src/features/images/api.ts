@@ -75,6 +75,8 @@ export interface DiffusionStatus {
   lora_after_reload?: boolean;
   // Whether the loaded model + quantisation can apply LoRA adapters (drives the LoRA picker enabled state).
   supports_lora?: boolean;
+  // Why supports_lora is false, shown in the LoRA slot when no reload would turn LoRA on.
+  lora_unavailable_reason?: string | null;
   supports_controlnet?: boolean;
   supports_negative_prompt?: boolean;
   // Whether the loaded model's inpaint pipeline can crop to the mask (diffusers padding_mask_crop).
@@ -688,6 +690,13 @@ export interface DiffusionTrainingStatus {
   grad_norm?: number | null;
   num_images: number | null;
   in_model_load: boolean;
+  model_load_stage?: "conditioning" | "transformer" | "quantizing" | null;
+  model_load_progress?: {
+    done: number;
+    total: number;
+    unit: "tensors" | "components" | "shards";
+    label: string;
+  } | null;
   preparation?: { stage?: string | null; done?: number | null; total?: number | null } | null;
   download_progress?: { bytes_done: number; bytes_total: number; label?: string; scope?: "active_files" } | null;
   output_dir: string | null;
