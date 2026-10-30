@@ -8,7 +8,7 @@ import { Route as rootRoute } from "./__root";
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/video",
-  staticData: { title: "Video" },
+  staticData: { titleKey: "shell.navigation.video" },
   // ?model= (+ ?quant= exact filename, ?ggufQuant= label), loaded then cleared by the page.
   validateSearch: (
     search: Record<string, unknown>,
