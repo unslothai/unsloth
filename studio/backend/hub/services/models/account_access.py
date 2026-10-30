@@ -884,7 +884,7 @@ def _cached_repo(path: Path) -> tuple[str, str] | None:
 
 
 def _is_own_shared_blob(path: Path, cached: tuple[str, str], resolved: Path) -> bool:
-    """Hub >= 1.32 stores Xet files once per cache: snapshot -> repo blob -> <cache>/blobs/xx/<hash>."""
+    """Hub >= 1.32 stores Xet files once per cache: snapshot -> repo blob -> <cache>/blobs/<hash[:2]>/<hash>."""
     hop, last_in_repo = path, None
     for _ in range(8):
         if not hop.is_symlink():
@@ -897,7 +897,6 @@ def _is_own_shared_blob(path: Path, cached: tuple[str, str], resolved: Path) -> 
         return False
     repo_blobs = last_in_repo.parent
     repo_dir = repo_blobs.parent
-    # The store entry is <cache>/blobs/<hash[:2]>/<64-hex xet hash>, as huggingface_hub's _shared_blobs writes it.
     return (
         repo_blobs.name == "blobs"
         and repo_dir.name == f"models--{cached[0].replace('/', '--')}"

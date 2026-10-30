@@ -37,7 +37,6 @@ def _repo(cache, name, blob_target):
 @pytest.mark.skipif(os.name == "nt", reason = "shared blobs need symlinks")
 def test_shared_blob_resident_keeps_its_repo(monkeypatch, tmp_path):
     cache = _cache(monkeypatch, tmp_path)
-    # Layout written by huggingface_hub >= 1.32 for Xet downloads.
     pointer = _repo(cache, "private", f"../../blobs/ab/{HASH}")
     assert pointer.resolve() == cache / "blobs" / "ab" / HASH
     assert access.cached_model_repo(str(pointer)) == "org/private"
