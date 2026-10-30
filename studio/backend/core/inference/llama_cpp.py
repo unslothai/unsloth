@@ -91,7 +91,7 @@ from core.inference.lookup_tables import (
     is_per_layer_embedding as _is_per_layer_embedding,
     lazy_read_bytes as _lookup_lazy_read_bytes,
 )
-from core.inference.stream_errors import stream_error_from_chunk
+from core.inference.stream_errors import is_tool_parse_rejection, stream_error_from_chunk
 from hub.utils.hf_errors import modelscope_missing
 from hub.utils.hf_tokens import (
     call_hub_with_anonymous_retry,
@@ -7540,6 +7540,19 @@ def _llama_chunk_has_generated_output(data: dict) -> bool:
         if choice.get("text") not in (None, ""):
             return True
     return False
+
+
+def _structured_calls_complete(calls: dict) -> bool:
+    for call in calls.values():
+        function = call.get("function") or {}
+        if not function.get("name", "").strip():
+            return False
+        try:
+            if not isinstance(json.loads(function.get("arguments") or ""), dict):
+                return False
+        except ValueError:
+            return False
+    return bool(calls)
 
 
 def _perf_callback_wants_timings(callback) -> bool:
@@ -35834,6 +35847,57 @@ class LlamaCppBackend:
             return False
         return _llama_chunk_has_generated_output(data)
 
+    def _iter_tool_round_text(
+        self,
+        response: "httpx.Response",
+        payload: dict,
+        cancel_event: Optional[threading.Event],
+        first_token_deadline: Optional[float],
+        on_respawn: Optional[Callable[[], None]] = None,
+    ) -> Generator[str, None, None]:
+        """Raw SSE text of one tool round. A tool-call parse rejection before any output (Llama 3.x
+        ``{"type": "function", ...}``, ``;``-joined calls) is retried once with tool_choice "none",
+        which turns llama-server's parser off so Studio's parser reads the raw reply."""
+        stream = self._iter_text_cancellable(
+            response, cancel_event, first_token_deadline = first_token_deadline
+        )
+        if not payload.get("tools") or payload.get("tool_choice") == "none":
+            yield from stream
+            return
+        pending = ""
+        for chunk in stream:
+            pending += chunk
+            while "\n" in pending:
+                line, pending = pending.split("\n", 1)
+                data = None
+                stripped = line.strip()
+                if stripped.startswith("data: ") and stripped != "data: [DONE]":
+                    try:
+                        data = json.loads(stripped[6:])
+                    except json.JSONDecodeError:
+                        pass
+                if is_tool_parse_rejection(data):
+                    logger.info(
+                        "llama-server could not parse the reply as tool calls; "
+                        "asking again with its tool-call parser off"
+                    )
+                    response.close()
+                    payload["tool_choice"] = "none"
+                    with self._open_chat_stream_with_respawn_retry(
+                        payload, cancel_event, on_respawn = on_respawn
+                    ) as (retry_response, retry_deadline):
+                        yield from self._iter_text_cancellable(
+                            retry_response, cancel_event, first_token_deadline = retry_deadline
+                        )
+                    return
+                yield line + "\n"
+                # Output already reached the caller: a second request could not be joined to it.
+                if isinstance(data, dict) and _llama_chunk_has_generated_output(data):
+                    yield pending
+                    yield from stream
+                    return
+        yield pending
+
     @staticmethod
     def _iter_text_cancellable(
         response: "httpx.Response",
@@ -37869,10 +37933,12 @@ class LlamaCppBackend:
                     for truncation in _respawn_truncations:
                         yield {"type": "context_truncated", **truncation}
                     raw_buf = ""
-                    for raw_chunk in self._iter_text_cancellable(
+                    for raw_chunk in self._iter_tool_round_text(
                         response,
+                        payload,
                         cancel_event,
-                        first_token_deadline = first_token_deadline,
+                        first_token_deadline,
+                        on_respawn = _refit_iteration_after_respawn,
                     ):
                         raw_buf += raw_chunk
                         while "\n" in raw_buf:
@@ -37932,6 +37998,19 @@ class LlamaCppBackend:
                                 # Error chunks have no choices; don't drop them.
                                 _stream_error = stream_error_from_chunk(chunk_data)
                                 if _stream_error is not None:
+                                    # A rejected later call (`;`-joined) must not lose the complete ones before it.
+                                    if (
+                                        has_structured_tc
+                                        and is_tool_parse_rejection(chunk_data)
+                                        and _structured_calls_complete(tool_calls_acc)
+                                    ):
+                                        logger.info(
+                                            "llama-server rejected a later tool call; "
+                                            "running the %d complete one(s) before it",
+                                            len(tool_calls_acc),
+                                        )
+                                        _stream_done = True
+                                        break
                                     raise _stream_error
                                 choices = chunk_data.get("choices", [])
                                 if not choices:
