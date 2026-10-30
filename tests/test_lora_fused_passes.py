@@ -95,6 +95,20 @@ def _run(fn, model, X0):
     return [o.detach() for o in outs], X.grad.clone(), grads
 
 
+def _skip_without_native_bf16(device, dtype = torch.bfloat16):
+    # Same rule as test_lora_gradient_layout: Triton's bf16 kernels need sm_80+, and is_bf16_supported() also
+    # reports emulated bf16 on older GPUs.
+    if (
+        device == "cuda"
+        and dtype is torch.bfloat16
+        and (
+            not torch.cuda.is_bf16_supported()
+            or (not torch.version.hip and torch.cuda.get_device_capability()[0] < 8)
+        )
+    ):
+        pytest.skip("bf16 kernels need native bf16 (sm_80+)")
+
+
 def _set(monkeypatch, on):
     monkeypatch.setattr(kernel_utils, "LORA_FUSED_PASSES", on)
 
@@ -114,6 +128,7 @@ def test_fused_passes_match_the_unfused_order_and_an_fp64_oracle(
         pytest.skip("the SwiGLU kernels are Triton")
     if device == "cpu" and dtype is torch.bfloat16:
         pytest.skip("bf16 GEMMs on CPU are slow and not what runs in training")
+    _skip_without_native_bf16(device, dtype)
     pattern = {"k_proj": 16, "up_proj": 16} if alphas == "mixed" else None
     model, block = _model(device, dtype, pattern)
     X0 = torch.randn(3, 5, H, device = device, dtype = dtype)
@@ -175,6 +190,7 @@ def test_kill_switch_is_the_base_then_lora_order(device, dtype, monkeypatch):
     # UNSLOTH_LORA_FUSED_PASSES=0: base GEMM, then the rank-r term added in place, bit for bit.
     if device == "cpu" and dtype is torch.bfloat16:
         pytest.skip("bf16 GEMMs on CPU are slow and not what runs in training")
+    _skip_without_native_bf16(device, dtype)
     _set(monkeypatch, False)
     g = torch.Generator(device = "cpu").manual_seed(0)
     X, W = torch.randn(7, H, generator = g), torch.randn(I, H, generator = g)
@@ -205,8 +221,7 @@ def test_exclusions_keep_the_base_then_lora_order(device, dtype, path, config, m
         pytest.skip("a down-only bias is an MLP case")
     if config == "plain" and dtype is not torch.float16:
         pytest.skip("plain bf16 / fp32 take the fused order")
-    if device == "cuda" and dtype is torch.bfloat16 and not torch.cuda.is_bf16_supported():
-        pytest.skip("no bf16 on this GPU")
+    _skip_without_native_bf16(device, dtype)
     kwargs = {"dropout": 0.1} if config == "dropout" else {}
     kwargs["lora_bias"] = config in ("lora_bias", "down_bias")
     model, block = _model(device, dtype, **kwargs)
@@ -243,7 +258,8 @@ def test_fp16_rank_r_term_cannot_overflow_before_the_base_cancels_it(device, mon
     assert torch.equal(outs[True], outs[False])
 
 
-def test_fused_eligibility_is_one_rule():
+def test_fused_eligibility_is_one_rule(monkeypatch):
+    _set(monkeypatch, True)
     from types import SimpleNamespace
 
     from unsloth.kernels.int4_packed import Int4QuantState
@@ -290,8 +306,7 @@ def test_fp32_base_under_autocast_keeps_the_base_then_lora_order(device, monkeyp
     # In-place accumulation is not autocast: an fp32 base weight with bf16 activations (fp32 weights under
     # autocast, as in fast_linear_forward's multi-token path and LoRA_W) takes the old order instead of
     # failing on the dtype mismatch. (main's LoRA_QKV / LoRA_MLP backward already needs matching dtypes.)
-    if device == "cuda" and not torch.cuda.is_bf16_supported():
-        pytest.skip("no bf16 on this GPU")
+    _skip_without_native_bf16(device)
     half = torch.bfloat16
     g = torch.Generator(device = "cpu").manual_seed(0)
     X, W = torch.randn(7, H, generator = g), torch.randn(I, H, generator = g)
@@ -315,8 +330,7 @@ def test_fp32_base_under_autocast_keeps_the_base_then_lora_order(device, monkeyp
 def test_fp16_nf4_state_under_bf16_autocast_keeps_the_base_then_lora_order(monkeypatch):
     # fast_dequantize returns the state's fp16, so the in-place base accumulate would mix dtypes.
     bnb = pytest.importorskip("bitsandbytes")
-    if not torch.cuda.is_bf16_supported():
-        pytest.skip("no bf16 on this GPU")
+    _skip_without_native_bf16("cuda")
     lin = bnb.nn.Linear4bit(H, I, bias = False, compute_dtype = torch.float16, quant_type = "nf4")
     lin.weight = bnb.nn.Params4bit(
         torch.randn(I, H, dtype = torch.float16), requires_grad = False, quant_type = "nf4"
@@ -333,3 +347,51 @@ def test_fp16_nf4_state_under_bf16_autocast_keeps_the_base_then_lora_order(monke
         with torch.autocast("cuda", dtype = torch.bfloat16):
             outs[on] = kernel_utils.matmul_lora(X, W, Wq, A, B, 2.0)
     assert torch.equal(outs[True], outs[False])
+
+
+def test_small_update_survives_the_single_rounding(monkeypatch):
+    # bf16 base output 1.0 plus a rank-r term of 1/128 rounds once to 1.0078125; the old order rounds the
+    # base output first and the separate add then loses everything below half a bf16 step.
+    x = torch.tensor([[1.0, 1.0]], dtype = torch.bfloat16)
+    w = torch.tensor([[1.0, 1 / 256]], dtype = torch.bfloat16)
+    a = torch.tensor([[1.0, 0.0]], dtype = torch.bfloat16)
+    b = torch.tensor([[1 / 512]], dtype = torch.bfloat16)
+    exact = (x.double() @ w.double().t() + (x.double() @ a.double().t()) @ b.double().t()).to(
+        torch.bfloat16
+    )
+    _set(monkeypatch, True)
+    got = kernel_utils.matmul_lora(x, w, None, a, b, 1.0)
+    assert torch.equal(got, exact) and got.item() == 1.0078125
+    _set(monkeypatch, False)
+    assert kernel_utils.matmul_lora(x, w, None, a, b, 1.0).item() == 1.0
+
+
+def test_a_caller_buffer_sharing_an_operand_keeps_main_behavior(monkeypatch):
+    # Writing the rank-r term first would overwrite a base operand the GEMM has not read yet.
+    _set(monkeypatch, True)
+    g = torch.Generator(device = "cpu").manual_seed(0)
+    X, W = torch.randn(H, H, generator = g), torch.randn(H, H, generator = g)
+    A, B = torch.randn(4, H, generator = g), torch.randn(H, 4, generator = g)
+    calls = []
+    real = kernel_utils.torch_matmul
+    monkeypatch.setattr(
+        kernel_utils, "torch_matmul", lambda *a, **k: calls.append(1) or real(*a, **k)
+    )
+    assert kernel_utils._shares_storage(W, X, W)
+    assert not kernel_utils._shares_storage(torch.empty(H, H), X, W, A, B, None)
+    out = W.clone()
+    kernel_utils.matmul_lora(X, out, None, A, B, 2.0, out = out)
+    assert calls, "a buffer aliasing W must take the base-then-LoRA order"
+
+
+def test_shared_lora_a_grads_have_the_parameter_layout(monkeypatch):
+    # The shared backward hands back d_A whose .t() is contiguous like the [r, K] parameter, so autograd
+    # does not copy it into a new layout.
+    _set(monkeypatch, True)
+    X = torch.randn(10, H)
+    As = (torch.randn(4, H).t(), torch.randn(4, H).t())
+    Bs = (torch.randn(H, 4).t(), torch.randn(I, 4).t())
+    dYs = (torch.randn(10, H), torch.randn(10, I))
+    d_As, _, _ = fast_lora._shared_lora_backward(X, dYs, As, Bs, 2.0, None)
+    for dA in d_As:
+        assert dA.t().is_contiguous(), dA.stride()
