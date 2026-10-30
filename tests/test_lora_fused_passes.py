@@ -97,7 +97,6 @@ def _run(fn, model, X0):
 
 def _set(monkeypatch, on):
     monkeypatch.setattr(kernel_utils, "LORA_FUSED_PASSES", on)
-    monkeypatch.setattr(fast_lora, "LORA_FUSED_PASSES", on)
 
 
 def _err(a, b):
@@ -186,16 +185,34 @@ def test_kill_switch_is_the_base_then_lora_order(device, dtype, monkeypatch):
     assert torch.equal(kernel_utils.matmul_lora(X, W, None, A, B, 2.0), want)
 
 
+def _drop_lora_bias(block, keep):
+    # PEFT puts lora_bias on every target; keep it only on `keep` (a down-only bias, for example).
+    for name in TARGETS:
+        if name not in keep:
+            getattr(block, name).lora_B["default"].bias = None
+
+
 @pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
 @pytest.mark.parametrize("path", ["qkv", "o", "mlp"])
-@pytest.mark.parametrize("config", ["dropout", "lora_bias"])
-def test_dropout_and_lora_bias_keep_the_base_then_lora_order(device, path, config, monkeypatch):
-    # These configs add the LoRA term after the base GEMM in both passes, so the switch changes nothing.
+@pytest.mark.parametrize("config", ["plain", "dropout", "lora_bias", "down_bias"])
+def test_exclusions_keep_the_base_then_lora_order(device, dtype, path, config, monkeypatch):
+    # Every configuration the fused order excludes (fp16 at all, dropout, lora_bias anywhere in the
+    # module) gives the kill switch's outputs and gradients bit for bit, forward and backward.
     if device == "cpu" and path == "mlp":
         pytest.skip("the SwiGLU kernels are Triton")
-    kwargs = {"dropout": 0.1} if config == "dropout" else {"lora_bias": True}
-    model, block = _model(device, torch.float32, **kwargs)
-    X0 = torch.randn(3, 5, H, device = device)
+    if config == "down_bias" and path != "mlp":
+        pytest.skip("a down-only bias is an MLP case")
+    if config == "plain" and dtype is not torch.float16:
+        pytest.skip("plain bf16 / fp32 take the fused order")
+    if device == "cuda" and dtype is torch.bfloat16 and not torch.cuda.is_bf16_supported():
+        pytest.skip("no bf16 on this GPU")
+    kwargs = {"dropout": 0.1} if config == "dropout" else {}
+    kwargs["lora_bias"] = config in ("lora_bias", "down_bias")
+    model, block = _model(device, dtype, **kwargs)
+    if config == "down_bias":
+        _drop_lora_bias(block, keep = ("down_proj",))
+    X0 = torch.randn(3, 5, H, device = device, dtype = dtype)
     runs = []
     for on in (False, True):
         _set(monkeypatch, on)
@@ -208,11 +225,74 @@ def test_dropout_and_lora_bias_keep_the_base_then_lora_order(device, path, confi
 
 
 @pytest.mark.parametrize("device", DEVICES)
+def test_fp16_rank_r_term_cannot_overflow_before_the_base_cancels_it(device, monkeypatch):
+    # The rank-r term alone is ~70000 (past fp16's 65504) but the output is ~10000. The base-then-LoRA
+    # order adds it in the GEMM's fp32 epilogue; writing it first would store inf.
+    X = torch.ones(1, H, dtype = torch.float16, device = device)
+    W = torch.zeros(I, H, dtype = torch.float16, device = device)
+    W[0] = -60000 / H
+    A = torch.zeros(4, H, dtype = torch.float16, device = device)
+    A[0, 0] = 1
+    B = torch.zeros(I, 4, dtype = torch.float16, device = device)
+    B[0, 0] = 35000
+    outs = {}
+    for on in (True, False):
+        _set(monkeypatch, on)
+        outs[on] = kernel_utils.matmul_lora(X, W, None, A, B, 2.0)
+    assert torch.isfinite(outs[True]).all() and abs(float(outs[True][0, 0]) - 10000) <= 32
+    assert torch.equal(outs[True], outs[False])
+
+
+def test_fused_eligibility_is_one_rule():
+    from types import SimpleNamespace
+
+    from unsloth.kernels.int4_packed import Int4QuantState
+
+    ok = kernel_utils._lora_fused_ok
+    dense = lambda dtype: torch.empty(4, 4, dtype = dtype)  # noqa: E731
+    u8 = torch.empty(4, 4, dtype = torch.uint8)
+    assert ok(dense(torch.bfloat16), None, torch.bfloat16) and ok(
+        dense(torch.float32), None, torch.float32
+    )
+    assert not ok(dense(torch.float16), None, torch.float16)  # fp16 keeps the old order
+    assert not ok(dense(torch.float32), None, torch.bfloat16)  # fp32 weight under bf16 autocast
+    # fast_dequantize returns a 4-bit state's own dtype, not the one asked for.
+    assert ok(u8, SimpleNamespace(dtype = torch.bfloat16), torch.bfloat16)
+    assert not ok(u8, SimpleNamespace(dtype = torch.float16), torch.bfloat16)
+    assert not ok(u8, [None, None, torch.float16], torch.bfloat16)
+    assert not ok(dense(torch.float8_e4m3fn), torch.ones(1), torch.bfloat16)
+    int4 = object.__new__(Int4QuantState)
+    w = torch.empty(8, 4, dtype = torch.int8)
+    assert not ok(w, int4, torch.bfloat16) and not ok(
+        w.t(), int4, torch.bfloat16
+    )  # either orientation
+    packed = type("Packed", (), {"_unsloth_packed_weight_state": True, "dtype": torch.bfloat16})()
+    assert not ok(u8, packed, torch.bfloat16)
+
+
+def test_a_caller_buffer_that_is_not_the_output_keeps_main_behavior(monkeypatch):
+    # torch.matmul(..., out = empty) resizes; the fused order writes the rank-r term first, so it is
+    # taken only when the buffer is already the output.
+    g = torch.Generator(device = "cpu").manual_seed(0)
+    X, W = torch.randn(7, H, generator = g), torch.randn(I, H, generator = g)
+    A, B = torch.randn(4, H, generator = g), torch.randn(I, 4, generator = g)
+    outs = {}
+    for on in (True, False):
+        _set(monkeypatch, on)
+        out = torch.empty(0)
+        assert kernel_utils.matmul_lora(X, W, None, A, B, 2.0, out = out) is not None
+        outs[on] = out
+    assert outs[True].shape == (7, I) and torch.equal(outs[True], outs[False])
+
+
+@pytest.mark.parametrize("device", DEVICES)
 def test_fp32_base_under_autocast_keeps_the_base_then_lora_order(device, monkeypatch):
-    # In-place accumulation is not autocast: an fp32 base weight with half activations (fp32 weights under
+    # In-place accumulation is not autocast: an fp32 base weight with bf16 activations (fp32 weights under
     # autocast, as in fast_linear_forward's multi-token path and LoRA_W) takes the old order instead of
     # failing on the dtype mismatch. (main's LoRA_QKV / LoRA_MLP backward already needs matching dtypes.)
-    half = torch.bfloat16 if device == "cpu" else torch.float16
+    if device == "cuda" and not torch.cuda.is_bf16_supported():
+        pytest.skip("no bf16 on this GPU")
+    half = torch.bfloat16
     g = torch.Generator(device = "cpu").manual_seed(0)
     X, W = torch.randn(7, H, generator = g), torch.randn(I, H, generator = g)
     A, B = torch.randn(4, H, generator = g), torch.randn(I, 4, generator = g)
@@ -231,36 +311,25 @@ def test_fp32_base_under_autocast_keeps_the_base_then_lora_order(device, monkeyp
     assert g_on.keys() == g_off.keys() and all(torch.equal(g_on[k], g_off[k]) for k in g_on)
 
 
-def test_fused_order_needs_the_dequantized_dtype_to_match():
-    # fast_dequantize returns a 4-bit state's own dtype, so a bf16 state under fp16 autocast must not fuse.
-    from types import SimpleNamespace
-
-    W = torch.empty(4, 4, dtype = torch.uint8)
-    ok = kernel_utils._lora_fused_base_ok
-    assert ok(W, SimpleNamespace(dtype = torch.float16), torch.float16)
-    assert not ok(W, SimpleNamespace(dtype = torch.bfloat16), torch.float16)
-    assert not ok(W, [None, None, torch.bfloat16], torch.float16)
-    assert ok(torch.empty(4, 4, dtype = torch.float16), None, torch.float16)
-    assert not ok(torch.empty(4, 4), None, torch.float16)
-    assert ok(torch.empty(4, 4, dtype = torch.float8_e4m3fn), torch.ones(1), torch.bfloat16)
-
-
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs bitsandbytes 4-bit on a real GPU")
-def test_bf16_nf4_state_under_fp16_autocast_keeps_the_base_then_lora_order(monkeypatch):
+def test_fp16_nf4_state_under_bf16_autocast_keeps_the_base_then_lora_order(monkeypatch):
+    # fast_dequantize returns the state's fp16, so the in-place base accumulate would mix dtypes.
     bnb = pytest.importorskip("bitsandbytes")
-    lin = bnb.nn.Linear4bit(H, I, bias = False, compute_dtype = torch.bfloat16, quant_type = "nf4")
+    if not torch.cuda.is_bf16_supported():
+        pytest.skip("no bf16 on this GPU")
+    lin = bnb.nn.Linear4bit(H, I, bias = False, compute_dtype = torch.float16, quant_type = "nf4")
     lin.weight = bnb.nn.Params4bit(
-        torch.randn(I, H, dtype = torch.bfloat16), requires_grad = False, quant_type = "nf4"
+        torch.randn(I, H, dtype = torch.float16), requires_grad = False, quant_type = "nf4"
     )
     lin = lin.cuda()
     W, Wq = lin.weight, lin.weight.quant_state
-    assert Wq.dtype == torch.bfloat16
+    assert Wq.dtype == torch.float16
     g = torch.Generator(device = "cpu").manual_seed(0)
-    X = torch.randn(7, H, generator = g).cuda().half()
+    X = torch.randn(7, H, generator = g).cuda().bfloat16()
     A, B = torch.randn(4, H, generator = g).cuda(), torch.randn(I, 4, generator = g).cuda()
     outs = {}
     for on in (True, False):
         _set(monkeypatch, on)
-        with torch.autocast("cuda", dtype = torch.float16):
+        with torch.autocast("cuda", dtype = torch.bfloat16):
             outs[on] = kernel_utils.matmul_lora(X, W, Wq, A, B, 2.0)
     assert torch.equal(outs[True], outs[False])
