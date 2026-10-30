@@ -211,6 +211,37 @@ def test_a_rendered_prompt_reaches_python_rewards_as_its_turns():
     assert seen["prompts"] == [turns]
 
 
+def test_python_rewards_get_the_system_turn_a_folding_template_loses():
+    # Gemma 2's template rejects a system turn, so training folds it into the user turn; Try it has
+    # no model and keeps it. The rewards get the unfolded turns either way.
+    from datasets import Dataset
+
+    from core.training.rewards import PROMPT_TURNS_COLUMN
+
+    class Gemma2:
+        chat_template = "{% if enable_thinking is defined %}{% endif %}"
+
+        def apply_chat_template(
+            self,
+            messages,
+            tokenize = False,
+            add_generation_prompt = False,
+            **kw,
+        ):
+            if any(m["role"] == "system" for m in messages):
+                raise ValueError("System role not supported")
+            return "".join(f"<{m['role']}>{m['content']}" for m in messages)
+
+    turns = [{"role": "system", "content": "S"}, {"role": "user", "content": "2+2?"}]
+    ds = Dataset.from_list([{"prompt": turns, "answer": "4"}])
+    folded = rl.fold_system_into_user(ds, keep_turns = True)
+    assert folded[0]["prompt"] == [{"role": "user", "content": "S\n\n2+2?"}]
+    for thinking in (False, None):  # rendered to text, and left as turns
+        out, _ = rl.render_grpo_prompts(folded, Gemma2(), thinking, keep_turns = True)
+        assert json.loads(out[0][PROMPT_TURNS_COLUMN]) == turns
+    assert PROMPT_TURNS_COLUMN not in rl.fold_system_into_user(ds).column_names
+
+
 def test_rendered_turns_drop_padded_tool_call_arguments():
     from datasets import Dataset
 
