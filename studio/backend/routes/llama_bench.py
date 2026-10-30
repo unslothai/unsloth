@@ -268,6 +268,8 @@ def _run(job: _Job, binary: Path, gguf: str) -> None:
             job.rows.append(_row(raw))
         code = job.proc.wait()
         reader.join(timeout = 2)
+        # Before the status turns terminal: the tab puts chat's model back as soon as it sees it.
+        _release_lease(job.id)
         if job.cancelled:
             job.status = "cancelled"
         elif code != 0:
@@ -277,6 +279,7 @@ def _run(job: _Job, binary: Path, gguf: str) -> None:
         else:
             job.status = "done"
     except Exception as exc:  # the job must end in a terminal state whatever went wrong
+        _release_lease(job.id)
         job.status = "error"
         job.error = str(exc)[:500]
     finally:

@@ -180,19 +180,19 @@ LOAD_PATHS = ("/api/inference/load", "/api/inference/unload", "/models/load", "/
 _NOT_GENERATIONS = ("/count_tokens", "/embeddings")
 
 
+def _lease_holds_against(holder: Optional[str]) -> bool:
+    return bool(_lease and _lease["expires"] > time.monotonic() and holder != _lease["holder"])
+
+
 def _sweep_holds_against(holder: Optional[str]) -> bool:
-    return bool(
-        _lease
-        and _lease["kind"] == "sweep"
-        and _lease["expires"] > time.monotonic()
-        and holder != _lease["holder"]
-    )
+    return _lease_holds_against(holder) and _lease["kind"] == "sweep"
 
 
 def load_refused(holder: Optional[str]) -> bool:
-    """A load reloads the one llama-server, so mid-sweep it would run the next rows under other settings."""
+    """A load reloads the one llama-server: mid-sweep it would run the next rows under other
+    settings, and mid llama-bench it would take back the GPU the run unloaded it for."""
     with _lease_lock:
-        return _sweep_holds_against(holder)
+        return _lease_holds_against(holder)
 
 
 def note_inference_request(holder: Optional[str]) -> None:

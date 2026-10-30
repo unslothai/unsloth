@@ -216,3 +216,21 @@ def test_a_non_executable_llama_bench_is_not_offered(tmp_path, monkeypatch):
     assert llama_bench.find_llama_bench() is None
     bench_bin.chmod(0o755)
     assert llama_bench.find_llama_bench() == bench_bin
+
+
+def test_the_lease_is_free_before_the_tab_sees_the_run_end(bench, monkeypatch):
+    # Loads are refused under a llama-bench lease, and the tab puts chat's model back as soon
+    # as the status turns terminal.
+    client, _, _ = bench
+    seen = []
+    release = llama_bench._release_lease
+
+    def record(holder):
+        if llama_bench._job is not None:
+            seen.append(llama_bench._job.status)
+        release(holder)
+
+    monkeypatch.setattr(llama_bench, "_release_lease", record)
+    assert client.post("/api/benchmarks/llama-bench/run", json = {}).status_code == 200
+    assert _wait(client)["status"] == "done"
+    assert seen[0] == "running"

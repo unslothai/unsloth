@@ -244,8 +244,17 @@ def test_a_sweep_refuses_other_loads_until_it_lets_go(monkeypatch):
         TestClient(app).post("/api/inference/load").status_code == 200
     )  # the route's auth decides
     client.delete("/api/benchmarks/lease", params = {"holder": mine["holder"]})
-    # Only sweeps fence loads: llama-bench and Evals manage the server themselves.
-    client.post("/api/benchmarks/lease", json = {"holder": "tab-bbbbbbbb", "kind": "llama-bench"})
+    # llama-bench unloaded the server for its own process: a load would take the GPU back.
+    bench = {"holder": "tab-bbbbbbbb", "kind": "llama-bench"}
+    client.post("/api/benchmarks/lease", json = bench)
+    assert client.post("/api/inference/load").status_code == 409
+    own = client.post("/api/inference/load", headers = {"X-Unsloth-Bench-Lease": bench["holder"]})
+    assert own.status_code == 200
+    # Only a sweep shares the server with other generations, so only a sweep counts them.
+    app.post("/v1/chat/completions")(lambda: {})
+    client.post("/v1/chat/completions")
+    assert client.post("/api/benchmarks/lease", json = bench).json()["outside"] == 0
+    client.delete("/api/benchmarks/lease", params = {"holder": bench["holder"]})
     assert client.post("/api/inference/load").status_code == 200
 
 
