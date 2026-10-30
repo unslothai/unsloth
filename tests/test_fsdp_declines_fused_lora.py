@@ -270,6 +270,27 @@ def test_a_kernel_behind_an_adopted_accelerate_hook_is_found_and_declined():
     assert count.calls > before
 
 
+def test_a_kernel_behind_an_accelerate_hook_after_untile_is_declined():
+    """Tile, fuse, attach an accelerate hook, untile: uninstall hands the kernel to the hook's `_old_forward`. The FSDP
+    detector and the decline must still see it there."""
+    import torch
+    from unsloth.models import llama
+    from unsloth.tiling import untile_mlp
+
+    registry = pytest.importorskip("unsloth_zoo.tiling_registry")
+    hooks, count = _counting_hook()
+    mlp = _GroupedMLP()
+    registry.install_module(mlp, "rows:2")
+    llama._install_fused_lora_mlp(mlp, llama.apply_lora_mlp_swiglu)
+    hooks.add_hook_to_module(mlp, count())
+    untile_mlp(mlp)
+    assert mlp in llama._fused_lora_modules(mlp)
+    assert llama._decline_fused_lora_for_fsdp(mlp) == 1
+    assert llama._fused_lora_modules(mlp) == []
+    x = torch.randn(2, 3, 4)
+    torch.testing.assert_close(mlp(x), mlp.up(x))
+
+
 @pytest.mark.parametrize("tiled", [False, True])
 def test_installing_the_kernel_keeps_an_accelerate_hook_running(tiled):
     import torch

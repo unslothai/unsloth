@@ -33,8 +33,9 @@ def _registry():
             import unsloth_zoo.device_type  # noqa: F401
         finally:
             torch.cuda.is_available = is_available
-    from unsloth_zoo import tiling_registry
-
+    tiling_registry = pytest.importorskip(
+        "unsloth_zoo.tiling_registry"
+    )  # an older zoo has no registry
     return tiling_registry
 
 
@@ -83,8 +84,9 @@ def _worker(rank, init_file, queue):
                     for name, p in inner.named_parameters():
                         if p.requires_grad:
                             p.register_hook(
-                                lambda g, name = name: fired.__setitem__(name, fired.get(name, 0) + 1)
-                                or g
+                                lambda g, name = name: (
+                                    fired.__setitem__(name, fired.get(name, 0) + 1) or g
+                                )
                             )
                     model = torch.nn.parallel.DistributedDataParallel(inner, **ddp_kwargs)
                     out[key] = []
@@ -118,6 +120,7 @@ def _reference(rank, step, frozen):
 
 @pytest.fixture(scope = "module")
 def ddp_grads(tmp_path_factory):
+    _registry()  # skips here, before spawning, on a zoo without the registry
     ctx = mp.get_context("spawn")
     queue = ctx.Queue()
     init_file = tempfile.mktemp(dir = tmp_path_factory.mktemp("ddp"))

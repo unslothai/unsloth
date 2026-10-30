@@ -55,6 +55,16 @@ def _registry():
     return tiling_registry
 
 
+def _refuse_mlx(model):
+    # Sequence tiling runs PyTorch modules under torch checkpointing; an MLX model has no such modules.
+    if any(
+        (getattr(c, "__module__", "") or "").split(".")[0] == "mlx" for c in type(model).__mro__
+    ):
+        raise NotImplementedError(
+            "Unsloth: tiled MLP (tile_mlp / untile_mlp) needs a PyTorch model and is not supported on MLX."
+        )
+
+
 def tile_mlp(
     model,
     rows = None,
@@ -69,6 +79,7 @@ def tile_mlp(
     UNSLOTH_TILED_MLP or "arctic" (rows per tile = hidden size); "auto" sizes tiles from free memory.
     modules: name or class patterns; only matching modules are tiled.
     """
+    _refuse_mlx(model)
     if rows is not None and target_gb is not None:
         raise ValueError("Unsloth: tile_mlp takes rows or target_gb, not both")
     if rows is not None:
@@ -84,6 +95,7 @@ def tile_mlp(
 
 def untile_mlp(model):
     """Undo `tile_mlp`; returns the number of modules restored."""
+    _refuse_mlx(model)
     return _registry().uninstall(model)
 
 

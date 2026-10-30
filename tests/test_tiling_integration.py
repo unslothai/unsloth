@@ -271,3 +271,13 @@ def test_revalidate_for_trainer_takes_the_model_explicitly():
     trainer = types.SimpleNamespace(model = _model())  # still the previous instance
     tiling.revalidate_for_trainer(trainer, model)
     assert len(registry.tiled_modules(model)) == 3
+
+
+def test_tile_mlp_on_an_mlx_model_says_it_is_unsupported():
+    from unsloth.tiling import tile_mlp, untile_mlp
+
+    MlxModule = type("Module", (), {"__module__": "mlx.nn.layers.base"})
+    model = type("Model", (MlxModule,), {})()
+    for fn in (tile_mlp, untile_mlp):
+        with pytest.raises(NotImplementedError, match = "not supported on MLX"):
+            fn(model)
