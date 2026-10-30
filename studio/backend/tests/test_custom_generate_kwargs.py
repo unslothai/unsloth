@@ -3,9 +3,37 @@
 
 """LFM3-Omni's custom generate raises on logits_processor and stopping_criteria (#16054)."""
 
+import ast
+import inspect
 import types
+from pathlib import Path
 
-from core.inference.inference import _supported_generate_kwargs
+# Loaded from source: importing core.inference.inference needs unsloth, which the backend matrix lacks.
+_SRC = Path(__file__).resolve().parents[1] / "core" / "inference" / "inference.py"
+_WANTED = {
+    "_CUSTOM_GENERATE_REJECTED_KWARGS",
+    "_supported_generate_kwargs",
+    "_processor_takes_text_first",
+}
+_NS = {"inspect": inspect}
+exec(
+    compile(
+        ast.Module(
+            [
+                n
+                for n in ast.parse(_SRC.read_text(encoding = "utf-8")).body
+                if getattr(n, "name", None) in _WANTED
+                or any(getattr(t, "id", None) in _WANTED for t in getattr(n, "targets", ()))
+            ],
+            [],
+        ),
+        str(_SRC),
+        "exec",
+    ),
+    _NS,
+)
+_supported_generate_kwargs = _NS["_supported_generate_kwargs"]
+_processor_takes_text_first = _NS["_processor_takes_text_first"]
 
 _KWARGS = {"input_ids": 1, "logits_processor": [], "stopping_criteria": [], "streamer": object()}
 
@@ -43,13 +71,11 @@ class _ImagesFirst:
 
 
 def test_text_first_processor_detected():
-    from core.inference.inference import _processor_takes_text_first
     assert _processor_takes_text_first(_TextFirst()) is True
     assert _processor_takes_text_first(_ImagesFirst()) is False
 
 
 def test_zoo_wrapped_call_still_reads_original_signature():
-    from core.inference.inference import _processor_takes_text_first
     class _Patched(_TextFirst):
         def __call__(self, *args, **kwargs):
             return super().__call__(*args, **kwargs)

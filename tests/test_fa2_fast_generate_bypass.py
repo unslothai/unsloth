@@ -27,6 +27,7 @@ def _load_function(name, namespace):
     return namespace[name]
 
 
+generate_rejects_cache_fields = _load_function("_generate_rejects_cache_fields", {})
 uses_flash_attention = _load_function(
     "_uses_flash_attention_for_generation",
     {
@@ -215,6 +216,7 @@ def test_wrapper_dispatch_preserves_normalization_and_selects_expected_path():
         "Version": Version,
         "transformers_version": TRANSFORMERS_VERSION,
         "_uses_flash_attention_for_generation": uses_flash_attention,
+        "_generate_rejects_cache_fields": generate_rejects_cache_fields,
         "_clear_generation_caches": clear_generation_caches,
         "_is_text_seq2seq_config": lambda config: False,
     }
@@ -301,6 +303,7 @@ def test_flash_attention_fallback_pins_a_dynamic_cache():
         "Version": Version,
         "transformers_version": TRANSFORMERS_VERSION,
         "_uses_flash_attention_for_generation": uses_flash_attention,
+        "_generate_rejects_cache_fields": generate_rejects_cache_fields,
         "_clear_generation_caches": clear_generation_caches,
         "_is_text_seq2seq_config": lambda config: False,
     }
