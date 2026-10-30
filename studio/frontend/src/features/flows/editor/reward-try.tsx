@@ -155,7 +155,7 @@ export function RewardTryPanel({ node }: { node: FlowNode }) {
         rows={2}
         value={reference}
         onChange={(e) => setReference(e.target.value)}
-        className="text-[13px] leading-snug"
+        className="text-ui-13 leading-snug"
       />
       <FieldLabel label="A model reply" />
       <Textarea
@@ -163,7 +163,7 @@ export function RewardTryPanel({ node }: { node: FlowNode }) {
         rows={5}
         value={completion}
         onChange={(e) => setCompletion(e.target.value)}
-        className="text-[13px] leading-snug"
+        className="text-ui-13 leading-snug"
       />
       <Button
         type="button"
