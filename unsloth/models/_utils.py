@@ -6374,7 +6374,6 @@ def patch_gradient_accumulation_fix(Trainer):
                 if not keep_fused:
                     from .llama import _decline_fused_lora_for_fsdp
                     _decline_fused_lora_for_fsdp(getattr(self, "model", None), reason)
-            # Tiled MLP: re-run the load-time plan per instance, so modules PEFT added after load are covered.
             try:
                 from ..tiling import revalidate_for_trainer
                 revalidate_for_trainer(self)
@@ -6408,7 +6407,6 @@ def patch_gradient_accumulation_fix(Trainer):
             model = _original_call_model_init(self, *args, **kwargs)
             _refuse_tensor_parallel_for_trainer(model)
             _tensor_subclass_weights_for_ddp(self, model)
-            # The fresh model may carry modules added after load (PEFT, the fused LoRA MLP); re-run its tiling plan.
             try:
                 from ..tiling import revalidate_for_trainer
                 revalidate_for_trainer(self, model)

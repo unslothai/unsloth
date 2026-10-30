@@ -3391,8 +3391,7 @@ def _fused_lora_modules(model) -> list:
     return fused
 
 
-# Every instance slot a fused LoRA MLP kernel can end up in: the instance forward, a tiled MLP's inner forward, and the
-# saved forward behind an accelerate hook / MoE wrapper that tiling adopted (the hook calls `_old_forward`).
+# `_old_forward`: an accelerate hook calls it, so the kernel can live behind the hook.
 _MLP_FORWARD_SLOTS = ("forward", "_unsloth_forward", "_old_forward", "_orig_moe_forward")
 
 
@@ -3402,7 +3401,6 @@ def _is_fused_lora_mlp(fn) -> bool:
 
 
 def _fused_lora_mlp_slot(module):
-    """The slot holding a fused LoRA MLP kernel on `module`, or None."""
     d = getattr(module, "__dict__", {})
     for name in _MLP_FORWARD_SLOTS:
         if _is_fused_lora_mlp(d.get(name)):
@@ -3414,13 +3412,7 @@ _PRE_FUSED_FORWARD = "_unsloth_forward_before_fused_lora"
 
 
 def _install_fused_lora_mlp(mlp_module, kernel):
-    """Bind the fused LoRA MLP kernel as the forward this MLP runs.
-
-    A tiled MLP (unsloth_zoo.tiling_registry) keeps its inner forward in `_unsloth_forward`, so the kernel goes there
-    and runs per tile; otherwise it becomes the instance forward. An accelerate hook (`_hf_hook`) calls the module's
-    `_old_forward`, so the kernel goes there instead and the hook keeps running around it. MethodType binds the
-    replacement.
-    """
+    """Bind the kernel into `_old_forward` (accelerate hook), `_unsloth_forward` (tiled) or `forward`."""
     d = mlp_module.__dict__
     if "_hf_hook" in d and "_old_forward" in d:
         slot = "_old_forward"
@@ -3430,11 +3422,8 @@ def _install_fused_lora_mlp(mlp_module, kernel):
         slot = "forward"
     current = d.get(slot)
     if _PRE_FUSED_FORWARD not in d and not _is_fused_lora_mlp(current):
-        # What ran before the kernel (an adopted grouped MoE / mxfp4 / accelerate-hook forward, or None for the
-        # class forward); _decline_fused_lora_for_fsdp puts it back, possibly into another slot once tiling moved it.
-        # The class forward (what tiling stores when nothing was adopted) is recorded as None: restoring it into the
-        # instance `forward` slot unbound would drop `self`. A plain instance function (`mlp.forward = f`, or a
-        # compiler.disable wrapper) already takes x: wrap it so a tiled inner slot does not bind `self` again.
+        # Class forward is recorded as None: restored unbound into `forward` it would drop `self`. A plain
+        # instance function already takes x: partial() stops a tiled inner slot binding `self` again.
         if current is type(mlp_module).forward:
             previous = None
         elif slot == "forward" and isinstance(current, types.FunctionType):
@@ -3466,8 +3455,6 @@ def _decline_fused_lora_for_fsdp(model, reason = None) -> int:
         for name in _MLP_FORWARD_SLOTS:
             if not _is_fused_lora_mlp(module.__dict__.get(name)):
                 continue
-            # Tiling may have moved the kernel (into _unsloth_forward, or behind an adopted accelerate hook in
-            # _old_forward) after the install, so the record is read whichever slot holds it.
             previous = module.__dict__.pop(_PRE_FUSED_FORWARD, None)
             if previous is type(module).forward:
                 previous = None
@@ -3479,7 +3466,6 @@ def _decline_fused_lora_for_fsdp(model, reason = None) -> int:
             elif name == "_unsloth_forward":
                 module._unsloth_forward = module.__class__.forward if previous is None else previous
             else:
-                # Called as module._old_forward(x): a bound method.
                 module.__dict__[name] = (
                     types.MethodType(module.__class__.forward, module)
                     if previous is None

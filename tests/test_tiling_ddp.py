@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Tiled MLP under 2-rank gloo DDP equals the untiled all-reduced grads in every DDP mode, with no DDP patch, and
-each parameter's grad hook fires once per backward (the removed _tiled_mlp_ddp.py existed because it fired per tile)."""
+"""Tiled MLP under 2-rank gloo DDP matches untiled grads with no DDP patch; grad hooks fire once per backward."""
 
 import os
 import sys

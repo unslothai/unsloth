@@ -1760,8 +1760,6 @@ else:
             pass
 
 
-# Sequence tiling one-liner, every backend (MLX included): unsloth.tile_mlp(model) / unsloth.untile_mlp(model).
-# unsloth.tiling imports only os; the zoo registry loads when a helper is called.
 from .tiling import tile_mlp, untile_mlp
 
 # A pip --target / PYTHONPATH layout makes dill pickle modules by value, breaking dataset fingerprints.

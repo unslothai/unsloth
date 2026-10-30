@@ -150,7 +150,6 @@ def test_the_trainer_init_wrapper_calls_the_decline():
 
 
 class _GroupedMLP(__import__("torch").nn.Module):
-    """A dense MLP whose instance forward was replaced (grouped MoE / mxfp4 / accelerate hook style)."""
 
     def __init__(self):
         import torch
@@ -167,8 +166,7 @@ def _adopted_forward(self, x):
 
 @pytest.mark.parametrize("tiled", [False, True, "after"])
 def test_declining_restores_the_forward_before_the_fused_kernel(tiled):
-    """An instance forward that ran before the fused LoRA MLP (adopted by tiling as its inner forward, or left as the
-    module's own forward) must come back on decline, not the class forward."""
+    """Decline restores the prior instance forward, not the class forward."""
     import types
 
     import torch
@@ -182,7 +180,6 @@ def test_declining_restores_the_forward_before_the_fused_kernel(tiled):
         assert mlp.__dict__["_unsloth_forward"].__func__ is _adopted_forward
     llama._install_fused_lora_mlp(mlp, llama.apply_lora_mlp_swiglu)
     if tiled == "after":
-        # Trainer revalidation tiles after the kernel went in: the kernel is adopted as the inner forward.
         registry.install_module(mlp, "rows:2")
     assert mlp in llama._fused_lora_modules(mlp)
     assert llama._decline_fused_lora_for_fsdp(mlp) == 1
@@ -219,8 +216,7 @@ def test_declining_a_plain_module_still_restores_the_class_forward(tiled):
 
 
 def test_tile_fuse_untile_decline_leaves_a_callable_module():
-    """Tiling stores the class forward in the inner slot; after untile the kernel sits in `forward`, and the decline
-    must not put the unbound class function there."""
+    """Decline after untile must not put the unbound class function in `forward`."""
     import torch
     from unsloth.models import llama
 
@@ -249,8 +245,7 @@ def _counting_hook():
 
 
 def test_a_kernel_behind_an_adopted_accelerate_hook_is_found_and_declined():
-    """Tile, fuse, attach an accelerate hook, revalidate: tiling adopts the hook and the kernel moves into the hook's
-    `_old_forward`. The FSDP detector and the decline must still see it, and the hook must keep running."""
+    """Kernel moved into an adopted hook's `_old_forward` is still detected and declined; the hook keeps running."""
     import torch
     from unsloth.models import llama
 
@@ -271,8 +266,7 @@ def test_a_kernel_behind_an_adopted_accelerate_hook_is_found_and_declined():
 
 
 def test_a_kernel_behind_an_accelerate_hook_after_untile_is_declined():
-    """Tile, fuse, attach an accelerate hook, untile: uninstall hands the kernel to the hook's `_old_forward`. The FSDP
-    detector and the decline must still see it there."""
+    """After untile the kernel sits in the hook's `_old_forward` and is still detected and declined."""
     import torch
     from unsloth.models import llama
     from unsloth.tiling import untile_mlp
@@ -308,7 +302,6 @@ def test_installing_the_kernel_keeps_an_accelerate_hook_running(tiled):
     kernel = llama.apply_lora_mlp_swiglu
     llama._install_fused_lora_mlp(mlp, kernel)
     assert mlp in llama._fused_lora_modules(mlp)
-    # Swap the real kernel for a spy only to observe the call; it is a plain function, not the fused kernel.
     slot = llama._fused_lora_mlp_slot(mlp)
     mlp.__dict__[slot] = types.MethodType(lambda self, x: (seen.append(1), self.up(x))[1], mlp)
     x = torch.randn(2, 3, 4)
@@ -319,8 +312,7 @@ def test_installing_the_kernel_keeps_an_accelerate_hook_running(tiled):
 
 @pytest.mark.parametrize("wrap", ["lambda", "compiler_disable"])
 def test_instance_forward_fuse_tile_decline_still_calls(wrap):
-    """An instance function forward (no `self`) recorded before the kernel must not get `self` twice when the
-    decline puts it into a tiled MLP's inner slot."""
+    """A restored instance function must not get `self` bound twice in a tiled inner slot."""
     import torch
     from unsloth.models import llama
 

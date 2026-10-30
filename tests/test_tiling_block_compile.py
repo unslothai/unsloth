@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Tiled MLP under the default per-decoder-block compile. The previous TiledMLP failed here on torch >= 2.11 with
-"A view was created in no_grad mode and its base ... has been modified inplace with grad mode enabled"."""
+"""Tiled MLP under per-decoder-block compile (old TiledMLP hit a no_grad view error on torch >= 2.11)."""
 
 import os
 
@@ -64,7 +63,6 @@ def test_tiled_mlp_trains_under_the_default_block_compile(spelling, monkeypatch,
     opt = torch.optim.AdamW(params, lr = 1e-4)
     ids = torch.randint(10, 500, (1, 256), generator = torch.Generator().manual_seed(1)).cuda()
     for _ in range(2):
-        # The decoder blocks hold the tiled MLP and the per-block compile; the 151k-vocab head is left out.
         hidden = model.base_model.model.model(input_ids = ids).last_hidden_state
         loss = hidden.float().pow(2).mean()
         loss.backward()
@@ -74,6 +72,5 @@ def test_tiled_mlp_trains_under_the_default_block_compile(spelling, monkeypatch,
         opt.zero_grad()
     out = capfd.readouterr()
     text = out.out + out.err
-    # The blocks must really have compiled: a demoted block runs the stock forward, which proves nothing here.
     assert "compiling each transformer block as one region" in text
     assert "block compile failed" not in text

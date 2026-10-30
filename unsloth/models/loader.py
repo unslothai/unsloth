@@ -1309,7 +1309,7 @@ class FastLanguageModel(FastLlamaModel):
                 load_in_8bit = True
                 load_in_4bit = False
 
-        # Tiling requested on a zoo without the registry: fail before any weights load.
+        # Fail before any weights load.
         check_tiling_available(unsloth_tiled_mlp)
         # Login to allow private models. Before normalization: dtype is also derived below from a 4bit config's compute dtype, which is not a request for the whole model.
         user_float32 = _requested_float32(dtype)
@@ -2141,7 +2141,6 @@ class FastLanguageModel(FastLlamaModel):
             except Exception:
                 pass  # optional speedup; never block model loading
 
-        # Sequence tiling: unsloth_tiled_mlp = True / "auto" / "arctic" / "rows:N" / "target:GB", or UNSLOTH_TILED_MLP.
         loader_tile_mlp(model, unsloth_tiled_mlp)
 
         model = _fix_rope_inv_freq(model)
@@ -2290,7 +2289,7 @@ class FastModel(FastBaseModel):
                 load_in_8bit = True
                 load_in_4bit = False
 
-        # Tiling requested on a zoo without the registry: fail before any weights load.
+        # Fail before any weights load.
         check_tiling_available(unsloth_tiled_mlp)
         # Login to allow private models. Before normalization: dtype is also derived below from a 4bit config's compute dtype, which is not a request for the whole model.
         user_float32 = _requested_float32(dtype)
@@ -3630,7 +3629,6 @@ class FastModel(FastBaseModel):
             print("Unsloth: Applying QAT to mitigate quantization degradation")
             model = FastModel._prepare_for_qat(model, qat_scheme)
 
-        # Sequence tiling: unsloth_tiled_mlp = True / "auto" / "arctic" / "rows:N" / "target:GB", or UNSLOTH_TILED_MLP.
         loader_tile_mlp(model, unsloth_tiled_mlp)
 
         model = _fix_rope_inv_freq(model)

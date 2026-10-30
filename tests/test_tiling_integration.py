@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Unsloth side of sequence tiling: loader spellings, tile_mlp / untile_mlp, Trainer revalidation, the removed DDP
-patch and the sentence-transformer passthrough. CPU only; unsloth/tiling.py is loaded by path (no GPU init)."""
+"""Unsloth side of sequence tiling. CPU only; unsloth/tiling.py is loaded by path (no GPU init)."""
 
 import ast
 import importlib.util
@@ -67,13 +66,11 @@ def _env(monkeypatch):
         ("target:2", True, "target:2"),
         ("target:2:mlp,ffn", False, "target:2:mlp,ffn"),
         ("auto", "rows:8", "auto"),  # the environment wins over the kwarg, as before
-        # One off parse: every off spelling of the environment behaves like "0" ...
         ("false", True, True),
         ("off", True, True),
         ("No", True, True),
         ("none", True, True),
         ("FALSE", False, None),
-        # ... and of the kwarg, numeric 0 included.
         (None, 0, None),
         (None, "false", None),
         (None, "Off", None),
@@ -139,7 +136,6 @@ def test_trainer_revalidation_covers_peft_added_modules():
     assert len(report.tiled) == 3 and registry.is_tiled(extra.mlp)
     assert tiling.revalidate_for_trainer(types.SimpleNamespace(model = _model())) is None
     assert tiling.revalidate_for_trainer(types.SimpleNamespace(model = None)) is None
-    # LoRA weights inside the tiles get gradients (frozen input: x does not require grad).
     model.train()
     x = torch.randn(2, 9, 8)
     out = sum(layer.mlp(x) for layer in model.base_model.model.layers)
@@ -174,7 +170,6 @@ def test_trainer_init_revalidates():
     )
     names = [getattr(n.func, "id", None) for n in ast.walk(init) if isinstance(n, ast.Call)]
     assert "revalidate_for_trainer" in names
-    # After the original __init__ and the FSDP fused-LoRA decline, so the model it sees is final.
     order = [n for n in names if n in ("_original_trainer_init", "revalidate_for_trainer")]
     assert order.index("_original_trainer_init") < order.index("revalidate_for_trainer")
 
@@ -192,7 +187,6 @@ def test_sentence_transformer_passes_the_kwarg_through():
 
 
 def test_package_exports_tile_mlp_on_every_backend():
-    # At module scope, after the MLX / GPU / CPU branch, so `unsloth.tile_mlp` exists on MLX too.
     tree = ast.parse((ROOT / "unsloth" / "__init__.py").read_text())
     top = [
         n
@@ -204,7 +198,6 @@ def test_package_exports_tile_mlp_on_every_backend():
 
 @pytest.mark.parametrize("off", [False, None, 0, "0", "false", "no"])
 def test_tiling_off_never_imports_the_registry(monkeypatch, off):
-    # An unsloth_zoo without the registry: tiling off must not touch it.
     import sys
 
     monkeypatch.setitem(sys.modules, "unsloth_zoo.tiling_registry", None)

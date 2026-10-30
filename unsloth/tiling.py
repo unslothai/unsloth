@@ -1,16 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Sequence tiling (tiled MLP) for any model: `unsloth.tile_mlp(model)` / `unsloth.untile_mlp(model)`.
+"""Sequence tiling (tiled MLP): `unsloth.tile_mlp(model)` / `unsloth.untile_mlp(model)`.
 
-Each token-local module (dense MLPs, top-k MoE blocks, VLM projectors) runs over the sequence in row tiles, so only
-one tile's intermediate activations are alive at a time. Which modules qualify, and how their outputs are put back
-together, is decided by `unsloth_zoo.tiling_registry`.
-
-Parallelism rule (unsloth_zoo.tiling_registry.PARALLEL_RULE): tiling is per rank. It splits only the rows this rank
-holds; under Ulysses context parallel the MLP sees the local sequence shard, so the tiles are planned on the shard.
-DDP and FSDP2 need nothing extra. Tensor parallel modules are left untiled (a row-parallel all-reduce would run once
-per tile) unless UNSLOTH_TILED_MLP_TP=1.
+Tensor parallel modules stay untiled (a row-parallel all-reduce would run once per tile) unless UNSLOTH_TILED_MLP_TP=1.
 """
 
 import os
@@ -24,8 +17,6 @@ _OFF = ("", "0", "false", "off", "no", "none")
 
 
 def _is_off(value):
-    """One parse for "tiling off", shared by the env var, the loader kwarg and `tile_mlp`: None, False, 0 and the
-    strings "", "0", "false", "off", "no", "none" (any case)."""
     if value is None or value is False:
         return True
     if isinstance(value, bool):
@@ -38,7 +29,6 @@ def _is_off(value):
 
 
 def _env_mode():
-    """UNSLOTH_TILED_MLP, or None when it is unset or any off spelling."""
     env = os.environ.get(_ENV, "").strip()
     return None if _is_off(env) else env
 
@@ -56,7 +46,6 @@ def _registry():
 
 
 def _refuse_mlx(model):
-    # Sequence tiling runs PyTorch modules under torch checkpointing; an MLX model has no such modules.
     if any(
         (getattr(c, "__module__", "") or "").split(".")[0] == "mlx" for c in type(model).__mro__
     ):
@@ -73,13 +62,7 @@ def tile_mlp(
     mode = None,
     verbose = True,
 ):
-    """Tile every eligible MLP / MoE / projector in `model`; idempotent. Returns the coverage report.
-
-    rows: fixed rows per tile. target_gb: activation budget per tile in GB. Neither: `mode`, which defaults to
-    UNSLOTH_TILED_MLP or "auto" (tiles from free memory, one tile when tiling would not lower the peak); "arctic"
-    always tiles with rows per tile = hidden size.
-    modules: name or class patterns; only matching modules are tiled.
-    """
+    """Tile every eligible MLP / MoE / projector in `model`; idempotent. Returns the coverage report."""
     _refuse_mlx(model)
     if rows is not None and target_gb is not None:
         raise ValueError("Unsloth: tile_mlp takes rows or target_gb, not both")
@@ -101,9 +84,7 @@ def untile_mlp(model):
 
 
 def resolve_loader_mode(unsloth_tiled_mlp):
-    """The tiling mode a loader call asks for, or None. UNSLOTH_TILED_MLP, when set to anything but an off spelling,
-    gives the mode; otherwise a `unsloth_tiled_mlp` that is not off turns tiling on, so an off environment never
-    overrides an explicit kwarg (the old "0" behaviour, now the same for every off spelling)."""
+    """A set UNSLOTH_TILED_MLP wins; an off environment never overrides an explicit kwarg."""
     env = _env_mode()
     if env is not None:
         return env
@@ -111,14 +92,12 @@ def resolve_loader_mode(unsloth_tiled_mlp):
 
 
 def check_tiling_available(unsloth_tiled_mlp):
-    """Loader entry, before any weights load: when tiling is requested, make sure this unsloth_zoo has the registry
-    and fail fast otherwise. Tiling off never imports it."""
+    """Fail fast before weights load; tiling off never imports the registry."""
     if resolve_loader_mode(unsloth_tiled_mlp) is not None:
         _registry()
 
 
 def loader_tile_mlp(model, unsloth_tiled_mlp):
-    """Loader call site: tile `model` when the kwarg or UNSLOTH_TILED_MLP asks for it."""
     mode = resolve_loader_mode(unsloth_tiled_mlp)
     if mode is None:
         return None
@@ -126,9 +105,6 @@ def loader_tile_mlp(model, unsloth_tiled_mlp):
 
 
 def revalidate_for_trainer(trainer, model = None):
-    """Per Trainer instance: re-run the model's tiling plan so modules added since load (PEFT, the fused LoRA MLP
-    forward) are covered. No-op for a model that was never tiled. `model` overrides `trainer.model` (the fresh model
-    `model_init` returns)."""
     if model is None:
         model = getattr(trainer, "model", None)
     if model is None:
