@@ -324,6 +324,12 @@ def _case_train(
     if sft_cp:
         args.context_parallel_size = cp
         args.context_parallel_backend = "ulysses"
+    if device != "cpu":
+        # Pure fp32 like the CPU reference. SFTConfig defaults to bf16 = True, and Unsloth's trainer turns
+        # bf16 = fp16 = False on a float32 model into bf16 autocast on a bf16 GPU, so both flags alone are not
+        # enough: the stamp below is the per-model "train this one in float32" switch the trainer honours.
+        args.bf16 = args.fp16 = False
+        model._unsloth_forced_float32 = True
     tokenizer = AutoTokenizer.from_pretrained(ckpt)
     trainer = SequentialSFT(
         model = model,
@@ -333,6 +339,8 @@ def _case_train(
         processing_class = tokenizer,
         callbacks = [Grabber()],
     )
+    if device != "cpu":
+        assert trainer.accelerator.mixed_precision == "no", trainer.accelerator.mixed_precision
     manager = getattr(trainer, "_context_parallel_manager", None)
     seen_lengths, ulysses_calls = set(), []
     embed = trainer.model.get_input_embeddings()
