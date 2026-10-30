@@ -139,7 +139,9 @@ def int8_mod_outliers() -> int:
         return DEFAULT_MOD_OUTLIERS
 
 
-def streamed_weight_only_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tuple[str, ...]:
+def streamed_weight_only_tokens_for_scheme(
+    scheme: str, family: Optional[str] = None
+) -> tuple[str, ...]:
     """Name tokens a streamed int8 build stores weight-only; () outside ``int8_text_stream_scope(True)``."""
     if scheme != TQ_INT8 or not _TEXT_STREAM_SCOPE.get() or int8_modulation_mode() == "off":
         return ()
@@ -171,7 +173,9 @@ def streamed_weight_only_layout(scheme: str, family: Optional[str] = None) -> di
     }
 
 
-def _modulation_fqns(transformer: Any, tokens: tuple, min_features: int, *, quantized: bool) -> list:
+def _modulation_fqns(
+    transformer: Any, tokens: tuple, min_features: int, *, quantized: bool
+) -> list:
     import torch
 
     from .diffusion_int8_gemv import weight_only_parts
@@ -180,14 +184,20 @@ def _modulation_fqns(transformer: Any, tokens: tuple, min_features: int, *, quan
     out = []
     for name, module in transformer.named_modules():
         lname = name.lower()
-        if not isinstance(module, torch.nn.Linear) or "lora_" in lname or not any(t in lname for t in tokens):
+        if (
+            not isinstance(module, torch.nn.Linear)
+            or "lora_" in lname
+            or not any(t in lname for t in tokens)
+        ):
             continue
         if module.in_features < min_features or module.out_features < min_features:
             continue
         if quantized:
             if weight_only_parts(module.weight) is not None:
                 out.append(name)
-        elif getattr(module.weight, "dtype", None) == torch.bfloat16 and not is_quantized_linear(module):
+        elif getattr(module.weight, "dtype", None) == torch.bfloat16 and not is_quantized_linear(
+            module
+        ):
             out.append(name)
     return out
 
@@ -219,22 +229,33 @@ def quantize_streamed_weight_only(
         names = _modulation_fqns(transformer, tokens, min_features, quantized = False)
         if not names:
             if mode == "wo":
-                install(transformer, _modulation_fqns(transformer, tokens, min_features, quantized = True), logger = logger)
+                install(
+                    transformer,
+                    _modulation_fqns(transformer, tokens, min_features, quantized = True),
+                    logger = logger,
+                )
             return ()
         config = _weight_only_config() if mode == "wo" else _make_quant_config(scheme)
         if config is None:
             return ()
         wanted = frozenset(names)
-        outliers = timestep_outlier_channels(transformer, layout["weight_only_outliers"]) if mode == "wo" else ()
+        outliers = (
+            timestep_outlier_channels(transformer, layout["weight_only_outliers"])
+            if mode == "wo"
+            else ()
+        )
         if outliers:
             modules = dict(transformer.named_modules())
             used = min(split_outliers_(modules[name], outliers) for name in names)
         if mode == "w8a8rot":
             from .diffusion_convrot import DEFAULT_CONVROT_GROUPSIZE, rotate_linears_
-
             rotate_linears_(
                 transformer,
-                [n for n in names if transformer.get_submodule(n).in_features % DEFAULT_CONVROT_GROUPSIZE == 0],
+                [
+                    n
+                    for n in names
+                    if transformer.get_submodule(n).in_features % DEFAULT_CONVROT_GROUPSIZE == 0
+                ],
             )
         quantize_(transformer, config, filter_fn = lambda _m, fqn = "": fqn in wanted)
         if mode == "wo":
@@ -251,7 +272,11 @@ def quantize_streamed_weight_only(
     if logger is not None:
         logger.info(
             "diffusion.transformer_quant: %s %d streamed modulation Linear(s) (%s; %d dense outlier channels)",
-            {"wo": "int8 weight-only", "w8a8": "int8 W8A8 padded", "w8a8rot": "int8 W8A8 ConvRot padded"}[mode],
+            {
+                "wo": "int8 weight-only",
+                "w8a8": "int8 W8A8 padded",
+                "w8a8rot": "int8 W8A8 ConvRot padded",
+            }[mode],
             len(names),
             ", ".join(tokens),
             used,

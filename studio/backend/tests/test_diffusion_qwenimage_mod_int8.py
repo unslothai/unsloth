@@ -19,7 +19,12 @@ _MODS = ("img_mod", "txt_mod")
 
 @pytest.fixture(autouse = True)
 def _clean_env(monkeypatch):
-    for var in (tq.INT8_MODULATION_ENV, tq.INT8_MOD_OUTLIERS_ENV, tq.INT8_TEXT_STREAM_ENV, gv.INT8_GEMV_ENV):
+    for var in (
+        tq.INT8_MODULATION_ENV,
+        tq.INT8_MOD_OUTLIERS_ENV,
+        tq.INT8_TEXT_STREAM_ENV,
+        gv.INT8_GEMV_ENV,
+    ):
         monkeypatch.delenv(var, raising = False)
 
 
@@ -41,7 +46,15 @@ def test_tokens_only_inside_the_streamed_scope():
 
 @pytest.mark.parametrize(
     "raw, mode",
-    [("", "wo"), ("1", "wo"), ("on", "wo"), ("0", "off"), ("off", "off"), ("w8a8", "w8a8"), ("w8a8rot", "w8a8rot")],
+    [
+        ("", "wo"),
+        ("1", "wo"),
+        ("on", "wo"),
+        ("0", "off"),
+        ("off", "off"),
+        ("w8a8", "w8a8"),
+        ("w8a8rot", "w8a8rot"),
+    ],
 )
 def test_modulation_switch(monkeypatch, raw, mode):
     monkeypatch.setenv(tq.INT8_MODULATION_ENV, raw)
@@ -57,7 +70,9 @@ def test_outlier_switch(monkeypatch, raw, n):
     assert tq.int8_mod_outliers() == n
 
 
-@pytest.mark.parametrize("raw, keyed", [("", None), ("8", None), ("junk", None), ("0", "0"), ("4", "4"), ("99", "16")])
+@pytest.mark.parametrize(
+    "raw, keyed", [("", None), ("8", None), ("junk", None), ("0", "0"), ("4", "4"), ("99", "16")]
+)
 def test_compile_cache_switch_keys_on_the_outlier_count_the_reader_uses(monkeypatch, raw, keyed):
     from core.inference import diffusion_compile_cache as cc
 
@@ -95,7 +110,11 @@ def test_cache_key_carries_the_layout(monkeypatch):
     assert len(set(keys)) == len(keys)
 
 
-def _linear(n = 48, k = 256, seed = 0):
+def _linear(
+    n = 48,
+    k = 256,
+    seed = 0,
+):
     g = torch.Generator().manual_seed(seed)
     lin = nn.Linear(k, n, dtype = torch.bfloat16)
     lin.weight.data = (torch.randn(n, k, generator = g) * 0.02).to(torch.bfloat16)
@@ -103,7 +122,12 @@ def _linear(n = 48, k = 256, seed = 0):
     return lin
 
 
-def _outlier_x(m = 2, k = 256, seed = 1, channels = (3, 77)):
+def _outlier_x(
+    m = 2,
+    k = 256,
+    seed = 1,
+    channels = (3, 77),
+):
     g = torch.Generator().manual_seed(seed)
     x = torch.randn(m, k, generator = g)
     for c in channels:
@@ -247,14 +271,22 @@ def test_streamed_quantize_builds_the_layout(monkeypatch):
     toy.time_text_embed.to(torch.bfloat16)
     toy.block = Block()
     temb = torch.nn.functional.silu(
-        toy.time_text_embed.timestep_embedder(toy.time_text_embed.time_proj(torch.tensor([0.5])).to(torch.bfloat16))
+        toy.time_text_embed.timestep_embedder(
+            toy.time_text_embed.time_proj(torch.tensor([0.5])).to(torch.bfloat16)
+        )
     )
     want = toy.block.img_mod(temb.float().to(torch.bfloat16)).float()
     with tq.int8_text_stream_scope(True):
         names = tq.quantize_streamed_weight_only(toy, TQ_INT8, "qwen-image", min_features = 32)
-    assert set(names) == {"block.img_mod.1", "block.txt_mod.1"}  # the float32 toy img_mod is not bf16: left alone
+    assert set(names) == {
+        "block.img_mod.1",
+        "block.txt_mod.1",
+    }  # the float32 toy img_mod is not bf16: left alone
     layout = toy._unsloth_weight_only_layout
-    assert layout["weight_only_outliers"] == tq.DEFAULT_MOD_OUTLIERS and layout["weight_only_mode"] == "wo"
+    assert (
+        layout["weight_only_outliers"] == tq.DEFAULT_MOD_OUTLIERS
+        and layout["weight_only_mode"] == "wo"
+    )
     assert gv.is_gemv_linear(toy.block.img_mod[1]) and type(toy.block.other) is nn.Linear
     assert {5, 40} <= set(toy.block.img_mod[1].outlier_idx.tolist())
     got = toy.block.img_mod(temb).float()

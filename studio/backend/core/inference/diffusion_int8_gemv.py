@@ -89,7 +89,9 @@ def _kernel() -> Any:
         for k0 in range(0, K, BLOCK_K):
             rk = k0 + tl.arange(0, BLOCK_K)
             q = tl.load(q_ptr + rn[:, None] * stride_qn + rk[None, :], mask = n_ok[:, None], other = 0)
-            x = tl.load(x_ptr + rm[:, None] * stride_xm + rk[None, :], mask = m_ok[:, None], other = 0.0)
+            x = tl.load(
+                x_ptr + rm[:, None] * stride_xm + rk[None, :], mask = m_ok[:, None], other = 0.0
+            )
             # int8 -> bf16 is exact and bf16 x bf16 products are exact in the float32 accumulator
             part = tl.dot(x, tl.trans(q.to(tl.bfloat16)), out_dtype = tl.float32)
             if GROUPED:
@@ -105,8 +107,16 @@ def _kernel() -> Any:
             ro = tl.arange(0, 16)
             o_ok = ro < KO
             idx = tl.load(oi_ptr + ro, mask = o_ok, other = 0)
-            xo = tl.load(x_ptr + rm[:, None] * stride_xm + idx[None, :], mask = m_ok[:, None] & o_ok[None, :], other = 0.0)
-            wo = tl.load(ow_ptr + rn[:, None] * stride_on + ro[None, :], mask = n_ok[:, None] & o_ok[None, :], other = 0.0)
+            xo = tl.load(
+                x_ptr + rm[:, None] * stride_xm + idx[None, :],
+                mask = m_ok[:, None] & o_ok[None, :],
+                other = 0.0,
+            )
+            wo = tl.load(
+                ow_ptr + rn[:, None] * stride_on + ro[None, :],
+                mask = n_ok[:, None] & o_ok[None, :],
+                other = 0.0,
+            )
             acc += tl.dot(xo, tl.trans(wo), out_dtype = tl.float32)
         if HAS_BIAS:
             b = tl.load(b_ptr + rn, mask = n_ok, other = 0.0)
@@ -120,7 +130,14 @@ def _kernel() -> Any:
     return triton, i8_wo_gemv
 
 
-def reference(x: Any, q: Any, s: Any, bias: Any, oidx: Any = None, ow: Any = None) -> Any:
+def reference(
+    x: Any,
+    q: Any,
+    s: Any,
+    bias: Any,
+    oidx: Any = None,
+    ow: Any = None,
+) -> Any:
     """Same math in torch (float32 accumulate, one bf16 rounding): the CPU / no-Triton body of the op."""
     import torch
 
@@ -131,7 +148,9 @@ def reference(x: Any, q: Any, s: Any, bias: Any, oidx: Any = None, ow: Any = Non
         y = (xf @ q.float().t()) * s.reshape(1, n).float()
     else:
         g = k // groups
-        parts = torch.einsum("mgk,ngk->mng", xf.reshape(-1, groups, g), q.float().reshape(n, groups, g))
+        parts = torch.einsum(
+            "mgk,ngk->mng", xf.reshape(-1, groups, g), q.float().reshape(n, groups, g)
+        )
         y = (parts * s.reshape(1, n, groups).float()).sum(-1)
     if oidx is not None:
         y = y + xf.index_select(-1, oidx.long()) @ ow.float().t()
@@ -181,7 +200,14 @@ def _launch(x: Any, q: Any, s2: Any, bias: Any, oidx: Any, ow: Any, cfg: tuple) 
     return y
 
 
-def _run(x: Any, q: Any, s: Any, bias: Any, oidx: Any = None, ow: Any = None) -> Any:
+def _run(
+    x: Any,
+    q: Any,
+    s: Any,
+    bias: Any,
+    oidx: Any = None,
+    ow: Any = None,
+) -> Any:
     m, k = x.shape
     n = q.shape[0]
     groups = s.numel() // n
@@ -255,7 +281,10 @@ def weight_only_parts(w: Any) -> Optional[tuple]:
     """(int8 [N, K], scale [N, K / G]) of a symmetric weight-only torchao ``Int8Tensor`` (per row or per group)."""
     if type(w).__name__ != "Int8Tensor":
         return None
-    if getattr(w, "act_quant_kwargs", None) is not None or getattr(w, "act_pre_scale", None) is not None:
+    if (
+        getattr(w, "act_quant_kwargs", None) is not None
+        or getattr(w, "act_pre_scale", None) is not None
+    ):
         return None
     q, s = getattr(w, "qdata", None), getattr(w, "scale", None)
     block = list(getattr(w, "block_size", ()) or ())
@@ -293,7 +322,9 @@ def _forward(self: Any, x: Any) -> Any:
         # stock torchao weight-only forward, plus the dense outlier columns (exact: their codes are zero)
         y = F.linear(x, w, self.bias)
         if oidx is not None:
-            y = y + F.linear(x.index_select(-1, oidx.to(x.device)), ow.to(device = x.device, dtype = x.dtype))
+            y = y + F.linear(
+                x.index_select(-1, oidx.to(x.device)), ow.to(device = x.device, dtype = x.dtype)
+            )
         return y
     lead = x.shape[:-1]
     y = op(x.reshape(-1, x.shape[-1]), parts[0], parts[1], self.bias, oidx, ow)
@@ -356,8 +387,12 @@ def prepare_outlier_buffers(transformer: Any, state_dict: Any) -> int:
         if idx is None or not isinstance(module, nn.Linear):
             continue
         weight = state_dict[key]
-        module.register_buffer(OUTLIER_WEIGHT, torch.empty(tuple(weight.shape), dtype = weight.dtype, device = "meta"))
-        module.register_buffer(OUTLIER_IDX, torch.empty(tuple(idx.shape), dtype = idx.dtype, device = "meta"))
+        module.register_buffer(
+            OUTLIER_WEIGHT, torch.empty(tuple(weight.shape), dtype = weight.dtype, device = "meta")
+        )
+        module.register_buffer(
+            OUTLIER_IDX, torch.empty(tuple(idx.shape), dtype = idx.dtype, device = "meta")
+        )
         module.__class__ = gemv_linear_class()
         count += 1
     return count
@@ -395,7 +430,12 @@ def timestep_outlier_channels(transformer: Any, count: int) -> tuple:
         return ()
 
 
-def install(transformer: Any, fqns: Any, *, logger: Any = None) -> int:
+def install(
+    transformer: Any,
+    fqns: Any,
+    *,
+    logger: Any = None,
+) -> int:
     """Swap the named weight-only Linears onto the GEMV forward (class swap, no hook); returns how many. A Linear
     carrying outlier columns is swapped even with the kernel off: its forward is what adds them back."""
     from torch import nn
@@ -410,7 +450,9 @@ def install(transformer: Any, fqns: Any, *, logger: Any = None) -> int:
             module = modules.get(fqn)
             if type(module) is not nn.Linear and not is_gemv_linear(module):
                 continue
-            if weight_only_parts(module.weight) is None or (not kernel and _outliers(module)[0] is None):
+            if weight_only_parts(module.weight) is None or (
+                not kernel and _outliers(module)[0] is None
+            ):
                 continue
             module.__class__ = gemv_linear_class()
             count += 1

@@ -2990,7 +2990,6 @@ def _validate_checkpoint(
     ckpt_weight_only = meta.get("weight_only_name_tokens")
     if ckpt_weight_only:
         from .diffusion_transformer_quant import streamed_weight_only_tokens_for_scheme
-
         allowed = set(streamed_weight_only_tokens_for_scheme(scheme, meta.get("family")))
         if not isinstance(ckpt_weight_only, (list, tuple)) or not set(ckpt_weight_only) <= allowed:
             _warn(
@@ -3327,7 +3326,6 @@ class PrequantIntoError(RuntimeError):
 
 def _prepare_outlier_buffers(transformer: Any, state_dict: dict) -> int:
     from .diffusion_int8_gemv import prepare_outlier_buffers
-
     return prepare_outlier_buffers(transformer, state_dict)
 
 
@@ -3341,7 +3339,11 @@ def _load_into_dense(transformer: Any, state_dict: dict, prepare_model: Optional
     from .diffusion_int8_gemv import OUTLIER_IDX, OUTLIER_WEIGHT
 
     # A streamed weight-only artifact also stores each modulation's dense outlier columns; the skeleton gets them below.
-    outlier_keys = {k for k in state_dict if k.endswith((f".{OUTLIER_WEIGHT}", f".{OUTLIER_IDX}")) and k not in own}
+    outlier_keys = {
+        k
+        for k in state_dict
+        if k.endswith((f".{OUTLIER_WEIGHT}", f".{OUTLIER_IDX}")) and k not in own
+    }
     for name in outlier_keys:
         own[name] = state_dict[name]
     if set(own) != set(state_dict):
