@@ -247,3 +247,33 @@ def test_a_sweep_refuses_other_loads_until_it_lets_go(monkeypatch):
     # Only sweeps fence loads: llama-bench and Evals manage the server themselves.
     client.post("/api/benchmarks/lease", json = {"holder": "tab-bbbbbbbb", "kind": "llama-bench"})
     assert client.post("/api/inference/load").status_code == 200
+
+
+def test_root_model_routes_are_fenced_and_token_counts_are_not_generations(monkeypatch):
+    monkeypatch.setattr(benchmarks_routes, "_lease", None)
+    app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    app.include_router(benchmarks_routes.router, prefix = "/api/benchmarks")
+    for path in ("/models/load", "/models/load/", "/models/unload", "/models/unload/"):
+        app.post(path)(lambda: {"ok": True})
+    for path in ("/v1/messages/count_tokens", "/v1/chat/count_tokens", "/v1/embeddings"):
+        app.post(path)(lambda: {})
+    app.add_middleware(benchmarks_routes.BenchmarkTrafficMiddleware)
+    client = TestClient(app, headers = {"Authorization": "Bearer t"})
+    mine = {"holder": "tab-aaaaaaaa", "kind": "sweep"}
+
+    client.post("/api/benchmarks/lease", json = mine)
+    for path in ("/models/load", "/models/load/", "/models/unload", "/models/unload/"):
+        assert client.post(path).status_code == 409, path
+        assert (
+            client.post(path, headers = {"X-Unsloth-Bench-Lease": mine["holder"]}).status_code
+            == 200
+        )
+    for path in ("/v1/messages/count_tokens", "/v1/chat/count_tokens", "/v1/embeddings"):
+        client.post(path)
+    assert client.post("/api/benchmarks/lease", json = mine).json()["outside"] == 0
+
+
+def test_the_lease_outlasts_a_throttled_background_tab():
+    # Chrome runs a hidden tab's 15 s renewal timer about once a minute.
+    assert benchmarks_routes.LEASE_TTL_SECONDS > 2 * 60
