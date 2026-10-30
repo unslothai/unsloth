@@ -256,8 +256,7 @@ def _read_ref(ref: Path):
 
 
 def _write_ref(ref: Path, commit: str) -> None:
-    """Atomic, as huggingface_hub writes it: readers never see a truncated ref. The temp file never outlives a failure,
-    since every file under refs/ reads as a ref (scan_cache_dir, snapshot_progress)."""
+    """Atomic; no temp file may survive, since every file under refs/ reads as a ref (scan_cache_dir)."""
     ref.parent.mkdir(parents = True, exist_ok = True)
     tmp = ref.with_name(f"main.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
@@ -272,9 +271,7 @@ def _write_ref(ref: Path, commit: str) -> None:
 
 
 def _pinned_revision(repo_type: RepoType, repo_id: str, commit) -> dict:
-    """``snapshot_download`` kwargs fetching the commit the manifest was planned from, so a branch moving
-    between the metadata read and the download cannot hand back other files. A raw sha also lets
-    huggingface_hub >= 1.x skip its own repo_info call. A sha revision leaves refs/main unwritten, and loads by
+    """Pin to the commit the manifest was planned from. A sha revision leaves refs/main unwritten, yet loads by
     repo id (offline too) resolve through it, so it is written here as an unpinned download would."""
     if not isinstance(commit, str) or not _COMMIT_SHA.fullmatch(commit):
         return {}
@@ -286,8 +283,7 @@ def _pinned_revision(repo_type: RepoType, repo_id: str, commit) -> dict:
     try:
         _write_ref(ref, commit)
     except OSError as e:
-        # huggingface_hub also only warns when the ref cannot be written; without the ref the pin is dropped
-        # so the download records refs/main itself as before.
+        # Without the ref the pin is dropped, so the download records refs/main itself as before.
         print(
             f"Could not record refs/main for {repo_id} ({e}); downloading unpinned.",
             file = sys.stderr,
@@ -297,8 +293,7 @@ def _pinned_revision(repo_type: RepoType, repo_id: str, commit) -> dict:
 
 
 def _landed_state(repo_dir: Path, commit: str) -> frozenset:
-    """Entries of ``commit``'s snapshot plus every partial blob with its size: what a download that got as far as
-    transferring bytes has changed."""
+    """``commit``'s snapshot entries plus partial blob sizes: what changes once a download transfers bytes."""
     state = set()
     snapshot = repo_dir / "snapshots" / commit
     try:
@@ -317,12 +312,9 @@ def _landed_state(repo_dir: Path, commit: str) -> frozenset:
 
 
 def _pinned_snapshot_download(snapshot_download, commit, **kwargs):
-    """``snapshot_download(**kwargs)`` at ``commit`` (see ``_pinned_revision``). An unpinned download moved refs/main
-    only once the Hub had answered its own revision lookup, so a network drop right after the metadata read left
-    the older complete snapshot loadable by repo id, offline too. So when the pinned call fails before anything of
-    ``commit`` lands (no snapshot entry, no partial blob grew), refs/main goes back to what it named and the unpinned
-    call runs as before, its offline fallback included. A failure after bytes landed keeps the ref, as an unpinned
-    download does."""
+    """``snapshot_download(**kwargs)`` at ``commit``. A failure before anything of ``commit`` lands puts refs/main
+    back and reruns the unpinned call, keeping its offline fallback to the older snapshot (an unpinned download
+    moves the ref only after the Hub answers)."""
     from hub.utils.snapshot_reuse import repo_cache_dir
 
     repo_type, repo_id = kwargs.get("repo_type") or "model", kwargs["repo_id"]
@@ -355,8 +347,7 @@ def _pinned_snapshot_download(snapshot_download, commit, **kwargs):
             file = sys.stderr,
         )
         return snapshot_download(**kwargs)
-    # A concurrent download of this repo (another GGUF variant) that failed early can have put back the ref this
-    # one replaced; the commit just fetched in full is the one to name.
+    # A concurrent variant download that failed early may have put back the ref this one replaced.
     if _read_ref(ref) == previous:
         _pinned_revision(repo_type, repo_id, commit)
     return path
