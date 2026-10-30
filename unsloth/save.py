@@ -4007,13 +4007,17 @@ def _requests_float32(dtype):
 
 
 def _base_config_dicts(model):
-    """config.json of each base the model names (PEFT base, then _name_or_path), cache first."""
+    """config.json of each base the model names (PEFT base, then _name_or_path), at the loaded commit, cache first."""
+    config = getattr(model, "config", None)
+    loaded = getattr(config, "_name_or_path", None)
     names = [
-        getattr(config, "base_model_name_or_path", None)
-        for config in (getattr(model, "peft_config", None) or {}).values()
+        getattr(peft_config, "base_model_name_or_path", None)
+        for peft_config in (getattr(model, "peft_config", None) or {}).values()
     ]
-    names.append(getattr(getattr(model, "config", None), "_name_or_path", None))
+    names.append(loaded)
     for name in dict.fromkeys(n for n in names if isinstance(n, str) and n):
+        # The loaded config's _commit_hash pins the snapshot it came from; another repo has no pin.
+        revision = getattr(config, "_commit_hash", None) if name == loaded else None
         try:
             if os.path.isdir(name):
                 path = os.path.join(name, "config.json")
@@ -4021,9 +4025,11 @@ def _base_config_dicts(model):
                 from huggingface_hub import hf_hub_download
 
                 try:
-                    path = hf_hub_download(name, "config.json", local_files_only = True)
+                    path = hf_hub_download(
+                        name, "config.json", revision = revision, local_files_only = True
+                    )
                 except Exception:
-                    path = hf_hub_download(name, "config.json")
+                    path = hf_hub_download(name, "config.json", revision = revision)
             with open(path, encoding = "utf-8") as f:
                 yield json.load(f)
         except Exception:

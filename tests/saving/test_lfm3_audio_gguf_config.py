@@ -83,3 +83,22 @@ def test_the_gguf_export_restores_it_before_converting():
 
     src = inspect.getsource(save_mod.unsloth_save_pretrained_gguf)
     assert src.index("_restore_lfm3_audio_release_config(") < src.index("save_to_gguf(")
+
+
+def test_a_hub_base_is_read_at_the_loaded_commit(tmp_path, monkeypatch):
+    import huggingface_hub
+
+    calls = []
+
+    def hf_hub_download(repo, filename, revision = None, local_files_only = False):
+        calls.append((repo, filename, revision))
+        return str(_write(tmp_path / "snap", RELEASE) / "config.json")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", hf_hub_download)
+    model = types.SimpleNamespace(
+        peft_config = {"default": types.SimpleNamespace(base_model_name_or_path = "LiquidAI/LFM3-Audio-2B")},
+        config = types.SimpleNamespace(_name_or_path = "LiquidAI/LFM3-Audio-2B", _commit_hash = "cddb56b5ec"),
+    )
+    merged = _write(tmp_path / "merged", SAVED)
+    assert save_mod._restore_lfm3_audio_release_config(model, str(merged))
+    assert calls[0] == ("LiquidAI/LFM3-Audio-2B", "config.json", "cddb56b5ec")
