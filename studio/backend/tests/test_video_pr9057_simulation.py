@@ -31,7 +31,6 @@ LIMIT = 64 * 1024 * 1024
 def _ffmpeg_installed(monkeypatch):
     """These cases are about /props; whether the host has ffmpeg is pinned, not asked."""
     import core.inference.llama_cpp as llama_mod
-
     monkeypatch.setattr(llama_mod, "video_tools", lambda _dir = None: ("/x/ffmpeg", "/x/ffprobe"))
 
 

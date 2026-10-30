@@ -114,9 +114,10 @@ def test_no_ffmpeg_or_an_older_build_sends_no_flag(monkeypatch):
 
 def test_a_hand_typed_or_inherited_folder_is_kept(monkeypatch):
     _tools_at(monkeypatch, "/opt/bin/ffmpeg", "/opt/bin/ffprobe")
-    assert _video_ffmpeg_dir_flags(
-        _CAPS, env = {}, extra_args = ["--video-ffmpeg-dir", "/mine"]
-    ) == ([], "/mine")
+    assert _video_ffmpeg_dir_flags(_CAPS, env = {}, extra_args = ["--video-ffmpeg-dir", "/mine"]) == (
+        [],
+        "/mine",
+    )
     assert _video_ffmpeg_dir_flags(_CAPS, env = {"LLAMA_ARG_VIDEO_FFMPEG_DIR": "/env"}) == (
         [],
         "/env",

@@ -31,7 +31,12 @@ class _VideoGguf(FakeLlamaCppBackend):
     is_vision = True
     _has_video_input = True
 
-    def __init__(self, *, has_video = True, needs_ffmpeg = False):
+    def __init__(
+        self,
+        *,
+        has_video = True,
+        needs_ffmpeg = False,
+    ):
         self._has_video_input = has_video
         self._video_needs_ffmpeg = needs_ffmpeg
         self.dispatched: list[dict] = []
