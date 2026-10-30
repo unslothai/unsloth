@@ -31,9 +31,7 @@ import { ParamsRow } from "./params-section-controls";
 export function DrafterSection(): ReactElement | null {
   const t = useT();
   const deviceType = usePlatformStore((state) => state.deviceType);
-  const trainsOnCpu = usePlatformStore(
-    (state) => state.chatOnly && !state.isTrainUnavailable(),
-  );
+  const trainsOnCpu = usePlatformStore((state) => state.isCpuTrainingHost());
   const store = useTrainingConfigStore(
     useShallow((state) => ({
       selectedModel: state.selectedModel,

@@ -50,7 +50,7 @@ test("the health verdict carries cpu_training into the platform store", () => {
   );
   assert.match(
     env,
-    /isTrainUnavailable: \(\) => \{[\s\S]*?trainsOnCpu\(state\.chatOnlyReason, state\.cpuTraining\)/,
+    /isCpuTrainingHost: \(\) => \{[\s\S]*?trainsOnCpu\(state\.chatOnlyReason, state\.cpuTraining\)/,
   );
 });
 

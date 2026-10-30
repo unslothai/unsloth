@@ -59,6 +59,8 @@ interface PlatformState {
   isChatOnly: () => boolean;
   // Train and /studio are off: chat-only, except a host that trains on the CPU backend.
   isTrainUnavailable: () => boolean;
+  // Chat-only, but Train runs on the CPU backend ("no_gpu" with cpu_training).
+  isCpuTrainingHost: () => boolean;
   // true until /api/health returns a verdict; guesses cannot gate features.
   capabilitiesUnknown: () => boolean;
 }
@@ -93,9 +95,10 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   verdictStale: false,
   detectionDeferred: false,
   isChatOnly: () => get().chatOnly,
-  isTrainUnavailable: () => {
+  isTrainUnavailable: () => get().chatOnly && !get().isCpuTrainingHost(),
+  isCpuTrainingHost: () => {
     const state = get();
-    return state.chatOnly && !trainsOnCpu(state.chatOnlyReason, state.cpuTraining);
+    return state.chatOnly && trainsOnCpu(state.chatOnlyReason, state.cpuTraining);
   },
   // deferred detection is settled because no verdict will arrive this session.
   capabilitiesUnknown: () => {

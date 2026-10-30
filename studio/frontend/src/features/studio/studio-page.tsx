@@ -85,7 +85,7 @@ export function StudioPage(): ReactElement {
   const capabilitiesUnknown = usePlatformStore((s) => s.capabilitiesUnknown());
   const trainUnavailable = usePlatformStore((s) => s.isTrainUnavailable());
   const trainsOnCpu = usePlatformStore(
-    (s) => s.chatOnly && !s.isTrainUnavailable() && !s.capabilitiesUnknown(),
+    (s) => s.isCpuTrainingHost() && !s.capabilitiesUnknown(),
   );
   const navigate = useNavigate();
   // The guard let this load on a guess; leave once the host is confirmed unable to train.
