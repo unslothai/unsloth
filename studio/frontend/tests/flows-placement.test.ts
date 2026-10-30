@@ -96,3 +96,21 @@ test("armed toolbar shapes place through placedRect and show their own ghost", (
   assert.match(src, /placeArmed\(\s*armed,\s*screenToFlowPosition/);
   assert.match(src, /<ShapeGhost type=\{armed\}/);
 });
+
+test("a reroute dropped near a wire lands on the wire's nearest point", async () => {
+  const { nearestOnPath } = await import("../src/features/flows/editor/wire-snap.ts");
+  // An L-shaped wire: (0,0) -> (100,0) -> (100,100).
+  const at = (d: number) => (d <= 100 ? { x: d, y: 0 } : { x: 100, y: d - 100 });
+  const p = nearestOnPath(200, at, { x: 40, y: 7 });
+  assert.ok(Math.abs(p.x - 40) < 0.5 && p.y === 0, JSON.stringify(p));
+  const q = nearestOnPath(200, at, { x: 108, y: 63 });
+  assert.ok(q.x === 100 && Math.abs(q.y - 63) < 0.5, JSON.stringify(q));
+});
+
+test("an armed reroute threads into the wire under the pointer, and the wire's × hides", () => {
+  const read = (f: string) => readFileSync(new URL(`../src/features/flows/editor/${f}`, import.meta.url), "utf8");
+  const controls = read("canvas-controls.tsx");
+  assert.match(controls, /addReroute\(\s*\[[\s\S]*?hit\.wire,\s*\)/);
+  assert.match(controls, /setPointer\(flowToScreenPosition\(hit\.at\)\)/);
+  assert.match(read("wire-delete.tsx"), /if \(!show \|\| rerouting\) return null;/);
+});

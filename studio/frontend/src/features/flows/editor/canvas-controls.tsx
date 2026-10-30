@@ -28,7 +28,8 @@ import {
   usePlacement,
 } from "./placement";
 import { PlacementGhost, ShapeGhost } from "./placement-ghost";
-import { REROUTE_TYPE, addReroute } from "./reroutes";
+import { REROUTE_SIZE, REROUTE_TYPE, addReroute } from "./reroutes";
+import { snapToWire, wireUnder } from "./wire-snap";
 
 // React Flow Controls' fit (default padding), animated.
 const FIT_VIEW_OPTIONS = { duration: 200, minZoom: FIT_MIN_ZOOM };
@@ -97,6 +98,20 @@ function placeArmed(
   }
 }
 
+/** The data wire an armed reroute would thread into at a screen point, and where on it. */
+function rerouteTarget(
+  clientX: number,
+  clientY: number,
+  toFlow: (p: { x: number; y: number }) => { x: number; y: number },
+): { wire: string; at: { x: number; y: number } } | null {
+  const wire = wireUnder(clientX, clientY);
+  const graph = useDocStore.getState().graph;
+  if (!wire || !(graph.wires[wire] || graph.edges[wire]?.kind === "data"))
+    return null;
+  const at = snapToWire(wire, toFlow({ x: clientX, y: clientY }));
+  return at ? { wire, at } : null;
+}
+
 /** While a Nodes panel item or a toolbar Group, Note or Reroute is armed: each click on empty canvas, a group or a note places one;
  *  Esc, right-click or leaving the editor stops. Clicks on cards and on controls are left alone. */
 function ArmedPlacement() {
@@ -104,7 +119,7 @@ function ArmedPlacement() {
   const spec = useCatalogStore((s) =>
     armed ? s.catalog?.nodes.find((n) => n.type === armed) : undefined,
   );
-  const { screenToFlowPosition } = useReactFlow();
+  const { screenToFlowPosition, flowToScreenPosition } = useReactFlow();
   const [pointer, setPointer] = useState<{ x: number; y: number } | null>(null);
 
   useEffect(() => stopPlacement, []);
@@ -115,8 +130,26 @@ function ArmedPlacement() {
     );
     if (!armed || !canvas) return;
     const onPane = (e: Event) => placeableTarget(e.target as Element);
+    const onWire = (e: MouseEvent) =>
+      armed === REROUTE_TYPE
+        ? rerouteTarget(e.clientX, e.clientY, screenToFlowPosition)
+        : null;
     const click = (e: MouseEvent) => {
-      if (e.button !== 0 || e.detail > 1 || !onPane(e)) return;
+      if (e.button !== 0 || e.detail > 1) return;
+      const hit = onWire(e);
+      if (hit) {
+        // Centred on the wire, not the grid: snapping off it would kink the wire.
+        const id = addReroute(
+          [
+            Math.round(hit.at.x - REROUTE_SIZE.width / 2),
+            Math.round(hit.at.y - REROUTE_SIZE.height / 2),
+          ],
+          hit.wire,
+        );
+        useUiStore.getState().setSelection([id], []);
+        return;
+      }
+      if (!onPane(e)) return;
       const snap = useUiStore.getState().snapToGrid;
       placeArmed(
         armed,
@@ -134,8 +167,11 @@ function ArmedPlacement() {
     const key = (e: KeyboardEvent) => {
       if (e.key === "Escape") stopPlacement();
     };
-    const move = (e: PointerEvent) =>
-      setPointer(onPane(e) ? { x: e.clientX, y: e.clientY } : null);
+    const move = (e: PointerEvent) => {
+      const hit = onWire(e);
+      if (hit) setPointer(flowToScreenPosition(hit.at));
+      else setPointer(onPane(e) ? { x: e.clientX, y: e.clientY } : null);
+    };
     canvas.classList.add("flows-armed");
     canvas.addEventListener("click", click);
     canvas.addEventListener("dblclick", dblclick, true);
@@ -151,7 +187,7 @@ function ArmedPlacement() {
       window.removeEventListener("keydown", key);
       setPointer(null);
     };
-  }, [armed, screenToFlowPosition]);
+  }, [armed, screenToFlowPosition, flowToScreenPosition]);
 
   if (!armed) return null;
   return (

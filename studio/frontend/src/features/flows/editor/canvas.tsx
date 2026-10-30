@@ -57,6 +57,7 @@ import { useWireReconnect } from "./use-wire-reconnect";
 import { wheelScrollsInside } from "./wheel-scroll";
 import { addFileNodes } from "./file-drop";
 import { FlowEdgeView } from "./flow-edge";
+import { wireUnder } from "./wire-snap";
 import { FlowNodeView } from "./flow-node";
 import { GroupFrame, NoteFrame } from "./frame-nodes";
 import { NODE_DRAG_MIME, addNodeConnected, tryConnect } from "./node-factory";
@@ -114,15 +115,6 @@ function wireInfo(wire: RerouteWire): WireInfo {
   if (upstream) ends.add(upstream.node);
   for (const ref of rerouteDownstream(graph, reroute)) ends.add(ref.node);
   return { portType, ends: [...ends] };
-}
-
-function wireUnder(x: number, y: number, ignore: string): string | null {
-  for (const element of document.elementsFromPoint(x, y)) {
-    const edge = element.closest(".react-flow__edge");
-    const id = edge?.getAttribute("data-id");
-    if (id && id !== ignore) return id;
-  }
-  return null;
 }
 
 function hasWires(graph: DocGraph, rerouteId: string): boolean {

@@ -5,6 +5,8 @@ import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { EdgeLabelRenderer, useReactFlow } from "@xyflow/react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { usePlacement } from "./placement";
+import { REROUTE_TYPE } from "./reroutes";
 
 /** Hover state for one wire that survives the move from the wire onto its × button. */
 export function useWireHover() {
@@ -55,7 +57,9 @@ export function WireDelete({
   onLeave: () => void;
 }) {
   const { deleteElements } = useReactFlow();
-  if (!show) return null;
+  // With a reroute in hand a click on the wire splits it; the × would only be in the way.
+  const rerouting = usePlacement((s) => s.armed === REROUTE_TYPE);
+  if (!show || rerouting) return null;
   return (
     <EdgeLabelRenderer>
       <button
