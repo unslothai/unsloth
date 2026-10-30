@@ -557,7 +557,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         base_repo = "MiniMaxAI/MiniMax-H3",
         aliases = ("minimax_h3", "minimaxh3", "h3"),
         has_audio = True,
-        default_steps = 30,
+        # The t2v template's non-LoRA path: 20 steps, BasicGuider (CFG 1); the turbo LoRA path is the PDD row.
+        default_steps = 20,
         default_guidance = 1.0,
         default_num_frames = 124,
         default_fps = 24,
