@@ -137,11 +137,11 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.autoScroll",
     "settings.chat.replyNotification",
     "settings.profile.greetingSloth",
+    "settings.chat.composerAtBottom",
     "settings.chat.thinking.visibility",
     "settings.chat.tools.visibility",
     "settings.chat.tools.foldIntoThinking",
     "settings.chat.webSearch.images",
-    "settings.chat.modelDisclaimer",
     "settings.chat.inlineEditResponse",
     "settings.chat.showReplyTimes",
     "settings.chat.showGenerationDetails",
@@ -231,6 +231,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.apiKeys.description",
     "settings.apiKeys.accessTokens",
     "settings.apiKeys.audioApi.title",
+    "settings.apiKeys.trainingApi.title",
     "settings.apiKeys.decisionApi.title",
     "settings.apiKeys.mcp.title",
     "settings.general.modelAutoSwitch.keepKv",
@@ -388,6 +389,12 @@ export function createSettingsSearchIndex({
       "settings.general.repairInstall.label",
       "settings.general.fullInstall.label",
     ],
+    // Desktop only, like the Rendering section it scrolls to.
+    appearance: SETTINGS_SEARCH_INDEX.appearance.flatMap((key) =>
+      key === "settings.appearance.sidebarNav.title"
+        ? (["settings.appearance.gpuRendering.label", key] as const)
+        : [key],
+    ),
     browser: [...SETTINGS_SEARCH_INDEX.browser, "browser.downloadLocationSetting"],
     about: SETTINGS_SEARCH_INDEX.about.filter(
       (key) => key !== "settings.about.updates",

@@ -15,17 +15,18 @@ import { StarPointedIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import {
   FilterMailIcon,
-  Folder02Icon,
-  FolderAddIcon,
   LayerIcon,
   PencilEdit02Icon,
   PinIcon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
+import { FolderAddIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ArrowDownUpIcon, Columns2Icon, GitBranchIcon } from "lucide-react";
+import { ProjectIcon } from "@/lib/project-icon";
+import { Columns2Icon, GitBranchIcon } from "lucide-react";
+import { SortIcon } from "@/lib/sort-icon";
 import type { ReactNode } from "react";
-import { ROUND_BUTTON, SortRadio, VIEW_OPTIONS } from "../components/library-toolbar";
+import { ROUND_BUTTON, SortRadio, ToolbarTip, VIEW_OPTIONS } from "../components/library-toolbar";
 import type { LibraryView } from "../settings-store";
 import {
   type ChatFilters,
@@ -128,16 +129,18 @@ function FilterMenu({
   const t = useT();
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          aria-label={t("library.toolbar.filter")}
-          data-active={chatFiltersActive(filters)}
-          className={ROUND_BUTTON}
-        >
-          <HugeiconsIcon icon={FilterMailIcon} strokeWidth={1.75} className="size-5" />
-        </button>
-      </DropdownMenuTrigger>
+      <ToolbarTip label={t("library.toolbar.filter")}>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            aria-label={t("library.toolbar.filter")}
+            data-active={chatFiltersActive(filters)}
+            className={ROUND_BUTTON}
+          >
+            <HugeiconsIcon icon={FilterMailIcon} strokeWidth={1.75} className="size-5" />
+          </button>
+        </DropdownMenuTrigger>
+      </ToolbarTip>
       <DropdownMenuContent
         align="end"
         sideOffset={4}
@@ -167,7 +170,7 @@ function FilterMenu({
             {facets.projects.map((project) => (
               <CheckItem
                 key={project.id}
-                icon={<HugeiconsIcon icon={Folder02Icon} strokeWidth={1.75} className={ICON} />}
+                icon={<HugeiconsIcon icon={ProjectIcon} strokeWidth={1.75} className={ICON} />}
                 label={project.name}
                 checked={filters.projects.has(project.id)}
                 onToggle={() =>
@@ -259,15 +262,17 @@ export function SortMenu<K extends string>({
   const current = options.find((option) => option.value === value);
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          className="flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3 text-ui-14 text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-open:bg-muted data-open:text-foreground dark:text-foreground/70"
-        >
-          <ArrowDownUpIcon strokeWidth={1.75} className="size-[calc(16px*var(--ui-space-scale,1))]" />
-          {current ? t(current.label) : t("library.toolbar.sort")}
-        </button>
-      </DropdownMenuTrigger>
+      <ToolbarTip label={t("library.toolbar.sort")}>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            className="flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3 text-ui-14 text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-open:bg-muted data-open:text-foreground dark:text-foreground/70"
+          >
+            <HugeiconsIcon icon={SortIcon} strokeWidth={1.75} className="size-[calc(16px*var(--ui-space-scale,1))]" />
+            {current ? t(current.label) : t("library.toolbar.sort")}
+          </button>
+        </DropdownMenuTrigger>
+      </ToolbarTip>
       <DropdownMenuContent align="start" sideOffset={4} className="library-actions-menu w-max min-w-44">
         <DropdownMenuLabel className={MENU_LABEL}>{t("library.toolbar.sort")}</DropdownMenuLabel>
         {options.map((option) => (
@@ -373,6 +378,7 @@ export function ChatsToolbar({
   onNewChat,
   onNewProject,
   onNewSection,
+  showView = true,
 }: {
   filters?: ChatFilters;
   onFiltersChange: (next: ChatFilters) => void;
@@ -386,24 +392,26 @@ export function ChatsToolbar({
   onNewChat: () => void;
   onNewProject: () => void;
   onNewSection: () => void;
+  showView?: boolean;
 }) {
   const t = useT();
   return (
     <div className="flex min-w-0 items-center gap-2">
       {filters && <FilterMenu filters={filters} onChange={onFiltersChange} facets={facets} />}
       {sort}
-      {VIEW_OPTIONS.map(({ value, label, icon }) => (
-        <button
-          key={value}
-          type="button"
-          aria-label={t(label)}
-          data-active={view === value}
-          aria-pressed={view === value}
-          onClick={() => onViewChange(value)}
-          className={ROUND_BUTTON}
-        >
-          <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-5" />
-        </button>
+      {showView && VIEW_OPTIONS.map(({ value, label, tip, icon }) => (
+        <ToolbarTip key={value} label={t(tip)}>
+          <button
+            type="button"
+            aria-label={t(label)}
+            data-active={view === value}
+            aria-pressed={view === value}
+            onClick={() => onViewChange(value)}
+            className={ROUND_BUTTON}
+          >
+            <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-5" />
+          </button>
+        </ToolbarTip>
       ))}
       <label className="relative ml-2 flex h-9 w-[clamp(10rem,calc(100cqw-30rem),min(15rem,24vw))] min-w-40 items-center rounded-full border border-border px-4 focus-within:border-ring dark:border-transparent dark:bg-card dark:focus-within:border-ring">
         <HugeiconsIcon

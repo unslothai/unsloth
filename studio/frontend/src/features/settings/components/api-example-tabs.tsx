@@ -5,7 +5,11 @@ import { useIsAccountOwner } from "@/features/auth";
 import { type TranslationKey, useT } from "@/i18n";
 // Not through the barrel: it pulls in chat, which every barrel importer would then load.
 import { RAISED_SURFACE } from "@/features/library/surface";
-import { AiSpeechIcon, MessageCircleIcon } from "@/lib/hugeicons-derived";
+import {
+  AiSpeechIcon,
+  MessageCircleIcon,
+  TestTubeOutlineIcon,
+} from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import {
   BotIcon,
@@ -32,9 +36,16 @@ import {
 import { AudioApiExamples } from "./audio-api-examples";
 import { DecisionApiSection } from "./decision-api-section";
 import { MediaApiExamples } from "./media-api-examples";
+import { TrainingApiExamples } from "./training-api-examples";
 import { UsageExamples } from "./usage-examples";
 
-export type ApiExampleKind = "chat" | "media" | "audio" | "decision" | "agents";
+export type ApiExampleKind =
+  | "chat"
+  | "media"
+  | "audio"
+  | "training"
+  | "decision"
+  | "agents";
 
 export function useApiExampleKinds(): {
   id: ApiExampleKind;
@@ -57,6 +68,12 @@ export function useApiExampleKinds(): {
       label: "Audio",
       icon: AiSpeechIcon,
       searchLabel: "settings.apiKeys.audioApi.title",
+    },
+    {
+      id: "training",
+      label: "Training",
+      icon: TestTubeOutlineIcon,
+      searchLabel: "settings.apiKeys.trainingApi.title",
     },
     ...(isOwner
       ? [
@@ -119,6 +136,7 @@ export function ApiExampleTabNav({
 const TAB_FOR_TARGET: Partial<Record<SettingsScrollTarget, ApiExampleKind>> = {
   "api-keys-media-api": "media",
   "api-keys-audio-api": "audio",
+  "api-keys-training-api": "training",
   "api-keys-decision-api": "decision",
 };
 
@@ -201,6 +219,13 @@ export function ApiExamplesPanel({
         />
       ) : kind === "audio" ? (
         <AudioApiExamples
+          apiKey={apiKey}
+          useTunnel={useTunnel}
+          showHeading={false}
+          {...keyless}
+        />
+      ) : kind === "training" ? (
+        <TrainingApiExamples
           apiKey={apiKey}
           useTunnel={useTunnel}
           showHeading={false}

@@ -452,6 +452,7 @@ export function ModelsPage() {
       ? checkpoint
       : null;
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const keepModelsLoaded = useChatRuntimeStore((s) => s.keepModelsLoaded);
   const loadedIsMlx = useChatRuntimeStore((s) => s.loadedIsMlx);
   const loadingModel = useChatRuntimeStore((s) => s.loadingModelPick);
   const [initialResidentStatusSettled, setInitialResidentStatusSettled] =
@@ -1838,6 +1839,10 @@ export function ModelsPage() {
         inferenceGpu.systemRamAvailableGb > 0
           ? inferenceGpu.systemRamAvailableGb
           : undefined,
+      unifiedLoadBudgetGb:
+        (!keepModelsLoaded && residentCheckpoint
+          ? inferenceGpu.unifiedLoadCeilingGb
+          : inferenceGpu.unifiedLoadBudgetGb) ?? null,
     }),
     [
       isActive,
@@ -1848,6 +1853,10 @@ export function ModelsPage() {
       inferenceGpu.memoryTotalGb,
       inferenceGpu.deviceCount,
       inferenceGpu.systemRamAvailableGb,
+      inferenceGpu.unifiedLoadBudgetGb,
+      inferenceGpu.unifiedLoadCeilingGb,
+      keepModelsLoaded,
+      residentCheckpoint,
     ],
   );
 

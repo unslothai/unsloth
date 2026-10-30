@@ -24,14 +24,14 @@ import { cn } from "@/lib/utils";
 import {
   Cancel01Icon,
   Delete02Icon,
+  Edit03Icon,
   FilterMailIcon,
-  Folder01Icon,
   InternetIcon,
   LinkSquare02Icon,
   MoreHorizontalIcon,
-  PencilEdit02Icon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
+import { Folder01Icon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DateRange } from "react-day-picker";
@@ -866,7 +866,7 @@ function BookmarkRow({ bookmark, tabId, time }: { bookmark: Bookmark; tabId: str
         menu={{
           rows: (
             <MenuRow
-              icon={PencilEdit02Icon}
+              icon={Edit03Icon}
               onSelect={() => {
                 editChosen.current = true;
                 setEditing(true);

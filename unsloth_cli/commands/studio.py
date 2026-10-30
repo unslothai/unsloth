@@ -1903,8 +1903,9 @@ def studio_default(
         "--cloudflare/--no-cloudflare",
         help = "Expose Unsloth on a PUBLIC internet URL via a free Cloudflare HTTPS "
         "tunnel, for non-api-only wildcard binds (0.0.0.0 or ::). Off by default; "
-        "pass --cloudflare to enable it (--secure implies it). --no-cloudflare forces "
-        "it off but does not change a raw wildcard bind.",
+        "pass --cloudflare to enable it (--secure implies it). The Remote access "
+        "'Start automatically' setting also starts one on every launch, on any host. "
+        "--no-cloudflare forces both off but does not change a raw wildcard bind.",
     ),
     secure: bool = typer.Option(
         False,
@@ -2561,8 +2562,9 @@ def run(
         rich_help_panel = _RUN_PANEL_SERVER,
         help = "Expose Unsloth on a PUBLIC internet URL via a free Cloudflare HTTPS "
         "tunnel, for non-api-only wildcard binds (0.0.0.0 or ::). Off by default; "
-        "pass --cloudflare to enable it (--secure implies it). --no-cloudflare forces "
-        "it off but does not change a raw wildcard bind.",
+        "pass --cloudflare to enable it (--secure implies it). The Remote access "
+        "'Start automatically' setting also starts one on every launch, on any host. "
+        "--no-cloudflare forces both off but does not change a raw wildcard bind.",
     ),
     secure: bool = typer.Option(
         False,

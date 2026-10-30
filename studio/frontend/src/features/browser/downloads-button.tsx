@@ -20,10 +20,10 @@ import {
   CheckmarkCircle02Icon,
   Delete02Icon,
   Download01Icon,
-  Folder01Icon,
   MoreHorizontalIcon,
   ArrowUpRight01Icon,
 } from "@hugeicons/core-free-icons";
+import { Folder01Icon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
