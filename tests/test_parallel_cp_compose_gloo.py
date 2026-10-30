@@ -345,6 +345,9 @@ def _case_train(
     seen_lengths, ulysses_calls = set(), []
     embed = trainer.model.get_input_embeddings()
     embed.register_forward_pre_hook(lambda m, a: seen_lengths.add(int(a[0].shape[-1])))
+    autocast_seen = set()  # autocast state inside every training forward (pure fp32 cells: {False} only)
+    autocast_device = "cpu" if device == "cpu" else "cuda"
+    embed.register_forward_pre_hook(lambda m, a: autocast_seen.add(bool(torch.is_autocast_enabled(autocast_device))))
     from unsloth.utils import ulysses_hybrid
 
     original_ulysses = ulysses_hybrid._ulysses_hf_attention
@@ -362,6 +365,8 @@ def _case_train(
     before = compile_counters.snapshot()
     trainer.train()
     compile_used = compile_counters.since(before)
+    if device != "cpu":
+        assert autocast_seen == {False}, ("a GPU cell ran under autocast", autocast_seen)
     logs = [h for h in trainer.state.log_history if "loss" in h]
     is_tp = tp_native.is_tensor_parallel(trainer.model)
     if is_tp:
@@ -383,6 +388,7 @@ def _case_train(
         "is_tp": is_tp,
         "stage": None if stage is None else int(stage.stage_index),
         "seen_lengths": sorted(seen_lengths),
+        "autocast_seen": sorted(autocast_seen),
         "ulysses_calls": None if compile else len(ulysses_calls),
         "cp_backend": None if manager is None else manager.backend,
         "epoch": float(trainer.state.epoch or 0.0),
