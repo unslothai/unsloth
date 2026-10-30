@@ -342,13 +342,11 @@ def _mark_ambiguous_builds(index: dict[str, MediaModelPick]) -> dict[str, MediaM
     }
 
 
-# Far above a full scan; past it a caller scans on its own instead of waiting on a stuck build.
+# Far above a full scan: past it a waiter scans on its own instead of hanging on a stuck build.
 _JOIN_TIMEOUT_S = 120.0
 
 
 class _Build:
-    """One in-flight index build that callers arriving for the same key wait on."""
-
     __slots__ = ("epoch", "owner", "done", "result")
 
     def __init__(self, epoch: tuple[int, Optional[int]]) -> None:
@@ -358,14 +356,12 @@ class _Build:
         self.result: Optional[dict[str, MediaModelPick]] = None
 
 
-# Builds in flight per key: the startup warm and the post-warm gate ask for the same index at once.
 _building: dict[tuple[str, str], _Build] = {}
-# Bumped by invalidate_index(): a build started before an invalidation is never joined.
 _invalidations = 0
 
 
 def _hf_cache_epoch() -> Optional[int]:
-    """Bumped by every download, delete and cache setting change; read before _index_lock is taken."""
+    """Bumped by downloads, deletes and cache setting changes; takes its own lock, so never call under _index_lock."""
     try:
         from hub.utils.inventory_scan import hf_cache_scans_epoch
         return hf_cache_scans_epoch()
@@ -385,7 +381,6 @@ def _cached_index(task: str) -> dict[str, MediaModelPick]:
                 return hit[1]
             epoch = (_invalidations, cache_epoch)
             build = _building.get(key)
-            # A build from before an invalidation, or one this thread is running, is not joined.
             if build is None or build.epoch != epoch or build.owner == threading.get_ident():
                 build = _Build(epoch)
                 _building[key] = build
@@ -393,19 +388,18 @@ def _cached_index(task: str) -> dict[str, MediaModelPick]:
             else:
                 owner = False
         if not owner:
-            # Started no earlier than the last invalidation and finishes after this call: no older than a ttl hit.
+            # Started no earlier than the last invalidation, finishes after this call: no older than a ttl hit.
             if not build.done.wait(_JOIN_TIMEOUT_S):
-                # Never wait forever on another thread's scan (a builder that waits on this thread would deadlock):
-                # scan here, as every caller did before builds were shared.
+                # A builder waiting on this thread would deadlock: scan here instead.
                 return _mark_ambiguous_builds(_build_index(task))
             if build.result is not None:
                 return build.result
-            continue  # that build raised: run one here, as a caller arriving alone would
+            continue  # that build raised
         try:
             built = _mark_ambiguous_builds(_build_index(task))
             cache_epoch = _hf_cache_epoch()
             with _index_lock:
-                # An invalidation during the scan: its waiters still get it, but it must not replace a fresher scan.
+                # Overtaken by an invalidation: its waiters still get it, the cache keeps the fresher scan.
                 if (_invalidations, cache_epoch) == build.epoch:
                     # stamped after the scan, so one slower than the ttl is not already expired
                     _index[key] = (time.monotonic(), built)
