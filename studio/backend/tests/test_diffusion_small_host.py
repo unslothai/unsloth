@@ -682,3 +682,76 @@ def test_complete_fp16_twins_with_an_orphan_default_index_skip_the_download(tmp_
         variant = "fp16",
     )
     assert calls == []
+
+
+def test_twins_completed_by_a_supplied_component_skip_the_early_download(tmp_path, monkeypatch):
+    """A component supplied after the first twins check (hosted VAE, native transformer) is the only one without a
+    twin: the load reads the twins, so the early download must not fetch the default weights the load never opens."""
+    import ast
+    import inspect
+
+    from core.inference import diffusion as dif
+    from core.inference.diffusion_fp16_variant import local_fp16_variant
+
+    monkeypatch.delenv(sh.DOWNLOAD_FIRST_ENV, raising = False)
+    index = {
+        "transformer": ["diffusers", "SD3Transformer2DModel"],
+        "text_encoder": ["transformers", "CLIPTextModel"],
+        "vae": ["diffusers", "AutoencoderKL"],
+    }
+    (tmp_path / "model_index.json").write_text(json.dumps(index))
+    _header_only(tmp_path, "transformer", 1, "diffusion_pytorch_model.fp16.safetensors")
+    _header_only(tmp_path, "text_encoder", 1, "model.fp16.safetensors")
+    _header_only(tmp_path, "vae", 1)  # default name only: no twin
+    (tmp_path / "transformer" / "diffusion_pytorch_model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"w": "diffusion_pytorch_model-00001-of-00002.safetensors"}})
+    )
+    pipe_kwargs = {"torch_dtype": torch.float16, "vae": object()}
+    # The pipeline load's own variant pick once the vae is supplied.
+    assert local_fp16_variant(str(tmp_path), load_dtype = torch.float16, supplied = tuple(pipe_kwargs)) == "fp16"
+
+    # Evaluate the variant the pipeline call site hands the decision, from the source's latest assignment to it.
+    src = inspect.getsource(dif)
+    tree = ast.parse(src)
+    call = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and getattr(n.func, "attr", None) == "_small_host_decision"
+        and any(k.arg == "variant" for k in n.keywords)
+    )
+    arg = next(k.value for k in call.keywords if k.arg == "variant")
+    assert isinstance(arg, ast.Name)
+    assign = max(
+        (
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Assign)
+            and n.lineno < call.lineno
+            and any(isinstance(t, ast.Name) and t.id == arg.id for t in n.targets)
+        ),
+        key = lambda n: n.lineno,
+    )
+    env = {
+        "local_fp16_variant": local_fp16_variant,
+        "_variant_snapshot": str(tmp_path),
+        "dtype": torch.float16,
+        "pipe_kwargs": pipe_kwargs,
+        "_te_replaced": (),
+        "_fp16_variant_eligible": True,
+    }
+    variant = eval(compile(ast.Expression(assign.value), "<call site>", "eval"), env)
+    monkeypatch.setattr(dif, "host_ram_mib", lambda: (64 * 1024, 60 * 1024))
+    monkeypatch.setattr(dif, "host_commit_mib", lambda: None)
+    monkeypatch.setattr(dif, "pread_available", lambda: False)
+    calls = []
+    dif.DiffusionBackend()._small_host_decision(
+        str(tmp_path),
+        pipe_kwargs,
+        types.SimpleNamespace(device = "cuda"),
+        torch.float16,
+        lora_active = False,
+        fetch = lambda: calls.append(1),
+        variant = variant,
+    )
+    assert variant == "fp16" and calls == []

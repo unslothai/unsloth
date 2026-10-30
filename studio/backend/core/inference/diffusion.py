@@ -9277,6 +9277,18 @@ class DiffusionBackend:
                                         self._stop_load_prefetch()
                                 else:
                                     # bf16 -> fp16 conversion materialises in host RAM (35 GB for FLUX.1)
+                                    # The twins the load will read, judged on what pipe_kwargs supplies now: a component
+                                    # supplied since the first check (hosted VAE, native transformer) can complete them.
+                                    _decision_variant = (
+                                        local_fp16_variant(
+                                            _variant_snapshot,
+                                            load_dtype = dtype,
+                                            torch_dtype = pipe_kwargs.get("torch_dtype"),
+                                            supplied = tuple(pipe_kwargs),
+                                        )
+                                        if _fp16_variant_eligible
+                                        else None
+                                    )
                                     small_host = self._small_host_decision(
                                         _base_local_dir or fetch_base,
                                         pipe_kwargs,
@@ -9287,13 +9299,13 @@ class DiffusionBackend:
                                             pipeline_cls,
                                             fetch_base,
                                             # the layout the load reads: a twins load never fetches the defaults
-                                            {**pipe_kwargs, "variant": _fp16_variant}
-                                            if _fp16_variant is not None
+                                            {**pipe_kwargs, "variant": _decision_variant}
+                                            if _decision_variant is not None
                                             else pipe_kwargs,
                                             _base_local_dir,
                                             local_files_only,
                                         ),
-                                        variant = _fp16_variant,
+                                        variant = _decision_variant,
                                     )
                                     if small_host is not None and small_host.engaged:
                                         pipe_kwargs["torch_dtype"] = small_host_torch_dtype_map(
