@@ -58,7 +58,7 @@ import {
   type ProjectRecord,
 } from "@/features/chat";
 import { useSettingsDialogStore } from "@/features/settings";
-import { useT } from "@/i18n";
+import { formatRelativeTime, useLocale, useT, type Locale, type TranslationKey } from "@/i18n";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildProjectsTourSteps } from "./tour";
 import { EditProjectDialog } from "./components/edit-project-dialog";
@@ -120,7 +120,11 @@ const PROJECT_CHATS_STREAM_REFRESH_DEBOUNCE_MS = 2000;
 const PROJECTS_INITIAL_FALLBACK = 8;
 const PROJECTS_ROW_HEIGHT = 68;
 
-function formatUpdated(ts: number): string {
+function formatUpdated(
+  ts: number,
+  t: (key: TranslationKey) => string,
+  locale: Locale,
+): string {
   if (!Number.isFinite(ts)) return "";
   const now = new Date();
   const then = new Date(ts);
@@ -135,10 +139,10 @@ function formatUpdated(ts: number): string {
     then.getDate(),
   ).getTime();
   const dayDiff = Math.round((startOfToday - startOfThen) / 86_400_000);
-  if (dayDiff <= 0) return "Today";
-  if (dayDiff === 1) return "Yesterday";
-  if (dayDiff < 7) return `${dayDiff} days ago`;
-  return then.toLocaleDateString(undefined, {
+  if (dayDiff <= 0) return t("projectsPage.today");
+  if (dayDiff === 1) return t("projectsPage.yesterday");
+  if (dayDiff < 7) return formatRelativeTime(locale, -dayDiff, "day");
+  return then.toLocaleDateString(locale, {
     month: "short",
     day: "numeric",
     year: then.getFullYear() === now.getFullYear() ? undefined : "numeric",
@@ -161,6 +165,7 @@ export function ProjectsPage({
   onToggleOrder?: () => void;
 } = {}) {
   const t = useT();
+  const locale = useLocale();
   const signalReady = useAppShellReadySignal();
   const navigate = useNavigate();
   const { projects, hasLoaded } = useChatProjects();
@@ -293,7 +298,9 @@ export function ProjectsPage({
     try {
       await runChatImport(source, {
         projectId,
-        name: projectId ? (projects.find((p) => p.id === projectId)?.name ?? "project") : undefined,
+        name: projectId
+          ? (projects.find((p) => p.id === projectId)?.name ?? t("projectsPage.projectFallback"))
+          : undefined,
       });
     } finally {
       setImporting(false);
@@ -312,7 +319,7 @@ export function ProjectsPage({
       setImportTargetId(null);
       setImportFile(nativeImportSource(selected));
     } catch (error) {
-      toast.error("Import failed.", {
+      toast.error(t("projectsPage.importFailed"), {
         description: error instanceof Error ? error.message : String(error),
       });
     }
@@ -447,7 +454,7 @@ export function ProjectsPage({
           ? listed.filter((t) => t.projectId && projectIds.has(t.projectId))
           : listed;
       const ids = [...new Set(threads.map((t) => t.id))];
-      if (ids.length === 0) { toast.info("No conversations to export."); return; }
+      if (ids.length === 0) { toast.info(t("projectsPage.nothingToExport")); return; }
       const ts = new Date().toISOString().slice(0, 10);
       const basename = `${scope === "all" ? "all-chats" : "all-projects"}-${ts}`;
       if (merged) {
@@ -457,7 +464,7 @@ export function ProjectsPage({
       }
     } catch (error) {
       if (!isDownloadCancelled(error)) {
-        toast.error("Export failed.");
+        toast.error(t("projectsPage.exportFailed"));
       }
     }
   }
@@ -471,7 +478,7 @@ export function ProjectsPage({
       await renameChatItem(target, name);
       notifyChatHistoryUpdated();
     } catch (err) {
-      toast.error("Failed to rename chat", {
+      toast.error(t("projectsPage.renameChatFailed"), {
         description: err instanceof Error ? err.message : undefined,
       });
     }
@@ -485,7 +492,7 @@ export function ProjectsPage({
     try {
       await archiveChatItem(chat, activeThreadId(), () => {});
     } catch (err) {
-      toast.error("Failed to archive chat", {
+      toast.error(t("projectsPage.archiveChatFailed"), {
         description: err instanceof Error ? err.message : undefined,
       });
     }
@@ -497,7 +504,7 @@ export function ProjectsPage({
       // Pins are stored apart from chats, so remove the id explicitly.
       unpinChat(chat.id);
     } catch (err) {
-      toast.error("Failed to delete chat", {
+      toast.error(t("projectsPage.deleteChatFailed"), {
         description: err instanceof Error ? err.message : undefined,
       });
     }
@@ -533,7 +540,7 @@ export function ProjectsPage({
       }
     } catch (error) {
       if (!isDownloadCancelled(error)) {
-        toast.error("Export failed.");
+        toast.error(t("projectsPage.exportFailed"));
       }
     }
   }
@@ -551,11 +558,16 @@ export function ProjectsPage({
       const runtime = useChatRuntimeStore.getState();
       if (runtime.activeProjectId === target.id) runtime.setActiveProjectId(null);
     } catch (err) {
-      toast.error("Failed to delete project", {
+      toast.error(t("projectsPage.deleteProjectFailed"), {
         description: err instanceof Error ? err.message : undefined,
       });
     }
   }
+
+  // Names are emphasised inside the sentence, so each message splits around its placeholder.
+  const deleteChatText = t("projectsPage.deleteChatDescription").split("{name}");
+  const deleteProjectText = t("projectsPage.deleteProjectDescription").split("{name}");
+  const importText = t("projectsPage.importDestination").split("{name}");
 
   // Inside the Library the page header and tour belong to the Library, so only the body renders.
   const Shell = embedded ? "div" : "main";
@@ -584,7 +596,7 @@ export function ProjectsPage({
       {!embedded && (
       <div className="flex flex-wrap items-center justify-between gap-4">
           <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
-            Projects
+            {t("projectsPage.title")}
           </h1>
         <div className="flex w-full min-w-0 items-center justify-end gap-3 sm:w-auto sm:flex-1">
           <div className="relative min-w-0 flex-1 sm:max-w-md">
@@ -600,9 +612,9 @@ export function ProjectsPage({
                   setQuery("");
                 }
               }}
-              placeholder="Search projects"
+              placeholder={t("projectsPage.search")}
               className="h-control w-full rounded-full border-none bg-muted pl-10 pr-4 shadow-none dark:bg-card"
-              aria-label="Search projects"
+              aria-label={t("projectsPage.search")}
             />
           </div>
           <DropdownMenu>
@@ -611,7 +623,7 @@ export function ProjectsPage({
                 variant="outline"
                 size="icon"
                 data-tour="projects-io"
-                title="Import / Export projects"
+                title={t("projectsPage.importExport")}
                 className="size-control rounded-full border-none bg-muted shadow-none dark:bg-card"
               >
                 <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
@@ -620,15 +632,15 @@ export function ProjectsPage({
             <DropdownMenuContent align="end" className="w-56">
               <DropdownMenuItem onSelect={() => void selectGlobalImportFile()}>
                 <HugeiconsIcon icon={Upload01Icon} strokeWidth={1.75} className="size-icon" />
-                Import chats…
+                {t("projectsPage.importChatsAction")}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuSub>
-                <DropdownMenuSubTrigger>Export All Projects</DropdownMenuSubTrigger>
+                <DropdownMenuSubTrigger>{t("projectsPage.exportAllProjects")}</DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="w-52">
                   <DropdownMenuGroup>
                     <DropdownMenuLabel className="pb-1 pt-2 text-ui-11 font-medium">
-                      Combined
+                      {t("projectsPage.combined")}
                     </DropdownMenuLabel>
                     {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                       <DropdownMenuItem key={`ap-m-${fmt}`} onSelect={() => void handleBulkProjectExport("projects", fmt, true)}>
@@ -639,7 +651,7 @@ export function ProjectsPage({
                   <DropdownMenuSeparator />
                   <DropdownMenuGroup>
                     <DropdownMenuLabel className="pb-1 pt-2 text-ui-11 font-medium">
-                      Per chat
+                      {t("projectsPage.perChat")}
                     </DropdownMenuLabel>
                     {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                       <DropdownMenuItem key={`ap-s-${fmt}`} onSelect={() => void handleBulkProjectExport("projects", fmt, false)}>
@@ -650,11 +662,11 @@ export function ProjectsPage({
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
               <DropdownMenuSub>
-                <DropdownMenuSubTrigger>Export Projects + Recents</DropdownMenuSubTrigger>
+                <DropdownMenuSubTrigger>{t("projectsPage.exportProjectsAndRecents")}</DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="w-52">
                   <DropdownMenuGroup>
                     <DropdownMenuLabel className="pb-1 pt-2 text-ui-11 font-medium">
-                      Combined
+                      {t("projectsPage.combined")}
                     </DropdownMenuLabel>
                     {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                       <DropdownMenuItem key={`all-m-${fmt}`} onSelect={() => void handleBulkProjectExport("all", fmt, true)}>
@@ -665,7 +677,7 @@ export function ProjectsPage({
                   <DropdownMenuSeparator />
                   <DropdownMenuGroup>
                     <DropdownMenuLabel className="pb-1 pt-2 text-ui-11 font-medium">
-                      Per chat
+                      {t("projectsPage.perChat")}
                     </DropdownMenuLabel>
                     {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                       <DropdownMenuItem key={`all-s-${fmt}`} onSelect={() => void handleBulkProjectExport("all", fmt, false)}>
@@ -679,7 +691,7 @@ export function ProjectsPage({
           </DropdownMenu>
           <Button variant="dark" data-tour="projects-new" onClick={() => setCreating(true)}>
             <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
-            New project
+            {t("projectsPage.newProject")}
           </Button>
         </div>
       </div>
@@ -688,8 +700,8 @@ export function ProjectsPage({
       {!hasLoaded ? (
         <div className="mt-16">
           <div className="mb-1 flex items-center gap-3 px-5 pb-1 text-ui-13 font-medium text-muted-foreground">
-            <span className="flex-1">Name</span>
-            <span className="shrink-0 sm:w-40">Updated</span>
+            <span className="flex-1">{t("projectsPage.name")}</span>
+            <span className="shrink-0 sm:w-40">{t("projectsPage.updated")}</span>
             <span className="size-7 shrink-0" />
             <span className="size-7 shrink-0" />
             <span className="w-8 shrink-0" />
@@ -712,8 +724,7 @@ export function ProjectsPage({
           {projects.length === 0 ? (
             <>
               <p className="max-w-sm text-sm">
-                A project keeps related chats together, with shared instructions and sources
-                every chat in it can use.
+                {t("projectsPage.emptyDescription")}
               </p>
               <Button
                 variant="outline"
@@ -721,14 +732,14 @@ export function ProjectsPage({
                 onClick={() => setCreating(true)}
               >
                 <HugeiconsIcon icon={ProjectIcon} strokeWidth={1.75} className="size-icon" />
-                Create your first project
+                {t("projectsPage.createFirst")}
               </Button>
             </>
           ) : (
             <>
-              <p className="text-sm">No projects match your search.</p>
+              <p className="text-sm">{t("projectsPage.noMatches")}</p>
               <Button variant="ghost" size="sm" onClick={() => setQuery("")}>
-                Clear search
+                {t("projectsPage.clearSearch")}
               </Button>
             </>
           )}
@@ -737,16 +748,16 @@ export function ProjectsPage({
         <>
         <div className={embedded ? "mt-6" : "mt-16"}>
           <div className="mb-1 flex items-center gap-3 px-5 pb-1 text-ui-13 font-medium text-muted-foreground">
-            <span className="flex-1">Name</span>
+            <span className="flex-1">{t("projectsPage.name")}</span>
             <button
               type="button"
               onClick={() =>
                 onToggleOrder ? onToggleOrder() : setSortDir((dir) => (dir === "desc" ? "asc" : "desc"))
               }
-              title={(orderedDesc ?? sortDir === "desc") ? "Newest first" : "Oldest first"}
+              title={t((orderedDesc ?? sortDir === "desc") ? "projectsPage.newestFirst" : "projectsPage.oldestFirst")}
               className="flex shrink-0 cursor-pointer items-center gap-1 text-left transition-colors hover:text-foreground sm:w-40"
             >
-              Updated
+              {t("projectsPage.updated")}
               <ArrowDownIcon
                 strokeWidth={1.75}
                 className={cn(
@@ -791,7 +802,7 @@ export function ProjectsPage({
                 </button>
                 <button
                   type="button"
-                  aria-label={chatsOpen ? "Hide chats" : "Show chats"}
+                  aria-label={t(chatsOpen ? "projectsPage.hideChats" : "projectsPage.showChats")}
                   aria-expanded={chatsOpen}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -819,11 +830,11 @@ export function ProjectsPage({
                 />
               </span>
               <span className="hidden w-40 shrink-0 text-sm text-muted-foreground sm:block">
-                {formatUpdated(projectActivityAt(project))}
+                {formatUpdated(projectActivityAt(project), t, locale)}
               </span>
               <button
                 type="button"
-                aria-label={pinned ? "Unpin project" : "Pin project"}
+                aria-label={t(pinned ? "projectsPage.unpinProject" : "projectsPage.pinProject")}
                 onClick={(e) => {
                   e.stopPropagation();
                   togglePinProject(project.id);
@@ -839,8 +850,8 @@ export function ProjectsPage({
               {/* As ChatGPT's project rows: a new chat is one click, beside the menu that also has it. */}
               <button
                 type="button"
-                aria-label="New chat in project"
-                title="New chat in project"
+                aria-label={t("projectsPage.newChatInProject")}
+                title={t("projectsPage.newChatInProject")}
                 onClick={(e) => {
                   e.stopPropagation();
                   newChatInProject(project.id);
@@ -855,7 +866,7 @@ export function ProjectsPage({
                     <button
                       type="button"
                       onClick={(e) => e.stopPropagation()}
-                      aria-label="Project options"
+                      aria-label={t("projectsPage.projectOptions")}
                       className="absolute right-0 flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground data-[state=open]:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:data-[state=open]:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
                     >
                       <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-icon" />
@@ -890,10 +901,10 @@ export function ProjectsPage({
                     onClick={() => loadProjectChats(project.id)}
                     className="cursor-pointer self-start py-1 pl-5 text-left text-sm text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
                   >
-                    Could not load chats. Retry
+                    {t("projectsPage.loadChatsFailed")}
                   </button>
                 ) : chats.length === 0 ? (
-                  <p className="py-1 pl-5 text-sm text-muted-foreground">No chats</p>
+                  <p className="py-1 pl-5 text-sm text-muted-foreground">{t("projectsPage.noChats")}</p>
                 ) : (
                   <>
                     {chats.map((chat) => {
@@ -916,7 +927,7 @@ export function ProjectsPage({
                           {chatUnread ? (
                             <span
                               role="img"
-                              aria-label="Unread"
+                              aria-label={t("projectsPage.unread")}
                               className="size-2 shrink-0 rounded-full bg-primary"
                             />
                           ) : null}
@@ -924,12 +935,12 @@ export function ProjectsPage({
                           {/* Same widths as a project row, so the columns line up under it, and
                               gone with it below sm, where a nested row has no room for both. */}
                           <span className="hidden w-40 shrink-0 sm:block">
-                            {formatUpdated(chat.updatedAt)}
+                            {formatUpdated(chat.updatedAt, t, locale)}
                           </span>
                         </button>
                         <button
                           type="button"
-                          aria-label={chatPinned ? "Unpin chat" : "Pin chat"}
+                          aria-label={t(chatPinned ? "projectsPage.unpinChat" : "projectsPage.pinChat")}
                           onClick={(e) => {
                             e.stopPropagation();
                             togglePinChat(chat.id);
@@ -953,7 +964,7 @@ export function ProjectsPage({
                               <button
                                 type="button"
                                 onClick={(e) => e.stopPropagation()}
-                                aria-label="Chat options"
+                                aria-label={t("projectsPage.chatOptions")}
                                 className="absolute right-0 flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground focus-visible:opacity-100 group-hover/chat-row:opacity-100 pointer-coarse:opacity-100 data-[state=open]:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] data-[state=open]:opacity-100 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:data-[state=open]:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
                               >
                                 <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-icon" />
@@ -974,7 +985,7 @@ export function ProjectsPage({
                                 }}
                               >
                                 <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
-                                <span>Rename</span>
+                                <span>{t("common.rename")}</span>
                               </DropdownMenuItem>
                               <DropdownMenuItem
                                 onSelect={() =>
@@ -996,7 +1007,7 @@ export function ProjectsPage({
                               <DropdownMenuSub>
                                 <DropdownMenuSubTrigger>
                                   <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon mr-1" />
-                                  <span>Export</span>
+                                  <span>{t("common.export")}</span>
                                 </DropdownMenuSubTrigger>
                                 <DropdownMenuSubContent className="w-52">
                                   {chatExportOptions().map(({ label, format }) => (
@@ -1018,7 +1029,7 @@ export function ProjectsPage({
                                         .openDialog("data")
                                     }
                                   >
-                                    Export all chats…
+                                    {t("projectsPage.exportAllChats")}
                                   </DropdownMenuItem>
                                 </DropdownMenuSubContent>
                               </DropdownMenuSub>
@@ -1026,7 +1037,7 @@ export function ProjectsPage({
                               <DropdownMenuSeparator />
                               <DropdownMenuItem onSelect={() => void archiveChat(chat)}>
                                 <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
-                                <span>Archive</span>
+                                <span>{t("projectsPage.archive")}</span>
                               </DropdownMenuItem>
                               <DropdownMenuItem
                                 variant="destructive"
@@ -1037,7 +1048,7 @@ export function ProjectsPage({
                                 }
                               >
                                 <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
-                                <span>Delete</span>
+                                <span>{t("common.delete")}</span>
                               </DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>
@@ -1051,7 +1062,7 @@ export function ProjectsPage({
                         onClick={() => loadProjectChats(project.id, true)}
                         className="cursor-pointer self-start py-1 text-left text-sm text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
                       >
-                        Could not refresh chats. Retry
+                        {t("projectsPage.refreshChatsFailed")}
                       </button>
                     )}
                   </>
@@ -1097,7 +1108,7 @@ export function ProjectsPage({
       >
         <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Rename chat</DialogTitle>
+            <DialogTitle>{t("projectsPage.renameChat")}</DialogTitle>
           </DialogHeader>
           <Input
             value={chatNameDraft}
@@ -1110,13 +1121,13 @@ export function ProjectsPage({
             }}
             autoFocus
             maxLength={200}
-            placeholder="Chat name"
-            aria-label="Chat name"
+            placeholder={t("projectsPage.chatName")}
+            aria-label={t("projectsPage.chatName")}
             className="focus-visible:border-input focus-visible:ring-0"
           />
           <DialogFooter className="flex-wrap gap-2 sm:justify-end">
             <Button type="button" variant="ghost" onClick={() => setRenamingChat(null)}>
-              Cancel
+              {t("common.cancel")}
             </Button>
             <Button
               type="button"
@@ -1127,7 +1138,7 @@ export function ProjectsPage({
                 chatNameDraft.trim() === renamingChat?.title
               }
             >
-              Save
+              {t("common.save")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1141,11 +1152,12 @@ export function ProjectsPage({
       >
         <DialogContent className="menu-flat-destructive corner-squircle dialog-soft-surface sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Delete chat</DialogTitle>
+            <DialogTitle>{t("projectsPage.deleteChat")}</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            Are you sure you want to delete <em>{deletingChat?.title}</em>? Its messages
-            will be permanently deleted.
+            {deleteChatText[0]}
+            <em>{deletingChat?.title}</em>
+            {deleteChatText[1]}
           </p>
           <DeleteChatFilesSwitch
             id="projects-delete-chat-files"
@@ -1154,14 +1166,14 @@ export function ProjectsPage({
           />
           <DialogFooter className="flex-wrap gap-2 sm:justify-end">
             <Button type="button" variant="ghost" onClick={() => setDeletingChat(null)}>
-              Cancel
+              {t("common.cancel")}
             </Button>
             <Button
               type="button"
               variant="destructive"
               onClick={() => void commitChatDelete()}
             >
-              {deleteFilesOnDelete ? "Delete all" : "Delete"}
+              {deleteFilesOnDelete ? t("projectsPage.deleteAll") : t("common.delete")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1170,35 +1182,35 @@ export function ProjectsPage({
       <Dialog open={importFile !== null} onOpenChange={(open) => { if (!open) setImportFile(null); }}>
         <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Import chats</DialogTitle>
+            <DialogTitle>{t("projectsPage.importChats")}</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            Choose where to import{" "}
+            {importText[0]}
             <span
               data-reload-snapshot-sensitive
               className="font-medium text-foreground"
             >
               {importFile?.name}
             </span>
-            :
+            {importText[1]}
           </p>
           <Select
             value={importTargetId ?? "__recents__"}
             onValueChange={(v) => setImportTargetId(v === "__recents__" ? null : v)}
           >
             <SelectTrigger>
-              <SelectValue placeholder="Select destination" />
+              <SelectValue placeholder={t("projectsPage.selectDestination")} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="__recents__">Recents</SelectItem>
+              <SelectItem value="__recents__">{t("projectsPage.recents")}</SelectItem>
               {projects.map((p) => (
                 <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
               ))}
             </SelectContent>
           </Select>
           <DialogFooter className="flex-wrap gap-2 sm:justify-end">
-            <Button type="button" variant="ghost" onClick={() => setImportFile(null)}>Cancel</Button>
-            <Button type="button" onClick={() => void commitImport()}>Import</Button>
+            <Button type="button" variant="ghost" onClick={() => setImportFile(null)}>{t("common.cancel")}</Button>
+            <Button type="button" onClick={() => void commitImport()}>{t("projectsPage.import")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1211,11 +1223,12 @@ export function ProjectsPage({
       >
         <DialogContent className="menu-flat-destructive corner-squircle dialog-soft-surface sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Delete project</DialogTitle>
+            <DialogTitle>{t("projectsPage.deleteProject")}</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            Are you sure you want to delete <em>{deleting?.name}</em>? Its chats will
-            be permanently deleted.
+            {deleteProjectText[0]}
+            <em>{deleting?.name}</em>
+            {deleteProjectText[1]}
           </p>
           <DeleteChatFilesSwitch
             id="projects-delete-project-files"
@@ -1223,15 +1236,15 @@ export function ProjectsPage({
             onCheckedChange={setDeleteFilesOnDelete}
             description={
               deleting?.rootPath ??
-              "The project workspace folder will be removed from disk."
+              t("projectsPage.deleteProjectFiles")
             }
           />
           <DialogFooter className="flex-wrap gap-2 sm:justify-end">
             <Button type="button" variant="ghost" onClick={() => setDeleting(null)}>
-              Cancel
+              {t("common.cancel")}
             </Button>
             <Button type="button" variant="destructive" onClick={() => void commitDelete()}>
-              {deleteFilesOnDelete ? "Delete all" : "Delete"}
+              {deleteFilesOnDelete ? t("projectsPage.deleteAll") : t("common.delete")}
             </Button>
           </DialogFooter>
         </DialogContent>
