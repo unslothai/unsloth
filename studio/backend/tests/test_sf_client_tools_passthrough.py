@@ -2268,7 +2268,7 @@ def test_video_turn_with_tools_enabled_keeps_the_client_tool_catalog(monkeypatch
     body = _json_body(_call(payload, monkeypatch, backend))
 
     assert backend.calls[0]["tools"] == [LOOKUP_TOOL]
-    assert backend.calls[0]["video"] == clip
+    assert backend.calls[0]["videos"] == [clip]
     assert body["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == "lookup"
 
 
@@ -2299,7 +2299,7 @@ def test_a_nudge_retry_keeps_the_video_on_the_question_turn(monkeypatch):
 
     assert len(backend.calls) == 2, "the nudge retry did not run"
     retry = backend.calls[1]["messages"]
-    assert backend.calls[1]["video"] == clip
+    assert backend.calls[1]["videos"] == [clip]
     question = next(m for m in retry if m["role"] == "user")
     assert question["content"][0] == {"type": "video"}
     assert retry[-1]["role"] == "user" and isinstance(retry[-1]["content"], str)

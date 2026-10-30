@@ -244,6 +244,64 @@ done < <(find "$appdir" -type f -print0)
 ((dynamic_count > 0)) || { echo "Complete AppImage contains no dynamic ELF objects" >&2; exit 1; }
 ((runpath_failures == 0)) || exit 1
 
+# Releases before host mode ship no copy; a launcher that runs one needs all of it.
+if grep -aFq 'usr/bin/host/unsloth-studio' "${launchers[@]}"; then
+  host_copy="$appdir/usr/bin/host/unsloth-studio"
+  [[ -f "$host_copy" && -x "$host_copy" ]] || {
+    echo "Complete AppImage launcher runs a missing host-mode executable: $host_copy" >&2
+    exit 1
+  }
+  # Minimal images (fedora:44) ship no diffutils; sha256sum is coreutils. Fail closed.
+  same_bytes() {
+    if command -v cmp >/dev/null 2>&1; then
+      cmp -s "$1" "$2"
+    else
+      local left right
+      left="$(sha256sum <"$1")" && right="$(sha256sum <"$2")" &&
+        [[ -n "$left" && "$left" == "$right" ]]
+    fi
+  }
+  same_bytes "$appdir/usr/bin/unsloth-studio" "$host_copy" || {
+    echo "Complete AppImage host-mode executable differs from usr/bin/unsloth-studio" >&2
+    exit 1
+  }
+  [[ ! -e "$appdir/usr/bin/lib" ]] || {
+    echo "Complete AppImage has usr/bin/lib, which the host-mode executable reaches" >&2
+    exit 1
+  }
+  host_runpath="$(readelf -d "$host_copy" 2>/dev/null |
+    sed -n 's/.*\(RPATH\|RUNPATH\).*Library .*path: \[\(.*\)\].*/\2/p')"
+  IFS=':' read -ra host_entries <<<"$host_runpath"
+  for entry in "${host_entries[@]}"; do
+    resolved="${entry//\$ORIGIN/$appdir/usr/bin/host}"
+    [[ ! -e "$resolved" ]] || {
+      echo "Complete AppImage host-mode executable reaches bundled libraries: $entry" >&2
+      exit 1
+    }
+  done
+  grep -aFq -- '--unsloth-webkit-probe' "${launchers[@]}" || {
+    echo "Complete AppImage runs its host-mode executable without the WebKitGTK probe" >&2
+    exit 1
+  }
+  # Host mode undoes the hook exports by name; a plugin bump must not add one it misses.
+  host_env="$(sed -n '/^unsloth_host_env() {$/,/^}$/p' "${launchers[@]}")"
+  [[ -n "$host_env" ]] || {
+    echo "Complete AppImage launcher has no host-mode environment restore" >&2
+    exit 1
+  }
+  drift=0
+  while IFS= read -r name; do
+    [[ "$name" != APPDIR ]] || continue
+    grep -Eq "(^|[^A-Za-z0-9_])${name}([^A-Za-z0-9_]|\$)" <<<"$host_env" || {
+      echo "Complete AppImage hook pins $name to the bundle, and host mode does not undo it" >&2
+      ((drift += 1))
+    }
+  done < <(sed -n -E \
+    's/^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=.*\$\{?APPDIR([^A-Za-z0-9_].*)?$/\2/p' \
+    "$appdir/apprun-hooks"/* 2>/dev/null | sort -u)
+  ((drift == 0)) || exit 1
+fi
+
 
 
 max_glibc="$({ readelf --version-info "$binary" 2>/dev/null || true; } |

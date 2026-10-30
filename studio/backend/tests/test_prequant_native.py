@@ -683,6 +683,66 @@ def test_the_converter_writes_a_text_encoder_with_tied_weights(tmp_path):
         )
 
 
+def _nvfp4_tensor(seed = 0, act_scale = None):
+    nv = pytest.importorskip("torchao.prototype.mx_formats.nvfp4_tensor")
+    g = torch.Generator().manual_seed(seed)
+    w = torch.randn(128, 64, generator = g).to(torch.bfloat16)
+    return nv.NVFP4Tensor.to_nvfp4(
+        w,
+        per_tensor_scale = nv.per_tensor_amax_to_scale(w.abs().max()),
+        is_swizzled_scales = True,
+        act_per_tensor_scale = act_scale,
+        act_quant_kwargs = nv.QuantizeTensorToNVFP4Kwargs(is_swizzled_scales = True),
+    )
+
+
+def test_the_converters_comparison_takes_a_0_dim_scale():
+    """nvfp4 carries 0-dim fp32 per-tensor scales; viewing those as bytes used to raise mid-conversion."""
+    conv = _converter()
+    one = torch.tensor(0.5)
+    assert conv.compare_state_dicts({"s": one}, {"s": one.clone()}) == []
+    assert conv.compare_state_dicts({"s": torch.tensor(0.0)}, {"s": torch.tensor(-0.0)}) == ["s"]
+    w = _nvfp4_tensor()
+    assert conv.compare_state_dicts({"a.w": w}, {"a.w": _nvfp4_tensor()}) == []
+    assert conv.compare_state_dicts({"a.w": w}, {"a.w": _nvfp4_tensor(seed = 1)}) == ["a.w"]
+    assert conv.compare_state_dicts(
+        {"a.w": w}, {"a.w": _nvfp4_tensor(act_scale = torch.tensor(0.25))}
+    ) == ["a.w"]
+
+
+@needs_helpers
+@pytest.mark.parametrize("act_scale", [None, 0.25])
+def test_the_converter_writes_a_bit_identical_nvfp4_artifact(tmp_path, act_scale):
+    nv = pytest.importorskip("torchao.prototype.mx_formats.nvfp4_tensor")
+    weight = _nvfp4_tensor(act_scale = None if act_scale is None else torch.tensor(act_scale))
+    src = tmp_path / "Model-NVFP4.pt"
+    torch.save(
+        {
+            "format": pq.PREQUANT_FORMAT,
+            "metadata": {"scheme": "nvfp4", "component": "transformer"},
+            "state_dict": {
+                "blk.proj.weight": weight,
+                "blk.proj.bias": torch.randn(128, dtype = torch.bfloat16),
+            },
+        },
+        str(src),
+    )
+    conv = _converter()
+    rec = conv.convert(str(src), str(tmp_path / "out"), repo = None, revision = None, sha = None)
+    assert rec["verified_bit_identical"] and rec["scheme"] == "nvfp4" and rec["quantized"] == 1
+    a = pq._load_prequant_checkpoint(str(src), map_location = "cpu")["state_dict"]
+    b = pq._load_prequant_checkpoint(rec["dst"], map_location = "cpu", mmap = True)["state_dict"]
+    got, want = b["blk.proj.weight"], a["blk.proj.weight"]
+    assert type(got) is nv.NVFP4Tensor
+    for attr in ("qdata", "scale", "per_tensor_scale", "act_per_tensor_scale"):
+        x, y = getattr(got, attr), getattr(want, attr)
+        assert (x is None) == (y is None) and (x is None or conv._same(x, y)), attr
+    for attr in ("block_size", "orig_dtype", "is_swizzled_scales", "use_triton_kernel"):
+        assert getattr(got, attr) == getattr(want, attr), attr
+    assert repr(got.act_quant_kwargs) == repr(want.act_quant_kwargs)
+    assert conv.compare_state_dicts(a, b) == []
+
+
 def test_the_converters_comparison_sees_every_kind_of_difference():
     conv = _converter()
     w = _int8_tensor()
