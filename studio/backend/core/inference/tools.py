@@ -13692,18 +13692,17 @@ def _search_conversation(arguments: dict, rag_scope: dict | None) -> str:
     if not found:
         return "No earlier turns of this conversation matched that query."
 
-    # Halve until the rendered result fits: chunk size is a target, not a weight (overlap, other
-    # tokenizer, markup). A single chunk that still does not fit is refused.
+    # One fewer until the text the model reads fits: chunk size is a target, not a weight (overlap,
+    # other tokenizer, markup). A single chunk that still does not fit is refused.
     if budget is not None:
         counter = scope.get("token_counter")
         attempt = max(1, int(top_k or 1))
         while True:
-            rendered = _rendered_conversation_search(found)
-            if _conversation_search_cost(rendered, counter) <= int(budget):
-                return rendered
+            if _conversation_search_cost(found[0], counter) <= int(budget):
+                return _rendered_conversation_search(found)
             if attempt <= 1:
                 return "There is no room left in this context to search earlier conversation."
-            attempt = max(1, attempt // 2)
+            attempt -= 1
             found = _recall(attempt)
             if not found:
                 return "No earlier turns of this conversation matched that query."
@@ -13731,7 +13730,7 @@ def _conversation_search_tokens(text: str) -> int:
 
 
 def _rendered_conversation_search(found) -> str:
-    """The tool result exactly as the model would receive it."""
+    """The full result; the model never sees the source map."""
     text, sources = found
     if sources:
         import json as _json
@@ -21474,20 +21473,6 @@ def _snapshot_and_history_begin(
     return before
 
 
-def _walk_lists(workdir: str, rel: str) -> bool:
-    """Whether `_history_walk` would list *rel*, so a file edit_file records is never
-    taken for a deletion by the next python or terminal walk."""
-    parts = rel.split("/")
-    if not all(map(_servable_segment, parts)):
-        return False
-    base = workdir
-    for part in parts[:-1]:
-        if part.startswith(".") or _snapshot_skips_dir(base, part):
-            return False
-        base = os.path.join(base, part)
-    return not (len(parts) == 1 and parts[0] in _INTERNAL_SANDBOX_FILES)
-
-
 def _history_begin_file(session_id: "str | None", target: str) -> dict:
     """Track the one file an edit_file call writes. The first call in a folder walks it once for the baseline."""
     if file_history.current_turn() is None or not session_id:
@@ -21500,7 +21485,11 @@ def _history_begin_file(session_id: "str | None", target: str) -> dict:
     if rel.startswith(os.pardir) or os.path.isabs(rel):
         return {}
     rel = rel.replace(os.sep, "/")
-    if not _walk_lists(workdir, rel) or not file_history.tracked(rel, ()):
+    if (
+        not all(map(_servable_segment, rel.split("/")))
+        or rel in _INTERNAL_SANDBOX_FILES
+        or not file_history.tracked(rel, ())
+    ):
         return {}
     try:
         baseline = file_history.store().needs_baseline(workdir)
