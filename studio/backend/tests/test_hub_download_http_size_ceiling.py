@@ -794,6 +794,85 @@ def test_an_ignored_file_list_does_not_refuse_a_download_that_fits(monkeypatch):
     assert result["transport"] == download_registry.TRANSPORT_HTTP
 
 
+@pytest.fixture
+def modelscope_source(monkeypatch):
+    from utils import hub_settings
+    monkeypatch.setenv(hub_settings.SOURCE_ENV, hub_settings.MODELSCOPE)
+    monkeypatch.setattr(download_registry.importlib.util, "find_spec", lambda name: object())
+
+
+@pytest.mark.parametrize("mode", ["auto", "xet", "http"])
+def test_modelscope_fetches_an_oversized_variant_over_http(monkeypatch, modelscope_source, mode):
+    model_downloads = _request_path(monkeypatch)
+    monkeypatch.setattr(
+        dl, "_repo_siblings", lambda *a, **k: (_Sibling("model.safetensors", _OVERSIZED),)
+    )
+
+    result = _download(model_downloads, transport_mode = mode)
+
+    assert result["transport"] == download_registry.TRANSPORT_HTTP
+
+
+def test_modelscope_keeps_the_http_rung_for_an_oversized_download(modelscope_source):
+    assert dl.http_rung_reason("model", "org/M", known_largest_file_bytes = _OVERSIZED) is None
+
+
+def test_modelscope_capabilities_offer_http_only(modelscope_source):
+    caps = download_registry.get_download_transport_capabilities(largest_file_bytes = _OVERSIZED)
+    assert caps.xet.available is False
+    assert caps.xet.reason == caps.auto_reason
+    assert "ModelScope" in caps.xet.reason
+    assert caps.http.available is True
+    assert caps.auto_resolves_to == download_registry.TRANSPORT_HTTP
+
+
+def _worker_main_exit_code(monkeypatch, tmp_path) -> int:
+    """Run the worker's main into the hub's real size check, stopping at the request that follows it."""
+    from huggingface_hub import constants, file_download
+
+    from hub.workers import hf_download
+
+    # Registers the undo: the worker overwrites this process-wide constant.
+    monkeypatch.setattr(constants, "MAX_HTTP_DOWNLOAD_SIZE", constants.MAX_HTTP_DOWNLOAD_SIZE)
+
+    class _Reached(Exception):
+        pass
+
+    def _reached(*_a, **_k):
+        raise _Reached
+
+    def _download(*_a):
+        with open(tmp_path / "partial", "wb") as handle, pytest.raises(_Reached):
+            file_download.http_get("https://example.invalid/f", handle, expected_size = _OVERSIZED)
+
+    monkeypatch.setattr(file_download, "http_stream_backoff", _reached)
+    monkeypatch.setattr(hf_download, "_install_signal_handlers", lambda: None)
+    monkeypatch.setattr(hf_download, "_download_snapshot", _download)
+    monkeypatch.setattr(sys, "argv", ["hf_download", "--repo-id", "org/M"])
+    with pytest.raises(SystemExit) as excinfo:
+        hf_download.main()
+    return excinfo.value.code
+
+
+def test_the_modelscope_worker_lifts_the_hubs_client_side_check(
+    monkeypatch, tmp_path, modelscope_source
+):
+    assert _worker_main_exit_code(monkeypatch, tmp_path) == 0
+
+
+def test_a_hugging_face_worker_keeps_the_hubs_check(monkeypatch, tmp_path, capfd):
+    assert _worker_main_exit_code(monkeypatch, tmp_path) == 1
+    assert "too large" in capfd.readouterr().err
+
+
+def test_a_hugging_face_install_without_hf_xet_keeps_its_auto_reason(monkeypatch):
+    monkeypatch.setattr(download_registry.importlib.util, "find_spec", lambda name: None)
+    caps = download_registry.get_download_transport_capabilities()
+    assert caps.xet.available is False
+    assert "hf_xet is not installed" in caps.xet.reason
+    assert caps.auto_reason is None
+
+
 def test_a_real_scope_is_still_measured_on_its_files(monkeypatch):
     model_downloads = _request_path(monkeypatch)
 

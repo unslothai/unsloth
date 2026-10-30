@@ -89,8 +89,24 @@ def test_supports_lora_matrix():
     assert not dl.supports_lora(
         engine = "diffusers", family = "flux.1", model_kind = "single_file", transformer_quant = "mxfp8"
     )
-    assert not dl.supports_lora(
+    assert dl.supports_lora(
         engine = "diffusers", family = "flux.1", model_kind = "gguf", transformer_quant = None
+    )
+    assert dl.supports_lora(
+        engine = "diffusers", family = "z-image", model_kind = "gguf", transformer_quant = None
+    )
+    assert not dl.supports_lora(
+        engine = "diffusers", family = "sdxl", model_kind = "gguf", transformer_quant = None
+    )
+    assert dl.supports_lora(
+        engine = "diffusers", family = "sdxl", model_kind = "single_file", transformer_quant = None
+    )
+    assert not dl.supports_lora(
+        engine = "diffusers",
+        family = "z-image",
+        model_kind = "gguf",
+        transformer_quant = None,
+        compiled = True,
     )
     # diffusers needs a non-hotswap adapter loaded before compilation.
     assert not dl.supports_lora(
@@ -104,6 +120,50 @@ def test_supports_lora_matrix():
         engine = "sd_cpp",
         family = "flux.1",
         model_kind = "gguf",
+        transformer_quant = None,
+        compiled = True,
+    )
+
+
+@pytest.mark.parametrize("engine", ["diffusers", "sd_cpp", "mlx"])
+@pytest.mark.parametrize(
+    "family", ["flux.1", "z-image", "qwen-image", "lumina-2", "sdxl", "moss-image", None]
+)
+@pytest.mark.parametrize("model_kind", ["gguf", "pipeline", "single_file"])
+@pytest.mark.parametrize("quant", [None, "int8", "fp8", "nvfp4", "mxfp8"])
+@pytest.mark.parametrize("compiled", [False, True])
+def test_every_build_without_lora_names_a_reason(engine, family, model_kind, quant, compiled):
+    # The Images page shows this reason in place of the picker, so a False gate must never come without one.
+    gate = dict(
+        engine = engine,
+        family = family,
+        model_kind = model_kind,
+        transformer_quant = quant,
+        compiled = compiled,
+    )
+    reason = dl.lora_unavailable_reason(**gate)
+    assert dl.supports_lora(**gate) is (reason is None)
+    assert reason is None or reason.strip()
+
+
+def test_lora_unavailable_reason_names_the_cause():
+    gguf = dict(model_kind = "gguf", transformer_quant = None)
+    assert dl.lora_unavailable_reason(engine = "mlx", family = "z-image", **gguf) is None
+    assert "MLX" in dl.lora_unavailable_reason(engine = "mlx", family = "flux.1", **gguf)
+    assert "qwen-image" in dl.lora_unavailable_reason(engine = "sd_cpp", family = "qwen-image", **gguf)
+    assert dl.lora_unavailable_reason(engine = "diffusers", family = "lumina-2", **gguf) is None
+    sdxl = dl.lora_unavailable_reason(engine = "diffusers", family = "sdxl", **gguf)
+    assert "whole-pipeline" in sdxl and ".safetensors" in sdxl
+    assert "NVFP4" in dl.lora_unavailable_reason(
+        engine = "diffusers", family = "flux.1", model_kind = "pipeline", transformer_quant = "nvfp4"
+    )
+    assert "no LoRA loader" in dl.lora_unavailable_reason(
+        engine = "diffusers", family = "moss-image", model_kind = "pipeline", transformer_quant = None
+    )
+    assert "Speed" in dl.lora_unavailable_reason(
+        engine = "diffusers",
+        family = "flux.1",
+        model_kind = "pipeline",
         transformer_quant = None,
         compiled = True,
     )

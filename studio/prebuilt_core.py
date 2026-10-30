@@ -751,7 +751,7 @@ def copy_response_body(
     *,
     total_bytes: int | None,
     progress: "DownloadProgress | None" = None,
-    chunk_size: int = 64 * 1024,
+    chunk_size: int = 1024 * 1024,
 ) -> int:
     """Stream ``response`` into ``write`` and return the byte count. Raises StalledDownload when a
     window passes with too few bytes, and TruncatedDownload when the body ends short of
@@ -759,23 +759,27 @@ def copy_response_body(
 
     A real HTTPResponse is read with read1, which returns what one receive brings: read(n) waits
     for all n bytes, so a trickle would block it for hours and the window check would never run.
-    Anything else (file:// bodies, test doubles) keeps plain read."""
-    if isinstance(response, http.client.HTTPResponse):
-        read = response.read1
-    else:
-        read = response.read
+    Anything else (file:// bodies, test doubles) keeps plain read. Each read1 stops at the next
+    ``chunk_size`` boundary and progress is reported there, so the progress lines land where the
+    whole-chunk reads put them while the stall window is still checked after every receive."""
+    per_receive = isinstance(response, http.client.HTTPResponse)
+    read = response.read1 if per_receive else response.read
     downloaded = 0
+    next_report = chunk_size
     window_start = time.monotonic()
     window_bytes = 0
     while True:
-        chunk = read(chunk_size)
+        chunk = read(next_report - downloaded if per_receive else chunk_size)
         if not chunk:
             break
         write(chunk)
         downloaded += len(chunk)
         window_bytes += len(chunk)
-        if progress is not None:
-            progress.update(downloaded)
+        if downloaded >= next_report or not per_receive:
+            if progress is not None:
+                progress.update(downloaded)
+            while next_report <= downloaded:
+                next_report += chunk_size
         now = time.monotonic()
         if now - window_start >= DOWNLOAD_STALL_WINDOW_SECONDS:
             if window_bytes < DOWNLOAD_STALL_MIN_BYTES and (

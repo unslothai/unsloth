@@ -15,9 +15,24 @@ HOOKED_ATTRS: tuple[str, ...] = DIT_ATTRS + ("unet",)
 # Named partitions a modular workflow compiles through a view (MiniMax-H3's reference DiT).
 PARTITION_ATTRS: tuple[str, ...] = ("transformer_ref",)
 
-# U-Net denoisers ship no ``_repeated_blocks``, so the regional compile cannot reach them; these classes get a
-# WHOLE-module static compile (diffusion_speed).
+# Whole-module U-Net compile only under max-autotune or UNSLOTH_DIFFUSION_UNET_REGIONAL=0.
 UNET_WHOLE_COMPILE: frozenset[str] = frozenset({"UNet2DConditionModel"})
+# SDXL 1024^2 on A100: 19 graphs, 55 s cold vs 154 s whole. Resnets/samplers are needed: step 97.3 ms eager,
+# transformer blocks only 91.2, all four 83.1, whole module 82.5.
+UNET_REGIONAL_BLOCKS: tuple[str, ...] = (
+    "BasicTransformerBlock",
+    "ResnetBlock2D",
+    "Downsample2D",
+    "Upsample2D",
+)
+UNET_REGIONAL_ENV = "UNSLOTH_DIFFUSION_UNET_REGIONAL"
+
+
+def unet_regional_enabled() -> bool:
+    import os
+    raw = (os.environ.get(UNET_REGIONAL_ENV) or "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
 
 # Component names that are never a denoiser even when they are a ModelMixin with repeated blocks.
 _NOT_DENOISERS = (

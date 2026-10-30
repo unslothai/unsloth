@@ -12,6 +12,7 @@ import { listChatMessages } from "../api/chat-api";
 import type { MessageRecord } from "../types";
 import {
   ensureStoredChatThread,
+  saveStoredChatMessage,
   syncStoredChatMessages,
 } from "./chat-history-storage";
 import {
@@ -99,8 +100,23 @@ async function withStoredResearchMessages(
 export async function syncExportedRepositoryToBackend(
   remoteId: string,
   exp: ExportedMessageRepository,
-  options: { pruneMissing?: boolean; deletedMessageIds?: string[] } = {},
+  options: {
+    pruneMissing?: boolean;
+    deletedMessageIds?: string[];
+    replyOnly?: boolean;
+  } = {},
 ): Promise<void> {
+  const reply = options.replyOnly
+    ? exp.messages.find(
+        ({ message }) => message.id === exp.headId && message.role === "assistant",
+      )
+    : undefined;
+  if (reply) {
+    await saveStoredChatMessage(
+      exportedItemToRecord(remoteId, reply.parentId, reply.message),
+    );
+    return;
+  }
   // syncStoredChatMessages ensures the row itself.
   const records = exp.messages.map(({ message, parentId }) =>
     exportedItemToRecord(remoteId, parentId, message),
