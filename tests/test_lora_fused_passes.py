@@ -372,16 +372,21 @@ def test_a_caller_buffer_sharing_an_operand_keeps_main_behavior(monkeypatch):
     g = torch.Generator(device = "cpu").manual_seed(0)
     X, W = torch.randn(H, H, generator = g), torch.randn(H, H, generator = g)
     A, B = torch.randn(4, H, generator = g), torch.randn(H, 4, generator = g)
-    calls = []
-    real = kernel_utils.torch_matmul
-    monkeypatch.setattr(
-        kernel_utils, "torch_matmul", lambda *a, **k: calls.append(1) or real(*a, **k)
-    )
     assert kernel_utils._shares_storage(W, X, W)
     assert not kernel_utils._shares_storage(torch.empty(H, H), X, W, A, B, None)
+    # The branch taken is checked, not the values: matmul with out= overlapping an input is undefined on
+    # main too (on CPU a 64 x 64 result differs from call to call).
+    betas = []
+    real = kernel_utils.addmm_
+    monkeypatch.setattr(
+        kernel_utils, "addmm_", lambda *a, **k: betas.append(k.get("beta", 1)) or real(*a, **k)
+    )
     out = W.clone()
     kernel_utils.matmul_lora(X, out, None, A, B, 2.0, out = out)
-    assert calls, "a buffer aliasing W must take the base-then-LoRA order"
+    assert betas == [1], "a buffer sharing W must take the base-then-LoRA order"
+    betas.clear()
+    kernel_utils.matmul_lora(X, W, None, A, B, 2.0, out = torch.empty(H, H))
+    assert betas == [0], "a separate buffer takes the fused order"
 
 
 def test_shared_lora_a_grads_have_the_parameter_layout(monkeypatch):
