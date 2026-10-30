@@ -21,6 +21,7 @@ import {
   type ApiModelOverrides,
   fetchModelOverrides,
   modelOverrideKey,
+  onModelOverrideWrite,
   syncModelOverride,
 } from "@/features/model-picker";
 // eslint-disable-next-line no-restricted-imports -- the override <-> config mapping Chat's own panel uses.
@@ -124,7 +125,7 @@ function cardModel(node: FlowNode): ModelChoice | null {
   return choice?.repo?.trim() ? choice : null;
 }
 
-// One read shared by every card on the canvas; a save drops it.
+// One read shared by every card on the canvas; any saved-settings write (Model Config, Chat, here) drops it.
 let overridesRead: Promise<ApiModelOverrides> | null = null;
 const overrideListeners = new Set<() => void>();
 
@@ -140,6 +141,7 @@ function overridesChanged() {
   overridesRead = null;
   for (const listener of overrideListeners) listener();
 }
+onModelOverrideWrite(overridesChanged);
 
 /** Chat's saved launch settings for the model, as the engine reads them. */
 function useSavedLoad(key: string | null, variant: string | null) {
@@ -349,7 +351,6 @@ export function LlmSettingsPanel({
                   const config = fromApiOverride({ ...savedLoad, ...own });
                   if (savePerModelConfig(key, variant, config))
                     syncModelOverride(key, variant, config);
-                  setTimeout(overridesChanged, 500);
                 }
                 toast.success(`Saved as defaults for ${shortModel(key)}`);
               }}
