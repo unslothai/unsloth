@@ -186,8 +186,16 @@ def release_lease(
 
 
 LEASE_HEADER = b"x-unsloth-bench-lease"
-# Compared without a trailing slash; /models/* are the llama-server-compatible root routes.
-LOAD_PATHS = ("/api/inference/load", "/api/inference/unload", "/models/load", "/models/unload")
+# Compared without a trailing slash. main.py mounts the inference router under /v1 too, and
+# /models/* are the llama-server-compatible root routes.
+LOAD_PATHS = (
+    "/api/inference/load",
+    "/api/inference/unload",
+    "/v1/load",
+    "/v1/unload",
+    "/models/load",
+    "/models/unload",
+)
 # Matched by _is_inference_path but never generate on the server.
 _NOT_GENERATIONS = ("/count_tokens", "/embeddings")
 

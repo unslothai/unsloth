@@ -263,7 +263,14 @@ def test_root_model_routes_are_fenced_and_token_counts_are_not_generations(monke
     app = FastAPI()
     app.dependency_overrides[get_current_subject] = lambda: "unsloth"
     app.include_router(benchmarks_routes.router, prefix = "/api/benchmarks")
-    for path in ("/models/load", "/models/load/", "/models/unload", "/models/unload/"):
+    for path in (
+        "/models/load",
+        "/models/load/",
+        "/models/unload",
+        "/models/unload/",
+        "/v1/load",
+        "/v1/unload",
+    ):
         app.post(path)(lambda: {"ok": True})
     for path in ("/v1/messages/count_tokens", "/v1/chat/count_tokens", "/v1/embeddings"):
         app.post(path)(lambda: {})
@@ -272,7 +279,14 @@ def test_root_model_routes_are_fenced_and_token_counts_are_not_generations(monke
     mine = {"holder": "tab-aaaaaaaa", "kind": "sweep"}
 
     client.post("/api/benchmarks/lease", json = mine)
-    for path in ("/models/load", "/models/load/", "/models/unload", "/models/unload/"):
+    for path in (
+        "/models/load",
+        "/models/load/",
+        "/models/unload",
+        "/models/unload/",
+        "/v1/load",
+        "/v1/unload",
+    ):
         assert client.post(path).status_code == 409, path
         assert (
             client.post(path, headers = {"X-Unsloth-Bench-Lease": mine["holder"]}).status_code == 200
