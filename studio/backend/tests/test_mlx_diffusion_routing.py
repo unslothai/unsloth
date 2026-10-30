@@ -1430,7 +1430,10 @@ def test_the_fallback_is_refused_when_it_does_not_fit_under_always(rig, route_ga
         _img2img(rig.engine)
     http = excinfo.value.http
     assert http.status_code == 409
-    assert http.headers == dict(arb.MULTI_MODEL_REFUSAL_HEADERS)
+    assert http.headers == {
+        **arb.MULTI_MODEL_REFUSAL_HEADERS,
+        "X-Unsloth-Problem": "multi_model_always kind=chat",
+    }
     assert rig.log == []
     assert rig.engine.status()["engine_routing"]["resident"] == ["mlx"]
 
