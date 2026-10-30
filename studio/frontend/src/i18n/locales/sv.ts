@@ -2572,7 +2572,7 @@ export const sv = {
         otherInUse: "Övrig användning",
         otherInUseHint: "Allt som används utöver modellvikterna, inklusive Unsloths KV-cache, dess GPU-kontext och eventuell träning.",
         freeLabel: "Ledigt",
-        unslothApp: "Unsloth Studio-appen",
+        unslothApp: "Unsloth-appen",
         unslothShare: "Visa Unsloths andel",
         unslothShareDescription: "Delar upp minnet i det Unsloth använder, det andra appar använder och det lediga.",
         modelBreakdown: "Dela upp per modell",

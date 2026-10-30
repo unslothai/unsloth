@@ -2396,7 +2396,7 @@ export const ar = {
         otherInUse: "استخدام آخر",
         otherInUseHint: "كل ما هو قيد الاستخدام عدا أوزان النموذج، بما في ذلك ذاكرة KV المؤقتة في Unsloth وسياق GPU الخاص به وأي تدريب جارٍ.",
         freeLabel: "متاح",
-        unslothApp: "تطبيق Unsloth Studio",
+        unslothApp: "تطبيق Unsloth",
         unslothShare: "إظهار حصة Unsloth",
         unslothShareDescription: "تقسيم الذاكرة بين ما يستخدمه Unsloth وما تستخدمه التطبيقات الأخرى والمتاح.",
         modelBreakdown: "التفصيل حسب النموذج",

@@ -2427,7 +2427,7 @@ export const fr = {
         otherInUse: "Autre usage",
         otherInUseHint: "Tout ce qui est utilisé hors poids du modèle, y compris le cache KV d'Unsloth, son contexte GPU et tout entraînement.",
         freeLabel: "Libre",
-        unslothApp: "App Unsloth Studio",
+        unslothApp: "App Unsloth",
         unslothShare: "Afficher la part d'Unsloth",
         unslothShareDescription: "Répartit la mémoire entre Unsloth, les autres apps et la mémoire libre.",
         modelBreakdown: "Détail par modèle",

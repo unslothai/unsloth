@@ -2389,7 +2389,7 @@ export const ko = {
         otherInUse: "기타 사용",
         otherInUseHint: "모델 가중치 외에 사용 중인 모든 메모리입니다. Unsloth의 KV 캐시, GPU 컨텍스트, 학습을 포함합니다.",
         freeLabel: "여유",
-        unslothApp: "Unsloth Studio 앱",
+        unslothApp: "Unsloth 앱",
         unslothShare: "Unsloth 사용량 표시",
         unslothShareDescription: "메모리를 Unsloth, 다른 앱, 여유 공간으로 나눠 보여줍니다.",
         modelBreakdown: "모델별로 나누기",

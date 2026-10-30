@@ -2367,7 +2367,7 @@ export const zhCN = {
         otherInUse: "其他占用",
         otherInUseHint: "除模型权重外的全部占用，包括 Unsloth 的 KV 缓存、GPU 上下文和训练任务。",
         freeLabel: "空闲",
-        unslothApp: "Unsloth Studio 应用",
+        unslothApp: "Unsloth 应用",
         unslothShare: "显示 Unsloth 占用",
         unslothShareDescription: "将内存分为 Unsloth 占用、其他应用占用和空闲。",
         modelBreakdown: "按模型细分",

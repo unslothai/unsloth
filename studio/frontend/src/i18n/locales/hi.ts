@@ -2402,7 +2402,7 @@ export const hi = {
         otherInUse: "अन्य उपयोग",
         otherInUseHint: "मॉडल वेट्स के अलावा उपयोग में सब कुछ, जिसमें Unsloth का KV कैश, उसका GPU कॉन्टेक्स्ट और कोई भी ट्रेनिंग शामिल है।",
         freeLabel: "खाली",
-        unslothApp: "Unsloth Studio ऐप",
+        unslothApp: "Unsloth ऐप",
         unslothShare: "Unsloth का हिस्सा दिखाएं",
         unslothShareDescription: "मेमोरी को Unsloth, अन्य ऐप्स और खाली हिस्से में बांटें।",
         modelBreakdown: "मॉडल के अनुसार विवरण",

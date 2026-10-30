@@ -2498,7 +2498,7 @@ export const he = {
         otherInUse: "שימוש אחר",
         otherInUseHint: "כל מה שבשימוש מלבד משקלי המודל, כולל מטמון ה-KV של Unsloth, הקשר ה-GPU שלו וכל אימון.",
         freeLabel: "פנוי",
-        unslothApp: "אפליקציית Unsloth Studio",
+        unslothApp: "אפליקציית Unsloth",
         unslothShare: "הצגת החלק של Unsloth",
         unslothShareDescription: "חלוקת הזיכרון בין Unsloth, אפליקציות אחרות וזיכרון פנוי.",
         modelBreakdown: "פירוט לפי מודל",

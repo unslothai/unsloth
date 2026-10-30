@@ -2428,7 +2428,7 @@ export const de = {
         otherInUse: "Sonstige Nutzung",
         otherInUseHint: "Alles, was außer den Modellgewichten belegt ist, einschließlich des KV-Caches von Unsloth, seines GPU-Kontexts und laufenden Trainings.",
         freeLabel: "Frei",
-        unslothApp: "Unsloth Studio-App",
+        unslothApp: "Unsloth-App",
         unslothShare: "Anteil von Unsloth anzeigen",
         unslothShareDescription: "Teilt den Speicher in Unsloth, andere Apps und freien Speicher auf.",
         modelBreakdown: "Nach Modell aufschlüsseln",

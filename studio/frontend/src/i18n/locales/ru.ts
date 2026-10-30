@@ -2407,7 +2407,7 @@ export const ru = {
         otherInUse: "Прочее",
         otherInUseHint: "Всё занятое, кроме весов модели, включая KV-кэш Unsloth, его контекст GPU и обучение.",
         freeLabel: "Свободно",
-        unslothApp: "Приложение Unsloth Studio",
+        unslothApp: "Приложение Unsloth",
         unslothShare: "Показывать долю Unsloth",
         unslothShareDescription: "Делит память на занятую Unsloth, другими приложениями и свободную.",
         modelBreakdown: "Разбивка по моделям",

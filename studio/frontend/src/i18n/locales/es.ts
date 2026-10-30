@@ -2423,7 +2423,7 @@ export const es = {
         otherInUse: "Otro uso",
         otherInUseHint: "Todo lo que está en uso aparte de los pesos del modelo, incluida la caché KV de Unsloth, su contexto de GPU y cualquier entrenamiento.",
         freeLabel: "Libre",
-        unslothApp: "App de Unsloth Studio",
+        unslothApp: "App de Unsloth",
         unslothShare: "Mostrar la parte de Unsloth",
         unslothShareDescription: "Divide la memoria entre lo que usa Unsloth, lo que usan otras apps y lo libre.",
         modelBreakdown: "Desglosar por modelo",

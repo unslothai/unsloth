@@ -2376,7 +2376,7 @@ export const ja = {
         otherInUse: "その他の使用",
         otherInUseHint: "モデルの重み以外で使用中のすべてです。Unsloth の KV キャッシュ、GPU コンテキスト、学習を含みます。",
         freeLabel: "空き",
-        unslothApp: "Unsloth Studio アプリ",
+        unslothApp: "Unsloth アプリ",
         unslothShare: "Unsloth の使用分を表示",
         unslothShareDescription: "メモリを Unsloth、他のアプリ、空きに分けて表示します。",
         modelBreakdown: "モデル別に表示",

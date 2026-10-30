@@ -279,7 +279,7 @@ function FloatingMonitorPanel({
   const [loadedModels, setLoadedModels] = useState<LoadedModelEntry[]>([]);
   const models = wantsModels ? modelShares(loadedModels) : [];
   const modelsGb = models.reduce((sum, model) => sum + model.gb, 0);
-  // Unsloth Studio's server plus its children (llama-server, workers), resident set.
+  // Unsloth's server plus its children (llama-server, workers), resident set.
   const processMb =
     systemInfo.memory?.process_tree_used_mb ?? systemInfo.memory?.process_used_mb;
   const unslothRamGb = unslothPoolGb(
