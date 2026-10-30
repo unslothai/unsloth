@@ -1584,8 +1584,7 @@ _PREFERRED_SCOPES = ("turbo", "english", "tiny")
 _SKIP_FILE_RE = re.compile(
     r"(^|/)(readme[^/]*|license[^/]*|\.gitattributes|[^/]*\.(md|mp4|mp3|wav|png|jpe?g|gif))$", re.I
 )
-# Published GGUFs audio.cpp cannot load: q4-ios's Q4_K ConvTranspose rows (10 values) cannot
-# hold a 256-value block ("quantized tensor byte size mismatch"); no runtime spec lists it.
+# q4-ios stores a rank-3 ConvTranspose weight as 2-D Q4_K: "quantized tensor byte size mismatch".
 _UNLOADABLE_FILES = {
     "vibevoice-1.5b-q4-ios.gguf": "This VibeVoice Q4 build cannot be loaded by audio.cpp. "
     "Use the Q8_0 or BF16 variant.",
@@ -2651,7 +2650,6 @@ def _resolve_uncached(
         variants = [v for v in variants if not _unloadable_reason(v.primary)]
     unsupported = policy.unsupported
     if not variants and unloadable:
-        # Nothing to offer; the model still names the file so cache actions find it.
         unsupported = unsupported or _unloadable_reason(unloadable[0].primary)
         default = unloadable[0]
     else:
@@ -3383,7 +3381,6 @@ def _scan_downloaded(task: Optional[str]) -> list[AudioCppModel]:
                 continue
             row = model.with_variant(cached)
             if cached in model.unloadable:
-                # Listed so Model Hub can delete it, and unsupported so nothing loads it.
                 reason = model.unsupported or _unloadable_reason(cached.primary)
                 row = replace(row, unsupported = reason)
             out.append(row)
