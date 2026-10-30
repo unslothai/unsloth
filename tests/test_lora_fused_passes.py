@@ -229,3 +229,38 @@ def test_fp32_base_under_autocast_keeps_the_base_then_lora_order(device, monkeyp
     (out_on, dX_on, g_on), (out_off, dX_off, g_off) = runs[True], runs[False]
     assert torch.equal(out_on[0], out_off[0]) and torch.equal(dX_on, dX_off)
     assert g_on.keys() == g_off.keys() and all(torch.equal(g_on[k], g_off[k]) for k in g_on)
+
+
+def test_fused_order_needs_the_dequantized_dtype_to_match():
+    # fast_dequantize returns a 4-bit state's own dtype, so a bf16 state under fp16 autocast must not fuse.
+    from types import SimpleNamespace
+
+    W = torch.empty(4, 4, dtype = torch.uint8)
+    ok = kernel_utils._lora_fused_base_ok
+    assert ok(W, SimpleNamespace(dtype = torch.float16), torch.float16)
+    assert not ok(W, SimpleNamespace(dtype = torch.bfloat16), torch.float16)
+    assert not ok(W, [None, None, torch.bfloat16], torch.float16)
+    assert ok(torch.empty(4, 4, dtype = torch.float16), None, torch.float16)
+    assert not ok(torch.empty(4, 4), None, torch.float16)
+    assert ok(torch.empty(4, 4, dtype = torch.float8_e4m3fn), torch.ones(1), torch.bfloat16)
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs bitsandbytes 4-bit on a real GPU")
+def test_bf16_nf4_state_under_fp16_autocast_keeps_the_base_then_lora_order(monkeypatch):
+    bnb = pytest.importorskip("bitsandbytes")
+    lin = bnb.nn.Linear4bit(H, I, bias = False, compute_dtype = torch.bfloat16, quant_type = "nf4")
+    lin.weight = bnb.nn.Params4bit(
+        torch.randn(I, H, dtype = torch.bfloat16), requires_grad = False, quant_type = "nf4"
+    )
+    lin = lin.cuda()
+    W, Wq = lin.weight, lin.weight.quant_state
+    assert Wq.dtype == torch.bfloat16
+    g = torch.Generator(device = "cpu").manual_seed(0)
+    X = torch.randn(7, H, generator = g).cuda().half()
+    A, B = torch.randn(4, H, generator = g).cuda(), torch.randn(I, 4, generator = g).cuda()
+    outs = {}
+    for on in (True, False):
+        _set(monkeypatch, on)
+        with torch.autocast("cuda", dtype = torch.float16):
+            outs[on] = kernel_utils.matmul_lora(X, W, Wq, A, B, 2.0)
+    assert torch.equal(outs[True], outs[False])

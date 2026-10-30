@@ -1881,9 +1881,14 @@ LORA_FUSED_PASSES = os.environ.get("UNSLOTH_LORA_FUSED_PASSES", "1") != "0"
 
 
 def _lora_fused_base_ok(W, W_quant, dtype):
-    # The base GEMM accumulates in place, which autocast does not cast: an unquantized base weight in
-    # another dtype (fp32 weights under fp16 / bf16 autocast) keeps the base-then-LoRA order.
-    return W_quant is not None or W.dtype == dtype
+    # The base GEMM accumulates in place, which autocast does not cast: a base weight that dequantizes to
+    # another dtype keeps the base-then-LoRA order (fp32 weights under fp16 / bf16 autocast, or a 4-bit
+    # state stored as bf16 under fp16 autocast: fast_dequantize returns the state's dtype, not `dtype`).
+    if W_quant is None:
+        return W.dtype == dtype
+    if W.dtype == torch.float8_e4m3fn:
+        return True
+    return _quant_state_dtype(W_quant) == dtype
 
 
 def matmul_lora(
