@@ -156,9 +156,11 @@ def _qkv(
     q_len,
     head_dim = 256,
     grad = True,
+    dtype = None,
 ):
     import torch
-    return [torch.randn(1, 2, q_len, head_dim, requires_grad = grad) for _ in range(3)]
+    dtype = dtype or torch.bfloat16
+    return [torch.randn(1, 2, q_len, head_dim, dtype = dtype, requires_grad = grad) for _ in range(3)]
 
 
 def test_wrapper_passes_tiles_for_training_calls(monkeypatch):
@@ -270,8 +272,35 @@ def test_wrapper_training_calls_add_no_sequence_guard(monkeypatch):
             return wrapped(_Causal(), q, q, q, None, is_causal = False) * 2
 
         for q_len in (256, 512, 64, 32):
-            block(torch.randn(1, 2, q_len, 256))
+            block(torch.randn(1, 2, q_len, 256, dtype = torch.bfloat16))
         torch._dynamo.reset()
         return len(graphs)
 
     assert graphs_for(True) == graphs_for(False)
+
+
+@pytest.mark.parametrize(
+    "q_len,grad,requested",
+    [
+        (64, False, {"FORCE_USE_FLEX_ATTENTION": True}),
+        (64, False, {"BACKEND": "TRITON"}),
+        (256, False, {}),
+        (256, True, {}),
+    ],
+)
+def test_float32_query_gets_no_small_tiles(monkeypatch, q_len, grad, requested):
+    # Explicit attn_implementation="flex_attention" (or UNSLOTH_FORCE_FLOAT32) bypasses the
+    # resolver's float32 check; in float32 these tiles need 147456 B and fail to compile.
+    import torch
+
+    wrapped, seen = _wrapped(monkeypatch)
+    monkeypatch.setattr(u, "_flex_call_needs_backward", lambda *a: grad)
+    qkv = _qkv(q_len, grad = grad, dtype = torch.float32)
+    wrapped(_Causal(), *qkv, object(), kernel_options = dict(requested))
+    assert not any(k in seen for k in u._FLEX_SMALL_SMEM_KERNEL_OPTIONS)
+    for k, v in requested.items():
+        assert seen[k] == v
+    for dtype in (torch.bfloat16, torch.float16):
+        qkv = _qkv(q_len, grad = grad, dtype = dtype)
+        wrapped(_Causal(), *qkv, object(), kernel_options = dict(requested))
+        assert seen["fwd_BLOCK_M"] == 64

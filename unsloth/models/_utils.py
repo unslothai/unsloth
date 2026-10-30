@@ -1216,6 +1216,8 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             and small_smem_device_ok
             and hasattr(query, "dim")
             and query.dim() == 4
+            # 147456 B in float32: the tiles fit 101376 B only for 2-byte dtypes.
+            and getattr(query, "dtype", None) in (torch.float16, torch.bfloat16)
             # Short no-grad queries go to flex_decoding, whose own tiles are left alone, unless the
             # caller (the block compile hook, also for no-grad checkpoint forwards) forces the main
             # kernel. Shape last, so training calls add no seq >= 128 guard.

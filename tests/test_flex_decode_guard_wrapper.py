@@ -39,8 +39,8 @@ def _wrapped_call(
     class M(torch.nn.Module):
         is_causal = True
 
-    q = torch.randn(1, 2, q_len, head_dim)
-    k = torch.randn(1, 2, 128, head_dim)
+    q = torch.randn(1, 2, q_len, head_dim, dtype = torch.bfloat16)
+    k = torch.randn(1, 2, 128, head_dim, dtype = torch.bfloat16)
     wrapped(M(), q, k, k.clone(), object(), **kwargs)
     return seen["kernel_options"]
 
