@@ -6413,11 +6413,13 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
             scaling = scaler.get_scale() if scaler is not None and scaler.is_enabled() else None,
             rows_per_chunk = int(rows) if rows.strip().isdigit() else None,
         )
-        try:
-            self._unsloth_gkd_chunked_calls = getattr(self, "_unsloth_gkd_chunked_calls", 0) + 1
-            self._unsloth_gkd_fused_calls = getattr(self, "_unsloth_gkd_fused_calls", 0) + 1
-        except Exception:
-            pass
+        # Traced, the counter would make Dynamo guard (recompile) on its value.
+        if not torch.compiler.is_compiling():
+            try:
+                self._unsloth_gkd_chunked_calls = getattr(self, "_unsloth_gkd_chunked_calls", 0) + 1
+                self._unsloth_gkd_fused_calls = getattr(self, "_unsloth_gkd_fused_calls", 0) + 1
+            except Exception:
+                pass
         return loss
     loss, _entropy_sum, _n_valid = distillation_chunked_jsd(
         student_states,
@@ -6438,10 +6440,11 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
         temperature = 1.0,
         **jsd_kwargs,
     )
-    try:
-        self._unsloth_gkd_chunked_calls = getattr(self, "_unsloth_gkd_chunked_calls", 0) + 1
-    except Exception:
-        pass
+    if not torch.compiler.is_compiling():
+        try:
+            self._unsloth_gkd_chunked_calls = getattr(self, "_unsloth_gkd_chunked_calls", 0) + 1
+        except Exception:
+            pass
     return loss
 
 
@@ -6722,10 +6725,11 @@ def _unsloth_pref_chunked_forward(self, model, head, concatenated_batch, len_cho
         nll_loss = torch.tensor(0.0).to(self.accelerator.device)
     else:
         nll_loss = -(nll_per_token * chosen_nll_mask).sum() / chosen_nll_mask.sum()
-    try:
-        self._unsloth_pref_chunked_calls = getattr(self, "_unsloth_pref_chunked_calls", 0) + 1
-    except Exception:
-        pass
+    if not torch.compiler.is_compiling():
+        try:
+            self._unsloth_pref_chunked_calls = getattr(self, "_unsloth_pref_chunked_calls", 0) + 1
+        except Exception:
+            pass
     # Stand-ins: TRL only reads chosen/rejected logits as .detach().mean().
     return (
         all_logps[:len_chosen],
@@ -6979,10 +6983,11 @@ def _unsloth_dpo_hidden_logps(self, chunked, hidden_states, labels, loss_mask):
         lm_head_bias = head.bias,
         return_mean_logits = True,
     )
-    try:
-        self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
-    except Exception:
-        pass
+    if not torch.compiler.is_compiling():
+        try:
+            self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
+        except Exception:
+            pass
     return per_token_logps.to(labels.device), mean_logits.unsqueeze(-1).to(labels.device)
 
 
@@ -7145,10 +7150,11 @@ def _unsloth_dpo_loss_stats(
             return_is_top1 = not ref,
             entropy_requires_grad = False,
         )
-    try:
-        self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
-    except Exception:
-        pass
+    if not torch.compiler.is_compiling():
+        try:
+            self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
+        except Exception:
+            pass
     if ref:
         return out
     logps, entropy, mean_logits, is_top1 = out
@@ -7419,10 +7425,11 @@ def _unsloth_kto_hidden_logps(self, chunked, hidden_states, labels, label_pad_to
             return_mean_logits = True,
         )
         per_token_logps = per_token_logps[:, :-1]
-    try:
-        self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
-    except Exception:
-        pass
+    if not torch.compiler.is_compiling():
+        try:
+            self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
+        except Exception:
+            pass
     completion_logps = (per_token_logps * mask).sum(-1)
     logits_sum = (mean_logits * head.weight.shape[0]).unsqueeze(-1)
     return completion_logps.to(out_device), logits_sum.to(out_device)
@@ -7640,10 +7647,11 @@ def _unsloth_fused_pass_logps(
             return_mean_logits = stats,
             entropy_requires_grad = False,
         )
-    try:
-        self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
-    except Exception:
-        pass
+    if not torch.compiler.is_compiling():
+        try:
+            self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
+        except Exception:
+            pass
     out = out if isinstance(out, tuple) else (out,)
     out = tuple(torch.nn.functional.pad(x, (0, width - n)) if n != width else x for x in out)
     if not stats:
@@ -8346,10 +8354,11 @@ def _unsloth_odpo_hidden_logps(
         logit_scale_divide = divide,
         logit_softcapping = softcap,
     )
-    try:
-        self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
-    except Exception:
-        pass
+    if not torch.compiler.is_compiling():
+        try:
+            self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
+        except Exception:
+            pass
     return logps.to(completion_ids.device)
 
 

@@ -35,6 +35,21 @@ class _Kernel:
         cls._last = args
         return ("trl",) * 5
 
+    @staticmethod
+    def forward(
+        ctx,
+        hidden,
+        weight,
+        bias,
+        targets,
+        temperature,
+        chunk_size,
+        final_logit_softcapping = None,
+        logit_scale = 1.0,
+        outputs = (),
+    ):
+        raise AssertionError("not reached")
+
 
 def _reference(hidden, weight, bias, targets, temperature, softcap, logit_scale):
     """TRL's outputs in float64: scale, softcap, then temperature; mean_logits after the temperature."""
@@ -281,6 +296,95 @@ def test_patch_leaves_kernels_without_bias(monkeypatch):
         monkeypatch.setattr(trainer, "utils", utils, raising = False)
     unsloth_rl.patch_trl_fused_lm_head_kernel()
     assert utils._ChunkedLogProbFunction is _NoBiasKernel
+
+
+class _ScoreIdsKernel(_Kernel):
+    """TRL main's kernel (after 1.16): ``support_ids`` and ``score_ids`` passed on every call, six outputs."""
+
+    @classmethod
+    def apply(cls, *args):
+        assert len(args) == 11
+        cls._calls += 1
+        cls._last = args
+        return ("trl",) * 6
+
+    @staticmethod
+    def forward(
+        ctx,
+        hidden,
+        weight,
+        bias,
+        targets,
+        temperature,
+        chunk_size,
+        final_logit_softcapping = None,
+        logit_scale = 1.0,
+        outputs = (),
+        support_ids = None,
+        score_ids = None,
+    ):
+        raise AssertionError("not reached")
+
+
+def _install(kernel, monkeypatch):
+    utils = types.ModuleType("trl.trainer.utils")
+    utils._ChunkedLogProbFunction = kernel
+    monkeypatch.setitem(sys.modules, "trl.trainer.utils", utils)
+    trainer = sys.modules.get("trl.trainer")
+    if trainer is not None:
+        monkeypatch.setattr(trainer, "utils", utils, raising = False)
+    unsloth_rl.patch_trl_fused_lm_head_kernel()
+    return utils._ChunkedLogProbFunction
+
+
+def test_patch_leaves_kernels_with_an_unknown_contract(monkeypatch):
+    """A call / return contract the adapter does not reproduce keeps TRL's kernel, which then serves every call."""
+    assert _install(_ScoreIdsKernel, monkeypatch) is _ScoreIdsKernel
+    hidden, weight, bias, targets = _inputs(5)
+    before = _ScoreIdsKernel._calls
+    got = _ScoreIdsKernel.apply(
+        hidden, weight, bias, targets, 1.0, 4096, None, 1.0, ("log_probs",), None, None
+    )
+    assert len(got) == 6 and _ScoreIdsKernel._calls == before + 1
+
+    class _NoSignature:
+        apply = _Kernel.apply
+
+    assert _install(_NoSignature, monkeypatch) is _NoSignature
+    assert isinstance(_install(_Kernel, monkeypatch), unsloth_rl._UnslothFusedLinearHead)
+
+
+def test_patch_wraps_the_installed_trl_kernel(monkeypatch):
+    """A released TRL kernel (1.14 - 1.16) gets the adapter, and the fused path serves its call.
+    A newer contract (TRL 1.17 adds score_ids and a sixth output) stays with TRL."""
+    try:
+        from trl.kernels import ChunkedLogProbFunction as kernel
+    except Exception:
+        kernel = getattr(pytest.importorskip("trl.trainer.utils"), "_ChunkedLogProbFunction", None)
+    kernel = getattr(kernel, "function", kernel)
+    while getattr(kernel, "function", None) is not None:
+        kernel = kernel.function
+    if kernel is None or "bias" not in inspect.signature(kernel.forward).parameters:
+        pytest.skip("this TRL has no fused-head kernel the adapter serves")
+    params = tuple(inspect.signature(kernel.forward).parameters)[2:]
+    if params not in unsloth_rl._TRL_FUSED_HEAD_CONTRACTS:
+        assert _install(kernel, monkeypatch) is kernel, params
+        return
+    wrapped = _install(kernel, monkeypatch)
+    assert isinstance(wrapped, unsloth_rl._UnslothFusedLinearHead)
+    hidden, weight, bias, targets = _inputs(6)
+    args = (hidden, weight, bias, targets, 1.0, 32768, None, 1.0)
+    if "outputs" in params:
+        args += (("log_probs",),)
+    calls = fused_linear.CALLS["logprobs"]
+    got = wrapped.apply(*args)
+    assert fused_linear.CALLS["logprobs"] == calls + 1
+    assert len(got) == (5 if "outputs" in params else 2)
+    want = _reference(hidden, weight, bias, targets, 1.0, None, 1.0)[0]
+    torch.testing.assert_close(got[0].double(), want, rtol = 1e-5, atol = 1e-5)
+    g_got = torch.autograd.grad(got[0].sum(), hidden)[0]
+    g_want = torch.autograd.grad(want.sum(), hidden)[0]
+    torch.testing.assert_close(g_got.double(), g_want.double(), rtol = 1e-4, atol = 1e-5)
 
 
 class _HeadLM(torch.nn.Module):
