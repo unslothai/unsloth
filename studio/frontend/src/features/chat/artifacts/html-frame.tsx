@@ -49,7 +49,7 @@ import {
 } from "./canvas-console";
 import { hashArtifactCode } from "./types";
 
-const RTL_LOCALES: ReadonlySet<string> = new Set(["ar", "he", "fa"]);
+const RTL_LOCALES: ReadonlySet<string> = new Set(["ar", "he", "fa", "ur"]);
 const HTML_FRAME_DEFAULT_HEIGHT = 400;
 const HTML_FRAME_MAX_HEIGHT = 900;
 const BLOCKED_HOSTS_SHOWN = 3;

@@ -483,7 +483,7 @@ test("the blocked alert scopes direction to its locale", () => {
   assert.match(alert, /dir=\{RTL_LOCALES\.has\(locale\) \? "rtl" : "ltr"\}/);
   assert.match(
     source.getFullText(),
-    /const RTL_LOCALES: ReadonlySet<string> = new Set\(\["ar", "he", "fa"\]\);/,
+    /const RTL_LOCALES: ReadonlySet<string> = new Set\(\["ar", "he", "fa", "ur"\]\);/,
   );
 });
 

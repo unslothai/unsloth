@@ -5,26 +5,40 @@
 // --strict also fails on missing keys. Run: npm run i18n:check
 
 import { ar } from "./locales/ar.ts";
+import { bn } from "./locales/bn.ts";
 import { cs } from "./locales/cs.ts";
+import { da } from "./locales/da.ts";
 import { de } from "./locales/de.ts";
+import { el } from "./locales/el.ts";
 import { en } from "./locales/en.ts";
+import { es419 } from "./locales/es-419.ts";
 import { es } from "./locales/es.ts";
 import { fa } from "./locales/fa.ts";
+import { fi } from "./locales/fi.ts";
+import { fil } from "./locales/fil.ts";
 import { fr } from "./locales/fr.ts";
 import { he } from "./locales/he.ts";
 import { hi } from "./locales/hi.ts";
+import { hu } from "./locales/hu.ts";
 import { id } from "./locales/id.ts";
 import { it } from "./locales/it.ts";
 import { ja } from "./locales/ja.ts";
 import { ko } from "./locales/ko.ts";
+import { ms } from "./locales/ms.ts";
+import { nb } from "./locales/nb.ts";
 import { nl } from "./locales/nl.ts";
 import { pl } from "./locales/pl.ts";
 import { ptBR } from "./locales/pt-br.ts";
+import { ptPT } from "./locales/pt-pt.ts";
+import { ro } from "./locales/ro.ts";
 import { ru } from "./locales/ru.ts";
 import { sv } from "./locales/sv.ts";
+import { ta } from "./locales/ta.ts";
+import { te } from "./locales/te.ts";
 import { th } from "./locales/th.ts";
 import { tr } from "./locales/tr.ts";
 import { uk } from "./locales/uk.ts";
+import { ur } from "./locales/ur.ts";
 import { vi } from "./locales/vi.ts";
 import { zhCN } from "./locales/zh-CN.ts";
 import { zhTW } from "./locales/zh-TW.ts";
@@ -132,6 +146,8 @@ const overlays: Record<string, Tree> = {
   ko: ko as unknown as Tree,
   it: it as unknown as Tree,
   "zh-TW": zhTW as unknown as Tree,
+  "es-419": es419 as unknown as Tree,
+  "pt-PT": ptPT as unknown as Tree,
   id: id as unknown as Tree,
   vi: vi as unknown as Tree,
   tr: tr as unknown as Tree,
@@ -141,6 +157,18 @@ const overlays: Record<string, Tree> = {
   fa: fa as unknown as Tree,
   cs: cs as unknown as Tree,
   nl: nl as unknown as Tree,
+  bn: bn as unknown as Tree,
+  ur: ur as unknown as Tree,
+  ta: ta as unknown as Tree,
+  te: te as unknown as Tree,
+  ms: ms as unknown as Tree,
+  fil: fil as unknown as Tree,
+  ro: ro as unknown as Tree,
+  hu: hu as unknown as Tree,
+  el: el as unknown as Tree,
+  fi: fi as unknown as Tree,
+  da: da as unknown as Tree,
+  nb: nb as unknown as Tree,
 };
 
 const requiredOverlayPrefixes = ["picker.", "studio."] as const;

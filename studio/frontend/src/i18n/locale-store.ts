@@ -59,14 +59,42 @@ function isTraditionalChinese(lowerTag: string): boolean {
   return parts.includes("tw") || parts.includes("hk") || parts.includes("mo");
 }
 
+const LATIN_AMERICAN_REGIONS = new Set(
+  "419 mx ar co cl pe ve ec gt cu bo do hn py sv ni cr pr pa uy us".split(" "),
+);
+
+const LANGUAGE_ALIASES: Record<string, string> = {
+  no: "nb",
+  nn: "nb",
+  tl: "fil",
+};
+
+function regionalLocale(language: string, lowerTag: string): Locale | null {
+  const region = lowerTag
+    .split("-")
+    .slice(1)
+    .find((part) => /^([a-z]{2}|\d{3})$/.test(part));
+  if (language === "zh") {
+    return isTraditionalChinese(lowerTag) ? "zh-TW" : "zh-CN";
+  }
+  if (language === "es") {
+    return region && LATIN_AMERICAN_REGIONS.has(region) ? "es-419" : "es";
+  }
+  if (language === "pt") {
+    return region && region !== "br" ? "pt-PT" : "pt-BR";
+  }
+  return null;
+}
+
 function matchLocale(tag: string): Locale | null {
   const locales = Object.keys(LOCALES) as Locale[];
   const lower = tag.toLowerCase();
   const exact = locales.find((locale) => locale.toLowerCase() === lower);
   if (exact) return exact;
-  const language = lower.split("-")[0];
-  if (language === "zh") return isTraditionalChinese(lower) ? "zh-TW" : "zh-CN";
+  const subtag = lower.split("-")[0];
+  const language = LANGUAGE_ALIASES[subtag] ?? subtag;
   return (
+    regionalLocale(language, lower) ??
     locales.find((locale) => locale.toLowerCase().split("-")[0] === language) ??
     null
   );

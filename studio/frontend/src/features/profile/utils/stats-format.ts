@@ -226,6 +226,16 @@ const PROFILE_COUNT_TEMPLATES = {
     message: { other: "{value} 則訊息" },
     step: { other: "{value} 步" },
   },
+  "es-419": {
+    token: { one: "{value} token", other: "{value} tokens" },
+    message: { one: "{value} mensaje", other: "{value} mensajes" },
+    step: { one: "{value} paso", other: "{value} pasos" },
+  },
+  "pt-PT": {
+    token: { one: "{value} token", other: "{value} tokens" },
+    message: { one: "{value} mensagem", other: "{value} mensagens" },
+    step: { one: "{value} passo", other: "{value} passos" },
+  },
   id: {
     token: { other: "{value} token" },
     message: { other: "{value} pesan" },
@@ -315,6 +325,74 @@ const PROFILE_COUNT_TEMPLATES = {
     token: { one: "{value} token", other: "{value} tokens" },
     message: { one: "{value} bericht", other: "{value} berichten" },
     step: { one: "{value} stap", other: "{value} stappen" },
+  },
+  bn: {
+    token: { other: "{value} টোকেন" },
+    message: { other: "{value}টি বার্তা" },
+    step: { other: "{value} ধাপ" },
+  },
+  ur: {
+    token: { other: "{value} ٹوکن" },
+    message: { one: "{value} پیغام", other: "{value} پیغامات" },
+    step: { one: "{value} مرحلہ", other: "{value} مراحل" },
+  },
+  ta: {
+    token: { one: "{value} டோக்கன்", other: "{value} டோக்கன்கள்" },
+    message: { one: "{value} செய்தி", other: "{value} செய்திகள்" },
+    step: { one: "{value} படி", other: "{value} படிகள்" },
+  },
+  te: {
+    token: { one: "{value} టోకెన్", other: "{value} టోకెన్‌లు" },
+    message: { one: "{value} సందేశం", other: "{value} సందేశాలు" },
+    step: { one: "{value} దశ", other: "{value} దశలు" },
+  },
+  ms: {
+    token: { other: "{value} token" },
+    message: { other: "{value} mesej" },
+    step: { other: "{value} langkah" },
+  },
+  fil: {
+    token: { other: "{value} token" },
+    message: { other: "{value} mensahe" },
+    step: { other: "{value} hakbang" },
+  },
+  ro: {
+    token: {
+      one: "{value} token",
+      few: "{value} tokenuri",
+      other: "{value} de tokenuri",
+    },
+    message: {
+      one: "{value} mesaj",
+      few: "{value} mesaje",
+      other: "{value} de mesaje",
+    },
+    step: { one: "{value} pas", few: "{value} pași", other: "{value} de pași" },
+  },
+  hu: {
+    token: { other: "{value} token" },
+    message: { other: "{value} üzenet" },
+    step: { other: "{value} lépés" },
+  },
+  el: {
+    token: { other: "{value} token" },
+    message: { one: "{value} μήνυμα", other: "{value} μηνύματα" },
+    step: { one: "{value} βήμα", other: "{value} βήματα" },
+  },
+  fi: {
+    token: { one: "{value} tokeni", other: "{value} tokenia" },
+    message: { one: "{value} viesti", other: "{value} viestiä" },
+    step: { one: "{value} vaihe", other: "{value} vaihetta" },
+  },
+  da: {
+    token: { one: "{value} token", other: "{value} tokens" },
+    message: { one: "{value} besked", other: "{value} beskeder" },
+    step: { other: "{value} trin" },
+  },
+  nb: {
+    token: { one: "{value} token", other: "{value} tokener" },
+    message: { one: "{value} melding", other: "{value} meldinger" },
+    step: { other: "{value} steg" },
   },
 } satisfies Record<Locale, Record<LexicalProfileCountUnit, CountTemplate>>;
 

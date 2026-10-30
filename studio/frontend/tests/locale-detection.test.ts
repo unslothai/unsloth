@@ -34,6 +34,40 @@ test("Traditional Chinese tags pick zh-TW, Simplified ones zh-CN", () => {
   assert.equal(detect("zh-TW", "zh"), "zh-TW");
 });
 
+test("Latin American Spanish picks es-419, other Spanish es", () => {
+  for (const tag of [
+    "es-419",
+    "es-MX",
+    "es-AR",
+    "es-CO",
+    "es-CL",
+    "es-PE",
+    "es-US",
+    "es-PR",
+    "es-Latn-UY",
+  ]) {
+    assert.equal(detect(tag), "es-419", tag);
+  }
+  for (const tag of ["es", "es-ES", "es-GQ"])
+    assert.equal(detect(tag), "es", tag);
+});
+
+test("European and African Portuguese pick pt-PT, Brazil and bare pt pt-BR", () => {
+  for (const tag of ["pt-PT", "pt-AO", "pt-MZ"]) {
+    assert.equal(detect(tag), "pt-PT", tag);
+  }
+  for (const tag of ["pt", "pt-BR"]) assert.equal(detect(tag), "pt-BR", tag);
+});
+
+test("Norwegian and Filipino browser tags reach nb and fil", () => {
+  for (const tag of ["nb", "nb-NO", "no", "nn-NO"]) {
+    assert.equal(detect(tag), "nb", tag);
+  }
+  for (const tag of ["fil", "fil-PH", "tl"]) {
+    assert.equal(detect(tag), "fil", tag);
+  }
+});
+
 test("other new languages match by their base subtag", () => {
   const cases: Record<string, string> = {
     "id-ID": "id",
@@ -45,6 +79,16 @@ test("other new languages match by their base subtag", () => {
     "fa-IR": "fa",
     "cs-CZ": "cs",
     "nl-BE": "nl",
+    "bn-BD": "bn",
+    "ur-PK": "ur",
+    "ta-IN": "ta",
+    "te-IN": "te",
+    "ms-MY": "ms",
+    "ro-RO": "ro",
+    "hu-HU": "hu",
+    "el-GR": "el",
+    "fi-FI": "fi",
+    "da-DK": "da",
   };
   for (const [tag, locale] of Object.entries(cases)) {
     assert.equal(detect(tag), locale, tag);
