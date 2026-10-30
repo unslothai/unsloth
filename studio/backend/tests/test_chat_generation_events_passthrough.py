@@ -216,6 +216,42 @@ def test_an_empty_stored_payload_still_reads_as_an_empty_object(running_run):
     assert all(json.loads(frame.split("\ndata: ", 1)[1])["payload"] == {} for frame in frames[:-1])
 
 
+CORRUPT_PAYLOADS = [
+    '{"choices":[{"delta":{"content":"cut',
+    '{"text":"x}',
+    "{'single':'quotes'}",
+    '{\n  "pretty": 1\n}',
+    '{"a":1}\r\n',
+    "not json",
+]
+
+
+def test_a_stored_payload_that_is_not_one_line_of_json_keeps_the_old_frame(running_run):
+    first = int(runs_db.get_run("run-1")["lastEventSeq"]) + 1
+    runs_db.append_events(
+        "run-1", running_run, [("chunk", {"i": i}) for i in range(len(CORRUPT_PAYLOADS))]
+    )
+    conn = studio_db.get_connection()
+    try:
+        for seq, text in enumerate(CORRUPT_PAYLOADS, start = first):
+            conn.execute(
+                "UPDATE chat_generation_events SET payload_json=? WHERE run_id='run-1' AND seq=?",
+                (text, seq),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    runs_db.finish_run("run-1", worker_token = running_run, status = "completed", finish_reason = "stop")
+
+    frames = _frames(asyncio.run(_stream(after = first - 1)))
+
+    # Spliced as is, a bad row would reach the client as a frame it cannot parse (or split it), and
+    # the client reconnects at that cursor forever; the old route sent a parse-and-encode.
+    _assert_old_bytes(frames, first - 1, runs_db.get_run("run-1"))
+    payloads = [json.loads(frame.split("\ndata: ", 1)[1])["payload"] for frame in frames[:-1]]
+    assert payloads == [{}, {}, {}, {"pretty": 1}, {"a": 1}, {}]
+
+
 def _random_value(rng, depth = 0):
     kind = rng.randrange(8 if depth < 4 else 5)
     if kind == 0:
