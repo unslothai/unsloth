@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Custom-code generate that rejects cache fields (LiquidAI LFM3, unslothai/unsloth#16054).
-
-LFM3-Omni's own generate lists cache_implementation in _generation_fields_unsupported and raises
-when it is set, so FastModel generate must not force a static cache onto it.
-"""
+"""LFM3's generate rejects forced cache fields (#16054)."""
 
 import types
 

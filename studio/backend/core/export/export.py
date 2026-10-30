@@ -714,8 +714,7 @@ def _checkpoint_load_refusal(checkpoint_path, pinned_base) -> Optional[str]:
 
 
 def _with_base_processor(tokenizer, base_model: str, **load_kw):
-    """An adapter trained text-only saves a bare tokenizer; wrap it in the base's processor so a
-    VLM export still ships the processor (and its remote code) that AutoProcessor and mmproj need."""
+    """A text-only VLM adapter saves a bare tokenizer; the export still needs the base's processor (mmproj)."""
     if tokenizer is None or hasattr(tokenizer, "tokenizer"):
         return tokenizer
     try:

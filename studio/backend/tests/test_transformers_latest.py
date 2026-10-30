@@ -1631,8 +1631,7 @@ def _custom_code_model(tmp_path: Path, saved_by: str) -> str:
 
 
 class TestCustomCodeRouting:
-    """The tier probe parses with trust_remote_code=False, so custom code fails every tier and
-    used to land on the 5.3.0 floor (LFM3: "Lfm3Config must be a dataclass before @strict")."""
+    """The probe parses with trust_remote_code=False, so custom code fell to 5.3.0 (#16054)."""
 
     @pytest.fixture(autouse = True)
     def _no_probe(self, monkeypatch):

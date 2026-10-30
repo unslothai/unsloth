@@ -1111,8 +1111,7 @@ def _release_tuple(ver) -> tuple[int, int, int] | None:
 
 
 def _remote_code_min_version(cfg: dict | None) -> tuple[int, int, int] | None:
-    """Saving transformers 5.x version of a custom-code config (``auto_map`` AutoConfig), else None.
-    The tier probe parses with trust_remote_code=False, so it can never place these (LFM3)."""
+    """Saving transformers 5.x version of a custom-code (``auto_map`` AutoConfig) config, else None."""
     if not isinstance(cfg, dict) or not _config_saved_by_transformers_5(cfg):
         return None
     auto_map = cfg.get("auto_map")
@@ -1147,9 +1146,7 @@ def _route_remote_code(
     cfg: dict | None,
     above: str | None = None,
 ) -> str | None:
-    """Tier for a custom-code config, or None to fall through. When nothing installed is new
-    enough, the newest tier beats the probe's 530 floor; /validate offers the latest sidecar.
-    ``above``: fall through when that version already satisfies the saving version."""
+    """Tier for a custom-code config; None falls through, also when ``above`` already satisfies it."""
     required = _remote_code_min_version(cfg)
     if required is None or (above is not None and required <= _release_tuple(above)):
         return None
@@ -1680,8 +1677,7 @@ def get_transformers_tier(
 ) -> str:
     """Returns 510, 550, 530 or default; local config.json is checked before name heuristics (dir-name false positives); probe=False skips sidecar subprocesses."""
     tier = _native_transformers_tier(model_name, hf_token, probe)
-    # Native rules can place a custom-code checkpoint below its saving version; raise only. The name
-    # fast path fetches no config, so a real load (probe=True) reads it here; the cheap hint stays I/O-free.
+    # Raise only; the name fast path fetched no config, so a real load (probe=True) reads it here.
     if probe and tier != "default":
         cfg = _load_config_json(model_name, hf_token)
     else:

@@ -393,8 +393,7 @@ def _hardcoded_tier_ships(model_type: str) -> bool:
 
 
 def _remote_code_upgrade(model_name: str, cfg: dict) -> dict | None:
-    """Custom-code configs (LFM3) never have a model_type in any mapping; offer latest PyPI when
-    it is at least the saving version and no installed tier is."""
+    """Offer latest transformers when it meets a custom-code config's saving version and no installed tier does."""
     required = _remote_code_min_version(cfg)
     if required is None or _remote_code_tier(cfg) is not None:
         return None

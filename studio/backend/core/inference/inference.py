@@ -695,13 +695,11 @@ class _StopSequenceStreamer:
             abort()
 
 
-# LFM3's custom generate raises on these; it marks itself with _generation_fields_unsupported.
 _CUSTOM_GENERATE_REJECTED_KWARGS = ("logits_processor", "stopping_criteria")
 
 
 def _supported_generate_kwargs(model, generation_kwargs: dict) -> dict:
-    """Drops kwargs a custom-code generate rejects: no presence penalty, prefill timing or early
-    cancel there, but the reply still streams and stop sequences are still trimmed."""
+    """Drops kwargs a custom-code generate rejects (no presence penalty or early cancel there)."""
     if not isinstance(getattr(model, "_generation_fields_unsupported", None), dict):
         return generation_kwargs
     return {k: v for k, v in generation_kwargs.items() if k not in _CUSTOM_GENERATE_REJECTED_KWARGS}
