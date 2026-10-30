@@ -104,8 +104,17 @@ export interface DocState {
   resizeGroup: (group: FlowGroup) => void;
   groupNodes: (group: FlowGroup, nodeIds: string[]) => void;
   upsertNote: (note: FlowNote, coalesceKey?: string) => void;
+  /** Tidy up's result as one undo step: card spots and sizes, frames, notes and reroutes. */
+  applyTidy: (patch: TidyPatch) => void;
   undo: () => void;
   redo: () => void;
+}
+
+export interface TidyPatch {
+  nodes: Record<string, { pos: [number, number]; size?: [number, number] | null }>;
+  groups: Record<string, [number, number, number, number]>;
+  notes: Record<string, [number, number, number, number]>;
+  reroutes: Record<string, [number, number]>;
 }
 
 const HISTORY_LIMIT = 100;
@@ -591,6 +600,31 @@ export const useDocStore = create<DocState>((set, get) => {
           graph = syncRerouteEdges(graph, s.graph.wireOrder);
         }
         return { graph };
+      }),
+
+    applyTidy: (patch) =>
+      commit((s) => {
+        const g = s.graph;
+        const nodes = { ...g.nodes };
+        for (const [id, next] of Object.entries(patch.nodes)) {
+          const node = nodes[id];
+          if (!node) continue;
+          nodes[id] = {
+            ...node,
+            pos: next.pos,
+            ...(next.size === undefined ? {} : { size: next.size }),
+          };
+        }
+        const groups = { ...g.groups };
+        for (const [id, rect] of Object.entries(patch.groups))
+          if (groups[id]) groups[id] = { ...groups[id], rect };
+        const notes = { ...g.notes };
+        for (const [id, rect] of Object.entries(patch.notes))
+          if (notes[id]) notes[id] = { ...notes[id], rect };
+        const reroutes = { ...g.reroutes };
+        for (const [id, pos] of Object.entries(patch.reroutes))
+          if (reroutes[id]) reroutes[id] = { ...reroutes[id], pos };
+        return { graph: { ...g, nodes, groups, notes, reroutes } };
       }),
 
     replaceReroutes: (list) =>

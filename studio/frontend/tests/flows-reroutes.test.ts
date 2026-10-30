@@ -26,7 +26,6 @@ const { tryConnect } = await import(
 const { inHandle, outHandle } = await import(
   "../src/features/flows/editor/connection-rules.ts"
 );
-const { layoutRequest } = await import("../src/features/flows/editor/layout.ts");
 const { computeLayout } = await import(
   "../src/features/flows/editor/layout-core.ts"
 );
@@ -305,25 +304,28 @@ test("a document without reroutes saves exactly as before", () => {
   );
 });
 
-test("auto layout places reroutes in line and keeps them", () => {
+test("tidy up lays out cards only and puts reroutes back between their ends", async () => {
   fresh();
   useDocStore.getState().addReroute({ id: "r1", pos: [-900, -900] }, "e1");
-  const request = layoutRequest(graph(), () => undefined, "LR");
-  assert.ok(request.nodes.some((n) => n.id === "r1"));
-  assert.ok(request.edges.some((e) => e.source === "src" && e.target === "r1"));
-  assert.ok(request.edges.some((e) => e.source === "r1" && e.target === "llm"));
-  assert.ok(
-    !request.edges.some((e) => e.source === "src" && e.target === "llm"),
-    "the derived edge is not laid out twice",
-  );
-  const result = computeLayout(request);
-  useDocStore.getState().moveNodes(result);
-  const r1 = graph().reroutes.r1;
-  assert.ok(r1, "the reroute survives");
-  assert.ok(
-    r1.pos[0] > graph().nodes.src.pos[0] && r1.pos[0] < graph().nodes.llm.pos[0],
-    "and sits between its ends",
-  );
+  const { tidyRequest, tidyPatch } = await import("../src/features/flows/editor/tidy.ts");
+  for (const wireStyle of ["bus", "curved"] as const) {
+    const ctx = {
+      graph: graph(),
+      wireStyle,
+      size: () => ({ width: 260, height: 140 }),
+      portY: () => 40,
+    };
+    const request = tidyRequest(ctx);
+    assert.ok(!request.nodes.some((n) => n.id === "r1"), "reroutes are not laid out as cards");
+    assert.ok(request.edges.some((e) => e.source === "src" && e.target === "llm"));
+    useDocStore.getState().applyTidy(tidyPatch(ctx, computeLayout(request)));
+    const r1 = graph().reroutes.r1;
+    assert.ok(r1, "the reroute survives");
+    const src = graph().nodes.src.pos;
+    const llm = graph().nodes.llm.pos;
+    assert.ok(r1.pos[0] > src[0] + 260 && r1.pos[0] + 28 < llm[0], `${wireStyle}: between its ends`);
+    if (wireStyle === "bus") assert.equal(r1.pos[1] + 8, src[1] + 40, "bus: level with its port");
+  }
   assert.deepEqual(plain(), ["e1:src.text->llm.prompt"]);
 });
 

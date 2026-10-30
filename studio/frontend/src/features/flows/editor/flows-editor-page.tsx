@@ -11,6 +11,7 @@ import {
   EmptyHeader,
   EmptyTitle,
 } from "@/components/ui/empty";
+import { useSidebar } from "@/components/ui/sidebar";
 import { Spinner } from "@/components/ui/spinner";
 import {
   holdSidebarUnpinned,
@@ -88,6 +89,8 @@ function EditorBody({
   const navigate = useNavigate();
   const paletteOpen = useUiStore((s) => s.paletteOpen);
   const { screenToFlowPosition } = useReactFlow();
+  const sidebar = useSidebar();
+  const sidebarBeside = sidebar.open && !sidebar.isMobile;
   useEditorShortcuts(!readOnly);
   // The Nodes panel owns the left edge here: the app sidebar unpins (Desktop peeks it from the
   // window edge) without touching the saved pin, which comes back on leaving.
@@ -128,7 +131,10 @@ function EditorBody({
         </Alert>
       )}
       {!readOnly && <CapabilityBanner flowId={flowId} />}
-      <div className="relative flex min-h-0 flex-1 overflow-hidden rounded-tl-xl bg-background">
+      <div
+        // Curves into the app sidebar only while it is open beside it.
+        className={`relative flex min-h-0 flex-1 overflow-hidden bg-background transition-[border-radius] duration-200 ease-out ${sidebarBeside ? "rounded-tl-xl" : "rounded-tl-none"}`}
+      >
         {paletteOpen && !readOnly && <Palette onDrop={dropAt} />}
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="relative min-h-0 flex-1">
