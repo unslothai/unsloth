@@ -515,7 +515,7 @@ export function TaskDialog({
                 value={Number.isNaN(form.hours) ? "" : form.hours}
                 onChange={(event) => patchForm({ hours: event.target.valueAsNumber })}
                 disabled={busy}
-                className={cn(BARE_INPUT, "w-24")}
+                className={cn(BARE_INPUT, "w-24 pr-8")}
               />
             </Row>
           )}
