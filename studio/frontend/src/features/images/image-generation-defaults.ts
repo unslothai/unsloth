@@ -147,6 +147,12 @@ export function residentDefaultsKey(
 
 export const DEFAULT_RESOLUTION = { width: 1024, height: 1024 } as const;
 
+// Families trained at a smaller canvas, whatever the build (pipeline, single file, GGUF, quantised).
+// SDXL-Turbo is a 512x512 model: its reference workflow and model card render 512x512 in 1 step.
+const NATIVE_CANVAS: Array<{ match: string; width: number; height: number }> = [
+  { match: "sdxl-turbo", width: 512, height: 512 },
+];
+
 // Quantised builds of activation-heavy families default to a smaller canvas so they fit 24 GB
 // (Qwen-Image-2.1: ~26 GB at 1024 vs ~19 GB at 512). Only a picked quant shrinks it; GGUF keeps 1024.
 const QUANTISED_CANVAS: Array<{
@@ -171,6 +177,13 @@ export function resolutionFor(
     transformerQuantSource?: string | null;
   },
 ): { width: number; height: number } {
+  const fold = (text: string) => text.toLowerCase().replace(/[-_.\s]+/g, "-");
+  const native = NATIVE_CANVAS.find((entry) =>
+    fold(repoId).includes(fold(entry.match)),
+  );
+  if (native) {
+    return { width: native.width, height: native.height };
+  }
   // A GGUF resident has no family substring in repo_id, so exclude it by kind.
   if ((build.modelKind ?? "").toLowerCase() === "gguf") {
     return DEFAULT_RESOLUTION;
