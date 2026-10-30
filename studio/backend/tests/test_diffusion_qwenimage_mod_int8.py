@@ -57,6 +57,15 @@ def test_outlier_switch(monkeypatch, raw, n):
     assert tq.int8_mod_outliers() == n
 
 
+@pytest.mark.parametrize("raw, keyed", [("", None), ("8", None), ("junk", None), ("0", "0"), ("4", "4"), ("99", "16")])
+def test_compile_cache_switch_keys_on_the_outlier_count_the_reader_uses(monkeypatch, raw, keyed):
+    from core.inference import diffusion_compile_cache as cc
+
+    monkeypatch.setenv(tq.INT8_MOD_OUTLIERS_ENV, raw)
+    assert cc.graph_switches().get(tq.INT8_MOD_OUTLIERS_ENV) == keyed
+    assert keyed is None or int(keyed) == tq.int8_mod_outliers()
+
+
 def test_cache_key_carries_the_layout(monkeypatch):
     from core.inference.diffusion_prequant_cache import key_parts
 
