@@ -47,14 +47,14 @@ test("a placed node lands with its header under the pointer, on the grid when sn
   assert.equal(Math.abs(y % 20), 0);
 });
 
-test("only empty canvas places; clicks on nodes and groups do not", () => {
+test("only placeable spots place (canvas, group or note body); clicks on cards do not", () => {
   const src = readFileSync(
     new URL("../src/features/flows/editor/canvas-controls.tsx", import.meta.url),
     "utf8",
   );
   const click = src.slice(src.indexOf("const click ="), src.indexOf("const dblclick"));
   assert.match(click, /!onPane\(e\)\) return;/);
-  assert.match(src, /classList\.contains\("react-flow__pane"\)/);
+  assert.match(src, /const onPane = \(e: Event\) => placeableTarget\(e\.target as Element\);/);
 });
 
 test("a placed card's header icon lands on the pointer, in flow units, at any spot", async () => {

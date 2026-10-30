@@ -17,7 +17,12 @@ import {
   PlusSignIcon,
 } from "./icon-data";
 import { addNodeConnected } from "./node-factory";
-import { placementPosition, stopPlacement, usePlacement } from "./placement";
+import {
+  placeableTarget,
+  placementPosition,
+  stopPlacement,
+  usePlacement,
+} from "./placement";
 import { PlacementGhost } from "./placement-ghost";
 
 // React Flow Controls' fit (default padding), animated.
@@ -64,8 +69,8 @@ function FloatingButton({
   );
 }
 
-/** While a Nodes panel item is armed: each click on empty canvas places one; Esc, right-click
- *  or leaving the editor stops. Clicks on nodes and groups are left alone. */
+/** While a Nodes panel item is armed: each click on empty canvas, a group or a note places one;
+ *  Esc, right-click or leaving the editor stops. Clicks on cards and on controls are left alone. */
 function ArmedPlacement() {
   const armed = usePlacement((s) => s.armed);
   const spec = useCatalogStore((s) =>
@@ -83,8 +88,7 @@ function ArmedPlacement() {
       '[data-testid="flows-canvas"]',
     );
     if (!armed || !canvas) return;
-    const onPane = (e: Event) =>
-      (e.target as Element).classList.contains("react-flow__pane");
+    const onPane = (e: Event) => placeableTarget(e.target as Element);
     const click = (e: MouseEvent) => {
       if (e.button !== 0 || e.detail > 1 || !onPane(e)) return;
       const snap = useUiStore.getState().snapToGrid;

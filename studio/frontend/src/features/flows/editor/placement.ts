@@ -39,3 +39,14 @@ export function placementPosition(
 ): [number, number] {
   return snapPoint([flow.x - GRAB[0], flow.y - GRAB[1]], snap);
 }
+
+/** Empty canvas, or the body of a group or note: a card lands on top of those. */
+export function placeableTarget(target: Element | null): boolean {
+  if (!target) return false;
+  if (target.classList.contains("react-flow__pane")) return true;
+  if (target.closest("button, input, textarea, select, a, [role='button']"))
+    return false;
+  return !!target.closest(
+    ".react-flow__node-flowGroup, .react-flow__node-flowNote",
+  );
+}
