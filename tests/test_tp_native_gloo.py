@@ -264,23 +264,26 @@ def _case_fused(rank, world, tmp):
         function, *args
     )
     out = {}
-    for fused in (False, True):
+    # "ref64": the plain PEFT path in float64, the reference both fp32 arms are measured against.
+    for fused in (False, True, "ref64"):
         calls.clear()
         model = build(QWEN3, {"num_attention_heads": 8, "num_key_value_heads": 4})
+        if fused == "ref64":
+            model = model.double()
         tp_native.apply_tensor_parallel(model, mesh["tp"])
         attn = tp_native._unwrap(model).model.layers[0].self_attn
         g = torch.Generator().manual_seed(5)
-        X = torch.randn(
-            2, 5, attn.q_proj.base_layer.weight.shape[1], generator = g, requires_grad = True
-        )
+        X = torch.randn(2, 5, attn.q_proj.base_layer.weight.shape[1], generator = g)
+        X = X.to(attn.q_proj.base_layer.weight.dtype).requires_grad_(True)
         Xr = tp_native.copy_to_tp(X, attn._unsloth_tp_group)
-        if fused:
+        fused_arm = fused is True
+        if fused_arm:
             Q, K, V = fast_lora.apply_lora_qkv(attn, Xr, inplace = False)
         else:
             Q, K, V = attn.q_proj(Xr), attn.k_proj(Xr), attn.v_proj(Xr)
         Y = torch.cat([Q, K, V], -1)
         O_in = Y[..., : Q.shape[-1]].contiguous()
-        O = fast_lora.apply_lora_o(attn, O_in) if fused else attn.o_proj(O_in)
+        O = fast_lora.apply_lora_o(attn, O_in) if fused_arm else attn.o_proj(O_in)
         O = tp_native.reduce_from_tp(O, attn._unsloth_tp_group)
         (O.square().sum() + Y.square().sum()).backward()
         out[fused] = {
@@ -1064,8 +1067,15 @@ def test_fused_lora_functions_read_local_shards():
             plain["calls"],
             fused["calls"],
         )
-        torch.testing.assert_close(fused["O"], plain["O"], rtol = 1e-5, atol = 1e-5)
-        torch.testing.assert_close(fused["dX"], plain["dX"], rtol = 1e-5, atol = 1e-5)
+        # The fused kernels round the LoRA term before the base GEMM accumulates onto it (PEFT adds the two
+        # rounded products), so fp32 results differ by summation order, not by shard: a wrong shard is O(1).
+        torch.testing.assert_close(fused["O"], plain["O"], rtol = 1e-4, atol = 1e-5)
+        torch.testing.assert_close(fused["dX"], plain["dX"], rtol = 1e-4, atol = 1e-5)
+        ref = res["ref64"]
+        for key in ("O", "dX"):
+            err_fused = (fused[key].double() - ref[key]).abs().max().item()
+            err_plain = (plain[key].double() - ref[key]).abs().max().item()
+            assert err_fused <= 2 * err_plain + 1e-6, (key, err_fused, err_plain)
         assert set(fused["grads"]) == set(plain["grads"]) and plain["grads"]
         for name in plain["grads"]:
             torch.testing.assert_close(
