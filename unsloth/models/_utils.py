@@ -6374,6 +6374,13 @@ def patch_gradient_accumulation_fix(Trainer):
                 if not keep_fused:
                     from .llama import _decline_fused_lora_for_fsdp
                     _decline_fused_lora_for_fsdp(getattr(self, "model", None), reason)
+            # Tiled MLP: re-run the load-time plan per instance, so modules PEFT added after load are covered.
+            try:
+                from ..tiling import revalidate_for_trainer
+
+                revalidate_for_trainer(self)
+            except Exception as e:
+                logger.warning_once(f"Unsloth: tiled MLP revalidation skipped ({e})")
             _replan_auto_offload_safely(self)
             _size_auto_checkpoint_skip_for_trainer(self)
             _block_swap_for_trainer_backend(self)

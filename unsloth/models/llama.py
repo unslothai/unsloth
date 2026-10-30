@@ -5373,7 +5373,7 @@ class FastLlamaModel:
                     ):
                         # MethodType binds the replacement; see stackoverflow.com/questions/50599045.
                         if hasattr(mlp_module, "_unsloth_forward"):
-                            # _unsloth_forward identifies an existing TiledMLP patch.
+                            # _unsloth_forward is the tiled MLP inner-forward slot (unsloth_zoo.tiling_registry): the kernel runs per tile.
                             mlp_module._unsloth_forward = types.MethodType(
                                 _apply_lora_mlp, mlp_module
                             )

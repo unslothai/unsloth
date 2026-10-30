@@ -100,8 +100,7 @@ from ..device_type import (
 
 from unsloth_zoo.utils import Version, _get_dtype
 from unsloth_zoo.hf_utils import dtype_from_config
-from unsloth_zoo.tiled_mlp import patch_tiled_mlp
-from ._tiled_mlp_ddp import patch_tiled_mlp_for_ddp
+from ..tiling import loader_tile_mlp
 
 transformers_version = Version(transformers_version)
 SUPPORTS_FOURBIT = transformers_version >= Version("4.37")
@@ -2140,14 +2139,8 @@ class FastLanguageModel(FastLlamaModel):
             except Exception:
                 pass  # optional speedup; never block model loading
 
-        # Patch Tiled MLP; enable by setting UNSLOTH_TILED_MLP to "arctic", "target", or "target:{GB}".
-        patch_tiled_mlp_choice = os.environ.get(
-            "UNSLOTH_TILED_MLP", "arctic" if unsloth_tiled_mlp else "0"
-        )
-        if patch_tiled_mlp_choice != "0" or unsloth_tiled_mlp:
-            patch_tiled_mlp(model, patch_options_str = patch_tiled_mlp_choice)
-            if is_distributed():
-                patch_tiled_mlp_for_ddp()
+        # Sequence tiling: unsloth_tiled_mlp = True / "auto" / "arctic" / "rows:N" / "target:GB", or UNSLOTH_TILED_MLP.
+        loader_tile_mlp(model, unsloth_tiled_mlp)
 
         model = _fix_rope_inv_freq(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
@@ -3633,14 +3626,8 @@ class FastModel(FastBaseModel):
             print("Unsloth: Applying QAT to mitigate quantization degradation")
             model = FastModel._prepare_for_qat(model, qat_scheme)
 
-        # Patch Tiled MLP; enable by setting UNSLOTH_TILED_MLP to "arctic", "target", or "target:{GB}".
-        patch_tiled_mlp_choice = os.environ.get(
-            "UNSLOTH_TILED_MLP", "arctic" if unsloth_tiled_mlp else "0"
-        )
-        if patch_tiled_mlp_choice != "0" or unsloth_tiled_mlp:
-            patch_tiled_mlp(model, patch_options_str = patch_tiled_mlp_choice)
-            if is_distributed():
-                patch_tiled_mlp_for_ddp()
+        # Sequence tiling: unsloth_tiled_mlp = True / "auto" / "arctic" / "rows:N" / "target:GB", or UNSLOTH_TILED_MLP.
+        loader_tile_mlp(model, unsloth_tiled_mlp)
 
         model = _fix_rope_inv_freq(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
