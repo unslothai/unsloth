@@ -130,18 +130,29 @@ def test_instance_prepare_is_restored():
     assert model.__dict__["prepare_inputs_for_generation"] is mine
 
 
-def test_overlapping_thread_pins_decode_path():
+def test_overlapping_thread_waits_for_the_running_generate():
+    # Thread B starting while A's flex prefill mask is built but not yet run must not switch the
+    # shared config under it: B waits until A exits, then runs its own steps.
     import threading
 
     model = _text_model()
     outer = _NonFlexGenerate(model).__enter__()
-    other = threading.Thread(target = lambda: _NonFlexGenerate(model).__enter__())
-    other.start()
-    other.join()
-    _steps(model)
-    assert model.seen == ["eager", "eager", "eager"]
-    _NonFlexGenerate.__exit__(types.SimpleNamespace(active = True, model = model))
+    model.prepare_inputs_for_generation(torch.zeros(1, 8, dtype = torch.long))
+    entered = threading.Event()
+
+    def other():
+        with _NonFlexGenerate(model):
+            entered.set()
+            _steps(model)
+
+    thread = threading.Thread(target = other)
+    thread.start()
+    assert not entered.wait(0.2)
+    assert model.config._attn_implementation == "flex_attention"
     outer.__exit__(None, None, None)
+    thread.join(5)
+    assert entered.is_set() and not thread.is_alive()
+    assert model.seen == ["flex_attention", "flex_attention", "eager", "eager"]
     assert model.config._attn_implementation == "flex_attention"
     assert not [k for k in model.__dict__ if k.startswith("_unsloth_non_flex")]
 

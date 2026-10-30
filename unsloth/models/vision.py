@@ -1577,12 +1577,22 @@ class _NonFlexGenerate:
     keep flex; each one-token decode step reads "eager" on the decoder attention configs (Gemma 3's
     patched attention then runs SDPA, as on cards without flex). Both paths write and read the same
     KV cache. The configs are restored on exit, including on error. Reference counted per model, so
-    nested calls restore once; an overlapping call from another thread pins every step to the
-    non-flex path until the last one exits (one shared config cannot serve two step kinds)."""
+    nested calls restore once. A call from another thread waits for the running one: they share one
+    config, which a step switches between its mask build and its forward."""
 
     def __init__(self, model):
         self.model = model
         self.active = False
+        self.serial = None
+
+    def _serial_lock(self):
+        # One per underlying model: a PEFT wrapper and its base model share the config.
+        base = self.model.get_base_model() if hasattr(self.model, "get_base_model") else self.model
+        owner = base.__dict__
+        lock = owner.get("_unsloth_flex_generate_serial")
+        if lock is None:
+            lock = owner["_unsloth_flex_generate_serial"] = threading.RLock()
+        return lock
 
     def _set(self, decode):
         state = self.model.__dict__
@@ -1619,10 +1629,23 @@ class _NonFlexGenerate:
     def __enter__(self):
         state = self.model.__dict__
         with _FLEX_GENERATE_LOCK:
+            # Keyed on the family, not the live config: another thread's decode step reads "eager".
+            config = getattr(self.model, "config", None)
+            routed = (
+                os.environ.get(_FLEX_GENERATE_ENV_VAR, "0") != "1"
+                and config is not None
+                and _config_prefers_flex_attention(config)
+            )
+            serial = self._serial_lock() if routed else None
+        if serial is not None:
+            serial.acquire()
+            self.serial = serial
+        with _FLEX_GENERATE_LOCK:
             depth = state.get("_unsloth_non_flex_generate", 0)
             if depth == 0:
                 configs = _flex_generate_configs(self.model)
                 if not configs:
+                    self._release()
                     return self
                 # Every config in the tree, parents first: the transformers setter also writes
                 # sub-configs, so restoring in this order leaves each one as it was.
@@ -1634,7 +1657,6 @@ class _NonFlexGenerate:
                 ]
                 state["_unsloth_non_flex_generate_saved"] = saved
                 state["_unsloth_non_flex_generate_configs"] = configs
-                state["_unsloth_non_flex_generate_owner"] = threading.get_ident()
                 self.steps = 0
                 # The generate loop calls prepare_inputs_for_generation on the transformers model that
                 # runs it: for a PEFT model that is the base model (PeftModelForCausalLM.generate hands
@@ -1664,16 +1686,25 @@ class _NonFlexGenerate:
                 else:
                     state["_unsloth_non_flex_generate_pinned"] = True
                     self._set(True)
-            elif state.get("_unsloth_non_flex_generate_owner") != threading.get_ident():
-                state["_unsloth_non_flex_generate_pinned"] = True
-                self._set(True)
             state["_unsloth_non_flex_generate"] = depth + 1
             self.active = True
         return self
 
+    def _release(self):
+        if self.serial is not None:
+            self.serial.release()
+            self.serial = None
+
     def __exit__(self, *exc):
         if not self.active:
             return False
+        try:
+            self._restore()
+        finally:
+            self._release()
+        return False
+
+    def _restore(self):
         state = self.model.__dict__
         with _FLEX_GENERATE_LOCK:
             depth = state.get("_unsloth_non_flex_generate", 1) - 1
@@ -1681,7 +1712,6 @@ class _NonFlexGenerate:
             if depth == 0:
                 state.pop("_unsloth_non_flex_generate", None)
                 state.pop("_unsloth_non_flex_generate_configs", None)
-                state.pop("_unsloth_non_flex_generate_owner", None)
                 state.pop("_unsloth_non_flex_generate_pinned", None)
                 for target, had, previous in state.pop("_unsloth_non_flex_generate_prepare", ()):
                     if had:
@@ -1690,7 +1720,6 @@ class _NonFlexGenerate:
                         target.__dict__.pop("prepare_inputs_for_generation", None)
                 for c, field, value in state.pop("_unsloth_non_flex_generate_saved", ()):
                     _config_set(c, field, value)
-        return False
 
 
 def _compiles_decode(model):
