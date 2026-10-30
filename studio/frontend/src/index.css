@@ -6760,22 +6760,22 @@ html.force-reduced-motion .spooky-still :is(.spooky-spider, .spooky-bat) {
   background: linear-gradient(color-mix(in srgb, var(--background) 48%, transparent), transparent);
 }
 :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) [data-side-panel-inset]:not(.chat-header-fade),
-html:has(:is([data-wallpaper-workspace], [data-chat-content-root]) > .chat-wallpaper[data-ready]) [data-slot="window-titlebar"] {
+html[data-chat-wallpaper-ready] [data-slot="window-titlebar"] {
   background: transparent;
   backdrop-filter: none;
 }
 :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .chat-header-fade,
-html:has(:is([data-wallpaper-workspace], [data-chat-content-root]) > .chat-wallpaper[data-ready]) [data-slot="window-titlebar-decoration"] {
+html[data-chat-wallpaper-ready] [data-slot="window-titlebar-decoration"] {
   visibility: hidden;
 }
 :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) [data-wallpaper-chrome-controls],
-html:has(:is([data-wallpaper-workspace], [data-chat-content-root]) > .chat-wallpaper[data-ready]) [data-slot="window-titlebar"] [data-wallpaper-chrome-controls] {
+html[data-chat-wallpaper-ready] [data-slot="window-titlebar"] [data-wallpaper-chrome-controls] {
   background: transparent;
   backdrop-filter: none;
   text-shadow: 0 1px 8px var(--background);
 }
 /* The pinned sidebar stays solid, including its segment of the native titlebar. */
-html:has([data-wallpaper-workspace] > .chat-wallpaper[data-ready]) [data-slot="window-titlebar"][data-wallpaper-sidebar-pinned] > [data-wallpaper-chrome-controls]:first-child {
+html[data-chat-wallpaper-workspace-ready] [data-slot="window-titlebar"][data-wallpaper-sidebar-pinned] > [data-wallpaper-chrome-controls]:first-child {
   background: var(--sidebar);
 }
 /* One viewport-sized crop, so opening the sidebar does not reframe the image. */
