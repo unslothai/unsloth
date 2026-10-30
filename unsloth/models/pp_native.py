@@ -897,7 +897,9 @@ class PipelineParallel:
         self._global_ranks = [dist.get_global_rank(self.group, i) for i in range(self.num_stages)]
         self._shapes = collections.OrderedDict()
         self._scaler = None
-        self._step_scaler = None  # the enabled GradScaler of the last step (clip_grad_norm_ checks it)
+        self._step_scaler = (
+            None  # the enabled GradScaler of the last step (clip_grad_norm_ checks it)
+        )
         self._mb_losses = []
         self._loss_multiplier = 1
         self.dp_mesh = None  # set by shard_model (FSDP2 over the data parallel dimension)

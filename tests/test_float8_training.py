@@ -467,7 +467,14 @@ def test_conversion_adds_no_hooks_to_an_undispatched_model():
 def _probe_out_dtypes(monkeypatch, recipe, *args):
     seen = []
 
-    def fake_scaled_mm(a, b, scale_a, scale_b, out_dtype = None, **kwargs):
+    def fake_scaled_mm(
+        a,
+        b,
+        scale_a,
+        scale_b,
+        out_dtype = None,
+        **kwargs,
+    ):
         seen.append((tuple(scale_a.shape) != (), out_dtype))
 
     monkeypatch.setattr(torch, "_scaled_mm", fake_scaled_mm)
@@ -481,7 +488,9 @@ def test_probe_writes_the_output_dtype_torchao_asks_for(monkeypatch):
     # float16 training: tensorwise GEMMs write float16 (a different cuBLAS path); torchao runs rowwise
     # float16 in bfloat16 and casts, so rowwise still probes bfloat16.
     tensorwise = _probe_out_dtypes(monkeypatch, "tensorwise", torch.float16)
-    assert tensorwise and all(o == torch.float16 for rowwise, o in tensorwise if not rowwise), tensorwise
+    assert tensorwise and all(
+        o == torch.float16 for rowwise, o in tensorwise if not rowwise
+    ), tensorwise
     rowwise = _probe_out_dtypes(monkeypatch, "rowwise", torch.float16)
     assert rowwise and {o for _, o in rowwise} == {torch.bfloat16}, rowwise
 
@@ -509,13 +518,19 @@ def test_float16_probe_failure_names_the_output_dtype(monkeypatch):
     monkeypatch.setattr(torch.version, "hip", None)
     calls = []
 
-    def fp16_unsupported(device, recipe, dtype = torch.bfloat16):
+    def fp16_unsupported(
+        device,
+        recipe,
+        dtype = torch.bfloat16,
+    ):
         calls.append(dtype)
         if dtype == torch.float16:
             raise RuntimeError("out_dtype float16 not supported")
 
     monkeypatch.setattr(f8t, "_probe_float8_gemm", fp16_unsupported)
     f8t._check_hardware(torch.device("cuda", 0), "tensorwise")
-    with pytest.raises(RuntimeError, match = "tensorwise scaling, float16 output\\) is not supported"):
+    with pytest.raises(
+        RuntimeError, match = "tensorwise scaling, float16 output\\) is not supported"
+    ):
         f8t._check_hardware(torch.device("cuda", 0), "tensorwise", torch.float16)
     assert calls == [torch.bfloat16, torch.float16]

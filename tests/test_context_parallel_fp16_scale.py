@@ -18,7 +18,9 @@ from unsloth import context_parallel as cp
 
 SCALE = 2.0**16
 TOKENS = 8
-FP16_GRAD = 40000.0  # one GPU's scaled per-token output gradient at 2**16: below the float16 max (65504)
+FP16_GRAD = (
+    40000.0  # one GPU's scaled per-token output gradient at 2**16: below the float16 max (65504)
+)
 
 
 class _Handler:
@@ -29,7 +31,11 @@ class _Handler:
         return dict(self.kwargs)
 
 
-def _trainer(world, scaler, handler = None):
+def _trainer(
+    world,
+    scaler,
+    handler = None,
+):
     accelerator = types.SimpleNamespace(
         scaler = scaler,
         scaler_handler = handler,
@@ -55,7 +61,11 @@ def _found_inf(scaler, world):
     opt = torch.optim.SGD([w], lr = 1e-3)
     scaler.scale((out.float() * coef).sum() / TOKENS * world).backward()
     scaler.unscale_(opt)
-    return float(sum(v.item() for v in scaler._per_optimizer_states[id(opt)]["found_inf_per_device"].values()))
+    return float(
+        sum(
+            v.item() for v in scaler._per_optimizer_states[id(opt)]["found_inf_per_device"].values()
+        )
+    )
 
 
 @pytest.mark.parametrize("world", [2, 4])

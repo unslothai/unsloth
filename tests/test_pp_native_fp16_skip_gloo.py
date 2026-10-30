@@ -109,7 +109,11 @@ def _worker(rank, world, port, tmp, case, kwargs):
         dist.destroy_process_group()
 
 
-def _spawn(case, world = 2, **kwargs):
+def _spawn(
+    case,
+    world = 2,
+    **kwargs,
+):
     if _torch_pipelining_error():
         pytest.skip(_torch_pipelining_error())
     ctx = multiprocessing.get_context("spawn")

@@ -147,7 +147,11 @@ def _probe_dtype_pairs(recipe):
     return pairs
 
 
-def _probe_float8_gemm(device, recipe, dtype = torch.bfloat16):
+def _probe_float8_gemm(
+    device,
+    recipe,
+    dtype = torch.bfloat16,
+):
     """Tiny torch._scaled_mm calls with each GEMM's own fp8 dtypes and scaling, so an unsupported GPU / torch refuses here, not mid-training.
     dtype is the training compute dtype, which torchao asks _scaled_mm to write: float16 for a float16 run
     (tensorwise), bfloat16 for rowwise (torchao computes rowwise float16 / float32 in bfloat16 and casts)."""
@@ -160,7 +164,9 @@ def _probe_float8_gemm(device, recipe, dtype = torch.bfloat16):
         rowwise = rowwise_a or rowwise_b
         sa = torch.ones(M, 1, device = device) if rowwise else torch.ones((), device = device)
         sb = torch.ones(1, N, device = device) if rowwise else torch.ones((), device = device)
-        out_dtype = torch.bfloat16 if rowwise or dtype not in (torch.float16, torch.float32) else dtype
+        out_dtype = (
+            torch.bfloat16 if rowwise or dtype not in (torch.float16, torch.float32) else dtype
+        )
         torch._scaled_mm(a, b, scale_a = sa, scale_b = sb, out_dtype = out_dtype)
 
 
@@ -201,7 +207,11 @@ def _selected_devices(model, module_filter_fn):
     return devices
 
 
-def _check_hardware(device, recipe, dtype = torch.bfloat16):
+def _check_hardware(
+    device,
+    recipe,
+    dtype = torch.bfloat16,
+):
     if device is None or device.type != "cuda" or not torch.cuda.is_available():
         raise RuntimeError(
             "Unsloth: float8_training needs the model on an NVIDIA GPU with compute capability 8.9+; "
