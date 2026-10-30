@@ -207,11 +207,12 @@ def _register_prequant_safe_globals() -> bool:
 def restricted_prequant_load_supported(
     scheme: Optional[str] = None, filename: Optional[str] = None
 ) -> bool:
-    """Per scheme (torchao retires int8 constructors before fp8); with a safetensors filename, answer for that file, which needs no allowlist."""
-    from .prequant_safetensors import is_safetensors_checkpoint, safetensors_prequant_supported
+    """Per scheme (torchao retires int8 constructors before fp8); with a safetensors filename, answer for that file, which needs no allowlist
+    but does need a torchao that can rebuild the scheme's subclass (0.16 cannot rebuild nvfp4 / mxfp8)."""
+    from .prequant_safetensors import is_safetensors_checkpoint, safetensors_scheme_supported
 
     if is_safetensors_checkpoint(filename):
-        return safetensors_prequant_supported()
+        return safetensors_scheme_supported(scheme)
     if not _register_prequant_safe_globals():
         return False
     key = (scheme or "").strip().lower()
@@ -701,6 +702,29 @@ def prefer_cached_pickle_twins(
     return out
 
 
+# 0 stops requesting the ``<stem>.safetensors`` twin ahead of a family-declared ``<stem>.pt`` (the older chain).
+SAFETENSORS_TWINS_ENV = "UNSLOTH_PREQUANT_SAFETENSORS_TWINS"
+
+
+def with_declared_safetensors_twins(names: Sequence[str], declared: Sequence[str]) -> list:
+    """Put ``<stem>.safetensors`` right before each declared root ``<stem>.pt`` / ``.pth``; the .pt stays as 404 fallback."""
+    import os
+
+    out = [n for n in names if n]
+    if (os.environ.get(SAFETENSORS_TWINS_ENV) or "").strip().lower() in ("0", "false", "no", "off"):
+        return out
+    wanted = {n for n in declared if n}
+    ordered: list = []
+    for name in out:
+        if name in wanted and "/" not in name and name.lower().endswith(_PICKLE_SUFFIXES):
+            twin = name[: name.rfind(".")] + ".safetensors"
+            if twin not in ordered:
+                ordered.append(twin)
+        if name not in ordered:
+            ordered.append(name)
+    return ordered
+
+
 _LOCAL_FILES_ONLY = contextvars.ContextVar("unsloth_prequant_local_files_only", default = False)
 # The load's Hub token for probes lacking one in their signature (cache freshness of a gated base); outer token wins.
 _LOAD_HF_TOKEN: contextvars.ContextVar = contextvars.ContextVar(
@@ -913,10 +937,13 @@ def resolve_prequant_source(
         # fallback: another partition's denoiser would pass every check with the wrong weights.
         task_specific = preferred is not None and preferred != agnostic
         if task_specific:
+            # Only the same artifact's safetensors twin goes ahead of it: same partition, same weights.
+            names = with_declared_safetensors_twins((preferred,), (preferred,))
             return PrequantSource(
                 kind = "repo",
                 location = repo_id,
-                filename = preferred,
+                filename = names[0],
+                fallback_filenames = tuple(names[1:]),
                 declared_filenames = (preferred,),
             )
         # Declared name first, then derived chain (safetensors ahead); dedup in order. Declared names are default-repo files; variant repos derive their own.
@@ -954,6 +981,7 @@ def resolve_prequant_source(
         for name in declared + derived:
             if name and name not in names:
                 names.append(name)
+        names = with_declared_safetensors_twins(names, declared)
         if comfy_prequant_enabled() and _comfy_prequant_family(fam):
             names = with_comfy_twins(names, lead = scheme in COMFY_TWIN_LEADS)
         return PrequantSource(
@@ -2374,7 +2402,25 @@ def load_prequantized_transformer(
             except Exception:  # noqa: BLE001
                 pass
         # Small-M padding, else quantised small-M linears raise in _int_mm. After load and .to().
-        from .diffusion_transformer_quant import apply_small_m_padding, apply_zero_row_guard
+        from .diffusion_transformer_quant import (
+            apply_small_m_padding,
+            apply_zero_row_guard,
+            quantize_runtime_leftovers,
+        )
+
+        # Must run before padding (it reparents Linears); a failure keeps the artifact, leftovers stay dense.
+        try:
+            quantize_runtime_leftovers(
+                transformer,
+                scheme,
+                metadata.get("family") or family,
+                metadata.get("exclude_name_tokens"),
+                min_features = int(metadata.get("min_features") or min_features or 512),
+                device = device,
+                logger = logger,
+            )
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            _warn(logger, f"{scheme}:runtime leftovers", exc)
 
         apply_small_m_padding(transformer, scheme, metadata.get("family"), logger = logger)
         apply_zero_row_guard(transformer, scheme, metadata.get("family"), logger = logger)

@@ -16,6 +16,8 @@ import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { MessageCircleIcon } from "@/lib/hugeicons-derived";
+import { MicIcon } from "@/lib/mic-icon";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { SparkleIcon } from "@/lib/sparkle-icon";
 import { cn } from "@/lib/utils";
@@ -23,12 +25,10 @@ import {
   Cancel01Icon,
   DatabaseIcon,
   DragDropVerticalIcon,
+  FlimSlateIcon,
   Image01Icon,
   LockIcon,
-  Message01Icon,
-  Mic01Icon,
   RemoveCircleIcon,
-  Video01Icon,
 } from "@hugeicons/core-free-icons";
 import { Volume02Icon } from "@/lib/volume-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -55,12 +55,15 @@ import { useLoadedModels } from "./use-loaded-models";
 
 const COLLAPSED_KEY = LOADED_MODELS_PREFERENCE_KEYS.collapsed;
 
-const KIND_ICONS: Record<LoadedModelKind, typeof SparkleIcon> = {
-  text: Message01Icon,
+// stt draws the filled MicIcon used everywhere else, which HugeiconsIcon would outline.
+const KIND_ICONS: Record<
+  Exclude<LoadedModelKind, "stt">,
+  typeof SparkleIcon
+> = {
+  text: MessageCircleIcon,
   tts: Volume02Icon,
   image: Image01Icon,
-  video: Video01Icon,
-  stt: Mic01Icon,
+  video: FlimSlateIcon,
   embedding: DatabaseIcon,
 };
 
@@ -154,11 +157,15 @@ function LoadedModelRow({
             className="flex min-w-0 flex-1 items-center gap-2 text-left"
           >
             <span className={ROW_ICON_CLASS}>
-              <HugeiconsIcon
-                icon={KIND_ICONS[entry.kind]}
-                strokeWidth={1.75}
-                className="size-[calc(15px*var(--ui-space-scale,1))]"
-              />
+              {entry.kind === "stt" ? (
+                <MicIcon className="size-[calc(15px*var(--ui-space-scale,1))]" />
+              ) : (
+                <HugeiconsIcon
+                  icon={KIND_ICONS[entry.kind]}
+                  strokeWidth={1.75}
+                  className="size-[calc(15px*var(--ui-space-scale,1))]"
+                />
+              )}
             </span>
             <span className="min-w-0 flex-1">
               <span className="block truncate text-ui-12p5 font-medium text-foreground">
