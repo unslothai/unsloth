@@ -329,6 +329,25 @@ test("tidy up lays out cards only and puts reroutes back between their ends", as
   assert.deepEqual(plain(), ["e1:src.text->llm.prompt"]);
 });
 
+test("top to bottom, upright reroutes on one wire spread along it instead of sharing a row", async () => {
+  fresh();
+  useDocStore.getState().addReroute({ id: "r1", pos: [-900, -900], dir: "down" }, "e1");
+  const into = graph().wireOrder.find((w) => graph().wires[w].target === "llm");
+  assert.ok(into);
+  useDocStore.getState().addReroute({ id: "r2", pos: [-900, -600], dir: "down" }, into);
+  const { tidyRequest, tidyPatch } = await import("../src/features/flows/editor/tidy.ts");
+  const ctx = {
+    graph: graph(),
+    wireStyle: "bus" as const,
+    direction: "TB" as const,
+    size: () => ({ width: 260, height: 140 }),
+    portY: () => 40,
+  };
+  useDocStore.getState().applyTidy(tidyPatch(ctx, computeLayout(tidyRequest(ctx))));
+  const { r1, r2 } = graph().reroutes;
+  assert.ok(r1.pos[1] < r2.pos[1], `r1 above r2: ${r1.pos[1]} vs ${r2.pos[1]}`);
+});
+
 test("rerouting a wire into a multi input keeps its place in the edge order", () => {
   fresh([
     edge("a", "src", "text", "out", "value"),
