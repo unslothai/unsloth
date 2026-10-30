@@ -3735,6 +3735,7 @@ export const tr = {
         groupToggle: "Tüm {group} araçları",
         description: "Ajanlar kapattığınız bir aracı asla görmez ve o araca yapılan çağrılar reddedilir. Zaten bağlı olan ajanlar değişikliği yeniden bağlandıklarında görür.",
         saveError: "Unsloth MCP araç ayarı kaydedilemedi.",
+        chatNote: "Sohbet hiçbir zaman {tools} almaz.",
         groups: {
           models: "Modeller",
           generate: "Üret",

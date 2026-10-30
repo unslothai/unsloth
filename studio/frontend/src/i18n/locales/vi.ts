@@ -3740,6 +3740,7 @@ export const vi = {
         groupToggle: "Tất cả công cụ {group}",
         description: "Tác tử sẽ không bao giờ thấy công cụ bạn đã tắt và mọi lệnh gọi đến công cụ đó đều bị từ chối. Các tác tử đã kết nối sẽ thấy thay đổi khi kết nối lại.",
         saveError: "Không thể lưu cài đặt công cụ Unsloth MCP.",
+        chatNote: "Cuộc trò chuyện không bao giờ nhận được {tools}.",
         groups: {
           models: "Mô hình",
           generate: "Tạo",

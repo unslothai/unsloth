@@ -3784,6 +3784,7 @@ export const nl = {
         groupToggle: "Alle {group}-tools",
         description: "Agents zien nooit een tool die je uitzet, en aanroepen ervan worden geweigerd. Agents die al verbonden zijn, zien de wijziging zodra ze opnieuw verbinden.",
         saveError: "Kon de instelling voor Unsloth MCP-tools niet opslaan.",
+        chatNote: "De chat krijgt nooit {tools}.",
         groups: {
           models: "Modellen",
           generate: "Genereren",

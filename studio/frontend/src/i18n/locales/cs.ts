@@ -3755,6 +3755,7 @@ export const cs = {
         groupToggle: "Všechny nástroje skupiny {group}",
         description: "Agenti nikdy neuvidí nástroj, který vypnete, a jeho volání jsou odmítnuta. Již připojení agenti uvidí změnu po opětovném připojení.",
         saveError: "Nastavení nástrojů Unsloth MCP se nepodařilo uložit.",
+        chatNote: "Chat nikdy nedostane {tools}.",
         groups: {
           models: "Modely",
           generate: "Generování",

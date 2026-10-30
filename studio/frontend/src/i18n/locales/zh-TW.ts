@@ -3548,6 +3548,7 @@ export const zhTW = {
         groupToggle: "所有{group}工具",
         description: "代理程式永遠看不到你關閉的工具，對它的呼叫也會被拒絕。已連線的代理程式會在重新連線後看到變更。",
         saveError: "無法儲存 Unsloth MCP 工具設定。",
+        chatNote: "聊天永遠不會取得 {tools}。",
         groups: {
           models: "模型",
           generate: "生成",

@@ -3782,6 +3782,7 @@ export const pl = {
         groupToggle: "Wszystkie narzędzia: {group}",
         description: "Agenci nigdy nie widzą narzędzia, które wyłączysz, a jego wywołania są odrzucane. Już połączeni agenci zobaczą zmianę po ponownym połączeniu.",
         saveError: "Nie udało się zapisać ustawienia narzędzi Unsloth MCP.",
+        chatNote: "Czat nigdy nie dostaje {tools}.",
         groups: {
           models: "Modele",
           generate: "Generowanie",

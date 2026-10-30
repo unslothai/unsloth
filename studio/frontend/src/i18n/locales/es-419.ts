@@ -3797,6 +3797,7 @@ export const es419 = {
         groupToggle: "Todas las herramientas de {group}",
         description: "Los agentes nunca ven una herramienta que desactives, y las llamadas a ella se rechazan. Los agentes que ya están conectados ven el cambio cuando se vuelven a conectar.",
         saveError: "No se pudo guardar la configuración de herramientas de Unsloth MCP.",
+        chatNote: "El chat nunca recibe {tools}.",
         groups: {
           models: "Modelos",
           generate: "Generar",
