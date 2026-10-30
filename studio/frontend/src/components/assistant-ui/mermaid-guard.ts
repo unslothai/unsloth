@@ -25,12 +25,10 @@ const STYLE_FETCH = /\\|url\s*\(|image(?:-set)?\s*\(|cross-fade\s*\(|element\s*\
 const STYLE_FETCHES = new RegExp(STYLE_FETCH.source, "gi");
 // These lexers take a style statement mid-line after a space and allow brackets in ids: every keyword counts.
 const MIDLINE_STYLE = /^[^\S\n]*(?:stateDiagram|erDiagram|block(?:-beta)?|requirementDiagram)\b/im;
-// Mermaid's own type check. In a stateDiagram a line opening `state "` is in the lexer's STATE state up
-// to its newline or `{`, where no style keyword is lexed, and its closed quote is label text.
+// Mermaid's type check; in a stateDiagram a quoted `state "..."` before newline or `{` is label text.
 const STATE_DIAGRAM = /^\s*stateDiagram/;
 const STATE_LABEL = /^[^\S\n]*state[^\S\n]+"[^"\n{}]*"/;
-// Lexed ahead of that quote: `.*<<fork>>` and the rest end the state statement, so a line holding one
-// is not a label and a style statement after it is real.
+// Lexed before the quote, these end the state statement, so a style statement after one is real.
 const STATE_EXIT = /<<(?:fork|join|choice)>>|\[\[(?:fork|join|choice)\]\]/i;
 
 // An HTML label tag with a style attribute; its CSS can fetch (background-image and the like).
@@ -208,7 +206,7 @@ export function stripRemoteDiagramImages(source: string): string {
   // Mermaid reads the diagram type after dropping directives: `%%{init}%%stateDiagram` counts.
   const midLine = MIDLINE_STYLE.test(scanned.replace(DIRECTIVE, ""));
   const stateLabels = STATE_DIAGRAM.test(scanned.replace(FRONT_MATTER, "").replace(DIRECTIVE, ""));
-  // Only while no other `"` came first: an open string or `accDescr {` there could end inside the label.
+  // An earlier `"` or `accDescr {` could end inside the label.
   let quoteFree = true;
   return out
     .replace(DIRECTIVE, (block) => (STYLE_FETCH.test(block) ? "" : block))
