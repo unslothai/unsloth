@@ -213,7 +213,11 @@ class _LoadCtx:
         self.params, self.resident, self.spec, self.gpu_shared = params, {}, {}, False
         self.statuses = []
 
-    def set_status(self, status, message = None):
+    def set_status(
+        self,
+        status,
+        message = None,
+    ):
         self.statuses.append(status)
 
     def on_cancel(self, fn):
@@ -264,7 +268,13 @@ def test_saved_load_settings_apply_when_the_card_follows_them(monkeypatch):
     )
     params = param_values(
         GENERATE,
-        {"params": {"use_model_settings": True, "model": {"repo": GGUF, "variant": None}, "load": CARD_LOAD}},
+        {
+            "params": {
+                "use_model_settings": True,
+                "model": {"repo": GGUF, "variant": None},
+                "load": CARD_LOAD,
+            }
+        },
     )
     asyncio.run(engine_mod._apply_saved_settings(_Ctx(), GENERATE, params, set()))
     assert params["load"] == {"max_seq_length": 65536, "kv_cache_dtype": "q8_0"}
@@ -272,9 +282,13 @@ def test_saved_load_settings_apply_when_the_card_follows_them(monkeypatch):
 
 def test_the_cache_key_includes_the_load_settings():
     base = param_values(GENERATE, {"params": {"model": {"repo": GGUF, "variant": None}}})
-    key = lambda p: cache_key("llm.generate", 1, p, {}, model = {"repo": GGUF, "variant": None}, seed = 1)
+    key = lambda p: cache_key(
+        "llm.generate", 1, p, {}, model = {"repo": GGUF, "variant": None}, seed = 1
+    )
     assert key(base) != key({**base, "load": CARD_LOAD})
-    assert key({**base, "load": CARD_LOAD}) != key({**base, "load": {**CARD_LOAD, "max_seq_length": 8192}})
+    assert key({**base, "load": CARD_LOAD}) != key(
+        {**base, "load": {**CARD_LOAD, "max_seq_length": 8192}}
+    )
 
 
 def _loads():
@@ -300,10 +314,11 @@ def test_ready_cards_sharing_a_load_run_back_to_back(monkeypatch):
     assert engine._pick_gpu(rs, ["a", "b", "c"]) in ("b", "c")
     # With the model resident at 32k, the 32k card goes first.
     opts = model_settings.load_kwargs(big["load"], is_gguf = True)
-    monkeypatch.setattr(_common, "_LOADED_OPTIONS", {"llm": (GGUF.lower(), _common.options_hash(opts), _loads())})
+    monkeypatch.setattr(
+        _common, "_LOADED_OPTIONS", {"llm": (GGUF.lower(), _common.options_hash(opts), _loads())}
+    )
     rs.resident = {"llm": GGUF}
     assert engine._pick_gpu(rs, ["b", "a", "c"]) == "a"
-
 
 
 def test_a_card_on_the_loaded_model_waits_when_its_load_differs(monkeypatch):
@@ -311,7 +326,9 @@ def test_a_card_on_the_loaded_model_waits_when_its_load_differs(monkeypatch):
     small = {"load": {"max_seq_length": 8192}}
     plan = _plan({"a": small, "b": big})
     opts = model_settings.load_kwargs(big["load"], is_gguf = True)
-    monkeypatch.setattr(_common, "_LOADED_OPTIONS", {"llm": (GGUF.lower(), _common.options_hash(opts), _loads())})
+    monkeypatch.setattr(
+        _common, "_LOADED_OPTIONS", {"llm": (GGUF.lower(), _common.options_hash(opts), _loads())}
+    )
     rs = SimpleNamespace(plan = plan, resident = {"llm": GGUF})
     engine = engine_mod.FlowEngine.__new__(engine_mod.FlowEngine)
     assert engine._pick_gpu(rs, ["a", "b"]) == "b"
@@ -325,10 +342,13 @@ def test_gguf_only_settings_on_a_card_with_model_unset_are_compared(monkeypatch)
     other = {"load": {"gpu_layers": 40}}
     opts = model_settings.load_kwargs(other["load"], is_gguf = True)
     assert opts and model_settings.card_load_kwargs(layers, GGUF) != opts
-    monkeypatch.setattr(_common, "_LOADED_OPTIONS", {"llm": (GGUF.lower(), _common.options_hash(opts), _loads())})
+    monkeypatch.setattr(
+        _common, "_LOADED_OPTIONS", {"llm": (GGUF.lower(), _common.options_hash(opts), _loads())}
+    )
     rs = SimpleNamespace(plan = _plan({"a": layers, "b": other}), resident = {"llm": GGUF})
     engine = engine_mod.FlowEngine.__new__(engine_mod.FlowEngine)
     assert engine._pick_gpu(rs, ["a", "b"]) == "b"
+
 
 def test_an_explicit_zero_context_reaches_the_load(monkeypatch):
     # Manual GPU memory with Auto layers maps to max_seq_length 0: llama.cpp's fit sizes the context.
@@ -375,7 +395,11 @@ def test_a_stale_load_record_does_not_steer_the_scheduler(monkeypatch):
     small = {"load": {"max_seq_length": 8192}}
     opts = model_settings.load_kwargs(big["load"], is_gguf = True)
     # Recorded before some other load (Chat reloading the model) bumped the count.
-    monkeypatch.setattr(_common, "_LOADED_OPTIONS", {"llm": (GGUF.lower(), _common.options_hash(opts), _loads() - 1)})
+    monkeypatch.setattr(
+        _common,
+        "_LOADED_OPTIONS",
+        {"llm": (GGUF.lower(), _common.options_hash(opts), _loads() - 1)},
+    )
     rs = SimpleNamespace(plan = _plan({"a": small, "b": big, "c": {}}), resident = {"llm": GGUF})
     engine = engine_mod.FlowEngine.__new__(engine_mod.FlowEngine)
     assert engine._pick_gpu(rs, ["a", "b", "c"]) == "c"
@@ -383,13 +407,19 @@ def test_a_stale_load_record_does_not_steer_the_scheduler(monkeypatch):
 
 def test_a_model_unset_card_hashes_the_resident_quants_saved_load(monkeypatch):
     by_quant = {"Q8_0": {"max_seq_length": 32768}, None: {"max_seq_length": 8192}}
-    monkeypatch.setattr(model_settings, "saved_load", lambda model_id, variant = None: dict(by_quant[variant]))
+    monkeypatch.setattr(
+        model_settings, "saved_load", lambda model_id, variant = None: dict(by_quant[variant])
+    )
     opts = model_settings.load_kwargs(by_quant["Q8_0"], is_gguf = True)
-    monkeypatch.setattr(_common, "_LOADED_OPTIONS", {"llm": (GGUF.lower(), _common.options_hash(opts), _loads())})
+    monkeypatch.setattr(
+        _common, "_LOADED_OPTIONS", {"llm": (GGUF.lower(), _common.options_hash(opts), _loads())}
+    )
     follows = {"use_model_settings": True}
     other = {"load": {"max_seq_length": 8192}}
     rs = SimpleNamespace(
-        plan = _plan({"a": other, "b": follows}), resident = {"llm": GGUF}, resident_variant = {"llm": "Q8_0"}
+        plan = _plan({"a": other, "b": follows}),
+        resident = {"llm": GGUF},
+        resident_variant = {"llm": "Q8_0"},
     )
     engine = engine_mod.FlowEngine.__new__(engine_mod.FlowEngine)
     assert engine._pick_gpu(rs, ["a", "b"]) == "b"

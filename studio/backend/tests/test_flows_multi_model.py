@@ -220,7 +220,9 @@ def test_a_card_with_load_settings_still_loads_alongside(monkeypatch):
     options = {"max_seq_length": 8192, "cache_type_kv": "q8_0"}
     asyncio.run(_common.ensure_model(ctx, "chat", {"repo": SMALL}, options = options))
     assert len(loads) == 1 and loads[0]["alongside"] is True
-    assert loads[0]["max_seq_length"] == 8192 and loads[0]["extra_body"] == {"cache_type_kv": "q8_0"}
+    assert loads[0]["max_seq_length"] == 8192 and loads[0]["extra_body"] == {
+        "cache_type_kv": "q8_0"
+    }
     assert state["serving"] == [BIG, SMALL]
 
 

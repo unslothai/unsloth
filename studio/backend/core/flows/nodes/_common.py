@@ -239,7 +239,10 @@ MULTI_MODEL_MODES = ("fit", "always")
 
 
 async def _alongside(
-    ctx: Any, repo: str, variant: Optional[str], options: Optional[dict] = None
+    ctx: Any,
+    repo: str,
+    variant: Optional[str],
+    options: Optional[dict] = None,
 ) -> Optional[dict]:
     """Under Keep multiple models loaded (fit or always), serve ``repo`` from its own slot beside the primary chat
     model instead of replacing it: bind to it when it is already kept alongside, else load it alongside. None means
@@ -256,7 +259,9 @@ async def _alongside(
     if not serving or loading._same_id(serving[0], repo):
         return None
     name = f"{repo}:{variant}" if variant else repo
-    for gone in [r for r in _ALONGSIDE_OPTIONS if not any(loading._same_id(s, r) for s in serving[1:])]:
+    for gone in [
+        r for r in _ALONGSIDE_OPTIONS if not any(loading._same_id(s, r) for s in serving[1:])
+    ]:
         _ALONGSIDE_OPTIONS.pop(gone, None)
     if any(loading._same_id(s, repo) for s in serving[1:]):
         kept = await loading._read_json(

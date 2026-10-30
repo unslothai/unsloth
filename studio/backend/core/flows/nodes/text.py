@@ -68,7 +68,9 @@ async def _model_and_load(ctx: NodeContext, kind: str) -> tuple[Any, Optional[di
         # The loaded quant, or a reload for different settings would fall back to the repo's default one.
         variant = await resident_gguf_variant(ctx)
         choice = {"repo": repo, "variant": variant}
-    return choice, model_settings.load_kwargs(load, is_gguf = model_settings.looks_gguf(repo, variant))
+    return choice, model_settings.load_kwargs(
+        load, is_gguf = model_settings.looks_gguf(repo, variant)
+    )
 
 
 def _temperature(ctx: NodeContext) -> float:

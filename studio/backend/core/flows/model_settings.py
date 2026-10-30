@@ -115,7 +115,6 @@ def saved_load(model_id: Optional[str], variant: Optional[str] = None) -> dict:
         return {}
     try:
         from utils.openai_auto_switch_settings import resolve_override_for_load
-
         return dict(resolve_override_for_load(model_id, None, variant)[1] or {})
     except Exception:
         logger.debug("flows: could not read saved load settings", exc_info = True)
@@ -130,13 +129,18 @@ def load_kwargs(load: Any, *, is_gguf: bool) -> Optional[dict]:
     """The load options a card's settings ask for, or None for "however it loads by default"."""
     if not isinstance(load, dict) or not load:
         return None
-    from utils.openai_auto_switch_settings import model_override_load_kwargs, normalize_model_override
+    from utils.openai_auto_switch_settings import (
+        model_override_load_kwargs,
+        normalize_model_override,
+    )
 
     return model_override_load_kwargs(normalize_model_override(load), is_gguf = is_gguf) or None
 
 
 def card_load_kwargs(
-    params: dict, resident: Optional[str] = None, resident_variant: Optional[str] = None
+    params: dict,
+    resident: Optional[str] = None,
+    resident_variant: Optional[str] = None,
 ) -> Optional[dict]:
     """What the scheduler groups by, before the run resolves saved settings: theirs when the card follows them.
     A card with Model unset reads as the resident model and its quant, so GGUF-only and quant-specific settings
@@ -144,7 +148,11 @@ def card_load_kwargs(
     choice = params.get("model")
     picked = choice.get("repo") if isinstance(choice, dict) else None
     repo = picked or resident
-    variant = (choice.get("variant") if isinstance(choice, dict) else None) if picked else resident_variant
+    variant = (
+        (choice.get("variant") if isinstance(choice, dict) else None)
+        if picked
+        else resident_variant
+    )
     load = params.get(LOAD) or {}
     if params.get(USE_SAVED) and repo:
         load = {**load, **saved_load(repo, variant)}
