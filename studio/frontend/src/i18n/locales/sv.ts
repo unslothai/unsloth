@@ -614,7 +614,7 @@ export const sv = {
     checkFailed: "Det gick inte att kontrollera sandlådan på den här datorn.",
     retry: "Försök igen",
     keepsRunning:
-      "Att stänga detta stoppar inte konfigurationen. Resultatet visas i Inställningar > Sandlåda.",
+      "Att stänga detta stoppar inte konfigurationen. Resultatet visas i Inställningar > Säkerhet.",
   },
   composerSettings: {
     title: "Skrivfält",
@@ -924,7 +924,7 @@ export const sv = {
       guidedTour: "Guidad tur",
       help: "Hjälp",
       logOut: "Logga ut",
-      logOutNeedsPassword: "Ange ett lösenord under Inställningar > Fjärråtkomst innan du loggar ut, så att du kan logga in igen.",
+      logOutNeedsPassword: "Ange ett lösenord under Inställningar > Fjärråtkomst och LAN innan du loggar ut, så att du kan logga in igen.",
       logOutFailed: "Det gick inte att logga ut säkert. Försök igen om en stund.",
       shutdown: "Stäng av",
     },
@@ -2522,6 +2522,8 @@ export const sv = {
         label: "Visningsspråk",
         description: "Språket som används av Unsloth.",
         autoDetect: "Identifiera automatiskt",
+        search: "Sök språk",
+        noResults: "Inga matchande språk",
         spellCheck: "Stavningskontroll",
         spellCheckDescription: "Stryk under felstavade ord medan du skriver.",
       },
