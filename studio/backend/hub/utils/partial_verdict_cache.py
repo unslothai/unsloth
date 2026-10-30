@@ -214,6 +214,9 @@ def _walk_repo(repo_dir: str) -> Optional[tuple[tuple, tuple]]:
     blobs = os.path.join(repo_dir, "blobs")
     snapshots = os.path.join(repo_dir, "snapshots")
     refs = os.path.join(repo_dir, "refs")
+    # Snapshot links resolve from where snapshots/ really is, so a linked one points them at blobs this walk would not stat.
+    if os.path.islink(snapshots):
+        return None
     dirs = [repo_dir, snapshots, blobs, refs]
     files: list[str] = []
     pending = [refs]

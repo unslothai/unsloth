@@ -385,6 +385,30 @@ def test_a_link_to_a_directory_in_blobs_is_not_cached(hub, tmp_path):
     assert os.fspath(hub / "models--org--chat") in keys
 
 
+def test_a_linked_snapshots_dir_tracks_the_blobs_its_links_reach(hub, tmp_path, monkeypatch):
+    """Relative snapshot links resolve from where snapshots/ really is, not from the repo dir."""
+    models = tmp_path / "models"
+    elsewhere = _hf_repo(
+        tmp_path / "elsewhere",
+        "org/moved",
+        _REV1,
+        {"config.json": _CONFIG.encode(), "model.safetensors": b"\5" * 64},
+    )
+    repo = hub / "models--org--moved"
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text(_REV1, encoding = "utf-8")
+    (repo / "blobs").mkdir()
+    (repo / "snapshots").symlink_to(elsewhere / "snapshots", target_is_directory = True)
+    _settle()
+    rows = _check(models, monkeypatch)
+    assert _partial(rows, "org/moved") is False
+    # The blob the links really reach goes away; nothing under the repo dir itself changes.
+    _settle()
+    (elsewhere / "blobs" / hashlib.sha256(b"\5" * 64).hexdigest()).unlink()
+    rows = _check(models, monkeypatch)
+    assert _partial(rows, "org/moved") is True
+
+
 def test_cache_is_bounded(hub, tmp_path, monkeypatch):
     monkeypatch.setattr(partial_verdict_cache, "_MAX_ENTRIES", 2)
     _settle()
